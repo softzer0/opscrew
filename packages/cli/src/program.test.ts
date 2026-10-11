@@ -54,15 +54,6 @@ describe("opscrew program", () => {
     expect(await main(argv("nope"), ctx)).toBe(1);
     expect(ctx.errors).toContain("unknown command");
   });
-
-  it.each(["provision", "dns", "secure", "verify", "mcp"])(
-    "stub `%s` says it is not available and exits 2",
-    async (name) => {
-      const ctx = createTestContext();
-      expect(await main(argv(name, "--some-flag"), ctx)).toBe(2);
-      expect(ctx.errors).toBe(`\`opscrew ${name}\` is not available yet.\n`);
-    },
-  );
 });
 
 describe("opscrew status", () => {

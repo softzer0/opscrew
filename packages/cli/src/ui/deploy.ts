@@ -1,0 +1,99 @@
+import { type ErrorCode, isUserFacingError } from "@opscrew/core";
+import { CommanderError } from "commander";
+import type { CliContext } from "../context";
+import { CliExit } from "../exit";
+
+/** Exit code when checks or policies failed, or an approval was refused. */
+export const REFUSED_EXIT_CODE = 1;
+/** Exit code when the command could not run (bad input, missing credentials, engine errors). */
+export const ERROR_EXIT_CODE = 2;
+
+/** Error codes that mean "stopped on purpose" (exit 1) rather than "could not run" (exit 2). */
+const REFUSED_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
+  "APPROVAL_REFUSED",
+  "PLAN_NOT_APPROVED",
+  "PLAN_HASH_MISMATCH",
+  "DESTROY_NOT_APPROVED",
+  "PHASE_PRECONDITION",
+]);
+
+/** 1 for refusals, failed policies and unmet preconditions; 2 for every other error. */
+export function exitCodeFor(error: unknown): number {
+  if (error instanceof CliExit) return error.exitCode;
+  return isUserFacingError(error) && REFUSED_CODES.has(error.code as ErrorCode)
+    ? REFUSED_EXIT_CODE
+    : ERROR_EXIT_CODE;
+}
+
+/** Commander `exitOverride` for deploy commands: usage errors exit 2, help and version exit 0. */
+export function usageErrorsExit2(error: CommanderError): never {
+  if (error.exitCode === 0) throw error;
+  throw new CommanderError(ERROR_EXIT_CODE, error.code, error.message);
+}
+
+/**
+ * Runs a phase and turns any error into plain-English output (message, then the hint) and a
+ * {@link CliExit} with the code from {@link exitCodeFor}. `extraHint` may add advice for an error.
+ */
+export async function runPhaseCommand<T>(
+  ctx: CliContext,
+  run: () => Promise<T>,
+  extraHint?: (error: unknown) => string | undefined,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof CliExit) throw error;
+    if (isUserFacingError(error)) {
+      ctx.reporter.error(error.message);
+      if (error.hint !== undefined && error.hint !== "") ctx.stderr(`  ${error.hint}\n`);
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.reporter.error(`Something went wrong: ${message}`);
+      if (ctx.env.OPSCREW_DEBUG === "1" && error instanceof Error && error.stack !== undefined) {
+        ctx.stderr(`${error.stack}\n`);
+      } else {
+        ctx.stderr("  Re-run with OPSCREW_DEBUG=1 to see the details.\n");
+      }
+    }
+    const extra = extraHint?.(error);
+    if (extra !== undefined && extra !== "") ctx.stderr(`  ${extra}\n`);
+    throw new CliExit(exitCodeFor(error));
+  }
+}
+
+/** Hint for an approval refused in a non-interactive run without `--yes`. */
+export function assumeYesHint(
+  ctx: CliContext,
+  yes: boolean | undefined,
+): (error: unknown) => string | undefined {
+  return (error) =>
+    !ctx.isInteractive &&
+    yes !== true &&
+    isUserFacingError(error) &&
+    error.code === "APPROVAL_REFUSED"
+      ? "This run is not interactive: add --yes to approve writing the generated files, storing the GitHub secrets, pushing and opening the pull request. Infrastructure changes need --approve <hash>; destroys and changed host keys need an interactive terminal."
+      : undefined;
+}
+
+/**
+ * Prints the plan hash of a `--plan-only` run on its own line, with the exact command that applies
+ * that plan and nothing else.
+ */
+export function printPlanHash(ctx: CliContext, planHash: string, approveCommand: string): void {
+  ctx.stdout(
+    [
+      "",
+      "Plan hash (SHA-256):",
+      "",
+      `    ${planHash}`,
+      "",
+      "Review the plan above. To apply exactly this plan, run:",
+      "",
+      `    ${approveCommand}`,
+      "",
+      "Only the saved plan with this hash is applied; if it no longer matches, OpsCrew refuses and you plan again.",
+      "",
+    ].join("\n"),
+  );
+}

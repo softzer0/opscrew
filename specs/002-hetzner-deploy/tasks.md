@@ -129,7 +129,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
 
 ## Phase 5: Interfaces
 
-- [ ] T211 [US2] [US3] [US4] Implement the CLI commands provision, dns, secure, verify and mcp in `packages/cli/src/commands/`
+- [X] T211 [US2] [US3] [US4] Implement the CLI commands provision, dns, secure, verify and mcp in `packages/cli/src/commands/`
   - Owns: `packages/cli/src/commands/{provision,dns,secure,verify,mcp}.ts` and their tests
   - Reads: spec FR-213, FR-214, FR-216; agents exports; `packages/cli/src/{deps,context,program,approval}.ts`
   - Depends: T209, T210, 001/T112, 001/T114 (`deps.ts`)
