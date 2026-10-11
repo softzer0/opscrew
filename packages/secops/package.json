@@ -1,0 +1,25 @@
+{
+  "name": "@opscrew/secops",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpsCrew security scanning, policy checks and hardening checks.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "@opscrew/detect": "workspace:*",
+    "@opscrew/plan-schema": "workspace:*",
+    "ignore": "^7.0.12",
+    "smol-toml": "^1.9.1",
+    "tinyglobby": "^0.2.17",
+    "yaml": "^2.9.1"
+  }
+}

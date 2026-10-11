@@ -1,0 +1,21 @@
+{
+  "name": "@opscrew/plan-schema",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Schemas and read/write helpers for OpsCrew artefacts (architecture.json, requirements.yaml, plan.yaml).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "gen:schemas": "tsx scripts/gen-schemas.ts"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  }
+}

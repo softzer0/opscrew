@@ -1,0 +1,23 @@
+{
+  "name": "@opscrew/connector-github",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHub adapter: git operations, pull requests, Actions secrets.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "libsodium-wrappers": "^0.8.4"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers": "^0.8.2"
+  }
+}

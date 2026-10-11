@@ -1,0 +1,20 @@
+{
+  "name": "@opscrew/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpsCrew core: paths, errors, redaction, audit log, approvals, tool policy, command runner, project state.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

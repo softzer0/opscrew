@@ -1,0 +1,26 @@
+{
+  "name": "@opscrew/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic MCP server exposing OpsCrew tools to coding agents.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@opscrew/agents": "workspace:*",
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "@opscrew/detect": "workspace:*",
+    "@opscrew/iac-engine": "workspace:*",
+    "@opscrew/plan-schema": "workspace:*",
+    "@opscrew/secops": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

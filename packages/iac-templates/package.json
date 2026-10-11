@@ -1,0 +1,20 @@
+{
+  "name": "@opscrew/iac-templates",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vendored HCL modules and runtime templates rendered from an OpsCrew plan.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/plan-schema": "workspace:*",
+    "yaml": "^2.9.1"
+  }
+}

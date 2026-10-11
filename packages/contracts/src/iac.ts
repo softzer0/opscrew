@@ -1,0 +1,113 @@
+import type { IsoDateTime } from "./common";
+
+export type IacEngineName = "tofu" | "terraform";
+
+export interface IacEngineInfo {
+  name: IacEngineName;
+  /** Version reported by the binary, for example `1.13.1`. */
+  version: string;
+  /** Absolute path of the binary that was detected or configured. */
+  binary: string;
+}
+
+export type ResourceAction = "create" | "update" | "delete" | "replace" | "read" | "no-op";
+
+export interface ResourceChange {
+  /** Full resource address, for example `module.server.hcloud_server.app`. */
+  address: string;
+  type: string;
+  name: string;
+  /** Provider name, for example `registry.opentofu.org/hetznercloud/hcloud`. */
+  provider: string;
+  action: ResourceAction;
+}
+
+export interface PlanSummary {
+  engine: IacEngineInfo;
+  /** Absolute path of the root module directory. */
+  dir: string;
+  /** Absolute path of the saved plan file. */
+  planFile: string;
+  /** SHA-256 hex digest of the plan file's bytes. Approvals bind to this value. */
+  planHash: string;
+  createdAt: IsoDateTime;
+  /** Every change except `no-op` and `read`. */
+  changes: ResourceChange[];
+  counts: { create: number; update: number; delete: number; replace: number };
+  /** True when any change is a `delete` or `replace`. */
+  hasDestroy: boolean;
+  /** The engine's machine-readable plan (`show -json`), used by policy checks. */
+  planJson: unknown;
+}
+
+export interface IacRunOptions {
+  /** Extra environment for the engine (provider tokens, `TF_ENCRYPTION`, …). Never logged. */
+  env?: Record<string, string | undefined>;
+  /** Input variables passed as `-var name=value`. Never put secrets here; use env instead. */
+  vars?: Record<string, string>;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  onOutput?: (line: string) => void;
+}
+
+export interface IacInitOptions extends IacRunOptions {
+  /** Values for a partial backend configuration (`-backend-config=key=value`). */
+  backendConfig?: Record<string, string>;
+  upgrade?: boolean;
+}
+
+export interface IacDiagnostic {
+  severity: "error" | "warning";
+  summary: string;
+  detail?: string;
+  file?: string;
+  line?: number;
+}
+
+export interface IacValidation {
+  valid: boolean;
+  diagnostics: IacDiagnostic[];
+}
+
+export interface IacApplyResult {
+  ok: boolean;
+  outputs: Record<string, unknown>;
+  /** Engine output, redacted. */
+  log: string;
+}
+
+export interface IacApproval {
+  /** Hash the user approved. Must equal the plan file's current SHA-256. */
+  approvedPlanHash: string;
+  /** Required when the plan deletes or replaces anything. */
+  allowDestroy?: boolean;
+}
+
+/**
+ * The only way OpsCrew talks to `tofu` or `terraform`. Implementations live in
+ * `@opscrew/iac-engine`. There is deliberately no `destroy` method: destroys are plans created
+ * with `destroy: true` and applied through the same approval-bound `apply`.
+ */
+export interface IacEngine {
+  readonly info: IacEngineInfo;
+  init(dir: string, options?: IacInitOptions): Promise<void>;
+  validate(dir: string, options?: IacRunOptions): Promise<IacValidation>;
+  /** Writes a saved plan to `planFile` and summarises it. */
+  plan(
+    dir: string,
+    planFile: string,
+    options?: IacRunOptions & { destroy?: boolean },
+  ): Promise<PlanSummary>;
+  /**
+   * Applies exactly the saved plan. MUST refuse when the plan file's SHA-256 differs from
+   * `approval.approvedPlanHash`, or when the plan deletes or replaces anything and
+   * `approval.allowDestroy` is not true.
+   */
+  apply(
+    dir: string,
+    planFile: string,
+    approval: IacApproval,
+    options?: IacRunOptions,
+  ): Promise<IacApplyResult>;
+  output(dir: string, options?: IacRunOptions): Promise<Record<string, unknown>>;
+}
