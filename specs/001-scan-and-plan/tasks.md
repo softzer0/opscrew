@@ -160,7 +160,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
 
 ## Phase 6: User Story 5 — MCP server and plugin (P3)
 
-- [ ] T112 [US5] Implement the MCP server with the planning tools in `packages/mcp-server/src/`
+- [X] T112 [US5] Implement the MCP server with the planning tools in `packages/mcp-server/src/`
   - Owns: `packages/mcp-server/src/**` except `packages/mcp-server/src/tools/deploy.ts`
   - Reads: plan.md "MCP server and plugin"; spec US5, FR-110; research.md "MCP"; installed `@modelcontextprotocol/sdk` type definitions
   - Depends: T102–T106, T109, T110
