@@ -133,7 +133,7 @@ async function scan(
     }
     if (isUserFacingError(error)) {
       ctx.reporter.error(error.message);
-      if (error.hint !== undefined && error.hint !== "") ctx.stderr(`  ${error.hint}\n`);
+      if (error.hint && !error.message.includes(error.hint)) ctx.stderr(`  ${error.hint}\n`);
     } else {
       ctx.reporter.error(`The scan could not finish: ${message}`);
       if (ctx.env.OPSCREW_DEBUG === "1" && error instanceof Error && error.stack !== undefined) {

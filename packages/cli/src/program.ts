@@ -58,7 +58,7 @@ function handleError(error: unknown, ctx: CliContext): number {
   const debug = ctx.env.OPSCREW_DEBUG === "1";
   if (isUserFacingError(error)) {
     ctx.reporter.error(error.message);
-    if (error.hint !== undefined && error.hint !== "") ctx.stderr(`  ${error.hint}\n`);
+    if (error.hint && !error.message.includes(error.hint)) ctx.stderr(`  ${error.hint}\n`);
   } else {
     const message = error instanceof Error ? error.message : String(error);
     ctx.reporter.error(`Something went wrong: ${message}`);

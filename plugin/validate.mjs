@@ -66,6 +66,14 @@ if (mcp) {
   }
 }
 
+// The MCP server version must match the plugin version (no floating `@latest`).
+const pinned = JSON.stringify(mcp ?? {}).match(/opscrew@([^"\s]+)/);
+if (manifest && pinned && pinned[1] !== manifest.version) {
+  errors.push(
+    `.mcp.json: runs opscrew@${pinned[1]}, but the plugin version is ${manifest.version}; pin the same version`,
+  );
+}
+
 // skills/<name>/SKILL.md
 const skillsDir = join(pluginDir, "skills");
 const skills = existsSync(skillsDir)
@@ -116,7 +124,12 @@ if (marketplace) {
   }
   if (typeof marketplace.owner?.name !== "string")
     errors.push("marketplace.json: missing owner.name");
-  if (!marketplace.description) warnings.push("marketplace.json: missing description");
+  if (marketplace.description !== undefined) {
+    errors.push("marketplace.json: `description` belongs under `metadata`, not at the root");
+  }
+  if (!marketplace.metadata?.description) {
+    warnings.push("marketplace.json: missing metadata.description");
+  }
   const entries = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
   if (entries.length === 0)
     errors.push("marketplace.json: `plugins` must list at least one plugin");

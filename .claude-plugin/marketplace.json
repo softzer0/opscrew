@@ -1,7 +1,11 @@
 {
   "name": "opscrew",
-  "description": "OpsCrew plugins for Claude Code: security scans, deployment planning and deploys to your own cloud.",
-  "owner": { "name": "The OpsCrew Authors" },
+  "owner": {
+    "name": "The OpsCrew Authors"
+  },
+  "metadata": {
+    "description": "OpsCrew plugins for Claude Code: security scans, deployment planning and deploys to your own cloud."
+  },
   "plugins": [
     {
       "name": "opscrew",

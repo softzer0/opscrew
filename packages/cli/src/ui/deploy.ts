@@ -24,7 +24,7 @@ export async function runPhaseCommand<T>(
     if (error instanceof CliExit) throw error;
     if (isUserFacingError(error)) {
       ctx.reporter.error(error.message);
-      if (error.hint !== undefined && error.hint !== "") ctx.stderr(`  ${error.hint}\n`);
+      if (error.hint && !error.message.includes(error.hint)) ctx.stderr(`  ${error.hint}\n`);
     } else {
       const message = error instanceof Error ? error.message : String(error);
       ctx.reporter.error(`Something went wrong: ${message}`);
