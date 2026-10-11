@@ -180,7 +180,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
 
 ## Phase 7: CLI and end-to-end
 
-- [ ] T114 [US1] [US2] [US3] [US4] Implement the CLI commands scan, analyze, interview, design and adapt in `packages/cli/src/commands/`
+- [X] T114 [US1] [US2] [US3] [US4] Implement the CLI commands scan, analyze, interview, design and adapt in `packages/cli/src/commands/`
   - Owns: `packages/cli/src/commands/{scan,analyze,interview,design,adapt}.ts` and their tests, `packages/cli/src/ui/**`, `packages/cli/src/deps.ts`
   - Reads: spec FR-101, FR-104, FR-106..FR-108, FR-113; agents and secops exports; `packages/cli/src/{context,program,approval,reporter}.ts`
   - Depends: T102–T106, T109–T111, 000/T008
