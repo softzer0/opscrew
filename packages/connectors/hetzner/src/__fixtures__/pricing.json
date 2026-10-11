@@ -1,0 +1,38 @@
+{
+  "pricing": {
+    "currency": "EUR",
+    "vat_rate": "19.00",
+    "primary_ips": [
+      {
+        "type": "ipv4",
+        "prices": [
+          {
+            "location": "fsn1",
+            "price_hourly": { "net": "0.0008000000", "gross": "0.0009520000000000" },
+            "price_monthly": { "net": "0.5000000000", "gross": "0.5950000000000000" }
+          },
+          {
+            "location": "ash",
+            "price_hourly": { "net": "0.0010000000", "gross": "0.0010000000000000" },
+            "price_monthly": { "net": "0.6000000000", "gross": "0.6000000000000000" }
+          }
+        ]
+      },
+      {
+        "type": "ipv6",
+        "prices": [
+          {
+            "location": "fsn1",
+            "price_hourly": { "net": "0.0000000000", "gross": "0.0000000000000000" },
+            "price_monthly": { "net": "0.0000000000", "gross": "0.0000000000000000" }
+          }
+        ]
+      }
+    ],
+    "server_backup": { "percentage": "20.0000000000" },
+    "volume": {
+      "price_per_gb_month": { "net": "0.0440000000", "gross": "0.0523600000000000" }
+    },
+    "server_types": []
+  }
+}

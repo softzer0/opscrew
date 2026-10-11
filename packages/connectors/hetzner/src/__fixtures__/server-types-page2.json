@@ -1,0 +1,63 @@
+{
+  "server_types": [
+    {
+      "id": 22,
+      "name": "cx22",
+      "description": "CX22",
+      "cores": 2,
+      "memory": 4.0,
+      "disk": 40,
+      "storage_type": "local",
+      "cpu_type": "shared",
+      "architecture": "x86",
+      "deprecated": true,
+      "deprecation": {
+        "announced": "2025-10-01T00:00:00+00:00",
+        "unavailable_after": "2026-01-01T00:00:00+00:00"
+      },
+      "prices": [
+        {
+          "location": "nbg1",
+          "price_hourly": { "net": "0.0060000000", "gross": "0.0071400000000000" },
+          "price_monthly": { "net": "3.7900000000", "gross": "4.5101000000000000" },
+          "included_traffic": 21990232555520,
+          "price_per_tb_traffic": { "net": "1.0000000000", "gross": "1.1900000000000000" }
+        }
+      ],
+      "locations": [
+        { "id": 2, "name": "nbg1", "available": true, "recommended": false, "deprecation": null }
+      ]
+    },
+    {
+      "id": 45,
+      "name": "cax11",
+      "description": "CAX11",
+      "cores": 2,
+      "memory": 4.0,
+      "disk": 40,
+      "storage_type": "local",
+      "cpu_type": "shared",
+      "architecture": "arm",
+      "deprecated": null,
+      "prices": [
+        {
+          "location": "fsn1",
+          "price_hourly": { "net": "0.0096000000", "gross": "0.0114240000000000" },
+          "price_monthly": { "net": "5.9900000000", "gross": "7.1281000000000000" },
+          "included_traffic": 21990232555520,
+          "price_per_tb_traffic": { "net": "1.0000000000", "gross": "1.1900000000000000" }
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "pagination": {
+      "page": 2,
+      "per_page": 50,
+      "previous_page": 1,
+      "next_page": null,
+      "last_page": 2,
+      "total_entries": 4
+    }
+  }
+}

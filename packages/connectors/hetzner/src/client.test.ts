@@ -1,0 +1,180 @@
+import { OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
+import { describe, expect, it } from "vitest";
+import { fakeFetch, fakeSleep, fixture } from "./__fixtures__/fake-fetch";
+import { HetznerClient } from "./client";
+
+const token = fakeSecret("hcloud-token");
+const unauthorized = {
+  status: 401,
+  body: { error: { code: "unauthorized", message: "unable to authenticate" } },
+};
+
+function client(
+  routes: Parameters<typeof fakeFetch>[0],
+  extra: { now?: () => number; version?: string } = {},
+) {
+  const fake = fakeFetch(routes);
+  const sleeper = fakeSleep();
+  const c = new HetznerClient({ token, fetch: fake.fetch, sleep: sleeper.sleep, ...extra });
+  return { client: c, calls: fake.calls, waits: sleeper.waits };
+}
+
+describe("HetznerClient", () => {
+  it("follows pagination over two pages with per_page=50", async () => {
+    const { client: c, calls } = client({
+      "/server_types?page=1": { body: fixture("server-types-page1.json") },
+      "/server_types?page=2": { body: fixture("server-types-page2.json") },
+    });
+    const types = await c.listServerTypes();
+    expect(types.map((t) => t.name)).toEqual(["cx23", "cpx22", "cx22", "cax11"]);
+    expect(calls.map((call) => call.url.searchParams.get("page"))).toEqual(["1", "2"]);
+    expect(calls.every((call) => call.url.searchParams.get("per_page") === "50")).toBe(true);
+    expect(calls[0]?.url.toString()).toMatch(/^https:\/\/api\.hetzner\.cloud\/v1\/server_types\?/);
+  });
+
+  it("keeps unknown fields (passthrough) and sends auth and User-Agent headers", async () => {
+    const { client: c, calls } = client(
+      {
+        "/server_types?page=1": { body: fixture("server-types-page1.json") },
+        "/server_types?page=2": { body: fixture("server-types-page2.json") },
+      },
+      { version: "1.2.3" },
+    );
+    const [first] = await c.listServerTypes();
+    expect((first as Record<string, unknown>).future_field).toEqual({ kept: true });
+    expect(calls[0]?.headers.Authorization).toBe(`Bearer ${token}`);
+    expect(calls[0]?.headers["User-Agent"]).toBe("opscrew/1.2.3");
+  });
+
+  it("uses opscrew/<version> as the default User-Agent", async () => {
+    const { client: c, calls } = client({ "/locations": { body: fixture("locations.json") } });
+    await c.listLocations();
+    expect(calls[0]?.headers["User-Agent"]).toMatch(/^opscrew\/\d+\.\d+\.\d+/);
+  });
+
+  it("parses net prices from decimal strings", async () => {
+    const { client: c } = client({
+      "/server_types?page=1": { body: fixture("server-types-page1.json") },
+      "/server_types?page=2": { body: fixture("server-types-page2.json") },
+    });
+    const [cx23] = await c.listServerTypes();
+    expect(cx23?.prices[0]?.price_monthly.net).toBe(5.49);
+    expect(cx23?.prices[0]?.price_hourly.net).toBe(0.0088);
+  });
+
+  it("retries a 429 until RateLimit-Reset, then succeeds", async () => {
+    const nowMs = 1_800_000_000_000;
+    const {
+      client: c,
+      calls,
+      waits,
+    } = client(
+      {
+        "/locations": [
+          {
+            status: 429,
+            body: { error: { code: "rate_limit_exceeded", message: "limit reached" } },
+            headers: { "RateLimit-Reset": String(nowMs / 1000 + 5) },
+          },
+          { body: fixture("locations.json") },
+        ],
+      },
+      { now: () => nowMs },
+    );
+    const locations = await c.listLocations();
+    expect(locations).toHaveLength(2);
+    expect(calls).toHaveLength(2);
+    expect(waits).toEqual([5000]);
+  });
+
+  it("backs off 2^n seconds on 429 without RateLimit-Reset and gives up after 3 retries", async () => {
+    const {
+      client: c,
+      calls,
+      waits,
+    } = client({
+      "/locations": {
+        status: 429,
+        body: { error: { code: "rate_limit_exceeded", message: "slow down" } },
+      },
+    });
+    const error = await c.listLocations().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).code).toBe("PROVIDER_ERROR");
+    expect(waits).toEqual([1000, 2000, 4000]);
+    expect(calls).toHaveLength(4);
+  });
+
+  it("retries 5xx at most twice", async () => {
+    const { client: c, calls } = client({
+      "/pricing": { status: 503, body: { error: { code: "unavailable", message: "maintenance" } } },
+    });
+    const error = (await c.getPricing().catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("maintenance");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("recovers from a 5xx followed by success", async () => {
+    const { client: c } = client({
+      "/pricing": [{ status: 502 }, { body: fixture("pricing.json") }],
+    });
+    const pricing = await c.getPricing();
+    expect(pricing.server_backup?.percentage).toBe(20);
+    expect(pricing.volume?.price_per_gb_month.net).toBe(0.044);
+  });
+
+  it("maps 401 to CREDENTIALS_INVALID with the API message and no token", async () => {
+    const { client: c, calls } = client({ "/locations": unauthorized });
+    const error = (await c.verifyToken().catch((e: unknown) => e)) as OpsCrewError;
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error.code).toBe("CREDENTIALS_INVALID");
+    expect(error.message).toContain("unable to authenticate");
+    expect(error.hint).toContain("HCLOUD_TOKEN");
+    expect(`${error.message} ${error.hint}`).not.toContain(token);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url.searchParams.get("per_page")).toBe("1");
+  });
+
+  it("maps other errors to PROVIDER_ERROR", async () => {
+    const { client: c } = client({
+      "/servers/42": {
+        status: 404,
+        body: { error: { code: "not_found", message: "server not found" } },
+      },
+    });
+    const error = (await c.getServer(42).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("server not found");
+  });
+
+  it("rejects responses that do not match the schema", async () => {
+    const { client: c } = client({ "/pricing": { body: { pricing: { nope: true } } } });
+    const error = (await c.getPricing().catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("unexpected response");
+  });
+
+  it("filters images by name and architecture and reads one server", async () => {
+    const { client: c, calls } = client({
+      "/images": {
+        body: {
+          images: [
+            { id: 1, name: "ubuntu-24.04", type: "system", architecture: "x86", deprecated: null },
+          ],
+          meta: { pagination: { page: 1, per_page: 50, next_page: null } },
+        },
+      },
+      "/servers/7": {
+        body: { server: { id: 7, name: "web", status: "running", server_type: { name: "cx23" } } },
+      },
+    });
+    const images = await c.listImages({ name: "ubuntu-24.04", architecture: "x86" });
+    expect(images[0]?.name).toBe("ubuntu-24.04");
+    expect(calls[0]?.url.searchParams.get("name")).toBe("ubuntu-24.04");
+    expect(calls[0]?.url.searchParams.get("architecture")).toBe("x86");
+    const server = await c.getServer(7);
+    expect(server.status).toBe("running");
+  });
+});

@@ -1,0 +1,356 @@
+import { OpsCrewError } from "@opscrew/core";
+import { z } from "zod";
+
+/** Default Hetzner Cloud API base URL. */
+export const HETZNER_API_URL = "https://api.hetzner.cloud/v1";
+/** Version sent in the `User-Agent` header when the caller does not pass one. */
+export const HETZNER_CONNECTOR_VERSION = "0.1.0";
+/** Page size used for paginated list endpoints. */
+export const PER_PAGE = 50;
+
+const MAX_RATE_LIMIT_RETRIES = 3;
+const MAX_SERVER_ERROR_RETRIES = 2;
+const MAX_WAIT_MS = 60_000;
+const TOKEN_HINT =
+  "Create a Read & Write API token in the Hetzner Cloud Console (your project → Security → API tokens) and set it as HCLOUD_TOKEN.";
+
+// --- Response schemas (hcloud-go shapes; unknown fields are kept) ------------------------------
+
+/** Hetzner sends prices as decimal strings; accept numbers too and parse to `number`. */
+const decimal = z.union([z.string(), z.number()]).transform((value, ctx) => {
+  const parsed = typeof value === "number" ? value : Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    ctx.addIssue({ code: "custom", message: `Not a decimal number: ${String(value)}` });
+    return z.NEVER;
+  }
+  return parsed;
+});
+
+const priceSchema = z.looseObject({ net: decimal, gross: decimal });
+
+const deprecationSchema = z.looseObject({
+  announced: z.string().optional(),
+  unavailable_after: z.string().optional(),
+});
+
+const paginationSchema = z.looseObject({
+  page: z.number().optional(),
+  per_page: z.number().optional(),
+  next_page: z.number().nullable().optional(),
+  last_page: z.number().nullable().optional(),
+  total_entries: z.number().nullable().optional(),
+});
+const metaSchema = z.looseObject({ pagination: paginationSchema.optional() }).optional();
+
+export const serverTypePriceSchema = z.looseObject({
+  location: z.string(),
+  price_hourly: priceSchema,
+  price_monthly: priceSchema,
+  included_traffic: z.number().nullable().optional(),
+  price_per_tb_traffic: priceSchema.nullable().optional(),
+});
+
+export const serverTypeLocationSchema = z.looseObject({
+  id: z.number().optional(),
+  name: z.string(),
+  available: z.boolean().optional(),
+  recommended: z.boolean().optional(),
+  deprecation: deprecationSchema.nullable().optional(),
+});
+
+export const serverTypeSchema = z.looseObject({
+  id: z.number(),
+  name: z.string(),
+  description: z.string().optional(),
+  category: z.string().nullable().optional(),
+  cores: z.number(),
+  memory: z.number(),
+  disk: z.number(),
+  storage_type: z.string().optional(),
+  cpu_type: z.string(),
+  architecture: z.string().optional(),
+  included_traffic: z.number().nullable().optional(),
+  deprecated: z.union([z.boolean(), deprecationSchema]).nullable().optional(),
+  deprecation: deprecationSchema.nullable().optional(),
+  prices: z.array(serverTypePriceSchema),
+  locations: z.array(serverTypeLocationSchema).optional(),
+});
+export type HetznerServerType = z.infer<typeof serverTypeSchema>;
+
+export const locationSchema = z.looseObject({
+  id: z.number(),
+  name: z.string(),
+  description: z.string().optional(),
+  country: z.string(),
+  city: z.string().optional(),
+  network_zone: z.string().optional(),
+  latitude: z.number().optional(),
+  longitude: z.number().optional(),
+});
+export type HetznerLocation = z.infer<typeof locationSchema>;
+
+const locationPriceSchema = z.looseObject({
+  location: z.string(),
+  price_hourly: priceSchema.optional(),
+  price_monthly: priceSchema,
+});
+
+export const pricingSchema = z.looseObject({
+  currency: z.string(),
+  vat_rate: decimal.optional(),
+  primary_ips: z
+    .array(z.looseObject({ type: z.string(), prices: z.array(locationPriceSchema) }))
+    .optional(),
+  server_backup: z.looseObject({ percentage: decimal }).optional(),
+  volume: z.looseObject({ price_per_gb_month: priceSchema }).optional(),
+});
+export type HetznerPricing = z.infer<typeof pricingSchema>;
+
+export const imageSchema = z.looseObject({
+  id: z.number(),
+  name: z.string().nullable().optional(),
+  description: z.string().optional(),
+  type: z.string(),
+  status: z.string().optional(),
+  os_flavor: z.string().optional(),
+  os_version: z.string().nullable().optional(),
+  architecture: z.string().optional(),
+  deprecated: z.string().nullable().optional(),
+});
+export type HetznerImage = z.infer<typeof imageSchema>;
+
+export const serverSchema = z.looseObject({
+  id: z.number(),
+  name: z.string(),
+  status: z.string(),
+  created: z.string().optional(),
+  server_type: z.looseObject({ name: z.string() }).optional(),
+  datacenter: z
+    .looseObject({ location: z.looseObject({ name: z.string() }).optional() })
+    .optional(),
+  public_net: z
+    .looseObject({ ipv4: z.looseObject({ ip: z.string() }).nullable().optional() })
+    .optional(),
+});
+export type HetznerServer = z.infer<typeof serverSchema>;
+
+const errorBodySchema = z.looseObject({
+  error: z.looseObject({ code: z.string().optional(), message: z.string().optional() }),
+});
+
+// --- Client -------------------------------------------------------------------------------------
+
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+export interface HetznerClientOptions {
+  /** Hetzner Cloud project API token. Only ever sent in the `Authorization` header. */
+  token: string;
+  fetch?: FetchLike;
+  baseUrl?: string;
+  /** Version used in `User-Agent: opscrew/<version>`. */
+  version?: string;
+  /** Injectable delay used between retries. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injectable clock (epoch ms) used to interpret `RateLimit-Reset`. */
+  now?: () => number;
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Typed, read-only Hetzner Cloud API client with pagination, retries and error mapping. */
+export class HetznerClient {
+  private readonly token: string;
+  private readonly fetchImpl: FetchLike;
+  private readonly baseUrl: string;
+  private readonly userAgent: string;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly now: () => number;
+
+  constructor(options: HetznerClientOptions) {
+    this.token = options.token;
+    this.fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    this.baseUrl = (options.baseUrl ?? HETZNER_API_URL).replace(/\/+$/, "");
+    this.userAgent = `opscrew/${options.version ?? HETZNER_CONNECTOR_VERSION}`;
+    this.sleep = options.sleep ?? defaultSleep;
+    this.now = options.now ?? Date.now;
+  }
+
+  /** All server types (`GET /server_types`, every page). */
+  listServerTypes(): Promise<HetznerServerType[]> {
+    return this.listAll("/server_types", "server_types", serverTypeSchema);
+  }
+
+  /** All locations (`GET /locations`, every page). */
+  listLocations(): Promise<HetznerLocation[]> {
+    return this.listAll("/locations", "locations", locationSchema);
+  }
+
+  /** Prices for IPs, backups and volumes (`GET /pricing`). */
+  async getPricing(): Promise<HetznerPricing> {
+    const body = await this.request("/pricing", z.looseObject({ pricing: pricingSchema }));
+    return body.pricing;
+  }
+
+  /** Images, optionally filtered by `name` and `architecture` (`GET /images`, every page). */
+  listImages(
+    filter: { name?: string; architecture?: "x86" | "arm" } = {},
+  ): Promise<HetznerImage[]> {
+    const query: Record<string, string> = {};
+    if (filter.name !== undefined) query.name = filter.name;
+    if (filter.architecture !== undefined) query.architecture = filter.architecture;
+    return this.listAll("/images", "images", imageSchema, query);
+  }
+
+  /** One server by id (`GET /servers/{id}`). */
+  async getServer(id: number): Promise<HetznerServer> {
+    const body = await this.request(
+      `/servers/${encodeURIComponent(String(id))}`,
+      z.looseObject({ server: serverSchema }),
+    );
+    return body.server;
+  }
+
+  /**
+   * Checks the token with a cheap read (one location). Resolves when the token works; throws
+   * `OpsCrewError` (`CREDENTIALS_INVALID` for a rejected token) otherwise.
+   */
+  async verifyToken(): Promise<void> {
+    await this.request("/locations", z.looseObject({ locations: z.array(locationSchema) }), {
+      per_page: "1",
+    });
+  }
+
+  private async listAll<T>(
+    path: string,
+    key: string,
+    item: z.ZodType<T>,
+    query: Record<string, string> = {},
+  ): Promise<T[]> {
+    const schema = z.looseObject({ [key]: z.array(item), meta: metaSchema });
+    const out: T[] = [];
+    let page: number | null | undefined = 1;
+    const seen = new Set<number>();
+    while (page !== null && page !== undefined && !seen.has(page)) {
+      seen.add(page);
+      const body = (await this.request(path, schema, {
+        ...query,
+        page: String(page),
+        per_page: String(PER_PAGE),
+      })) as Record<string, unknown> & { meta?: z.infer<typeof metaSchema> };
+      out.push(...(body[key] as T[]));
+      page = body.meta?.pagination?.next_page;
+    }
+    return out;
+  }
+
+  private async request<S extends z.ZodType>(
+    path: string,
+    schema: S,
+    query: Record<string, string> = {},
+  ): Promise<z.infer<S>> {
+    const url = new URL(`${this.baseUrl}${path}`);
+    for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
+
+    let rateLimitRetries = 0;
+    let serverErrorRetries = 0;
+    for (;;) {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url.toString(), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            Accept: "application/json",
+            "User-Agent": this.userAgent,
+          },
+        });
+      } catch (cause) {
+        if (serverErrorRetries < MAX_SERVER_ERROR_RETRIES) {
+          await this.sleep(2 ** serverErrorRetries * 1000);
+          serverErrorRetries++;
+          continue;
+        }
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          `Could not reach the Hetzner Cloud API (${path}).`,
+          {
+            hint: "Check your network connection and try again.",
+            cause,
+          },
+        );
+      }
+
+      if (response.status === 429 && rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
+        await this.sleep(this.rateLimitWait(response, rateLimitRetries));
+        rateLimitRetries++;
+        continue;
+      }
+      if (response.status >= 500 && serverErrorRetries < MAX_SERVER_ERROR_RETRIES) {
+        await this.sleep(2 ** serverErrorRetries * 1000);
+        serverErrorRetries++;
+        continue;
+      }
+      if (!response.ok) throw await toError(response, path);
+
+      let json: unknown;
+      try {
+        json = await response.json();
+      } catch (cause) {
+        throw new OpsCrewError("PROVIDER_ERROR", `Hetzner returned invalid JSON for ${path}.`, {
+          cause,
+        });
+      }
+      const parsed = schema.safeParse(json);
+      if (!parsed.success) {
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          `Hetzner returned an unexpected response for ${path}: ${parsed.error.issues
+            .slice(0, 3)
+            .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+            .join("; ")}`,
+          { hint: "The Hetzner API may have changed; please report this to OpsCrew." },
+        );
+      }
+      return parsed.data;
+    }
+  }
+
+  /** Wait until `RateLimit-Reset` (unix seconds) when present, else 2^n seconds; capped at 60 s. */
+  private rateLimitWait(response: Response, attempt: number): number {
+    const reset = Number(response.headers.get("RateLimit-Reset"));
+    const wait =
+      Number.isFinite(reset) && reset > 0 ? reset * 1000 - this.now() : 2 ** attempt * 1000;
+    return Math.min(Math.max(wait, 0), MAX_WAIT_MS);
+  }
+}
+
+async function toError(response: Response, path: string): Promise<OpsCrewError> {
+  let apiMessage: string | undefined;
+  try {
+    const parsed = errorBodySchema.safeParse(await response.json());
+    if (parsed.success) apiMessage = parsed.data.error.message;
+  } catch {
+    // Body was not JSON; fall back to the status text.
+  }
+  const detail = apiMessage ?? (response.statusText || `HTTP ${response.status}`);
+  if (response.status === 401) {
+    return new OpsCrewError("CREDENTIALS_INVALID", `Hetzner rejected the API token: ${detail}`, {
+      hint: TOKEN_HINT,
+    });
+  }
+  if (response.status === 429) {
+    return new OpsCrewError("PROVIDER_ERROR", `Hetzner rate limit reached: ${detail}`, {
+      hint: "Wait a minute and try again.",
+    });
+  }
+  return new OpsCrewError(
+    "PROVIDER_ERROR",
+    `Hetzner API request ${path} failed (HTTP ${response.status}): ${detail}`,
+    {
+      hint:
+        response.status === 403
+          ? "Check that the token belongs to the right project and has Read & Write permission."
+          : "Try again later; check https://status.hetzner.com/ if it keeps failing.",
+    },
+  );
+}

@@ -1,0 +1,92 @@
+{
+  "server_types": [
+    {
+      "id": 114,
+      "name": "cx23",
+      "description": "CX23",
+      "category": "cost_optimized",
+      "cores": 2,
+      "memory": 4.0,
+      "disk": 40,
+      "storage_type": "local",
+      "cpu_type": "shared",
+      "architecture": "x86",
+      "deprecated": false,
+      "deprecation": null,
+      "included_traffic": 21990232555520,
+      "prices": [
+        {
+          "location": "fsn1",
+          "price_hourly": { "net": "0.0088000000", "gross": "0.0104720000000000" },
+          "price_monthly": { "net": "5.4900000000", "gross": "6.5331000000000000" },
+          "included_traffic": 21990232555520,
+          "price_per_tb_traffic": { "net": "1.0000000000", "gross": "1.1900000000000000" }
+        },
+        {
+          "location": "nbg1",
+          "price_hourly": { "net": "0.0088000000", "gross": "0.0104720000000000" },
+          "price_monthly": { "net": "5.4900000000", "gross": "6.5331000000000000" },
+          "included_traffic": 21990232555520,
+          "price_per_tb_traffic": { "net": "1.0000000000", "gross": "1.1900000000000000" }
+        }
+      ],
+      "locations": [
+        { "id": 1, "name": "fsn1", "available": true, "recommended": true, "deprecation": null },
+        { "id": 2, "name": "nbg1", "available": false, "recommended": false, "deprecation": null }
+      ],
+      "future_field": { "kept": true }
+    },
+    {
+      "id": 120,
+      "name": "cpx22",
+      "description": "CPX22",
+      "category": "regular_purpose",
+      "cores": 2,
+      "memory": 4.0,
+      "disk": 80,
+      "storage_type": "local",
+      "cpu_type": "shared",
+      "architecture": "x86",
+      "deprecated": false,
+      "deprecation": null,
+      "prices": [
+        {
+          "location": "hel1",
+          "price_hourly": { "net": "0.0312000000", "gross": "0.0371280000000000" },
+          "price_monthly": { "net": "19.4900000000", "gross": "23.1931000000000000" },
+          "included_traffic": 21990232555520,
+          "price_per_tb_traffic": { "net": "1.0000000000", "gross": "1.1900000000000000" }
+        },
+        {
+          "location": "ash",
+          "price_hourly": { "net": "0.0400000000", "gross": "0.0400000000000000" },
+          "price_monthly": { "net": "24.9900000000", "gross": "24.9900000000000000" },
+          "included_traffic": 1099511627776,
+          "price_per_tb_traffic": { "net": "1.0000000000", "gross": "1.0000000000000000" }
+        }
+      ],
+      "locations": [
+        {
+          "id": 3,
+          "name": "hel1",
+          "available": true,
+          "recommended": false,
+          "deprecation": {
+            "announced": "2026-09-01T00:00:00+00:00",
+            "unavailable_after": "2026-12-01T00:00:00+00:00"
+          }
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "pagination": {
+      "page": 1,
+      "per_page": 50,
+      "previous_page": null,
+      "next_page": 2,
+      "last_page": 2,
+      "total_entries": 4
+    }
+  }
+}
