@@ -276,6 +276,26 @@ describe("production environment", () => {
     expect(result.names.join(" ")).not.toContain(stripe);
   });
 
+  it("reuses generated values from an earlier run so the database password stays valid", async () => {
+    const dotenvText = `STRIPE_SECRET_KEY=${stripe}\nVITE_PUBLIC_URL=https://shop.example.com\n`;
+    let counter = 0;
+    const password = () => `generated-${++counter}`;
+    const first = await assembleAppEnv({ plan: plan(env), dotenvText, password });
+    expect(first.generated).toEqual({
+      dbPassword: "generated-1",
+      env: { SESSION_SECRET: "generated-2" },
+    });
+    const second = await assembleAppEnv({
+      plan: plan(env),
+      dotenvText,
+      password,
+      previous: first.generated,
+    });
+    expect(second.dbEnv).toBe(first.dbEnv);
+    expect(second.appEnv).toBe(first.appEnv);
+    expect(counter).toBe(2);
+  });
+
   it("lists missing values in non-interactive mode", async () => {
     await expect(
       assembleAppEnv({ plan: plan(env, { postgres: false, redis: false }), dotenvText: "" }),

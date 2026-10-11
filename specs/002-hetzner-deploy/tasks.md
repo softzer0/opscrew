@@ -12,7 +12,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
 
 ## Phase 1: Engine and adapters
 
-- [ ] T201 [P] [US1] Implement the dual Terraform/OpenTofu engine in `packages/iac-engine/src/`
+- [X] T201 [P] [US1] Implement the dual Terraform/OpenTofu engine in `packages/iac-engine/src/`
   - Owns: `packages/iac-engine/**`
   - Reads: plan.md "IaC engine"; spec US1, FR-201..FR-203; `packages/contracts/src/iac.ts`; `@opscrew/core` (`NodeCommandRunner`, `findExecutable`, `OpsCrewError`)
   - Depends: 000/T004, 000/T005
@@ -109,7 +109,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
 
 ## Phase 4: Phases
 
-- [ ] T209 [US2] [US3] Implement the provision and dns phases in `packages/agents/src/{provision,dns}/`
+- [X] T209 [US2] [US3] Implement the provision and dns phases in `packages/agents/src/{provision,dns}/`
   - Owns: `packages/agents/src/provision/**`, `packages/agents/src/dns/**`
   - Reads: plan.md "Provision orchestration"; spec US2, US3, FR-213, FR-214; exports of iac-engine, iac-templates, connectors, secops policies, agents/shared
   - Depends: T201–T207, 001/T110
