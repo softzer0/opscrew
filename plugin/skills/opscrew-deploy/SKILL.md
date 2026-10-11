@@ -39,16 +39,22 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 6. **Preview the infrastructure (optional).** Call `opscrew_render` and `opscrew_plan` to show which
    files OpsCrew will add and exactly which cloud resources it will create, with cost and policy
    checks.
-7. **Provision in the terminal.** Ask the user to run this in their own terminal (not through you):
+7. **Provision.** Prefer the user's own terminal, because it is the only place where they can type
+   production values (API keys for their app) directly into OpsCrew:
 
    ```bash
    npx opscrew provision
    ```
 
    It checks their Hetzner, Cloudflare and GitHub tokens, shows the plan and asks for approval,
-   creates the server, stores the deploy secrets in GitHub (the user types production values
-   directly into OpsCrew) and opens a pull request with the infrastructure and deploy workflow.
-   Merging that pull request deploys the app.
+   creates the server, stores the deploy secrets in GitHub and opens a pull request with the
+   infrastructure and deploy workflow. Merging that pull request deploys the app.
+
+   If the user wants to approve from here instead, call `opscrew_plan`, show them the plan, cost
+   and policy results, then call `opscrew_apply` with the plan hash. OpsCrew asks the user in a
+   dialog (a destroying plan needs them to type the server name); never claim approval yourself.
+   Unless `OPSCREW_APP_ENV_FILE` is set, the deploy secrets still have to be stored by running
+   `npx opscrew provision` in their terminal afterwards (it resumes without changing the server).
 8. **Check.** After the first deploy finishes, call `opscrew_verify` and `opscrew_secure` and walk
    the user through anything that failed. Point them to `opscrew/RUNBOOK.md` for day-to-day
    operations.
