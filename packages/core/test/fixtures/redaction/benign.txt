@@ -1,0 +1,37 @@
+# Benign samples that the redactor must leave unchanged (one sample per line).
+const token = process.env.GITHUB_TOKEN;
+password: string;
+apiKey: z.string().min(1),
+export HCLOUD_TOKEN=${HCLOUD_TOKEN}
+token: ${{ secrets.GITHUB_TOKEN }}
+secret_key_base: <%= ENV["SECRET_KEY_BASE"] %>
+jwt_secret: ${JWT_SECRET}
+api_key: <your-api-key>
+"password": "",
+password = "changeme"
+if (!token) throw new Error("Missing token: set GITHUB_TOKEN first");
+export const SECRET_ENV_NAMES = ["HCLOUD_TOKEN"];
+const tokenizer = new Tokenizer(options);
+TOKEN_TTL_SECONDS=3600
+commit 9fceb02d0ae598e95dc970b74767f19372d61af8
+Merge: 1a2b3c4 5d6e7f8
+- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+id: 123e4567-e89b-12d3-a456-426614174000
+"requestId": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" />
+background: url("data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
+"integrity": "sha512-3Hk9vQ2mL7pR4vZxN8bT1wY6cF0jD5gS2hU9kE3nA7qW4rM1tB8yP6xV0zC5lJ2oI9uG3fH7eK1dR4sX8aZ6mNw==",
+docker pull ghcr.io/opscrew/agent@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+https://github.com/opscrew/opscrew/blob/main/README.md
+postgres://localhost:5432/app
+ssh://git@github.com/opscrew/opscrew.git
+git@github.com:opscrew/opscrew.git
+https://user@example.com/path?query=1#frag
+http://localhost:3000/api/token
+token_endpoint: https://auth.example.com/oauth2/token
+password_reset_url: https://example.com/reset
+The password must be at least 12 characters long.
+Set ANTHROPIC_API_KEY or OPENAI_API_KEY in your environment.
+GitHub classic tokens start with ghp_ and AWS access key ids start with AKIA.
+C:\Users\dev\projects\app\src\secret-manager.ts
+kubernetes-cluster-autoscaler-configuration

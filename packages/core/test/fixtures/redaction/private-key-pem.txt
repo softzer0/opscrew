@@ -1,0 +1,10 @@
+# PEM private-key samples. Markers are expanded at test time (see secrets.txt); nothing here is a key.
+deploy:
+  ssh_key: |
+{{LOCAL:openssh-pem}}
+  host: deploy.example.com
+tls:
+  key: "{{LOCAL:rsa-pem-escaped}}"
+  generated: |
+{{FAKE:private-key-pem}}
+  cert_path: /etc/ssl/certs/app.crt
