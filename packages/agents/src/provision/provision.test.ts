@@ -185,7 +185,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
     expect(engine.calls).toEqual(["init", "validate", "plan"]);
     expect(github.secrets.size).toBe(0);
-    expect(deps.reporter.text()).toContain(`opscrew provision --approve ${planned.planHash}`);
+    expect(deps.reporter.text()).toContain(`Saved the plan (hash ${planned.planHash})`);
     const saved = await findSavedPlan(deps.paths.files.plansDir, planned.planHash as string);
     expect(saved?.planHash).toBe(planned.planHash);
 

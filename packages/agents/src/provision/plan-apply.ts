@@ -27,6 +27,8 @@ export interface PlanAndApplyOptions {
   /** Apply the saved plan with this hash instead of planning again. */
   approvePlanHash?: string;
   planOnly?: boolean;
+  /** Command named in hints, for example `opscrew dns` (default `opscrew provision`). */
+  command?: string;
 }
 
 export interface PlanAndApplyResult {
@@ -184,6 +186,7 @@ export async function planAndApply(
   options: PlanAndApplyOptions,
 ): Promise<PlanAndApplyResult> {
   const { engine, dir, env, deployPlan } = options;
+  const command = options.command ?? "opscrew provision";
   let saved: SavedPlan;
   if (options.approvePlanHash !== undefined) {
     const found = await findSavedPlan(deps.paths.files.plansDir, options.approvePlanHash);
@@ -192,7 +195,7 @@ export async function planAndApply(
         "PLAN_HASH_MISMATCH",
         `No saved plan has the hash ${options.approvePlanHash}.`,
         {
-          hint: "Run `opscrew provision --plan-only` again, review the plan and approve the new hash.",
+          hint: `Run \`${command} --plan-only\` again, review the plan and approve the new hash.`,
         },
       );
     }
@@ -200,7 +203,7 @@ export async function planAndApply(
       throw new OpsCrewError(
         "PLAN_HASH_MISMATCH",
         "The saved plan file changed after it was reviewed, so OpsCrew will not apply it.",
-        { hint: "Run `opscrew provision --plan-only` again and approve the new hash." },
+        { hint: `Run \`${command} --plan-only\` again and approve the new hash.` },
       );
     }
     if (found.engine.name !== engine.info.name) {
@@ -234,9 +237,7 @@ export async function planAndApply(
 
   if (options.approvePlanHash === undefined) await saveSidecar(saved);
   if (options.planOnly) {
-    deps.reporter.info(
-      `Plan saved. To apply exactly this plan, run: opscrew provision --approve ${saved.planHash}`,
-    );
+    deps.reporter.info(`Saved the plan (hash ${saved.planHash}); nothing was changed.`);
     return { planHash: saved.planHash, applied: false, outputs: {}, plan: saved };
   }
 
@@ -254,9 +255,7 @@ export async function planAndApply(
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
       `The infrastructure plan was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was changed.`,
-      {
-        hint: `To apply it later without prompts, run: opscrew provision --approve ${saved.planHash}`,
-      },
+      { hint: `To apply it later without prompts, run: ${command} --approve ${saved.planHash}` },
     );
   }
   await deps.approvals.assertApprovedPlan(saved.planHash, { allowDestroy: saved.hasDestroy });

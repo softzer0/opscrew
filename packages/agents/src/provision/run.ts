@@ -68,7 +68,11 @@ async function requireDockerfile(deps: PhaseDeps, git: GitClient, plan: DeployPl
  * render (approved write) → plan, policies, approval, apply → record the deployment → wait for the
  * server and pin its host key → deploy secrets → commit, push and pull request.
  */
-async function provisionFlow(deps: PhaseDeps, options: ProvisionOptions): Promise<ProvisionResult> {
+async function provisionFlow(
+  deps: PhaseDeps,
+  options: ProvisionOptions,
+  phase: Extract<PhaseName, "provision" | "dns">,
+): Promise<ProvisionResult> {
   const services = options.services ?? {};
   const root = deps.paths.root;
   let plan = await readArtifact("plan", deps.paths.files.plan);
@@ -159,6 +163,7 @@ async function provisionFlow(deps: PhaseDeps, options: ProvisionOptions): Promis
     env: engineEnv,
     deployPlan: plan,
     files,
+    command: `opscrew ${phase}`,
     ...(options.approvePlanHash !== undefined ? { approvePlanHash: options.approvePlanHash } : {}),
     ...(options.planOnly ? { planOnly: true } : {}),
   });
@@ -299,8 +304,8 @@ async function provisionFlow(deps: PhaseDeps, options: ProvisionOptions): Promis
   });
   deps.reporter.info(
     published.prUrl
-      ? `Next: merge ${published.prUrl} to deploy, then run \`opscrew verify\`.`
-      : "Next: push the branch and merge it to deploy, then run `opscrew verify`.",
+      ? `Merging ${published.prUrl} deploys the app.`
+      : `Merging ${published.branch} into ${plan.cicd.branch} deploys the app.`,
   );
   return {
     ...(applied.planHash ? { planHash: applied.planHash } : {}),
@@ -318,7 +323,7 @@ export async function runPhaseFlow(
   options: ProvisionOptions,
 ): Promise<ProvisionResult> {
   try {
-    const result = await provisionFlow(deps, options);
+    const result = await provisionFlow(deps, options, phase);
     if (!(options.planOnly && options.approvePlanHash === undefined)) {
       await deps.state.markPhase(
         phase,
