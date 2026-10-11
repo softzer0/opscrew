@@ -34,13 +34,16 @@ export function formatCounts(report: ScanReport): string {
 }
 
 /**
- * Short terminal summary: counts, the most severe findings (one line each), skipped or failed
- * scanners, and where the full report is. Deterministic; contains only masked data.
+ * Short terminal summary: counts, a clear "no high or critical problems" line when that is the
+ * case, the most severe findings (one line each), skipped or failed scanners, and where the full
+ * report is. Deterministic; contains only masked data.
  */
 export function renderScanSummary(report: ScanReport, options: ScanSummaryOptions = {}): string {
   const color = options.color ?? false;
   const top = Math.max(0, options.top ?? 10);
   const lines = [`OpsCrew scan of ${report.project}: ${formatCounts(report)}`];
+  const serious = report.findings.some((f) => f.severity === "critical" || f.severity === "high");
+  if (!serious) lines.push("No high or critical problems were found.");
 
   if (report.findings.length === 0) {
     lines.push("No problems found by the scanners that ran.");

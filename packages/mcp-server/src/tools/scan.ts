@@ -51,6 +51,7 @@ export function registerScanTool(server: McpServer, deps: ResolvedMcpDeps): void
         const reportPath = relativeTo(paths.root, paths.files.scanReportMd);
         const jsonPath = relativeTo(paths.root, paths.files.scanReportJson);
         let report: ScanReport;
+        const warnings: string[] = [];
         try {
           report = await runScan(paths.root, {
             offline: offline ?? false,
@@ -59,6 +60,9 @@ export function registerScanTool(server: McpServer, deps: ResolvedMcpDeps): void
             scanners: deps.scanners(),
             version: phase.version,
             now: () => phase.clock.now(),
+            onProgress: (event) => {
+              if (event.type === "warning") warnings.push(event.message);
+            },
           });
           await ensureStateDir(paths);
           await writeFileAtomic(paths.files.scanReportMd, renderScanMarkdown(report), {
@@ -77,14 +81,21 @@ export function registerScanTool(server: McpServer, deps: ResolvedMcpDeps): void
         const blocking = report.findings.filter((f) =>
           (BLOCKING as readonly string[]).includes(f.severity),
         ).length;
+        // The summary itself says when no high or critical problems were found.
         const summary = renderScanSummary(report, { top: limit, reportPath }).trimEnd();
         const verdict =
           blocking === 0
-            ? "No high or critical problems were found."
+            ? undefined
             : `${blocking} high or critical problem${blocking === 1 ? "" : "s"} need${blocking === 1 ? "s" : ""} attention before deploying.`;
+        const text = [
+          ...warnings.map((warning) => `Warning: ${warning}`),
+          summary,
+          ...(verdict ? [verdict] : []),
+        ].join("\n\n");
         return {
-          text: `${summary}\n\n${verdict}`,
+          text,
           data: {
+            warnings,
             project: report.project,
             counts: report.counts,
             totalFindings: report.findings.length,

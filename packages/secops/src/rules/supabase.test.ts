@@ -62,9 +62,9 @@ async function fixtureContext(name: string): Promise<ScanContext> {
   };
 }
 
-/** In-memory context for small inline cases. */
-function memoryContext(files: Record<string, string>): ScanContext {
-  return {
+/** In-memory context for small inline cases; `tracked` becomes `gitTracked` when given. */
+function memoryContext(files: Record<string, string>, tracked?: readonly string[]): ScanContext {
+  const context: ScanContext = {
     rootDir: "/virtual",
     files: Object.keys(files).sort(),
     readFile: async (relativePath) => {
@@ -82,7 +82,13 @@ function memoryContext(files: Record<string, string>): ScanContext {
       },
     },
   };
+  if (tracked) context.gitTracked = new Set(tracked);
+  return context;
 }
+
+/** A synthetic `sb_secret_` key, generated at runtime so no secret-shaped literal is committed. */
+const sbSecret = (seed: string) => `sb_secret_${fakeSecret("cloudflare-token", seed)}`;
+const serviceJwt = (seed: string) => fakeSecret("supabase-service-role-jwt", seed);
 
 const scanner = createSupabaseScanner();
 const byRule = (findings: Finding[], ruleId: string) => findings.filter((f) => f.ruleId === ruleId);
@@ -114,6 +120,7 @@ describe("Supabase fixture app", () => {
     rawJwts = [
       fakeSecret("supabase-service-role-jwt"),
       fakeSecret("supabase-service-role-jwt", "env"),
+      fakeSecret("supabase-service-role-jwt", "server"),
       fakeSecret("supabase-anon-jwt"),
     ];
   });
@@ -151,8 +158,16 @@ describe("Supabase fixture app", () => {
     expect(findings.filter((f) => f.file === ".env.local").map((f) => f.line)).toEqual([3]);
   });
 
-  it("ignores service-role keys in server code and server-only env names (negative)", () => {
-    expect(findings.some((f) => f.file === "server/admin.ts")).toBe(false);
+  it("reports a service-role key hard-coded in server code as a secret, not as client code (positive)", () => {
+    const hits = findings.filter((f) => f.file === "server/admin.ts");
+    expect(hits.map((f) => `${f.ruleId}:${f.line}`)).toEqual(["supabase/secret-key-in-source:3"]);
+    // Not git-tracked in this fixture: high (critical once committed).
+    expect(hits[0]).toMatchObject({ severity: "high", category: "secret" });
+    expect(hits[0]?.evidence).toMatch(/^eyJh…\(\d+ chars\)$/);
+  });
+
+  it("leaves server-only env names in a real .env file to the secrets scanner (negative)", () => {
+    expect(findings.some((f) => f.file === ".env.local" && f.line === 4)).toBe(false);
   });
 
   it("masks evidence and never leaks the raw key anywhere in a finding", () => {
@@ -243,8 +258,11 @@ describe("Supabase scanner on other project shapes", () => {
     ]);
   });
 
-  it("ignores generic migrations and backend code in a project that does not use Supabase (negative)", async () => {
-    expect(await scanner.scan(await fixtureContext("plain-postgres"))).toEqual([]);
+  it("ignores generic migrations in a project that does not use Supabase, and labels backend keys as hard-coded, not client code", async () => {
+    const findings = await scanner.scan(await fixtureContext("plain-postgres"));
+    expect(findings.map((f) => `${f.ruleId} ${f.file}:${f.line}`)).toEqual([
+      "supabase/secret-key-in-source index.js:3",
+    ]);
   });
 
   it("parses SQL tolerantly: case, block comments, quoted identifiers, policies for all (positive)", async () => {
@@ -313,6 +331,114 @@ describe("Supabase scanner on other project shapes", () => {
           'export const key = "sb_secret_your-key-goes-here-xxxxxx";\n' +
           'export const token = "eyJnot.eyJajwt.at-all";\n',
       }),
+    );
+    expect(findings).toEqual([]);
+  });
+});
+
+describe("Supabase secret keys outside client code", () => {
+  const NEXT = JSON.stringify({ dependencies: { next: "^15", react: "^19" } });
+
+  it("reports service-role JWTs and sb_secret_ keys in server files: critical when tracked, high otherwise (positive)", async () => {
+    const files = {
+      "package.json": JSON.stringify({ dependencies: { express: "^5" } }),
+      "server/admin.js": `const key = "${serviceJwt("admin")}";\n`,
+      "scripts/seed.py": `\nSUPABASE_SECRET_KEY = "${sbSecret("seed")}"\n`,
+      "README.md": `Use \`${sbSecret("docs")}\` to connect.\n`,
+    };
+    const findings = await scanner.scan(memoryContext(files, ["server/admin.js", "README.md"]));
+    expect(findings.map((f) => `${f.ruleId} ${f.file}:${f.line} ${f.severity}`).sort()).toEqual([
+      "supabase/secret-key-in-source README.md:1 critical",
+      "supabase/secret-key-in-source scripts/seed.py:2 high",
+      "supabase/secret-key-in-source server/admin.js:1 critical",
+    ]);
+    const serialised = JSON.stringify(findings);
+    for (const value of [serviceJwt("admin"), sbSecret("seed"), sbSecret("docs")]) {
+      expect(serialised).not.toContain(value);
+    }
+    expect(findings.every((f) => f.category === "secret" && f.source === "opscrew-supabase")).toBe(
+      true,
+    );
+  });
+
+  it("labels Next.js route handlers and other server-only files inside frontend folders as server code (positive)", async () => {
+    const line = `export const key = "${serviceJwt("route")}";\n`;
+    const findings = await scanner.scan(
+      memoryContext({
+        "package.json": NEXT,
+        "app/api/admin/route.ts": line,
+        "src/app/api/users/route.ts": line,
+        "app/(admin)/export/route.js": line,
+        "pages/api/admin.ts": line,
+        "src/lib/server/admin.ts": line,
+        "app/routes/admin.server.ts": line,
+        "src/middleware.ts": line,
+        "app/page.tsx": line,
+      }),
+    );
+    expect(findings.map((f) => `${f.ruleId} ${f.file}`).sort()).toEqual([
+      "supabase/secret-key-in-source app/(admin)/export/route.js",
+      "supabase/secret-key-in-source app/api/admin/route.ts",
+      "supabase/secret-key-in-source app/routes/admin.server.ts",
+      "supabase/secret-key-in-source pages/api/admin.ts",
+      "supabase/secret-key-in-source src/app/api/users/route.ts",
+      "supabase/secret-key-in-source src/lib/server/admin.ts",
+      "supabase/secret-key-in-source src/middleware.ts",
+      "supabase/service-role-in-client app/page.tsx",
+    ]);
+  });
+
+  it("keeps Vite client folders named api or supabase as client code (negative for the server rule)", async () => {
+    const line = `export const key = "${serviceJwt("vite")}";\n`;
+    const findings = await scanner.scan(
+      memoryContext({
+        "package.json": JSON.stringify({ dependencies: { vite: "^7", react: "^19" } }),
+        "src/api/admin.ts": line,
+        "src/integrations/supabase/client.ts": line,
+      }),
+    );
+    expect(findings.map((f) => `${f.ruleId} ${f.file}`).sort()).toEqual([
+      "supabase/service-role-in-client src/api/admin.ts",
+      "supabase/service-role-in-client src/integrations/supabase/client.ts",
+    ]);
+  });
+
+  it("reports each line once, and a committed example env file as source (positive)", async () => {
+    const findings = await scanner.scan(
+      memoryContext(
+        {
+          "server/keys.ts": `const a = "${serviceJwt("a")}", b = "${sbSecret("b")}"; // NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY\n`,
+          ".env.example": `SUPABASE_SERVICE_ROLE_KEY=${serviceJwt("example")}\n`,
+        },
+        [".env.example", "server/keys.ts"],
+      ),
+    );
+    expect(findings.map((f) => `${f.ruleId} ${f.file}:${f.line}`).sort()).toEqual([
+      "supabase/secret-key-in-source .env.example:1",
+      "supabase/secret-key-in-source server/keys.ts:1",
+    ]);
+  });
+
+  it("ignores anon keys, the CLI's public demo keys, placeholders, real .env files and binary files (negative)", async () => {
+    const part = (claims: object) => Buffer.from(JSON.stringify(claims)).toString("base64url");
+    const demo = [
+      part({ alg: "HS256", typ: "JWT" }),
+      part({ iss: "supabase-demo", role: "service_role", exp: 1983812996 }),
+      "FAKEsignatureFAKEsignature",
+    ].join(".");
+    const findings = await scanner.scan(
+      memoryContext(
+        {
+          "docker/test-env.ts": `const local = "${demo}";\n`,
+          "server/client.ts": `const anon = "${fakeSecret("supabase-anon-jwt")}";\n`,
+          "server/placeholder.ts": 'const key = "sb_secret_your-key-goes-here-xxxxxx";\n',
+          ".env": `SUPABASE_SERVICE_ROLE_KEY=${serviceJwt("dotenv")}\n`,
+          ".env.production": `SUPABASE_SECRET_KEY=${sbSecret("prod")}\n`,
+          "assets/logo.png": `${serviceJwt("png")}\n`,
+          "server/blob.dat": `\0${serviceJwt("bin")}\n`,
+        },
+        [".env", ".env.production", "server/client.ts"],
+      ),
     );
     expect(findings).toEqual([]);
   });

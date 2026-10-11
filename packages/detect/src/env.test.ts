@@ -39,7 +39,6 @@ describe("classification", () => {
   it.each([
     ["VITE_SUPABASE_URL", true, false],
     ["VITE_SUPABASE_ANON_KEY", true, false],
-    ["VITE_OPENAI_API_KEY", true, false],
     ["VITE_SUPABASE_SERVICE_ROLE_KEY", true, true],
     ["NEXT_PUBLIC_STRIPE_SECRET", true, true],
     ["REACT_APP_ADMIN_PASSWORD", true, true],
@@ -58,6 +57,77 @@ describe("classification", () => {
   ])("%s → clientExposed %s, secretLikely %s", (name, client, secret) => {
     expect(isClientExposed(name)).toBe(client);
     expect(isSecretLikely(name)).toBe(secret);
+  });
+
+  it.each([
+    // AI providers: any key or token shipped to the browser can be used to run up the bill.
+    "VITE_OPENAI_API_KEY",
+    "VITE_OPENAI_KEY",
+    "NEXT_PUBLIC_ANTHROPIC_API_KEY",
+    "REACT_APP_GEMINI_API_KEY",
+    "VITE_GROQ_API_KEY",
+    "EXPO_PUBLIC_OPENROUTER_API_KEY",
+    "VITE_HF_TOKEN",
+    "VITE_HUGGINGFACE_ACCESS_TOKEN",
+    "VITE_ELEVENLABS_API_KEY",
+    // Payment, cloud and messaging secrets.
+    "NEXT_PUBLIC_STRIPE_SECRET_KEY",
+    "VITE_STRIPE_RESTRICTED_KEY",
+    "VITE_AWS_SECRET_ACCESS_KEY",
+    "VITE_AWS_ACCESS_KEY",
+    "NEXT_PUBLIC_GITHUB_TOKEN",
+    "VITE_SENDGRID_API_KEY",
+    "VITE_RESEND_API_KEY",
+    "VITE_TWILIO_AUTH_TOKEN",
+    "PUBLIC_SLACK_BOT_TOKEN",
+    "VITE_DISCORD_BOT_TOKEN",
+    "VITE_TELEGRAM_BOT_TOKEN",
+    "NEXT_PUBLIC_CLOUDFLARE_API_TOKEN",
+    "VITE_HCLOUD_TOKEN",
+    "VITE_AIRTABLE_API_KEY",
+    "VITE_NOTION_API_KEY",
+    "VITE_PINECONE_API_KEY",
+  ])("%s is a secret exposed to the browser", (name) => {
+    expect(isClientExposed(name)).toBe(true);
+    expect(isSecretLikely(name)).toBe(true);
+  });
+
+  it.each([
+    // Public by design: meant to be shipped to browsers.
+    "VITE_FIREBASE_API_KEY",
+    "NEXT_PUBLIC_FIREBASE_API_KEY",
+    "VITE_SUPABASE_ANON_KEY",
+    "VITE_SUPABASE_PUBLISHABLE_KEY",
+    "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY",
+    "VITE_STRIPE_PUBLIC_KEY",
+    "VITE_STRIPE_KEY",
+    "NEXT_PUBLIC_GOOGLE_MAPS_API_KEY",
+    "VITE_GOOGLE_API_KEY",
+    "NEXT_PUBLIC_POSTHOG_KEY",
+    "NEXT_PUBLIC_POSTHOG_API_KEY",
+    "NEXT_PUBLIC_SEGMENT_WRITE_KEY",
+    "VITE_MAPBOX_ACCESS_TOKEN",
+    "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+    "VITE_SENTRY_DSN",
+    "NEXT_PUBLIC_ALGOLIA_SEARCH_API_KEY",
+    "VITE_RECAPTCHA_SITE_KEY",
+    "NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY",
+    // Identifiers and settings of secret-bearing providers, not the secrets themselves.
+    "VITE_AWS_ACCESS_KEY_ID",
+    "VITE_AWS_REGION",
+    "NEXT_PUBLIC_GITHUB_CLIENT_ID",
+    "VITE_OPENAI_MODEL",
+    "VITE_OPENAI_BASE_URL",
+    "VITE_SLACK_CHANNEL",
+    "VITE_STRIPE_PRICE_ID",
+    "VITE_PAYPAL_CLIENT_ID",
+    // Generic tokens without a known secret-bearing provider stay unflagged (too noisy).
+    "GATSBY_TOKEN",
+    "VITE_API_KEY",
+    "VITE_CSRF_TOKEN_HEADER",
+  ])("%s is client-exposed but not flagged as a secret", (name) => {
+    expect(isClientExposed(name)).toBe(true);
+    expect(isSecretLikely(name)).toBe(false);
   });
 });
 

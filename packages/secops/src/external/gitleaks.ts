@@ -1,4 +1,4 @@
-import type { Finding, Scanner } from "@opscrew/contracts";
+import type { Finding, ScanContext, Scanner } from "@opscrew/contracts";
 import { maskSecret } from "@opscrew/core";
 import { findingId } from "../scan/finding";
 import {
@@ -9,6 +9,7 @@ import {
   type ExternalScannerOptions,
   failure,
   isUsageError,
+  notInstalledReason,
   parseJsonOutput,
   relativePath,
   resolveWhich,
@@ -30,7 +31,9 @@ const REPORT_ARGS = [
  * before 8.19). Only files OpsCrew scans are reported (ignored files such as `node_modules` or a
  * git-ignored `.env` are dropped); findings in git-tracked files are critical.
  */
-export function createGitleaksScanner(options: ExternalScannerOptions = {}): Scanner {
+export function createGitleaksScanner(options: ExternalScannerOptions = {}): Scanner & {
+  skipReason(context: ScanContext): string | undefined;
+} {
   const which = resolveWhich(options);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return {
@@ -38,6 +41,10 @@ export function createGitleaksScanner(options: ExternalScannerOptions = {}): Sca
     kind: "external",
     async isAvailable() {
       return which("gitleaks") !== undefined;
+    },
+    skipReason() {
+      if (which("gitleaks") !== undefined) return undefined;
+      return notInstalledReason("gitleaks", "catch more kinds of leaked keys and tokens");
     },
     async scan(context) {
       const bin = which("gitleaks");

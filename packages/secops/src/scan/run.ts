@@ -22,8 +22,13 @@ export interface ScannerSkipReason {
   skipReason?(context: ScanContext): string | undefined;
 }
 
-/** Progress events emitted by {@link runScan}, one `started` and one final event per scanner. */
+/**
+ * Progress events emitted by {@link runScan}: one `started` and one final event per scanner, and
+ * `warning` for problems the user should know about that do not stop the scan (for example the
+ * file listing stopping at the file limit, so part of the project was not checked).
+ */
 export type ScanProgressEvent =
+  | { type: "warning"; message: string }
   | { type: "started"; scanner: string }
   | {
       type: "finished";
@@ -224,14 +229,7 @@ export async function runScan(root: string, options: RunScanOptions): Promise<Sc
   const now = options.now ?? (() => new Date());
   const startedAt = now().toISOString();
   const scanners = options.scanners ?? defaultScanners();
-  const contextOptions: ScanContextOptions = {
-    offline: options.offline,
-    fetch: options.fetch,
-    runner: options.runner,
-  };
-  if (options.maxFiles !== undefined) contextOptions.maxFiles = options.maxFiles;
-  const context = await createScanContext(root, contextOptions);
-  const sanitize = createSanitizer(context.rootDir);
+  const sanitize = createSanitizer(path.resolve(root));
   const notify = (event: ScanProgressEvent) => {
     try {
       options.onProgress?.(event);
@@ -239,6 +237,14 @@ export async function runScan(root: string, options: RunScanOptions): Promise<Sc
       // A failing progress callback must not break the scan.
     }
   };
+  const contextOptions: ScanContextOptions = {
+    offline: options.offline,
+    fetch: options.fetch,
+    runner: options.runner,
+    onWarning: (message) => notify({ type: "warning", message: sanitize(message) }),
+  };
+  if (options.maxFiles !== undefined) contextOptions.maxFiles = options.maxFiles;
+  const context = await createScanContext(root, contextOptions);
 
   const outcomes: ScannerOutcome[] = new Array(scanners.length);
   let next = 0;

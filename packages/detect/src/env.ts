@@ -29,7 +29,71 @@ const SECRET_MARKERS = [
 ] as const;
 
 /** Markers that make a client-exposed name dangerous (a secret shipped to browsers). */
-const CLIENT_SECRET_MARKERS = ["SECRET", "SERVICE_ROLE", "PRIVATE", "PASSWORD"] as const;
+const CLIENT_SECRET_MARKERS = [
+  "SECRET",
+  "SERVICE_ROLE",
+  "PRIVATE",
+  "PASSWORD",
+  "RESTRICTED_KEY",
+] as const;
+
+/**
+ * Providers whose API keys and tokens are always secret: anyone who reads them from the browser
+ * can spend the owner's money or act as the owner. Providers with keys that are public by design
+ * (Firebase web keys, Google Maps, Supabase anon, Stripe publishable, PostHog, Segment, Mapbox,
+ * Algolia search) are deliberately absent.
+ */
+const SECRET_KEY_PROVIDERS = new Set([
+  // AI and speech APIs
+  "OPENAI",
+  "ANTHROPIC",
+  "CLAUDE",
+  "GEMINI",
+  "GROQ",
+  "MISTRAL",
+  "COHERE",
+  "DEEPSEEK",
+  "OPENROUTER",
+  "PERPLEXITY",
+  "REPLICATE",
+  "TOGETHER",
+  "FIREWORKS",
+  "XAI",
+  "HF",
+  "HUGGINGFACE",
+  "ELEVENLABS",
+  "DEEPGRAM",
+  "ASSEMBLYAI",
+  // Cloud, code hosting and infrastructure
+  "AWS",
+  "GITHUB",
+  "GITLAB",
+  "HCLOUD",
+  "HETZNER",
+  "CLOUDFLARE",
+  "DIGITALOCEAN",
+  "VERCEL",
+  "NETLIFY",
+  // Messaging and email
+  "SLACK",
+  "DISCORD",
+  "TELEGRAM",
+  "TWILIO",
+  "SENDGRID",
+  "RESEND",
+  "MAILGUN",
+  "POSTMARK",
+  "BREVO",
+  "MAILCHIMP",
+  // Data services with secret API keys
+  "AIRTABLE",
+  "NOTION",
+  "PINECONE",
+]);
+/** Final name segments that hold a key or token. */
+const KEY_SEGMENTS = new Set(["KEY", "APIKEY", "TOKEN"]);
+/** Segments that mark a key as public by design (Turnstile/reCAPTCHA site keys, publishable keys). */
+const PUBLIC_KEY_SEGMENTS = new Set(["PUBLIC", "PUBLISHABLE", "ANON", "SITE"]);
 
 /** Names never reported: set by every runtime, or Vite built-ins on `import.meta.env`. */
 const IGNORED_NAMES = new Set(["NODE_ENV", "MODE", "DEV", "PROD", "SSR", "BASE_URL"]);
@@ -41,13 +105,34 @@ export function isClientExposed(name: string): boolean {
 }
 
 /**
- * True when the name looks like it holds a secret. Client-exposed names count only when they
- * contain `SECRET`, `SERVICE_ROLE`, `PRIVATE` or `PASSWORD` (the dangerous case).
+ * True for a client-exposed name that holds a secret: it contains `SECRET`, `SERVICE_ROLE`,
+ * `PRIVATE`, `PASSWORD` or `RESTRICTED_KEY`, or it is the API key or token of a provider whose keys
+ * are always secret (`VITE_OPENAI_API_KEY`, `NEXT_PUBLIC_GITHUB_TOKEN`). Generic names such as
+ * `VITE_API_KEY` and public-by-design keys are not flagged, to keep false positives low.
+ */
+function isClientSecret(upper: string): boolean {
+  if (CLIENT_SECRET_MARKERS.some((marker) => upper.includes(marker))) return true;
+  const prefix = CLIENT_EXPOSED_PREFIXES.filter((p) => upper.startsWith(p)).sort(
+    (a, b) => b.length - a.length,
+  )[0];
+  const segments = upper
+    .slice(prefix?.length ?? 0)
+    .split("_")
+    .filter((segment) => segment !== "");
+  const last = segments[segments.length - 1];
+  if (last === undefined || !KEY_SEGMENTS.has(last)) return false;
+  if (segments.some((segment) => PUBLIC_KEY_SEGMENTS.has(segment))) return false;
+  return segments.some((segment) => SECRET_KEY_PROVIDERS.has(segment));
+}
+
+/**
+ * True when the name looks like it holds a secret. Client-exposed names count only in the
+ * dangerous case: a secret marker or a known secret-bearing provider's key (see `isClientSecret`).
  */
 export function isSecretLikely(name: string): boolean {
   const upper = name.toUpperCase();
-  const markers = isClientExposed(name) ? CLIENT_SECRET_MARKERS : SECRET_MARKERS;
-  return markers.some((marker) => upper.includes(marker));
+  if (isClientExposed(name)) return isClientSecret(upper);
+  return SECRET_MARKERS.some((marker) => upper.includes(marker));
 }
 
 const NAME = "[A-Za-z_][A-Za-z0-9_]*";

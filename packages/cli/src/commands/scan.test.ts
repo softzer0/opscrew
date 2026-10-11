@@ -2,11 +2,26 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
+
+/** Lets a test lower the scan's file limit (20,000) so truncation can be tested on a small fixture. */
+const limits = vi.hoisted(() => ({ maxFiles: undefined as number | undefined }));
+vi.mock("@opscrew/secops", async (importOriginal) => {
+  const secops = await importOriginal<typeof import("@opscrew/secops")>();
+  return {
+    ...secops,
+    runScan: (root: string, options: Parameters<typeof secops.runScan>[1]) =>
+      secops.runScan(
+        root,
+        limits.maxFiles === undefined ? options : { ...options, maxFiles: limits.maxFiles },
+      ),
+  };
+});
 
 let project: TempProject | undefined;
 afterEach(async () => {
+  limits.maxFiles = undefined;
   await project?.cleanup();
   project = undefined;
 });
@@ -39,11 +54,35 @@ describe("opscrew scan", () => {
     }
   });
 
-  it("exits 0 on a clean project", async () => {
+  it("exits 0 on a clean project and says nothing serious was found", async () => {
     project = await tempProject("static-vite");
     const ctx = projectContext(project);
     expect(await run(ctx, "scan", "--offline")).toBe(0);
     expect(ctx.output).toContain("0 critical, 0 high");
+    expect(ctx.output).toContain("No high or critical problems were found.");
+    expect(ctx.errors).not.toMatch(/were not checked/);
+  });
+
+  it("says so when only medium findings remain (US1 AS2)", async () => {
+    project = await tempProject("static-vite");
+    // A Dockerfile running as root is a medium finding.
+    await writeFile(path.join(project.root, "Dockerfile"), 'FROM node:22-alpine\nCMD ["node"]\n');
+    const ctx = projectContext(project);
+    expect(await run(ctx, "scan", "--offline")).toBe(0);
+    expect(ctx.output).toContain("No high or critical problems were found.");
+    expect(ctx.output).toContain("MEDIUM");
+  });
+
+  it("warns when the scan stops at the file limit, also with --json", async () => {
+    project = await tempProject("static-vite");
+    limits.maxFiles = 2;
+    const ctx = projectContext(project);
+    await run(ctx, "scan", "--offline");
+    expect(ctx.output + ctx.errors).toMatch(/more than 2 files.*were not checked/);
+    const json = projectContext(project);
+    await run(json, "scan", "--offline", "--json");
+    expect(JSON.parse(json.output).tool).toBe("opscrew");
+    expect(json.errors).toMatch(/more than 2 files/);
   });
 
   it("honours --fail-on", async () => {

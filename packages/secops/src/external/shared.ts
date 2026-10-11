@@ -11,6 +11,18 @@ export interface ExternalScannerOptions {
 
 export const DEFAULT_TIMEOUT_MS = 300_000;
 
+/** Where to get each optional scanner (all three are also in Homebrew under the same name). */
+const INSTALL_URLS = {
+  gitleaks: "https://github.com/gitleaks/gitleaks#installing",
+  "osv-scanner": "https://google.github.io/osv-scanner/installation/",
+  trivy: "https://trivy.dev/latest/getting-started/installation/",
+} as const;
+
+/** Skip reason for an optional scanner whose binary is missing: what it adds and how to install it. */
+export function notInstalledReason(tool: keyof typeof INSTALL_URLS, adds: string): string {
+  return `${tool} is not installed. Install it to ${adds}: \`brew install ${tool}\` on macOS or Linux, otherwise see ${INSTALL_URLS[tool]}`;
+}
+
 export function resolveWhich(
   options: ExternalScannerOptions,
 ): (name: string) => string | undefined {

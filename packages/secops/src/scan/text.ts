@@ -8,6 +8,10 @@ import { isEnvExampleFile } from "@opscrew/detect";
 /** Lines longer than this are treated as minified or generated and skipped by line rules. */
 export const MAX_LINE_LENGTH = 5_000;
 
+/** File extensions of binary formats that text rules never read. */
+export const BINARY_EXTENSION =
+  /\.(?:png|jpe?g|gif|webp|avif|ico|bmp|tiff?|psd|pdf|zip|gz|tgz|bz2|xz|7z|rar|jar|war|class|woff2?|ttf|otf|eot|mp[34]|mov|avi|webm|wav|ogg|flac|wasm|so|dylib|dll|exe|bin|pyc|sqlite3?|db)$/i;
+
 /** Last path segment of a repo-relative POSIX path. */
 export function basename(file: string): string {
   return file.slice(file.lastIndexOf("/") + 1);

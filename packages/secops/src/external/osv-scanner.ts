@@ -12,6 +12,7 @@ import {
   type ExternalScannerOptions,
   failure,
   isUsageError,
+  notInstalledReason,
   parseJsonOutput,
   relativePath,
   resolveWhich,
@@ -81,10 +82,13 @@ export function createOsvScannerCli(options: ExternalScannerOptions = {}): Scann
       return !context.offline && which("osv-scanner") !== undefined;
     },
     skipReason(context) {
-      if (context.offline && which("osv-scanner") !== undefined) {
-        return "Offline mode: osv-scanner needs the network.";
+      if (which("osv-scanner") === undefined) {
+        return notInstalledReason(
+          "osv-scanner",
+          "check dependencies in more lockfile formats against the OSV database",
+        );
       }
-      return undefined;
+      return context.offline ? "Offline mode: osv-scanner needs the network." : undefined;
     },
     async scan(context) {
       const bin = which("osv-scanner");

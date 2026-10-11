@@ -167,11 +167,13 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
 
       const serious = report.findings.filter((finding) => HIGH.has(finding.severity));
       if (expected.scan.clean) {
+        // SC-102: a clean example has no findings at all, not just no serious ones.
         expect(
-          serious.map((f) => `${f.ruleId} ${f.file ?? ""}`),
-          "high or critical findings",
+          report.findings.map((f) => `${f.severity} ${f.ruleId} ${f.file ?? ""}:${f.line ?? ""}`),
+          "findings on a clean example",
         ).toEqual([]);
         expect(code).toBe(0);
+        expect(text).toContain("No high or critical problems were found");
       } else {
         expect(serious).not.toHaveLength(0);
         expect(code).toBe(1);

@@ -116,7 +116,20 @@ describe("renderScanSummary", () => {
   });
 
   it("says when nothing was found", () => {
-    expect(renderScanSummary(report([]))).toContain("No problems found");
+    const text = renderScanSummary(report([]));
+    expect(text).toContain("No problems found");
+    expect(text).toContain("No high or critical problems were found.");
+  });
+
+  it("says clearly that nothing serious was found when only medium or low findings remain (US1 AS2)", () => {
+    const minor = report([
+      finding({ id: "0000000000000004", severity: "medium", ruleId: "config/dockerfile-root" }),
+      finding({ id: "0000000000000005", severity: "low", ruleId: "config/dockerfile-latest" }),
+    ]);
+    const text = renderScanSummary(minor);
+    expect(text).toContain("No high or critical problems were found.");
+    expect(text).toContain("MEDIUM");
+    expect(renderScanSummary(mixed)).not.toContain("No high or critical");
   });
 });
 

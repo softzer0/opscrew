@@ -1,15 +1,22 @@
 /**
  * Supabase exposure rules (`opscrew-supabase`): service-role keys shipped to browsers,
- * client-exposed `SERVICE_ROLE` env names, and migration problems (tables without row-level
- * security, `using (true)` write policies, public reads of sensitive tables, write grants to
- * `anon`, public storage buckets). Deterministic and offline; raw secret values never leave
- * this module (evidence is masked with `maskSecret`).
+ * service-role and `sb_secret_` keys hard-coded anywhere else in the repository, client-exposed
+ * `SERVICE_ROLE` env names, and migration problems (tables without row-level security,
+ * `using (true)` write policies, public reads of sensitive tables, write grants to `anon`, public
+ * storage buckets). Deterministic and offline; raw secret values never leave this module
+ * (evidence is masked with `maskSecret`).
  */
-import type { Finding, ScanContext, Scanner, Severity } from "@opscrew/contracts";
+import type { Finding, FindingCategory, ScanContext, Scanner, Severity } from "@opscrew/contracts";
 import { maskSecret, Redactor } from "@opscrew/core";
 import { CLIENT_EXPOSED_PREFIXES } from "@opscrew/detect";
 import { findingId } from "../scan/finding";
-import { basename } from "../scan/text";
+import {
+  BINARY_EXTENSION,
+  basename,
+  isEnvFile as holdsLocalValues,
+  mapConcurrent,
+  readText,
+} from "../scan/text";
 
 const SOURCE = "opscrew-supabase";
 
@@ -49,14 +56,16 @@ interface FindingInput {
   description: string;
   remediation: string;
   references: string[];
+  /** Default `supabase`. */
+  category?: FindingCategory;
 }
 
 function makeFinding(input: FindingInput): Finding {
-  const { raw, ...rest } = input;
+  const { raw, category, ...rest } = input;
   return {
     id: findingId(input.ruleId, input.file, input.line, raw),
     ...rest,
-    category: "supabase",
+    category: category ?? "supabase",
     source: SOURCE,
   };
 }
@@ -122,11 +131,14 @@ const FRONTEND_DEPENDENCIES = [
 interface ProjectShape {
   /** Directories ("" = root) containing a package.json, mapped to "is a frontend app". */
   packages: Map<string, boolean>;
+  /** Package directories that depend on Next.js (route handlers and API routes run on the server). */
+  nextPackages: Set<string>;
   usesSupabase: boolean;
 }
 
 async function readProjectShape(context: ScanContext): Promise<ProjectShape> {
   const packages = new Map<string, boolean>();
+  const nextPackages = new Set<string>();
   let usesSupabase = context.files.some((file) => file.startsWith("supabase/"));
   for (const file of context.files) {
     const name = basename(file);
@@ -147,6 +159,7 @@ async function readProjectShape(context: ScanContext): Promise<ProjectShape> {
         dirname(file),
         names.some((dep) => FRONTEND_DEPENDENCIES.includes(dep)),
       );
+      if (names.includes("next")) nextPackages.add(dirname(file));
       if (names.some((dep) => dep.startsWith("@supabase/") || dep === "supabase")) {
         usesSupabase = true;
       }
@@ -158,7 +171,7 @@ async function readProjectShape(context: ScanContext): Promise<ProjectShape> {
       if (text && /^\s*supabase\b/im.test(text)) usesSupabase = true;
     }
   }
-  return { packages, usesSupabase };
+  return { packages, nextPackages, usesSupabase };
 }
 
 /** Nearest ancestor directory with a package.json, or undefined. */
@@ -201,17 +214,31 @@ const SERVER_SEGMENTS = new Set([
   "cypress",
   "playwright",
 ]);
-const SERVER_FILE_NAME = /(^server\.|\.server\.|\.config\.|^middleware\.|\.(test|spec)\.)/i;
+const SERVER_FILE_NAME =
+  /(^server\.|^\+server\.|\.server\.|\.config\.|^middleware\.|\.(test|spec)\.)/i;
+/** Folders that hold server-only code even inside a frontend app's `src/` (SvelteKit `lib/server`). */
+const SERVER_ONLY_DIRS = new Set(["server", "servers"]);
+/** Next.js API routes (`pages/api`, `app/api`) and App Router route handlers (`route.ts`). */
+const NEXT_SERVER_ROUTE = /^(?:src\/)?(?:(?:app|pages)\/api\/|app\/(?:.+\/)?route\.[cm]?[jt]sx?$)/;
 
 function isEnvFile(file: string): boolean {
   const name = basename(file);
   return name === ".env" || name.startsWith(".env.");
 }
 
+/** True for files inside a frontend folder that never reach the browser. */
+function isServerOnlyFile(relative: string, root: string, shape: ProjectShape): boolean {
+  if (SERVER_FILE_NAME.test(basename(relative))) return true;
+  const dirs = relative.split("/").slice(0, -1);
+  if (dirs.some((dir) => SERVER_ONLY_DIRS.has(dir.toLowerCase()))) return true;
+  return shape.nextPackages.has(root) && NEXT_SERVER_ROUTE.test(relative);
+}
+
 /**
  * True when `file` ends up in (or is) browser code: any file under `src/`, `app/`, `pages/`,
- * `components/`, `public/` or `lib/` of a frontend package, otherwise any markup/JS file that is
- * not in a server-side location.
+ * `components/`, `public/` or `lib/` of a frontend package unless it is server-only (route
+ * handlers, `*.server.*`, `server/` folders, middleware, config and tests), otherwise any
+ * markup/JS file that is not in a server-side location.
  */
 function isClientFile(file: string, shape: ProjectShape): boolean {
   const ext = extension(file);
@@ -226,7 +253,7 @@ function isClientFile(file: string, shape: ProjectShape): boolean {
     FRONTEND_DIRS.has(top) &&
     (CODE_EXTENSIONS.has(ext) || MARKUP_EXTENSIONS.has(ext) || DATA_EXTENSIONS.has(ext))
   ) {
-    return true;
+    return !isServerOnlyFile(relative, root, shape);
   }
   const dirs = file.split("/").slice(0, -1);
   if (dirs.some((dir) => SERVER_SEGMENTS.has(dir.toLowerCase()))) return false;
@@ -252,14 +279,18 @@ const CLIENT_SECRET_ENV = new RegExp(
 );
 const ENV_ASSIGNMENT = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[=:]/;
 
-/** Decodes a JWT payload and returns its `role` claim, or undefined. */
+/**
+ * Decodes a JWT payload and returns its `role` claim, or undefined. The well-known demo keys of
+ * the Supabase CLI's local stack (`"iss": "supabase-demo"`) are public, so they have no role here.
+ */
 function jwtRole(token: string): string | undefined {
   const payload = token.split(".")[1];
   if (!payload) return undefined;
   try {
     const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as unknown;
     if (claims && typeof claims === "object" && "role" in claims) {
-      const role = (claims as { role: unknown }).role;
+      const { role, iss } = claims as { role: unknown; iss?: unknown };
+      if (iss === "supabase-demo") return undefined;
       return typeof role === "string" ? role : undefined;
     }
   } catch {
@@ -314,6 +345,36 @@ function serviceRoleFinding(file: string, line: number, value: string, viaEnv?: 
   });
 }
 
+function secretInSourceFinding(
+  file: string,
+  line: number,
+  value: string,
+  tracked: boolean,
+): Finding {
+  const kind = value.startsWith("sb_secret_") ? "secret (`sb_secret_`)" : "service-role";
+  return makeFinding({
+    ruleId: "supabase/secret-key-in-source",
+    title: "Supabase secret key hard-coded in source",
+    severity: tracked ? "critical" : "high",
+    category: "secret",
+    file,
+    line,
+    raw: value,
+    evidence: maskSecret(value),
+    description:
+      `A Supabase ${kind} key is written directly in this file. It bypasses row-level security, ` +
+      "so anyone who can read the file can read, change or delete every row in the database. " +
+      (tracked
+        ? "The file is committed to git, so everyone with access to the repository or its history has the key."
+        : "The file is not ignored by git, so the next commit will publish the key."),
+    remediation:
+      "Rotate the key in the Supabase dashboard (Project Settings > API) if it was ever committed " +
+      "or shared, remove it from the file and read it from an environment variable such as " +
+      "`SUPABASE_SERVICE_ROLE_KEY` (set on the server, never in git).",
+    references: [REFS.apiKeys],
+  });
+}
+
 function exposedEnvFinding(file: string, line: number, name: string): Finding {
   return makeFinding({
     ruleId: "supabase/service-role-env-exposed",
@@ -346,20 +407,36 @@ function isScannable(file: string): boolean {
   );
 }
 
-function scanKeysAndEnv(file: string, text: string, shape: ProjectShape): Finding[] {
+function scanKeysAndEnv(
+  file: string,
+  text: string,
+  shape: ProjectShape,
+  tracked: boolean,
+): Finding[] {
   const findings: Finding[] = [];
   const keyLines = new Set<number>();
   const lineAt = lineLocator(text);
+  /** Hard-coded secret keys outside browser code: one finding per line. */
+  const inSource = (key: KeyMatch) => {
+    const line = lineAt(key.index);
+    if (keyLines.has(line)) return;
+    keyLines.add(line);
+    findings.push(secretInSourceFinding(file, line, key.value, tracked));
+  };
   if (isEnvFile(file)) {
-    // Only client-prefixed variables are browser-visible; server-side `.env` values are the
-    // secrets scanner's concern (committed `.env`).
+    // Client-prefixed variables are browser-visible. Other values in a real `.env` file are the
+    // secrets scanner's concern (committed `.env`); example and template files are committed by
+    // design, so a real key there is hard-coded in the repository.
     for (const key of findSecretKeys(text)) {
       const lineStart = text.lastIndexOf("\n", key.index) + 1;
       const name = ENV_ASSIGNMENT.exec(text.slice(lineStart, key.index))?.[1];
-      if (!name || !CLIENT_EXPOSED_PREFIXES.some((p) => name.toUpperCase().startsWith(p))) continue;
-      const line = lineAt(key.index);
-      keyLines.add(line);
-      findings.push(serviceRoleFinding(file, line, key.value, name));
+      if (name && CLIENT_EXPOSED_PREFIXES.some((p) => name.toUpperCase().startsWith(p))) {
+        const line = lineAt(key.index);
+        keyLines.add(line);
+        findings.push(serviceRoleFinding(file, line, key.value, name));
+      } else if (!holdsLocalValues(file)) {
+        inSource(key);
+      }
     }
   } else if (isClientFile(file, shape)) {
     for (const key of findSecretKeys(text)) {
@@ -367,7 +444,10 @@ function scanKeysAndEnv(file: string, text: string, shape: ProjectShape): Findin
       keyLines.add(line);
       findings.push(serviceRoleFinding(file, line, key.value));
     }
+  } else {
+    for (const key of findSecretKeys(text)) inSource(key);
   }
+  if (!isScannable(file)) return findings;
 
   const seen = new Set<string>();
   for (const match of text.matchAll(CLIENT_SECRET_ENV)) {
@@ -885,16 +965,23 @@ function bucketFindings(files: ParsedFile[]): Finding[] {
 // Scanner
 // ---------------------------------------------------------------------------------------------
 
+const READ_CONCURRENCY = 16;
+
 async function scanSupabase(context: ScanContext): Promise<Finding[]> {
   const shape = await readProjectShape(context);
   const findings: Finding[] = [];
   const migrations: ParsedFile[] = [];
   const migrationFiles = context.files.filter(isMigrationFile).sort();
-  for (const file of context.files) {
-    if (!isScannable(file)) continue;
-    const text = await readSafe(context, file);
-    if (text !== undefined) findings.push(...scanKeysAndEnv(file, text, shape));
-  }
+  const perFile = await mapConcurrent(
+    context.files.filter((file) => !BINARY_EXTENSION.test(file)),
+    READ_CONCURRENCY,
+    async (file) => {
+      const text = await readText(context, file);
+      if (text === undefined) return [];
+      return scanKeysAndEnv(file, text, shape, context.gitTracked?.has(file) === true);
+    },
+  );
+  findings.push(...perFile.flat());
   for (const file of migrationFiles) {
     const text = await readSafe(context, file);
     if (text === undefined) continue;

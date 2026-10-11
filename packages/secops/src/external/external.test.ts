@@ -213,6 +213,46 @@ describe("trivy", () => {
   });
 });
 
+describe("install hints for missing scanners (US1 AS4)", () => {
+  const missing = () => undefined;
+  it.each([
+    [
+      "gitleaks",
+      createGitleaksScanner({ which: missing }),
+      "https://github.com/gitleaks/gitleaks#installing",
+    ],
+    [
+      "osv-scanner",
+      createOsvScannerCli({ which: missing }),
+      "https://google.github.io/osv-scanner/installation/",
+    ],
+    [
+      "trivy",
+      createTrivyScanner({ which: missing }),
+      "https://trivy.dev/latest/getting-started/installation/",
+    ],
+  ])(
+    "%s says it is not installed and how to install it, online and offline",
+    async (name, scanner, url) => {
+      for (const offline of [false, true]) {
+        const ctx = context(scriptedRunner([]).runner, { offline });
+        expect(await scanner.isAvailable(ctx)).toBe(false);
+        const reason = scanner.skipReason(ctx);
+        expect(reason).toContain(`${name} is not installed`);
+        expect(reason).toContain(`brew install ${name}`);
+        expect(reason).toContain(url);
+      }
+    },
+  );
+
+  it("gives no install hint when the scanner is installed", () => {
+    const ctx = context(scriptedRunner([]).runner);
+    expect(createGitleaksScanner({ which: installed }).skipReason(ctx)).toBeUndefined();
+    expect(createOsvScannerCli({ which: installed }).skipReason(ctx)).toBeUndefined();
+    expect(createTrivyScanner({ which: installed }).skipReason(ctx)).toBeUndefined();
+  });
+});
+
 describe("relativePath", () => {
   it("strips the root from absolute, Windows and ./ paths", () => {
     expect(relativePath("D:/work/my-app", "D:\\work\\my-app\\src\\a.ts")).toBe("src/a.ts");

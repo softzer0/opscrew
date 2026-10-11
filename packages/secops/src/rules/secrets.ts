@@ -2,6 +2,7 @@ import type { Finding, ScanContext, Scanner, Severity } from "@opscrew/contracts
 import { maskSecret, shannonEntropy } from "@opscrew/core";
 import { createFinding } from "../scan/finding";
 import {
+  BINARY_EXTENSION,
   basename,
   isEnvFile,
   isPlaceholderValue,
@@ -162,6 +163,7 @@ const NON_SECRET_NAME_SUFFIX =
 const ASSIGNMENT =
   /(?<![A-Za-z0-9_$])(["']?)([A-Za-z_][A-Za-z0-9_.-]{0,80})\1\s*(?::=|=>|=(?!=)|:)\s*(?:"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`|([^\s"'`,;]+))/g;
 const JWT_SHAPE = /^eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/;
+const SUPABASE_SECRET_KEY = /^sb_secret_/;
 const GENERIC_MIN_LENGTH = 12;
 const GENERIC_MIN_ENTROPY = 3.0;
 
@@ -184,8 +186,6 @@ const SKIPPED_FILES = new Set([
   "Gemfile.lock",
   "go.sum",
 ]);
-const BINARY_EXTENSION =
-  /\.(?:png|jpe?g|gif|webp|avif|ico|bmp|tiff?|psd|pdf|zip|gz|tgz|bz2|xz|7z|rar|jar|war|class|woff2?|ttf|otf|eot|mp[34]|mov|avi|webm|wav|ogg|flac|wasm|so|dylib|dll|exe|bin|pyc|sqlite3?|db)$/i;
 const DOC_EXTENSION = /\.(?:md|mdx|markdown|rst|txt|adoc)$/i;
 
 function hasCharacterMix(value: string): boolean {
@@ -199,7 +199,8 @@ function isGenericSecret(value: string, quoted: boolean, envFile: boolean): bool
   if (/[\s(){}$<>]/.test(value)) return false;
   if (!quoted && /[.[\]]/.test(value)) return false;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) || /^(?:\.{0,2}\/|~\/)/.test(value)) return false;
-  if (JWT_SHAPE.test(value)) return false;
+  // JWTs and Supabase `sb_secret_` keys are the Supabase scanner's (it reports them with context).
+  if (JWT_SHAPE.test(value) || SUPABASE_SECRET_KEY.test(value)) return false;
   if (!quoted && !envFile && /^[A-Za-z_][A-Za-z_]*$/.test(value)) return false;
   if (!hasCharacterMix(value)) return false;
   return shannonEntropy(value) >= GENERIC_MIN_ENTROPY;
@@ -417,8 +418,9 @@ const READ_CONCURRENCY = 16;
  * AWS, Stripe, Slack, Google, labelled Hetzner and Cloudflare tokens, URL passwords), generic
  * high-entropy values assigned to secret-like names, PEM private keys and key stores, and dotenv
  * files with values (git-tracked → critical `secrets/committed-env`; present but not ignored → high
- * `secrets/env-not-ignored`). JWTs are left to the Supabase scanner, which can tell service-role
- * keys from public anon keys. Evidence is always masked with `maskSecret`.
+ * `secrets/env-not-ignored`). JWTs and `sb_secret_` keys are left to the Supabase scanner, which
+ * can tell service-role keys from public anon keys and reports them in client and server code.
+ * Evidence is always masked with `maskSecret`.
  */
 export function createSecretsScanner(): Scanner {
   return {

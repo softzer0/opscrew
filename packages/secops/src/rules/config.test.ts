@@ -144,6 +144,24 @@ describe("createConfigScanner", () => {
       expect(findings.some((f) => f.file === "web/README.md")).toBe(false);
     });
 
+    it("flags client-exposed AI and API secrets but not keys that are public by design", async () => {
+      const findings = await scanFiles({
+        ".gitignore": ".env*\n",
+        "src/ai.ts": [
+          "const openai = import.meta.env.VITE_OPENAI_API_KEY;",
+          "const stripe = process.env.NEXT_PUBLIC_STRIPE_SECRET_KEY;",
+          "const firebase = import.meta.env.VITE_FIREBASE_API_KEY;",
+          "const pk = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;",
+          "const maps = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;",
+          "const posthog = process.env.NEXT_PUBLIC_POSTHOG_KEY;",
+          "",
+        ].join("\n"),
+      });
+      expect(
+        findings.filter((f) => f.ruleId === "config/client-exposed-secret").map((f) => f.evidence),
+      ).toEqual(["VITE_OPENAI_API_KEY", "NEXT_PUBLIC_STRIPE_SECRET_KEY"]);
+    });
+
     it("reports nothing about .env when .gitignore excludes it", async () => {
       const findings = await scanFiles({ ".gitignore": ".env*\n", ".env": "PORT=3000\n" });
       expect(findings).toEqual([]);

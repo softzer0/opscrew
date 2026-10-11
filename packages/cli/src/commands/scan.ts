@@ -116,6 +116,10 @@ async function scan(
       runner: deps.runner,
       version: deps.version,
       now: () => deps.clock.now(),
+      // Warnings (such as the scan stopping at the file limit) must never be silent.
+      onProgress: (event) => {
+        if (event.type === "warning") reporter.warn(event.message);
+      },
     });
     await writeFileAtomic(paths.files.scanReportMd, renderScanMarkdown(report), { mode: 0o644 });
     await writeFileAtomic(paths.files.scanReportJson, `${JSON.stringify(report, null, 2)}\n`);

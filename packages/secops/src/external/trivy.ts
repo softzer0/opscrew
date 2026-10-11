@@ -7,6 +7,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   type ExternalScannerOptions,
   failure,
+  notInstalledReason,
   parseJsonOutput,
   relativePath,
   resolveWhich,
@@ -90,10 +91,13 @@ export function createTrivyScanner(options: ExternalScannerOptions = {}): Scanne
       return !context.offline && which("trivy") !== undefined;
     },
     skipReason(context) {
-      if (context.offline && which("trivy") !== undefined) {
-        return "Offline mode: trivy may download its checks.";
+      if (which("trivy") === undefined) {
+        return notInstalledReason(
+          "trivy",
+          "check Dockerfiles and infrastructure code against more misconfiguration rules",
+        );
       }
-      return undefined;
+      return context.offline ? "Offline mode: trivy may download its checks." : undefined;
     },
     async scan(context) {
       const bin = which("trivy");

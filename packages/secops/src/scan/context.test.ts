@@ -2,9 +2,26 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { CommandRunner } from "@opscrew/contracts";
+import { findExecutable, NodeCommandRunner } from "@opscrew/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createScanContext } from "./context";
 import { failingRunner, gitRunner, noFetch } from "./test-utils";
+
+const GIT = findExecutable("git");
+
+/**
+ * Real git, isolated from the environment: no inherited `GIT_*` variables (as set inside git
+ * hooks) and no repository above the temporary folder.
+ */
+function isolatedGit(): CommandRunner {
+  const runner = new NodeCommandRunner();
+  const env: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!/^GIT_/i.test(key)) env[key] = value;
+  }
+  env.GIT_CEILING_DIRECTORIES = path.dirname(root);
+  return { run: (command, args, options) => runner.run(command, args, { ...options, env }) };
+}
 
 let root: string;
 beforeEach(async () => {
@@ -58,10 +75,81 @@ describe("createScanContext", () => {
     ]);
   });
 
-  it("does not run git without a .git entry", async () => {
+  it("asks git from a subfolder of a repository, so it sees what is tracked there", async () => {
+    await mkdir(path.join(root, ".git"));
+    const sub = path.join(root, "src");
+    // `git ls-files` run in a subfolder lists paths relative to that folder.
+    const runner = gitRunner(["a.ts"]);
+    const context = await createScanContext(sub, { offline: true, fetch: noFetch, runner });
+    expect(runner.calls).toEqual([
+      { command: "git", args: ["ls-files", "-z"], cwd: path.resolve(sub) },
+    ]);
+    expect([...(context.gitTracked ?? [])]).toEqual(["a.ts"]);
+  });
+
+  it("does not run git when neither the folder nor a parent has a .git entry", async () => {
     const runner = gitRunner(["src/a.ts"]);
-    await createScanContext(root, { offline: true, fetch: noFetch, runner });
+    const context = await createScanContext(root, { offline: true, fetch: noFetch, runner });
     expect(runner.calls).toEqual([]);
+    expect(context.gitTracked).toBeUndefined();
+  });
+
+  it.skipIf(GIT === undefined)(
+    "sees a committed .env when scanning a nested folder of a real repository",
+    async () => {
+      const app = path.join(root, "apps", "web");
+      await mkdir(app, { recursive: true });
+      await writeFile(path.join(app, ".env"), "API_TOKEN=committed-by-mistake\n");
+      await writeFile(path.join(app, "index.js"), "console.log(1);\n");
+      const runner = isolatedGit();
+      const git = async (...args: string[]) => {
+        const result = await runner.run(
+          GIT ?? "git",
+          ["-c", "user.name=OpsCrew Test", "-c", "user.email=test@opscrew.invalid", ...args],
+          { cwd: root, timeoutMs: 30_000 },
+        );
+        expect(result.exitCode, result.stderr).toBe(0);
+      };
+      await git("init", "-q");
+      await git("add", "-A");
+      await git("commit", "-q", "-m", "initial");
+      const context = await createScanContext(app, { offline: true, fetch: noFetch, runner });
+      expect([...(context.gitTracked ?? [])].sort()).toEqual([".env", "index.js"]);
+    },
+    60_000,
+  );
+
+  it.skipIf(GIT === undefined)("leaves gitTracked undefined outside a git repository", async () => {
+    const context = await createScanContext(root, {
+      offline: true,
+      fetch: noFetch,
+      runner: isolatedGit(),
+    });
+    // The temp folder is not inside a repository (git exits non-zero).
+    expect(context.gitTracked).toBeUndefined();
+  });
+
+  it("warns when the file listing stops at maxFiles, and stays quiet otherwise", async () => {
+    const warnings: string[] = [];
+    const onWarning = (message: string) => warnings.push(message);
+    await createScanContext(root, {
+      offline: true,
+      fetch: noFetch,
+      runner: failingRunner,
+      onWarning,
+    });
+    expect(warnings).toEqual([]);
+    const context = await createScanContext(root, {
+      offline: true,
+      fetch: noFetch,
+      runner: failingRunner,
+      maxFiles: 2,
+      onWarning,
+    });
+    expect(context.files).toHaveLength(2);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/more than 2 files.*not checked/);
+    expect(warnings[0]).not.toContain(root);
   });
 
   it("leaves gitTracked undefined when git is missing or fails", async () => {

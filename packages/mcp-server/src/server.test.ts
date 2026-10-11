@@ -9,9 +9,23 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createTestPhaseDeps, forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import { defaultScanners } from "@opscrew/secops";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpscrewMcpDeps } from "./deps";
 import { createOpscrewMcpServer, PLANNING_TOOLS } from "./server";
+
+/** Lets a test lower the scan's file limit (20,000) so truncation can be tested on a small fixture. */
+const limits = vi.hoisted(() => ({ maxFiles: undefined as number | undefined }));
+vi.mock("@opscrew/secops", async (importOriginal) => {
+  const secops = await importOriginal<typeof import("@opscrew/secops")>();
+  return {
+    ...secops,
+    runScan: (root: string, options: Parameters<typeof secops.runScan>[1]) =>
+      secops.runScan(
+        root,
+        limits.maxFiles === undefined ? options : { ...options, maxFiles: limits.maxFiles },
+      ),
+  };
+});
 
 const EXAMPLES = fileURLToPath(new URL("../../../examples/", import.meta.url));
 
@@ -24,6 +38,7 @@ const FAKE_VALUES = [
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  limits.maxFiles = undefined;
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
@@ -167,7 +182,18 @@ describe("createOpscrewMcpServer", () => {
     const result = await h.call("opscrew_scan", { offline: true });
     expect(result.isError).toBeFalsy();
     expect(dataOf(result).blockingFindings).toBe(0);
+    expect(dataOf(result).warnings).toEqual([]);
     expect(textOf(result)).toContain("No high or critical problems were found.");
+    expect(textOf(result)).not.toContain("Warning:");
+  });
+
+  it("opscrew_scan includes the warning when the scan stops at the file limit", async () => {
+    const h = await connect(await fixture("static-vite"));
+    limits.maxFiles = 2;
+    const result = await h.call("opscrew_scan", { offline: true });
+    expect(result.isError).toBeFalsy();
+    expect(dataOf(result).warnings).toEqual([expect.stringMatching(/more than 2 files/)]);
+    expect(textOf(result)).toMatch(/^Warning: .*more than 2 files.*were not checked/);
   });
 
   it("opscrew_detect returns the facts and writes nothing", async () => {

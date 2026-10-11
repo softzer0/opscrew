@@ -15,23 +15,37 @@ export interface ScanContextOptions {
   maxFiles?: number;
   /** Use these repo-relative POSIX paths instead of listing the project. */
   files?: readonly string[];
+  /** Receives plain-English warnings, such as the file listing stopping at `maxFiles`. */
+  onWarning?: (message: string) => void;
 }
 
 const GIT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_FILES = 20_000;
+
+/** True when `dir` or one of its ancestors has a `.git` entry (directory, or file for worktrees). */
+async function insideGitCheckout(dir: string): Promise<boolean> {
+  for (let current = dir; ; ) {
+    const found = await stat(path.join(current, ".git")).then(
+      () => true,
+      () => false,
+    );
+    if (found) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
 
 /**
- * Repo-relative paths tracked by git (`git ls-files -z`), or `undefined` when `root` has no `.git`
- * entry, git is not installed or the command fails.
+ * Paths tracked by git under `root`, relative to `root` (`git ls-files -z` run in `root`, which
+ * also works when `root` is a subfolder of the repository), or `undefined` when no `.git` entry
+ * exists in `root` or above it, git is not installed or the command fails.
  */
 async function readGitTracked(
   root: string,
   runner: CommandRunner,
 ): Promise<ReadonlySet<string> | undefined> {
-  const hasGit = await stat(path.join(root, ".git")).then(
-    () => true,
-    () => false,
-  );
-  if (!hasGit) return undefined;
+  if (!(await insideGitCheckout(root))) return undefined;
   try {
     const result = await runner.run("git", ["ls-files", "-z"], {
       cwd: root,
@@ -69,8 +83,9 @@ function resolveInside(root: string, relativePath: string): string {
 
 /**
  * Builds the {@link ScanContext} for `root`: files from `listProjectFiles` (gitignore-aware,
- * dotfiles such as `.env` included), `gitTracked` from `git ls-files -z` when the project is a git
- * repository, and `readFile` reading UTF-8 text relative to the root.
+ * dotfiles such as `.env` included; `onWarning` is told when the listing stops at `maxFiles`),
+ * `gitTracked` from `git ls-files -z` when `root` is inside a git repository, and `readFile`
+ * reading UTF-8 text relative to the root.
  */
 export async function createScanContext(
   root: string,
@@ -86,14 +101,22 @@ export async function createScanContext(
       hint: "Run the scan from your project folder or pass the path of an existing directory.",
     });
   }
-  const files =
-    options.files ??
-    (
-      await listProjectFiles(
-        rootDir,
-        options.maxFiles === undefined ? {} : { maxFiles: options.maxFiles },
-      )
-    ).files;
+  let files = options.files;
+  if (files === undefined) {
+    const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
+    const listing = await listProjectFiles(rootDir, { maxFiles });
+    files = listing.files;
+    if (listing.truncated) {
+      try {
+        options.onWarning?.(
+          `The project has more than ${maxFiles.toLocaleString("en-US")} files, so the scan stopped listing there and the rest were not checked. ` +
+            "Scan the app's own folder, or add generated folders (builds, caches, vendored code) to .gitignore, so every file is checked.",
+        );
+      } catch {
+        // A failing warning callback must not break the scan.
+      }
+    }
+  }
   const gitTracked = await readGitTracked(rootDir, options.runner);
   const context: ScanContext = {
     rootDir,

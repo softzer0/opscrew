@@ -1,9 +1,11 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Finding, ScanContext, Scanner } from "@opscrew/contracts";
+import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { createConfigScanner } from "../rules/config";
 import { createSecretsScanner } from "../rules/secrets";
+import { createSupabaseScanner } from "../rules/supabase";
 import { createFinding } from "./finding";
 import { dedupeFindings, runScan, type ScannerSkipReason, type ScanProgressEvent } from "./run";
 import {
@@ -170,6 +172,56 @@ describe("runScan", () => {
     expect(events.filter((e) => e.type === "started")).toHaveLength(9);
     expect(events.filter((e) => e.type === "finished")).toHaveLength(9);
     expect(events.find((e) => e.type === "finished")).toMatchObject({ status: "ran", findings: 0 });
+    expect(events.filter((e) => e.type === "warning")).toEqual([]);
+  });
+
+  it("emits a warning event when the file listing stops at maxFiles", async () => {
+    const { dir } = await setup();
+    const events: ScanProgressEvent[] = [];
+    await runScan(dir, {
+      offline: true,
+      fetch: noFetch,
+      runner: failingRunner,
+      version: "0.1.0",
+      scanners: [],
+      maxFiles: 2,
+      onProgress: (event) => events.push(event),
+    });
+    const warnings = events.filter((e) => e.type === "warning");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({ message: expect.stringMatching(/more than 2 files/) });
+  });
+
+  it("reports a hard-coded Supabase secret key in server code once, even when other scanners see it", async () => {
+    const { dir } = await setup();
+    const key = `sb_secret_${fakeSecret("cloudflare-token", "run")}`;
+    await mkdir(path.join(dir, "server"));
+    await writeFile(
+      path.join(dir, "server", "admin.js"),
+      `const SUPABASE_SECRET_KEY = "${key}";\n`,
+    );
+    const report = await runScan(dir, {
+      offline: true,
+      fetch: noFetch,
+      runner: gitRunner([...TRACKED, "server/admin.js"]),
+      version: "0.1.0",
+      scanners: [
+        createSecretsScanner(),
+        createSupabaseScanner(),
+        fakeScanner("gitleaks", async () => [
+          external("gitleaks", {
+            ruleId: "gitleaks/generic-api-key",
+            file: "server/admin.js",
+            line: 1,
+          }),
+        ]),
+      ],
+    });
+    const hits = report.findings.filter((f) => f.file === "server/admin.js");
+    expect(hits.map((f) => `${f.severity} ${f.ruleId}:${f.line}`)).toEqual([
+      "critical supabase/secret-key-in-source:1",
+    ]);
+    expect(JSON.stringify(report)).not.toContain(key);
   });
 
   it("deduplicates across scanners, keeps the most severe and normalises paths", async () => {
