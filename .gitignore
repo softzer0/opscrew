@@ -20,6 +20,8 @@ crash.log
 .env
 .env.*
 !.env.example
+# fixture env files hold only {{FAKE:…}} markers (materializeFixture expands them in tests)
+!.env*.fixture
 
 # Claude Code agent worktrees
 .claude/worktrees/
