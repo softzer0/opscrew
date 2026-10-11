@@ -95,7 +95,7 @@ export interface DeployKey {
   created: boolean;
 }
 
-/** Creates the project's deploy key once (`~/.opscrew/projects/<id>/deploy_ed25519`) and reuses it. */
+/** Creates the project's deploy key once (`~/.opscrew/projects/<id>/deploy_key`) and reuses it. */
 export async function ensureDeployKey(paths: ProjectPaths): Promise<DeployKey> {
   const existingPrivate = await readIfExists(paths.files.deployKey);
   const existingPublic = await readIfExists(paths.files.deployKeyPub);

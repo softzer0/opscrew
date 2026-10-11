@@ -54,7 +54,7 @@ describe("renderRunbook", () => {
     expect(file.path).toBe("opscrew/RUNBOOK.md");
     expect(file.content).toContain("https://shop.example.com");
     expect(file.content).toContain(
-      "ssh -i ~/.opscrew/projects/shop-0123456789ab/deploy_ed25519 deploy@203.0.113.10",
+      "ssh -i ~/.opscrew/projects/shop-0123456789ab/deploy_key deploy@203.0.113.10",
     );
     expect(file.content).toContain("## Roll back");
     expect(file.content).toContain("Cloudflare's IP ranges");

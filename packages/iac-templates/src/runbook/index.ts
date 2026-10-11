@@ -28,7 +28,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
   const ipv6 = plan.deployment.serverIpv6 ?? ctx.serverIpv6;
   const hosts = siteHosts(plan);
   const url = hosts.length > 0 ? `https://${hosts[0]}` : ip ? `http://${ip}` : PENDING;
-  const keyPath = `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}/deploy_ed25519`;
+  const keyPath = `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}/deploy_key`;
   const ssh = ip ? `ssh -i ${keyPath} deploy@${ip}` : `ssh -i ${keyPath} deploy@<server-ip>`;
   const branch = plan.cicd.branch;
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
