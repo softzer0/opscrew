@@ -32,7 +32,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare`
   - Effort: medium
 
-- [ ] T203 [P] [US2] Implement git and GitHub operations in `packages/connectors/github/src/`
+- [X] T203 [P] [US2] Implement git and GitHub operations in `packages/connectors/github/src/`
   - Owns: `packages/connectors/github/**`
   - Reads: spec FR-212; plan.md "Provision orchestration" steps 9–10; 001 plan.md "Adapt"; `packages/contracts/src/{io,connector}.ts`
   - Depends: 000/T004

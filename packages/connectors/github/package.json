@@ -15,7 +15,8 @@
   "dependencies": {
     "@opscrew/contracts": "workspace:*",
     "@opscrew/core": "workspace:*",
-    "libsodium-wrappers": "^0.8.4"
+    "libsodium-wrappers": "^0.8.4",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/libsodium-wrappers": "^0.8.2"
