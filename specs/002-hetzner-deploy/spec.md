@@ -194,9 +194,12 @@ secret rotation and costs.
   (22/80/443), set Docker log rotation and `no-new-privileges`, create `/srv/app` and `/srv/data`,
   and write `/var/lib/opscrew-ready` when finished.
 - **FR-207**: The `cloudflare-dns` module MUST create proxied A/AAAA records (and optional `www`
-  CNAME), and — only when enabled by OpsCrew after checking that the zone has no existing entrypoint
-  ruleset for the phase — a host-scoped configuration rule (TLS strict) and WAF custom rules blocking
-  probes for `/.env`, `/.git`, `/wp-admin`, `/wp-login.php`, `/xmlrpc.php` and `/phpmyadmin`.
+  CNAME), and — only when enabled by OpsCrew after checking that the zone has no entrypoint ruleset
+  for the phase, or only OpsCrew's own (so re-runs keep them) — a host-scoped configuration rule (TLS
+  strict) and WAF custom rules blocking probes for `/.env`, `/.git`, `/wp-admin`, `/wp-login.php`,
+  `/xmlrpc.php` and `/phpmyadmin`. Before planning, existing A/AAAA/CNAME records for the hostname
+  (and `www.` when enabled) that are not OpsCrew's stop provisioning with the list of records, so an
+  old host never shares traffic with the new server.
 - **FR-208**: The compose file MUST run `app` (image `${APP_IMAGE}`, `env_file: app.env`,
   `no-new-privileges`, all capabilities dropped, internal network only), optional `db` (Postgres 17,
   data in `/srv/data/postgres`, health check, `env_file: db.env`) and `cache` (Valkey 8), and `caddy`
@@ -212,8 +215,9 @@ secret rotation and costs.
   (net prices, availability per location, deprecated types excluded), a dated static fallback catalog,
   and in-process read tools.
 - **FR-211**: `@opscrew/connector-cloudflare` MUST provide token verification, zone lookup from a
-  domain (trying parent names), DNS record listing, entrypoint-ruleset existence checks for the
-  `http_config_settings` and `http_request_firewall_custom` phases, and Cloudflare IP ranges.
+  domain (trying parent names), DNS record listing (with comments), entrypoint-ruleset inspection for
+  the `http_config_settings` and `http_request_firewall_custom` phases (exists, owned by OpsCrew,
+  rule count), and Cloudflare IP ranges.
 - **FR-212**: `@opscrew/connector-github` MUST provide git operations through the command runner
   (status, branch, add, commit, push, diff, remote parsing), and REST operations (repository info,
   pull requests, Actions public key and secret upload sealed with libsodium, workflow runs); tokens

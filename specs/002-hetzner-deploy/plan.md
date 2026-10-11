@@ -156,12 +156,17 @@ app:<port>`; `encode zstd gzip`; headers `Strict-Transport-Security` (only with 
 strict-origin-when-cross-origin`, `-Server`; global `email` when `acmeEmail` is set.
 Workflow jobs `build` (`permissions: contents: read, packages: write`) and `deploy` (`needs:
 build`, `environment: production`); `concurrency: { group: opscrew-deploy, cancel-in-progress:
-false }`; `actions/checkout` pinned to the commit SHA of the latest v7 tag (resolve the annotated
-tag with `git ls-remote https://github.com/actions/checkout 'refs/tags/v7*'` using the `^{}`
-entries); everything else is plain `run:` steps (docker CLI, ssh, scp, curl). Image tag
-`ghcr.io/${owner,,}/${repo,,}:${{ github.sha }}` computed in bash. Health URL
-`https://<domain><healthPath>` or `http://${{ secrets.OPSCREW_HOST }}<healthPath>`; 20 attempts,
-6 s apart. Rollback restores `.env.previous` and restarts, then fails the job.
+false }`; `actions/checkout` pinned to the commit SHA of the latest v7 tag (v7.0.1 is a lightweight
+tag, so `git ls-remote https://github.com/actions/checkout 'refs/tags/v7*'` gives the commit
+directly; for annotated tags use the `^{}` entries); everything else is plain `run:` steps (docker
+CLI, ssh, scp, curl). Image tag `ghcr.io/${owner,,}/${repo,,}:${{ github.sha }}` computed in bash;
+after the push the build job publishes the image digest (`ghcr.io/…@sha256:…`) and logs out of
+GHCR, then the optional Trivy scan runs from a digest-pinned image; the deploy job refuses an image
+that is not digest-pinned and deploys exactly that digest. Health URL
+`https://<domain><healthPath>` or `http://${{ secrets.OPSCREW_HOST }}<healthPath>`; 30 attempts,
+6 s apart. The start step first saves the running `.env` as `.env.previous`; rollback runs only
+when the start or health step failed and the server already runs this run's image, restores the
+previous `.env`, restarts and fails the job (it says "restored" only after a real swap).
 
 ### Provision orchestration (`agents/src/provision`)
 
@@ -215,7 +220,7 @@ entries); everything else is plain `run:` steps (docker CLI, ssh, scp, curl). Im
 - Host checks (`HostCheck { id; title; severity; command; evaluate(result) → CheckResult }`) run as
   the `deploy` user without sudo: sshd drop-in present and values set (read
   `/etc/ssh/sshd_config.d/10-opscrew.conf`), `systemctl is-active fail2ban`, `systemctl is-enabled
-  unattended-upgrades`, `systemctl is-active ufw`, `ss -H -tln` (only 22/80/443 and loopback),
+  unattended-upgrades`, `grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf`, `ss -H -tln` (only 22/80/443 and loopback),
   no listener on 2375/2376, `test ! -f /var/run/reboot-required`, `df -P /` usage < 85 %, cloud-init
   marker present. Outside probes: TCP connect to 22 (expect open), 80/443 (open; when origin is
   Cloudflare-only expect filtered from non-Cloudflare IPs — reported as info), and 3000, 3306, 5432,

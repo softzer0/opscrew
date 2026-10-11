@@ -39,9 +39,12 @@ the engine integration test.
 
 ## GitHub Actions
 
-- `actions/checkout` latest tag v7.0.1 (2026-10-11). The tag is annotated: resolve the commit SHA
-  with `git ls-remote https://github.com/actions/checkout 'refs/tags/v7.0.1^{}'` and pin
-  `actions/checkout@<sha> # v7.0.1`.
+- `actions/checkout` latest tag v7.0.1 (2026-10-11). The tag is lightweight (no `^{}` entry):
+  `git ls-remote https://github.com/actions/checkout 'refs/tags/v7.0.1'` gives the commit SHA
+  directly; pin `actions/checkout@<sha> # v7.0.1`.
+- Trivy image `aquasec/trivy:0.75.0` is pinned by its multi-arch index digest from the Docker Hub
+  registry API (`registry-1.docker.io/v2/aquasec/trivy/manifests/0.75.0`; `ghcr.io/aquasecurity/trivy`
+  serves the same digest).
 - GHCR: `docker login ghcr.io -u <actor> --password-stdin` with `GITHUB_TOKEN`; job permission
   `packages: write`; image names must be lower-case.
 - Secrets API: `GET /repos/{owner}/{repo}/actions/secrets/public-key` → `{ key_id, key }`;
