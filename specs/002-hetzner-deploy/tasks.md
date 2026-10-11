@@ -145,7 +145,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/mcp-server`
   - Effort: high
 
-- [ ] T213 Live end-to-end test (gated) in `packages/cli/test/live/`
+- [X] T213 Live end-to-end test (gated) in `packages/cli/test/live/`
   - Owns: `packages/cli/test/live/**`, `docs/e2e.md`
   - Reads: spec SC-203, SC-204; all phases
   - Depends: T211, 001/T115
