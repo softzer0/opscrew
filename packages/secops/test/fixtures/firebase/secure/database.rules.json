@@ -1,0 +1,7 @@
+{
+  // Realtime Database rules allow comments.
+  "rules": {
+    ".read": "auth != null",
+    ".write": false
+  }
+}

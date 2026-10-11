@@ -14,7 +14,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
 
 ## Phase 1: Foundations for this feature
 
-- [ ] T101 [P] [US2] Implement deterministic repository detection in `packages/detect/src/`
+- [X] T101 [P] [US2] Implement deterministic repository detection in `packages/detect/src/`
   - Owns: `packages/detect/**`
   - Reads: plan.md "Detection"; 000 data-model.md `ProjectFacts`; `packages/plan-schema/src/index.ts`
   - Depends: 000/T003
@@ -26,7 +26,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect`
   - Effort: high
 
-- [ ] T103 [P] [US3] Implement the Hetzner client, live and static catalogues and connector in `packages/connectors/hetzner/src/`
+- [X] T103 [P] [US3] Implement the Hetzner client, live and static catalogues and connector in `packages/connectors/hetzner/src/`
   - Owns: `packages/connectors/hetzner/**`
   - Reads: plan.md "Hetzner catalogue"; research.md "Hetzner prices"; `packages/contracts/src/connector.ts`
   - Depends: 000/T004 (OpsCrewError, redaction)
@@ -55,7 +55,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/secops`
   - Effort: high
 
-- [ ] T104 [P] [US1] Implement Supabase and Firebase rules in `packages/secops/src/rules/{supabase,firebase}.ts`
+- [X] T104 [P] [US1] Implement Supabase and Firebase rules in `packages/secops/src/rules/{supabase,firebase}.ts`
   - Owns: `packages/secops/src/rules/supabase.ts`, `packages/secops/src/rules/supabase.test.ts`, `packages/secops/src/rules/firebase.ts`, `packages/secops/src/rules/firebase.test.ts`, `packages/secops/test/fixtures/{supabase,firebase}/**`
   - Reads: plan.md "Scan"; spec FR-102; `packages/contracts/src/secops.ts`
   - Depends: 000/T004

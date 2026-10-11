@@ -1,0 +1,2 @@
+These are release notes, not Firebase rules:
+allow read, write: if true;

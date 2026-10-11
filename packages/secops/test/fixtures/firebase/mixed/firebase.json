@@ -1,0 +1,9 @@
+{
+  "firestore": {
+    "rules": "config/app-firestore.rules",
+    "indexes": "config/firestore.indexes.json"
+  },
+  "database": {
+    "rules": "./config/rtdb-rules.json"
+  }
+}
