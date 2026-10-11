@@ -1,0 +1,59 @@
+{
+  "name": "blog",
+  "languages": ["python"],
+  "packageManager": "uv",
+  "frameworks": [{ "name": "django", "version": ">=5.1,<6", "path": "." }],
+  "appKind": "fullstack",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "build": {
+    "installCommand": "uv sync --frozen",
+    "startCommand": "gunicorn blog.wsgi:application --bind 0.0.0.0:8000"
+  },
+  "port": 8000,
+  "runtimeVersions": { "python": ">=3.11" },
+  "envVars": [
+    {
+      "name": "DJANGO_ALLOWED_HOSTS",
+      "files": ["blog/settings.py"],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "DJANGO_DEBUG",
+      "files": ["blog/settings.py"],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "DJANGO_SECRET_KEY",
+      "files": ["blog/settings.py"],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "POSTGRES_DB",
+      "files": ["blog/settings.py"],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "POSTGRES_HOST",
+      "files": ["blog/settings.py"],
+      "clientExposed": false,
+      "secretLikely": false
+    }
+  ],
+  "services": [
+    {
+      "kind": "postgres",
+      "evidence": [
+        "config:django.db.backends.postgresql",
+        "dependency:psycopg",
+        "env:POSTGRES_DB",
+        "env:POSTGRES_HOST"
+      ]
+    }
+  ],
+  "healthEndpoint": "/healthz/",
+  "monorepo": false
+}

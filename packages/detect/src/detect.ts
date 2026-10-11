@@ -1,0 +1,692 @@
+import { readFile, stat } from "node:fs/promises";
+import { basename, resolve } from "node:path";
+import {
+  type AppKind,
+  type Language,
+  type ProjectFacts,
+  ProjectFactsSchema,
+} from "@opscrew/plan-schema";
+import { isClientExposed, isEnvExampleFile, isSecretLikely, parseEnvExampleKeys } from "./env";
+import { listProjectFiles } from "./files";
+import {
+  type AppKindHints,
+  appKindOf,
+  type DetectedFramework,
+  defaultPort,
+  detectFrameworks,
+  effectiveRoles,
+  type FrameworkRole,
+  hasAstroAdapter,
+  isServerUnit,
+} from "./frameworks";
+import { readGitInfo } from "./git";
+import {
+  matchesWorkspace,
+  parseJson,
+  type ReadText,
+  readUnits,
+  stripBom,
+  type Unit,
+  workspacePatterns,
+} from "./manifests";
+import {
+  basenameRel,
+  depthOf,
+  dirnameRel,
+  isWithin,
+  joinRel,
+  relativeTo,
+  sortStrings,
+  toFsPath,
+  uniqueSorted,
+} from "./paths";
+import { detectPlatform } from "./platform";
+import {
+  addDependencyServices,
+  addDjangoServices,
+  addEnvServices,
+  addPrismaServices,
+  ServiceCollector,
+} from "./services";
+import {
+  healthRouteFromPath,
+  isAppCodeFile,
+  isSourceFile,
+  portsInCommand,
+  pythonModule,
+  type SourceSignals,
+  scanSource,
+} from "./sources";
+
+/** Options for {@link detectProject}. */
+export interface DetectOptions {
+  /** Maximum number of files to inspect (default 20,000). */
+  maxFiles?: number;
+}
+
+/** Full detection result: the facts plus context the caller may turn into warnings or risks. */
+export interface ProjectDetection {
+  facts: ProjectFacts;
+  /** Repo-relative directory of the app the facts describe (`.` for the root). */
+  appDir: string;
+  /**
+   * Directories of deployable apps when several qualify (monorepos); the facts then describe the
+   * repository root and the interview should ask which one to deploy. Empty otherwise.
+   */
+  appCandidates: string[];
+  /** True when the file walk stopped at `maxFiles`; detection may be incomplete. */
+  truncated: boolean;
+}
+
+interface UnitInfo {
+  unit: Unit;
+  frameworks: DetectedFramework[];
+  hints: AppKindHints;
+  roles: Set<FrameworkRole>;
+  appKind: AppKind;
+}
+
+type JsPackageManager = "npm" | "pnpm" | "yarn" | "bun";
+type PyPackageManager = "pip" | "poetry" | "uv" | "pipenv";
+
+const LANGUAGE_BY_EXTENSION: Record<string, Language> = {
+  js: "javascript",
+  jsx: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  ts: "typescript",
+  tsx: "typescript",
+  mts: "typescript",
+  cts: "typescript",
+  py: "python",
+  go: "go",
+  rb: "ruby",
+  php: "php",
+  java: "java",
+  rs: "rust",
+  cs: "other",
+  kt: "other",
+  swift: "other",
+  scala: "other",
+  ex: "other",
+  exs: "other",
+  dart: "other",
+};
+
+const PYTHON_SERVER_FRAMEWORKS = new Set(["fastapi", "flask", "django"]);
+
+async function mapLimit<T>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next++] as T;
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function firstLine(text: string | undefined): string | undefined {
+  const line = text
+    ?.split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l !== "" && !l.startsWith("#"));
+  return line || undefined;
+}
+
+function detectLanguages(files: readonly string[], units: readonly Unit[]): Language[] {
+  const languages = new Set<Language>();
+  for (const file of files) {
+    const name = basenameRel(file);
+    // Tool configuration (vite.config.js, .eslintrc.cjs) does not define the app's language.
+    if (/\.config\.[cm]?[jt]s$/.test(name) || /^\.[\w-]+rc\.[cm]?js$/.test(name)) continue;
+    const dot = name.lastIndexOf(".");
+    const language = dot > 0 ? LANGUAGE_BY_EXTENSION[name.slice(dot + 1).toLowerCase()] : undefined;
+    if (language) languages.add(language);
+  }
+  for (const unit of units) {
+    const names = new Set(unit.manifests.map(basenameRel));
+    if (unit.packageJson && !languages.has("typescript")) languages.add("javascript");
+    if (unit.python) languages.add("python");
+    if (names.has("Gemfile")) languages.add("ruby");
+    if (names.has("composer.json")) languages.add("php");
+    if (names.has("go.mod")) languages.add("go");
+    if (names.has("Cargo.toml")) languages.add("rust");
+  }
+  return sortStrings(languages) as Language[];
+}
+
+function jsInstallCommand(pm: JsPackageManager, locked: boolean, berry: boolean): string {
+  switch (pm) {
+    case "npm":
+      return locked ? "npm ci" : "npm install";
+    case "pnpm":
+      return locked ? "pnpm install --frozen-lockfile" : "pnpm install";
+    case "yarn":
+      if (berry) return locked ? "yarn install --immutable" : "yarn install";
+      return locked ? "yarn install --frozen-lockfile" : "yarn install";
+    case "bun":
+      return locked ? "bun install --frozen-lockfile" : "bun install";
+  }
+}
+
+function jsExec(pm: JsPackageManager): string {
+  return { npm: "npx", pnpm: "pnpm exec", yarn: "yarn", bun: "bunx" }[pm];
+}
+
+/** `pm run <script>` (or the workspace-filtered form for a monorepo member). */
+function jsRun(pm: JsPackageManager, script: string, member?: { name: string; dir: string }) {
+  const start = script === "start";
+  if (member) {
+    switch (pm) {
+      case "pnpm":
+        return `pnpm --filter ${member.name} ${start ? "start" : `run ${script}`}`;
+      case "npm":
+        return `npm ${start ? "start" : `run ${script}`} --workspace=${member.dir}`;
+      case "yarn":
+        return `yarn workspace ${member.name} ${start ? "start" : `run ${script}`}`;
+      case "bun":
+        return `bun run --filter ${member.name} ${script}`;
+    }
+  }
+  if (start) return pm === "bun" ? "bun run start" : `${pm} start`;
+  return `${pm} run ${script}`;
+}
+
+/** Detects repository facts and returns them with the app directory and monorepo candidates. */
+export async function detectProjectDetails(
+  root: string,
+  options: DetectOptions = {},
+): Promise<ProjectDetection> {
+  const absRoot = resolve(root);
+  const listing = await listProjectFiles(
+    absRoot,
+    options.maxFiles === undefined ? {} : { maxFiles: options.maxFiles },
+  );
+  const files = listing.files;
+  const fileSet = new Set(files);
+  // Only files that survived the walk (ignore rules, size limit) are ever read.
+  const read: ReadText = async (path) => {
+    if (!fileSet.has(path)) return undefined;
+    try {
+      return stripBom(await readFile(toFsPath(absRoot, path), "utf8"));
+    } catch {
+      return undefined;
+    }
+  };
+  const filesIn = (dir: string, test: (name: string) => boolean) =>
+    files.filter((file) => dirnameRel(file) === dir && test(basenameRel(file)));
+
+  const [git, units] = await Promise.all([readGitInfo(absRoot), readUnits(files, read)]);
+
+  // Per-unit frameworks and app kind.
+  const infos: UnitInfo[] = [];
+  for (const unit of units) {
+    const frameworks = detectFrameworks(unit);
+    const names = new Set(frameworks.map((f) => f.name));
+    const nextConfig = names.has("next")
+      ? await read(filesIn(unit.dir, (n) => /^next\.config\.[cm]?[jt]s$/.test(n))[0] ?? "")
+      : undefined;
+    const astroConfig = names.has("astro")
+      ? await read(filesIn(unit.dir, (n) => /^astro\.config\.[cm]?[jt]s$/.test(n))[0] ?? "")
+      : undefined;
+    const hints: AppKindHints = {
+      nextStaticExport: /\boutput\s*:\s*["'`]export["'`]/.test(nextConfig ?? ""),
+      astroServer:
+        hasAstroAdapter(unit) ||
+        /\badapter\s*:|\boutput\s*:\s*["'`](?:server|hybrid)["'`]/.test(astroConfig ?? ""),
+      djangoTemplates: files.some(
+        (file) =>
+          isWithin(unit.dir, file) &&
+          /(?:^|\/)templates\/.+\.html?$/i.test(relativeTo(unit.dir, file)),
+      ),
+    };
+    infos.push({
+      unit,
+      frameworks,
+      hints,
+      roles: effectiveRoles(unit, frameworks, hints),
+      appKind: appKindOf(unit, frameworks, hints),
+    });
+  }
+  const rootInfo = infos.find((info) => info.unit.dir === ".");
+  const rootPackage = rootInfo?.unit.packageJson;
+
+  // Monorepo layout and the deployable app.
+  const monorepo =
+    rootPackage?.workspaces !== undefined ||
+    ["pnpm-workspace.yaml", "turbo.json", "nx.json", "lerna.json"].some((f) => fileSet.has(f));
+  let patterns = workspacePatterns(
+    rootPackage,
+    await read("pnpm-workspace.yaml"),
+    await read("lerna.json"),
+  );
+  if (monorepo && patterns.length === 0) patterns = ["apps/*", "packages/*"];
+  const nested = infos.filter((info) => info.unit.dir !== ".");
+  const members = monorepo
+    ? nested.filter((info) => matchesWorkspace(info.unit.dir, patterns))
+    : nested;
+  const relevant = rootInfo ? [rootInfo, ...members] : members;
+
+  let primary: UnitInfo | undefined;
+  let appCandidates: string[] = [];
+  if (!monorepo && rootInfo) {
+    primary = rootInfo;
+  } else {
+    let deployable = members.filter((info) => isServerUnit(info.unit, info.roles));
+    if (deployable.length === 0) deployable = members.filter((info) => info.appKind !== "unknown");
+    if (deployable.length === 1) {
+      primary = deployable[0];
+    } else {
+      primary = rootInfo;
+      appCandidates = deployable.map((info) => info.unit.dir);
+    }
+  }
+  const appDir = primary?.unit.dir ?? ".";
+  const appPackage = primary?.unit.packageJson;
+  const appKind: AppKind = primary?.appKind ?? "unknown";
+  const appFrameworkNames = new Set(primary?.frameworks.map((f) => f.name) ?? []);
+  const searchDirs = uniqueSorted([appDir, "."]).sort((a, b) => depthOf(b) - depthOf(a));
+  const findIn = (name: string) =>
+    searchDirs.map((dir) => joinRel(dir, name)).find((p) => fileSet.has(p));
+
+  // Source signals (env names, ports, health routes, Python app objects, URL schemes).
+  const signals = new Map<string, SourceSignals>();
+  await mapLimit(files.filter(isSourceFile), 16, async (file) => {
+    const text = await read(file);
+    if (text !== undefined) signals.set(file, scanSource(text));
+  });
+
+  // Environment variables.
+  const envFiles = new Map<string, Set<string>>();
+  const addEnv = (name: string, file: string) => {
+    const set = envFiles.get(name) ?? new Set<string>();
+    set.add(file);
+    envFiles.set(name, set);
+  };
+  for (const [file, found] of signals) for (const name of found.envNames) addEnv(name, file);
+  for (const file of files.filter(isEnvExampleFile)) {
+    for (const name of parseEnvExampleKeys((await read(file)) ?? "")) addEnv(name, file);
+  }
+  const envVars = sortStrings(envFiles.keys()).map((name) => ({
+    name,
+    files: sortStrings(envFiles.get(name) ?? []),
+    clientExposed: isClientExposed(name),
+    secretLikely: isSecretLikely(name),
+  }));
+
+  // Services.
+  const pythonUrlSchemes = new Set<string>();
+  for (const [file, found] of signals) {
+    if (file.endsWith(".py")) for (const scheme of found.urlSchemes) pythonUrlSchemes.add(scheme);
+  }
+  const services = new ServiceCollector();
+  for (const info of relevant) addDependencyServices(services, info.unit, { pythonUrlSchemes });
+  for (const file of files.filter((f) => f.endsWith(".prisma"))) {
+    addPrismaServices(
+      services,
+      (await read(file)) ?? "",
+      relevant.map((info) => info.unit),
+    );
+  }
+  const settingsFiles = files.filter((f) => /(?:^|\/)settings(?:\.py|\/[^/]+\.py)$/.test(f));
+  const settingsTexts = new Map<string, string>();
+  for (const file of settingsFiles) {
+    const text = (await read(file)) ?? "";
+    settingsTexts.set(file, text);
+    addDjangoServices(services, text);
+  }
+  addEnvServices(services, envFiles.keys());
+
+  // Platform fingerprints.
+  const platformUnits = [...new Set([rootInfo?.unit, primary?.unit])].filter(
+    (unit): unit is Unit => unit !== undefined,
+  );
+  const readmePath = searchDirs
+    .slice()
+    .reverse()
+    .map((dir) => filesIn(dir, (n) => /^readme(?:\.md|\.markdown|\.txt)?$/i.test(n))[0])
+    .find(Boolean);
+  const indexHtmlPath = findIn("index.html");
+  const markers = new Set<string>();
+  for (const marker of [".bolt", ".replit", "replit.nix"]) {
+    if (await exists(toFsPath(absRoot, marker))) markers.add(marker);
+  }
+  if (findIn("components.json")) markers.add("components.json");
+  const readmeText = readmePath ? await read(readmePath) : undefined;
+  const indexHtmlText = indexHtmlPath ? await read(indexHtmlPath) : undefined;
+  const platform = detectPlatform({
+    dependencies: platformUnits.flatMap((unit) => unit.dependencies),
+    packageNames: platformUnits.flatMap((unit) =>
+      unit.packageJson?.name ? [unit.packageJson.name] : [],
+    ),
+    ...(readmePath && readmeText !== undefined
+      ? { readme: { path: readmePath, text: readmeText } }
+      : {}),
+    ...(indexHtmlPath && indexHtmlText !== undefined
+      ? { indexHtml: { path: indexHtmlPath, text: indexHtmlText } }
+      : {}),
+    markers,
+  });
+
+  // Docker files.
+  const pickFile = (exact: string[], loose?: (name: string) => boolean): string | undefined => {
+    for (const dir of searchDirs) {
+      for (const name of exact) if (fileSet.has(joinRel(dir, name))) return joinRel(dir, name);
+    }
+    if (!loose) return undefined;
+    return files
+      .filter((f) => loose(basenameRel(f)))
+      .sort((a, b) => depthOf(a) - depthOf(b) || (a < b ? -1 : 1))[0];
+  };
+  const dockerfile = pickFile(
+    ["Dockerfile"],
+    (n) => /^dockerfile(?:\.[\w-]+)?$/i.test(n) || /\.dockerfile$/i.test(n),
+  );
+  const composeNames = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+  const compose = pickFile(composeNames, (n) => composeNames.includes(n));
+  const dockerignore = pickFile([".dockerignore"]);
+
+  // Package manager and install command.
+  const usePython =
+    [...appFrameworkNames].some((name) => PYTHON_SERVER_FRAMEWORKS.has(name)) ||
+    (Boolean(primary?.unit.python) && !appPackage) ||
+    (!primary && !rootPackage && infos.some((info) => info.unit.python));
+  const hasJs = Boolean(appPackage ?? rootPackage);
+  const ecosystem: "js" | "python" | "none" = usePython
+    ? "python"
+    : hasJs
+      ? "js"
+      : infos.some((info) => info.unit.python)
+        ? "python"
+        : "none";
+  const cdPrefix = (command: string) => (appDir === "." ? command : `cd ${appDir} && ${command}`);
+
+  let packageManager: ProjectFacts["packageManager"] = "none";
+  const build: ProjectFacts["build"] = {};
+  let jsPm: JsPackageManager | undefined;
+  let member: { name: string; dir: string } | undefined;
+  if (ecosystem === "js") {
+    const declared = [appPackage?.packageManager, rootPackage?.packageManager]
+      .map((value) => /^(npm|pnpm|yarn|bun)@(\d+)?/.exec(value ?? ""))
+      .find(Boolean);
+    const lockOf: Record<JsPackageManager, string[]> = {
+      pnpm: ["pnpm-lock.yaml"],
+      yarn: ["yarn.lock"],
+      bun: ["bun.lock", "bun.lockb"],
+      npm: ["package-lock.json", "npm-shrinkwrap.json"],
+    };
+    const hasLock = (pm: JsPackageManager) => lockOf[pm].some((name) => findIn(name));
+    jsPm =
+      (declared?.[1] as JsPackageManager | undefined) ??
+      (["pnpm", "yarn", "bun", "npm"] as const).find(hasLock) ??
+      "npm";
+    const berry =
+      jsPm === "yarn" && (Boolean(findIn(".yarnrc.yml")) || Number(declared?.[2] ?? 1) >= 2);
+    packageManager = jsPm;
+    const install = jsInstallCommand(jsPm, hasLock(jsPm), berry);
+    if (monorepo && appDir !== ".") {
+      member = { name: appPackage?.name ?? appDir, dir: appDir };
+      build.installCommand = install;
+    } else {
+      build.installCommand = cdPrefix(install);
+    }
+  } else if (ecosystem === "python") {
+    const python = primary?.unit.python ?? rootInfo?.unit.python;
+    const pm: PyPackageManager = findIn("uv.lock")
+      ? "uv"
+      : findIn("poetry.lock") || python?.usesPoetry
+        ? "poetry"
+        : findIn("Pipfile")
+          ? "pipenv"
+          : "pip";
+    packageManager = pm;
+    const requirements = fileSet.has(joinRel(appDir, "requirements.txt"));
+    const install = {
+      uv: "uv sync --frozen",
+      poetry: "poetry install --no-root",
+      pipenv: findIn("Pipfile.lock") ? "pipenv install --deploy" : "pipenv install",
+      pip: requirements
+        ? "pip install -r requirements.txt"
+        : fileSet.has(joinRel(appDir, "pyproject.toml"))
+          ? "pip install ."
+          : undefined,
+    }[pm];
+    if (install) build.installCommand = cdPrefix(install);
+  }
+
+  // Build command, start command and port.
+  const scripts = appPackage?.scripts ?? {};
+  if (jsPm && scripts.build) {
+    const command = jsRun(jsPm, "build", member);
+    build.buildCommand = member ? command : cdPrefix(command);
+  }
+  const procfileWeb = /^web:\s*(.+)$/m
+    .exec((await read(joinRel(appDir, "Procfile"))) ?? "")?.[1]
+    ?.trim();
+  const appCode = files.filter((f) => isWithin(appDir, f) && isAppCodeFile(relativeTo(appDir, f)));
+  const dockerText = dockerfile ? await read(dockerfile) : undefined;
+  const explicitPort = [scripts.start, procfileWeb]
+    .flatMap((command) => (command ? portsInCommand(command) : []))
+    .at(0);
+  const exposedPort = Number(/^\s*EXPOSE\s+(\d{1,5})\b/im.exec(dockerText ?? "")?.[1]) || undefined;
+  const sourcePort = appCode.flatMap((f) => signals.get(f)?.ports ?? []).at(0);
+  const servesHttp = appKind !== "static-spa" && appKind !== "worker";
+  const port = servesHttp
+    ? (explicitPort ??
+      (exposedPort && exposedPort <= 65535 ? exposedPort : undefined) ??
+      sourcePort ??
+      defaultPort(primary?.frameworks ?? []))
+    : undefined;
+
+  if (appKind !== "static-spa") {
+    let start: string | undefined;
+    if (jsPm && scripts.start) {
+      start = member ? jsRun(jsPm, "start", member) : cdPrefix(jsRun(jsPm, "start"));
+    } else if (procfileWeb) {
+      start = cdPrefix(procfileWeb);
+    } else if (ecosystem === "python" && port) {
+      start = pythonStartCommand(appFrameworkNames, appDir, appCode, signals, settingsTexts, port);
+      if (start) start = cdPrefix(start);
+    } else if (jsPm && appFrameworkNames.has("next")) {
+      start = cdPrefix(`${jsExec(jsPm)} next start`);
+    } else if (jsPm && appFrameworkNames.has("nuxt")) {
+      start = cdPrefix("node .output/server/index.mjs");
+    } else if (appPackage?.main && primary?.roles.has("server")) {
+      start = cdPrefix(`node ${appPackage.main}`);
+    }
+    if (start) build.startCommand = start;
+  } else {
+    const output = await staticOutputDir(primary, read, filesIn);
+    if (output) build.outputDir = joinRel(appDir, output);
+  }
+
+  // Health endpoint: file-system routes and literal route registrations in app code.
+  let healthEndpoint: string | undefined;
+  for (const file of appCode) {
+    healthEndpoint =
+      healthRouteFromPath(relativeTo(appDir, file)) ?? signals.get(file)?.healthPaths[0];
+    if (healthEndpoint) break;
+  }
+
+  // Runtime versions.
+  const runtimeVersions: ProjectFacts["runtimeVersions"] = {};
+  const nodeVersion =
+    firstLine(await read(findIn(".nvmrc") ?? "")) ??
+    firstLine(await read(findIn(".node-version") ?? "")) ??
+    appPackage?.voltaNode ??
+    appPackage?.engineNode ??
+    rootPackage?.voltaNode ??
+    rootPackage?.engineNode;
+  if (nodeVersion) runtimeVersions.node = nodeVersion;
+  const python = primary?.unit.python ?? rootInfo?.unit.python;
+  const pythonVersion =
+    firstLine(await read(findIn(".python-version") ?? "")) ??
+    /python-(\S+)/.exec((await read(findIn("runtime.txt") ?? "")) ?? "")?.[1] ??
+    python?.requiresPython ??
+    python?.pipfilePython;
+  if (pythonVersion) runtimeVersions.python = pythonVersion;
+
+  // Frameworks of every relevant unit, sorted by directory then name.
+  const frameworks = relevant
+    .flatMap((info) =>
+      info.frameworks.map((f) => ({
+        name: f.name,
+        ...(f.version ? { version: f.version } : {}),
+        path: info.unit.dir,
+      })),
+    )
+    .sort((a, b) => (a.path === b.path ? (a.name < b.name ? -1 : 1) : a.path < b.path ? -1 : 1));
+
+  const name = (
+    rootPackage?.name ??
+    rootInfo?.unit.python?.name ??
+    appPackage?.name ??
+    primary?.unit.python?.name ??
+    basename(absRoot)
+  ).slice(0, 100);
+
+  const facts: ProjectFacts = {
+    name: name || "project",
+    languages: detectLanguages(files, units),
+    packageManager,
+    frameworks,
+    appKind,
+    platformExport: platform,
+    build,
+    ...(port ? { port } : {}),
+    runtimeVersions,
+    envVars,
+    services: services.toList(),
+    docker: {
+      ...(dockerfile ? { dockerfile } : {}),
+      ...(compose ? { compose } : {}),
+      ...(dockerignore ? { dockerignore } : {}),
+    },
+    ...(healthEndpoint ? { healthEndpoint } : {}),
+    monorepo,
+    git,
+  };
+
+  const parsed = ProjectFactsSchema.safeParse(facts);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`Repository detection produced invalid project facts: ${issues}`);
+  }
+  return { facts: parsed.data, appDir, appCandidates, truncated: listing.truncated };
+}
+
+/**
+ * Detects deterministic facts about the repository at `root` (frameworks, app kind, build/start
+ * commands, port, environment variables, services, builder platform, Docker files, git). The
+ * result is validated with `ProjectFactsSchema` before it is returned.
+ */
+export async function detectProject(
+  root: string,
+  options: DetectOptions = {},
+): Promise<ProjectFacts> {
+  return (await detectProjectDetails(root, options)).facts;
+}
+
+function pythonStartCommand(
+  frameworks: ReadonlySet<string>,
+  appDir: string,
+  appCode: readonly string[],
+  signals: ReadonlyMap<string, SourceSignals>,
+  settingsTexts: ReadonlyMap<string, string>,
+  port: number,
+): string | undefined {
+  const byDepth = (a: string, b: string) => depthOf(a) - depthOf(b) || (a < b ? -1 : 1);
+  if (frameworks.has("django")) {
+    let wsgi: string | undefined;
+    for (const [file, text] of settingsTexts) {
+      if (!isWithin(appDir, file)) continue;
+      wsgi = /WSGI_APPLICATION\s*=\s*["']([\w.]+)\.application["']/.exec(text)?.[1];
+      if (wsgi) break;
+    }
+    wsgi ??= appCode
+      .filter((f) => basenameRel(f) === "wsgi.py")
+      .sort(byDepth)
+      .map((f) => pythonModule(relativeTo(appDir, f)))[0];
+    return wsgi ? `gunicorn ${wsgi}:application --bind 0.0.0.0:${port}` : undefined;
+  }
+  for (const framework of ["fastapi", "flask"] as const) {
+    if (!frameworks.has(framework)) continue;
+    const file = appCode
+      .filter(
+        (f) =>
+          f.endsWith(".py") && signals.get(f)?.appObjects.some((o) => o.framework === framework),
+      )
+      .sort(byDepth)[0];
+    const variable = file
+      ? signals.get(file)?.appObjects.find((o) => o.framework === framework)?.variable
+      : undefined;
+    if (!file || !variable) continue;
+    const target = `${pythonModule(relativeTo(appDir, file))}:${variable}`;
+    return framework === "fastapi"
+      ? `uvicorn ${target} --host 0.0.0.0 --port ${port}`
+      : `gunicorn ${target} --bind 0.0.0.0:${port}`;
+  }
+  return undefined;
+}
+
+async function staticOutputDir(
+  info: UnitInfo | undefined,
+  read: ReadText,
+  filesIn: (dir: string, test: (name: string) => boolean) => string[],
+): Promise<string | undefined> {
+  if (!info) return undefined;
+  const names = new Set(info.frameworks.map((f) => f.name));
+  const dir = info.unit.dir;
+  if (names.has("next") && info.hints.nextStaticExport) return "out";
+  if (names.has("astro")) return "dist";
+  if (names.has("angular")) return angularOutputDir(await read(joinRel(dir, "angular.json")));
+  if (names.has("vite")) {
+    const config = await read(filesIn(dir, (n) => /^vite\.config\.[cm]?[jt]s$/.test(n))[0] ?? "");
+    return (
+      /\boutDir\s*:\s*["'`]([^"'`]+)["'`]/.exec(config ?? "")?.[1]?.replace(/^\.\//, "") ?? "dist"
+    );
+  }
+  if (names.has("create-react-app")) return "build";
+  return undefined;
+}
+
+function angularOutputDir(text: string | undefined): string {
+  const data = parseJson(text) as
+    | { defaultProject?: unknown; projects?: Record<string, unknown> }
+    | undefined;
+  const projects = data?.projects && typeof data.projects === "object" ? data.projects : {};
+  const project =
+    typeof data?.defaultProject === "string" ? data.defaultProject : Object.keys(projects)[0];
+  if (!project) return "dist";
+  const config = projects[project] as
+    | { architect?: Record<string, unknown>; targets?: Record<string, unknown> }
+    | undefined;
+  const target = (config?.architect?.build ?? config?.targets?.build) as
+    | { builder?: unknown; options?: { outputPath?: unknown } }
+    | undefined;
+  const outputPath = target?.options?.outputPath;
+  const base =
+    typeof outputPath === "string"
+      ? outputPath
+      : typeof outputPath === "object" && outputPath && "base" in outputPath
+        ? String((outputPath as { base: unknown }).base)
+        : `dist/${project}`;
+  const builder = typeof target?.builder === "string" ? target.builder : "";
+  return /:browser(?:-esbuild)?$/.test(builder) ? base : `${base.replace(/\/+$/, "")}/browser`;
+}

@@ -1,0 +1,31 @@
+{
+  "name": "python-requirements",
+  "languages": ["python"],
+  "packageManager": "pip",
+  "frameworks": [{ "name": "flask", "version": "3.1.0", "path": "." }],
+  "appKind": "api",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "build": {
+    "installCommand": "pip install -r requirements.txt",
+    "startCommand": "gunicorn app:app"
+  },
+  "port": 5000,
+  "runtimeVersions": { "python": "3.11.9" },
+  "envVars": [
+    {
+      "name": "CELERY_BROKER_URL",
+      "files": ["tasks.py"],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    { "name": "DATABASE_URL", "files": ["app.py"], "clientExposed": false, "secretLikely": true }
+  ],
+  "services": [
+    { "kind": "postgres", "evidence": ["dependency:psycopg2-binary", "env:DATABASE_URL"] },
+    { "kind": "queue", "evidence": ["dependency:celery"] },
+    { "kind": "redis", "evidence": ["dependency:celery[redis]"] }
+  ],
+  "docker": {},
+  "healthEndpoint": "/ping",
+  "monorepo": false
+}

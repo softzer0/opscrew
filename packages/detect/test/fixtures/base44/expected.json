@@ -1,0 +1,18 @@
+{
+  "name": "base44-app",
+  "languages": ["javascript"],
+  "packageManager": "npm",
+  "appKind": "static-spa",
+  "platformExport": { "platform": "base44", "evidence": ["dependency:@base44/sdk"] },
+  "build": { "installCommand": "npm install", "buildCommand": "npm run build", "outputDir": "dist" },
+  "envVars": [
+    {
+      "name": "VITE_BASE44_APP_ID",
+      "files": ["src/api/base44Client.js"],
+      "clientExposed": true,
+      "secretLikely": false
+    }
+  ],
+  "services": [],
+  "monorepo": false
+}

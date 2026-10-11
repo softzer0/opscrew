@@ -1,0 +1,4 @@
+# API runtime
+fastapi==0.115.6
+uvicorn[standard]>=0.32
+redis>=5.2

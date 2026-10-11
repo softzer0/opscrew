@@ -1,0 +1,30 @@
+{
+  "name": "my-v0-project",
+  "languages": ["typescript"],
+  "packageManager": "pnpm",
+  "frameworks": [
+    { "name": "next", "version": "15.2.4", "path": "." },
+    { "name": "react", "version": "^19", "path": "." }
+  ],
+  "appKind": "ssr",
+  "platformExport": {
+    "platform": "v0",
+    "evidence": ["components.json", "dependency:next", "package.json:name=my-v0-project"]
+  },
+  "build": {
+    "installCommand": "pnpm install --frozen-lockfile",
+    "buildCommand": "pnpm run build",
+    "startCommand": "pnpm start"
+  },
+  "port": 3000,
+  "envVars": [
+    {
+      "name": "NEXT_PUBLIC_SITE_NAME",
+      "files": ["app/page.tsx"],
+      "clientExposed": true,
+      "secretLikely": false
+    }
+  ],
+  "services": [],
+  "monorepo": false
+}

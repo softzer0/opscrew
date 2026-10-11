@@ -1,0 +1,8 @@
+{
+  "name": "@acme/ui",
+  "private": true,
+  "main": "src/index.tsx",
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "landing",
+  "languages": ["javascript"],
+  "packageManager": "bun",
+  "frameworks": [{ "name": "vite", "version": "^6.0.5", "path": "." }],
+  "appKind": "static-spa",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "build": {
+    "installCommand": "bun install --frozen-lockfile",
+    "buildCommand": "bun run build",
+    "outputDir": "www"
+  },
+  "envVars": [],
+  "services": [],
+  "docker": {},
+  "monorepo": false
+}

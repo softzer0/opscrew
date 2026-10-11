@@ -1,0 +1,27 @@
+{
+  "name": "acme",
+  "languages": ["typescript"],
+  "packageManager": "pnpm",
+  "frameworks": [
+    { "name": "next", "version": "^15.1.3", "path": "apps/web" },
+    { "name": "react", "version": "^19.0.0", "path": "apps/web" }
+  ],
+  "appKind": "ssr",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "build": {
+    "installCommand": "pnpm install --frozen-lockfile",
+    "buildCommand": "pnpm --filter web run build",
+    "startCommand": "pnpm --filter web start"
+  },
+  "port": 4000,
+  "envVars": [
+    {
+      "name": "NEXT_PUBLIC_SUPABASE_URL",
+      "files": ["apps/web/app/page.tsx"],
+      "clientExposed": true,
+      "secretLikely": false
+    }
+  ],
+  "services": [{ "kind": "supabase", "evidence": ["dependency:@supabase/supabase-js"] }],
+  "monorepo": true
+}

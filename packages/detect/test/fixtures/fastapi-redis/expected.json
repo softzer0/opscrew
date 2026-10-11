@@ -1,0 +1,22 @@
+{
+  "name": "fastapi-redis",
+  "languages": ["python"],
+  "packageManager": "pip",
+  "frameworks": [{ "name": "fastapi", "version": "0.115.6", "path": "." }],
+  "appKind": "api",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "build": {
+    "installCommand": "pip install -r requirements.txt",
+    "startCommand": "uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  },
+  "port": 8000,
+  "runtimeVersions": { "python": "3.12" },
+  "envVars": [
+    { "name": "API_TOKEN", "files": ["app/main.py"], "clientExposed": false, "secretLikely": true },
+    { "name": "REDIS_URL", "files": ["app/main.py"], "clientExposed": false, "secretLikely": false }
+  ],
+  "services": [{ "kind": "redis", "evidence": ["dependency:redis", "env:REDIS_URL"] }],
+  "docker": {},
+  "healthEndpoint": "/health",
+  "monorepo": false
+}

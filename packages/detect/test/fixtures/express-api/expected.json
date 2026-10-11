@@ -1,0 +1,36 @@
+{
+  "name": "orders-api",
+  "languages": ["javascript"],
+  "packageManager": "npm",
+  "frameworks": [{ "name": "express", "version": "^5.0.1", "path": "." }],
+  "appKind": "api",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "build": { "installCommand": "npm ci", "startCommand": "npm start" },
+  "port": 8080,
+  "runtimeVersions": { "node": ">=20" },
+  "envVars": [
+    { "name": "DATABASE_URL", "files": ["src/db.js"], "clientExposed": false, "secretLikely": true },
+    { "name": "PORT", "files": ["src/server.js"], "clientExposed": false, "secretLikely": false },
+    { "name": "SMTP_HOST", "files": ["src/mail.js"], "clientExposed": false, "secretLikely": false },
+    {
+      "name": "SMTP_PASSWORD",
+      "files": ["src/mail.js"],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "STRIPE_SECRET_KEY",
+      "files": ["src/server.js"],
+      "clientExposed": false,
+      "secretLikely": true
+    }
+  ],
+  "services": [
+    { "kind": "email", "evidence": ["dependency:nodemailer"] },
+    { "kind": "postgres", "evidence": ["dependency:pg", "env:DATABASE_URL"] },
+    { "kind": "stripe", "evidence": ["dependency:stripe"] }
+  ],
+  "docker": { "dockerfile": "Dockerfile", "compose": "compose.yaml" },
+  "healthEndpoint": "/healthz",
+  "monorepo": false
+}

@@ -1,0 +1,47 @@
+{
+  "name": "acme-dashboard",
+  "languages": ["typescript"],
+  "packageManager": "yarn",
+  "frameworks": [
+    { "name": "next", "version": "^14.2.15", "path": "." },
+    { "name": "react", "version": "^18.3.1", "path": "." }
+  ],
+  "appKind": "ssr",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "build": {
+    "installCommand": "yarn install --frozen-lockfile",
+    "buildCommand": "yarn run build",
+    "startCommand": "yarn start"
+  },
+  "port": 3000,
+  "runtimeVersions": { "node": "20.18.0" },
+  "envVars": [
+    {
+      "name": "DATABASE_URL",
+      "files": [".env.example", "lib/db.ts"],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "NEXTAUTH_SECRET",
+      "files": [".env.example"],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "NEXT_PUBLIC_APP_URL",
+      "files": [".env.example", "app/page.tsx"],
+      "clientExposed": true,
+      "secretLikely": false
+    }
+  ],
+  "services": [
+    {
+      "kind": "postgres",
+      "evidence": ["dependency:@prisma/client", "env:DATABASE_URL", "prisma:postgresql"]
+    }
+  ],
+  "docker": { "dockerfile": "Dockerfile", "dockerignore": ".dockerignore" },
+  "healthEndpoint": "/api/health",
+  "monorepo": false
+}

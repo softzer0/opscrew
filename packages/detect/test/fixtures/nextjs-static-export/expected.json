@@ -1,0 +1,15 @@
+{
+  "name": "marketing-site",
+  "languages": ["javascript"],
+  "packageManager": "npm",
+  "frameworks": [
+    { "name": "next", "path": "." },
+    { "name": "react", "path": "." }
+  ],
+  "appKind": "static-spa",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "build": { "installCommand": "npm install", "buildCommand": "npm run build", "outputDir": "out" },
+  "envVars": [],
+  "services": [],
+  "monorepo": false
+}

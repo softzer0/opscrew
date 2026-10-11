@@ -1,0 +1,33 @@
+{
+  "name": "vite_react_shadcn_ts",
+  "languages": ["typescript"],
+  "packageManager": "npm",
+  "frameworks": [
+    { "name": "react", "version": "^18.3.1", "path": "." },
+    { "name": "vite", "version": "^5.4.1", "path": "." }
+  ],
+  "appKind": "static-spa",
+  "platformExport": {
+    "platform": "lovable",
+    "evidence": ["README.md:lovable.dev", "devDependency:lovable-tagger", "index.html:lovable"]
+  },
+  "build": { "installCommand": "npm ci", "buildCommand": "npm run build", "outputDir": "dist" },
+  "envVars": [
+    {
+      "name": "VITE_SUPABASE_PUBLISHABLE_KEY",
+      "files": ["src/integrations/supabase/client.ts"],
+      "clientExposed": true,
+      "secretLikely": false
+    },
+    {
+      "name": "VITE_SUPABASE_URL",
+      "files": ["src/integrations/supabase/client.ts"],
+      "clientExposed": true,
+      "secretLikely": false
+    }
+  ],
+  "services": [{ "kind": "supabase", "evidence": ["dependency:@supabase/supabase-js"] }],
+  "docker": {},
+  "monorepo": false,
+  "git": {}
+}

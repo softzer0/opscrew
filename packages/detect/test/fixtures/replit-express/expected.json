@@ -1,0 +1,17 @@
+{
+  "name": "replit-express",
+  "languages": ["javascript"],
+  "packageManager": "npm",
+  "frameworks": [{ "name": "express", "version": "^4.21.2", "path": "." }],
+  "appKind": "api",
+  "platformExport": { "platform": "replit", "evidence": [".replit", "replit.nix"] },
+  "build": { "installCommand": "npm install", "startCommand": "npm start" },
+  "port": 3000,
+  "envVars": [
+    { "name": "PORT", "files": ["index.js"], "clientExposed": false, "secretLikely": false },
+    { "name": "REPL_SLUG", "files": ["index.js"], "clientExposed": false, "secretLikely": false }
+  ],
+  "services": [],
+  "healthEndpoint": "/health",
+  "monorepo": false
+}

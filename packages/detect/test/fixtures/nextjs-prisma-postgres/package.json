@@ -1,0 +1,20 @@
+{
+  "name": "acme-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.1.0",
+    "next": "^14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "prisma": "^6.1.0",
+    "typescript": "^5.6.3"
+  }
+}

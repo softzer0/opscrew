@@ -1,0 +1,17 @@
+{
+  "name": "vite-react-typescript-starter",
+  "languages": ["typescript"],
+  "packageManager": "npm",
+  "frameworks": [
+    { "name": "react", "path": "." },
+    { "name": "vite", "path": "." }
+  ],
+  "appKind": "static-spa",
+  "platformExport": { "platform": "bolt", "evidence": [".bolt/"] },
+  "build": { "installCommand": "npm install", "buildCommand": "npm run build", "outputDir": "dist" },
+  "envVars": [
+    { "name": "VITE_API_URL", "files": ["src/App.tsx"], "clientExposed": true, "secretLikely": false }
+  ],
+  "services": [],
+  "monorepo": false
+}
