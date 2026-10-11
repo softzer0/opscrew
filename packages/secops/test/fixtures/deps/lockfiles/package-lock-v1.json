@@ -1,0 +1,22 @@
+{
+  "name": "legacy",
+  "version": "1.0.0",
+  "lockfileVersion": 1,
+  "requires": true,
+  "dependencies": {
+    "lodash": {
+      "version": "4.17.20"
+    },
+    "request": {
+      "version": "2.88.2",
+      "dependencies": {
+        "qs": {
+          "version": "6.5.2"
+        }
+      }
+    },
+    "my-alias": {
+      "version": "npm:minimist@1.2.5"
+    }
+  }
+}

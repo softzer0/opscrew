@@ -1,0 +1,13 @@
+# Pinned production requirements
+-r base.txt
+--index-url https://pypi.org/simple
+Django==4.2.1
+fastapi[all]==0.110.0  # web framework
+redis == 5.0.1 ; python_version >= "3.8"
+uvicorn>=0.20
+pydantic~=2.5
+requests==2.31.0 \
+    --hash=sha256:58cd2187c01e70e6e26505bca751777aa9f2ee0b7f4300988b709f44e013003f
+Zope.Interface==6.1
+starlette==0.36.*
+-e git+https://github.com/acme/thing.git#egg=thing

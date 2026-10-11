@@ -1,0 +1,72 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": ".",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "Dockerfile",
+      "Class": "config",
+      "Type": "dockerfile",
+      "MisconfSummary": { "Successes": 20, "Failures": 2 },
+      "Misconfigurations": [
+        {
+          "Type": "Dockerfile Security Check",
+          "ID": "DS002",
+          "AVDID": "AVD-DS-0002",
+          "Title": "Image user should not be 'root'",
+          "Description": "Running containers with 'root' user can lead to a container escape situation.",
+          "Message": "Specify at least 1 USER command in Dockerfile with non-root user as argument",
+          "Resolution": "Add 'USER <non root user name>' line to the Dockerfile",
+          "Severity": "HIGH",
+          "PrimaryURL": "https://avd.aquasec.com/misconfig/ds002",
+          "References": ["https://docs.docker.com/develop/develop-images/dockerfile_best-practices/", "https://avd.aquasec.com/misconfig/ds002"],
+          "Status": "FAIL",
+          "CauseMetadata": { "Provider": "Dockerfile", "Service": "general", "StartLine": 0, "EndLine": 0 }
+        },
+        {
+          "Type": "Dockerfile Security Check",
+          "ID": "DS001",
+          "Title": "':latest' tag used",
+          "Description": "When using a 'FROM' statement you should use a specific tag.",
+          "Message": "Specify a tag in the 'FROM' statement for image 'node'",
+          "Resolution": "Add a tag to the image in the 'FROM' statement",
+          "Severity": "MEDIUM",
+          "PrimaryURL": "https://avd.aquasec.com/misconfig/ds001",
+          "Status": "FAIL",
+          "CauseMetadata": { "StartLine": 1, "EndLine": 1 }
+        },
+        {
+          "ID": "DS026",
+          "Title": "No HEALTHCHECK defined",
+          "Severity": "LOW",
+          "Status": "PASS"
+        }
+      ]
+    },
+    {
+      "Target": "infra/main.tf",
+      "Class": "config",
+      "Type": "terraform",
+      "Misconfigurations": [
+        {
+          "ID": "AVD-HCL-0001",
+          "Title": "Firewall allows SSH from anywhere",
+          "Description": "Port 22 is open to 0.0.0.0/0.",
+          "Message": "Firewall rule allows ingress from public internet to port 22",
+          "Resolution": "Restrict the source addresses",
+          "Severity": "CRITICAL",
+          "Status": "FAIL",
+          "CauseMetadata": { "StartLine": 12, "EndLine": 18 }
+        }
+      ]
+    },
+    {
+      "Target": "node_modules/pkg/Dockerfile",
+      "Class": "config",
+      "Type": "dockerfile",
+      "Misconfigurations": [
+        { "ID": "DS002", "Title": "root", "Severity": "HIGH", "Status": "FAIL" }
+      ]
+    }
+  ]
+}

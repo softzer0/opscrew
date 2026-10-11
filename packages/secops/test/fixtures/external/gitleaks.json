@@ -1,0 +1,46 @@
+[
+  {
+    "RuleID": "github-pat",
+    "Description": "Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.",
+    "StartLine": 3,
+    "EndLine": 3,
+    "StartColumn": 15,
+    "EndColumn": 54,
+    "Match": "const token = \"REDACTED\"",
+    "Secret": "REDACTED",
+    "File": "{{ROOT}}/src/config.ts",
+    "SymlinkFile": "",
+    "Commit": "",
+    "Entropy": 4.8,
+    "Author": "",
+    "Email": "",
+    "Date": "",
+    "Message": "",
+    "Tags": [],
+    "Fingerprint": "{{ROOT}}/src/config.ts:github-pat:3"
+  },
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+    "StartLine": 1,
+    "EndLine": 1,
+    "StartColumn": 1,
+    "EndColumn": 30,
+    "Match": "API_KEY=REDACTED",
+    "Secret": "REDACTED",
+    "File": "{{ROOT}}/scripts/local.sh",
+    "Fingerprint": "{{ROOT}}/scripts/local.sh:generic-api-key:1"
+  },
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Detected a Generic API Key.",
+    "StartLine": 7,
+    "File": "{{ROOT}}/node_modules/some-lib/test.js",
+    "Secret": "REDACTED",
+    "Fingerprint": "{{ROOT}}/node_modules/some-lib/test.js:generic-api-key:7"
+  },
+  {
+    "Description": "malformed entry without a rule id",
+    "File": "{{ROOT}}/src/config.ts"
+  }
+]

@@ -1,0 +1,28 @@
+version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "anyio"
+version = "4.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "idna" },
+]
+
+[[package]]
+name = "idna"
+version = "3.6"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "my-app"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anyio" },
+]
+
+[[package]]
+name = "vendored"
+version = "1.0.0"
+source = { git = "https://github.com/acme/vendored?rev=abc#abc" }

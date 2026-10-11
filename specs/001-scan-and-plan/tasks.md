@@ -66,7 +66,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/secops`
   - Effort: high
 
-- [ ] T105 [P] [US1] Implement dependency scanning (OSV) and optional external scanners in `packages/secops/src/{rules/deps.ts,lockfiles,external}/`
+- [X] T105 [P] [US1] Implement dependency scanning (OSV) and optional external scanners in `packages/secops/src/{rules/deps.ts,lockfiles,external}/`
   - Owns: `packages/secops/src/rules/deps.ts`, `packages/secops/src/rules/deps.test.ts`, `packages/secops/src/lockfiles/**`, `packages/secops/src/external/**`, `packages/secops/test/fixtures/{deps,external}/**`
   - Reads: plan.md "Scan" (OSV + external commands); `packages/contracts/src/{secops,io}.ts`; `findExecutable` in `@opscrew/core`
   - Depends: 000/T004

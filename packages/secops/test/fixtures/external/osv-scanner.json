@@ -1,0 +1,68 @@
+{
+  "results": [
+    {
+      "source": { "path": "{{ROOT}}/package-lock.json", "type": "lockfile" },
+      "packages": [
+        {
+          "package": { "name": "lodash", "version": "4.17.20", "ecosystem": "npm" },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-35jh-r3h4-6jhm",
+              "summary": "Command Injection in lodash",
+              "aliases": ["CVE-2021-23337"],
+              "database_specific": { "severity": "HIGH" },
+              "affected": [
+                {
+                  "package": { "ecosystem": "npm", "name": "lodash" },
+                  "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }, { "fixed": "4.17.21" }] }]
+                }
+              ],
+              "references": [{ "type": "ADVISORY", "url": "https://nvd.nist.gov/vuln/detail/CVE-2021-23337" }]
+            },
+            {
+              "id": "CVE-2021-23337",
+              "summary": "Duplicate record of the same issue",
+              "aliases": ["GHSA-35jh-r3h4-6jhm"]
+            },
+            {
+              "id": "GHSA-29mw-wpgm-hmr9",
+              "summary": "Regular Expression Denial of Service (ReDoS) in lodash",
+              "affected": [
+                {
+                  "package": { "ecosystem": "npm", "name": "lodash" },
+                  "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "4.0.0" }, { "fixed": "4.17.21" }] }]
+                }
+              ]
+            }
+          ],
+          "groups": [
+            { "ids": ["GHSA-35jh-r3h4-6jhm", "CVE-2021-23337"], "aliases": ["CVE-2021-23337", "GHSA-35jh-r3h4-6jhm"], "max_severity": "9.8" },
+            { "ids": ["GHSA-29mw-wpgm-hmr9"], "aliases": ["GHSA-29mw-wpgm-hmr9"], "max_severity": "5.3" }
+          ]
+        }
+      ]
+    },
+    {
+      "source": { "path": "{{ROOT}}/api/requirements.txt", "type": "lockfile" },
+      "packages": [
+        {
+          "package": { "name": "django", "version": "4.2.1", "ecosystem": "PyPI" },
+          "vulnerabilities": [
+            {
+              "id": "PYSEC-2023-100",
+              "summary": "Potential denial of service in django",
+              "aliases": ["CVE-2023-36053"],
+              "affected": [
+                {
+                  "package": { "ecosystem": "PyPI", "name": "django" },
+                  "ranges": [{ "type": "ECOSYSTEM", "events": [{ "introduced": "4.2" }, { "fixed": "4.2.3" }] }]
+                }
+              ]
+            }
+          ],
+          "groups": []
+        }
+      ]
+    }
+  ]
+}
