@@ -144,7 +144,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: medium
 
-- [ ] T111 [US4] Implement the adapt phase (deterministic files, Code-change agent, commit, push, PR) in `packages/agents/src/adapt/`
+- [X] T111 [US4] Implement the adapt phase (deterministic files, Code-change agent, commit, push, PR) in `packages/agents/src/adapt/`
   - Owns: `packages/agents/src/adapt/**`
   - Reads: plan.md "Adapt"; spec US4, FR-108; `@opscrew/connector-github` exports (feature 002 T203); `@opscrew/iac-templates` docker exports
   - Depends: T107, T110, 002/T203, 000/T007
