@@ -23,7 +23,8 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
  * - `none`: no built-in tools; only the in-process tools passed with the request.
  * - `read-only`: read, list and search files inside the project root.
  * - `edit-repo`: additionally edit and create files inside the project root and run allow-listed
- *   build/test/git commands.
+ *   read-only commands; running project code (package managers, build and test runners) needs a
+ *   human approval, and git writes are denied.
  */
 export type ToolProfile = "none" | "read-only" | "edit-repo";
 

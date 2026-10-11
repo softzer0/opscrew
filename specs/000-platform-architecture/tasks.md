@@ -82,7 +82,7 @@ All test fixtures with secrets use obviously fake values.
 
 ## Phase 4: User Story 4 - Agent runtime (P2)
 
-- [ ] T007 [US4] Implement the Claude Agent SDK runtime and the fake runtime in `packages/runtime-claude/src/` and `packages/core/src/testing/`
+- [X] T007 [US4] Implement the Claude Agent SDK runtime and the fake runtime in `packages/runtime-claude/src/` and `packages/core/src/testing/`
   - Owns: `packages/runtime-claude/src/**`, `packages/core/src/testing/**`
   - Reads: `packages/contracts/src/runtime.ts`, `packages/contracts/src/safety.ts`, `packages/core/src/index.ts` and the modules it exports, the installed SDK types `node_modules/@anthropic-ai/claude-agent-sdk/*.d.ts` (authoritative API; do not guess), plan.md decisions 4–7
   - Depends: T004, T005, T006
@@ -101,7 +101,7 @@ All test fixtures with secrets use obviously fake values.
 
 ## Phase 5: User Story 5 - CLI skeleton (P3)
 
-- [ ] T008 [US5] Implement the `opscrew` CLI skeleton, reporter, approval handlers and bundle in `packages/cli/`
+- [X] T008 [US5] Implement the `opscrew` CLI skeleton, reporter, approval handlers and bundle in `packages/cli/`
   - Owns: `packages/cli/src/**`, `packages/cli/tsup.config.ts`
   - Reads: `packages/contracts/src/{io,safety}.ts`, `packages/core/src/index.ts` and modules, spec US5, FR-012
   - Depends: T004, T005
@@ -124,6 +124,13 @@ All test fixtures with secrets use obviously fake values.
 
 - [X] T009 Write ADRs 0001–0005 (lead) in `docs/adr/`
 - [ ] T010 Feature verification (lead): `pnpm check`, CLI bundle smoke test, `/speckit-converge`-style review against spec FR-001..FR-013
+
+## Phase 7: Converge (review of 2026-10-11 against FR-001..FR-013 and the constitution)
+
+- [X] T011 Redact every tool result before the model sees it (post-tool-use `updatedToolOutput`) and redact audit targets before shortening them in `packages/runtime-claude/src/runtime.ts` (FR-010, constitution IV)
+- [X] T012 Check file and command paths where symbolic links really lead (`realpath` option, `nodeRealpath`, wired in the CLI) in `packages/core/src/policy.ts` and `packages/cli/src/deps.ts` (FR-009, US3.5)
+- [X] T013 Mask PEM private-key blocks cut before their END line in `packages/core/src/redact.ts`; give the concurrent state-store test a Windows-safe timeout (FR-007, SC-001)
+- [X] T014 One exit-code contract for every CLI command (0 done, 1 stopped on purpose, 2 could not run), each hint printed once, programmatic `src/index.ts`, plugin MCP server pinned to the plugin version and a valid marketplace manifest in `packages/cli/`, `plugin/`, `.claude-plugin/` (FR-002, FR-012)
 
 ## Dependencies & execution order
 

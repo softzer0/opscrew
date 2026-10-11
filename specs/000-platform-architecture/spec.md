@@ -173,21 +173,29 @@ features add commands to the same program.
   engine caller.
 - **FR-009**: The default tool policy MUST implement the profiles `none`, `read-only` and
   `edit-repo`, deny destructive or exfiltrating Bash commands in every profile, deny reads of
-  secret files and paths outside the project root, and deny writes outside the project root or into
-  `.git/`, `.opscrew/` and `opscrew/infra/` (infrastructure files are rendered deterministically,
-  never hand-edited by an agent).
+  secret files and paths outside the project root (checked where symbolic links really lead when a
+  `realpath` function is supplied, which the CLI does), ask before running project code (package
+  managers, build and test runners), deny git writes, and deny writes outside the project root or
+  into `.git/`, `.opscrew/`, `opscrew/` and the OpsCrew deploy workflow (OpsCrew artefacts are
+  rendered deterministically, never hand-edited by an agent).
 - **FR-010**: `@opscrew/runtime-claude` MUST implement `AgentRuntime` with the Claude Agent SDK:
   map profiles to SDK tool allow-lists, wire the tool policy into the SDK's pre-tool-use hook and
   permission callback, register in-process tools, request structured output when an output schema
   is given and validate it with zod, enforce `maxTurns` and `maxBudgetUsd`, sanitize the
-  environment, not load user or project Claude settings, audit tool calls, redact streamed events,
-  and record cost in the cost ledger.
+  environment, not load user or project Claude settings, audit tool calls, redact streamed events
+  and every tool result before the model sees it (post-tool-use `updatedToolOutput`), and record
+  cost in the cost ledger.
 - **FR-011**: `@opscrew/core` MUST export a `FakeAgentRuntime` (subpath `@opscrew/core/testing`)
   that returns scripted results and records requests, for use in other packages' tests.
 - **FR-012**: The `opscrew` CLI MUST provide `--version`, `--help` and `status`, a terminal
-  reporter, an interactive approval handler (TTY) and a non-interactive approval handler that only
-  approves an `iac-apply` whose plan hash matches `--approve <hash>`; it MUST bundle to a single
-  executable file for Node ≥ 20.19.
+  reporter, an interactive approval handler (TTY) and a non-interactive approval handler that
+  approves an `iac-apply` only when its plan hash matches `--approve <hash>` and nothing is
+  destroyed; with `--yes` it also approves writing generated files, storing GitHub deploy secrets,
+  pushing and opening pull requests, never destroys, changed host keys or agent tool calls. Every
+  command exits 0 when done, 1 when it stopped on purpose (refused or cancelled approval, failed
+  policy or check, an earlier step not run yet) and 2 when it could not run. The CLI MUST bundle to
+  a single executable file for Node ≥ 20.19 (entry `src/bin.ts`; `src/index.ts` exports the
+  programmatic API).
 - **FR-013**: ADRs MUST record: agent runtime choice, dual IaC engine, licensing, deterministic-first
   phases, and source-consumed packages with a bundled CLI.
 

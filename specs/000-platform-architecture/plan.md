@@ -51,8 +51,8 @@ No violations; Complexity Tracking not needed.
 
 ```text
 specs/000-platform-architecture/
-├── spec.md, plan.md, research.md, data-model.md, quickstart.md, tasks.md
-└── contracts/README.md      # points at packages/contracts/src (canonical)
+├── spec.md, plan.md, data-model.md, tasks.md
+└── (contracts live in packages/contracts/src, which is canonical)
 ```
 
 ### Source Code (repository root)
@@ -71,9 +71,9 @@ packages/
 │   ├── policy.ts env.ts                              # T006
 │   ├── testing/{index,fake-runtime}.ts               # T007
 │   └── index.ts             # barrel (lead, fixed; do not edit)
-├── runtime-claude/src/{runtime,mapping,hooks,index}.ts   # T007
+├── runtime-claude/src/{runtime,tools,index}.ts           # T007
 └── cli/
-    ├── src/{bin,program,reporter,approval,commands/status,index}.ts         # T008
+    ├── src/{bin,program,context,reporter,approval,exit,commands/status,index}.ts  # T008
     └── tsup.config.ts
 docs/adr/0001..0005-*.md     # T009 (lead)
 ```
@@ -84,7 +84,7 @@ package (`@opscrew/runtime-claude`) rather than a folder in core, so core stays 
 dependency and a provider-agnostic runtime can be added beside it (ADR 0001). This refines the
 approved layout, which placed the runtime under `core/src/runtime/`.
 
-## Key design decisions (details in research.md)
+## Key design decisions
 
 1. **Barrel files are lead-owned.** `packages/core/src/index.ts` already re-exports every module;
    implementers fill module files only, so parallel tasks never edit the same file.
