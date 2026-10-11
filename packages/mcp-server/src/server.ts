@@ -19,7 +19,7 @@ export const PLANNING_TOOLS = [
 ] as const;
 
 const INSTRUCTIONS =
-  "OpsCrew's deterministic tools take an app from its repository to a production deployment on the user's own cloud. Planning flow: opscrew_scan → opscrew_detect → opscrew_interview_questions → opscrew_save_requirements → opscrew_design_options → opscrew_select_design; opscrew_status shows progress. The tools never call a model and never print secrets. Never run tofu, terraform or hcloud yourself, and never ask the user to paste tokens or .env values.";
+  "OpsCrew's deterministic tools take an app from its repository to a production deployment on the user's own cloud. Planning flow: opscrew_scan → opscrew_detect → opscrew_interview_questions → opscrew_save_requirements → opscrew_design_options → opscrew_select_design; opscrew_status shows progress. Deploy flow (after the app is adapted and merged): opscrew_render → opscrew_plan → show the user the plan, its cost and policy results → opscrew_apply with the plan hash (the user approves in a dialog; never claim approval yourself) → the user merges the pull request → opscrew_verify and opscrew_secure. The tools never call a model and never print secrets. Never run tofu, terraform or hcloud yourself, and never ask the user to paste tokens or .env values.";
 
 /**
  * Creates the OpsCrew MCP server with the planning tools and the deploy tools registered. The

@@ -137,7 +137,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: high
 
-- [ ] T212 [P] [US2] [US4] Implement the MCP deploy tools in `packages/mcp-server/src/tools/deploy.ts`
+- [X] T212 [P] [US2] [US4] Implement the MCP deploy tools in `packages/mcp-server/src/tools/deploy.ts`
   - Owns: `packages/mcp-server/src/tools/deploy.ts`, `packages/mcp-server/src/tools/deploy.test.ts`
   - Reads: spec FR-217; research.md "MCP elicitation"; `packages/mcp-server/src/server.ts`
   - Depends: T209, T210, 001/T112
