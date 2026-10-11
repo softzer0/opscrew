@@ -117,7 +117,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T210 [P] [US4] Implement the secure and verify phases in `packages/agents/src/{secure,verify}/`
+- [X] T210 [P] [US4] Implement the secure and verify phases in `packages/agents/src/{secure,verify}/`
   - Owns: `packages/agents/src/secure/**`, `packages/agents/src/verify/**`
   - Reads: plan.md "Secure and verify"; spec US4, FR-216; secops exports (scan, policies, hardening); `renderRunbook`
   - Depends: T206, T207, T208, 001/T102–T106
