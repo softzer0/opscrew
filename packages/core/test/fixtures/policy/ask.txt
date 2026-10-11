@@ -1,0 +1,48 @@
+npm install
+npm ci
+npm i
+pnpm install --frozen-lockfile
+pnpm i
+yarn install
+bun install
+npm test
+pnpm test
+pnpm run build
+pnpm run lint
+npm run typecheck
+yarn run check
+bun run format
+pnpm test -- --reporter=dot
+docker build -t app:dev .
+python -m pytest
+python -m pytest tests -q
+python -m pip install -r requirements.txt
+pip install -r requirements.txt
+uv sync
+uv pip install -r requirements.txt
+poetry install
+go build ./...
+go test ./...
+go mod tidy
+pnpm install && pnpm test
+pnpm run build 2>&1
+pnpm test > /dev/null 2>&1
+# Bash commands that are neither clearly dangerous nor on the allow list: `ask` in edit-repo
+# (denied in none and read-only). One command per line; "#" lines and blank lines are ignored.
+
+pnpm add lodash
+npm install left-pad
+npm install -g typescript
+pnpm --filter web build
+rm -rf node_modules
+git fetch origin
+make build
+cargo build
+mv src/a.ts src/b.ts
+cp a.txt b.txt
+bash scripts/build.sh
+grep -r TODO src
+cat /etc/hosts
+ls ../other-project
+DEBUG=1 pnpm test
+ls *

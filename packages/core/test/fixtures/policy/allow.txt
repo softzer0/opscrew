@@ -1,0 +1,29 @@
+# Bash commands allowed without asking in the edit-repo profile (denied in none and read-only,
+# which have no Bash tool). One command per line; "#" lines and blank lines are ignored.
+
+node --version
+git status
+git status --short
+git diff
+git diff --stat HEAD~1
+git log --oneline -n 10
+git show HEAD
+git rev-parse HEAD
+git ls-files
+ls
+ls -la src
+ls src/*.ts
+pwd
+cat package.json
+cat .env.example
+cat .gitignore
+head -n 20 README.md
+tail -n 50 server.log
+wc -l src/index.ts
+grep -n TODO src/index.ts
+find . -name '*.ts' -not -path './node_modules/*'
+tree -L 2 src
+mkdir -p src/components
+git status; git diff
+ls src | wc -l
+cat package.json | grep version
