@@ -1,0 +1,133 @@
+/**
+ * Support code for the end-to-end tests over `examples/`: the `expected.json` schema, the fake
+ * secret values an example plants, a snapshot of the materialised files and a leak search over
+ * every file a run wrote.
+ */
+import { readdir, readFile } from "node:fs/promises";
+import path from "node:path";
+import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
+import { FAKE_SECRET_KINDS, type FakeSecretKind, fakeSecret } from "@opscrew/core/testing";
+import { z } from "zod";
+
+/** `examples/<name>/expected.json` (see `examples/README.md`). */
+export const ExpectedSchema = z.strictObject({
+  facts: z.strictObject({
+    platformExport: z.strictObject({ platform: z.string().min(1) }),
+    appKind: z.string().min(1),
+    frameworkNames: z.array(z.string().min(1)).optional(),
+    port: z.number().int().positive().optional(),
+    services: z.array(z.string().min(1)).optional(),
+    languages: z.array(z.string().min(1)).optional(),
+    clientExposedEnv: z.array(z.string().min(1)).optional(),
+    secretEnv: z.array(z.string().min(1)).optional(),
+  }),
+  scan: z.strictObject({
+    clean: z.boolean(),
+    mustInclude: z.array(z.string().min(1)),
+    notes: z.string().optional(),
+  }),
+  codeChanges: z.array(z.string().min(1)).optional(),
+});
+export type Expected = z.infer<typeof ExpectedSchema>;
+
+/** Reads and validates `<exampleDir>/expected.json`. */
+export async function readExpected(exampleDir: string): Promise<Expected> {
+  const text = await readFile(path.join(exampleDir, "expected.json"), "utf8");
+  return ExpectedSchema.parse(JSON.parse(text));
+}
+
+/** Every file below `dir` (absolute paths), skipping `.git` directories and bare repositories. */
+export async function listFiles(dir: string, skipDirs: readonly string[] = []): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === ".git" || skipDirs.includes(full)) continue;
+      files.push(...(await listFiles(full, skipDirs)));
+    } else if (entry.isFile()) {
+      files.push(full);
+    }
+  }
+  return files;
+}
+
+const MARKER = /\{\{FAKE:([a-z0-9-]+)(?::([A-Za-z0-9_-]+))?\}\}/g;
+
+/** The fake secret values the `{{FAKE:…}}` markers in `exampleDir` expand to (deduplicated). */
+export async function plantedSecrets(exampleDir: string): Promise<string[]> {
+  const values = new Set<string>();
+  for (const file of await listFiles(exampleDir)) {
+    const text = await readFile(file, "utf8");
+    for (const [, kind, seed] of text.matchAll(MARKER)) {
+      if (!(FAKE_SECRET_KINDS as readonly string[]).includes(kind ?? "")) {
+        throw new Error(`Unknown fake secret kind "${kind}" in ${file}.`);
+      }
+      values.add(fakeSecret(kind as FakeSecretKind, seed ?? "opscrew"));
+    }
+  }
+  return [...values];
+}
+
+/** Path → content of every file below `dir`, for telling inputs apart from what a run wrote. */
+export async function snapshotFiles(dir: string): Promise<Map<string, string>> {
+  const snapshot = new Map<string, string>();
+  for (const file of await listFiles(dir)) snapshot.set(file, await readFile(file, "utf8"));
+  return snapshot;
+}
+
+/** One place a planted secret showed up. */
+export interface Leak {
+  where: string;
+  /** Index of the secret in the list that was searched for (never the value itself). */
+  secret: number;
+}
+
+/**
+ * Finds every secret in `texts` (labelled outputs) and in the files below `dir`. A file from
+ * `inputs` (the materialised example) only counts when it now holds a secret it did not hold
+ * before, so the planted values in the example's own source are not reported.
+ */
+export async function findLeaks(options: {
+  secrets: readonly string[];
+  texts: ReadonlyMap<string, string>;
+  dir: string;
+  inputs: ReadonlyMap<string, string>;
+  skipDirs?: readonly string[];
+}): Promise<Leak[]> {
+  const leaks: Leak[] = [];
+  const check = (where: string, text: string, before?: string) => {
+    options.secrets.forEach((secret, i) => {
+      if (text.includes(secret) && !(before ?? "").includes(secret))
+        leaks.push({ where, secret: i });
+    });
+  };
+  for (const [label, text] of options.texts) check(label, text);
+  for (const file of await listFiles(options.dir, options.skipDirs)) {
+    check(
+      path.relative(options.dir, file).split(path.sep).join("/"),
+      await readFile(file, "utf8"),
+      options.inputs.get(file),
+    );
+  }
+  return leaks;
+}
+
+/**
+ * The scripted human for `adapt`: approves committing (`repo-write`) and refuses everything else
+ * (pushing, pull requests, applies), recording every request it saw.
+ */
+export class ScriptedApprovals implements ApprovalHandler {
+  readonly requests: ApprovalRequest[] = [];
+  constructor(private readonly approve: readonly ApprovalRequest["kind"][] = ["repo-write"]) {}
+
+  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    this.requests.push(request);
+    const approved = this.approve.includes(request.kind);
+    return {
+      approved,
+      approver: "e2e test",
+      decidedAt: "2026-10-11T12:00:00.000Z",
+      ...(approved ? {} : { reason: `the e2e script does not approve ${request.kind}` }),
+    };
+  }
+}

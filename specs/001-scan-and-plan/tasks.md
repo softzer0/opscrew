@@ -188,7 +188,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: high
 
-- [ ] T115 End-to-end tests over the example apps in `packages/cli/test/e2e/`
+- [X] T115 End-to-end tests over the example apps in `packages/cli/test/e2e/`
   - Owns: `packages/cli/test/e2e/**`, `packages/cli/vitest.config.ts`
   - Reads: `examples/*/expected.json`; spec SC-102, SC-103, SC-106
   - Depends: T108, T114
