@@ -1,0 +1,887 @@
+import { resolve } from "node:path";
+import type {
+  HookJSONOutput,
+  Options,
+  PermissionResult,
+  SDKMessage,
+  SdkMcpToolDefinition,
+} from "@anthropic-ai/claude-agent-sdk";
+import type {
+  ApprovalRequest,
+  PhaseName,
+  PhaseRequest,
+  RuntimeEvent,
+  ToolDecision,
+  ToolPolicy,
+} from "@opscrew/contracts";
+import { DefaultToolPolicy, MemoryAuditLog, Redactor } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
+import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { ClaudeAgentRuntime, type ClaudeAgentRuntimeOptions, type QueryFn } from "./runtime";
+import { toSdkTools } from "./tools";
+
+const ROOT = resolve("opscrew-test-project");
+const SESSION = "session-1";
+
+// ---------------------------------------------------------------------------------------------
+// Scripted SDK
+// ---------------------------------------------------------------------------------------------
+
+interface ToolStep {
+  tool: string;
+  input: Record<string, unknown>;
+  id?: string;
+  /** Which SDK entry point decides: the pre-tool-use hook (default), the callback, or both. */
+  via?: "hook" | "canUseTool" | "both";
+}
+type Step = SDKMessage | ToolStep | { throw: Error };
+
+interface ToolOutcome {
+  tool: string;
+  hook?: HookJSONOutput;
+  permission?: PermissionResult;
+  executed: boolean;
+}
+
+function isToolStep(step: Step): step is ToolStep {
+  return "tool" in step && !("type" in step);
+}
+
+function scriptedQuery(steps: Step[]) {
+  const calls: Array<{ prompt: string; options?: Options }> = [];
+  const outcomes: ToolOutcome[] = [];
+  const queryFn: QueryFn = (params) => {
+    calls.push(params);
+    const options = params.options ?? {};
+    return (async function* () {
+      let n = 0;
+      for (const step of steps) {
+        if ("throw" in step) throw step.throw;
+        if (!isToolStep(step)) {
+          yield step;
+          continue;
+        }
+        const id = step.id ?? `tool-${++n}`;
+        const via = step.via ?? "hook";
+        const outcome: ToolOutcome = { tool: step.tool, executed: false };
+        const signal = new AbortController().signal;
+        let allowed = true;
+        if (via !== "canUseTool") {
+          const pre = options.hooks?.PreToolUse?.[0]?.hooks[0];
+          if (pre === undefined) throw new Error("PreToolUse hook missing");
+          outcome.hook = await pre(
+            {
+              hook_event_name: "PreToolUse",
+              tool_name: step.tool,
+              tool_input: step.input,
+              tool_use_id: id,
+              session_id: SESSION,
+              transcript_path: "",
+              cwd: ROOT,
+            },
+            id,
+            { signal },
+          );
+          const specific = (
+            outcome.hook as { hookSpecificOutput?: { permissionDecision?: string } }
+          ).hookSpecificOutput;
+          allowed = specific?.permissionDecision === "allow";
+        }
+        if (via !== "hook") {
+          const canUse = options.canUseTool;
+          if (canUse === undefined) throw new Error("canUseTool missing");
+          const permission = await canUse(step.tool, step.input, {
+            signal,
+            toolUseID: id,
+            requestId: `req-${id}`,
+          });
+          if (permission === null) throw new Error("canUseTool returned null");
+          outcome.permission = permission;
+          allowed = allowed && permission.behavior === "allow";
+        }
+        if (allowed) {
+          outcome.executed = true;
+          const post = options.hooks?.PostToolUse?.[0]?.hooks[0];
+          await post?.(
+            {
+              hook_event_name: "PostToolUse",
+              tool_name: step.tool,
+              tool_input: step.input,
+              tool_response: "ok",
+              tool_use_id: id,
+              session_id: SESSION,
+              transcript_path: "",
+              cwd: ROOT,
+            },
+            id,
+            { signal },
+          );
+        }
+        outcomes.push(outcome);
+      }
+    })();
+  };
+  return { queryFn, calls, outcomes };
+}
+
+function init(model = "claude-opus-5-5"): SDKMessage {
+  return { type: "system", subtype: "init", model, session_id: SESSION } as unknown as SDKMessage;
+}
+
+function assistant(text: string, parent: string | null = null): SDKMessage {
+  return {
+    type: "assistant",
+    message: { content: [{ type: "text", text }] },
+    parent_tool_use_id: parent,
+    session_id: SESSION,
+  } as unknown as SDKMessage;
+}
+
+function success(overrides: Record<string, unknown> = {}): SDKMessage {
+  return {
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    num_turns: 3,
+    result: "All done.",
+    stop_reason: "end_turn",
+    total_cost_usd: 0.42,
+    usage: { input_tokens: 1, output_tokens: 2 },
+    modelUsage: {
+      "claude-opus-5-5": {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadInputTokens: 10,
+        cacheCreationInputTokens: 5,
+        webSearchRequests: 0,
+        costUSD: 0.42,
+        contextWindow: 0,
+        maxOutputTokens: 0,
+      },
+    },
+    permission_denials: [],
+    session_id: SESSION,
+    ...overrides,
+  } as unknown as SDKMessage;
+}
+
+function failure(subtype: string, overrides: Record<string, unknown> = {}): SDKMessage {
+  return {
+    type: "result",
+    subtype,
+    is_error: true,
+    num_turns: 7,
+    stop_reason: null,
+    total_cost_usd: 1.5,
+    usage: { input_tokens: 0, output_tokens: 0 },
+    modelUsage: {},
+    permission_denials: [],
+    errors: [],
+    session_id: SESSION,
+    ...overrides,
+  } as unknown as SDKMessage;
+}
+
+function request<T = unknown>(overrides: Partial<PhaseRequest<T>> = {}): PhaseRequest<T> {
+  return {
+    phase: "analyze",
+    systemPrompt: "You are the Analyst.",
+    prompt: "Describe this repository.",
+    projectRoot: ROOT,
+    profile: "read-only",
+    ...overrides,
+  };
+}
+
+function setup(
+  steps: Step[],
+  options: Partial<ClaudeAgentRuntimeOptions> = {},
+): {
+  runtime: ClaudeAgentRuntime;
+  audit: MemoryAuditLog;
+  ledger: Array<{ phase: PhaseName; model?: string; costUsd: number }>;
+  calls: Array<{ prompt: string; options?: Options }>;
+  outcomes: ToolOutcome[];
+} {
+  const redactor = new Redactor();
+  const audit = new MemoryAuditLog({ redact: redactor.redact });
+  const ledger: Array<{ phase: PhaseName; model?: string; costUsd: number }> = [];
+  const { queryFn, calls, outcomes } = scriptedQuery(steps);
+  const runtime = new ClaudeAgentRuntime({
+    policy: new DefaultToolPolicy(),
+    audit,
+    redact: redactor.redact,
+    costLedger: { append: async (entry) => void ledger.push(entry) },
+    env: { ANTHROPIC_API_KEY: "test", PATH: "/usr/bin" },
+    queryFn,
+    ...options,
+  });
+  return { runtime, audit, ledger, calls, outcomes };
+}
+
+function onlyCall(calls: Array<{ prompt: string; options?: Options }>) {
+  expect(calls).toHaveLength(1);
+  const options = calls[0]?.options;
+  if (options === undefined) throw new Error("query() was called without options");
+  return options;
+}
+
+function stubPolicy(decision: ToolDecision): ToolPolicy {
+  return { evaluate: () => decision };
+}
+
+// ---------------------------------------------------------------------------------------------
+// isConfigured
+// ---------------------------------------------------------------------------------------------
+
+describe("ClaudeAgentRuntime.isConfigured", () => {
+  const make = (env: Record<string, string | undefined>) =>
+    new ClaudeAgentRuntime({
+      policy: new DefaultToolPolicy(),
+      audit: new MemoryAuditLog(),
+      redact: (text) => text,
+      env,
+    });
+
+  it("has the id claude-agent-sdk", () => {
+    expect(make({}).id).toBe("claude-agent-sdk");
+  });
+
+  it("explains how to configure credentials when none are present (US4-5)", async () => {
+    const result = await make({ PATH: "/usr/bin", CLAUDE_CODE_USE_BEDROCK: "0" }).isConfigured();
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/credentials/i);
+    for (const name of [
+      "ANTHROPIC_API_KEY",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY",
+    ]) {
+      expect(result.hint).toContain(name);
+    }
+  });
+
+  it.each([
+    [{ ANTHROPIC_API_KEY: "x" }],
+    [{ ANTHROPIC_AUTH_TOKEN: "x" }],
+    [{ CLAUDE_CODE_USE_BEDROCK: "1" }],
+    [{ CLAUDE_CODE_USE_VERTEX: "1" }],
+    [{ CLAUDE_CODE_USE_FOUNDRY: "1" }],
+  ])("is configured with %o", async (env) => {
+    expect(await make(env).isConfigured()).toEqual({ ok: true });
+  });
+
+  it("ignores empty keys", async () => {
+    expect((await make({ ANTHROPIC_API_KEY: "  " }).isConfigured()).ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Option mapping
+// ---------------------------------------------------------------------------------------------
+
+describe("ClaudeAgentRuntime option mapping", () => {
+  it("maps read-only to a plain system prompt, read tools and isolated settings", async () => {
+    const { runtime, calls } = setup([success()]);
+    await runtime.runPhase(request());
+    const options = onlyCall(calls);
+    expect(calls[0]?.prompt).toBe("Describe this repository.");
+    expect(options.systemPrompt).toBe("You are the Analyst.");
+    expect(options.cwd).toBe(ROOT);
+    expect(options.model).toBe("claude-opus-5-5");
+    expect(options.tools).toEqual(["Read", "Glob", "Grep"]);
+    expect(options.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+    expect(options.disallowedTools).toEqual(
+      expect.arrayContaining(["Edit", "Write", "Bash", "WebFetch", "WebSearch", "Task"]),
+    );
+    expect(options.disallowedTools).not.toContain("Read");
+    expect(options.settingSources).toEqual([]);
+    expect(options.strictMcpConfig).toBe(true);
+    expect(options.permissionMode).toBe("default");
+    expect(options.allowDangerouslySkipPermissions).toBeUndefined();
+    expect(typeof options.canUseTool).toBe("function");
+    expect(options.hooks?.PreToolUse?.[0]?.matcher).toBeUndefined();
+    expect(options.hooks?.PreToolUse?.[0]?.hooks).toHaveLength(1);
+    expect(options.hooks?.PostToolUse?.[0]?.hooks).toHaveLength(1);
+    expect(options.abortController).toBeInstanceOf(AbortController);
+    expect(options.mcpServers).toBeUndefined();
+    expect(options.outputFormat).toBeUndefined();
+    expect(options.maxTurns).toBeUndefined();
+    expect(options.maxBudgetUsd).toBeUndefined();
+  });
+
+  it("maps edit-repo to the Claude Code preset with the phase prompt appended", async () => {
+    const { runtime, calls } = setup([success()]);
+    await runtime.runPhase(request({ phase: "adapt", profile: "edit-repo" }));
+    const options = onlyCall(calls);
+    expect(options.systemPrompt).toEqual({
+      type: "preset",
+      preset: "claude_code",
+      append: "You are the Analyst.",
+    });
+    expect(options.tools).toEqual(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]);
+    expect(options.allowedTools).toEqual(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]);
+    expect(options.disallowedTools).not.toContain("Bash");
+  });
+
+  it("maps none to no built-in tools plus the in-process OpsCrew tools", async () => {
+    const lookup = {
+      name: "hetzner_list_offers",
+      description: "List server offers.",
+      inputSchema: z.object({ location: z.string() }),
+      mutates: false,
+      handler: async () => ({ text: "cx22" }),
+    };
+    const { runtime, calls } = setup([success()]);
+    await runtime.runPhase(request({ phase: "design", profile: "none", tools: [lookup] }));
+    const options = onlyCall(calls);
+    expect(options.tools).toEqual([]);
+    expect(options.allowedTools).toEqual(["mcp__opscrew__hetzner_list_offers"]);
+    expect(options.disallowedTools).toEqual(
+      expect.arrayContaining(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]),
+    );
+    const server = options.mcpServers?.opscrew as { type: string; name: string } | undefined;
+    expect(server?.type).toBe("sdk");
+    expect(server?.name).toBe("opscrew");
+  });
+
+  it("intersects the profile tools with builtinTools", async () => {
+    const { runtime, calls } = setup([success()]);
+    await runtime.runPhase(request({ builtinTools: ["Read", "Bash"] }));
+    const options = onlyCall(calls);
+    expect(options.tools).toEqual(["Read"]);
+    expect(options.allowedTools).toEqual(["Read"]);
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Glob", "Grep", "Bash"]));
+  });
+
+  it("passes model, effort, maxTurns and maxBudgetUsd through", async () => {
+    const { runtime, calls } = setup([success()]);
+    await runtime.runPhase(
+      request({ model: "claude-sonnet-5", effort: "high", maxTurns: 12, maxBudgetUsd: 0.75 }),
+    );
+    const options = onlyCall(calls);
+    expect(options).toMatchObject({
+      model: "claude-sonnet-5",
+      effort: "high",
+      maxTurns: 12,
+      maxBudgetUsd: 0.75,
+    });
+  });
+
+  it("uses the configured default model", async () => {
+    const { runtime, calls } = setup([success()], { defaultModel: "claude-haiku-5" });
+    await runtime.runPhase(request());
+    expect(onlyCall(calls).model).toBe("claude-haiku-5");
+  });
+
+  it("requests structured output as a draft-07 JSON schema", async () => {
+    const { runtime, calls } = setup([success({ structured_output: { summary: "x" } })]);
+    await runtime.runPhase(
+      request({ output: { name: "summary", schema: z.object({ summary: z.string() }) } }),
+    );
+    const format = onlyCall(calls).outputFormat;
+    expect(format?.type).toBe("json_schema");
+    expect(format?.schema).toMatchObject({
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "object",
+      properties: { summary: { type: "string" } },
+      required: ["summary"],
+    });
+  });
+
+  it("removes provider tokens from the agent environment (US4-4)", async () => {
+    const env = {
+      PATH: "/usr/bin",
+      ANTHROPIC_API_KEY: fakeSecret("anthropic-key"),
+      HCLOUD_TOKEN: fakeSecret("hcloud-token"),
+      CLOUDFLARE_API_TOKEN: fakeSecret("cloudflare-token"),
+      GITHUB_TOKEN: fakeSecret("github-token"),
+    };
+    const { runtime, calls } = setup([success()], { env });
+    await runtime.runPhase(request());
+    const agentEnv = onlyCall(calls).env ?? {};
+    expect(agentEnv).not.toHaveProperty("HCLOUD_TOKEN");
+    expect(agentEnv).not.toHaveProperty("CLOUDFLARE_API_TOKEN");
+    expect(agentEnv).not.toHaveProperty("GITHUB_TOKEN");
+    expect(agentEnv.ANTHROPIC_API_KEY).toBe(env.ANTHROPIC_API_KEY);
+    expect(agentEnv.PATH).toBe("/usr/bin");
+  });
+
+  it("redacts the prompt and system prompt before they reach the model", async () => {
+    const token = fakeSecret("github-token");
+    const { runtime, calls } = setup([success()]);
+    await runtime.runPhase(
+      request({ prompt: `Token ${token} found`, systemPrompt: `Never print ${token}` }),
+    );
+    const options = onlyCall(calls);
+    expect(calls[0]?.prompt).not.toContain(token);
+    expect(String(options.systemPrompt)).not.toContain(token);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Tool gating
+// ---------------------------------------------------------------------------------------------
+
+describe("ClaudeAgentRuntime tool gating", () => {
+  it("denies a tool call the policy denies, with the reason, and audits it (US4-3)", async () => {
+    const events: RuntimeEvent[] = [];
+    const { runtime, audit, outcomes } = setup([
+      init(),
+      { tool: "Bash", input: { command: "ls" } },
+      success(),
+    ]);
+    await runtime.runPhase(request({ onEvent: (event) => events.push(event) }));
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]?.executed).toBe(false);
+    expect(outcomes[0]?.hook).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: "Bash is not allowed in the read-only profile.",
+      },
+    });
+    const denied = audit.entries.filter((entry) => entry.kind === "tool-denied");
+    expect(denied).toHaveLength(1);
+    expect(denied[0]).toMatchObject({
+      action: "Bash",
+      phase: "analyze",
+      decision: "deny",
+      target: "ls",
+      detail: "Bash is not allowed in the read-only profile.",
+    });
+    expect(audit.entries.some((entry) => entry.kind === "tool-call")).toBe(false);
+    expect(events.some((event) => event.kind === "tool-denied" && event.tool === "Bash")).toBe(
+      true,
+    );
+  });
+
+  it("applies the same policy in the permission callback", async () => {
+    const { runtime, audit, outcomes } = setup([
+      { tool: "Write", input: { file_path: `${ROOT}/x.txt`, content: "" }, via: "canUseTool" },
+      success(),
+    ]);
+    await runtime.runPhase(request());
+    expect(outcomes[0]?.permission).toEqual({
+      behavior: "deny",
+      message: "Write is not allowed in the read-only profile.",
+    });
+    expect(outcomes[0]?.executed).toBe(false);
+    expect(audit.entries.filter((entry) => entry.kind === "tool-denied")).toHaveLength(1);
+  });
+
+  it("allows a permitted call and audits it after it runs", async () => {
+    const file = resolve(ROOT, "src", "index.ts");
+    const { runtime, audit, outcomes } = setup([
+      init(),
+      { tool: "Read", input: { file_path: file }, via: "both" },
+      success(),
+    ]);
+    await runtime.runPhase(request());
+    expect(outcomes[0]?.executed).toBe(true);
+    expect(outcomes[0]?.hook).toMatchObject({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
+    });
+    expect(outcomes[0]?.permission).toEqual({
+      behavior: "allow",
+      updatedInput: { file_path: file },
+    });
+    const calls = audit.entries.filter((entry) => entry.kind === "tool-call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      action: "Read",
+      actor: "agent",
+      phase: "analyze",
+      sessionId: SESSION,
+      target: file,
+      decision: "allow",
+    });
+  });
+
+  it("denies a call outside the project root", async () => {
+    const { runtime, outcomes } = setup([
+      { tool: "Read", input: { file_path: resolve(ROOT, "..", "elsewhere.txt") } },
+      success(),
+    ]);
+    await runtime.runPhase(request());
+    expect(outcomes[0]?.executed).toBe(false);
+  });
+
+  it("denies an ask decision when no approval handler is configured", async () => {
+    const { runtime, audit, outcomes } = setup(
+      [{ tool: "Bash", input: { command: "npm install" } }, success()],
+      { policy: stubPolicy({ decision: "ask", reason: "This command runs project code." }) },
+    );
+    await runtime.runPhase(request({ profile: "edit-repo" }));
+    expect(outcomes[0]?.executed).toBe(false);
+    const hook = outcomes[0]?.hook as
+      | { hookSpecificOutput?: { permissionDecisionReason?: string } }
+      | undefined;
+    const reason = hook?.hookSpecificOutput?.permissionDecisionReason;
+    expect(reason).toMatch(/runs project code/);
+    expect(reason).toMatch(/denied/);
+    expect(audit.entries.find((entry) => entry.kind === "tool-denied")).toMatchObject({
+      action: "Bash",
+      decision: "deny",
+      target: "npm install",
+    });
+  });
+
+  it("asks the approval handler once for an ask decision and runs the call when approved", async () => {
+    const asked: ApprovalRequest[] = [];
+    const approvals = {
+      request: vi.fn(async (req: ApprovalRequest) => {
+        asked.push(req);
+        return { approved: true };
+      }),
+    };
+    const { runtime, audit, outcomes } = setup(
+      [{ tool: "Bash", input: { command: "npm install" }, via: "both" }, success()],
+      {
+        policy: stubPolicy({ decision: "ask", reason: "This command runs project code." }),
+        approvals,
+      },
+    );
+    await runtime.runPhase(request({ phase: "adapt", profile: "edit-repo" }));
+    expect(outcomes[0]?.executed).toBe(true);
+    expect(approvals.request).toHaveBeenCalledTimes(1);
+    expect(asked[0]).toMatchObject({ kind: "tool-call" });
+    expect(asked[0]?.title).toContain("Bash");
+    expect(asked[0]?.details).toContain("npm install");
+    expect(audit.entries.find((entry) => entry.kind === "tool-call")).toMatchObject({
+      action: "Bash",
+      decision: "approved",
+    });
+  });
+
+  it("denies an ask decision the human refuses", async () => {
+    const approvals = { request: async () => ({ approved: false }) };
+    const { runtime, audit, outcomes } = setup(
+      [{ tool: "Bash", input: { command: "docker build ." } }, success()],
+      {
+        policy: stubPolicy({ decision: "ask", reason: "This command runs project code." }),
+        approvals,
+      },
+    );
+    await runtime.runPhase(request({ profile: "edit-repo" }));
+    expect(outcomes[0]?.executed).toBe(false);
+    expect(audit.entries.find((entry) => entry.kind === "tool-denied")).toMatchObject({
+      decision: "refused",
+    });
+  });
+
+  it("denies when the approval handler fails", async () => {
+    const approvals = {
+      request: async (): Promise<{ approved: boolean }> => {
+        throw new Error("no TTY");
+      },
+    };
+    const { runtime, outcomes } = setup([{ tool: "Bash", input: { command: "make" } }, success()], {
+      policy: stubPolicy({ decision: "ask", reason: "Runs project code." }),
+      approvals,
+    });
+    await runtime.runPhase(request({ profile: "edit-repo" }));
+    expect(outcomes[0]?.executed).toBe(false);
+  });
+
+  it("fails closed when the audit log cannot record a denial", async () => {
+    const { runtime, outcomes } = setup([{ tool: "Bash", input: { command: "ls" } }, success()], {
+      audit: {
+        append: async () => {
+          throw new Error("disk full");
+        },
+      },
+    });
+    const result = await runtime.runPhase(request());
+    expect(outcomes[0]?.executed).toBe(false);
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Result mapping
+// ---------------------------------------------------------------------------------------------
+
+describe("ClaudeAgentRuntime result mapping", () => {
+  it("maps a successful result with cost, turns, session, usage and model", async () => {
+    const { runtime, ledger, audit } = setup([init("claude-opus-5-5"), success()]);
+    const result = await runtime.runPhase(request());
+    expect(result).toEqual({
+      ok: true,
+      stopReason: "completed",
+      text: "All done.",
+      costUsd: 0.42,
+      turns: 3,
+      sessionId: SESSION,
+      model: "claude-opus-5-5",
+      usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheCreationTokens: 5 },
+    });
+    expect(ledger).toEqual([{ phase: "analyze", model: "claude-opus-5-5", costUsd: 0.42 }]);
+    expect(audit.entries.find((entry) => entry.kind === "phase")).toMatchObject({
+      action: "analyze",
+      sessionId: SESSION,
+    });
+  });
+
+  it("falls back to the main-loop usage when modelUsage is empty", async () => {
+    const { runtime } = setup([
+      success({
+        modelUsage: {},
+        usage: {
+          input_tokens: 7,
+          output_tokens: 3,
+          cache_read_input_tokens: 2,
+          cache_creation_input_tokens: 1,
+        },
+      }),
+    ]);
+    const result = await runtime.runPhase(request({ model: "claude-sonnet-5" }));
+    expect(result.usage).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      cacheReadTokens: 2,
+      cacheCreationTokens: 1,
+    });
+    expect(result.model).toBe("claude-sonnet-5");
+  });
+
+  const schema = z.object({ framework: z.string(), port: z.number().int() });
+  const output = { name: "architecture_summary", schema };
+
+  it("returns validated structured output", async () => {
+    const { runtime } = setup([success({ structured_output: { framework: "next", port: 3000 } })]);
+    const result = await runtime.runPhase(request({ output }));
+    expect(result.ok).toBe(true);
+    expect(result.stopReason).toBe("completed");
+    expect(result.output).toEqual({ framework: "next", port: 3000 });
+  });
+
+  it("falls back to JSON in the result text when structured_output is absent", async () => {
+    const { runtime } = setup([
+      success({ result: '```json\n{"framework":"vite","port":5173}\n```' }),
+    ]);
+    const result = await runtime.runPhase(request({ output }));
+    expect(result.output).toEqual({ framework: "vite", port: 5173 });
+  });
+
+  it("fails with invalid_output when the output does not match the schema (US4-1)", async () => {
+    const { runtime, ledger } = setup([
+      success({ structured_output: { framework: "next", port: "3000" } }),
+    ]);
+    const result = await runtime.runPhase(request({ output }));
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe("invalid_output");
+    expect(result).not.toHaveProperty("output");
+    expect(result.error).toMatch(/architecture_summary/);
+    expect(result.error).toMatch(/port/);
+    expect(ledger).toHaveLength(1);
+  });
+
+  it("maps structured-output retry exhaustion to invalid_output", async () => {
+    const { runtime } = setup([failure("error_max_structured_output_retries")]);
+    const result = await runtime.runPhase(request({ output }));
+    expect(result).toMatchObject({ ok: false, stopReason: "invalid_output" });
+    expect(result.output).toBeUndefined();
+  });
+
+  it("maps a budget stop and records the spend (US4-2)", async () => {
+    const { runtime, ledger } = setup([init(), failure("error_max_budget_usd")]);
+    const result = await runtime.runPhase(request({ maxBudgetUsd: 1 }));
+    expect(result).toMatchObject({
+      ok: false,
+      stopReason: "budget_exceeded",
+      costUsd: 1.5,
+      turns: 7,
+    });
+    expect(result.error).toMatch(/\$1\b/);
+    expect(ledger).toEqual([{ phase: "analyze", model: "claude-opus-5-5", costUsd: 1.5 }]);
+  });
+
+  it("maps a max-turns stop", async () => {
+    const { runtime } = setup([failure("error_max_turns")]);
+    const result = await runtime.runPhase(request({ maxTurns: 7 }));
+    expect(result).toMatchObject({ ok: false, stopReason: "max_turns" });
+    expect(result.error).toMatch(/7 turns/);
+  });
+
+  it("maps a refusal", async () => {
+    const { runtime } = setup([success({ stop_reason: "refusal", result: "I can't help." })]);
+    const result = await runtime.runPhase(request());
+    expect(result).toMatchObject({ ok: false, stopReason: "refused" });
+
+    const viaNotice = setup([
+      {
+        type: "system",
+        subtype: "model_refusal_no_fallback",
+        session_id: SESSION,
+      } as unknown as SDKMessage,
+      success(),
+    ]);
+    expect((await viaNotice.runtime.runPhase(request())).stopReason).toBe("refused");
+  });
+
+  it("maps execution errors to error with redacted, plain-English text", async () => {
+    const token = fakeSecret("github-token");
+    const { runtime } = setup([
+      failure("error_during_execution", { errors: [`API rejected ${token}`] }),
+    ]);
+    const result = await runtime.runPhase(request());
+    expect(result).toMatchObject({ ok: false, stopReason: "error" });
+    expect(result.error).toMatch(/API rejected/);
+    expect(result.error).not.toContain(token);
+  });
+
+  it("maps an is_error success to error", async () => {
+    const { runtime } = setup([success({ is_error: true, result: "Overloaded" })]);
+    const result = await runtime.runPhase(request());
+    expect(result).toMatchObject({ ok: false, stopReason: "error", error: "Overloaded" });
+  });
+
+  it("returns an error result when query() throws", async () => {
+    const { runtime, ledger } = setup([{ throw: new Error("spawn claude ENOENT") }]);
+    const result = await runtime.runPhase(request());
+    expect(result).toMatchObject({ ok: false, stopReason: "error", costUsd: 0 });
+    expect(result.error).toMatch(/ENOENT/);
+    expect(ledger).toEqual([]);
+  });
+
+  it("returns an error when the stream ends without a result", async () => {
+    const { runtime } = setup([init()]);
+    const result = await runtime.runPhase(request());
+    expect(result).toMatchObject({ ok: false, stopReason: "error" });
+  });
+
+  it("maps an abort through the signal", async () => {
+    const controller = new AbortController();
+    const abortError = Object.assign(new Error("aborted"), { name: "AbortError" });
+    const steps: Step[] = [init(), { throw: abortError }];
+    const { runtime, calls } = setup(steps);
+    const pending = runtime.runPhase(request({ signal: controller.signal }));
+    controller.abort();
+    const result = await pending;
+    expect(result).toMatchObject({ ok: false, stopReason: "aborted" });
+    expect(onlyCall(calls).abortController?.signal.aborted).toBe(true);
+  });
+
+  it("does not start the agent when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { runtime, calls } = setup([success()]);
+    const result = await runtime.runPhase(request({ signal: controller.signal }));
+    expect(result.stopReason).toBe("aborted");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("redacts streamed assistant text and the final text", async () => {
+    const token = fakeSecret("github-token");
+    const events: RuntimeEvent[] = [];
+    const { runtime } = setup([
+      init(),
+      assistant(`I found ${token} in .env`),
+      success({ result: `Remove ${token} from the repo.` }),
+    ]);
+    const result = await runtime.runPhase(request({ onEvent: (event) => events.push(event) }));
+    const texts = events.filter((event) => event.kind === "assistant-text");
+    expect(texts).toHaveLength(1);
+    expect(texts[0]?.message).toContain("I found");
+    expect(texts[0]?.message).not.toContain(token);
+    expect(result.text).toContain("Remove");
+    expect(result.text).not.toContain(token);
+  });
+
+  it("keeps running when the onEvent listener throws", async () => {
+    const { runtime } = setup([init(), assistant("hello"), success()]);
+    const result = await runtime.runPhase(
+      request({
+        onEvent: () => {
+          throw new Error("listener bug");
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// In-process tools
+// ---------------------------------------------------------------------------------------------
+
+describe("toSdkTools", () => {
+  const ctx = { phase: "design" as const, projectRoot: ROOT };
+  const redactor = new Redactor();
+
+  function only(tools: SdkMcpToolDefinition[]) {
+    const [first] = tools;
+    if (first === undefined) throw new Error("no tool");
+    return first;
+  }
+
+  it("validates input, calls the handler with the context and redacts the result", async () => {
+    const token = fakeSecret("github-token");
+    const handler = vi.fn(async (input: { location: string }) => ({
+      text: `offers in ${input.location} via ${token}`,
+    }));
+    const definition = only(
+      toSdkTools(
+        [
+          {
+            name: "hetzner_list_offers",
+            description: "List offers.",
+            inputSchema: z.object({ location: z.string().min(3) }),
+            mutates: false,
+            handler,
+          },
+        ],
+        ctx,
+        redactor.redact,
+      ),
+    );
+    expect(definition.name).toBe("hetzner_list_offers");
+    expect(Object.keys(definition.inputSchema)).toEqual(["location"]);
+
+    const ok = await definition.handler({ location: "fsn1" }, {});
+    expect(handler).toHaveBeenCalledWith({ location: "fsn1" }, ctx);
+    const text = (ok.content[0] as { text: string }).text;
+    expect(text).toContain("offers in fsn1");
+    expect(text).not.toContain(token);
+    expect(ok.isError).toBeUndefined();
+
+    const bad = await definition.handler({ location: "x" }, {});
+    expect(bad.isError).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("turns handler errors and error results into MCP error results", async () => {
+    const [throwing, failing] = toSdkTools(
+      [
+        {
+          name: "boom",
+          description: "Throws.",
+          inputSchema: z.object({}),
+          mutates: false,
+          handler: async () => {
+            throw new Error("exploded");
+          },
+        },
+        {
+          name: "fails",
+          description: "Fails.",
+          inputSchema: z.object({}),
+          mutates: false,
+          handler: async () => ({ text: "nope", isError: true }),
+        },
+      ],
+      ctx,
+      redactor.redact,
+    );
+    const thrown = await throwing?.handler({}, {});
+    expect(thrown?.isError).toBe(true);
+    expect((thrown?.content[0] as { text?: string } | undefined)?.text).toMatch(
+      /boom failed: exploded/,
+    );
+    const failed = await failing?.handler({}, {});
+    expect(failed?.isError).toBe(true);
+  });
+});
