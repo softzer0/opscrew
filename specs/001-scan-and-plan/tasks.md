@@ -121,7 +121,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
 
 ## Phase 4: User Story 3 — Design (P2)
 
-- [ ] T110 [US3] Implement sizing, options, cost, code-change derivation and the design phase in `packages/agents/src/design/`
+- [X] T110 [US3] Implement sizing, options, cost, code-change derivation and the design phase in `packages/agents/src/design/`
   - Owns: `packages/agents/src/design/**`
   - Reads: plan.md "Interview, design and code changes"; spec US3, FR-107; `packages/contracts/src/connector.ts`; `@opscrew/connector-hetzner` exports
   - Depends: T103, T109 (interview types), 000/T003
