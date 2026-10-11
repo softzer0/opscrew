@@ -297,7 +297,7 @@ class PhaseRun<T> {
         action: input.tool_name,
         phase: this.request.phase,
         ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
-        ...(target === undefined ? {} : { target: this.#redact(target) }),
+        ...(target === undefined ? {} : { target: shorten(this.#redact(target)) }),
         decision: gate?.allowed === true ? gate.decision : "allow",
         ...(failed ? { detail: this.#redact(`failed: ${input.error}`) } : {}),
       });
@@ -309,6 +309,15 @@ class PhaseRun<T> {
       tool: input.tool_name,
       message: failed ? `${input.tool_name} failed` : `${input.tool_name} finished`,
     });
+    if (input.hook_event_name !== "PostToolUse") return {};
+    // Constitution IV: whatever a tool returned (a file read, a grep hit, command output) reaches
+    // the model only after redaction, so a hard-coded key in the repository is never sent on.
+    const redacted = redactDeep(input.tool_response, (text) => this.#redact(text));
+    if (redacted.changed) {
+      return {
+        hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: redacted.value },
+      };
+    }
     return {};
   };
 
@@ -393,7 +402,7 @@ class PhaseRun<T> {
       action: tool,
       phase: this.request.phase,
       ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
-      ...(target === undefined ? {} : { target: this.#redact(target) }),
+      ...(target === undefined ? {} : { target: shorten(this.#redact(target)) }),
       decision,
       detail: reason,
     });
@@ -551,7 +560,7 @@ class PhaseRun<T> {
     const handler = this.request.onEvent;
     if (handler === undefined) return;
     try {
-      handler({ ...event, message: this.#redact(event.message) });
+      handler({ ...event, message: shorten(this.#redact(event.message), 500) });
     } catch {
       // A failing progress listener must not break the agent loop.
     }
@@ -611,8 +620,37 @@ function describeInput(tool: string, input: unknown): string | undefined {
     tool === "Bash"
       ? pick("command")
       : (pick("file_path") ?? pick("notebook_path") ?? pick("pattern") ?? pick("path"));
-  if (value === undefined) return undefined;
-  return value.length > 300 ? `${value.slice(0, 300)}…` : value;
+  return value;
+}
+
+/** Shortens text for audit targets. Callers redact first, so a cut can never split a secret. */
+function shorten(text: string, max = 300): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** Redacts every string inside a JSON-like value; `changed` tells whether anything was masked. */
+export function redactDeep(
+  value: unknown,
+  redact: (text: string) => string,
+): { value: unknown; changed: boolean } {
+  let changed = false;
+  const walk = (node: unknown, depth: number): unknown => {
+    if (typeof node === "string") {
+      const masked = redact(node);
+      if (masked !== node) changed = true;
+      return masked;
+    }
+    if (depth > 50 || node === null || typeof node !== "object") return node;
+    if (Array.isArray(node)) return node.map((item) => walk(item, depth + 1));
+    return Object.fromEntries(
+      Object.entries(node as Record<string, unknown>).map(([key, item]) => [
+        key,
+        walk(item, depth + 1),
+      ]),
+    );
+  };
+  const result = walk(value, 0);
+  return { value: changed ? result : value, changed };
 }
 
 function parseJson(text: string | undefined): unknown {

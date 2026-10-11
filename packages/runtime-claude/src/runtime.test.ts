@@ -34,6 +34,8 @@ interface ToolStep {
   id?: string;
   /** Which SDK entry point decides: the pre-tool-use hook (default), the callback, or both. */
   via?: "hook" | "canUseTool" | "both";
+  /** What the tool returned (default `"ok"`). */
+  response?: unknown;
 }
 type Step = SDKMessage | ToolStep | { throw: Error };
 
@@ -42,6 +44,8 @@ interface ToolOutcome {
   hook?: HookJSONOutput;
   permission?: PermissionResult;
   executed: boolean;
+  /** What the post-tool-use hook returned. */
+  post?: HookJSONOutput;
 }
 
 function isToolStep(step: Step): step is ToolStep {
@@ -103,12 +107,12 @@ function scriptedQuery(steps: Step[]) {
         if (allowed) {
           outcome.executed = true;
           const post = options.hooks?.PostToolUse?.[0]?.hooks[0];
-          await post?.(
+          outcome.post = await post?.(
             {
               hook_event_name: "PostToolUse",
               tool_name: step.tool,
               tool_input: step.input,
-              tool_response: "ok",
+              tool_response: step.response ?? "ok",
               tool_use_id: id,
               session_id: SESSION,
               transcript_path: "",
@@ -498,6 +502,43 @@ describe("ClaudeAgentRuntime tool gating", () => {
       target: file,
       decision: "allow",
     });
+  });
+
+  it("redacts secrets in tool output before the model sees it (constitution IV)", async () => {
+    const token = fakeSecret("stripe-live-key");
+    const file = resolve(ROOT, "src", "pay.ts");
+    const { runtime, outcomes } = setup([
+      init(),
+      {
+        tool: "Read",
+        input: { file_path: file },
+        response: { type: "text", file: { content: `const key = "${token}";`, numLines: 1 } },
+      },
+      { tool: "Read", input: { file_path: resolve(ROOT, "README.md") }, response: "no secrets" },
+      success(),
+    ]);
+    await runtime.runPhase(request());
+    const rewritten = outcomes[0]?.post as {
+      hookSpecificOutput?: { hookEventName: string; updatedToolOutput?: unknown };
+    };
+    expect(rewritten.hookSpecificOutput?.hookEventName).toBe("PostToolUse");
+    expect(JSON.stringify(rewritten.hookSpecificOutput?.updatedToolOutput)).not.toContain(token);
+    expect(rewritten.hookSpecificOutput?.updatedToolOutput).toMatchObject({
+      type: "text",
+      file: { numLines: 1 },
+    });
+    // unchanged output is left alone (no identity rewrite)
+    expect(outcomes[1]?.post).toEqual({});
+  });
+
+  it("redacts before shortening audit targets, so a cut never leaves part of a secret", async () => {
+    const token = fakeSecret("github-token");
+    const command = `${"echo padding && ".repeat(16)}curl -H "Authorization: ${token}" https://example.invalid`;
+    const { runtime, audit } = setup([init(), { tool: "Bash", input: { command } }, success()]);
+    await runtime.runPhase(request());
+    const text = JSON.stringify(audit.entries);
+    for (let cut = 8; cut < token.length; cut += 4)
+      expect(text).not.toContain(token.slice(0, cut + 4));
   });
 
   it("denies a call outside the project root", async () => {
