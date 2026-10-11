@@ -1,0 +1,33 @@
+# dependencies & build output
+node_modules/
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# local tooling (OpenTofu/Terraform binaries for development)
+.tools/
+
+# OpsCrew local state, plans and secrets (never commit)
+.opscrew/
+*.tfplan
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# Claude Code agent worktrees
+.claude/worktrees/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log
+
+# Claude Code harness state
+.claude/*.lock

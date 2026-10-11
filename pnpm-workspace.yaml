@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+  - "packages/connectors/*"
+  - "examples/*"
+
+onlyBuiltDependencies:
+  - esbuild
