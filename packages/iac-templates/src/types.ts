@@ -36,7 +36,7 @@ export interface RenderContext {
   /** Known after the first apply; used for the no-domain health URL and the runbook. */
   serverIpv4?: string;
   serverIpv6?: string;
-  /** Pinned image reference for the optional Trivy scan step, e.g. `aquasec/trivy:0.75.0`. */
+  /** Digest-pinned image for the optional Trivy scan step, e.g. `aquasec/trivy:0.75.0@sha256:…`. */
   trivyImage?: string;
   /** OpsCrew project id (names `~/.opscrew/projects/<id>/` in the runbook; never an absolute path). */
   projectId?: string;

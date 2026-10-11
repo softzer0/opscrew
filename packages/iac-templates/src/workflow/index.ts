@@ -4,8 +4,17 @@ import type { RenderContext, RenderedFile } from "../types";
 
 /** actions/checkout v7.0.1 (lightweight tag → commit), pinned by SHA. */
 export const CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
-/** Default image for the optional, report-only image scan. */
-export const DEFAULT_TRIVY_IMAGE = "aquasec/trivy:0.75.0";
+/**
+ * Default image for the optional, report-only image scan, pinned by digest because it runs with the
+ * Docker socket. Digest of the multi-arch OCI index for tag 0.75.0, resolved on 2026-10-11 from the
+ * Docker Hub registry API (`registry-1.docker.io/v2/aquasec/trivy/manifests/0.75.0`) and identical
+ * on `ghcr.io/aquasecurity/trivy:0.75.0`.
+ */
+export const DEFAULT_TRIVY_IMAGE =
+  "aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa";
+
+/** Shell pattern for a GHCR image pinned by digest, `ghcr.io/<owner>/<repo>@sha256:<hex>`. */
+const DIGEST_REF_PATTERN = "^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$";
 
 /** Names of the GitHub Actions secrets the workflow reads. `opscrew provision` sets them. */
 export const DEPLOY_SECRETS = {
@@ -44,6 +53,11 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
   const context = plan.app.buildContext || ".";
   const dockerfile = plan.app.dockerfile || "Dockerfile";
   const scanImage = ctx.trivyImage ?? DEFAULT_TRIVY_IMAGE;
+  if (!/@sha256:[0-9a-f]{64}$/.test(scanImage)) {
+    throw new Error(
+      `The Trivy image "${scanImage}" must be pinned by digest (name:tag@sha256:...) because the scan runs with the Docker socket. Use a digest-pinned reference or leave trivyImage unset.`,
+    );
+  }
   const hasDb = plan.services.postgres;
 
   const buildSteps = [
@@ -58,7 +72,10 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "  env:",
     "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
     '  run: printf \'%s\\n\' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin',
-    "- name: Build and push the image",
+    // The deploy pulls `ref` (the digest that was pushed), so it runs exactly this build; the SHA
+    // tag stays for humans. Logging out here keeps the `packages: write` token away from the scan.
+    "- id: push",
+    "  name: Build and push the image",
     "  env:",
     "    IMAGE: ${{ steps.image.outputs.image }}",
     `    BUILD_ENV: ${secret(DEPLOY_SECRETS.buildEnv)}`,
@@ -71,8 +88,17 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     '    done <<< "${BUILD_ENV:-}"',
     `    docker build "\${build_args[@]}" -t "$IMAGE" -f ${JSON.stringify(dockerfile)} ${JSON.stringify(context)}`,
     '    docker push "$IMAGE"',
+    "    docker logout ghcr.io",
+    '    ref="$(docker image inspect --format \'{{range .RepoDigests}}{{println .}}{{end}}\' "$IMAGE" | grep -m1 -F "${IMAGE%:*}@sha256:" || true)"',
+    `    if [[ ! "$ref" =~ ${DIGEST_REF_PATTERN} ]]; then`,
+    '      echo "::error::Could not read the digest of the pushed image $IMAGE; re-run the workflow."',
+    "      exit 1",
+    "    fi",
+    '    echo "ref=$ref" >> "$GITHUB_OUTPUT"',
+    '    echo "Pushed \\`$IMAGE\\` as \\`$ref\\`." >> "$GITHUB_STEP_SUMMARY"',
   ];
   if (plan.security.imageScan) {
+    // Scans the local image the digest above was read from (same image id), without registry login.
     buildSteps.push(
       "- name: Scan the image (report only)",
       "  env:",
@@ -115,17 +141,29 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     ...uploadEnv,
     "  run: |",
     ...uploadRun,
-    "- name: Start the new version",
+    // Saving the running version is the first thing done on the server, and the rollback only
+    // swaps it back when `.env` already names this run's image, so a failure before the switch
+    // never restores an older version.
+    "- id: start",
+    "  name: Start the new version",
     "  env:",
     `    HOST: ${secret(DEPLOY_SECRETS.host)}`,
     "    IMAGE: ${{ needs.build.outputs.image }}",
+    "    TAG: ${{ needs.build.outputs.tag }}",
     "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
     "  run: |",
     "    set -euo pipefail",
+    `    if [[ ! "$IMAGE" =~ ${DIGEST_REF_PATTERN} ]]; then`,
+    '      echo "::error::The build job did not report the image digest; re-run the workflow."',
+    "      exit 1",
+    "    fi",
+    '    echo "Deploying ${TAG:-the new image} as $IMAGE"',
     `    ${SSH_OPTS}`,
+    '    ssh "${ssh_opts[@]}" "deploy@${HOST}" \'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous; fi\'',
     '    printf \'%s\\n\' "$REGISTRY_TOKEN" | ssh "${ssh_opts[@]}" "deploy@${HOST}" "docker login ghcr.io -u \'${GITHUB_ACTOR}\' --password-stdin"',
-    '    ssh "${ssh_opts[@]}" "deploy@${HOST}" "set -e; cd /srv/app; if [ -f .env ]; then cp .env .env.previous; fi; printf \'APP_IMAGE=%s\\n\' \'${IMAGE}\' > .env; docker compose pull; docker compose up -d --remove-orphans; docker logout ghcr.io"',
-    "- name: Check that the app is healthy",
+    "    ssh \"${ssh_opts[@]}\" \"deploy@${HOST}\" \"set -e; trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT; cd /srv/app; printf 'APP_IMAGE=%s\\n' '${IMAGE}' > .env; docker compose pull; docker compose up -d --remove-orphans\"",
+    "- id: health",
+    "  name: Check that the app is healthy",
     "  env:",
     `    URL: ${healthUrl(plan)}`,
     "  run: |",
@@ -139,15 +177,31 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "    done",
     '    echo "::error::The new version did not answer at $URL."',
     "    exit 1",
+    // Runs only when starting or checking the new version failed (not for upload or setup errors),
+    // and always fails the job.
     "- name: Roll back to the previous version",
-    "  if: failure()",
+    "  if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')",
     "  env:",
     `    HOST: ${secret(DEPLOY_SECRETS.host)}`,
+    "    IMAGE: ${{ needs.build.outputs.image }}",
     "  run: |",
     "    set -uo pipefail",
     `    ${SSH_OPTS}`,
-    '    ssh "${ssh_opts[@]}" "deploy@${HOST}" \'cd /srv/app && if [ -f .env.previous ]; then mv .env.previous .env && docker compose up -d --remove-orphans; fi\'',
-    '    echo "::error::The deploy failed; OpsCrew restored the previous version."',
+    "    outcome=unchanged",
+    `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
+    '      outcome="$(ssh "${ssh_opts[@]}" "deploy@${HOST}" "cd /srv/app || exit 1; if ! grep -qxF \'APP_IMAGE=${IMAGE}\' .env 2>/dev/null; then echo unchanged; elif [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; else mv .env.previous .env && docker compose up -d --remove-orphans >&2 && echo restored; fi")"',
+    "    fi",
+    '    case "$outcome" in',
+    "      restored)",
+    '        echo "::error::The deploy failed; OpsCrew restored the previous version." ;;',
+    "      unchanged)",
+    '        echo "::error::The deploy failed before the new version started; the server still runs the version it had." ;;',
+    "      no-previous)",
+    '        echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;',
+    "      *)",
+    '        echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\`docker compose ps\\` in /srv/app." ;;',
+    "    esac",
+    "    exit 1",
   ];
 
   const lines = [
@@ -176,7 +230,8 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "      contents: read",
     "      packages: write",
     "    outputs:",
-    "      image: ${{ steps.image.outputs.image }}",
+    "      image: ${{ steps.push.outputs.ref }}",
+    "      tag: ${{ steps.image.outputs.image }}",
     "    steps:",
     ...block(buildSteps, 6),
     "",

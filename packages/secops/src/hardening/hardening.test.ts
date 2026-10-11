@@ -17,7 +17,7 @@ const HEALTHY: Record<string, CommandResult> = {
   ),
   "systemctl is-active fail2ban": ok("active\n"),
   "systemctl is-enabled unattended-upgrades": ok("enabled\n"),
-  "systemctl is-active ufw": ok("active\n"),
+  "grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf": ok(""),
   "ss -H -tln": ok(
     [
       "LISTEN 0 4096 0.0.0.0:443 0.0.0.0:*",
@@ -127,6 +127,40 @@ describe("runHostChecks", () => {
     );
     expect(results.find((r) => r.id === "setup-finished")?.status).toBe("fail");
     expect(results.find((r) => r.id === "fail2ban")?.message).toContain("inactive");
+  });
+});
+
+describe("ufw check", () => {
+  const UFW = "grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf";
+
+  it("reads ufw.conf, which the deploy user can read without sudo", () => {
+    expect(HOST_CHECKS.find((c) => c.id === "ufw")?.command).toBe(UFW);
+  });
+
+  it("fails when ufw is installed but disabled, even if its systemd unit is active", async () => {
+    const results = await runHostChecks(
+      remote({ [UFW]: ok("", 1), "systemctl is-active ufw": ok("active\n") }),
+    );
+    const ufw = results.find((r) => r.id === "ufw");
+    expect(ufw).toMatchObject({ status: "fail", severity: "medium" });
+    expect(ufw?.message).toContain("disabled");
+    expect(ufw?.remediation).toContain("ufw enable");
+  });
+
+  it("fails when ufw is not installed", async () => {
+    const results = await runHostChecks(remote({ [UFW]: ok("", 2) }));
+    const ufw = results.find((r) => r.id === "ufw");
+    expect(ufw).toMatchObject({ status: "fail" });
+    expect(ufw?.message).toContain("not installed");
+    expect(ufw?.remediation).toContain("ufw enable");
+  });
+
+  it("passes when ufw is enabled", async () => {
+    const results = await runHostChecks(remote());
+    expect(results.find((r) => r.id === "ufw")).toMatchObject({
+      status: "pass",
+      message: "ufw is enabled.",
+    });
   });
 });
 

@@ -100,6 +100,37 @@ function serviceCheck(
   };
 }
 
+const UFW_REMEDIATION =
+  "Enable it with `ufw enable` (as root) after allowing 22, 80 and 443 (the Hetzner firewall still protects the server).";
+
+/**
+ * `systemctl is-active ufw` reports `active` even after `ufw disable` (the unit is a oneshot that
+ * stays active), so read the persistent switch in `/etc/ufw/ufw.conf` instead. The file is
+ * world-readable, so this works as the unprivileged `deploy` user where `ufw status` does not.
+ */
+const ufwEnabled: HostCheck = {
+  id: "ufw",
+  title: "Host firewall (ufw) is enabled",
+  severity: "medium",
+  command: "grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf",
+  evaluate(result) {
+    if (result.exitCode === 0) return check(this, "pass", "ufw is enabled.");
+    return result.exitCode === 1
+      ? check(
+          this,
+          "fail",
+          "ufw is installed but disabled, so it filters nothing.",
+          UFW_REMEDIATION,
+        )
+      : check(
+          this,
+          "fail",
+          "ufw is not installed (or /etc/ufw/ufw.conf cannot be read).",
+          `Install it with \`apt install ufw\` (as root). ${UFW_REMEDIATION}`,
+        );
+  },
+};
+
 const listeningPorts: HostCheck = {
   id: "listening-ports",
   title: "Only SSH and web ports listen on public addresses",
@@ -245,15 +276,7 @@ export const HOST_CHECKS: readonly HostCheck[] = [
     "enabled",
     "Enable it with `systemctl enable --now unattended-upgrades` (as root).",
   ),
-  serviceCheck(
-    "ufw",
-    "Host firewall (ufw) is active",
-    "medium",
-    "is-active",
-    "ufw",
-    "active",
-    "Enable it with `ufw enable` after allowing 22, 80 and 443 (the Hetzner firewall still protects the server).",
-  ),
+  ufwEnabled,
   listeningPorts,
   dockerTcp,
   diskUsage,

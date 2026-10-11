@@ -70,7 +70,7 @@ function serverScript(o: ServerOptions = {}) {
             : HARDENED_SSHD,
         );
       case "systemctl is-active fail2ban":
-      case "systemctl is-active ufw":
+      case "grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf":
         return ok("active");
       case "systemctl is-enabled unattended-upgrades":
         return ok("enabled");

@@ -357,7 +357,7 @@ export function fakeServer(options: { passwordAuth?: boolean } = {}): RemoteExec
   const answers: Record<string, string> = {
     "cat /etc/ssh/sshd_config.d/10-opscrew.conf": sshd,
     "systemctl is-active fail2ban": "active",
-    "systemctl is-active ufw": "active",
+    "grep -qx 'ENABLED=yes' /etc/ufw/ufw.conf": "",
     "systemctl is-enabled unattended-upgrades": "enabled",
     "ss -H -tln": [
       "LISTEN 0      4096   0.0.0.0:22        0.0.0.0:*",
