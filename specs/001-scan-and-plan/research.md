@@ -106,10 +106,12 @@ field), `prices[]` (`location`, `price_hourly{net,gross}`, `price_monthly{net,gr
   ~1,500 chars combined), `allowed-tools` where useful; keep the file under 500 lines.
 - Marketplace `.claude-plugin/marketplace.json` at the repo root: required `name` (not reserved:
   avoid `claude-*`, `anthropic-*`, `npm`, `github`, …), `owner { name }`, `plugins[]` with `name` +
-  `source` (`"./plugin"`); recommended `description`.
+  `source` (`"./plugin"`); a description goes under `metadata.description` (the current validator
+  rejects a root-level `description`).
 - Install: `claude plugin marketplace add <owner>/<repo>` then `claude plugin install
   opscrew@<marketplace>` (or `/plugin marketplace add …` and `/plugin install …` in a session);
-  local dev: `claude --plugin-dir ./plugin`; validation: `claude plugin validate ./plugin`.
+  local dev: `claude --plugin-dir ./plugin`; validation: `claude plugin validate ./plugin` and
+  `claude plugin validate .` (marketplace).
 - Windows: npx-based stdio servers may need `"command": "cmd", "args": ["/c", "npx", …]`
   (UNVERIFIED; document in the plugin README).
 

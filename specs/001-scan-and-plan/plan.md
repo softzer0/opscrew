@@ -261,8 +261,9 @@ list but scheduled in the same wave as adapt; adapt depends on it).
 
 - Server built with `McpServer` + `StdioServerTransport` from `@modelcontextprotocol/sdk` (check the
   installed type definitions). Each tool: `title`, `description`, `inputSchema` (zod shape) with
-  `projectDir` (absolute; defaults to the server's cwd), `annotations` (`readOnlyHint` for scan/
-  detect/questions/options/status; `destructiveHint: false` for writes of artefacts), returns text
+  `projectDir` (absolute; defaults to the server's cwd), `annotations` (`readOnlyHint` for detect/
+  questions/options/status; `destructiveHint: false` for writes of artefacts, including the scan,
+  which writes its two reports and is `idempotentHint: true`), returns text
   plus `structuredContent`. Errors → `isError: true` with the user-facing message and hint.
 - Plugin layout and marketplace format per research.md (verified against current Claude Code docs).
   Skills tell the agent to always use OpsCrew tools for infrastructure, never run `tofu`/

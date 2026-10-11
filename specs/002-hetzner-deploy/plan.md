@@ -181,7 +181,10 @@ entries); everything else is plain `run:` steps (docker CLI, ssh, scp, curl). Im
    (backend path `.opscrew/tfstate/prod.tfstate`) → `validate` (errors → stop) → `checkDialect`
    on the rendered `.tf` files → `plan` to `.opscrew/plans/<timestamp>.tfplan` → policies
    (`evaluatePlanPolicies`; any failed critical/high → stop with messages) → summary table (changes,
-   cost from `plan.cost`, policy results) → if `planOnly`: print hash and stop → `iac-apply` approval
+   cost from `plan.cost`, policy results) → if `planOnly`: save a sidecar
+   `<plan>.tfplan.json` (hash, engine, changes, policy results, plan JSON for later policy
+   re-checks), print hash and stop; with `approvePlanHash`: skip init/plan and apply the saved plan
+   whose sidecar has that hash, after re-hashing the file and checking the engine → `iac-apply` approval
    (`allowDestroy` + `confirmPhrase` = server name when the plan destroys; non-interactive requires
    `approvePlanHash`) → `assertApprovedPlan` → `engine.apply` → outputs.
 6. Update `plan.deployment` (IPs, url, lastPlanHash, lastApplyAt) and `plan.approvals`; write plan.

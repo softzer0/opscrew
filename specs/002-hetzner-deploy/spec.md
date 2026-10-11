@@ -75,14 +75,20 @@ GitHub and fake SSH; a live end-to-end test runs when `OPSCREW_E2E_HCLOUD_TOKEN`
 4. **Given** the server is up, **When** provisioning continues, **Then** OpsCrew waits for
    cloud-init to finish (up to 8 minutes), pins the server's SSH host key, and sets the GitHub
    Actions secrets `OPSCREW_HOST`, `OPSCREW_SSH_PRIVATE_KEY`, `OPSCREW_SSH_KNOWN_HOSTS`,
-   `OPSCREW_APP_ENV` (and `OPSCREW_DB_ENV` when Postgres is self-hosted) after showing their names
-   (never their values) and getting approval.
+   `OPSCREW_APP_ENV`, `OPSCREW_BUILD_ENV` (browser-visible values such as `NEXT_PUBLIC_*` and
+   `VITE_*`, passed as build arguments) and `OPSCREW_DB_ENV` (when Postgres is self-hosted) after
+   showing their names (never their values) and getting approval. Generated values (the database
+   password, app secrets) are kept privately beside the deploy key so a re-run never changes the
+   password Postgres was initialised with.
 5. **Given** a deploy run, **When** the new container fails its health check, **Then** the workflow
    restores the previous image, the site keeps serving the previous version, and the run fails with
    a clear message.
-6. **Given** a non-interactive environment, **When** `opscrew provision --plan-only` runs, **Then**
-   it prints the plan hash; **When** `opscrew provision --approve <hash>` runs, **Then** it applies
-   exactly that plan or refuses.
+6. **Given** a non-interactive environment, **When** `opscrew provision --plan-only --yes` runs,
+   **Then** it writes the files, saves the plan and prints its hash; **When** `opscrew provision
+   --approve <hash> --yes` runs, **Then** it applies exactly that saved plan file (it never plans
+   again, because every plan embeds a timestamp and could not reproduce the reviewed hash) or
+   refuses when the saved plan is missing, its file changed or it was made with the other engine.
+   `--plan-only` and `--approve` cannot be combined.
 
 ---
 
@@ -177,11 +183,12 @@ secret rotation and costs.
   and render, from a `DeployPlan` and a secret-free render context: the root module (`versions.tf`
   with provider constraints and an empty local backend, `main.tf`, `variables.tf`, `outputs.tf`,
   `terraform.tfvars.json`), the vendored modules, `opscrew/runtime/compose.yaml`,
-  `opscrew/runtime/Caddyfile`, `.github/workflows/opscrew-deploy.yml`, and `opscrew/RUNBOOK.md`.
+  `opscrew/runtime/Caddyfile` and `.github/workflows/opscrew-deploy.yml`; `opscrew/RUNBOOK.md` is
+  rendered by the same package and written by `opscrew verify`.
 - **FR-205**: The `hetzner-vps` module MUST create an SSH key, a firewall (22 from
   `ssh_allowed_cidrs`; 80/443 TCP and 443 UDP from `http_allowed_cidrs`; ICMP), and a server with
   delete and rebuild protection, optional backups, IPv4+IPv6, labels, cloud-init user data and
-  `ignore_changes` on user data and image; outputs IPv4, IPv6, server id and name.
+  `ignore_changes` on user data, image and SSH keys; outputs IPv4, IPv6, server id and name.
 - **FR-206**: Cloud-init MUST create a non-root `deploy` user (key-only, docker group), disable
   password and root SSH login, install Docker + Compose v2, fail2ban, unattended-upgrades and ufw
   (22/80/443), set Docker log rotation and `no-new-privileges`, create `/srv/app` and `/srv/data`,
@@ -219,17 +226,22 @@ secret rotation and costs.
   the non-infrastructure steps (writing generated files, GitHub secrets, push, pull request); an
   infrastructure apply still needs `--approve <hash>`, and destroys or changed host keys always need
   a human.
-- **FR-214**: `opscrew dns [--domain <fqdn>]` MUST update the plan's DNS settings and run the same
-  plan/approve/apply path.
+- **FR-214**: `opscrew dns [--domain <fqdn>] [--plan-only] [--approve <hash>] [--yes]` MUST update
+  the plan's DNS settings (Cloudflare, proxied, web ports limited to Cloudflare) and the requirements,
+  and run the same plan/approve/apply path; deploy secrets are set again only when no server exists
+  yet.
 - **FR-215**: `@opscrew/secops` MUST provide `evaluatePlanPolicies(planJson, deployPlan)` (firewall
   attached, no open admin/database ports, SSH keys set, delete protection, origin restricted to
   Cloudflare when proxied, backups when data is critical) and host hardening checks run through
   `RemoteExec`, plus outside port probes.
 - **FR-216**: `opscrew secure` and `opscrew verify` MUST implement US4 and write their reports.
-- **FR-217**: The MCP server MUST add deploy tools: `opscrew_render`, `opscrew_plan`,
-  `opscrew_apply` (requires the plan hash and a user confirmation through MCP elicitation; refuses
-  when the client cannot elicit and tells the user to run `opscrew provision --approve <hash>`),
-  `opscrew_secure` and `opscrew_verify`.
+- **FR-217**: The MCP server MUST add deploy tools: `opscrew_render` (read-only preview of the files
+  provision would write), `opscrew_plan` (writes the files, which the user-approved tool call
+  authorises, and saves the plan; never applies), `opscrew_apply` (requires the plan hash and a user
+  confirmation through MCP elicitation, with the typed server name for destroys; refuses when the
+  client cannot elicit and tells the user to run `opscrew provision --approve <hash>`; then commits,
+  pushes and opens the pull request; stores deploy secrets only when `OPSCREW_APP_ENV_FILE` is set
+  and never asks for secret values through MCP), `opscrew_secure` and `opscrew_verify`.
 
 ### Key Entities
 

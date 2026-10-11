@@ -32,13 +32,15 @@ expected list for each fixture.
 
 1. **Given** the Lovable-style fixture with a planted fake service-role key in `src/`, a migration
    creating a `profiles` table without row-level security and a committed `.env`, **When** the user
-   runs `opscrew scan`, **Then** the scan reports at least one critical secret finding, a critical
-   Supabase service-role finding, a high "RLS disabled" finding for `profiles`, and a critical
+   runs `opscrew scan`, **Then** the scan reports a critical finding for the leaked key (the
+   service-role key is reported in the Supabase category because only that rule can tell it from
+   the public anon key), a high "RLS disabled" finding for `profiles`, and a critical
    "committed .env" finding, each with file, line and masked evidence, and exits with code 1.
 2. **Given** a clean repository, **When** the user runs `opscrew scan`, **Then** the summary says
    no high or critical problems were found and the exit code is 0.
 3. **Given** `--offline`, **When** the scan runs, **Then** no network request is made and the
-   dependency scanner is listed as skipped with the reason.
+   scanners that need the network (the OSV dependency lookup, osv-scanner and Trivy, which may
+   download its checks) are listed as skipped with the reason.
 4. **Given** `gitleaks` or `osv-scanner` is installed, **When** the scan runs, **Then** their results
    are merged into the report and duplicates are removed; **Given** they are not installed, **Then**
    the report says which optional scanners were skipped and how to install them.
@@ -167,7 +169,9 @@ a fixture.
 ### Edge Cases
 
 - Monorepos with several apps: detect the deployable app (the one with a start script or server
-  framework); if ambiguous, ask in the interview which directory to deploy.
+  framework). When several apps remain, analyze lists them as a risk and design stops with a plain
+  explanation: v1 deploys one app per repository, so run OpsCrew from the app's folder when that app
+  is self-contained. A single app in a workspace subfolder (for example `apps/web`) is supported.
 - Repositories without git: scan and analyze work; adapt explains that git is required.
 - Very large repos: file walking skips ignored folders and files over 1 MB and stops at 20,000
   files with a warning.
@@ -218,8 +222,9 @@ a fixture.
   `opscrew_design_options`, `opscrew_select_design` and `opscrew_status`, with zod input schemas and
   annotations; tools never call a model.
 - **FR-111**: The repository MUST contain a Claude Code plugin in `plugin/` (manifest, MCP config,
-  skills `opscrew-deploy`, `opscrew-scan`, `opscrew-adapt`) and a marketplace manifest at
-  `.claude-plugin/marketplace.json`.
+  skills `opscrew-deploy`, `opscrew-scan`, `opscrew-adapt`; the MCP config pins the `opscrew`
+  version that matches the plugin version) and a marketplace manifest at
+  `.claude-plugin/marketplace.json`; both pass `claude plugin validate`.
 - **FR-112**: Fixture apps MUST exist in `examples/` (Lovable-style Vite + Supabase with planted fake
   problems, Next.js + Postgres, FastAPI + Redis, static Vite SPA) with expected scan and analysis
   results checked by tests.
