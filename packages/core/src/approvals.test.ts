@@ -1,0 +1,330 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type {
+  ApprovalDecision,
+  ApprovalHandler,
+  ApprovalRecord,
+  ApprovalRequest,
+  Clock,
+} from "@opscrew/contracts";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ApprovalGate, isPlanHash, JsonlApprovalStore, MemoryApprovalStore } from "./approvals";
+import { MemoryAuditLog } from "./audit";
+import { OpsCrewError } from "./errors";
+
+const HASH_A = "a".repeat(64);
+const HASH_B = "b".repeat(64);
+const HASH_C_UPPER = `C${"c".repeat(63)}`.toUpperCase();
+const clock: Clock = { now: () => new Date("2026-10-11T12:00:00.000Z") };
+
+function record(overrides: Partial<ApprovalRecord> = {}): ApprovalRecord {
+  return {
+    id: "id-1",
+    kind: "iac-apply",
+    title: "Create 4 resources on Hetzner Cloud",
+    planHash: HASH_A,
+    approved: true,
+    approver: "Test User",
+    decidedAt: "2026-10-11T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** Handler that returns scripted decisions and remembers what it was asked. */
+class ScriptedHandler implements ApprovalHandler {
+  readonly requests: ApprovalRequest[] = [];
+  constructor(private readonly decision: Partial<ApprovalDecision>) {}
+  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    this.requests.push(request);
+    return {
+      approved: true,
+      approver: "Test User",
+      decidedAt: "2026-10-11T12:00:00.000Z",
+      ...this.decision,
+    };
+  }
+}
+
+function makeGate(decision: Partial<ApprovalDecision> = {}) {
+  const handler = new ScriptedHandler(decision);
+  const store = new MemoryApprovalStore();
+  const audit = new MemoryAuditLog({ clock });
+  let n = 0;
+  const gate = new ApprovalGate({ handler, store, audit, clock, newId: () => `id-${++n}` });
+  return { gate, handler, store, audit };
+}
+
+let root: string;
+
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "opscrew-approvals-"));
+});
+
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true });
+});
+
+describe("isPlanHash", () => {
+  it("accepts 64 hex characters in either case", () => {
+    expect(isPlanHash(HASH_A)).toBe(true);
+    expect(isPlanHash(HASH_C_UPPER)).toBe(true);
+  });
+
+  it("rejects anything else", () => {
+    expect(isPlanHash("a".repeat(63))).toBe(false);
+    expect(isPlanHash("a".repeat(65))).toBe(false);
+    expect(isPlanHash(`${"a".repeat(63)}g`)).toBe(false);
+    expect(isPlanHash(` ${HASH_A}`)).toBe(false);
+    expect(isPlanHash(undefined)).toBe(false);
+    expect(isPlanHash(42)).toBe(false);
+  });
+});
+
+describe.each([
+  ["MemoryApprovalStore", () => new MemoryApprovalStore()],
+  ["JsonlApprovalStore", () => new JsonlApprovalStore(join(root, ".opscrew", "approvals.jsonl"))],
+])("%s", (_name, makeStore) => {
+  it("lists records in append order", async () => {
+    const store = makeStore();
+    expect(await store.list()).toEqual([]);
+    await store.append(record({ id: "1" }));
+    await store.append(record({ id: "2", kind: "git-push", planHash: undefined }));
+    expect((await store.list()).map((r) => r.id)).toEqual(["1", "2"]);
+  });
+
+  it("finds the latest approved iac-apply record, matching the hash case-insensitively", async () => {
+    const store = makeStore();
+    await store.append(record({ id: "1", planHash: HASH_A }));
+    await store.append(record({ id: "2", planHash: HASH_A.toUpperCase() }));
+    await store.append(record({ id: "3", planHash: HASH_A, approved: false }));
+    await store.append(record({ id: "4", planHash: HASH_A, kind: "tool-call" }));
+    await store.append(record({ id: "5", planHash: HASH_B }));
+    expect((await store.findApprovedPlan(HASH_A.toUpperCase()))?.id).toBe("2");
+    expect((await store.findApprovedPlan(HASH_B))?.id).toBe("5");
+    expect(await store.findApprovedPlan("d".repeat(64))).toBeUndefined();
+  });
+});
+
+describe("JsonlApprovalStore", () => {
+  it("creates parent directories and writes one record per line", async () => {
+    const file = join(root, "deep", ".opscrew", "approvals.jsonl");
+    const store = new JsonlApprovalStore(file);
+    await store.append(record());
+    const lines = (await readFile(file, "utf8")).split("\n").filter(Boolean);
+    expect(lines.map((line) => JSON.parse(line))).toEqual([record()]);
+  });
+
+  it("treats a missing or empty file as no approvals", async () => {
+    const file = join(root, "approvals.jsonl");
+    const store = new JsonlApprovalStore(file);
+    expect(await store.list()).toEqual([]);
+    await writeFile(file, "", "utf8");
+    expect(await store.list()).toEqual([]);
+    expect(store.warnings).toEqual([]);
+  });
+
+  it("skips corrupt and malformed lines and exposes warnings", async () => {
+    const file = join(root, "approvals.jsonl");
+    const good = JSON.stringify(record({ id: "good" }));
+    const wrongShape = JSON.stringify({ id: "x", kind: "launch-missiles" });
+    await writeFile(file, `${good}\n{broken\n${wrongShape}\n${good.slice(0, 20)}`, "utf8");
+    const store = new JsonlApprovalStore(file);
+    expect((await store.list()).map((r) => r.id)).toEqual(["good"]);
+    expect(store.warnings).toHaveLength(3);
+    expect(await store.findApprovedPlan(HASH_A)).toMatchObject({ id: "good" });
+  });
+
+  it("never interleaves 100 concurrent appends", async () => {
+    const file = join(root, "approvals.jsonl");
+    const store = new JsonlApprovalStore(file);
+    await Promise.all(
+      Array.from({ length: 100 }, (_, i) =>
+        store.append(record({ id: `r${i}`, title: "t".repeat(10_000) })),
+      ),
+    );
+    const records = await store.list();
+    expect(records).toHaveLength(100);
+    expect(store.warnings).toEqual([]);
+    expect(new Set(records.map((r) => r.id)).size).toBe(100);
+  });
+});
+
+describe("ApprovalGate.request", () => {
+  const applyRequest: ApprovalRequest = {
+    kind: "iac-apply",
+    title: "Create 4 resources on Hetzner Cloud",
+    details: "+ hcloud_server.app",
+    planHash: HASH_C_UPPER,
+  };
+
+  it("records an approved decision in the store and the audit log, lower-casing the hash", async () => {
+    const { gate, handler, store, audit } = makeGate();
+    const result = await gate.request(applyRequest);
+    expect(handler.requests).toEqual([applyRequest]);
+    expect(result).toEqual({
+      id: "id-1",
+      kind: "iac-apply",
+      title: applyRequest.title,
+      planHash: HASH_C_UPPER.toLowerCase(),
+      approved: true,
+      approver: "Test User",
+      decidedAt: "2026-10-11T12:00:00.000Z",
+    });
+    expect(await store.list()).toEqual([result]);
+    expect(audit.entries).toHaveLength(1);
+    expect(audit.entries[0]).toMatchObject({
+      kind: "approval",
+      action: "iac-apply",
+      decision: "approved",
+      target: HASH_C_UPPER.toLowerCase(),
+    });
+  });
+
+  it("records a refusal from the handler", async () => {
+    const { gate, store, audit } = makeGate({ approved: false, reason: "not today" });
+    const result = await gate.request(applyRequest);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe("not today");
+    expect((await store.list())[0]?.approved).toBe(false);
+    expect(audit.entries[0]?.decision).toBe("refused");
+  });
+
+  it("rejects an iac-apply request without a valid plan hash", async () => {
+    const { gate, handler } = makeGate();
+    for (const planHash of [undefined, "", "abc", `${"a".repeat(63)}z`]) {
+      const promise = gate.request({ ...applyRequest, planHash });
+      await expect(promise).rejects.toBeInstanceOf(OpsCrewError);
+      await expect(gate.request({ ...applyRequest, planHash })).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+    }
+    expect(handler.requests).toHaveLength(0);
+  });
+
+  it("rejects allowDestroy without a non-empty confirmation phrase", async () => {
+    const { gate, handler } = makeGate();
+    for (const confirmPhrase of [undefined, "", "   "]) {
+      await expect(
+        gate.request({ ...applyRequest, allowDestroy: true, confirmPhrase }),
+      ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    }
+    expect(handler.requests).toHaveLength(0);
+  });
+
+  // Spec US3 scenario 3: deletions require the exact typed phrase; anything else is a refusal.
+  describe("destructive plans (US3 scenario 3)", () => {
+    const destroyRequest: ApprovalRequest = {
+      ...applyRequest,
+      allowDestroy: true,
+      confirmPhrase: "hcloud_server.app",
+    };
+
+    it("approves when the typed phrase matches exactly (surrounding whitespace ignored)", async () => {
+      const { gate, audit } = makeGate({ confirmation: "  hcloud_server.app \n" });
+      const result = await gate.request(destroyRequest);
+      expect(result.approved).toBe(true);
+      expect(result.allowDestroy).toBe(true);
+      expect(audit.entries[0]?.decision).toBe("approved");
+    });
+
+    it.each([
+      ["a different phrase", "hcloud_server.db"],
+      ["a different case", "HCLOUD_SERVER.APP"],
+      ["a partial phrase", "hcloud_server"],
+      ["yes", "yes"],
+      ["nothing", undefined],
+    ])("refuses when the user types %s", async (_label, confirmation) => {
+      const { gate, store, audit } = makeGate({ approved: true, confirmation });
+      const result = await gate.request(destroyRequest);
+      expect(result.approved).toBe(false);
+      expect(result.reason).toBe("confirmation phrase did not match");
+      expect((await store.list())[0]?.approved).toBe(false);
+      expect(audit.entries[0]?.decision).toBe("refused");
+    });
+
+    it("never grants a destroy when the plan is approved without the flag", async () => {
+      const { gate } = makeGate();
+      await gate.request(applyRequest);
+      await expect(
+        gate.assertApprovedPlan(HASH_C_UPPER, { allowDestroy: true }),
+      ).rejects.toMatchObject({ code: "DESTROY_NOT_APPROVED" });
+    });
+
+    it("grants a destroy after a confirmed destroy approval", async () => {
+      const { gate } = makeGate({ confirmation: "hcloud_server.app" });
+      await gate.request(destroyRequest);
+      const approved = await gate.assertApprovedPlan(HASH_C_UPPER, { allowDestroy: true });
+      expect(approved.allowDestroy).toBe(true);
+    });
+  });
+
+  it("enforces a confirmation phrase on non-destructive requests too", async () => {
+    const { gate } = makeGate({ confirmation: "nope" });
+    const result = await gate.request({
+      kind: "github-secrets",
+      title: "Set 3 repository secrets",
+      details: "",
+      confirmPhrase: "owner/repo",
+    });
+    expect(result.approved).toBe(false);
+  });
+
+  it("passes non-apply requests through without a plan hash", async () => {
+    const { gate } = makeGate();
+    const result = await gate.request({ kind: "git-push", title: "Push branch", details: "" });
+    expect(result).toMatchObject({ kind: "git-push", approved: true });
+    expect(result.planHash).toBeUndefined();
+  });
+});
+
+// Spec US3 scenario 2: an approval for hash A never authorises an apply of hash B.
+describe("ApprovalGate.assertApprovedPlan (US3 scenario 2)", () => {
+  it("refuses a different hash, audits the refusal and tells the user about --approve", async () => {
+    const { gate, audit } = makeGate();
+    await gate.request({ kind: "iac-apply", title: "Apply A", details: "", planHash: HASH_A });
+
+    const error = await gate.assertApprovedPlan(HASH_B).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error).toMatchObject({ code: "PLAN_NOT_APPROVED" });
+    expect((error as OpsCrewError).hint).toContain(`--approve ${HASH_B}`);
+
+    const refusal = audit.entries.at(-1);
+    expect(refusal).toMatchObject({
+      kind: "approval",
+      action: "iac-apply",
+      target: HASH_B,
+      decision: "refused",
+    });
+  });
+
+  it("returns the approved record for the approved hash in any case", async () => {
+    const { gate } = makeGate();
+    await gate.request({ kind: "iac-apply", title: "Apply A", details: "", planHash: HASH_A });
+    const approved = await gate.assertApprovedPlan(HASH_A.toUpperCase());
+    expect(approved.planHash).toBe(HASH_A);
+  });
+
+  it("refuses a hash whose only decision was a refusal", async () => {
+    const { gate } = makeGate({ approved: false });
+    await gate.request({ kind: "iac-apply", title: "Apply A", details: "", planHash: HASH_A });
+    await expect(gate.assertApprovedPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+  });
+
+  it("refuses an invalid hash", async () => {
+    const { gate } = makeGate();
+    await expect(gate.assertApprovedPlan("not-a-hash")).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+  });
+
+  it("refuses when the store holds an approval for another kind with the same hash", async () => {
+    const { gate, store } = makeGate();
+    await store.append(record({ kind: "tool-call", planHash: HASH_A }));
+    await expect(gate.assertApprovedPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+  });
+});
