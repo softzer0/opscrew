@@ -41,7 +41,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
 
 ## Phase 2: User Story 1 — Free security scan (P1)
 
-- [ ] T102 [US1] Implement the scan engine plus secret and config rules in `packages/secops/src/{scan,rules}/`
+- [X] T102 [US1] Implement the scan engine plus secret and config rules in `packages/secops/src/{scan,rules}/`
   - Owns: `packages/secops/src/scan/**`, `packages/secops/src/rules/secrets.ts`, `packages/secops/src/rules/secrets.test.ts`, `packages/secops/src/rules/config.ts`, `packages/secops/src/rules/config.test.ts`, `packages/secops/test/fixtures/{scan,secrets,config}/**`
   - Reads: plan.md "Scan"; spec FR-101..FR-103; `packages/contracts/src/secops.ts`; `packages/secops/src/{index,scanners}.ts` (lead-owned)
   - Depends: T101, 000/T004
