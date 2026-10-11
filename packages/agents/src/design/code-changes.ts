@@ -20,12 +20,20 @@ export type CodeChange = DeployPlan["codeChanges"][number];
 export interface CodeChangeSignals {
   /** Repo-relative POSIX paths of the project's files. */
   files?: readonly string[];
-  /** The Next.js config file and whether it sets `output: "standalone"`. */
-  nextConfig?: { path: string; standalone: boolean };
+  /**
+   * The Next.js config file and whether it sets `output: "standalone"`. `tracingRoot` (whether it
+   * sets `outputFileTracingRoot`) is only checked for an app in a monorepo folder.
+   */
+  nextConfig?: { path: string; standalone: boolean; tracingRoot?: boolean };
   /** App source files that pass a literal port number to `listen(...)` / `run(port=...)`. */
   hardcodedPortFiles?: readonly string[];
   /** File where the server app is created; the health endpoint is added there. */
   serverEntry?: string;
+  /**
+   * Django settings: the main settings file and whether any settings file sets `STATIC_ROOT`
+   * (the generated image runs `collectstatic`, which needs it).
+   */
+  djangoSettings?: { path: string; staticRoot: boolean };
 }
 
 /** The subset of a scan report that code-change derivation reads. */
@@ -47,6 +55,7 @@ const NEXT_CONFIG_NAMES = [
   "next.config.cjs",
 ];
 const STANDALONE = /\boutput\s*:\s*["'`]standalone["'`]/;
+const TRACING_ROOT = /\boutputFileTracingRoot\b/;
 const SOURCE_FILE = /\.(?:[cm]?[jt]sx?|py)$/;
 const TEST_FILE = /(?:^|\/)(?:__tests__|tests?|e2e|cypress)\/|\.(?:test|spec)\.[^/]+$/;
 const JS_LITERAL_LISTEN = /\.listen\(\s*\d{2,5}\s*[,)]/;
@@ -62,14 +71,27 @@ const SERVER_ENTRY = [
   /\bcreateServer\(/,
 ];
 const MAX_SOURCE_FILES = 5_000;
+/** Scan rules whose findings are hard-coded secrets (built-in, gitleaks and Supabase service role). */
+const SECRET_RULE_PREFIXES = ["secrets/", "gitleaks/", "supabase/service-role-"];
+
+function isRootDir(dir: string): boolean {
+  return dir === "." || dir === "" || dir === "./";
+}
 
 function joinRel(dir: string, file: string): string {
-  return dir === "." || dir === "" ? file : `${dir}/${file}`;
+  return isRootDir(dir) ? file : `${dir.replace(/\/+$/, "")}/${file}`;
 }
 
 function nextDir(facts: ProjectFacts): string | undefined {
   return facts.frameworks.find((framework) => framework.name === "next")?.path;
 }
+
+function usesDjango(facts: ProjectFacts): boolean {
+  return facts.frameworks.some((framework) => framework.name === "django");
+}
+
+const DJANGO_SETTINGS = /(?:^|\/)settings(?:\/[^/]+)?\.py$/;
+const STATIC_ROOT = /^\s*STATIC_ROOT\s*=/m;
 
 function depth(path: string): number {
   return path.split("/").length;
@@ -92,7 +114,12 @@ export async function collectCodeChangeSignals(
     const fileSet = new Set(files);
     const config = NEXT_CONFIG_NAMES.map((name) => joinRel(next, name)).find((f) => fileSet.has(f));
     if (config !== undefined) {
-      signals.nextConfig = { path: config, standalone: STANDALONE.test(await read(config)) };
+      const text = await read(config);
+      signals.nextConfig = {
+        path: config,
+        standalone: STANDALONE.test(text),
+        ...(isRootDir(next) ? {} : { tracingRoot: TRACING_ROOT.test(text) }),
+      };
     }
   }
 
@@ -113,6 +140,18 @@ export async function collectCodeChangeSignals(
     }
   }
   signals.hardcodedPortFiles = hardcoded.sort();
+
+  if (usesDjango(facts)) {
+    const settings = files
+      .filter((file) => DJANGO_SETTINGS.test(file) && !TEST_FILE.test(file))
+      .sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : 1));
+    const main = settings.find((file) => file.endsWith("/settings.py") || file === "settings.py");
+    if (settings.length > 0) {
+      let staticRoot = false;
+      for (const file of settings) if (STATIC_ROOT.test(await read(file))) staticRoot = true;
+      signals.djangoSettings = { path: main ?? (settings[0] as string), staticRoot };
+    }
+  }
   return signals;
 }
 
@@ -153,8 +192,9 @@ function hasEnvExample(facts: ProjectFacts, signals: CodeChangeSignals): boolean
 
 /**
  * Code changes the app needs before it can be deployed (plan.md): Dockerfile, `.dockerignore`,
- * health endpoint, port from the environment, `.env.example`, Next.js standalone output, and one
- * `secret-removal` per source file with a hard-coded secret found by the scan (`secrets/*`,
+ * health endpoint, port from the environment, `.env.example`, Next.js standalone output (plus
+ * `outputFileTracingRoot` for an app in a monorepo folder), and one `secret-removal` per source
+ * file with a hard-coded secret found by the scan (`secrets/*`, `gitleaks/*`,
  * `supabase/service-role-*`; `.env` files are excluded). Ids are stable: the kind, plus a number
  * for kinds that can repeat (`port-config-1`, `secret-removal-2`). All start `pending`.
  */
@@ -216,19 +256,35 @@ export function deriveCodeChanges(
   }
 
   const next = nextDir(facts);
-  if (next !== undefined && facts.appKind !== "static-spa" && !signals.nextConfig?.standalone) {
+  if (next !== undefined && facts.appKind !== "static-spa") {
+    const config = signals.nextConfig;
+    const inFolder = !isRootDir(next);
+    if (!config?.standalone || (inFolder && config.tracingRoot === false)) {
+      const toRoot = `${"../".repeat(next.replace(/\/+$/, "").split("/").length)}`;
+      add(
+        "build-config",
+        "build-config",
+        config?.path ?? joinRel(next, "next.config.mjs"),
+        inFolder
+          ? `Set output: "standalone" and outputFileTracingRoot (the repository root, for example path.join(__dirname, "${toRoot}")) in the Next.js config, so the container image only ships the files the server needs, including workspace packages.`
+          : 'Set output: "standalone" in the Next.js config so the container image only ships the files the server needs.',
+      );
+    }
+  }
+
+  const django = signals.djangoSettings;
+  if (django !== undefined && !django.staticRoot) {
     add(
       "build-config",
       "build-config",
-      signals.nextConfig?.path ?? joinRel(next, "next.config.mjs"),
-      'Set output: "standalone" in the Next.js config so the container image only ships the files the server needs.',
+      django.path,
+      'Set STATIC_ROOT (for example BASE_DIR / "staticfiles") so `collectstatic` works when the container image is built, and read SECRET_KEY, DEBUG and ALLOWED_HOSTS from the environment.',
     );
   }
 
   const secretFiles = new Map<string, Set<string>>();
   for (const finding of scan?.findings ?? []) {
-    const isSecret =
-      finding.ruleId.startsWith("secrets/") || finding.ruleId.startsWith("supabase/service-role-");
+    const isSecret = SECRET_RULE_PREFIXES.some((prefix) => finding.ruleId.startsWith(prefix));
     if (!isSecret || finding.file === undefined || isDotenvFile(finding.file)) continue;
     if (!RepoPathSchema.safeParse(finding.file).success) continue;
     const titles = secretFiles.get(finding.file) ?? new Set<string>();

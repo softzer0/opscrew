@@ -11,6 +11,8 @@ export const PER_PAGE = 50;
 const MAX_RATE_LIMIT_RETRIES = 3;
 const MAX_SERVER_ERROR_RETRIES = 2;
 const MAX_WAIT_MS = 60_000;
+/** Default time one HTTP request may take before it counts as failed and is retried. */
+export const HETZNER_REQUEST_TIMEOUT_MS = 15_000;
 const TOKEN_HINT =
   "Create a Read & Write API token in the Hetzner Cloud Console (your project → Security → API tokens) and set it as HCLOUD_TOKEN.";
 
@@ -153,6 +155,8 @@ export interface HetznerClientOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Injectable clock (epoch ms) used to interpret `RateLimit-Reset`. */
   now?: () => number;
+  /** Per-request timeout in milliseconds (default {@link HETZNER_REQUEST_TIMEOUT_MS}). */
+  timeoutMs?: number;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -165,6 +169,7 @@ export class HetznerClient {
   private readonly userAgent: string;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
+  private readonly timeoutMs: number;
 
   constructor(options: HetznerClientOptions) {
     this.token = options.token;
@@ -173,6 +178,7 @@ export class HetznerClient {
     this.userAgent = `opscrew/${options.version ?? HETZNER_CONNECTOR_VERSION}`;
     this.sleep = options.sleep ?? defaultSleep;
     this.now = options.now ?? Date.now;
+    this.timeoutMs = options.timeoutMs ?? HETZNER_REQUEST_TIMEOUT_MS;
   }
 
   /** All server types (`GET /server_types`, every page). */
@@ -254,21 +260,48 @@ export class HetznerClient {
     let rateLimitRetries = 0;
     let serverErrorRetries = 0;
     for (;;) {
+      // A fresh timeout per attempt: a hanging API counts as a failed attempt and is retried.
+      const signal = AbortSignal.timeout(this.timeoutMs);
       let response: Response;
+      let body: { json: unknown } | { error: unknown } | undefined;
       try {
-        response = await this.fetchImpl(url.toString(), {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${this.token}`,
-            Accept: "application/json",
-            "User-Agent": this.userAgent,
-          },
-        });
+        response = await untilAborted(
+          this.fetchImpl(url.toString(), {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${this.token}`,
+              Accept: "application/json",
+              "User-Agent": this.userAgent,
+            },
+            signal,
+          }),
+          signal,
+        );
+        if (response.ok) {
+          body = await untilAborted(response.json(), signal).then(
+            (json: unknown) => ({ json }),
+            (error: unknown) => {
+              if (signal.aborted) throw error;
+              return { error };
+            },
+          );
+        }
       } catch (cause) {
+        const timedOut = signal.aborted;
         if (serverErrorRetries < MAX_SERVER_ERROR_RETRIES) {
           await this.sleep(2 ** serverErrorRetries * 1000);
           serverErrorRetries++;
           continue;
+        }
+        if (timedOut) {
+          throw new OpsCrewError(
+            "PROVIDER_ERROR",
+            `The Hetzner Cloud API did not answer within ${seconds(this.timeoutMs)} (${path}).`,
+            {
+              hint: "Try again in a few minutes; check https://status.hetzner.com/ if it keeps happening.",
+              cause,
+            },
+          );
         }
         throw new OpsCrewError(
           "PROVIDER_ERROR",
@@ -290,17 +323,13 @@ export class HetznerClient {
         serverErrorRetries++;
         continue;
       }
-      if (!response.ok) throw await toError(response, path);
-
-      let json: unknown;
-      try {
-        json = await response.json();
-      } catch (cause) {
+      if (!response.ok || body === undefined) throw await toError(response, path, signal);
+      if ("error" in body) {
         throw new OpsCrewError("PROVIDER_ERROR", `Hetzner returned invalid JSON for ${path}.`, {
-          cause,
+          cause: body.error,
         });
       }
-      const parsed = schema.safeParse(json);
+      const parsed = schema.safeParse(body.json);
       if (!parsed.success) {
         throw new OpsCrewError(
           "PROVIDER_ERROR",
@@ -324,10 +353,41 @@ export class HetznerClient {
   }
 }
 
-async function toError(response: Response, path: string): Promise<OpsCrewError> {
+/**
+ * Settles like `promise`, or rejects with the signal's reason once it aborts, so a `fetch`
+ * implementation that ignores its abort signal still cannot hang the caller.
+ */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function seconds(ms: number): string {
+  const value = Math.round(ms / 100) / 10;
+  return `${value} second${value === 1 ? "" : "s"}`;
+}
+
+async function toError(
+  response: Response,
+  path: string,
+  signal: AbortSignal,
+): Promise<OpsCrewError> {
   let apiMessage: string | undefined;
   try {
-    const parsed = errorBodySchema.safeParse(await response.json());
+    const parsed = errorBodySchema.safeParse(await untilAborted(response.json(), signal));
     if (parsed.success) apiMessage = parsed.data.error.message;
   } catch {
     // Body was not JSON; fall back to the status text.

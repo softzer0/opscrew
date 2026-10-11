@@ -81,8 +81,33 @@ const djangoApp = facts({
   name: "shop-site",
 });
 const pythonApp = facts({ languages: ["python"], packageManager: "uv", appKind: "worker" });
+/** The detect `monorepo-turbo` fixture: one Next.js app in `apps/web` of a pnpm workspace. */
+const nextMonorepoApp = facts({
+  name: "acme",
+  packageManager: "pnpm",
+  frameworks: [
+    { name: "next", version: "^15.1.3", path: "apps/web" },
+    { name: "react", version: "^19.0.0", path: "apps/web" },
+  ],
+  appKind: "ssr",
+  port: 4000,
+  build: {
+    installCommand: "pnpm install --frozen-lockfile",
+    buildCommand: "pnpm --filter web run build",
+    startCommand: "pnpm --filter web start",
+  },
+  envVars: [
+    {
+      name: "NEXT_PUBLIC_SUPABASE_URL",
+      files: ["apps/web/app/page.tsx"],
+      clientExposed: true,
+      secretLikely: false,
+    },
+  ],
+  monorepo: true,
+});
 
-const ALL = { nextApp, viteApp, expressApp, fastapiApp, djangoApp, pythonApp };
+const ALL = { nextApp, viteApp, expressApp, fastapiApp, djangoApp, pythonApp, nextMonorepoApp };
 
 describe("detectStack", () => {
   it("maps each sample to its recipe", () => {
@@ -146,9 +171,17 @@ describe("renderDockerAssets", () => {
       "opscrew",
       ".opscrew",
       "node_modules",
+      // Nested app folders in monorepos.
+      "**/.env",
+      "**/.env.*",
+      "!**/.env.example",
+      "**/node_modules",
+      "**/.next",
     ]) {
       expect(ignore.split("\n")).toContain(entry);
     }
+    const lines = ignore.split("\n");
+    expect(lines.indexOf("!**/.env.example")).toBeGreaterThan(lines.indexOf("**/.env.*"));
   });
 
   it("uses the detected package manager and uvicorn target", () => {
@@ -158,6 +191,53 @@ describe("renderDockerAssets", () => {
       renderDockerAssets(fastapiApp, { appPort: 8000, healthPath: "/health" })[0]?.content ?? "";
     expect(api).toContain("uvicorn app.main:api --host 0.0.0.0");
     expect(api).toContain("FROM python:3.12-slim");
+  });
+
+  it("builds a Next.js app in a monorepo folder from the repository root", () => {
+    const dockerfile =
+      renderDockerAssets(nextMonorepoApp, { appPort: 4000, healthPath: "/api/health" })[0]
+        ?.content ?? "";
+    const lines = dockerfile.split("\n");
+    // The whole workspace (root lockfile and workspace packages) is the build context.
+    expect(lines).toContain("COPY . .");
+    expect(dockerfile).toContain("pnpm install --frozen-lockfile");
+    expect(lines).toContain("RUN pnpm --filter web run build && mkdir -p apps/web/public");
+    expect(lines).toContain(
+      "COPY --from=build --chown=node:node /app/apps/web/.next/standalone ./",
+    );
+    expect(lines).toContain(
+      "COPY --from=build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static",
+    );
+    expect(lines).toContain(
+      "COPY --from=build --chown=node:node /app/apps/web/public ./apps/web/public",
+    );
+    expect(lines).toContain('CMD ["node", "apps/web/server.js"]');
+    expect(dockerfile).not.toContain("/app/.next/standalone");
+    expect(dockerfile).toContain("outputFileTracingRoot");
+  });
+
+  it("quotes monorepo app folders that need it", () => {
+    const spaced = facts({
+      ...nextMonorepoApp,
+      frameworks: [{ name: "next", path: "apps/my web/" }],
+    });
+    const dockerfile =
+      renderDockerAssets(spaced, { appPort: 4000, healthPath: "/" })[0]?.content ?? "";
+    expect(dockerfile).toContain(
+      'COPY --from=build --chown=node:node ["/app/apps/my web/.next/standalone", "./"]',
+    );
+    expect(dockerfile).toContain('CMD ["node", "apps/my web/server.js"]');
+  });
+
+  it("collects Django static files at build time without real settings", () => {
+    const dockerfile =
+      renderDockerAssets(djangoApp, { appPort: 8000, healthPath: "/health" })[0]?.content ?? "";
+    const lines = dockerfile.split("\n");
+    const collect = lines.findIndex((line) => line.includes("collectstatic --noinput"));
+    expect(collect).toBeGreaterThan(lines.indexOf("COPY --chown=app:app . ."));
+    expect(collect).toBeLessThan(lines.indexOf("USER app"));
+    expect(lines[collect]).toMatch(/\bSECRET_KEY=build-only-placeholder-not-secret\b/);
+    expect(lines[collect]).toMatch(/python manage\.py collectstatic --noinput/);
   });
 
   it("refuses stacks without a template", () => {

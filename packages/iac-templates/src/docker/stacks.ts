@@ -91,11 +91,55 @@ function needsCorepack(facts: ProjectFacts): boolean {
   return facts.packageManager === "pnpm" || facts.packageManager === "yarn";
 }
 
+/** Normalised repo-relative directory of a framework (`.` for the repository root). */
+function frameworkDir(facts: ProjectFacts, name: string): string {
+  const path = facts.frameworks.find((f) => f.name === name)?.path ?? ".";
+  const dir = path
+    .replace(/^(?:\.\/)+/, "")
+    .replace(/\/+$/, "")
+    .replace(/\/\.$/, "");
+  return dir === "" ? "." : dir;
+}
+
+const PLAIN_PATH = /^[A-Za-z0-9._/@+-]+$/;
+
+/** `COPY --from=build` that switches to the JSON form when a path needs quoting. */
+function copyFromBuild(source: string, destination: string): string {
+  const prefix = "COPY --from=build --chown=node:node";
+  return PLAIN_PATH.test(source) && PLAIN_PATH.test(destination)
+    ? `${prefix} ${source} ${destination}`
+    : `${prefix} [${JSON.stringify(source)}, ${JSON.stringify(destination)}]`;
+}
+
+function shellQuote(value: string): string {
+  return PLAIN_PATH.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Next.js standalone image. For an app in a monorepo folder (`frameworks[].path` of `next`), the
+ * image is still built from the repository root so the root lockfile and workspace packages are
+ * available, and the standalone output is copied from `<dir>/.next/standalone`, where the server
+ * lives at `<dir>/server.js` once `outputFileTracingRoot` points at the repository root.
+ */
 export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): string {
-  const build = facts.build.buildCommand ?? jsRun(facts, "build");
+  const dir = frameworkDir(facts, "next");
+  const atRoot = dir === ".";
+  const inApp = (path: string) => (atRoot ? path : `${dir}/${path}`);
+  const build =
+    facts.build.buildCommand ??
+    (atRoot ? jsRun(facts, "build") : `(cd ${shellQuote(dir)} && ${jsRun(facts, "build")})`);
+  const requirements = atRoot
+    ? ['# Requires `output: "standalone"` in next.config.* (OpsCrew adds it as a code change).']
+    : [
+        `# Requires \`output: "standalone"\` in ${dir}/next.config.* and, because the app lives in a`,
+        "# monorepo, `outputFileTracingRoot` pointing at the repository root, for example",
+        `# \`outputFileTracingRoot: path.join(__dirname, "${"../".repeat(dir.split("/").length)}")\` (OpsCrew adds both as a code change).`,
+        "# The image is built from the repository root so the root lockfile and workspace packages",
+        `# are available; the server starts from ${dir}/server.js.`,
+      ];
   return [
     HEADER("next-standalone"),
-    '# Requires `output: "standalone"` in next.config.* (OpsCrew adds it as a code change).',
+    ...requirements,
     "",
     "FROM node:22-alpine AS build",
     "WORKDIR /app",
@@ -103,17 +147,17 @@ export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): str
     `RUN ${jsInstall(facts)}`,
     "ENV NEXT_TELEMETRY_DISABLED=1",
     ...buildArgs(facts),
-    `RUN ${build} && mkdir -p public`,
+    `RUN ${build} && mkdir -p ${shellQuote(inApp("public"))}`,
     "",
     "FROM node:22-alpine AS runtime",
     "WORKDIR /app",
     `ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=${port} HOSTNAME=0.0.0.0`,
-    "COPY --from=build --chown=node:node /app/public ./public",
-    "COPY --from=build --chown=node:node /app/.next/standalone ./",
-    "COPY --from=build --chown=node:node /app/.next/static ./.next/static",
+    copyFromBuild(`/app/${inApp("public")}`, `./${inApp("public")}`),
+    copyFromBuild(`/app/${inApp(".next/standalone")}`, "./"),
+    copyFromBuild(`/app/${inApp(".next/static")}`, `./${inApp(".next/static")}`),
     "USER node",
     `EXPOSE ${port}`,
-    'CMD ["node", "server.js"]',
+    `CMD ["node", ${JSON.stringify(inApp("server.js"))}]`,
     "",
   ].join("\n");
 }
@@ -237,6 +281,10 @@ export function fastapiDockerfile(facts: ProjectFacts, port: number): string {
   ].join("\n");
 }
 
+/** Placeholder settings so `collectstatic` can import production settings during the build. */
+const DJANGO_BUILD_KEY =
+  "SECRET_KEY=build-only-placeholder-not-secret DJANGO_SECRET_KEY=build-only-placeholder-not-secret";
+
 export function djangoDockerfile(facts: ProjectFacts, port: number): string {
   const module =
     facts.build.startCommand?.match(/([\w.]+)\.wsgi/)?.[1] ?? facts.name.replace(/-/g, "_");
@@ -244,6 +292,9 @@ export function djangoDockerfile(facts: ProjectFacts, port: number): string {
     ...pythonBase("python-django", port, facts),
     "RUN pip install gunicorn",
     `ENV DJANGO_WSGI_MODULE=${module}.wsgi`,
+    "# Collects static files at build time (settings need STATIC_ROOT). The key below is a",
+    "# throwaway value for this step only; the real SECRET_KEY is set when the container runs.",
+    `RUN ${DJANGO_BUILD_KEY} python manage.py collectstatic --noinput`,
     "USER app",
     `EXPOSE ${port}`,
     "# Run migrations as part of your release process (for example `python manage.py migrate`).",

@@ -61,6 +61,57 @@ describe("deriveCodeChanges", () => {
     );
   });
 
+  it("turns gitleaks findings into secret-removal changes, except in .env files", () => {
+    const scan = {
+      findings: [
+        finding("gitleaks/github-pat", "src/config.ts", "GitHub personal access token"),
+        finding("gitleaks/generic-api-key", "apps/api/.env", "Generic API key"),
+        finding("gitleaks/generic-api-key", "scripts/local.sh", "Generic API key"),
+        finding("secrets/github-token", "src/config.ts", "GitHub token"),
+      ],
+    };
+    const changes = deriveCodeChanges(staticSpaFacts(), scan).filter(
+      (c) => c.kind === "secret-removal",
+    );
+    expect(changes.map((c) => [c.id, c.path])).toEqual([
+      ["secret-removal-1", "scripts/local.sh"],
+      ["secret-removal-2", "src/config.ts"],
+    ]);
+    expect(changes[1]?.reason).toContain("GitHub personal access token; GitHub token");
+  });
+
+  it("asks a Next.js app in a monorepo folder to trace files from the repository root", () => {
+    const facts = nextPostgresFacts({
+      frameworks: [{ name: "next", path: "apps/web" }],
+      monorepo: true,
+    });
+    const missing = deriveCodeChanges(facts, undefined, { files: ["apps/web/app/page.tsx"] });
+    const change = missing.find((c) => c.kind === "build-config");
+    expect(change?.path).toBe("apps/web/next.config.mjs");
+    expect(change?.reason).toContain('output: "standalone"');
+    expect(change?.reason).toContain("outputFileTracingRoot");
+    expect(change?.reason).toContain('"../../"');
+
+    // Standalone is set but the tracing root is not: still a build-config change.
+    const partly = deriveCodeChanges(facts, undefined, {
+      nextConfig: { path: "apps/web/next.config.ts", standalone: true, tracingRoot: false },
+    });
+    expect(partly.find((c) => c.kind === "build-config")?.path).toBe("apps/web/next.config.ts");
+
+    const done = deriveCodeChanges(facts, undefined, {
+      nextConfig: { path: "apps/web/next.config.ts", standalone: true, tracingRoot: true },
+    });
+    expect(done.map((c) => c.kind)).not.toContain("build-config");
+
+    // A root app does not need the tracing root.
+    const root = deriveCodeChanges(nextPostgresFacts(), undefined, {
+      nextConfig: { path: "next.config.ts", standalone: false },
+    });
+    expect(root.find((c) => c.kind === "build-config")?.reason).not.toContain(
+      "outputFileTracingRoot",
+    );
+  });
+
   it("needs nothing for an app that is already container-ready", () => {
     const facts = nextPostgresFacts({
       docker: { dockerfile: "Dockerfile", dockerignore: ".dockerignore" },
@@ -158,6 +209,57 @@ describe("collectCodeChangeSignals", () => {
     expect(changes.find((c) => c.kind === "health-endpoint")?.path).toBe(
       "src/app/api/health/route.ts",
     );
+  });
+
+  it("asks a Django app without STATIC_ROOT to set it, so collectstatic works in the image", async () => {
+    const facts = makeFacts({
+      languages: ["python"],
+      packageManager: "pip",
+      frameworks: [{ name: "django", path: "." }],
+    });
+    const without = await project({
+      "manage.py": "",
+      "proj/settings.py": "SECRET_KEY = 'x'\nSTATIC_URL = 'static/'\n",
+    });
+    const missing = await collectCodeChangeSignals(without, facts);
+    expect(missing.djangoSettings).toEqual({ path: "proj/settings.py", staticRoot: false });
+    const change = deriveCodeChanges(facts, undefined, missing).find(
+      (c) => c.kind === "build-config",
+    );
+    expect(change).toMatchObject({ path: "proj/settings.py" });
+    expect(change?.reason).toContain("STATIC_ROOT");
+
+    const withRoot = await project({
+      "manage.py": "",
+      "proj/settings/base.py": 'STATIC_ROOT = BASE_DIR / "staticfiles"\n',
+      "proj/settings/production.py": "from .base import *\n",
+    });
+    const ok = await collectCodeChangeSignals(withRoot, facts);
+    expect(ok.djangoSettings?.staticRoot).toBe(true);
+    expect(deriveCodeChanges(facts, undefined, ok).map((c) => c.kind)).not.toContain(
+      "build-config",
+    );
+  });
+
+  it("checks outputFileTracingRoot for a Next.js app in a monorepo folder", async () => {
+    const facts = nextPostgresFacts({ frameworks: [{ name: "next", path: "apps/web" }] });
+    const without = await project({
+      "apps/web/next.config.mjs": 'export default { output: "standalone" };\n',
+    });
+    expect((await collectCodeChangeSignals(without, facts)).nextConfig).toEqual({
+      path: "apps/web/next.config.mjs",
+      standalone: true,
+      tracingRoot: false,
+    });
+    const traced = await project({
+      "apps/web/next.config.js":
+        'module.exports = { output: "standalone", outputFileTracingRoot: path.join(__dirname, "../../") };\n',
+    });
+    expect((await collectCodeChangeSignals(traced, facts)).nextConfig).toEqual({
+      path: "apps/web/next.config.js",
+      standalone: true,
+      tracingRoot: true,
+    });
   });
 
   it("flags a Next.js config without standalone output", async () => {

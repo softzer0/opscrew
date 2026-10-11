@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import { hetznerConnector, StaticHetznerCatalog } from "@opscrew/connector-hetzner";
 import type { ComputeCatalog } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { detectProjectDetails } from "@opscrew/detect";
 import {
   type DeployPlan,
+  DeployPlanSchema,
   type DesignOption,
   type ProjectFacts,
   type Requirements,
@@ -11,6 +13,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
 import {
   type CodeChangeSignals,
@@ -108,6 +111,7 @@ export async function previewDesignOptions(
   const facts =
     options.facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
   const requirements = await readArtifact("requirements", paths.files.requirements);
+  await requireSingleApp(paths.root);
   const now = deps.clock.now();
 
   let catalog = options.catalog;
@@ -171,13 +175,25 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
 
   const chosen = await pick(designOptions, options);
 
+  const warn = (text: string) => {
+    warnings.push(say(text));
+    reporter.warn(say(text));
+  };
+
   const [signals, scan, previous] = await Promise.all([
     collectCodeChangeSignals(paths.root, facts).catch((): CodeChangeSignals => ({})),
     readScanFindings(paths.files.scanReportJson),
-    readArtifact("plan", paths.files.plan).catch(() => undefined),
+    readArtifact("plan", paths.files.plan).catch((error: unknown) => {
+      if (!(isUserFacingError(error) && error.code === "ARTIFACT_MISSING")) {
+        warn(
+          "The existing opscrew/plan.yaml could not be read, so OpsCrew wrote a new plan. Settings you changed in it by hand (security, infra) and the record of an earlier deployment were not kept; check them before you run `opscrew provision`.",
+        );
+      }
+      return undefined;
+    }),
   ]);
   const codeChanges = deriveCodeChanges(facts, scan, signals);
-  const plan = optionToPlan(chosen, {
+  const fresh = optionToPlan(chosen, {
     facts,
     requirements,
     now,
@@ -185,6 +201,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     signals,
     ...(previous ? { createdAt: previous.createdAt } : {}),
   });
+  const plan = previous ? keepPlanSettings(fresh, previous) : fresh;
+  if (previous) for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
   await writeArtifact("plan", paths.files.plan, plan);
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);
@@ -205,6 +223,77 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     say(`${chosen.id}, ${cost}/month (${priceLabel(chosen.cost)})`),
   );
   return { options: designOptions, chosen, plan, priceSource, warnings };
+}
+
+/**
+ * OpsCrew v1 deploys one app per repository. Re-detects the repository (the saved facts may be
+ * stale) and stops with `PHASE_PRECONDITION` when a monorepo has several deployable apps, instead
+ * of designing a plan from the mixed facts of the repository root.
+ */
+async function requireSingleApp(root: string): Promise<void> {
+  let detection: Awaited<ReturnType<typeof detectProjectDetails>>;
+  try {
+    detection = await detectProjectDetails(root);
+  } catch {
+    return; // Analyze already reported detection problems; the saved facts are used as they are.
+  }
+  const candidates = detection.appCandidates;
+  if (candidates.length <= 1) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `This repository contains ${candidates.length} deployable apps: ${appCandidatesText(detection.facts, candidates)}. OpsCrew v1 deploys one app per repository, so it cannot design one deployment for all of them.`,
+    {
+      hint: `If the app you want to deploy is self-contained (it does not use code from other folders of this repository), run OpsCrew from the app's folder, for example \`cd ${candidates[0]}\` and then \`opscrew analyze\`. Otherwise wait for monorepo support in a later OpsCrew version.`,
+    },
+  );
+}
+
+/**
+ * Carries what the user and later phases put into the previous plan over to the new one:
+ * `deployment`, `approvals`, `security`, `infra` and the status of code changes that are still
+ * the same change (id, kind and path). `security.httpAllowedFrom` is re-derived when the DNS proxy
+ * setting changed, so a Cloudflare-only allow-list never outlives the Cloudflare proxy.
+ */
+function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
+  const key = (change: DeployPlan["codeChanges"][number]) =>
+    `${change.id}\u0000${change.kind}\u0000${change.path}`;
+  const statuses = new Map(previous.codeChanges.map((change) => [key(change), change.status]));
+  const { httpAllowedFrom, ...security } = previous.security;
+  return DeployPlanSchema.parse({
+    ...fresh,
+    codeChanges: fresh.codeChanges.map((change) => ({
+      ...change,
+      status: statuses.get(key(change)) ?? change.status,
+    })),
+    infra: previous.infra,
+    security: previous.dns.proxied === fresh.dns.proxied ? previous.security : security,
+    approvals: previous.approvals,
+    deployment: previous.deployment,
+  });
+}
+
+/** Plain-English warnings when the new plan moves or resizes a server that already exists. */
+function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] {
+  const { deployment } = previous;
+  const deployed =
+    deployment.serverIpv4 !== undefined ||
+    deployment.serverIpv6 !== undefined ||
+    deployment.lastApplyAt !== undefined ||
+    deployment.lastPlanHash !== undefined;
+  if (!deployed) return [];
+  const before = previous.target;
+  const after = plan.target;
+  if (before.location !== after.location) {
+    return [
+      `Your server already runs in ${before.location} (${before.serverType}). The chosen option uses ${after.location} (${after.serverType}), so the next \`opscrew provision\` will replace the server: it creates a new one and deletes the old one together with the data on it. Back up your data first, or choose an option in ${before.location} to keep the server.`,
+    ];
+  }
+  if (before.serverType !== after.serverType) {
+    return [
+      `The chosen option changes the server type from ${before.serverType} to ${after.serverType}, so the next \`opscrew provision\` will resize the server. The app is offline while the server restarts.`,
+    ];
+  }
+  return [];
 }
 
 async function pick(

@@ -13,7 +13,7 @@ export const nextjsPlaybook: Playbook = {
     "health-endpoint":
       'Create the health route at the listed path. With the app router (`app/api/health/route.ts`) export `export const dynamic = "force-dynamic";` and `export function GET() { return Response.json({ status: "ok" }); }`. With the pages router (`pages/api/health.ts`) export a default handler that calls `res.status(200).json({ status: "ok" })`. Make sure middleware does not redirect or protect this path.',
     "build-config":
-      'Set `output: "standalone"` in the listed Next.js config file and keep every other option as it is. If the file does not exist, create `next.config.mjs` with `const nextConfig = { output: "standalone" }; export default nextConfig;`.',
+      'Set `output: "standalone"` in the listed Next.js config file and keep every other option as it is. If the file does not exist, create `next.config.mjs` with `const nextConfig = { output: "standalone" }; export default nextConfig;`. For an app in a monorepo folder (for example `apps/web`), also set `outputFileTracingRoot` to the repository root (for example `path.join(__dirname, "../../")`) so workspace packages are traced into the standalone output.',
     "port-config":
       "The standalone server already reads PORT and HOSTNAME. If the app uses a custom server, make it listen on `Number(process.env.PORT ?? <current port>)` and host 0.0.0.0.",
     "secret-removal":
@@ -24,7 +24,7 @@ export const nextjsPlaybook: Playbook = {
       "`GET /api/health` returns 200 with a JSON body and is not cached or protected by middleware.",
     ],
     "build-config": [
-      '`next build` succeeds and creates `.next/standalone/server.js` (the config contains output: "standalone").',
+      '`next build` succeeds and creates `.next/standalone/server.js` (the config contains output: "standalone"). For an app in a monorepo folder `<dir>`, the server is `<dir>/.next/standalone/<dir>/server.js` and the config also sets outputFileTracingRoot.',
     ],
     "secret-removal": [
       "The value is gone from the file and is read from process.env on the server only.",

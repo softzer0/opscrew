@@ -156,6 +156,62 @@ describe("HetznerClient", () => {
     expect(error.message).toContain("unexpected response");
   });
 
+  it("gives every request a 15-second timeout signal by default", async () => {
+    const seen: (AbortSignal | null | undefined)[] = [];
+    const c = new HetznerClient({
+      token,
+      fetch: async (_input, init) => {
+        seen.push(init?.signal);
+        return new Response(JSON.stringify(fixture("locations.json")), { status: 200 });
+      },
+    });
+    await c.listLocations();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(AbortSignal);
+    expect(seen[0]?.aborted).toBe(false);
+  });
+
+  it("retries a request that never answers, then fails with a plain-English timeout", async () => {
+    const calls: string[] = [];
+    // A fetch that never resolves and ignores the abort signal: the client must still give up.
+    const hanging = (input: string) => {
+      calls.push(input);
+      return new Promise<Response>(() => {});
+    };
+    const sleeper = fakeSleep();
+    const c = new HetznerClient({ token, fetch: hanging, sleep: sleeper.sleep, timeoutMs: 5 });
+    const error = (await c.getPricing().catch((e: unknown) => e)) as OpsCrewError;
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("did not answer within");
+    expect(error.message).toContain("/pricing");
+    expect(error.hint).toMatch(/try again/i);
+    expect(`${error.message} ${error.hint}`).not.toContain(token);
+    expect(calls).toHaveLength(3);
+    expect(sleeper.waits).toEqual([1000, 2000]);
+  });
+
+  it("aborts a hanging fetch through its signal and recovers on the retry", async () => {
+    let attempt = 0;
+    const fetch = (_input: string, init?: RequestInit) => {
+      attempt++;
+      if (attempt > 1) {
+        return Promise.resolve(
+          new Response(JSON.stringify(fixture("pricing.json")), { status: 200 }),
+        );
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      });
+    };
+    const sleeper = fakeSleep();
+    const c = new HetznerClient({ token, fetch, sleep: sleeper.sleep, timeoutMs: 5 });
+    const pricing = await c.getPricing();
+    expect(pricing.server_backup?.percentage).toBe(20);
+    expect(attempt).toBe(2);
+    expect(sleeper.waits).toEqual([1000]);
+  });
+
   it("filters images by name and architecture and reads one server", async () => {
     const { client: c, calls } = client({
       "/images": {

@@ -121,24 +121,53 @@ const SERVER_KINDS: ReadonlySet<AppKind> = new Set(["ssr", "api", "fullstack"]);
  * values, only names (environment variables, files, services).
  */
 export function summarizeFacts(facts: ProjectFacts, options: SummarizeOptions = {}): FactsSummary {
-  return { summary: summaryText(facts), risks: risksFor(facts, options) };
+  return { summary: summaryText(facts, options), risks: risksFor(facts, options) };
 }
 
-function summaryText(facts: ProjectFacts): string {
+/** True when a monorepo has several deployable apps and the facts describe the repository root. */
+function severalApps(options: SummarizeOptions): boolean {
+  return (options.appCandidates?.length ?? 0) > 1;
+}
+
+/**
+ * Plain-English list of monorepo app folders with their frameworks, for example
+ * "`apps/api` (Express) and `apps/web` (Next.js and React)".
+ */
+export function appCandidatesText(facts: ProjectFacts, candidates: readonly string[]): string {
+  return listText(
+    candidates.map((dir) => {
+      const names = [
+        ...new Set(
+          facts.frameworks.filter((f) => f.path === dir).map((f) => frameworkName(f.name)),
+        ),
+      ];
+      return names.length > 0 ? `\`${dir}\` (${listText(names)})` : `\`${dir}\``;
+    }),
+  );
+}
+
+function summaryText(facts: ProjectFacts, options: SummarizeOptions): string {
   const sentences: string[] = [];
   const frameworks = [...new Set(facts.frameworks.map((f) => frameworkName(f.name)))];
   const languages = facts.languages.map(languageName);
-  let first = `${facts.name} is ${APP_KIND_TEXT[facts.appKind]}`;
-  if (frameworks.length > 0) first += ` built with ${listText(frameworks)}`;
-  if (languages.length > 0) {
-    first +=
-      frameworks.length > 0 ? ` (${listText(languages)})` : ` written in ${listText(languages)}`;
+  const candidates = options.appCandidates ?? [];
+  let first: string;
+  if (severalApps(options)) {
+    first = `${facts.name} is a monorepo with ${candidates.length} deployable apps: ${appCandidatesText(facts, candidates)}`;
+    if (languages.length > 0) first += `, written in ${listText(languages)}`;
+  } else {
+    first = `${facts.name} is ${APP_KIND_TEXT[facts.appKind]}`;
+    if (frameworks.length > 0) first += ` built with ${listText(frameworks)}`;
+    if (languages.length > 0) {
+      first +=
+        frameworks.length > 0 ? ` (${listText(languages)})` : ` written in ${listText(languages)}`;
+    }
   }
   sentences.push(`${first}.`);
   if (facts.platformExport.platform !== "none") {
     sentences.push(`It was exported from ${PLATFORM_NAMES[facts.platformExport.platform]}.`);
   }
-  if (facts.monorepo) sentences.push("The repository is a monorepo.");
+  if (facts.monorepo && !severalApps(options)) sentences.push("The repository is a monorepo.");
   if (facts.packageManager !== "none") {
     sentences.push(`Dependencies are installed with ${facts.packageManager}.`);
   }
@@ -170,13 +199,13 @@ function summaryText(facts: ProjectFacts): string {
 function risksFor(facts: ProjectFacts, options: SummarizeOptions): string[] {
   const risks: string[] = [];
   const candidates = options.appCandidates ?? [];
-  if (candidates.length > 1) {
+  if (severalApps(options)) {
     risks.push(
       `This repository contains several deployable apps (${listText(candidates.map((c) => `\`${c}\``))}). ` +
-        "OpsCrew analysed the repository root; run OpsCrew from the directory of the app you want to deploy.",
+        "OpsCrew v1 deploys one app per repository, so `opscrew design` stops here. If the app you " +
+        "want to deploy is self-contained, run OpsCrew from its folder; otherwise wait for monorepo support.",
     );
-  }
-  if (facts.appKind === "unknown") {
+  } else if (facts.appKind === "unknown") {
     risks.push(
       "OpsCrew could not tell what kind of app this is (no known web framework was found). " +
         "Check the start command and port before deploying.",

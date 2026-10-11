@@ -1,8 +1,11 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { FetchLike } from "@opscrew/contracts";
+import { materializeFixture } from "@opscrew/core/testing";
 import {
   type Architecture,
+  type DeployPlan,
   type Requirements,
   readArtifact,
   writeArtifact,
@@ -18,6 +21,10 @@ import {
 import { previewDesignOptions, runDesign } from "./index";
 
 const TOKEN = "hcloud-test-token-not-a-real-value";
+/** The detect `monorepo-turbo` fixture plus an Express API in `apps/api`. */
+const MONOREPO_FIXTURE = fileURLToPath(
+  new URL("./__fixtures__/monorepo-two-apps", import.meta.url),
+);
 
 async function setup(
   facts = staticSpaFacts(),
@@ -296,6 +303,148 @@ describe("runDesign", () => {
     const result = await runDesign(later, { catalog: euCatalog() });
     expect(result.plan.createdAt).toBe("2026-10-11T12:00:00.000Z");
     expect(result.plan.updatedAt).toBe("2026-10-12T08:00:00.000Z");
+  });
+
+  it("stops when a monorepo has several deployable apps (one app per repository in v1)", async () => {
+    const deps = await setup(nextPostgresFacts());
+    await materializeFixture(MONOREPO_FIXTURE, deps.paths.root);
+
+    for (const attempt of [
+      () => runDesign(deps, { catalog: euCatalog() }),
+      () => previewDesignOptions(deps, { catalog: euCatalog() }),
+    ]) {
+      const error = await attempt().catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+      const { message, hint } = error as { message: string; hint: string };
+      expect(message).toContain("`apps/api` (Express)");
+      expect(message).toContain("`apps/web` (Next.js");
+      expect(message).toContain("OpsCrew v1 deploys one app per repository");
+      expect(hint).toMatch(/run OpsCrew from the app's folder/);
+      expect(hint).toMatch(/self-contained/);
+      expect(hint).toMatch(/monorepo support/);
+    }
+    await expect(readFile(deps.paths.files.plan, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await deps.state.read()).phases.design?.status).toBe("failed");
+  });
+
+  it("designs a monorepo with a single deployable app", async () => {
+    const deps = await setup(nextPostgresFacts());
+    await materializeFixture(MONOREPO_FIXTURE, deps.paths.root);
+    await rm(join(deps.paths.root, "apps", "api"), { recursive: true, force: true });
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.plan.target.serverType).toBeDefined();
+  });
+
+  describe("re-running design on an existing plan", () => {
+    const HASH = "ab".repeat(32);
+
+    /** Writes a plan for `optionId`, then applies `edit` to it as the user or provision would. */
+    async function existingPlan(
+      optionId: string,
+      edit: (plan: DeployPlan) => DeployPlan,
+    ): Promise<TestPhaseDeps> {
+      const deps = await setup();
+      await runDesign(deps, { catalog: euCatalog(), optionId });
+      const plan = await readArtifact("plan", deps.paths.files.plan);
+      await writeArtifact("plan", deps.paths.files.plan, edit(plan));
+      return deps;
+    }
+
+    const deployed = (plan: DeployPlan): DeployPlan => ({
+      ...plan,
+      codeChanges: plan.codeChanges.map((c) =>
+        c.id === "dockerfile" ? { ...c, status: "applied" as const } : c,
+      ),
+      infra: { engine: "tofu", dir: "infra/live", stateEncryption: false },
+      security: { ...plan.security, sshAllowedCidrs: ["203.0.113.7/32"], imageScan: false },
+      approvals: [
+        { planHash: HASH, approver: "dev", at: "2026-10-11T12:30:00.000Z", kind: "apply" },
+      ],
+      deployment: {
+        lastCompletedPhase: "provision",
+        serverIpv4: "203.0.113.10",
+        lastPlanHash: HASH,
+        lastApplyAt: "2026-10-11T12:30:00.000Z",
+      },
+    });
+
+    it("keeps deployment, approvals, security, infra and code-change progress", async () => {
+      const deps = await existingPlan("hetzner-single-cx13-fsn1", deployed);
+      const result = await runDesign(deps, {
+        catalog: euCatalog(),
+        optionId: "hetzner-single-cx13-fsn1",
+      });
+      const plan = await readArtifact("plan", deps.paths.files.plan);
+      expect(plan).toEqual(result.plan);
+      expect(plan.security.sshAllowedCidrs).toEqual(["203.0.113.7/32"]);
+      expect(plan.security.imageScan).toBe(false);
+      expect(plan.infra).toEqual({ engine: "tofu", dir: "infra/live", stateEncryption: false });
+      expect(plan.approvals).toEqual([
+        { planHash: HASH, approver: "dev", at: "2026-10-11T12:30:00.000Z", kind: "apply" },
+      ]);
+      expect(plan.deployment).toMatchObject({ serverIpv4: "203.0.113.10", lastPlanHash: HASH });
+      expect(plan.codeChanges.find((c) => c.id === "dockerfile")?.status).toBe("applied");
+      expect(plan.codeChanges.find((c) => c.id === "dockerignore")?.status).toBe("pending");
+      expect(result.warnings.join("\n")).not.toMatch(/replace|resize/);
+    });
+
+    it("warns that a deployed server will be replaced when the location changes", async () => {
+      const deps = await existingPlan("hetzner-single-cx13-fsn1", deployed);
+      const result = await runDesign(deps, {
+        catalog: euCatalog(),
+        optionId: "hetzner-single-cx33-nbg1",
+      });
+      const warning = result.warnings.join("\n");
+      expect(warning).toMatch(/fsn1/);
+      expect(warning).toMatch(/nbg1/);
+      expect(warning).toMatch(/replace the server/);
+      expect(warning).toMatch(/opscrew provision/);
+      expect(deps.reporter.lines.some((l) => l.level === "warn" && /replace/.test(l.message))).toBe(
+        true,
+      );
+      // The new plan still keeps the user's settings.
+      expect(result.plan.security.sshAllowedCidrs).toEqual(["203.0.113.7/32"]);
+    });
+
+    it("warns that a deployed server will be resized when only the server type changes", async () => {
+      const deps = await existingPlan("hetzner-single-cx33-nbg1", (plan) =>
+        deployed({ ...plan, target: { ...plan.target, serverType: "cx23" } }),
+      );
+      const result = await runDesign(deps, {
+        catalog: euCatalog(),
+        optionId: "hetzner-single-cx33-nbg1",
+      });
+      const warning = result.warnings.join("\n");
+      expect(warning).toMatch(/cx23/);
+      expect(warning).toMatch(/cx33/);
+      expect(warning).toMatch(/resize/);
+      expect(warning).not.toMatch(/replace the server/);
+    });
+
+    it("does not warn about a plan that was never provisioned", async () => {
+      const deps = await existingPlan("hetzner-single-cx13-fsn1", (plan) => plan);
+      const result = await runDesign(deps, {
+        catalog: euCatalog(),
+        optionId: "hetzner-single-cx33-nbg1",
+      });
+      expect(result.warnings.join("\n")).not.toMatch(/replace|resize/);
+    });
+
+    it("re-derives the HTTP allow-list when the DNS proxy setting changed", async () => {
+      // The old plan was proxied by Cloudflare; the new requirements have no Cloudflare DNS.
+      const deps = await existingPlan("hetzner-single-cx13-fsn1", (plan) => ({
+        ...deployed(plan),
+        dns: { provider: "cloudflare", domain: "app.example.com", proxied: true, www: false },
+        security: { ...deployed(plan).security, httpAllowedFrom: "cloudflare" },
+      }));
+      const result = await runDesign(deps, {
+        catalog: euCatalog(),
+        optionId: "hetzner-single-cx13-fsn1",
+      });
+      expect(result.plan.dns.proxied).toBe(false);
+      expect(result.plan.security.httpAllowedFrom).toBe("any");
+      expect(result.plan.security.sshAllowedCidrs).toEqual(["203.0.113.7/32"]);
+    });
   });
 
   it("says which artefact is missing", async () => {
