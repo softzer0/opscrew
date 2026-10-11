@@ -1,0 +1,19 @@
+{
+  "facts": {
+    "platformExport": { "platform": "lovable" },
+    "appKind": "static-spa",
+    "frameworkNames": ["react", "vite"],
+    "services": ["supabase"],
+    "clientExposedEnv": ["VITE_SUPABASE_PUBLISHABLE_KEY", "VITE_SUPABASE_URL"]
+  },
+  "scan": {
+    "clean": false,
+    "mustInclude": [
+      "supabase/service-role-in-client",
+      "supabase/rls-disabled",
+      "supabase/permissive-write-policy",
+      "secrets/committed-env"
+    ],
+    "notes": "secrets/committed-env requires the materialised repo to commit .env (the e2e test does so)."
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "ssr",
+    "frameworkNames": ["next", "react"],
+    "port": 3000,
+    "services": ["postgres"],
+    "secretEnv": ["DATABASE_URL"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore", "health-endpoint", "env-example", "build-config"]
+}

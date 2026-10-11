@@ -1,0 +1,10 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "static-spa",
+    "frameworkNames": ["react", "vite"],
+    "services": []
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore"]
+}
