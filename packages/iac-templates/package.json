@@ -10,12 +10,16 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "gen:modules": "tsx scripts/gen-modules.ts"
   },
   "dependencies": {
     "@opscrew/contracts": "workspace:*",
     "@opscrew/core": "workspace:*",
     "@opscrew/plan-schema": "workspace:*",
     "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@opscrew/iac-engine": "workspace:*"
   }
 }

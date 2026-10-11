@@ -1,0 +1,65 @@
+#cloud-config
+# Rendered by OpsCrew. Runs once at first boot: creates the deploy user, hardens SSH, installs
+# Docker, fail2ban, automatic security updates and the host firewall.
+users:
+  - name: deploy
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+ssh_pwauth: false
+disable_root: true
+package_update: true
+package_upgrade: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - fail2ban
+  - unattended-upgrades
+  - ufw
+  - curl
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-opscrew.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      MaxAuthTries 3
+      X11Forwarding no
+      AllowUsers deploy
+  - path: /etc/fail2ban/jail.d/opscrew.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled = true
+      maxretry = 5
+      bantime = 1h
+  - path: /etc/docker/daemon.json
+    permissions: "0644"
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "10m", "max-file": "3" },
+        "no-new-privileges": true,
+        "live-restore": true
+      }
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+runcmd:
+  - [usermod, -aG, docker, deploy]
+  - [mkdir, -p, /srv/app, /srv/data]
+  - [chown, "deploy:deploy", /srv/app]
+  - [chmod, "750", /srv/app]
+  - [ufw, default, deny, incoming]
+  - [ufw, allow, 22/tcp]
+  - [ufw, allow, 80/tcp]
+  - [ufw, allow, 443/tcp]
+  - [ufw, allow, 443/udp]
+  - [ufw, --force, enable]
+  - [systemctl, enable, --now, docker, fail2ban, unattended-upgrades]
+  - [systemctl, restart, ssh]
+  - [touch, /var/lib/opscrew-ready]

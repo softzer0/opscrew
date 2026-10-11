@@ -1,0 +1,216 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { NodeCommandRunner } from "@opscrew/core";
+import { checkDialect } from "@opscrew/iac-engine";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { describe, expect, it } from "vitest";
+import { collectModuleFiles, renderGeneratedModule } from "../../scripts/gen-modules";
+import { MODULE_FILES } from "../generated/modules";
+import type { RenderContext } from "../types";
+import { httpAllowedCidrs, renderInfra, tfvars } from "./index";
+
+const CF = { ipv4: ["173.245.48.0/20", "103.21.244.0/22"], ipv6: ["2400:cb00::/32"] };
+const PUBLIC_KEY =
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE opscrew-deploy";
+
+function plan(
+  overrides: { domain?: string; www?: boolean; waf?: boolean; backups?: boolean } = {},
+): DeployPlan {
+  return DeployPlanSchema.parse({
+    schemaVersion: 1,
+    createdAt: "2026-10-11T12:00:00.000Z",
+    updatedAt: "2026-10-11T12:00:00.000Z",
+    app: { name: "shop", port: 3000, healthPath: "/api/health", env: [] },
+    target: {
+      provider: "hetzner",
+      mode: "vps-compose",
+      location: "nbg1",
+      serverType: "cx23",
+      backups: overrides.backups ?? true,
+    },
+    services: { postgres: true, redis: false },
+    externalServices: [],
+    cost: {
+      monthly: { amount: 7.09, currency: "EUR" },
+      breakdown: [
+        { item: "server", monthly: { amount: 6.59, currency: "EUR" } },
+        { item: "ipv4", monthly: { amount: 0.5, currency: "EUR" } },
+      ],
+      pricesIncludeVat: false,
+      source: "static",
+      asOf: "2026-06-15T00:00:00.000Z",
+    },
+    codeChanges: [],
+    infra: {},
+    dns: overrides.domain
+      ? {
+          provider: "cloudflare",
+          domain: overrides.domain,
+          zone: "example.com",
+          proxied: true,
+          www: overrides.www ?? false,
+        }
+      : { provider: "none", proxied: false },
+    cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
+    security: overrides.waf === false ? { wafCustomRules: false } : {},
+  });
+}
+
+function ctx(overrides: Partial<RenderContext> = {}): RenderContext {
+  return {
+    opscrewVersion: "0.1.0",
+    github: { owner: "acme", repo: "shop" },
+    deploySshPublicKey: `${PUBLIC_KEY}\n`,
+    ...overrides,
+  };
+}
+
+const cloudflare = (manage = true) => ({
+  zoneId: "0123456789abcdef0123456789abcdef",
+  manageConfigRule: manage,
+  manageWafRules: manage,
+  ipRanges: CF,
+});
+
+describe("renderInfra", () => {
+  it("renders a server-only root module without a domain", () => {
+    const files = renderInfra(plan(), ctx());
+    expect(files.map((f) => f.path)).toEqual([
+      "opscrew/infra/prod/versions.tf",
+      "opscrew/infra/prod/main.tf",
+      "opscrew/infra/prod/variables.tf",
+      "opscrew/infra/prod/outputs.tf",
+      "opscrew/infra/prod/terraform.tfvars.json",
+      "opscrew/infra/modules/hetzner-vps/cloud-init.yaml.tftpl",
+      "opscrew/infra/modules/hetzner-vps/main.tf",
+      "opscrew/infra/modules/hetzner-vps/outputs.tf",
+      "opscrew/infra/modules/hetzner-vps/variables.tf",
+      "opscrew/infra/modules/hetzner-vps/versions.tf",
+    ]);
+    const main = files.find((f) => f.path.endsWith("prod/main.tf"))?.content ?? "";
+    expect(main).not.toContain("cloudflare");
+    expect(main).toMatchSnapshot();
+    expect(files.find((f) => f.path.endsWith("versions.tf"))?.content).toMatchSnapshot();
+    expect(JSON.parse(files.find((f) => f.path.endsWith("tfvars.json"))?.content ?? "{}")).toEqual({
+      app_name: "shop",
+      location: "nbg1",
+      server_type: "cx23",
+      image: "ubuntu-24.04",
+      backups: true,
+      deploy_ssh_public_key: PUBLIC_KEY,
+      ssh_allowed_cidrs: ["0.0.0.0/0", "::/0"],
+      http_allowed_cidrs: ["0.0.0.0/0", "::/0"],
+    });
+  });
+
+  it("adds Cloudflare DNS and restricts web ports to Cloudflare when proxied", () => {
+    const files = renderInfra(
+      plan({ domain: "shop.example.com", www: true }),
+      ctx({ cloudflare: cloudflare() }),
+    );
+    expect(files.some((f) => f.path === "opscrew/infra/modules/cloudflare-dns/main.tf")).toBe(true);
+    expect(files.find((f) => f.path.endsWith("prod/main.tf"))?.content).toMatchSnapshot();
+    const values = JSON.parse(files.find((f) => f.path.endsWith("tfvars.json"))?.content ?? "{}");
+    expect(values).toMatchObject({
+      domain: "shop.example.com",
+      cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
+      proxied: true,
+      www: true,
+      manage_config_rule: true,
+      manage_waf_rules: true,
+      http_allowed_cidrs: [...CF.ipv4, ...CF.ipv6],
+    });
+  });
+
+  it("leaves existing Cloudflare rulesets alone", () => {
+    const values = tfvars(
+      plan({ domain: "shop.example.com" }),
+      ctx({ cloudflare: cloudflare(false) }),
+    );
+    expect(values).toMatchObject({ manage_config_rule: false, manage_waf_rules: false });
+  });
+
+  it("turns WAF rules off when the plan says so", () => {
+    const values = tfvars(
+      plan({ domain: "shop.example.com", waf: false }),
+      ctx({ cloudflare: cloudflare() }),
+    );
+    expect(values).toMatchObject({ manage_config_rule: true, manage_waf_rules: false });
+  });
+
+  it("keeps web ports open when Cloudflare ranges are unknown", () => {
+    expect(
+      httpAllowedCidrs(
+        plan({ domain: "shop.example.com" }),
+        ctx({ cloudflare: { ...cloudflare(), ipRanges: { ipv4: [], ipv6: [] } } }),
+      ),
+    ).toEqual(["0.0.0.0/0", "::/0"]);
+  });
+
+  it("refuses to render DNS without a zone id", () => {
+    expect(() => renderInfra(plan({ domain: "shop.example.com" }), ctx())).toThrow(/zone id/);
+  });
+
+  it("is deterministic, dialect-neutral and free of secrets and absolute paths", () => {
+    const rendered = renderInfra(
+      plan({ domain: "shop.example.com" }),
+      ctx({ cloudflare: cloudflare() }),
+    );
+    expect(
+      renderInfra(plan({ domain: "shop.example.com" }), ctx({ cloudflare: cloudflare() })),
+    ).toEqual(rendered);
+    const tf = rendered.filter((f) => f.path.endsWith(".tf"));
+    expect(checkDialect(tf.map((f) => ({ path: f.path, content: f.content })))).toEqual([]);
+    for (const file of rendered) {
+      expect(file.content).not.toMatch(
+        /(ghp_|sk-ant-|sk_live_|AKIA)[A-Za-z0-9]{8}|BEGIN [A-Z ]*PRIVATE KEY/,
+      );
+      expect(file.content).not.toMatch(/[A-Za-z]:\\|\/home\/|\/Users\//);
+      expect(file.content.endsWith("\n")).toBe(true);
+    }
+  });
+});
+
+describe("generated modules", () => {
+  it("match the module sources (run gen:modules after editing a module)", () => {
+    expect(MODULE_FILES).toEqual(collectModuleFiles());
+    expect(renderGeneratedModule(MODULE_FILES)).toContain("export const MODULE_FILES");
+  });
+});
+
+// Downloads providers from the registry, so it only runs with OPSCREW_IT=1.
+const engines = [
+  ["tofu", process.env.OPSCREW_TOFU_BIN],
+  ["terraform", process.env.OPSCREW_TERRAFORM_BIN],
+] as const;
+
+describe.skipIf(process.env.OPSCREW_IT !== "1")("rendered HCL validates (integration)", () => {
+  for (const [name, bin] of engines) {
+    it.skipIf(!bin)(
+      `validates with ${name}`,
+      async () => {
+        const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-`));
+        for (const file of renderInfra(
+          plan({ domain: "shop.example.com", www: true }),
+          ctx({ cloudflare: cloudflare() }),
+        )) {
+          const target = join(root, file.path);
+          await mkdir(dirname(target), { recursive: true });
+          await writeFile(target, file.content);
+        }
+        const runner = new NodeCommandRunner();
+        const cwd = join(root, "opscrew/infra/prod");
+        const init = await runner.run(
+          bin as string,
+          ["init", "-backend=false", "-input=false", "-no-color"],
+          { cwd },
+        );
+        expect(init.exitCode, init.stderr).toBe(0);
+        const validate = await runner.run(bin as string, ["validate", "-no-color"], { cwd });
+        expect(validate.exitCode, validate.stdout + validate.stderr).toBe(0);
+      },
+      300_000,
+    );
+  }
+});
