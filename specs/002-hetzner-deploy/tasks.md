@@ -91,7 +91,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/secops`
   - Effort: medium
 
-- [ ] T207 [P] [US2] Implement shared provisioning helpers in `packages/agents/src/shared/`
+- [X] T207 [P] [US2] Implement shared provisioning helpers in `packages/agents/src/shared/`
   - Owns: `packages/agents/src/shared/**`
   - Reads: plan.md "Provision orchestration" steps 3, 4, 7, 8; spec FR-213; 000 data-model.md (project home files)
   - Depends: 000/T004, 000/T005

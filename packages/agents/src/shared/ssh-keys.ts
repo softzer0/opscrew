@@ -1,0 +1,137 @@
+import { createHash, generateKeyPairSync, randomBytes, randomInt } from "node:crypto";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import type { ProjectPaths } from "@opscrew/core";
+
+export interface Ed25519KeyPair {
+  /** `-----BEGIN OPENSSH PRIVATE KEY-----` … (unencrypted openssh-key-v1). */
+  privateKeyOpenSsh: string;
+  /** `ssh-ed25519 AAAA… comment` */
+  publicKeyOpenSsh: string;
+  /** `SHA256:…` as printed by `ssh-keygen -lf`. */
+  fingerprintSha256: string;
+}
+
+function sshString(value: Buffer | string): Buffer {
+  const data = typeof value === "string" ? Buffer.from(value, "utf8") : value;
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  return Buffer.concat([length, data]);
+}
+
+function uint32(value: number): Buffer {
+  const out = Buffer.alloc(4);
+  out.writeUInt32BE(value >>> 0);
+  return out;
+}
+
+/** Generates an Ed25519 key pair in OpenSSH formats using Node's built-in crypto. */
+export function generateEd25519KeyPair(
+  comment: string,
+  random: (size: number) => Buffer = randomBytes,
+): Ed25519KeyPair {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const jwk = privateKey.export({ format: "jwk" });
+  const pub = Buffer.from(publicKey.export({ format: "jwk" }).x ?? "", "base64url");
+  const seed = Buffer.from(jwk.d ?? "", "base64url");
+  if (pub.length !== 32 || seed.length !== 32) throw new Error("Unexpected Ed25519 key length");
+
+  const keyType = "ssh-ed25519";
+  const publicBlob = Buffer.concat([sshString(keyType), sshString(pub)]);
+  const check = random(4);
+  let privateSection = Buffer.concat([
+    check,
+    check,
+    sshString(keyType),
+    sshString(pub),
+    sshString(Buffer.concat([seed, pub])),
+    sshString(comment),
+  ]);
+  const padding: number[] = [];
+  for (let i = 1; (privateSection.length + padding.length) % 8 !== 0; i++) padding.push(i);
+  privateSection = Buffer.concat([privateSection, Buffer.from(padding)]);
+
+  const body = Buffer.concat([
+    Buffer.from("openssh-key-v1\0", "binary"),
+    sshString("none"),
+    sshString("none"),
+    sshString(""),
+    uint32(1),
+    sshString(publicBlob),
+    sshString(privateSection),
+  ]);
+  const base64 =
+    body
+      .toString("base64")
+      .match(/.{1,70}/g)
+      ?.join("\n") ?? "";
+  const fingerprint = createHash("sha256").update(publicBlob).digest("base64").replace(/=+$/, "");
+  return {
+    privateKeyOpenSsh: `-----BEGIN OPENSSH PRIVATE KEY-----\n${base64}\n-----END OPENSSH PRIVATE KEY-----\n`,
+    publicKeyOpenSsh: `${keyType} ${publicBlob.toString("base64")} ${comment}`,
+    fingerprintSha256: `SHA256:${fingerprint}`,
+  };
+}
+
+async function readIfExists(file: string): Promise<string | undefined> {
+  try {
+    return await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function writePrivate(file: string, content: string): Promise<void> {
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(file, content, { mode: 0o600 });
+  await chmod(file, 0o600).catch(() => undefined);
+}
+
+export interface DeployKey {
+  privateKeyOpenSsh: string;
+  publicKeyOpenSsh: string;
+  privateKeyFile: string;
+  created: boolean;
+}
+
+/** Creates the project's deploy key once (`~/.opscrew/projects/<id>/deploy_ed25519`) and reuses it. */
+export async function ensureDeployKey(paths: ProjectPaths): Promise<DeployKey> {
+  const existingPrivate = await readIfExists(paths.files.deployKey);
+  const existingPublic = await readIfExists(paths.files.deployKeyPub);
+  if (existingPrivate && existingPublic) {
+    return {
+      privateKeyOpenSsh: existingPrivate,
+      publicKeyOpenSsh: existingPublic.trim(),
+      privateKeyFile: paths.files.deployKey,
+      created: false,
+    };
+  }
+  const pair = generateEd25519KeyPair(`opscrew-deploy@${paths.projectId}`);
+  await writePrivate(paths.files.deployKey, pair.privateKeyOpenSsh);
+  await writeFile(paths.files.deployKeyPub, `${pair.publicKeyOpenSsh}\n`, { mode: 0o644 });
+  return {
+    privateKeyOpenSsh: pair.privateKeyOpenSsh,
+    publicKeyOpenSsh: pair.publicKeyOpenSsh,
+    privateKeyFile: paths.files.deployKey,
+    created: true,
+  };
+}
+
+/** The OpenTofu state passphrase for this project, created once (32 random bytes, base64url). */
+export async function ensureStatePassphrase(paths: ProjectPaths): Promise<string> {
+  const existing = (await readIfExists(paths.files.statePassphrase))?.trim();
+  if (existing && existing.length >= 16) return existing;
+  const passphrase = randomBytes(32).toString("base64url");
+  await writePrivate(paths.files.statePassphrase, `${passphrase}\n`);
+  return passphrase;
+}
+
+const PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+/** Random password safe in URLs, dotenv files and shells (letters and digits only). */
+export function randomPassword(length = 32): string {
+  let out = "";
+  for (let i = 0; i < length; i++) out += PASSWORD_ALPHABET[randomInt(PASSWORD_ALPHABET.length)];
+  return out;
+}

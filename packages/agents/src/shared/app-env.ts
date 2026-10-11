@@ -1,0 +1,140 @@
+import { OpsCrewError } from "@opscrew/core";
+import { isClientExposedEnvName } from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
+import { randomPassword } from "./ssh-keys";
+
+/** Parses a dotenv file (quotes, `export` prefixes, `#` comments, escaped newlines). */
+export function parseDotenv(text: string): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const raw of text.replace(/^﻿/, "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith("#")) continue;
+    const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
+    if (!match) continue;
+    const name = match[1] as string;
+    let value = (match[2] as string).trim();
+    if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+      value = value.slice(1, -1).replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    } else if (value.startsWith("'") && value.endsWith("'") && value.length >= 2) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.replace(/\s+#.*$/, "");
+    }
+    values.set(name, value);
+  }
+  return values;
+}
+
+/** One `NAME=value` line for a Docker Compose env_file, quoted so Compose reads it literally. */
+export function dotenvLine(name: string, value: string): string {
+  if (/^[A-Za-z0-9_.,:/@+=-]*$/.test(value)) return `${name}=${value}`;
+  if (!value.includes("'") && !value.includes("\n")) return `${name}='${value}'`;
+  const escaped = value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\$/g, "$$$$");
+  return `${name}="${escaped}"`;
+}
+
+export type EnvAnswer = { useLocal: true } | { value: string } | { skip: true };
+
+export interface EnvQuestion {
+  name: string;
+  secret: boolean;
+  /** True when the local `.env` has a value the user may reuse for production. */
+  localValueAvailable: boolean;
+}
+
+export interface AssembleAppEnvOptions {
+  plan: DeployPlan;
+  /** Contents of the local `.env` (interactive) or of `OPSCREW_APP_ENV_FILE` (non-interactive). */
+  dotenvText?: string;
+  /** Interactive prompt; when absent, values come from `dotenvText` only. */
+  ask?: (question: EnvQuestion) => Promise<EnvAnswer>;
+  /** Injected for tests. */
+  password?: () => string;
+}
+
+export interface AppEnvironment {
+  /** Contents of the `OPSCREW_APP_ENV` secret (Compose env_file for the app). */
+  appEnv: string;
+  /** Contents of `OPSCREW_DB_ENV` when Postgres is self-hosted. */
+  dbEnv?: string;
+  /** Contents of `OPSCREW_BUILD_ENV`: client-exposed values passed as Docker build arguments. */
+  buildEnv: string;
+  /** Variable names set (never values), for display and audit. */
+  names: string[];
+}
+
+/**
+ * Builds the production environment for the deploy secrets. Values the app needs come from the
+ * user (local `.env` only after confirmation, or typed in), are generated (database password) or
+ * derived (DATABASE_URL, REDIS_URL pointing at the containers). Values are never logged.
+ */
+export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<AppEnvironment> {
+  const { plan } = options;
+  const local = parseDotenv(options.dotenvText ?? "");
+  const app = new Map<string, string>();
+  const build = new Map<string, string>();
+  const missing: string[] = [];
+  let dbEnv: string | undefined;
+
+  if (plan.services.postgres) {
+    const password = (options.password ?? randomPassword)();
+    dbEnv = ["POSTGRES_USER=app", "POSTGRES_DB=app", `POSTGRES_PASSWORD=${password}`, ""].join(
+      "\n",
+    );
+    app.set("DATABASE_URL", `postgres://app:${password}@db:5432/app`);
+  }
+  if (plan.services.redis) app.set("REDIS_URL", "redis://cache:6379");
+
+  for (const variable of plan.app.env) {
+    if (app.has(variable.name) || variable.name === "PORT") continue;
+    let value: string | undefined;
+    if (variable.source === "generated") {
+      value = (options.password ?? randomPassword)();
+    } else if (options.ask) {
+      const answer = await options.ask({
+        name: variable.name,
+        secret: variable.secret,
+        localValueAvailable: local.has(variable.name),
+      });
+      if ("useLocal" in answer) value = local.get(variable.name);
+      else if ("value" in answer) value = answer.value;
+    } else {
+      value = local.get(variable.name);
+    }
+    if (value === undefined) {
+      missing.push(variable.name);
+      continue;
+    }
+    if (isClientExposedEnvName(variable.name)) {
+      if (/[\r\n]/.test(value)) {
+        throw new OpsCrewError("INVALID_INPUT", `${variable.name} must be a single line.`);
+      }
+      build.set(variable.name, value);
+    } else {
+      app.set(variable.name, value);
+    }
+  }
+
+  if (missing.length > 0 && !options.ask) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Production values are missing for: ${missing.join(", ")}.`,
+      {
+        hint: "Add them to the file in OPSCREW_APP_ENV_FILE, or run `opscrew provision` in a terminal to type them in.",
+      },
+    );
+  }
+
+  const sortedLines = (values: Map<string, string>, format: (n: string, v: string) => string) =>
+    [...values.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([n, v]) => format(n, v));
+  return {
+    appEnv: `${sortedLines(app, dotenvLine).join("\n")}\n`,
+    ...(dbEnv !== undefined ? { dbEnv } : {}),
+    buildEnv: `${sortedLines(build, (n, v) => `${n}=${v}`).join("\n")}\n`,
+    names: [...new Set([...app.keys(), ...build.keys()])].sort(),
+  };
+}
