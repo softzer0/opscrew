@@ -105,7 +105,7 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
   - Verify: `node -e "for (const d of ['lovable-supabase','nextjs-postgres','fastapi-redis','static-vite']) JSON.parse(require('fs').readFileSync('examples/'+d+'/expected.json','utf8'))" && git grep -nE "(ghp_|sk-ant-|sk_live_|AKIA)[A-Za-z0-9]{8}" -- examples || echo "no secret literals"`
   - Effort: medium
 
-- [ ] T109 [US2] [US3] Implement the analyze and interview phases in `packages/agents/src/{analyze,interview}/`
+- [X] T109 [US2] [US3] Implement the analyze and interview phases in `packages/agents/src/{analyze,interview}/`
   - Owns: `packages/agents/src/analyze/**`, `packages/agents/src/interview/**`
   - Reads: spec US2, US3, FR-104, FR-106; plan.md "Interview, design and code changes"; `packages/agents/src/context.ts` (lead-owned `PhaseDeps`); 000 data-model.md
   - Depends: T101, 000/T003, 000/T005, 000/T007

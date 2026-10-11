@@ -1,0 +1,161 @@
+import {
+  type ProjectFacts,
+  type Question,
+  type QuestionId,
+  QuestionSchema,
+  type Requirements,
+  type ServiceKind,
+} from "@opscrew/plan-schema";
+
+/** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
+export type InterviewAnswers = Record<string, unknown>;
+
+/** Services whose data loss matters; without one of them the data-criticality question is skipped. */
+const DATA_SERVICES: ReadonlySet<ServiceKind> = new Set([
+  "postgres",
+  "mysql",
+  "mongodb",
+  "sqlite",
+  "supabase",
+  "firebase",
+]);
+
+const usesService = (facts: ProjectFacts, kind: ServiceKind) =>
+  facts.services.some((s) => s.kind === kind);
+
+/** True when the app stores data in a database, so data criticality must be asked. */
+export function storesData(facts: ProjectFacts): boolean {
+  return facts.services.some((s) => DATA_SERVICES.has(s.kind));
+}
+
+/**
+ * Answers inferred from the facts for questions that are not asked (no database → data
+ * criticality `none`; no Supabase → keep nothing) and defaults for optional questions.
+ */
+export function inferredAnswers(facts: ProjectFacts): Partial<Record<QuestionId, unknown>> {
+  const inferred: Partial<Record<QuestionId, unknown>> = {};
+  if (!storesData(facts)) inferred.dataCriticality = "none";
+  inferred.keepExternalServices = usesService(facts, "supabase") ? ["supabase"] : [];
+  return inferred;
+}
+
+const withDefault = <T>(value: T | undefined) => (value === undefined ? {} : { default: value });
+
+/**
+ * The interview questions for a project: only those that cannot be inferred from the facts, with
+ * previous answers pre-filled as defaults. Every question is validated with `QuestionSchema`.
+ */
+export function buildQuestions(facts: ProjectFacts, previous?: Requirements): Question[] {
+  const questions: Question[] = [
+    {
+      id: "expectedMonthlyUsers",
+      prompt: "How many people will use the app each month?",
+      help: "A rough guess is fine. It decides the server size.",
+      kind: "single-select",
+      options: [
+        { value: "<1k", label: "Fewer than 1,000" },
+        { value: "1k-10k", label: "1,000 to 10,000" },
+        { value: "10k-100k", label: "10,000 to 100,000" },
+        { value: ">100k", label: "More than 100,000" },
+      ],
+      default: previous?.expectedMonthlyUsers ?? "<1k",
+      required: true,
+    },
+    {
+      id: "budgetMonthly",
+      prompt: "What is your monthly budget for hosting?",
+      help: "In EUR or USD, for example 10 EUR. OpsCrew shows which options fit it.",
+      kind: "money",
+      ...withDefault(previous?.budgetMonthly),
+      required: true,
+    },
+    {
+      id: "region",
+      prompt: "Where are most of your users?",
+      help: "The server is placed close to them.",
+      kind: "single-select",
+      options: [
+        { value: "eu-central", label: "Europe (Germany)" },
+        { value: "eu-north", label: "Northern Europe (Finland)" },
+        { value: "us-east", label: "United States, east coast" },
+        { value: "us-west", label: "United States, west coast" },
+        { value: "ap-southeast", label: "Asia Pacific (Singapore)" },
+      ],
+      default: previous?.region ?? "eu-central",
+      required: true,
+    },
+    {
+      id: "uptime",
+      prompt: "How much downtime is acceptable?",
+      kind: "single-select",
+      options: [
+        {
+          value: "best-effort",
+          label: "Some downtime is fine",
+          hint: "side projects, demos",
+        },
+        { value: "standard", label: "Short outages are acceptable", hint: "most apps" },
+        {
+          value: "high",
+          label: "It must stay up",
+          hint: "paying customers; costs more",
+        },
+      ],
+      default: previous?.uptime ?? "standard",
+      required: true,
+    },
+  ];
+
+  if (storesData(facts)) {
+    questions.push({
+      id: "dataCriticality",
+      prompt: "How bad would it be to lose the app's data?",
+      help: "Anything other than 'not a problem' turns on automated backups.",
+      kind: "single-select",
+      options: [
+        { value: "none", label: "Not a problem", hint: "the data can be recreated" },
+        { value: "important", label: "Painful", hint: "daily backups" },
+        { value: "critical", label: "Unacceptable", hint: "backups and extra care" },
+      ],
+      default: previous?.dataCriticality ?? "important",
+      required: true,
+    });
+  }
+
+  questions.push(
+    {
+      id: "domain",
+      prompt: "Which domain should the app use? Leave empty to decide later.",
+      help: "For example app.example.com. You can add one later.",
+      kind: "text",
+      ...withDefault(previous?.domain),
+      required: false,
+    },
+    {
+      id: "dnsProvider",
+      prompt: "Where is the domain's DNS managed?",
+      help: "Ignored when you leave the domain empty. With Cloudflare, OpsCrew can set up DNS for you.",
+      kind: "single-select",
+      options: [
+        { value: "cloudflare", label: "Cloudflare" },
+        { value: "other", label: "Another provider", hint: "you add the DNS record yourself" },
+        { value: "none", label: "No domain yet" },
+      ],
+      default: previous?.dnsProvider ?? "cloudflare",
+      required: false,
+    },
+  );
+
+  if (usesService(facts, "supabase")) {
+    questions.push({
+      id: "keepExternalServices",
+      prompt: "Keep using your hosted Supabase project?",
+      help: "Yes (recommended) keeps the database and sign-in on Supabase. No runs PostgreSQL on your own server, and you move the data and replace Supabase features yourself.",
+      kind: "confirm",
+      default: previous !== undefined ? previous.keepExternalServices.includes("supabase") : true,
+      required: false,
+    });
+  }
+
+  return questions.map((q) => QuestionSchema.parse(q));
+}

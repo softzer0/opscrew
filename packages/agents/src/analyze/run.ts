@@ -1,0 +1,273 @@
+import type { PhaseResult } from "@opscrew/contracts";
+import { ensureStateDir, writeFileAtomic } from "@opscrew/core";
+import { detectProjectDetails } from "@opscrew/detect";
+import {
+  AppKindSchema,
+  type Architecture,
+  ArchitectureSchema,
+  PortSchema,
+  type ProjectFacts,
+  ProjectFactsSchema,
+  UrlPathSchema,
+  writeArtifact,
+} from "@opscrew/plan-schema";
+import { z } from "zod";
+import type { PhaseDeps } from "../context";
+import { renderArchitectureMarkdown } from "./markdown";
+import { ANALYST_SYSTEM_PROMPT, buildAnalystPrompt } from "./prompts";
+import { APP_KIND_LABELS, summarizeFacts } from "./summary";
+
+/** Default model of the Analyst. */
+export const DEFAULT_ANALYST_MODEL = "claude-haiku-5-5";
+
+/** Structured output the Analyst must return; validated before any of it is used. */
+export const AnalystOutputSchema = z.object({
+  summary: z.string().min(1).max(3000),
+  risks: z.array(z.string().min(1).max(600)).max(20),
+  corrections: z
+    .object({
+      appKind: AppKindSchema.optional(),
+      port: PortSchema.optional(),
+      startCommand: z.string().min(1).max(500).optional(),
+      healthEndpoint: UrlPathSchema.optional(),
+    })
+    .optional(),
+});
+export type AnalystOutput = z.infer<typeof AnalystOutputSchema>;
+
+export interface AnalyzeOptions {
+  /** Let the Analyst refine the result when a model is configured (default true). */
+  ai?: boolean;
+  /** Model id for the Analyst (default {@link DEFAULT_ANALYST_MODEL}). */
+  model?: string;
+}
+
+export interface AnalyzeResult {
+  architecture: Architecture;
+  /** Contents written to `opscrew/ARCHITECTURE.md`. */
+  markdown: string;
+  /** Model spend in USD (0 when no model ran). */
+  costUsd: number;
+  /** Why the AI step did not refine the result, when it was requested but skipped or failed. */
+  aiSkippedReason?: string;
+}
+
+const MAX_TURNS = 25;
+const MAX_BUDGET_USD = 0.5;
+
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/**
+ * The analyze phase: detects the project, builds the deterministic architecture, optionally lets
+ * the read-only Analyst refine the summary, risks and a few facts (app kind, port, start command,
+ * health endpoint), then writes `opscrew/architecture.json` and `opscrew/ARCHITECTURE.md`, records
+ * the phase in `.opscrew/state.json` and the model cost in `.opscrew/costs.jsonl`. Any AI failure
+ * falls back to the deterministic result with a warning.
+ */
+export async function runAnalyze(
+  deps: PhaseDeps,
+  options: AnalyzeOptions = {},
+): Promise<AnalyzeResult> {
+  const { ai = true, model = DEFAULT_ANALYST_MODEL } = options;
+  const { reporter, paths } = deps;
+  try {
+    await ensureStateDir(paths);
+    reporter.step("Analysing the project");
+    const detection = await detectProjectDetails(paths.root);
+    if (detection.truncated) {
+      reporter.warn(
+        "The repository has more files than OpsCrew inspects (20,000); detection may be incomplete.",
+      );
+    }
+    const summarizeOptions = { appCandidates: detection.appCandidates };
+    const deterministic = summarizeFacts(detection.facts, summarizeOptions);
+    let architecture: Architecture = {
+      schemaVersion: 1,
+      generatedAt: deps.clock.now().toISOString(),
+      generator: { tool: "opscrew", version: deps.version },
+      facts: detection.facts,
+      summary: deterministic.summary,
+      risks: deterministic.risks,
+      aiEnriched: false,
+    };
+
+    let costUsd = 0;
+    let aiSkippedReason: string | undefined;
+    if (ai) {
+      const enriched = await enrich(deps, architecture, deterministic, model, summarizeOptions);
+      costUsd = enriched.costUsd;
+      if (enriched.architecture !== undefined) architecture = enriched.architecture;
+      else aiSkippedReason = enriched.reason;
+    }
+
+    const markdown = renderArchitectureMarkdown(architecture);
+    await writeArtifact("architecture", paths.files.architecture, architecture);
+    await writeFileAtomic(paths.files.architectureMd, markdown, { mode: 0o644 });
+    reporter.success("Wrote opscrew/architecture.json and opscrew/ARCHITECTURE.md.");
+
+    const { facts } = architecture;
+    const riskCount = architecture.risks.length;
+    await deps.state.markPhase(
+      "analyze",
+      "ok",
+      `${APP_KIND_LABELS[facts.appKind]}; ${riskCount} risk${riskCount === 1 ? "" : "s"}` +
+        (architecture.aiEnriched ? "; refined by the Analyst" : ""),
+    );
+    return {
+      architecture,
+      markdown,
+      costUsd,
+      ...(aiSkippedReason !== undefined ? { aiSkippedReason } : {}),
+    };
+  } catch (error) {
+    await markFailed(deps, error);
+    throw error;
+  }
+}
+
+async function markFailed(deps: PhaseDeps, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  try {
+    await deps.state.markPhase("analyze", "failed", deps.redactor.redact(message).slice(0, 300));
+  } catch {
+    // Keep the original error; a broken state file is reported by the next read.
+  }
+}
+
+interface Enrichment {
+  architecture?: Architecture;
+  reason?: string;
+  costUsd: number;
+}
+
+async function enrich(
+  deps: PhaseDeps,
+  base: Architecture,
+  deterministic: { summary: string; risks: string[] },
+  model: string,
+  summarizeOptions: { appCandidates: string[] },
+): Promise<Enrichment> {
+  const { reporter, redactor, runtime } = deps;
+  const skip = (reason: string, costUsd = 0): Enrichment => {
+    reporter.warn(`Skipped the AI step: ${reason} The deterministic analysis was written instead.`);
+    return { reason, costUsd };
+  };
+
+  if (runtime === undefined) {
+    const reason = "No model is configured for this run.";
+    reporter.info(`${reason} Using the deterministic analysis.`);
+    return { reason, costUsd: 0 };
+  }
+  const availability = await runtime.isConfigured();
+  if (!availability.ok) {
+    const hint = availability.hint !== undefined ? ` ${availability.hint}` : "";
+    return skip(redactor.redact(`${availability.reason ?? "The model is not available."}${hint}`));
+  }
+
+  reporter.step(`Asking the Analyst (${model}) to review the code (read-only)`);
+  let result: PhaseResult<AnalystOutput>;
+  try {
+    result = await runtime.runPhase<AnalystOutput>({
+      phase: "analyze",
+      systemPrompt: ANALYST_SYSTEM_PROMPT,
+      prompt: redactor.redact(buildAnalystPrompt(base.facts, deterministic)),
+      projectRoot: deps.paths.root,
+      profile: "read-only",
+      builtinTools: ["Read", "Glob", "Grep"],
+      output: {
+        name: "architecture_summary",
+        description: "Plain-English summary, extra deployment risks and corrected facts.",
+        schema: AnalystOutputSchema,
+      },
+      model,
+      maxTurns: MAX_TURNS,
+      maxBudgetUsd: MAX_BUDGET_USD,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return skip(redactor.redact(`the Analyst failed (${message}).`));
+  }
+
+  const costUsd = Number.isFinite(result.costUsd) && result.costUsd > 0 ? result.costUsd : 0;
+  await deps.costs.append({ phase: "analyze", model: result.model ?? model, costUsd });
+  reporter.info(
+    `The Analyst used ${result.turns} turn${result.turns === 1 ? "" : "s"} and cost $${costUsd.toFixed(4)}.`,
+  );
+
+  if (!result.ok || result.output === undefined) {
+    const why = result.error ?? `the Analyst stopped early (${result.stopReason}).`;
+    return skip(redactor.redact(why), costUsd);
+  }
+  // Re-validate: never trust the runtime alone with model output.
+  const parsed = AnalystOutputSchema.safeParse(result.output);
+  if (!parsed.success) {
+    return skip("the Analyst's answer did not match the expected format.", costUsd);
+  }
+  const output = parsed.data;
+
+  const facts = applyCorrections(deps, base.facts, output.corrections);
+  const factRisks = summarizeFacts(facts, summarizeOptions).risks;
+  const seen = new Set(factRisks.map((r) => r.toLowerCase()));
+  const modelRisks: string[] = [];
+  for (const raw of output.risks) {
+    const risk = oneLine(redactor.redact(raw));
+    if (risk === "" || seen.has(risk.toLowerCase())) continue;
+    seen.add(risk.toLowerCase());
+    modelRisks.push(risk);
+  }
+  const candidate = ArchitectureSchema.safeParse({
+    ...base,
+    facts,
+    summary: redactor.redact(output.summary.trim()),
+    risks: [...factRisks, ...modelRisks],
+    aiEnriched: true,
+  });
+  if (!candidate.success) {
+    return skip("the refined architecture did not pass validation.", costUsd);
+  }
+  reporter.success("The Analyst refined the summary and risks.");
+  return { architecture: candidate.data, costUsd };
+}
+
+const CORRECTABLE = ["appKind", "port", "startCommand", "healthEndpoint"] as const;
+
+/** Applies the Analyst's corrections to the four correctable fields; invalid results are ignored. */
+function applyCorrections(
+  deps: PhaseDeps,
+  facts: ProjectFacts,
+  corrections: AnalystOutput["corrections"],
+): ProjectFacts {
+  if (corrections === undefined) return facts;
+  const next: ProjectFacts = structuredClone(facts);
+  const changes: string[] = [];
+  if (corrections.appKind !== undefined && corrections.appKind !== facts.appKind) {
+    next.appKind = corrections.appKind;
+    changes.push(`app kind ${facts.appKind} → ${corrections.appKind}`);
+  }
+  if (corrections.port !== undefined && corrections.port !== facts.port) {
+    next.port = corrections.port;
+    changes.push(`port ${facts.port ?? "unknown"} → ${corrections.port}`);
+  }
+  const startCommand = corrections.startCommand?.trim();
+  if (startCommand && startCommand !== facts.build.startCommand) {
+    next.build.startCommand = deps.redactor.redact(startCommand);
+    changes.push(`start command → \`${next.build.startCommand}\``);
+  }
+  if (
+    corrections.healthEndpoint !== undefined &&
+    corrections.healthEndpoint !== facts.healthEndpoint
+  ) {
+    next.healthEndpoint = corrections.healthEndpoint;
+    changes.push(`health endpoint → ${corrections.healthEndpoint}`);
+  }
+  if (changes.length === 0) return facts;
+  const valid = ProjectFactsSchema.safeParse(next);
+  if (!valid.success) {
+    deps.reporter.warn(
+      `Ignored the Analyst's corrections (${CORRECTABLE.join(", ")}) because they were not valid.`,
+    );
+    return facts;
+  }
+  deps.reporter.info(`The Analyst corrected: ${changes.join("; ")}.`);
+  return valid.data;
+}
