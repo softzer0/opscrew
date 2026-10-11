@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "opscrew": {
+      "command": "npx",
+      "args": ["-y", "opscrew@latest", "mcp"]
+    }
+  }
+}

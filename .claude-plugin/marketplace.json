@@ -1,0 +1,15 @@
+{
+  "name": "opscrew",
+  "description": "OpsCrew plugins for Claude Code: security scans, deployment planning and deploys to your own cloud.",
+  "owner": { "name": "The OpsCrew Authors" },
+  "plugins": [
+    {
+      "name": "opscrew",
+      "source": "./plugin",
+      "description": "Scan, plan, prepare and deploy your app to your own cloud with OpsCrew.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "devops"
+    }
+  ]
+}

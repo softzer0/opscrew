@@ -1,0 +1,20 @@
+{
+  "name": "opscrew",
+  "version": "0.1.0",
+  "description": "OpsCrew: the ops crew you didn't hire. Scan your app for security problems, plan a deployment that fits your budget, prepare the code and deploy to your own cloud with Terraform or OpenTofu, with your approval at every step.",
+  "author": { "name": "The OpsCrew Authors" },
+  "homepage": "https://opscrew.dev",
+  "repository": "https://github.com/opscrew/opscrew",
+  "license": "Apache-2.0",
+  "keywords": [
+    "devops",
+    "secops",
+    "deploy",
+    "terraform",
+    "opentofu",
+    "hetzner",
+    "cloudflare",
+    "security",
+    "supabase"
+  ]
+}
