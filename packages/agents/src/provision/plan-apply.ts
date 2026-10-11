@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type {
   ApprovalRecord,
   IacEngine,
+  PhaseName,
   PlanSummary,
   PolicyResult,
   ResourceAction,
@@ -29,6 +30,21 @@ export interface PlanAndApplyOptions {
   planOnly?: boolean;
   /** Command named in hints, for example `opscrew dns` (default `opscrew provision`). */
   command?: string;
+  /** Phase recorded in the audit log (default `provision`). */
+  phase?: PhaseName;
+  /** Plain-English warnings added to the `iac-apply` approval details. */
+  approvalNotes?: readonly string[];
+}
+
+/** Hetzner's wording when a server type has no capacity in a location. */
+const UNAVAILABLE =
+  /resource_unavailable|out of stock|unsupported location|error during placement|(?<!service )unavailable/i;
+
+function applyFailureHint(log: string, deployPlan: DeployPlan, command: string): string {
+  if (UNAVAILABLE.test(log)) {
+    return `Hetzner cannot create a ${deployPlan.target.serverType} server in ${deployPlan.target.location} right now (the type is unavailable or out of stock there). Run \`opscrew design\` to pick another server type or location, then run \`${command}\` again. Nothing that was already created is removed.`;
+  }
+  return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
 }
 
 export interface PlanAndApplyResult {
@@ -242,10 +258,13 @@ export async function planAndApply(
   }
 
   const { create, update, delete: del, replace } = saved.counts;
+  const providers =
+    deployPlan.dns.provider === "cloudflare" ? "Hetzner Cloud and Cloudflare" : "Hetzner Cloud";
+  const notes = options.approvalNotes ?? [];
   const approval = await deps.approvals.request({
     kind: "iac-apply",
-    title: `Apply the infrastructure plan on Hetzner Cloud (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`,
-    details,
+    title: `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`,
+    details: notes.length > 0 ? `${details}\n\n${notes.join("\n")}` : details,
     planHash: saved.planHash,
     costDelta: deployPlan.cost.monthly,
     policy: saved.policy,
@@ -271,19 +290,16 @@ export async function planAndApply(
     kind: "iac",
     actor: "opscrew",
     action: "apply",
-    phase: "provision",
+    phase: options.phase ?? "provision",
     target: saved.planHash,
     decision: result.ok ? "approved" : "refused",
     detail: result.ok ? "apply finished" : "apply failed",
   });
   if (!result.ok) {
-    throw new OpsCrewError(
-      "ENGINE_FAILED",
-      `Applying the plan failed:\n${deps.redactor.redact(lastLines(result.log))}`,
-      {
-        hint: "Fix the cause shown above, then run `opscrew provision` again; it plans the remaining changes.",
-      },
-    );
+    const log = deps.redactor.redact(lastLines(result.log));
+    throw new OpsCrewError("ENGINE_FAILED", `Applying the plan failed:\n${log}`, {
+      hint: applyFailureHint(log, deployPlan, command),
+    });
   }
   deps.reporter.success("Infrastructure applied.");
   return {

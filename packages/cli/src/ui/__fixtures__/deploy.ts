@@ -269,7 +269,8 @@ export function fakeCloudflare(): CloudflareApi {
       status: "active",
       nameServers: [],
     }),
-    hasEntrypointRuleset: async () => false,
+    listDnsRecords: async () => [],
+    inspectEntrypointRuleset: async () => ({ exists: false, ownedByOpsCrew: false, ruleCount: 0 }),
     getIpRanges: async () => ({ ipv4: CF_V4, ipv6: CF_V6 }),
   };
 }

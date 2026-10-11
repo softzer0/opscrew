@@ -25,10 +25,11 @@ export {
   previewDeploymentFiles,
   readRequirements,
 } from "./render";
-export { runPhaseFlow, runProvision } from "./run";
+export { type PhaseFlowExtras, runPhaseFlow, runProvision } from "./run";
 export {
   buildAppEnvironment,
   deploySecrets,
+  deploySecretsStoredFor,
   generatedValuesFile,
   setDeploySecrets,
 } from "./secrets";

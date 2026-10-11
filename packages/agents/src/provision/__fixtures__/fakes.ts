@@ -11,6 +11,7 @@ import type {
   RemoteExec,
   ResourceChange,
 } from "@opscrew/contracts";
+import { type CloudflareDnsRecord, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
 import { NodeCommandRunner } from "@opscrew/core";
 import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { ScriptedRunner } from "../../testing";
@@ -29,6 +30,8 @@ export interface PlanInputOptions {
   domain?: string;
   postgres?: boolean;
   deployed?: boolean;
+  /** Also serve `www.<domain>` (with `domain`). */
+  www?: boolean;
 }
 
 /** A valid `opscrew/plan.yaml` input (parsed with the schema so defaults are filled). */
@@ -70,7 +73,7 @@ export function testPlan(options: PlanInputOptions = {}) {
     codeChanges: [],
     infra: { engine: "tofu" },
     dns: options.domain
-      ? { provider: "cloudflare", domain: options.domain, proxied: true }
+      ? { provider: "cloudflare", domain: options.domain, proxied: true, www: !!options.www }
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: {},
@@ -282,17 +285,85 @@ export class FakeGitHub implements GitHubApi {
   }
 }
 
-export function fakeCloudflare(
-  options: { configRules?: boolean; wafRules?: boolean; zone?: boolean } = {},
-): CloudflareApi {
+/**
+ * Who holds a phase's entrypoint ruleset in the fake zone: nobody, the user (with rules, or an
+ * empty one) or OpsCrew's module. `true` means `"user"`, `false` means `"none"`.
+ */
+export type FakeRuleset = "none" | "user" | "user-empty" | "opscrew";
+
+export interface FakeCloudflareOptions {
+  configRules?: FakeRuleset | boolean;
+  wafRules?: FakeRuleset | boolean;
+  zone?: boolean;
+  /** DNS records in the zone. */
+  records?: CloudflareDnsRecord[];
+  /** Thrown by `listDnsRecords` (for example a refused permission). */
+  listError?: Error;
+}
+
+/** Cloudflare fake whose zone contents tests may change between runs. */
+export interface FakeCloudflare extends CloudflareApi {
+  readonly state: { config: FakeRuleset; waf: FakeRuleset; records: CloudflareDnsRecord[] };
+  /** Names passed to `listDnsRecords`, in call order. */
+  readonly listed: string[];
+}
+
+const rulesetOwner = (value: FakeRuleset | boolean | undefined): FakeRuleset =>
+  value === true ? "user" : value === false || value === undefined ? "none" : value;
+
+/** A DNS record as OpsCrew's module creates it (with its comment). */
+export function opscrewRecord(
+  name: string,
+  type: string,
+  content: string,
+  extra: Partial<CloudflareDnsRecord> = {},
+): CloudflareDnsRecord {
   return {
+    id: `${type}-${name}`,
+    type,
+    name,
+    content,
+    ttl: 1,
+    proxied: true,
+    comment: OPSCREW_MANAGED_COMMENT,
+    ...extra,
+  };
+}
+
+export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudflare {
+  const state = {
+    config: rulesetOwner(options.configRules),
+    waf: rulesetOwner(options.wafRules),
+    records: [...(options.records ?? [])],
+  };
+  const listed: string[] = [];
+  return {
+    state,
+    listed,
     verifyToken: async () => ({ ok: true, message: "The Cloudflare token is active." }),
     findZone: async () =>
       options.zone === false
         ? undefined
         : { id: "zone-123", name: "example.com", status: "active", nameServers: [] },
-    hasEntrypointRuleset: async (_zone, phase) =>
-      phase === "http_config_settings" ? !!options.configRules : !!options.wafRules,
+    listDnsRecords: async (_zone, filter = {}) => {
+      listed.push(filter.name ?? "*");
+      if (options.listError) throw options.listError;
+      return state.records.filter(
+        (r) =>
+          (filter.name === undefined || r.name === filter.name) &&
+          (filter.type === undefined || r.type === filter.type),
+      );
+    },
+    inspectEntrypointRuleset: async (_zone, phase) => {
+      const owner = phase === "http_config_settings" ? state.config : state.waf;
+      if (owner === "none") return { exists: false, ownedByOpsCrew: false, ruleCount: 0 };
+      return {
+        exists: true,
+        ownedByOpsCrew: owner === "opscrew",
+        ruleCount: owner === "user-empty" ? 0 : 1,
+        id: `rs-${phase}`,
+      };
+    },
     getIpRanges: async () => ({ ipv4: CF_V4, ipv6: CF_V6 }),
   };
 }

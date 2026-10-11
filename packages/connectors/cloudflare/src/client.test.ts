@@ -1,7 +1,12 @@
 import type { FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { CloudflareClient, cloudflareConnector, zoneCandidates } from "./index";
+import {
+  CloudflareClient,
+  cloudflareConnector,
+  OPSCREW_MANAGED_COMMENT,
+  zoneCandidates,
+} from "./index";
 
 const TOKEN = fakeSecret("cloudflare-token");
 
@@ -134,25 +139,93 @@ describe("CloudflareClient", () => {
     expect(calls[0]?.url).toContain("type=A");
   });
 
-  it("detects existing entrypoint rulesets", async () => {
+  it("keeps record comments and maps a refused DNS read to the permissions hint", async () => {
+    const record = { type: "A", name: "a.example.com", ttl: 1 };
     const { fetch } = fakeFetch({
-      "/zones/z1/rulesets/phases/http_config_settings/entrypoint": {
+      "/zones/z1/dns_records": ok([
+        { ...record, id: "r1", content: "203.0.113.10", comment: "Managed by OpsCrew" },
+        { ...record, id: "r2", content: "198.51.100.7", comment: null },
+      ]),
+      "/zones/z2/dns_records": {
+        status: 403,
+        body: { success: false, errors: [{ message: "Authentication error" }] },
+      },
+    });
+    const client = new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep });
+    const records = await client.listDnsRecords("z1", { name: "a.example.com" });
+    expect(records[0]?.comment).toBe(OPSCREW_MANAGED_COMMENT);
+    expect(records[1]).not.toHaveProperty("comment");
+    await expect(client.listDnsRecords("z2")).rejects.toMatchObject({
+      code: "CREDENTIALS_INVALID",
+      hint: expect.stringContaining("DNS → Edit"),
+    });
+  });
+
+  it("tells OpsCrew's own entrypoint rulesets from the user's", async () => {
+    const config = "/rulesets/phases/http_config_settings/entrypoint";
+    const waf = "/rulesets/phases/http_request_firewall_custom/entrypoint";
+    const { fetch } = fakeFetch({
+      [`/zones/z1${config}`]: {
         status: 404,
         body: { success: false, errors: [{ code: 10003, message: "not found" }] },
       },
-      "/zones/z1/rulesets/phases/http_request_firewall_custom/entrypoint": ok({
-        id: "rs",
-        rules: [{ id: "x" }],
+      [`/zones/z1${waf}`]: ok({
+        id: "rs-user",
+        name: "default",
+        description: "",
+        rules: [{ id: "x", description: "Block bad bots" }],
       }),
-      "/zones/z2/rulesets/phases/http_request_firewall_custom/entrypoint": ok({
-        id: "rs",
-        rules: [],
+      [`/zones/z2${config}`]: ok({
+        id: "rs-ops",
+        name: "OpsCrew configuration rules",
+        description: "Managed by OpsCrew",
+        rules: [{ id: "r1", description: "OpsCrew: verify the origin certificate" }],
       }),
+      [`/zones/z2${waf}`]: ok({ id: "rs-empty", name: "default", rules: [] }),
+      [`/zones/z3${waf}`]: ok({ id: "rs-named", name: "OpsCrew custom rules", rules: [] }),
     });
     const client = new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep });
-    expect(await client.hasEntrypointRuleset("z1", "http_config_settings")).toBe(false);
-    expect(await client.hasEntrypointRuleset("z1", "http_request_firewall_custom")).toBe(true);
-    expect(await client.hasEntrypointRuleset("z2", "http_request_firewall_custom")).toBe(false);
+    expect(await client.inspectEntrypointRuleset("z1", "http_config_settings")).toEqual({
+      exists: false,
+      ownedByOpsCrew: false,
+      ruleCount: 0,
+    });
+    expect(await client.inspectEntrypointRuleset("z1", "http_request_firewall_custom")).toEqual({
+      exists: true,
+      ownedByOpsCrew: false,
+      ruleCount: 1,
+      id: "rs-user",
+    });
+    expect(await client.inspectEntrypointRuleset("z2", "http_config_settings")).toEqual({
+      exists: true,
+      ownedByOpsCrew: true,
+      ruleCount: 1,
+      id: "rs-ops",
+    });
+    expect(await client.inspectEntrypointRuleset("z2", "http_request_firewall_custom")).toEqual({
+      exists: true,
+      ownedByOpsCrew: false,
+      ruleCount: 0,
+      id: "rs-empty",
+    });
+    expect(
+      await client.inspectEntrypointRuleset("z3", "http_request_firewall_custom"),
+    ).toMatchObject({ exists: true, ownedByOpsCrew: true, ruleCount: 0 });
+  });
+
+  it("maps a refused ruleset read to the permissions hint", async () => {
+    const { fetch } = fakeFetch({
+      "/zones/z1/rulesets": {
+        status: 403,
+        body: { success: false, errors: [{ message: "Authentication error" }] },
+      },
+    });
+    await expect(
+      new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep }).inspectEntrypointRuleset(
+        "z1",
+        "http_config_settings",
+      ),
+    ).rejects.toMatchObject({ code: "CREDENTIALS_INVALID", hint: expect.stringContaining("WAF") });
   });
 
   it("reads IP ranges without a token", async () => {

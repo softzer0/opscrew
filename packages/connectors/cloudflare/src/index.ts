@@ -6,7 +6,9 @@ export {
   type CloudflareDnsRecord,
   type CloudflareIpRanges,
   type CloudflareZone,
+  type EntrypointRulesetStatus,
   type ManagedRulesetPhase,
+  OPSCREW_MANAGED_COMMENT,
   zoneCandidates,
 } from "./client";
 export {

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import type { PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -94,6 +95,29 @@ export function deploySecrets(input: {
   };
 }
 
+/** Private file recording the server and repository the deploy secrets were last stored for. */
+function deploySecretsRecordFile(deps: PhaseDeps): string {
+  return join(deps.paths.projectHomeDir, "deploy_secrets.json");
+}
+
+/**
+ * True when OpsCrew stored the deploy secrets for this server (`host`) in this repository from
+ * this computer. The record holds names only, never values.
+ */
+export async function deploySecretsStoredFor(
+  deps: PhaseDeps,
+  where: { host: string; owner: string; repo: string },
+): Promise<boolean> {
+  const text = await readIfExists(deploySecretsRecordFile(deps));
+  if (text === undefined) return false;
+  try {
+    const record = JSON.parse(text) as { host?: unknown; repo?: unknown };
+    return record.host === where.host && record.repo === `${where.owner}/${where.repo}`;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Stores the deploy secrets in the repository's GitHub Actions after a `github-secrets` approval
  * that lists their names. Values are sealed locally; only names reach the reporter and audit log.
@@ -103,6 +127,7 @@ export async function setDeploySecrets(
   github: GitHubSetup,
   secrets: Record<string, string>,
   variableNames: readonly string[],
+  phase: Extract<PhaseName, "provision" | "dns"> = "provision",
 ): Promise<void> {
   const names = Object.keys(secrets).sort();
   const repo = `${github.owner}/${github.repo}`;
@@ -135,10 +160,19 @@ export async function setDeploySecrets(
       kind: "secret-set",
       actor: "opscrew",
       action: `set secret ${name}`,
-      phase: "provision",
+      phase,
       target: repo,
       decision: "approved",
     });
   }
+  await writeFileAtomic(
+    deploySecretsRecordFile(deps),
+    `${JSON.stringify({
+      host: secrets[DEPLOY_SECRETS.host],
+      repo,
+      names,
+      storedAt: deps.clock.now().toISOString(),
+    })}\n`,
+  );
   deps.reporter.success(`Stored ${names.length} deploy secrets in GitHub Actions.`);
 }

@@ -15,6 +15,26 @@ export const CLOUDFLARE_TOKEN_PERMISSIONS = [
 /** Rule phases OpsCrew may manage; it never takes over a phase the user already uses. */
 export type ManagedRulesetPhase = "http_config_settings" | "http_request_firewall_custom";
 
+/**
+ * Comment on the DNS records and description of the rulesets that OpsCrew's `cloudflare-dns`
+ * module creates; it is how OpsCrew recognises its own resources in a zone.
+ */
+export const OPSCREW_MANAGED_COMMENT = "Managed by OpsCrew";
+
+/** Names the `cloudflare-dns` module gives its entrypoint rulesets. */
+const OPSCREW_RULESET_NAMES = new Set(["OpsCrew configuration rules", "OpsCrew custom rules"]);
+
+/** What a zone's entrypoint ruleset for one phase looks like (Cloudflare allows one per phase). */
+export interface EntrypointRulesetStatus {
+  /** The zone has an entrypoint ruleset in this phase (possibly with no rules). */
+  exists: boolean;
+  /** The ruleset carries the name or description OpsCrew's module renders. */
+  ownedByOpsCrew: boolean;
+  ruleCount: number;
+  /** Ruleset id, when it exists. */
+  id?: string;
+}
+
 export interface CloudflareZone {
   id: string;
   name: string;
@@ -29,6 +49,8 @@ export interface CloudflareDnsRecord {
   content: string;
   proxied?: boolean;
   ttl: number;
+  /** Free-text record comment; OpsCrew's records carry {@link OPSCREW_MANAGED_COMMENT}. */
+  comment?: string;
 }
 
 export interface CloudflareIpRanges {
@@ -68,9 +90,15 @@ const RecordSchema = z.looseObject({
   content: z.string().default(""),
   proxied: z.boolean().optional(),
   ttl: z.number(),
+  comment: z.string().nullable().optional(),
 });
 
-const RulesetSchema = z.looseObject({ rules: z.array(z.unknown()).default([]) });
+const RulesetSchema = z.looseObject({
+  id: z.string().optional(),
+  name: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  rules: z.array(z.unknown()).nullable().optional(),
+});
 
 const IpsSchema = z.looseObject({
   ipv4_cidrs: z.array(z.string()),
@@ -277,6 +305,7 @@ export class CloudflareClient {
           content: r.content,
           ttl: r.ttl,
           ...(r.proxied === undefined ? {} : { proxied: r.proxied }),
+          ...(r.comment ? { comment: r.comment } : {}),
         });
       }
       const totalPages = body.result_info?.total_pages ?? 1;
@@ -284,15 +313,34 @@ export class CloudflareClient {
     }
   }
 
-  /** True when the zone already has its own rules in this phase (OpsCrew then leaves it alone). */
-  async hasEntrypointRuleset(zoneId: string, phase: ManagedRulesetPhase): Promise<boolean> {
+  /**
+   * The zone's entrypoint ruleset for `phase`: whether it exists, whether OpsCrew created it (by
+   * the name or description its module renders) and how many rules it holds. OpsCrew manages a
+   * phase only when the entrypoint is missing or its own.
+   */
+  async inspectEntrypointRuleset(
+    zoneId: string,
+    phase: ManagedRulesetPhase,
+  ): Promise<EntrypointRulesetStatus> {
     const { status, body } = await this.#request(
       `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/${phase}/entrypoint`,
     );
-    if (status === 404) return false;
+    if (status === 404) return { exists: false, ownedByOpsCrew: false, ruleCount: 0 };
     if (!body.success || status >= 400) this.#fail(status, body, `read the ${phase} rules`);
-    const ruleset = RulesetSchema.safeParse(body.result);
-    return ruleset.success && ruleset.data.rules.length > 0;
+    const parsed = RulesetSchema.safeParse(body.result);
+    if (!parsed.success) {
+      throw new OpsCrewError("PROVIDER_ERROR", `Cloudflare returned unexpected ${phase} rules.`);
+    }
+    const ruleset = parsed.data;
+    const ownedByOpsCrew =
+      ruleset.description?.trim() === OPSCREW_MANAGED_COMMENT ||
+      OPSCREW_RULESET_NAMES.has(ruleset.name?.trim() ?? "");
+    return {
+      exists: true,
+      ownedByOpsCrew,
+      ruleCount: ruleset.rules?.length ?? 0,
+      ...(ruleset.id ? { id: ruleset.id } : {}),
+    };
   }
 
   /** Cloudflare's published edge IP ranges (public endpoint, no token needed). */

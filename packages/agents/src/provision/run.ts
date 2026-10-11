@@ -23,7 +23,12 @@ import { checkHetzner, setupCloudflare, setupGitHub } from "./credentials";
 import { planAndApply } from "./plan-apply";
 import { publishDeploySetup } from "./publish";
 import { deploymentRenderContext, readRequirements } from "./render";
-import { buildAppEnvironment, deploySecrets, setDeploySecrets } from "./secrets";
+import {
+  buildAppEnvironment,
+  deploySecrets,
+  deploySecretsStoredFor,
+  setDeploySecrets,
+} from "./secrets";
 import type { ProvisionOptions, ProvisionResult } from "./types";
 
 const SSH_WAIT_MS = 5 * 60_000;
@@ -63,6 +68,17 @@ async function requireDockerfile(deps: PhaseDeps, git: GitClient, plan: DeployPl
   }
 }
 
+/** Quotes a path for a copy-pasteable shell command. */
+function quotePath(path: string): string {
+  return `"${path.replace(/"/g, '\\"')}"`;
+}
+
+/** Extra inputs a phase passes to the shared flow. */
+export interface PhaseFlowExtras {
+  /** Plain-English warnings added to the infrastructure (`iac-apply`) approval details. */
+  approvalNotes?: readonly string[];
+}
+
 /**
  * Provision and DNS share this flow: credentials → engine, deploy key and state encryption →
  * render (approved write) → plan, policies, approval, apply → record the deployment → wait for the
@@ -72,6 +88,7 @@ async function provisionFlow(
   deps: PhaseDeps,
   options: ProvisionOptions,
   phase: Extract<PhaseName, "provision" | "dns">,
+  extras: PhaseFlowExtras,
 ): Promise<ProvisionResult> {
   const services = options.services ?? {};
   const root = deps.paths.root;
@@ -164,6 +181,8 @@ async function provisionFlow(
     deployPlan: plan,
     files,
     command: `opscrew ${phase}`,
+    phase,
+    ...(extras.approvalNotes ? { approvalNotes: extras.approvalNotes } : {}),
     ...(options.approvePlanHash !== undefined ? { approvePlanHash: options.approvePlanHash } : {}),
     ...(options.planOnly ? { planOnly: true } : {}),
   });
@@ -266,17 +285,19 @@ async function provisionFlow(
     ...waits,
   });
   if (!ready) {
+    const check = `ssh -i ${quotePath(deployKey.privateKeyFile)} -o UserKnownHostsFile=${quotePath(deps.paths.files.knownHosts)} deploy@${ipv4} cloud-init status --long`;
     throw new OpsCrewError(
       "PROVIDER_ERROR",
       "The server did not finish its first-boot setup within 8 minutes.",
       {
-        hint: "Run `opscrew provision` again in a few minutes; it continues where it stopped.",
+        hint: `Check what it is still doing (or what failed) with \`${check}\`, then run \`opscrew ${phase}\` again; it continues where it stopped.`,
       },
     );
   }
   deps.reporter.success(`The server at ${ipv4} is ready.`);
 
   // 8–9. Production environment and GitHub Actions secrets
+  let secretsStored = false;
   if (options.secrets !== false) {
     const environment = await buildAppEnvironment(deps, plan, services);
     await setDeploySecrets(
@@ -289,7 +310,20 @@ async function provisionFlow(
         environment,
       }),
       environment.names,
+      phase,
     );
+    secretsStored = true;
+  } else {
+    secretsStored = await deploySecretsStoredFor(deps, {
+      host: ipv4,
+      owner: github.owner,
+      repo: github.repo,
+    });
+    if (!secretsStored) {
+      deps.reporter.warn(
+        "The deploy secrets are not stored in GitHub Actions for this server yet, so a deploy would fail. Before merging the pull request, run `opscrew provision` in a terminal in the project directory to store them.",
+      );
+    }
   }
 
   // 10. Commit, push and open the pull request
@@ -301,12 +335,16 @@ async function provisionFlow(
     plan,
     paths: [...files.map((f) => f.path), toPosixRelative(root, deps.paths.files.plan)],
     push: options.push !== false,
+    secretsStored,
+    phase,
   });
-  deps.reporter.info(
-    published.prUrl
-      ? `Merging ${published.prUrl} deploys the app.`
-      : `Merging ${published.branch} into ${plan.cicd.branch} deploys the app.`,
-  );
+  if (secretsStored) {
+    deps.reporter.info(
+      published.prUrl
+        ? `Merging ${published.prUrl} deploys the app.`
+        : `Merging ${published.branch} into ${plan.cicd.branch} deploys the app.`,
+    );
+  }
   return {
     ...(applied.planHash ? { planHash: applied.planHash } : {}),
     applied: applied.applied,
@@ -321,9 +359,10 @@ export async function runPhaseFlow(
   deps: PhaseDeps,
   phase: Extract<PhaseName, "provision" | "dns">,
   options: ProvisionOptions,
+  extras: PhaseFlowExtras = {},
 ): Promise<ProvisionResult> {
   try {
-    const result = await provisionFlow(deps, options, phase);
+    const result = await provisionFlow(deps, options, phase, extras);
     if (!(options.planOnly && options.approvePlanHash === undefined)) {
       await deps.state.markPhase(
         phase,

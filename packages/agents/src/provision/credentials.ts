@@ -1,4 +1,9 @@
-import { cloudflareConnector } from "@opscrew/connector-cloudflare";
+import {
+  type CloudflareDnsRecord,
+  cloudflareConnector,
+  type EntrypointRulesetStatus,
+  OPSCREW_MANAGED_COMMENT,
+} from "@opscrew/connector-cloudflare";
 import {
   type GitClient,
   GitHubClient,
@@ -62,9 +67,73 @@ export async function checkHetzner(deps: PhaseDeps, services: ProvisionServices)
   if (!check.ok) throw invalid("Hetzner Cloud", check.message, connector.credentials);
 }
 
+/** Record types that clash with (or split traffic away from) OpsCrew's A/AAAA/CNAME records. */
+const CLASHING_RECORD_TYPES = new Set(["A", "AAAA", "CNAME"]);
+
+/** Canonical form of an address so `2001:DB8:0::1` matches `2001:db8::1`. */
+function canonicalAddress(value: string): string {
+  const text = value.trim().toLowerCase();
+  if (!text.includes(":")) return text;
+  try {
+    return new URL(`http://[${text}]/`).hostname.replace(/^\[|\]$/g, "");
+  } catch {
+    return text;
+  }
+}
+
 /**
- * Cloudflare checks for a plan with a Cloudflare domain: token, zone, which rule phases OpsCrew may
- * manage (never a phase the zone already uses) and the edge IP ranges when the site is proxied.
+ * A, AAAA and CNAME records at the app's hostnames that OpsCrew did not create: no OpsCrew comment
+ * and not pointing at the server OpsCrew already deployed. Doubles as the DNS-read permission check.
+ */
+async function foreignDnsRecords(
+  api: CloudflareApi,
+  zoneId: string,
+  plan: DeployPlan,
+  hosts: readonly string[],
+): Promise<CloudflareDnsRecord[]> {
+  const known = new Set(
+    [plan.deployment.serverIpv4, plan.deployment.serverIpv6]
+      .filter((ip): ip is string => ip !== undefined && ip !== "")
+      .map(canonicalAddress),
+  );
+  const foreign: CloudflareDnsRecord[] = [];
+  for (const host of hosts) {
+    for (const record of await api.listDnsRecords(zoneId, { name: host })) {
+      if (!CLASHING_RECORD_TYPES.has(record.type.toUpperCase())) continue;
+      if (record.comment?.trim() === OPSCREW_MANAGED_COMMENT) continue;
+      if (known.has(canonicalAddress(record.content))) continue;
+      foreign.push(record);
+    }
+  }
+  return foreign;
+}
+
+/**
+ * Whether OpsCrew may manage a rule phase: only when the zone has no entrypoint ruleset for it or
+ * the entrypoint is OpsCrew's own (from an earlier apply). Warns, in plain English, otherwise.
+ */
+function mayManagePhase(
+  deps: PhaseDeps,
+  status: EntrypointRulesetStatus,
+  text: { theirs: string; empty: string; fallback: string },
+  zoneId: string,
+): boolean {
+  if (!status.exists || status.ownedByOpsCrew) return true;
+  if (status.ruleCount > 0) {
+    deps.reporter.warn(text.theirs);
+    return false;
+  }
+  const api = status.id ? ` (or the API: DELETE /zones/${zoneId}/rulesets/${status.id})` : "";
+  deps.reporter.warn(
+    `${text.empty} Cloudflare allows only one per zone, and OpsCrew did not create this one. To let OpsCrew manage it, delete the empty ruleset in the Cloudflare dashboard${api} and run OpsCrew again; ${text.fallback}`,
+  );
+  return false;
+}
+
+/**
+ * Cloudflare checks for a plan with a Cloudflare domain: token, zone, existing DNS records at the
+ * app's hostnames (stops when records OpsCrew did not create are there), which rule phases OpsCrew
+ * may manage (never a phase the user owns; always its own) and the edge IP ranges when proxied.
  */
 export async function setupCloudflare(
   deps: PhaseDeps,
@@ -97,25 +166,57 @@ export async function setupCloudflare(
         },
       );
     }
-    const [hasConfigRules, hasWafRules] = await Promise.all([
-      api.hasEntrypointRuleset(zone.id, "http_config_settings"),
-      api.hasEntrypointRuleset(zone.id, "http_request_firewall_custom"),
+    const hosts = plan.dns.www ? [domain, `www.${domain}`] : [domain];
+    const foreign = await foreignDnsRecords(api, zone.id, plan, hosts);
+    if (foreign.length > 0) {
+      const lines = foreign.map((r) => `  ${r.type} ${r.name} ${r.content}`);
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        deps.redactor.redact(
+          [
+            `Cloudflare already has DNS records for ${hosts.join(" and ")} that OpsCrew did not create:`,
+            ...lines,
+            "Adding the app's records next to them would fail after the server is created, or split visitors between the old host and the new one. Nothing was created.",
+          ].join("\n"),
+        ),
+        {
+          hint: "Delete these records in the Cloudflare dashboard (DNS → Records) if they belong to a host you no longer use, or pick another hostname with `opscrew dns --domain <hostname>`, then run OpsCrew again.",
+        },
+      );
+    }
+
+    const [configStatus, wafStatus] = await Promise.all([
+      api.inspectEntrypointRuleset(zone.id, "http_config_settings"),
+      api.inspectEntrypointRuleset(zone.id, "http_request_firewall_custom"),
     ]);
-    if (hasConfigRules) {
-      deps.reporter.warn(
-        `The ${zone.name} zone already has its own configuration rules, so OpsCrew will not add the TLS (Full strict) rule. Set SSL/TLS to "Full (strict)" for ${domain} yourself.`,
+    const tlsYourself = `set SSL/TLS to "Full (strict)" for ${domain} yourself.`;
+    const manageConfigRule = mayManagePhase(
+      deps,
+      configStatus,
+      {
+        theirs: `The ${zone.name} zone already has its own configuration rules, so OpsCrew will not add the TLS (Full strict) rule. Set SSL/TLS to "Full (strict)" for ${domain} yourself.`,
+        empty: `The ${zone.name} zone has an empty configuration ruleset, so OpsCrew cannot add its TLS (Full strict) rule.`,
+        fallback: `otherwise ${tlsYourself}`,
+      },
+      zone.id,
+    );
+    const manageWafRules =
+      plan.security.wafCustomRules &&
+      mayManagePhase(
+        deps,
+        wafStatus,
+        {
+          theirs: `The ${zone.name} zone already has its own WAF custom rules, so OpsCrew will not add its probe-blocking rules.`,
+          empty: `The ${zone.name} zone has an empty WAF custom ruleset, so OpsCrew cannot add its probe-blocking rules.`,
+          fallback: "otherwise the site runs without them.",
+        },
+        zone.id,
       );
-    }
-    if (hasWafRules && plan.security.wafCustomRules) {
-      deps.reporter.warn(
-        `The ${zone.name} zone already has its own WAF custom rules, so OpsCrew will not add its probe-blocking rules.`,
-      );
-    }
     const setup: CloudflareSetup = {
       zoneId: zone.id,
       zoneName: zone.name,
-      manageConfigRule: !hasConfigRules,
-      manageWafRules: plan.security.wafCustomRules && !hasWafRules,
+      manageConfigRule,
+      manageWafRules,
     };
     if (plan.dns.proxied && plan.security.httpAllowedFrom === "cloudflare") {
       setup.ipRanges = await api.getIpRanges();

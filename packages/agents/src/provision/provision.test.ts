@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { findExecutable } from "@opscrew/core";
+import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -11,10 +11,12 @@ import {
   FakeGitHub,
   fakeCloudflare,
   HOST_KEY,
+  opscrewRecord,
   planJsonFor,
   projectRunner,
   readyRemote,
   SERVER_IPV4,
+  SERVER_IPV6,
   testPlan,
 } from "./__fixtures__/fakes";
 import { findSavedPlan } from "./plan-apply";
@@ -137,6 +139,8 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     const committed = await git(root, "show", "--name-only", "--format=", "HEAD");
     expect(committed).toContain("opscrew/plan.yaml");
     expect(committed).toContain(".github/workflows/opscrew-deploy.yml");
+    expect(github.pulls[0]?.body).toContain("the deploy secrets are stored in GitHub Actions");
+    expect(deps.audit.entries.find((e) => e.kind === "iac")?.phase).toBe("provision");
 
     expect((await deps.state.read()).phases.provision?.status).toBe("ok");
 
@@ -274,6 +278,122 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(plan.dns.zone).toBe("example.com");
   });
 
+  it("keeps managing its own Cloudflare rules and records when run again", async () => {
+    const cloudflare = fakeCloudflare();
+    const { deps, services, root, handler } = await setup({
+      plan: testPlan({ domain: "shop.example.com" }),
+      engine: new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
+      services: { cloudflare },
+    });
+    await runProvision(deps, { services });
+    const tfvarsFile = join(root, "opscrew/infra/prod/terraform.tfvars.json");
+    const first = await readFile(tfvarsFile, "utf8");
+    expect(JSON.parse(first)).toMatchObject({ manage_config_rule: true, manage_waf_rules: true });
+
+    // What the first apply created in the zone
+    cloudflare.state.config = "opscrew";
+    cloudflare.state.waf = "opscrew";
+    cloudflare.state.records.push(
+      opscrewRecord("shop.example.com", "A", SERVER_IPV4),
+      opscrewRecord("shop.example.com", "AAAA", SERVER_IPV6),
+    );
+    handler.requests.length = 0;
+    await runProvision(deps, { services });
+
+    expect(await readFile(tfvarsFile, "utf8")).toBe(first);
+    expect(handler.requests.map((r) => r.kind)).not.toContain("repo-write");
+    expect(deps.reporter.text()).not.toContain("already has its own");
+  });
+
+  it("leaves an empty rule phase it did not create alone and explains what to do", async () => {
+    const { deps, services, root } = await setup({
+      plan: testPlan({ domain: "shop.example.com" }),
+      engine: new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
+      services: {
+        cloudflare: fakeCloudflare({ configRules: "user-empty", wafRules: "user-empty" }),
+      },
+    });
+    await runProvision(deps, { services });
+    const tfvars = JSON.parse(
+      await readFile(join(root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
+    );
+    expect(tfvars).toMatchObject({ manage_config_rule: false, manage_waf_rules: false });
+    const text = deps.reporter.text();
+    expect(text).toContain("empty configuration ruleset");
+    expect(text).toContain('set SSL/TLS to "Full (strict)"');
+    expect(text).toContain("empty WAF custom ruleset");
+    expect(text).toContain("delete");
+  });
+
+  it("stops before creating anything when the hostname has DNS records OpsCrew did not create", async () => {
+    const foreign = { ttl: 1, proxied: false };
+    const cloudflare = fakeCloudflare({
+      records: [
+        { ...foreign, id: "r1", type: "A", name: "shop.example.com", content: "198.51.100.7" },
+        { ...foreign, id: "r2", type: "TXT", name: "shop.example.com", content: "v=spf1 -all" },
+        {
+          ...foreign,
+          id: "r3",
+          type: "CNAME",
+          name: "www.shop.example.com",
+          content: "old-host.example.net",
+        },
+        opscrewRecord("shop.example.com", "AAAA", "2001:db8::99"),
+      ],
+    });
+    const { deps, services, engine, handler } = await setup({
+      plan: testPlan({ domain: "shop.example.com", www: true }),
+      services: { cloudflare },
+    });
+    const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      hint: expect.stringContaining("another hostname"),
+    });
+    const message = (error as Error).message;
+    expect(message).toContain("A shop.example.com 198.51.100.7");
+    expect(message).toContain("CNAME www.shop.example.com old-host.example.net");
+    expect(message).not.toContain("TXT");
+    expect(message).not.toContain("2001:db8::99");
+    expect(cloudflare.listed).toEqual(["shop.example.com", "www.shop.example.com"]);
+    expect(engine.calls).toEqual([]);
+    expect(handler.requests).toEqual([]);
+  });
+
+  it("accepts records that already point at the deployed server", async () => {
+    const { deps, services } = await setup({
+      plan: testPlan({ domain: "shop.example.com", deployed: true }),
+      engine: new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
+      services: {
+        cloudflare: fakeCloudflare({
+          records: [
+            { id: "r1", type: "A", name: "shop.example.com", content: SERVER_IPV4, ttl: 1 },
+            { id: "r2", type: "AAAA", name: "shop.example.com", content: "2001:DB8::1", ttl: 1 },
+          ],
+        }),
+      },
+    });
+    await expect(runProvision(deps, { services })).resolves.toMatchObject({ applied: true });
+  });
+
+  it("explains the token permissions when Cloudflare refuses to list DNS records", async () => {
+    const { deps, services } = await setup({
+      plan: testPlan({ domain: "shop.example.com" }),
+      services: {
+        cloudflare: fakeCloudflare({
+          listError: new OpsCrewError(
+            "CREDENTIALS_INVALID",
+            "Cloudflare refused the request to list DNS records: Authentication error.",
+          ),
+        }),
+      },
+    });
+    await expect(runProvision(deps, { services })).rejects.toMatchObject({
+      code: "CREDENTIALS_INVALID",
+      hint: expect.stringContaining("DNS → Edit"),
+    });
+  });
+
   it("stops when the Cloudflare zone is not visible to the token", async () => {
     const { deps, services } = await setup({
       plan: testPlan({ domain: "shop.example.com" }),
@@ -340,6 +460,39 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     await expect(runProvision(deps, { services })).rejects.toMatchObject({
       code: "ENGINE_FAILED",
       message: expect.stringContaining("server type unavailable"),
+      hint: expect.stringContaining("opscrew design"),
     });
+  });
+
+  it("names the exact SSH command when the first-boot setup times out", async () => {
+    let clock = 0;
+    const { deps, services } = await setup({
+      services: {
+        remote: (host) => ({
+          host,
+          run: async () => ({ exitCode: 0, stdout: "waiting\n", stderr: "" }),
+        }),
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      },
+    });
+    const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PROVIDER_ERROR" });
+    const hint = (error as OpsCrewError).hint ?? "";
+    expect(hint).toContain(`deploy@${SERVER_IPV4} cloud-init status --long`);
+    expect(hint).toContain(`-i "${deps.paths.files.deployKey}"`);
+    expect(hint).toContain(`UserKnownHostsFile="${deps.paths.files.knownHosts}"`);
+  });
+
+  it("tells the user to store the deploy secrets when this run skipped them", async () => {
+    const { deps, services, github } = await setup();
+    await runProvision(deps, { services, secrets: false });
+    expect(github.secrets.size).toBe(0);
+    const body = github.pulls[0]?.body ?? "";
+    expect(body).not.toContain("the deploy secrets are stored");
+    expect(body).toContain("run `opscrew provision` in a terminal");
+    expect(deps.reporter.text()).toContain("opscrew provision");
   });
 });

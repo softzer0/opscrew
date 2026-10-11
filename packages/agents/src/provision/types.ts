@@ -14,7 +14,7 @@ import type { EnvAnswer, EnvQuestion } from "../shared";
 /** The Cloudflare calls provisioning needs (a `CloudflareClient` or a test fake). */
 export type CloudflareApi = Pick<
   CloudflareClient,
-  "verifyToken" | "findZone" | "hasEntrypointRuleset" | "getIpRanges"
+  "verifyToken" | "findZone" | "listDnsRecords" | "inspectEntrypointRuleset" | "getIpRanges"
 >;
 
 /** The GitHub calls provisioning needs (a `GitHubClient` or a test fake). */

@@ -1,4 +1,5 @@
 import type { GitClient } from "@opscrew/connector-github";
+import type { PhaseName } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "./credentials";
@@ -13,9 +14,26 @@ export interface PublishResult {
   pushed: boolean;
 }
 
-/** Pull request body for the generated deployment files. */
-export function deploySetupPullRequestBody(plan: DeployPlan, version: string): string {
+/**
+ * Pull request body for the generated deployment files. `secretsStored` (default true) says
+ * whether the GitHub Actions deploy secrets are known to be stored for this server; when they are
+ * not, the body tells the user to run `opscrew provision` in a terminal before merging.
+ */
+export function deploySetupPullRequestBody(
+  plan: DeployPlan,
+  version: string,
+  options: { secretsStored?: boolean } = {},
+): string {
   const host = plan.dns.domain ?? plan.deployment.serverIpv4 ?? "the new server";
+  const nextStep =
+    options.secretsStored === false
+      ? [
+          "The server is already running, but OpsCrew has no record of storing the deploy secrets in GitHub Actions for it, so a deploy would fail.",
+          `**Before merging, run \`opscrew provision\` in a terminal in the project directory.** It finds no infrastructure changes, asks for the production environment values and stores the secrets. After that, merging this pull request deploys the app to ${host}. When the first deploy finishes, run \`opscrew verify\`.`,
+        ]
+      : [
+          `The server is already running and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${host}.** After the first deploy finishes, run \`opscrew verify\`.`,
+        ];
   return [
     `This pull request adds the deployment setup that OpsCrew generated from \`opscrew/plan.yaml\` for **${plan.app.name}**:`,
     "",
@@ -24,7 +42,7 @@ export function deploySetupPullRequestBody(plan: DeployPlan, version: string): s
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
     "- `opscrew/plan.yaml`: the plan with the server's addresses.",
     "",
-    `The server is already running and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${host}.** After the first deploy finishes, run \`opscrew verify\`.`,
+    ...nextStep,
     "",
     "Review checklist:",
     "- [ ] The workflow only uses pinned, first-party actions.",
@@ -48,9 +66,17 @@ export async function publishDeploySetup(
     plan: DeployPlan;
     paths: readonly string[];
     push: boolean;
+    /** Whether the deploy secrets are known to be stored for this server (default true). */
+    secretsStored?: boolean;
+    /** Phase recorded in the audit log (default `provision`). */
+    phase?: Extract<PhaseName, "provision" | "dns">;
   },
 ): Promise<PublishResult> {
   const { git, github, plan } = input;
+  const phase = input.phase ?? "provision";
+  const body = deploySetupPullRequestBody(plan, deps.version, {
+    secretsStored: input.secretsStored !== false,
+  });
   const branch = DEPLOY_SETUP_BRANCH;
   if ((await git.currentBranch()) !== branch) {
     if (await git.branchExists(branch)) await git.checkout(branch);
@@ -67,7 +93,7 @@ export async function publishDeploySetup(
       kind: "git",
       actor: "opscrew",
       action: "commit",
-      phase: "provision",
+      phase,
       target: branch,
       detail: commit,
     });
@@ -99,7 +125,7 @@ export async function publishDeploySetup(
     kind: "git",
     actor: "opscrew",
     action: "push",
-    phase: "provision",
+    phase,
     target: `${repo}:${branch}`,
     decision: "approved",
   });
@@ -114,7 +140,7 @@ export async function publishDeploySetup(
   const pr = await deps.approvals.request({
     kind: "pull-request",
     title: `Open the pull request "${title}" into ${plan.cicd.branch}`,
-    details: deploySetupPullRequestBody(plan, deps.version),
+    details: body,
   });
   if (!pr.approved) {
     deps.reporter.warn(
@@ -128,13 +154,13 @@ export async function publishDeploySetup(
     head: branch,
     base: plan.cicd.branch,
     title,
-    body: deploySetupPullRequestBody(plan, deps.version),
+    body,
   });
   await deps.audit.append({
     kind: "git",
     actor: "opscrew",
     action: "pull-request",
-    phase: "provision",
+    phase,
     target: opened.url,
     decision: "approved",
   });
