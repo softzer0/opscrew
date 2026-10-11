@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-11T13:30:00.000Z",
+  "generator": {
+    "tool": "opscrew",
+    "version": "0.1.0"
+  },
+  "facts": {
+    "name": "acme-web",
+    "languages": [
+      "javascript",
+      "typescript"
+    ],
+    "packageManager": "pnpm",
+    "frameworks": [
+      {
+        "name": "react",
+        "version": "19.2.0",
+        "path": "."
+      },
+      {
+        "name": "vite",
+        "version": "7.1.4",
+        "path": "."
+      }
+    ],
+    "appKind": "fullstack",
+    "platformExport": {
+      "platform": "lovable",
+      "evidence": [
+        "devDependency:lovable-tagger"
+      ]
+    },
+    "build": {
+      "installCommand": "pnpm install --frozen-lockfile",
+      "buildCommand": "pnpm build",
+      "startCommand": "node server/index.js",
+      "outputDir": "dist"
+    },
+    "port": 3000,
+    "runtimeVersions": {
+      "node": "22"
+    },
+    "envVars": [
+      {
+        "name": "DATABASE_URL",
+        "files": [
+          ".env.example",
+          "server/db.ts"
+        ],
+        "clientExposed": false,
+        "secretLikely": true
+      },
+      {
+        "name": "VITE_PUBLIC_API_URL",
+        "files": [
+          "src/api.ts"
+        ],
+        "clientExposed": true,
+        "secretLikely": false
+      }
+    ],
+    "services": [
+      {
+        "kind": "postgres",
+        "evidence": [
+          "dependency:pg"
+        ]
+      },
+      {
+        "kind": "stripe",
+        "evidence": [
+          "dependency:stripe"
+        ]
+      }
+    ],
+    "docker": {},
+    "healthEndpoint": "/api/health",
+    "monorepo": false,
+    "git": {
+      "remoteUrl": "https://github.com/acme/acme-web.git",
+      "owner": "acme",
+      "repo": "acme-web",
+      "defaultBranch": "main",
+      "currentBranch": "main"
+    }
+  },
+  "summary": "A React + Vite single-page app with a small Node API server and a Postgres database, exported from Lovable.",
+  "risks": [
+    "No Dockerfile yet: OpsCrew will propose one.",
+    "DATABASE_URL is read at build time in one place; it must stay server-side."
+  ],
+  "aiEnriched": false
+}

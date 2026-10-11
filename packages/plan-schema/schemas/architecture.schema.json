@@ -1,0 +1,299 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpsCrew architecture (opscrew/architecture.json)",
+  "description": "Schema v1 of opscrew/architecture.json. Generated from @opscrew/plan-schema; do not edit.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    },
+    "generator": {
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": "string",
+          "const": "opscrew"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["tool", "version"],
+      "additionalProperties": false
+    },
+    "facts": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "javascript",
+              "typescript",
+              "python",
+              "go",
+              "ruby",
+              "php",
+              "java",
+              "rust",
+              "other"
+            ]
+          }
+        },
+        "packageManager": {
+          "type": "string",
+          "enum": ["npm", "pnpm", "yarn", "bun", "pip", "poetry", "uv", "pipenv", "none"]
+        },
+        "frameworks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "version": {
+                "type": "string",
+                "minLength": 1
+              },
+              "path": {
+                "type": "string",
+                "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+              }
+            },
+            "required": ["name", "path"],
+            "additionalProperties": false
+          }
+        },
+        "appKind": {
+          "type": "string",
+          "enum": ["static-spa", "ssr", "api", "fullstack", "worker", "unknown"]
+        },
+        "platformExport": {
+          "type": "object",
+          "properties": {
+            "platform": {
+              "type": "string",
+              "enum": ["lovable", "bolt", "replit", "v0", "base44", "none"]
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": ["platform", "evidence"],
+          "additionalProperties": false
+        },
+        "build": {
+          "type": "object",
+          "properties": {
+            "installCommand": {
+              "type": "string",
+              "minLength": 1
+            },
+            "buildCommand": {
+              "type": "string",
+              "minLength": 1
+            },
+            "startCommand": {
+              "type": "string",
+              "minLength": 1
+            },
+            "outputDir": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "runtimeVersions": {
+          "type": "object",
+          "properties": {
+            "node": {
+              "type": "string",
+              "minLength": 1
+            },
+            "python": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "envVars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+                }
+              },
+              "clientExposed": {
+                "type": "boolean"
+              },
+              "secretLikely": {
+                "type": "boolean"
+              }
+            },
+            "required": ["name", "files", "clientExposed", "secretLikely"],
+            "additionalProperties": false
+          }
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "postgres",
+                  "mysql",
+                  "mongodb",
+                  "redis",
+                  "sqlite",
+                  "supabase",
+                  "firebase",
+                  "s3",
+                  "stripe",
+                  "email",
+                  "queue",
+                  "websocket",
+                  "cron"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": ["kind", "evidence"],
+            "additionalProperties": false
+          }
+        },
+        "docker": {
+          "type": "object",
+          "properties": {
+            "dockerfile": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+            },
+            "compose": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+            },
+            "dockerignore": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "healthEndpoint": {
+          "type": "string",
+          "pattern": "^\\/\\S*$"
+        },
+        "monorepo": {
+          "type": "boolean"
+        },
+        "git": {
+          "type": "object",
+          "properties": {
+            "remoteUrl": {
+              "type": "string",
+              "minLength": 1
+            },
+            "owner": {
+              "type": "string",
+              "minLength": 1
+            },
+            "repo": {
+              "type": "string",
+              "minLength": 1
+            },
+            "defaultBranch": {
+              "type": "string",
+              "minLength": 1
+            },
+            "currentBranch": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "name",
+        "languages",
+        "packageManager",
+        "frameworks",
+        "appKind",
+        "platformExport",
+        "build",
+        "runtimeVersions",
+        "envVars",
+        "services",
+        "docker",
+        "monorepo",
+        "git"
+      ],
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "string"
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "aiEnriched": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "generatedAt",
+    "generator",
+    "facts",
+    "summary",
+    "risks",
+    "aiEnriched"
+  ],
+  "additionalProperties": false
+}

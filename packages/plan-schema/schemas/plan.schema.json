@@ -1,0 +1,442 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpsCrew deploy plan (opscrew/plan.yaml)",
+  "description": "Schema v1 of opscrew/plan.yaml. Generated from @opscrew/plan-schema; do not edit.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    },
+    "app": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,40}$"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "healthPath": {
+          "default": "/health",
+          "type": "string",
+          "pattern": "^\\/\\S*$"
+        },
+        "buildContext": {
+          "default": ".",
+          "type": "string",
+          "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+        },
+        "dockerfile": {
+          "default": "Dockerfile",
+          "type": "string",
+          "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "secret": {
+                "type": "boolean"
+              },
+              "source": {
+                "type": "string",
+                "enum": ["user", "generated", "derived"]
+              }
+            },
+            "required": ["name", "secret", "source"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["name", "port", "env"],
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "const": "hetzner"
+        },
+        "mode": {
+          "type": "string",
+          "const": "vps-compose"
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1
+        },
+        "serverType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image": {
+          "default": "ubuntu-24.04",
+          "type": "string",
+          "minLength": 1
+        },
+        "backups": {
+          "type": "boolean"
+        }
+      },
+      "required": ["provider", "mode", "location", "serverType", "backups"],
+      "additionalProperties": false
+    },
+    "services": {
+      "type": "object",
+      "properties": {
+        "postgres": {
+          "type": "boolean"
+        },
+        "redis": {
+          "type": "boolean"
+        }
+      },
+      "required": ["postgres", "redis"],
+      "additionalProperties": false
+    },
+    "externalServices": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "postgres",
+          "mysql",
+          "mongodb",
+          "redis",
+          "sqlite",
+          "supabase",
+          "firebase",
+          "s3",
+          "stripe",
+          "email",
+          "queue",
+          "websocket",
+          "cron"
+        ]
+      }
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "monthly": {
+          "type": "object",
+          "properties": {
+            "amount": {
+              "type": "number",
+              "minimum": 0
+            },
+            "currency": {
+              "type": "string",
+              "enum": ["EUR", "USD"]
+            }
+          },
+          "required": ["amount", "currency"],
+          "additionalProperties": false
+        },
+        "breakdown": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "item": {
+                "type": "string",
+                "minLength": 1
+              },
+              "monthly": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "currency": {
+                    "type": "string",
+                    "enum": ["EUR", "USD"]
+                  }
+                },
+                "required": ["amount", "currency"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["item", "monthly"],
+            "additionalProperties": false
+          }
+        },
+        "pricesIncludeVat": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["live", "static"]
+        },
+        "asOf": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      },
+      "required": ["monthly", "breakdown", "pricesIncludeVat", "source", "asOf"],
+      "additionalProperties": false
+    },
+    "codeChanges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "dockerfile",
+              "dockerignore",
+              "health-endpoint",
+              "port-config",
+              "env-example",
+              "build-config",
+              "secret-removal",
+              "other"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "applied", "skipped"]
+          }
+        },
+        "required": ["id", "kind", "path", "reason", "status"],
+        "additionalProperties": false
+      }
+    },
+    "infra": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "engine": {
+          "default": "auto",
+          "type": "string",
+          "enum": ["auto", "tofu", "terraform"]
+        },
+        "dir": {
+          "default": "opscrew/infra/prod",
+          "type": "string",
+          "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+        },
+        "stateEncryption": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "dns": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["cloudflare", "none"]
+        },
+        "domain": {
+          "type": "string",
+          "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
+        },
+        "zone": {
+          "type": "string",
+          "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
+        },
+        "proxied": {
+          "default": true,
+          "type": "boolean"
+        },
+        "www": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": ["provider"],
+      "additionalProperties": false
+    },
+    "cicd": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "const": "github-actions"
+        },
+        "workflowPath": {
+          "default": ".github/workflows/opscrew-deploy.yml",
+          "type": "string",
+          "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+        },
+        "registry": {
+          "type": "string",
+          "const": "ghcr"
+        },
+        "branch": {
+          "default": "main",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["provider", "registry"],
+      "additionalProperties": false
+    },
+    "security": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "sshAllowedCidrs": {
+          "default": ["0.0.0.0/0", "::/0"],
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "cidrv4",
+                "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\/([0-9]|[1-2][0-9]|3[0-2])$"
+              },
+              {
+                "type": "string",
+                "format": "cidrv6",
+                "pattern": "^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))\\/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$"
+              }
+            ]
+          }
+        },
+        "httpAllowedFrom": {
+          "type": "string",
+          "enum": ["any", "cloudflare"]
+        },
+        "wafCustomRules": {
+          "default": true,
+          "type": "boolean"
+        },
+        "imageScan": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "approvals": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "planHash": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{64}$"
+          },
+          "approver": {
+            "type": "string",
+            "minLength": 1
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["planHash", "approver", "at", "kind"],
+        "additionalProperties": false
+      }
+    },
+    "deployment": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "lastCompletedPhase": {
+          "type": "string",
+          "enum": [
+            "scan",
+            "analyze",
+            "interview",
+            "design",
+            "adapt",
+            "provision",
+            "dns",
+            "secure",
+            "verify"
+          ]
+        },
+        "serverIpv4": {
+          "type": "string",
+          "format": "ipv4",
+          "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$"
+        },
+        "serverIpv6": {
+          "type": "string",
+          "format": "ipv6",
+          "pattern": "^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "lastPlanHash": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "lastApplyAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "lastDeployAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "createdAt",
+    "updatedAt",
+    "app",
+    "target",
+    "services",
+    "externalServices",
+    "cost",
+    "codeChanges",
+    "dns",
+    "cicd"
+  ],
+  "additionalProperties": false
+}

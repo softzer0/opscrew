@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpsCrew requirements (opscrew/requirements.yaml)",
+  "description": "Schema v1 of opscrew/requirements.yaml. Generated from @opscrew/plan-schema; do not edit.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "answeredAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    },
+    "expectedMonthlyUsers": {
+      "type": "string",
+      "enum": ["<1k", "1k-10k", "10k-100k", ">100k"]
+    },
+    "budgetMonthly": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["EUR", "USD"]
+        }
+      },
+      "required": ["amount", "currency"],
+      "additionalProperties": false
+    },
+    "region": {
+      "type": "string",
+      "enum": ["eu-central", "eu-north", "us-east", "us-west", "ap-southeast"]
+    },
+    "uptime": {
+      "type": "string",
+      "enum": ["best-effort", "standard", "high"]
+    },
+    "dataCriticality": {
+      "type": "string",
+      "enum": ["none", "important", "critical"]
+    },
+    "domain": {
+      "type": "string",
+      "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
+    },
+    "dnsProvider": {
+      "type": "string",
+      "enum": ["cloudflare", "other", "none"]
+    },
+    "keepExternalServices": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "postgres",
+          "mysql",
+          "mongodb",
+          "redis",
+          "sqlite",
+          "supabase",
+          "firebase",
+          "s3",
+          "stripe",
+          "email",
+          "queue",
+          "websocket",
+          "cron"
+        ]
+      }
+    },
+    "contactEmail": {
+      "type": "string",
+      "format": "email",
+      "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "answeredAt",
+    "expectedMonthlyUsers",
+    "budgetMonthly",
+    "region",
+    "uptime",
+    "dataCriticality",
+    "dnsProvider",
+    "keepExternalServices"
+  ],
+  "additionalProperties": false
+}
