@@ -4,7 +4,7 @@ import { Command, CommanderError } from "commander";
 import { description } from "../package.json";
 import { ALL_COMMANDS } from "./commands/index";
 import { type CliContext, createDefaultContext } from "./context";
-import { CliExit } from "./exit";
+import { CliExit, ERROR_EXIT_CODE, exitCodeFor } from "./exit";
 
 /** Builds the `opscrew` program with every command registered. Errors are thrown, not exited. */
 export function createProgram(ctx: CliContext): Command {
@@ -51,8 +51,8 @@ export async function runProgram(
 }
 
 function handleError(error: unknown, ctx: CliContext): number {
-  // Commander has already printed its own message (or the help / version text).
-  if (error instanceof CommanderError) return error.exitCode;
+  // Commander has already printed its own message (or the help / version text); usage errors exit 2.
+  if (error instanceof CommanderError) return error.exitCode === 0 ? 0 : ERROR_EXIT_CODE;
   if (error instanceof CliExit) return error.exitCode;
 
   const debug = ctx.env.OPSCREW_DEBUG === "1";
@@ -67,5 +67,5 @@ function handleError(error: unknown, ctx: CliContext): number {
   if (debug && error instanceof Error && error.stack !== undefined) {
     ctx.stderr(`${error.stack}\n`);
   }
-  return 1;
+  return exitCodeFor(error);
 }

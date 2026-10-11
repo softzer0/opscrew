@@ -85,7 +85,7 @@ describe("askQuestions", () => {
   it("throws a user-facing error when cancelled", async () => {
     const prompts = new ScriptedPrompts([CANCEL]);
     await expect(askQuestions(questions, { prompts })).rejects.toMatchObject({
-      code: "INVALID_INPUT",
+      code: "APPROVAL_REFUSED",
       message: "You cancelled the interview, so nothing was written.",
     });
   });

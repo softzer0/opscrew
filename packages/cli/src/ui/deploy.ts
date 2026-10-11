@@ -1,29 +1,7 @@
-import { type ErrorCode, isUserFacingError } from "@opscrew/core";
+import { isUserFacingError } from "@opscrew/core";
 import { CommanderError } from "commander";
 import type { CliContext } from "../context";
-import { CliExit } from "../exit";
-
-/** Exit code when checks or policies failed, or an approval was refused. */
-export const REFUSED_EXIT_CODE = 1;
-/** Exit code when the command could not run (bad input, missing credentials, engine errors). */
-export const ERROR_EXIT_CODE = 2;
-
-/** Error codes that mean "stopped on purpose" (exit 1) rather than "could not run" (exit 2). */
-const REFUSED_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
-  "APPROVAL_REFUSED",
-  "PLAN_NOT_APPROVED",
-  "PLAN_HASH_MISMATCH",
-  "DESTROY_NOT_APPROVED",
-  "PHASE_PRECONDITION",
-]);
-
-/** 1 for refusals, failed policies and unmet preconditions; 2 for every other error. */
-export function exitCodeFor(error: unknown): number {
-  if (error instanceof CliExit) return error.exitCode;
-  return isUserFacingError(error) && REFUSED_CODES.has(error.code as ErrorCode)
-    ? REFUSED_EXIT_CODE
-    : ERROR_EXIT_CODE;
-}
+import { CliExit, ERROR_EXIT_CODE, exitCodeFor } from "../exit";
 
 /** Commander `exitOverride` for deploy commands: usage errors exit 2, help and version exit 0. */
 export function usageErrorsExit2(error: CommanderError): never {

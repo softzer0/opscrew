@@ -45,7 +45,7 @@ export const clackPrompts: UiPrompts = {
 
 /** Thrown when the user cancels a prompt; nothing has been written at that point. */
 export function cancelled(what: string, rerun: string): OpsCrewError {
-  return new OpsCrewError("INVALID_INPUT", `You cancelled ${what}, so nothing was written.`, {
+  return new OpsCrewError("APPROVAL_REFUSED", `You cancelled ${what}, so nothing was written.`, {
     hint: `Run \`${rerun}\` again when you are ready.`,
   });
 }

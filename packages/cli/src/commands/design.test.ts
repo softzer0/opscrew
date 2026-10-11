@@ -82,7 +82,7 @@ describe("opscrew design", () => {
   it("fails with the valid ids for an unknown --option", async () => {
     project = await prepared();
     const ctx = projectContext(project);
-    expect(await run(ctx, "design", "--option", "nope")).toBe(1);
+    expect(await run(ctx, "design", "--option", "nope")).toBe(2);
     expect(ctx.errors).toContain('There is no design option "nope".');
     expect(ctx.errors).toContain("Choose one of: hetzner-");
   });

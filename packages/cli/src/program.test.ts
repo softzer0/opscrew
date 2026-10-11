@@ -49,9 +49,9 @@ describe("opscrew program", () => {
     expect(ALL_COMMANDS).toHaveLength(11);
   });
 
-  it("exits 1 for an unknown command", async () => {
+  it("exits 2 for an unknown command", async () => {
     const ctx = createTestContext();
-    expect(await main(argv("nope"), ctx)).toBe(1);
+    expect(await main(argv("nope"), ctx)).toBe(2);
     expect(ctx.errors).toContain("unknown command");
   });
 });
@@ -100,22 +100,22 @@ describe("error mapping", () => {
     return program;
   };
 
-  it("prints a user-facing error and its hint without a stack trace, exit 1", async () => {
+  it("prints a user-facing error and its hint without a stack trace, exit 2", async () => {
     const ctx = createTestContext();
-    expect(await runProgram(withFailingCommands(ctx), argv("boom"), ctx)).toBe(1);
+    expect(await runProgram(withFailingCommands(ctx), argv("boom"), ctx)).toBe(2);
     expect(ctx.errors).toBe("✗ That input is wrong.\n  Pass a valid value.\n");
   });
 
   it("reports unexpected errors without a stack trace unless OPSCREW_DEBUG=1", async () => {
     const quiet = createTestContext();
-    expect(await runProgram(withFailingCommands(quiet), argv("crash"), quiet)).toBe(1);
+    expect(await runProgram(withFailingCommands(quiet), argv("crash"), quiet)).toBe(2);
     expect(quiet.errors).toContain("✗ Something went wrong: kaboom");
     expect(quiet.errors).toContain("OPSCREW_DEBUG=1");
     expect(quiet.errors).not.toMatch(/\n\s+at /);
 
     const debug = createTestContext({ env: { OPSCREW_DEBUG: "1" } });
-    expect(await runProgram(withFailingCommands(debug), argv("boom"), debug)).toBe(1);
-    expect(await runProgram(withFailingCommands(debug), argv("crash"), debug)).toBe(1);
+    expect(await runProgram(withFailingCommands(debug), argv("boom"), debug)).toBe(2);
+    expect(await runProgram(withFailingCommands(debug), argv("crash"), debug)).toBe(2);
     expect(debug.errors).toMatch(/\n\s+at /);
   });
 
@@ -124,7 +124,7 @@ describe("error mapping", () => {
     await new ProjectStateStore(paths.files.state).markPhase("scan", "ok");
     await writeFile(paths.files.state, "{not json");
     const ctx = createTestContext({ cwd: dir });
-    expect(await main(argv("status"), ctx)).toBe(1);
+    expect(await main(argv("status"), ctx)).toBe(2);
     expect(ctx.errors).toContain("is not a valid OpsCrew state file.");
     expect(ctx.errors).toContain("Delete the file to reset");
   });
@@ -137,7 +137,7 @@ describe("error mapping", () => {
     program.command("leak").action(() => {
       throw new OpsCrewError("PROVIDER_ERROR", `Token ${secret} was rejected.`);
     });
-    expect(await runProgram(program, argv("leak"), ctx)).toBe(1);
+    expect(await runProgram(program, argv("leak"), ctx)).toBe(2);
     expect(ctx.errors).not.toContain(secret);
     expect(ctx.errors).toContain("HCLOUD_TOKEN");
   });

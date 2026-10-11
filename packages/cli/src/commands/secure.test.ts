@@ -63,9 +63,9 @@ describe("opscrew secure", () => {
     expect(await run(ctx, "secure")).toBe(1);
   });
 
-  it("exits 2 when there is no plan yet", async () => {
+  it("exits 1 when there is no plan yet (an earlier step has not run)", async () => {
     const { ctx } = await setup(undefined);
-    expect(await run(ctx, "secure")).toBe(2);
+    expect(await run(ctx, "secure")).toBe(1);
     expect(ctx.errors).toContain("plan.yaml");
   });
 });

@@ -2,8 +2,8 @@ import { runSecure } from "@opscrew/agents";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps } from "../deps";
-import { CliExit } from "../exit";
-import { REFUSED_EXIT_CODE, runPhaseCommand, usageErrorsExit2 } from "../ui/deploy";
+import { CliExit, REFUSED_EXIT_CODE } from "../exit";
+import { runPhaseCommand, usageErrorsExit2 } from "../ui/deploy";
 import { deployServicesOf } from "../ui/deploy-services";
 import { printNextSteps } from "../ui/output";
 

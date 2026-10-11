@@ -112,7 +112,7 @@ describe("opscrew interview", () => {
   it("fails with a plain-English error when required answers are missing", async () => {
     project = await tempProject("static-vite");
     const ctx = projectContext(project);
-    expect(await run(ctx, "interview")).toBe(1);
+    expect(await run(ctx, "interview")).toBe(2);
     expect(ctx.errors).toContain("Some required answers are missing");
   });
 
@@ -120,7 +120,7 @@ describe("opscrew interview", () => {
     project = await tempProject("static-vite");
     await writeFile(path.join(project.root, "answers.yaml"), "- a\n- b\n");
     const ctx = projectContext(project);
-    expect(await run(ctx, "interview", "--answers", "answers.yaml")).toBe(1);
+    expect(await run(ctx, "interview", "--answers", "answers.yaml")).toBe(2);
     expect(ctx.errors).toContain("must map question names to answers");
   });
 
