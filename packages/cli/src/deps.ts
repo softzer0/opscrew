@@ -15,6 +15,7 @@ import {
   JsonlApprovalStore,
   JsonlAuditLog,
   NodeCommandRunner,
+  nodeRealpath,
   ProjectStateStore,
   registerEnvSecrets,
   resolveProjectPaths,
@@ -135,7 +136,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     } else if (claudeConfigured(ctx.env)) {
       // Phases record their own spend in the cost ledger, so the runtime gets none (no doubles).
       runtime = new ClaudeAgentRuntime({
-        policy: new DefaultToolPolicy({ mcpServerName: MCP_SERVER_NAME }),
+        policy: new DefaultToolPolicy({ mcpServerName: MCP_SERVER_NAME, realpath: nodeRealpath }),
         audit,
         redact: redactor.redact,
         approvals,

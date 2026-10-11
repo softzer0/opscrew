@@ -477,6 +477,53 @@ describe("DefaultToolPolicy: Bash parsing rules", () => {
   });
 });
 
+describe("DefaultToolPolicy: symbolic links", () => {
+  // A fake filesystem: existing paths map to where they really lead.
+  const links: Record<string, string> = {
+    "/home/dev/app": "/home/dev/app",
+    "/home/dev/app/src": "/home/dev/app/src",
+    "/home/dev/app/src/index.ts": "/home/dev/app/src/index.ts",
+    "/home/dev/app/docs": "/home/dev/app/docs",
+    "/home/dev/app/docs/aws": "/home/dev/.aws/credentials",
+    "/home/dev/app/docs/env-link": "/home/dev/app/.env",
+    "/home/dev/app/docs/git-link": "/home/dev/app/.git/config",
+    "/home/dev/app/out": "/tmp/elsewhere",
+  };
+  const policy = new DefaultToolPolicy({ platform: "linux", realpath: (p) => links[p] });
+  const run = (tool: string, input: Record<string, unknown>, root = "/home/dev/app") =>
+    policy.evaluate(call(tool, input, "edit-repo", root)).decision;
+
+  it("checks where a link really leads", () => {
+    expect(run("Read", { file_path: "docs/aws" })).toBe("deny");
+    expect(run("Read", { file_path: "/home/dev/app/docs/env-link" })).toBe("deny");
+    expect(run("Edit", { file_path: "docs/git-link", old_string: "a", new_string: "b" })).toBe(
+      "deny",
+    );
+    expect(run("Bash", { command: "cat docs/aws" })).not.toBe("allow");
+  });
+
+  it("checks new files under a linked folder by the folder's real location", () => {
+    expect(run("Write", { file_path: "out/new.txt", content: "x" })).toBe("deny");
+    expect(run("Write", { file_path: "src/new.ts", content: "x" })).toBe("allow");
+  });
+
+  it("allows ordinary files and a project root that is itself a link", () => {
+    expect(run("Read", { file_path: "src/index.ts" })).toBe("allow");
+    const linkedRoot = new DefaultToolPolicy({
+      platform: "linux",
+      realpath: (p) => (p.startsWith("/srv/app") ? p.replace("/srv/app", "/data/app") : undefined),
+    });
+    expect(
+      linkedRoot.evaluate(call("Read", { file_path: "/srv/app/src/a.ts" }, "read-only", "/srv/app"))
+        .decision,
+    ).toBe("allow");
+  });
+
+  it("keeps checking paths as written when no realpath is given", () => {
+    expect(decide("Read", { file_path: "docs/aws" }, "read-only").decision).toBe("allow");
+  });
+});
+
 describe("splitShellCommand", () => {
   it("splits on control operators and newlines", () => {
     expect(splitShellCommand("a && b || c; d | e & f\ng")).toEqual([

@@ -6,6 +6,7 @@
  * denied (or, for Bash commands that are not clearly dangerous, sent to a human as `ask`).
  * It is pure and synchronous; the host platform only decides how paths are compared.
  */
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import type {
   BuiltinTool,
@@ -292,6 +293,10 @@ interface PathContext {
   api: typeof path.posix;
   /** Resolved absolute project root. */
   root: string;
+  /** Resolves links on the real filesystem (`undefined` when the path does not exist). */
+  realpath?: (absolute: string) => string | undefined;
+  /** The project root with links resolved. */
+  realRoot?: string;
 }
 
 type Resolution =
@@ -303,14 +308,39 @@ const WIN_DRIVE_RELATIVE = /^[a-zA-Z]:(?![\\/])/;
 const WIN_DEVICE_PATH = /^[\\/]{2}[?.][\\/]/;
 const WIN_SHORT_NAME = /~\d/;
 
-function makePathContext(projectRoot: unknown, win: boolean): PathContext | undefined {
+function makePathContext(
+  projectRoot: unknown,
+  win: boolean,
+  realpath?: (absolute: string) => string | undefined,
+): PathContext | undefined {
   if (typeof projectRoot !== "string" || projectRoot === "" || projectRoot.includes("\0")) {
     return undefined;
   }
   const api = win ? path.win32 : path.posix;
   if (!api.isAbsolute(projectRoot)) return undefined;
   if (win && !/^([a-zA-Z]:[\\/]|[\\/]{2}[^\\/?.])/.test(projectRoot)) return undefined;
-  return { win, api, root: api.resolve(projectRoot) };
+  const root = api.resolve(projectRoot);
+  if (realpath === undefined) return { win, api, root };
+  return { win, api, root, realpath, realRoot: realpath(root) ?? root };
+}
+
+/**
+ * The path with links resolved: the deepest existing ancestor through `realpath`, plus the
+ * segments that do not exist yet (a file about to be written). `undefined` when nothing resolves.
+ */
+function realPathOf(ctx: PathContext, absolute: string): string | undefined {
+  if (ctx.realpath === undefined) return undefined;
+  let current = absolute;
+  const missing: string[] = [];
+  for (let depth = 0; depth < 256; depth++) {
+    const real = ctx.realpath(current);
+    if (real !== undefined) return missing.length === 0 ? real : ctx.api.join(real, ...missing);
+    const parent = ctx.api.dirname(current);
+    if (parent === current) return undefined;
+    missing.unshift(ctx.api.basename(current));
+    current = parent;
+  }
+  return undefined;
 }
 
 function locate(ctx: PathContext, absolute: string): Resolution {
@@ -331,7 +361,18 @@ function resolvePath(ctx: PathContext, raw: string): Resolution {
     if (WIN_DRIVE_RELATIVE.test(raw)) return { status: "unknown", why: "is drive-relative" };
     if (WIN_DEVICE_PATH.test(raw)) return { status: "unknown", why: "uses a device path" };
   }
-  return locate(ctx, ctx.api.resolve(ctx.root, raw));
+  const absolute = ctx.api.resolve(ctx.root, raw);
+  const lexical = locate(ctx, absolute);
+  if (lexical.status !== "inside" || ctx.realpath === undefined) return lexical;
+  // A link inside the project may lead anywhere (a cloned repository can commit one pointing at
+  // ~/.aws/credentials), so the checks apply to where the path really leads.
+  const real = realPathOf(ctx, absolute);
+  if (real === undefined) return lexical;
+  const resolved = locate({ ...ctx, root: ctx.realRoot ?? ctx.root }, real);
+  if (resolved.status === "outside") {
+    return { status: "unknown", why: "is a link that leads outside the project" };
+  }
+  return resolved;
 }
 
 /** Project-relative locations agents may never write. */
@@ -1549,6 +1590,21 @@ export interface DefaultToolPolicyOptions {
   mcpServerName?: string;
   /** Platform whose path rules apply. Defaults to `process.platform`; injectable for tests. */
   platform?: NodeJS.Platform;
+  /**
+   * Resolves symbolic links and junctions on the real filesystem, returning `undefined` for a path
+   * that does not exist (see {@link nodeRealpath}). When set, every path is also checked where it
+   * really leads; without it, paths are checked as written.
+   */
+  realpath?: (absolute: string) => string | undefined;
+}
+
+/** `fs.realpathSync.native`, or `undefined` when the path does not exist. */
+export function nodeRealpath(absolute: string): string | undefined {
+  try {
+    return realpathSync.native(absolute);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1560,10 +1616,12 @@ export interface DefaultToolPolicyOptions {
 export class DefaultToolPolicy implements ToolPolicy {
   readonly #mcpPrefix: string;
   readonly #win: boolean;
+  readonly #realpath: ((absolute: string) => string | undefined) | undefined;
 
   constructor(options: DefaultToolPolicyOptions = {}) {
     this.#mcpPrefix = `mcp__${options.mcpServerName ?? "opscrew"}__`;
     this.#win = (options.platform ?? process.platform) === "win32";
+    this.#realpath = options.realpath;
   }
 
   evaluate(call: ToolCall): ToolDecision {
@@ -1597,7 +1655,7 @@ export class DefaultToolPolicy implements ToolPolicy {
       return deny(`${tool} is not allowed in the ${profile} profile.`);
     }
 
-    const ctx = makePathContext(call.projectRoot, this.#win);
+    const ctx = makePathContext(call.projectRoot, this.#win, this.#realpath);
     if (ctx === undefined) return deny("The project root is not an absolute path.");
     const input = isRecord(call.input) ? call.input : {};
 

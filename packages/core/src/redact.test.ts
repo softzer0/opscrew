@@ -107,6 +107,13 @@ describe("redaction corpus (SC-002)", () => {
     expect(out).toContain("cert_path: /etc/ssl/certs/app.crt");
   });
 
+  it("masks a PEM block whose END line was cut off", () => {
+    const block = pem("", [F.repeat(4), F.repeat(4)]);
+    const truncated = `log start\n${block.slice(0, block.indexOf("-----END"))}`;
+    const out = new Redactor().redact(truncated);
+    expect(out).toBe("log start\n[REDACTED:pem-private-key]");
+  });
+
   it("masks PEM blocks with CRLF line endings", () => {
     const block = pem("", [F.repeat(4)], "\r\n");
     expect(new Redactor().redact(`a\r\n${block}\r\nb`)).toBe(

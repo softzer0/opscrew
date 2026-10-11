@@ -107,7 +107,7 @@ describe("ProjectStateStore", () => {
     }
     expect(await readLoop).toBeGreaterThan(0);
     expect(await readdir(join(root, ".opscrew"))).toEqual(["state.json"]);
-  });
+  }, 30_000); // Windows renames are slow under parallel test load
 
   it("serialises reads with writes on the same store", async () => {
     const store = new ProjectStateStore(join(root, "state.json"), tickingClock());

@@ -36,7 +36,9 @@ function isPlaceholder(value: string): boolean {
 export const DEFAULT_REDACTION_RULES: readonly RedactionRule[] = [
   {
     id: "pem-private-key",
-    pattern: /-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z0-9 ]*PRIVATE KEY-----/g,
+    // A block cut off before its END line (truncated output) is masked to the end of the text.
+    pattern:
+      /-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END[A-Z0-9 ]*PRIVATE KEY-----|[\s\S]*$)/g,
   },
   { id: "github-token", pattern: /(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36,251}(?![A-Za-z0-9])/g },
   { id: "github-pat", pattern: /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{22,255}/g },
