@@ -101,7 +101,12 @@ describe("SshRemoteExec", () => {
 describe("waiting for the server", () => {
   function clock() {
     let t = 0;
-    return { now: () => t, sleep: async (ms: number) => void (t += ms) };
+    return {
+      now: () => t,
+      sleep: async (ms: number) => {
+        t += ms;
+      },
+    };
   }
 
   it("waits for the SSH port", async () => {
