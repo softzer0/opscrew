@@ -1,0 +1,133 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.13.1",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "hcloud_firewall.web",
+      "mode": "managed",
+      "type": "hcloud_firewall",
+      "name": "web",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "update"
+        ],
+        "before": null,
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "hcloud_ssh_key.old",
+      "mode": "managed",
+      "type": "hcloud_ssh_key",
+      "name": "old",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "delete"
+        ],
+        "before": null,
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "hcloud_server.app",
+      "mode": "managed",
+      "type": "hcloud_server",
+      "name": "app",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "delete",
+          "create"
+        ],
+        "before": null,
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      },
+      "action_reason": "replace_because_cannot_update"
+    },
+    {
+      "address": "hcloud_primary_ip.v4",
+      "mode": "managed",
+      "type": "hcloud_primary_ip",
+      "name": "v4",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "create",
+          "delete"
+        ],
+        "before": null,
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "hcloud_network.main",
+      "mode": "managed",
+      "type": "hcloud_network",
+      "name": "main",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "no-op"
+        ],
+        "before": null,
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "data.hcloud_image.ubuntu",
+      "mode": "data",
+      "type": "hcloud_image",
+      "name": "ubuntu",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "read"
+        ]
+      }
+    },
+    {
+      "address": "hcloud_volume.data",
+      "mode": "managed",
+      "type": "hcloud_volume",
+      "name": "data",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      }
+    }
+  ],
+  "configuration": {
+    "root_module": {}
+  },
+  "timestamp": "2026-10-11T12:00:00Z",
+  "applyable": true,
+  "complete": true,
+  "errored": false
+}

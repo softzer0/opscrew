@@ -1,0 +1,33 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.13.1",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "hcloud_server.app",
+      "mode": "managed",
+      "type": "hcloud_server",
+      "name": "app",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "no-op"
+        ],
+        "before": null,
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      }
+    }
+  ],
+  "configuration": {
+    "root_module": {}
+  },
+  "timestamp": "2026-10-11T12:00:00Z",
+  "applyable": true,
+  "complete": true,
+  "errored": false
+}

@@ -1,0 +1,64 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.13.1",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "module.server.hcloud_ssh_key.deploy",
+      "mode": "managed",
+      "type": "hcloud_ssh_key",
+      "name": "deploy",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      },
+      "module_address": "module.server"
+    },
+    {
+      "address": "module.server.hcloud_server.app",
+      "mode": "managed",
+      "type": "hcloud_server",
+      "name": "app",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": false,
+        "after_sensitive": {}
+      },
+      "module_address": "module.server"
+    },
+    {
+      "address": "data.hcloud_image.ubuntu",
+      "mode": "data",
+      "type": "hcloud_image",
+      "name": "ubuntu",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": [
+          "read"
+        ]
+      }
+    }
+  ],
+  "configuration": {
+    "root_module": {}
+  },
+  "timestamp": "2026-10-11T12:00:00Z",
+  "applyable": true,
+  "complete": true,
+  "errored": false
+}
