@@ -211,11 +211,14 @@ secret rotation and costs.
   (status, branch, add, commit, push, diff, remote parsing), and REST operations (repository info,
   pull requests, Actions public key and secret upload sealed with libsodium, workflow runs); tokens
   from `GITHUB_TOKEN`/`GH_TOKEN` or `gh auth token`.
-- **FR-213**: `opscrew provision [--plan-only] [--approve <hash>] [--engine <name>] [--no-push]`
+- **FR-213**: `opscrew provision [--plan-only] [--approve <hash>] [--engine <name>] [--no-push] [--yes]`
   MUST implement US2 and US3 end to end through the approval gate, deploy-key generation (Ed25519,
   OpenSSH format, stored under `~/.opscrew/projects/<id>/`, mode 0600), OpenTofu state encryption
   with a generated passphrase stored beside the key, policy checks before approval, readiness wait,
-  host-key pinning, GitHub secrets, commit and pull request.
+  host-key pinning, GitHub secrets, commit and pull request. In non-interactive runs `--yes` approves only
+  the non-infrastructure steps (writing generated files, GitHub secrets, push, pull request); an
+  infrastructure apply still needs `--approve <hash>`, and destroys or changed host keys always need
+  a human.
 - **FR-214**: `opscrew dns [--domain <fqdn>]` MUST update the plan's DNS settings and run the same
   plan/approve/apply path.
 - **FR-215**: `@opscrew/secops` MUST provide `evaluatePlanPolicies(planJson, deployPlan)` (firewall

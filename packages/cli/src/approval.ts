@@ -144,10 +144,24 @@ export function formatMoneyDelta(money: Money): string {
 export interface NonInteractiveApprovalHandlerOptions {
   /** Plan hash passed with `--approve <hash>`. */
   approvePlanHash?: string;
+  /**
+   * `--yes`: also approve the non-infrastructure steps of a run (writing generated files, storing
+   * GitHub secrets, pushing, opening a pull request). Never infrastructure applies (those need
+   * `--approve <hash>`), destroys, changed host keys or agent tool calls.
+   */
+  assumeYes?: boolean;
   /** Recorded as the approver, for example `--approve flag`. */
   approver: string;
   clock?: Clock;
 }
+
+/** Request kinds `--yes` may approve without a human. */
+export const ASSUME_YES_KINDS: readonly ApprovalRequest["kind"][] = [
+  "repo-write",
+  "github-secrets",
+  "git-push",
+  "pull-request",
+];
 
 const RUN_INTERACTIVELY =
   "Run the command in an interactive terminal to review and approve it, or pass --approve <hash> with the hash of the plan you reviewed.";
@@ -176,6 +190,14 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
   }
 
   private refusalReason(request: ApprovalRequest): string | undefined {
+    if (
+      this.options.assumeYes === true &&
+      ASSUME_YES_KINDS.includes(request.kind) &&
+      request.allowDestroy !== true &&
+      request.confirmPhrase === undefined
+    ) {
+      return undefined;
+    }
     if (request.kind !== "iac-apply") {
       return `"${request.title}" needs a human approval and this run is not interactive. ${RUN_INTERACTIVELY}`;
     }
@@ -199,13 +221,14 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
 /** Picks the interactive handler on a TTY, otherwise the `--approve <hash>` handler. */
 export function createApprovalHandler(
   ctx: CliContext,
-  options: { approvePlanHash?: string } = {},
+  options: { approvePlanHash?: string; assumeYes?: boolean } = {},
 ): ApprovalHandler {
   if (ctx.isInteractive) {
     return new InteractiveApprovalHandler({ stdout: ctx.stdout, cwd: ctx.cwd });
   }
   return new NonInteractiveApprovalHandler({
     ...(options.approvePlanHash === undefined ? {} : { approvePlanHash: options.approvePlanHash }),
-    approver: "--approve flag",
+    ...(options.assumeYes === true ? { assumeYes: true } : {}),
+    approver: options.assumeYes === true ? "--yes flag" : "--approve flag",
   });
 }

@@ -133,7 +133,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Owns: `packages/cli/src/commands/{provision,dns,secure,verify,mcp}.ts` and their tests
   - Reads: spec FR-213, FR-214, FR-216; agents exports; `packages/cli/src/{deps,context,program,approval}.ts`
   - Depends: T209, T210, 001/T112, 001/T114 (`deps.ts`)
-  - Accept: `provision [--plan-only] [--approve <hash>] [--engine tofu|terraform] [--no-push]`, `dns [--domain <fqdn>]`, `secure`, `verify`, `mcp` (starts `startStdioServer` with deps built from the cwd; logs to stderr only); exit codes (0 ok, 1 checks/policies failed or refused, 2 error); next-step hints; tests through `createProgram` with fakes.
+  - Accept: `provision [--plan-only] [--approve <hash>] [--engine tofu|terraform] [--no-push] [--yes]`, `dns [--domain <fqdn>] [--plan-only] [--approve <hash>] [--yes]`, `secure`, `verify`, `mcp` (starts `startStdioServer` with deps built from the cwd; logs to stderr only); exit codes (0 ok, 1 checks/policies failed or refused, 2 error); next-step hints; tests through `createProgram` with fakes.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: high
 

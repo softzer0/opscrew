@@ -74,6 +74,38 @@ describe("NonInteractiveApprovalHandler", () => {
   });
 });
 
+describe("NonInteractiveApprovalHandler with --yes", () => {
+  const handler = new NonInteractiveApprovalHandler({
+    assumeYes: true,
+    approver: "--yes flag",
+    clock,
+  });
+
+  it("approves writing files, storing secrets, pushing and opening a pull request", async () => {
+    for (const kind of ["repo-write", "github-secrets", "git-push", "pull-request"] as const) {
+      const decision = await handler.request({ kind, title: kind, details: "" });
+      expect(decision, kind).toMatchObject({ approved: true, approver: "--yes flag" });
+    }
+  });
+
+  it("never approves an infrastructure apply, a changed host key or a tool call", async () => {
+    expect((await handler.request(apply())).approved).toBe(false);
+    for (const kind of ["remote-exec", "tool-call"] as const) {
+      expect((await handler.request({ kind, title: kind, details: "" })).approved).toBe(false);
+    }
+  });
+
+  it("never approves anything that needs a typed confirmation", async () => {
+    const decision = await handler.request({
+      kind: "repo-write",
+      title: "Overwrite",
+      details: "",
+      confirmPhrase: "shop",
+    });
+    expect(decision.approved).toBe(false);
+  });
+});
+
 describe("InteractiveApprovalHandler", () => {
   const gitRunner = (name: string, exitCode = 0): CommandRunner => ({
     run: vi.fn(async () => ({ exitCode, stdout: `${name}\n`, stderr: "" })),
