@@ -153,6 +153,12 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run test --filter=opscrew` (live suite skipped without env)
   - Effort: high
 
+## Phase 6: Converge (review of 2026-10-11 against FR-201..FR-217, US1–US4 and the constitution)
+
+- [X] T214 Keep OpsCrew's own Cloudflare rulesets on re-runs (ownership check), stop on conflicting DNS records, warn before `dns` changes a running server, record the real phase in the audit, an accurate PR body when secrets were skipped, and actionable hints for unavailable server types and slow cloud-init in `packages/connectors/cloudflare/src/`, `packages/agents/src/{provision,dns}/` (FR-207, FR-211, FR-213, FR-214, US3 AS3)
+- [X] T215 Roll back only when this run's start or health step failed, scan with a digest-pinned Trivy after logging out of GHCR, deploy the pushed image by digest, and check ufw through `/etc/ufw/ufw.conf` in `packages/iac-templates/src/workflow/`, `packages/secops/src/hardening/` (FR-209, FR-215, US2 AS5)
+- [X] T216 Spec, plan and research text converged with the implementation (saved-plan `--approve`, `--yes`, `OPSCREW_BUILD_ENV`, MCP deploy tool semantics, RUNBOOK by verify, workflow and Cloudflare behaviour) in `specs/002-hetzner-deploy/`
+
 ## Waves
 
 See `specs/001-scan-and-plan/tasks.md` "Dependencies & waves" (features 001 and 002 are scheduled

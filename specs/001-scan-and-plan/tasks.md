@@ -196,6 +196,12 @@ never contain secret-shaped literals: use `{{FAKE:<kind>}}` markers + `materiali
   - Verify: `pnpm turbo run test --filter=opscrew`
   - Effort: high
 
+## Phase 8: Converge (review of 2026-10-11 against FR-101..FR-113, US1–US5 and the edge cases)
+
+- [X] T116 Report Supabase secret keys hard-coded in server code, read git tracking from subfolders, install hints for skipped scanners, a truncation warning, a clean-summary line, client-exposed AI/API key names, and zero findings on the clean examples in `packages/secops/src/`, `packages/detect/src/env.ts`, `packages/cli/src/commands/scan.ts`, `packages/cli/test/e2e/` (FR-101, FR-102, US1 AS2/AS4, SC-102)
+- [X] T117 Stop design on repositories with several apps, build monorepo Next.js apps from the repository root, run `collectstatic` (and ask for `STATIC_ROOT`), time out Hetzner requests, keep plan edits and statuses when design runs again, and turn gitleaks findings into secret-removal changes in `packages/agents/src/{design,analyze,adapt/playbooks}/`, `packages/iac-templates/src/docker/`, `packages/connectors/hetzner/src/client.ts` (FR-107, FR-109, edge cases)
+- [X] T118 Marketplace manifest passes `claude plugin validate .`; plugin MCP server pinned to the plugin version; spec, plan and research text converged in `.claude-plugin/`, `plugin/`, `specs/001-scan-and-plan/` (FR-111)
+
 ## Dependencies & waves
 
 - Wave B: 000/T007, 000/T008, T101, T103, 002/T201

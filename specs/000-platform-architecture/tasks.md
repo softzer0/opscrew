@@ -123,7 +123,7 @@ All test fixtures with secrets use obviously fake values.
 ## Phase 6: Polish
 
 - [X] T009 Write ADRs 0001–0005 (lead) in `docs/adr/`
-- [ ] T010 Feature verification (lead): `pnpm check`, CLI bundle smoke test, `/speckit-converge`-style review against spec FR-001..FR-013
+- [X] T010 Feature verification (lead): `pnpm check`, CLI bundle smoke test, `/speckit-converge`-style review against spec FR-001..FR-013
 
 ## Phase 7: Converge (review of 2026-10-11 against FR-001..FR-013 and the constitution)
 
