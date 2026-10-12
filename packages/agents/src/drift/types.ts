@@ -1,11 +1,16 @@
-import type { IacEngineInfo, ResourceChange, ResourceDrift } from "@opscrew/contracts";
+import type {
+  IacEngineInfo,
+  ResourceChange,
+  ResourceDrift,
+  VpsProviderId,
+} from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { ProvisionServices } from "../provision/types";
 
 export interface DriftOptions {
   /** Overrides `plan.infra.engine`. */
   engine?: EnginePreference;
-  /** Engine, Hetzner and Cloudflare fakes for tests (same shape as provision's). */
+  /** Engine, cloud provider and Cloudflare fakes for tests (same shape as provision's). */
   services?: ProvisionServices;
 }
 
@@ -30,4 +35,6 @@ export interface DriftReport {
   engine: IacEngineInfo;
   /** ISO time of the check. */
   checkedAt: string;
+  /** Cloud provider of the deployment, named in the report (absent in reports made before 004). */
+  provider?: VpsProviderId;
 }

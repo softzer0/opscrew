@@ -2,6 +2,8 @@ import { BlockList, isIPv6 } from "node:net";
 import type { CheckResult, FetchLike, Severity } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
+import { type ProviderProfile, planProvider, providerProfile } from "../providers";
+import { providerConsole } from "../shared";
 import type { DnsResolver, TlsCertificateInfo, TlsConnect } from "./net";
 
 /** Cloudflare edge ranges (CIDRs) used to confirm proxied DNS records. */
@@ -65,6 +67,11 @@ function result(
     ...(extra.remediation !== undefined ? { remediation: extra.remediation } : {}),
     ...(extra.target !== undefined ? { target: extra.target } : {}),
   };
+}
+
+/** The plan provider's names and links for remediation text. */
+function profileOf(plan: DeployPlan): ProviderProfile {
+  return providerProfile(planProvider(plan));
 }
 
 function errorText(error: unknown): string {
@@ -304,8 +311,7 @@ export async function checkSiteReachable(
         "fail",
         `Could not reach ${target}: ${errorText(error)}.`,
         {
-          remediation:
-            "Check that the latest deploy run succeeded and that the server is running (Hetzner Console).",
+          remediation: `Check that the latest deploy run succeeded and that the ${profileOf(ctx.plan).serverNoun} is running (${providerConsole(profileOf(ctx.plan))}).`,
           target,
         },
       ),
@@ -613,8 +619,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
         "fail",
         `Port 443 on the server (${ip}) answers directly, so Cloudflare's protection can be bypassed.`,
         {
-          remediation:
-            "Re-run `opscrew provision` so the Hetzner firewall only allows Cloudflare's IP ranges on ports 80 and 443.",
+          remediation: `Re-run \`opscrew provision\` so the ${profileOf(plan).displayName} firewall only allows Cloudflare's IP ranges on ports 80 and 443.`,
           target: ip,
         },
       )

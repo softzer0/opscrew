@@ -10,6 +10,7 @@ import type {
   PlanSummary,
   RemoteExec,
   ResourceChange,
+  VpsProviderId,
 } from "@opscrew/contracts";
 import { type CloudflareDnsRecord, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
 import { NodeCommandRunner } from "@opscrew/core";
@@ -32,10 +33,20 @@ export interface PlanInputOptions {
   deployed?: boolean;
   /** Also serve `www.<domain>` (with `domain`). */
   www?: boolean;
+  /** Cloud provider of the plan (default Hetzner). */
+  provider?: VpsProviderId;
 }
+
+/** Plan targets per provider: location, size and image as design would choose them. */
+const TARGETS = {
+  hetzner: { location: "nbg1", serverType: "cx23" },
+  digitalocean: { location: "fra1", serverType: "s-1vcpu-2gb", image: "ubuntu-24-04-x64" },
+} as const;
 
 /** A valid `opscrew/plan.yaml` input (parsed with the schema so defaults are filled). */
 export function testPlan(options: PlanInputOptions = {}) {
+  const provider = options.provider ?? "hetzner";
+  const currency = provider === "digitalocean" ? "USD" : "EUR";
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-11T10:00:00.000Z",
@@ -51,20 +62,19 @@ export function testPlan(options: PlanInputOptions = {}) {
       ],
     },
     target: {
-      provider: "hetzner",
+      provider,
       mode: "vps-compose",
-      location: "nbg1",
-      serverType: "cx23",
+      ...TARGETS[provider],
       backups: true,
     },
     services: { postgres: options.postgres ?? true, redis: false },
     externalServices: [],
     cost: {
-      monthly: { amount: 8.41, currency: "EUR" },
+      monthly: { amount: 8.41, currency },
       breakdown: [
-        { item: "server", monthly: { amount: 6.59, currency: "EUR" } },
-        { item: "backups", monthly: { amount: 1.32, currency: "EUR" } },
-        { item: "ipv4", monthly: { amount: 0.5, currency: "EUR" } },
+        { item: "server", monthly: { amount: 6.59, currency } },
+        { item: "backups", monthly: { amount: 1.32, currency } },
+        { item: "ipv4", monthly: { amount: 0.5, currency } },
       ],
       pricesIncludeVat: false,
       source: "static",
@@ -83,8 +93,15 @@ export function testPlan(options: PlanInputOptions = {}) {
   });
 }
 
+export interface PlanJsonOptions {
+  proxied?: boolean;
+  openDatabasePort?: boolean;
+  provider?: VpsProviderId;
+}
+
 /** `show -json` shaped like the rendered root module, passing every policy unless told otherwise. */
-export function planJsonFor(options: { proxied?: boolean; openDatabasePort?: boolean } = {}) {
+export function planJsonFor(options: PlanJsonOptions = {}) {
+  if (options.provider === "digitalocean") return digitalOceanPlanJson(options);
   const web = options.proxied ? [...CF_V4, ...CF_V6] : ["0.0.0.0/0", "::/0"];
   const rules: Record<string, unknown>[] = [
     { direction: "in", protocol: "tcp", port: "22", source_ips: ["0.0.0.0/0", "::/0"] },
@@ -149,6 +166,152 @@ export function planJsonFor(options: { proxied?: boolean; openDatabasePort?: boo
   };
 }
 
+/** The DNS module's planned record when the site is behind Cloudflare's proxy. */
+function dnsModule(proxied: boolean | undefined) {
+  return proxied
+    ? [
+        {
+          address: "module.dns",
+          resources: [
+            {
+              address: "module.dns.cloudflare_dns_record.a",
+              mode: "managed",
+              type: "cloudflare_dns_record",
+              name: "a",
+              values: { name: "shop.example.com", type: "A", proxied: true, ttl: 1 },
+            },
+          ],
+        },
+      ]
+    : [];
+}
+
+/** `show -json` shaped like the rendered DigitalOcean root module (module `server`). */
+function digitalOceanPlanJson(options: PlanJsonOptions) {
+  const world = ["0.0.0.0/0", "::/0"];
+  const web = options.proxied ? [...CF_V4, ...CF_V6] : world;
+  const inbound: Record<string, unknown>[] = [
+    { protocol: "tcp", port_range: "22", source_addresses: world },
+    { protocol: "tcp", port_range: "80", source_addresses: web },
+    { protocol: "tcp", port_range: "443", source_addresses: web },
+    { protocol: "udp", port_range: "443", source_addresses: web },
+    { protocol: "icmp", port_range: "", source_addresses: world },
+  ];
+  if (options.openDatabasePort) {
+    inbound.push({ protocol: "tcp", port_range: "5432", source_addresses: ["0.0.0.0/0"] });
+  }
+  const resources: Record<string, unknown>[] = [
+    {
+      address: "module.server.digitalocean_droplet.this",
+      mode: "managed",
+      type: "digitalocean_droplet",
+      name: "this",
+      values: {
+        name: "shop",
+        region: "fra1",
+        size: "s-1vcpu-2gb",
+        image: "ubuntu-24-04-x64",
+        backups: true,
+        ipv6: true,
+        monitoring: true,
+      },
+    },
+    {
+      address: "module.server.digitalocean_firewall.this",
+      mode: "managed",
+      type: "digitalocean_firewall",
+      name: "this",
+      values: {
+        name: "shop-firewall",
+        inbound_rule: inbound,
+        outbound_rule: [
+          { protocol: "tcp", port_range: "1-65535", destination_addresses: world },
+          { protocol: "udp", port_range: "1-65535", destination_addresses: world },
+        ],
+      },
+    },
+    {
+      address: "module.server.digitalocean_ssh_key.deploy",
+      mode: "managed",
+      type: "digitalocean_ssh_key",
+      name: "deploy",
+      values: { name: "shop-deploy" },
+    },
+    {
+      address: "module.server.digitalocean_tag.app",
+      mode: "managed",
+      type: "digitalocean_tag",
+      name: "app",
+      values: { name: "opscrew-app:shop" },
+    },
+  ];
+  return {
+    format_version: "1.2",
+    planned_values: {
+      root_module: {
+        child_modules: [{ address: "module.server", resources }, ...dnsModule(options.proxied)],
+      },
+    },
+    resource_changes: [
+      {
+        address: "module.server.digitalocean_droplet.this",
+        change: { actions: ["create"], after_unknown: { id: true, ssh_keys: [true] } },
+      },
+      {
+        address: "module.server.digitalocean_firewall.this",
+        change: { actions: ["create"], after_unknown: { id: true, droplet_ids: true } },
+      },
+    ],
+    configuration: {
+      root_module: {
+        module_calls: {
+          server: {
+            source: "../modules/digitalocean-droplet",
+            module: {
+              resources: [
+                {
+                  address: "digitalocean_droplet.this",
+                  mode: "managed",
+                  type: "digitalocean_droplet",
+                  name: "this",
+                  expressions: { ssh_keys: { references: ["digitalocean_ssh_key.deploy.fingerprint"] } },
+                },
+                {
+                  address: "digitalocean_firewall.this",
+                  mode: "managed",
+                  type: "digitalocean_firewall",
+                  name: "this",
+                  expressions: {
+                    droplet_ids: {
+                      references: ["digitalocean_droplet.this.id", "digitalocean_droplet.this"],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+const DIGITALOCEAN_PROVIDER = "registry.opentofu.org/digitalocean/digitalocean";
+
+/** What the first apply of a DigitalOcean plan creates. */
+export const DIGITALOCEAN_CREATE: ResourceChange[] = [
+  ["digitalocean_tag", "app"],
+  ["digitalocean_ssh_key", "deploy"],
+  ["digitalocean_droplet", "this"],
+  ["digitalocean_firewall", "this"],
+].map(([type, name]) => ({
+  address: `module.server.${type}.${name}`,
+  type: type as string,
+  name: name as string,
+  provider: DIGITALOCEAN_PROVIDER,
+  action: "create" as const,
+}));
+
 const CREATE: ResourceChange[] = [
   {
     address: "module.server.hcloud_ssh_key.deploy",
@@ -178,6 +341,8 @@ export interface FakeEngineScenario {
   changes?: ResourceChange[];
   outputs?: Record<string, unknown>;
   applyOk?: boolean;
+  /** Engine log of a failed apply (default: Hetzner's unavailable server type). */
+  applyLog?: string;
 }
 
 /** IaC engine fake: writes real plan files, enforces the hash binding like the real engines. */
@@ -243,7 +408,11 @@ export class FakeEngine implements IacEngine {
     }
     this.applied.push({ planFile, approval });
     return this.scenario.applyOk === false
-      ? { ok: false, outputs: {}, log: "Error: server type unavailable in nbg1" }
+      ? {
+          ok: false,
+          outputs: {},
+          log: this.scenario.applyLog ?? "Error: server type unavailable in nbg1",
+        }
       : { ok: true, outputs: this.outputs, log: "Apply complete!" };
   }
 

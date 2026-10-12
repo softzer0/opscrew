@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import type {
   ApprovalRecord,
   IacEngine,
@@ -7,6 +8,7 @@ import type {
   PlanSummary,
   PolicyResult,
   ResourceAction,
+  VpsProviderId,
 } from "@opscrew/contracts";
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { checkDialect, engineLabel, hashFile } from "@opscrew/iac-engine";
@@ -14,6 +16,7 @@ import type { RenderedFile } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { planProvider, providerProfile, vpsConnector } from "../providers";
 import type { SavedPlan } from "./types";
 
 export interface PlanAndApplyOptions {
@@ -36,13 +39,53 @@ export interface PlanAndApplyOptions {
   approvalNotes?: readonly string[];
 }
 
-/** Hetzner's wording when a server type has no capacity in a location. */
-const UNAVAILABLE =
-  /resource_unavailable|out of stock|unsupported location|error during placement|(?<!service )unavailable/i;
+/** Engine log text meaning an API refused the token's permissions (HTTP 403, read-only token). */
+const FORBIDDEN =
+  /:\s*403\b|\bforbidden\b|not authori[sz]ed|insufficient[_ ]permissions?|missing (?:the )?(?:required )?scopes?|token_readonly|only allowed to perform GET requests/i;
 
-function applyFailureHint(log: string, deployPlan: DeployPlan, command: string): string {
-  if (UNAVAILABLE.test(log)) {
-    return `Hetzner cannot create a ${deployPlan.target.serverType} server in ${deployPlan.target.location} right now (the type is unavailable or out of stock there). Run \`opscrew design\` to pick another server type or location, then run \`${command}\` again. Nothing that was already created is removed.`;
+/** Engine log text naming each provider's API or resources, so a 403 is blamed on the right token. */
+const PROVIDER_API: Readonly<Record<VpsProviderId, RegExp>> = {
+  hetzner: /api\.hetzner\.cloud|hcloud_|token_readonly/i,
+  digitalocean: /api\.digitalocean\.com|digitalocean_/i,
+};
+
+const CLOUDFLARE_API = /api\.cloudflare\.com|cloudflare_/i;
+
+/** A provider outage (HTTP 502/503), not a size that is unavailable in the location. */
+const SERVICE_DOWN = /service (?:temporarily )?unavailable|\b50[23]\b/i;
+
+/**
+ * Next step after a failed apply, in the plan provider's words: an exhausted server limit, a token
+ * without a needed permission, a size unavailable in the location, or else "fix and re-run".
+ */
+function applyFailureHint(
+  deps: PhaseDeps,
+  log: string,
+  deployPlan: DeployPlan,
+  command: string,
+): string {
+  const provider = planProvider(deployPlan);
+  const profile = providerProfile(provider);
+  const { displayName, serverNoun } = profile;
+  const kept = "Nothing that was already created is removed.";
+  if (profile.serverLimit.test(log)) {
+    return `Your ${displayName} account reached its ${serverNoun} limit, so it cannot create another ${serverNoun}. Delete a ${serverNoun} you no longer need or ask ${displayName} for a higher limit in the console (${profile.consoleUrl}), then run \`${command}\` again. ${kept}`;
+  }
+  const providerNamed = PROVIDER_API[provider].test(log);
+  if (FORBIDDEN.test(log) && CLOUDFLARE_API.test(log) && !providerNamed) {
+    return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at https://dash.cloudflare.com/profile/api-tokens with ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. ${kept}`;
+  }
+  if (FORBIDDEN.test(log) && providerNamed) {
+    const requirement = vpsConnector(provider, deps).credentials;
+    const needed =
+      requirement.scopes.length === 1
+        ? `${requirement.scopes[0]} permission`
+        : `these scopes (${requirement.scopes.join(", ")})`;
+    return `${displayName} refused the request, so the API token is probably missing a permission OpsCrew needs. Create a token at ${requirement.createUrl} with ${needed}, set ${profile.tokenVars[0]} to it, then run \`${command}\` again. ${kept}`;
+  }
+  if (profile.unavailable.test(log) && !SERVICE_DOWN.test(log)) {
+    const size = provider === "hetzner" ? "server type" : "size";
+    return `${displayName} cannot create a ${deployPlan.target.serverType} ${serverNoun} in ${deployPlan.target.location} right now (the ${size} is unavailable or out of stock there). Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;
   }
   return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
 }
@@ -258,8 +301,8 @@ export async function planAndApply(
   }
 
   const { create, update, delete: del, replace } = saved.counts;
-  const providers =
-    deployPlan.dns.provider === "cloudflare" ? "Hetzner Cloud and Cloudflare" : "Hetzner Cloud";
+  const cloud = providerProfile(planProvider(deployPlan)).displayName;
+  const providers = deployPlan.dns.provider === "cloudflare" ? `${cloud} and Cloudflare` : cloud;
   const notes = options.approvalNotes ?? [];
   const approval = await deps.approvals.request({
     kind: "iac-apply",
@@ -298,7 +341,7 @@ export async function planAndApply(
   if (!result.ok) {
     const log = deps.redactor.redact(lastLines(result.log));
     throw new OpsCrewError("ENGINE_FAILED", `Applying the plan failed:\n${log}`, {
-      hint: applyFailureHint(log, deployPlan, command),
+      hint: applyFailureHint(deps, log, deployPlan, command),
     });
   }
   deps.reporter.success("Infrastructure applied.");

@@ -195,6 +195,34 @@ describe("runSecure", () => {
     expect(result.summary).toContain("5432");
   });
 
+  it("names the plan provider's firewall and console in the probe fixes", async () => {
+    const remediation = (checks: readonly CheckResult[], id: string) =>
+      find(checks, id).remediation;
+    const hetzner = await setup({ httpAllowedFrom: "any" });
+    const onHetzner = await runSecure(hetzner, {
+      scanners: noScanners,
+      tcpConnect: async (_host, port) => port === 5432,
+    });
+    expect(remediation(onHetzner.probes, "port-5432-closed")).toContain("Hetzner Cloud firewall");
+    expect(remediation(onHetzner.probes, "port-22-open")).toContain(
+      "Hetzner Cloud console (https://console.hetzner.cloud/)",
+    );
+
+    const digitalocean = await setup({ httpAllowedFrom: "any", provider: "digitalocean" });
+    const onDigitalOcean = await runSecure(digitalocean, {
+      scanners: noScanners,
+      tcpConnect: async (_host, port) => port === 5432,
+    });
+    const probes = onDigitalOcean.probes;
+    expect(remediation(probes, "port-5432-closed")).toContain("the DigitalOcean firewall");
+    expect(remediation(probes, "port-22-open")).toContain(
+      "Droplet is running in the DigitalOcean console (https://cloud.digitalocean.com/)",
+    );
+    expect(remediation(probes, "port-443-open")).toContain("DigitalOcean firewall");
+    expect(onDigitalOcean.report).toContain("DigitalOcean firewall");
+    expect(onDigitalOcean.report).not.toContain("Hetzner");
+  });
+
   it("treats filtered web ports as expected when only Cloudflare may reach the origin", async () => {
     const deps = await setup({ httpAllowedFrom: "cloudflare" });
     const result = await runSecure(deps, {

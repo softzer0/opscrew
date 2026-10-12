@@ -1,6 +1,8 @@
 import type { CheckResult } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
+import { planProvider, providerProfile } from "../providers";
+import { providerConsole } from "../shared";
 import { originIsCloudflareOnly } from "../verify/checks";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
@@ -20,6 +22,7 @@ export async function probeExpectedPorts(
     [22, 80, 443].map((port) => options.connect(host, port, timeoutMs)),
   );
   const out: CheckResult[] = [];
+  const profile = providerProfile(planProvider(plan));
 
   const sshOpenToAll = plan.security.sshAllowedCidrs.some((cidr) => OPEN_TO_ALL.has(cidr));
   if (ssh) {
@@ -42,8 +45,7 @@ export async function probeExpectedPorts(
         : `Port 22 does not answer from this machine; SSH is limited to ${plan.security.sshAllowedCidrs.join(", ")}.`,
       ...(sshOpenToAll
         ? {
-            remediation:
-              "Check that the server is running in the Hetzner Console and that the firewall allows port 22.",
+            remediation: `Check that the ${profile.serverNoun} is running in the ${providerConsole(profile)} and that the ${profile.displayName} firewall allows port 22.`,
           }
         : {}),
       target: host,
@@ -79,8 +81,7 @@ export async function probeExpectedPorts(
         severity: "medium",
         status: "fail",
         message: `Port ${port} does not answer, so visitors cannot reach the app.`,
-        remediation:
-          "Check that Caddy is running (`docker compose ps`) and that the Hetzner firewall allows the port.",
+        remediation: `Check that Caddy is running (\`docker compose ps\`) and that the ${profile.displayName} firewall allows the port.`,
       });
     }
   }

@@ -70,6 +70,8 @@ export interface PinHostKeyOptions {
   host: string;
   knownHostsFile: string;
   runner: CommandRunner;
+  /** Provider console named in hints (see `providerConsole`); default "your cloud provider's console". */
+  console?: string;
   /** Asked when the pinned key differs; refusal (or no handler) throws. */
   confirmChangedKey?: (details: {
     host: string;
@@ -128,7 +130,7 @@ export async function pinHostKey(options: PinHostKeyOptions): Promise<PinnedHost
         "APPROVAL_REFUSED",
         `The SSH host key of ${options.host} changed since OpsCrew pinned it.`,
         {
-          hint: "If you did not rebuild the server, someone may be intercepting the connection. Check in the Hetzner Console before continuing.",
+          hint: `If you did not rebuild the server, someone may be intercepting the connection. Check in ${options.console ? `the ${options.console}` : "your cloud provider's console"} before continuing.`,
         },
       );
     }

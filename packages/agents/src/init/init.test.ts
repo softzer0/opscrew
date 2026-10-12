@@ -10,7 +10,7 @@ import {
   ScriptedRunner,
   type TestPhaseDeps,
 } from "../testing";
-import { testPlan } from "../verify/__fixtures__/plan";
+import { type TestPlanOptions, testPlan } from "../verify/__fixtures__/plan";
 import {
   ensureGitignore,
   gitignoreCoversOpsCrew,
@@ -25,7 +25,8 @@ const HCLOUD = fakeSecret("aws-secret-access-key", "hcloud");
 const CLOUDFLARE = fakeSecret("aws-secret-access-key", "cloudflare");
 const GITHUB = fakeSecret("github-token", "init");
 const ANTHROPIC = fakeSecret("anthropic-key", "init");
-const TOKENS = [HCLOUD, CLOUDFLARE, GITHUB, ANTHROPIC];
+const DIGITALOCEAN = fakeSecret("digitalocean-token", "init");
+const TOKENS = [HCLOUD, CLOUDFLARE, GITHUB, ANTHROPIC, DIGITALOCEAN];
 
 const ALL_TOOLS = ["git", "tofu", "ssh", "ssh-keyscan", "gitleaks", "osv-scanner", "trivy"];
 
@@ -65,6 +66,8 @@ function repoRunner(o: RepoOptions = {}): ScriptedRunner {
 
 interface NetOptions {
   hetzner?: 200 | 401 | "hang";
+  /** Account status DigitalOcean reports for the token, or a refusal. */
+  digitalocean?: "active" | "locked" | 401;
   cloudflare?: "active" | 401;
   /** Zone `example.com` is visible to the Cloudflare token. */
   zone?: boolean;
@@ -89,6 +92,23 @@ function fakeNet(o: NetOptions = {}): { fetch: FetchLike; calls: string[] } {
       return mode === 200
         ? json(200, { locations: [{ id: 1, name: "fsn1", country: "DE" }] })
         : json(401, { error: { code: "unauthorized", message: "unable to authenticate" } });
+    }
+    if (url.hostname === "api.digitalocean.com" && url.pathname === "/v2/account") {
+      const mode = o.digitalocean ?? "active";
+      if (mode === 401) {
+        return json(401, { id: "unauthorized", message: "Unable to authenticate you" });
+      }
+      return json(200, {
+        account: {
+          droplet_limit: 25,
+          email: "owner@example.com",
+          uuid: "00000000-0000-4000-8000-000000000001",
+          email_verified: true,
+          status: mode,
+          status_message: mode === "locked" ? "Your account is locked for billing." : "",
+          team: { uuid: "00000000-0000-4000-8000-000000000002", name: "Shop Team" },
+        },
+      });
     }
     if (url.hostname === "api.cloudflare.com") {
       const active = (o.cloudflare ?? "active") === "active";
@@ -201,7 +221,7 @@ describe("runInitChecks", () => {
       "repository",
       "engine",
       "ssh",
-      "hetzner",
+      "provider",
       "cloudflare",
       "github",
       "model",
@@ -275,11 +295,11 @@ describe("runInitChecks", () => {
   });
 
   it("fails a missing or rejected Hetzner token with the env var and create link", async () => {
-    const missing = await check("hetzner", { env: { GITHUB_TOKEN: GITHUB } });
+    const missing = await check("provider", { env: { GITHUB_TOKEN: GITHUB } });
     expect(missing.status).toBe("fail");
     expect(missing.fix).toContain("HCLOUD_TOKEN");
     expect(missing.fix).toContain("https://console.hetzner.cloud/");
-    const rejected = await check("hetzner", { net: { hetzner: 401 } });
+    const rejected = await check("provider", { net: { hetzner: 401 } });
     expect(rejected.status).toBe("fail");
     expect(rejected.fix).toContain("Read & Write");
     expectNoTokens(rejected);
@@ -288,7 +308,7 @@ describe("runInitChecks", () => {
   it("fails a network check that runs over its time budget", async () => {
     const started = Date.now();
     const slow = await check(
-      "hetzner",
+      "provider",
       { net: { hetzner: "hang" } },
       { services: services({}, { timeoutMs: 30 }) },
     );
@@ -296,6 +316,163 @@ describe("runInitChecks", () => {
     expect(slow.message).toContain("did not answer");
     expect(slow.fix).toContain("--offline");
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  describe("cloud provider token", () => {
+    const DO_TOKEN_PAGE = "https://cloud.digitalocean.com/account/api/tokens";
+    const both = { HCLOUD_TOKEN: HCLOUD, DIGITALOCEAN_TOKEN: DIGITALOCEAN, GITHUB_TOKEN: GITHUB };
+
+    async function providerCheck(
+      o: Setup & { plan?: TestPlanOptions; requirements?: Partial<Requirements> },
+      offline = false,
+    ) {
+      const { deps, calls } = await setup(o);
+      if (o.plan) await writeArtifact("plan", deps.paths.files.plan, testPlan(o.plan));
+      if (o.requirements) await writeRequirements(deps, o.requirements);
+      const checks = await runInitChecks(deps, {
+        ...(offline ? { offline: true } : {}),
+        services: services(o),
+      });
+      const found = checks.find((c) => c.id === "provider");
+      if (!found) throw new Error("no provider check");
+      expectNoTokens(checks);
+      const touched = (host: string) => calls.some((u) => new URL(u).hostname === host);
+      return {
+        check: found,
+        hetznerCalled: touched("api.hetzner.cloud"),
+        digitaloceanCalled: touched("api.digitalocean.com"),
+      };
+    }
+
+    it("verifies only the DigitalOcean token for a DigitalOcean plan and lists its scopes", async () => {
+      const { check, hetznerCalled, digitaloceanCalled } = await providerCheck({
+        env: both,
+        plan: { provider: "digitalocean" },
+      });
+      expect(check.title).toBe("DigitalOcean token");
+      expect(check.status).toBe("pass");
+      expect(check.message).toContain("DIGITALOCEAN_TOKEN works (Shop Team)");
+      expect(check.message).toContain("droplet:create");
+      expect(check.message).toContain("image:create");
+      expect(check.message).not.toContain("owner@example.com");
+      expect(digitaloceanCalled).toBe(true);
+      expect(hetznerCalled).toBe(false);
+    });
+
+    it("fails a locked DigitalOcean account or a rejected token with the token page and scopes", async () => {
+      const locked = await providerCheck({
+        env: both,
+        plan: { provider: "digitalocean" },
+        net: { digitalocean: "locked" },
+      });
+      expect(locked.check.status).toBe("fail");
+      expect(locked.check.message).toContain("locked");
+      expect(locked.check.fix).toContain("https://cloud.digitalocean.com/account");
+      expect(locked.check.fix).not.toContain(DO_TOKEN_PAGE);
+      expect(locked.check.fix).not.toContain("droplet:create");
+      const rejected = await providerCheck({
+        env: both,
+        plan: { provider: "digitalocean" },
+        net: { digitalocean: 401 },
+      });
+      expect(rejected.check.status).toBe("fail");
+      expect(rejected.check.fix).toContain(DO_TOKEN_PAGE);
+      expect(rejected.check.fix).toContain("droplet:create");
+      expect(rejected.check.fix).toContain("set DIGITALOCEAN_TOKEN to it");
+      expect(rejected.hetznerCalled).toBe(false);
+    });
+
+    it("fails a missing DigitalOcean token and says the Hetzner token is not used", async () => {
+      const { check, hetznerCalled } = await providerCheck({
+        env: { HCLOUD_TOKEN: HCLOUD, GITHUB_TOKEN: GITHUB },
+        plan: { provider: "digitalocean" },
+      });
+      expect(check.title).toBe("DigitalOcean token");
+      expect(check.status).toBe("fail");
+      expect(check.message).toContain("DIGITALOCEAN_TOKEN is not set");
+      expect(check.message).toContain("HCLOUD_TOKEN is not used");
+      expect(check.fix).toContain(DO_TOKEN_PAGE);
+      expect(check.fix).toContain("account:read");
+      expect(check.fix).not.toMatch(/DIGITALOCEAN_TOKEN\s*:/);
+      expect(hetznerCalled).toBe(false);
+    });
+
+    it("verifies only the Hetzner token for a Hetzner plan when both tokens are set", async () => {
+      const { check, hetznerCalled, digitaloceanCalled } = await providerCheck({
+        env: both,
+        plan: { provider: "hetzner" },
+      });
+      expect(check).toMatchObject({
+        title: "Hetzner Cloud token",
+        status: "pass",
+        message: "HCLOUD_TOKEN works.",
+      });
+      expect(hetznerCalled).toBe(true);
+      expect(digitaloceanCalled).toBe(false);
+    });
+
+    it("follows the interview answer before a plan exists", async () => {
+      const { check, hetznerCalled } = await providerCheck({
+        env: both,
+        requirements: { provider: "digitalocean" },
+      });
+      expect(check.title).toBe("DigitalOcean token");
+      expect(check.status).toBe("pass");
+      expect(hetznerCalled).toBe(false);
+    });
+
+    it("passes either token before a provider is chosen and says only one is needed", async () => {
+      const { check, digitaloceanCalled } = await providerCheck({
+        env: { DIGITALOCEAN_TOKEN: DIGITALOCEAN, GITHUB_TOKEN: GITHUB },
+      });
+      expect(check.title).toBe("DigitalOcean token");
+      expect(check.status).toBe("pass");
+      expect(check.message).toContain("only one cloud provider token");
+      expect(digitaloceanCalled).toBe(true);
+
+      const hetzner = await providerCheck({ env: { HCLOUD_TOKEN: HCLOUD, GITHUB_TOKEN: GITHUB } });
+      expect(hetzner.check.title).toBe("Hetzner Cloud token");
+      expect(hetzner.check.status).toBe("pass");
+      expect(hetzner.check.message).toContain("only one cloud provider token");
+    });
+
+    it("passes both tokens before a provider is chosen without checking either", async () => {
+      const { check, hetznerCalled, digitaloceanCalled } = await providerCheck({ env: both });
+      expect(check.title).toBe("Cloud provider token");
+      expect(check.status).toBe("pass");
+      expect(check.message).toContain("HCLOUD_TOKEN and DIGITALOCEAN_TOKEN are both set");
+      expect(check.message).toContain("only one");
+      expect(hetznerCalled).toBe(false);
+      expect(digitaloceanCalled).toBe(false);
+    });
+
+    it("fails without any provider token and explains both", async () => {
+      const { check } = await providerCheck({ env: { GITHUB_TOKEN: GITHUB } });
+      expect(check.title).toBe("Cloud provider token");
+      expect(check.status).toBe("fail");
+      for (const text of [
+        "HCLOUD_TOKEN",
+        "https://console.hetzner.cloud/",
+        "DIGITALOCEAN_TOKEN",
+        DO_TOKEN_PAGE,
+      ]) {
+        expect(check.fix).toContain(text);
+      }
+    });
+
+    it("offline: only looks for the planned provider's token and still lists the scopes", async () => {
+      const present = await providerCheck({ env: both, plan: { provider: "digitalocean" } }, true);
+      expect(present.check.status).toBe("pass");
+      expect(present.check.message).toContain("DIGITALOCEAN_TOKEN is set");
+      expect(present.check.message).toContain("only checked that it is set");
+      expect(present.check.message).toContain("droplet:create");
+      expect(present.digitaloceanCalled).toBe(false);
+      const missing = await providerCheck(
+        { env: { HCLOUD_TOKEN: HCLOUD, GITHUB_TOKEN: GITHUB }, plan: { provider: "digitalocean" } },
+        true,
+      );
+      expect(missing.check.status).toBe("fail");
+    });
   });
 
   describe("Cloudflare", () => {
@@ -426,7 +603,7 @@ describe("runInitChecks", () => {
     };
     await writeRequirements(deps, { dnsProvider: "cloudflare", domain: "shop.example.com" });
     const checks = await runInitChecks(deps, { offline: true, services: services() });
-    for (const id of ["hetzner", "cloudflare", "github"] as const) {
+    for (const id of ["provider", "cloudflare", "github"] as const) {
       const c = checks.find((x) => x.id === id);
       expect(c?.status).toBe("pass");
       expect(c?.message).toContain("only checked that it is set");
@@ -436,7 +613,7 @@ describe("runInitChecks", () => {
 
     const { deps: empty } = await setup({ env: {} });
     const missing = await runInitChecks(empty, { offline: true, services: services() });
-    expect(missing.find((c) => c.id === "hetzner")?.status).toBe("fail");
+    expect(missing.find((c) => c.id === "provider")?.status).toBe("fail");
     expect(missing.find((c) => c.id === "github")?.status).toBe("fail");
   });
 });

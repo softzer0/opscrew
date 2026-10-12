@@ -69,7 +69,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T408 [P] [US1] [US2] Provider-aware provision, drift, init, secure and verify in `packages/agents/src/{provision,drift,init,secure,verify,dns,shared}/`
+- [X] T408 [P] [US1] [US2] Provider-aware provision, drift, init, secure and verify in `packages/agents/src/{provision,drift,init,secure,verify,dns,shared}/`
   - Owns: `packages/agents/src/{provision,drift,init,secure,verify,dns,shared}/**` (except the T405 files `provision/types.ts` and `provision/credentials.ts`, which may only gain hint text); the check-id assertion in `packages/mcp-server/src/tools/init.test.ts`
   - Reads: plan.md "Provision, drift, init, secure, verify"; spec US1 AS3–AS4, US2 AS2–AS4, edge cases; `packages/agents/src/providers/**`
   - Depends: T405

@@ -18,6 +18,7 @@ import {
   type TcpConnect,
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { planProvider, providerProfile } from "../providers";
 import { findSavedPlan } from "../provision/plan-apply";
 import { SshRemoteExec } from "../shared";
 import { probeExpectedPorts } from "./probes";
@@ -148,7 +149,11 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     const timeoutMs = options.probeTimeoutMs ?? 3000;
     probes = [
       ...(await probeExpectedPorts(host, plan, { connect, timeoutMs })),
-      ...(await probePorts(host, { connect, timeoutMs })),
+      ...(await probePorts(host, {
+        connect,
+        timeoutMs,
+        providerName: providerProfile(planProvider(plan)).displayName,
+      })),
       await probeSshPasswordAuth(host, {
         runner: deps.runner,
         knownHostsFile: paths.files.knownHosts,

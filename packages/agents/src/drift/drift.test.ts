@@ -177,6 +177,7 @@ interface SetupOptions {
   state?: StateKind;
   services?: ProvisionServices;
   passphrase?: boolean;
+  env?: Record<string, string | undefined>;
 }
 
 async function setup(options: SetupOptions = {}) {
@@ -187,6 +188,7 @@ async function setup(options: SetupOptions = {}) {
     ...process.env,
     OPSCREW_HOME: join(project.root, ".home-opscrew"),
     HCLOUD_TOKEN: HCLOUD,
+    ...options.env,
   };
   const deps = await createTestPhaseDeps({
     root: project.root,
@@ -279,6 +281,7 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
       clean: true,
       engine: engine.info,
       checkedAt: "2026-10-11T12:00:00.000Z",
+      provider: "hetzner",
     });
     expect(engine.calls).toEqual(["init", "plan:refresh-only", "plan"]);
     expect(engine.calls).not.toContain("apply");
@@ -504,6 +507,39 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect(engine.calls).not.toContain("apply");
   });
 
+  it("reports a DigitalOcean firewall changed in the DigitalOcean console", async () => {
+    const token = fakeSecret("digitalocean-token", "drift");
+    const firewall = "module.server.digitalocean_firewall.this";
+    const engine = new DriftEngine({
+      drift: [drifted(firewall, "update", ["inbound_rule"])],
+      pending: [change(firewall, "update")],
+    });
+    const { deps, services } = await setup({
+      plan: testPlan({ deployed: true, provider: "digitalocean" }),
+      engine,
+      env: { HCLOUD_TOKEN: undefined, DIGITALOCEAN_TOKEN: token },
+    });
+    const report = await runDrift(deps, { services });
+
+    expect(report.provider).toBe("digitalocean");
+    expect(report.clean).toBe(false);
+    expect(report.drift).toEqual([drifted(firewall, "update", ["inbound_rule"])]);
+    expect(report.files).toEqual({ changed: [], created: [] });
+    expect(engine.calls).not.toContain("apply");
+    const text = renderDriftReport(report);
+    expect(text).toMatch(/digitalocean_firewall\.this.*inbound_rule/);
+    expect(text).toContain("in the DigitalOcean or Cloudflare console");
+    expect(text).not.toContain("Hetzner");
+    expect(deps.reporter.text()).toContain("Checking your DigitalOcean access");
+    const everything = [
+      JSON.stringify(report),
+      text,
+      JSON.stringify(deps.audit.entries),
+      deps.reporter.text(),
+    ].join("\n");
+    expect(everything).not.toContain(token);
+  });
+
   it("never puts a secret value in the report, its text, the audit log or the output", async () => {
     const engine = new DriftEngine({
       drift: [drifted(FIREWALL, "update", ["rule"])],
@@ -551,6 +587,13 @@ describe("renderDriftReport", () => {
     expect(text.indexOf("opscrew/infra/prod/main.tf")).toBeLessThan(
       text.indexOf("opscrew/runtime/compose.yaml"),
     );
+  });
+
+  it("names the deployment's provider console, or none for older reports", () => {
+    expect(renderDriftReport({ ...base, provider: "hetzner" })).toContain(
+      "in the Hetzner Cloud or Cloudflare console",
+    );
+    expect(renderDriftReport(base)).toContain("in your cloud provider's or Cloudflare console");
   });
 
   it("names the engine and the time of the check", () => {

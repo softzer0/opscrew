@@ -1,3 +1,4 @@
+import type { VpsProviderId } from "@opscrew/contracts";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 
 export const SERVER_IPV4 = "203.0.113.10";
@@ -17,7 +18,19 @@ export interface TestPlanOptions {
   ip?: boolean;
   httpAllowedFrom?: "any" | "cloudflare";
   sshAllowedCidrs?: string[];
+  /** Cloud provider (default Hetzner). */
+  provider?: VpsProviderId;
 }
+
+const TARGETS = {
+  hetzner: { provider: "hetzner", location: "nbg1", serverType: "cx23" },
+  digitalocean: {
+    provider: "digitalocean",
+    location: "fra1",
+    serverType: "s-1vcpu-2gb",
+    image: "ubuntu-24-04-x64",
+  },
+} as const;
 
 /** A deploy plan for the `shop` app, with a domain by default and the server provisioned. */
 export function testPlan(o: TestPlanOptions = {}): DeployPlan {
@@ -27,13 +40,7 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
     createdAt: "2026-10-01T12:00:00.000Z",
     updatedAt: "2026-10-01T12:00:00.000Z",
     app: { name: "shop", port: 3000, healthPath: "/api/health", env: [] },
-    target: {
-      provider: "hetzner",
-      mode: "vps-compose",
-      location: "nbg1",
-      serverType: "cx23",
-      backups: true,
-    },
+    target: { mode: "vps-compose", ...TARGETS[o.provider ?? "hetzner"], backups: true },
     services: { postgres: true, redis: false },
     externalServices: [],
     cost: {

@@ -57,7 +57,7 @@ describe("opscrew_init_check", () => {
     })) as CallToolResult;
     const data = result.structuredContent as { passed: boolean; checks: { id: string }[] };
     expect(data.checks.map((c) => c.id)).toContain("node");
-    expect(data.checks.map((c) => c.id)).toContain("hetzner");
+    expect(data.checks.map((c) => c.id)).toContain("provider");
     // no git, engine or ssh on this fake PATH, so required checks fail
     expect(data.passed).toBe(false);
     const text = JSON.stringify(result);

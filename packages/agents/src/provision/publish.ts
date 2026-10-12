@@ -2,6 +2,7 @@ import type { GitClient } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { planProvider, providerProfile } from "../providers";
 import type { GitHubSetup } from "./credentials";
 
 /** Branch holding the generated deployment files. */
@@ -24,7 +25,8 @@ export function deploySetupPullRequestBody(
   version: string,
   options: { secretsStored?: boolean } = {},
 ): string {
-  const host = plan.dns.domain ?? plan.deployment.serverIpv4 ?? "the new server";
+  const profile = providerProfile(planProvider(plan));
+  const host = plan.dns.domain ?? plan.deployment.serverIpv4 ?? `the new ${profile.serverNoun}`;
   const nextStep =
     options.secretsStored === false
       ? [
@@ -37,7 +39,7 @@ export function deploySetupPullRequestBody(
   return [
     `This pull request adds the deployment setup that OpsCrew generated from \`opscrew/plan.yaml\` for **${plan.app.name}**:`,
     "",
-    `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: infrastructure code for the Hetzner server${plan.dns.provider === "cloudflare" ? " and the Cloudflare DNS records" : ""} (works with OpenTofu and Terraform).`,
+    `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: infrastructure code for the ${profile.displayName} ${profile.serverNoun}${plan.dns.provider === "cloudflare" ? " and the Cloudflare DNS records" : ""} (works with OpenTofu and Terraform).`,
     "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server.",
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
     "- `opscrew/plan.yaml`: the plan with the server's addresses.",

@@ -1,5 +1,7 @@
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
@@ -7,7 +9,9 @@ import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import {
   createProject,
+  DIGITALOCEAN_CREATE,
   FakeEngine,
+  type FakeEngineScenario,
   FakeGitHub,
   fakeCloudflare,
   HOST_KEY,
@@ -34,6 +38,7 @@ interface SetupOptions {
   engine?: FakeEngine;
   services?: ProvisionServices;
   env?: Record<string, string | undefined>;
+  fetch?: FetchLike;
 }
 
 async function setup(options: SetupOptions = {}) {
@@ -54,6 +59,7 @@ async function setup(options: SetupOptions = {}) {
     env,
     runner: projectRunner(),
     approvalHandler: handler,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
   });
   deps.redactor.addLiteral(HCLOUD, "HCLOUD_TOKEN");
   const services: ProvisionServices = {
@@ -508,5 +514,242 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(body).not.toContain("the deploy secrets are stored");
     expect(body).toContain("run `opscrew provision` in a terminal");
     expect(deps.reporter.text()).toContain("opscrew provision");
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
+  const DO_TOKEN = fakeSecret("digitalocean-token", "provision");
+  const DO_TOKEN_PAGE = "https://cloud.digitalocean.com/account/api/tokens";
+  const env = {
+    HCLOUD_TOKEN: undefined,
+    DIGITALOCEAN_TOKEN: DO_TOKEN,
+    DIGITALOCEAN_ACCESS_TOKEN: undefined,
+  };
+  const engine = (scenario: FakeEngineScenario = {}) =>
+    new FakeEngine({
+      changes: DIGITALOCEAN_CREATE,
+      planJson: planJsonFor({ provider: "digitalocean" }),
+      ...scenario,
+    });
+
+  /** DigitalOcean's account endpoint for an active account; records the requests. */
+  function accountApi() {
+    const calls: { url: string; authorized: boolean }[] = [];
+    const fetch: FetchLike = async (input, init) => {
+      const headers = new Headers(init?.headers);
+      calls.push({
+        url: String(input),
+        authorized: headers.get("authorization") === `Bearer ${DO_TOKEN}`,
+      });
+      return new Response(
+        JSON.stringify({
+          account: {
+            droplet_limit: 25,
+            email: "owner@example.com",
+            uuid: "00000000-0000-4000-8000-000000000001",
+            email_verified: true,
+            status: "active",
+            status_message: "",
+            team: { uuid: "00000000-0000-4000-8000-000000000002", name: "Shop Team" },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    return { fetch, calls };
+  }
+
+  it("provisions a DigitalOcean plan end to end and names the provider", async () => {
+    const api = accountApi();
+    const run = await setup({
+      plan: testPlan({ provider: "digitalocean" }),
+      engine: engine(),
+      env,
+      fetch: api.fetch,
+    });
+    // The real credential check through the DigitalOcean connector (no fake `provider`).
+    const { provider: _fake, ...services } = run.services;
+    const result = await runProvision(run.deps, { services });
+
+    expect(api.calls).toEqual([
+      { url: "https://api.digitalocean.com/v2/account", authorized: true },
+    ]);
+    expect(run.handler.requests.map((r) => r.kind)).toEqual([
+      "repo-write",
+      "iac-apply",
+      "github-secrets",
+      "git-push",
+      "pull-request",
+    ]);
+    const apply = run.handler.requests.find((r) => r.kind === "iac-apply");
+    expect(apply?.title).toContain("Apply the infrastructure plan on DigitalOcean (4 to create");
+    expect(apply?.details).toContain("module.server.digitalocean_droplet.this");
+    expect(apply?.details).toContain("module.server.digitalocean_firewall.this");
+    expect(run.engine.calls).toEqual(["init", "validate", "plan", "apply"]);
+    expect(run.engine.applied[0]?.approval.approvedPlanHash).toBe(result.planHash);
+    expect(result).toMatchObject({ applied: true, prUrl: "https://github.com/acme/shop/pull/7" });
+
+    await expect(readFile(join(run.root, "opscrew/infra/prod/main.tf"), "utf8")).resolves.toContain(
+      "digitalocean",
+    );
+    expect(existsSync(join(run.root, "opscrew/infra/modules/digitalocean-droplet/main.tf"))).toBe(
+      true,
+    );
+    expect(existsSync(join(run.root, "opscrew/infra/modules/hetzner-vps"))).toBe(false);
+
+    const plan = await readArtifact("plan", run.deps.paths.files.plan);
+    expect(plan.target.provider).toBe("digitalocean");
+    expect(plan.deployment).toMatchObject({
+      serverIpv4: SERVER_IPV4,
+      serverIpv6: SERVER_IPV6,
+      lastPlanHash: result.planHash,
+      lastCompletedPhase: "provision",
+    });
+    expect(run.github.secrets.get("OPSCREW_HOST")).toBe(SERVER_IPV4);
+    expect(run.github.pulls[0]?.body).toContain("infrastructure code for the DigitalOcean Droplet");
+
+    const text = run.deps.reporter.text();
+    expect(text).toContain("Checking your DigitalOcean, Cloudflare and GitHub access");
+    expect(text).not.toContain("Hetzner");
+    // SC-404: the token never reaches the reporter, the audit log or the deploy secrets
+    const printed = `${everythingPrinted(run.deps)}\n${JSON.stringify([...run.github.secrets])}`;
+    expect(printed).not.toContain(DO_TOKEN);
+  });
+
+  it("names the variable, the token page and the scopes when the token is missing", async () => {
+    const run = await setup({
+      plan: testPlan({ provider: "digitalocean" }),
+      engine: engine(),
+      env: { ...env, DIGITALOCEAN_TOKEN: undefined },
+    });
+    const { provider: _fake, ...services } = run.services;
+    const error = await runProvision(run.deps, { services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "CREDENTIALS_MISSING",
+      message: expect.stringContaining("DIGITALOCEAN_TOKEN"),
+      hint: expect.stringContaining(DO_TOKEN_PAGE),
+    });
+    expect((error as OpsCrewError).hint).toContain("droplet:create");
+    expect(run.engine.calls).toEqual([]);
+  });
+
+  const failures: [string, string, string[]][] = [
+    [
+      "a size unavailable in the region",
+      'Error: Error creating droplet: POST https://api.digitalocean.com/v2/droplets: 422 (request "r1") Size is not available in this region.',
+      ["DigitalOcean cannot create a s-1vcpu-2gb Droplet in fra1", "opscrew design"],
+    ],
+    [
+      "the Droplet limit",
+      'Error: Error creating droplet: POST https://api.digitalocean.com/v2/droplets: 422 (request "r2") You have reached your droplet limit. Please contact support.',
+      ["DigitalOcean account reached its Droplet limit", "https://cloud.digitalocean.com/"],
+    ],
+    [
+      "a missing scope",
+      'Error: Error creating droplet: POST https://api.digitalocean.com/v2/droplets: 403 (request "r3") You are not authorized to perform this operation',
+      [DO_TOKEN_PAGE, "droplet:create", "firewall:create", "set DIGITALOCEAN_TOKEN to it"],
+    ],
+  ];
+
+  it.each(failures)("explains a failed apply caused by %s", async (_name, log, expected) => {
+    const run = await setup({
+      plan: testPlan({ provider: "digitalocean" }),
+      engine: engine({ applyOk: false, applyLog: log }),
+      env,
+    });
+    const error = await runProvision(run.deps, { services: run.services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "ENGINE_FAILED" });
+    const hint = (error as OpsCrewError).hint ?? "";
+    for (const text of expected) expect(hint).toContain(text);
+    expect(hint).not.toContain("Hetzner");
+    expect(everythingPrinted(run.deps)).not.toContain(DO_TOKEN);
+    expect((await run.deps.state.read()).phases.provision?.status).toBe("failed");
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runProvision apply hints on both providers", () => {
+  const providers = [
+    { provider: "hetzner", tokenVar: "HCLOUD_TOKEN", api: "api.hetzner.cloud/v1/servers" },
+    {
+      provider: "digitalocean",
+      tokenVar: "DIGITALOCEAN_TOKEN",
+      api: "api.digitalocean.com/v2/droplets",
+    },
+  ] as const;
+
+  async function hintFor(provider: (typeof providers)[number]["provider"], log: string) {
+    const changes = provider === "digitalocean" ? { changes: DIGITALOCEAN_CREATE } : {};
+    const { deps, services } = await setup({
+      plan: testPlan({ provider }),
+      engine: new FakeEngine({
+        ...changes,
+        planJson: planJsonFor({ provider }),
+        applyOk: false,
+        applyLog: log,
+      }),
+    });
+    const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "ENGINE_FAILED" });
+    return (error as OpsCrewError).hint ?? "";
+  }
+
+  it.each(providers)("blames the Cloudflare token for a Cloudflare 403 ($provider)", async (p) => {
+    const hint = await hintFor(
+      p.provider,
+      'Error: failed to make http request: POST "https://api.cloudflare.com/client/v4/zones/zone-123/dns_records": 403 Forbidden {"errors":[{"code":10000,"message":"Authentication error"}]}\n\n  with module.dns.cloudflare_dns_record.a',
+    );
+    expect(hint).toContain("CLOUDFLARE_API_TOKEN");
+    expect(hint).toContain("Zone → DNS → Edit");
+    expect(hint).not.toContain(p.tokenVar);
+  });
+
+  it.each(providers)(
+    "treats a 503 as an outage, not an unavailable size ($provider)",
+    async (p) => {
+      const hint = await hintFor(
+        p.provider,
+        `Error: POST https://${p.api}: 503 Service Unavailable (service_unavailable)`,
+      );
+      expect(hint).not.toContain("opscrew design");
+      expect(hint).not.toContain(p.tokenVar);
+      expect(hint).toContain("Fix the cause shown above");
+    },
+  );
+});
+
+describe.skipIf(!findExecutable("git"))("runProvision apply hints on Hetzner", () => {
+  it("explains an exhausted server limit with the Hetzner console", async () => {
+    const { deps, services } = await setup({
+      engine: new FakeEngine({
+        applyOk: false,
+        applyLog: "Error: server limit reached for this project (resource_limit_exceeded)",
+      }),
+    });
+    const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "ENGINE_FAILED" });
+    const hint = (error as OpsCrewError).hint ?? "";
+    expect(hint).toContain("Hetzner Cloud account reached its server limit");
+    expect(hint).toContain("https://console.hetzner.cloud/");
+  });
+
+  it("asks for a Read & Write token when the Hetzner token is read-only", async () => {
+    const { deps, services } = await setup({
+      engine: new FakeEngine({
+        applyOk: false,
+        applyLog: "Error: only allowed to perform GET requests (token_readonly)",
+      }),
+    });
+    const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+    const hint = (error as OpsCrewError).hint ?? "";
+    expect(hint).toContain("Read & Write permission");
+    expect(hint).toContain("set HCLOUD_TOKEN to it");
+  });
+
+  it("keeps naming the server type for an unavailable Hetzner type", async () => {
+    const { deps, services } = await setup({ engine: new FakeEngine({ applyOk: false }) });
+    const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+    expect((error as OpsCrewError).hint).toContain(
+      "Hetzner Cloud cannot create a cx23 server in nbg1 right now",
+    );
   });
 });

@@ -8,13 +8,14 @@ import { renderDeployment } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import { planProvider } from "../providers";
+import { planProvider, providerProfile } from "../providers";
 import {
   describeDiff,
   diffRenderedFiles,
   ensureDeployKey,
   ensureStatePassphrase,
   pinHostKey,
+  providerConsole,
   SshRemoteExec,
   waitForCloudInit,
   waitForPort,
@@ -109,8 +110,9 @@ async function provisionFlow(
     });
   }
   await requireDockerfile(deps, git, plan);
-  deps.reporter.step("Checking your Hetzner, Cloudflare and GitHub access");
-  await checkProvider(deps, planProvider(plan), services);
+  const profile = providerProfile(planProvider(plan));
+  deps.reporter.step(`Checking your ${profile.displayName}, Cloudflare and GitHub access`);
+  await checkProvider(deps, profile.id, services);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
   const zoneLearned = cloudflare !== undefined && plan.dns.zone !== cloudflare.zoneName;
@@ -249,12 +251,13 @@ async function provisionFlow(
       "PROVIDER_ERROR",
       `The server at ${ipv4} did not open SSH within 5 minutes.`,
       {
-        hint: "Check the server in the Hetzner console, then run `opscrew provision` again; it continues where it stopped.",
+        hint: `Check the ${profile.serverNoun} in the ${providerConsole(profile)}, then run \`opscrew ${phase}\` again; it continues where it stopped.`,
       },
     );
   }
   const pinned = await pinHostKey({
     host: ipv4,
+    console: providerConsole(profile),
     knownHostsFile: deps.paths.files.knownHosts,
     runner: deps.runner,
     confirmChangedKey: async ({ host, previous, current }) => {
@@ -384,7 +387,8 @@ export async function runPhaseFlow(
 }
 
 /**
- * `opscrew provision`: creates the hardened Hetzner server (and Cloudflare DNS when planned) through
+ * `opscrew provision`: creates the hardened server on the plan's provider (Hetzner Cloud or
+ * DigitalOcean, and Cloudflare DNS when planned) through
  * plan → policies → approval → apply, waits for it, stores the deploy secrets in GitHub Actions and
  * opens a pull request with the generated files. Safe to re-run: it plans only what is missing and
  * reuses the deploy key, state passphrase, pinned host key and generated passwords.

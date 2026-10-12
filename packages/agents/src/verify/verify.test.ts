@@ -386,6 +386,29 @@ describe("runVerify", () => {
     const origin = byId(result.checks, "origin-not-direct");
     expect(origin.status).toBe("fail");
     expect(origin.message).toContain(SERVER_IPV4);
+    expect((origin as { remediation?: string }).remediation).toContain("Hetzner Cloud firewall");
+  });
+
+  it("names the DigitalOcean firewall and console in its hints for a DigitalOcean plan", async () => {
+    const deps = await setup({ provider: "digitalocean" });
+    const result = await runVerify(deps, {
+      resolver: resolver(),
+      fetch: fakeSite({
+        routes: {
+          "https://shop.example.com/": () => {
+            throw new Error("connection refused");
+          },
+        },
+      }).fetch,
+      tlsConnect: cert(),
+      tcpConnect: async (host, port) => host === SERVER_IPV4 && port === 443,
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    const hints = (id: string) => (byId(result.checks, id) as { remediation?: string }).remediation;
+    expect(hints("origin-not-direct")).toContain("DigitalOcean firewall");
+    expect(hints("site-reachable")).toContain("Droplet is running");
+    expect(hints("site-reachable")).toContain("https://cloud.digitalocean.com/");
+    expect(JSON.stringify(result.checks)).not.toContain("Hetzner");
   });
 
   it("reports missing security headers, a broken redirect and a failing health endpoint", async () => {

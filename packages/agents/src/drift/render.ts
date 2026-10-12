@@ -1,5 +1,6 @@
 import type { ResourceAction } from "@opscrew/contracts";
 import { engineLabel } from "@opscrew/iac-engine";
+import { providerProfile } from "../providers";
 import type { DriftReport } from "./types";
 
 const SYMBOL: Record<ResourceAction, string> = {
@@ -27,6 +28,9 @@ export function renderDriftReport(report: DriftReport): string {
     "",
   ];
   const drift = [...report.drift].sort(byAddress);
+  const cloud = report.provider
+    ? `the ${providerProfile(report.provider).displayName}`
+    : "your cloud provider's";
   const pending = [...report.pending].sort(byAddress);
   const files = [
     ...report.files.changed.map((path) => ({ path, label: "changed" })),
@@ -45,7 +49,7 @@ export function renderDriftReport(report: DriftReport): string {
 
   if (drift.length > 0) {
     lines.push(
-      `Resources changed outside OpsCrew (${drift.length}), for example in the Hetzner or Cloudflare console:`,
+      `Resources changed outside OpsCrew (${drift.length}), for example in ${cloud} or Cloudflare console:`,
     );
     for (const item of drift) {
       if (item.action === "delete") {

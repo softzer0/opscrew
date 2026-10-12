@@ -6,11 +6,20 @@ import {
   parseGitHubRepo,
   resolveGitHubToken,
 } from "@opscrew/connector-github";
-import { HETZNER_CREDENTIALS, hetznerConnector } from "@opscrew/connector-hetzner";
+import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { findExecutable, isUserFacingError } from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import {
+  type ProviderProfile,
+  planProvider,
+  providerFromTokens,
+  providerProfile,
+  requestedProvider,
+  VPS_PROVIDERS,
+  vpsConnector,
+} from "../providers";
 import { gitignoreCoversOpsCrew, OPSCREW_GITIGNORE_ENTRY, readGitignore } from "./gitignore";
 
 /** Outcome of one check. Only required checks fail; optional ones warn. */
@@ -23,7 +32,8 @@ export type InitCheckId =
   | "repository"
   | "engine"
   | "ssh"
-  | "hetzner"
+  /** The cloud provider token (Hetzner Cloud or DigitalOcean); was `hetzner` before 004. */
+  | "provider"
   | "cloudflare"
   | "github"
   | "model"
@@ -119,9 +129,11 @@ interface RepoInfo {
 
 /**
  * Runs every `opscrew init` preflight check (FR-306) and returns the checklist. Network checks
- * (Hetzner, Cloudflare, GitHub) run in parallel with a time budget each; with `offline` they only
- * look for the tokens. Required checks (Node, git repository, engine, ssh, Hetzner and GitHub
- * tokens, Cloudflare when the plan uses it) fail; the rest only warn. Every message is redacted.
+ * (cloud provider, Cloudflare, GitHub) run in parallel with a time budget each; with `offline`
+ * they only look for the tokens. The cloud provider check looks at the planned provider's token
+ * (else the interview answer's, else whichever single token is set) and never at the other
+ * provider's. Required checks (Node, git repository, engine, ssh, cloud provider and GitHub tokens,
+ * Cloudflare when the plan uses it) fail; the rest only warn. Every message is redacted.
  */
 export async function runInitChecks(
   deps: PhaseDeps,
@@ -133,12 +145,14 @@ export async function runInitChecks(
   const which = services.which ?? ((name: string) => findExecutable(name, env));
   const budget = services.timeoutMs ?? NETWORK_TIMEOUT_MS;
 
-  for (const name of ["HCLOUD_TOKEN", "CLOUDFLARE_API_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]) {
+  const providerTokens = VPS_PROVIDERS.flatMap((id) => providerProfile(id).tokenVars);
+  for (const name of [...providerTokens, "CLOUDFLARE_API_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]) {
     const value = env[name]?.trim();
     if (value) deps.redactor.addLiteral(value, name);
   }
 
   const repoInfo = inspectRepository(deps, which);
+  const choice = await providerChoice(deps);
 
   const checks = await Promise.all([
     guard("node", "Node.js", true, async () => checkNode(services.nodeVersion)),
@@ -146,8 +160,13 @@ export async function runInitChecks(
     guard("repository", "GitHub repository", true, async () => checkRepository(await repoInfo)),
     guard("engine", "OpenTofu or Terraform", true, () => checkEngine(deps, which)),
     guard("ssh", "ssh and ssh-keyscan", true, async () => checkSsh(which)),
-    guard("hetzner", "Hetzner Cloud token", true, () =>
-      withBudget(checkHetzner(deps, offline), budget, "Hetzner Cloud", true),
+    guard("provider", providerTitle(choice), true, () =>
+      withBudget(
+        checkProviderToken(deps, offline, choice),
+        budget,
+        choice.provider ? providerProfile(choice.provider).displayName : "The cloud provider",
+        true,
+      ),
     ),
     guard("cloudflare", "Cloudflare token", false, async () => {
       const usage = await cloudflareUsage(deps);
@@ -321,26 +340,156 @@ function checkSsh(which: (name: string) => string | undefined): CheckResult {
   };
 }
 
-const HETZNER_FIX = `Create a Read & Write API token in the Hetzner Cloud Console (${HETZNER_CREDENTIALS.createUrl} → your project → Security → API tokens) and set it as HCLOUD_TOKEN.`;
+/** Which provider's token the provider check looks at, and why. */
+interface ProviderChoice {
+  /** Undefined before a provider is chosen when zero or both tokens are set. */
+  provider?: VpsProviderId;
+  /** The plan, the interview answers, or the only token that is set. */
+  source: "plan" | "requirements" | "token" | "none";
+}
 
-async function checkHetzner(deps: PhaseDeps, offline: boolean): Promise<CheckResult> {
-  if (!set(deps.env, "HCLOUD_TOKEN")) {
-    return { status: "fail", message: "HCLOUD_TOKEN is not set.", fix: HETZNER_FIX };
+/** The planned provider, else the requested one, else the provider whose token alone is set. */
+async function providerChoice(deps: PhaseDeps): Promise<ProviderChoice> {
+  try {
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    return { provider: planProvider(plan), source: "plan" };
+  } catch {
+    // No usable plan yet: fall back to the interview answers.
   }
-  if (offline) return { status: "pass", message: `HCLOUD_TOKEN is set (${OFFLINE_NOTE}).` };
-  const connector = hetznerConnector({
-    env: deps.env,
-    fetch: deps.fetch,
-    redactor: deps.redactor,
-    version: deps.version,
-  });
+  try {
+    const requirements = await readArtifact("requirements", deps.paths.files.requirements);
+    return { provider: requestedProvider(requirements), source: "requirements" };
+  } catch {
+    // No answers yet: fall back to the tokens.
+  }
+  const provider = providerFromTokens(deps.env);
+  return provider ? { provider, source: "token" } : { source: "none" };
+}
+
+/** Title of the provider check: `Hetzner Cloud token`, `DigitalOcean token` or a neutral one. */
+function providerTitle(choice: ProviderChoice): string {
+  return choice.provider
+    ? `${providerProfile(choice.provider).displayName} token`
+    : "Cloud provider token";
+}
+
+/** The first token variable of a provider that is set. */
+function tokenVarOf(env: Record<string, string | undefined>, profile: ProviderProfile) {
+  return profile.tokenVars.find((name) => set(env, name));
+}
+
+/** How to create the provider's token, naming the page, the variable and the scopes. */
+function providerFix(profile: ProviderProfile, requirement: CredentialRequirement): string {
+  if (profile.id === "hetzner") {
+    return `Create a Read & Write API token in the Hetzner Cloud Console (${requirement.createUrl} → your project → Security → API tokens) and set it as HCLOUD_TOKEN.`;
+  }
+  return `Create a personal access token with custom scopes at ${requirement.createUrl}, select these scopes (${requirement.scopes.join(", ")}), and set ${profile.tokenVars[0]} to it.`;
+}
+
+/**
+ * For providers whose API cannot list a token's scopes (DigitalOcean), the scopes OpsCrew needs,
+ * so the user can compare them with the token's.
+ */
+function scopeNote(profile: ProviderProfile, requirement: CredentialRequirement): string {
+  if (profile.id === "hetzner") return "";
+  return ` ${profile.displayName} cannot report which scopes a token has, so make sure it has these (${requirement.scopes.join(", ")}).`;
+}
+
+const ONLY_ONE =
+  "OpsCrew needs only one cloud provider token; `opscrew interview` asks where to run the app.";
+
+/**
+ * The cloud provider token check: the chosen provider's token (verified online unless `offline`;
+ * the other provider's token is never checked), or before a choice either token.
+ */
+async function checkProviderToken(
+  deps: PhaseDeps,
+  offline: boolean,
+  choice: ProviderChoice,
+): Promise<CheckResult> {
+  const env = deps.env;
+  const { provider } = choice;
+  if (provider === undefined) {
+    const withToken = VPS_PROVIDERS.map(providerProfile).filter((p) => tokenVarOf(env, p));
+    if (withToken.length > 1) {
+      return {
+        status: "pass",
+        message: `${withToken.map((p) => tokenVarOf(env, p)).join(" and ")} are both set. ${ONLY_ONE} OpsCrew uses and checks only the chosen provider's token.`,
+      };
+    }
+    const fixes = VPS_PROVIDERS.map((id) => {
+      const profile = providerProfile(id);
+      return `For ${profile.displayName}, ${lowerFirst(providerFix(profile, vpsConnector(id, deps).credentials))}`;
+    });
+    return {
+      status: "fail",
+      message: `No cloud provider token is set (${VPS_PROVIDERS.map((id) => `${providerProfile(id).tokenVars[0]} for ${providerProfile(id).displayName}`).join(" or ")}).`,
+      fix: `OpsCrew needs one. ${fixes.join(" ")}`,
+    };
+  }
+
+  const profile = providerProfile(provider);
+  const connector = vpsConnector(provider, deps);
+  const requirement = connector.credentials;
+  const fix = providerFix(profile, requirement);
+  const envVar = tokenVarOf(env, profile);
+  const unchosen = choice.source === "token" ? ` No provider is chosen yet. ${ONLY_ONE}` : "";
+  if (envVar === undefined) {
+    const others = VPS_PROVIDERS.filter((id) => id !== provider).flatMap((id) => {
+      const other = tokenVarOf(env, providerProfile(id));
+      return other ? [other] : [];
+    });
+    const why =
+      others.length > 0
+        ? ` (${choice.source === "plan" ? "the plan deploys" : "your interview answers deploy"} to ${profile.displayName}, so ${others.join(" and ")} is not used)`
+        : "";
+    return {
+      status: "fail",
+      message: `${profile.tokenVars[0]} is not set${why}.`,
+      fix: `${fix}${scopeNote(profile, requirement)}`,
+    };
+  }
+  if (offline) {
+    return {
+      status: "pass",
+      message: `${envVar} is set (${OFFLINE_NOTE}).${scopeNote(profile, requirement)}${unchosen}`,
+    };
+  }
   const result = await connector.verifyCredentials();
-  if (result.ok) return { status: "pass", message: "HCLOUD_TOKEN works." };
+  if (result.ok) {
+    const identity = result.identity ? ` (${result.identity})` : "";
+    const detail = /\bworks\.$/.test(result.message) ? "" : ` ${result.message}`;
+    return {
+      status: "pass",
+      message: `${envVar} works${identity}.${detail}${scopeNote(profile, requirement)}${unchosen}`,
+    };
+  }
+  if (result.identity !== undefined) {
+    // The token was accepted, but the account itself is locked or not verified yet.
+    return {
+      status: "fail",
+      message: `${envVar} was accepted, but the ${profile.displayName} account cannot be used yet. ${result.message}`,
+      fix: `Resolve this in the ${profile.displayName} control panel (${accountUrl(profile)}), then run \`opscrew init\` again.`,
+    };
+  }
+  const needs =
+    requirement.scopes.length === 1
+      ? `${requirement.scopes[0]} permission`
+      : `these scopes (${requirement.scopes.join(", ")})`;
   return {
     status: "fail",
-    message: `HCLOUD_TOKEN does not work: ${result.message}`,
-    fix: `The token needs ${HETZNER_CREDENTIALS.scopes.join(", ")} permission. ${HETZNER_FIX}`,
+    message: `${envVar} does not work: ${result.message}`,
+    fix: `The token needs ${needs}. ${fix}`,
   };
+}
+
+/** Where the user fixes account problems (locked account, unverified email). */
+function accountUrl(profile: ProviderProfile): string {
+  return profile.id === "digitalocean" ? `${profile.consoleUrl}account` : profile.consoleUrl;
+}
+
+function lowerFirst(text: string): string {
+  return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 }
 
 function cloudflareFix(domain?: string): string {

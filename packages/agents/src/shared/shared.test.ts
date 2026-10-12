@@ -5,6 +5,7 @@ import { findExecutable, NodeCommandRunner, resolveProjectPaths } from "@opscrew
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { providerProfile } from "../providers";
 import { ScriptedRunner } from "../testing";
 import {
   assembleAppEnv,
@@ -17,6 +18,7 @@ import {
   parseDotenv,
   parseKeyscan,
   pinHostKey,
+  providerConsole,
   randomPassword,
   SshRemoteExec,
   sshArgs,
@@ -169,7 +171,22 @@ describe("waiting for the server", () => {
     current = keyB;
     await expect(
       pinHostKey({ host: "203.0.113.10", knownHostsFile, runner }),
-    ).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+    ).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      hint: expect.stringContaining("your cloud provider's console"),
+    });
+    await expect(
+      pinHostKey({
+        host: "203.0.113.10",
+        knownHostsFile,
+        runner,
+        console: providerConsole(providerProfile("digitalocean")),
+      }),
+    ).rejects.toMatchObject({
+      hint: expect.stringContaining(
+        "Check in the DigitalOcean console (https://cloud.digitalocean.com/)",
+      ),
+    });
     const replaced = await pinHostKey({
       host: "203.0.113.10",
       knownHostsFile,
