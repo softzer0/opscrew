@@ -1,15 +1,17 @@
 import type {
   AnyToolDefinition,
   ComputeCatalog,
-  Connector,
   CredentialCheck,
   CredentialRequirement,
+  ServerSnapshotApi,
   ToolDefinition,
+  VpsConnector,
 } from "@opscrew/contracts";
 import { isUserFacingError, Redactor } from "@opscrew/core";
 import { z } from "zod";
 import { HetznerCatalog, StaticHetznerCatalog } from "./catalog";
 import { type FetchLike, HetznerClient } from "./client";
+import { hetznerServerApi } from "./servers";
 
 /** Credentials OpsCrew needs for Hetzner Cloud. */
 export const HETZNER_CREDENTIALS: CredentialRequirement = {
@@ -32,7 +34,12 @@ export interface HetznerConnectorOptions {
 }
 
 /** The Hetzner connector plus access to its client and catalogue. */
-export interface HetznerConnector extends Connector {
+export interface HetznerConnector extends VpsConnector {
+  readonly id: "hetzner";
+  /** True when `HCLOUD_TOKEN` is set (it may still be invalid). */
+  readonly configured: boolean;
+  /** Server lookup and snapshots, or `undefined` when `HCLOUD_TOKEN` is not set. */
+  readonly servers: ServerSnapshotApi | undefined;
   /** Typed API client, or `undefined` when `HCLOUD_TOKEN` is not set. */
   readonly client: HetznerClient | undefined;
   /** Live catalogue when a token is set, otherwise the dated static catalogue. */
@@ -108,7 +115,9 @@ export function hetznerConnector(options: HetznerConnectorOptions): HetznerConne
     id: "hetzner",
     displayName: "Hetzner Cloud",
     credentials: HETZNER_CREDENTIALS,
+    configured: client !== undefined,
     client,
+    servers: client === undefined ? undefined : hetznerServerApi(client),
     catalog: getCatalog,
     async verifyCredentials(): Promise<CredentialCheck> {
       if (client === undefined) {

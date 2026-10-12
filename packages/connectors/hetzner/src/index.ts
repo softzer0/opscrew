@@ -22,4 +22,5 @@ export {
   type HetznerConnectorOptions,
   hetznerConnector,
 } from "./connector";
+export { appServerSelector, hetznerServerApi, SNAPSHOT_TIMEOUT_MS } from "./servers";
 export { STATIC_PRICES_AS_OF } from "./static-prices";

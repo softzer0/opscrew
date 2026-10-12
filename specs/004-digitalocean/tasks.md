@@ -28,7 +28,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-digitalocean`
   - Effort: high
 
-- [ ] T403 [P] [US2] Hetzner connector implements `VpsConnector` (`configured`, `servers`) in `packages/connectors/hetzner/src/`
+- [X] T403 [P] [US2] Hetzner connector implements `VpsConnector` (`configured`, `servers`) in `packages/connectors/hetzner/src/`
   - Owns: `packages/connectors/hetzner/src/**`
   - Reads: plan.md "Hetzner connector"; `packages/contracts/src/connector.ts`
   - Depends: T401
