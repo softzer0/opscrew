@@ -14,7 +14,7 @@ export function registerDriftTool(server: McpServer, deps: ResolvedMcpDeps): voi
     {
       title: "Infrastructure drift",
       description:
-        "Check whether the deployment still matches opscrew/plan.yaml: resources someone changed in the Hetzner or Cloudflare console (with the changed attribute names, never values), infrastructure changes not applied yet, and generated files that were edited or are missing. Needs a provisioned deployment and its state on this computer. Never changes anything; to undo drift the user runs `npx opscrew provision` in a terminal.",
+        "Check whether the deployment still matches opscrew/plan.yaml: resources someone changed in the cloud provider (Hetzner Cloud or DigitalOcean) or Cloudflare console (with the changed attribute names, never values), infrastructure changes not applied yet, and generated files that were edited or are missing. Needs a provisioned deployment and its state on this computer. Never changes anything; to undo drift the user runs `npx opscrew provision` in a terminal.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

@@ -103,7 +103,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
   - Verify: `pnpm turbo run typecheck test build --filter=opscrew`
   - Effort: high
 
-- [ ] T412 [P] [US4] Provider-neutral MCP texts, DigitalOcean init-check test, plugin skill and README in `packages/mcp-server/src/`, `plugin/`, `README.md`
+- [X] T412 [P] [US4] Provider-neutral MCP texts, DigitalOcean init-check test, plugin skill and README in `packages/mcp-server/src/`, `plugin/`, `README.md`
   - Owns: `packages/mcp-server/src/**`, `plugin/**`, `README.md`
   - Reads: spec US4, FR-409
   - Depends: T407–T410

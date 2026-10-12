@@ -33,7 +33,7 @@ import { projectDirInput, runTool } from "./shared";
  * its real defaults (engine binary, provider APIs, SSH, DNS, TLS, TCP).
  */
 export interface DeployToolOptions {
-  /** Fakes for `runProvision` / `previewDeploymentFiles` (engine, Hetzner, GitHub, SSH, waits). */
+  /** Fakes for `runProvision` / `previewDeploymentFiles` (engine, cloud provider, GitHub, SSH, waits). */
   provisionServices?: ProvisionServices;
   /** Fakes for `runSecure` (remote shell, TCP probe). */
   secure?: Pick<RunSecureOptions, "remote" | "tcpConnect" | "probeTimeoutMs">;
@@ -300,7 +300,7 @@ export function registerDeployTools(
     {
       title: "Plan the infrastructure",
       description:
-        "Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the Hetzner server (and Cloudflare DNS when planned), then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. Never applies anything: show the plan to the user, then call opscrew_apply with the hash. Needs HCLOUD_TOKEN and GitHub access in the MCP server's environment.",
+        "Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (Hetzner Cloud or DigitalOcean) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. Never applies anything: show the plan to the user, then call opscrew_apply with the hash. Needs the provider's API token (HCLOUD_TOKEN for Hetzner Cloud, DIGITALOCEAN_TOKEN for DigitalOcean) and GitHub access in the MCP server's environment.",
       inputSchema: {
         ...projectDirInput,
         engine: z
@@ -369,7 +369,7 @@ export function registerDeployTools(
     {
       title: "Apply an approved plan",
       description:
-        "Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's Hetzner (and Cloudflare) account, waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with `opscrew provision` in a terminal. Refuses when the client cannot show dialogs.",
+        "Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (Hetzner Cloud or DigitalOcean, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with `opscrew provision` in a terminal. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
         planHash: z

@@ -29,6 +29,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    asking the user.
 3. **Interview.** Call `opscrew_interview_questions`. Ask the user every returned question (use the
    question's options when it has them), then call `opscrew_save_requirements` with the answers.
+   One question is where to run the app: Hetzner Cloud or DigitalOcean (Droplets). Its default is
+   the provider whose API token is already set (`HCLOUD_TOKEN` or `DIGITALOCEAN_TOKEN`), otherwise
+   Hetzner Cloud; let the user choose.
 4. **Design.** Call `opscrew_design_options`. Present each option with its monthly cost, whether it
    fits the budget and its trade-offs; say which one OpsCrew recommends and why. When prices are
    marked as static estimates, say so. After the user chooses, call `opscrew_select_design`.
@@ -46,9 +49,10 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    npx opscrew provision
    ```
 
-   It checks their Hetzner, Cloudflare and GitHub tokens, shows the plan and asks for approval,
-   creates the server, stores the deploy secrets in GitHub and opens a pull request with the
-   infrastructure and deploy workflow. Merging that pull request deploys the app.
+   It checks the token of their cloud provider (Hetzner Cloud or DigitalOcean), plus their
+   Cloudflare and GitHub tokens, shows the plan and asks for approval, creates the server, stores
+   the deploy secrets in GitHub and opens a pull request with the infrastructure and deploy
+   workflow. Merging that pull request deploys the app.
 
    If the user wants to approve from here instead, call `opscrew_plan`, show them the plan, cost
    and policy results, then call `opscrew_apply` with the plan hash. OpsCrew asks the user in a
@@ -64,8 +68,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 - **Preflight.** On a fresh machine or clone, call `opscrew_init_check` first and help the user fix
   every item marked ✗ (tools to install, tokens to create). `npx opscrew init --fix` also adds
   `.opscrew/` to `.gitignore`.
-- **Drift.** When the user asks whether anything changed, or after they worked in the Hetzner or
-  Cloudflare console, call `opscrew_drift`. It reports changes made outside OpsCrew (attribute
+- **Drift.** When the user asks whether anything changed, or after they worked in the Hetzner Cloud,
+  DigitalOcean or Cloudflare console, call `opscrew_drift`. It reports changes made outside OpsCrew (attribute
   names only), changes not applied yet and edited generated files, and changes nothing. To undo
   drift the user runs `npx opscrew provision`; to keep a console change, `opscrew/plan.yaml` must
   be updated to match first.

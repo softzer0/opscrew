@@ -17,7 +17,7 @@ export function registerInitCheckTool(server: McpServer, deps: ResolvedMcpDeps):
     {
       title: "OpsCrew preflight",
       description:
-        "Check that everything OpsCrew needs is ready: git and a GitHub remote, OpenTofu or Terraform, ssh, the Hetzner, Cloudflare and GitHub tokens and what they can access, an optional model key, optional scanners, and .opscrew/ in .gitignore. Returns a checklist where every problem has its fix. Token values are never shown. With offline: true, tokens are only checked for presence. Changes nothing.",
+        "Check that everything OpsCrew needs is ready: git and a GitHub remote, OpenTofu or Terraform, ssh, the cloud provider token (Hetzner Cloud or DigitalOcean, whichever is planned), the Cloudflare and GitHub tokens and what they can access, an optional model key, optional scanners, and .opscrew/ in .gitignore. Returns a checklist where every problem has its fix. Token values are never shown. With offline: true, tokens are only checked for presence. Changes nothing.",
       inputSchema: {
         ...projectDirInput,
         offline: z

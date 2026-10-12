@@ -6,6 +6,8 @@ import {
   type PhaseDeps,
   previewDesignOptions,
   priceLabel,
+  providerProfile,
+  requestedProvider,
   runAnalyze,
   runDesign,
 } from "@opscrew/agents";
@@ -82,7 +84,7 @@ function renderOption(option: DesignOption): string {
 }
 
 /**
- * `opscrew_design_options` (read-only preview of 2–3 priced Hetzner options) and
+ * `opscrew_design_options` (read-only preview of 2–3 priced options on the chosen provider) and
  * `opscrew_select_design` (writes `opscrew/plan.yaml` for the chosen option).
  */
 export function registerDesignTools(server: McpServer, deps: ResolvedMcpDeps): void {
@@ -91,7 +93,7 @@ export function registerDesignTools(server: McpServer, deps: ResolvedMcpDeps): v
     {
       title: "Deployment options",
       description:
-        "Offer 2–3 concrete deployment options on Hetzner Cloud for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices are live when HCLOUD_TOKEN is set, otherwise a dated price list labelled as an estimate. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
+        "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices are live when the provider's API token (HCLOUD_TOKEN or DIGITALOCEAN_TOKEN) is set, otherwise a dated price list labelled as an estimate. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -105,8 +107,9 @@ export function registerDesignTools(server: McpServer, deps: ResolvedMcpDeps): v
         const recommended = result.options.find((o) => o.recommended);
         const requirements = await readArtifact("requirements", phase.paths.files.requirements);
         const fitting = result.options.some((o) => o.fitsBudget);
+        const providerName = providerProfile(requestedProvider(requirements)).displayName;
         const text = [
-          `Deployment options (budget ${formatMoney(requirements.budgetMonthly)}/month, prices ${result.priceSource === "live" ? "live from Hetzner" : "from a dated price list; estimates"}, excl. VAT):`,
+          `Deployment options on ${providerName} (budget ${formatMoney(requirements.budgetMonthly)}/month, prices ${result.priceSource === "live" ? `live from ${providerName}` : "from a dated price list; estimates"}, excl. VAT):`,
           "",
           ...result.options.map(renderOption),
           "",

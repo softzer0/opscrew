@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
 import { fakeSecret } from "@opscrew/core/testing";
+import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOpscrewMcpServer } from "../server";
 
@@ -16,13 +17,47 @@ afterEach(async () => {
 
 const TOKEN = fakeSecret("hcloud-token");
 
-async function connect() {
+/** A minimal valid plan on DigitalOcean (`fra1`, `s-1vcpu-2gb`). */
+function digitalOceanPlan() {
+  return DeployPlanSchema.parse({
+    schemaVersion: 1,
+    createdAt: "2026-10-11T10:00:00.000Z",
+    updatedAt: "2026-10-11T10:00:00.000Z",
+    app: { name: "shop", port: 3000, healthPath: "/api/health", env: [] },
+    target: {
+      provider: "digitalocean",
+      mode: "vps-compose",
+      location: "fra1",
+      serverType: "s-1vcpu-2gb",
+      backups: false,
+    },
+    services: { postgres: false, redis: false },
+    externalServices: [],
+    cost: {
+      monthly: { amount: 12, currency: "USD" },
+      breakdown: [{ item: "server", monthly: { amount: 12, currency: "USD" } }],
+      pricesIncludeVat: false,
+      source: "static",
+      asOf: "2026-06-15T00:00:00.000Z",
+    },
+    codeChanges: [],
+    infra: { engine: "tofu" },
+    dns: { provider: "none", proxied: false },
+    cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
+    security: {},
+  });
+}
+
+async function connect(
+  options: { env?: Record<string, string>; setup?: (dir: string) => Promise<void> } = {},
+) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-init-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
+  await options.setup?.(dir);
   const fetchCalls: string[] = [];
   const server = createOpscrewMcpServer({
     version: "0.0.0-test",
-    env: { OPSCREW_HOME: path.join(dir, "home"), HCLOUD_TOKEN: TOKEN },
+    env: { OPSCREW_HOME: path.join(dir, "home"), ...(options.env ?? { HCLOUD_TOKEN: TOKEN }) },
     fetch: async (input, init) => {
       fetchCalls.push(String(input));
       return forbiddenFetch(input, init);
@@ -64,5 +99,44 @@ describe("opscrew_init_check", () => {
     expect(text).toContain("only checked that it is set");
     expect(text).not.toContain(TOKEN);
     expect(fetchCalls).toEqual([]);
+  });
+
+  it("checks DIGITALOCEAN_TOKEN for a DigitalOcean plan and never prints its value", async () => {
+    const doToken = fakeSecret("digitalocean-token");
+    const { client, fetchCalls } = await connect({
+      env: { DIGITALOCEAN_TOKEN: doToken },
+      setup: (dir) =>
+        writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), digitalOceanPlan()),
+    });
+    const result = (await client.callTool({
+      name: "opscrew_init_check",
+      arguments: { offline: true },
+    })) as CallToolResult;
+    const data = result.structuredContent as {
+      checks: { id: string; title: string; status: string; message: string }[];
+    };
+    const provider = data.checks.find((c) => c.id === "provider");
+    expect(provider?.title).toContain("DigitalOcean");
+    expect(provider?.status).toBe("pass");
+    expect(JSON.stringify(provider)).toContain("DIGITALOCEAN_TOKEN");
+    const text = JSON.stringify(result);
+    expect(text).not.toContain(doToken);
+    expect(fetchCalls).toEqual([]);
+  });
+
+  it("asks for DIGITALOCEAN_TOKEN when a DigitalOcean plan has no token set", async () => {
+    const { client } = await connect({
+      env: {},
+      setup: (dir) =>
+        writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), digitalOceanPlan()),
+    });
+    const result = (await client.callTool({
+      name: "opscrew_init_check",
+      arguments: { offline: true },
+    })) as CallToolResult;
+    const data = result.structuredContent as { checks: { id: string; status: string }[] };
+    const provider = data.checks.find((c) => c.id === "provider");
+    expect(provider?.status).toBe("fail");
+    expect(JSON.stringify(provider)).toContain("DIGITALOCEAN_TOKEN");
   });
 });

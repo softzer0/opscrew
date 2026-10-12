@@ -81,9 +81,9 @@ export type PhaseDepsFactory = (
 export interface OpscrewMcpDeps {
   /** OpsCrew version: reported to the client and written into reports and plans. */
   version: string;
-  /** Environment (for example `HCLOUD_TOKEN`, `OPSCREW_HOME`). Secret values are redacted. */
+  /** Environment (for example `HCLOUD_TOKEN`, `DIGITALOCEAN_TOKEN`, `OPSCREW_HOME`). Secret values are redacted. */
   env: Record<string, string | undefined>;
-  /** HTTP client for opt-in lookups (OSV, live Hetzner prices). */
+  /** HTTP client for opt-in lookups (OSV, live provider prices). */
   fetch: FetchLike;
   /** Runs optional external scanners (gitleaks, osv-scanner, trivy). */
   runner: CommandRunner;

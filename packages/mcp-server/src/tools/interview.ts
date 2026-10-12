@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { buildQuestions, inferredAnswers, runInterview } from "@opscrew/agents";
+import { buildQuestions, inferredAnswers, providerFromTokens, runInterview } from "@opscrew/agents";
 import type { ProjectPaths } from "@opscrew/core";
 import { detectProject, detectProjectDetails } from "@opscrew/detect";
 import {
@@ -68,6 +68,8 @@ const AnswerValueSchema = z.union([
 ]);
 
 const ANSWER_HELP: Record<string, string> = {
+  provider:
+    'Cloud provider for the server: "hetzner" (Hetzner Cloud) or "digitalocean" (DigitalOcean).',
   expectedMonthlyUsers: "One of <1k, 1k-10k, 10k-100k, >100k.",
   budgetMonthly:
     'Monthly hosting budget, for example "10 EUR", "$20" or { amount: 10, currency: "EUR" }.',
@@ -99,7 +101,7 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
     {
       title: "Interview questions",
       description:
-        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, external services). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
+        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, the cloud provider (Hetzner Cloud or DigitalOcean), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, external services). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -110,8 +112,11 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
         const previous = await loadPrevious(paths);
         // In a repository with several apps, the first question is which one to deploy.
         const { appCandidates } = await detectProjectDetails(paths.root);
-        const questions = buildQuestions(facts, previous, appCandidates);
-        const inferred = inferredAnswers(facts);
+        // The provider default follows the token that is set, as in `opscrew init`/`interview`.
+        const inferredProvider = providerFromTokens(deps.env);
+        const context = inferredProvider !== undefined ? { inferredProvider } : {};
+        const questions = buildQuestions(facts, previous, appCandidates, context);
+        const inferred = inferredAnswers(facts, context);
         const text = [
           `Ask the user these ${questions.length} question${questions.length === 1 ? "" : "s"}, then call opscrew_save_requirements with the answers keyed by answer id.`,
           ...(previous !== undefined

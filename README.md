@@ -18,7 +18,7 @@ OpsCrew is an open-source crew of AI agents that does the DevOps and SecOps work
 
 Everything OpsCrew produces is a plain file in your repo: infrastructure code, workflows, reports, a runbook. Delete OpsCrew and your deployment keeps working.
 
-First target: Hetzner Cloud with Cloudflare DNS. DigitalOcean, AWS, Google Cloud, Azure and Contabo follow.
+Supported clouds: Hetzner Cloud and DigitalOcean (Droplets), with optional Cloudflare DNS. The interview asks which one to use. AWS, Google Cloud, Azure and Contabo follow.
 
 ## Development
 
