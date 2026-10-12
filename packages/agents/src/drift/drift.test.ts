@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type {
@@ -274,6 +275,7 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
       drift: [],
       pending: [],
       files: { changed: [], created: [] },
+      foreignDnsRecords: [],
       clean: true,
       engine: engine.info,
       checkedAt: "2026-10-11T12:00:00.000Z",
@@ -463,6 +465,43 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect(report.clean).toBe(true);
   });
 
+  it("never creates a deploy key: without it on this computer the check stops", async () => {
+    const { deps, services, engine } = await setup();
+    await rm(deps.paths.files.deployKey, { force: true });
+    await rm(deps.paths.files.deployKeyPub, { force: true });
+    await expectError(runDrift(deps, { services }), "PHASE_PRECONDITION");
+    expect(existsSync(deps.paths.files.deployKeyPub)).toBe(false);
+    expect(engine.calls).not.toContain("apply");
+  });
+
+  it("reports DNS records someone added outside OpsCrew instead of stopping", async () => {
+    const cloudflare = fakeCloudflare({
+      records: [
+        {
+          id: "old",
+          type: "A",
+          name: "shop.example.com",
+          content: "198.51.100.7",
+          ttl: 1,
+          proxied: false,
+        },
+      ],
+    });
+    const { deps, services, engine } = await setup({
+      plan: testPlan({ deployed: true, domain: "shop.example.com" }),
+      services: { cloudflare },
+    });
+    const report = await runDrift(deps, { services });
+    expect(report.foreignDnsRecords).toEqual([
+      { type: "A", name: "shop.example.com", content: "198.51.100.7" },
+    ]);
+    expect(report.clean).toBe(false);
+    const text = renderDriftReport(report);
+    expect(text).toContain("A shop.example.com 198.51.100.7");
+    expect(text).toContain("did not create");
+    expect(engine.calls).not.toContain("apply");
+  });
+
   it("never puts a secret value in the report, its text, the audit log or the output", async () => {
     const engine = new DriftEngine({
       drift: [drifted(FIREWALL, "update", ["rule"])],
@@ -490,6 +529,7 @@ describe("renderDriftReport", () => {
     ],
     pending: [change(SERVER, "update"), change(FIREWALL, "update")],
     files: { changed: ["opscrew/runtime/compose.yaml", "opscrew/infra/prod/main.tf"], created: [] },
+    foreignDnsRecords: [],
     clean: false,
     engine: { name: "tofu", version: "1.13.1", binary: "/fake/tofu" },
     checkedAt: "2026-10-11T12:00:00.000Z",

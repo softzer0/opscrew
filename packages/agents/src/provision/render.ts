@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { GitClient } from "@opscrew/connector-github";
 import { OpsCrewError } from "@opscrew/core";
 import {
@@ -53,8 +54,30 @@ export function deploymentRenderContext(
   };
 }
 
+/** The deploy key's public half: created once when allowed, otherwise read (never invented). */
+async function deployPublicKeyFor(deps: PhaseDeps, create: boolean): Promise<string> {
+  if (create) {
+    const key = await ensureDeployKey(deps.paths);
+    deps.redactor.addLiteral(key.privateKeyOpenSsh, "deploy-key");
+    return key.publicKeyOpenSsh;
+  }
+  const existing = (await readFile(deps.paths.files.deployKeyPub, "utf8").catch(() => ""))?.trim();
+  if (!existing) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "The project's deploy key is not on this computer, so OpsCrew cannot render the files it would compare. Nothing was checked.",
+      {
+        hint: `Copy the deploy key files from the computer that ran \`opscrew provision\` to ${deps.paths.files.deployKey} and ${deps.paths.files.deployKeyPub}, then try again.`,
+      },
+    );
+  }
+  return existing;
+}
+
 export interface DeploymentPreview {
   plan: DeployPlan;
+  /** DNS records at the app's hostnames OpsCrew did not create (only with `foreignRecords: "report"`). */
+  foreignDnsRecords?: { type: string; name: string; content: string }[];
   files: { path: string; kind: RenderedFileKind }[];
   created: string[];
   changed: string[];
@@ -69,7 +92,12 @@ export interface DeploymentPreview {
  */
 export async function previewDeploymentFiles(
   deps: PhaseDeps,
-  options: { services?: ProvisionServices } = {},
+  options: {
+    services?: ProvisionServices;
+    foreignRecords?: "stop" | "report";
+    /** Create the project's deploy key when it is missing (default true; drift passes false). */
+    createDeployKey?: boolean;
+  } = {},
 ): Promise<DeploymentPreview> {
   let plan = await readArtifact("plan", deps.paths.files.plan);
   const requirements = await readRequirements(deps);
@@ -85,23 +113,19 @@ export async function previewDeploymentFiles(
     });
   }
   const github = await githubCoordinates(git);
-  const cloudflare = await setupCloudflare(deps, plan, options.services ?? {});
+  const cloudflare = await setupCloudflare(deps, plan, options.services ?? {}, {
+    foreignRecords: options.foreignRecords ?? "stop",
+  });
   if (cloudflare) plan = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };
-  const deployKey = await ensureDeployKey(deps.paths);
-  deps.redactor.addLiteral(deployKey.privateKeyOpenSsh, "deploy-key");
+  const deployPublicKey = await deployPublicKeyFor(deps, options.createDeployKey !== false);
   const files = renderDeployment(
     plan,
-    deploymentRenderContext(deps, {
-      plan,
-      requirements,
-      github,
-      deployPublicKey: deployKey.publicKeyOpenSsh,
-      cloudflare,
-    }),
+    deploymentRenderContext(deps, { plan, requirements, github, deployPublicKey, cloudflare }),
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);
   return {
     plan,
+    ...(cloudflare?.foreignRecords ? { foreignDnsRecords: cloudflare.foreignRecords } : {}),
     files: files.map((f) => ({ path: f.path, kind: f.kind })),
     created: diff.created.map((f) => f.path),
     changed: diff.changed.map((f) => f.path),

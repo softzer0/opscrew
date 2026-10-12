@@ -25,6 +25,11 @@ export interface CloudflareSetup {
   manageConfigRule: boolean;
   manageWafRules: boolean;
   ipRanges?: { ipv4: string[]; ipv6: string[] };
+  /**
+   * A/AAAA/CNAME records at the app's hostnames that OpsCrew did not create; only collected when
+   * `setupCloudflare` runs with `foreignRecords: "report"` (otherwise they stop the run).
+   */
+  foreignRecords?: { type: string; name: string; content: string }[];
 }
 
 export interface GitHubSetup {
@@ -139,6 +144,7 @@ export async function setupCloudflare(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: ProvisionServices,
+  options: { foreignRecords?: "stop" | "report" } = {},
 ): Promise<CloudflareSetup | undefined> {
   if (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined) return undefined;
   const connector = cloudflareConnector({
@@ -168,7 +174,8 @@ export async function setupCloudflare(
     }
     const hosts = plan.dns.www ? [domain, `www.${domain}`] : [domain];
     const foreign = await foreignDnsRecords(api, zone.id, plan, hosts);
-    if (foreign.length > 0) {
+    const reportForeign = options.foreignRecords === "report";
+    if (foreign.length > 0 && !reportForeign) {
       const lines = foreign.map((r) => `  ${r.type} ${r.name} ${r.content}`);
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
@@ -217,6 +224,15 @@ export async function setupCloudflare(
       zoneName: zone.name,
       manageConfigRule,
       manageWafRules,
+      ...(reportForeign && foreign.length > 0
+        ? {
+            foreignRecords: foreign.map((r) => ({
+              type: r.type,
+              name: r.name,
+              content: deps.redactor.redact(r.content),
+            })),
+          }
+        : {}),
     };
     if (plan.dns.proxied && plan.security.httpAllowedFrom === "cloudflare") {
       setup.ipRanges = await api.getIpRanges();

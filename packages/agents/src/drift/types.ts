@@ -20,6 +20,11 @@ export interface DriftReport {
    * were edited, `created` are missing (OpsCrew would add them). Sorted repo-relative paths.
    */
   files: { changed: string[]; created: string[] };
+  /**
+   * DNS records at the app's hostnames that OpsCrew did not create (someone replaced or added one
+   * in the Cloudflare dashboard). Type, name and content, sorted by name.
+   */
+  foreignDnsRecords: { type: string; name: string; content: string }[];
   /** True when nothing drifted, nothing is pending and every file matches. */
   clean: boolean;
   engine: IacEngineInfo;

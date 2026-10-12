@@ -130,7 +130,11 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   deps.reporter.step(`Checking your Hetzner${usesCloudflare ? " and Cloudflare" : ""} access`);
   await checkHetzner(deps, services);
   deps.reporter.step("Comparing the generated files with what OpsCrew renders from the plan");
-  const preview = await previewDeploymentFiles(deps, { services });
+  const preview = await previewDeploymentFiles(deps, {
+    services,
+    foreignRecords: "report",
+    createDeployKey: false,
+  });
 
   // 3. Engine and state encryption
   const preference = options.engine ?? plan.infra.engine;
@@ -179,15 +183,20 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     changed: [...preview.changed].sort(),
     created: [...preview.created].sort(),
   };
+  const foreignDnsRecords = [...(preview.foreignDnsRecords ?? [])].sort((a, b) =>
+    `${a.name} ${a.type}`.localeCompare(`${b.name} ${b.type}`),
+  );
   const clean =
     drift.length === 0 &&
     pending.length === 0 &&
     files.changed.length === 0 &&
-    files.created.length === 0;
+    files.created.length === 0 &&
+    foreignDnsRecords.length === 0;
   const report: DriftReport = {
     drift,
     pending,
     files,
+    foreignDnsRecords,
     clean,
     engine: engine.info,
     checkedAt: deps.clock.now().toISOString(),

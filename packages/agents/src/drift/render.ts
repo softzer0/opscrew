@@ -33,7 +33,10 @@ export function renderDriftReport(report: DriftReport): string {
     ...report.files.created.map((path) => ({ path, label: "missing" })),
   ].sort((a, b) => byText(a.path, b.path) || byText(a.label, b.label));
 
-  if (drift.length === 0 && pending.length === 0 && files.length === 0) {
+  const foreign = [...(report.foreignDnsRecords ?? [])].sort(
+    (a, b) => byText(a.name, b.name) || byText(a.type, b.type) || byText(a.content, b.content),
+  );
+  if (drift.length === 0 && pending.length === 0 && files.length === 0 && foreign.length === 0) {
     lines.push(
       "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
     );
@@ -57,6 +60,17 @@ export function renderDriftReport(report: DriftReport): string {
     lines.push(
       "`opscrew provision` would undo these changes and restore what opscrew/plan.yaml describes.",
       "To keep a change instead, update opscrew/plan.yaml to match it (for example with `opscrew design`), then run `opscrew provision` and review its plan.",
+      "",
+    );
+  }
+
+  if (foreign.length > 0) {
+    lines.push(
+      `DNS records at the app's hostname that OpsCrew did not create (${foreign.length}), for example added in the Cloudflare dashboard:`,
+    );
+    for (const record of foreign) lines.push(`  ! ${record.type} ${record.name} ${record.content}`);
+    lines.push(
+      "They can send visitors somewhere else than the server, and `opscrew provision` stops until they are gone: delete them in the Cloudflare dashboard (DNS → Records) unless you put them there on purpose.",
       "",
     );
   }
