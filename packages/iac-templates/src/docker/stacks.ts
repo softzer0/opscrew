@@ -91,9 +91,8 @@ function needsCorepack(facts: ProjectFacts): boolean {
   return facts.packageManager === "pnpm" || facts.packageManager === "yarn";
 }
 
-/** Normalised repo-relative directory of a framework (`.` for the repository root). */
-function frameworkDir(facts: ProjectFacts, name: string): string {
-  const path = facts.frameworks.find((f) => f.name === name)?.path ?? ".";
+/** Normalised repo-relative directory (`.` for the repository root). */
+function normaliseDir(path: string): string {
   const dir = path
     .replace(/^(?:\.\/)+/, "")
     .replace(/\/+$/, "")
@@ -101,33 +100,113 @@ function frameworkDir(facts: ProjectFacts, name: string): string {
   return dir === "" ? "." : dir;
 }
 
+/** Frameworks whose folder locates the app when `facts.appDir` is absent (older facts). */
+const STACK_FRAMEWORKS: Record<DockerStack, string[]> = {
+  "next-standalone": ["next"],
+  "node-server": NODE_SERVER_FRAMEWORKS,
+  "static-spa": [],
+  "python-fastapi": ["fastapi"],
+  "python-django": ["django"],
+  "python-generic": [],
+};
+
+/**
+ * Repo-relative directory of the app (`.` for the repository root): `facts.appDir` when detection
+ * recorded it, otherwise the folder of the stack's framework (or of the first framework).
+ */
+export function appDirectory(facts: ProjectFacts, stack: DockerStack): string {
+  if (facts.appDir !== undefined) return normaliseDir(facts.appDir);
+  const names = STACK_FRAMEWORKS[stack];
+  const framework = facts.frameworks.find((f) => names.includes(f.name)) ?? facts.frameworks.at(0);
+  return normaliseDir(framework?.path ?? ".");
+}
+
 const PLAIN_PATH = /^[A-Za-z0-9._/@+-]+$/;
+const PLAIN_SOURCE = /^[A-Za-z0-9._/@+*-]+$/;
+
+/** A `COPY` instruction that switches to the JSON form when a path needs quoting. */
+function copy(prefix: string, sources: string[], destination: string): string {
+  const paths = [...sources, destination];
+  return paths.every((path) => PLAIN_SOURCE.test(path))
+    ? `${prefix} ${paths.join(" ")}`
+    : `${prefix} [${paths.map((path) => JSON.stringify(path)).join(", ")}]`;
+}
 
 /** `COPY --from=build` that switches to the JSON form when a path needs quoting. */
 function copyFromBuild(source: string, destination: string): string {
-  const prefix = "COPY --from=build --chown=node:node";
-  return PLAIN_PATH.test(source) && PLAIN_PATH.test(destination)
-    ? `${prefix} ${source} ${destination}`
-    : `${prefix} [${JSON.stringify(source)}, ${JSON.stringify(destination)}]`;
+  return copy("COPY --from=build --chown=node:node", [source], destination);
 }
 
 function shellQuote(value: string): string {
   return PLAIN_PATH.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Package name of a yarn workspace, read from the commands detection wrote. */
+function yarnWorkspaceName(facts: ProjectFacts): string | undefined {
+  const { buildCommand, startCommand, installCommand } = facts.build;
+  for (const command of [startCommand, buildCommand, installCommand]) {
+    const name = command?.match(/\byarn workspace (\S+)/)?.[1];
+    if (name) return name;
+  }
+  return undefined;
+}
+
 /**
- * Next.js standalone image. For an app in a monorepo folder (`frameworks[].path` of `next`), the
- * image is still built from the repository root so the root lockfile and workspace packages are
- * available, and the standalone output is copied from `<dir>/.next/standalone`, where the server
- * lives at `<dir>/server.js` once `outputFileTracingRoot` points at the repository root.
+ * Command running a package script of the app from the repository root: the plain form at the
+ * root, the package manager's workspace flag for a workspace member, and `cd <dir> && …` for a
+ * folder that is not part of a workspace (or a yarn workspace whose package name is unknown).
+ */
+function jsScript(facts: ProjectFacts, dir: string, script: string): string {
+  if (dir === ".") return jsRun(facts, script);
+  const inDir = `cd ${shellQuote(dir)} && ${jsRun(facts, script)}`;
+  if (!facts.monorepo) return inDir;
+  switch (facts.packageManager) {
+    case "pnpm":
+      return `pnpm --filter ${shellQuote(`./${dir}`)} run ${script}`;
+    case "yarn": {
+      const name = yarnWorkspaceName(facts);
+      return name ? `yarn workspace ${shellQuote(name)} ${script}` : inDir;
+    }
+    default:
+      return `npm run ${script} --workspace ${shellQuote(dir)}`;
+  }
+}
+
+/**
+ * Dependency install for the app: at the root for the root app and for workspace members (the
+ * root lockfile covers the whole workspace), inside the folder otherwise.
+ */
+function jsInstallFor(facts: ProjectFacts, dir: string): string {
+  return dir === "." || facts.monorepo
+    ? jsInstall(facts)
+    : `cd ${shellQuote(dir)} && ${jsInstall(facts)}`;
+}
+
+/** Header note for an app in a subfolder (nothing at the root). */
+function jsFolderNote(facts: ProjectFacts, dir: string): string[] {
+  if (dir === ".") return [];
+  return facts.monorepo
+    ? [
+        "# The image is built from the repository root so the root lockfile and workspace packages",
+        `# are available; the app lives in ${dir}.`,
+      ]
+    : [`# The image is built from the repository root; the app lives in ${dir}.`];
+}
+
+/**
+ * Next.js standalone image. For an app in a monorepo folder (`facts.appDir`, or the `next`
+ * framework's path), the image is still built from the repository root so the root lockfile and
+ * workspace packages are available, and the standalone output is copied from
+ * `<dir>/.next/standalone`, where the server lives at `<dir>/server.js` once
+ * `outputFileTracingRoot` points at the repository root.
  */
 export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): string {
-  const dir = frameworkDir(facts, "next");
+  const dir = appDirectory(facts, "next-standalone");
   const atRoot = dir === ".";
   const inApp = (path: string) => (atRoot ? path : `${dir}/${path}`);
-  const build =
-    facts.build.buildCommand ??
-    (atRoot ? jsRun(facts, "build") : `(cd ${shellQuote(dir)} && ${jsRun(facts, "build")})`);
+  const command = facts.build.buildCommand ?? jsScript(facts, dir, "build");
+  // A `cd` must not leak into the `mkdir` that follows, which runs from the repository root.
+  const build = /^cd\s/.test(command) ? `(${command})` : command;
   const requirements = atRoot
     ? ['# Requires `output: "standalone"` in next.config.* (OpsCrew adds it as a code change).']
     : [
@@ -144,7 +223,7 @@ export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): str
     "FROM node:22-alpine AS build",
     "WORKDIR /app",
     "COPY . .",
-    `RUN ${jsInstall(facts)}`,
+    `RUN ${jsInstallFor(facts, dir)}`,
     "ENV NEXT_TELEMETRY_DISABLED=1",
     ...buildArgs(facts),
     `RUN ${build} && mkdir -p ${shellQuote(inApp("public"))}`,
@@ -162,15 +241,18 @@ export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): str
   ].join("\n");
 }
 
+/** Node.js server image; an app in a subfolder is built from the root and started from there. */
 export function nodeServerDockerfile(facts: ProjectFacts, port: number): string {
-  const start = facts.build.startCommand ?? jsRun(facts, "start");
+  const dir = appDirectory(facts, "node-server");
+  const start = facts.build.startCommand ?? jsScript(facts, dir, "start");
   const lines = [
     HEADER("node-server"),
+    ...jsFolderNote(facts, dir),
     "",
     "FROM node:22-alpine AS build",
     "WORKDIR /app",
     "COPY . .",
-    `RUN ${jsInstall(facts)}`,
+    `RUN ${jsInstallFor(facts, dir)}`,
     ...buildArgs(facts),
   ];
   if (facts.build.buildCommand) lines.push(`RUN ${facts.build.buildCommand}`);
@@ -191,9 +273,14 @@ export function nodeServerDockerfile(facts: ProjectFacts, port: number): string 
   return lines.join("\n");
 }
 
+/**
+ * Static site image. For an app in a subfolder, the default output folder is `<dir>/dist`
+ * (a detected `outputDir` is already relative to the repository root).
+ */
 export function staticSpaDockerfile(facts: ProjectFacts): string {
-  const build = facts.build.buildCommand ?? jsRun(facts, "build");
-  const outputDir = facts.build.outputDir ?? "dist";
+  const dir = appDirectory(facts, "static-spa");
+  const build = facts.build.buildCommand ?? jsScript(facts, dir, "build");
+  const outputDir = facts.build.outputDir ?? (dir === "." ? "dist" : `${dir}/dist`);
   const caddyfile = [
     "{",
     "\tauto_https off",
@@ -210,16 +297,17 @@ export function staticSpaDockerfile(facts: ProjectFacts): string {
     HEADER("static-spa"),
     "# Builds the site with Node, then serves the static files with Caddy on port 8080 as an",
     "# unprivileged user (OpsCrew's outer Caddy terminates TLS in front of it).",
+    ...jsFolderNote(facts, dir),
     "",
     "FROM node:22-alpine AS build",
     "WORKDIR /app",
     "COPY . .",
-    `RUN ${jsInstall(facts)}`,
+    `RUN ${jsInstallFor(facts, dir)}`,
     ...buildArgs(facts),
     `RUN ${build}`,
     "",
     "FROM caddy:2-alpine",
-    `COPY --from=build /app/${outputDir} /srv`,
+    copy("COPY --from=build", [`/app/${outputDir}`], "/srv"),
     `RUN printf '%s\\n' ${caddyfile.map((line) => `'${line}'`).join(" ")} > /etc/caddy/Caddyfile \\`,
     "  && chown -R 65534:65534 /data /config",
     "USER 65534",
@@ -228,45 +316,72 @@ export function staticSpaDockerfile(facts: ProjectFacts): string {
   ].join("\n");
 }
 
+/**
+ * Base of every Python image. Only the app folder is copied into `/app`, so an app in a subfolder
+ * runs exactly as it would at the root.
+ */
 function pythonBase(stack: DockerStack, port: number, facts: ProjectFacts): string[] {
   const version = facts.runtimeVersions.python?.match(/^3\.\d+/)?.[0] ?? "3.13";
+  const dir = appDirectory(facts, stack);
   return [
     HEADER(stack),
+    ...(dir === "."
+      ? []
+      : [`# Built from the repository root; only ${dir} is copied into the image.`]),
     "",
     `FROM python:${version}-slim`,
     `ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PORT=${port}`,
     "WORKDIR /app",
     "RUN useradd --create-home --uid 10001 app",
-    ...pythonInstall(facts),
-    "COPY --chown=app:app . .",
+    ...pythonInstall(facts, dir),
+    copy("COPY --chown=app:app", [dir], "."),
   ];
 }
 
-function pythonInstall(facts: ProjectFacts): string[] {
+function pythonInstall(facts: ProjectFacts, dir: string): string[] {
+  const inApp = (...files: string[]) =>
+    files.map((file) => (dir === "." ? file : `${dir}/${file}`));
   switch (facts.packageManager) {
     case "poetry":
       return [
-        "COPY pyproject.toml poetry.lock* ./",
+        copy("COPY", inApp("pyproject.toml", "poetry.lock*"), "./"),
         "RUN pip install poetry && poetry config virtualenvs.create false && poetry install --only main --no-root",
       ];
     case "uv":
       return [
-        "COPY pyproject.toml uv.lock* ./",
+        copy("COPY", inApp("pyproject.toml", "uv.lock*"), "./"),
         "RUN pip install uv && uv pip install --system -r pyproject.toml",
       ];
     case "pipenv":
       return [
-        "COPY Pipfile Pipfile.lock* ./",
+        copy("COPY", inApp("Pipfile", "Pipfile.lock*"), "./"),
         "RUN pip install pipenv && pipenv install --system --deploy",
       ];
     default:
-      return ["COPY requirements*.txt ./", "RUN pip install -r requirements.txt"];
+      return [
+        copy("COPY", inApp("requirements*.txt"), "./"),
+        "RUN pip install -r requirements.txt",
+      ];
   }
+}
+
+/**
+ * Detected start command as it runs inside the image: the `cd <dir> && ` prefix detection adds for
+ * an app in a subfolder is dropped, because the image holds only that folder.
+ */
+function pythonStart(facts: ProjectFacts, stack: DockerStack): string | undefined {
+  const start = facts.build.startCommand;
+  const dir = appDirectory(facts, stack);
+  if (start === undefined || dir === ".") return start;
+  for (const prefix of [`cd ${dir} && `, `cd ${shellQuote(dir)} && `]) {
+    if (start.startsWith(prefix)) return start.slice(prefix.length);
+  }
+  return start;
 }
 
 /** Uvicorn target (`module:app`) from the detected start command, or `main:app`. */
 function uvicornTarget(facts: ProjectFacts): string {
-  const match = facts.build.startCommand?.match(/uvicorn\s+([\w.]+:[\w]+)/);
+  const match = pythonStart(facts, "python-fastapi")?.match(/uvicorn\s+([\w.]+:[\w]+)/);
   return match?.[1] ?? "main:app";
 }
 
@@ -287,7 +402,8 @@ const DJANGO_BUILD_KEY =
 
 export function djangoDockerfile(facts: ProjectFacts, port: number): string {
   const module =
-    facts.build.startCommand?.match(/([\w.]+)\.wsgi/)?.[1] ?? facts.name.replace(/-/g, "_");
+    pythonStart(facts, "python-django")?.match(/([\w.]+)\.wsgi/)?.[1] ??
+    facts.name.replace(/-/g, "_");
   return [
     ...pythonBase("python-django", port, facts),
     "RUN pip install gunicorn",
@@ -305,7 +421,7 @@ export function djangoDockerfile(facts: ProjectFacts, port: number): string {
 }
 
 export function pythonGenericDockerfile(facts: ProjectFacts, port: number): string {
-  const start = facts.build.startCommand ?? "python main.py";
+  const start = pythonStart(facts, "python-generic") ?? "python main.py";
   return [
     ...pythonBase("python-generic", port, facts),
     "USER app",

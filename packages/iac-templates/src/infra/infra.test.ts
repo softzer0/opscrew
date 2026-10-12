@@ -148,6 +148,31 @@ describe("renderInfra", () => {
     ).toEqual(["0.0.0.0/0", "::/0"]);
   });
 
+  it("exposes delete protection as a variable that defaults to on and is never in tfvars", () => {
+    for (const files of [
+      renderInfra(plan(), ctx()),
+      renderInfra(plan({ domain: "shop.example.com" }), ctx({ cloudflare: cloudflare() })),
+    ]) {
+      const variablesTf = files.find((f) => f.path.endsWith("prod/variables.tf"))?.content ?? "";
+      expect(variablesTf).toContain(
+        [
+          'variable "delete_protection" {',
+          '  description = "Protect the server against accidental deletion and rebuilds; `opscrew destroy` passes false."',
+          "  type        = bool",
+          "  default     = true",
+          "}",
+        ].join("\n"),
+      );
+      const main = files.find((f) => f.path.endsWith("prod/main.tf"))?.content ?? "";
+      expect(main).toMatch(/^ {2}delete_protection +=\s*var\.delete_protection$/m);
+      const values = JSON.parse(files.find((f) => f.path.endsWith("tfvars.json"))?.content ?? "{}");
+      expect(values).not.toHaveProperty("delete_protection");
+      expect(files.find((f) => f.path.endsWith("tfvars.json"))?.content).not.toContain(
+        "delete_protection",
+      );
+    }
+  });
+
   it("refuses to render DNS without a zone id", () => {
     expect(() => renderInfra(plan({ domain: "shop.example.com" }), ctx())).toThrow(/zone id/);
   });

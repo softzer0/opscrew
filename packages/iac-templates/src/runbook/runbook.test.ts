@@ -82,6 +82,41 @@ describe("renderRunbook", () => {
     );
   });
 
+  it("explains how to check for drift without changing anything", () => {
+    const content = renderRunbook(plan({ ip: "203.0.113.10" }), ctx).content;
+    const section = content.slice(content.indexOf("## Check for drift"));
+    expect(content).toContain("## Check for drift");
+    expect(section).toContain("opscrew drift");
+    expect(section).toMatch(/never changes anything/);
+    expect(section).toMatch(/refresh/i);
+    expect(section).toContain("opscrew/infra/");
+  });
+
+  it("explains how to tear the deployment down and what remains", () => {
+    const content = renderRunbook(
+      plan({ domain: "shop.example.com", ip: "203.0.113.10" }),
+      ctx,
+    ).content;
+    const section = content.slice(content.indexOf("## Tear it down"));
+    expect(content).toContain("## Tear it down");
+    expect(section).toContain("opscrew destroy");
+    expect(section).toContain("--confirm shop");
+    expect(section).toContain("--no-snapshot");
+    expect(section).toMatch(/backups are deleted\s+together\s+with\s+the\s+server/);
+    expect(section).toMatch(/snapshot is the only copy/);
+    expect(section).toMatch(/per GB per month/);
+    expect(section).toContain("ghcr.io/acme/shop");
+    expect(section).toContain(".github/workflows/opscrew-deploy.yml");
+    expect(section).toMatch(/deploy secrets/);
+    expect(section).toContain("Cloudflare DNS records");
+    // No data on the server: no snapshot unless asked for.
+    const stateless = renderRunbook(plan({ postgres: false, backups: false }), ctx).content;
+    const plain = stateless.slice(stateless.indexOf("## Tear it down"));
+    expect(plain).toMatch(/does not take a\s+snapshot/);
+    expect(plain).toMatch(/backups would be deleted\s+together\s+with\s+the\s+server/);
+    expect(plain).not.toContain("Cloudflare DNS records");
+  });
+
   it("contains no absolute paths and is deterministic", () => {
     const a = renderRunbook(plan({ domain: "shop.example.com", ip: "203.0.113.10" }), ctx).content;
     expect(

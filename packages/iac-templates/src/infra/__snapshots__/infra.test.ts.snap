@@ -18,6 +18,7 @@ module "server" {
   server_type        = var.server_type
   image              = var.image
   backups            = var.backups
+  delete_protection  = var.delete_protection
   ssh_public_key     = var.deploy_ssh_public_key
   ssh_allowed_cidrs  = var.ssh_allowed_cidrs
   http_allowed_cidrs = var.http_allowed_cidrs
@@ -54,6 +55,7 @@ module "server" {
   server_type        = var.server_type
   image              = var.image
   backups            = var.backups
+  delete_protection  = var.delete_protection
   ssh_public_key     = var.deploy_ssh_public_key
   ssh_allowed_cidrs  = var.ssh_allowed_cidrs
   http_allowed_cidrs = var.http_allowed_cidrs

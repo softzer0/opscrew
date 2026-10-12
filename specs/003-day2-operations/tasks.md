@@ -27,7 +27,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-engine`
   - Effort: high
 
-- [ ] T303 [P] [US1] [US4] Delete-protection variable, monorepo Docker builds and runbook sections in `packages/iac-templates/src/`
+- [X] T303 [P] [US1] [US4] Delete-protection variable, monorepo Docker builds and runbook sections in `packages/iac-templates/src/`
   - Owns: `packages/iac-templates/src/{infra,docker,runbook}/**`, `packages/iac-templates/modules/**` (only if needed), their tests and snapshots
   - Reads: plan.md "Templates"; spec FR-307, FR-309, FR-310; `packages/plan-schema/src/facts.ts` (`appDir`)
   - Depends: T301

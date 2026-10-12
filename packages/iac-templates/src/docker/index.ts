@@ -2,6 +2,7 @@ import { OpsCrewError } from "@opscrew/core";
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import type { RenderedFile } from "../types";
 import {
+  appDirectory,
   type DockerStack,
   detectStack,
   djangoDockerfile,
@@ -112,8 +113,10 @@ function envExample(facts: ProjectFacts): string {
 
 /**
  * `Dockerfile`, `.dockerignore` and `.env.example` for the detected stack. Callers write them only
- * when the files are missing (the user owns them afterwards). Throws `INVALID_INPUT` when OpsCrew
- * has no template for the stack.
+ * when the files are missing (the user owns them afterwards). For an app in a subfolder
+ * (`facts.appDir`) the Dockerfile is `<appDir>/Dockerfile`; the build context, and so the
+ * `.dockerignore`, stays at the repository root. Throws `INVALID_INPUT` when OpsCrew has no
+ * template for the stack.
  */
 export function renderDockerAssets(
   facts: ProjectFacts,
@@ -128,8 +131,13 @@ export function renderDockerAssets(
     );
   }
   const port = containerPort(stack, options.appPort);
+  const dir = appDirectory(facts, stack);
   return [
-    { path: "Dockerfile", content: dockerfile(stack, facts, port), kind: "docker" },
+    {
+      path: dir === "." ? "Dockerfile" : `${dir}/Dockerfile`,
+      content: dockerfile(stack, facts, port),
+      kind: "docker",
+    },
     { path: ".dockerignore", content: DOCKERIGNORE, kind: "docker" },
     { path: ".env.example", content: envExample(facts), kind: "docker" },
   ];

@@ -109,6 +109,57 @@ const nextMonorepoApp = facts({
 
 const ALL = { nextApp, viteApp, expressApp, fastapiApp, djangoApp, pythonApp, nextMonorepoApp };
 
+/** An Express API in `apps/api` of an npm workspace, without detected commands. */
+const npmWorkspaceApi = facts({
+  name: "acme",
+  packageManager: "npm",
+  frameworks: [{ name: "express", path: "apps/api" }],
+  appKind: "api",
+  port: 4000,
+  monorepo: true,
+  appDir: "apps/api",
+});
+/** A Vite site in `apps/site` of a pnpm workspace, without detected commands. */
+const pnpmWorkspaceSite = facts({
+  name: "acme",
+  packageManager: "pnpm",
+  frameworks: [
+    { name: "react", path: "apps/site" },
+    { name: "vite", path: "apps/site" },
+  ],
+  appKind: "static-spa",
+  envVars: [
+    {
+      name: "VITE_API_URL",
+      files: ["apps/site/src/api.ts"],
+      clientExposed: true,
+      secretLikely: false,
+    },
+  ],
+  monorepo: true,
+  appDir: "apps/site",
+});
+/** A FastAPI service in `services/api`, with the start command detect writes for a subfolder. */
+const pythonSubfolderApi = facts({
+  name: "platform",
+  languages: ["python"],
+  packageManager: "pip",
+  frameworks: [{ name: "fastapi", path: "services/api" }],
+  appKind: "api",
+  port: 8000,
+  build: {
+    installCommand: "cd services/api && pip install -r requirements.txt",
+    startCommand: "cd services/api && uvicorn app.main:app --host 0.0.0.0 --port 8000",
+  },
+  appDir: "services/api",
+});
+
+const SUBFOLDER = { npmWorkspaceApi, pnpmWorkspaceSite, pythonSubfolderApi };
+
+function dockerfileOf(sample: ProjectFacts, appPort = sample.port ?? 3000): string {
+  return renderDockerAssets(sample, { appPort, healthPath: "/health" })[0]?.content ?? "";
+}
+
 describe("detectStack", () => {
   it("maps each sample to its recipe", () => {
     expect(detectStack(nextApp)).toBe("next-standalone");
@@ -133,7 +184,9 @@ describe("renderDockerAssets", () => {
         appPort: sample.port ?? 3000,
         healthPath: "/health",
       });
-      expect(files.map((f) => f.path)).toEqual(["Dockerfile", ".dockerignore", ".env.example"]);
+      // Older facts without `appDir`: the framework's folder locates the app.
+      const dockerfilePath = sample === nextMonorepoApp ? "apps/web/Dockerfile" : "Dockerfile";
+      expect(files.map((f) => f.path)).toEqual([dockerfilePath, ".dockerignore", ".env.example"]);
       const dockerfile = files[0]?.content ?? "";
       expect(dockerfile).toMatchSnapshot();
       // Every image ends with a non-root user before it starts.
@@ -247,7 +300,7 @@ describe("renderDockerAssets", () => {
   });
 
   it("never emits secret-shaped strings", () => {
-    for (const sample of Object.values(ALL)) {
+    for (const sample of [...Object.values(ALL), ...Object.values(SUBFOLDER)]) {
       for (const file of renderDockerAssets(sample, { appPort: 3000, healthPath: "/health" })) {
         expect(file.content).not.toMatch(/(ghp_|sk-ant-|sk_live_|AKIA|eyJ)[A-Za-z0-9]{8}/);
       }
@@ -258,5 +311,161 @@ describe("renderDockerAssets", () => {
     expect(isClientExposedEnvName("VITE_X")).toBe(true);
     expect(isClientExposedEnvName("NEXT_PUBLIC_X")).toBe(true);
     expect(isClientExposedEnvName("DATABASE_URL")).toBe(false);
+  });
+});
+
+describe("renderDockerAssets for an app in a subfolder (facts.appDir)", () => {
+  for (const [name, sample] of Object.entries(SUBFOLDER)) {
+    it(`renders ${name} into its folder`, () => {
+      const files = renderDockerAssets(sample, {
+        appPort: sample.port ?? 3000,
+        healthPath: "/health",
+      });
+      // The Dockerfile lives with the app; the build context (and its .dockerignore) is the root.
+      expect(files.map((f) => f.path)).toEqual([
+        `${sample.appDir}/Dockerfile`,
+        ".dockerignore",
+        ".env.example",
+      ]);
+      const dockerfile = files[0]?.content ?? "";
+      expect(dockerfile).toMatchSnapshot();
+      expect(dockerfile.match(/^USER (\S+)$/gm)?.at(-1)).not.toBe("USER root");
+      expect(dockerfile.endsWith("\n")).toBe(true);
+    });
+  }
+
+  it("leaves root apps byte-identical when appDir is `.`", () => {
+    for (const sample of Object.values(ALL).filter((s) => s !== nextMonorepoApp)) {
+      const before = renderDockerAssets(sample, { appPort: 3000, healthPath: "/health" });
+      const after = renderDockerAssets(
+        { ...sample, appDir: "." },
+        { appPort: 3000, healthPath: "/health" },
+      );
+      expect(after).toEqual(before);
+    }
+  });
+
+  it("prefers facts.appDir over framework paths", () => {
+    const files = renderDockerAssets(
+      { ...nextMonorepoApp, appDir: "." },
+      { appPort: 4000, healthPath: "/" },
+    );
+    expect(files[0]?.path).toBe("Dockerfile");
+    expect(files[0]?.content).toContain('CMD ["node", "server.js"]');
+  });
+
+  it("falls back to the framework path for every stack", () => {
+    const { appDir: _ignored, ...withoutAppDir } = npmWorkspaceApi;
+    const files = renderDockerAssets(withoutAppDir, { appPort: 4000, healthPath: "/" });
+    expect(files[0]?.path).toBe("apps/api/Dockerfile");
+    const python = renderDockerAssets(
+      { ...pythonSubfolderApi, appDir: undefined },
+      { appPort: 8000, healthPath: "/" },
+    );
+    expect(python[0]?.path).toBe("services/api/Dockerfile");
+  });
+
+  it("installs an npm workspace from the root and runs the app with --workspace", () => {
+    const lines = dockerfileOf(npmWorkspaceApi).split("\n");
+    expect(lines).toContain("COPY . .");
+    expect(lines).toContain("RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi");
+    expect(lines).toContain('CMD ["sh", "-c", "npm run start --workspace apps/api"]');
+  });
+
+  it("builds a pnpm workspace member with --filter ./<dir>", () => {
+    const lines = dockerfileOf(pnpmWorkspaceSite, 8080).split("\n");
+    expect(lines).toContain(
+      "RUN corepack enable && if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else pnpm install; fi",
+    );
+    expect(lines).toContain("RUN pnpm --filter ./apps/site run build");
+    expect(lines).toContain("COPY --from=build /app/apps/site/dist /srv");
+    expect(lines).toContain("ARG VITE_API_URL");
+  });
+
+  it("keeps a detected root-relative output folder", () => {
+    const lines = dockerfileOf(
+      { ...pnpmWorkspaceSite, build: { outputDir: "apps/site/build" } },
+      8080,
+    ).split("\n");
+    expect(lines).toContain("COPY --from=build /app/apps/site/build /srv");
+  });
+
+  it("runs a yarn workspace by its package name when facts know it", () => {
+    const named = facts({
+      ...npmWorkspaceApi,
+      packageManager: "yarn",
+      build: { startCommand: "yarn workspace @acme/api start" },
+    });
+    expect(dockerfileOf(named)).toContain('CMD ["sh", "-c", "yarn workspace @acme/api start"]');
+    const nameFromBuild = facts({
+      ...npmWorkspaceApi,
+      packageManager: "yarn",
+      build: { buildCommand: "yarn workspace @acme/api run build" },
+    });
+    expect(dockerfileOf(nameFromBuild)).toContain(
+      'CMD ["sh", "-c", "yarn workspace @acme/api start"]',
+    );
+    const unnamed = facts({ ...npmWorkspaceApi, packageManager: "yarn" });
+    expect(dockerfileOf(unnamed)).toContain('CMD ["sh", "-c", "cd apps/api && yarn start"]');
+  });
+
+  it("builds Next.js in a workspace with the workspace flag when no command was detected", () => {
+    const lines = dockerfileOf({ ...nextMonorepoApp, appDir: "apps/web", build: {} }).split("\n");
+    expect(lines).toContain("RUN pnpm --filter ./apps/web run build && mkdir -p apps/web/public");
+  });
+
+  it("installs and builds inside the folder when the repository is not a workspace", () => {
+    const site = facts({
+      ...pnpmWorkspaceSite,
+      packageManager: "npm",
+      monorepo: false,
+      appDir: "frontend",
+      frameworks: [{ name: "vite", path: "frontend" }],
+      envVars: [],
+    });
+    const lines = dockerfileOf(site, 8080).split("\n");
+    expect(lines).toContain(
+      "RUN cd frontend && if [ -f package-lock.json ]; then npm ci; else npm install; fi",
+    );
+    expect(lines).toContain("RUN cd frontend && npm run build");
+    expect(lines).toContain("COPY --from=build /app/frontend/dist /srv");
+
+    const next = facts({
+      ...nextApp,
+      appDir: "web",
+      frameworks: [{ name: "next", path: "web" }],
+      build: { buildCommand: "cd web && npm run build" },
+    });
+    expect(dockerfileOf(next).split("\n")).toContain(
+      "RUN (cd web && npm run build) && mkdir -p web/public",
+    );
+  });
+
+  it("copies only the app folder for Python and starts it from there", () => {
+    const dockerfile = dockerfileOf(pythonSubfolderApi);
+    const lines = dockerfile.split("\n");
+    expect(lines).toContain("COPY services/api/requirements*.txt ./");
+    expect(lines).toContain("COPY --chown=app:app services/api .");
+    expect(lines).not.toContain("COPY --chown=app:app . .");
+    expect(dockerfile).not.toContain("cd services/api");
+    expect(dockerfile).toContain("uvicorn app.main:app --host 0.0.0.0");
+
+    const poetry = dockerfileOf({
+      ...pythonSubfolderApi,
+      packageManager: "poetry",
+      frameworks: [{ name: "django", path: "services/api" }],
+      build: {},
+    });
+    expect(poetry.split("\n")).toContain(
+      "COPY services/api/pyproject.toml services/api/poetry.lock* ./",
+    );
+  });
+
+  it("quotes app folders that need it", () => {
+    const spaced = dockerfileOf({ ...pythonSubfolderApi, appDir: "services/my api", build: {} });
+    expect(spaced).toContain('COPY ["services/my api/requirements*.txt", "./"]');
+    expect(spaced).toContain('COPY --chown=app:app ["services/my api", "."]');
+    const npm = dockerfileOf({ ...npmWorkspaceApi, appDir: "apps/my api" });
+    expect(npm).toContain(`npm run start --workspace 'apps/my api'`);
   });
 });

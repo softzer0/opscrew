@@ -91,6 +91,7 @@ function mainTf(plan: DeployPlan): string {
     "  server_type        = var.server_type",
     "  image              = var.image",
     "  backups            = var.backups",
+    "  delete_protection  = var.delete_protection",
     "  ssh_public_key     = var.deploy_ssh_public_key",
     "  ssh_allowed_cidrs  = var.ssh_allowed_cidrs",
     "  http_allowed_cidrs = var.http_allowed_cidrs",
@@ -122,6 +123,8 @@ interface VariableSpec {
   name: string;
   type: string;
   description: string;
+  /** HCL literal; variables with a default are never written to `terraform.tfvars.json`. */
+  default?: string;
 }
 
 function variables(plan: DeployPlan): VariableSpec[] {
@@ -131,6 +134,13 @@ function variables(plan: DeployPlan): VariableSpec[] {
     { name: "server_type", type: "string", description: "Hetzner Cloud server type." },
     { name: "image", type: "string", description: "Operating system image." },
     { name: "backups", type: "bool", description: "Hetzner automated backups." },
+    {
+      name: "delete_protection",
+      type: "bool",
+      description:
+        "Protect the server against accidental deletion and rebuilds; `opscrew destroy` passes false.",
+      default: "true",
+    },
     {
       name: "deploy_ssh_public_key",
       type: "string",
@@ -165,6 +175,7 @@ function variablesTf(plan: DeployPlan): string {
       `variable "${v.name}" {`,
       `  description = ${JSON.stringify(v.description)}`,
       `  type        = ${v.type}`,
+      ...(v.default === undefined ? [] : [`  default     = ${v.default}`]),
       "}",
     ].join("\n"),
   );
@@ -200,7 +211,11 @@ function outputsTf(plan: DeployPlan): string {
   ].join("\n");
 }
 
-/** Non-secret variable values, written as `terraform.tfvars.json`. */
+/**
+ * Non-secret variable values, written as `terraform.tfvars.json`. `delete_protection` is left out
+ * on purpose: it keeps its default (on), and destroy lifts it with `-var delete_protection=false`
+ * without editing committed files.
+ */
 export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unknown> {
   const values: Record<string, unknown> = {
     app_name: plan.app.name,

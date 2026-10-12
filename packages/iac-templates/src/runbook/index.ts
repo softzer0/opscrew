@@ -118,6 +118,20 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "- **Infrastructure code:** `opscrew/infra/` is plain Terraform/OpenTofu that you own. You can run it yourself; state is",
     "  kept in `.opscrew/tfstate/` on the machine that ran `opscrew provision`.",
     "",
+    "## Check for drift",
+    "",
+    "Run `opscrew drift` on the machine that ran `opscrew provision` (the state lives there). It compares three things:",
+    "",
+    "- **The real infrastructure with the state:** a refresh-only plan shows anything changed outside OpsCrew, for example",
+    "  a firewall rule edited in Hetzner Console or a DNS record changed in Cloudflare.",
+    "- **The state with the code:** a normal plan shows changes in `opscrew/infra/` that have not been applied yet.",
+    "- **The files with the plan:** files under `opscrew/infra/` and `opscrew/runtime/` that differ from what",
+    "  `opscrew/plan.yaml` would generate.",
+    "",
+    "`opscrew drift` never changes anything and leaves no plan behind that could be applied. It exits with 0 when",
+    "everything matches and 1 when something differs (`--json` for scripts). To fix drift, run `opscrew provision`,",
+    "which shows the plan and applies nothing without your approval.",
+    "",
     "## Security",
     "",
     "- Run `opscrew secure` for a fresh security report (`opscrew/SECURITY_REPORT.md`) and `opscrew verify` to check DNS,",
@@ -139,6 +153,47 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "2. Run `opscrew verify` to see which check fails (DNS, certificate, health endpoint …).",
     "3. On the server, `docker compose logs --tail 200 app` usually shows why the app does not start.",
     "",
+    ...teardown(plan, repo),
   );
   return { path: "opscrew/RUNBOOK.md", content: lines.join("\n"), kind: "doc" };
+}
+
+/** "Tear it down": what `opscrew destroy` deletes, the snapshot offer and what remains. */
+function teardown(plan: DeployPlan, repo: string): string[] {
+  const name = plan.app.name;
+  const cloudflare = plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
+  const deletes = cloudflare
+    ? "the server, its firewall and SSH key, and the Cloudflare DNS records and rules OpsCrew created"
+    : "the server, its firewall and SSH key";
+  const keepsData = plan.services.postgres || plan.target.backups;
+  const reason = plan.services.postgres
+    ? "the database lives on the server"
+    : "automated backups are on for this server";
+  return [
+    "## Tear it down",
+    "",
+    "Run `opscrew destroy` on the machine that ran `opscrew provision`. It deletes",
+    `${deletes}.`,
+    "It first lists everything it will delete and the data at risk, then asks you to type the server name",
+    `(\`${name}\`) before anything is deleted. In scripts, pass \`--confirm ${name}\`.`,
+    "",
+    ...(keepsData
+      ? [
+          `- **Snapshot first:** because ${reason}, OpsCrew takes a Hetzner snapshot of the server`,
+          "  before deleting it (skip it with `--no-snapshot`). Hetzner's automated backups are deleted together with",
+          "  the server, so the snapshot is the only copy that remains.",
+        ]
+      : [
+          "- **Snapshot:** this app keeps no database on the server and backups are off, so OpsCrew does not take a snapshot",
+          "  before deleting the server. Hetzner's automated backups would be deleted together with the server.",
+        ]),
+    "- **What remains:** the snapshot, if one was taken (Hetzner bills it per GB per month until you delete it in Hetzner",
+    `  Console → Snapshots), the container images in GitHub Container Registry (\`ghcr.io/${repo.toLowerCase()}\`), and the`,
+    `  files in this repository (\`opscrew/\` and \`${plan.cicd.workflowPath}\`).`,
+    "- **What is removed besides the infrastructure:** the GitHub deploy secrets, so the workflow can no longer deploy,",
+    "  and the server's host key on this machine. `opscrew/plan.yaml` records that the deployment was destroyed.",
+    "",
+    "To deploy again later, run `opscrew provision`.",
+    "",
+  ];
 }
