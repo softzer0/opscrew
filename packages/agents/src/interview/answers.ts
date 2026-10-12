@@ -37,6 +37,7 @@ const REQUIRED: readonly QuestionId[] = [
 const DESCRIPTIONS: Record<QuestionId, string> = {
   expectedMonthlyUsers: "expected monthly users",
   budgetMonthly: "monthly hosting budget",
+  provider: "cloud provider",
   region: "where most users are",
   uptime: "acceptable downtime",
   dataCriticality: "how bad losing data would be",

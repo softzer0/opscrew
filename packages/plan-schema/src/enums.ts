@@ -69,6 +69,10 @@ export const RegionSchema = z.enum([
 ]);
 export type Region = z.infer<typeof RegionSchema>;
 
+/** Cloud providers OpsCrew deploys a single server to (`vps-compose` mode). */
+export const VpsProviderSchema = z.enum(["hetzner", "digitalocean"]);
+export type VpsProvider = z.infer<typeof VpsProviderSchema>;
+
 /** Expected monthly active users. */
 export const UserScaleSchema = z.enum(["<1k", "1k-10k", "10k-100k", ">100k"]);
 export type UserScale = z.infer<typeof UserScaleSchema>;

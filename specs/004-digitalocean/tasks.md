@@ -14,7 +14,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
 
 ## Phase 1: Foundation (lead, serial)
 
-- [ ] T401 Contracts, schemas, fake token kind, DigitalOcean package skeleton, lockfile and ADR 0006 (lead) in `packages/contracts/src/connector.ts`, `packages/plan-schema/src/**` (+ regenerated JSON Schemas), `packages/core/src/testing/fake-secrets.ts`, `packages/connectors/digitalocean/{package.json,tsconfig.json,src/index.ts}`, `packages/{agents,cli}/package.json`, `pnpm-lock.yaml`, `docs/adr/0006-vps-provider-seam.md`
+- [X] T401 Contracts, schemas, fake token kind, DigitalOcean package skeleton, lockfile and ADR 0006 (lead) in `packages/contracts/src/connector.ts`, `packages/plan-schema/src/**` (+ regenerated JSON Schemas), `packages/core/src/testing/fake-secrets.ts`, `packages/connectors/digitalocean/{package.json,tsconfig.json,src/index.ts}`, `packages/{agents,cli}/package.json`, `pnpm-lock.yaml`, `docs/adr/0006-vps-provider-seam.md`
   - Accept: plan.md "Contracts and schemas"; every existing artefact and fixture still parses; `pnpm check` passes.
   - Effort: lead
 

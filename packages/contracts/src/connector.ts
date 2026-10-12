@@ -98,3 +98,43 @@ export interface ComputeCatalog {
   listOffers(location?: string): Promise<ComputeOffer[]>;
   extras(location: string): Promise<ProviderExtras>;
 }
+
+/** Providers OpsCrew deploys a single server to (`vps-compose` mode). */
+export type VpsProviderId = Extract<ProviderId, "hetzner" | "digitalocean">;
+
+/** A server OpsCrew created for an app, as the provider reports it. */
+export interface AppServer {
+  /** Provider id as a string (both providers use numbers on the wire). */
+  id: string;
+  name: string;
+  /** Provider status, for example `running` (Hetzner) or `active` (DigitalOcean). */
+  status: string;
+}
+
+export interface SnapshotRequest {
+  /** Snapshot name shown in the provider console (DigitalOcean); Hetzner uses `description`. */
+  name: string;
+  description: string;
+  /** Applied where the provider supports labels on images (Hetzner); otherwise ignored. */
+  labels: Record<string, string>;
+  /** Give up waiting after this long (default 15 minutes). */
+  timeoutMs?: number;
+}
+
+/** Server lookup and snapshots, used before a teardown. The snapshot only adds a resource. */
+export interface ServerSnapshotApi {
+  /** Servers labelled or tagged as created by OpsCrew for `app`. */
+  findAppServers(app: string): Promise<AppServer[]>;
+  /** Snapshots the server and resolves when the provider reports it complete. */
+  snapshotServer(serverId: string, request: SnapshotRequest): Promise<{ snapshotId: string }>;
+}
+
+/** A VPS provider connector: credentials, price catalogue and server API. */
+export interface VpsConnector extends Connector {
+  readonly id: VpsProviderId;
+  /** True when a token is set (it may still be invalid). */
+  readonly configured: boolean;
+  catalog(): ComputeCatalog;
+  /** Undefined when no token is set. */
+  readonly servers: ServerSnapshotApi | undefined;
+}

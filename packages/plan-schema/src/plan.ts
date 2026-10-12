@@ -12,6 +12,8 @@ import {
   RepoPathSchema,
   ServiceKindSchema,
   UrlPathSchema,
+  type VpsProvider,
+  VpsProviderSchema,
 } from "./enums";
 
 /** Services that conflict with a self-hosted Postgres container. */
@@ -43,14 +45,15 @@ const DeployPlanObjectSchema = z
       ),
     }),
     target: z.strictObject({
-      provider: z.literal("hetzner"),
+      provider: VpsProviderSchema,
       mode: z.literal("vps-compose"),
-      /** For example `nbg1`. */
+      /** Provider location or region, for example `nbg1` (Hetzner) or `fra1` (DigitalOcean). */
       location: z.string().min(1),
-      /** For example `cpx22`. */
+      /** Provider server type or size, for example `cpx22` or `s-2vcpu-4gb`. */
       serverType: z.string().min(1),
-      image: z.string().min(1).default("ubuntu-24.04"),
-      /** Hetzner automated backups. */
+      /** Provider image name; the provider's Ubuntu 24.04 image when omitted (`DEFAULT_IMAGES`). */
+      image: z.string().min(1).optional(),
+      /** The provider's automated daily backups. */
       backups: z.boolean(),
     }),
     services: z.strictObject({ postgres: z.boolean(), redis: z.boolean() }),
@@ -147,12 +150,19 @@ const DeployPlanObjectSchema = z
     }
   });
 
+/** Ubuntu 24.04 LTS image name per provider, used when `target.image` is omitted. */
+export const DEFAULT_IMAGES: Readonly<Record<VpsProvider, string>> = {
+  hetzner: "ubuntu-24.04",
+  digitalocean: "ubuntu-24-04-x64",
+};
+
 /**
  * `opscrew/plan.yaml`: the chosen deployment. Parsing fills every documented default, including
  * `security.httpAllowedFrom` (`cloudflare` when `dns.proxied`, else `any`).
  */
 export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => ({
   ...plan,
+  target: { ...plan.target, image: plan.target.image ?? DEFAULT_IMAGES[plan.target.provider] },
   security: {
     sshAllowedCidrs: plan.security.sshAllowedCidrs,
     httpAllowedFrom:

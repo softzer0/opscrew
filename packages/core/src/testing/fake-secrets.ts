@@ -22,6 +22,7 @@ export const FAKE_SECRET_KINDS = [
   "private-key-pem",
   "hcloud-token",
   "cloudflare-token",
+  "digitalocean-token",
   "generic-password",
 ] as const;
 export type FakeSecretKind = (typeof FAKE_SECRET_KINDS)[number];
@@ -31,6 +32,7 @@ const UPPER_DIGITS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const BASE64 = `${ALNUM}+/`;
 const BASE64URL = `${ALNUM}-_`;
 const DIGITS = "0123456789";
+const HEX = "0123456789abcdef";
 
 /** Deterministic pseudo-random string that starts with `FAKE` when the alphabet allows it. */
 function filler(seed: string, length: number, alphabet: string = ALNUM): string {
@@ -105,6 +107,9 @@ export function fakeSecret(kind: FakeSecretKind, seed = "opscrew"): string {
       return filler(s, 64);
     case "cloudflare-token":
       return filler(s, 40, BASE64URL);
+    // Lower-case hex cannot spell FAKE; the `dop_v1_` prefix still marks it as a DigitalOcean token.
+    case "digitalocean-token":
+      return `dop_v1_${filler(s, 64, HEX)}`;
     case "generic-password":
       return `FakeP4ss-${filler(s, 16)}`;
   }

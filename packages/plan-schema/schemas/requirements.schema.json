@@ -32,6 +32,10 @@
       "required": ["amount", "currency"],
       "additionalProperties": false
     },
+    "provider": {
+      "type": "string",
+      "enum": ["hetzner", "digitalocean"]
+    },
     "region": {
       "type": "string",
       "enum": ["eu-central", "eu-north", "us-east", "us-west", "ap-southeast"]

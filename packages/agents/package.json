@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@opscrew/connector-cloudflare": "workspace:*",
+    "@opscrew/connector-digitalocean": "workspace:*",
     "@opscrew/connector-github": "workspace:*",
     "@opscrew/connector-hetzner": "workspace:*",
     "@opscrew/contracts": "workspace:*",

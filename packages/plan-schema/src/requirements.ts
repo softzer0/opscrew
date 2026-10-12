@@ -9,6 +9,7 @@ import {
   ServiceKindSchema,
   UptimeSchema,
   UserScaleSchema,
+  VpsProviderSchema,
 } from "./enums";
 
 /** `opscrew/requirements.yaml`: the user's answers from the interview. */
@@ -21,6 +22,8 @@ export const RequirementsSchema = z
       amount: z.number().positive(),
       currency: CurrencySchema,
     }),
+    /** Where to run the app; absent in files written before feature 004, which means Hetzner. */
+    provider: VpsProviderSchema.optional(),
     region: RegionSchema,
     uptime: UptimeSchema,
     dataCriticality: DataCriticalitySchema,

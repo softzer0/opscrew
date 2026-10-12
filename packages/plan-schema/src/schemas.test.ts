@@ -8,6 +8,8 @@ import {
   type ArtifactKind,
   CostEstimateSchema,
   type CurrencySchema,
+  DEFAULT_IMAGES,
+  DeployPlanSchema,
   type DesignOption,
   DesignOptionListSchema,
   DesignOptionSchema,
@@ -267,5 +269,38 @@ describe("Question", () => {
     expect(
       pathsOf(QuestionSchema.safeParse({ ...base, id: "schemaVersion", kind: "text" })),
     ).toEqual(["id"]);
+  });
+});
+
+describe("DeployPlan target provider", () => {
+  async function validPlan() {
+    return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+  }
+
+  it("accepts Hetzner Cloud and DigitalOcean and nothing else", async () => {
+    const plan = await validPlan();
+    for (const provider of ["hetzner", "digitalocean"]) {
+      const target = { ...plan.target, provider };
+      expect(DeployPlanSchema.safeParse({ ...plan, target }).success, provider).toBe(true);
+    }
+    const aws = { ...plan, target: { ...plan.target, provider: "aws" } };
+    expect(pathsOf(DeployPlanSchema.safeParse(aws))).toEqual(["target.provider"]);
+  });
+
+  it("fills the provider's own Ubuntu image when the image is omitted", async () => {
+    const { image: _image, ...target } = (await validPlan()).target;
+    const plan = await validPlan();
+    const hetzner = DeployPlanSchema.parse({ ...plan, target: { ...target, provider: "hetzner" } });
+    expect(hetzner.target.image).toBe(DEFAULT_IMAGES.hetzner);
+    const digitalocean = DeployPlanSchema.parse({
+      ...plan,
+      target: { ...target, provider: "digitalocean" },
+    });
+    expect(digitalocean.target.image).toBe("ubuntu-24-04-x64");
+    const explicit = DeployPlanSchema.parse({
+      ...plan,
+      target: { ...target, provider: "digitalocean", image: "ubuntu-22-04-x64" },
+    });
+    expect(explicit.target.image).toBe("ubuntu-22-04-x64");
   });
 });

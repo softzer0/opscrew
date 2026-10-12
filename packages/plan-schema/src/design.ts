@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IsoDateTimeSchema, MoneySchema, ServiceKindSchema } from "./enums";
+import { IsoDateTimeSchema, MoneySchema, ServiceKindSchema, VpsProviderSchema } from "./enums";
 
 /** Allowed difference between the breakdown sum and the monthly total (rounding to cents). */
 const SUM_TOLERANCE = 0.01 + 1e-9;
@@ -41,12 +41,12 @@ export type CostEstimate = z.infer<typeof CostEstimateSchema>;
 
 /** One deployment option offered by the Architect (not persisted). */
 export const DesignOptionSchema = z.strictObject({
-  /** For example `hetzner-single-cpx22-nbg1`. */
+  /** For example `hetzner-single-cpx22-nbg1` or `digitalocean-single-s-2vcpu-4gb-fra1`. */
   id: z.string().min(1),
   title: z.string().min(1),
   summary: z.string().min(1),
   target: z.strictObject({
-    provider: z.literal("hetzner"),
+    provider: VpsProviderSchema,
     location: z.string().min(1),
     serverType: z.string().min(1),
     vcpus: z.int().positive(),

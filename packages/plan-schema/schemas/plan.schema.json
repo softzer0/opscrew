@@ -75,7 +75,7 @@
       "properties": {
         "provider": {
           "type": "string",
-          "const": "hetzner"
+          "enum": ["hetzner", "digitalocean"]
         },
         "mode": {
           "type": "string",
@@ -90,7 +90,6 @@
           "minLength": 1
         },
         "image": {
-          "default": "ubuntu-24.04",
           "type": "string",
           "minLength": 1
         },
