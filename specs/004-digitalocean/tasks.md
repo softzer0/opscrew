@@ -36,7 +36,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-hetzner`
   - Effort: medium
 
-- [ ] T404 [P] [US1] [US2] DigitalOcean module, provider-aware root rendering and runbook in `packages/iac-templates/`
+- [X] T404 [P] [US1] [US2] DigitalOcean module, provider-aware root rendering and runbook in `packages/iac-templates/`
   - Owns: `packages/iac-templates/modules/**`, `packages/iac-templates/src/**`, `packages/iac-templates/scripts/**`, their tests and snapshots
   - Reads: plan.md "Templates"; research.md "Terraform provider", "Behaviour that differs from Hetzner"; `packages/plan-schema/src/plan.ts`
   - Depends: T401

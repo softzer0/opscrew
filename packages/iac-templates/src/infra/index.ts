@@ -1,5 +1,6 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { MODULE_FILES } from "../generated/modules";
+import { providerText } from "../providers";
 import type { RenderContext, RenderedFile } from "../types";
 
 const OPEN_TO_ALL = ["0.0.0.0/0", "::/0"];
@@ -36,10 +37,11 @@ export function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[]
 }
 
 function versionsTf(plan: DeployPlan): string {
+  const { name, source, version } = providerText(plan).terraformProvider;
   const providers = [
-    "    hcloud = {",
-    '      source  = "hetznercloud/hcloud"',
-    '      version = "~> 1.70"',
+    `    ${name} = {`,
+    `      source  = "${source}"`,
+    `      version = "${version}"`,
     "    }",
   ];
   if (usesCloudflare(plan)) {
@@ -67,12 +69,19 @@ function versionsTf(plan: DeployPlan): string {
   ].join("\n");
 }
 
+/** `  name = value` lines with the `=` signs aligned, as `terraform fmt` writes them. */
+function alignedArguments(args: readonly (readonly [string, string])[]): string[] {
+  const width = Math.max(...args.map(([name]) => name.length));
+  return args.map(([name, value]) => `  ${name.padEnd(width)} = ${value}`);
+}
+
 function mainTf(plan: DeployPlan): string {
+  const provider = providerText(plan);
   const lines = [
     ROOT_HEADER,
     "",
-    "# Token from the HCLOUD_TOKEN environment variable (never stored in files or state).",
-    'provider "hcloud" {}',
+    `# Token from the ${provider.tokenVar} environment variable (never stored in files or state).`,
+    `provider "${provider.terraformProvider.name}" {}`,
     "",
   ];
   if (usesCloudflare(plan)) {
@@ -84,18 +93,9 @@ function mainTf(plan: DeployPlan): string {
   }
   lines.push(
     'module "server" {',
-    '  source = "../modules/hetzner-vps"',
+    `  source = "../modules/${provider.module}"`,
     "",
-    "  name               = var.app_name",
-    "  location           = var.location",
-    "  server_type        = var.server_type",
-    "  image              = var.image",
-    "  backups            = var.backups",
-    "  delete_protection  = var.delete_protection",
-    "  ssh_public_key     = var.deploy_ssh_public_key",
-    "  ssh_allowed_cidrs  = var.ssh_allowed_cidrs",
-    "  http_allowed_cidrs = var.http_allowed_cidrs",
-    '  labels             = { "managed-by" = "opscrew", app = var.app_name }',
+    ...alignedArguments(provider.moduleArguments),
     "}",
     "",
   );
@@ -128,19 +128,24 @@ interface VariableSpec {
 }
 
 function variables(plan: DeployPlan): VariableSpec[] {
+  const provider = providerText(plan);
   const base: VariableSpec[] = [
     { name: "app_name", type: "string", description: "App name, used for resource names." },
-    { name: "location", type: "string", description: "Hetzner Cloud location." },
-    { name: "server_type", type: "string", description: "Hetzner Cloud server type." },
+    { name: "location", type: "string", description: provider.descriptions.location },
+    { name: "server_type", type: "string", description: provider.descriptions.serverType },
     { name: "image", type: "string", description: "Operating system image." },
-    { name: "backups", type: "bool", description: "Hetzner automated backups." },
-    {
-      name: "delete_protection",
-      type: "bool",
-      description:
-        "Protect the server against accidental deletion and rebuilds; `opscrew destroy` passes false.",
-      default: "true",
-    },
+    { name: "backups", type: "bool", description: provider.descriptions.backups },
+    ...(provider.deleteProtection
+      ? [
+          {
+            name: "delete_protection",
+            type: "bool",
+            description:
+              "Protect the server against accidental deletion and rebuilds; `opscrew destroy` passes false.",
+            default: "true",
+          },
+        ]
+      : []),
     {
       name: "deploy_ssh_public_key",
       type: "string",
@@ -214,7 +219,8 @@ function outputsTf(plan: DeployPlan): string {
 /**
  * Non-secret variable values, written as `terraform.tfvars.json`. `delete_protection` is left out
  * on purpose: it keeps its default (on), and destroy lifts it with `-var delete_protection=false`
- * without editing committed files.
+ * without editing committed files. DigitalOcean has no delete protection, so its root module has
+ * no such variable.
  */
 export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unknown> {
   const values: Record<string, unknown> = {
@@ -261,7 +267,8 @@ export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[
       kind: "infra",
     },
   ];
-  const modules = usesCloudflare(plan) ? ["hetzner-vps", "cloudflare-dns"] : ["hetzner-vps"];
+  const server = providerText(plan).module;
+  const modules = usesCloudflare(plan) ? [server, "cloudflare-dns"] : [server];
   for (const [path, content] of Object.entries(MODULE_FILES).sort(([a], [b]) =>
     a.localeCompare(b),
   )) {

@@ -1,16 +1,17 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { type ProviderText, providerText } from "../providers";
 import { siteHosts } from "../runtime";
 import type { RenderContext, RenderedFile } from "../types";
 
 const PENDING = "_(set by `opscrew provision`)_";
 
-function money(plan: DeployPlan): string {
+function money(plan: DeployPlan, provider: ProviderText): string {
   const { amount, currency } = plan.cost.monthly;
   const symbol = currency === "EUR" ? "€" : "$";
   const vat = plan.cost.pricesIncludeVat ? "incl. VAT" : "excl. VAT";
   const source =
     plan.cost.source === "static"
-      ? `, estimate from Hetzner's price list of ${plan.cost.asOf.slice(0, 10)}`
+      ? `, estimate from ${provider.name}'s price list of ${plan.cost.asOf.slice(0, 10)}`
       : "";
   return `${symbol}${amount.toFixed(2)} per month (${vat}${source})`;
 }
@@ -24,6 +25,7 @@ function cell(text: string): string {
  * the real values from the plan. Deterministic; contains no secrets or absolute paths.
  */
 export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFile {
+  const provider = providerText(plan);
   const ip = plan.deployment.serverIpv4 ?? ctx.serverIpv4;
   const ipv6 = plan.deployment.serverIpv6 ?? ctx.serverIpv6;
   const hosts = siteHosts(plan);
@@ -33,7 +35,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
   const branch = plan.cicd.branch;
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
   const db = plan.services.postgres
-    ? `PostgreSQL 17 in a container on the server, data in \`/srv/data/postgres\`${plan.target.backups ? "; Hetzner automated backups are on" : "; automated backups are off"}`
+    ? `PostgreSQL 17 in a container on the server, data in \`/srv/data/postgres\`${plan.target.backups ? `; ${provider.runbook.backupsOnDatabaseCell}` : "; automated backups are off"}`
     : plan.externalServices.length > 0
       ? `External: ${plan.externalServices.join(", ")} (not managed by OpsCrew)`
       : "None";
@@ -53,13 +55,13 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "|---|---|",
     `| App | ${cell(url)} |`,
     `| Health check | \`${plan.app.healthPath}\` |`,
-    `| Server | ${cell(`${plan.app.name} — Hetzner Cloud ${plan.target.serverType} in ${plan.target.location}`)} |`,
+    `| Server | ${cell(`${plan.app.name} — ${provider.serverLabel(plan.target.serverType, plan.target.location)}`)} |`,
     `| IPv4 / IPv6 | ${ip ?? PENDING} / ${ipv6 ?? PENDING} |`,
     `| Deploys | every push to \`${branch}\` runs \`${plan.cicd.workflowPath}\` |`,
     `| Image | \`ghcr.io/${repo.toLowerCase()}\` (GitHub Container Registry) |`,
     `| Database | ${cell(db)} |`,
     `| DNS | ${cell(dns)} |`,
-    `| Cost | ${cell(money(plan))} |`,
+    `| Cost | ${cell(money(plan, provider))} |`,
     "",
     "## How a deploy works",
     "",
@@ -88,6 +90,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "The deploy key is stored only on the machine where you ran `opscrew provision` (and as a GitHub Actions",
     "secret). Password login and root login are disabled on the server.",
     "",
+    ...provider.runbook.connectNote,
   ];
 
   if (plan.services.postgres) {
@@ -95,8 +98,8 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
       "## Database backups",
       "",
       plan.target.backups
-        ? "Hetzner takes a backup of the whole server every day and keeps the last seven (Hetzner Console → your server → Backups)."
-        : "Automated server backups are **off**. Turn them on with `opscrew design` (20% of the server price) or make your own backups:",
+        ? provider.runbook.backupsOn
+        : `Automated server backups are **off**. Turn them on with \`opscrew design\` (${provider.runbook.backupsOffPercent}) or make your own backups:`,
       "",
       "```bash",
       "# On the server: dump the database to a file",
@@ -123,7 +126,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "Run `opscrew drift` on the machine that ran `opscrew provision` (the state lives there). It compares three things:",
     "",
     "- **The real infrastructure with the state:** a refresh-only plan shows anything changed outside OpsCrew, for example",
-    "  a firewall rule edited in Hetzner Console or a DNS record changed in Cloudflare.",
+    `  a firewall rule edited in ${provider.console} or a DNS record changed in Cloudflare.`,
     "- **The state with the code:** a normal plan shows changes in `opscrew/infra/` that have not been applied yet.",
     "- **The files with the plan:** files under `opscrew/infra/` and `opscrew/runtime/` that differ from what",
     "  `opscrew/plan.yaml` would generate.",
@@ -137,7 +140,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "- Run `opscrew secure` for a fresh security report (`opscrew/SECURITY_REPORT.md`) and `opscrew verify` to check DNS,",
     "  HTTPS, the health endpoint and security headers.",
     "- What OpsCrew set up on the server: a `deploy` user with key-only SSH, no root login, fail2ban against brute force,",
-    "  automatic security updates, a host firewall (22/80/443) in addition to the Hetzner firewall, and Docker log limits.",
+    `  automatic security updates, a host firewall (22/80/443) in addition to ${provider.runbook.cloudFirewall}, and Docker log limits.`,
   );
   if (plan.dns.provider === "cloudflare" && plan.dns.proxied) {
     lines.push(
@@ -153,45 +156,38 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "2. Run `opscrew verify` to see which check fails (DNS, certificate, health endpoint …).",
     "3. On the server, `docker compose logs --tail 200 app` usually shows why the app does not start.",
     "",
-    ...teardown(plan, repo),
+    ...teardown(plan, repo, provider),
   );
   return { path: "opscrew/RUNBOOK.md", content: lines.join("\n"), kind: "doc" };
 }
 
 /** "Tear it down": what `opscrew destroy` deletes, the snapshot offer and what remains. */
-function teardown(plan: DeployPlan, repo: string): string[] {
+function teardown(plan: DeployPlan, repo: string, provider: ProviderText): string[] {
   const name = plan.app.name;
+  const text = provider.runbook;
+  const noun = provider.serverNoun;
   const cloudflare = plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
   const deletes = cloudflare
-    ? "the server, its firewall and SSH key, and the Cloudflare DNS records and rules OpsCrew created"
-    : "the server, its firewall and SSH key";
+    ? `${text.deletes(name)}, and the Cloudflare DNS records and rules OpsCrew created`
+    : text.deletes(name);
   const keepsData = plan.services.postgres || plan.target.backups;
-  const reason = plan.services.postgres
-    ? "the database lives on the server"
-    : "automated backups are on for this server";
+  const reason = plan.services.postgres ? `the database lives on the ${noun}` : text.snapshotReason;
+  const [snapshotLead = "", ...snapshotRest] = text.snapshotFirst;
   return [
     "## Tear it down",
     "",
     "Run `opscrew destroy` on the machine that ran `opscrew provision`. It deletes",
     `${deletes}.`,
-    "It first lists everything it will delete and the data at risk, then asks you to type the server name",
+    `It first lists everything it will delete and the data at risk, then asks you to type the ${noun} name`,
     `(\`${name}\`) before anything is deleted. In scripts, pass \`--confirm ${name}\`.`,
     "",
+    ...text.deleteProtectionNote,
     ...(keepsData
-      ? [
-          `- **Snapshot first:** because ${reason}, OpsCrew takes a Hetzner snapshot of the server`,
-          "  before deleting it (skip it with `--no-snapshot`). Hetzner's automated backups are deleted together with",
-          "  the server, so the snapshot is the only copy that remains.",
-        ]
-      : [
-          "- **Snapshot:** this app keeps no database on the server and backups are off, so OpsCrew does not take a snapshot",
-          "  before deleting the server. Hetzner's automated backups would be deleted together with the server.",
-        ]),
-    "- **What remains:** the snapshot, if one was taken (Hetzner bills it per GB per month until you delete it in Hetzner",
-    `  Console → Snapshots), the container images in GitHub Container Registry (\`ghcr.io/${repo.toLowerCase()}\`), and the`,
-    `  files in this repository (\`opscrew/\` and \`${plan.cicd.workflowPath}\`).`,
+      ? [`- **Snapshot first:** because ${reason}, ${snapshotLead}`, ...snapshotRest]
+      : text.noSnapshot),
+    ...text.whatRemains(repo.toLowerCase(), plan.cicd.workflowPath, plan.target.backups),
     "- **What is removed besides the infrastructure:** the GitHub deploy secrets, so the workflow can no longer deploy,",
-    "  and the server's host key on this machine. `opscrew/plan.yaml` records that the deployment was destroyed.",
+    `  and ${text.hostKey} on this machine. \`opscrew/plan.yaml\` records that the deployment was destroyed.`,
     "",
     "To deploy again later, run `opscrew provision`.",
     "",

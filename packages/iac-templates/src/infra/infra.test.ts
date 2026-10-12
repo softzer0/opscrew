@@ -2,10 +2,11 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
-import { checkDialect } from "@opscrew/iac-engine";
+import { checkDialect, detectEngines } from "@opscrew/iac-engine";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { collectModuleFiles, renderGeneratedModule } from "../../scripts/gen-modules";
+import { testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext } from "../types";
 import { httpAllowedCidrs, renderInfra, tfvars } from "./index";
@@ -204,38 +205,63 @@ describe("generated modules", () => {
   });
 });
 
-// Downloads providers from the registry, so it only runs with OPSCREW_IT=1.
-const engines = [
-  ["tofu", process.env.OPSCREW_TOFU_BIN],
-  ["terraform", process.env.OPSCREW_TERRAFORM_BIN],
-] as const;
+// Downloads the hcloud, digitalocean and cloudflare providers from the registry, so it only runs
+// with OPSCREW_IT=1. Binaries come from OPSCREW_TOFU_BIN / OPSCREW_TERRAFORM_BIN or PATH.
+const runIt = process.env.OPSCREW_IT === "1";
+const detected = runIt ? await detectEngines() : [];
+if (!runIt) {
+  console.warn(
+    "[iac-templates] skipping HCL validation: set OPSCREW_IT=1 (it downloads the hcloud, digitalocean and cloudflare providers).",
+  );
+}
+const NETWORK_ERROR =
+  /dial tcp|no such host|i\/o timeout|connection (?:refused|reset)|network is unreachable|TLS handshake|context deadline exceeded|could not connect/i;
+const validatedPlans = {
+  hetzner: () => plan({ domain: "shop.example.com", www: true }),
+  digitalocean: () =>
+    testPlan({ provider: "digitalocean", domain: "shop.example.com", www: true, backups: true }),
+};
 
-describe.skipIf(process.env.OPSCREW_IT !== "1")("rendered HCL validates (integration)", () => {
-  for (const [name, bin] of engines) {
-    it.skipIf(!bin)(
-      `validates with ${name}`,
-      async () => {
-        const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-`));
-        for (const file of renderInfra(
-          plan({ domain: "shop.example.com", www: true }),
-          ctx({ cloudflare: cloudflare() }),
-        )) {
-          const target = join(root, file.path);
-          await mkdir(dirname(target), { recursive: true });
-          await writeFile(target, file.content);
-        }
-        const runner = new NodeCommandRunner();
-        const cwd = join(root, "opscrew/infra/prod");
-        const init = await runner.run(
-          bin as string,
-          ["init", "-backend=false", "-input=false", "-no-color"],
-          { cwd },
-        );
-        expect(init.exitCode, init.stderr).toBe(0);
-        const validate = await runner.run(bin as string, ["validate", "-no-color"], { cwd });
-        expect(validate.exitCode, validate.stdout + validate.stderr).toBe(0);
-      },
-      300_000,
-    );
+describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
+  for (const name of ["tofu", "terraform"] as const) {
+    const engine = detected.find((d) => d.name === name && d.supported);
+    if (runIt && !engine) {
+      const problem = detected.find((d) => d.name === name)?.problem;
+      console.warn(
+        problem
+          ? `[iac-templates] skipping ${name} validation: ${problem}`
+          : `[iac-templates] skipping ${name} validation: no usable ${name} binary (set OPSCREW_${name.toUpperCase()}_BIN or add it to PATH).`,
+      );
+    }
+    for (const [provider, planFor] of Object.entries(validatedPlans)) {
+      it.skipIf(!engine)(
+        `validates the ${provider} root with ${name}`,
+        async (test) => {
+          const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-${provider}-`));
+          for (const file of renderInfra(planFor(), ctx({ cloudflare: cloudflare() }))) {
+            const target = join(root, file.path);
+            await mkdir(dirname(target), { recursive: true });
+            await writeFile(target, file.content);
+          }
+          const bin = engine?.binary ?? name;
+          const runner = new NodeCommandRunner();
+          const cwd = join(root, "opscrew/infra/prod");
+          const init = await runner.run(
+            bin,
+            ["init", "-backend=false", "-input=false", "-no-color"],
+            { cwd },
+          );
+          if (init.exitCode !== 0 && NETWORK_ERROR.test(init.stdout + init.stderr)) {
+            test.skip(
+              `${name} could not download the providers (network needed): ${init.stderr.trim().split("\n")[0]}`,
+            );
+          }
+          expect(init.exitCode, init.stdout + init.stderr).toBe(0);
+          const validate = await runner.run(bin, ["validate", "-no-color"], { cwd });
+          expect(validate.exitCode, validate.stdout + validate.stderr).toBe(0);
+        },
+        300_000,
+      );
+    }
   }
 });
