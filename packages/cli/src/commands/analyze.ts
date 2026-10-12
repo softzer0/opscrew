@@ -7,6 +7,7 @@ import { printCosts, printNextSteps } from "../ui/output";
 interface AnalyzeFlags {
   ai: boolean;
   model?: string;
+  app?: string;
 }
 
 /**
@@ -20,6 +21,10 @@ export function register(program: Command, ctx: CliContext): void {
     .description("Analyse the app: frameworks, services and environment variables")
     .option("--no-ai", "Use only the deterministic analysis (no model, no cost)")
     .option("--model <id>", "Model for the Analyst (default claude-haiku-5-5, or OPSCREW_MODEL)")
+    .option(
+      "--app <dir>",
+      "In a repository with several apps, the folder of the app to deploy (`.` for the whole repository)",
+    )
     .action(async (flags: AnalyzeFlags) => {
       const model = modelOption(ctx, flags.model);
       const deps = createPhaseDeps(ctx, {
@@ -29,6 +34,7 @@ export function register(program: Command, ctx: CliContext): void {
       const result = await runAnalyze(deps, {
         ai: flags.ai,
         ...(model === undefined ? {} : { model }),
+        ...(flags.app === undefined ? {} : { appDir: flags.app }),
       });
 
       const { architecture } = result;

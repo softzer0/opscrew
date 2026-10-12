@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { CostLedger, ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
-import { FakeAgentRuntime } from "@opscrew/core/testing";
+import { FakeAgentRuntime, materializeFixture } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { MODEL_SETUP_HINT } from "../deps";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
@@ -35,6 +36,25 @@ describe("opscrew analyze", () => {
     expect(ctx.output).toContain("opscrew interview");
     const state = await new ProjectStateStore(paths.files.state).read();
     expect(state.phases.analyze?.status).toBe("ok");
+  });
+
+  it("describes the app chosen with --app in a repository with several apps", async () => {
+    project = await tempProject();
+    await materializeFixture(
+      fileURLToPath(new URL("../../../detect/test/fixtures/monorepo-two-apps/", import.meta.url)),
+      project.root,
+    );
+    const ctx = projectContext(project);
+    expect(await run(ctx, "analyze", "--no-ai")).toBe(0);
+    expect(ctx.output).toContain("several deployable apps");
+
+    expect(await run(ctx, "analyze", "--no-ai", "--app", "apps/web")).toBe(0);
+    const paths = resolveProjectPaths(project.root, { env: ctx.env });
+    const architecture = JSON.parse(await readFile(paths.files.architecture, "utf8"));
+    expect(architecture.facts.appDir).toBe("apps/web");
+
+    expect(await run(ctx, "analyze", "--no-ai", "--app", "apps/nope")).toBe(2);
+    expect(ctx.errors).toMatch(/apps\/api, apps\/web/);
   });
 
   it("lets the Analyst refine the result and prints the model cost", async () => {
