@@ -15,7 +15,7 @@ import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { providerProfile, vpsConnector } from "../providers";
+import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
 import type { CloudflareApi, GitHubApi, ProvisionServices } from "./types";
 
 /** Cloudflare facts the render context needs. */
@@ -49,10 +49,35 @@ function missing(service: string, requirement: CredentialRequirement): OpsCrewEr
   );
 }
 
+/**
+ * The token was rejected. The connector's message often names the service and the scopes and
+ * links the token page already; the message and hint add only what it does not say.
+ */
 function invalid(service: string, message: string, requirement: CredentialRequirement) {
-  return new OpsCrewError("CREDENTIALS_INVALID", `${service}: ${message}`, {
-    hint: `The token needs: ${requirement.scopes.join(", ")}. Create one at ${requirement.createUrl}`,
+  const brand = service.split(" ")[0] ?? service;
+  const text = message.includes(brand) ? message : `${service}: ${message}`;
+  const scopesSaid = requirement.scopes.every((scope) => message.includes(scope));
+  const needs =
+    requirement.scopes.length === 1
+      ? `the ${requirement.scopes[0]} permission`
+      : `these scopes (${requirement.scopes.join(", ")})`;
+  const create = message.includes(requirement.createUrl)
+    ? "Replace the token as described"
+    : `Create a new one at ${requirement.createUrl}`;
+  return new OpsCrewError("CREDENTIALS_INVALID", text, {
+    hint: `${scopesSaid ? "" : `The token needs ${needs}. `}${create}, then try again.`,
   });
+}
+
+/** The token works, but the account cannot be used yet (locked, or its email is not verified). */
+function accountBlocked(profile: ProviderProfile, message: string) {
+  return new OpsCrewError(
+    "CREDENTIALS_INVALID",
+    `The ${profile.displayName} API token works, but the account cannot be used yet. ${message}`,
+    {
+      hint: `Resolve this on your ${profile.displayName} account page (${profile.accountUrl}), then try again.`,
+    },
+  );
 }
 
 /** Stops unless the provider's token (for example `HCLOUD_TOKEN`) is set and works. */
@@ -62,14 +87,16 @@ export async function checkProvider(
   services: Pick<ProvisionServices, "provider">,
 ): Promise<void> {
   const connector = vpsConnector(provider, deps);
-  const name = providerProfile(provider).displayName;
+  const profile = providerProfile(provider);
   const check = services.provider ?? {
     configured: connector.configured,
     verify: () => connector.verifyCredentials(),
   };
-  if (!check.configured) throw missing(name, connector.credentials);
+  if (!check.configured) throw missing(profile.displayName, connector.credentials);
   const result = await check.verify();
-  if (!result.ok) throw invalid(name, result.message, connector.credentials);
+  if (result.ok) return;
+  if (result.identity !== undefined) throw accountBlocked(profile, result.message);
+  throw invalid(profile.displayName, result.message, connector.credentials);
 }
 
 /** Record types that clash with (or split traffic away from) OpsCrew's A/AAAA/CNAME records. */

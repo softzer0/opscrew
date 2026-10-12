@@ -30,6 +30,13 @@ describe("provider profiles", () => {
     expect(providerProfile("hetzner").regionNotes).toEqual({});
   });
 
+  it("links each provider's account page", () => {
+    expect(providerProfile("hetzner").accountUrl).toBe("https://console.hetzner.cloud/");
+    expect(providerProfile("digitalocean").accountUrl).toBe(
+      "https://cloud.digitalocean.com/account",
+    );
+  });
+
   it("records which providers protect servers against deletion", () => {
     expect(providerProfile("hetzner").deleteProtection).toBe(true);
     expect(providerProfile("digitalocean").deleteProtection).toBe(false);

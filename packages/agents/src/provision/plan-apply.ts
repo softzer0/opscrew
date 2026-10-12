@@ -13,7 +13,7 @@ import type {
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { checkDialect, engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
@@ -54,9 +54,40 @@ const CLOUDFLARE_API = /api\.cloudflare\.com|cloudflare_/i;
 /** A provider outage (HTTP 502/503), not a size that is unavailable in the location. */
 const SERVICE_DOWN = /service (?:temporarily )?unavailable|\b50[23]\b/i;
 
+/** A line that starts an engine error block (`Error: …`, optionally inside the `│` box). */
+const ERROR_LINE = /^[\s│╷]*Error:/;
+
+/**
+ * The error blocks of an engine log, each from its `Error:` line up to the next one. The whole log
+ * is one block when it has no `Error:` line.
+ */
+function errorBlocks(log: string): string[] {
+  const blocks: string[][] = [];
+  for (const line of log.split(/\r?\n/)) {
+    if (ERROR_LINE.test(line)) blocks.push([line]);
+    else blocks.at(-1)?.push(line);
+  }
+  return blocks.length > 0 ? blocks.map((lines) => lines.join("\n")) : [log];
+}
+
+/**
+ * Whose API an error block came from: the resource address the engine prints in the block
+ * (`with module.dns.…` or `with module.server.…`), else the only API or resource type it names.
+ */
+function blockOwner(block: string, provider: VpsProviderId): "cloudflare" | "provider" | undefined {
+  if (/\bwith module\.dns\./.test(block)) return "cloudflare";
+  if (/\bwith module\.server\./.test(block)) return "provider";
+  const cloudflare = CLOUDFLARE_API.test(block);
+  const named = PROVIDER_API[provider].test(block);
+  if (cloudflare && !named) return "cloudflare";
+  if (named && !cloudflare) return "provider";
+  return undefined;
+}
+
 /**
  * Next step after a failed apply, in the plan provider's words: an exhausted server limit, a token
- * without a needed permission, a size unavailable in the location, or else "fix and re-run".
+ * without a needed permission (blamed on the token of the API whose error block holds the 403), a
+ * size unavailable in the location, or else "fix and re-run".
  */
 function applyFailureHint(
   deps: PhaseDeps,
@@ -68,14 +99,18 @@ function applyFailureHint(
   const profile = providerProfile(provider);
   const { displayName, serverNoun } = profile;
   const kept = "Nothing that was already created is removed.";
-  if (profile.serverLimit.test(log)) {
-    return `Your ${displayName} account reached its ${serverNoun} limit, so it cannot create another ${serverNoun}. Delete a ${serverNoun} you no longer need or ask ${displayName} for a higher limit in the console (${profile.consoleUrl}), then run \`${command}\` again. ${kept}`;
+  const blocks = errorBlocks(log);
+  const errors = blocks.join("\n");
+  if (profile.serverLimit.test(errors)) {
+    return `Your ${displayName} account reached its ${serverNoun} limit, so it cannot create another ${serverNoun}. Delete a ${serverNoun} you no longer need or ask ${displayName} for a higher limit on your account page (${profile.accountUrl}), then run \`${command}\` again. ${kept}`;
   }
-  const providerNamed = PROVIDER_API[provider].test(log);
-  if (FORBIDDEN.test(log) && CLOUDFLARE_API.test(log) && !providerNamed) {
+  const refused = new Set(
+    blocks.filter((block) => FORBIDDEN.test(block)).map((block) => blockOwner(block, provider)),
+  );
+  if (refused.has("cloudflare") && !refused.has("provider")) {
     return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at https://dash.cloudflare.com/profile/api-tokens with ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. ${kept}`;
   }
-  if (FORBIDDEN.test(log) && providerNamed) {
+  if (refused.has("provider")) {
     const requirement = vpsConnector(provider, deps).credentials;
     const needed =
       requirement.scopes.length === 1
@@ -83,7 +118,7 @@ function applyFailureHint(
         : `these scopes (${requirement.scopes.join(", ")})`;
     return `${displayName} refused the request, so the API token is probably missing a permission OpsCrew needs. Create a token at ${requirement.createUrl} with ${needed}, set ${profile.tokenVars[0]} to it, then run \`${command}\` again. ${kept}`;
   }
-  if (profile.unavailable.test(log) && !SERVICE_DOWN.test(log)) {
+  if (profile.unavailable.test(errors) && !SERVICE_DOWN.test(errors)) {
     const size = provider === "hetzner" ? "server type" : "size";
     return `${displayName} cannot create a ${deployPlan.target.serverType} ${serverNoun} in ${deployPlan.target.location} right now (the ${size} is unavailable or out of stock there). Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;
   }
@@ -122,8 +157,10 @@ export function describePlan(saved: SavedPlan, deployPlan: DeployPlan): string {
     `Changes: ${create} to create, ${update} to update, ${del} to delete, ${replace} to replace.`,
   );
   const cost = deployPlan.cost.monthly;
+  // EUR prices (Hetzner) are quoted with or without VAT; USD prices (DigitalOcean) exclude sales tax.
+  const tax = cost.currency === "EUR" ? "VAT" : "tax";
   lines.push(
-    `Estimated cost: ${money(cost.amount, cost.currency)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${deployPlan.cost.pricesIncludeVat ? "incl." : "excl."} VAT).`,
+    `Estimated cost: ${money(cost.amount, cost.currency)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${deployPlan.cost.pricesIncludeVat ? "incl." : "excl."} ${tax}).`,
   );
   const failed = saved.policy.filter((p) => !p.passed);
   lines.push(
@@ -235,6 +272,17 @@ async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise
 }
 
 /**
+ * Removes `deployment.destroyedAt` from `opscrew/plan.yaml` before a new apply starts: from then on
+ * the deployment may have resources again, even when the apply fails half-way.
+ */
+async function clearDestroyedAt(deps: PhaseDeps): Promise<void> {
+  const onDisk = await readArtifact("plan", deps.paths.files.plan);
+  if (onDisk.deployment.destroyedAt === undefined) return;
+  const { destroyedAt: _destroyedAt, ...deployment } = onDisk.deployment;
+  await writeArtifact("plan", deps.paths.files.plan, { ...onDisk, deployment });
+}
+
+/**
  * Plan → policies → approval bound to the plan hash → apply (constitution I). With `planOnly` it
  * stops after saving the plan and printing its hash; with `approvePlanHash` it applies the saved
  * plan from that earlier run (plans are never re-made, so the hash the user reviewed is the one
@@ -321,6 +369,7 @@ export async function planAndApply(
     );
   }
   await deps.approvals.assertApprovedPlan(saved.planHash, { allowDestroy: saved.hasDestroy });
+  if (deployPlan.deployment.destroyedAt !== undefined) await clearDestroyedAt(deps);
 
   deps.reporter.step("Applying the plan (this usually takes one to three minutes)");
   const result = await engine.apply(
@@ -339,9 +388,10 @@ export async function planAndApply(
     detail: result.ok ? "apply finished" : "apply failed",
   });
   if (!result.ok) {
-    const log = deps.redactor.redact(lastLines(result.log));
-    throw new OpsCrewError("ENGINE_FAILED", `Applying the plan failed:\n${log}`, {
-      hint: applyFailureHint(deps, log, deployPlan, command),
+    // The message shows the last lines; the hint reads every error block of the redacted log.
+    const fullLog = deps.redactor.redact(result.log);
+    throw new OpsCrewError("ENGINE_FAILED", `Applying the plan failed:\n${lastLines(fullLog)}`, {
+      hint: applyFailureHint(deps, fullLog, deployPlan, command),
     });
   }
   deps.reporter.success("Infrastructure applied.");

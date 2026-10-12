@@ -221,7 +221,9 @@ function toOption(
 ): DesignOption {
   const { provider, wording, sizing, backups, budget } = context;
   const place = wording.profile.locationNames[offer.location] ?? offer.location;
-  const price = `${formatMoney(cost.monthly)}/month (${priceLabel(cost)}, ${cost.pricesIncludeVat ? "including" : "excluding"} VAT)`;
+  // EUR prices are quoted with or without VAT; USD prices (DigitalOcean) exclude sales tax.
+  const tax = cost.monthly.currency === "EUR" ? "VAT" : "tax";
+  const price = `${formatMoney(cost.monthly)}/month (${priceLabel(cost)}, ${cost.pricesIncludeVat ? "including" : "excluding"} ${tax})`;
   const containers = [
     "the app",
     ...(sizing.services.postgres ? ["Postgres"] : []),

@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import type { ComputeCatalog, VpsProviderId } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
@@ -129,6 +130,7 @@ export async function previewDesignOptions(
     const block = providerSwitchBlock(
       previous,
       inputs.requirements,
+      await stateExists(deps),
       "`opscrew design` will stop without changing opscrew/plan.yaml",
     );
     if (block !== undefined) warner(deps, warnings)(`${block.message} ${block.hint}`);
@@ -232,7 +234,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     }
     return undefined;
   });
-  if (previous !== undefined) requireSameProvider(previous, inputs.requirements);
+  if (previous !== undefined) {
+    requireSameProvider(previous, inputs.requirements, await stateExists(deps));
+  }
 
   const preview = await priceOptions(deps, inputs, options.catalog, warnings);
   const { facts, requirements, priceSource } = preview;
@@ -279,17 +283,29 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   return { options: designOptions, chosen, plan, priceSource, warnings };
 }
 
+/** True when the local infrastructure state file exists and is not empty. */
+async function stateExists(deps: PhaseDeps): Promise<boolean> {
+  try {
+    return (await stat(join(deps.paths.files.tfstateDir, "prod.tfstate"))).size > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The provider of a deployment that may still have resources: not destroyed, and either a server
- * address recorded or an apply run (a provision that applied and then failed before recording the
- * address can leave resources behind). `undefined` when nothing can be live.
+ * address recorded, an apply recorded, or a non-empty state file (`stateExists`: a first apply
+ * that fails half-way records nothing in the plan but keeps what it created in the state).
+ * `undefined` when nothing can be live.
  */
 export function liveDeploymentProvider(
   plan: Pick<DeployPlan, "target" | "deployment">,
+  stateExists = false,
 ): VpsProviderId | undefined {
   const { deployment } = plan;
   if (deployment.destroyedAt !== undefined) return undefined;
-  const applied = deployment.serverIpv4 !== undefined || deployment.lastApplyAt !== undefined;
+  const applied =
+    deployment.serverIpv4 !== undefined || deployment.lastApplyAt !== undefined || stateExists;
   return applied ? plan.target.provider : undefined;
 }
 
@@ -301,9 +317,10 @@ export function liveDeploymentProvider(
 function providerSwitchBlock(
   previous: DeployPlan,
   requirements: Requirements,
+  stateExists: boolean,
   outcome: string,
 ): { message: string; hint: string } | undefined {
-  const current = liveDeploymentProvider(previous);
+  const current = liveDeploymentProvider(previous, stateExists);
   const requested = requestedProvider(requirements);
   if (current === undefined || requested === current) return undefined;
   const from = providerProfile(current).displayName;
@@ -324,8 +341,17 @@ function providerSwitchBlock(
  * (see {@link liveDeploymentProvider}) and the requirements ask for another provider. A destroyed
  * or never-applied plan may switch.
  */
-function requireSameProvider(previous: DeployPlan, requirements: Requirements): void {
-  const block = providerSwitchBlock(previous, requirements, "opscrew/plan.yaml was not changed");
+function requireSameProvider(
+  previous: DeployPlan,
+  requirements: Requirements,
+  stateExists: boolean,
+): void {
+  const block = providerSwitchBlock(
+    previous,
+    requirements,
+    stateExists,
+    "opscrew/plan.yaml was not changed",
+  );
   if (block !== undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", block.message, { hint: block.hint });
   }

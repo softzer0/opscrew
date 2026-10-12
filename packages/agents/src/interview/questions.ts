@@ -154,14 +154,14 @@ export function buildQuestions(
     {
       id: "region",
       prompt: "Where are most of your users?",
-      help: "The server is placed close to them.",
+      help: "The server goes to the chosen provider's closest data centre.",
       kind: "single-select",
       options: [
-        { value: "eu-central", label: "Europe (Germany)" },
-        { value: "eu-north", label: "Northern Europe (Finland)" },
+        { value: "eu-central", label: "Central Europe" },
+        { value: "eu-north", label: "Northern Europe" },
         { value: "us-east", label: "United States, east coast" },
         { value: "us-west", label: "United States, west coast" },
-        { value: "ap-southeast", label: "Asia Pacific (Singapore)" },
+        { value: "ap-southeast", label: "Southeast Asia (Singapore)" },
       ],
       default: previous?.region ?? "eu-central",
       required: true,

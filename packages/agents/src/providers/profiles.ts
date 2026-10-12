@@ -14,6 +14,8 @@ export interface ProviderProfile {
   tokenUrl: string;
   /** The provider's web console. */
   consoleUrl: string;
+  /** Where the user fixes account problems: a locked account, an unverified email, limits. */
+  accountUrl: string;
   /** Terraform resource type of the server, for example `hcloud_server`. */
   serverResourceType: string;
   /** Terraform resource type of the cloud firewall. */
@@ -47,6 +49,7 @@ const HETZNER: ProviderProfile = {
   tokenVars: ["HCLOUD_TOKEN"],
   tokenUrl: "https://console.hetzner.cloud/",
   consoleUrl: "https://console.hetzner.cloud/",
+  accountUrl: "https://console.hetzner.cloud/",
   serverResourceType: "hcloud_server",
   firewallResourceType: "hcloud_firewall",
   deleteProtection: true,
@@ -82,6 +85,7 @@ const DIGITALOCEAN: ProviderProfile = {
   tokenVars: ["DIGITALOCEAN_TOKEN", "DIGITALOCEAN_ACCESS_TOKEN"],
   tokenUrl: "https://cloud.digitalocean.com/account/api/tokens",
   consoleUrl: "https://cloud.digitalocean.com/",
+  accountUrl: "https://cloud.digitalocean.com/account",
   serverResourceType: "digitalocean_droplet",
   firewallResourceType: "digitalocean_firewall",
   deleteProtection: false,

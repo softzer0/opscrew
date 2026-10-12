@@ -183,6 +183,45 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(after.deployment.serverIpv4).toBe(SERVER_IPV4);
   });
 
+  it("clears the teardown record before a new apply starts, even when the apply fails", async () => {
+    const plan = testPlan();
+    const engine = new FakeEngine({ applyOk: false });
+    const { deps, services } = await setup({
+      engine,
+      plan: {
+        ...plan,
+        deployment: { ...plan.deployment, destroyedAt: "2026-10-10T10:00:00.000Z" },
+      },
+    });
+    const apply = engine.apply.bind(engine);
+    const seen: (string | undefined)[] = [];
+    engine.apply = async (...args: Parameters<FakeEngine["apply"]>) => {
+      seen.push((await readArtifact("plan", deps.paths.files.plan)).deployment.destroyedAt);
+      return apply(...args);
+    };
+    await expect(runProvision(deps, { services })).rejects.toMatchObject({
+      code: "ENGINE_FAILED",
+    });
+    expect(seen).toEqual([undefined]);
+    expect((await readArtifact("plan", deps.paths.files.plan)).deployment.destroyedAt).toBe(
+      undefined,
+    );
+  });
+
+  it("keeps the teardown record when nothing is applied (--plan-only)", async () => {
+    const plan = testPlan();
+    const { deps, services } = await setup({
+      plan: {
+        ...plan,
+        deployment: { ...plan.deployment, destroyedAt: "2026-10-10T10:00:00.000Z" },
+      },
+    });
+    await runProvision(deps, { services, planOnly: true });
+    expect((await readArtifact("plan", deps.paths.files.plan)).deployment.destroyedAt).toBe(
+      "2026-10-10T10:00:00.000Z",
+    );
+  });
+
   it("keeps the database password and reuses key and host pin when run again", async () => {
     const { deps, github, services, handler } = await setup();
     await runProvision(deps, { services });
@@ -532,8 +571,11 @@ describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
       ...scenario,
     });
 
-  /** DigitalOcean's account endpoint for an active account; records the requests. */
-  function accountApi() {
+  /**
+   * DigitalOcean's account endpoint (an active account unless `account` overrides fields, or an
+   * HTTP error with `status`); records the requests.
+   */
+  function accountApi(options: { account?: Record<string, unknown>; status?: number } = {}) {
     const calls: { url: string; authorized: boolean }[] = [];
     const fetch: FetchLike = async (input, init) => {
       const headers = new Headers(init?.headers);
@@ -541,6 +583,15 @@ describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
         url: String(input),
         authorized: headers.get("authorization") === `Bearer ${DO_TOKEN}`,
       });
+      if (options.status !== undefined) {
+        return new Response(
+          JSON.stringify({
+            id: "forbidden",
+            message: "You are not authorized to perform this operation",
+          }),
+          { status: options.status, headers: { "content-type": "application/json" } },
+        );
+      }
       return new Response(
         JSON.stringify({
           account: {
@@ -551,6 +602,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
             status: "active",
             status_message: "",
             team: { uuid: "00000000-0000-4000-8000-000000000002", name: "Shop Team" },
+            ...options.account,
           },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -558,6 +610,47 @@ describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
     };
     return { fetch, calls };
   }
+
+  it("points a locked account to the account page, not the token page", async () => {
+    const run = await setup({
+      plan: testPlan({ provider: "digitalocean" }),
+      engine: engine(),
+      env,
+      fetch: accountApi({ account: { status: "locked", status_message: "Billing issue" } }).fetch,
+    });
+    const { provider: _fake, ...services } = run.services;
+    const error = await runProvision(run.deps, { services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "CREDENTIALS_INVALID" });
+    const { message, hint } = error as OpsCrewError;
+    expect(message).toContain("The DigitalOcean API token works, but the account cannot be used");
+    expect(message).toContain("locked");
+    expect(hint).toBe(
+      "Resolve this on your DigitalOcean account page (https://cloud.digitalocean.com/account), then try again.",
+    );
+    expect(hint).not.toContain(DO_TOKEN_PAGE);
+    expect(hint).not.toContain("droplet:create");
+    expect(run.engine.calls).toEqual([]);
+  });
+
+  it("names the provider once and lists the scopes once when the token lacks a scope (403)", async () => {
+    const run = await setup({
+      plan: testPlan({ provider: "digitalocean" }),
+      engine: engine(),
+      env,
+      fetch: accountApi({ status: 403 }).fetch,
+    });
+    const { provider: _fake, ...services } = run.services;
+    const error = await runProvision(run.deps, { services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "CREDENTIALS_INVALID" });
+    const { message, hint = "" } = error as OpsCrewError;
+    expect(message).toMatch(/^DigitalOcean refused/);
+    expect(message).not.toContain("DigitalOcean: ");
+    const shown = `${message} ${hint}`;
+    expect(shown.split("droplet:create").length - 1).toBe(1);
+    expect(shown).toContain(DO_TOKEN_PAGE);
+    expect(hint).not.toContain("The token needs");
+    expect(run.engine.calls).toEqual([]);
+  });
 
   it("provisions a DigitalOcean plan end to end and names the provider", async () => {
     const api = accountApi();
@@ -585,6 +678,9 @@ describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
     expect(apply?.title).toContain("Apply the infrastructure plan on DigitalOcean (4 to create");
     expect(apply?.details).toContain("module.server.digitalocean_droplet.this");
     expect(apply?.details).toContain("module.server.digitalocean_firewall.this");
+    // USD prices exclude sales tax; "VAT" is only for Hetzner's EUR prices.
+    expect(apply?.details).toContain("$8.41 per month (price list of 2026-06-15, excl. tax)");
+    expect(apply?.details).not.toContain("VAT");
     expect(run.engine.calls).toEqual(["init", "validate", "plan", "apply"]);
     expect(run.engine.applied[0]?.approval.approvedPlanHash).toBe(result.planHash);
     expect(result).toMatchObject({ applied: true, prUrl: "https://github.com/acme/shop/pull/7" });
@@ -642,7 +738,10 @@ describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
     [
       "the Droplet limit",
       'Error: Error creating droplet: POST https://api.digitalocean.com/v2/droplets: 422 (request "r2") You have reached your droplet limit. Please contact support.',
-      ["DigitalOcean account reached its Droplet limit", "https://cloud.digitalocean.com/"],
+      [
+        "DigitalOcean account reached its Droplet limit",
+        "on your account page (https://cloud.digitalocean.com/account)",
+      ],
     ],
     [
       "a missing scope",
@@ -702,6 +801,59 @@ describe.skipIf(!findExecutable("git"))("runProvision apply hints on both provid
     expect(hint).toContain("Zone → DNS → Edit");
     expect(hint).not.toContain(p.tokenVar);
   });
+
+  it.each(providers)(
+    "blames the token of the API whose error block holds the 403 ($provider)",
+    async (p) => {
+      const resource =
+        p.provider === "digitalocean" ? "digitalocean_droplet.this" : "hcloud_server.this";
+      const providerBlock = [
+        "╷",
+        `│ Error: POST https://${p.api}: 422 Size is not available in this region.`,
+        "│ ",
+        `│   with module.server.${resource},`,
+        `│   on ../modules/server/main.tf line 20, in resource "${resource.split(".")[0]}" "this":`,
+        `│   20: resource "${resource.split(".")[0]}" "this" {`,
+        "│ ",
+        "╵",
+      ];
+      const cloudflareBlock = [
+        "╷",
+        '│ Error: failed to make http request: POST "https://api.cloudflare.com/client/v4/zones/zone-123/dns_records": 403 Forbidden',
+        "│ ",
+        "│   with module.dns.cloudflare_dns_record.a,",
+        '│   on ../modules/cloudflare-dns/main.tf line 5, in resource "cloudflare_dns_record" "a":',
+        '│    5: resource "cloudflare_dns_record" "a" {',
+        "│ ",
+        "╵",
+      ];
+      const cloudflareFirst = await hintFor(
+        p.provider,
+        [...cloudflareBlock, ...providerBlock].join("\n"),
+      );
+      expect(cloudflareFirst).toContain("CLOUDFLARE_API_TOKEN");
+      expect(cloudflareFirst).not.toContain(p.tokenVar);
+      const providerFirst = await hintFor(
+        p.provider,
+        [...providerBlock, ...cloudflareBlock].join("\n"),
+      );
+      expect(providerFirst).toContain("CLOUDFLARE_API_TOKEN");
+      expect(providerFirst).not.toContain(p.tokenVar);
+
+      // A 403 in the provider's block is the provider token's, even with a Cloudflare error nearby.
+      const providerRefused = await hintFor(
+        p.provider,
+        [
+          ...providerBlock.map((line) =>
+            line.replace("422 Size is not available in this region.", "403 Forbidden"),
+          ),
+          ...cloudflareBlock.map((line) => line.replace("403 Forbidden", "400 Bad Request")),
+        ].join("\n"),
+      );
+      expect(providerRefused).toContain(`set ${p.tokenVar} to it`);
+      expect(providerRefused).not.toContain("CLOUDFLARE_API_TOKEN");
+    },
+  );
 
   it.each(providers)(
     "treats a 503 as an outage, not an unavailable size ($provider)",

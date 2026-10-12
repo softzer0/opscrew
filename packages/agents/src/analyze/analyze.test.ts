@@ -167,6 +167,10 @@ describe("Analyst prompts", () => {
     expect(ANALYST_SYSTEM_PROMPT).toMatch(/deployment facts/);
   });
 
+  it("names both VPS providers", () => {
+    expect(ANALYST_SYSTEM_PROMPT).toContain("(Hetzner Cloud or DigitalOcean, Docker, Caddy)");
+  });
+
   it("passes the facts as JSON", () => {
     const facts = baseFacts();
     const prompt = buildAnalystPrompt(facts, summarizeFacts(facts));

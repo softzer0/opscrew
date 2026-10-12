@@ -469,23 +469,15 @@ async function checkProviderToken(
     return {
       status: "fail",
       message: `${envVar} was accepted, but the ${profile.displayName} account cannot be used yet. ${result.message}`,
-      fix: `Resolve this in the ${profile.displayName} control panel (${accountUrl(profile)}), then run \`opscrew init\` again.`,
+      fix: `Resolve this on your ${profile.displayName} account page (${profile.accountUrl}), then run \`opscrew init\` again.`,
     };
   }
-  const needs =
-    requirement.scopes.length === 1
-      ? `${requirement.scopes[0]} permission`
-      : `these scopes (${requirement.scopes.join(", ")})`;
+  // The fix already names the permission or scopes; the connector's message may name them too.
   return {
     status: "fail",
     message: `${envVar} does not work: ${result.message}`,
-    fix: `The token needs ${needs}. ${fix}`,
+    fix,
   };
-}
-
-/** Where the user fixes account problems (locked account, unverified email). */
-function accountUrl(profile: ProviderProfile): string {
-  return profile.id === "digitalocean" ? `${profile.consoleUrl}account` : profile.consoleUrl;
 }
 
 function lowerFirst(text: string): string {
@@ -583,7 +575,7 @@ async function checkGitHub(
     return {
       status: "fail",
       message:
-        "No GitHub token: GITHUB_TOKEN and GH_TOKEN are not set and the GitHub CLI is not logged in.",
+        "No GitHub token is set (GITHUB_TOKEN and GH_TOKEN are empty) and the GitHub CLI is not logged in.",
       fix: githubFix(info.coordinates),
     };
   }

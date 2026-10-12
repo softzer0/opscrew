@@ -732,6 +732,46 @@ describe("runDesign", () => {
         expect(result.plan.target.provider).toBe("digitalocean");
       });
 
+      /** Writes a non-empty local state file, as a (partly) failed apply leaves behind. */
+      async function writeState(deps: TestPhaseDeps, content = '{"version":4,"resources":[]}') {
+        await mkdir(deps.paths.files.tfstateDir, { recursive: true });
+        await writeFile(join(deps.paths.files.tfstateDir, "prod.tfstate"), content);
+      }
+
+      it("stops after a first apply that failed half-way (state file, no address, no apply recorded)", async () => {
+        const { deps, before } = await hetznerDeployment({ lastPlanHash: "ab".repeat(32) });
+        await writeState(deps);
+        const error = await runDesign(deps, { catalog: doEuCatalog() }).catch((e: unknown) => e);
+        expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+        expect((error as Error).message).toContain(
+          "An earlier apply may have created resources at Hetzner Cloud",
+        );
+        expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+
+        const preview = await previewDesignOptions(deps, { catalog: doEuCatalog() });
+        expect(preview.warnings.join("\n")).toContain(
+          "not supported yet, so `opscrew design` will stop",
+        );
+      });
+
+      it("lets a plan-only run without a state file (or with an empty one) switch providers", async () => {
+        const { deps } = await hetznerDeployment({ lastPlanHash: "ab".repeat(32) });
+        await writeState(deps, "");
+        const result = await runDesign(deps, { catalog: doEuCatalog() });
+        expect(result.plan.target.provider).toBe("digitalocean");
+      });
+
+      it("lets a destroyed deployment switch even though its state file remains", async () => {
+        const { deps } = await hetznerDeployment({
+          serverIpv4: "203.0.113.10",
+          lastApplyAt: "2026-10-11T12:30:00.000Z",
+          destroyedAt: "2026-10-12T09:00:00.000Z",
+        });
+        await writeState(deps);
+        const result = await runDesign(deps, { catalog: doEuCatalog() });
+        expect(result.plan.target.provider).toBe("digitalocean");
+      });
+
       it("the preview still lists the options and warns that design would stop", async () => {
         const { deps, before } = await hetznerDeployment({
           lastCompletedPhase: "provision",

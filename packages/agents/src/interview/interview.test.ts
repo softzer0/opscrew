@@ -162,6 +162,22 @@ describe("provider question", () => {
     });
   });
 
+  it("labels regions without naming one provider's locations", () => {
+    const region = buildQuestions(facts()).find((q) => q.id === "region");
+    expect(region).toMatchObject({
+      prompt: "Where are most of your users?",
+      help: "The server goes to the chosen provider's closest data centre.",
+      options: [
+        { value: "eu-central", label: "Central Europe" },
+        { value: "eu-north", label: "Northern Europe" },
+        { value: "us-east", label: "United States, east coast" },
+        { value: "us-west", label: "United States, west coast" },
+        { value: "ap-southeast", label: "Southeast Asia (Singapore)" },
+      ],
+    });
+    expect(JSON.stringify(region)).not.toMatch(/Germany|Finland/);
+  });
+
   it("defaults to the previous answer, then the inferred provider, then Hetzner", () => {
     const def = (previous?: Requirements, inferred?: "hetzner" | "digitalocean") =>
       providerQuestion(

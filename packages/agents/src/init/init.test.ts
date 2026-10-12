@@ -530,6 +530,16 @@ describe("runInitChecks", () => {
       expect(gh.fix).toContain("https://github.com/settings/personal-access-tokens/new");
     });
 
+    it("names both variables in the missing-token message, unmasked by the redactor", async () => {
+      const { deps } = await setup({ env: { HCLOUD_TOKEN: HCLOUD } });
+      const checks = await runInitChecks(deps, { services: services() });
+      const gh = checks.find((c) => c.id === "github");
+      const expected =
+        "No GitHub token is set (GITHUB_TOKEN and GH_TOKEN are empty) and the GitHub CLI is not logged in.";
+      expect(gh?.message).toBe(expected);
+      expect(deps.redactor.redact(expected)).toBe(expected);
+    });
+
     it("fails when the token cannot push", async () => {
       const gh = await check("github", { net: { github: "read" } });
       expect(gh.status).toBe("fail");

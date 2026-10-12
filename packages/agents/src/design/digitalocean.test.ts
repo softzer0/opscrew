@@ -52,6 +52,9 @@ describe("buildDesignOptions on DigitalOcean", () => {
     expect(lean?.summary).toContain("One s-1vcpu-2gb DigitalOcean Droplet");
     expect(lean?.summary).toContain("in Frankfurt (fra1)");
     expect(lean?.summary).toContain("$15.60/month");
+    // DigitalOcean's USD prices exclude sales tax; "VAT" stays for Hetzner's EUR prices.
+    expect(lean?.summary).toContain("excluding tax)");
+    expect(lean?.summary).not.toContain("VAT");
     // IPv4 is included in the Droplet price, so it has no line of its own.
     expect(lean?.cost.breakdown).toEqual([
       { item: "Server s-1vcpu-2gb (fra1)", monthly: { amount: 12, currency: "USD" } },

@@ -182,6 +182,7 @@ describe("buildDesignOptions", () => {
     for (const option of statics) {
       expect(option.cost.source).toBe("static");
       expect(option.summary).toContain("estimate as of 2026-06-15");
+      expect(option.summary).toMatch(/(including|excluding) VAT\)/);
       expect(option.tradeoffs.join(" ")).toContain("HCLOUD_TOKEN");
     }
     // The static table's cheapest eu-central x86 server, never the ARM cax11.
