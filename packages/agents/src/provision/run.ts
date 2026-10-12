@@ -205,6 +205,8 @@ async function provisionFlow(
       hint: "Run `opscrew provision` again; it reads the address from the infrastructure state.",
     });
   }
+  // A new deployment after `opscrew destroy` is no longer destroyed.
+  const { destroyedAt: _destroyedAt, ...previousDeployment } = plan.deployment;
   plan = {
     ...plan,
     updatedAt: now,
@@ -220,7 +222,7 @@ async function provisionFlow(
         ]
       : plan.approvals,
     deployment: {
-      ...plan.deployment,
+      ...previousDeployment,
       serverIpv4: ipv4,
       ...(ipv6 ? { serverIpv6: ipv6 } : {}),
       ...(url ? { url } : {}),

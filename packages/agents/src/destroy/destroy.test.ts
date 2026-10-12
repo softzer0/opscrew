@@ -1,0 +1,863 @@
+import { existsSync } from "node:fs";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import type { ApprovalDecision, ApprovalRequest, FetchLike } from "@opscrew/contracts";
+import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
+import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { describe, expect, it } from "vitest";
+import {
+  createProject,
+  fakeCloudflare,
+  HOST_KEY,
+  projectRunner,
+  SERVER_IPV4,
+  testPlan,
+} from "../provision/__fixtures__/fakes";
+import { ensureStatePassphrase } from "../shared";
+import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
+import {
+  type DestroyScript,
+  deployedResources,
+  FakeDestroyGitHub,
+  FakeHetzner,
+  ScriptedDestroyEngine,
+  SERVER_ADDRESS,
+  unprotectPlan,
+} from "./__fixtures__/fakes";
+import { runDestroy } from "./run";
+import type { DestroyServices } from "./types";
+
+const HCLOUD = fakeSecret("hcloud-token");
+const CLOUDFLARE = fakeSecret("cloudflare-token");
+const GITHUB = fakeSecret("github-token");
+const OTHER_HOST = `198.51.100.7 ${HOST_KEY}`;
+const SECRET_NAMES = Object.values(DEPLOY_SECRETS).sort();
+const NOW = "2026-10-11T12:00:00.000Z";
+
+type Answer = (request: ApprovalRequest) => boolean | { approved: boolean; confirmation?: string };
+
+/** Scripted approvals that also record each request in the shared event log. */
+class RecordingHandler extends ScriptedApprovalHandler {
+  constructor(
+    answer: Answer,
+    private readonly events: string[],
+  ) {
+    super(answer);
+  }
+  override async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    this.events.push(`approval:${request.kind}`);
+    return super.request(request);
+  }
+}
+
+/** What the CLI does without a terminal: approve only when `--confirm` equals the server name. */
+function confirmHandler(confirm: string | undefined, serverName: string): Answer {
+  return () =>
+    confirm !== undefined && confirm === serverName
+      ? { approved: true, confirmation: confirm }
+      : { approved: false };
+}
+
+/** A plan for a deployed app (Postgres and backups on, so the snapshot defaults to on). */
+function deployedPlan(options: Parameters<typeof testPlan>[0] = {}): DeployPlan {
+  const plan = testPlan({ deployed: true, ...options });
+  return {
+    ...plan,
+    deployment: {
+      ...plan.deployment,
+      url: options.domain ? `https://${options.domain}` : `http://${SERVER_IPV4}`,
+      lastCompletedPhase: "provision",
+      lastPlanHash: "a".repeat(64),
+      lastApplyAt: "2026-10-10T09:00:00.000Z",
+    },
+  };
+}
+
+interface SetupOptions {
+  plan?: DeployPlan;
+  answer?: Answer;
+  script?: DestroyScript;
+  services?: Partial<DestroyServices>;
+  env?: Record<string, string | undefined>;
+  /** Write the local state file (default true). */
+  state?: boolean;
+  /** Infrastructure code that declares `delete_protection` (default true). */
+  protectionVariable?: boolean;
+  /** Write the OpenTofu state passphrase as provision does (default true). */
+  passphrase?: boolean;
+}
+
+async function setup(options: SetupOptions = {}) {
+  const plan = options.plan ?? deployedPlan();
+  const project = await createProject(plan);
+  const events: string[] = [];
+  const engine = new ScriptedDestroyEngine(options.script, events);
+  const hetzner = new FakeHetzner(events);
+  const github = new FakeDestroyGitHub(events);
+  for (const name of SECRET_NAMES) github.secrets.set(name, "stored");
+  const handler = new RecordingHandler(options.answer ?? (() => true), events);
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    OPSCREW_HOME: join(project.root, ".home-opscrew"),
+    HCLOUD_TOKEN: HCLOUD,
+    CLOUDFLARE_API_TOKEN: undefined,
+    GITHUB_TOKEN: undefined,
+    GH_TOKEN: undefined,
+    ...options.env,
+  };
+  const deps = await createTestPhaseDeps({
+    root: project.root,
+    env,
+    runner: projectRunner(),
+    approvalHandler: handler,
+  });
+
+  // No apply may ever happen before an approval for exactly that plan hash was recorded.
+  engine.beforeApply = (planHash) => {
+    const approved = deps.audit.entries.some(
+      (e) =>
+        e.kind === "approval" &&
+        e.action === "iac-apply" &&
+        e.target === planHash &&
+        e.decision === "approved",
+    );
+    if (!approved) throw new Error(`apply of ${planHash} before its approval`);
+  };
+
+  // provision created the state passphrase; destroy only ever reads it
+  if (options.passphrase !== false) await ensureStatePassphrase(deps.paths);
+  const statePath = join(deps.paths.files.tfstateDir, "prod.tfstate");
+  if (options.state !== false) {
+    await mkdir(deps.paths.files.tfstateDir, { recursive: true });
+    await writeFile(statePath, '{"version":4,"resources":[]}\n');
+  }
+  await mkdir(join(project.root, plan.infra.dir), { recursive: true });
+  await writeFile(
+    join(project.root, plan.infra.dir, "variables.tf"),
+    options.protectionVariable === false
+      ? 'variable "app_name" {\n  type = string\n}\n'
+      : 'variable "delete_protection" {\n  type    = bool\n  default = true\n}\n',
+  );
+  await mkdir(dirname(deps.paths.files.knownHosts), { recursive: true });
+  await writeFile(deps.paths.files.knownHosts, `${OTHER_HOST}\n${SERVER_IPV4} ${HOST_KEY}\n`);
+  const secretsRecord = join(deps.paths.projectHomeDir, "deploy_secrets.json");
+  await writeFile(
+    secretsRecord,
+    `${JSON.stringify({ host: SERVER_IPV4, repo: "acme/shop", names: SECRET_NAMES })}\n`,
+  );
+
+  const services: DestroyServices = {
+    engine: async () => engine,
+    hetzner: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    hetznerClient: hetzner,
+    cloudflare: fakeCloudflare(),
+    github,
+    sleep: async () => undefined,
+    ...options.services,
+  };
+  return {
+    ...project,
+    plan,
+    deps,
+    engine,
+    hetzner,
+    github,
+    handler,
+    services,
+    events,
+    statePath,
+    secretsRecord,
+  };
+}
+
+type Setup = Awaited<ReturnType<typeof setup>>;
+
+async function planFilesLeft(deps: Setup["deps"]): Promise<string[]> {
+  return readdir(deps.paths.files.plansDir).catch(() => []);
+}
+
+/** The project is exactly as before the run: deployment recorded, secrets, host key, record. */
+async function expectNothingCleanedUp(s: Setup) {
+  const plan = await readArtifact("plan", s.deps.paths.files.plan);
+  expect(plan.deployment.serverIpv4).toBe(SERVER_IPV4);
+  expect(plan.deployment.destroyedAt).toBeUndefined();
+  expect(s.github.deleted).toEqual([]);
+  await expect(readFile(s.deps.paths.files.knownHosts, "utf8")).resolves.toContain(SERVER_IPV4);
+  expect(existsSync(s.secretsRecord)).toBe(true);
+  expect((await s.deps.state.read()).phases.provision).toBeUndefined();
+  expect(await planFilesLeft(s.deps)).toEqual([]);
+}
+
+describe.skipIf(!findExecutable("git"))("runDestroy", () => {
+  it("snapshots, lifts protection, destroys, removes the secrets and records the teardown", async () => {
+    const s = await setup();
+    const { deps, engine, hetzner, github, handler, services, events } = s;
+    const serverAddressWhenSecretsGo: (string | undefined)[] = [];
+    github.onDelete = async () => {
+      const current = await readArtifact("plan", deps.paths.files.plan);
+      serverAddressWhenSecretsGo.push(current.deployment.serverIpv4);
+    };
+
+    const result = await runDestroy(deps, { services });
+
+    // Order: preview → snapshot → unprotect plan, approval, apply → destroy plan, approval, apply
+    // → secrets → plan update (the plan still had its address while the secrets were removed).
+    expect(events).toEqual([
+      "plan:destroy",
+      "snapshot:create",
+      "snapshot:ready",
+      "plan:unprotect",
+      "approval:iac-apply",
+      "apply:unprotect",
+      "plan:destroy",
+      "approval:iac-apply",
+      "apply:destroy",
+      "approval:github-secrets",
+      ...SECRET_NAMES.map((name) => `secret:${name}`),
+    ]);
+    expect(serverAddressWhenSecretsGo).toEqual(SECRET_NAMES.map(() => SERVER_IPV4));
+
+    expect(result).toEqual({
+      snapshotImageId: 9001,
+      destroyed: deployedResources(),
+      secretsRemoved: SECRET_NAMES,
+      remaining: expect.any(Array),
+    });
+    const remaining = result.remaining.join("\n");
+    expect(remaining).toContain("Hetzner image 9001");
+    expect(remaining).toContain("per GB per month");
+    expect(remaining).toContain("ghcr.io/acme/shop");
+    expect(remaining).toContain(".github/workflows/opscrew-deploy.yml");
+    expect(remaining).toContain("opscrew provision");
+
+    // Engine: same backend and encryption as provision; every plan lifts protection via the var
+    expect(engine.initOptions?.backendConfig?.path).toBe(s.statePath);
+    expect(engine.initOptions?.env?.TF_ENCRYPTION).toContain("pbkdf2");
+    expect(engine.planOptions.map((o) => [o.destroy === true, o.vars])).toEqual([
+      [true, { delete_protection: "false" }],
+      [false, { delete_protection: "false" }],
+      [true, { delete_protection: "false" }],
+    ]);
+    expect(engine.applied.map((a) => [a.kind, a.approval.allowDestroy])).toEqual([
+      ["unprotect", false],
+      ["destroy", true],
+    ]);
+    expect(engine.planFiles.filter((f) => existsSync(f))).toEqual([]);
+
+    // Snapshot of the labelled server, labelled with the app and time, waited for up to 15 minutes
+    expect(hetzner.selectors).toEqual(["managed-by=opscrew,app=shop"]);
+    expect(hetzner.snapshots).toEqual([
+      {
+        serverId: 4711,
+        description: `OpsCrew snapshot of shop before opscrew destroy (${NOW})`,
+        labels: {
+          app: "shop",
+          "created-by": "opscrew",
+          reason: "destroy",
+          "taken-at": "20261011T120000Z",
+        },
+      },
+    ]);
+    expect(hetzner.waits).toEqual([{ actionId: 77, timeoutMs: 15 * 60_000 }]);
+
+    // Approvals: protection lift (no destroy), destroy (allowDestroy + typed name), secrets
+    const [unprotect, destroy, secrets] = handler.requests;
+    expect(handler.requests).toHaveLength(3);
+    expect(unprotect).toMatchObject({ kind: "iac-apply", title: "Lift delete protection on shop" });
+    expect(unprotect?.allowDestroy).toBeUndefined();
+    expect(unprotect?.planHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(unprotect?.details).toContain(`~ update  ${SERVER_ADDRESS}`);
+    expect(destroy).toMatchObject({
+      kind: "iac-apply",
+      allowDestroy: true,
+      confirmPhrase: "shop",
+      costDelta: { amount: -8.41, currency: "EUR" },
+    });
+    expect(destroy?.title).toBe("Delete shop on Hetzner Cloud (3 resources to delete)");
+    expect(destroy?.details).toContain(`- delete  ${SERVER_ADDRESS}`);
+    expect(destroy?.details).toContain("the PostgreSQL database");
+    expect(destroy?.details).toContain("Hetzner's automatic backups");
+    expect(destroy?.details).toContain("Snapshot: Hetzner image 9001");
+    expect(destroy?.details).toContain(`Plan hash: ${destroy?.planHash}`);
+    expect(secrets).toMatchObject({
+      kind: "github-secrets",
+      title: "Remove the deploy secrets from acme/shop",
+    });
+    for (const name of SECRET_NAMES) expect(secrets?.details).toContain(name);
+    expect(github.secrets.size).toBe(0);
+
+    // Host key of the server removed, the other host kept
+    expect(await readFile(deps.paths.files.knownHosts, "utf8")).toBe(`${OTHER_HOST}\n`);
+    expect(existsSync(s.secretsRecord)).toBe(false);
+
+    // Plan: no addresses, destroyedAt, approvals recorded; phase state
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    expect(plan.deployment).toEqual({
+      lastPlanHash: "a".repeat(64),
+      lastApplyAt: "2026-10-10T09:00:00.000Z",
+      destroyedAt: NOW,
+    });
+    expect(plan.updatedAt).toBe(NOW);
+    expect(plan.approvals).toEqual([
+      { planHash: unprotect?.planHash, approver: "test-user", at: NOW, kind: "iac-apply" },
+      { planHash: destroy?.planHash, approver: "test-user", at: NOW, kind: "iac-apply" },
+    ]);
+    expect((await deps.state.read()).phases.provision).toMatchObject({
+      status: "skipped",
+      summary: "infrastructure destroyed",
+    });
+
+    // Audit: snapshot, both applies, every secret (names only) and the outcome
+    const audit = deps.audit.entries;
+    expect(audit.filter((e) => e.kind === "provider-call").map((e) => e.action)).toEqual([
+      "create snapshot",
+    ]);
+    expect(audit.filter((e) => e.kind === "iac").map((e) => [e.target, e.detail])).toEqual([
+      [unprotect?.planHash, "lifting delete protection: apply finished"],
+      [destroy?.planHash, "deleting the infrastructure: apply finished"],
+    ]);
+    expect(audit.filter((e) => e.kind === "secret-set").map((e) => e.action)).toEqual(
+      SECRET_NAMES.map((name) => `delete secret ${name}`),
+    );
+    expect(audit.filter((e) => e.kind === "approval").map((e) => [e.action, e.decision])).toEqual([
+      ["iac-apply", "approved"],
+      ["iac-apply", "approved"],
+      ["github-secrets", "approved"],
+    ]);
+    expect(audit.find((e) => e.kind === "phase")?.detail).toContain("3 resources deleted");
+
+    const text = deps.reporter.text();
+    expect(text).toContain("The teardown deletes these resources:");
+    expect(text).toContain("the PostgreSQL database");
+    expect(text).toContain("What remains:");
+  });
+
+  it("stops when the typed name is wrong: nothing deleted, and says protection is already lifted", async () => {
+    const s = await setup({
+      answer: (request) =>
+        request.confirmPhrase === undefined ? true : { approved: true, confirmation: "shpo" },
+    });
+    const error = await runDestroy(s.deps, { services: s.services }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error).toMatchObject({ code: "APPROVAL_REFUSED" });
+    const { message, hint } = error as OpsCrewError;
+    expect(message).toContain("confirmation phrase did not match");
+    expect(message).toContain("Nothing was deleted.");
+    expect(message).toContain("Delete protection on shop is already lifted");
+    expect(message).toContain("Hetzner image 9001) was kept");
+    expect(hint).toContain("`opscrew provision` to turn delete protection back on");
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect"]);
+    expect(s.handler.requests.map((r) => r.kind)).toEqual(["iac-apply", "iac-apply"]);
+    await expectNothingCleanedUp(s);
+  });
+
+  it("an up-front confirmation that fails stops before the snapshot: nothing at all changes", async () => {
+    const s = await setup();
+    const seen: string[] = [];
+    await expect(
+      runDestroy(s.deps, {
+        services: s.services,
+        confirm: async (preview) => {
+          seen.push(preview.name, ...preview.resources.map((r) => r.address));
+          expect(preview.dataWarning).toBeDefined();
+          return false;
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      message: expect.stringContaining("nothing was deleted and nothing was changed"),
+    });
+    expect(seen[0]).toBe("shop");
+    expect(seen).toContain("module.server.hcloud_server.this");
+    expect(s.hetzner.snapshots).toEqual([]);
+    expect(s.engine.applied).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
+    expect(s.deps.audit.entries.find((e) => e.action === "destroy-confirm")?.decision).toBe(
+      "refused",
+    );
+    await expectNothingCleanedUp(s);
+  });
+
+  it("an up-front confirmation that passes runs the usual approvals", async () => {
+    const s = await setup();
+    const result = await runDestroy(s.deps, { services: s.services, confirm: async () => true });
+    expect(result.destroyed).toEqual(deployedResources());
+    expect(s.deps.audit.entries.find((e) => e.action === "destroy-confirm")?.decision).toBe(
+      "approved",
+    );
+  });
+
+  it("stops before planning when the state passphrase is not on this computer, and never creates one", async () => {
+    const s = await setup({ passphrase: false });
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("does not have its passphrase"),
+    });
+    expect(existsSync(s.deps.paths.files.statePassphrase)).toBe(false);
+    expect(s.engine.calls.filter((c) => c.startsWith("plan"))).toEqual([]);
+    await expectNothingCleanedUp(s);
+  });
+
+  it("stops when the destroy plan would delete something that was not in the confirmed list", async () => {
+    const s = await setup();
+    await expect(
+      runDestroy(s.deps, {
+        services: s.services,
+        confirm: async () => {
+          // someone adds a volume between the preview and the destroy plan
+          (s.engine.script as DestroyScript).resources = [
+            ...deployedResources(),
+            {
+              address: "module.server.hcloud_volume.data",
+              type: "hcloud_volume",
+              name: "data",
+              provider: "registry.opentofu.org/hetznercloud/hcloud",
+              action: "delete",
+            },
+          ];
+          return true;
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("module.server.hcloud_volume.data"),
+    });
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect"]);
+  });
+
+  it("reuses the snapshot of an earlier run instead of taking another", async () => {
+    let refuseDestroy = true;
+    const s = await setup({
+      answer: (request) => !(refuseDestroy && request.allowDestroy === true),
+    });
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+    });
+    expect(s.hetzner.snapshots).toHaveLength(1);
+
+    refuseDestroy = false;
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.snapshotImageId).toBe(9001);
+    expect(s.hetzner.snapshots).toHaveLength(1);
+    expect(s.deps.reporter.text()).toContain("Reusing the snapshot taken by the earlier run");
+  });
+
+  it("refusing the protection lift changes nothing", async () => {
+    const s = await setup({ answer: () => false });
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      message: expect.stringContaining("Delete protection on shop was not lifted"),
+    });
+    expect(s.engine.applied).toEqual([]);
+    await expectNothingCleanedUp(s);
+  });
+
+  it("takes no snapshot with snapshot: false", async () => {
+    const s = await setup();
+    const result = await runDestroy(s.deps, { services: s.services, snapshot: false });
+    expect(result.snapshotImageId).toBeUndefined();
+    expect(s.hetzner.selectors).toEqual([]);
+    expect(s.hetzner.snapshots).toEqual([]);
+    expect(s.deps.reporter.text()).toContain("Skipping the snapshot, as requested.");
+    expect(s.handler.requests[1]?.details).toContain(
+      "Snapshot: none. What is stored on the server cannot be recovered after this.",
+    );
+    expect(result.remaining.join("\n")).not.toContain("snapshot");
+    expect(result.destroyed).toEqual(deployedResources());
+  });
+
+  it("auto takes no snapshot when no data lives only on the server", async () => {
+    const base = deployedPlan({ postgres: false });
+    const s = await setup({ plan: { ...base, target: { ...base.target, backups: false } } });
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.snapshotImageId).toBeUndefined();
+    expect(s.hetzner.selectors).toEqual([]);
+    expect(s.deps.reporter.text()).toContain(
+      "No snapshot: the database does not run on the server",
+    );
+  });
+
+  it.each([
+    ["creating", "createError", undefined],
+    ["waiting for", "waitError", "Hetzner image 9001"],
+  ] as const)(
+    "a snapshot error while %s it stops before anything changes",
+    async (_what, field, hint) => {
+      const s = await setup();
+      s.hetzner[field] = new OpsCrewError(
+        "PROVIDER_ERROR",
+        "Hetzner action 77 (create_image) failed: disk unavailable",
+      );
+      const error = await runDestroy(s.deps, { services: s.services }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "PROVIDER_ERROR" });
+      expect((error as OpsCrewError).message).toBe(
+        "The snapshot of shop failed: Hetzner action 77 (create_image) failed: disk unavailable. Nothing was deleted.",
+      );
+      if (hint) expect((error as OpsCrewError).hint).toContain(hint);
+      expect(s.engine.calls.filter((c) => c.startsWith("apply"))).toEqual([]);
+      expect(s.engine.calls).not.toContain("plan:unprotect");
+      expect(s.handler.requests).toEqual([]);
+      await expectNothingCleanedUp(s);
+    },
+  );
+
+  it.each([
+    [
+      "another resource",
+      {
+        changes: [
+          ...unprotectPlan().changes,
+          {
+            address: "module.server.hcloud_firewall.this",
+            type: "hcloud_firewall",
+            name: "this",
+            provider: "registry.opentofu.org/hetznercloud/hcloud",
+            action: "create" as const,
+          },
+        ],
+        planJson: unprotectPlan().planJson,
+      },
+      "create module.server.hcloud_firewall.this",
+    ],
+    [
+      "another server setting",
+      unprotectPlan({ server_type: "cx53" }),
+      `update ${SERVER_ADDRESS} (server_type)`,
+    ],
+  ])(
+    "an unprotect plan that also changes %s stops, even when every approval is given",
+    async (_what, unprotect, listed) => {
+      const s = await setup({ answer: confirmHandler("shop", "shop"), script: { unprotect } });
+      const error = await runDestroy(s.deps, { services: s.services }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+      expect((error as OpsCrewError).message).toContain(listed);
+      expect((error as OpsCrewError).message).toContain("Nothing was changed.");
+      expect((error as OpsCrewError).message).not.toContain("cx53");
+      expect((error as OpsCrewError).hint).toContain("opscrew drift");
+      expect(s.handler.requests).toEqual([]);
+      expect(s.engine.applied).toEqual([]);
+      await expectNothingCleanedUp(s);
+    },
+  );
+
+  it("non-interactive: proceeds without prompts only when --confirm matches the server name", async () => {
+    const matching = await setup({ answer: confirmHandler("shop", "shop") });
+    const result = await runDestroy(matching.deps, { services: matching.services });
+    expect(result.destroyed).toEqual(deployedResources());
+    expect(matching.handler.requests.map((r) => r.kind)).toEqual([
+      "iac-apply",
+      "iac-apply",
+      "github-secrets",
+    ]);
+
+    for (const confirm of ["shop2", undefined]) {
+      const other = await setup({ answer: confirmHandler(confirm, "shop") });
+      await expect(runDestroy(other.deps, { services: other.services })).rejects.toMatchObject({
+        code: "APPROVAL_REFUSED",
+        message: expect.stringContaining("Delete protection on shop was not lifted"),
+      });
+      expect(other.engine.applied).toEqual([]);
+      expect(other.handler.requests).toHaveLength(1);
+      await expectNothingCleanedUp(other);
+    }
+  });
+
+  it("handles a server that is already gone: no snapshot, no protection lift, deletes the rest", async () => {
+    const s = await setup({ script: { resources: deployedResources({ server: false }) } });
+    s.hetzner.servers = [];
+    const result = await runDestroy(s.deps, { services: s.services });
+
+    expect(result.snapshotImageId).toBeUndefined();
+    expect(result.destroyed).toEqual(deployedResources({ server: false }));
+    expect(s.hetzner.snapshots).toEqual([]);
+    expect(s.engine.calls).not.toContain("plan:unprotect");
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["destroy"]);
+    const text = s.deps.reporter.text();
+    expect(text).toContain("No snapshot: the server shop no longer exists in Hetzner Cloud");
+    expect(text).toContain("no delete protection to lift");
+    expect(text).not.toContain("PostgreSQL");
+    expect(s.handler.requests[0]?.details).toContain("Snapshot: none.");
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBe(NOW);
+  });
+
+  it("deletes the Cloudflare records too, and stops before planning without a Cloudflare token", async () => {
+    const plan = deployedPlan({ domain: "shop.example.com" });
+    const withToken = await setup({
+      plan,
+      script: { resources: deployedResources({ dns: true }) },
+    });
+    const result = await runDestroy(withToken.deps, { services: withToken.services });
+    expect(result.destroyed).toHaveLength(5);
+    expect(withToken.handler.requests[1]?.title).toBe(
+      "Delete shop on Hetzner Cloud and Cloudflare (5 resources to delete)",
+    );
+
+    const without = await setup({ plan, services: { cloudflare: null } });
+    const error = await runDestroy(without.deps, { services: without.services }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toMatchObject({ code: "CREDENTIALS_MISSING" });
+    expect((error as OpsCrewError).message).toContain("CLOUDFLARE_API_TOKEN");
+    expect((error as OpsCrewError).hint).toContain("dead address");
+    expect(without.engine.calls).toEqual([]);
+    expect(without.hetzner.selectors).toEqual([]);
+    await expectNothingCleanedUp(without);
+
+    const rejected = await setup({
+      plan,
+      services: {
+        cloudflare: {
+          verifyToken: async () => ({ ok: false, message: "The token was rejected." }),
+        },
+      },
+    });
+    await expect(runDestroy(rejected.deps, { services: rejected.services })).rejects.toMatchObject({
+      code: "CREDENTIALS_INVALID",
+    });
+    expect(rejected.engine.calls).toEqual([]);
+  });
+
+  it("without a GitHub token: warns, skips the secret cleanup and lists the secrets as remaining", async () => {
+    const s = await setup({ services: { github: null } });
+    const result = await runDestroy(s.deps, { services: s.services });
+
+    expect(result.secretsRemoved).toEqual([]);
+    expect(result.destroyed).toEqual(deployedResources());
+    expect(s.handler.requests.map((r) => r.kind)).toEqual(["iac-apply", "iac-apply"]);
+    const warning = s.deps.reporter.lines.find(
+      (l) => l.level === "warn" && l.message.includes("GitHub"),
+    );
+    expect(warning?.message).toContain("no GitHub token was found");
+    expect(warning?.message).toContain("https://github.com/acme/shop/settings/secrets/actions");
+    const remaining = result.remaining.join("\n");
+    expect(remaining).toContain("OPSCREW_SSH_PRIVATE_KEY");
+    expect(remaining).toContain("https://github.com/acme/shop/settings/secrets/actions");
+    expect(s.deps.audit.entries.filter((e) => e.kind === "secret-set")).toEqual([]);
+    // the rest of the cleanup still happens
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.serverIpv4).toBeUndefined();
+    expect(plan.deployment.destroyedAt).toBe(NOW);
+    expect(await readFile(s.deps.paths.files.knownHosts, "utf8")).toBe(`${OTHER_HOST}\n`);
+    expect(existsSync(s.secretsRecord)).toBe(false);
+  });
+
+  it("a failed destroy apply reports the log tail; running again continues where it stopped", async () => {
+    const s = await setup({ script: { applyOk: { destroy: false } } });
+    const error = await runDestroy(s.deps, { services: s.services, snapshot: false }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toMatchObject({ code: "ENGINE_FAILED" });
+    expect((error as OpsCrewError).message).toContain("Deleting the infrastructure failed:");
+    expect((error as OpsCrewError).message).toContain("server is locked");
+    expect((error as OpsCrewError).hint).toContain("run `opscrew destroy` again");
+    expect(
+      s.deps.audit.entries.filter((e) => e.kind === "iac").map((e) => [e.decision, e.detail]),
+    ).toEqual([
+      ["approved", "lifting delete protection: apply finished"],
+      ["refused", "deleting the infrastructure: apply failed"],
+    ]);
+    await expectNothingCleanedUp(s);
+
+    // Second run: protection is already off (empty unprotect plan, no approval for it)
+    s.engine.script.applyOk = {};
+    s.handler.requests.length = 0;
+    const result = await runDestroy(s.deps, { services: s.services, snapshot: false });
+    expect(result.destroyed).toEqual(deployedResources());
+    expect(s.handler.requests.map((r) => r.kind)).toEqual(["iac-apply", "github-secrets"]);
+    expect(s.handler.requests[0]?.allowDestroy).toBe(true);
+    expect(s.deps.reporter.text()).toContain("Delete protection on shop is already off.");
+  });
+
+  it("a failed protection lift stops before the destroy plan", async () => {
+    const s = await setup({ script: { applyOk: { unprotect: false } } });
+    const error = await runDestroy(s.deps, { services: s.services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "ENGINE_FAILED" });
+    expect((error as OpsCrewError).message).toContain("Lifting delete protection failed:");
+    expect((error as OpsCrewError).hint).toContain("Nothing was deleted.");
+    expect(s.engine.calls.filter((c) => c === "plan:destroy")).toHaveLength(1);
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect"]);
+    await expectNothingCleanedUp(s);
+  });
+
+  it("a GitHub error while removing a secret says the infrastructure is gone and how to finish", async () => {
+    const s = await setup();
+    s.github.deleteError = new OpsCrewError(
+      "CREDENTIALS_INVALID",
+      "GitHub refused to delete the secret OPSCREW_APP_ENV (Resource not accessible by integration).",
+      { hint: "The token needs access to this repository with: Secrets (read and write)." },
+    );
+    const error = await runDestroy(s.deps, { services: s.services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "CREDENTIALS_INVALID" });
+    expect((error as OpsCrewError).message).toContain(
+      "The infrastructure is deleted, but removing the GitHub secret OPSCREW_APP_ENV failed",
+    );
+    expect((error as OpsCrewError).hint).toContain("Secrets (read and write).");
+    expect((error as OpsCrewError).hint).toContain("run `opscrew destroy` again");
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect", "destroy"]);
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.serverIpv4).toBe(SERVER_IPV4);
+  });
+
+  it("a refused secret cleanup leaves the plan as it was; running again finishes the cleanup", async () => {
+    let removeSecrets = false;
+    const s = await setup({
+      answer: (request) => request.kind !== "github-secrets" || removeSecrets,
+    });
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      message: expect.stringContaining("The infrastructure is deleted."),
+    });
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect", "destroy"]);
+    let plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.serverIpv4).toBe(SERVER_IPV4);
+    expect(plan.deployment.destroyedAt).toBeUndefined();
+
+    s.hetzner.servers = [];
+    s.handler.requests.length = 0;
+    removeSecrets = true;
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.destroyed).toEqual([]);
+    expect(result.secretsRemoved).toEqual(SECRET_NAMES);
+    expect(s.handler.requests.map((r) => r.kind)).toEqual(["github-secrets"]);
+    expect(s.deps.reporter.text()).toContain("Nothing is left to delete.");
+    plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBe(NOW);
+
+    // A third run finds nothing deployed
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: "Nothing is deployed for this project, so there is nothing to destroy.",
+      hint: expect.stringContaining(`already tore this deployment down (${NOW})`),
+    });
+  });
+
+  it("stops before any credential check without local state or with old infrastructure code", async () => {
+    const elsewhere = await setup({ state: false });
+    await expect(
+      runDestroy(elsewhere.deps, { services: elsewhere.services }),
+    ).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("is not on this computer"),
+    });
+    expect(elsewhere.engine.calls).toEqual([]);
+
+    const fresh = await setup({ plan: testPlan(), state: false });
+    await expect(runDestroy(fresh.deps, { services: fresh.services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: "Nothing is deployed for this project, so there is nothing to destroy.",
+    });
+
+    const old = await setup({ protectionVariable: false });
+    await expect(runDestroy(old.deps, { services: old.services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("generated by an older OpsCrew"),
+    });
+    expect(old.engine.calls).toEqual([]);
+
+    const noInfra = await setup();
+    await rm(join(noInfra.root, noInfra.plan.infra.dir), { recursive: true });
+    await expect(runDestroy(noInfra.deps, { services: noInfra.services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("opscrew/infra/prod) is missing"),
+    });
+  });
+
+  it("never prints a token or the state passphrase (real connectors over a fake network)", async () => {
+    const requests: { method: string; url: string; auth: string | null }[] = [];
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    const fetch: FetchLike = async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      requests.push({
+        method,
+        url: url.toString(),
+        auth: new Headers(init?.headers).get("authorization"),
+      });
+      const page = { pagination: { page: 1, next_page: null } };
+      if (url.hostname === "api.hetzner.cloud") {
+        if (url.pathname === "/v1/locations") {
+          return json({ locations: [{ id: 1, name: "nbg1", country: "DE" }], meta: page });
+        }
+        if (url.pathname === "/v1/servers") {
+          return json({
+            servers: [
+              {
+                id: 4711,
+                name: "shop",
+                status: "running",
+                labels: { "managed-by": "opscrew", app: "shop" },
+                public_net: { ipv4: { ip: SERVER_IPV4 }, ipv6: null },
+              },
+            ],
+            meta: page,
+          });
+        }
+        if (url.pathname === "/v1/servers/4711/actions/create_image" && method === "POST") {
+          return json(
+            {
+              image: { id: 9001, type: "snapshot" },
+              action: { id: 77, command: "create_image", status: "running" },
+            },
+            201,
+          );
+        }
+        if (url.pathname === "/v1/actions/77") {
+          return json({ action: { id: 77, command: "create_image", status: "success" } });
+        }
+      }
+      if (url.hostname === "api.cloudflare.com" && url.pathname.endsWith("/user/tokens/verify")) {
+        return json({ success: true, errors: [], result: { status: "active" } });
+      }
+      if (url.hostname === "api.github.com" && method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected request in a test: ${method} ${url}`);
+    };
+
+    const plan = deployedPlan({ domain: "shop.example.com" });
+    const s = await setup({
+      plan,
+      script: { resources: deployedResources({ dns: true }) },
+      env: { HCLOUD_TOKEN: HCLOUD, CLOUDFLARE_API_TOKEN: CLOUDFLARE, GITHUB_TOKEN: GITHUB },
+    });
+    s.deps.fetch = fetch;
+    const services: DestroyServices = {
+      engine: s.services.engine as NonNullable<DestroyServices["engine"]>,
+    };
+    const result = await runDestroy(s.deps, { services });
+
+    expect(result.snapshotImageId).toBe(9001);
+    expect(result.secretsRemoved).toEqual(SECRET_NAMES);
+    // The tokens were used, but only in Authorization headers
+    expect(requests.some((r) => r.auth === `Bearer ${HCLOUD}`)).toBe(true);
+    expect(requests.some((r) => r.auth === `Bearer ${CLOUDFLARE}`)).toBe(true);
+    expect(requests.some((r) => r.auth === `Bearer ${GITHUB}`)).toBe(true);
+    expect(requests.find((r) => r.url.includes("/v1/servers?"))?.url).toContain(
+      "label_selector=managed-by%3Dopscrew%2Capp%3Dshop",
+    );
+    expect(requests.filter((r) => r.method === "DELETE").map((r) => r.url)).toEqual(
+      SECRET_NAMES.map((n) => `https://api.github.com/repos/acme/shop/actions/secrets/${n}`),
+    );
+    expect(requests.every((r) => !r.url.includes(HCLOUD) && !r.url.includes(GITHUB))).toBe(true);
+
+    const passphrase = (await readFile(s.deps.paths.files.statePassphrase, "utf8")).trim();
+    expect(s.engine.initOptions?.env?.TF_ENCRYPTION).toContain(passphrase);
+    const printed = [
+      s.deps.reporter.text(),
+      JSON.stringify(s.deps.audit.entries),
+      JSON.stringify(s.handler.requests),
+      result.remaining.join("\n"),
+    ].join("\n");
+    for (const secret of [HCLOUD, CLOUDFLARE, GITHUB, passphrase]) {
+      expect(printed).not.toContain(secret);
+    }
+  });
+});

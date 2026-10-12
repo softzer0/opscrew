@@ -53,7 +53,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
 
 ## Phase 3: Phases
 
-- [ ] T306 [US1] Destroy orchestration in `packages/agents/src/destroy/`
+- [X] T306 [US1] Destroy orchestration in `packages/agents/src/destroy/`
   - Owns: `packages/agents/src/destroy/**`
   - Reads: plan.md "Destroy orchestration"; spec US1, FR-301; `packages/agents/src/provision/**` (reuse credentials, engine setup, `findSavedPlan`, fakes pattern)
   - Depends: T302, T303, T304

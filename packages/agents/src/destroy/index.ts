@@ -1,2 +1,10 @@
-/** Filled by its owning task (see specs/003-day2-operations/tasks.md). */
-export {};
+export { runDestroy } from "./run";
+export type {
+  DestroyCloudflareApi,
+  DestroyGitHubApi,
+  DestroyOptions,
+  DestroyPreview,
+  DestroyResult,
+  DestroyServices,
+  HetznerSnapshotApi,
+} from "./types";

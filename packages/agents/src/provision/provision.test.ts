@@ -163,6 +163,20 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     ).toContain("set secret OPSCREW_APP_ENV");
   });
 
+  it("a new deployment after opscrew destroy no longer records the teardown", async () => {
+    const plan = testPlan();
+    const { deps, services } = await setup({
+      plan: {
+        ...plan,
+        deployment: { ...plan.deployment, destroyedAt: "2026-10-10T10:00:00.000Z" },
+      },
+    });
+    await runProvision(deps, { services });
+    const after = await readArtifact("plan", deps.paths.files.plan);
+    expect(after.deployment.destroyedAt).toBeUndefined();
+    expect(after.deployment.serverIpv4).toBe(SERVER_IPV4);
+  });
+
   it("keeps the database password and reuses key and host pin when run again", async () => {
     const { deps, github, services, handler } = await setup();
     await runProvision(deps, { services });
