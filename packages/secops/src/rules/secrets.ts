@@ -151,6 +151,15 @@ const TOKEN_RULES: readonly TokenRule[] = [
     description:
       "A Cloudflare API token is written in this file. Depending on its scope it can change your DNS, TLS and firewall settings.",
   },
+  {
+    id: "digitalocean-token",
+    title: "DigitalOcean API token",
+    severity: "critical",
+    // Personal access (`dop_`), OAuth (`doo_`) and refresh (`dor_`) tokens.
+    pattern: /(?<![A-Za-z0-9_])do[por]_v1_[0-9a-f]{64}(?![A-Za-z0-9_])/g,
+    description:
+      "A DigitalOcean API token is written in this file. Depending on its scopes it can create, change and delete Droplets, firewalls and other resources in your DigitalOcean team.",
+  },
 ];
 
 /** Names that suggest the assigned value is a secret. */
@@ -415,7 +424,7 @@ const READ_CONCURRENCY = 16;
 
 /**
  * Built-in secret scanner (`opscrew-secrets`): FR-007 token families (GitHub, Anthropic, OpenAI,
- * AWS, Stripe, Slack, Google, labelled Hetzner and Cloudflare tokens, URL passwords), generic
+ * AWS, Stripe, Slack, Google, labelled Hetzner and Cloudflare tokens, DigitalOcean tokens, URL passwords), generic
  * high-entropy values assigned to secret-like names, PEM private keys and key stores, and dotenv
  * files with values (git-tracked → critical `secrets/committed-env`; present but not ignored → high
  * `secrets/env-not-ignored`). JWTs and `sb_secret_` keys are left to the Supabase scanner, which

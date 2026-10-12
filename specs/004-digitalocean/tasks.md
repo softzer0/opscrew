@@ -44,7 +44,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T406 [P] [US1] [US2] DigitalOcean plan policies, token secret rule, redactor pattern and provider-neutral hardening texts in `packages/secops/src/`, `packages/core/src/redact.ts`
+- [X] T406 [P] [US1] [US2] DigitalOcean plan policies, token secret rule, redactor pattern and provider-neutral hardening texts in `packages/secops/src/`, `packages/core/src/redact.ts`
   - Owns: `packages/secops/src/**`, `packages/core/src/redact.ts`, `packages/core/src/redact.test.ts`
   - Reads: plan.md "Security checks"; existing Hetzner policies in `packages/secops/src/policies/plan.ts`
   - Depends: T401

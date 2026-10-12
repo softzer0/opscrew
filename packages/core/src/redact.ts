@@ -59,6 +59,11 @@ export const DEFAULT_REDACTION_RULES: readonly RedactionRule[] = [
     pattern: /(?<![A-Za-z0-9_])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/g,
   },
   { id: "slack-token", pattern: /(?<![A-Za-z0-9_-])xox[abposr]-[A-Za-z0-9-]{10,}/g },
+  // DigitalOcean personal access (`dop_`), OAuth (`doo_`) and refresh (`dor_`) tokens.
+  {
+    id: "digitalocean-token",
+    pattern: /(?<![A-Za-z0-9_])do[por]_v1_[0-9a-f]{64}(?![A-Za-z0-9_])/g,
+  },
   { id: "google-api-key", pattern: /(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/g },
   {
     id: "jwt",

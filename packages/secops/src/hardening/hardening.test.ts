@@ -175,6 +175,15 @@ describe("probePorts", () => {
     expect(results[1]?.status).toBe("pass");
   });
 
+  it("names the provider's firewall only when told which provider it is", async () => {
+    const connect = async () => true;
+    const [neutral] = await probePorts("h", { ports: [6379], connect });
+    expect(neutral?.remediation).toContain("your cloud provider's firewall");
+    expect(neutral?.remediation).not.toMatch(/hetzner/i);
+    const [named] = await probePorts("h", { ports: [6379], connect, providerName: "DigitalOcean" });
+    expect(named?.remediation).toContain("the DigitalOcean firewall");
+  });
+
   it("checks the default sensitive ports", async () => {
     const asked: number[] = [];
     await probePorts("h", {

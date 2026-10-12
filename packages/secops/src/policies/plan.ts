@@ -84,6 +84,236 @@ function result(
   return { policyId, title, severity, passed, message, ...(resource ? { resource } : {}) };
 }
 
+/** Resource address without `count`/`for_each` keys: `module.a[0].x.y["k"]` becomes `module.a.x.y`. */
+function configAddress(address: string): string {
+  return address.replace(/\[[^\]]*\]/g, "");
+}
+
+/**
+ * Droplet addresses (without instance keys) that each `digitalocean_firewall` references in its
+ * `droplet_ids` expression, read from the plan's `configuration` section. Droplet ids are unknown
+ * before apply, so these references are the only way to see the attachment on a first plan.
+ */
+function firewallDropletReferences(planJson: unknown): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  const walk = (module: unknown, prefix: string) => {
+    if (!isRecord(module)) return;
+    for (const resource of Array.isArray(module.resources) ? module.resources : []) {
+      if (!isRecord(resource) || resource.type !== "digitalocean_firewall") continue;
+      if (typeof resource.address !== "string") continue;
+      const expressions = isRecord(resource.expressions) ? resource.expressions : {};
+      const dropletIds = isRecord(expressions.droplet_ids) ? expressions.droplet_ids : {};
+      const references = Array.isArray(dropletIds.references) ? dropletIds.references : [];
+      const droplets = new Set<string>();
+      for (const reference of references) {
+        if (typeof reference !== "string") continue;
+        const target = configAddress(reference).replace(/\.id$/, "");
+        if (/^digitalocean_droplet\.[^.]+$/.test(target)) droplets.add(`${prefix}${target}`);
+      }
+      out.set(`${prefix}${resource.address}`, droplets);
+    }
+    const calls = isRecord(module.module_calls) ? module.module_calls : {};
+    for (const [name, call] of Object.entries(calls)) {
+      if (isRecord(call)) walk(call.module, `${prefix}module.${name}.`);
+    }
+  };
+  if (isRecord(planJson) && isRecord(planJson.configuration)) {
+    walk(planJson.configuration.root_module, "");
+  }
+  return out;
+}
+
+interface DigitalOceanInboundRule {
+  protocol?: string;
+  port_range?: string | null;
+  source_addresses?: string[];
+}
+
+/** `inbound_rule` blocks of a `digitalocean_firewall`, in the Hetzner rule shape. */
+function digitalOceanInboundRules(resource: PlannedResource): FirewallRule[] {
+  const rules = resource.values.inbound_rule;
+  if (!Array.isArray(rules)) return [];
+  return rules.filter(isRecord).map((raw) => {
+    const rule = raw as DigitalOceanInboundRule;
+    const range = rule.port_range ?? "";
+    return {
+      direction: "in",
+      protocol: rule.protocol ?? "",
+      // DigitalOcean writes "all" (or "0", or nothing) for every port; all mean "any".
+      port: range === "all" || range === "0" ? "" : range,
+      source_ips: rule.source_addresses ?? [],
+    };
+  });
+}
+
+/** Ports open to the whole internet: ones that must never be public, web ports and SSH. */
+function openPorts(rules: FirewallRule[]): { admin: string[]; web: string[]; ssh: boolean } {
+  const admin: string[] = [];
+  const web: string[] = [];
+  let ssh = false;
+  for (const rule of rules) {
+    if ((rule.direction ?? "in") !== "in") continue;
+    const open = (rule.source_ips ?? []).some((ip) => OPEN_TO_ALL.has(ip));
+    if (!open) continue;
+    const protocol = (rule.protocol ?? "").toLowerCase();
+    const port = rule.port ?? "";
+    if (protocol === "icmp") continue;
+    const allowed =
+      protocol === "tcp"
+        ? PUBLIC_TCP_PORTS
+        : protocol === "udp"
+          ? PUBLIC_UDP_PORTS
+          : new Set<string>();
+    if (!allowed.has(port)) admin.push(`${protocol}/${port || "any"}`);
+    else if (port === "80" || port === "443") web.push(`${protocol}/${port}`);
+    else ssh = true;
+  }
+  return { admin, web, ssh };
+}
+
+/** `no-open-admin-ports` and, behind Cloudflare, `origin-cloudflare-only` for one firewall. */
+/** SSH (port 22) may be open to the whole internet only when the plan allows it. */
+function sshPolicyResult(
+  firewall: PlannedResource,
+  rules: FirewallRule[],
+  deployPlan: DeployPlan,
+): PolicyResult {
+  const planned = deployPlan.security.sshAllowedCidrs.some((cidr) => OPEN_TO_ALL.has(cidr));
+  const open = openPorts(rules).ssh;
+  return result(
+    "ssh-not-public",
+    "SSH is open only as planned",
+    "high",
+    !open || planned,
+    !open
+      ? "SSH (port 22) accepts only the planned address ranges."
+      : planned
+        ? "SSH (port 22) is open to the internet as the plan allows; only key logins are accepted."
+        : "SSH (port 22) is open to the whole internet, but the plan limits it to specific address ranges. Restrict the firewall rule to those ranges.",
+    firewall.address,
+  );
+}
+
+function openPortResults(
+  firewall: PlannedResource,
+  rules: FirewallRule[],
+  proxiedBehindCloudflare: boolean,
+): PolicyResult[] {
+  const { admin: openAdminPorts, web: openWebPorts } = openPorts(rules);
+  const out = [
+    result(
+      "no-open-admin-ports",
+      "Only SSH and web ports are open to the internet",
+      "critical",
+      openAdminPorts.length === 0,
+      openAdminPorts.length === 0
+        ? "Only ports 22, 80 and 443 accept traffic from anywhere."
+        : `These ports are open to the whole internet: ${openAdminPorts.join(", ")}. Databases, caches and admin panels must never be public; remove those rules.`,
+      firewall.address,
+    ),
+  ];
+  if (proxiedBehindCloudflare) {
+    out.push(
+      result(
+        "origin-cloudflare-only",
+        "Web ports accept only Cloudflare",
+        "medium",
+        openWebPorts.length === 0,
+        openWebPorts.length === 0
+          ? "Ports 80 and 443 accept only Cloudflare's IP ranges, so attackers cannot bypass the proxy."
+          : `Ports ${openWebPorts.join(", ")} are open to everyone even though traffic should come through Cloudflare. Restrict them to Cloudflare's IP ranges.`,
+        firewall.address,
+      ),
+    );
+  }
+  return out;
+}
+
+/** DigitalOcean equivalents of the Hetzner checks (spec 004 plan "Security checks"). */
+function digitalOceanPolicies(
+  planJson: unknown,
+  resources: PlannedResource[],
+  deployPlan: DeployPlan,
+  proxiedBehindCloudflare: boolean,
+): PolicyResult[] {
+  const results: PolicyResult[] = [];
+  const droplets = resources.filter((r) => r.type === "digitalocean_droplet");
+  const firewalls = resources.filter((r) => r.type === "digitalocean_firewall");
+  const references = firewallDropletReferences(planJson);
+
+  const attached = (droplet: PlannedResource): boolean => {
+    const id = droplet.values.id;
+    const target = configAddress(droplet.address);
+    return firewalls.some((firewall) => {
+      const ids = firewall.values.droplet_ids;
+      if (id !== undefined && id !== null && id !== "" && Array.isArray(ids)) {
+        if (ids.some((value) => String(value) === String(id))) return true;
+      }
+      return references.get(configAddress(firewall.address))?.has(target) ?? false;
+    });
+  };
+
+  for (const droplet of droplets) {
+    const hasFirewall = attached(droplet);
+    const hasKeys = isSet(droplet, "ssh_keys");
+    results.push(
+      result(
+        "firewall-attached",
+        "Server has a firewall",
+        "high",
+        hasFirewall,
+        hasFirewall
+          ? "The Droplet is attached to a DigitalOcean Cloud Firewall."
+          : "No firewall lists this Droplet, so every port is reachable from the internet. Attach the OpsCrew firewall.",
+        droplet.address,
+      ),
+      result(
+        "ssh-keys-set",
+        "Server uses SSH keys",
+        "high",
+        hasKeys,
+        hasKeys
+          ? "The Droplet is created with an SSH key, so no root password is emailed or used."
+          : "The Droplet has no SSH key; DigitalOcean would email a root password. Add the deploy key.",
+        droplet.address,
+      ),
+    );
+    if (deployPlan.target.backups) {
+      results.push(
+        result(
+          "backups-for-critical-data",
+          "Automated backups are on",
+          "high",
+          droplet.values.backups === true,
+          droplet.values.backups === true
+            ? "DigitalOcean automated backups are enabled as the plan requires."
+            : "The plan requires automated backups but the Droplet has them turned off.",
+          droplet.address,
+        ),
+      );
+    }
+  }
+
+  for (const firewall of firewalls) {
+    const rules = digitalOceanInboundRules(firewall);
+    results.push(...openPortResults(firewall, rules, proxiedBehindCloudflare));
+    results.push(sshPolicyResult(firewall, rules, deployPlan));
+  }
+
+  if (droplets.length > 0 && firewalls.length === 0) {
+    results.push(
+      result(
+        "firewall-attached",
+        "Server has a firewall",
+        "high",
+        false,
+        "The plan creates a Droplet but no firewall. Every port would be reachable from the internet.",
+      ),
+    );
+  }
+  return results;
+}
+
 /**
  * Policy checks on an engine plan (`show -json`) before the user is asked to approve it. Returns
  * passing and failing results; callers stop on any failed `critical` or `high` result.
@@ -149,51 +379,12 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
     deployPlan.security.httpAllowedFrom === "cloudflare";
 
   for (const firewall of firewalls) {
-    const openAdminPorts: string[] = [];
-    const openWebPorts: string[] = [];
-    for (const rule of firewallRules(firewall)) {
-      if ((rule.direction ?? "in") !== "in") continue;
-      const open = (rule.source_ips ?? []).some((ip) => OPEN_TO_ALL.has(ip));
-      if (!open) continue;
-      const protocol = (rule.protocol ?? "").toLowerCase();
-      const port = rule.port ?? "";
-      if (protocol === "icmp") continue;
-      const allowed =
-        protocol === "tcp"
-          ? PUBLIC_TCP_PORTS
-          : protocol === "udp"
-            ? PUBLIC_UDP_PORTS
-            : new Set<string>();
-      if (!allowed.has(port)) openAdminPorts.push(`${protocol}/${port || "any"}`);
-      else if (port === "80" || port === "443") openWebPorts.push(`${protocol}/${port}`);
-    }
-    results.push(
-      result(
-        "no-open-admin-ports",
-        "Only SSH and web ports are open to the internet",
-        "critical",
-        openAdminPorts.length === 0,
-        openAdminPorts.length === 0
-          ? "Only ports 22, 80 and 443 accept traffic from anywhere."
-          : `These ports are open to the whole internet: ${openAdminPorts.join(", ")}. Databases, caches and admin panels must never be public; remove those rules.`,
-        firewall.address,
-      ),
-    );
-    if (proxiedBehindCloudflare) {
-      results.push(
-        result(
-          "origin-cloudflare-only",
-          "Web ports accept only Cloudflare",
-          "medium",
-          openWebPorts.length === 0,
-          openWebPorts.length === 0
-            ? "Ports 80 and 443 accept only Cloudflare's IP ranges, so attackers cannot bypass the proxy."
-            : `Ports ${openWebPorts.join(", ")} are open to everyone even though traffic should come through Cloudflare. Restrict them to Cloudflare's IP ranges.`,
-          firewall.address,
-        ),
-      );
-    }
+    const rules = firewallRules(firewall);
+    results.push(...openPortResults(firewall, rules, proxiedBehindCloudflare));
+    results.push(sshPolicyResult(firewall, rules, deployPlan));
   }
+
+  results.push(...digitalOceanPolicies(planJson, resources, deployPlan, proxiedBehindCloudflare));
 
   if (deployPlan.dns.provider === "cloudflare" && deployPlan.dns.proxied && deployPlan.dns.domain) {
     const domain = deployPlan.dns.domain;

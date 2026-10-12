@@ -163,6 +163,24 @@ describe("Redactor", () => {
     expect(r.redact(interpolated)).toBe(interpolated);
   });
 
+  it("masks DigitalOcean personal, OAuth and refresh tokens by value anywhere", () => {
+    const r = new Redactor();
+    const token = fakeSecret("digitalocean-token");
+    for (const prefix of ["dop_", "doo_", "dor_"]) {
+      const value = token.replace("dop_", prefix);
+      expect(r.redact(`Authorization: Bearer ${value}\n`)).toBe(
+        "Authorization: Bearer [REDACTED:digitalocean-token]\n",
+      );
+      expect(r.redact(`{"t":"${value}"}`)).toBe('{"t":"[REDACTED:digitalocean-token]"}');
+    }
+    expect(r.redact(`DIGITALOCEAN_TOKEN=${token}`)).toBe(
+      "DIGITALOCEAN_TOKEN=[REDACTED:digitalocean-token]",
+    );
+    // Not a DigitalOcean token: wrong prefix or too short.
+    const notToken = `dox_v1_${"ab".repeat(32)} dop_v1_abc`;
+    expect(r.redact(notToken)).toBe(notToken);
+  });
+
   it("masks labelled assignments only when the value looks random", () => {
     const r = new Redactor();
     expect(r.redact(`HCLOUD_TOKEN=${fakeSecret("hcloud-token")}`)).toBe(

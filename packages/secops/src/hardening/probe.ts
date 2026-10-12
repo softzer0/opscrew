@@ -36,6 +36,8 @@ export interface ProbeOptions {
   ports?: number[];
   timeoutMs?: number;
   connect?: TcpConnect;
+  /** Cloud provider shown in remediation texts, for example `Hetzner Cloud` or `DigitalOcean`. */
+  providerName?: string;
 }
 
 /** Checks from the outside that sensitive ports on `host` are closed. */
@@ -43,6 +45,9 @@ export async function probePorts(host: string, options: ProbeOptions = {}): Prom
   const ports = options.ports ?? Object.keys(SENSITIVE_PORTS).map(Number);
   const connect = options.connect ?? defaultTcpConnect;
   const timeoutMs = options.timeoutMs ?? 3000;
+  const firewall = options.providerName
+    ? `the ${options.providerName} firewall`
+    : "your cloud provider's firewall";
   const open = await Promise.all(ports.map((port) => connect(host, port, timeoutMs)));
   return ports.map((port, i) => {
     const service = SENSITIVE_PORTS[port] ?? "service";
@@ -53,8 +58,7 @@ export async function probePorts(host: string, options: ProbeOptions = {}): Prom
           severity: "critical",
           status: "fail",
           message: `Port ${port} (${service}) is reachable from the internet.`,
-          remediation:
-            "Close it in the Hetzner firewall and stop publishing it from Docker; use the internal network instead.",
+          remediation: `Close it in ${firewall} and stop publishing it from Docker; use the internal network instead.`,
           target: host,
         }
       : {

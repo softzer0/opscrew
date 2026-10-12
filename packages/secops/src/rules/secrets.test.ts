@@ -176,6 +176,29 @@ describe("createSecretsScanner", () => {
     expect(find(findings, "secrets/stripe-secret-key", "pay.ts").severity).toBe("medium");
   });
 
+  it("flags DigitalOcean personal, OAuth and refresh tokens with masked evidence", async () => {
+    fixture = await materialize("secrets/app");
+    const token = fakeSecret("digitalocean-token", "do");
+    const oauth = token.replace("dop_", "doo_");
+    const refresh = token.replace("dop_", "dor_");
+    await writeFile(
+      path.join(fixture.dir, "do.sh"),
+      `export DIGITALOCEAN_TOKEN=${token}\nauth="${oauth}"\nrefresh: ${refresh}\nnot: dox_v1_${"a".repeat(64)}\n`,
+    );
+    const findings = (await scanWith(createSecretsScanner(), await contextFor(fixture.dir))).filter(
+      (f) => f.file === "do.sh",
+    );
+    expect(keys(findings.filter((f) => f.ruleId === "secrets/digitalocean-token"))).toEqual([
+      "secrets/digitalocean-token@do.sh:1",
+      "secrets/digitalocean-token@do.sh:2",
+      "secrets/digitalocean-token@do.sh:3",
+    ]);
+    const first = find(findings, "secrets/digitalocean-token", "do.sh");
+    expect(first.severity).toBe("critical");
+    expect(first.evidence).toBe(`dop_…(${token.length} chars)`);
+    expectNoFakeValues(findings, [token, oauth, refresh]);
+  });
+
   it("gives the same id for the same match on rescans", async () => {
     const first = await scanFixture();
     await fixture?.cleanup();

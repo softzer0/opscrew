@@ -101,7 +101,7 @@ function serviceCheck(
 }
 
 const UFW_REMEDIATION =
-  "Enable it with `ufw enable` (as root) after allowing 22, 80 and 443 (the Hetzner firewall still protects the server).";
+  "Enable it with `ufw enable` (as root) after allowing 22, 80 and 443 (the cloud provider's firewall still protects the server).";
 
 /**
  * `systemctl is-active ufw` reports `active` even after `ufw disable` (the unit is a oneshot that
@@ -184,7 +184,7 @@ const rebootRequired: HostCheck = {
           this,
           "warn",
           "Security updates were installed that need a reboot.",
-          "Reboot the server from the Hetzner Cloud console during a quiet moment; the app containers start again automatically.",
+          "Reboot the server during a quiet moment (`sudo reboot`, or from your cloud provider's console); the app containers start again automatically.",
         )
       : check(this, "pass", "No reboot is pending.");
   },

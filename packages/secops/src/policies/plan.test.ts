@@ -172,6 +172,18 @@ describe("evaluatePlanPolicies", () => {
     expect(blockingPolicyFailures(results)).toEqual([]);
   });
 
+  it("flags SSH open to the internet when the plan limits it to specific ranges", () => {
+    const plan = deployPlan();
+    const limited = {
+      ...plan,
+      security: { ...plan.security, sshAllowedCidrs: ["203.0.113.0/24"] },
+    };
+    expect(failed(evaluatePlanPolicies(planJson(), limited))).toEqual(["ssh-not-public"]);
+    expect(evaluatePlanPolicies(planJson(), plan).map((r) => r.policyId)).toContain(
+      "ssh-not-public",
+    );
+  });
+
   it("accepts a known firewall id on updates", () => {
     expect(failed(evaluatePlanPolicies(planJson({ firewallIds: "known" }), deployPlan()))).toEqual(
       [],
