@@ -1,0 +1,16 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "unknown",
+    "frameworkNames": ["express", "next"],
+    "services": ["postgres"]
+  },
+  "chosenApp": {
+    "appDir": "apps/api",
+    "appKind": "api",
+    "frameworkNames": ["express"],
+    "port": 4001
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore"]
+}

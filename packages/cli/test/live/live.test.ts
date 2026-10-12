@@ -187,15 +187,28 @@ describe.skipIf(!enabled)("live end-to-end on Hetzner Cloud", () => {
       const secure = await opscrew("secure");
       expect(secure.output).toContain("SECURITY_REPORT.md");
     } finally {
-      await teardown(repo, env, appName);
+      // The user's own teardown first (SC-301); the IaC and API fallbacks only if it fails.
+      let destroyed = false;
+      if (appName !== undefined) {
+        const destroy = await opscrew("destroy", "--confirm", appName, "--no-snapshot").catch(
+          () => undefined,
+        );
+        destroyed = destroy?.exitCode === 0;
+        if (!destroyed) {
+          console.error(`opscrew destroy failed; falling back:
+${destroy?.output ?? ""}`);
+        }
+      }
+      if (destroyed && appName !== undefined) await expectNothingLeft(appName);
+      else await teardown(repo, env, appName);
     }
   });
 });
 
 /**
- * Destroys everything through the same IaC path users have: lift delete protection (an approved
- * update), then a destroy plan applied with `allowDestroy`. Falls back to deleting the labelled
- * Hetzner resources through the API so a failed run never leaves a billed server behind.
+ * Fallback when `opscrew destroy` failed: lift delete protection and apply a destroy plan with the
+ * engine directly, then delete the labelled Hetzner resources through the API, so a failed run
+ * never leaves a billed server behind.
  */
 async function teardown(
   repo: string,
@@ -273,6 +286,14 @@ async function teardown(
       }
     }
   }
-  const left = await hetzner("GET", `/servers?label_selector=${selector}`);
-  expect((left.json as { servers: unknown[] }).servers, "no OpsCrew server is left").toEqual([]);
+  await expectNothingLeft(appName);
+}
+
+/** SC-301: no server, firewall or SSH key labelled for the app remains. */
+async function expectNothingLeft(appName: string): Promise<void> {
+  const selector = encodeURIComponent(`managed-by=opscrew,app=${appName}`);
+  for (const kind of ["servers", "firewalls", "ssh_keys"] as const) {
+    const left = await hetzner("GET", `/${kind}?label_selector=${selector}`);
+    expect((left.json as Record<string, unknown[]>)[kind], `no OpsCrew ${kind} left`).toEqual([]);
+  }
 }

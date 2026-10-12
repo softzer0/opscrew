@@ -105,7 +105,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
 
 ## Phase 5: Verification
 
-- [ ] T312 Live test tears down with `opscrew destroy --confirm` (API cleanup stays as the fallback) and a two-app e2e example (lead) in `packages/cli/test/{live,e2e}/**`, `examples/`, `docs/e2e.md`
+- [X] T312 Live test tears down with `opscrew destroy --confirm` (API cleanup stays as the fallback) and a two-app e2e example (lead) in `packages/cli/test/{live,e2e}/**`, `examples/`, `docs/e2e.md`
 - [ ] T313 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-301..FR-310
 
 ## Dependencies & waves

@@ -27,6 +27,15 @@ export const ExpectedSchema = z.strictObject({
     notes: z.string().optional(),
   }),
   codeChanges: z.array(z.string().min(1)).optional(),
+  /** Monorepos: the app chosen in the interview and what analysis describes afterwards. */
+  chosenApp: z
+    .strictObject({
+      appDir: z.string().min(1),
+      appKind: z.string().min(1),
+      frameworkNames: z.array(z.string().min(1)).optional(),
+      port: z.number().int().positive().optional(),
+    })
+    .optional(),
 });
 export type Expected = z.infer<typeof ExpectedSchema>;
 

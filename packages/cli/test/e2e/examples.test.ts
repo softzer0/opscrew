@@ -70,6 +70,14 @@ const ANSWERS: Record<string, Record<string, unknown>> = {
     domain: "app.example.com",
     dnsProvider: "cloudflare",
   },
+  "monorepo-two-apps": {
+    appDir: "apps/api",
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: "10 EUR",
+    region: "eu-central",
+    uptime: "standard",
+    dataCriticality: "important",
+  },
   "static-vite": {
     expectedMonthlyUsers: "<1k",
     budgetMonthly: "10 EUR",
@@ -212,6 +220,20 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
       expect(requirements.region).toBe(answers.region);
       expect(requirements.expectedMonthlyUsers).toBe(answers.expectedMonthlyUsers);
 
+      // Monorepos: the chosen app is recorded and the analysis now describes only that app.
+      if (expected.chosenApp !== undefined) {
+        expect(requirements.appDir).toBe(expected.chosenApp.appDir);
+        const architecture = ArchitectureSchema.parse(
+          JSON.parse(
+            await readFile(path.join(project.root, "opscrew", "architecture.json"), "utf8"),
+          ),
+        );
+        expect(architecture.facts.appDir).toBe(expected.chosenApp.appDir);
+        expect(architecture.facts.appKind).toBe(expected.chosenApp.appKind);
+        const names = architecture.facts.frameworks.map((framework) => framework.name);
+        expect(names).toEqual(expected.chosenApp.frameworkNames ?? names);
+      }
+
       // Without --option the recommended option is chosen and the others are listed.
       const first = await opscrew("design");
       expect(first.code).toBe(0);
@@ -227,7 +249,12 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
       const plan = await readPlan(project.root);
       expect(`hetzner-single-${plan.target.serverType}-${plan.target.location}`).toBe(chosenOption);
       expect(plan.target.provider).toBe("hetzner");
-      if (expected.facts.port !== undefined) expect(plan.app.port).toBe(expected.facts.port);
+      const port = expected.chosenApp?.port ?? expected.facts.port;
+      if (port !== undefined) expect(plan.app.port).toBe(port);
+      if (expected.chosenApp !== undefined) {
+        expect(plan.app.dockerfile).toBe(`${expected.chosenApp.appDir}/Dockerfile`);
+        expect(plan.app.buildContext).toBe(".");
+      }
       if (answers.domain !== undefined) {
         expect(plan.dns).toMatchObject({ provider: "cloudflare", domain: answers.domain });
       } else {

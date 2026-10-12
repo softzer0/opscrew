@@ -8,7 +8,7 @@
 4. It runs `provision --plan-only --yes` and then `provision --approve <hash> --yes`, which creates a real Hetzner server.
 5. It merges the deployment pull request and waits for the `opscrew-deploy.yml` workflow to succeed.
 6. It runs `verify` and `secure`.
-7. It tears everything down.
+7. It tears everything down with `opscrew destroy --confirm`.
 
 The test is skipped unless its environment variables are set, so normal runs and CI never start it.
 
@@ -48,10 +48,14 @@ The test runs the smallest x86 server that fits the recommended design, for abou
 
 Teardown runs in a `finally` block, so it happens even after a failure:
 
-1. It lifts delete protection with an approved update of the generated root module.
-2. It applies a destroy plan with `allowDestroy`, the same path a user's destroy takes.
-3. If the IaC teardown fails, it deletes the servers, firewalls and SSH keys labelled `managed-by=opscrew,app=<name>` through the Hetzner API.
-4. It asserts that no OpsCrew server is left.
+1. It runs `opscrew destroy --confirm <name> --no-snapshot`, the same command a user runs. It lifts
+   delete protection and applies the destroy plan, each plan approved by its hash, then removes
+   the deploy secrets.
+2. It asserts that no server, firewall or SSH key labelled `managed-by=opscrew,app=<name>`
+   remains (SC-301).
+3. If `opscrew destroy` failed, it falls back to lifting protection and applying a destroy plan
+   with the engine directly, then to deleting the labelled resources through the Hetzner API, and
+   asserts again that nothing is left.
 
 Some things are not removed:
 

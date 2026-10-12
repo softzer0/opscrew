@@ -20,3 +20,4 @@ They are not part of the pnpm workspace.
 | `scan.mustInclude` | rule ids that `opscrew scan` must report |
 | `scan.clean` | `true` → no high or critical findings |
 | `codeChanges` | code-change kinds `opscrew design` must derive |
+| `chosenApp` | monorepos only: the app the interview's `appDir` answer picks, and what analysis describes after it (`appDir`, `appKind`, `frameworkNames`, `port`) |
