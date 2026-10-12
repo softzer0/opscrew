@@ -1,2 +1,16 @@
-/** Filled by its owning task (see specs/003-day2-operations/tasks.md). */
-export {};
+export {
+  type InitCheck,
+  type InitCheckId,
+  type InitCheckOptions,
+  type InitCheckStatus,
+  type InitServices,
+  initPassed,
+  MIN_NODE_VERSION,
+  runInitChecks,
+} from "./checks";
+export {
+  type EnsureGitignoreOptions,
+  ensureGitignore,
+  gitignoreCoversOpsCrew,
+  OPSCREW_GITIGNORE_ENTRY,
+} from "./gitignore";

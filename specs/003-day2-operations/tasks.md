@@ -69,7 +69,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T308 [P] [US3] Preflight checks in `packages/agents/src/init/`
+- [X] T308 [P] [US3] Preflight checks in `packages/agents/src/init/`
   - Owns: `packages/agents/src/init/**`
   - Reads: plan.md "Init"; spec US3, FR-306; connector root exports; `@opscrew/iac-engine` `detectEngines`
   - Depends: T301
