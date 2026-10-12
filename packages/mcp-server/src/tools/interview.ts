@@ -1,5 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { buildQuestions, inferredAnswers, providerFromTokens, runInterview } from "@opscrew/agents";
+import {
+  buildQuestions,
+  inferredAnswers,
+  providerFromTokens,
+  providerProfile,
+  requestedProvider,
+  runInterview,
+} from "@opscrew/agents";
 import type { ProjectPaths } from "@opscrew/core";
 import { detectProject, detectProjectDetails } from "@opscrew/detect";
 import {
@@ -176,6 +183,7 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
         const budget = requirements.budgetMonthly;
         const text = [
           `Saved ${file}.`,
+          `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
           `- Expected monthly users: ${requirements.expectedMonthlyUsers}`,
           `- Budget: ${budget.amount} ${budget.currency} per month`,
           `- Region: ${requirements.region}`,

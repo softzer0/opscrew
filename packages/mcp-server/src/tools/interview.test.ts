@@ -14,7 +14,7 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
-async function questions(env: Record<string, string>) {
+async function connect(env: Record<string, string>) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-interview-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, "repo");
@@ -37,10 +37,13 @@ async function questions(env: Record<string, string>) {
     await client.close();
     await server.close();
   });
-  const result = (await client.callTool({
-    name: "opscrew_interview_questions",
-    arguments: {},
-  })) as CallToolResult;
+  return async (name: string, args: Record<string, unknown> = {}) =>
+    (await client.callTool({ name, arguments: args })) as CallToolResult;
+}
+
+async function questions(env: Record<string, string>) {
+  const call = await connect(env);
+  const result = await call("opscrew_interview_questions");
   const data = result.structuredContent as {
     questions: { id: string; default?: unknown }[];
     inferred: Record<string, unknown>;
@@ -61,5 +64,37 @@ describe("opscrew_interview_questions provider default", () => {
     const { data } = await questions({});
     expect(data.questions.find((q) => q.id === "provider")?.default).toBe("hetzner");
     expect(data.inferred.provider).toBe("hetzner");
+  });
+});
+
+const ANSWERS = {
+  expectedMonthlyUsers: "<1k",
+  budgetMonthly: "10 EUR",
+  region: "eu-central",
+  uptime: "best-effort",
+  dataCriticality: "none",
+};
+
+function textOf(result: CallToolResult): string {
+  return result.content.map((c) => (c.type === "text" ? c.text : "")).join("\n");
+}
+
+describe("opscrew_save_requirements provider summary", () => {
+  it("reports DigitalOcean when no provider is given and only DIGITALOCEAN_TOKEN is set", async () => {
+    const token = fakeSecret("digitalocean-token");
+    const call = await connect({ DIGITALOCEAN_TOKEN: token });
+    const saved = await call("opscrew_save_requirements", { answers: ANSWERS });
+    expect(saved.isError).toBeFalsy();
+    expect(textOf(saved)).toContain("- Cloud provider: DigitalOcean");
+    expect(JSON.stringify(saved)).not.toContain(token);
+  });
+
+  it("reports Hetzner Cloud when the provider answer is hetzner", async () => {
+    const call = await connect({ DIGITALOCEAN_TOKEN: fakeSecret("digitalocean-token") });
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, provider: "hetzner" },
+    });
+    expect(saved.isError).toBeFalsy();
+    expect(textOf(saved)).toContain("- Cloud provider: Hetzner Cloud");
   });
 });

@@ -15,7 +15,7 @@ describe("renderRunbook for DigitalOcean", () => {
     expect(content).not.toMatch(/hetzner/i);
     expect(content).toContain("shop — DigitalOcean Droplet s-1vcpu-2gb in fra1");
     expect(content).toContain(
-      "$15.60 per month (excl. VAT, estimate from DigitalOcean's price list of 2026-10-12)",
+      "$15.60 per month (excl. tax, estimate from DigitalOcean's price list of 2026-10-12)",
     );
     expect(content).toContain("https://cloud.digitalocean.com/");
     expect(content).toContain("DigitalOcean daily backups are on");

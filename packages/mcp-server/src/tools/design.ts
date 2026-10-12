@@ -67,6 +67,15 @@ async function previewDesign(
   return previewDesignOptions(quiet, facts ? { facts } : {});
 }
 
+/**
+ * "incl./excl. VAT" for EUR prices, "incl./excl. tax" for USD prices (DigitalOcean's USD prices
+ * exclude sales tax, which is not VAT).
+ */
+function taxLabel(cost: Pick<DesignOption["cost"], "monthly" | "pricesIncludeVat">): string {
+  const tax = cost.monthly.currency === "EUR" ? "VAT" : "tax";
+  return `${cost.pricesIncludeVat ? "incl." : "excl."} ${tax}`;
+}
+
 /** Plain-text block for one option. */
 function renderOption(option: DesignOption): string {
   const marks = [
@@ -108,8 +117,9 @@ export function registerDesignTools(server: McpServer, deps: ResolvedMcpDeps): v
         const requirements = await readArtifact("requirements", phase.paths.files.requirements);
         const fitting = result.options.some((o) => o.fitsBudget);
         const providerName = providerProfile(requestedProvider(requirements)).displayName;
+        const tax = result.options[0] ? `, ${taxLabel(result.options[0].cost)}` : "";
         const text = [
-          `Deployment options on ${providerName} (budget ${formatMoney(requirements.budgetMonthly)}/month, prices ${result.priceSource === "live" ? `live from ${providerName}` : "from a dated price list; estimates"}, excl. VAT):`,
+          `Deployment options on ${providerName} (budget ${formatMoney(requirements.budgetMonthly)}/month, prices ${result.priceSource === "live" ? `live from ${providerName}` : "from a dated price list; estimates"}${tax}):`,
           "",
           ...result.options.map(renderOption),
           "",

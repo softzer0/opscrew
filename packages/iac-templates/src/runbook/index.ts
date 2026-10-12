@@ -8,7 +8,9 @@ const PENDING = "_(set by `opscrew provision`)_";
 function money(plan: DeployPlan, provider: ProviderText): string {
   const { amount, currency } = plan.cost.monthly;
   const symbol = currency === "EUR" ? "€" : "$";
-  const vat = plan.cost.pricesIncludeVat ? "incl. VAT" : "excl. VAT";
+  // EUR prices are quoted with VAT; DigitalOcean's USD prices exclude sales tax, which is not VAT.
+  const tax = currency === "EUR" ? "VAT" : "tax";
+  const vat = `${plan.cost.pricesIncludeVat ? "incl." : "excl."} ${tax}`;
   const source =
     plan.cost.source === "static"
       ? `, estimate from ${provider.name}'s price list of ${plan.cost.asOf.slice(0, 10)}`
