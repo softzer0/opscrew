@@ -55,5 +55,6 @@
     }
   ],
   "healthEndpoint": "/healthz/",
-  "monorepo": false
+  "monorepo": false,
+  "appDir": "."
 }

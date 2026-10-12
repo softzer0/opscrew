@@ -23,5 +23,6 @@
     }
   ],
   "services": [{ "kind": "supabase", "evidence": ["dependency:@supabase/supabase-js"] }],
-  "monorepo": true
+  "monorepo": true,
+  "appDir": "apps/web"
 }

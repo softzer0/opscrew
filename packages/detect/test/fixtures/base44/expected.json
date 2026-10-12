@@ -14,5 +14,6 @@
     }
   ],
   "services": [],
-  "monorepo": false
+  "monorepo": false,
+  "appDir": "."
 }

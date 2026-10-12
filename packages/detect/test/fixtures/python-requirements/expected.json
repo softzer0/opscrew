@@ -27,5 +27,6 @@
   ],
   "docker": {},
   "healthEndpoint": "/ping",
-  "monorepo": false
+  "monorepo": false,
+  "appDir": "."
 }

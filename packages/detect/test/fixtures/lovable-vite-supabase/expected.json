@@ -29,5 +29,6 @@
   "services": [{ "kind": "supabase", "evidence": ["dependency:@supabase/supabase-js"] }],
   "docker": {},
   "monorepo": false,
+  "appDir": ".",
   "git": {}
 }

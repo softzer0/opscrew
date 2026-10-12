@@ -32,5 +32,6 @@
   ],
   "docker": { "dockerfile": "Dockerfile", "compose": "compose.yaml" },
   "healthEndpoint": "/healthz",
-  "monorepo": false
+  "monorepo": false,
+  "appDir": "."
 }

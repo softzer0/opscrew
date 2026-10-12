@@ -11,5 +11,6 @@
   "build": { "installCommand": "npm install", "buildCommand": "npm run build", "outputDir": "out" },
   "envVars": [],
   "services": [],
-  "monorepo": false
+  "monorepo": false,
+  "appDir": "."
 }

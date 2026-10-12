@@ -16,6 +16,7 @@ const FIXTURE_NAMES = [
   "fastapi-redis",
   "lovable-vite-supabase",
   "monorepo-turbo",
+  "monorepo-two-apps",
   "nextjs-prisma-postgres",
   "nextjs-static-export",
   "python-requirements",
@@ -122,6 +123,7 @@ describe("detectProject scenarios", () => {
       services: [],
       docker: {},
       monorepo: false,
+      appDir: ".",
       git: {},
     });
     expect(result.truncated).toBe(false);
@@ -242,6 +244,7 @@ describe("detectProject scenarios", () => {
     });
     const result = await detectProjectDetails(root);
     expect(result.appDir).toBe("backend");
+    expect(result.facts.appDir).toBe("backend");
     expect(result.facts.build).toEqual({
       installCommand: "cd backend && pip install -r requirements.txt",
       startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port 8000",

@@ -13,5 +13,6 @@
     { "name": "VITE_API_URL", "files": ["src/App.tsx"], "clientExposed": true, "secretLikely": false }
   ],
   "services": [],
-  "monorepo": false
+  "monorepo": false,
+  "appDir": "."
 }

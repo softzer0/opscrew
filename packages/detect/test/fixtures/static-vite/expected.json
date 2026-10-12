@@ -13,5 +13,6 @@
   "envVars": [],
   "services": [],
   "docker": {},
-  "monorepo": false
+  "monorepo": false,
+  "appDir": "."
 }

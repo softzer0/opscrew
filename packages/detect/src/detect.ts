@@ -6,6 +6,7 @@ import {
   type ProjectFacts,
   ProjectFactsSchema,
 } from "@opscrew/plan-schema";
+import { normalizeAppDir, unknownAppDirError } from "./app-dir";
 import { isClientExposed, isEnvExampleFile, isSecretLikely, parseEnvExampleKeys } from "./env";
 import { listProjectFiles } from "./files";
 import {
@@ -62,6 +63,13 @@ import {
 export interface DetectOptions {
   /** Maximum number of files to inspect (default 20,000). */
   maxFiles?: number;
+  /**
+   * Repo-relative directory of the app to describe (a workspace member, a detected subdirectory
+   * app, or `.` for the root). Trailing slashes, `./` prefixes and backslashes are accepted. When
+   * set, `appCandidates` is empty and other deployable apps are left out of the facts. An unknown
+   * directory throws a `DetectError` (`INVALID_INPUT`) listing the candidates.
+   */
+  appDir?: string;
 }
 
 /** Full detection result: the facts plus context the caller may turn into warnings or risks. */
@@ -279,22 +287,35 @@ export async function detectProjectDetails(
   const members = monorepo
     ? nested.filter((info) => matchesWorkspace(info.unit.dir, patterns))
     : nested;
-  const relevant = rootInfo ? [rootInfo, ...members] : members;
+  let deployable = members.filter((info) => isServerUnit(info.unit, info.roles));
+  if (deployable.length === 0) deployable = members.filter((info) => info.appKind !== "unknown");
+  const deployableDirs = deployable.map((info) => info.unit.dir);
 
   let primary: UnitInfo | undefined;
   let appCandidates: string[] = [];
-  if (!monorepo && rootInfo) {
-    primary = rootInfo;
-  } else {
-    let deployable = members.filter((info) => isServerUnit(info.unit, info.roles));
-    if (deployable.length === 0) deployable = members.filter((info) => info.appKind !== "unknown");
-    if (deployable.length === 1) {
-      primary = deployable[0];
-    } else {
+  // Other apps left out of the facts when the caller chose one app explicitly.
+  let otherApps: string[] = [];
+  if (options.appDir !== undefined) {
+    const wanted = normalizeAppDir(options.appDir);
+    if (wanted === ".") {
       primary = rootInfo;
-      appCandidates = deployable.map((info) => info.unit.dir);
+    } else {
+      primary = members.find((info) => info.unit.dir === wanted);
+      if (!primary) throw unknownAppDirError(options.appDir, deployableDirs);
+      otherApps = deployableDirs.filter((dir) => dir !== wanted && !isWithin(dir, wanted));
     }
+  } else if (!monorepo && rootInfo) {
+    primary = rootInfo;
+  } else if (deployable.length === 1) {
+    primary = deployable[0];
+  } else {
+    primary = rootInfo;
+    appCandidates = deployableDirs;
   }
+  const inScope = (path: string) => !otherApps.some((dir) => isWithin(dir, path));
+  const scopedFiles = otherApps.length > 0 ? files.filter(inScope) : files;
+  const scopedMembers = members.filter((info) => inScope(info.unit.dir));
+  const relevant = rootInfo ? [rootInfo, ...scopedMembers] : scopedMembers;
   const appDir = primary?.unit.dir ?? ".";
   const appPackage = primary?.unit.packageJson;
   const appKind: AppKind = primary?.appKind ?? "unknown";
@@ -305,7 +326,7 @@ export async function detectProjectDetails(
 
   // Source signals (env names, ports, health routes, Python app objects, URL schemes).
   const signals = new Map<string, SourceSignals>();
-  await mapLimit(files.filter(isSourceFile), 16, async (file) => {
+  await mapLimit(scopedFiles.filter(isSourceFile), 16, async (file) => {
     const text = await read(file);
     if (text !== undefined) signals.set(file, scanSource(text));
   });
@@ -318,7 +339,7 @@ export async function detectProjectDetails(
     envFiles.set(name, set);
   };
   for (const [file, found] of signals) for (const name of found.envNames) addEnv(name, file);
-  for (const file of files.filter(isEnvExampleFile)) {
+  for (const file of scopedFiles.filter(isEnvExampleFile)) {
     for (const name of parseEnvExampleKeys((await read(file)) ?? "")) addEnv(name, file);
   }
   const envVars = sortStrings(envFiles.keys()).map((name) => ({
@@ -335,14 +356,14 @@ export async function detectProjectDetails(
   }
   const services = new ServiceCollector();
   for (const info of relevant) addDependencyServices(services, info.unit, { pythonUrlSchemes });
-  for (const file of files.filter((f) => f.endsWith(".prisma"))) {
+  for (const file of scopedFiles.filter((f) => f.endsWith(".prisma"))) {
     addPrismaServices(
       services,
       (await read(file)) ?? "",
       relevant.map((info) => info.unit),
     );
   }
-  const settingsFiles = files.filter((f) => /(?:^|\/)settings(?:\.py|\/[^/]+\.py)$/.test(f));
+  const settingsFiles = scopedFiles.filter((f) => /(?:^|\/)settings(?:\.py|\/[^/]+\.py)$/.test(f));
   const settingsTexts = new Map<string, string>();
   for (const file of settingsFiles) {
     const text = (await read(file)) ?? "";
@@ -388,7 +409,7 @@ export async function detectProjectDetails(
       for (const name of exact) if (fileSet.has(joinRel(dir, name))) return joinRel(dir, name);
     }
     if (!loose) return undefined;
-    return files
+    return scopedFiles
       .filter((f) => loose(basenameRel(f)))
       .sort((a, b) => depthOf(a) - depthOf(b) || (a < b ? -1 : 1))[0];
   };
@@ -477,7 +498,9 @@ export async function detectProjectDetails(
   const procfileWeb = /^web:\s*(.+)$/m
     .exec((await read(joinRel(appDir, "Procfile"))) ?? "")?.[1]
     ?.trim();
-  const appCode = files.filter((f) => isWithin(appDir, f) && isAppCodeFile(relativeTo(appDir, f)));
+  const appCode = scopedFiles.filter(
+    (f) => isWithin(appDir, f) && isAppCodeFile(relativeTo(appDir, f)),
+  );
   const dockerText = dockerfile ? await read(dockerfile) : undefined;
   const explicitPort = [scripts.start, procfileWeb]
     .flatMap((command) => (command ? portsInCommand(command) : []))
@@ -561,7 +584,10 @@ export async function detectProjectDetails(
 
   const facts: ProjectFacts = {
     name: name || "project",
-    languages: detectLanguages(files, units),
+    languages: detectLanguages(
+      scopedFiles,
+      units.filter((unit) => inScope(unit.dir)),
+    ),
     packageManager,
     frameworks,
     appKind,
@@ -578,6 +604,8 @@ export async function detectProjectDetails(
     },
     ...(healthEndpoint ? { healthEndpoint } : {}),
     monorepo,
+    // Always set: `.` when the facts describe the repository root.
+    appDir,
     git,
   };
 

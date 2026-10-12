@@ -4,6 +4,7 @@
  * commands, port, environment variables, services, builder platform and Docker files.
  * All paths are repo-relative POSIX paths on every platform.
  */
+export { DetectError, normalizeAppDir } from "./app-dir";
 export {
   type DetectOptions,
   detectProject,

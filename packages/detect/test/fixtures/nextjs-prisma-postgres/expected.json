@@ -43,5 +43,6 @@
   ],
   "docker": { "dockerfile": "Dockerfile", "dockerignore": ".dockerignore" },
   "healthEndpoint": "/api/health",
-  "monorepo": false
+  "monorepo": false,
+  "appDir": "."
 }

@@ -1,0 +1,15 @@
+{
+  "name": "duo",
+  "languages": ["javascript", "typescript"],
+  "packageManager": "pnpm",
+  "frameworks": [
+    { "name": "express", "version": "^5.0.1", "path": "apps/api" },
+    { "name": "next", "version": "^15.1.3", "path": "apps/web" },
+    { "name": "react", "version": "^19.0.0", "path": "apps/web" }
+  ],
+  "appKind": "unknown",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "services": [{ "kind": "postgres", "evidence": ["dependency:pg", "env:DATABASE_URL"] }],
+  "monorepo": true,
+  "appDir": "."
+}

@@ -43,7 +43,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-hetzner --filter=@opscrew/connector-github`
   - Effort: medium
 
-- [ ] T305 [P] [US4] Chosen app directory in detection in `packages/detect/src/`
+- [X] T305 [P] [US4] Chosen app directory in detection in `packages/detect/src/`
   - Owns: `packages/detect/src/**`, `packages/detect/test/**`
   - Reads: plan.md "Detection"; spec FR-307
   - Depends: T301
