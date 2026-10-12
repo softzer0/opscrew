@@ -6,7 +6,13 @@ import {
   type ProjectFacts,
   type Requirements,
 } from "@opscrew/plan-schema";
-import { type CodeChange, type CodeChangeSignals, healthRouteFor } from "./code-changes";
+import {
+  appDirOf,
+  appDockerfile,
+  type CodeChange,
+  type CodeChangeSignals,
+  healthRouteFor,
+} from "./code-changes";
 
 export interface OptionToPlanInput {
   facts: ProjectFacts;
@@ -83,6 +89,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       name: appNameFor(facts),
       port: appPortFor(facts),
       healthPath: healthRouteFor(facts, input.signals).path,
+      // An app in a subfolder is built from the repository root (`buildContext` stays `.`).
+      ...(appDirOf(facts) !== "." ? { dockerfile: appDockerfile(facts).path } : {}),
       env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     },
     target: {

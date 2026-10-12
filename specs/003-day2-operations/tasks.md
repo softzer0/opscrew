@@ -77,7 +77,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
 
-- [ ] T309 [US4] Monorepo app selection across analyze, interview, design and adapt in `packages/agents/src/{analyze,interview,design,adapt}/`
+- [X] T309 [US4] Monorepo app selection across analyze, interview, design and adapt in `packages/agents/src/{analyze,interview,design,adapt}/`
   - Owns: the monorepo-related parts of `packages/agents/src/{analyze,interview,design,adapt}/**` and their tests
   - Reads: plan.md "Monorepo"; spec US4, FR-307
   - Depends: T303, T305

@@ -43,9 +43,27 @@ describe("summarizeFacts for a monorepo with several apps", () => {
     const { risks } = summarizeFacts(ambiguousMonorepo(), options);
     const text = risks.join("\n");
     expect(text).toMatch(/several deployable apps \(`apps\/api` and `apps\/web`\)/);
-    expect(text).toMatch(/one app per repository/);
+    expect(text).toMatch(/stops until you choose which/);
+    expect(text).toMatch(/`opscrew interview`/);
+    expect(text).toMatch(/`opscrew analyze --app apps\/api`/);
     expect(text).not.toMatch(/no known web framework/);
     expect(text).not.toMatch(/could not tell what kind of app/);
+  });
+
+  it("describes a chosen app in a subfolder without the several-apps risk", () => {
+    const facts = {
+      ...ambiguousMonorepo(),
+      appKind: "api" as const,
+      appDir: "apps/api",
+      frameworks: [{ name: "express", path: "apps/api" }],
+    };
+    const { summary, risks } = summarizeFacts(facts);
+    expect(summary).toContain("built with Express");
+    expect(summary).toContain(
+      "It lives in `apps/api` of a monorepo and is built from the repository root.",
+    );
+    expect(summary).not.toContain("The repository is a monorepo.");
+    expect(risks.join("\n")).not.toMatch(/several deployable apps/);
   });
 
   it("names a candidate without a detected framework plainly", () => {

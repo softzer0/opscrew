@@ -2,8 +2,14 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isUserFacingError } from "@opscrew/core";
 import { FakeAgentRuntime, fakeSecret, materializeFixture } from "@opscrew/core/testing";
-import { type Architecture, type ProjectFacts, readArtifact } from "@opscrew/plan-schema";
+import {
+  type Architecture,
+  type ProjectFacts,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
 import {
@@ -16,6 +22,10 @@ import {
 } from "./index";
 
 const examples = fileURLToPath(new URL("../../../../examples/", import.meta.url));
+/** The detect fixture with an Express API in `apps/api` and a Next.js app in `apps/web`. */
+const TWO_APPS = fileURLToPath(
+  new URL("../../../detect/test/fixtures/monorepo-two-apps/", import.meta.url),
+);
 
 async function project(example: string) {
   const root = await mkdtemp(join(tmpdir(), `opscrew-analyze-${example}-`));
@@ -354,6 +364,87 @@ describe("runAnalyze", () => {
     expect(runtime.requests).toHaveLength(0);
     expect(result.aiSkippedReason).toMatch(/No API key was found\. Set ANTHROPIC_API_KEY\./);
     expect(result.architecture.aiEnriched).toBe(false);
+  });
+
+  describe("in a repository with several apps", () => {
+    async function twoApps() {
+      const root = await mkdtemp(join(tmpdir(), "opscrew-analyze-two-apps-"));
+      await materializeFixture(TWO_APPS, root);
+      return createTestPhaseDeps({ root });
+    }
+
+    it("describes the root and reports the candidates when no app is chosen", async () => {
+      const deps = await twoApps();
+      const { architecture } = await runAnalyze(deps, { ai: false });
+      expect(architecture.facts.appDir).toBe(".");
+      expect(architecture.risks.join("\n")).toMatch(
+        /several deployable apps \(`apps\/api` and `apps\/web`\)/,
+      );
+    });
+
+    it("describes the app given with appDir, without the several-apps risk", async () => {
+      const deps = await twoApps();
+      const { architecture } = await runAnalyze(deps, { ai: false, appDir: "./apps/api/" });
+      expect(architecture.facts.appDir).toBe("apps/api");
+      expect(architecture.facts.appKind).toBe("api");
+      expect(architecture.facts.frameworks.map((f) => f.name)).toEqual(["express"]);
+      expect(architecture.risks.join("\n")).not.toMatch(/several deployable apps/);
+      expect(architecture.summary).toContain("It lives in `apps/api` of a monorepo");
+      expect((await deps.state.read()).phases.analyze?.summary).toMatch(/in apps\/api/);
+    });
+
+    it("takes the app chosen in requirements.yaml", async () => {
+      const deps = await twoApps();
+      await writeArtifact("requirements", deps.paths.files.requirements, {
+        schemaVersion: 1,
+        answeredAt: "2026-10-11T11:00:00.000Z",
+        expectedMonthlyUsers: "<1k",
+        budgetMonthly: { amount: 10, currency: "EUR" },
+        region: "eu-central",
+        uptime: "standard",
+        dataCriticality: "none",
+        dnsProvider: "none",
+        keepExternalServices: [],
+        appDir: "apps/web",
+      });
+      const { architecture } = await runAnalyze(deps, { ai: false });
+      expect(architecture.facts.appDir).toBe("apps/web");
+      expect(architecture.facts.appKind).toBe("ssr");
+      expect(deps.reporter.text()).toMatch(/apps\/web \(chosen earlier/);
+
+      // The option wins over the requirements.
+      const option = await runAnalyze(deps, { ai: false, appDir: "apps/api" });
+      expect(option.architecture.facts.appDir).toBe("apps/api");
+      // ...and records the new choice there, so design never sees two different apps.
+      expect((await readArtifact("requirements", deps.paths.files.requirements)).appDir).toBe(
+        "apps/api",
+      );
+    });
+
+    it("keeps the app chosen with --app on the next plain analyze, until --app .", async () => {
+      const deps = await twoApps();
+      await runAnalyze(deps, { ai: false, appDir: "apps/api" });
+      const again = await runAnalyze(deps, { ai: false });
+      expect(again.architecture.facts.appDir).toBe("apps/api");
+      const reset = await runAnalyze(deps, { ai: false, appDir: "." });
+      expect(reset.architecture.facts.appDir).toBe(".");
+      const afterReset = await runAnalyze(deps, { ai: false });
+      expect(afterReset.architecture.facts.appDir).toBe(".");
+    });
+
+    it("rejects an unknown app folder with the candidates and writes nothing", async () => {
+      const deps = await twoApps();
+      const error = await runAnalyze(deps, { ai: false, appDir: "apps/nope" }).catch(
+        (e: unknown) => e,
+      );
+      expect(error).toMatchObject({ code: "INVALID_INPUT" });
+      expect((error as Error).message).toMatch(/apps\/api, apps\/web/);
+      expect(isUserFacingError(error)).toBe(true);
+      await expect(readFile(deps.paths.files.architecture, "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect((await deps.state.read()).phases.analyze?.status).toBe("failed");
+    });
   });
 
   it("does not call the model with ai: false", async () => {

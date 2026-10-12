@@ -97,6 +97,26 @@ describe("Code-change prompts", () => {
     expect(prompt).toContain("DATABASE_URL, STRIPE_SECRET_KEY");
     expect(prompt).toContain("Report exactly these change ids: health-endpoint, build-config.");
     expect(prompt).not.toContain("### dockerfile");
+    expect(prompt).not.toContain("App folder");
+  });
+
+  it("names the app folder of an app in a monorepo", () => {
+    const facts = {
+      ...nextFacts(),
+      monorepo: true,
+      appDir: "apps/web",
+      frameworks: [{ name: "next", path: "apps/web" }],
+    };
+    const plan = makePlan(nextChanges());
+    const prompt = buildCodeChangePrompt({
+      facts,
+      plan: { ...plan, app: { ...plan.app, dockerfile: "apps/web/Dockerfile" } },
+      changes: nextChanges().filter((c) => c.kind === "health-endpoint"),
+      playbook: playbookFor(facts),
+    });
+    expect(prompt).toContain("- App folder: apps/web");
+    expect(prompt).toContain("never the other apps");
+    expect(prompt).toContain("built from the repository root with apps/web/Dockerfile");
   });
 
   it("validates the agent report", () => {

@@ -1,6 +1,7 @@
 import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { CodeChange } from "../design";
+import { appDirOf } from "../design/code-changes";
 import { type Playbook, playbookInstructions } from "./playbooks";
 
 /** Default model for the Code-change agent. */
@@ -55,10 +56,17 @@ export function buildCodeChangePrompt(input: CodeChangePromptInput): string {
     f.path === "." ? f.name : `${f.name} (${f.path})`,
   );
   const envNames = plan.app.env.map((variable) => variable.name);
+  const appDir = appDirOf(facts);
   const lines: string[] = [
     `Prepare the app "${facts.name}" for a production container.`,
     "",
     "## Project",
+    ...(appDir === "."
+      ? []
+      : [
+          `- App folder: ${appDir} (this repository holds several apps; change only this app and the files listed below, never the other apps)`,
+          `- The container image is built from the repository root with ${plan.app.dockerfile}, so code shared from other folders of the repository is available at build time`,
+        ]),
     `- Languages: ${facts.languages.join(", ") || "unknown"}`,
     `- Frameworks: ${frameworks.join(", ") || "none detected"}`,
     `- Package manager: ${facts.packageManager}`,

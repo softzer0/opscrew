@@ -305,7 +305,7 @@ describe("runDesign", () => {
     expect(result.plan.updatedAt).toBe("2026-10-12T08:00:00.000Z");
   });
 
-  it("stops when a monorepo has several deployable apps (one app per repository in v1)", async () => {
+  it("stops when a monorepo has several deployable apps and none was chosen", async () => {
     const deps = await setup(nextPostgresFacts());
     await materializeFixture(MONOREPO_FIXTURE, deps.paths.root);
 
@@ -318,13 +318,55 @@ describe("runDesign", () => {
       const { message, hint } = error as { message: string; hint: string };
       expect(message).toContain("`apps/api` (Express)");
       expect(message).toContain("`apps/web` (Next.js");
-      expect(message).toContain("OpsCrew v1 deploys one app per repository");
-      expect(hint).toMatch(/run OpsCrew from the app's folder/);
-      expect(hint).toMatch(/self-contained/);
-      expect(hint).toMatch(/monorepo support/);
+      expect(message).toContain("OpsCrew deploys one app, so choose which one");
+      expect(hint).toMatch(/`opscrew interview` and pick the app/);
+      expect(hint).toMatch(/`opscrew analyze --app apps\/api`/);
     }
     await expect(readFile(deps.paths.files.plan, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect((await deps.state.read()).phases.design?.status).toBe("failed");
+  });
+
+  it("designs the chosen app of a monorepo, built from the repository root", async () => {
+    const facts = nextPostgresFacts({
+      monorepo: true,
+      appDir: "apps/web",
+      frameworks: [{ name: "next", version: "15.0.0", path: "apps/web" }],
+    });
+    const deps = await setup(facts, makeRequirements({ appDir: "apps/web" }));
+    await materializeFixture(MONOREPO_FIXTURE, deps.paths.root);
+
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.plan.app.dockerfile).toBe("apps/web/Dockerfile");
+    expect(result.plan.app.buildContext).toBe(".");
+    const paths = Object.fromEntries(result.plan.codeChanges.map((c) => [c.id, c.path]));
+    expect(paths.dockerfile).toBe("apps/web/Dockerfile");
+    expect(paths.dockerignore).toBe(".dockerignore");
+    // Ports and server entries of the other app (apps/api) are not this app's changes.
+    expect(result.plan.codeChanges.some((c) => c.path.startsWith("apps/api/"))).toBe(false);
+    expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(result.plan);
+  });
+
+  it("does not stop without requirements.appDir when the analysis already chose an app", async () => {
+    const facts = nextPostgresFacts({
+      monorepo: true,
+      appDir: "apps/web",
+      frameworks: [{ name: "next", version: "15.0.0", path: "apps/web" }],
+    });
+    const deps = await setup(facts);
+    await materializeFixture(MONOREPO_FIXTURE, deps.paths.root);
+    const preview = await previewDesignOptions(deps, { catalog: euCatalog() });
+    expect(preview.options.length).toBeGreaterThan(0);
+  });
+
+  it("stops when the requirements choose an app the analysis does not describe", async () => {
+    const deps = await setup(nextPostgresFacts(), makeRequirements({ appDir: "apps/api" }));
+    await materializeFixture(MONOREPO_FIXTURE, deps.paths.root);
+    const error = await runDesign(deps, { catalog: euCatalog() }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("chooses the app in apps/api"),
+      hint: expect.stringContaining("Run `opscrew analyze`"),
+    });
   });
 
   it("designs a monorepo with a single deployable app", async () => {

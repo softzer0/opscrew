@@ -82,6 +82,30 @@ function joinRel(dir: string, file: string): string {
   return isRootDir(dir) ? file : `${dir.replace(/\/+$/, "")}/${file}`;
 }
 
+/** Repo-relative folder of the app the facts describe (`.` for the repository root). */
+export function appDirOf(facts: ProjectFacts): string {
+  const dir = (facts.appDir ?? ".").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+  return isRootDir(dir) ? "." : dir;
+}
+
+function isInDir(dir: string, file: string): boolean {
+  return isRootDir(dir) || file.startsWith(`${dir}/`);
+}
+
+/**
+ * The Dockerfile the deployment builds and whether it exists. At the repository root that is
+ * `Dockerfile` (present when detection found any Dockerfile). For an app in a subfolder it is a
+ * Dockerfile detected inside that folder, otherwise `<appDir>/Dockerfile`, which adapt creates;
+ * the build context is the repository root either way.
+ */
+export function appDockerfile(facts: ProjectFacts): { path: string; exists: boolean } {
+  const dir = appDirOf(facts);
+  const found = facts.docker.dockerfile;
+  if (dir === ".") return { path: "Dockerfile", exists: found !== undefined };
+  if (found !== undefined && isInDir(dir, found)) return { path: found, exists: true };
+  return { path: joinRel(dir, "Dockerfile"), exists: false };
+}
+
 function nextDir(facts: ProjectFacts): string | undefined {
   return facts.frameworks.find((framework) => framework.name === "next")?.path;
 }
@@ -123,7 +147,10 @@ export async function collectCodeChangeSignals(
     }
   }
 
+  // Only the chosen app's folder counts in a repository with several apps.
+  const appDir = appDirOf(facts);
   const sources = files
+    .filter((file) => isInDir(appDir, file))
     .filter((file) => SOURCE_FILE.test(file) && !TEST_FILE.test(file) && !/\.d\.ts$/.test(file))
     .filter((file) => !/(?:^|\/)(?:next|vite|vitest|jest|webpack|tailwind)\.config\./.test(file))
     .sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : 1))
@@ -143,6 +170,7 @@ export async function collectCodeChangeSignals(
 
   if (usesDjango(facts)) {
     const settings = files
+      .filter((file) => isInDir(appDir, file))
       .filter((file) => DJANGO_SETTINGS.test(file) && !TEST_FILE.test(file))
       .sort((a, b) => depth(a) - depth(b) || (a < b ? -1 : 1));
     const main = settings.find((file) => file.endsWith("/settings.py") || file === "settings.py");
@@ -208,15 +236,21 @@ export function deriveCodeChanges(
     changes.push({ id, kind, path, reason, status: "pending" });
   };
 
-  if (facts.docker.dockerfile === undefined) {
+  const dockerfile = appDockerfile(facts);
+  if (!dockerfile.exists) {
     add(
       "dockerfile",
       "dockerfile",
-      "Dockerfile",
+      dockerfile.path,
       "The app has no Dockerfile; OpsCrew adds a production Dockerfile for the detected stack that runs as a non-root user.",
     );
   }
-  if (facts.docker.dockerignore === undefined) {
+  // The build context is the repository root, so that is where `.dockerignore` must be.
+  const rootIgnore =
+    appDirOf(facts) === "."
+      ? facts.docker.dockerignore !== undefined
+      : facts.docker.dockerignore === ".dockerignore";
+  if (!rootIgnore) {
     add(
       "dockerignore",
       "dockerignore",

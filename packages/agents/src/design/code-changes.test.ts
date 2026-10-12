@@ -211,6 +211,48 @@ describe("collectCodeChangeSignals", () => {
     );
   });
 
+  it("looks only inside the chosen app's folder of a monorepo", async () => {
+    const root = await project({
+      "package.json": "{}",
+      "apps/api/package.json": "{}",
+      "apps/api/src/server.js": "const app = express();\napp.listen(4001);\n",
+      "apps/worker/src/server.js": "const app = express();\napp.listen(5000);\n",
+    });
+    const facts = makeFacts({
+      appDir: "apps/api",
+      monorepo: true,
+      frameworks: [{ name: "express", path: "apps/api" }],
+    });
+    const signals = await collectCodeChangeSignals(root, facts);
+    expect(signals.hardcodedPortFiles).toEqual(["apps/api/src/server.js"]);
+    expect(signals.serverEntry).toBe("apps/api/src/server.js");
+
+    const changes = deriveCodeChanges(facts, undefined, signals);
+    const paths = Object.fromEntries(changes.map((c) => [c.id, c.path]));
+    expect(paths).toMatchObject({
+      dockerfile: "apps/api/Dockerfile",
+      dockerignore: ".dockerignore",
+      "health-endpoint": "apps/api/src/server.js",
+      "port-config-1": "apps/api/src/server.js",
+    });
+  });
+
+  it("keeps a Dockerfile inside the app folder and asks for a .dockerignore at the root", () => {
+    const facts = makeFacts({
+      appDir: "apps/api",
+      docker: { dockerfile: "apps/api/Dockerfile", dockerignore: "apps/api/.dockerignore" },
+    });
+    const kinds = deriveCodeChanges(facts).map((c) => [c.kind, c.path]);
+    expect(kinds).not.toContainEqual(["dockerfile", expect.any(String)]);
+    expect(kinds).toContainEqual(["dockerignore", ".dockerignore"]);
+
+    // A Dockerfile elsewhere (for example the root) does not build this app.
+    const elsewhere = makeFacts({ appDir: "apps/api", docker: { dockerfile: "Dockerfile" } });
+    expect(deriveCodeChanges(elsewhere).find((c) => c.kind === "dockerfile")?.path).toBe(
+      "apps/api/Dockerfile",
+    );
+  });
+
   it("asks a Django app without STATIC_ROOT to set it, so collectstatic works in the image", async () => {
     const facts = makeFacts({
       languages: ["python"],

@@ -304,4 +304,148 @@ describe("runInterview", () => {
     expect(result.requirements.region).toBe("eu-central");
     expect(deps.reporter.text()).toMatch(/not valid; its answers are not reused/);
   });
+
+  it("does not ask which app to deploy in a single-app repository", async () => {
+    const deps = await createTestPhaseDeps({ root: await project("nextjs-postgres") });
+    await runAnalyze(deps, { ai: false });
+    const before = await readFile(deps.paths.files.architecture, "utf8");
+    const result = await runInterview(deps, {
+      answers: { ...BASE_ANSWERS, dataCriticality: "important" },
+    });
+    expect(ids(result.questions)).not.toContain("appDir");
+    expect(result.requirements.appDir).toBeUndefined();
+    expect(result.reanalyzed).toBe(false);
+    expect(await readFile(deps.paths.files.architecture, "utf8")).toBe(before);
+  });
+});
+
+describe("choosing one app in a monorepo", () => {
+  /** The detect fixture with an Express API in `apps/api` and a Next.js app in `apps/web`. */
+  const TWO_APPS = fileURLToPath(
+    new URL("../../../detect/test/fixtures/monorepo-two-apps/", import.meta.url),
+  );
+  const CANDIDATES = ["apps/api", "apps/web"];
+  const rootFacts = (): ProjectFacts => ({
+    ...facts(),
+    appKind: "unknown",
+    monorepo: true,
+    appDir: ".",
+    frameworks: [
+      { name: "express", path: "apps/api" },
+      { name: "next", path: "apps/web" },
+      { name: "react", path: "apps/web" },
+    ],
+  });
+
+  async function twoApps() {
+    const root = await mkdtemp(join(tmpdir(), "opscrew-interview-two-apps-"));
+    await materializeFixture(TWO_APPS, root);
+    const deps = await createTestPhaseDeps({ root });
+    await runAnalyze(deps, { ai: false });
+    return deps;
+  }
+
+  it("asks first which app to deploy, describing each candidate", () => {
+    const questions = buildQuestions(rootFacts(), undefined, CANDIDATES);
+    const [first] = questions;
+    expect(first).toMatchObject({ id: "appDir", kind: "single-select", required: true });
+    expect(first?.options).toEqual([
+      { value: "apps/api", label: "apps/api", hint: "Express" },
+      { value: "apps/web", label: "apps/web", hint: "Next.js and React" },
+    ]);
+    expect(first?.default).toBeUndefined();
+    expect(QuestionSchema.safeParse(first).success).toBe(true);
+
+    const previous = answersToRequirements(
+      { ...BASE_ANSWERS, appDir: "apps/web" },
+      { now, facts: rootFacts(), appCandidates: CANDIDATES },
+    );
+    expect(buildQuestions(rootFacts(), previous, CANDIDATES)[0]?.default).toBe("apps/web");
+  });
+
+  it("does not ask with one candidate or when the facts already describe an app", () => {
+    expect(ids(buildQuestions(rootFacts(), undefined, ["apps/api"]))).not.toContain("appDir");
+    expect(
+      ids(buildQuestions({ ...rootFacts(), appDir: "apps/api" }, undefined, CANDIDATES)),
+    ).not.toContain("appDir");
+    expect(ids(buildQuestions(rootFacts()))).not.toContain("appDir");
+  });
+
+  it("normalises the chosen folder and rejects one that is not a candidate", () => {
+    const options = { now, facts: rootFacts(), appCandidates: CANDIDATES };
+    expect(
+      answersToRequirements({ ...BASE_ANSWERS, appDir: ".\\apps\\api\\" }, options).appDir,
+    ).toBe("apps/api");
+    expect(() =>
+      answersToRequirements({ ...BASE_ANSWERS, appDir: "apps/admin" }, options),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "INVALID_INPUT",
+        message: expect.stringContaining(
+          'appDir: "apps/admin" is not one of the apps OpsCrew found (apps/api, apps/web)',
+        ),
+      }),
+    );
+    expect(() => answersToRequirements(BASE_ANSWERS, options)).toThrowError(
+      expect.objectContaining({ message: expect.stringContaining("appDir (app to deploy)") }),
+    );
+  });
+
+  it("keeps an app chosen by the analysis over an older answer", () => {
+    const previous = answersToRequirements(
+      { ...BASE_ANSWERS, appDir: "apps/web" },
+      { now, facts: rootFacts(), appCandidates: CANDIDATES },
+    );
+    const chosen = { ...rootFacts(), appDir: "apps/api" };
+    expect(answersToRequirements({}, { now, previous, facts: chosen }).appDir).toBe("apps/api");
+    expect(answersToRequirements({}, { now, previous, facts: rootFacts() }).appDir).toBe(
+      "apps/web",
+    );
+  });
+
+  it("asks for the app, then analyses the chosen app again without AI", async () => {
+    const deps = await twoApps();
+    const before = await readArtifact("architecture", deps.paths.files.architecture);
+    expect(before.facts.appDir).toBe(".");
+    expect(before.risks.join("\n")).toMatch(/several deployable apps/);
+
+    let asked: Question[] = [];
+    const result = await runInterview(deps, {
+      ask: async (questions) => {
+        asked = questions;
+        return { ...BASE_ANSWERS, appDir: "apps/api", dataCriticality: "important" };
+      },
+    });
+    expect(asked[0]?.id).toBe("appDir");
+    expect(asked[0]?.options?.map((o) => o.value)).toEqual(CANDIDATES);
+    expect(result.requirements.appDir).toBe("apps/api");
+    expect(result.reanalyzed).toBe(true);
+
+    const after = await readArtifact("architecture", deps.paths.files.architecture);
+    expect(after.facts.appDir).toBe("apps/api");
+    expect(after.facts.frameworks.map((f) => f.name)).toEqual(["express"]);
+    expect(after.aiEnriched).toBe(false);
+    expect(after.risks.join("\n")).not.toMatch(/several deployable apps/);
+    expect(deps.reporter.text()).toMatch(/AI review was not re-run/);
+    expect((await readArtifact("requirements", deps.paths.files.requirements)).appDir).toBe(
+      "apps/api",
+    );
+
+    // A re-run keeps the choice without asking or analysing again.
+    const again = await runInterview(deps, { answers: {} });
+    expect(ids(again.questions)).not.toContain("appDir");
+    expect(again.requirements.appDir).toBe("apps/api");
+    expect(again.reanalyzed).toBe(false);
+  });
+
+  it("writes nothing when the chosen app is not one of the candidates", async () => {
+    const deps = await twoApps();
+    const before = await readFile(deps.paths.files.architecture, "utf8");
+    await expect(
+      runInterview(deps, { answers: { ...BASE_ANSWERS, appDir: "apps/nope" } }),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(readFile(deps.paths.files.requirements, "utf8")).rejects.toThrow();
+    expect(await readFile(deps.paths.files.architecture, "utf8")).toBe(before);
+    expect((await deps.state.read()).phases.interview?.status).toBe("failed");
+  });
 });

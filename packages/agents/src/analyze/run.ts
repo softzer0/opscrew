@@ -1,6 +1,6 @@
 import type { PhaseResult } from "@opscrew/contracts";
 import { ensureStateDir, writeFileAtomic } from "@opscrew/core";
-import { detectProjectDetails } from "@opscrew/detect";
+import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   AppKindSchema,
   type Architecture,
@@ -8,6 +8,7 @@ import {
   PortSchema,
   type ProjectFacts,
   ProjectFactsSchema,
+  readArtifact,
   UrlPathSchema,
   writeArtifact,
 } from "@opscrew/plan-schema";
@@ -40,6 +41,12 @@ export interface AnalyzeOptions {
   ai?: boolean;
   /** Model id for the Analyst (default {@link DEFAULT_ANALYST_MODEL}). */
   model?: string;
+  /**
+   * Repo-relative directory of the app to describe in a repository with several apps (CLI
+   * `--app`). Default: `appDir` from `opscrew/requirements.yaml` when it is set there. An unknown
+   * directory fails with `INVALID_INPUT` listing the apps OpsCrew found.
+   */
+  appDir?: string;
 }
 
 export interface AnalyzeResult {
@@ -57,6 +64,10 @@ const MAX_BUDGET_USD = 0.5;
 
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
+/** ` in apps/api` for an app in a subfolder, empty for the repository root. */
+const inFolder = (facts: ProjectFacts) =>
+  facts.appDir !== undefined && facts.appDir !== "." ? ` in ${facts.appDir}` : "";
+
 /**
  * The analyze phase: detects the project, builds the deterministic architecture, optionally lets
  * the read-only Analyst refine the summary, risks and a few facts (app kind, port, start command,
@@ -73,7 +84,18 @@ export async function runAnalyze(
   try {
     await ensureStateDir(paths);
     reporter.step("Analysing the project");
-    const detection = await detectProjectDetails(paths.root);
+    const appDir = options.appDir ?? (await chosenAppDir(deps));
+    if (appDir !== undefined && normalizeAppDir(appDir) !== ".") {
+      const source =
+        options.appDir !== undefined
+          ? ""
+          : " (chosen earlier; `--app .` describes the whole repository)";
+      reporter.info(`Describing the app in ${normalizeAppDir(appDir)}${source}.`);
+    }
+    const detection = await detectProjectDetails(
+      paths.root,
+      appDir !== undefined ? { appDir } : {},
+    );
     if (detection.truncated) {
       reporter.warn(
         "The repository has more files than OpsCrew inspects (20,000); detection may be incomplete.",
@@ -104,13 +126,14 @@ export async function runAnalyze(
     await writeArtifact("architecture", paths.files.architecture, architecture);
     await writeFileAtomic(paths.files.architectureMd, markdown, { mode: 0o644 });
     reporter.success("Wrote opscrew/architecture.json and opscrew/ARCHITECTURE.md.");
+    if (options.appDir !== undefined) await recordAppChoice(deps, architecture.facts.appDir ?? ".");
 
     const { facts } = architecture;
     const riskCount = architecture.risks.length;
     await deps.state.markPhase(
       "analyze",
       "ok",
-      `${APP_KIND_LABELS[facts.appKind]}; ${riskCount} risk${riskCount === 1 ? "" : "s"}` +
+      `${APP_KIND_LABELS[facts.appKind]}${inFolder(facts)}; ${riskCount} risk${riskCount === 1 ? "" : "s"}` +
         (architecture.aiEnriched ? "; refined by the Analyst" : ""),
     );
     return {
@@ -123,6 +146,49 @@ export async function runAnalyze(
     await markFailed(deps, error);
     throw error;
   }
+}
+
+/**
+ * The app directory chosen earlier: `appDir` in `opscrew/requirements.yaml`, else the one the
+ * previous `opscrew/architecture.json` describes (so `opscrew analyze --app <dir>` sticks until the
+ * user picks another app or `--app .`). Missing or invalid files mean no choice.
+ */
+async function chosenAppDir(deps: PhaseDeps): Promise<string | undefined> {
+  try {
+    const fromRequirements = (await readArtifact("requirements", deps.paths.files.requirements))
+      .appDir;
+    if (fromRequirements !== undefined) return fromRequirements;
+  } catch {
+    // no requirements yet
+  }
+  try {
+    const previous = (await readArtifact("architecture", deps.paths.files.architecture)).facts
+      .appDir;
+    return previous !== undefined && previous !== "." ? previous : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * An explicit app choice also updates `opscrew/requirements.yaml` when it exists, so design never
+ * sees requirements and facts describing different apps.
+ */
+async function recordAppChoice(deps: PhaseDeps, appDir: string): Promise<void> {
+  let requirements: Awaited<ReturnType<typeof readArtifact<"requirements">>>;
+  try {
+    requirements = await readArtifact("requirements", deps.paths.files.requirements);
+  } catch {
+    return;
+  }
+  if ((requirements.appDir ?? ".") === appDir) return;
+  const { appDir: _previous, ...rest } = requirements;
+  await writeArtifact(
+    "requirements",
+    deps.paths.files.requirements,
+    appDir === "." ? rest : { ...rest, appDir },
+  );
+  deps.reporter.info("Updated the app to deploy in opscrew/requirements.yaml.");
 }
 
 async function markFailed(deps: PhaseDeps, error: unknown): Promise<void> {

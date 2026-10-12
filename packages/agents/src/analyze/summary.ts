@@ -167,7 +167,13 @@ function summaryText(facts: ProjectFacts, options: SummarizeOptions): string {
   if (facts.platformExport.platform !== "none") {
     sentences.push(`It was exported from ${PLATFORM_NAMES[facts.platformExport.platform]}.`);
   }
-  if (facts.monorepo && !severalApps(options)) sentences.push("The repository is a monorepo.");
+  if (facts.appDir !== undefined && facts.appDir !== ".") {
+    sentences.push(
+      `It lives in \`${facts.appDir}\`${facts.monorepo ? " of a monorepo" : ""} and is built from the repository root.`,
+    );
+  } else if (facts.monorepo && !severalApps(options)) {
+    sentences.push("The repository is a monorepo.");
+  }
   if (facts.packageManager !== "none") {
     sentences.push(`Dependencies are installed with ${facts.packageManager}.`);
   }
@@ -202,8 +208,8 @@ function risksFor(facts: ProjectFacts, options: SummarizeOptions): string[] {
   if (severalApps(options)) {
     risks.push(
       `This repository contains several deployable apps (${listText(candidates.map((c) => `\`${c}\``))}). ` +
-        "OpsCrew v1 deploys one app per repository, so `opscrew design` stops here. If the app you " +
-        "want to deploy is self-contained, run OpsCrew from its folder; otherwise wait for monorepo support.",
+        "OpsCrew deploys one of them, so `opscrew design` stops until you choose which: answer the " +
+        `question in \`opscrew interview\`, or run \`opscrew analyze --app ${candidates[0]}\`.`,
     );
   } else if (facts.appKind === "unknown") {
     risks.push(

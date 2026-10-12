@@ -1,4 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
+import { normalizeAppDir } from "@opscrew/detect";
 import {
   type Money,
   type ProjectFacts,
@@ -7,7 +8,7 @@ import {
   type Requirements,
   RequirementsSchema,
 } from "@opscrew/plan-schema";
-import { type InterviewAnswers, inferredAnswers } from "./questions";
+import { describesRoot, type InterviewAnswers, inferredAnswers } from "./questions";
 
 /** Options for {@link answersToRequirements}. */
 export interface AnswersToRequirementsOptions {
@@ -17,6 +18,11 @@ export interface AnswersToRequirementsOptions {
   previous?: Requirements;
   /** Project facts; used to infer answers for questions that were not asked. */
   facts?: ProjectFacts;
+  /**
+   * Deployable app directories when the facts describe a repository root with several apps. With
+   * more than one, `appDir` is required and must be one of them.
+   */
+  appCandidates?: readonly string[];
 }
 
 /** Requirements fields that must have an answer (from the answers, previous run or inference). */
@@ -133,8 +139,10 @@ function serviceList(value: unknown): unknown {
 /**
  * Turns interview answers into validated requirements. Answers that were not given fall back to
  * the previous requirements, then to answers inferred from `facts`. The domain is normalised; without
- * a domain the DNS provider is `none`. Throws `OpsCrewError("INVALID_INPUT")` listing unknown keys,
- * missing required answers or invalid values.
+ * a domain the DNS provider is `none`. The app folder (`appDir`) is normalised and, when
+ * `appCandidates` is given, must be one of them; without an answer it comes from facts that
+ * describe a chosen app folder, then from the previous requirements. Throws
+ * `OpsCrewError("INVALID_INPUT")` listing unknown keys, missing required answers or invalid values.
  */
 export function answersToRequirements(
   answers: InterviewAnswers,
@@ -152,16 +160,24 @@ export function answersToRequirements(
   }
 
   const inferred = options.facts !== undefined ? inferredAnswers(options.facts) : {};
+  // An app folder chosen in the analysis (`opscrew analyze --app`) wins over an older answer.
+  if (options.facts !== undefined && !describesRoot(options.facts)) {
+    inferred.appDir = options.facts.appDir;
+  }
+  const appCandidates = options.appCandidates ?? [];
+  const required: readonly QuestionId[] =
+    appCandidates.length > 1 ? [...REQUIRED, "appDir"] : REQUIRED;
   const previous = options.previous as Partial<Record<QuestionId, unknown>> | undefined;
+  const given = (id: QuestionId) => Object.hasOwn(answers, id) && !isBlank(answers[id]);
   const pick = (id: QuestionId): unknown => {
-    const given = answers[id];
-    if (Object.hasOwn(answers, id) && !isBlank(given)) return given;
+    if (given(id)) return answers[id];
     // An explicit empty answer clears an optional field instead of reusing the previous value.
-    if (Object.hasOwn(answers, id) && !REQUIRED.includes(id)) return undefined;
+    if (Object.hasOwn(answers, id) && !required.includes(id)) return undefined;
+    if (id === "appDir") return inferred.appDir ?? previous?.appDir;
     return previous?.[id] ?? inferred[id];
   };
 
-  const missing = REQUIRED.filter((id) => isBlank(pick(id)));
+  const missing = required.filter((id) => isBlank(pick(id)));
   if (missing.length > 0) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -194,6 +210,15 @@ export function answersToRequirements(
       value = value.trim();
     }
     if (id === "keepExternalServices") value = serviceList(value);
+    if (id === "appDir" && typeof value === "string") {
+      value = normalizeAppDir(value);
+      if (given(id) && appCandidates.length > 0 && !appCandidates.includes(value as string)) {
+        problems.push(
+          `appDir: ${JSON.stringify(String(answers[id]).trim().slice(0, 200))} is not one of the apps OpsCrew found (${appCandidates.join(", ")})`,
+        );
+        continue;
+      }
+    }
     if (isBlank(value)) continue;
     draft[id] = value;
   }

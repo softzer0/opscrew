@@ -6,6 +6,7 @@ import {
   type Requirements,
   type ServiceKind,
 } from "@opscrew/plan-schema";
+import { frameworkName, listText } from "../analyze/summary";
 
 /** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
 export type InterviewAnswers = Record<string, unknown>;
@@ -39,14 +40,51 @@ export function inferredAnswers(facts: ProjectFacts): Partial<Record<QuestionId,
   return inferred;
 }
 
+/** True when the facts describe the repository root (no app folder was chosen). */
+export function describesRoot(facts: ProjectFacts): boolean {
+  return facts.appDir === undefined || facts.appDir === ".";
+}
+
+/** Short description of a candidate app from the frameworks detected in its folder. */
+function candidateHint(facts: ProjectFacts, dir: string): string | undefined {
+  const names = [
+    ...new Set(facts.frameworks.filter((f) => f.path === dir).map((f) => frameworkName(f.name))),
+  ];
+  return names.length > 0 ? listText(names) : undefined;
+}
+
 const withDefault = <T>(value: T | undefined) => (value === undefined ? {} : { default: value });
 
 /**
  * The interview questions for a project: only those that cannot be inferred from the facts, with
- * previous answers pre-filled as defaults. Every question is validated with `QuestionSchema`.
+ * previous answers pre-filled as defaults. When the facts describe the repository root and
+ * `appCandidates` (from `detectProjectDetails`) lists several apps, the first question asks which
+ * one to deploy (`appDir`). Every question is validated with `QuestionSchema`.
  */
-export function buildQuestions(facts: ProjectFacts, previous?: Requirements): Question[] {
-  const questions: Question[] = [
+export function buildQuestions(
+  facts: ProjectFacts,
+  previous?: Requirements,
+  appCandidates: readonly string[] = [],
+): Question[] {
+  const questions: Question[] = [];
+  if (describesRoot(facts) && appCandidates.length > 1) {
+    const previousApp = previous?.appDir;
+    questions.push({
+      id: "appDir",
+      prompt: "This repository contains several apps. Which one should OpsCrew deploy?",
+      help: "OpsCrew deploys one app. It builds the app from the repository root, so code shared from other folders is included.",
+      kind: "single-select",
+      options: appCandidates.map((dir) => {
+        const hint = candidateHint(facts, dir);
+        return { value: dir, label: dir, ...(hint !== undefined ? { hint } : {}) };
+      }),
+      ...withDefault(
+        previousApp !== undefined && appCandidates.includes(previousApp) ? previousApp : undefined,
+      ),
+      required: true,
+    });
+  }
+  questions.push(
     {
       id: "expectedMonthlyUsers",
       prompt: "How many people will use the app each month?",
@@ -104,7 +142,7 @@ export function buildQuestions(facts: ProjectFacts, previous?: Requirements): Qu
       default: previous?.uptime ?? "standard",
       required: true,
     },
-  ];
+  );
 
   if (storesData(facts)) {
     questions.push({

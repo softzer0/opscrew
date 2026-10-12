@@ -101,12 +101,29 @@ export interface AdaptResult {
   pullRequest?: PullRequest;
 }
 
-/** Code-change kinds OpsCrew writes from templates, and the rendered file each one uses. */
-const DETERMINISTIC: Partial<Record<CodeChangeKind, string>> = {
-  dockerfile: "Dockerfile",
-  dockerignore: ".dockerignore",
-  "env-example": ".env.example",
+/**
+ * Code-change kinds OpsCrew writes from templates, and the rendered file each one uses: the
+ * Dockerfile is rendered in the app's folder (`<appDir>/Dockerfile`), the others at the repository
+ * root (the build context).
+ */
+const DETERMINISTIC: Partial<Record<CodeChangeKind, (path: string) => boolean>> = {
+  dockerfile: (path) => path === "Dockerfile" || path.endsWith("/Dockerfile"),
+  dockerignore: (path) => path === ".dockerignore",
+  "env-example": (path) => path === ".env.example",
 };
+
+/** The rendered template for a deterministic change, preferring one at the change's own path. */
+function templateFor(
+  change: CodeChange,
+  rendered: readonly RenderedFile[],
+): RenderedFile | undefined {
+  const matches = DETERMINISTIC[change.kind];
+  if (matches === undefined) return undefined;
+  return (
+    rendered.find((file) => file.path === change.path && matches(file.path)) ??
+    rendered.find((file) => matches(file.path))
+  );
+}
 
 const ScanFileSchema = z.looseObject({
   counts: z.partialRecord(z.enum(SEVERITIES), z.number().int().nonnegative()).optional(),
@@ -226,7 +243,13 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   }
   const toWrite: RenderedFile[] = [];
   for (const change of templated) {
-    const template = rendered.find((file) => file.path === DETERMINISTIC[change.kind]);
+    // Written at the change's path, which design sets to where the plan's build expects it.
+    const template = templateFor(change, rendered);
+    if (template !== undefined && template.path !== change.path) {
+      warn(
+        `The plan puts the ${change.kind} at ${change.path}, but OpsCrew would render it at ${template.path} for the analysed app. If you changed which app to deploy, run \`opscrew design\` again.`,
+      );
+    }
     if (template === undefined) {
       forAgent.push(change);
     } else if (await exists(join(paths.root, change.path))) {

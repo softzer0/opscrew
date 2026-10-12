@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { hetznerConnector, StaticHetznerCatalog } from "@opscrew/connector-hetzner";
 import type { ComputeCatalog } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
-import { detectProjectDetails } from "@opscrew/detect";
+import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -111,7 +111,7 @@ export async function previewDesignOptions(
   const facts =
     options.facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
   const requirements = await readArtifact("requirements", paths.files.requirements);
-  await requireSingleApp(paths.root);
+  await requireChosenApp(paths.root, facts, requirements);
   const now = deps.clock.now();
 
   let catalog = options.catalog;
@@ -226,11 +226,31 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
 }
 
 /**
- * OpsCrew v1 deploys one app per repository. Re-detects the repository (the saved facts may be
- * stale) and stops with `PHASE_PRECONDITION` when a monorepo has several deployable apps, instead
- * of designing a plan from the mixed facts of the repository root.
+ * OpsCrew deploys one app per repository. When neither the requirements nor the facts name an app
+ * folder, re-detects the repository (the saved facts may be stale) and stops with
+ * `PHASE_PRECONDITION` when it has several deployable apps, instead of designing a plan from the
+ * mixed facts of the repository root. When the requirements chose an app the analysis does not
+ * describe, stops and says how to bring them back in line.
  */
-async function requireSingleApp(root: string): Promise<void> {
+async function requireChosenApp(
+  root: string,
+  facts: ProjectFacts,
+  requirements: Requirements,
+): Promise<void> {
+  const factsDir = normalizeAppDir(facts.appDir ?? ".");
+  if (requirements.appDir !== undefined) {
+    const chosen = normalizeAppDir(requirements.appDir);
+    if (chosen === factsDir) return;
+    const described = factsDir === "." ? "the repository root" : factsDir;
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `opscrew/requirements.yaml chooses the app in ${chosen === "." ? "the repository root" : chosen}, but opscrew/architecture.json describes ${described}.`,
+      {
+        hint: `Run \`opscrew analyze\` to describe the chosen app${factsDir === "." ? "" : `, or \`opscrew interview\` to deploy ${factsDir} instead`}, then run \`opscrew design\` again.`,
+      },
+    );
+  }
+  if (factsDir !== ".") return;
   let detection: Awaited<ReturnType<typeof detectProjectDetails>>;
   try {
     detection = await detectProjectDetails(root);
@@ -241,9 +261,9 @@ async function requireSingleApp(root: string): Promise<void> {
   if (candidates.length <= 1) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `This repository contains ${candidates.length} deployable apps: ${appCandidatesText(detection.facts, candidates)}. OpsCrew v1 deploys one app per repository, so it cannot design one deployment for all of them.`,
+    `This repository contains ${candidates.length} deployable apps: ${appCandidatesText(detection.facts, candidates)}. OpsCrew deploys one app, so choose which one before designing the deployment.`,
     {
-      hint: `If the app you want to deploy is self-contained (it does not use code from other folders of this repository), run OpsCrew from the app's folder, for example \`cd ${candidates[0]}\` and then \`opscrew analyze\`. Otherwise wait for monorepo support in a later OpsCrew version.`,
+      hint: `Run \`opscrew interview\` and pick the app, or \`opscrew analyze --app ${candidates[0]}\`, then run \`opscrew design\` again.`,
     },
   );
 }
