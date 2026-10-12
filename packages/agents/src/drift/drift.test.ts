@@ -233,7 +233,7 @@ async function setup(options: SetupOptions = {}) {
   const engine = options.engine ?? new DriftEngine();
   const services: ProvisionServices = {
     engine: async () => engine,
-    hetzner: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     ...options.services,
   };
   return { ...project, deps, engine, handler, services, statePath, passphrase };
@@ -438,7 +438,9 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
 
   it("needs the Hetzner token", async () => {
     const { deps, engine, services } = await setup({
-      services: { hetzner: { configured: false, verify: async () => ({ ok: true, message: "" }) } },
+      services: {
+        provider: { configured: false, verify: async () => ({ ok: true, message: "" }) },
+      },
     });
     await expectError(runDrift(deps, { services }), "CREDENTIALS_MISSING");
     expect(engine.calls).toEqual([]);

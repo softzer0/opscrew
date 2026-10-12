@@ -6,7 +6,8 @@ import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engin
 import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { checkHetzner } from "../provision/credentials";
+import { planProvider } from "../providers";
+import { checkProvider } from "../provision/credentials";
 import { previewDeploymentFiles } from "../provision/render";
 import type { DriftOptions, DriftReport } from "./types";
 
@@ -128,7 +129,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   // 2. Credentials (Cloudflare inside the file preview) and the rendered-file comparison
   const usesCloudflare = plan.dns.provider === "cloudflare";
   deps.reporter.step(`Checking your Hetzner${usesCloudflare ? " and Cloudflare" : ""} access`);
-  await checkHetzner(deps, services);
+  await checkProvider(deps, planProvider(plan), services);
   deps.reporter.step("Comparing the generated files with what OpsCrew renders from the plan");
   const preview = await previewDeploymentFiles(deps, {
     services,

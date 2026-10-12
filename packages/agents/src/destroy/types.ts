@@ -21,7 +21,7 @@ export type DestroyCloudflareApi = Pick<CloudflareClient, "verifyToken">;
  * Collaborators that talk to the outside world, as in provisioning. Each defaults to the real
  * implementation built from `PhaseDeps` (env, fetch, runner); tests replace them with fakes.
  */
-export interface DestroyServices extends Pick<ProvisionServices, "engine" | "hetzner"> {
+export interface DestroyServices extends Pick<ProvisionServices, "engine" | "provider"> {
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: DestroyCloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */

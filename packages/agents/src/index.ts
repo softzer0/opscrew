@@ -7,6 +7,7 @@ export * from "./dns";
 export * from "./drift";
 export * from "./init";
 export * from "./interview";
+export * from "./providers";
 export * from "./provision";
 export * from "./secure";
 export * from "./shared";

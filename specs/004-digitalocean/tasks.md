@@ -54,7 +54,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
 
 ## Phase 3: Provider seam (lead, serial)
 
-- [ ] T405 Provider profiles, `vpsConnector`, `services.provider` rename and `checkProvider` (lead) in `packages/agents/src/providers/**`, `packages/agents/src/provision/{types,credentials}.ts` and the `checkHetzner` call sites (provision, drift, init), `packages/agents/src/index.ts`, tests and fixtures that use the old key (agents, `packages/cli/src/ui/__fixtures__/deploy.ts`, `packages/mcp-server/src/tools/deploy.test.ts`)
+- [X] T405 Provider profiles, `vpsConnector`, `services.provider` rename and `checkProvider` (lead) in `packages/agents/src/providers/**`, `packages/agents/src/provision/{types,credentials}.ts` and the `checkHetzner` call sites (provision, drift, init), `packages/agents/src/index.ts`, tests and fixtures that use the old key (agents, `packages/cli/src/ui/__fixtures__/deploy.ts`, `packages/mcp-server/src/tools/deploy.test.ts`)
   - Depends: T402, T403
   - Accept: plan.md "Provider seam"; `pnpm check` passes with Hetzner behaviour unchanged.
   - Effort: lead

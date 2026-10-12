@@ -283,7 +283,7 @@ export function provisionServices(
 ): ProvisionServices {
   return {
     engine: async () => engine,
-    hetzner: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     github,
     cloudflare: fakeCloudflare(),
     tcpConnect: async () => true,

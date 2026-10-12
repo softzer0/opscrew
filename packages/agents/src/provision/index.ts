@@ -1,6 +1,6 @@
 export {
   type CloudflareSetup,
-  checkHetzner,
+  checkProvider,
   type GitHubSetup,
   githubCoordinates,
   setupCloudflare,

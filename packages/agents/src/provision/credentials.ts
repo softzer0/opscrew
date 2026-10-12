@@ -11,11 +11,11 @@ import {
   parseGitHubRepo,
   resolveGitHubToken,
 } from "@opscrew/connector-github";
-import { hetznerConnector } from "@opscrew/connector-hetzner";
-import type { CredentialRequirement } from "@opscrew/contracts";
+import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { providerProfile, vpsConnector } from "../providers";
 import type { CloudflareApi, GitHubApi, ProvisionServices } from "./types";
 
 /** Cloudflare facts the render context needs. */
@@ -55,21 +55,21 @@ function invalid(service: string, message: string, requirement: CredentialRequir
   });
 }
 
-/** Stops unless `HCLOUD_TOKEN` is set and works. */
-export async function checkHetzner(deps: PhaseDeps, services: ProvisionServices): Promise<void> {
-  const connector = hetznerConnector({
-    env: deps.env,
-    fetch: deps.fetch,
-    redactor: deps.redactor,
-    version: deps.version,
-  });
-  const hetzner = services.hetzner ?? {
-    configured: connector.client !== undefined,
+/** Stops unless the provider's token (for example `HCLOUD_TOKEN`) is set and works. */
+export async function checkProvider(
+  deps: PhaseDeps,
+  provider: VpsProviderId,
+  services: Pick<ProvisionServices, "provider">,
+): Promise<void> {
+  const connector = vpsConnector(provider, deps);
+  const name = providerProfile(provider).displayName;
+  const check = services.provider ?? {
+    configured: connector.configured,
     verify: () => connector.verifyCredentials(),
   };
-  if (!hetzner.configured) throw missing("Hetzner Cloud", connector.credentials);
-  const check = await hetzner.verify();
-  if (!check.ok) throw invalid("Hetzner Cloud", check.message, connector.credentials);
+  if (!check.configured) throw missing(name, connector.credentials);
+  const result = await check.verify();
+  if (!result.ok) throw invalid(name, result.message, connector.credentials);
 }
 
 /** Record types that clash with (or split traffic away from) OpsCrew's A/AAAA/CNAME records. */

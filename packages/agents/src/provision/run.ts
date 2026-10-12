@@ -8,6 +8,7 @@ import { renderDeployment } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { planProvider } from "../providers";
 import {
   describeDiff,
   diffRenderedFiles,
@@ -19,7 +20,7 @@ import {
   waitForPort,
   writeRenderedFiles,
 } from "../shared";
-import { checkHetzner, setupCloudflare, setupGitHub } from "./credentials";
+import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { planAndApply } from "./plan-apply";
 import { publishDeploySetup } from "./publish";
 import { deploymentRenderContext, readRequirements } from "./render";
@@ -109,7 +110,7 @@ async function provisionFlow(
   }
   await requireDockerfile(deps, git, plan);
   deps.reporter.step("Checking your Hetzner, Cloudflare and GitHub access");
-  await checkHetzner(deps, services);
+  await checkProvider(deps, planProvider(plan), services);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
   const zoneLearned = cloudflare !== undefined && plan.dns.zone !== cloudflare.zoneName;

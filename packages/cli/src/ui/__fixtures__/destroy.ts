@@ -123,7 +123,7 @@ export function destroyServices(engine: DestroyEngine) {
   const deletedSecrets: string[] = [];
   const services: DestroyServices = {
     engine: async () => engine,
-    hetzner: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     hetznerClient: {
       listServers: async () => [
         {

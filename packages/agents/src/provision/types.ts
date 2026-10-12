@@ -34,8 +34,8 @@ export type GitHubApi = Pick<
 export interface ProvisionServices {
   /** Picks the IaC engine (default: `selectEngine` from `@opscrew/iac-engine`). */
   engine?: (preference: EnginePreference) => Promise<IacEngine>;
-  /** Hetzner credential check (default: `hetznerConnector` over `HCLOUD_TOKEN`). */
-  hetzner?: { configured: boolean; verify(): Promise<CredentialCheck> };
+  /** Credential check for the plan's provider (default: `vpsConnector` over its token). */
+  provider?: { configured: boolean; verify(): Promise<CredentialCheck> };
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: CloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */

@@ -41,7 +41,7 @@ async function setup(options: { deployed?: boolean } = {}) {
   const engine = new FakeEngine({ planJson: planJsonFor({ proxied: true }) });
   const services: ProvisionServices = {
     engine: async () => engine,
-    hetzner: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     cloudflare: fakeCloudflare(),
     github,
     tcpConnect: async () => true,

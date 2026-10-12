@@ -58,7 +58,7 @@ async function setup(options: SetupOptions = {}) {
   deps.redactor.addLiteral(HCLOUD, "HCLOUD_TOKEN");
   const services: ProvisionServices = {
     engine: async () => engine,
-    hetzner: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     github,
     tcpConnect: async () => true,
     remote: readyRemote,
@@ -257,8 +257,8 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
 
   it("explains which token is missing and where to create it", async () => {
     const { deps, services } = await setup({ env: { HCLOUD_TOKEN: undefined } });
-    const { hetzner: _ignored, ...withoutHetzner } = services;
-    await expect(runProvision(deps, { services: withoutHetzner })).rejects.toMatchObject({
+    const { provider: _ignored, ...withoutProvider } = services;
+    await expect(runProvision(deps, { services: withoutProvider })).rejects.toMatchObject({
       code: "CREDENTIALS_MISSING",
       message: expect.stringContaining("HCLOUD_TOKEN"),
       hint: expect.stringContaining("https://console.hetzner.cloud/"),

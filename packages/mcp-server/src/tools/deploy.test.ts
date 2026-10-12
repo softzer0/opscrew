@@ -329,7 +329,7 @@ async function connect(options: HarnessOptions = {}) {
   const github = new FakeGitHub();
   const services: ProvisionServices = {
     engine: async () => engine,
-    hetzner: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     github,
     tcpConnect: async () => true,
     remote: readyRemote,

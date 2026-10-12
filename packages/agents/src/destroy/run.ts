@@ -14,7 +14,8 @@ import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engin
 import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { checkHetzner, githubCoordinates } from "../provision";
+import { planProvider } from "../providers";
+import { checkProvider, githubCoordinates } from "../provision";
 import {
   dataWarning,
   deletesServer,
@@ -794,7 +795,7 @@ export async function runDestroy(
   deps.reporter.step(
     `Checking your Hetzner Cloud${usesCloudflare ? ", Cloudflare" : ""} and GitHub access`,
   );
-  await checkHetzner(deps, services.hetzner ? { hetzner: services.hetzner } : {});
+  await checkProvider(deps, planProvider(plan), services);
   await checkCloudflare(deps, plan, services);
   const github = await resolveGitHub(deps, services);
   if (github.skipReason) {

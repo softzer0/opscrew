@@ -150,7 +150,7 @@ async function setup(options: SetupOptions = {}) {
 
   const services: DestroyServices = {
     engine: async () => engine,
-    hetzner: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     hetznerClient: hetzner,
     cloudflare: fakeCloudflare(),
     github,
