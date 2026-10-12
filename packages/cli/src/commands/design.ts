@@ -10,8 +10,8 @@ interface DesignFlags {
 }
 
 /**
- * `opscrew design`: prices 2–3 Hetzner options (live with `HCLOUD_TOKEN`, otherwise the dated
- * static table), lets the user pick one in the terminal (or takes `--option <id>`, or the
+ * `opscrew design`: prices 2–3 options on the provider chosen in the interview (live when its API
+ * token is set, otherwise its dated static price table), lets the user pick one in the terminal (or takes `--option <id>`, or the
  * recommendation when no terminal is available) and writes `opscrew/plan.yaml` (FR-107).
  */
 export function register(program: Command, ctx: CliContext): void {

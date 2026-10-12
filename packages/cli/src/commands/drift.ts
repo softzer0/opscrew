@@ -1,5 +1,5 @@
-import { renderDriftReport, runDrift } from "@opscrew/agents";
-import type { Reporter } from "@opscrew/contracts";
+import { providerProfile, renderDriftReport, runDrift } from "@opscrew/agents";
+import type { Reporter, VpsProviderId } from "@opscrew/contracts";
 import { type Command, Option } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps } from "../deps";
@@ -22,6 +22,11 @@ function quietReporter(ctx: CliContext): Reporter {
     warn: (message) => ctx.reporter.warn(message),
     error: (message) => ctx.reporter.error(message),
   };
+}
+
+/** The deployment's cloud provider by name; reports made before DigitalOcean support are Hetzner's. */
+function providerName(provider: VpsProviderId | undefined): string {
+  return providerProfile(provider ?? "hetzner").displayName;
 }
 
 /**
@@ -69,7 +74,7 @@ export function register(program: Command, ctx: CliContext): void {
       ctx.stdout(`${renderDriftReport(report)}\n`);
       if (report.clean) {
         printNextSteps(ctx, [
-          "nothing to do; run `opscrew drift` again after changes in the Hetzner or Cloudflare console.",
+          `nothing to do; run \`opscrew drift\` again after changes in the ${providerName(report.provider)} or Cloudflare console.`,
         ]);
         return;
       }

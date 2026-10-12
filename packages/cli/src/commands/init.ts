@@ -17,7 +17,7 @@ const MARK: Record<InitCheck["status"], string> = { pass: "✓", warn: "!", fail
 function checklist(checks: readonly InitCheck[]): string {
   const lines = ["OpsCrew preflight", ""];
   for (const check of checks) {
-    // " — ", not ":", so "Hetzner Cloud token: HCLOUD_TOKEN" never looks like a labelled secret.
+    // " — ", not ":", so "<provider> token: <TOKEN_VAR>" never looks like a labelled secret.
     lines.push(`  ${MARK[check.status]} ${check.title} — ${check.message}`);
     if (check.fix !== undefined && check.status !== "pass") lines.push(`      ${check.fix}`);
   }

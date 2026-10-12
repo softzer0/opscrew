@@ -169,6 +169,137 @@ const CREATE: ResourceChange[] = ["hcloud_ssh_key.deploy", "hcloud_firewall.this
   },
 );
 
+/**
+ * `show -json` shaped like the rendered DigitalOcean root module for `plan` (module `server`):
+ * Droplet, firewall attached to it, deploy SSH key and app tag; passes every DigitalOcean policy.
+ */
+export function digitalOceanPlanJsonFor(plan: DeployPlan) {
+  const world = ["0.0.0.0/0", "::/0"];
+  const proxied = plan.dns.proxied && plan.security.httpAllowedFrom === "cloudflare";
+  const web = proxied ? [...CF_V4, ...CF_V6] : world;
+  const name = plan.app.name;
+  const resource = (type: string, local: string, values: Record<string, unknown>) => ({
+    address: `module.server.${type}.${local}`,
+    mode: "managed",
+    type,
+    name: local,
+    values,
+  });
+  const dns = proxied
+    ? [
+        {
+          address: "module.dns",
+          resources: [
+            {
+              address: "module.dns.cloudflare_dns_record.a",
+              mode: "managed",
+              type: "cloudflare_dns_record",
+              name: "a",
+              values: { name: plan.dns.domain, type: "A", proxied: true, ttl: 1 },
+            },
+          ],
+        },
+      ]
+    : [];
+  return {
+    format_version: "1.2",
+    planned_values: {
+      root_module: {
+        child_modules: [
+          {
+            address: "module.server",
+            resources: [
+              resource("digitalocean_droplet", "this", {
+                name,
+                region: plan.target.location,
+                size: plan.target.serverType,
+                image: plan.target.image,
+                backups: plan.target.backups,
+                ipv6: true,
+                monitoring: true,
+              }),
+              resource("digitalocean_firewall", "this", {
+                name: `${name}-firewall`,
+                inbound_rule: [
+                  { protocol: "tcp", port_range: "22", source_addresses: world },
+                  { protocol: "tcp", port_range: "80", source_addresses: web },
+                  { protocol: "tcp", port_range: "443", source_addresses: web },
+                  { protocol: "udp", port_range: "443", source_addresses: web },
+                  { protocol: "icmp", port_range: "", source_addresses: world },
+                ],
+                outbound_rule: [
+                  { protocol: "tcp", port_range: "1-65535", destination_addresses: world },
+                  { protocol: "udp", port_range: "1-65535", destination_addresses: world },
+                ],
+              }),
+              resource("digitalocean_ssh_key", "deploy", { name: `${name}-deploy` }),
+              resource("digitalocean_tag", "app", { name: `opscrew-app:${name}` }),
+            ],
+          },
+          ...dns,
+        ],
+      },
+    },
+    resource_changes: [
+      {
+        address: "module.server.digitalocean_droplet.this",
+        change: { actions: ["create"], after_unknown: { id: true, ssh_keys: [true] } },
+      },
+      {
+        address: "module.server.digitalocean_firewall.this",
+        change: { actions: ["create"], after_unknown: { id: true, droplet_ids: true } },
+      },
+    ],
+    configuration: {
+      root_module: {
+        module_calls: {
+          server: {
+            source: "../modules/digitalocean-droplet",
+            module: {
+              resources: [
+                {
+                  address: "digitalocean_droplet.this",
+                  mode: "managed",
+                  type: "digitalocean_droplet",
+                  name: "this",
+                  expressions: {
+                    ssh_keys: { references: ["digitalocean_ssh_key.deploy.fingerprint"] },
+                  },
+                },
+                {
+                  address: "digitalocean_firewall.this",
+                  mode: "managed",
+                  type: "digitalocean_firewall",
+                  name: "this",
+                  expressions: {
+                    droplet_ids: {
+                      references: ["digitalocean_droplet.this.id", "digitalocean_droplet.this"],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+/** What the first apply of a DigitalOcean plan creates. */
+export const DIGITALOCEAN_CREATE: ResourceChange[] = [
+  ["digitalocean_tag", "app"],
+  ["digitalocean_ssh_key", "deploy"],
+  ["digitalocean_droplet", "this"],
+  ["digitalocean_firewall", "this"],
+].map(([type = "", name = ""]) => ({
+  address: `module.server.${type}.${name}`,
+  type,
+  name,
+  provider: "registry.opentofu.org/digitalocean/digitalocean",
+  action: "create" as const,
+}));
+
 /** IaC engine fake: writes real plan files and refuses an apply whose hash does not match. */
 export class FakeEngine implements IacEngine {
   readonly info = { name: "tofu" as const, version: "1.13.1", binary: "/fake/tofu" };
@@ -275,7 +406,7 @@ export function fakeCloudflare(): CloudflareApi {
   };
 }
 
-/** The fakes `provision` and `dns` need: engine, Hetzner, GitHub, Cloudflare, SSH and waits. */
+/** The fakes `provision` and `dns` need: engine, cloud provider, GitHub, Cloudflare, SSH and waits. */
 export function provisionServices(
   engine: FakeEngine,
   github: FakeGitHub,

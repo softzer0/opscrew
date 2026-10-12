@@ -132,8 +132,8 @@ export async function runInfraCommand(
 }
 
 /**
- * `opscrew provision`: renders the deployment files, plans the Hetzner (and Cloudflare)
- * infrastructure, runs the security policies and applies only after an approval bound to the plan
+ * `opscrew provision`: renders the deployment files, plans the infrastructure on the plan's
+ * provider (and Cloudflare), runs the security policies and applies only after an approval bound to the plan
  * hash; then waits for the server, pins its host key, stores the GitHub deploy secrets and opens a
  * pull request (FR-213). Exit codes: 0 done, 1 refused or a policy failed, 2 error.
  */

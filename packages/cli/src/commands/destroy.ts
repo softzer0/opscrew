@@ -16,7 +16,8 @@ interface DestroyFlags {
 }
 
 /**
- * Approves this teardown's infrastructure plans (lifting protection, then deleting) once the
+ * Approves this teardown's infrastructure plans (lifting delete protection where the provider has
+ * it, then deleting) once the
  * server name was typed (or given with `--confirm`); everything else goes to `base`, except that
  * a `--confirm` run also approves removing the GitHub deploy secrets (no prompts at all).
  */
@@ -49,7 +50,7 @@ class TypedConfirmationHandler implements ApprovalHandler {
 /**
  * `opscrew destroy`: shows what the teardown deletes, has the user type the server name before
  * anything changes, takes a snapshot when data lives only on the server, lifts delete protection
- * and applies the destroy plan (each plan approved by hash), then removes the GitHub deploy
+ * (on providers that have it) and applies the destroy plan (each plan approved by hash), then removes the GitHub deploy
  * secrets after its own approval (FR-301). Non-interactive runs need `--confirm <server name>`.
  * Exit codes: 0 torn down, 1 refused or not confirmed, 2 error.
  */
@@ -57,8 +58,8 @@ export function register(program: Command, ctx: CliContext): void {
   program
     .command("destroy")
     .description("Delete the deployment's infrastructure (asks for the server name)")
-    .option("--snapshot", "Always take a Hetzner snapshot of the server first")
-    .option("--no-snapshot", "Do not take a Hetzner snapshot of the server first")
+    .option("--snapshot", "Take a snapshot of the server first")
+    .option("--no-snapshot", "Do not take a snapshot of the server first")
     .option("--confirm <name>", "The server name, to run without prompts (for scripts and CI)")
     .addOption(
       new Option("--engine <name>", "Infrastructure engine to use instead of the plan's").choices([

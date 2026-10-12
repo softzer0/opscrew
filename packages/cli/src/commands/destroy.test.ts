@@ -61,6 +61,14 @@ async function setup(options: { interactive?: boolean; typed?: unknown } = {}) {
 }
 
 describe.skipIf(!GIT)("opscrew destroy", () => {
+  it("names no provider in --help", async () => {
+    const { ctx } = await setup();
+    expect(await run(ctx, "destroy", "--help")).toBe(0);
+    expect(ctx.output).toContain("Take a snapshot of the server first");
+    expect(ctx.output).toContain("Do not take a snapshot of the server first");
+    expect(ctx.output).not.toMatch(/hetzner|digitalocean/i);
+  });
+
   it("refuses a non-interactive run without --confirm and says how to run it", async () => {
     const { ctx, engine, fakes } = await setup();
     expect(await run(ctx, "destroy")).toBe(1);

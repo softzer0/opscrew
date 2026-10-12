@@ -14,7 +14,7 @@ import type { CliContext } from "../context";
  * fakes with {@link withDeployServices} so commands never reach a cloud, a server or the network.
  */
 export interface DeployServices {
-  /** Engine, Hetzner, Cloudflare, GitHub, SSH and wait fakes for `provision` and `dns`. */
+  /** Engine, cloud provider, Cloudflare, GitHub, SSH and wait fakes for `provision` and `dns`. */
   provision?: ProvisionServices;
   /** Remote shell, port probe and scanners for `secure`. */
   secure?: Omit<RunSecureOptions, "planJson">;
@@ -24,7 +24,7 @@ export interface DeployServices {
   mcp?: { stdin?: Readable; stdout?: Writable };
   /** PATH lookup, Node version and time budget for `init`. */
   init?: InitServices;
-  /** Engine, Hetzner, Cloudflare and GitHub fakes for `destroy`. */
+  /** Engine, cloud provider, Cloudflare and GitHub fakes for `destroy`. */
   destroy?: DestroyServices;
 }
 

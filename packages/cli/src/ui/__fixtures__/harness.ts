@@ -32,7 +32,7 @@ export interface TempProject {
 }
 
 const DROPPED_ENV =
-  /^(?:GIT_|GITHUB_TOKEN$|GH_TOKEN$|GH_ENTERPRISE_TOKEN$|ANTHROPIC_|CLAUDE_CODE_|HCLOUD_TOKEN$|CLOUDFLARE_|CF_API_TOKEN$|OPSCREW_|CI$)/i;
+  /^(?:GIT_|GITHUB_TOKEN$|GH_TOKEN$|GH_ENTERPRISE_TOKEN$|ANTHROPIC_|CLAUDE_CODE_|HCLOUD_TOKEN$|DIGITALOCEAN_|CLOUDFLARE_|CF_API_TOKEN$|OPSCREW_|CI$)/i;
 
 /** `process.env` without credentials, git configuration or OpsCrew settings, plus test homes. */
 export function testEnv(dir: string): Record<string, string | undefined> {

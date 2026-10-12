@@ -95,7 +95,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
 
 ## Phase 5: Interfaces (parallel)
 
-- [ ] T411 [P] [US1] [US2] Provider-neutral CLI texts and a DigitalOcean end-to-end run in `packages/cli/`
+- [X] T411 [P] [US1] [US2] Provider-neutral CLI texts and a DigitalOcean end-to-end run in `packages/cli/`
   - Owns: `packages/cli/src/**` (except `src/ui/__fixtures__/destroy.ts`), `packages/cli/test/e2e/**`
   - Reads: spec FR-409, SC-402; plan.md "CLI, MCP, plugin, docs"
   - Depends: T407–T410

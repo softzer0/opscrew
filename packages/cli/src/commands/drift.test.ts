@@ -97,6 +97,8 @@ describe.skipIf(!GIT)("opscrew drift", () => {
     await writeRenderedFiles((project as DeployProject).root, files);
     expect(await run(ctx, "drift")).toBe(0);
     expect(ctx.output).toContain("nothing to do");
+    // The next step names the deployment's provider.
+    expect(ctx.output).toContain("changes in the Hetzner Cloud or Cloudflare console");
     expect(engine.calls).not.toContain("apply");
   });
 
