@@ -3,7 +3,10 @@ import type { CliContext } from "../context";
 import * as adapt from "./adapt";
 import * as analyze from "./analyze";
 import * as design from "./design";
+import * as destroy from "./destroy";
 import * as dns from "./dns";
+import * as drift from "./drift";
+import * as init from "./init";
 import * as interview from "./interview";
 import * as mcp from "./mcp";
 import * as provision from "./provision";
@@ -19,6 +22,7 @@ export interface CommandModule {
 
 /** Every `opscrew` subcommand, in the order shown by `--help` (pipeline order, then tools). */
 export const ALL_COMMANDS: readonly CommandModule[] = [
+  init,
   scan,
   analyze,
   interview,
@@ -28,6 +32,8 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   dns,
   secure,
   verify,
+  drift,
+  destroy,
   status,
   mcp,
 ];

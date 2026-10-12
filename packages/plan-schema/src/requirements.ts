@@ -5,6 +5,7 @@ import {
   FqdnSchema,
   IsoDateTimeSchema,
   RegionSchema,
+  RepoPathSchema,
   ServiceKindSchema,
   UptimeSchema,
   UserScaleSchema,
@@ -31,6 +32,8 @@ export const RequirementsSchema = z
     keepExternalServices: z.array(ServiceKindSchema),
     /** Used for TLS certificate registration. */
     contactEmail: z.email().optional(),
+    /** In a repository with several apps: the repo-relative directory of the app to deploy. */
+    appDir: RepoPathSchema.optional(),
     /** Free text from the user. */
     notes: z.string().optional(),
   })

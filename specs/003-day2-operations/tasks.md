@@ -13,7 +13,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
 
 ## Phase 1: Foundation (lead, serial)
 
-- [ ] T301 Contracts, schemas, barrels and placeholders (lead) in `packages/contracts/src/iac.ts`, `packages/plan-schema/src/{facts,requirements,plan}.ts` (+ regenerated JSON Schemas), `packages/agents/src/{destroy,drift,init}/index.ts`, `packages/agents/src/index.ts`, `packages/cli/src/commands/{destroy,drift,init,index}.ts`, `packages/mcp-server/src/tools/{drift,init}.ts`, `packages/mcp-server/src/server.ts`
+- [X] T301 Contracts, schemas, barrels and placeholders (lead) in `packages/contracts/src/iac.ts`, `packages/plan-schema/src/{facts,requirements,plan}.ts` (+ regenerated JSON Schemas), `packages/agents/src/{destroy,drift,init}/index.ts`, `packages/agents/src/index.ts`, `packages/cli/src/commands/{destroy,drift,init,index}.ts`, `packages/mcp-server/src/tools/{drift,init}.ts`, `packages/mcp-server/src/server.ts`
   - Accept: plan.md "Contracts"; every package still passes `pnpm check`; placeholders throw or report "not implemented yet" (exit 2).
   - Effort: lead
 

@@ -121,6 +121,8 @@ const DeployPlanObjectSchema = z
         lastPlanHash: PlanHashSchema.optional(),
         lastApplyAt: IsoDateTimeSchema.optional(),
         lastDeployAt: IsoDateTimeSchema.optional(),
+        /** When `opscrew destroy` removed the infrastructure. */
+        destroyedAt: IsoDateTimeSchema.optional(),
       })
       .prefault({}),
   })

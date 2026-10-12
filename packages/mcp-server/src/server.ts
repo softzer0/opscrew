@@ -3,6 +3,8 @@ import { type OpscrewMcpDeps, resolveMcpDeps } from "./deps";
 import { registerDeployTools } from "./tools/deploy";
 import { registerDesignTools } from "./tools/design";
 import { registerDetectTool } from "./tools/detect";
+import { registerDriftTool } from "./tools/drift";
+import { registerInitCheckTool } from "./tools/init";
 import { registerInterviewTools } from "./tools/interview";
 import { registerScanTool } from "./tools/scan";
 import { registerStatusTool } from "./tools/status";
@@ -40,5 +42,7 @@ export function createOpscrewMcpServer(deps: OpscrewMcpDeps): McpServer {
   registerDesignTools(server, resolved);
   registerStatusTool(server, resolved);
   registerDeployTools(server, resolved);
+  registerDriftTool(server, resolved);
+  registerInitCheckTool(server, resolved);
   return server;
 }

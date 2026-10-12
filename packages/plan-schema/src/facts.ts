@@ -104,6 +104,8 @@ export const ProjectFactsSchema = z.strictObject({
   }),
   healthEndpoint: UrlPathSchema.optional(),
   monorepo: z.boolean(),
+  /** Repo-relative directory of the app the facts describe (absent or `.` for the root). */
+  appDir: RepoPathSchema.optional(),
   git: z.strictObject({
     remoteUrl: z
       .string()

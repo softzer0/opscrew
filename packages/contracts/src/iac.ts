@@ -38,6 +38,23 @@ export interface PlanSummary {
   hasDestroy: boolean;
   /** The engine's machine-readable plan (`show -json`), used by policy checks. */
   planJson: unknown;
+  /**
+   * Changes made outside the engine since the last apply (`resource_drift`), found while
+   * refreshing. Present when the engine reports any; refresh-only plans carry only this.
+   */
+  drift?: ResourceDrift[];
+}
+
+/** One resource whose real state no longer matches the engine's state. */
+export interface ResourceDrift {
+  address: string;
+  type: string;
+  name: string;
+  provider: string;
+  /** `delete`: the resource no longer exists; `update`: some attributes changed. */
+  action: "update" | "delete";
+  /** Sorted top-level attribute names whose values differ. Values are never copied. */
+  attributes: string[];
 }
 
 export interface IacRunOptions {
@@ -96,7 +113,11 @@ export interface IacEngine {
   plan(
     dir: string,
     planFile: string,
-    options?: IacRunOptions & { destroy?: boolean },
+    options?: IacRunOptions & {
+      destroy?: boolean;
+      /** Only refresh the state and report drift (`-refresh-only`); never plans changes. */
+      refreshOnly?: boolean;
+    },
   ): Promise<PlanSummary>;
   /**
    * Applies exactly the saved plan. MUST refuse when the plan file's SHA-256 differs from

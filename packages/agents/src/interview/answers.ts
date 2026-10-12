@@ -39,6 +39,7 @@ const DESCRIPTIONS: Record<QuestionId, string> = {
   keepExternalServices: "external services to keep",
   contactEmail: "contact email",
   notes: "notes",
+  appDir: "app to deploy",
 };
 
 /** Fields whose values are lower-cased enum strings. */

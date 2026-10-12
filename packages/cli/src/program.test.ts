@@ -32,6 +32,7 @@ describe("opscrew program", () => {
     expect(ctx.output).toContain("OpsCrew");
     expect(ctx.output).toContain("--cwd <dir>");
     for (const name of [
+      "init",
       "scan",
       "analyze",
       "interview",
@@ -41,12 +42,14 @@ describe("opscrew program", () => {
       "dns",
       "secure",
       "verify",
+      "drift",
+      "destroy",
       "mcp",
       "status",
     ]) {
       expect(ctx.output).toMatch(new RegExp(`^\\s+${name}\\b`, "m"));
     }
-    expect(ALL_COMMANDS).toHaveLength(11);
+    expect(ALL_COMMANDS).toHaveLength(14);
   });
 
   it("exits 2 for an unknown command", async () => {

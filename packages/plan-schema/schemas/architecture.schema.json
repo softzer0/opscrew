@@ -229,6 +229,10 @@
         "monorepo": {
           "type": "boolean"
         },
+        "appDir": {
+          "type": "string",
+          "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+        },
         "git": {
           "type": "object",
           "properties": {
