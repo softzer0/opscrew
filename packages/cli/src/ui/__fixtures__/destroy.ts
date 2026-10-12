@@ -9,7 +9,6 @@ import type {
   PlanSummary,
   ResourceChange,
 } from "@opscrew/contracts";
-import { SERVER_IPV4 } from "./deploy";
 
 const HCLOUD = "registry.opentofu.org/hetznercloud/hcloud";
 const SERVER = "module.server.hcloud_server.this";
@@ -100,7 +99,19 @@ export class DestroyEngine implements IacEngine {
                 },
               ],
             }
-          : { resource_changes: [] },
+          : {
+              // the state's ids say which server the teardown deletes (and so which to snapshot)
+              resource_changes: changes.map((c) => ({
+                address: c.address,
+                mode: "managed",
+                type: c.type,
+                change: {
+                  actions: [c.action],
+                  before: { id: c.type === "hcloud_server" ? "4711" : `${c.name}-1` },
+                  after: null,
+                },
+              })),
+            },
     };
   }
 
@@ -117,28 +128,22 @@ export class DestroyEngine implements IacEngine {
   }
 }
 
-/** Fakes for `opscrew destroy`: one labelled server, snapshots succeed, secrets get deleted. */
+/**
+ * Fakes for `opscrew destroy`: the app's server is found, snapshots succeed (`snapshots` lists the
+ * snapshotted server ids as numbers), secrets get deleted.
+ */
 export function destroyServices(engine: DestroyEngine) {
   const snapshots: number[] = [];
   const deletedSecrets: string[] = [];
   const services: DestroyServices = {
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
-    hetznerClient: {
-      listServers: async () => [
-        {
-          id: 4711,
-          name: "shop",
-          status: "running",
-          labels: { "managed-by": "opscrew", app: "shop" },
-          ipv4: SERVER_IPV4,
-        },
-      ],
-      createSnapshot: async (serverId) => {
-        snapshots.push(serverId);
-        return { imageId: 9001, actionId: 77 };
+    servers: {
+      findAppServers: async () => [{ id: "4711", name: "shop", status: "running" }],
+      snapshotServer: async (serverId) => {
+        snapshots.push(Number(serverId));
+        return { snapshotId: "9001" };
       },
-      waitForAction: async (actionId) => ({ id: actionId, status: "success" }) as never,
     },
     cloudflare: null,
     github: {

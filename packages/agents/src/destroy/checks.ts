@@ -1,9 +1,14 @@
-import type { ResourceAction, ResourceChange } from "@opscrew/contracts";
+import type { ResourceAction, ResourceChange, VpsProviderId } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { planProvider, providerProfile } from "../providers";
+import { destroyTexts } from "./texts";
 
-/** Terraform type of the server; the only resource the protection-lifting plan may change. */
-export const SERVER_RESOURCE_TYPE = "hcloud_server";
+/**
+ * Terraform type of the Hetzner server, the only resource the protection-lifting plan may change.
+ * Only Hetzner has delete protection, so that plan (and this check) exists only there.
+ */
+export const PROTECTED_SERVER_TYPE = providerProfile("hetzner").serverResourceType;
 
 /** Server attributes the protection-lifting plan is allowed to change. */
 export const PROTECTION_ATTRIBUTES: readonly string[] = ["delete_protection", "rebuild_protection"];
@@ -22,11 +27,54 @@ export function describeChanges(changes: readonly ResourceChange[]): string[] {
   return changes.map((c) => `  ${SYMBOL[c.action]} ${c.action.padEnd(7)} ${c.address}`);
 }
 
-/** True when the changes delete (or replace) an `hcloud_server`. */
-export function deletesServer(changes: readonly ResourceChange[]): boolean {
-  return changes.some(
-    (c) => c.type === SERVER_RESOURCE_TYPE && (c.action === "delete" || c.action === "replace"),
-  );
+/**
+ * True when the changes delete (or replace) the provider's server, for example an `hcloud_server`
+ * on Hetzner or a `digitalocean_droplet` on DigitalOcean.
+ */
+export function deletesServer(
+  changes: readonly ResourceChange[],
+  provider: VpsProviderId,
+): boolean {
+  const type = providerProfile(provider).serverResourceType;
+  return changes.some((c) => c.type === type && (c.action === "delete" || c.action === "replace"));
+}
+
+/** A provider resource id: a string, or a number (written as a string). */
+export const ProviderIdSchema = z.union([
+  z.string().trim().min(1),
+  z.number().int().nonnegative().transform(String),
+]);
+
+const PlanServerIdsSchema = z.looseObject({
+  resource_changes: z
+    .array(
+      z.looseObject({
+        type: z.string().optional(),
+        change: z
+          .looseObject({ actions: z.array(z.string()), before: z.unknown().optional() })
+          .optional(),
+      }),
+    )
+    .optional(),
+});
+const BeforeIdSchema = z.looseObject({ id: ProviderIdSchema });
+
+/**
+ * The provider ids (`change.before.id`) of the servers a destroy plan deletes, as the
+ * infrastructure state knows them, without duplicates. Empty when the plan JSON does not say.
+ * These ids, not the names (names need not be unique), say which server the teardown deletes.
+ */
+export function serverIdsInPlan(planJson: unknown, provider: VpsProviderId): string[] {
+  const parsed = PlanServerIdsSchema.safeParse(planJson);
+  if (!parsed.success) return [];
+  const type = providerProfile(provider).serverResourceType;
+  const ids = new Set<string>();
+  for (const rc of parsed.data.resource_changes ?? []) {
+    if (rc.type !== type || rc.change?.actions.includes("delete") !== true) continue;
+    const before = BeforeIdSchema.safeParse(rc.change.before);
+    if (before.success) ids.add(before.data.id);
+  }
+  return [...ids];
 }
 
 const PlanChangesSchema = z.looseObject({
@@ -103,7 +151,7 @@ export function unprotectPlanProblems(
   );
   const problems: string[] = [];
   for (const change of changes) {
-    if (change.type !== SERVER_RESOURCE_TYPE || change.action !== "update") {
+    if (change.type !== PROTECTED_SERVER_TYPE || change.action !== "update") {
       problems.push(`${change.action} ${change.address}`);
       continue;
     }
@@ -171,14 +219,20 @@ function joinList(items: readonly string[]): string {
 
 /**
  * Plain-English warning about data that exists only on the server, or `undefined` when the plan
- * does not delete the server.
+ * does not delete the server. Automatic backups are lost with a Hetzner server but kept for a
+ * while by DigitalOcean, and the warning says which.
  */
 export function dataWarning(plan: DeployPlan, serverDeleted: boolean): string | undefined {
   if (!serverDeleted) return undefined;
+  const texts = destroyTexts(planProvider(plan));
   const lost: string[] = [];
   if (plan.services.postgres) lost.push("the PostgreSQL database");
   if (plan.services.redis) lost.push("the Redis data");
-  lost.push("any files the app stored on the server");
-  if (plan.target.backups) lost.push("Hetzner's automatic backups of the server");
-  return `Deleting the server also deletes ${joinList(lost)}. Only a snapshot keeps a copy.`;
+  lost.push(`any files the app stored on the ${texts.noun}`);
+  if (plan.target.backups && texts.deletedBackups) lost.push(texts.deletedBackups);
+  const deleted = `Deleting the ${texts.noun} also deletes ${joinList(lost)}.`;
+  if (plan.target.backups && texts.keptBackups) {
+    return `${deleted} ${texts.keptBackups}; only a snapshot keeps a copy for longer.`;
+  }
+  return `${deleted} Only a snapshot keeps a copy.`;
 }

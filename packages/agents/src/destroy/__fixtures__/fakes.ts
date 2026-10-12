@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import type {
+  AppServer,
   IacApplyResult,
   IacApproval,
   IacEngine,
@@ -8,16 +9,20 @@ import type {
   IacRunOptions,
   PlanSummary,
   ResourceChange,
+  ServerSnapshotApi,
+  SnapshotRequest,
+  VpsProviderId,
 } from "@opscrew/contracts";
-import type { HetznerServerSummary } from "@opscrew/connector-hetzner";
 import { FakeGitHub, SERVER_IPV4 } from "../../provision/__fixtures__/fakes";
-import type { DestroyGitHubApi, HetznerSnapshotApi } from "../types";
+import type { DestroyGitHubApi } from "../types";
 
 const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 
 const HCLOUD = "registry.opentofu.org/hetznercloud/hcloud";
+const DIGITALOCEAN = "registry.opentofu.org/digitalocean/digitalocean";
 const CLOUDFLARE = "registry.opentofu.org/cloudflare/cloudflare";
 export const SERVER_ADDRESS = "module.server.hcloud_server.this";
+export const DROPLET_ADDRESS = "module.server.digitalocean_droplet.this";
 
 function change(
   address: string,
@@ -28,13 +33,29 @@ function change(
   return { address, type, name: address.split(".").pop() as string, provider, action };
 }
 
-/** What the destroy plans delete when the whole deployment still exists (server last). */
-export function deployedResources(options: { dns?: boolean; server?: boolean } = {}) {
-  const resources = [
+/** The server-module resources of a deployment on `provider` (the server last). */
+function serverResources(provider: VpsProviderId, server: boolean): ResourceChange[] {
+  if (provider === "digitalocean") {
+    const d = (address: string, type: string) => change(address, type, "delete", DIGITALOCEAN);
+    return [
+      d("module.server.digitalocean_tag.app", "digitalocean_tag"),
+      d("module.server.digitalocean_ssh_key.deploy", "digitalocean_ssh_key"),
+      d("module.server.digitalocean_firewall.this", "digitalocean_firewall"),
+      ...(server ? [d(DROPLET_ADDRESS, "digitalocean_droplet")] : []),
+    ];
+  }
+  return [
     change("module.server.hcloud_ssh_key.deploy", "hcloud_ssh_key", "delete"),
     change("module.server.hcloud_firewall.this", "hcloud_firewall", "delete"),
-    ...(options.server === false ? [] : [change(SERVER_ADDRESS, "hcloud_server", "delete")]),
+    ...(server ? [change(SERVER_ADDRESS, "hcloud_server", "delete")] : []),
   ];
+}
+
+/** What the destroy plans delete when the whole deployment still exists (server last). */
+export function deployedResources(
+  options: { dns?: boolean; server?: boolean; provider?: VpsProviderId } = {},
+) {
+  const resources = serverResources(options.provider ?? "hetzner", options.server !== false);
   if (options.dns) {
     resources.unshift(
       change("module.dns.cloudflare_dns_record.a", "cloudflare_dns_record", "delete", CLOUDFLARE),
@@ -94,6 +115,37 @@ export interface DestroyScript {
   unprotect?: { changes: ResourceChange[]; planJson: unknown };
   /** Apply results by plan kind (default: success). */
   applyOk?: Partial<Record<PlanKind, boolean>>;
+  /**
+   * The server's id in the destroy plan JSON (`change.before.id`), as the state knows it. Default:
+   * the id of the provider's fake server; `null` leaves it out (plan JSON without the id).
+   */
+  serverId?: string | null;
+}
+
+/** Server ids in the state by resource type (the fake servers of {@link FakeServers}). */
+const STATE_SERVER_IDS: Readonly<Record<string, string>> = {
+  hcloud_server: "4711",
+  digitalocean_droplet: "3164444",
+};
+
+/** `show -json` of a destroy plan: every change a delete, with the state's `before` values. */
+function destroyPlanJson(changes: readonly ResourceChange[], serverId: string | null | undefined) {
+  const before = (change: ResourceChange): Record<string, unknown> => {
+    const stateId = STATE_SERVER_IDS[change.type];
+    if (stateId === undefined) return { id: `${change.name}-1` };
+    const id = serverId === undefined ? stateId : serverId;
+    return { ...(id === null ? {} : { id }), name: "shop" };
+  };
+  return {
+    format_version: "1.2",
+    resource_changes: changes.map((change) => ({
+      address: change.address,
+      mode: "managed",
+      type: change.type,
+      name: change.name,
+      change: { actions: ["delete"], before: before(change), after: null },
+    })),
+  };
 }
 
 /**
@@ -170,9 +222,11 @@ export class ScriptedDestroyEngine implements IacEngine {
       },
       hasDestroy: changes.some((c) => c.action === "delete" || c.action === "replace"),
       planJson:
-        kind === "unprotect" && changes.length > 0
-          ? unprotect.planJson
-          : { format_version: "1.2", resource_changes: [] },
+        kind === "destroy"
+          ? destroyPlanJson(changes, this.script.serverId)
+          : changes.length > 0
+            ? unprotect.planJson
+            : { format_version: "1.2", resource_changes: [] },
     };
   }
 
@@ -202,53 +256,52 @@ export class ScriptedDestroyEngine implements IacEngine {
   }
 }
 
-/** Hetzner snapshot fake: one labelled server; snapshots succeed unless told otherwise. */
-export class FakeHetzner implements HetznerSnapshotApi {
-  servers: HetznerServerSummary[] = [
-    {
-      id: 4711,
-      name: "shop",
-      status: "running",
-      labels: { "managed-by": "opscrew", app: "shop" },
-      ipv4: SERVER_IPV4,
-    },
-  ];
-  readonly selectors: (string | undefined)[] = [];
-  readonly snapshots: {
-    serverId: number;
-    description: string;
-    labels: Record<string, string> | undefined;
-  }[] = [];
-  readonly waits: { actionId: number; timeoutMs: number | undefined }[] = [];
+/** The app's server as each provider's fake reports it, and the id its snapshot gets. */
+const FAKE_SERVERS: Record<VpsProviderId, { server: AppServer; snapshotId: string }> = {
+  hetzner: { server: { id: "4711", name: "shop", status: "running" }, snapshotId: "9001" },
+  digitalocean: {
+    server: { id: "3164444", name: "shop", status: "active" },
+    snapshotId: "6372321",
+  },
+};
+
+/**
+ * Provider-neutral snapshot fake (`ServerSnapshotApi`): one server for the app; snapshots succeed
+ * unless told otherwise. `createError` fails before anything is started; `waitError` fails after
+ * the snapshot was started (an errored or timed-out wait), as a connector's `snapshotServer` can.
+ */
+export class FakeServers implements ServerSnapshotApi {
+  servers: AppServer[];
+  snapshotId: string;
+  /** Apps looked up with `findAppServers`. */
+  readonly lookups: string[] = [];
+  /** Every snapshot that was started, with its request. */
+  readonly snapshots: ({ serverId: string } & SnapshotRequest)[] = [];
+  lookupError: Error | undefined;
   createError: Error | undefined;
   waitError: Error | undefined;
 
-  constructor(readonly events: string[] = []) {}
-
-  async listServers(options: { labelSelector?: string } = {}) {
-    this.selectors.push(options.labelSelector);
-    const wanted = (options.labelSelector ?? "")
-      .split(",")
-      .filter((term) => term !== "")
-      .map((term) => term.split("=") as [string, string]);
-    return this.servers.filter((s) => wanted.every(([k, v]) => s.labels[k] === v));
-  }
-
-  async createSnapshot(
-    serverId: number,
-    options: { description: string; labels?: Record<string, string> },
+  constructor(
+    readonly events: string[] = [],
+    provider: VpsProviderId = "hetzner",
   ) {
-    if (this.createError) throw this.createError;
-    this.snapshots.push({ serverId, description: options.description, labels: options.labels });
-    this.events.push("snapshot:create");
-    return { imageId: 9001, actionId: 77 };
+    this.servers = [{ ...FAKE_SERVERS[provider].server }];
+    this.snapshotId = FAKE_SERVERS[provider].snapshotId;
   }
 
-  async waitForAction(actionId: number, options: { timeoutMs?: number } = {}) {
-    this.waits.push({ actionId, timeoutMs: options.timeoutMs });
+  async findAppServers(app: string): Promise<AppServer[]> {
+    this.lookups.push(app);
+    if (this.lookupError) throw this.lookupError;
+    return this.servers.map((server) => ({ ...server }));
+  }
+
+  async snapshotServer(serverId: string, request: SnapshotRequest) {
+    if (this.createError) throw this.createError;
+    this.snapshots.push({ serverId, ...request });
+    this.events.push("snapshot:create");
     if (this.waitError) throw this.waitError;
     this.events.push("snapshot:ready");
-    return { id: actionId, status: "success" };
+    return { snapshotId: this.snapshotId };
   }
 }
 

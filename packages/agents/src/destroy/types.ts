@@ -1,15 +1,8 @@
 import type { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { GitHubClient } from "@opscrew/connector-github";
-import type { HetznerClient } from "@opscrew/connector-hetzner";
-import type { ResourceChange } from "@opscrew/contracts";
+import type { ResourceChange, ServerSnapshotApi, VpsProviderId } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { ProvisionServices } from "../provision";
-
-/** The Hetzner calls the snapshot step needs (a `HetznerClient` or a test fake). */
-export type HetznerSnapshotApi = Pick<
-  HetznerClient,
-  "listServers" | "createSnapshot" | "waitForAction"
->;
 
 /** The GitHub call the secret cleanup needs (a `GitHubClient` or a test fake). */
 export type DestroyGitHubApi = Pick<GitHubClient, "deleteActionsSecret">;
@@ -26,18 +19,21 @@ export interface DestroyServices extends Pick<ProvisionServices, "engine" | "pro
   cloudflare?: DestroyCloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */
   github?: DestroyGitHubApi | null;
-  /** Hetzner API for the snapshot (default: client from `HCLOUD_TOKEN`). */
-  hetznerClient?: HetznerSnapshotApi;
-  /** Delay between snapshot status polls. */
+  /**
+   * Server lookup and snapshots of the planned provider (default: the provider connector's
+   * `servers`, built from its token).
+   */
+  servers?: ServerSnapshotApi;
+  /** Delay between snapshot status polls (passed to the default connector). */
   sleep?: (ms: number) => Promise<void>;
-  /** Clock in epoch milliseconds for the snapshot wait. */
+  /** Clock in epoch milliseconds for the snapshot wait (passed to the default connector). */
   now?: () => number;
 }
 
 export interface DestroyOptions {
   /**
-   * Take a Hetzner snapshot of the server before deleting it. `auto` (the default) takes one when
-   * the server holds the database (self-hosted Postgres) or Hetzner backups are on.
+   * Take a snapshot of the server before deleting it. `auto` (the default) takes one when the
+   * server holds the database (self-hosted Postgres) or the provider's automatic backups are on.
    */
   snapshot?: "auto" | boolean;
   /** Overrides `plan.infra.engine`. */
@@ -55,6 +51,13 @@ export interface DestroyOptions {
 export interface DestroyPreview {
   /** The server name the user types to confirm. */
   name: string;
+  /** The planned provider. */
+  provider: VpsProviderId;
+  /**
+   * False when the provider has no delete protection (DigitalOcean): the server is deleted as soon
+   * as the approved destroy plan is applied, with no protection-lifting step before it.
+   */
+  deleteProtection: boolean;
   resources: ResourceChange[];
   /** True when a snapshot is taken before anything is deleted (announced before the prompt). */
   snapshot: boolean;
@@ -63,8 +66,11 @@ export interface DestroyPreview {
 }
 
 export interface DestroyResult {
-  /** Hetzner image id of the snapshot taken before the destroy, when one was taken. */
-  snapshotImageId?: number;
+  /**
+   * Provider id of the snapshot taken (or reused) before the destroy, when there is one: the
+   * Hetzner image id or the DigitalOcean snapshot id.
+   */
+  snapshotId?: string;
   /** Resources the applied destroy plan deleted (empty when nothing was left to delete). */
   destroyed: ResourceChange[];
   /** GitHub Actions secrets removed from the repository (names only). */

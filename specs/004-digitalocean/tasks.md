@@ -77,7 +77,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T409 [P] [US2] Provider-neutral destroy with the DigitalOcean flow in `packages/agents/src/destroy/`
+- [X] T409 [P] [US2] Provider-neutral destroy with the DigitalOcean flow in `packages/agents/src/destroy/`
   - Owns: `packages/agents/src/destroy/**`, `packages/cli/src/ui/__fixtures__/destroy.ts`
   - Reads: plan.md "Destroy"; spec US2 AS1, FR-407, edge cases; `packages/agents/src/providers/**`; research.md "Behaviour that differs from Hetzner"
   - Depends: T405

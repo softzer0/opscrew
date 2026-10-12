@@ -6,5 +6,4 @@ export type {
   DestroyPreview,
   DestroyResult,
   DestroyServices,
-  HetznerSnapshotApi,
 } from "./types";

@@ -19,22 +19,34 @@ import { ensureStatePassphrase } from "../shared";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import {
   type DestroyScript,
+  DROPLET_ADDRESS,
   deployedResources,
   FakeDestroyGitHub,
-  FakeHetzner,
+  FakeServers,
   ScriptedDestroyEngine,
   SERVER_ADDRESS,
   unprotectPlan,
 } from "./__fixtures__/fakes";
 import { runDestroy } from "./run";
-import type { DestroyServices } from "./types";
+import type { DestroyPreview, DestroyServices } from "./types";
 
 const HCLOUD = fakeSecret("hcloud-token");
+const DIGITALOCEAN = fakeSecret("digitalocean-token");
 const CLOUDFLARE = fakeSecret("cloudflare-token");
 const GITHUB = fakeSecret("github-token");
 const OTHER_HOST = `198.51.100.7 ${HOST_KEY}`;
 const SECRET_NAMES = Object.values(DEPLOY_SECRETS).sort();
 const NOW = "2026-10-11T12:00:00.000Z";
+const SNAPSHOT_NAME = "opscrew-shop-before-destroy-20261011T120000Z";
+const SNAPSHOT_LABELS = {
+  app: "shop",
+  "created-by": "opscrew",
+  reason: "destroy",
+  "taken-at": "20261011T120000Z",
+};
+/** Only a DigitalOcean token, as for a user who never had a Hetzner account. */
+const DO_ENV = { HCLOUD_TOKEN: undefined, DIGITALOCEAN_TOKEN: DIGITALOCEAN };
+const DO_RESOURCES = deployedResources({ provider: "digitalocean" });
 
 type Answer = (request: ApprovalRequest) => boolean | { approved: boolean; confirmation?: string };
 
@@ -75,6 +87,29 @@ function deployedPlan(options: Parameters<typeof testPlan>[0] = {}): DeployPlan 
   };
 }
 
+/** The same deployment on a DigitalOcean Droplet (prices in USD). */
+function digitalOceanPlan(options: Parameters<typeof testPlan>[0] = {}): DeployPlan {
+  const plan = deployedPlan(options);
+  return {
+    ...plan,
+    target: {
+      ...plan.target,
+      provider: "digitalocean",
+      location: "fra1",
+      serverType: "s-1vcpu-2gb",
+      image: "ubuntu-24-04-x64",
+    },
+    cost: {
+      ...plan.cost,
+      monthly: { amount: 15.6, currency: "USD" },
+      breakdown: [
+        { item: "server", monthly: { amount: 12, currency: "USD" } },
+        { item: "backups", monthly: { amount: 3.6, currency: "USD" } },
+      ],
+    },
+  };
+}
+
 interface SetupOptions {
   plan?: DeployPlan;
   answer?: Answer;
@@ -83,7 +118,7 @@ interface SetupOptions {
   env?: Record<string, string | undefined>;
   /** Write the local state file (default true). */
   state?: boolean;
-  /** Infrastructure code that declares `delete_protection` (default true). */
+  /** Infrastructure code that declares `delete_protection` (default: on Hetzner only). */
   protectionVariable?: boolean;
   /** Write the OpenTofu state passphrase as provision does (default true). */
   passphrase?: boolean;
@@ -94,7 +129,7 @@ async function setup(options: SetupOptions = {}) {
   const project = await createProject(plan);
   const events: string[] = [];
   const engine = new ScriptedDestroyEngine(options.script, events);
-  const hetzner = new FakeHetzner(events);
+  const servers = new FakeServers(events, plan.target.provider);
   const github = new FakeDestroyGitHub(events);
   for (const name of SECRET_NAMES) github.secrets.set(name, "stored");
   const handler = new RecordingHandler(options.answer ?? (() => true), events);
@@ -102,6 +137,8 @@ async function setup(options: SetupOptions = {}) {
     ...process.env,
     OPSCREW_HOME: join(project.root, ".home-opscrew"),
     HCLOUD_TOKEN: HCLOUD,
+    DIGITALOCEAN_TOKEN: undefined,
+    DIGITALOCEAN_ACCESS_TOKEN: undefined,
     CLOUDFLARE_API_TOKEN: undefined,
     GITHUB_TOKEN: undefined,
     GH_TOKEN: undefined,
@@ -134,11 +171,13 @@ async function setup(options: SetupOptions = {}) {
     await writeFile(statePath, '{"version":4,"resources":[]}\n');
   }
   await mkdir(join(project.root, plan.infra.dir), { recursive: true });
+  // DigitalOcean deployments never declare delete_protection (the provider has none)
+  const protectionVariable = options.protectionVariable ?? plan.target.provider === "hetzner";
   await writeFile(
     join(project.root, plan.infra.dir, "variables.tf"),
-    options.protectionVariable === false
-      ? 'variable "app_name" {\n  type = string\n}\n'
-      : 'variable "delete_protection" {\n  type    = bool\n  default = true\n}\n',
+    protectionVariable
+      ? 'variable "delete_protection" {\n  type    = bool\n  default = true\n}\n'
+      : 'variable "app_name" {\n  type = string\n}\n',
   );
   await mkdir(dirname(deps.paths.files.knownHosts), { recursive: true });
   await writeFile(deps.paths.files.knownHosts, `${OTHER_HOST}\n${SERVER_IPV4} ${HOST_KEY}\n`);
@@ -151,7 +190,7 @@ async function setup(options: SetupOptions = {}) {
   const services: DestroyServices = {
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
-    hetznerClient: hetzner,
+    servers,
     cloudflare: fakeCloudflare(),
     github,
     sleep: async () => undefined,
@@ -162,7 +201,7 @@ async function setup(options: SetupOptions = {}) {
     plan,
     deps,
     engine,
-    hetzner,
+    servers,
     github,
     handler,
     services,
@@ -176,6 +215,26 @@ type Setup = Awaited<ReturnType<typeof setup>>;
 
 async function planFilesLeft(deps: Setup["deps"]): Promise<string[]> {
   return readdir(deps.paths.files.plansDir).catch(() => []);
+}
+
+/** The provider calls in the audit log (the snapshot) as `[action, target, detail]`. */
+function providerCalls(deps: Setup["deps"]): unknown[][] {
+  return deps.audit.entries
+    .filter((e) => e.kind === "provider-call")
+    .map((e) => [e.action, e.target, e.detail]);
+}
+
+/** Where a run remembers its snapshot so that a re-run reuses it. */
+function snapshotRecord(deps: Setup["deps"]): string {
+  return join(deps.paths.stateDir, "destroy-snapshot.json");
+}
+
+async function writeSnapshotRecord(deps: Setup["deps"], record: unknown): Promise<void> {
+  await mkdir(deps.paths.stateDir, { recursive: true });
+  await writeFile(
+    snapshotRecord(deps),
+    typeof record === "string" ? record : `${JSON.stringify(record)}\n`,
+  );
 }
 
 /** The project is exactly as before the run: deployment recorded, secrets, host key, record. */
@@ -193,7 +252,7 @@ async function expectNothingCleanedUp(s: Setup) {
 describe.skipIf(!findExecutable("git"))("runDestroy", () => {
   it("snapshots, lifts protection, destroys, removes the secrets and records the teardown", async () => {
     const s = await setup();
-    const { deps, engine, hetzner, github, handler, services, events } = s;
+    const { deps, engine, servers, github, handler, services, events } = s;
     const serverAddressWhenSecretsGo: (string | undefined)[] = [];
     github.onDelete = async () => {
       const current = await readArtifact("plan", deps.paths.files.plan);
@@ -220,7 +279,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(serverAddressWhenSecretsGo).toEqual(SECRET_NAMES.map(() => SERVER_IPV4));
 
     expect(result).toEqual({
-      snapshotImageId: 9001,
+      snapshotId: "9001",
       destroyed: deployedResources(),
       secretsRemoved: SECRET_NAMES,
       remaining: expect.any(Array),
@@ -246,21 +305,18 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     ]);
     expect(engine.planFiles.filter((f) => existsSync(f))).toEqual([]);
 
-    // Snapshot of the labelled server, labelled with the app and time, waited for up to 15 minutes
-    expect(hetzner.selectors).toEqual(["managed-by=opscrew,app=shop"]);
-    expect(hetzner.snapshots).toEqual([
+    // Snapshot of the app's server, labelled with the app and time, waited for up to 15 minutes
+    // (the label selector itself is checked against the real connector below)
+    expect(servers.lookups).toEqual(["shop"]);
+    expect(servers.snapshots).toEqual([
       {
-        serverId: 4711,
+        serverId: "4711",
+        name: SNAPSHOT_NAME,
         description: `OpsCrew snapshot of shop before opscrew destroy (${NOW})`,
-        labels: {
-          app: "shop",
-          "created-by": "opscrew",
-          reason: "destroy",
-          "taken-at": "20261011T120000Z",
-        },
+        labels: SNAPSHOT_LABELS,
+        timeoutMs: 15 * 60_000,
       },
     ]);
-    expect(hetzner.waits).toEqual([{ actionId: 77, timeoutMs: 15 * 60_000 }]);
 
     // Approvals: protection lift (no destroy), destroy (allowDestroy + typed name), secrets
     const [unprotect, destroy, secrets] = handler.requests;
@@ -311,8 +367,13 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
 
     // Audit: snapshot, both applies, every secret (names only) and the outcome
     const audit = deps.audit.entries;
-    expect(audit.filter((e) => e.kind === "provider-call").map((e) => e.action)).toEqual([
-      "create snapshot",
+    expect(providerCalls(deps)).toEqual([
+      [
+        "create snapshot",
+        "hetzner server 4711",
+        `snapshot ${SNAPSHOT_NAME} of shop before destroy`,
+      ],
+      ["snapshot ready", "hetzner server 4711", `snapshot 9001 of shop (${SNAPSHOT_NAME})`],
     ]);
     expect(audit.filter((e) => e.kind === "iac").map((e) => [e.target, e.detail])).toEqual([
       [unprotect?.planHash, "lifting delete protection: apply finished"],
@@ -357,11 +418,13 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
   it("an up-front confirmation that fails stops before the snapshot: nothing at all changes", async () => {
     const s = await setup();
     const seen: string[] = [];
+    const previews: DestroyPreview[] = [];
     await expect(
       runDestroy(s.deps, {
         services: s.services,
         confirm: async (preview) => {
           seen.push(preview.name, ...preview.resources.map((r) => r.address));
+          previews.push(preview);
           expect(preview.dataWarning).toBeDefined();
           return false;
         },
@@ -372,7 +435,14 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     });
     expect(seen[0]).toBe("shop");
     expect(seen).toContain("module.server.hcloud_server.this");
-    expect(s.hetzner.snapshots).toEqual([]);
+    expect(previews[0]).toMatchObject({
+      provider: "hetzner",
+      deleteProtection: true,
+      snapshot: true,
+    });
+    expect(s.deps.reporter.text()).not.toContain("no delete protection");
+    expect(s.servers.lookups).toEqual([]);
+    expect(s.servers.snapshots).toEqual([]);
     expect(s.engine.applied).toEqual([]);
     expect(s.handler.requests).toEqual([]);
     expect(s.deps.audit.entries.find((e) => e.action === "destroy-confirm")?.decision).toBe(
@@ -403,29 +473,63 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
 
   it("stops when the destroy plan would delete something that was not in the confirmed list", async () => {
     const s = await setup();
-    await expect(
-      runDestroy(s.deps, {
-        services: s.services,
-        confirm: async () => {
-          // someone adds a volume between the preview and the destroy plan
-          (s.engine.script as DestroyScript).resources = [
-            ...deployedResources(),
-            {
-              address: "module.server.hcloud_volume.data",
-              type: "hcloud_volume",
-              name: "data",
-              provider: "registry.opentofu.org/hetznercloud/hcloud",
-              action: "delete",
-            },
-          ];
-          return true;
-        },
-      }),
-    ).rejects.toMatchObject({
+    const error = await runDestroy(s.deps, {
+      services: s.services,
+      confirm: async () => {
+        // someone adds a volume between the preview and the destroy plan
+        (s.engine.script as DestroyScript).resources = [
+          ...deployedResources(),
+          {
+            address: "module.server.hcloud_volume.data",
+            type: "hcloud_volume",
+            name: "data",
+            provider: "registry.opentofu.org/hetznercloud/hcloud",
+            action: "delete",
+          },
+        ];
+        return true;
+      },
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
       code: "PHASE_PRECONDITION",
       message: expect.stringContaining("module.server.hcloud_volume.data"),
     });
     expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect"]);
+    // protection was lifted before this stop, so the error says so and how to turn it back on
+    expect((error as OpsCrewError).message).toContain(
+      "Nothing was deleted. Delete protection on shop is already lifted, so the server is not protected against deletion now.",
+    );
+    expect((error as OpsCrewError).hint).toBe(
+      "Run `opscrew provision` to turn delete protection back on, or run `opscrew destroy` again to see the current list and confirm it.",
+    );
+  });
+
+  it("stops when the destroy plan deletes another server than the confirmed one, and says protection is already lifted", async () => {
+    const s = await setup();
+    // the server is recreated between the preview and the destroy plan
+    s.engine.beforeApply = (() => {
+      const check = s.engine.beforeApply;
+      return (planHash, kind) => {
+        check?.(planHash, kind);
+        if (kind === "unprotect") (s.engine.script as DestroyScript).serverId = "4712";
+      };
+    })();
+    const error = await runDestroy(s.deps, { services: s.services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    const { message, hint } = error as OpsCrewError;
+    expect(message).toContain(
+      "The teardown plan now deletes a server other than the one you confirmed (id 4711), so OpsCrew stopped. Nothing was deleted.",
+    );
+    expect(message).toContain(
+      "Delete protection on shop is already lifted, so the server is not protected against deletion now.",
+    );
+    expect(message).toContain("The snapshot (Hetzner image 9001) was kept");
+    expect(hint).toBe(
+      "Run `opscrew provision` to turn delete protection back on, or run `opscrew drift` to see what changed, then run `opscrew destroy` again to see the current list and confirm it.",
+    );
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect"]);
+    expect(s.handler.requests.map((r) => r.title)).toEqual(["Lift delete protection on shop"]);
+    await expectNothingCleanedUp(s);
   });
 
   it("reuses the snapshot of an earlier run instead of taking another", async () => {
@@ -436,13 +540,38 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
       code: "APPROVAL_REFUSED",
     });
-    expect(s.hetzner.snapshots).toHaveLength(1);
+    expect(s.servers.snapshots).toHaveLength(1);
+    expect(JSON.parse(await readFile(snapshotRecord(s.deps), "utf8"))).toEqual({
+      provider: "hetzner",
+      serverId: "4711",
+      snapshotId: "9001",
+      takenAt: NOW,
+    });
 
     refuseDestroy = false;
     const result = await runDestroy(s.deps, { services: s.services });
-    expect(result.snapshotImageId).toBe(9001);
-    expect(s.hetzner.snapshots).toHaveLength(1);
-    expect(s.deps.reporter.text()).toContain("Reusing the snapshot taken by the earlier run");
+    expect(result.snapshotId).toBe("9001");
+    expect(s.servers.snapshots).toHaveLength(1);
+    expect(s.deps.reporter.text()).toContain(
+      "Reusing the snapshot taken by the earlier run (Hetzner image 9001).",
+    );
+    expect(existsSync(snapshotRecord(s.deps))).toBe(false);
+  });
+
+  it("reuses a snapshot recorded by OpsCrew 003 (numeric Hetzner ids)", async () => {
+    const s = await setup();
+    await writeSnapshotRecord(s.deps, {
+      serverId: 4711,
+      imageId: 9001,
+      takenAt: "2026-10-10T09:00:00.000Z",
+    });
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.snapshotId).toBe("9001");
+    expect(s.servers.snapshots).toEqual([]);
+    expect(s.deps.reporter.text()).toContain(
+      "Reusing the snapshot taken by the earlier run (Hetzner image 9001).",
+    );
+    expect(s.handler.requests[1]?.details).toContain("Snapshot: Hetzner image 9001");
   });
 
   it("refusing the protection lift changes nothing", async () => {
@@ -458,9 +587,9 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
   it("takes no snapshot with snapshot: false", async () => {
     const s = await setup();
     const result = await runDestroy(s.deps, { services: s.services, snapshot: false });
-    expect(result.snapshotImageId).toBeUndefined();
-    expect(s.hetzner.selectors).toEqual([]);
-    expect(s.hetzner.snapshots).toEqual([]);
+    expect(result.snapshotId).toBeUndefined();
+    expect(s.servers.lookups).toEqual([]);
+    expect(s.servers.snapshots).toEqual([]);
     expect(s.deps.reporter.text()).toContain("Skipping the snapshot, as requested.");
     expect(s.handler.requests[1]?.details).toContain(
       "Snapshot: none. What is stored on the server cannot be recovered after this.",
@@ -473,21 +602,21 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     const base = deployedPlan({ postgres: false });
     const s = await setup({ plan: { ...base, target: { ...base.target, backups: false } } });
     const result = await runDestroy(s.deps, { services: s.services });
-    expect(result.snapshotImageId).toBeUndefined();
-    expect(s.hetzner.selectors).toEqual([]);
+    expect(result.snapshotId).toBeUndefined();
+    expect(s.servers.lookups).toEqual([]);
     expect(s.deps.reporter.text()).toContain(
-      "No snapshot: the database does not run on the server",
+      "No snapshot: the database does not run on the server and Hetzner backups are off.",
     );
   });
 
   it.each([
-    ["creating", "createError", undefined],
-    ["waiting for", "waitError", "Hetzner image 9001"],
+    ["creating", "createError"],
+    ["waiting for", "waitError"],
   ] as const)(
     "a snapshot error while %s it stops before anything changes",
-    async (_what, field, hint) => {
+    async (_what, field) => {
       const s = await setup();
-      s.hetzner[field] = new OpsCrewError(
+      s.servers[field] = new OpsCrewError(
         "PROVIDER_ERROR",
         "Hetzner action 77 (create_image) failed: disk unavailable",
       );
@@ -496,10 +625,25 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
       expect((error as OpsCrewError).message).toBe(
         "The snapshot of shop failed: Hetzner action 77 (create_image) failed: disk unavailable. Nothing was deleted.",
       );
-      if (hint) expect((error as OpsCrewError).hint).toContain(hint);
+      // Whether the snapshot was started is unknown here, so the hint covers both cases
+      expect((error as OpsCrewError).hint).toContain("its snapshots in the Hetzner Cloud Console");
+      expect((error as OpsCrewError).hint).toContain("`opscrew destroy --no-snapshot`");
       expect(s.engine.calls.filter((c) => c.startsWith("apply"))).toEqual([]);
       expect(s.engine.calls).not.toContain("plan:unprotect");
       expect(s.handler.requests).toEqual([]);
+      expect(providerCalls(s.deps)).toEqual([
+        [
+          "create snapshot",
+          "hetzner server 4711",
+          `snapshot ${SNAPSHOT_NAME} of shop before destroy`,
+        ],
+        [
+          "snapshot failed",
+          "hetzner server 4711",
+          `snapshot ${SNAPSHOT_NAME} of shop: Hetzner action 77 (create_image) failed: disk unavailable`,
+        ],
+      ]);
+      expect(existsSync(snapshotRecord(s.deps))).toBe(false);
       await expectNothingCleanedUp(s);
     },
   );
@@ -567,12 +711,12 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
 
   it("handles a server that is already gone: no snapshot, no protection lift, deletes the rest", async () => {
     const s = await setup({ script: { resources: deployedResources({ server: false }) } });
-    s.hetzner.servers = [];
+    s.servers.servers = [];
     const result = await runDestroy(s.deps, { services: s.services });
 
-    expect(result.snapshotImageId).toBeUndefined();
+    expect(result.snapshotId).toBeUndefined();
     expect(result.destroyed).toEqual(deployedResources({ server: false }));
-    expect(s.hetzner.snapshots).toEqual([]);
+    expect(s.servers.snapshots).toEqual([]);
     expect(s.engine.calls).not.toContain("plan:unprotect");
     expect(s.engine.applied.map((a) => a.kind)).toEqual(["destroy"]);
     const text = s.deps.reporter.text();
@@ -604,7 +748,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect((error as OpsCrewError).message).toContain("CLOUDFLARE_API_TOKEN");
     expect((error as OpsCrewError).hint).toContain("dead address");
     expect(without.engine.calls).toEqual([]);
-    expect(without.hetzner.selectors).toEqual([]);
+    expect(without.servers.lookups).toEqual([]);
     await expectNothingCleanedUp(without);
 
     const rejected = await setup({
@@ -716,7 +860,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(plan.deployment.serverIpv4).toBe(SERVER_IPV4);
     expect(plan.deployment.destroyedAt).toBeUndefined();
 
-    s.hetzner.servers = [];
+    s.servers.servers = [];
     s.handler.requests.length = 0;
     removeSecrets = true;
     const result = await runDestroy(s.deps, { services: s.services });
@@ -834,7 +978,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     };
     const result = await runDestroy(s.deps, { services });
 
-    expect(result.snapshotImageId).toBe(9001);
+    expect(result.snapshotId).toBe("9001");
     expect(result.secretsRemoved).toEqual(SECRET_NAMES);
     // The tokens were used, but only in Authorization headers
     expect(requests.some((r) => r.auth === `Bearer ${HCLOUD}`)).toBe(true);
@@ -859,5 +1003,689 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     for (const secret of [HCLOUD, CLOUDFLARE, GITHUB, passphrase]) {
       expect(printed).not.toContain(secret);
     }
+  });
+
+  it("stops before deleting a server that is in the teardown but cannot be found for its snapshot", async () => {
+    const s = await setup();
+    s.servers.servers = [];
+    const error = await runDestroy(s.deps, { services: s.services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect((error as OpsCrewError).message).toContain(
+      "OpsCrew could not find the server shop in Hetzner Cloud",
+    );
+    expect((error as OpsCrewError).message).toContain("Nothing was changed.");
+    expect((error as OpsCrewError).hint).toContain("`opscrew destroy --no-snapshot`");
+    expect(s.servers.snapshots).toEqual([]);
+    expect(s.engine.applied).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
+    await expectNothingCleanedUp(s);
+  });
+
+  it("snapshots the server with the state's id when another one has the same name", async () => {
+    const s = await setup();
+    s.servers.servers = [
+      { id: "999", name: "shop", status: "running" },
+      { id: "4711", name: "shop", status: "running" },
+    ];
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(s.servers.snapshots.map((snapshot) => snapshot.serverId)).toEqual(["4711"]);
+    expect(result.snapshotId).toBe("9001");
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect", "destroy"]);
+  });
+
+  it("takes no snapshot of a server the teardown does not delete", async () => {
+    const s = await setup({ script: { resources: deployedResources({ server: false }) } });
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.snapshotId).toBeUndefined();
+    expect(s.servers.snapshots).toEqual([]);
+    expect(providerCalls(s.deps)).toEqual([]);
+    expect(s.deps.reporter.text()).toContain(
+      "No snapshot: the teardown does not delete the server shop",
+    );
+    expect(result.destroyed).toEqual(deployedResources({ server: false }));
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runDestroy on DigitalOcean", () => {
+  it("says there is no delete protection, snapshots after the typed name and destroys without a protection step", async () => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+    });
+    const { deps, engine, servers, github, handler, events } = s;
+    const previews: DestroyPreview[] = [];
+    let printedBeforeConfirm = "";
+    const result = await runDestroy(deps, {
+      services: s.services,
+      confirm: async (preview) => {
+        previews.push(preview);
+        printedBeforeConfirm = deps.reporter.text();
+        events.push("confirm");
+        return true;
+      },
+    });
+
+    // Order: preview → typed name → snapshot → destroy plan, approval, apply → secrets
+    expect(events).toEqual([
+      "plan:destroy",
+      "confirm",
+      "snapshot:create",
+      "snapshot:ready",
+      "plan:destroy",
+      "approval:iac-apply",
+      "apply:destroy",
+      "approval:github-secrets",
+      ...SECRET_NAMES.map((name) => `secret:${name}`),
+    ]);
+
+    // The preview: resources, the data warning, the snapshot and the missing delete protection
+    expect(previews).toHaveLength(1);
+    expect(previews[0]).toMatchObject({
+      name: "shop",
+      provider: "digitalocean",
+      deleteProtection: false,
+      snapshot: true,
+      resources: DO_RESOURCES,
+    });
+    expect(previews[0]?.dataWarning).toContain(
+      "Deleting the Droplet also deletes the PostgreSQL database",
+    );
+    expect(printedBeforeConfirm).toContain(`- delete  ${DROPLET_ADDRESS}`);
+    expect(printedBeforeConfirm).toContain(
+      "DigitalOcean has no delete protection for Droplets, so the only safeguard is OpsCrew's own confirmation",
+    );
+    expect(printedBeforeConfirm).toContain("A snapshot of the Droplet is taken first");
+    expect(printedBeforeConfirm).toContain("$0.06 per GB per month");
+
+    // No protection step: no unprotect plan and no delete_protection variable on any plan
+    expect(engine.calls).not.toContain("plan:unprotect");
+    expect(engine.planOptions.map((o) => [o.destroy === true, o.vars])).toEqual([
+      [true, undefined],
+      [true, undefined],
+    ]);
+    expect(engine.applied.map((a) => [a.kind, a.approval.allowDestroy])).toEqual([
+      ["destroy", true],
+    ]);
+    expect(engine.planFiles.filter((f) => existsSync(f))).toEqual([]);
+
+    // The snapshot goes through the provider-neutral API with a findable name
+    expect(servers.lookups).toEqual(["shop"]);
+    expect(servers.snapshots).toEqual([
+      {
+        serverId: "3164444",
+        name: SNAPSHOT_NAME,
+        description: `OpsCrew snapshot of shop before opscrew destroy (${NOW})`,
+        labels: SNAPSHOT_LABELS,
+        timeoutMs: 15 * 60_000,
+      },
+    ]);
+
+    // Approvals: the destroy plan (allowDestroy + typed name), then the secrets
+    expect(handler.requests.map((r) => r.kind)).toEqual(["iac-apply", "github-secrets"]);
+    const destroy = handler.requests[0];
+    expect(destroy).toMatchObject({
+      title: "Delete shop on DigitalOcean (4 resources to delete)",
+      allowDestroy: true,
+      confirmPhrase: "shop",
+      costDelta: { amount: -15.6, currency: "USD" },
+    });
+    expect(destroy?.details).toContain(`- delete  ${DROPLET_ADDRESS}`);
+    expect(destroy?.details).toContain("the PostgreSQL database");
+    expect(destroy?.details).toContain(
+      "Snapshot: DigitalOcean snapshot 6372321 keeps a copy of the Droplet (billed at $0.06 per GB per month; OpsCrew never deletes it).",
+    );
+
+    // Result and what remains: the snapshot and its price, the retained backups, images, files
+    expect(result).toEqual({
+      snapshotId: "6372321",
+      destroyed: DO_RESOURCES,
+      secretsRemoved: SECRET_NAMES,
+      remaining: expect.any(Array),
+    });
+    const remaining = result.remaining.join("\n");
+    expect(remaining).toContain("DigitalOcean snapshot 6372321");
+    expect(remaining).toContain("DigitalOcean bills snapshots at $0.06 per GB per month");
+    expect(remaining).toContain("OpsCrew never deletes them");
+    expect(remaining).toContain(
+      "The Droplet's automatic backups. DigitalOcean keeps them until they expire, four weeks after they were taken",
+    );
+    expect(remaining).not.toContain("bills them");
+    expect(remaining).toContain("ghcr.io/acme/shop");
+    expect(remaining).toContain(".github/workflows/opscrew-deploy.yml");
+
+    // Secrets and the pinned host key are gone; the plan records the teardown
+    expect(github.secrets.size).toBe(0);
+    expect(await readFile(deps.paths.files.knownHosts, "utf8")).toBe(`${OTHER_HOST}\n`);
+    expect(existsSync(s.secretsRecord)).toBe(false);
+    expect(existsSync(snapshotRecord(deps))).toBe(false);
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    expect(plan.deployment.serverIpv4).toBeUndefined();
+    expect(plan.deployment.destroyedAt).toBe(NOW);
+    expect(plan.approvals).toEqual([
+      { planHash: destroy?.planHash, approver: "test-user", at: NOW, kind: "iac-apply" },
+    ]);
+
+    // Audit: the typed confirmation, the snapshot (provider, Droplet, snapshot id), the apply
+    const audit = deps.audit.entries;
+    expect(audit.find((e) => e.action === "destroy-confirm")?.decision).toBe("approved");
+    expect(providerCalls(deps)).toEqual([
+      [
+        "create snapshot",
+        "digitalocean server 3164444",
+        `snapshot ${SNAPSHOT_NAME} of shop before destroy`,
+      ],
+      [
+        "snapshot ready",
+        "digitalocean server 3164444",
+        `snapshot 6372321 of shop (${SNAPSHOT_NAME})`,
+      ],
+    ]);
+    expect(audit.filter((e) => e.kind === "iac").map((e) => [e.target, e.detail])).toEqual([
+      [destroy?.planHash, "deleting the infrastructure: apply finished"],
+    ]);
+    expect(audit.find((e) => e.kind === "phase")?.detail).toContain(
+      "DigitalOcean snapshot 6372321 kept",
+    );
+
+    // Nothing about Hetzner or lifting protection anywhere
+    const text = [deps.reporter.text(), JSON.stringify(handler.requests), remaining].join("\n");
+    expect(text).not.toContain("Hetzner");
+    expect(text).not.toContain("Lift delete protection");
+    expect(text).not.toContain("delete_protection");
+  });
+
+  it("runs without a typed confirmation hook too: the destroy approval is the only gate", async () => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+      answer: confirmHandler("shop", "shop"),
+    });
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.destroyed).toEqual(DO_RESOURCES);
+    expect(s.handler.requests.map((r) => [r.kind, r.allowDestroy])).toEqual([
+      ["iac-apply", true],
+      ["github-secrets", undefined],
+    ]);
+
+    for (const confirm of ["shpo", undefined]) {
+      const other = await setup({
+        plan: digitalOceanPlan(),
+        script: { resources: DO_RESOURCES },
+        env: DO_ENV,
+        answer: confirmHandler(confirm, "shop"),
+      });
+      const error = await runDestroy(other.deps, { services: other.services }).catch(
+        (e: unknown) => e,
+      );
+      expect(error).toMatchObject({ code: "APPROVAL_REFUSED" });
+      expect((error as OpsCrewError).message).toContain("Nothing was deleted.");
+      expect((error as OpsCrewError).message).toContain("DigitalOcean snapshot 6372321) was kept");
+      expect((error as OpsCrewError).message).not.toContain("protection");
+      expect(other.engine.applied).toEqual([]);
+      await expectNothingCleanedUp(other);
+    }
+  });
+
+  it("an up-front confirmation that fails changes nothing, not even a snapshot", async () => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+    });
+    await expect(
+      runDestroy(s.deps, { services: s.services, confirm: async () => false }),
+    ).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      message: expect.stringContaining("nothing was deleted and nothing was changed"),
+    });
+    expect(s.servers.lookups).toEqual([]);
+    expect(s.servers.snapshots).toEqual([]);
+    expect(s.engine.applied).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
+    await expectNothingCleanedUp(s);
+  });
+
+  it("a Droplet deleted in the console: the snapshot is skipped with a note and the rest is deleted", async () => {
+    const left = deployedResources({ provider: "digitalocean", server: false });
+    const s = await setup({ plan: digitalOceanPlan(), script: { resources: left }, env: DO_ENV });
+    s.servers.servers = [];
+    const result = await runDestroy(s.deps, { services: s.services });
+
+    expect(result.snapshotId).toBeUndefined();
+    expect(result.destroyed).toEqual(left);
+    expect(s.servers.lookups).toEqual(["shop"]);
+    expect(s.servers.snapshots).toEqual([]);
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["destroy"]);
+    const text = s.deps.reporter.text();
+    expect(text).toContain(
+      "No snapshot: the Droplet shop no longer exists in DigitalOcean, so there is nothing to keep.",
+    );
+    expect(text).not.toContain("PostgreSQL");
+    expect(s.handler.requests[0]?.details).toContain("Snapshot: none.");
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBe(NOW);
+  });
+
+  it.each([
+    [
+      "cannot start",
+      "createError",
+      "DigitalOcean could not start the snapshot: Droplet is currently busy.",
+    ],
+    ["errors", "waitError", "DigitalOcean action 36805022 (snapshot) failed."],
+    [
+      "times out",
+      "waitError",
+      "DigitalOcean action 36805022 (snapshot) did not finish within 15 minutes.",
+    ],
+  ] as const)(
+    "a snapshot that %s stops before anything is deleted",
+    async (_what, field, cause) => {
+      const s = await setup({
+        plan: digitalOceanPlan(),
+        script: { resources: DO_RESOURCES },
+        env: DO_ENV,
+      });
+      s.servers[field] = new OpsCrewError("PROVIDER_ERROR", cause);
+      const error = await runDestroy(s.deps, {
+        services: s.services,
+        confirm: async () => true,
+      }).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({ code: "PROVIDER_ERROR" });
+      expect((error as OpsCrewError).message).toBe(
+        `The snapshot of shop failed: ${cause.replace(/\.$/, "")}. Nothing was deleted.`,
+      );
+      expect((error as OpsCrewError).hint).toContain(
+        "the Droplet and its snapshots in the DigitalOcean control panel",
+      );
+      expect(s.engine.calls.filter((c) => c.startsWith("plan"))).toEqual(["plan:destroy"]);
+      expect(s.engine.applied).toEqual([]);
+      expect(s.handler.requests).toEqual([]);
+      expect(providerCalls(s.deps)).toEqual([
+        [
+          "create snapshot",
+          "digitalocean server 3164444",
+          `snapshot ${SNAPSHOT_NAME} of shop before destroy`,
+        ],
+        [
+          "snapshot failed",
+          "digitalocean server 3164444",
+          `snapshot ${SNAPSHOT_NAME} of shop: ${cause.replace(/\.$/, "")}`,
+        ],
+      ]);
+      expect(existsSync(snapshotRecord(s.deps))).toBe(false);
+      await expectNothingCleanedUp(s);
+    },
+  );
+
+  it("reuses a snapshot recorded with string ids for the same provider and Droplet", async () => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+    });
+    await writeSnapshotRecord(s.deps, {
+      provider: "digitalocean",
+      serverId: "3164444",
+      snapshotId: "6372399",
+      takenAt: "2026-10-10T09:00:00.000Z",
+    });
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.snapshotId).toBe("6372399");
+    expect(s.servers.snapshots).toEqual([]);
+    expect(providerCalls(s.deps)).toEqual([]);
+    expect(s.deps.reporter.text()).toContain(
+      "Reusing the snapshot taken by the earlier run (DigitalOcean snapshot 6372399).",
+    );
+    expect(s.handler.requests[0]?.details).toContain("Snapshot: DigitalOcean snapshot 6372399");
+    expect(existsSync(snapshotRecord(s.deps))).toBe(false);
+  });
+
+  it.each([
+    ["from another provider", { provider: "hetzner", serverId: "3164444", snapshotId: "1" }],
+    ["from OpsCrew 003, which only knew Hetzner", { serverId: 3164444, imageId: 1 }],
+    ["for another Droplet", { provider: "digitalocean", serverId: "999", snapshotId: "1" }],
+    ["missing the snapshot id", { provider: "digitalocean", serverId: "3164444" }],
+    ["unreadable", "{not json"],
+  ])("takes a new snapshot when the record is %s", async (_what, record) => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+      // stop after the snapshot so the new record can be read
+      answer: (request) => request.allowDestroy !== true,
+    });
+    await writeSnapshotRecord(s.deps, record);
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      message: expect.stringContaining("DigitalOcean snapshot 6372321) was kept"),
+    });
+    expect(s.servers.snapshots.map((snapshot) => snapshot.serverId)).toEqual(["3164444"]);
+    expect(JSON.parse(await readFile(snapshotRecord(s.deps), "utf8"))).toEqual({
+      provider: "digitalocean",
+      serverId: "3164444",
+      snapshotId: "6372321",
+      takenAt: NOW,
+    });
+    expect(s.engine.applied).toEqual([]);
+  });
+
+  it("snapshots the Droplet the state names, not another one with the same name", async () => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+    });
+    // an orphan from lost state, listed first, with the same name and tags
+    s.servers.servers = [
+      { id: "1111111", name: "shop", status: "active" },
+      { id: "3164444", name: "shop", status: "active" },
+    ];
+    // a record from an earlier run for the orphan is not reused either
+    await writeSnapshotRecord(s.deps, {
+      provider: "digitalocean",
+      serverId: "1111111",
+      snapshotId: "5555",
+    });
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(s.servers.snapshots.map((snapshot) => snapshot.serverId)).toEqual(["3164444"]);
+    expect(result.snapshotId).toBe("6372321");
+    expect(providerCalls(s.deps).map(([action, target]) => [action, target])).toEqual([
+      ["create snapshot", "digitalocean server 3164444"],
+      ["snapshot ready", "digitalocean server 3164444"],
+    ]);
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["destroy"]);
+  });
+
+  it.each([
+    [
+      "no Droplet has the id the state records",
+      { serverId: "3164444" },
+      [
+        { id: "1111111", name: "shop", status: "active" },
+        { id: "2222222", name: "shop", status: "active" },
+      ],
+      "no Droplet tagged opscrew-app:shop and managed-by:opscrew has the id 3164444 that the infrastructure state records",
+    ],
+    [
+      "the plan does not say the id and two Droplets have the name",
+      { serverId: null },
+      [
+        { id: "1111111", name: "shop", status: "active" },
+        { id: "3164444", name: "shop", status: "active" },
+      ],
+      "Several Droplets tagged opscrew-app:shop and managed-by:opscrew are named shop, and the infrastructure state does not say which one the teardown deletes",
+    ],
+  ] as const)("stops with nothing changed when %s", async (_what, script, droplets, message) => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES, ...script },
+      env: DO_ENV,
+    });
+    s.servers.servers = droplets.map((droplet) => ({ ...droplet }));
+    const error = await runDestroy(s.deps, {
+      services: s.services,
+      confirm: async () => true,
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect((error as OpsCrewError).message).toContain(message);
+    expect((error as OpsCrewError).message).toContain("Nothing was changed.");
+    expect((error as OpsCrewError).hint).toContain("`opscrew destroy --no-snapshot`");
+    expect(s.servers.snapshots).toEqual([]);
+    expect(providerCalls(s.deps)).toEqual([]);
+    expect(s.engine.calls.filter((c) => c.startsWith("plan"))).toEqual(["plan:destroy"]);
+    expect(s.engine.applied).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
+    await expectNothingCleanedUp(s);
+  });
+
+  it("falls back to the name when the plan does not say the id and exactly one Droplet has it", async () => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES, serverId: null },
+      env: DO_ENV,
+    });
+    s.servers.servers = [
+      { id: "1111111", name: "shop-old", status: "active" },
+      { id: "3164444", name: "shop", status: "active" },
+    ];
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(s.servers.snapshots.map((snapshot) => snapshot.serverId)).toEqual(["3164444"]);
+    expect(result.destroyed).toEqual(DO_RESOURCES);
+  });
+
+  it("stops when the destroy plan deletes another Droplet than the confirmed one", async () => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+    });
+    const error = await runDestroy(s.deps, {
+      services: s.services,
+      confirm: async () => {
+        // the Droplet is recreated between the preview and the destroy plan
+        (s.engine.script as DestroyScript).serverId = "9999999";
+        return true;
+      },
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect((error as OpsCrewError).message).toContain(
+      "The teardown plan now deletes a Droplet other than the one you confirmed (id 3164444)",
+    );
+    expect((error as OpsCrewError).message).toContain("Nothing was deleted.");
+    expect((error as OpsCrewError).message).not.toContain("protection");
+    expect((error as OpsCrewError).hint).not.toContain("protection");
+    expect(s.servers.snapshots.map((snapshot) => snapshot.serverId)).toEqual(["3164444"]);
+    expect(s.engine.applied).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
+    await expectNothingCleanedUp(s);
+  });
+
+  it("keeps reporting the snapshot when an earlier run already deleted the Droplet", async () => {
+    let removeSecrets = false;
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+      answer: (request) => request.kind !== "github-secrets" || removeSecrets,
+    });
+    // First run: snapshot, Droplet deleted, then the secret cleanup is refused
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      message: expect.stringContaining("The infrastructure is deleted."),
+    });
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["destroy"]);
+
+    // Second run: the Droplet is gone, the snapshot it left is still reported
+    s.servers.servers = [];
+    removeSecrets = true;
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.snapshotId).toBe("6372321");
+    expect(result.destroyed).toEqual([]);
+    expect(s.servers.snapshots).toHaveLength(1);
+    expect(s.deps.reporter.text()).toContain(
+      "The snapshot taken by the earlier run is kept (DigitalOcean snapshot 6372321).",
+    );
+    expect(result.remaining.join("\n")).toContain(
+      "The snapshot of shop (DigitalOcean snapshot 6372321)",
+    );
+    expect(s.deps.audit.entries.filter((e) => e.kind === "phase").at(-1)?.detail).toContain(
+      "DigitalOcean snapshot 6372321 kept",
+    );
+    expect(existsSync(snapshotRecord(s.deps))).toBe(false);
+  });
+
+  it("a failed lookup does not block deleting what is left when the teardown keeps no Droplet", async () => {
+    const left = deployedResources({ provider: "digitalocean", server: false });
+    const s = await setup({ plan: digitalOceanPlan(), script: { resources: left }, env: DO_ENV });
+    s.servers.lookupError = new OpsCrewError(
+      "PROVIDER_ERROR",
+      "Could not reach the DigitalOcean API (GET /v2/droplets).",
+    );
+    const result = await runDestroy(s.deps, { services: s.services });
+    expect(result.snapshotId).toBeUndefined();
+    expect(result.destroyed).toEqual(left);
+    expect(s.servers.lookups).toEqual(["shop"]);
+    expect(s.servers.snapshots).toEqual([]);
+    expect(s.engine.applied.map((a) => a.kind)).toEqual(["destroy"]);
+    const text = s.deps.reporter.text();
+    expect(text).toContain(
+      "No snapshot: the teardown does not delete the Droplet shop, so no snapshot is taken.",
+    );
+    expect(text).not.toContain("Could not reach");
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBe(NOW);
+  });
+
+  it("a failed lookup still stops the run when the teardown deletes the Droplet", async () => {
+    const s = await setup({
+      plan: digitalOceanPlan(),
+      script: { resources: DO_RESOURCES },
+      env: DO_ENV,
+    });
+    s.servers.lookupError = new OpsCrewError(
+      "PROVIDER_ERROR",
+      "Could not reach the DigitalOcean API (GET /v2/droplets).",
+    );
+    const error = await runDestroy(s.deps, { services: s.services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PROVIDER_ERROR",
+      message:
+        "The snapshot of shop failed: Could not reach the DigitalOcean API (GET /v2/droplets). Nothing was deleted.",
+    });
+    expect(s.engine.applied).toEqual([]);
+    await expectNothingCleanedUp(s);
+  });
+
+  it("does not report another provider's recorded snapshot after the Droplet is gone", async () => {
+    const left = deployedResources({ provider: "digitalocean", server: false });
+    const s = await setup({ plan: digitalOceanPlan(), script: { resources: left }, env: DO_ENV });
+    s.servers.servers = [];
+    await writeSnapshotRecord(s.deps, { serverId: 4711, imageId: 9001 });
+    const result = await runDestroy(s.deps, { services: s.services, snapshot: false });
+    expect(result.snapshotId).toBeUndefined();
+    expect(result.remaining.join("\n")).not.toContain("snapshot");
+  });
+
+  it("never prints the DigitalOcean token (real connectors over a fake network)", async () => {
+    const requests: { method: string; url: string; auth: string | null; body?: string }[] = [];
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    let snapshotName: string | undefined;
+    const fetch: FetchLike = async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      const body = typeof init?.body === "string" ? init.body : undefined;
+      requests.push({
+        method,
+        url: url.toString(),
+        auth: new Headers(init?.headers).get("authorization"),
+        ...(body === undefined ? {} : { body }),
+      });
+      if (url.hostname === "api.digitalocean.com") {
+        if (url.pathname === "/v2/account") {
+          return json({
+            account: { status: "active", email_verified: true, team: { name: "Acme" } },
+          });
+        }
+        if (url.pathname === "/v2/droplets" && method === "GET") {
+          return json({
+            droplets: [
+              {
+                id: 3164444,
+                name: "shop",
+                status: "active",
+                tags: ["opscrew-app:shop", "managed-by:opscrew"],
+              },
+            ],
+            links: {},
+            meta: { total: 1 },
+          });
+        }
+        if (url.pathname === "/v2/droplets/3164444/actions" && method === "POST") {
+          snapshotName = (JSON.parse(body ?? "{}") as { name?: string }).name;
+          return json(
+            {
+              action: {
+                id: 36805022,
+                status: "in-progress",
+                type: "snapshot",
+                started_at: "2026-10-11T12:00:00Z",
+              },
+            },
+            201,
+          );
+        }
+        if (url.pathname === "/v2/actions/36805022") {
+          return json({
+            action: {
+              id: 36805022,
+              status: "completed",
+              type: "snapshot",
+              started_at: "2026-10-11T12:00:00Z",
+              completed_at: "2026-10-11T12:04:00Z",
+            },
+          });
+        }
+        if (url.pathname === "/v2/droplets/3164444/snapshots") {
+          return json({
+            snapshots: [{ id: 6372321, name: snapshotName, created_at: "2026-10-11T12:00:05Z" }],
+            links: {},
+            meta: { total: 1 },
+          });
+        }
+      }
+      if (url.hostname === "api.cloudflare.com" && url.pathname.endsWith("/user/tokens/verify")) {
+        return json({ success: true, errors: [], result: { status: "active" } });
+      }
+      if (url.hostname === "api.github.com" && method === "DELETE") {
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected request in a test: ${method} ${url}`);
+    };
+
+    const s = await setup({
+      plan: digitalOceanPlan({ domain: "shop.example.com" }),
+      script: { resources: deployedResources({ provider: "digitalocean", dns: true }) },
+      env: { ...DO_ENV, CLOUDFLARE_API_TOKEN: CLOUDFLARE, GITHUB_TOKEN: GITHUB },
+    });
+    s.deps.fetch = fetch;
+    const services: DestroyServices = {
+      engine: s.services.engine as NonNullable<DestroyServices["engine"]>,
+      sleep: async () => undefined,
+    };
+    const result = await runDestroy(s.deps, { services });
+
+    expect(result.snapshotId).toBe("6372321");
+    expect(result.secretsRemoved).toEqual(SECRET_NAMES);
+    expect(snapshotName).toBe(SNAPSHOT_NAME);
+    // Only DigitalOcean was asked about the server; the token only went into Authorization headers
+    expect(requests.some((r) => r.url.includes("hetzner"))).toBe(false);
+    expect(requests.some((r) => r.auth === `Bearer ${DIGITALOCEAN}`)).toBe(true);
+    expect(requests.find((r) => r.url.includes("/v2/droplets?"))?.url).toContain(
+      "tag_name=opscrew-app%3Ashop",
+    );
+    expect(
+      requests.every((r) => !r.url.includes(DIGITALOCEAN) && !r.body?.includes(DIGITALOCEAN)),
+    ).toBe(true);
+
+    const printed = [
+      s.deps.reporter.text(),
+      JSON.stringify(s.deps.audit.entries),
+      JSON.stringify(s.handler.requests),
+      result.remaining.join("\n"),
+      await readFile(s.deps.paths.files.plan, "utf8"),
+    ].join("\n");
+    for (const secret of [DIGITALOCEAN, CLOUDFLARE, GITHUB]) {
+      expect(printed).not.toContain(secret);
+    }
+    // No "NAME_TOKEN:" anywhere, which a reader (or a redactor) could take for an assignment
+    expect(printed).not.toMatch(/[A-Z][A-Z0-9_]*_TOKEN\s*:/);
   });
 });
