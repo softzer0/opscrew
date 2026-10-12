@@ -75,6 +75,8 @@ export interface PhaseDepsOptions {
   approvePlanHash?: string;
   /** `--yes`: approve the repository and GitHub steps of a non-interactive run (never applies). */
   assumeYes?: boolean;
+  /** Wraps the run's approval handler (for example `destroy`'s typed-confirmation handler). */
+  wrapApprovals?: (handler: ApprovalHandler) => ApprovalHandler;
   /** Reporter override, for example a quiet one for `--json` output. Default `ctx.reporter`. */
   reporter?: Reporter;
 }
@@ -114,7 +116,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     ...(extra.homedir === undefined ? {} : { homedir: extra.homedir }),
   });
   const audit = new JsonlAuditLog({ dir: paths.auditDir, redact: redactor.redact, clock });
-  const handler =
+  const baseHandler =
     extra.approvalHandler ??
     createApprovalHandler(ctx, {
       ...(options.approvePlanHash === undefined
@@ -122,6 +124,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
         : { approvePlanHash: options.approvePlanHash }),
       ...(options.assumeYes === true ? { assumeYes: true } : {}),
     });
+  const handler = options.wrapApprovals ? options.wrapApprovals(baseHandler) : baseHandler;
   const approvals = new ApprovalGate({
     handler,
     store: new JsonlApprovalStore(paths.files.approvals),

@@ -87,7 +87,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
 
 ## Phase 4: Interfaces
 
-- [ ] T310 [US1] [US2] [US3] [US4] CLI commands destroy, drift, init and `analyze --app` in `packages/cli/src/commands/`
+- [X] T310 [US1] [US2] [US3] [US4] CLI commands destroy, drift, init and `analyze --app` in `packages/cli/src/commands/`
   - Owns: `packages/cli/src/commands/{destroy,drift,init}.ts` and their tests, the `--app` option in `analyze.ts` and its test, new files under `packages/cli/src/ui/`
   - Reads: spec FR-301, FR-304, FR-306, FR-307; `packages/cli/src/{deps,exit,approval}.ts`; existing deploy command patterns
   - Depends: T306–T309

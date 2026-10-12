@@ -1,5 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 import type {
+  DestroyServices,
   InitServices,
   ProvisionServices,
   RunSecureOptions,
@@ -23,6 +24,8 @@ export interface DeployServices {
   mcp?: { stdin?: Readable; stdout?: Writable };
   /** PATH lookup, Node version and time budget for `init`. */
   init?: InitServices;
+  /** Engine, Hetzner, Cloudflare and GitHub fakes for `destroy`. */
+  destroy?: DestroyServices;
 }
 
 const attached = new WeakMap<CliContext, DeployServices>();
