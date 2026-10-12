@@ -1,0 +1,98 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.16.5",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_drift": [
+    {
+      "address": "module.server.hcloud_server.app",
+      "module_address": "module.server",
+      "mode": "managed",
+      "type": "hcloud_server",
+      "name": "app",
+      "provider_name": "registry.terraform.io/hetznercloud/hcloud",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "delete_protection": true,
+          "id": "7654321",
+          "image": "ubuntu-24.04",
+          "labels": { "app": "my-app", "managed-by": "opscrew" },
+          "name": "my-app",
+          "public_net": [{ "ipv4_enabled": true, "ipv6_enabled": true }],
+          "server_type": "cx22",
+          "user_data": "sensitive-before-marker"
+        },
+        "after": {
+          "delete_protection": false,
+          "id": "7654321",
+          "image": "ubuntu-24.04",
+          "labels": { "app": "my-app", "managed-by": "opscrew", "owner": "someone-else" },
+          "name": "my-app",
+          "public_net": [{ "ipv4_enabled": true, "ipv6_enabled": true }],
+          "server_type": "cx22",
+          "user_data": "sensitive-after-marker"
+        },
+        "after_unknown": {},
+        "before_sensitive": { "labels": {}, "public_net": [{}], "user_data": true },
+        "after_sensitive": { "labels": {}, "public_net": [{}], "user_data": true }
+      }
+    },
+    {
+      "address": "hcloud_ssh_key.deploy",
+      "mode": "managed",
+      "type": "hcloud_ssh_key",
+      "name": "deploy",
+      "provider_name": "registry.terraform.io/hetznercloud/hcloud",
+      "change": {
+        "actions": ["delete"],
+        "before": {
+          "fingerprint": "aa:bb:cc",
+          "id": "42",
+          "labels": {},
+          "name": "my-app-deploy",
+          "public_key": "ssh-ed25519 public-key-marker"
+        },
+        "after": null,
+        "after_unknown": {},
+        "before_sensitive": { "labels": {} },
+        "after_sensitive": false
+      }
+    }
+  ],
+  "resource_changes": [
+    {
+      "address": "module.server.hcloud_server.app",
+      "module_address": "module.server",
+      "mode": "managed",
+      "type": "hcloud_server",
+      "name": "app",
+      "provider_name": "registry.terraform.io/hetznercloud/hcloud",
+      "change": {
+        "actions": ["update"],
+        "before": {},
+        "after": {},
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    }
+  ],
+  "relevant_attributes": [
+    { "resource": "module.server.hcloud_server.app", "attribute": ["delete_protection"] }
+  ],
+  "prior_state": {
+    "format_version": "1.0",
+    "terraform_version": "1.16.5",
+    "values": { "root_module": {} }
+  },
+  "configuration": {
+    "provider_config": {},
+    "root_module": {}
+  },
+  "timestamp": "2026-10-12T05:43:00Z",
+  "applyable": true,
+  "complete": true,
+  "errored": false
+}

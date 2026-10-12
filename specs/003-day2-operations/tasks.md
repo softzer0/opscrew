@@ -19,7 +19,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
 
 ## Phase 2: Packages (parallel)
 
-- [ ] T302 [P] [US2] Refresh-only plans and drift parsing in `packages/iac-engine/src/`
+- [X] T302 [P] [US2] Refresh-only plans and drift parsing in `packages/iac-engine/src/`
   - Owns: `packages/iac-engine/src/**`, `packages/iac-engine/test/**`
   - Reads: plan.md "Engine"; spec FR-305; `packages/contracts/src/iac.ts`
   - Depends: T301

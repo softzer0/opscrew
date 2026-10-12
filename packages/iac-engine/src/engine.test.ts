@@ -219,6 +219,63 @@ describe("plan", () => {
     expect(existsSync(stale)).toBe(false);
   });
 
+  it("passes -refresh-only and reports drift with no changes", async () => {
+    const runner = new ScriptedRunner()
+      .on("plan", writesPlan("REFRESH"))
+      .on("show", { stdout: fixture("show-drift-tofu.json") });
+    const summary = await makeEngine(runner).plan(dir, "drift.tfplan", {
+      refreshOnly: true,
+      vars: { name: "my-app" },
+    });
+    expect(runner.calls[0]?.args).toEqual([
+      "plan",
+      "-input=false",
+      "-no-color",
+      `-out=${path.join(path.resolve(dir), "drift.tfplan")}`,
+      "-detailed-exitcode",
+      "-refresh-only",
+      "-var",
+      "name=my-app",
+    ]);
+    expect(summary.changes).toEqual([]);
+    expect(summary.counts).toEqual({ create: 0, update: 0, delete: 0, replace: 0 });
+    expect(summary.hasDestroy).toBe(false);
+    expect(summary.drift?.map((d) => [d.address, d.action, d.attributes])).toEqual([
+      ["hcloud_firewall.web", "update", ["rule"]],
+      ["local_file.note", "delete", []],
+    ]);
+  });
+
+  it("reports drift found while planning normal changes, and omits drift when there is none", async () => {
+    const drifted = new ScriptedRunner()
+      .on("plan", writesPlan("NORMAL"))
+      .on("show", { stdout: fixture("show-drift-terraform.json") });
+    const summary = await makeEngine(drifted, "terraform").plan(dir, "p.tfplan");
+    expect(drifted.calls[0]?.args).not.toContain("-refresh-only");
+    expect(summary.counts.update).toBe(1);
+    expect(summary.drift).toHaveLength(2);
+
+    const clean = new ScriptedRunner()
+      .on("plan", writesPlan("CLEAN", 0))
+      .on("show", { stdout: fixture("show-refresh-clean.json") });
+    const none = await makeEngine(clean, "terraform").plan(dir, "p.tfplan", { refreshOnly: true });
+    expect(none.changes).toEqual([]);
+    expect(none).not.toHaveProperty("drift");
+  });
+
+  it("rejects refreshOnly combined with destroy before running anything", async () => {
+    const stale = path.join(dir, "p.tfplan");
+    await writeFile(stale, "OLD");
+    const runner = new ScriptedRunner();
+    const error = await failure(
+      makeEngine(runner).plan(dir, "p.tfplan", { refreshOnly: true, destroy: true }),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.hint).toBeTruthy();
+    expect(runner.calls).toEqual([]);
+    expect(existsSync(stale)).toBe(true);
+  });
+
   it("rejects invalid variable names", async () => {
     const runner = new ScriptedRunner();
     const error = await failure(

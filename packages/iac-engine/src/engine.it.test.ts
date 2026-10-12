@@ -2,6 +2,9 @@
  * Integration tests with real `tofu` / `terraform` binaries, found through OPSCREW_TOFU_BIN /
  * OPSCREW_TERRAFORM_BIN or PATH. The module uses only the built-in `terraform_data` resource, so
  * no provider is downloaded and no network is needed. Skipped when a binary is not available.
+ *
+ * The drift tests download the `hashicorp/local` provider, so they also need `OPSCREW_IT=1` and
+ * network access; they skip with a message when the download fails.
  */
 import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -31,8 +34,28 @@ output "a" {
 }
 `;
 
+const DRIFT_MODULE = `terraform {
+  required_providers {
+    local = {
+      source = "hashicorp/local"
+    }
+  }
+}
+
+resource "local_file" "note" {
+  filename = "\${path.module}/note.txt"
+  content  = "drift-original-content"
+}
+`;
+
 const TIMEOUT = 180_000;
 const detected = await detectEngines();
+const runDriftIt = process.env.OPSCREW_IT === "1";
+if (!runDriftIt) {
+  console.warn(
+    "[iac-engine] skipping drift integration tests: set OPSCREW_IT=1 (they download the hashicorp/local provider).",
+  );
+}
 
 for (const name of ["tofu", "terraform"] as const satisfies readonly IacEngineName[]) {
   const found = detected.find((d) => d.name === name && d.supported);
@@ -131,6 +154,60 @@ for (const name of ["tofu", "terraform"] as const satisfies readonly IacEngineNa
         } finally {
           await rm(bad, { recursive: true, force: true });
         }
+      },
+      TIMEOUT,
+    );
+  });
+
+  describe.skipIf(!found || !runDriftIt)(`${name} drift (real binary, hashicorp/local)`, () => {
+    let dir: string;
+    afterAll(async () => {
+      if (dir) await rm(dir, { recursive: true, force: true });
+    });
+
+    it(
+      "a refresh-only plan reports a file edited on disk as drift, without its contents",
+      async (ctx) => {
+        dir = await mkdtemp(path.join(tmpdir(), `opscrew-it-${name}-drift-`));
+        await writeFile(path.join(dir, "main.tf"), DRIFT_MODULE);
+        const engine = await selectEngine(name);
+        try {
+          await engine.init(dir);
+        } catch (error) {
+          ctx.skip(
+            `${name} could not download the hashicorp/local provider (network needed): ${String((error as Error).message).split("\n")[0]}`,
+          );
+        }
+
+        const created = await engine.plan(dir, ".opscrew/plans/infra.tfplan");
+        expect(created.counts.create).toBe(1);
+        const applied = await engine.apply(dir, created.planFile, {
+          approvedPlanHash: created.planHash,
+        });
+        expect(applied.ok).toBe(true);
+
+        const clean = await engine.plan(dir, ".opscrew/plans/drift.tfplan", { refreshOnly: true });
+        expect(clean.changes).toEqual([]);
+        expect(clean.drift).toBeUndefined();
+
+        await writeFile(path.join(dir, "note.txt"), "drift-edited-by-hand");
+        const drifted = await engine.plan(dir, ".opscrew/plans/drift.tfplan", {
+          refreshOnly: true,
+        });
+        expect(drifted.changes).toEqual([]);
+        expect(drifted.hasDestroy).toBe(false);
+        expect(drifted.drift).toEqual([
+          expect.objectContaining({
+            address: "local_file.note",
+            type: "local_file",
+            name: "note",
+            provider: expect.stringContaining("hashicorp/local"),
+          }),
+        ]);
+        expect(["update", "delete"]).toContain(drifted.drift?.[0]?.action);
+        const reported = JSON.stringify(drifted.drift);
+        expect(reported).not.toContain("drift-original-content");
+        expect(reported).not.toContain("drift-edited-by-hand");
       },
       TIMEOUT,
     );

@@ -143,8 +143,15 @@ class Engine implements IacEngine {
   async plan(
     dir: string,
     planFile: string,
-    options: IacRunOptions & { destroy?: boolean } = {},
+    options: IacRunOptions & { destroy?: boolean; refreshOnly?: boolean } = {},
   ): Promise<PlanSummary> {
+    if (options.refreshOnly && options.destroy) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "A plan cannot both check for drift (refresh only) and destroy resources.",
+        { hint: "Create the drift check and the destroy plan separately." },
+      );
+    }
     const cwd = path.resolve(dir);
     const file = path.resolve(cwd, planFile);
     await mkdir(path.dirname(file), { recursive: true });
@@ -153,6 +160,7 @@ class Engine implements IacEngine {
 
     const args = ["plan", "-input=false", "-no-color", `-out=${file}`, "-detailed-exitcode"];
     if (options.destroy) args.push("-destroy");
+    if (options.refreshOnly) args.push("-refresh-only");
     args.push(...this.varArgs(options.vars));
     const result = await this.exec("plan", cwd, args, options);
     // -detailed-exitcode: 0 = no changes, 2 = changes, anything else is an error.
@@ -164,16 +172,19 @@ class Engine implements IacEngine {
     const planHash = hashBytes(bytes);
     const planJson = await this.show(cwd, file, options);
     const parsed = parsePlanJson(planJson);
+    // A refresh-only plan only updates the state, so it never carries resource changes.
+    const refreshOnly = options.refreshOnly === true;
     return {
       engine: { ...this.info },
       dir: cwd,
       planFile: file,
       planHash,
       createdAt: this.now().toISOString(),
-      changes: parsed.changes,
-      counts: parsed.counts,
-      hasDestroy: parsed.hasDestroy,
+      changes: refreshOnly ? [] : parsed.changes,
+      counts: refreshOnly ? { create: 0, update: 0, delete: 0, replace: 0 } : parsed.counts,
+      hasDestroy: refreshOnly ? false : parsed.hasDestroy,
       planJson,
+      ...(parsed.drift ? { drift: parsed.drift } : {}),
     };
   }
 

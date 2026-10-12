@@ -1,4 +1,9 @@
-import type { PlanSummary, ResourceAction, ResourceChange } from "@opscrew/contracts";
+import type {
+  PlanSummary,
+  ResourceAction,
+  ResourceChange,
+  ResourceDrift,
+} from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 
 /** What `parsePlanJson` extracts from a machine-readable plan (`show -json`). */
@@ -8,6 +13,11 @@ export interface ParsedPlan {
   counts: PlanSummary["counts"];
   /** True when any change is a `delete` or `replace`. */
   hasDestroy: boolean;
+  /**
+   * Managed resources changed outside the engine (`resource_drift`), in the engine's order.
+   * Present only when there is any. Carries attribute names, never values.
+   */
+  drift?: ResourceDrift[];
 }
 
 function invalid(detail: string): OpsCrewError {
@@ -47,8 +57,74 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Structural JSON equality; object key order does not matter. */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((item, i) => sameJson(item, b[i]))
+    );
+  }
+  if (!isRecord(a) || !isRecord(b)) return false;
+  const keys = Object.keys(a);
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.hasOwn(b, key) && sameJson(a[key], b[key]))
+  );
+}
+
+/** Sorted top-level attribute names whose values differ. Only names are returned. */
+function changedAttributes(before: unknown, after: unknown): string[] {
+  const from = isRecord(before) ? before : {};
+  const to = isRecord(after) ? after : {};
+  const keys = new Set([...Object.keys(from), ...Object.keys(to)]);
+  return [...keys].filter((key) => !sameJson(from[key], to[key])).sort();
+}
+
 /**
- * Summarises a plan produced by `tofu show -json` / `terraform show -json`. Accepts the parsed
+ * Maps `resource_drift[]` to `ResourceDrift`. Only managed resources count; `no-op` entries are
+ * skipped. A deleted resource lists no attributes (every attribute is gone).
+ */
+function parseDrift(raw: unknown): ResourceDrift[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw invalid("resource_drift is not a list");
+  const drift: ResourceDrift[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) throw invalid("malformed resource drift");
+    if (entry.mode !== undefined && entry.mode !== "managed") continue;
+    const { address, type, name, provider_name: provider, change } = entry;
+    const actions = isRecord(change) ? change.actions : undefined;
+    if (
+      !isRecord(change) ||
+      typeof address !== "string" ||
+      typeof type !== "string" ||
+      typeof name !== "string" ||
+      !Array.isArray(actions) ||
+      !actions.every((a): a is string => typeof a === "string")
+    ) {
+      throw invalid("malformed resource drift");
+    }
+    const key = actions.join(",");
+    if (key === "no-op" || key === "read" || key === "") continue;
+    const action = key === "delete" ? "delete" : "update";
+    drift.push({
+      address,
+      type,
+      name,
+      provider: typeof provider === "string" ? provider : "",
+      action,
+      attributes: action === "delete" ? [] : changedAttributes(change.before, change.after),
+    });
+  }
+  return drift;
+}
+
+/**
+ * Summarises a plan produced by `tofu show -json` / `terraform show -json`, including any drift
+ * the engine found while refreshing (`resource_drift`). Accepts the parsed
  * object or the raw JSON text. Throws `OpsCrewError` (`ENGINE_FAILED`) when the input is not a
  * plan or contains an action it does not understand.
  */
@@ -91,5 +167,11 @@ export function parsePlanJson(json: unknown): ParsedPlan {
       action,
     });
   }
-  return { changes, counts, hasDestroy: counts.delete + counts.replace > 0 };
+  const drift = parseDrift(plan.resource_drift);
+  return {
+    changes,
+    counts,
+    hasDestroy: counts.delete + counts.replace > 0,
+    ...(drift.length > 0 ? { drift } : {}),
+  };
 }

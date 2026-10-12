@@ -1,0 +1,130 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.13.1",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_drift": [
+    {
+      "address": "hcloud_firewall.web",
+      "mode": "managed",
+      "type": "hcloud_firewall",
+      "name": "web",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "apply_to": [],
+          "id": "1234567",
+          "labels": { "app": "my-app", "managed-by": "opscrew" },
+          "name": "my-app-web",
+          "rule": [
+            {
+              "description": "ssh",
+              "destination_ips": [],
+              "direction": "in",
+              "port": "22",
+              "protocol": "tcp",
+              "source_ips": ["0.0.0.0/0", "::/0"]
+            },
+            {
+              "description": "https",
+              "destination_ips": [],
+              "direction": "in",
+              "port": "443",
+              "protocol": "tcp",
+              "source_ips": ["0.0.0.0/0", "::/0"]
+            }
+          ]
+        },
+        "after": {
+          "apply_to": [],
+          "id": "1234567",
+          "labels": { "managed-by": "opscrew", "app": "my-app" },
+          "name": "my-app-web",
+          "rule": [
+            {
+              "description": "ssh",
+              "destination_ips": [],
+              "direction": "in",
+              "port": "22",
+              "protocol": "tcp",
+              "source_ips": ["0.0.0.0/0", "::/0"]
+            },
+            {
+              "description": "https",
+              "destination_ips": [],
+              "direction": "in",
+              "port": "443",
+              "protocol": "tcp",
+              "source_ips": ["0.0.0.0/0", "::/0"]
+            },
+            {
+              "description": "postgres-added-by-hand",
+              "destination_ips": [],
+              "direction": "in",
+              "port": "5432",
+              "protocol": "tcp",
+              "source_ips": ["0.0.0.0/0"]
+            }
+          ]
+        },
+        "after_unknown": {},
+        "before_sensitive": { "apply_to": [], "labels": {}, "rule": [{}, {}] },
+        "after_sensitive": { "apply_to": [], "labels": {}, "rule": [{}, {}, {}] }
+      }
+    },
+    {
+      "address": "data.hcloud_image.ubuntu",
+      "mode": "data",
+      "type": "hcloud_image",
+      "name": "ubuntu",
+      "provider_name": "registry.opentofu.org/hetznercloud/hcloud",
+      "change": {
+        "actions": ["update"],
+        "before": { "id": "1" },
+        "after": { "id": "2" },
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    },
+    {
+      "address": "local_file.note",
+      "mode": "managed",
+      "type": "local_file",
+      "name": "note",
+      "provider_name": "registry.opentofu.org/hashicorp/local",
+      "change": {
+        "actions": ["delete"],
+        "before": {
+          "content": "original",
+          "content_base64": null,
+          "content_base64sha256": "BoLF8gdvCZw0z90VqeBjhJ7UN6SWd+b8xbQZjHZXW+U=",
+          "content_md5": "919c8b643b7133116b02fc0d9bb7df3f",
+          "content_sha1": "d73ef92426f2b11dfc4aed4d4bfc41c49ee1087c",
+          "directory_permission": "0777",
+          "file_permission": "0644",
+          "filename": "./note.txt",
+          "id": "d73ef92426f2b11dfc4aed4d4bfc41c49ee1087c",
+          "sensitive_content": null,
+          "source": null
+        },
+        "after": null,
+        "after_unknown": {},
+        "before_sensitive": { "sensitive_content": true },
+        "after_sensitive": false
+      }
+    }
+  ],
+  "prior_state": {
+    "format_version": "1.0",
+    "terraform_version": "1.13.1",
+    "values": { "root_module": {} }
+  },
+  "configuration": {
+    "root_module": {}
+  },
+  "timestamp": "2026-10-12T05:43:00Z",
+  "errored": false
+}
