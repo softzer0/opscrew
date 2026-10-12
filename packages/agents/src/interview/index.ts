@@ -5,5 +5,11 @@ export {
   normaliseDomain,
   parseMoney,
 } from "./answers";
-export { buildQuestions, type InterviewAnswers, inferredAnswers, storesData } from "./questions";
+export {
+  buildQuestions,
+  type InterviewAnswers,
+  type InterviewContext,
+  inferredAnswers,
+  storesData,
+} from "./questions";
 export { type InterviewOptions, type InterviewResult, runInterview } from "./run";

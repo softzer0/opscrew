@@ -8,10 +8,16 @@ import {
   type Requirements,
   RequirementsSchema,
 } from "@opscrew/plan-schema";
-import { describesRoot, type InterviewAnswers, inferredAnswers } from "./questions";
+import {
+  defaultProvider,
+  describesRoot,
+  type InterviewAnswers,
+  type InterviewContext,
+  inferredAnswers,
+} from "./questions";
 
 /** Options for {@link answersToRequirements}. */
-export interface AnswersToRequirementsOptions {
+export interface AnswersToRequirementsOptions extends InterviewContext {
   /** Time written to `answeredAt`. */
   now: Date;
   /** Previous requirements; their values fill answers that were not given. */
@@ -29,6 +35,7 @@ export interface AnswersToRequirementsOptions {
 const REQUIRED: readonly QuestionId[] = [
   "expectedMonthlyUsers",
   "budgetMonthly",
+  "provider",
   "region",
   "uptime",
   "dataCriticality",
@@ -52,6 +59,7 @@ const DESCRIPTIONS: Record<QuestionId, string> = {
 /** Fields whose values are lower-cased enum strings. */
 const ENUM_FIELDS: ReadonlySet<QuestionId> = new Set([
   "expectedMonthlyUsers",
+  "provider",
   "region",
   "uptime",
   "dataCriticality",
@@ -160,7 +168,12 @@ export function answersToRequirements(
     );
   }
 
-  const inferred = options.facts !== undefined ? inferredAnswers(options.facts) : {};
+  const context: InterviewContext =
+    options.inferredProvider !== undefined ? { inferredProvider: options.inferredProvider } : {};
+  const inferred: Partial<Record<QuestionId, unknown>> =
+    options.facts !== undefined ? inferredAnswers(options.facts, context) : {};
+  // The provider is always recorded: previous answer, else the token inference, else Hetzner.
+  inferred.provider ??= defaultProvider(undefined, context);
   // An app folder chosen in the analysis (`opscrew analyze --app`) wins over an older answer.
   if (options.facts !== undefined && !describesRoot(options.facts)) {
     inferred.appDir = options.facts.appDir;

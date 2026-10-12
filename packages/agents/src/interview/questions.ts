@@ -1,3 +1,4 @@
+import type { VpsProviderId } from "@opscrew/contracts";
 import {
   type ProjectFacts,
   type Question,
@@ -29,12 +30,34 @@ export function storesData(facts: ProjectFacts): boolean {
   return facts.services.some((s) => DATA_SERVICES.has(s.kind));
 }
 
+/** Context the interview cannot read from the facts. */
+export interface InterviewContext {
+  /**
+   * The provider inferred from the API tokens that are set (`providerFromTokens(env)`); used as
+   * the provider default when there is no previous answer. Without it the default is `hetzner`.
+   */
+  inferredProvider?: VpsProviderId;
+}
+
+/** The provider default: the previous answer, else the one inferred from tokens, else Hetzner. */
+export function defaultProvider(
+  previous: Pick<Requirements, "provider"> | undefined,
+  context: InterviewContext = {},
+): VpsProviderId {
+  return previous?.provider ?? context.inferredProvider ?? "hetzner";
+}
+
 /**
  * Answers inferred from the facts for questions that are not asked (no database → data
- * criticality `none`; no Supabase → keep nothing) and defaults for optional questions.
+ * criticality `none`; no Supabase → keep nothing), the provider inferred from tokens (else
+ * `hetzner`) and defaults for optional questions.
  */
-export function inferredAnswers(facts: ProjectFacts): Partial<Record<QuestionId, unknown>> {
+export function inferredAnswers(
+  facts: ProjectFacts,
+  context: InterviewContext = {},
+): Partial<Record<QuestionId, unknown>> {
   const inferred: Partial<Record<QuestionId, unknown>> = {};
+  inferred.provider = defaultProvider(undefined, context);
   if (!storesData(facts)) inferred.dataCriticality = "none";
   inferred.keepExternalServices = usesService(facts, "supabase") ? ["supabase"] : [];
   return inferred;
@@ -59,12 +82,14 @@ const withDefault = <T>(value: T | undefined) => (value === undefined ? {} : { d
  * The interview questions for a project: only those that cannot be inferred from the facts, with
  * previous answers pre-filled as defaults. When the facts describe the repository root and
  * `appCandidates` (from `detectProjectDetails`) lists several apps, the first question asks which
- * one to deploy (`appDir`). Every question is validated with `QuestionSchema`.
+ * one to deploy (`appDir`). The provider question defaults to the previous answer, then
+ * `context.inferredProvider`, then `hetzner`. Every question is validated with `QuestionSchema`.
  */
 export function buildQuestions(
   facts: ProjectFacts,
   previous?: Requirements,
   appCandidates: readonly string[] = [],
+  context: InterviewContext = {},
 ): Question[] {
   const questions: Question[] = [];
   if (describesRoot(facts) && appCandidates.length > 1) {
@@ -105,6 +130,25 @@ export function buildQuestions(
       help: "In EUR or USD, for example 10 EUR. OpsCrew shows which options fit it.",
       kind: "money",
       ...withDefault(previous?.budgetMonthly),
+      required: true,
+    },
+    {
+      id: "provider",
+      prompt: "Where should OpsCrew run your app?",
+      kind: "single-select",
+      options: [
+        {
+          value: "hetzner",
+          label: "Hetzner Cloud",
+          hint: "lowest prices; servers in Germany, Finland, the US and Singapore",
+        },
+        {
+          value: "digitalocean",
+          label: "DigitalOcean",
+          hint: "use your DigitalOcean account; data centres in Germany, the Netherlands, the US and Singapore; prices in USD",
+        },
+      ],
+      default: defaultProvider(previous, context),
       required: true,
     },
     {

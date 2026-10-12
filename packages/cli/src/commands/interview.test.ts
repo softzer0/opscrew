@@ -55,6 +55,7 @@ describe("opscrew interview", () => {
     const prompts = new ScriptedPrompts([
       "<1k", // users
       "15 USD", // budget
+      "digitalocean", // cloud provider
       "us-east", // region
       "best-effort", // uptime
       "none", // data criticality
@@ -69,11 +70,15 @@ describe("opscrew interview", () => {
       "select",
       "select",
       "select",
+      "select",
       "text",
     ]);
     expect(prompts.calls[0]?.initial).toBe("<1k");
     expect(prompts.calls[0]?.options?.length).toBeGreaterThan(1);
+    expect(prompts.calls[2]?.message).toContain("Where should OpsCrew run your app?");
+    expect(prompts.calls[2]?.initial).toBe("hetzner");
     const requirements = await requirementsOf(project.root, project.env);
+    expect(requirements.provider).toBe("digitalocean");
     expect(requirements.budgetMonthly).toEqual({ amount: 15, currency: "USD" });
     expect(requirements.region).toBe("us-east");
     expect(requirements.dnsProvider).toBe("none");
@@ -91,6 +96,7 @@ describe("opscrew interview", () => {
     const answers = new ScriptedPrompts([
       "<1k",
       "25 EUR",
+      "hetzner",
       "eu-central",
       "standard",
       "important",
@@ -101,7 +107,7 @@ describe("opscrew interview", () => {
     expect(await run(rerun, "interview")).toBe(0);
     expect(answers.calls[0]?.initial).toBe("1k-10k");
     expect(answers.calls[1]?.initial).toBe("20 EUR");
-    expect(answers.calls[5]?.initial).toBe("shop.example.com");
+    expect(answers.calls[6]?.initial).toBe("shop.example.com");
 
     const quiet = projectContext(project);
     expect(await run(quiet, "interview")).toBe(0);

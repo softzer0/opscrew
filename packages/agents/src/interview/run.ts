@@ -9,6 +9,7 @@ import {
 } from "@opscrew/plan-schema";
 import { runAnalyze } from "../analyze";
 import type { PhaseDeps } from "../context";
+import { providerFromTokens } from "../providers";
 import { answersToRequirements } from "./answers";
 import { buildQuestions, describesRoot, type InterviewAnswers } from "./questions";
 
@@ -100,7 +101,9 @@ export async function runInterview(
     const facts = await loadFacts(deps);
     const previous = await loadPrevious(deps);
     const appCandidates = await appCandidatesFor(deps, facts);
-    const questions = buildQuestions(facts, previous, appCandidates);
+    const inferredProvider = providerFromTokens(deps.env);
+    const context = inferredProvider !== undefined ? { inferredProvider } : {};
+    const questions = buildQuestions(facts, previous, appCandidates, context);
     if (previous !== undefined) reporter.info("Your previous answers are pre-filled.");
 
     let answers: InterviewAnswers = {};
@@ -111,6 +114,7 @@ export async function runInterview(
       now: deps.clock.now(),
       facts,
       appCandidates,
+      ...context,
       ...(previous !== undefined ? { previous } : {}),
     });
     // The analysis must describe the chosen app. Re-run it before saving the answers, so an app

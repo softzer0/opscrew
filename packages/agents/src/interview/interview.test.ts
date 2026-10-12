@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { materializeFixture } from "@opscrew/core/testing";
+import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import {
   type ProjectFacts,
   type Question,
@@ -17,6 +17,7 @@ import {
   answersToRequirements,
   buildQuestions,
   type InterviewAnswers,
+  inferredAnswers,
   normaliseDomain,
   parseMoney,
   runInterview,
@@ -64,6 +65,7 @@ describe("buildQuestions", () => {
     expect(ids(questions)).toEqual([
       "expectedMonthlyUsers",
       "budgetMonthly",
+      "provider",
       "region",
       "uptime",
       "domain",
@@ -77,6 +79,7 @@ describe("buildQuestions", () => {
       [
         "expectedMonthlyUsers",
         "budgetMonthly",
+        "provider",
         "region",
         "uptime",
         "dataCriticality",
@@ -108,6 +111,7 @@ describe("buildQuestions", () => {
     expect(defaults).toEqual({
       expectedMonthlyUsers: "10k-100k",
       budgetMonthly: { amount: 40, currency: "USD" },
+      provider: "hetzner",
       region: "us-east",
       uptime: "high",
       dataCriticality: "critical",
@@ -116,6 +120,144 @@ describe("buildQuestions", () => {
       keepExternalServices: false,
     });
     expect(buildQuestions(facts()).find((q) => q.id === "budgetMonthly")?.default).toBeUndefined();
+  });
+});
+
+describe("provider question", () => {
+  const previousWith = (provider?: "hetzner" | "digitalocean"): Requirements => ({
+    schemaVersion: 1,
+    answeredAt: "2026-10-01T00:00:00.000Z",
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: { amount: 10, currency: "EUR" },
+    ...(provider !== undefined ? { provider } : {}),
+    region: "eu-central",
+    uptime: "standard",
+    dataCriticality: "none",
+    dnsProvider: "none",
+    keepExternalServices: [],
+  });
+  const providerQuestion = (questions: Question[]) => questions.find((q) => q.id === "provider");
+
+  it("asks which provider to use, directly before the region, with both options", () => {
+    const questions = buildQuestions(facts());
+    const index = ids(questions).indexOf("provider");
+    expect(ids(questions)[index + 1]).toBe("region");
+    expect(providerQuestion(questions)).toMatchObject({
+      prompt: "Where should OpsCrew run your app?",
+      kind: "single-select",
+      required: true,
+      default: "hetzner",
+      options: [
+        {
+          value: "hetzner",
+          label: "Hetzner Cloud",
+          hint: "lowest prices; servers in Germany, Finland, the US and Singapore",
+        },
+        {
+          value: "digitalocean",
+          label: "DigitalOcean",
+          hint: "use your DigitalOcean account; data centres in Germany, the Netherlands, the US and Singapore; prices in USD",
+        },
+      ],
+    });
+  });
+
+  it("defaults to the previous answer, then the inferred provider, then Hetzner", () => {
+    const def = (previous?: Requirements, inferred?: "hetzner" | "digitalocean") =>
+      providerQuestion(
+        buildQuestions(
+          facts(),
+          previous,
+          [],
+          inferred !== undefined ? { inferredProvider: inferred } : {},
+        ),
+      )?.default;
+    expect(def(previousWith("hetzner"), "digitalocean")).toBe("hetzner");
+    expect(def(previousWith("digitalocean"))).toBe("digitalocean");
+    expect(def(previousWith(), "digitalocean")).toBe("digitalocean");
+    expect(def(undefined, "digitalocean")).toBe("digitalocean");
+    expect(def()).toBe("hetzner");
+    expect(inferredAnswers(facts()).provider).toBe("hetzner");
+    expect(inferredAnswers(facts(), { inferredProvider: "digitalocean" }).provider).toBe(
+      "digitalocean",
+    );
+  });
+
+  it("accepts the provider case-insensitively and rejects other values with the valid list", () => {
+    expect(
+      answersToRequirements(
+        { ...BASE_ANSWERS, provider: " DigitalOcean " },
+        { now, facts: facts() },
+      ).provider,
+    ).toBe("digitalocean");
+    expect(() =>
+      answersToRequirements({ ...BASE_ANSWERS, provider: "aws" }, { now, facts: facts() }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "INVALID_INPUT",
+        message: expect.stringMatching(/provider must be one of hetzner, digitalocean/),
+      }),
+    );
+  });
+
+  it("always records the provider: given, previous, inferred, then Hetzner", () => {
+    const opts = { now, facts: facts() };
+    expect(answersToRequirements(BASE_ANSWERS, opts).provider).toBe("hetzner");
+    const withoutFacts = { ...BASE_ANSWERS, dataCriticality: "none" };
+    expect(answersToRequirements(withoutFacts, { now }).provider).toBe("hetzner");
+    expect(
+      answersToRequirements(withoutFacts, { now, inferredProvider: "digitalocean" }).provider,
+    ).toBe("digitalocean");
+    expect(
+      answersToRequirements(BASE_ANSWERS, { ...opts, inferredProvider: "digitalocean" }).provider,
+    ).toBe("digitalocean");
+    expect(
+      answersToRequirements(BASE_ANSWERS, {
+        ...opts,
+        previous: previousWith("hetzner"),
+        inferredProvider: "digitalocean",
+      }).provider,
+    ).toBe("hetzner");
+    expect(
+      answersToRequirements(
+        { ...BASE_ANSWERS, provider: "digitalocean" },
+        { ...opts, previous: previousWith("hetzner") },
+      ).provider,
+    ).toBe("digitalocean");
+  });
+
+  it("infers the provider from the tokens that are set", async () => {
+    const root = await project("static-vite");
+    const run = async (tokens: Record<string, string>) => {
+      const deps = await createTestPhaseDeps({
+        root,
+        env: { OPSCREW_HOME: join(root, ".home-opscrew"), ...tokens },
+      });
+      let asked: Question[] = [];
+      const result = await runInterview(deps, {
+        ask: async (questions) => {
+          asked = questions;
+          return BASE_ANSWERS;
+        },
+      });
+      await rm(deps.paths.files.requirements);
+      return { default: providerQuestion(asked)?.default, saved: result.requirements.provider };
+    };
+    expect(await run({ DIGITALOCEAN_TOKEN: fakeSecret("digitalocean-token") })).toEqual({
+      default: "digitalocean",
+      saved: "digitalocean",
+    });
+    expect(await run({ HCLOUD_TOKEN: fakeSecret("hcloud-token") })).toEqual({
+      default: "hetzner",
+      saved: "hetzner",
+    });
+    expect(
+      await run({
+        HCLOUD_TOKEN: fakeSecret("hcloud-token"),
+        DIGITALOCEAN_TOKEN: fakeSecret("digitalocean-token"),
+      }),
+    ).toEqual({ default: "hetzner", saved: "hetzner" });
+    expect(await run({})).toEqual({ default: "hetzner", saved: "hetzner" });
   });
 });
 
@@ -150,6 +292,7 @@ describe("answersToRequirements", () => {
       answeredAt: "2026-10-11T12:00:00.000Z",
       expectedMonthlyUsers: "<1k",
       budgetMonthly: { amount: 15, currency: "EUR" },
+      provider: "hetzner",
       region: "eu-central",
       uptime: "standard",
       dataCriticality: "none",

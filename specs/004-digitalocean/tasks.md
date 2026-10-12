@@ -85,7 +85,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: xhigh
 
-- [ ] T410 [P] [US1] Provider question in the interview in `packages/agents/src/interview/`
+- [X] T410 [P] [US1] Provider question in the interview in `packages/agents/src/interview/`
   - Owns: `packages/agents/src/interview/**`
   - Reads: plan.md "Interview"; spec US1 AS1; `packages/agents/src/providers/**` (`providerFromTokens`)
   - Depends: T405
