@@ -95,7 +95,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: high
 
-- [ ] T311 [P] [US5] MCP tools `opscrew_drift`, `opscrew_init_check` and skill updates in `packages/mcp-server/src/tools/{drift,init}.ts`, `plugin/skills/**`
+- [X] T311 [P] [US5] MCP tools `opscrew_drift`, `opscrew_init_check` and skill updates in `packages/mcp-server/src/tools/{drift,init}.ts`, `plugin/skills/**`
   - Owns: `packages/mcp-server/src/tools/{drift,init}.ts` and tests, `plugin/skills/**`
   - Reads: spec US5, FR-308; `packages/mcp-server/src/tools/shared.ts`
   - Depends: T307, T308

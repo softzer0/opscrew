@@ -59,5 +59,21 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    the user through anything that failed. Point them to `opscrew/RUNBOOK.md` for day-to-day
    operations.
 
+## Before you start and later
+
+- **Preflight.** On a fresh machine or clone, call `opscrew_init_check` first and help the user fix
+  every item marked ✗ (tools to install, tokens to create). `npx opscrew init --fix` also adds
+  `.opscrew/` to `.gitignore`.
+- **Drift.** When the user asks whether anything changed, or after they worked in the Hetzner or
+  Cloudflare console, call `opscrew_drift`. It reports changes made outside OpsCrew (attribute
+  names only), changes not applied yet and edited generated files, and changes nothing. To undo
+  drift the user runs `npx opscrew provision`; to keep a console change, `opscrew/plan.yaml` must
+  be updated to match first.
+- **Monorepos.** When the repository has several apps, `opscrew_interview_questions` asks which one
+  to deploy (`appDir`); ask the user, never guess.
+- **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`
+  in their own terminal: it offers a snapshot first (the database is deleted with the server), asks
+  them to type the server name and removes the deploy secrets from GitHub.
+
 If a tool returns an error, read its message and hint to the user and suggest the next step; do not
 work around OpsCrew's checks.
