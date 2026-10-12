@@ -1,5 +1,10 @@
 import type { Readable, Writable } from "node:stream";
-import type { ProvisionServices, RunSecureOptions, RunVerifyOptions } from "@opscrew/agents";
+import type {
+  InitServices,
+  ProvisionServices,
+  RunSecureOptions,
+  RunVerifyOptions,
+} from "@opscrew/agents";
 import type { CliContext } from "../context";
 
 /**
@@ -16,6 +21,8 @@ export interface DeployServices {
   verify?: Omit<RunVerifyOptions, "fetch">;
   /** Streams for `mcp` instead of the process's stdin and stdout. */
   mcp?: { stdin?: Readable; stdout?: Writable };
+  /** PATH lookup, Node version and time budget for `init`. */
+  init?: InitServices;
 }
 
 const attached = new WeakMap<CliContext, DeployServices>();
