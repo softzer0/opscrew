@@ -1,8 +1,8 @@
 # OpsCrew — agent guidance
 
 OpsCrew is an open-source crew of AI agents that takes an app from a GitHub repo to a hardened
-production deployment on the user's own cloud (v1: Hetzner Cloud + Cloudflare), with Terraform or
-OpenTofu, and keeps it secure. Read `.specify/memory/constitution.md` before changing anything;
+production deployment on the user's own cloud (Hetzner Cloud or DigitalOcean, plus Cloudflare),
+with Terraform or OpenTofu, and keeps it secure. Read `.specify/memory/constitution.md` before changing anything;
 it is the source of truth and overrides this file.
 
 ## Where things are
@@ -21,7 +21,8 @@ it is the source of truth and overrides this file.
 - `packages/iac-engine` — `tofu`/`terraform` abstraction (plan JSON, plan-hash-bound apply).
 - `packages/iac-templates` — vendored HCL modules + runtime templates (compose, Caddyfile,
   cloud-init, GitHub workflow) and the renderer.
-- `packages/connectors/*` — `github`, `hetzner`, `cloudflare` typed adapters (`@opscrew/connector-*`).
+- `packages/connectors/*` — `github`, `hetzner`, `digitalocean`, `cloudflare` typed adapters (`@opscrew/connector-*`);
+  phases reach a VPS provider only through `vpsConnector` and `providerProfile` in `packages/agents/src/providers`.
 - `packages/cli` — the `opscrew` CLI (bundled for publishing).
 - `packages/mcp-server` — deterministic MCP server (`opscrew mcp`).
 - `plugin/` — Claude Code plugin (skills + MCP config).

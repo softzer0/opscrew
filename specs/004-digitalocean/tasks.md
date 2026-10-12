@@ -114,7 +114,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
 ## Phase 6: Verification
 
 - [X] T413 Live test for DigitalOcean with teardown through `opscrew destroy --confirm` and API cleanup by tag as the fallback (lead) in `packages/cli/test/live/**`, `docs/e2e.md`
-- [ ] T414 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-401..FR-411, `CLAUDE.md` provider line
+- [X] T414 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-401..FR-411, `CLAUDE.md` provider line
 
 ## Phase 7: Converge (review of 2026-10-12 against FR-401..FR-411, US1–US4 and the constitution)
 
