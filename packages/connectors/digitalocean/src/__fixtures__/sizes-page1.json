@@ -1,0 +1,73 @@
+{
+  "sizes": [
+    {
+      "slug": "s-1vcpu-512mb-10gb",
+      "memory": 512,
+      "vcpus": 1,
+      "disk": 10,
+      "transfer": 0.5,
+      "price_monthly": 4,
+      "price_hourly": 0.00595,
+      "regions": ["fra1", "nyc3"],
+      "available": true,
+      "description": "Basic"
+    },
+    {
+      "slug": "s-1vcpu-1gb",
+      "memory": 1024,
+      "vcpus": 1,
+      "disk": 25,
+      "transfer": 1,
+      "price_monthly": 6,
+      "price_hourly": 0.00893,
+      "regions": ["ams3", "fra1", "nyc3"],
+      "available": true,
+      "description": "Basic",
+      "disk_info": [{ "type": "local", "size": { "amount": 25, "unit": "gib" } }],
+      "future_field": { "kept": true }
+    },
+    {
+      "slug": "s-1vcpu-1gb-intel",
+      "memory": 1024,
+      "vcpus": 1,
+      "disk": 25,
+      "transfer": 1,
+      "price_monthly": 7,
+      "price_hourly": 0.01042,
+      "regions": ["fra1"],
+      "available": true,
+      "description": "Basic"
+    },
+    {
+      "slug": "s-2vcpu-4gb",
+      "memory": 4096,
+      "vcpus": 2,
+      "disk": 80,
+      "transfer": 4,
+      "price_monthly": 24,
+      "price_hourly": 0.03571,
+      "regions": ["fra1", "lon1"],
+      "available": true,
+      "description": "Basic"
+    },
+    {
+      "slug": "s-4vcpu-8gb",
+      "memory": 8192,
+      "vcpus": 4,
+      "disk": 160,
+      "transfer": 5,
+      "price_monthly": 48,
+      "price_hourly": 0.07143,
+      "regions": ["fra1"],
+      "available": false,
+      "description": "Basic"
+    }
+  ],
+  "links": {
+    "pages": {
+      "last": "https://api.digitalocean.com/v2/sizes?page=2&per_page=200",
+      "next": "https://api.digitalocean.com/v2/sizes?page=2&per_page=200"
+    }
+  },
+  "meta": { "total": 9 }
+}

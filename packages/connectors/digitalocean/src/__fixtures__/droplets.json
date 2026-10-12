@@ -1,0 +1,50 @@
+{
+  "droplets": [
+    {
+      "id": 3164444,
+      "name": "shop-web",
+      "memory": 1024,
+      "vcpus": 1,
+      "disk": 25,
+      "locked": false,
+      "status": "active",
+      "created_at": "2026-10-01T10:00:00Z",
+      "features": ["backups", "ipv6", "monitoring"],
+      "backup_ids": [],
+      "snapshot_ids": [],
+      "image": { "id": 6918990, "slug": "ubuntu-24-04-x64", "distribution": "Ubuntu" },
+      "size_slug": "s-1vcpu-1gb",
+      "networks": {
+        "v4": [
+          {
+            "ip_address": "10.128.192.124",
+            "netmask": "255.255.0.0",
+            "gateway": "nil",
+            "type": "private"
+          },
+          {
+            "ip_address": "203.0.113.10",
+            "netmask": "255.255.240.0",
+            "gateway": "203.0.113.1",
+            "type": "public"
+          }
+        ],
+        "v6": [
+          { "ip_address": "2001:db8::1", "netmask": 64, "gateway": "2001:db8::", "type": "public" }
+        ]
+      },
+      "region": { "name": "Frankfurt 1", "slug": "fra1" },
+      "tags": ["managed-by:opscrew", "opscrew-app:shop"],
+      "vpc_uuid": "760e09ef-dc84-11e8-981e-3cfdfeaae000"
+    },
+    {
+      "id": 3164445,
+      "name": "shop-imposter",
+      "status": "off",
+      "tags": ["opscrew-app:shop"],
+      "networks": { "v4": [{ "address": "unknown-shape" }] }
+    }
+  ],
+  "links": {},
+  "meta": { "total": 2 }
+}

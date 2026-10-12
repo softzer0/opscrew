@@ -1,0 +1,40 @@
+{
+  "regions": [
+    {
+      "name": "Frankfurt 1",
+      "slug": "fra1",
+      "features": ["backups", "ipv6", "metadata", "install_agent"],
+      "available": true,
+      "sizes": ["s-1vcpu-1gb", "s-2vcpu-4gb", "c-2"]
+    },
+    {
+      "name": "Amsterdam 3",
+      "slug": "ams3",
+      "features": ["backups", "ipv6"],
+      "available": true,
+      "sizes": ["s-1vcpu-1gb"]
+    },
+    {
+      "name": "New York 2",
+      "slug": "nyc2",
+      "features": ["backups"],
+      "available": false,
+      "sizes": ["s-1vcpu-1gb"]
+    },
+    {
+      "name": "Somewhere 1",
+      "slug": "xyz1",
+      "available": true,
+      "sizes": ["s-1vcpu-1gb"],
+      "future_field": true
+    },
+    {
+      "name": "Empty 1",
+      "slug": "emp1",
+      "available": true,
+      "sizes": []
+    }
+  ],
+  "links": {},
+  "meta": { "total": 5 }
+}

@@ -20,7 +20,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
 
 ## Phase 2: Packages (parallel)
 
-- [ ] T402 [P] [US1] [US2] DigitalOcean client, catalogue, static prices and connector in `packages/connectors/digitalocean/src/`
+- [X] T402 [P] [US1] [US2] DigitalOcean client, catalogue, static prices and connector in `packages/connectors/digitalocean/src/`
   - Owns: `packages/connectors/digitalocean/src/**`
   - Reads: plan.md "DigitalOcean connector"; research.md "API v2", "Token scopes", "Pricing"; `packages/connectors/hetzner/src/**` (mirror its structure, errors and tests); `packages/contracts/src/connector.ts`
   - Depends: T401

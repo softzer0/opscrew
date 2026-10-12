@@ -1,0 +1,60 @@
+{
+  "sizes": [
+    {
+      "slug": "c-2",
+      "memory": 4096,
+      "vcpus": 2,
+      "disk": 25,
+      "transfer": 4,
+      "price_monthly": 42,
+      "price_hourly": 0.0625,
+      "regions": ["fra1", "nyc3"],
+      "available": true,
+      "description": "CPU-Optimized"
+    },
+    {
+      "slug": "c2-2vcpu-4gb",
+      "memory": 4096,
+      "vcpus": 2,
+      "disk": 50,
+      "transfer": 4,
+      "price_monthly": 47,
+      "price_hourly": 0.06994,
+      "regions": ["fra1"],
+      "available": true,
+      "description": "CPU-Optimized 2x SSD"
+    },
+    {
+      "slug": "g-2vcpu-8gb",
+      "memory": 8192,
+      "vcpus": 2,
+      "disk": 25,
+      "transfer": 4,
+      "price_monthly": 63,
+      "price_hourly": 0.09375,
+      "regions": ["fra1"],
+      "available": true,
+      "description": "General Purpose"
+    },
+    {
+      "slug": "gpu-h100x1-80gb",
+      "memory": 245760,
+      "vcpus": 20,
+      "disk": 720,
+      "transfer": 15,
+      "price_monthly": 4529.76,
+      "price_hourly": 6.74,
+      "regions": ["nyc2"],
+      "available": true,
+      "description": "H100 GPU - 1X",
+      "gpu_info": { "count": 1, "model": "nvidia_h100" }
+    }
+  ],
+  "links": {
+    "pages": {
+      "first": "https://api.digitalocean.com/v2/sizes?page=1&per_page=200",
+      "prev": "https://api.digitalocean.com/v2/sizes?page=1&per_page=200"
+    }
+  },
+  "meta": { "total": 9 }
+}
