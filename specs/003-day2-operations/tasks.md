@@ -61,7 +61,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T307 [P] [US2] Drift check in `packages/agents/src/drift/`
+- [X] T307 [P] [US2] Drift check in `packages/agents/src/drift/`
   - Owns: `packages/agents/src/drift/**`
   - Reads: plan.md "Drift"; spec US2, FR-304; `packages/agents/src/provision/**`
   - Depends: T302

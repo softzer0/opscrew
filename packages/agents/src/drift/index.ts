@@ -1,2 +1,3 @@
-/** Filled by its owning task (see specs/003-day2-operations/tasks.md). */
-export {};
+export { renderDriftReport } from "./render";
+export { runDrift } from "./run";
+export type { DriftOptions, DriftReport } from "./types";
