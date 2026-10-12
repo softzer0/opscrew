@@ -35,7 +35,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T304 [P] [US1] Snapshot, action and server-list methods for Hetzner; secret deletion for GitHub in `packages/connectors/{hetzner,github}/src/`
+- [X] T304 [P] [US1] Snapshot, action and server-list methods for Hetzner; secret deletion for GitHub in `packages/connectors/{hetzner,github}/src/`
   - Owns: `packages/connectors/hetzner/src/**`, `packages/connectors/github/src/**`
   - Reads: plan.md "Adapters"; spec FR-302, FR-303
   - Depends: T301

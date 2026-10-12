@@ -12,13 +12,16 @@ export interface FakeReply {
 }
 
 export interface RecordedCall {
+  method: string;
   url: URL;
   headers: Record<string, string>;
+  body?: unknown;
 }
 
 /**
- * Fake `fetch` keyed by `<pathname>` or `<pathname>?page=<n>` (most specific wins). Each key maps
- * to a list of replies consumed in order; the last reply repeats.
+ * Fake `fetch` keyed by `<pathname>` or `<pathname>?page=<n>` (most specific wins), optionally
+ * prefixed with the method (`POST /servers/7/actions/create_image`). Each key maps to a list of
+ * replies consumed in order; the last reply repeats.
  */
 export function fakeFetch(routes: Record<string, FakeReply | FakeReply[]>) {
   const calls: RecordedCall[] = [];
@@ -27,11 +30,19 @@ export function fakeFetch(routes: Record<string, FakeReply | FakeReply[]>) {
   );
   const fetch = async (input: string, init?: RequestInit): Promise<Response> => {
     const url = new URL(input);
-    calls.push({ url, headers: { ...(init?.headers as Record<string, string>) } });
+    const method = init?.method ?? "GET";
+    calls.push({
+      method,
+      url,
+      headers: { ...(init?.headers as Record<string, string>) },
+      ...(typeof init?.body === "string" && { body: JSON.parse(init.body) }),
+    });
     const path = url.pathname.replace(/^\/v1/, "");
     const page = url.searchParams.get("page");
     const queue =
-      (page !== null ? queues.get(`${path}?page=${page}`) : undefined) ?? queues.get(path);
+      (page !== null ? queues.get(`${path}?page=${page}`) : undefined) ??
+      queues.get(`${method} ${path}`) ??
+      queues.get(path);
     if (queue === undefined || queue.length === 0) {
       return new Response(JSON.stringify({ error: { code: "not_found", message: "no route" } }), {
         status: 404,

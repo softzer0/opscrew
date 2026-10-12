@@ -130,11 +130,77 @@ export const serverSchema = z.looseObject({
   datacenter: z
     .looseObject({ location: z.looseObject({ name: z.string() }).optional() })
     .optional(),
+  labels: z.record(z.string(), z.string()).optional(),
   public_net: z
-    .looseObject({ ipv4: z.looseObject({ ip: z.string() }).nullable().optional() })
+    .looseObject({
+      ipv4: z.looseObject({ ip: z.string() }).nullable().optional(),
+      ipv6: z.looseObject({ ip: z.string() }).nullable().optional(),
+    })
     .optional(),
 });
 export type HetznerServer = z.infer<typeof serverSchema>;
+
+/** A server as returned by {@link HetznerClient.listServers}. */
+export interface HetznerServerSummary {
+  id: number;
+  name: string;
+  /** Hetzner status such as `running`, `off`, `initializing`. */
+  status: string;
+  labels: Record<string, string>;
+  /** Public IPv4 address, when the server has one. */
+  ipv4?: string;
+  /** Public IPv6 network as reported by Hetzner (for example `2001:db8::/64`), when present. */
+  ipv6?: string;
+}
+
+/** Filter for {@link HetznerClient.listServers}. */
+export interface ListServersOptions {
+  /** Hetzner label selector, for example `managed-by=opscrew,app=shop`. */
+  labelSelector?: string;
+}
+
+/** Input for {@link HetznerClient.createSnapshot}. */
+export interface CreateSnapshotOptions {
+  description: string;
+  labels?: Record<string, string>;
+}
+
+/** Ids returned by {@link HetznerClient.createSnapshot}. */
+export interface CreateSnapshotResult {
+  imageId: number;
+  actionId: number;
+}
+
+/** Polling options for {@link HetznerClient.waitForAction}. */
+export interface WaitForActionOptions {
+  /** Give up after this many milliseconds (default 10 minutes). */
+  timeoutMs?: number;
+  /** Delay between polls in milliseconds (default 2 seconds). */
+  intervalMs?: number;
+  /** Injectable delay between polls (defaults to the client's). */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injectable clock in epoch ms (defaults to the client's). */
+  now?: () => number;
+}
+
+export const actionSchema = z.looseObject({
+  id: z.number(),
+  command: z.string().optional(),
+  /** `running`, `success` or `error`. */
+  status: z.string(),
+  progress: z.number().optional(),
+  started: z.string().nullable().optional(),
+  finished: z.string().nullable().optional(),
+  error: z
+    .looseObject({ code: z.string().optional(), message: z.string().optional() })
+    .nullable()
+    .optional(),
+});
+/** A Hetzner Cloud action (`GET /actions/{id}`). */
+export type HetznerAction = z.infer<typeof actionSchema>;
+
+const DEFAULT_ACTION_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_ACTION_INTERVAL_MS = 2_000;
 
 const errorBodySchema = z.looseObject({
   error: z.looseObject({ code: z.string().optional(), message: z.string().optional() }),
@@ -161,7 +227,11 @@ export interface HetznerClientOptions {
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Typed, read-only Hetzner Cloud API client with pagination, retries and error mapping. */
+/**
+ * Typed Hetzner Cloud API client with pagination, retries and error mapping. Write methods are
+ * only called after an approval; reads and rate-limited writes are retried, other failed writes
+ * are not (the server may already have carried them out).
+ */
 export class HetznerClient {
   private readonly token: string;
   private readonly fetchImpl: FetchLike;
@@ -216,6 +286,96 @@ export class HetznerClient {
     return body.server;
   }
 
+  /** Servers, optionally filtered by a label selector (`GET /servers`, every page). */
+  async listServers(options: ListServersOptions = {}): Promise<HetznerServerSummary[]> {
+    const query: Record<string, string> = {};
+    if (options.labelSelector !== undefined) query.label_selector = options.labelSelector;
+    const servers = await this.listAll("/servers", "servers", serverSchema, query);
+    return servers.map((server) => {
+      const summary: HetznerServerSummary = {
+        id: server.id,
+        name: server.name,
+        status: server.status,
+        labels: { ...server.labels },
+      };
+      const ipv4 = server.public_net?.ipv4?.ip;
+      const ipv6 = server.public_net?.ipv6?.ip;
+      if (ipv4 !== undefined) summary.ipv4 = ipv4;
+      if (ipv6 !== undefined) summary.ipv6 = ipv6;
+      return summary;
+    });
+  }
+
+  /**
+   * Starts a snapshot of a server (`POST /servers/{id}/actions/create_image`, `type: "snapshot"`).
+   * Use {@link waitForAction} with the returned `actionId` to wait until the image is ready.
+   */
+  async createSnapshot(
+    serverId: number,
+    options: CreateSnapshotOptions,
+  ): Promise<CreateSnapshotResult> {
+    const body = await this.request(
+      `/servers/${encodeURIComponent(String(serverId))}/actions/create_image`,
+      z.looseObject({ image: imageSchema, action: actionSchema }),
+      {},
+      {
+        method: "POST",
+        body: {
+          type: "snapshot",
+          description: options.description,
+          ...(options.labels !== undefined && { labels: options.labels }),
+        },
+      },
+    );
+    return { imageId: body.image.id, actionId: body.action.id };
+  }
+
+  /** One action by id (`GET /actions/{id}`). */
+  async getAction(actionId: number): Promise<HetznerAction> {
+    const body = await this.request(
+      `/actions/${encodeURIComponent(String(actionId))}`,
+      z.looseObject({ action: actionSchema }),
+    );
+    return body.action;
+  }
+
+  /**
+   * Polls an action until it succeeds and returns it. An action that ends in `error` and a
+   * timeout both throw `OpsCrewError` (`PROVIDER_ERROR`).
+   */
+  async waitForAction(
+    actionId: number,
+    options: WaitForActionOptions = {},
+  ): Promise<HetznerAction> {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
+    const intervalMs = options.intervalMs ?? DEFAULT_ACTION_INTERVAL_MS;
+    const sleep = options.sleep ?? this.sleep;
+    const now = options.now ?? this.now;
+    const start = now();
+    for (;;) {
+      const action = await this.getAction(actionId);
+      const label = `Hetzner action ${actionId}${action.command ? ` (${action.command})` : ""}`;
+      if (action.status === "success") return action;
+      if (action.status === "error") {
+        const detail = action.error?.message ?? action.error?.code ?? "no reason given";
+        throw new OpsCrewError("PROVIDER_ERROR", `${label} failed: ${detail}`, {
+          hint: "Check the server in the Hetzner Cloud Console, then try again.",
+        });
+      }
+      const elapsed = now() - start;
+      if (elapsed >= timeoutMs) {
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          `${label} did not finish within ${seconds(timeoutMs)}.`,
+          {
+            hint: "It may still be running: check its progress in the Hetzner Cloud Console and try again once it has finished.",
+          },
+        );
+      }
+      await sleep(Math.min(intervalMs, timeoutMs - elapsed));
+    }
+  }
+
   /**
    * Checks the token with a cheap read (one location). Resolves when the token works; throws
    * `OpsCrewError` (`CREDENTIALS_INVALID` for a rejected token) otherwise.
@@ -253,9 +413,14 @@ export class HetznerClient {
     path: string,
     schema: S,
     query: Record<string, string> = {},
+    init: { method?: "GET" | "POST"; body?: unknown } = {},
   ): Promise<z.infer<S>> {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
+    const method = init.method ?? "GET";
+    // A write is only retried when Hetzner said it did not accept it (429). After a 5xx, a timeout
+    // or a dropped connection it may already have been carried out, so it is never repeated.
+    const idempotent = method === "GET";
 
     let rateLimitRetries = 0;
     let serverErrorRetries = 0;
@@ -267,12 +432,14 @@ export class HetznerClient {
       try {
         response = await untilAborted(
           this.fetchImpl(url.toString(), {
-            method: "GET",
+            method,
             headers: {
               Authorization: `Bearer ${this.token}`,
               Accept: "application/json",
               "User-Agent": this.userAgent,
+              ...(init.body !== undefined && { "Content-Type": "application/json" }),
             },
+            ...(init.body !== undefined && { body: JSON.stringify(init.body) }),
             signal,
           }),
           signal,
@@ -288,6 +455,18 @@ export class HetznerClient {
         }
       } catch (cause) {
         const timedOut = signal.aborted;
+        if (!idempotent) {
+          throw new OpsCrewError(
+            "PROVIDER_ERROR",
+            timedOut
+              ? `The Hetzner Cloud API did not answer within ${seconds(this.timeoutMs)} (${method} ${path}).`
+              : `Lost the connection to the Hetzner Cloud API (${method} ${path}).`,
+            {
+              hint: "The change may still have been made: check the Hetzner Cloud Console before trying again.",
+              cause,
+            },
+          );
+        }
         if (serverErrorRetries < MAX_SERVER_ERROR_RETRIES) {
           await this.sleep(2 ** serverErrorRetries * 1000);
           serverErrorRetries++;
@@ -318,7 +497,7 @@ export class HetznerClient {
         rateLimitRetries++;
         continue;
       }
-      if (response.status >= 500 && serverErrorRetries < MAX_SERVER_ERROR_RETRIES) {
+      if (idempotent && response.status >= 500 && serverErrorRetries < MAX_SERVER_ERROR_RETRIES) {
         await this.sleep(2 ** serverErrorRetries * 1000);
         serverErrorRetries++;
         continue;

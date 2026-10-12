@@ -63,6 +63,14 @@ const RunsSchema = z.looseObject({
 
 const SECRET_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
+function assertSecretName(name: string): void {
+  if (!SECRET_NAME.test(name)) {
+    throw new OpsCrewError("INVALID_INPUT", `"${name}" is not a valid GitHub secret name.`, {
+      hint: "Use only upper-case letters, digits and underscores, not starting with a digit.",
+    });
+  }
+}
+
 /** Minimal GitHub REST client for what OpsCrew needs. The token never appears in errors. */
 export class GitHubClient {
   readonly #token: string;
@@ -82,6 +90,7 @@ export class GitHubClient {
     path: string,
     what: string,
     body?: unknown,
+    okStatuses: readonly number[] = [],
   ): Promise<{ status: number; json: unknown }> {
     let response: Response;
     try {
@@ -109,7 +118,7 @@ export class GitHubClient {
     } catch {
       json = undefined;
     }
-    if (response.status >= 400) {
+    if (response.status >= 400 && !okStatuses.includes(response.status)) {
       const message =
         typeof json === "object" && json !== null && "message" in json
           ? String((json as { message: unknown }).message)
@@ -209,9 +218,7 @@ export class GitHubClient {
     value: string,
     publicKey?: { keyId: string; key: string },
   ): Promise<void> {
-    if (!SECRET_NAME.test(name)) {
-      throw new OpsCrewError("INVALID_INPUT", `"${name}" is not a valid GitHub secret name.`);
-    }
+    assertSecretName(name);
     const key = publicKey ?? (await this.getActionsPublicKey(owner, repo));
     const encrypted = await sealSecret(key.key, value);
     await this.#request(
@@ -222,6 +229,18 @@ export class GitHubClient {
         encrypted_value: encrypted,
         key_id: key.keyId,
       },
+    );
+  }
+
+  /** Deletes an Actions secret. A secret that does not exist (404) counts as deleted. */
+  async deleteActionsSecret(owner: string, repo: string, name: string): Promise<void> {
+    assertSecretName(name);
+    await this.#request(
+      "DELETE",
+      `/repos/${owner}/${repo}/actions/secrets/${name}`,
+      `delete the secret ${name}`,
+      undefined,
+      [404],
     );
   }
 

@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandRunner, FetchLike } from "@opscrew/contracts";
-import { findExecutable, NodeCommandRunner } from "@opscrew/core";
+import { findExecutable, NodeCommandRunner, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import sodium from "libsodium-wrappers";
 import { describe, expect, it } from "vitest";
@@ -34,7 +34,7 @@ function fakeFetch(routes: Record<string, { status?: number; body?: unknown }>) 
     const key = Object.keys(routes).find((k) => `${method} ${path}`.startsWith(k));
     if (!key) throw new Error(`unrouted ${method} ${path}`);
     const route = routes[key] as { status?: number; body?: unknown };
-    return new Response(route.body === undefined ? "" : JSON.stringify(route.body), {
+    return new Response(route.body === undefined ? null : JSON.stringify(route.body), {
       status: route.status ?? 200,
     });
   };
@@ -133,6 +133,70 @@ describe("GitHubClient", () => {
     const { fetch, calls } = fakeFetch({});
     await expect(
       new GitHubClient({ token: TOKEN, fetch }).setActionsSecret("acme", "shop", "bad-name", "x"),
+    ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("deletes an Actions secret (204)", async () => {
+    const { fetch, calls } = fakeFetch({
+      "DELETE /repos/acme/shop/actions/secrets/OPSCREW_SSH_KEY": { status: 204 },
+    });
+    await new GitHubClient({ token: TOKEN, fetch }).deleteActionsSecret(
+      "acme",
+      "shop",
+      "OPSCREW_SSH_KEY",
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("DELETE");
+    expect(calls[0]?.url).toBe(
+      "https://api.github.com/repos/acme/shop/actions/secrets/OPSCREW_SSH_KEY",
+    );
+    expect(calls[0]?.body).toBeUndefined();
+  });
+
+  it("treats a secret that is already gone (404) as deleted", async () => {
+    const { fetch, calls } = fakeFetch({
+      "DELETE /repos/acme/shop/actions/secrets/OPSCREW_SSH_KEY": {
+        status: 404,
+        body: { message: "Not Found" },
+      },
+    });
+    await expect(
+      new GitHubClient({ token: TOKEN, fetch }).deleteActionsSecret(
+        "acme",
+        "shop",
+        "OPSCREW_SSH_KEY",
+      ),
+    ).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("maps 403 and 401 on secret deletion like the other methods, without the token", async () => {
+    for (const [status, code] of [
+      [403, "CREDENTIALS_INVALID"],
+      [401, "CREDENTIALS_INVALID"],
+      [500, "PROVIDER_ERROR"],
+    ] as const) {
+      const { fetch } = fakeFetch({
+        "DELETE /repos/acme/shop/actions/secrets/OPSCREW_SSH_KEY": {
+          status,
+          body: { message: "Resource not accessible by personal access token" },
+        },
+      });
+      const error = (await new GitHubClient({ token: TOKEN, fetch })
+        .deleteActionsSecret("acme", "shop", "OPSCREW_SSH_KEY")
+        .catch((e: unknown) => e)) as OpsCrewError;
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error.code).toBe(code);
+      expect(`${error.message} ${error.hint ?? ""}`).not.toContain(TOKEN);
+      if (status === 403) expect(error.hint).toContain("Secrets: Read and write");
+    }
+  });
+
+  it("rejects invalid secret names before deleting", async () => {
+    const { fetch, calls } = fakeFetch({});
+    await expect(
+      new GitHubClient({ token: TOKEN, fetch }).deleteActionsSecret("acme", "shop", "bad-name"),
     ).rejects.toMatchObject({ code: "INVALID_INPUT" });
     expect(calls).toHaveLength(0);
   });
