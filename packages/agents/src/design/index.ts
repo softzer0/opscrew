@@ -1,4 +1,4 @@
-/** Architect: sizing, Hetzner options and costs, code-change derivation and the design phase. */
+/** Architect: sizing, provider options and costs, code-change derivation and the design phase. */
 export {
   type CodeChange,
   type CodeChangeSignals,

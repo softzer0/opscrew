@@ -7,7 +7,7 @@ export const USD_PER_EUR = 1.1;
 /** Sentence stating the exchange rate, shown whenever a budget is compared across currencies. */
 export const EXCHANGE_RATE_NOTE = "Converted at a fixed approximate rate of 1 EUR = 1.10 USD.";
 
-/** Hetzner's automated backup surcharge when the catalogue does not report one. */
+/** Automated backup surcharge when neither the catalogue nor the caller gives one (Hetzner's). */
 const DEFAULT_BACKUP_PERCENT = 20;
 
 /** Rounds to cents. */
@@ -33,14 +33,16 @@ export function priceLabel(cost: Pick<CostEstimate, "source" | "asOf">): string 
 }
 
 /**
- * Monthly cost of running `offer`: server + primary IPv4 + automated backups (percentage of the
- * server price) when `backups` is on. Each line is rounded to cents and the total is their sum,
- * in the offer's currency. Validated with `CostEstimateSchema`.
+ * Monthly cost of running `offer`: server + primary IPv4 (only when the provider prices it
+ * separately) + automated backups (percentage of the server price) when `backups` is on. The
+ * backup percentage comes from `extras`, else `options.backupPercent` (the provider profile's),
+ * else 20. Each line is rounded to cents and the total is their sum, in the offer's currency.
+ * Validated with `CostEstimateSchema`.
  */
 export function costFor(
   offer: ComputeOffer,
   extras: ProviderExtras,
-  options: { backups: boolean },
+  options: { backups: boolean; backupPercent?: number },
 ): CostEstimate {
   const currency = offer.monthly.currency;
   const server = roundCents(offer.monthly.amount);
@@ -57,7 +59,7 @@ export function costFor(
     });
   }
   if (options.backups) {
-    const percent = extras.backupPercent ?? DEFAULT_BACKUP_PERCENT;
+    const percent = extras.backupPercent ?? options.backupPercent ?? DEFAULT_BACKUP_PERCENT;
     breakdown.push({
       item: `Automated backups (${percent}% of the server price)`,
       monthly: { amount: roundCents((server * percent) / 100), currency },

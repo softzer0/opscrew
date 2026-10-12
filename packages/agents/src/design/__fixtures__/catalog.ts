@@ -3,6 +3,7 @@ import type {
   ComputeLocation,
   ComputeOffer,
   ProviderExtras,
+  VpsProviderId,
 } from "@opscrew/contracts";
 import type { ProjectFacts, Requirements } from "@opscrew/plan-schema";
 
@@ -32,7 +33,6 @@ export function offer(
 
 /** In-memory `ComputeCatalog` over a fixed offer list. Records the locations asked for. */
 export class MemoryCatalog implements ComputeCatalog {
-  readonly provider = "hetzner" as const;
   readonly requested: (string | undefined)[] = [];
   constructor(
     readonly offers: ComputeOffer[],
@@ -42,6 +42,7 @@ export class MemoryCatalog implements ComputeCatalog {
       backupPercent: 20,
       pricesIncludeVat: false,
     },
+    readonly provider: VpsProviderId = "hetzner",
   ) {}
   async listLocations(): Promise<ComputeLocation[]> {
     return [...new Set(this.offers.map((o) => o.location))].map((id) => ({

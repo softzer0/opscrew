@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { hetznerConnector, StaticHetznerCatalog } from "@opscrew/connector-hetzner";
-import type { ComputeCatalog } from "@opscrew/contracts";
+import type { ComputeCatalog, VpsProviderId } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
@@ -8,6 +7,7 @@ import {
   DeployPlanSchema,
   type DesignOption,
   type ProjectFacts,
+  type Region,
   type Requirements,
   readArtifact,
   writeArtifact,
@@ -15,6 +15,7 @@ import {
 import { z } from "zod";
 import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
+import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import {
   type CodeChangeSignals,
   collectCodeChangeSignals,
@@ -24,6 +25,7 @@ import {
 import { convertMoney, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
 import { buildDesignOptions, minimumMonthlyCost } from "./options";
 import { optionToPlan } from "./plan";
+import { designWording } from "./wording";
 
 export interface RunDesignOptions {
   /**
@@ -33,7 +35,10 @@ export interface RunDesignOptions {
   choose?: (options: readonly DesignOption[]) => Promise<string>;
   /** Option id chosen up front (`opscrew design --option <id>`). */
   optionId?: string;
-  /** Catalogue override (tests, MCP). Default: live Hetzner when HCLOUD_TOKEN works, else static. */
+  /**
+   * Catalogue override (tests, MCP). Default: the requested provider's live catalogue when its
+   * token works, else its dated static price list.
+   */
   catalog?: ComputeCatalog;
 }
 
@@ -56,9 +61,11 @@ const ScanFileSchema = z.looseObject({
 
 /**
  * The design phase: reads `opscrew/architecture.json` and `opscrew/requirements.yaml`, prices 2–3
- * Hetzner options (live catalogue when `HCLOUD_TOKEN` verifies, otherwise the dated static table
- * with a warning), lets the user choose (or takes `optionId` / the recommendation), derives the
- * code changes and writes `opscrew/plan.yaml`. Marks the `design` phase.
+ * options on the requested provider (live catalogue when its token verifies, otherwise the dated
+ * static table with a warning), lets the user choose (or takes `optionId` / the recommendation),
+ * derives the code changes and writes `opscrew/plan.yaml`. Marks the `design` phase.
+ * @throws OpsCrewError `PHASE_PRECONDITION` (nothing written) when the plan has a live deployment
+ * on another provider than the one requested.
  */
 export async function runDesign(
   deps: PhaseDeps,
@@ -77,7 +84,7 @@ export async function runDesign(
 }
 
 export interface PreviewDesignOptions {
-  /** Catalogue to price against (default: live when `HCLOUD_TOKEN` verifies, else static). */
+  /** Catalogue to price against (default: the requested provider's, live when its token works). */
   catalog?: ComputeCatalog;
   /** Project facts to use instead of reading `opscrew/architecture.json`. */
   facts?: ProjectFacts;
@@ -91,33 +98,73 @@ export interface DesignPreview {
   requirements: Requirements;
 }
 
+interface DesignInputs {
+  facts: ProjectFacts;
+  requirements: Requirements;
+}
+
+/** Collects warnings: redacted, sent to the reporter and kept for the result. */
+function warner(deps: PhaseDeps, warnings: string[]): (text: string) => void {
+  return (text) => {
+    const said = deps.redactor.redact(text);
+    warnings.push(said);
+    deps.reporter.warn(said);
+  };
+}
+
 /**
  * Prices the deployment options for the saved requirements without writing anything (no plan, no
- * phase state). `runDesign` builds on it; the MCP server uses it for its read-only preview.
+ * phase state). `runDesign` builds on it; the MCP server uses it for its read-only preview. When
+ * the existing plan has a live deployment on another provider than the one requested, the preview
+ * still lists the options and adds a warning that `runDesign` would stop.
  */
 export async function previewDesignOptions(
   deps: PhaseDeps,
   options: PreviewDesignOptions = {},
 ): Promise<DesignPreview> {
-  const { paths, reporter } = deps;
-  const say = (text: string) => deps.redactor.redact(text);
+  const inputs = await readInputs(deps, options.facts);
   const warnings: string[] = [];
-  const warn = (text: string) => {
-    warnings.push(say(text));
-    reporter.warn(say(text));
-  };
+  const previous = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
+  if (previous !== undefined) {
+    const block = providerSwitchBlock(
+      previous,
+      inputs.requirements,
+      "`opscrew design` will stop without changing opscrew/plan.yaml",
+    );
+    if (block !== undefined) warner(deps, warnings)(`${block.message} ${block.hint}`);
+  }
+  return priceOptions(deps, inputs, options.catalog, warnings);
+}
 
-  reporter.step("Designing deployment options");
-  const facts =
-    options.facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
+async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<DesignInputs> {
+  const { paths } = deps;
+  deps.reporter.step("Designing deployment options");
+  const resolvedFacts =
+    facts ?? (await readArtifact("architecture", paths.files.architecture)).facts;
   const requirements = await readArtifact("requirements", paths.files.requirements);
-  await requireChosenApp(paths.root, facts, requirements);
+  await requireChosenApp(paths.root, resolvedFacts, requirements);
+  return { facts: resolvedFacts, requirements };
+}
+
+async function priceOptions(
+  deps: PhaseDeps,
+  { facts, requirements }: DesignInputs,
+  override: ComputeCatalog | undefined,
+  warnings: string[],
+): Promise<DesignPreview> {
+  const { reporter } = deps;
+  const say = (text: string) => deps.redactor.redact(text);
+  const warn = warner(deps, warnings);
+  const provider = requestedProvider(requirements);
+  const wording = designWording(provider);
   const now = deps.clock.now();
 
-  let catalog = options.catalog;
+  let catalog = override;
+  let isStatic = false;
   if (catalog === undefined) {
-    const resolved = await resolveCatalog(deps);
+    const resolved = await resolveCatalog(deps, provider, requirements.region);
     catalog = resolved.catalog;
+    isStatic = resolved.isStatic;
     if (resolved.warning !== undefined) warn(resolved.warning);
   }
   let designOptions: DesignOption[];
@@ -125,13 +172,13 @@ export async function previewDesignOptions(
     designOptions = await buildDesignOptions({ facts, requirements, catalog, now });
   } catch (error) {
     // A live catalogue that fails half-way falls back to the static table; sizing errors do not.
-    if (options.catalog !== undefined || catalog instanceof StaticHetznerCatalog) throw error;
+    if (override !== undefined || isStatic) throw error;
     if (isUserFacingError(error) && error.code === "INVALID_INPUT") throw error;
     const reason = isUserFacingError(error) ? error.message : "an unexpected error";
-    const fallback = new StaticHetznerCatalog();
-    catalog = fallback;
+    const fallback = await staticCatalog(deps, provider, requirements.region);
+    catalog = fallback.catalog;
     warn(
-      `Could not read live prices from Hetzner (${reason}). Using the price list dated ${fallback.asOf.slice(0, 10)} instead; prices are estimates.`,
+      `Could not read live prices from ${wording.name} (${reason}). Using the price list dated ${fallback.date} instead; prices are estimates.`,
     );
     designOptions = await buildDesignOptions({ facts, requirements, catalog, now });
   }
@@ -139,6 +186,8 @@ export async function previewDesignOptions(
     ? "live"
     : "static";
 
+  const regionNote = wording.profile.regionNotes[requirements.region];
+  if (regionNote !== undefined) reporter.info(say(regionNote));
   const budget = requirements.budgetMonthly;
   for (const option of designOptions) {
     const marks = [
@@ -151,11 +200,18 @@ export async function previewDesignOptions(
       ),
     );
   }
+  const crossCurrency = designOptions.some((o) => o.cost.monthly.currency !== budget.currency);
   if (!designOptions.some((option) => option.fitsBudget)) {
     const minimum = minimumMonthlyCost(designOptions, budget.currency);
-    const crossCurrency = designOptions.some((o) => o.cost.monthly.currency !== budget.currency);
     warn(
       `None of the options fits your budget of ${formatMoney(budget)}/month. The cheapest costs ${minimum ? formatMoney(minimum) : "more"}/month.${crossCurrency ? ` ${EXCHANGE_RATE_NOTE}` : ""} Raise the budget with \`opscrew interview\` or accept the cheapest option.`,
+    );
+  } else if (crossCurrency) {
+    const currency = designOptions[0]?.cost.monthly.currency ?? wording.profile.currency;
+    reporter.info(
+      say(
+        `${wording.name} prices are in ${currency} and your budget is in ${budget.currency}, so the budget comparison is approximate. ${EXCHANGE_RATE_NOTE}`,
+      ),
     );
   }
   return { options: designOptions, priceSource, warnings, facts, requirements };
@@ -164,33 +220,31 @@ export async function previewDesignOptions(
 async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<DesignResult> {
   const { paths, reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
-  const preview = await previewDesignOptions(
-    deps,
-    options.catalog !== undefined ? { catalog: options.catalog } : {},
-  );
-  const { facts, requirements, priceSource, warnings } = preview;
+  const warnings: string[] = [];
+  const warn = warner(deps, warnings);
+
+  const inputs = await readInputs(deps);
+  const previous = await readArtifact("plan", paths.files.plan).catch((error: unknown) => {
+    if (!(isUserFacingError(error) && error.code === "ARTIFACT_MISSING")) {
+      warn(
+        "The existing opscrew/plan.yaml could not be read, so OpsCrew wrote a new plan. Settings you changed in it by hand (security, infra) and the record of an earlier deployment were not kept; check them before you run `opscrew provision`.",
+      );
+    }
+    return undefined;
+  });
+  if (previous !== undefined) requireSameProvider(previous, inputs.requirements);
+
+  const preview = await priceOptions(deps, inputs, options.catalog, warnings);
+  const { facts, requirements, priceSource } = preview;
   const designOptions = preview.options;
   const budget = requirements.budgetMonthly;
   const now = deps.clock.now();
 
   const chosen = await pick(designOptions, options);
 
-  const warn = (text: string) => {
-    warnings.push(say(text));
-    reporter.warn(say(text));
-  };
-
-  const [signals, scan, previous] = await Promise.all([
+  const [signals, scan] = await Promise.all([
     collectCodeChangeSignals(paths.root, facts).catch((): CodeChangeSignals => ({})),
     readScanFindings(paths.files.scanReportJson),
-    readArtifact("plan", paths.files.plan).catch((error: unknown) => {
-      if (!(isUserFacingError(error) && error.code === "ARTIFACT_MISSING")) {
-        warn(
-          "The existing opscrew/plan.yaml could not be read, so OpsCrew wrote a new plan. Settings you changed in it by hand (security, infra) and the record of an earlier deployment were not kept; check them before you run `opscrew provision`.",
-        );
-      }
-      return undefined;
-    }),
   ]);
   const codeChanges = deriveCodeChanges(facts, scan, signals);
   const fresh = optionToPlan(chosen, {
@@ -223,6 +277,58 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     say(`${chosen.id}, ${cost}/month (${priceLabel(chosen.cost)})`),
   );
   return { options: designOptions, chosen, plan, priceSource, warnings };
+}
+
+/**
+ * The provider of a deployment that may still have resources: not destroyed, and either a server
+ * address recorded or an apply run (a provision that applied and then failed before recording the
+ * address can leave resources behind). `undefined` when nothing can be live.
+ */
+export function liveDeploymentProvider(
+  plan: Pick<DeployPlan, "target" | "deployment">,
+): VpsProviderId | undefined {
+  const { deployment } = plan;
+  if (deployment.destroyedAt !== undefined) return undefined;
+  const applied = deployment.serverIpv4 !== undefined || deployment.lastApplyAt !== undefined;
+  return applied ? plan.target.provider : undefined;
+}
+
+/**
+ * Why the requested provider cannot replace the plan's (a live deployment stays on its provider
+ * until `opscrew retarget` exists), or `undefined` when the switch is allowed. `outcome` finishes
+ * the first sentence of the message: what happened (or will happen) to `opscrew/plan.yaml`.
+ */
+function providerSwitchBlock(
+  previous: DeployPlan,
+  requirements: Requirements,
+  outcome: string,
+): { message: string; hint: string } | undefined {
+  const current = liveDeploymentProvider(previous);
+  const requested = requestedProvider(requirements);
+  if (current === undefined || requested === current) return undefined;
+  const from = providerProfile(current).displayName;
+  const to = providerProfile(requested).displayName;
+  const ipv4 = previous.deployment.serverIpv4;
+  const where =
+    ipv4 !== undefined
+      ? `Your app is deployed on ${from} (${ipv4})`
+      : `An earlier apply may have created resources at ${from}`;
+  return {
+    message: `${where}, but opscrew/requirements.yaml now asks for ${to}. Moving a live deployment between providers is not supported yet, so ${outcome}.`,
+    hint: `Run \`opscrew destroy\` first and then \`opscrew design\` again, or keep ${from} by choosing it again with \`opscrew interview\`. \`opscrew retarget\` will move a live deployment in a later version.`,
+  };
+}
+
+/**
+ * Stops with `PHASE_PRECONDITION` before anything is written when the plan has a live deployment
+ * (see {@link liveDeploymentProvider}) and the requirements ask for another provider. A destroyed
+ * or never-applied plan may switch.
+ */
+function requireSameProvider(previous: DeployPlan, requirements: Requirements): void {
+  const block = providerSwitchBlock(previous, requirements, "opscrew/plan.yaml was not changed");
+  if (block !== undefined) {
+    throw new OpsCrewError("PHASE_PRECONDITION", block.message, { hint: block.hint });
+  }
 }
 
 /**
@@ -292,7 +398,11 @@ function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
   });
 }
 
-/** Plain-English warnings when the new plan moves or resizes a server that already exists. */
+/**
+ * Plain-English warnings when the new plan moves or resizes a server that already exists. A
+ * destroyed deployment, or one on another provider (only possible once destroyed), has no server
+ * to move.
+ */
 function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] {
   const { deployment } = previous;
   const deployed =
@@ -300,17 +410,19 @@ function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] 
     deployment.serverIpv6 !== undefined ||
     deployment.lastApplyAt !== undefined ||
     deployment.lastPlanHash !== undefined;
-  if (!deployed) return [];
+  if (!deployed || deployment.destroyedAt !== undefined) return [];
   const before = previous.target;
   const after = plan.target;
+  if (before.provider !== after.provider) return [];
+  const server = providerProfile(after.provider).serverNoun;
   if (before.location !== after.location) {
     return [
-      `Your server already runs in ${before.location} (${before.serverType}). The chosen option uses ${after.location} (${after.serverType}), so the next \`opscrew provision\` will replace the server: it creates a new one and deletes the old one together with the data on it. Back up your data first, or choose an option in ${before.location} to keep the server.`,
+      `Your ${server} already runs in ${before.location} (${before.serverType}). The chosen option uses ${after.location} (${after.serverType}), so the next \`opscrew provision\` will replace the ${server}: it creates a new one and deletes the old one together with the data on it. Back up your data first, or choose an option in ${before.location} to keep the ${server}.`,
     ];
   }
   if (before.serverType !== after.serverType) {
     return [
-      `The chosen option changes the server type from ${before.serverType} to ${after.serverType}, so the next \`opscrew provision\` will resize the server. The app is offline while the server restarts.`,
+      `The chosen option changes the server type from ${before.serverType} to ${after.serverType}, so the next \`opscrew provision\` will resize the ${server}. The app is offline while the ${server} restarts.`,
     ];
   }
   return [];
@@ -334,32 +446,66 @@ async function pick(
   return chosen;
 }
 
+interface ResolvedCatalog {
+  catalog: ComputeCatalog;
+  /** True for the dated static price list. */
+  isStatic: boolean;
+  warning?: string;
+}
+
+/**
+ * The provider's live catalogue when its token is set and verifies; otherwise its dated static
+ * price list with a warning that names the date and the token variable to set.
+ */
 async function resolveCatalog(
   deps: PhaseDeps,
-): Promise<{ catalog: ComputeCatalog; warning?: string }> {
-  const fallback = new StaticHetznerCatalog();
-  const dated = `Hetzner's published price list dated ${fallback.asOf.slice(0, 10)}`;
-  if (!deps.env.HCLOUD_TOKEN?.trim()) {
+  provider: VpsProviderId,
+  region: Region,
+): Promise<ResolvedCatalog> {
+  const wording = designWording(provider);
+  const connector = vpsConnector(provider, deps, { now: () => deps.clock.now() });
+  if (!connector.configured) {
+    const fallback = await staticCatalog(deps, provider, region);
     return {
-      catalog: fallback,
-      warning: `HCLOUD_TOKEN is not set, so prices come from ${dated} and are estimates; server availability is not checked. Set HCLOUD_TOKEN for live prices.`,
+      catalog: fallback.catalog,
+      isStatic: true,
+      warning: `${wording.tokenVar} is not set, so prices come from ${fallback.dated} and are estimates; ${wording.profile.serverNoun} availability is not checked. Set ${wording.tokenVar} for live prices.`,
     };
   }
-  const connector = hetznerConnector({
-    env: deps.env,
+  const check = await connector.verifyCredentials();
+  if (!check.ok) {
+    const fallback = await staticCatalog(deps, provider, region);
+    return {
+      catalog: fallback.catalog,
+      isStatic: true,
+      warning: `The ${wording.name} token could not be used (${check.message}) Prices come from ${fallback.dated} and are estimates.`,
+    };
+  }
+  return { catalog: connector.catalog(), isStatic: false };
+}
+
+/**
+ * The provider's dated static price list (its connector without a token) and the list's date,
+ * read from the static extras of the region's first location.
+ */
+async function staticCatalog(
+  deps: PhaseDeps,
+  provider: VpsProviderId,
+  region: Region,
+): Promise<{ catalog: ComputeCatalog; date: string; dated: string }> {
+  const catalog = vpsConnector(provider, {
+    env: {},
     fetch: deps.fetch,
     redactor: deps.redactor,
     version: deps.version,
-    now: () => deps.clock.now(),
-  });
-  const check = await connector.verifyCredentials();
-  if (!check.ok) {
-    return {
-      catalog: fallback,
-      warning: `The Hetzner token could not be used (${check.message}) Prices come from ${dated} and are estimates.`,
-    };
-  }
-  return { catalog: connector.catalog() };
+  }).catalog();
+  const location = providerProfile(provider).regionLocations[region][0] ?? "";
+  const date = (await catalog.extras(location)).asOf.slice(0, 10);
+  return {
+    catalog,
+    date,
+    dated: `${designWording(provider).name}'s published price list dated ${date}`,
+  };
 }
 
 async function readScanFindings(file: string): Promise<ScanFindings | undefined> {

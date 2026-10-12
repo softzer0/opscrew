@@ -2,7 +2,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FetchLike } from "@opscrew/contracts";
-import { materializeFixture } from "@opscrew/core/testing";
+import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import {
   type Architecture,
   type DeployPlan,
@@ -18,6 +18,7 @@ import {
   nextPostgresFacts,
   staticSpaFacts,
 } from "./__fixtures__/catalog";
+import { doEuCatalog } from "./__fixtures__/digitalocean-catalog";
 import { previewDesignOptions, runDesign } from "./index";
 
 const TOKEN = "hcloud-test-token-not-a-real-value";
@@ -487,6 +488,287 @@ describe("runDesign", () => {
       expect(result.plan.security.httpAllowedFrom).toBe("any");
       expect(result.plan.security.sshAllowedCidrs).toEqual(["203.0.113.7/32"]);
     });
+  });
+
+  describe("on DigitalOcean", () => {
+    const doRequirements = (overrides: Partial<Requirements> = {}) =>
+      makeRequirements({
+        provider: "digitalocean",
+        budgetMonthly: { amount: 20, currency: "EUR" },
+        ...overrides,
+      });
+
+    /** A fake DigitalOcean API: the account and three sizes (one Basic size unavailable). */
+    function digitaloceanApi(
+      token: string,
+      options: { accountStatus?: number; sizesStatus?: number } = {},
+    ) {
+      const calls: string[] = [];
+      const size = (
+        slug: string,
+        vcpus: number,
+        memory: number,
+        disk: number,
+        monthly: number,
+      ) => ({
+        slug,
+        memory,
+        vcpus,
+        disk,
+        transfer: 2,
+        price_monthly: monthly,
+        price_hourly: monthly / 672,
+        regions: ["fra1", "ams3"],
+        available: true,
+        description: "Basic",
+      });
+      const fetch: FetchLike = async (input, init) => {
+        const url = new URL(String(input));
+        calls.push(url.pathname);
+        const auth = new Headers(init?.headers).get("authorization");
+        if (auth !== `Bearer ${token}`) return json({ id: "unauthorized", message: "no" }, 401);
+        if (url.pathname === "/v2/account") {
+          if (options.accountStatus) {
+            return json(
+              { id: "unauthorized", message: "Unable to authenticate you." },
+              options.accountStatus,
+            );
+          }
+          return json({ account: { status: "active", email_verified: true, droplet_limit: 25 } });
+        }
+        if (url.pathname === "/v2/sizes") {
+          if (options.sizesStatus) {
+            return json({ id: "forbidden", message: "Forbidden." }, options.sizesStatus);
+          }
+          return json({
+            sizes: [
+              size("s-1vcpu-2gb", 1, 2048, 50, 12),
+              size("s-2vcpu-4gb", 2, 4096, 80, 24),
+              { ...size("s-4vcpu-8gb", 4, 8192, 160, 48), available: false },
+            ],
+            links: {},
+            meta: { total: 3 },
+          });
+        }
+        return json({ id: "not_found", message: "not found" }, 404);
+      };
+      return { fetch, calls };
+    }
+
+    it("US1-2: writes a DigitalOcean plan with the provider, the Droplet image and USD prices", async () => {
+      const deps = await setup(staticSpaFacts(), doRequirements());
+      const result = await runDesign(deps, { catalog: doEuCatalog() });
+      expect(result.chosen.id).toBe("digitalocean-single-s-1vcpu-2gb-fra1");
+      const plan = await readArtifact("plan", deps.paths.files.plan);
+      expect(plan).toEqual(result.plan);
+      expect(plan.target).toEqual({
+        provider: "digitalocean",
+        mode: "vps-compose",
+        location: "fra1",
+        serverType: "s-1vcpu-2gb",
+        image: "ubuntu-24-04-x64",
+        backups: false,
+      });
+      expect(plan.cost.monthly).toEqual({ amount: 12, currency: "USD" });
+      const text = deps.reporter.text();
+      expect(text).toContain("$12.00/month (about €10.91)");
+      expect(text).toContain(
+        "DigitalOcean prices are in USD and your budget is in EUR, so the budget comparison is approximate.",
+      );
+      expect(text).toContain("1 EUR = 1.10 USD");
+    });
+
+    it("US3-1: without a token, uses the dated static price list and says how to get live prices", async () => {
+      const deps = await setup(staticSpaFacts(), doRequirements({ region: "eu-north" }));
+      const result = await runDesign(deps);
+      expect(result.priceSource).toBe("static");
+      expect(result.options.map((o) => o.id)).toContain("digitalocean-single-s-1vcpu-2gb-ams3");
+      expect(result.options.every((o) => o.summary.includes("estimate as of 2026-10-12"))).toBe(
+        true,
+      );
+      const warning = result.warnings.join("\n");
+      expect(warning).toContain("DIGITALOCEAN_TOKEN is not set");
+      expect(warning).toContain("DigitalOcean's published price list dated 2026-10-12");
+      expect(warning).toContain("Droplet availability is not checked");
+      expect(warning).toContain("Set DIGITALOCEAN_TOKEN for live prices.");
+      expect(warning).not.toMatch(/Hetzner|HCLOUD/);
+      // The reporter (after redaction) still says which variable to set.
+      const text = deps.reporter.text();
+      expect(text).toContain("Set DIGITALOCEAN_TOKEN for live prices.");
+      expect(text).toContain("DigitalOcean has no data centre in northern Europe");
+      expect(result.plan.target).toMatchObject({ provider: "digitalocean", location: "ams3" });
+    });
+
+    it("prices live from the DigitalOcean API when the token works", async () => {
+      const token = fakeSecret("digitalocean-token");
+      const api = digitaloceanApi(token);
+      const deps = await setup(staticSpaFacts(), doRequirements(), {
+        fetch: api.fetch,
+        env: { DIGITALOCEAN_TOKEN: token },
+      });
+      const result = await runDesign(deps);
+      expect(result.priceSource).toBe("live");
+      expect(result.warnings).toEqual([]);
+      expect(result.options.map((o) => o.id)).toEqual([
+        "digitalocean-single-s-1vcpu-2gb-fra1",
+        "digitalocean-single-s-2vcpu-4gb-fra1",
+      ]);
+      expect(result.options[0]?.summary).toContain("live price");
+      expect(api.calls).toContain("/v2/account");
+      expect(await readFile(deps.paths.files.plan, "utf8")).not.toContain(token);
+      expect(deps.reporter.text()).not.toContain(token);
+    });
+
+    it("falls back to static prices when the token is rejected or the API fails", async () => {
+      const token = fakeSecret("digitalocean-token");
+      const rejected = await setup(staticSpaFacts(), doRequirements(), {
+        fetch: digitaloceanApi(token, { accountStatus: 401 }).fetch,
+        env: { DIGITALOCEAN_TOKEN: token },
+      });
+      const first = await runDesign(rejected);
+      expect(first.priceSource).toBe("static");
+      expect(first.warnings.join("\n")).toContain("The DigitalOcean token could not be used");
+      expect(first.warnings.join("\n")).toContain("price list dated 2026-10-12");
+
+      const failing = await setup(staticSpaFacts(), doRequirements(), {
+        fetch: digitaloceanApi(token, { sizesStatus: 403 }).fetch,
+        env: { DIGITALOCEAN_TOKEN: token },
+      });
+      const second = await runDesign(failing);
+      expect(second.priceSource).toBe("static");
+      const warning = second.warnings.join("\n");
+      expect(warning).toContain("Could not read live prices from DigitalOcean");
+      expect(warning).toContain("Using the price list dated 2026-10-12 instead");
+      expect(warning).not.toContain(token);
+      expect(failing.reporter.text()).not.toContain(token);
+    });
+
+    describe("changing the provider of an existing plan", () => {
+      /** A Hetzner plan, provisioned, then the requirements switch to DigitalOcean. */
+      async function hetznerDeployment(
+        deployment: DeployPlan["deployment"],
+      ): Promise<{ deps: TestPhaseDeps; before: string }> {
+        const deps = await setup();
+        await runDesign(deps, { catalog: euCatalog() });
+        const plan = await readArtifact("plan", deps.paths.files.plan);
+        await writeArtifact("plan", deps.paths.files.plan, { ...plan, deployment });
+        await writeArtifact("requirements", deps.paths.files.requirements, doRequirements());
+        return { deps, before: await readFile(deps.paths.files.plan, "utf8") };
+      }
+
+      it("US3-2: stops without touching plan.yaml when the deployment is live", async () => {
+        const { deps, before } = await hetznerDeployment({
+          lastCompletedPhase: "provision",
+          serverIpv4: "203.0.113.10",
+          lastApplyAt: "2026-10-11T12:30:00.000Z",
+        });
+        let asked = false;
+        const error = await runDesign(deps, {
+          catalog: doEuCatalog(),
+          choose: async (options) => {
+            asked = true;
+            return options[0]?.id ?? "";
+          },
+        }).catch((e: unknown) => e);
+        expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+        const { message, hint } = error as { message: string; hint: string };
+        expect(message).toContain("deployed on Hetzner Cloud");
+        expect(message).toContain("asks for DigitalOcean");
+        expect(message).toContain(
+          "Moving a live deployment between providers is not supported yet",
+        );
+        expect(hint).toContain("`opscrew destroy`");
+        expect(hint).toContain("`opscrew retarget`");
+        expect(asked).toBe(false);
+        expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+        expect((await deps.state.read()).phases.design?.status).toBe("failed");
+      });
+
+      it("lets a destroyed deployment switch providers", async () => {
+        const { deps } = await hetznerDeployment({
+          lastCompletedPhase: "provision",
+          serverIpv4: "203.0.113.10",
+          lastApplyAt: "2026-10-11T12:30:00.000Z",
+          destroyedAt: "2026-10-12T09:00:00.000Z",
+        });
+        const result = await runDesign(deps, { catalog: doEuCatalog() });
+        expect(result.plan.target).toMatchObject({
+          provider: "digitalocean",
+          image: "ubuntu-24-04-x64",
+          location: "fra1",
+        });
+        expect(result.plan.deployment.destroyedAt).toBe("2026-10-12T09:00:00.000Z");
+        expect(result.warnings.join("\n")).not.toMatch(/replace|resize/);
+        expect((await readArtifact("plan", deps.paths.files.plan)).target.provider).toBe(
+          "digitalocean",
+        );
+      });
+
+      it("lets a plan that was never provisioned switch providers", async () => {
+        const { deps } = await hetznerDeployment({});
+        const result = await runDesign(deps, { catalog: doEuCatalog() });
+        expect(result.plan.target.provider).toBe("digitalocean");
+      });
+
+      it("stops when an earlier apply may have created resources without recording an address", async () => {
+        const { deps, before } = await hetznerDeployment({
+          lastPlanHash: "ab".repeat(32),
+          lastApplyAt: "2026-10-11T12:30:00.000Z",
+        });
+        const error = await runDesign(deps, { catalog: doEuCatalog() }).catch((e: unknown) => e);
+        expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+        const { message, hint } = error as { message: string; hint: string };
+        expect(message).toContain("An earlier apply may have created resources at Hetzner Cloud");
+        expect(message).toContain(
+          "Moving a live deployment between providers is not supported yet, so opscrew/plan.yaml was not changed.",
+        );
+        expect(hint).toContain("Run `opscrew destroy` first");
+        expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+      });
+
+      it("lets a plan that was planned but never applied switch providers", async () => {
+        const { deps } = await hetznerDeployment({ lastPlanHash: "ab".repeat(32) });
+        const result = await runDesign(deps, { catalog: doEuCatalog() });
+        expect(result.plan.target.provider).toBe("digitalocean");
+      });
+
+      it("the preview still lists the options and warns that design would stop", async () => {
+        const { deps, before } = await hetznerDeployment({
+          lastCompletedPhase: "provision",
+          serverIpv4: "203.0.113.10",
+          lastApplyAt: "2026-10-11T12:30:00.000Z",
+        });
+        const preview = await previewDesignOptions(deps, { catalog: doEuCatalog() });
+        expect(preview.options.map((o) => o.id)).toContain("digitalocean-single-s-1vcpu-2gb-fra1");
+        const warning = preview.warnings.join("\n");
+        expect(warning).toContain("Your app is deployed on Hetzner Cloud (203.0.113.10)");
+        expect(warning).toContain(
+          "not supported yet, so `opscrew design` will stop without changing opscrew/plan.yaml.",
+        );
+        expect(warning).toMatch(
+          /`opscrew retarget` will move a live deployment in a later version\.$/,
+        );
+        expect(
+          deps.reporter.lines.some((l) => l.level === "warn" && /Hetzner Cloud/.test(l.message)),
+        ).toBe(true);
+        expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+
+        // A destroyed deployment previews without that warning.
+        const destroyed = await hetznerDeployment({
+          serverIpv4: "203.0.113.10",
+          lastApplyAt: "2026-10-11T12:30:00.000Z",
+          destroyedAt: "2026-10-12T09:00:00.000Z",
+        });
+        const clean = await previewDesignOptions(destroyed.deps, { catalog: doEuCatalog() });
+        expect(clean.warnings.join("\n")).not.toContain("not supported yet");
+      });
+    });
+  });
+
+  it("keeps the Hetzner image and provider in Hetzner plans", async () => {
+    const deps = await setup();
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.plan.target).toMatchObject({ provider: "hetzner", image: "ubuntu-24.04" });
   });
 
   it("says which artefact is missing", async () => {

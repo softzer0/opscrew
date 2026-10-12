@@ -6,6 +6,7 @@ import {
   type ProjectFacts,
   type Requirements,
 } from "@opscrew/plan-schema";
+import { providerProfile } from "../providers";
 import {
   appDirOf,
   appDockerfile,
@@ -50,7 +51,7 @@ export function appPortFor(facts: ProjectFacts): number {
 
 /**
  * Turns the chosen option into `opscrew/plan.yaml` content: app (name, port, health path,
- * environment variable names), target, services, cost, code changes, DNS from the requirements and
+ * environment variable names), target (the option's provider and its default image), services, cost, code changes, DNS from the requirements and
  * GitHub Actions + GHCR for CI/CD. Every documented default is filled by `DeployPlanSchema`.
  * @throws ZodError when the result is not a valid plan (a bug, never user input).
  */
@@ -94,10 +95,11 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     },
     target: {
-      provider: "hetzner",
+      provider: option.target.provider,
       mode: "vps-compose",
       location: option.target.location,
       serverType: option.target.serverType,
+      image: providerProfile(option.target.provider).defaultImage,
       backups: option.backups,
     },
     services: { postgres: services.postgres, redis: services.redis },

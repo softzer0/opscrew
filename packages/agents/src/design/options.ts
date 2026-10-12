@@ -1,4 +1,10 @@
-import type { ComputeCatalog, ComputeOffer, Money, ProviderExtras } from "@opscrew/contracts";
+import type {
+  ComputeCatalog,
+  ComputeOffer,
+  Money,
+  ProviderExtras,
+  VpsProviderId,
+} from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
   type CostEstimate,
@@ -7,8 +13,10 @@ import {
   type ProjectFacts,
   type Requirements,
 } from "@opscrew/plan-schema";
+import { requestedProvider } from "../providers";
 import { convertMoney, costFor, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
-import { LOCATION_NAMES, regionLocations, type Sizing, sizeFor } from "./sizing";
+import { regionLocations, type Sizing, sizeFor } from "./sizing";
+import { type DesignWording, designWording } from "./wording";
 
 export interface BuildDesignOptionsInput {
   facts: ProjectFacts;
@@ -30,19 +38,28 @@ interface Candidate {
 }
 
 /**
- * Two or three deployment options on Hetzner Cloud for the app (plan.md "Interview, design and
- * code changes"): **Lean** (cheapest shared server meeting the need), **Comfortable** (cheapest
- * shared server with at least twice the needed memory, bigger than Lean) and **Dedicated**
- * (cheapest dedicated-vCPU server, only for `high` uptime or 10k+ users). ARM, deprecated and
- * unavailable server types are excluded; each server type is offered in the first location of
- * the region where it is available. Exactly one option is recommended. Validated with
+ * Two or three deployment options for the app on the requested provider (`requirements.provider`,
+ * Hetzner when unset; plan.md "Interview, design and code changes"): **Lean** (cheapest shared
+ * server meeting the need), **Comfortable** (cheapest shared server with at least twice the needed
+ * memory, bigger than Lean) and **Dedicated** (cheapest dedicated-vCPU server, only for `high`
+ * uptime or 10k+ users). ARM, deprecated and unavailable server types are excluded; each server
+ * type is offered in the first location of the region (from the provider profile) where it is
+ * available. Prices stay in the catalogue's currency; the budget is compared at the fixed
+ * approximate exchange rate. Exactly one option is recommended. Validated with
  * `DesignOptionListSchema`.
  * @throws OpsCrewError `INVALID_INPUT` when no server in the region meets the need.
+ * @throws Error when the catalogue belongs to another provider (a bug, never user input).
  */
 export async function buildDesignOptions(input: BuildDesignOptionsInput): Promise<DesignOption[]> {
   const { facts, requirements, catalog } = input;
+  const provider = requestedProvider(requirements);
+  if (catalog.provider !== provider) {
+    throw new Error(`Design needs the ${provider} catalogue but got the ${catalog.provider} one.`);
+  }
+  const wording = designWording(provider);
+  const { profile } = wording;
   const sizing = sizeFor(facts, requirements);
-  const locations = regionLocations(requirements.region);
+  const locations = regionLocations(requirements.region, provider);
   const backups = requirements.dataCriticality !== "none";
 
   const offers = (await Promise.all(locations.map((location) => catalog.listOffers(location))))
@@ -74,7 +91,9 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
   const candidates: Candidate[] = [];
   for (const offer of byType.values()) {
     if (!meets(offer, sizing)) continue;
-    candidates.push({ offer, cost: costFor(offer, await extrasFor(offer.location), { backups }) });
+    const extras = await extrasFor(offer.location);
+    const cost = costFor(offer, extras, { backups, backupPercent: profile.backupPercent });
+    candidates.push({ offer, cost });
   }
   candidates.sort(cheapestFirst);
 
@@ -98,10 +117,10 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
   if (comfortable) picked.push(["comfortable", comfortable]);
   if (dedicated) picked.push(["dedicated", dedicated]);
   if (picked.length === 0) {
-    const where = locations.map((l) => LOCATION_NAMES[l] ?? l).join(" or ");
+    const where = locations.map((l) => profile.locationNames[l] ?? l).join(" or ");
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `No available x86 Hetzner server in ${where} has the ${sizing.vcpus} vCPU, ${sizing.memoryGb} GB memory and ${sizing.diskGb} GB disk this app needs.`,
+      `No available x86 ${wording.name} ${profile.serverNoun} in ${where} has the ${sizing.vcpus} vCPU, ${sizing.memoryGb} GB memory and ${sizing.diskGb} GB disk this app needs.`,
       {
         hint: "Run `opscrew interview` again and choose another region or a smaller expected number of users.",
       },
@@ -115,6 +134,9 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
 
   const options = picked.map(([tier, candidate]) =>
     toOption(tier, candidate, {
+      provider,
+      wording,
+      regionNote: profile.regionNotes[requirements.region],
       sizing,
       backups,
       budget,
@@ -185,6 +207,10 @@ function toOption(
   tier: DesignTier,
   { offer, cost }: Candidate,
   context: {
+    provider: VpsProviderId;
+    wording: DesignWording;
+    /** Why the region maps to a location outside it, when it does. */
+    regionNote: string | undefined;
     sizing: Sizing;
     backups: boolean;
     budget: Money;
@@ -193,8 +219,8 @@ function toOption(
     now: Date | undefined;
   },
 ): DesignOption {
-  const { sizing, backups, budget } = context;
-  const place = LOCATION_NAMES[offer.location] ?? offer.location;
+  const { provider, wording, sizing, backups, budget } = context;
+  const place = wording.profile.locationNames[offer.location] ?? offer.location;
   const price = `${formatMoney(cost.monthly)}/month (${priceLabel(cost)}, ${cost.pricesIncludeVat ? "including" : "excluding"} VAT)`;
   const containers = [
     "the app",
@@ -202,12 +228,13 @@ function toOption(
     ...(sizing.services.redis ? ["Redis"] : []),
   ];
   const summary = [
-    `One ${offer.id} server (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${joinWords(containers)} with Docker Compose behind Caddy.`,
+    `One ${offer.id} ${wording.summaryNoun} (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${joinWords(containers)} with Docker Compose behind Caddy.`,
     `${price}.`,
     backups ? "Automated backups are on." : "Automated backups are off.",
   ].join(" ");
 
   const tradeoffs = [...TIER_TRADEOFFS[tier]];
+  if (context.regionNote !== undefined) tradeoffs.push(context.regionNote);
   tradeoffs.push("A single server: if it fails, the app is down until the server is restored.");
   if (sizing.services.postgres) {
     tradeoffs.push(
@@ -230,7 +257,7 @@ function toOption(
   }
   if (cost.source === "static") {
     tradeoffs.push(
-      `Prices are an ${priceLabel(cost)} from Hetzner's published price list and availability was not checked; set HCLOUD_TOKEN for live prices.`,
+      `Prices are an ${priceLabel(cost)} from ${wording.name}'s published price list and availability was not checked; set ${wording.tokenVar} for live prices.`,
     );
     const ageDays =
       context.now === undefined
@@ -242,11 +269,11 @@ function toOption(
   }
 
   return {
-    id: `hetzner-single-${offer.id}-${offer.location}`,
-    title: `${TIER_TITLES[tier]}: ${offer.id} in ${place}`,
+    id: `${provider}-single-${offer.id}-${offer.location}`,
+    title: `${TIER_TITLES[tier]}: ${offer.id} in ${place}${wording.titleSuffix}`,
     summary,
     target: {
-      provider: "hetzner",
+      provider,
       location: offer.location,
       serverType: offer.id,
       vcpus: offer.vcpus,

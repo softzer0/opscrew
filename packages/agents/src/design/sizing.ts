@@ -1,3 +1,4 @@
+import type { VpsProviderId } from "@opscrew/contracts";
 import type {
   ProjectFacts,
   Region,
@@ -6,29 +7,15 @@ import type {
   UserScale,
 } from "@opscrew/plan-schema";
 import { ServiceKindSchema } from "@opscrew/plan-schema";
+import { providerProfile } from "../providers";
 
-/** Hetzner locations per region, in order of preference (first available wins). */
-const REGION_LOCATIONS: Record<Region, readonly string[]> = {
-  "eu-central": ["nbg1", "fsn1"],
-  "eu-north": ["hel1"],
-  "us-east": ["ash"],
-  "us-west": ["hil"],
-  "ap-southeast": ["sin"],
-};
+/** Display names of the Hetzner locations OpsCrew offers (see `providerProfile` for others). */
+export const LOCATION_NAMES: Readonly<Record<string, string>> =
+  providerProfile("hetzner").locationNames;
 
-/** Display names of the Hetzner locations OpsCrew offers. */
-export const LOCATION_NAMES: Readonly<Record<string, string>> = {
-  nbg1: "Nuremberg",
-  fsn1: "Falkenstein",
-  hel1: "Helsinki",
-  ash: "Ashburn",
-  hil: "Hillsboro",
-  sin: "Singapore",
-};
-
-/** Hetzner locations for a region, in order of preference. */
-export function regionLocations(region: Region): string[] {
-  return [...REGION_LOCATIONS[region]];
+/** A provider's locations for a region, in order of preference (Hetzner by default). */
+export function regionLocations(region: Region, provider: VpsProviderId = "hetzner"): string[] {
+  return [...providerProfile(provider).regionLocations[region]];
 }
 
 /** What the server must provide and which services run on it. */

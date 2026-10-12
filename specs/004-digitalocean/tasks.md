@@ -61,7 +61,7 @@ literals (`fakeSecret()` / `{{FAKE:…}}` + `materializeFixture()`); a DigitalOc
 
 ## Phase 4: Agents (parallel)
 
-- [ ] T407 [P] [US1] [US3] Provider-aware design in `packages/agents/src/design/`
+- [X] T407 [P] [US1] [US3] Provider-aware design in `packages/agents/src/design/`
   - Owns: `packages/agents/src/design/**`
   - Reads: plan.md "Design"; spec US1 AS2, US3; `packages/agents/src/providers/**`
   - Depends: T405
