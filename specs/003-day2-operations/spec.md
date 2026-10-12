@@ -33,7 +33,8 @@ with `opscrew destroy`.
 
 1. **Given** a deployed plan with self-hosted Postgres, **When** the user runs `opscrew destroy`,
    **Then** OpsCrew lists every resource to be deleted, says that the database and Hetzner backups
-   are deleted with the server, and offers a snapshot (default yes); **When** the user types the
+   are deleted with the server, and announces a snapshot (on by default when Postgres runs on the
+   server or backups are on; `--snapshot` / `--no-snapshot` override); **When** the user types the
    server name, **Then** it takes the snapshot, lifts delete protection, applies the destroy plan
    and reports what remains (the snapshot, the GHCR images, the repository files).
 2. **Given** the user types anything other than the server name, **When** asked to confirm,
@@ -143,7 +144,8 @@ terminal-only; the deploy skill explains how to tear down.
 - Destroy when the plan uses Cloudflare but the token is missing: stop before planning (a partial
   destroy would leave DNS pointing at a dead address).
 - Destroy interrupted after protection was lifted: re-running continues (the unprotect plan is
-  empty, the destroy plan proceeds); `drift` reports the lifted protection meanwhile.
+  empty, the earlier snapshot is reused, the destroy plan proceeds); `drift` shows the lifted
+  protection as a pending change meanwhile.
 - Snapshot creation fails or times out: stop before deleting anything.
 - Drift with Terraform state written by OpenTofu with encryption: explain the engine mismatch.
 - Init on Windows: ssh checks use Windows OpenSSH; PATHEXT-aware detection.
@@ -154,7 +156,7 @@ terminal-only; the deploy skill explains how to tear down.
 
 ### Functional Requirements
 
-- **FR-301**: `opscrew destroy [--no-snapshot] [--confirm <server name>] [--engine <name>]` MUST
+- **FR-301**: `opscrew destroy [--snapshot | --no-snapshot] [--confirm <server name>] [--engine <name>]` MUST
   implement US1: preview of resources and data at risk, optional snapshot through a typed Hetzner
   adapter (default on when Postgres is self-hosted or backups are enabled), a protection-lifting
   plan applied after an `iac-apply` approval, a destroy plan applied after an `iac-apply` approval
@@ -165,8 +167,10 @@ terminal-only; the deploy skill explains how to tear down.
   servers by label selector.
 - **FR-303**: `@opscrew/connector-github` MUST add deleting an Actions secret (404 counts as done).
 - **FR-304**: `opscrew drift [--json]` MUST implement US2 with a refresh-only plan (drift), a normal
-  plan (pending changes) and a rendered-files comparison; exit 0 when everything matches, 1 when
-  anything differs, 2 on error; it never applies and leaves no approvable plan behind.
+  plan (pending changes), a rendered-files comparison and DNS records at the app's hostnames that
+  OpsCrew did not create; exit 0 when everything matches, 1 when anything differs, 2 when the
+  check could not run (missing state, passphrase or deploy key, credentials); it never applies,
+  never creates keys or passphrases and leaves no approvable plan behind.
 - **FR-305**: `@opscrew/iac-engine` MUST support refresh-only plans and report drift
   (`resource_drift`) as resource address, action (update or delete) and changed attribute names,
   without attribute values.

@@ -91,7 +91,7 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
   - Owns: `packages/cli/src/commands/{destroy,drift,init}.ts` and their tests, the `--app` option in `analyze.ts` and its test, new files under `packages/cli/src/ui/`
   - Reads: spec FR-301, FR-304, FR-306, FR-307; `packages/cli/src/{deps,exit,approval}.ts`; existing deploy command patterns
   - Depends: T306–T309
-  - Accept: `destroy [--no-snapshot] [--confirm <name>] [--engine]` (interactive typed confirmation; non-interactive only with `--confirm`), `drift [--json]` (exit 0/1/2), `init [--fix] [--offline]` (checklist, exit 1 on a failed required check), `analyze --app <dir>`; next-step hints; tests through `createProgram` with fakes.
+  - Accept: `destroy [--snapshot | --no-snapshot] [--confirm <name>] [--engine]` (interactive typed confirmation; non-interactive only with `--confirm`), `drift [--json]` (exit 0/1/2), `init [--fix] [--offline]` (checklist, exit 1 on a failed required check), `analyze --app <dir>`; next-step hints; tests through `createProgram` with fakes.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: high
 
@@ -106,7 +106,13 @@ fill only your files. Fixtures never contain secret-shaped literals (`fakeSecret
 ## Phase 5: Verification
 
 - [X] T312 Live test tears down with `opscrew destroy --confirm` (API cleanup stays as the fallback) and a two-app e2e example (lead) in `packages/cli/test/{live,e2e}/**`, `examples/`, `docs/e2e.md`
-- [ ] T313 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-301..FR-310
+- [X] T313 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-301..FR-310
+
+## Phase 6: Converge (review of 2026-10-12 against FR-301..FR-310, US1–US5 and the constitution)
+
+- [X] T314 Destroy deletes only what the user confirmed (the destroy plan must stay within the previewed addresses), announces the snapshot before the typed name and reuses it on a re-run, counts values unknown until apply as changes in the protection-lifting plan, never creates the state passphrase, and `opscrew provision` after a teardown drops `destroyedAt`; `destroy --snapshot | --no-snapshot` in `packages/agents/src/{destroy,provision}/`, `packages/cli/src/commands/destroy.ts` (FR-301, US1 AS1, AS4)
+- [X] T315 Drift exits 2 whenever the check could not run, reports DNS records OpsCrew did not create and never creates the deploy key; init prints the checklist before asking about `.gitignore` and separates titles from messages so token names are never redacted in `packages/agents/src/{drift,provision}/`, `packages/cli/src/commands/{drift,init}.ts`, `packages/mcp-server/src/tools/init.ts` (FR-304, FR-306, US3 AS3); `apps/web` Next.js coverage for monorepo adapt (FR-307)
+- [X] T316 Spec and plan text converged with the implementation (destroy steps, snapshot defaults and reuse, drift preconditions and exit codes, foreign DNS records) in `specs/003-day2-operations/`
 
 ## Dependencies & waves
 

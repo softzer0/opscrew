@@ -73,8 +73,8 @@ produces drift with both binaries; unit tests use recorded `show -json` document
 - Docker: every stack honours `facts.appDir`. JS stacks build from the repository root with the
   workspace-aware install (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install
   --frozen-lockfile`) and build/run the app with the package manager's workspace flag
-  (`npm run build --workspace <dir>`, `pnpm --filter ./<dir> run build`, `yarn workspace <name>
-  build`); Python stacks copy `<dir>` only. The rendered file lives at `<appDir>/Dockerfile`; the
+  (`npm run build --workspace <dir>`, `pnpm --filter <package name> run build`,
+  `yarn workspace <name> build`); Python stacks copy `<dir>` only. The rendered file lives at `<appDir>/Dockerfile`; the
   plan keeps `buildContext: "."` and `dockerfile: "<appDir>/Dockerfile"`.
 - Runbook: sections "Check for drift" (`opscrew drift`) and "Tear it down" (`opscrew destroy`,
   snapshot note, what remains).
@@ -97,37 +97,52 @@ listing the candidates. Facts gain `appDir` (the primary unit's directory).
 ### Destroy orchestration (T306, `agents/src/destroy`)
 
 `runDestroy(deps, { snapshot = "auto", confirm?, engine?, services? })`:
-1. Load plan; require `deployment.serverIpv4` or an existing state file, else `PHASE_PRECONDITION`
-   ("nothing is deployed").
-2. Credentials as in provision (Hetzner always; Cloudflare when the plan uses it; GitHub optional:
-   missing token → secrets cleanup skipped with a warning).
+1. Load plan; require the local state file, infrastructure code that declares
+   `variable "delete_protection"` (older deployments: run `opscrew provision` first) and, with
+   OpenTofu state encryption, the existing passphrase (read, never created); else
+   `PHASE_PRECONDITION`.
+2. Credentials: Hetzner always; Cloudflare token present and valid when the plan uses it (no
+   record checks, so a teardown is never blocked by foreign records); GitHub optional (missing
+   token, repository or origin → secrets cleanup skipped with the reason).
 3. Engine, `TF_ENCRYPTION`, `init` (same backend path).
-4. Preview: `engine.plan(..., { destroy: true })` with `delete_protection=false` →
-   list of resources to delete (no approval yet; this plan is discarded). Data warning when
-   `services.postgres` or `target.backups`.
-5. Snapshot (`auto` → on when Postgres or backups; `--no-snapshot` off): find the server by
-   labels `managed-by=opscrew,app=<name>`; create a snapshot labelled with the app and time;
+4. Preview: `engine.plan(..., { destroy: true })` with `delete_protection=false` → list of
+   resources to delete (this plan is discarded). Data warning when `services.postgres` or
+   `target.backups`; the snapshot is announced. Then the `confirm` hook: the CLI has the user
+   type the server name once (or checks `--confirm`) before anything changes; a mismatch stops
+   with nothing changed. The answer is audited.
+5. Snapshot (`auto` → on when Postgres or backups; `--snapshot` always; `--no-snapshot` off):
+   find the server by labels `managed-by=opscrew,app=<name>`; reuse the snapshot an earlier run
+   of the same server took (`.opscrew/destroy-snapshot.json`), else create one labelled `app`,
+   `created-by=opscrew`, `reason=destroy`, `taken-at` (never `managed-by`, so cleanups keep it);
    wait (timeout 15 min); failure stops everything.
-6. Unprotect: `plan` with `vars: { delete_protection: "false" }`; if changes exist they must be
-   only `update` of `hcloud_server` resources (else stop); approval `iac-apply` (title "Lift
-   delete protection on <server>"); `assertApprovedPlan`; apply.
-7. Destroy: `plan` with `destroy: true` and the same var; approval `iac-apply` with
+6. Unprotect (skipped when the preview deletes no server): `plan` with
+   `vars: { delete_protection: "false" }`; changes must be updates of `hcloud_server` that change
+   only `delete_protection`/`rebuild_protection` and turn delete protection off (a value known
+   only after apply counts as a change; else stop); approval `iac-apply`; `assertApprovedPlan`;
+   apply.
+7. Destroy: `plan` with `destroy: true` and the same var; it may only delete, and only
+   resources that were in the confirmed preview (else stop); approval `iac-apply` with
    `allowDestroy: true`, `confirmPhrase: plan.app.name`, details = resource list + data warning +
-   snapshot id; `assertApprovedPlan({ allowDestroy: true })`; apply.
+   snapshot id (the CLI's handler answers both plan approvals with the name typed in step 4);
+   `assertApprovedPlan({ allowDestroy: true })`; apply.
 8. Cleanup: approval `github-secrets` ("Remove the deploy secrets …") → `deleteActionsSecret` for
    every `DEPLOY_SECRETS` name; remove the server's line from `known_hosts`; update the plan:
-   drop `serverIpv4`, `serverIpv6`, `url`, `lastCompletedPhase`; set `destroyedAt`; write it;
+   drop `serverIpv4`, `serverIpv6`, `url`, `lastCompletedPhase`; set `destroyedAt` (provision
+   drops it again on the next deployment); record both approvals in `plan.approvals`; delete
+   `deploy_secrets.json` and the snapshot record; write it;
    mark phase `provision` as `skipped` with "infrastructure destroyed"; audit every step.
 9. Report what remains: snapshot (id, billed per GB per month), GHCR images, repository files
    (`opscrew/infra`, workflow; the workflow cannot deploy without the secrets).
-Refusals at any step leave everything after it untouched. Non-interactive: the CLI passes a
-handler that approves only when `--confirm` equals the server name (all three approvals), and the
-flow enforces the unprotect-plan check.
+Refusals at any step leave everything after it untouched; plan files are deleted after use and
+never get a sidecar. Non-interactive: `--confirm` must equal the server name (checked before any
+cloud call); it then also approves removing the deploy secrets.
 
 ### Drift (T307, `agents/src/drift`)
 
-`runDrift(deps, { engine?, services? }) → DriftReport`: require deployment and a state file (else
-`PHASE_PRECONDITION` explaining that the state lives on the computer that provisioned);
+`runDrift(deps, { engine?, services? }) → DriftReport`: require deployment and a non-empty state
+file (OpenTofu-encrypted state is recognised from the file; else `PHASE_PRECONDITION` explaining
+that the state lives on the computer that provisioned), the existing passphrase and deploy key
+(read, never created); DNS records OpsCrew did not create are reported, not fatal;
 credentials (Hetzner; Cloudflare when used); engine + encryption + init; refresh-only plan →
 `drift`; normal plan → `pending`; `previewDeploymentFiles` → changed/created infra and runtime
 files; plan files are written under `.opscrew/plans/drift-*.tfplan` and deleted afterwards (no
