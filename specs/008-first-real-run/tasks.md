@@ -72,7 +72,7 @@ description: "Tasks for 008-first-real-run"
 ## Phase 3: Live runs (lead)
 
 - [X] T804 Hetzner live pass green after the fixes; results in `docs/e2e.md` (lead)
-- [ ] T805 Hetzner + Cloudflare pass on `e2e.poasjet.com` (TLS, DNS, WAF) green; results in `docs/e2e.md` (lead)
+- [X] T805 Hetzner + Cloudflare pass on `e2e.poasjet.com` (TLS, DNS, WAF) green; results in `docs/e2e.md` (lead)
 
 ## Phase 4: Release prep
 
