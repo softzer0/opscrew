@@ -84,7 +84,7 @@ after an environment variable name.
 
 ## Phase 5: Interfaces
 
-- [ ] T710 [US1] [US2] [US3] `--registrar`, `--compare` and `opscrew domain connect` in `packages/cli/src/commands/domain.ts`
+- [X] T710 [US1] [US2] [US3] `--registrar`, `--compare` and `opscrew domain connect` in `packages/cli/src/commands/domain.ts`
   - Owns: `packages/cli/src/commands/domain.ts` (+ test), `packages/cli/src/ui/__fixtures__/domain.ts`, the program test if the command list changes
   - Depends: T707, T708
   - Accept: flags and exit codes as in 006; connect with `--records-file` and `--confirm`; the typed handler covers connect; the bundle builds with `fast-xml-parser`.
