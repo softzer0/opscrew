@@ -380,6 +380,26 @@ function toZone(zone: z.infer<typeof ZoneSchema>): CloudflareZone {
 }
 
 /**
+ * Registrant sent only to the registrar sandbox, which has no Express Mode and ignores the
+ * account's default contact. Made up (reserved example domain, fictional 555-01xx number); real
+ * purchases send no contact, so the registrar uses the account's own.
+ */
+const SANDBOX_REGISTRANT = {
+  email: "registrant@example.com",
+  phone: "+1.2025550100",
+  postal_info: {
+    name: "OpsCrew Sandbox",
+    address: {
+      street: "100 Example Street",
+      city: "Austin",
+      state: "TX",
+      postal_code: "78701",
+      country_code: "US",
+    },
+  },
+} as const;
+
+/**
  * Cloudflare API client. DNS changes are made through HCL and the approval gate; the registrar,
  * zone-create and DNSSEC calls are made by the domain purchase flow after its approval.
  */
@@ -743,12 +763,17 @@ export class CloudflareClient {
           ...(cause === undefined ? {} : { cause }),
         },
       );
+    const sandbox = this.#registrar === "registrar-sandbox";
     let answer: RawAnswer;
     try {
       answer = await this.#request(this.#registrarPath(accountId, "/registrations"), {
         method: "POST",
         headers: { Prefer: "respond-async" },
-        body: { ...request, domain_name: domain },
+        body: {
+          ...request,
+          domain_name: domain,
+          ...(sandbox ? { contacts: { registrant: SANDBOX_REGISTRANT } } : {}),
+        },
         retryServerErrors: false,
       });
     } catch (error) {

@@ -110,10 +110,11 @@ registration succeeded. It runs in a planned project (analyze, interview and des
 --confirm <domain>` works. Response shapes and states are exercised along the way; the token
 permission name and multi-year billing still need a check against the real API.
 
-The pass currently stops before the purchase: the sandbox has no Express Mode, so it ignores the
-account's default registrant contact and wants the contact sent with each purchase, and OpsCrew
-never sends contact details. The real purchase of `opscrew.dev` (Live results, 2026-10-14) covers
-the purchase path against the real API instead.
+The sandbox has no Express Mode: it ignores the account's default registrant contact and wants the
+contact sent with each purchase. In sandbox mode OpsCrew therefore sends a made-up contact
+(an `example.com` address, a fictional 555-01xx number); real purchases never send one and use the
+account's own contact. The real purchase of `opscrew.dev` (Live results, 2026-10-14) covers the
+purchase path against the real API.
 
 ## Domain purchases at Porkbun and Namecheap (registrar sandboxes)
 
@@ -166,3 +167,5 @@ GoDaddy has no public test system for its v3 API, so its adapter is only tested 
 | 2026-10-14 | Namecheap sandbox purchase | Stopped correctly | The sandbox account's default address has only a name and email; OpsCrew named the missing fields and bought nothing (account setup) |
 | 2026-10-14 | AI path (`analyze`, `adapt` with a model on examples/fastapi-redis) | `analyze` passed ($0.0034); `adapt` failed | The tool policy blocked the SDK's `StructuredOutput` tool, so the Code-change agent could not return its report after editing `main.py` correctly ($0.10) (T818) |
 | 2026-10-14 | **Real purchase: `opscrew domain buy opscrew.dev`** (interactive, PowerShell on Windows) | **Passed** | Bought at Cloudflare for $8.20 after the founder typed the domain; zone active with Cloudflare nameservers delegated, DNSSEC on (zone signed; the registry's DS record follows from Cloudflare Registrar), auto-renew and WHOIS privacy on |
+| 2026-10-14 | Cloudflare Registrar sandbox purchase, rerun | **Passed** | OpsCrew now sends a made-up contact to the sandbox only (fixed); bought with `--confirm` and `--max-price`, recorded in the plan, `domain status` and `domain auto-renew off` worked |
+| 2026-10-14 | Namecheap sandbox purchase, rerun | **Passed** | After the founder completed the sandbox default address: bought with it, nameservers on the stand-in zone, `domain connect` of a second domain |

@@ -237,6 +237,17 @@ describe("CloudflareClient registrar calls", () => {
     await cf.setAutoRenew(ACCOUNT, "a.com", false);
     expect(calls).toHaveLength(7);
     expect(calls.every((c) => c.path.includes("/registrar-sandbox/"))).toBe(true);
+    // The sandbox ignores the account's default contact, so a made-up one goes along.
+    expect(calls[3]?.body).toMatchObject({
+      domain_name: "a.com",
+      contacts: {
+        registrant: {
+          email: expect.stringMatching(/@example\.com$/),
+          phone: expect.stringMatching(/^\+1\.\d+$/),
+          postal_info: { name: expect.any(String), address: { country_code: "US" } },
+        },
+      },
+    });
   });
 
   it("searches cached suggestions", async () => {
@@ -304,6 +315,8 @@ describe("CloudflareClient registrar calls", () => {
         privacy_mode: "redaction",
       },
     });
+    // A real purchase uses the account's own contact: OpsCrew never sends one.
+    expect(calls[0]?.body).not.toHaveProperty("contacts");
     expect(calls[0]?.headers.Prefer).toBe("respond-async");
     const done = { ...request, domain_name: "done.com" };
     // Without an explicit `succeeded` state the registration is only in progress (polling confirms).
