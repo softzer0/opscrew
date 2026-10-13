@@ -46,6 +46,14 @@ resource "hcloud_firewall" "this" {
     protocol    = "icmp"
     source_ips  = ["0.0.0.0/0", "::/0"]
   }
+
+  lifecycle {
+    # The server attaches this firewall (firewall_ids, so it is protected from its first boot);
+    # Hetzner mirrors that attachment into apply_to, which is not set here. Ignoring it keeps
+    # `opscrew drift` from reporting a change nobody made; a detached firewall still shows up as
+    # drift on the server's firewall_ids.
+    ignore_changes = [apply_to]
+  }
 }
 
 resource "hcloud_server" "this" {

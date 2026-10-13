@@ -40,6 +40,13 @@ export interface ProviderProfile {
   unavailable: RegExp;
   /** Provider error text meaning the account reached its server limit. */
   serverLimit: RegExp;
+  /**
+   * Attributes the provider fills in from a relationship OpsCrew manages on the other resource
+   * (Hetzner mirrors the server's `firewall_ids` into the firewall's `apply_to`). They change on
+   * refresh without anyone touching the console, so `opscrew drift` does not report them; a real
+   * change still shows on the resource OpsCrew manages the relationship on.
+   */
+  mirroredAttributes: Readonly<Record<string, readonly string[]>>;
 }
 
 const HETZNER: ProviderProfile = {
@@ -76,6 +83,7 @@ const HETZNER: ProviderProfile = {
   unavailable:
     /resource_unavailable|out of stock|unsupported location|error during placement|(?<!service )unavailable/i,
   serverLimit: /resource_limit_exceeded|server limit/i,
+  mirroredAttributes: { hcloud_firewall: ["apply_to"] },
 };
 
 const DIGITALOCEAN: ProviderProfile = {
@@ -120,6 +128,7 @@ const DIGITALOCEAN: ProviderProfile = {
   unavailable:
     /(size|image|region) is not available|not available in (this|the selected) region|(?<!service (temporarily )?)unavailable|out of stock/i,
   serverLimit: /droplet limit|droplet quota|exceed(s|ed)? (your|the) droplet/i,
+  mirroredAttributes: {},
 };
 
 const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {

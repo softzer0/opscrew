@@ -33,6 +33,22 @@ async function readOptional(path: string): Promise<string | undefined> {
   }
 }
 
+/**
+ * Drift without the attributes a provider mirrors from a relationship OpsCrew manages elsewhere
+ * (see `ProviderProfile.mirroredAttributes`); an update left with no attributes is dropped.
+ */
+export function withoutMirrored(
+  drift: readonly ResourceDrift[],
+  mirrored: Readonly<Record<string, readonly string[]>>,
+): ResourceDrift[] {
+  return drift.flatMap((entry) => {
+    const ignored = mirrored[entry.type];
+    if (entry.action !== "update" || ignored === undefined) return [entry];
+    const attributes = entry.attributes.filter((name) => !ignored.includes(name));
+    return attributes.length === 0 ? [] : [{ ...entry, attributes }];
+  });
+}
+
 const byAddress = (a: { address: string }, b: { address: string }) =>
   a.address < b.address ? -1 : a.address > b.address ? 1 : 0;
 
@@ -170,7 +186,10 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     await engine.init(dir, { env: engineEnv, backendConfig: { path: statePath } });
     deps.reporter.step("Reading the live infrastructure (nothing is changed)");
     const refreshed = await engine.plan(dir, refreshFile, { env: engineEnv, refreshOnly: true });
-    drift = [...(refreshed.drift ?? [])].sort(byAddress);
+    drift = withoutMirrored(
+      refreshed.drift ?? [],
+      providerProfile(provider).mirroredAttributes,
+    ).sort(byAddress);
     deps.reporter.step("Comparing the state with the infrastructure code (nothing is applied)");
     const planned = await engine.plan(dir, pendingFile, { env: engineEnv });
     pending = [...planned.changes].sort(byAddress);

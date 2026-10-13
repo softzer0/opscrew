@@ -326,6 +326,28 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect(text).toContain("opscrew/plan.yaml");
   });
 
+  it("ignores the firewall attachment Hetzner mirrors into apply_to, but not other firewall changes", async () => {
+    // Found by the first real run: the server attaches the firewall (firewall_ids) and Hetzner
+    // reports it back on the firewall's apply_to, so every refresh saw a change nobody made.
+    const mirrored = new DriftEngine({
+      drift: [drifted(FIREWALL, "update", ["apply_to"])],
+      pending: [],
+    });
+    const clean = await setup({ engine: mirrored });
+    const report = await runDrift(clean.deps, { services: clean.services });
+    expect(report.drift).toEqual([]);
+    expect(report.clean).toBe(true);
+
+    const mixed = new DriftEngine({
+      drift: [drifted(FIREWALL, "update", ["apply_to", "rule"])],
+      pending: [change(FIREWALL, "update")],
+    });
+    const changed = await setup({ engine: mixed });
+    const second = await runDrift(changed.deps, { services: changed.services });
+    expect(second.drift).toEqual([drifted(FIREWALL, "update", ["rule"])]);
+    expect(second.clean).toBe(false);
+  });
+
   it("reports a server deleted outside OpsCrew", async () => {
     const engine = new DriftEngine({
       drift: [drifted(SERVER, "delete")],
