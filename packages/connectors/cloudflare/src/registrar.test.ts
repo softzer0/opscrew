@@ -499,6 +499,28 @@ describe("CloudflareClient registrar calls", () => {
     expect(await cf.getRegistration(ACCOUNT, "a.com")).toBeUndefined();
   });
 
+  it("reads the live API's exact not-found answers (code 10000) as no registration, nothing else", async () => {
+    // Recorded from the real and sandbox Registrar APIs on 2026-10-14.
+    const statusPath = `GET ${REG}/registrations/a.com/registration-status`;
+    const detailPath = `GET ${REG}/registrations/a.com`;
+    const { cf } = client({
+      [statusPath]: [
+        fail(404, [{ code: 10000, message: "No workflow found for other.com" }]),
+        fail(404, [{ code: 10000, message: "Authentication error" }]),
+        fail(404, [{ code: 10000, message: "No workflow found for a.com" }]),
+      ],
+      [detailPath]: [
+        fail(404, [{ code: 10000, message: "Authentication error" }]),
+        fail(404, [{ code: 10000, message: "Domain not found" }]),
+      ],
+    });
+    await plainError(cf.registrationStatus(ACCOUNT, "a.com"));
+    await plainError(cf.registrationStatus(ACCOUNT, "a.com"));
+    expect(await cf.registrationStatus(ACCOUNT, "a.com")).toBeUndefined();
+    await plainError(cf.getRegistration(ACCOUNT, "a.com"));
+    expect(await cf.getRegistration(ACCOUNT, "a.com")).toBeUndefined();
+  });
+
   it("reads a registration and updates auto-renew", async () => {
     const registration = {
       domain_name: "a.com",

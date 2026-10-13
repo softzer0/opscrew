@@ -251,6 +251,22 @@ const DOMAIN_CHECK_BATCH = 20;
 /** Cloudflare error codes on a 404 that mean a wrong route, account or token, not "no such registration". */
 const NOT_A_MISSING_REGISTRATION_CODES = new Set([7000, 7001, 7003, 9109, 10000, 10001]);
 
+/**
+ * The live Registrar API's exact "nothing here" answers, which use the generic code 10000 (also
+ * used for authentication errors, so the code alone never counts): a 404 with "No workflow found
+ * for <domain>" from the registration status, and "Domain not found" from the registration.
+ * Checked against the real and sandbox APIs on 2026-10-14.
+ */
+function isLiveNotFound(
+  message: string,
+  live: { domain: string; lookup: "status" | "detail" },
+): boolean {
+  const text = message.trim().replace(/\.$/, "").toLowerCase();
+  return live.lookup === "status"
+    ? text === `no workflow found for ${live.domain.toLowerCase()}`
+    : text === "domain not found";
+}
+
 /** Cloudflare's error code for "zone already exists". */
 const ZONE_EXISTS_CODE = 1061;
 
@@ -768,9 +784,15 @@ export class CloudflareClient {
    * the account, a permission or the route) and bare 404s without an envelope are not that.
    * Assumption (confirm live): the "none" answer names the registration or domain as not found.
    */
-  #noRegistration(status: number, body: EnvelopeBody, envelope: boolean): boolean {
+  #noRegistration(
+    status: number,
+    body: EnvelopeBody,
+    envelope: boolean,
+    live?: { domain: string; lookup: "status" | "detail" },
+  ): boolean {
     if (status !== 404 || !envelope || body.success || body.errors.length === 0) return false;
     return body.errors.every((e) => {
+      if (live !== undefined && e.code === 10000 && isLiveNotFound(e.message, live)) return true;
       if (typeof e.code === "number" && NOT_A_MISSING_REGISTRATION_CODES.has(e.code)) return false;
       const text = `${typeof e.code === "string" ? e.code : ""} ${e.message}`.toLowerCase();
       if (/account|permission|route|authenticat|authori|token/.test(text)) return false;
@@ -795,7 +817,9 @@ export class CloudflareClient {
         `/registrations/${encodeURIComponent(name)}/registration-status`,
       ),
     );
-    if (this.#noRegistration(status, body, envelope)) return undefined;
+    if (this.#noRegistration(status, body, envelope, { domain: name, lookup: "status" })) {
+      return undefined;
+    }
     if (!body.success || status >= 400) this.#fail(status, body, what, REGISTRAR_HINTS);
     return toRegistrationStatus(this.#parse(WorkflowSchema, body.result ?? {}, what), name);
   }
@@ -807,7 +831,9 @@ export class CloudflareClient {
     const { status, body, envelope } = await this.#request(
       this.#registrarPath(accountId, `/registrations/${encodeURIComponent(name)}`),
     );
-    if (this.#noRegistration(status, body, envelope)) return undefined;
+    if (this.#noRegistration(status, body, envelope, { domain: name, lookup: "detail" })) {
+      return undefined;
+    }
     if (!body.success || status >= 400) this.#fail(status, body, what, REGISTRAR_HINTS);
     return toRegisteredDomain(this.#parse(RegistrationSchema, body.result, what), name);
   }
