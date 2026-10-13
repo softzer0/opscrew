@@ -10,13 +10,17 @@ import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
 import {
+  addressFromOutputs,
+  committableUrl,
   describeDiff,
   diffRenderedFiles,
   ensureDeployKey,
   ensureStatePassphrase,
   pinHostKey,
   providerConsole,
+  recordServerAddress,
   SshRemoteExec,
+  serverAddress,
   waitForCloudInit,
   waitForPort,
   writeRenderedFiles,
@@ -203,18 +207,24 @@ async function provisionFlow(
     };
   }
 
-  // 6. Record the deployment in the plan
+  // 6. Record the deployment: the server's address in the local state (never in the repository),
+  // the apply and the domain URL in the plan.
   const now = deps.clock.now().toISOString();
-  const ipv4 = stringOutput(applied.outputs, "server_ipv4") ?? plan.deployment.serverIpv4;
-  const ipv6 = stringOutput(applied.outputs, "server_ipv6") ?? plan.deployment.serverIpv6;
-  const url = stringOutput(applied.outputs, "url") ?? plan.deployment.url;
-  if (!ipv4) {
+  const address =
+    addressFromOutputs(applied.outputs) ??
+    (await serverAddress(deps, plan, { engine: async () => engine, engineEnv }));
+  if (address === undefined) {
     throw new OpsCrewError("ENGINE_FAILED", "The server's address is unknown after the apply.", {
       hint: "Run `opscrew provision` again; it reads the address from the infrastructure state.",
     });
   }
+  await recordServerAddress(deps.paths, address);
+  const ipv4 = address.ipv4;
+  // Without a domain the output is `http://<server IP>`, which is not committed.
+  const outputUrl = stringOutput(applied.outputs, "url");
+  const url = outputUrl === undefined ? plan.deployment.url : committableUrl(outputUrl);
   // A new deployment after `opscrew destroy` is no longer destroyed.
-  const { destroyedAt: _destroyedAt, ...previousDeployment } = plan.deployment;
+  const { destroyedAt: _destroyedAt, url: _url, ...previousDeployment } = plan.deployment;
   plan = {
     ...plan,
     updatedAt: now,
@@ -231,8 +241,6 @@ async function provisionFlow(
       : plan.approvals,
     deployment: {
       ...previousDeployment,
-      serverIpv4: ipv4,
-      ...(ipv6 ? { serverIpv6: ipv6 } : {}),
       ...(url ? { url } : {}),
       ...(applied.planHash && applied.applied ? { lastPlanHash: applied.planHash } : {}),
       ...(applied.applied ? { lastApplyAt: now } : {}),

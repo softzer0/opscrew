@@ -4,6 +4,7 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { SavedPlan } from "../provision";
+import { committableUrl, recordServerAddress, type ServerAddress } from "../shared";
 import { moveLayout, previousTarget } from "./layouts";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { startService, stopService } from "./server-ops";
@@ -12,6 +13,7 @@ import {
   auditStep,
   type MoveSession,
   moveOf,
+  newServer,
   redactWith,
   saveMove,
   useLayout,
@@ -108,10 +110,10 @@ async function rollBackSwitch(session: MoveSession, cause: unknown): Promise<Ops
     : `run \`${RUN_COMMAND}\` again`;
   // A failed apply may have updated some records before it stopped; they point at the new server,
   // whose web server is stopped. Continuing completes the switch; aborting points them back first.
-  const next = moveOf(session).next;
+  const next = session.servers.next;
   const partly =
     !refused && managedDns(plan) && next !== undefined
-      ? ` Some DNS records of ${dnsHosts(plan).join(" and ")} may already point at the new server (${[next.serverIpv4, next.serverIpv6].filter(Boolean).join(", ")}), where the web server is stopped, so some visitors may get errors until you continue or abort: \`${RUN_COMMAND}\` completes the switch, \`${ABORT_COMMAND}\` points them back to the old server first.`
+      ? ` Some DNS records of ${dnsHosts(plan).join(" and ")} may already point at the new server (${[next.ipv4, next.ipv6].filter(Boolean).join(", ")}), where the web server is stopped, so some visitors may get errors until you continue or abort: \`${RUN_COMMAND}\` completes the switch, \`${ABORT_COMMAND}\` points them back to the old server first.`
       : "";
   return new OpsCrewError(
     codeOf(cause),
@@ -129,52 +131,53 @@ function dnsHosts(plan: DeployPlan): string[] {
   return plan.dns.www ? [domain, `www.${domain}`] : [domain];
 }
 
-/** Records the switch: `deployment` is the new server, the step `switched` (abort is over). */
+/**
+ * Records the switch: the new server receives the traffic (its address in OpsCrew's local state,
+ * the domain URL in `deployment`), the step `switched` (abort is over).
+ */
 async function recordSwitched(
   session: MoveSession,
   input: { url: string; applied?: { planHash: string; approval?: ApprovalRecord } },
 ): Promise<void> {
   const { deps } = session;
   const move = moveOf(session);
-  const next = move.next;
+  const next = session.servers.next;
   if (next === undefined) return;
   const at = deps.clock.now().toISOString();
   const recorded = input.applied
     ? withApply(session.plan, input.applied, at)
     : { approvals: session.plan.approvals, deployment: session.plan.deployment };
-  const { serverIpv6: _previous, ...deployment } = recorded.deployment;
+  const { url: _previous, ...deployment } = recorded.deployment;
+  // Without a domain the URL is the new server's IP address, which is never committed.
+  const url = committableUrl(input.url);
   await saveMove(
     session,
     { ...move, step: "switched" },
     {
       approvals: recorded.approvals,
-      deployment: {
-        ...deployment,
-        serverIpv4: next.serverIpv4,
-        ...(next.serverIpv6 !== undefined ? { serverIpv6: next.serverIpv6 } : {}),
-        url: input.url,
-      },
+      deployment: { ...deployment, ...(url !== undefined ? { url } : {}) },
     },
   );
-  await auditStep(session, "switched", `traffic goes to the new server ${next.serverIpv4}`);
+  await recordServerAddress(deps.paths, next);
+  await auditStep(session, "switched", `traffic goes to the new server ${next.ipv4}`);
 }
 
 const UrlSchema = z.url({ protocol: /^https?$/ });
 
 /** The DNS change to make by hand, line by line. */
-function manualRecords(plan: DeployPlan, next: { serverIpv4: string; serverIpv6?: string }) {
+function manualRecords(plan: DeployPlan, next: ServerAddress) {
   const domain = plan.dns.domain;
   if (domain === undefined) {
     return [
-      `The app's new address is http://${next.serverIpv4}. Tell your users (or update the links) to use it.`,
+      `The app's new address is http://${next.ipv4}. Tell your users (or update the links) to use it.`,
     ];
   }
   const hosts = plan.dns.www ? [domain, `www.${domain}`] : [domain];
   return [
     "Change these DNS records at your DNS provider:",
     ...hosts.flatMap((host) => [
-      `  A     ${host} → ${next.serverIpv4}`,
-      ...(next.serverIpv6 !== undefined ? [`  AAAA  ${host} → ${next.serverIpv6}`] : []),
+      `  A     ${host} → ${next.ipv4}`,
+      ...(next.ipv6 !== undefined ? [`  AAAA  ${host} → ${next.ipv6}`] : []),
     ]),
   ];
 }
@@ -243,7 +246,7 @@ async function switchManagedDns(
     deps.reporter.info(`The DNS records of ${plan.dns.domain} already point to the new server.`);
     const url = UrlSchema.safeParse(prepared.outputs.url);
     await recordSwitched(session, {
-      url: url.success ? url.data : publicUrl(plan, move.next?.serverIpv4 ?? ""),
+      url: url.success ? url.data : publicUrl(plan, session.servers.next?.ipv4 ?? ""),
     });
     return undefined;
   }
@@ -255,7 +258,7 @@ async function switchManagedDns(
   }
   const url = UrlSchema.safeParse(applied.outputs.url);
   await recordSwitched(session, {
-    url: url.success ? url.data : publicUrl(plan, move.next?.serverIpv4 ?? ""),
+    url: url.success ? url.data : publicUrl(plan, session.servers.next?.ipv4 ?? ""),
     applied: {
       planHash: prepared.planHash,
       ...(applied.approval ? { approval: applied.approval } : {}),
@@ -276,7 +279,7 @@ async function switchByHand(
 ): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  const next = move.next;
+  const next = session.servers.next;
   if (next === undefined)
     return { step: move.step, done: false, next: [`Run \`${RUN_COMMAND}\` again.`] };
   if (windowAhead) {
@@ -286,20 +289,20 @@ async function switchByHand(
   const fresh = providerWords(plan.target.provider);
   const old = providerWords(move.from.target.provider);
   const records = manualRecords(plan, next);
-  const url = publicUrl(plan, next.serverIpv4);
+  const url = publicUrl(plan, next.ipv4);
   if (options.dnsSwitched === true) {
     await auditMove(session, {
       kind: "approval",
       actor: "user",
       action: "dns-switched",
-      target: next.serverIpv4,
+      target: next.ipv4,
       decision: "approved",
       detail: "the user confirmed the switch to the new server with --dns-switched",
     });
   } else if (deps.interactive) {
     const approval = await deps.approvals.request({
       kind: "remote-exec",
-      title: `Switch ${plan.app.name} to the new ${fresh.noun} (${next.serverIpv4})`,
+      title: `Switch ${plan.app.name} to the new ${fresh.noun} (${next.ipv4})`,
       details: [
         ...records,
         "",
@@ -331,7 +334,7 @@ async function switchByHand(
       next: [...stoppedNote, ...records, `Then run \`${RUN_COMMAND} --dns-switched\`.`],
     };
   }
-  await recordSwitched(session, { url: `http://${next.serverIpv4}` });
+  await recordSwitched(session, { url: `http://${next.ipv4}` });
   return undefined;
 }
 
@@ -374,17 +377,6 @@ async function waitForUrl(
     if (now() >= deadline) return { ok: false, ...(last !== undefined ? { last } : {}) };
     await sleep(URL_INTERVAL_MS);
   }
-}
-
-/** The new server's address; throws when it is not recorded (a bug: only called after a switch). */
-function switchedTo(session: MoveSession): { serverIpv4: string; serverIpv6?: string } {
-  const next = moveOf(session).next;
-  if (next === undefined) {
-    throw new OpsCrewError("INTERNAL", "The new server's address is not recorded.", {
-      hint: "This is a bug in OpsCrew; please report it.",
-    });
-  }
-  return next;
 }
 
 /** The system resolver: every address `hostname` resolves to from this computer. */
@@ -456,14 +448,14 @@ async function settleSwitch(
 ): Promise<string> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  const next = switchedTo(session);
+  const next = newServer(session);
   const fresh = providerWords(plan.target.provider);
   const old = providerWords(move.from.target.provider);
   const ops = redactWith(deps);
   const remote = newRemote(session);
-  const site = publicUrl(plan, next.serverIpv4);
+  const site = publicUrl(plan, next.ipv4);
   const check = `${site}${plan.app.healthPath}`;
-  const logs = `See what happens with \`ssh deploy@${next.serverIpv4}\` and \`cd /srv/app && docker compose logs --tail 100 caddy app\`, then run \`${RUN_COMMAND}\` to check again.`;
+  const logs = `See what happens with \`ssh deploy@${next.ipv4}\` and \`cd /srv/app && docker compose logs --tail 100 caddy app\`, then run \`${RUN_COMMAND}\` to check again.`;
   deps.reporter.step(`Starting Caddy on the new ${fresh.noun}`);
   try {
     await startService(remote, "caddy", ops);
@@ -482,13 +474,13 @@ async function settleSwitch(
       `Checking that ${domain} resolves to the new ${fresh.noun} (up to 5 minutes)`,
     );
     const problem = await waitForDns(session, domain, {
-      fresh: [next.serverIpv4, next.serverIpv6],
-      old: [move.from.serverIpv4, move.from.serverIpv6],
+      fresh: [next.ipv4, next.ipv6],
+      old: [session.servers.from.ipv4, session.servers.from.ipv6],
     });
     if (problem !== undefined) {
       throw refuse({
         problem,
-        hint: `Change the DNS records of ${dnsHosts(plan).join(" and ")} to ${[next.serverIpv4, next.serverIpv6].filter(Boolean).join(" and ")} at your DNS provider (and remove the old addresses), wait until the change reaches this computer, then run \`${RUN_COMMAND}\` to check again.`,
+        hint: `Change the DNS records of ${dnsHosts(plan).join(" and ")} to ${[next.ipv4, next.ipv6].filter(Boolean).join(" and ")} at your DNS provider (and remove the old addresses), wait until the change reaches this computer, then run \`${RUN_COMMAND}\` to check again.`,
       });
     }
   }
@@ -517,7 +509,7 @@ async function settleSwitch(
       await auditMove(session, {
         kind: "remote-exec",
         action: "stop app",
-        target: move.from.serverIpv4,
+        target: session.servers.from.ipv4,
         decision: "approved",
       });
     } catch (error) {

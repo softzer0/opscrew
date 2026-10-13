@@ -4,6 +4,7 @@ import { findExecutable, NodeCommandRunner } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { previewDeploymentFiles } from "../provision";
+import { readServerAddresses } from "../shared";
 import {
   caught,
   crashAfter,
@@ -22,6 +23,7 @@ import {
   moveHarness,
   OLD_IDS,
   OLD_IPV4,
+  OLD_IPV6,
   STRIPE,
   TOKENS,
 } from "./__fixtures__/move";
@@ -101,7 +103,11 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     const plan = await readArtifact("plan", h.paths.files.plan);
     expect(plan.retarget).toBeUndefined();
     expect(plan.target.provider).toBe("digitalocean");
-    expect(plan.deployment.serverIpv4).toBe(h.newServer.ipv4);
+    // The new server receives the traffic; its address stays in the local state only.
+    expect(await readServerAddresses(h.paths)).toEqual({
+      schemaVersion: 1,
+      deployment: { ipv4: h.newServer.ipv4, ipv6: h.newServer.ipv6 },
+    });
     expect(plan.approvals).toHaveLength(5);
 
     const main = await readFile(join(h.root, "opscrew/infra/prod/main.tf"), "utf8");
@@ -126,6 +132,23 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     expect(tree.stdout).toContain("opscrew/infra/modules/digitalocean-droplet/main.tf");
     expect(tree.stdout).not.toContain("hetzner-vps");
     expect(tree.stdout).toContain("opscrew/plan.yaml");
+    // Neither the published files nor the pull request name either server's address.
+    const published = await git.run("git", ["-C", h.bare, "show", "opscrew/deploy-setup"]);
+    const files = await git.run("git", [
+      "-C",
+      h.bare,
+      "grep",
+      "-I",
+      "-e",
+      ".",
+      "opscrew/deploy-setup",
+    ]);
+    expect(files.stdout).toContain("opscrew/deploy-setup:opscrew/plan.yaml:");
+    for (const ip of [OLD_IPV4, OLD_IPV6, h.newServer.ipv4, h.newServer.ipv6]) {
+      expect(published.stdout).not.toContain(ip);
+      expect(files.stdout).not.toContain(ip);
+      expect(h.github.pulls[0]?.body).not.toContain(ip);
+    }
     expect(await exists(join(h.paths.stateDir, "retarget-snapshot.json"))).toBe(false);
     expect((await h.deps.state.read()).phases.retarget?.status).toBe("ok");
     expect(result.next.join(" ")).toContain("https://github.com/acme/shop/pull/7");
@@ -406,7 +429,11 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
       expect(plan.target).toEqual(h.plan.target);
       expect(plan.cost.monthly.currency).toBe("EUR");
       expect(plan.cost.breakdown[0]?.item).toBe("Server cx23 (nbg1)");
-      expect(plan.deployment).toMatchObject({ serverIpv4: OLD_IPV4, url: h.plan.deployment.url });
+      expect(plan.deployment.url).toBe(h.plan.deployment.url);
+      expect(await readServerAddresses(h.paths)).toEqual({
+        schemaVersion: 1,
+        deployment: { ipv4: OLD_IPV4, ipv6: OLD_IPV6 },
+      });
       if (created) expect(h.github.secrets.get("OPSCREW_HOST")).toBe(OLD_IPV4);
       expect(await readFile(h.paths.files.knownHosts, "utf8")).not.toContain(h.newServer.ipv4);
       expect(h.hosts.host(OLD_IPV4).app).toBe(true);

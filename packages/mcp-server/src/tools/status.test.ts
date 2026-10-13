@@ -53,11 +53,7 @@ function movingPlan(step: Retarget["step"], abort?: AbortStep) {
           serverType: "cpx22",
           backups: false,
         },
-        serverIpv4: "203.0.113.10",
       },
-      ...(step === "started" || step === "renamed"
-        ? {}
-        : { next: { serverIpv4: "198.51.100.20" } }),
       step,
       ...(abort !== undefined ? { abort: { step: abort } } : {}),
       startedAt: "2026-10-12T09:00:00.000Z",

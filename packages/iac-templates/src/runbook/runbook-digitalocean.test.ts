@@ -8,10 +8,7 @@ const doPlan = (o: Parameters<typeof testPlan>[0] = {}) =>
 
 describe("renderRunbook for DigitalOcean", () => {
   it("names the Droplet, the control panel and USD prices, never Hetzner", () => {
-    const content = renderRunbook(
-      doPlan({ domain: "shop.example.com", ip: "203.0.113.10" }),
-      ctx,
-    ).content;
+    const content = renderRunbook(doPlan({ domain: "shop.example.com" }), ctx).content;
     expect(content).not.toMatch(/hetzner/i);
     expect(content).toContain("shop — DigitalOcean Droplet s-1vcpu-2gb in fra1");
     expect(content).toContain(
@@ -80,8 +77,8 @@ describe("renderRunbook for DigitalOcean", () => {
   });
 
   it("is deterministic and contains no absolute paths", () => {
-    const a = renderRunbook(doPlan({ ip: "203.0.113.10" }), ctx).content;
-    expect(renderRunbook(doPlan({ ip: "203.0.113.10" }), ctx).content).toBe(a);
+    const a = renderRunbook(doPlan(), ctx).content;
+    expect(renderRunbook(doPlan(), ctx).content).toBe(a);
     expect(a).not.toMatch(/[A-Za-z]:\\|\/home\/|\/Users\//);
   });
 });

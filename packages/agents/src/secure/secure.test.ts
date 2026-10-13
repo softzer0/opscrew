@@ -12,8 +12,15 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { createSecretsScanner, type TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
+import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, ScriptedRunner, type TestPhaseDeps } from "../testing";
-import { SERVER_IPV4, type TestPlanOptions, testPlan } from "../verify/__fixtures__/plan";
+import {
+  SERVER,
+  SERVER_IPV4,
+  SERVER_IPV6,
+  type TestPlanOptions,
+  testPlan,
+} from "../verify/__fixtures__/plan";
 import {
   renderSecurityReport,
   runSecure,
@@ -112,6 +119,7 @@ async function setup(
     clock: { now: () => new Date(NOW) },
   });
   await writeArtifact("plan", deps.paths.files.plan, testPlan(plan));
+  if (plan.ip !== false) await recordServerAddress(deps.paths, SERVER);
   if (options.deployKey !== false) {
     await mkdir(dirname(deps.paths.files.deployKey), { recursive: true });
     await writeFile(deps.paths.files.deployKey, "placeholder for the deploy key file\n");
@@ -337,12 +345,32 @@ describe("runSecure", () => {
     expect(result.passed).toBe(false);
   });
 
+  it("keeps the server's address out of the report behind Cloudflare's proxy", async () => {
+    // A failing probe whose target is the server, so the address would show up in the fix list.
+    const deps = await setup({ httpAllowedFrom: "any" }, { passwordAuth: true });
+    const result = await runSecure(deps, { scanners: noScanners, tcpConnect: ports([5432]) });
+    const report = await readFile(deps.paths.files.securityReport, "utf8");
+    expect(report).toBe(result.report);
+    expect(report).not.toContain(SERVER_IPV4);
+    expect(report).not.toContain(SERVER_IPV6);
+    expect(report).toContain("Connections attempted from this machine to the server.");
+    expect(report).toContain("Port 5432 (PostgreSQL) is reachable from the internet.");
+    // The checks themselves still ran against the address, and the terminal may show it.
+    expect(find(result.probes, "port-5432-closed").target).toBe(SERVER_IPV4);
+    expect(deps.runner.calls.some((c) => c.args.includes(`deploy@${SERVER_IPV4}`))).toBe(true);
+
+    // Without a domain the app is served on the address, so the report names it.
+    const open = await setup({ domain: undefined }, {});
+    const plain = await runSecure(open, { scanners: noScanners, tcpConnect: ports() });
+    expect(plain.report).toContain(`Server: \`${SERVER_IPV4}\`.`);
+  });
+
   it("skips the server checks before provision and without the deploy key", async () => {
     const before = await setup({ ip: false });
     const a = await runSecure(before, { scanners: noScanners, tcpConnect: ports() });
     expect(a.hostChecks).toEqual([]);
     expect(a.probes).toEqual([]);
-    expect(a.report).toContain("Skipped: no server is recorded");
+    expect(a.report).toContain("Skipped: OpsCrew does not know a server for this project");
     expect(before.runner.calls).toEqual([]);
 
     const noKey = await setup({ httpAllowedFrom: "any" }, {}, { deployKey: false });

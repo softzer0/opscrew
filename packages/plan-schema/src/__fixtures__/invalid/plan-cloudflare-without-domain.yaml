@@ -90,8 +90,6 @@ approvals:
     kind: iac-apply
 deployment:
   lastCompletedPhase: provision
-  serverIpv4: 203.0.113.10
-  serverIpv6: 2001:db8::1
   url: https://app.example.com
   lastPlanHash: 3f5a9c0e7b1d2f4a6c8e0b2d4f6a8c0e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a
   lastApplyAt: 2026-10-11T15:12:00.000Z

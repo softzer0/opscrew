@@ -19,7 +19,8 @@ export interface PublishResult {
 /**
  * Pull request body for the generated deployment files. `secretsStored` (default true) says
  * whether the GitHub Actions deploy secrets are known to be stored for this server; when they are
- * not, the body tells the user to run `opscrew provision` in a terminal before merging.
+ * not, the body tells the user to run `opscrew provision` in a terminal before merging. It names
+ * the domain or "the server", never the server's IP address (pull requests are often public).
  */
 export function deploySetupPullRequestBody(
   plan: DeployPlan,
@@ -27,7 +28,7 @@ export function deploySetupPullRequestBody(
   options: { secretsStored?: boolean } = {},
 ): string {
   const profile = providerProfile(planProvider(plan));
-  const host = plan.dns.domain ?? plan.deployment.serverIpv4 ?? `the new ${profile.serverNoun}`;
+  const host = plan.dns.domain ?? `the ${profile.serverNoun}`;
   const nextStep =
     options.secretsStored === false
       ? [
@@ -43,7 +44,7 @@ export function deploySetupPullRequestBody(
     `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: infrastructure code for the ${profile.displayName} ${profile.serverNoun}${plan.dns.provider === "cloudflare" ? " and the Cloudflare DNS records" : ""} (works with OpenTofu and Terraform).`,
     "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server.",
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
-    "- `opscrew/plan.yaml`: the plan with the server's addresses.",
+    "- `opscrew/plan.yaml`: the deployment plan. The server's IP address is not in the repository; `opscrew status` shows it on the computer that ran `opscrew provision`.",
     "",
     ...nextStep,
     "",

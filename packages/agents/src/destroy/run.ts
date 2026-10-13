@@ -15,6 +15,7 @@ import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-sche
 import type { PhaseDeps } from "../context";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import { checkProvider, githubCoordinates } from "../provision";
+import { hasDeployment, recordServerAddress, serverAddress } from "../shared";
 import {
   dataWarning,
   deletesServer,
@@ -116,7 +117,7 @@ async function requirePreconditions(
   statePath: string,
 ) {
   if (!(await exists(statePath))) {
-    if (plan.deployment.serverIpv4 === undefined) throw nothingDeployed(plan);
+    if (!hasDeployment(plan)) throw nothingDeployed(plan);
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The infrastructure state of ${plan.app.name} is not on this computer (.opscrew/tfstate/prod.tfstate), so OpsCrew cannot tell what to delete. Nothing was changed.`,
@@ -461,13 +462,13 @@ async function removeDeploySecrets(deps: PhaseDeps, github: GitHubTarget): Promi
   return removed;
 }
 
-/** 8. The plan without the server's addresses, with `destroyedAt` and the approvals recorded. */
+/** 8. The plan without the app's URL, with `destroyedAt` and the approvals recorded. */
 function destroyedPlan(
   plan: DeployPlan,
   at: string,
   approvals: readonly (ApprovalRecord | undefined)[],
 ): DeployPlan {
-  const { serverIpv4, serverIpv6, url, lastCompletedPhase, ...kept } = plan.deployment;
+  const { url, lastCompletedPhase, ...kept } = plan.deployment;
   const recorded = approvals
     .filter((a): a is ApprovalRecord => a?.planHash !== undefined)
     .map((a) => ({
@@ -528,8 +529,9 @@ function remainingAfterDestroy(input: {
  * protection (Hetzner), a protection-lifting plan that may only change the server's protection
  * (`iac-apply` approval) → the destroy plan (`iac-apply` approval with `allowDestroy` and the
  * server name typed to confirm) → removal of the GitHub deploy secrets (`github-secrets`
- * approval), the pinned host key and the plan's server addresses. A refusal or failure at any step
- * leaves everything after it untouched, and running it again continues where it stopped.
+ * approval), the pinned host key and the server's address in OpsCrew's local state. A refusal or
+ * failure at any step leaves everything after it untouched, and running it again continues where
+ * it stopped.
  */
 export async function runDestroy(
   deps: PhaseDeps,
@@ -579,14 +581,19 @@ export async function runDestroy(
   const vars = profile.deleteProtection ? { [PROTECTION_VARIABLE]: "false" } : undefined;
   const ctx: DestroyContext = { session, plan, profile, texts, ...(vars ? { vars } : {}) };
 
-  // 4. Preview: what the teardown deletes (this plan is never applied)
+  // 4. Preview: what the teardown deletes (this plan is never applied). The server's address is
+  // read now, while the state still has it (its host key is forgotten after the teardown).
   deps.reporter.step("Planning the teardown to see what it deletes");
   const preview = await previewDeletion(session, {
     suffix: "destroy-preview",
     ...(vars ? { vars } : {}),
     destroy: true,
   });
-  if (preview.changes.length === 0 && plan.deployment.serverIpv4 === undefined) {
+  const address = await serverAddress(deps, plan, {
+    engine: async () => engine,
+    engineEnv: env,
+  });
+  if (preview.changes.length === 0 && address === undefined) {
     throw nothingDeployed(plan);
   }
   // Which server that is, by the id the state records (names need not be unique).
@@ -656,8 +663,7 @@ export async function runDestroy(
 
   // 8. Cleanup: deploy secrets, pinned host key, plan, stored-secrets record, phase state
   const secretsRemoved = await removeDeploySecrets(deps, github);
-  const hosts = [plan.deployment.serverIpv4, plan.deployment.serverIpv6];
-  if ((await forgetHostKeys(deps, hosts)) > 0) {
+  if ((await forgetHostKeys(deps, [address?.ipv4, address?.ipv6])) > 0) {
     deps.reporter.info(`Removed the ${texts.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
   const at = deps.clock.now().toISOString();
@@ -666,6 +672,7 @@ export async function runDestroy(
     deps.paths.files.plan,
     destroyedPlan(plan, at, [protection.approval, destroyApproval]),
   );
+  await recordServerAddress(deps.paths, undefined);
   await rm(join(deps.paths.projectHomeDir, "deploy_secrets.json"), { force: true });
   await removeSnapshotRecord(deps, "destroy");
   await deps.state.markPhase("provision", "skipped", "infrastructure destroyed");

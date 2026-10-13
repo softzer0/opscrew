@@ -39,11 +39,14 @@ import {
   ensureDeployKey,
   pinHostKey,
   providerConsole,
+  type ServerAddress,
   SshRemoteExec,
   writeRenderedFiles,
 } from "../shared";
 import type { MoveLayoutName } from "./layouts";
 import type { RedactText } from "./server-ops";
+import { loadMoveServers, type MoveServers, recordMoveServers } from "./servers";
+import { RUN_COMMAND } from "./texts";
 import type { RetargetGitHubApi, RetargetServices } from "./types";
 
 /** Everything the steps of one run share: credentials checked, engine ready, files rendered. */
@@ -69,13 +72,15 @@ export interface MoveSession {
   command: string;
   /** `--approve <hash>` until a step used it. */
   approve: string | undefined;
+  /** The servers' addresses, from OpsCrew's local state (never from `opscrew/plan.yaml`). */
+  servers: MoveServers;
 }
 
 /**
  * What reaching the servers and recording the move needs, without credentials or engine: enough
  * to start the old app again before anything else is checked.
  */
-export type MoveBase = Pick<MoveSession, "deps" | "plan" | "services" | "deployKey">;
+export type MoveBase = Pick<MoveSession, "deps" | "plan" | "services" | "deployKey" | "servers">;
 
 /** `.opscrew/tfstate/prod.tfstate`, as provision, destroy and drift use it. */
 export function statePathOf(deps: Pick<PhaseDeps, "paths">): string {
@@ -207,6 +212,8 @@ export interface OpenSessionInput {
   engine?: EnginePreference;
   approvePlanHash?: string;
   services: RetargetServices;
+  /** The servers when the caller knows them (a new move, or read before the session opened). */
+  servers?: MoveServers;
 }
 
 /**
@@ -264,6 +271,10 @@ export async function openSession(
   deps.reporter.info(`Using ${engineLabel(engine.info.name)} ${engine.info.version}.`);
   const env = await engineEnvironment(deps, plan, engine, command);
   await mkdir(deps.paths.files.plansDir, { recursive: true });
+  const dir = join(deps.paths.root, plan.infra.dir);
+  const servers =
+    input.servers ??
+    (await loadMoveServers(deps, plan, command, () => engine.output(dir, { env })));
   return {
     deps,
     services,
@@ -276,11 +287,32 @@ export async function openSession(
     engine,
     env,
     deployKey,
-    dir: join(deps.paths.root, plan.infra.dir),
+    dir,
     statePath: statePathOf(deps),
     command,
     approve: input.approvePlanHash?.trim() || undefined,
+    servers,
   };
+}
+
+/** Records the new server's address (local state and session) once it is created. */
+export async function recordNewServer(
+  session: Pick<MoveSession, "deps" | "servers">,
+  next: ServerAddress,
+): Promise<void> {
+  session.servers = { ...session.servers, next };
+  await recordMoveServers(session.deps, session.servers);
+}
+
+/** The new server's address; throws when it is not known yet (a bug: callers check first). */
+export function newServer(session: Pick<MoveSession, "servers">): ServerAddress {
+  const next = session.servers.next;
+  if (next === undefined) {
+    throw new OpsCrewError("INTERNAL", "The new server's address is not recorded yet.", {
+      hint: `Run \`${RUN_COMMAND}\` again; it reads the address from the infrastructure state.`,
+    });
+  }
+  return next;
 }
 
 /** Every file of the deployment for `plan` (default: the session's) in `layout` (none: final). */

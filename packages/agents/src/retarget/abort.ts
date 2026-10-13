@@ -30,6 +30,7 @@ import {
 } from "./plans";
 
 import { isAppHealthy } from "./server-ops";
+import { endMoveServers, loadMoveServers } from "./servers";
 import {
   auditStep,
   type MoveSession,
@@ -347,7 +348,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
       const stop = await removeNewServer(session, options, flags);
       if (stop !== undefined) return stop;
     }
-    await forgetHostKeys(deps, [move.next?.serverIpv4, move.next?.serverIpv6]);
+    await forgetHostKeys(deps, [session.servers.next?.ipv4, session.servers.next?.ipv6]);
     await recordAbortStep(session, "new-removed", "the new server is gone");
   }
 
@@ -355,7 +356,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   if (abortProgress(session) < ABORT_PROGRESS["secrets-restored"]) {
     if (!stepBefore(move.step, "created")) {
       await recordAbort(session);
-      await storeDeploySecrets(session, move.from.serverIpv4, "old");
+      await storeDeploySecrets(session, session.servers.from.ipv4, "old");
     }
     await recordAbortStep(
       session,
@@ -402,9 +403,10 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   const { retarget: _aborted, ...rest } = session.plan;
   const restored: DeployPlan = { ...rest, target: from, ...(cost !== undefined ? { cost } : {}) };
   await writeFinalFiles(session, restored, moveLayout("both", from, to), "infra");
-  const oldHost = move.from.serverIpv4;
+  const oldHost = session.servers.from.ipv4;
   await savePlan(session, restored);
   await clearPending(deps);
+  await endMoveServers(deps, session.servers.from);
   await deps.state.markPhase(
     "retarget",
     "skipped",
@@ -470,7 +472,13 @@ export async function abortRetarget(
     const services = options.services ?? {};
     // Users first: the old app runs again before anything else is checked.
     if (move.oldAppStoppedAt !== undefined) {
-      const base = { deps, plan, services, deployKey: await readDeployKey(deps, ABORT_COMMAND) };
+      const base = {
+        deps,
+        plan,
+        services,
+        deployKey: await readDeployKey(deps, ABORT_COMMAND),
+        servers: await loadMoveServers(deps, plan, ABORT_COMMAND),
+      };
       if (stepBefore(move.step, "migrated")) await recoverInterruptedWindow(base);
       else await restartOldApp(base);
       plan = base.plan;

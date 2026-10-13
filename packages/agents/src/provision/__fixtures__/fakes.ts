@@ -14,8 +14,9 @@ import type {
   VpsProviderId,
 } from "@opscrew/contracts";
 import { type CloudflareDnsRecord, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
-import { NodeCommandRunner } from "@opscrew/core";
-import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
+import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { hasDeployment, updateServerAddresses } from "../../shared";
 import { ScriptedRunner } from "../../testing";
 import type { CloudflareApi, GitHubApi } from "../types";
 
@@ -88,11 +89,14 @@ export function testPlan(options: PlanInputOptions = {}) {
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: {},
-    ...(options.deployed
-      ? { deployment: { serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6 } }
-      : {}),
+    // A deployed plan records the apply; the server's address is in the local state only
+    // (`createProject` writes it there, as provision does).
+    ...(options.deployed ? { deployment: { lastApplyAt: DEPLOYED_AT } } : {}),
   });
 }
+
+/** When the deployed test plans were applied. */
+export const DEPLOYED_AT = "2026-10-11T11:00:00.000Z";
 
 /**
  * A deployed Hetzner plan in the middle of `opscrew retarget` to DigitalOcean: `target` is already
@@ -104,11 +108,26 @@ export function movingPlan(step: "started" | "renamed" | "created" = "renamed") 
     ...from,
     target: testPlan({ provider: "digitalocean" }).target,
     retarget: {
-      from: { target: from.target, serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6 },
+      from: { target: from.target },
       step,
       startedAt: "2026-10-12T09:00:00.000Z",
     },
   });
+}
+
+/**
+ * Writes the server's address to the project's local state (`.opscrew/server.json`) the way
+ * `opscrew provision` does: {@link SERVER_IPV4} and {@link SERVER_IPV6} for the deployment and,
+ * during a move, as the server being replaced.
+ */
+export async function recordTestServer(root: string, plan: DeployPlan): Promise<void> {
+  if (!hasDeployment(plan)) return;
+  const address = { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 };
+  await updateServerAddresses(resolveProjectPaths(root), (current) => ({
+    ...current,
+    deployment: address,
+    ...(plan.retarget === undefined ? {} : { retarget: { from: address } }),
+  }));
 }
 
 export interface PlanJsonOptions {
@@ -603,5 +622,6 @@ export async function createProject(plan = testPlan()) {
   await git(root, "add", "Dockerfile", ".gitignore");
   await git(root, "commit", "-m", "init");
   await writeArtifact("plan", join(root, "opscrew", "plan.yaml"), plan);
+  await recordTestServer(root, plan);
   return { root, bare, git };
 }

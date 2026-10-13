@@ -22,18 +22,29 @@ function cell(text: string): string {
   return text.replace(/\|/g, "\\|");
 }
 
+/** True when Cloudflare proxies the app's domain: the server's address must not be published. */
+function addressIsPrivate(plan: DeployPlan): boolean {
+  return plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined && plan.dns.proxied;
+}
+
 /**
  * `opscrew/RUNBOOK.md`: how this deployment works and how to operate it, in plain English, with
- * the real values from the plan. Deterministic; contains no secrets or absolute paths.
+ * the real values from the plan. Deterministic; contains no secrets or absolute paths. The
+ * server's address (`ctx.serverIpv4`/`serverIpv6`) is shown only when the domain is not behind
+ * Cloudflare's proxy: a published origin address would let anyone go around Cloudflare.
  */
 export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   const provider = providerText(plan.target);
-  const ip = plan.deployment.serverIpv4 ?? ctx.serverIpv4;
-  const ipv6 = plan.deployment.serverIpv6 ?? ctx.serverIpv6;
+  const hidden = addressIsPrivate(plan);
+  const ip = hidden ? undefined : ctx.serverIpv4;
+  const ipv6 = hidden ? undefined : ctx.serverIpv6;
   const hosts = siteHosts(plan);
   const url = hosts.length > 0 ? `https://${hosts[0]}` : ip ? `http://${ip}` : PENDING;
   const keyPath = `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}/deploy_key`;
-  const ssh = ip ? `ssh -i ${keyPath} deploy@${ip}` : `ssh -i ${keyPath} deploy@<server-ip>`;
+  const ssh = `ssh -i ${keyPath} deploy@${ip ?? "$(opscrew status --ip)"}`;
+  const addresses = hidden
+    ? "kept private behind Cloudflare: `opscrew status` shows them"
+    : `${ip ?? PENDING} / ${ipv6 ?? PENDING}`;
   const branch = plan.cicd.branch;
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
   const db = plan.services.postgres
@@ -58,7 +69,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     `| App | ${cell(url)} |`,
     `| Health check | \`${plan.app.healthPath}\` |`,
     `| Server | ${cell(`${plan.app.name} — ${provider.serverLabel(plan.target.serverType, plan.target.location)}`)} |`,
-    `| IPv4 / IPv6 | ${ip ?? PENDING} / ${ipv6 ?? PENDING} |`,
+    `| IPv4 / IPv6 | ${cell(addresses)} |`,
     `| Deploys | every push to \`${branch}\` runs \`${plan.cicd.workflowPath}\` |`,
     `| Image | \`ghcr.io/${repo.toLowerCase()}\` (GitHub Container Registry) |`,
     `| Database | ${cell(db)} |`,
@@ -92,6 +103,19 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "The deploy key is stored only on the machine where you ran `opscrew provision` (and as a GitHub Actions",
     "secret). Password login and root login are disabled on the server.",
     "",
+    ...(ip === undefined
+      ? [
+          ...(hidden
+            ? [
+                "The server's IP address is not written in this repository: Cloudflare's proxy hides it, and a published",
+                "address would let anyone go around Cloudflare.",
+              ]
+            : []),
+          "`opscrew status` shows the address on the machine that ran `opscrew provision` (`opscrew status --ip` prints",
+          "only the IPv4 address, as used above).",
+          "",
+        ]
+      : []),
     ...provider.runbook.connectNote,
   ];
 

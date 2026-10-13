@@ -1,3 +1,4 @@
+import { readServerAddresses } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
@@ -187,7 +188,7 @@ describe("retargetStatusLine", () => {
         serverType: "s-1vcpu-2gb",
       },
       retarget: {
-        from: { target: from.target, serverIpv4: "203.0.113.10" },
+        from: { target: from.target },
         startedAt: "2026-10-13T12:00:00.000Z",
         ...retarget,
       },
@@ -290,7 +291,9 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     let plan = await readArtifact("plan", m.paths.files.plan);
     expect(plan.retarget?.step).toBe("switched");
     expect(plan.target.serverType).toBe("s-2vcpu-4gb");
-    expect(plan.deployment.serverIpv4).toBe(NEW_SERVERS.digitalocean.ipv4);
+    expect((await readServerAddresses(m.paths)).deployment?.ipv4).toBe(
+      NEW_SERVERS.digitalocean.ipv4,
+    );
     expect(m.engine.applied).toHaveLength(3); // rename, create, DNS switch
     expect(approvals.requests.map((r) => r.kind)).toEqual([
       "iac-apply",

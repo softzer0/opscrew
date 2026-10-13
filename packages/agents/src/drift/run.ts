@@ -10,6 +10,7 @@ import { planProvider, providerProfile } from "../providers";
 import { checkProvider } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { previewDeploymentFiles } from "../provision/render";
+import { hasDeployment } from "../shared";
 import {
   mergeAttributes,
   providerReadOnlyAttributes,
@@ -125,7 +126,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
 
   // 1. Preconditions: no move in progress, a deployment and its state (no network yet)
   requireNoMoveInProgress(plan);
-  if (!plan.deployment.serverIpv4 || plan.deployment.destroyedAt !== undefined) {
+  if (!hasDeployment(plan)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       "Nothing is deployed yet, so there is nothing to check for drift.",

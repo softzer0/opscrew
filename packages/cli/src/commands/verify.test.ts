@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CF_V4,
@@ -11,6 +11,7 @@ import {
   fakeSite,
   SERVER_IPV4,
   testPlan,
+  writeProjectPlan,
 } from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
 import { withDeployServices } from "../ui/deploy-services";
@@ -23,8 +24,7 @@ afterEach(async () => {
 
 async function setup(plan: DeployPlan, options: { healthStatus?: number } = {}) {
   project = await tempProject();
-  const planFile = path.join(project.root, "opscrew", "plan.yaml");
-  await writeArtifact("plan", planFile, plan);
+  const planFile = await writeProjectPlan(project, plan);
   const ctx = projectContext(project, {
     services: { runner: new DeployRunner(), fetch: fakeSite(options) },
   });
@@ -60,7 +60,10 @@ describe("opscrew verify", () => {
     expect(ctx.output).toContain("read opscrew/RUNBOOK.md");
     const runbook = await readFile(path.join(root, "opscrew", "RUNBOOK.md"), "utf8");
     expect(runbook).toContain("shop.example.com");
-    expect(runbook).toContain(SERVER_IPV4);
+    // Behind Cloudflare's proxy, neither committed file names the server's address.
+    expect(runbook).not.toContain(SERVER_IPV4);
+    expect(runbook).toContain("deploy@$(opscrew status --ip)");
+    expect(await readFile(planFile, "utf8")).not.toContain(SERVER_IPV4);
     const plan = await readArtifact("plan", planFile);
     expect(plan.deployment.url).toBe("https://shop.example.com");
   });
@@ -75,7 +78,7 @@ describe("opscrew verify", () => {
   it("exits 1 with the next step when nothing is provisioned yet", async () => {
     const { ctx } = await setup(testPlan());
     expect(await run(ctx, "verify")).toBe(1);
-    expect(ctx.errors).toContain("no server address yet");
+    expect(ctx.errors).toContain("does not know the server's address");
     expect(ctx.errors).toContain("opscrew provision");
   });
 });

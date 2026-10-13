@@ -18,6 +18,7 @@ import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
+import { serverAddress } from "../shared";
 import {
   type CodeChangeSignals,
   collectCodeChangeSignals,
@@ -142,6 +143,7 @@ export async function previewDesignOptions(
       inputs.requirements,
       await stateExists(deps),
       "`opscrew design` will stop without changing opscrew/plan.yaml",
+      (await serverAddress(deps, previous)) !== undefined,
     );
     if (block !== undefined) warner(deps, warnings)(`${block.message} ${block.hint}`);
   }
@@ -245,7 +247,12 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     return undefined;
   });
   if (previous !== undefined) {
-    requireSameProvider(previous, inputs.requirements, await stateExists(deps));
+    requireSameProvider(
+      previous,
+      inputs.requirements,
+      await stateExists(deps),
+      (await serverAddress(deps, previous)) !== undefined,
+    );
   }
 
   const preview = await priceOptions(deps, inputs, options.catalog, warnings);
@@ -303,10 +310,10 @@ async function stateExists(deps: PhaseDeps): Promise<boolean> {
 }
 
 /**
- * The provider of a deployment that may still have resources: not destroyed, and either a server
- * address recorded, an apply recorded, or a non-empty state file (`stateExists`: a first apply
- * that fails half-way records nothing in the plan but keeps what it created in the state).
- * `undefined` when nothing can be live.
+ * The provider of a deployment that may still have resources: not destroyed, and either an apply
+ * recorded or a non-empty state file (`stateExists`: a first apply that fails half-way records
+ * nothing in the plan but keeps what it created in the state). `undefined` when nothing can be
+ * live.
  */
 export function liveDeploymentProvider(
   plan: Pick<DeployPlan, "target" | "deployment">,
@@ -314,38 +321,36 @@ export function liveDeploymentProvider(
 ): VpsProviderId | undefined {
   const { deployment } = plan;
   if (deployment.destroyedAt !== undefined) return undefined;
-  const applied =
-    deployment.serverIpv4 !== undefined || deployment.lastApplyAt !== undefined || stateExists;
+  const applied = deployment.lastApplyAt !== undefined || stateExists;
   return applied ? plan.target.provider : undefined;
 }
 
 /**
  * Why the requested provider cannot replace the plan's (a live deployment moves only through
  * `opscrew retarget`), or `undefined` when the switch is allowed. `outcome` is the message's last
- * sentence: what happened (or will happen) to `opscrew/plan.yaml`.
+ * sentence: what happened (or will happen) to `opscrew/plan.yaml`. `hasServer` says whether
+ * OpsCrew knows the deployed server's address (`serverAddress`; a move starts from it).
  */
 function providerSwitchBlock(
   previous: DeployPlan,
   requirements: Requirements,
   stateExists: boolean,
   outcome: string,
+  hasServer: boolean,
 ): { message: string; hint: string } | undefined {
   const current = liveDeploymentProvider(previous, stateExists);
   const requested = requestedProvider(requirements);
   if (current === undefined || requested === current) return undefined;
   const from = providerProfile(current).displayName;
   const to = providerProfile(requested).displayName;
-  const ipv4 = previous.deployment.serverIpv4;
-  const where =
-    ipv4 !== undefined
-      ? `Your app is deployed on ${from} (${ipv4})`
-      : `An earlier apply may have created resources at ${from}`;
+  const where = hasServer
+    ? `Your app is deployed on ${from}`
+    : `An earlier apply may have created resources at ${from}`;
   const retarget = `\`opscrew retarget --to ${requested}\``;
-  // A move starts from a deployed server, so without an address the deployment is finished first.
-  const move =
-    ipv4 !== undefined
-      ? `Run ${retarget} to move the deployment with its data`
-      : `Run \`opscrew provision\` to finish the deployment on ${from} and then ${retarget} to move it with its data`;
+  // A move starts from a deployed server, so without its address the deployment is finished first.
+  const move = hasServer
+    ? `Run ${retarget} to move the deployment with its data`
+    : `Run \`opscrew provision\` to finish the deployment on ${from} and then ${retarget} to move it with its data`;
   return {
     message: `${where}, but opscrew/requirements.yaml now asks for ${to}. ${outcome}.`,
     hint: `${move}, or \`opscrew destroy\` first and then \`opscrew design\`, or keep ${from} by answering \`opscrew interview\` again.`,
@@ -361,12 +366,14 @@ function requireSameProvider(
   previous: DeployPlan,
   requirements: Requirements,
   stateExists: boolean,
+  hasServer: boolean,
 ): void {
   const block = providerSwitchBlock(
     previous,
     requirements,
     stateExists,
     "opscrew/plan.yaml was not changed",
+    hasServer,
   );
   if (block !== undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", block.message, { hint: block.hint });
@@ -447,11 +454,7 @@ function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
  */
 function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] {
   const { deployment } = previous;
-  const deployed =
-    deployment.serverIpv4 !== undefined ||
-    deployment.serverIpv6 !== undefined ||
-    deployment.lastApplyAt !== undefined ||
-    deployment.lastPlanHash !== undefined;
+  const deployed = deployment.lastApplyAt !== undefined || deployment.lastPlanHash !== undefined;
   if (!deployed || deployment.destroyedAt !== undefined) return [];
   const before = previous.target;
   const after = plan.target;

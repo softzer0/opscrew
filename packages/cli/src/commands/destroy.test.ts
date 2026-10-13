@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { readServerAddresses } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
@@ -94,7 +95,7 @@ describe.skipIf(!GIT)("opscrew destroy", () => {
     expect(approvals.requests).toEqual([]);
     const plan = await readArtifact("plan", paths.files.plan);
     expect(plan.deployment.destroyedAt).toBeDefined();
-    expect(plan.deployment.serverIpv4).toBeUndefined();
+    expect((await readServerAddresses(paths)).deployment).toBeUndefined();
     expect(ctx.output).toContain("`opscrew provision` to deploy again");
   });
 

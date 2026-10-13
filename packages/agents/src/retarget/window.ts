@@ -18,6 +18,7 @@ import {
   type MoveBase,
   type MoveSession,
   moveOf,
+  newServer,
   redactWith,
   remoteFor,
   saveMove,
@@ -62,23 +63,17 @@ export function oldRemote(session: MoveBase): RemoteExec {
     session.deps,
     session.services,
     session.deployKey.privateKeyFile,
-    moveOf(session).from.serverIpv4,
+    session.servers.from.ipv4,
   );
 }
 
 /** The new server's shell; throws when its address is not recorded yet (a bug: callers check). */
 export function newRemote(session: MoveBase): RemoteExec {
-  const next = moveOf(session).next;
-  if (next === undefined) {
-    throw new OpsCrewError("INTERNAL", "The new server's address is not recorded yet.", {
-      hint: `Run \`${RUN_COMMAND}\` again; it reads the address from the infrastructure state.`,
-    });
-  }
   return remoteFor(
     session.deps,
     session.services,
     session.deployKey.privateKeyFile,
-    next.serverIpv4,
+    newServer(session).ipv4,
   );
 }
 
@@ -111,7 +106,7 @@ export async function restartOldApp(session: MoveBase, before = ""): Promise<voi
   let move = moveOf(session);
   if (move.oldAppStoppedAt === undefined) return;
   const { deps } = session;
-  const host = move.from.serverIpv4;
+  const host = session.servers.from.ipv4;
   const stale = move.step === "migrated";
   if (stale) {
     await saveMove(session, { ...move, step: "deployed" });
@@ -174,7 +169,7 @@ export async function recoverInterruptedWindow(session: MoveBase): Promise<void>
   );
   await restartOldApp(session);
   await removeDumpQuietly(session, oldRemote(session));
-  if (move.next !== undefined) await removeDumpQuietly(session, newRemote(session));
+  if (session.servers.next !== undefined) await removeDumpQuietly(session, newRemote(session));
 }
 
 /** The commands of the window, listed in its approval. */
@@ -214,7 +209,7 @@ export async function maintenanceWindow(
 ): Promise<"done" | RetargetResult> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  const next = move.next;
+  const next = session.servers.next;
   if (next === undefined) return stopped(session, [`Run \`${RUN_COMMAND}\` again.`]);
   const old = oldRemote(session);
   const fresh = newRemote(session);
@@ -252,7 +247,7 @@ export async function maintenanceWindow(
     kind: "remote-exec",
     title: `${MAINTENANCE_WINDOW_TITLE} stop ${plan.app.name} on the old server and copy its database (${sizeText(size)}) to the new server (${byHand ? `downtime: ${downtime} for the copy, plus ${plan.dns.domain !== undefined ? "your DNS change" : "your users' move to the new address"}` : `${downtime} of downtime`})`,
     details: [
-      ...windowCommands(move.from.serverIpv4, next.serverIpv4, plan.app.port, plan.app.healthPath),
+      ...windowCommands(session.servers.from.ipv4, next.ipv4, plan.app.port, plan.app.healthPath),
       ...(byHand ? ["", ...warning] : []),
     ].join("\n"),
   });
@@ -271,7 +266,7 @@ export async function maintenanceWindow(
   await auditMove(session, {
     kind: "remote-exec",
     action: "maintenance window",
-    target: move.from.serverIpv4,
+    target: session.servers.from.ipv4,
     decision: "approved",
     detail: `maintenance window started: database of ${size} bytes, ${downtime}`,
   });

@@ -2,7 +2,9 @@ import type { VpsProviderId } from "@opscrew/contracts";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 
 export const SERVER_IPV4 = "203.0.113.10";
-export const SERVER_IPV6 = "2a01:4f8:c17:1234::1";
+export const SERVER_IPV6 = "2001:db8::10";
+/** The server as OpsCrew's local state records it (`.opscrew/server.json`). */
+export const SERVER = { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 };
 /** Inside Cloudflare's published 104.16.0.0/13 range. */
 export const CLOUDFLARE_IPV4 = "104.21.32.1";
 export const CLOUDFLARE_IPV6 = "2606:4700:3030::6815:2001";
@@ -15,6 +17,7 @@ export interface TestPlanOptions {
   domain?: string;
   proxied?: boolean;
   www?: boolean;
+  /** The server is provisioned (default true): the plan records the apply. */
   ip?: boolean;
   httpAllowedFrom?: "any" | "cloudflare";
   sshAllowedCidrs?: string[];
@@ -66,6 +69,7 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
       ...(o.httpAllowedFrom ? { httpAllowedFrom: o.httpAllowedFrom } : {}),
       ...(o.sshAllowedCidrs ? { sshAllowedCidrs: o.sshAllowedCidrs } : {}),
     },
-    deployment: o.ip === false ? {} : { serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6 },
+    // The server's address is never in the plan: tests record it in the local state.
+    deployment: o.ip === false ? {} : { lastApplyAt: "2026-10-01T12:30:00.000Z" },
   });
 }

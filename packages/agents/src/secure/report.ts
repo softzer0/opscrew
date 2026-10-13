@@ -14,7 +14,10 @@ export interface SecurityReportInput {
   version: string;
   /** ISO-8601 time of the run. */
   generatedAt: string;
-  /** Server address the host checks and probes ran against; absent before provision. */
+  /**
+   * Server address the host checks and probes ran against; absent before provision and when the
+   * address must stay private (behind Cloudflare's proxy).
+   */
   host?: string;
   scan: ScanReport;
   /** Plan policy results; `undefined` when no engine plan was available to evaluate. */
@@ -268,7 +271,10 @@ export function renderSecurityReport(input: SecurityReportInput): string {
 
   out.push("## Outside probes", "");
   if (input.probes.length === 0) {
-    out.push("Skipped: no server address is recorded in `opscrew/plan.yaml` yet.", "");
+    out.push(
+      "Skipped: OpsCrew does not know the server's address on this machine yet (run `opscrew provision` first).",
+      "",
+    );
   } else {
     out.push(
       `Connections attempted from this machine to ${input.host ? inlineCode(input.host) : "the server"}.`,

@@ -655,7 +655,7 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
     ...(dns === "other" ? { dns: { provider: "none", domain: DOMAIN, proxied: false } } : {}),
     deployment: {
       ...base.deployment,
-      url: dns === "cloudflare" ? `https://${DOMAIN}` : `http://${SERVER_IPV4}`,
+      ...(dns === "cloudflare" ? { url: `https://${DOMAIN}` } : {}),
       lastCompletedPhase: "provision",
     },
   });

@@ -34,21 +34,34 @@ export const DeployTargetSchema = z.strictObject({
   backups: z.boolean(),
 });
 
+/** True when `host` (a URL's hostname) is an IPv4 or bracketed IPv6 address, not a name. */
+function isIpHost(host: string): boolean {
+  return (
+    z.ipv4().safeParse(host).success || z.ipv6().safeParse(host.replace(/^\[|\]$/g, "")).success
+  );
+}
+
+/**
+ * The app's public URL as committed in `opscrew/plan.yaml`: it must name a domain. A URL on the
+ * server's IP address would publish the address, which OpsCrew keeps in its local state
+ * (`.opscrew/server.json`) instead.
+ */
+const DomainUrlSchema = z
+  .url({ protocol: /^https?$/ })
+  .refine((url) => !isIpHost(new URL(url).hostname), {
+    message:
+      "must name the app's domain, not the server's IP address (OpsCrew keeps the address in .opscrew/server.json, outside the repository)",
+  });
+
 /**
  * A move to another provider in progress (`opscrew retarget`). `plan.target` is already the new
- * target; `plan.deployment` describes the server that receives traffic (the old one until the
- * DNS switch).
+ * target; `plan.deployment` describes the deployment that receives traffic (the old server until
+ * the DNS switch). The servers' addresses are never committed: OpsCrew keeps them in its local
+ * state (`.opscrew/server.json`).
  */
 export const RetargetSchema = z.strictObject({
   /** The deployment being replaced. */
-  from: z.strictObject({
-    target: DeployTargetSchema,
-    serverIpv4: z.ipv4(),
-    serverIpv6: z.ipv6().optional(),
-    url: z.url({ protocol: /^https?$/ }).optional(),
-  }),
-  /** The new server, once created. */
-  next: z.strictObject({ serverIpv4: z.ipv4(), serverIpv6: z.ipv6().optional() }).optional(),
+  from: z.strictObject({ target: DeployTargetSchema }),
   /** Last completed step. */
   step: z.enum(["started", "renamed", "created", "deployed", "migrated", "switched"]),
   /** Set while OpsCrew keeps the old server's app stopped (maintenance window, after the switch). */
@@ -156,12 +169,16 @@ const DeployPlanObjectSchema = z
         }),
       )
       .default(() => []),
+    /**
+     * What was deployed and when. The server's IP addresses are never committed (in a public
+     * repository they would let anyone go around Cloudflare's proxy): OpsCrew keeps them in its
+     * local state, `.opscrew/server.json`.
+     */
     deployment: z
       .strictObject({
         lastCompletedPhase: PhaseNameSchema.optional(),
-        serverIpv4: z.ipv4().optional(),
-        serverIpv6: z.ipv6().optional(),
-        url: z.url({ protocol: /^https?$/ }).optional(),
+        /** The app's public URL on its domain; absent without a domain. */
+        url: DomainUrlSchema.optional(),
         lastPlanHash: PlanHashSchema.optional(),
         lastApplyAt: IsoDateTimeSchema.optional(),
         lastDeployAt: IsoDateTimeSchema.optional(),

@@ -6,6 +6,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { planJsonFor } from "../provision/__fixtures__/fakes";
+import { readServerAddresses, serverAddressesFile } from "../shared";
 import {
   caught,
   crashAfter,
@@ -23,6 +24,7 @@ import {
   type MoveHarness,
   moveHarness,
   OLD_IPV4,
+  OLD_IPV6,
   STRIPE,
   TOKENS,
 } from "./__fixtures__/move";
@@ -96,11 +98,21 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(plan.cost.monthly.currency).toBe("USD");
     expect(plan.retarget).toMatchObject({
       step: "switched",
-      from: { target: { provider: "hetzner", serverType: "cx23" }, serverIpv4: OLD_IPV4 },
-      next: { serverIpv4: n },
+      from: { target: { provider: "hetzner", serverType: "cx23" } },
     });
     expect(plan.retarget?.oldAppStoppedAt).toBeDefined();
-    expect(plan.deployment).toMatchObject({ serverIpv4: n, url: `https://${DOMAIN}` });
+    expect(plan.deployment).toMatchObject({ url: `https://${DOMAIN}` });
+    // Both servers' addresses are in OpsCrew's local state, never in opscrew/plan.yaml.
+    const fresh = { ipv4: n, ipv6: h.newServer.ipv6 };
+    expect(await readServerAddresses(h.paths)).toEqual({
+      schemaVersion: 1,
+      deployment: fresh,
+      retarget: { from: { ipv4: OLD_IPV4, ipv6: OLD_IPV6 }, next: fresh },
+    });
+    const committed = await readFile(h.paths.files.plan, "utf8");
+    for (const ip of [OLD_IPV4, OLD_IPV6, n, h.newServer.ipv6]) {
+      expect(committed).not.toContain(ip);
+    }
     expect(plan.approvals).toHaveLength(3);
     // Honest cost: the plan that creates the new server shows its price; rename and switch none.
     const applyRequests = h.handler.requests.filter((r) => r.kind === "iac-apply");
@@ -417,7 +429,9 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       "apply creates=4",
     ]);
     const plan = await readArtifact("plan", h.paths.files.plan);
-    expect(plan.deployment).toMatchObject({ serverIpv4: n, url: `http://${n}` });
+    // The URL on the new server's IP is not committed; the address is in the local state.
+    expect(plan.deployment.url).toBeUndefined();
+    expect((await readServerAddresses(h.paths)).deployment?.ipv4).toBe(n);
     expect(h.events.some((e) => e.type === "fetch" && e.url.startsWith(`https://${DOMAIN}`))).toBe(
       true,
     );
@@ -518,6 +532,23 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expectGated(h.events);
   });
 
+  it("reads both servers' addresses from the infrastructure state when the local record is gone", async () => {
+    const h = await moveHarness({ dns: "none", postgres: false, interactive: false });
+    const fresh = { ipv4: h.newServer.ipv4, ipv6: h.newServer.ipv6 };
+    await drive(h);
+    await rm(serverAddressesFile(h.paths));
+    const result = await run(h, { dnsSwitched: true });
+    expect(result).toMatchObject({ step: "switched", done: true });
+    expect(await readServerAddresses(h.paths)).toEqual({
+      schemaVersion: 1,
+      deployment: fresh,
+      retarget: { from: { ipv4: OLD_IPV4, ipv6: OLD_IPV6 }, next: fresh },
+    });
+    // The right servers were used: the old app is stopped, the new one serves.
+    expect(h.hosts.host(OLD_IPV4).app).toBe(false);
+    expect(h.hosts.host(fresh.ipv4)).toMatchObject({ app: true, caddy: true });
+  });
+
   it("without a domain the app moves to the new address", async () => {
     const h = await moveHarness({ dns: "none", postgres: false, interactive: false });
     const n = h.newServer.ipv4;
@@ -527,7 +558,9 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const result = await run(h, { dnsSwitched: true });
     expect(result).toMatchObject({ step: "switched", done: true });
     const plan = await readArtifact("plan", h.paths.files.plan);
-    expect(plan.deployment.url).toBe(`http://${n}`);
+    expect(plan.deployment.url).toBeUndefined();
+    expect((await readServerAddresses(h.paths)).deployment?.ipv4).toBe(n);
+    expect(await readFile(h.paths.files.plan, "utf8")).not.toContain(n);
     expect(h.events.some((e) => e.type === "fetch" && e.url === `http://${n}/api/health`)).toBe(
       true,
     );

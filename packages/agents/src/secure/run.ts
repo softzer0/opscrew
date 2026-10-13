@@ -20,7 +20,13 @@ import {
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
 import { findSavedPlan } from "../provision/plan-apply";
-import { SshRemoteExec } from "../shared";
+import {
+  hidesServerAddress,
+  type ServerAddress,
+  SshRemoteExec,
+  serverAddress,
+  withoutServerAddress,
+} from "../shared";
 import { probeExpectedPorts } from "./probes";
 import {
   renderSecurityReport,
@@ -65,6 +71,23 @@ export interface SecureResult {
   summary: string;
 }
 
+/**
+ * The report input without the server's address: no `host`, and check targets that name the
+ * address are left out (the checks still say what they found).
+ */
+function privateReportInput(
+  input: SecurityReportInput,
+  address: ServerAddress | undefined,
+): SecurityReportInput {
+  const { host: _host, ...rest } = input;
+  const named = new Set([address?.ipv4, address?.ipv6].filter((ip) => ip !== undefined));
+  const strip = (checks: readonly CheckResult[]) =>
+    checks.map(({ target, ...check }) =>
+      target === undefined || named.has(target) ? check : { ...check, target },
+    );
+  return { ...rest, hostChecks: strip(input.hostChecks), probes: strip(input.probes) };
+}
+
 async function exists(file: string): Promise<boolean> {
   try {
     await access(file);
@@ -100,7 +123,8 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   const { paths, reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const plan = await readArtifact("plan", paths.files.plan);
-  const host = plan.deployment.serverIpv4;
+  const address = await serverAddress(deps, plan);
+  const host = address?.ipv4;
 
   reporter.step("Scanning the repository");
   const scan = await runScan(paths.root, {
@@ -125,7 +149,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   let hostChecksSkipped: string | undefined;
   if (host === undefined) {
     hostChecksSkipped =
-      "no server is recorded in `opscrew/plan.yaml` yet. Run `opscrew provision` first.";
+      "OpsCrew does not know a server for this project on this machine yet. Run `opscrew provision` first, or run the checks on the machine that provisioned the server.";
   } else {
     const remote =
       options.remote ??
@@ -172,7 +196,12 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     ...(policies !== undefined ? { policies } : {}),
     ...(hostChecksSkipped !== undefined ? { hostChecksSkipped } : {}),
   };
-  const report = say(renderSecurityReport(input));
+  // The report is committed: behind Cloudflare's proxy it never names the server's address.
+  const report = say(
+    hidesServerAddress(plan)
+      ? withoutServerAddress(renderSecurityReport(privateReportInput(input, address)), [address])
+      : renderSecurityReport(input),
+  );
   await writeFileAtomic(paths.files.securityReport, report);
   const reportPath = toPosixRelative(paths.root, paths.files.securityReport);
 

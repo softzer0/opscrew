@@ -8,6 +8,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { hasDeployment } from "../shared";
 import { toIsoDateTime } from "./common";
 
 /** The project's requirements and plan, when present (validated). */
@@ -226,9 +227,5 @@ export async function syncPlanRegistration(
 
 /** True when the plan's server is running (created and not destroyed). */
 export function isDeployed(plan: DeployPlan | undefined): boolean {
-  return (
-    plan !== undefined &&
-    plan.deployment.serverIpv4 !== undefined &&
-    plan.deployment.destroyedAt === undefined
-  );
+  return plan !== undefined && hasDeployment(plan);
 }

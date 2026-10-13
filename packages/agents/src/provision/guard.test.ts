@@ -10,7 +10,7 @@ function moving(abort?: NonNullable<Retarget["abort"]>["step"]): DeployPlan {
   return {
     ...testPlan({ provider: "digitalocean", deployed: true }),
     retarget: {
-      from: { target: from.target, serverIpv4: "203.0.113.10" },
+      from: { target: from.target },
       step: "deployed",
       startedAt: "2026-10-12T09:00:00.000Z",
       ...(abort !== undefined ? { abort: { step: abort } } : {}),

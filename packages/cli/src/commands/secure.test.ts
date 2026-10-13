@@ -1,10 +1,16 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
-import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
-import { DeployRunner, fakeServer, SERVER_IPV4, testPlan } from "../ui/__fixtures__/deploy";
+import {
+  DeployRunner,
+  fakeServer,
+  SERVER_IPV4,
+  testPlan,
+  writeProjectPlan,
+} from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
 import { type DeployServices, withDeployServices } from "../ui/deploy-services";
 
@@ -22,7 +28,7 @@ function ports(open: number[] = []): TcpConnect {
 async function setup(plan: DeployPlan | undefined, secure: DeployServices["secure"] = {}) {
   project = await tempProject();
   if (plan !== undefined) {
-    await writeArtifact("plan", path.join(project.root, "opscrew", "plan.yaml"), plan);
+    await writeProjectPlan(project, plan);
   }
   const ctx = projectContext(project, { services: { runner: new DeployRunner() } });
   withDeployServices(ctx, {

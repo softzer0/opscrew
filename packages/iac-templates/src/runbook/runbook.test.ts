@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import type { RenderContext } from "../types";
 import { renderRunbook } from "./index";
 
+const IPV4 = "203.0.113.10";
+const IPV6 = "2001:db8::1";
+
 function plan(
-  o: { domain?: string; ip?: string; postgres?: boolean; backups?: boolean } = {},
+  o: { domain?: string; proxied?: boolean; postgres?: boolean; backups?: boolean } = {},
 ): DeployPlan {
   return DeployPlanSchema.parse({
     schemaVersion: 1,
@@ -33,11 +36,15 @@ function plan(
     codeChanges: [],
     infra: {},
     dns: o.domain
-      ? { provider: "cloudflare", domain: o.domain, zone: "example.com", proxied: true }
+      ? {
+          provider: "cloudflare",
+          domain: o.domain,
+          zone: "example.com",
+          proxied: o.proxied ?? true,
+        }
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: {},
-    deployment: o.ip ? { serverIpv4: o.ip, serverIpv6: "2a01:4f8::1" } : {},
   });
 }
 
@@ -48,13 +55,16 @@ const ctx: RenderContext = {
   projectId: "shop-0123456789ab",
 };
 
+/** The context once the server exists: its addresses from OpsCrew's local state. */
+const deployed: RenderContext = { ...ctx, serverIpv4: IPV4, serverIpv6: IPV6 };
+
 describe("renderRunbook", () => {
-  it("uses the real domain, IP, SSH command and rollback steps (spec US4 scenario 3)", () => {
-    const file = renderRunbook(plan({ domain: "shop.example.com", ip: "203.0.113.10" }), ctx);
+  it("uses the real domain, SSH command and rollback steps (spec US4 scenario 3)", () => {
+    const file = renderRunbook(plan({ domain: "shop.example.com" }), deployed);
     expect(file.path).toBe("opscrew/RUNBOOK.md");
     expect(file.content).toContain("https://shop.example.com");
     expect(file.content).toContain(
-      "ssh -i ~/.opscrew/projects/shop-0123456789ab/deploy_key deploy@203.0.113.10",
+      "ssh -i ~/.opscrew/projects/shop-0123456789ab/deploy_key deploy@$(opscrew status --ip)",
     );
     expect(file.content).toContain("## Roll back");
     expect(file.content).toContain("Cloudflare's IP ranges");
@@ -65,12 +75,40 @@ describe("renderRunbook", () => {
     expect(file.content).toMatchSnapshot();
   });
 
+  it("never writes the server's address behind Cloudflare's proxy", () => {
+    const content = renderRunbook(plan({ domain: "shop.example.com" }), deployed).content;
+    expect(content).not.toContain(IPV4);
+    expect(content).not.toContain(IPV6);
+    expect(content).toContain(
+      "| IPv4 / IPv6 | kept private behind Cloudflare: `opscrew status` shows them |",
+    );
+    expect(content).toContain("The server's IP address is not written in this repository");
+    expect(content).toContain("`opscrew status --ip`");
+  });
+
+  it("shows the address when the app is served on it or DNS is not proxied", () => {
+    const noDomain = renderRunbook(plan(), deployed).content;
+    expect(noDomain).toContain(`| App | http://${IPV4} |`);
+    expect(noDomain).toContain(`| IPv4 / IPv6 | ${IPV4} / ${IPV6} |`);
+    expect(noDomain).toContain(`deploy_key deploy@${IPV4}`);
+    expect(noDomain).not.toContain("opscrew status --ip");
+
+    const dnsOnly = renderRunbook(
+      plan({ domain: "shop.example.com", proxied: false }),
+      deployed,
+    ).content;
+    expect(dnsOnly).toContain("| App | https://shop.example.com |");
+    expect(dnsOnly).toContain(`| IPv4 / IPv6 | ${IPV4} / ${IPV6} |`);
+    expect(dnsOnly).toContain(`deploy_key deploy@${IPV4}`);
+  });
+
   it("explains placeholders before the first apply", () => {
     const content = renderRunbook(plan(), { ...ctx, projectId: undefined }).content;
     expect(content).toContain("_(set by `opscrew provision`)_");
-    expect(content).toContain("deploy@<server-ip>");
+    expect(content).toContain("deploy@$(opscrew status --ip)");
     expect(content).toContain("<project-id>");
     expect(content).toContain("plain HTTP on the server IP");
+    expect(content).not.toContain("Cloudflare's proxy hides it");
   });
 
   it("covers backups only when Postgres is self-hosted", () => {
@@ -83,7 +121,7 @@ describe("renderRunbook", () => {
   });
 
   it("explains how to check for drift without changing anything", () => {
-    const content = renderRunbook(plan({ ip: "203.0.113.10" }), ctx).content;
+    const content = renderRunbook(plan(), ctx).content;
     const section = content.slice(content.indexOf("## Check for drift"));
     expect(content).toContain("## Check for drift");
     expect(section).toContain("opscrew drift");
@@ -103,7 +141,7 @@ describe("renderRunbook", () => {
       expect(section).toMatch(/^## Moving to another provider\n\n/);
       return section.replace(/\s+/g, " ");
     };
-    const section = moving(plan({ domain: "shop.example.com", ip: "203.0.113.10" }));
+    const section = moving(plan({ domain: "shop.example.com" }));
     expect(section).toContain("`opscrew retarget --to <provider>`");
     expect(section).toContain("`opscrew retarget --finish`");
     expect(section).toContain("`opscrew retarget --abort`");
@@ -155,10 +193,7 @@ describe("renderRunbook", () => {
   });
 
   it("explains how to tear the deployment down and what remains", () => {
-    const content = renderRunbook(
-      plan({ domain: "shop.example.com", ip: "203.0.113.10" }),
-      ctx,
-    ).content;
+    const content = renderRunbook(plan({ domain: "shop.example.com" }), ctx).content;
     const section = content.slice(content.indexOf("## Tear it down"));
     expect(content).toContain("## Tear it down");
     expect(section).toContain("opscrew destroy");
@@ -180,10 +215,8 @@ describe("renderRunbook", () => {
   });
 
   it("contains no absolute paths and is deterministic", () => {
-    const a = renderRunbook(plan({ domain: "shop.example.com", ip: "203.0.113.10" }), ctx).content;
-    expect(
-      renderRunbook(plan({ domain: "shop.example.com", ip: "203.0.113.10" }), ctx).content,
-    ).toBe(a);
+    const a = renderRunbook(plan({ domain: "shop.example.com" }), ctx).content;
+    expect(renderRunbook(plan({ domain: "shop.example.com" }), ctx).content).toBe(a);
     expect(a).not.toMatch(/[A-Za-z]:\\|\/home\/|\/Users\//);
   });
 });

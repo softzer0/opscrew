@@ -2,6 +2,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
+import { loadMoveServers } from "./servers";
 import {
   type MoveSession,
   markFailed,
@@ -56,7 +57,13 @@ async function continueMove(
   // only needs the deploy key, so a missing token cannot keep the app offline.
   let current = plan;
   if (move.oldAppStoppedAt !== undefined && stepBefore(move.step, "migrated")) {
-    const base = { deps, plan, services, deployKey: await readDeployKey(deps, RUN_COMMAND) };
+    const base = {
+      deps,
+      plan,
+      services,
+      deployKey: await readDeployKey(deps, RUN_COMMAND),
+      servers: await loadMoveServers(deps, plan, RUN_COMMAND),
+    };
     await recoverInterruptedWindow(base);
     current = base.plan;
   }

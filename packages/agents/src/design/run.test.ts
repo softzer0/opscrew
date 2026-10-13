@@ -11,6 +11,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
 import {
   euCatalog,
@@ -405,7 +406,6 @@ describe("runDesign", () => {
       ],
       deployment: {
         lastCompletedPhase: "provision",
-        serverIpv4: "203.0.113.10",
         lastPlanHash: HASH,
         lastApplyAt: "2026-10-11T12:30:00.000Z",
       },
@@ -425,7 +425,10 @@ describe("runDesign", () => {
       expect(plan.approvals).toEqual([
         { planHash: HASH, approver: "dev", at: "2026-10-11T12:30:00.000Z", kind: "apply" },
       ]);
-      expect(plan.deployment).toMatchObject({ serverIpv4: "203.0.113.10", lastPlanHash: HASH });
+      expect(plan.deployment).toMatchObject({
+        lastApplyAt: "2026-10-11T12:30:00.000Z",
+        lastPlanHash: HASH,
+      });
       expect(plan.codeChanges.find((c) => c.id === "dockerfile")?.status).toBe("applied");
       expect(plan.codeChanges.find((c) => c.id === "dockerignore")?.status).toBe("pending");
       expect(result.warnings.join("\n")).not.toMatch(/replace|resize/);
@@ -644,24 +647,31 @@ describe("runDesign", () => {
     });
 
     describe("changing the provider of an existing plan", () => {
-      /** A Hetzner plan, provisioned, then the requirements switch to DigitalOcean. */
+      /**
+       * A Hetzner plan, provisioned, then the requirements switch to DigitalOcean. With `server`,
+       * the server's address is in OpsCrew's local state, as `opscrew provision` leaves it.
+       */
       async function hetznerDeployment(
         deployment: DeployPlan["deployment"],
+        server = false,
       ): Promise<{ deps: TestPhaseDeps; before: string }> {
         const deps = await setup();
         await runDesign(deps, { catalog: euCatalog() });
         const plan = await readArtifact("plan", deps.paths.files.plan);
         await writeArtifact("plan", deps.paths.files.plan, { ...plan, deployment });
+        if (server) await recordServerAddress(deps.paths, { ipv4: "203.0.113.10" });
         await writeArtifact("requirements", deps.paths.files.requirements, doRequirements());
         return { deps, before: await readFile(deps.paths.files.plan, "utf8") };
       }
 
       it("US3-2: stops without touching plan.yaml when the deployment is live", async () => {
-        const { deps, before } = await hetznerDeployment({
-          lastCompletedPhase: "provision",
-          serverIpv4: "203.0.113.10",
-          lastApplyAt: "2026-10-11T12:30:00.000Z",
-        });
+        const { deps, before } = await hetznerDeployment(
+          {
+            lastCompletedPhase: "provision",
+            lastApplyAt: "2026-10-11T12:30:00.000Z",
+          },
+          true,
+        );
         let asked = false;
         const error = await runDesign(deps, {
           catalog: doEuCatalog(),
@@ -673,7 +683,7 @@ describe("runDesign", () => {
         expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
         const { message, hint } = error as { message: string; hint: string };
         expect(message).toBe(
-          "Your app is deployed on Hetzner Cloud (203.0.113.10), but opscrew/requirements.yaml now asks for DigitalOcean. opscrew/plan.yaml was not changed.",
+          "Your app is deployed on Hetzner Cloud, but opscrew/requirements.yaml now asks for DigitalOcean. opscrew/plan.yaml was not changed.",
         );
         expect(hint).toBe(
           "Run `opscrew retarget --to digitalocean` to move the deployment with its data, or `opscrew destroy` first and then `opscrew design`, or keep Hetzner Cloud by answering `opscrew interview` again.",
@@ -686,7 +696,6 @@ describe("runDesign", () => {
       it("lets a destroyed deployment switch providers", async () => {
         const { deps } = await hetznerDeployment({
           lastCompletedPhase: "provision",
-          serverIpv4: "203.0.113.10",
           lastApplyAt: "2026-10-11T12:30:00.000Z",
           destroyedAt: "2026-10-12T09:00:00.000Z",
         });
@@ -763,7 +772,6 @@ describe("runDesign", () => {
 
       it("lets a destroyed deployment switch even though its state file remains", async () => {
         const { deps } = await hetznerDeployment({
-          serverIpv4: "203.0.113.10",
           lastApplyAt: "2026-10-11T12:30:00.000Z",
           destroyedAt: "2026-10-12T09:00:00.000Z",
         });
@@ -773,15 +781,17 @@ describe("runDesign", () => {
       });
 
       it("the preview still lists the options and warns that design would stop", async () => {
-        const { deps, before } = await hetznerDeployment({
-          lastCompletedPhase: "provision",
-          serverIpv4: "203.0.113.10",
-          lastApplyAt: "2026-10-11T12:30:00.000Z",
-        });
+        const { deps, before } = await hetznerDeployment(
+          {
+            lastCompletedPhase: "provision",
+            lastApplyAt: "2026-10-11T12:30:00.000Z",
+          },
+          true,
+        );
         const preview = await previewDesignOptions(deps, { catalog: doEuCatalog() });
         expect(preview.options.map((o) => o.id)).toContain("digitalocean-single-s-1vcpu-2gb-fra1");
         const warning = preview.warnings.join("\n");
-        expect(warning).toContain("Your app is deployed on Hetzner Cloud (203.0.113.10)");
+        expect(warning).toContain("Your app is deployed on Hetzner Cloud, but");
         expect(warning).toContain(
           "now asks for DigitalOcean. `opscrew design` will stop without changing opscrew/plan.yaml.",
         );
@@ -795,7 +805,6 @@ describe("runDesign", () => {
 
         // A destroyed deployment previews without that warning.
         const destroyed = await hetznerDeployment({
-          serverIpv4: "203.0.113.10",
           lastApplyAt: "2026-10-11T12:30:00.000Z",
           destroyedAt: "2026-10-12T09:00:00.000Z",
         });
@@ -820,9 +829,9 @@ describe("runDesign", () => {
             image: "ubuntu-24-04-x64",
             backups: true,
           },
-          deployment: { serverIpv4: "203.0.113.10", lastApplyAt: "2026-10-11T12:30:00.000Z" },
+          deployment: { lastApplyAt: "2026-10-11T12:30:00.000Z" },
           retarget: {
-            from: { target: plan.target, serverIpv4: "203.0.113.10" },
+            from: { target: plan.target },
             step: "renamed",
             startedAt: "2026-10-12T09:00:00.000Z",
           },

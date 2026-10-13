@@ -10,7 +10,9 @@ import type { PhaseDeps } from "../context";
 import { buildDesignOptions, formatMoney, priceLabel } from "../design";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { readRequirements } from "../provision";
+import { serverAddress } from "../shared";
 import { databaseSize } from "./server-ops";
+import { recordMoveServers } from "./servers";
 import {
   auditStep,
   type MoveSession,
@@ -161,13 +163,11 @@ export async function startMove(
   plan: DeployPlan,
   options: RetargetOptions,
 ): Promise<MoveSession> {
-  if (
-    plan.deployment.destroyedAt !== undefined ||
-    plan.deployment.serverIpv4 === undefined ||
-    !(await stateExists(deps))
-  ) {
-    throw nothingLive(plan);
-  }
+  const address =
+    plan.deployment.destroyedAt === undefined && (await stateExists(deps))
+      ? await serverAddress(deps, plan, { engine: options.services?.engine })
+      : undefined;
+  if (address === undefined) throw nothingLive(plan);
   const requirements = await readRequirements(deps);
   if (requirements === undefined) {
     throw new OpsCrewError(
@@ -195,6 +195,7 @@ export async function startMove(
     command: RUN_COMMAND,
     providers: [from.provider, to],
     services,
+    servers: { from: address },
     ...(options.engine !== undefined ? { engine: options.engine } : {}),
     ...(options.approvePlanHash !== undefined ? { approvePlanHash: options.approvePlanHash } : {}),
   });
@@ -224,7 +225,7 @@ export async function startMove(
   const target = targetOf(chosen);
 
   // What it means: database size (over SSH to the old server) and the summary.
-  const oldHost = plan.deployment.serverIpv4;
+  const oldHost = address.ipv4;
   let databaseBytes: number | undefined;
   if (plan.services.postgres) {
     await pinHost(session, oldHost, from.provider);
@@ -241,17 +242,12 @@ export async function startMove(
   }
 
   const retarget: Retarget = {
-    from: {
-      target: from,
-      serverIpv4: oldHost,
-      ...(plan.deployment.serverIpv6 !== undefined
-        ? { serverIpv6: plan.deployment.serverIpv6 }
-        : {}),
-      ...(plan.deployment.url !== undefined ? { url: plan.deployment.url } : {}),
-    },
+    from: { target: from },
     step: "started",
     startedAt: deps.clock.now().toISOString(),
   };
+  // The old server's address goes to the local state, never into opscrew/plan.yaml.
+  await recordMoveServers(deps, session.servers);
   await saveMove(session, retarget, { target, cost: chosen.cost });
   deps.reporter.success(
     `Started the move of ${plan.app.name} to ${fresh.name} (${chosen.id}); opscrew/plan.yaml records each step.`,

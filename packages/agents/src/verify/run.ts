@@ -12,7 +12,7 @@ import { renderRunbook } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import { writeRenderedFiles } from "../shared";
+import { committableUrl, hidesServerAddress, serverAddress, writeRenderedFiles } from "../shared";
 import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
 import { type DnsResolver, defaultDnsResolver, defaultTlsConnect, type TlsConnect } from "./net";
 
@@ -58,8 +58,10 @@ export function summarizeChecks(checks: readonly CheckResult[]): string {
 /**
  * The verify phase: checks DNS, HTTPS and the certificate, the HTTP→HTTPS redirect, the health
  * endpoint, security headers, that `.env`/`.git` are not served, that the origin cannot be reached
- * around Cloudflare, and the latest deploy run. Writes `opscrew/RUNBOOK.md`; when nothing fails,
- * records `deployment.url` and `deployment.lastDeployAt` in `opscrew/plan.yaml`. Marks `verify`.
+ * around Cloudflare, and the latest deploy run. The server's address comes from OpsCrew's local
+ * state (`serverAddress`). Writes `opscrew/RUNBOOK.md` (without the address behind Cloudflare's
+ * proxy); when nothing fails, records `deployment.lastDeployAt` and, with a domain,
+ * `deployment.url` in `opscrew/plan.yaml`. Marks `verify`.
  */
 export async function runVerify(
   deps: PhaseDeps,
@@ -83,12 +85,15 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   reporter.step("Verifying the deployment");
 
   const plan = await readArtifact("plan", paths.files.plan);
-  const url = siteUrl(plan);
+  const server = await serverAddress(deps, plan);
+  const url = siteUrl(plan, server);
   if (url === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "opscrew/plan.yaml has no server address yet, so there is nothing to verify.",
-      { hint: "Run `opscrew provision` first, merge its pull request, then run `opscrew verify`." },
+      "OpsCrew does not know the server's address on this machine yet, so there is nothing to verify.",
+      {
+        hint: "Run `opscrew provision` first (on this machine, it records the address), merge its pull request, then run `opscrew verify`.",
+      },
     );
   }
   const fetch = options.fetch ?? deps.fetch;
@@ -96,6 +101,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
 
   const { checks, lastDeployAt } = await runVerifyChecks({
     plan,
+    ...(server !== undefined ? { server } : {}),
     resolver: options.resolver ?? defaultDnsResolver,
     fetch,
     tlsConnect: options.tlsConnect ?? defaultTlsConnect,
@@ -133,12 +139,15 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   let current = plan;
   if (passed) {
     const now = deps.clock.now().toISOString();
+    // Only a domain URL is committed; without a domain the URL is the server's IP address.
+    const { url: _url, ...deployment } = plan.deployment;
+    const committed = committableUrl(url);
     current = {
       ...plan,
       updatedAt: now,
       deployment: {
-        ...plan.deployment,
-        url,
+        ...deployment,
+        ...(committed !== undefined ? { url: committed } : {}),
         lastCompletedPhase: "verify",
         ...(lastDeployAt !== undefined ? { lastDeployAt } : {}),
       },
@@ -146,13 +155,16 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     await writeArtifact("plan", paths.files.plan, current);
   }
 
+  // The runbook is committed: it shows the address only when the domain is not behind
+  // Cloudflare's proxy (or there is no domain, so the app is served on the address).
+  const shown = server !== undefined && !hidesServerAddress(current) ? server : undefined;
   const runbook = renderRunbook(current, {
     opscrewVersion: deps.version,
     github: github.repo ?? { owner: "<owner>", repo: "<repo>" },
     deploySshPublicKey: await readOptional(paths.files.deployKeyPub),
     projectId: paths.projectId,
-    ...(current.deployment.serverIpv4 ? { serverIpv4: current.deployment.serverIpv4 } : {}),
-    ...(current.deployment.serverIpv6 ? { serverIpv6: current.deployment.serverIpv6 } : {}),
+    ...(shown !== undefined ? { serverIpv4: shown.ipv4 } : {}),
+    ...(shown?.ipv6 !== undefined ? { serverIpv6: shown.ipv6 } : {}),
   });
   await writeRenderedFiles(paths.root, [runbook]);
   const runbookPath = toPosixRelative(paths.root, paths.files.runbook);

@@ -1,30 +1,80 @@
+import {
+  formatServerAddress,
+  type PhaseDeps,
+  type ServerAddress,
+  serverAddress,
+} from "@opscrew/agents";
 import { PHASES } from "@opscrew/contracts";
-import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
+import { OpsCrewError, ProjectStateStore } from "@opscrew/core";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
+import { createPhaseDeps } from "../deps";
 import { retargetStatusLine } from "../ui/retarget";
 
 /**
- * `opscrew status`: which phases have run in this project, with their result and time, and a
- * `retarget` line while a move to another provider is in progress (from → to, last completed
- * step, the next command).
+ * The server's address from OpsCrew's local state (or the infrastructure state), never from the
+ * repository; `undefined` without a plan or a known server.
+ */
+async function addressOf(
+  deps: PhaseDeps,
+  plan: DeployPlan | undefined,
+): Promise<ServerAddress | undefined> {
+  return plan === undefined ? undefined : serverAddress(deps, plan);
+}
+
+/** The lines that show the server's address on this computer. */
+function addressLines(address: ServerAddress | undefined): string[] {
+  if (address === undefined) return [];
+  return [
+    "",
+    "Server address (kept on this computer only, never in the repository):",
+    `  ${formatServerAddress(address)}`,
+  ];
+}
+
+/**
+ * `opscrew status`: which phases have run in this project, with their result and time, the
+ * server's address (from OpsCrew's local state; it is never committed) and a `retarget` line while
+ * a move to another provider is in progress (from → to, last completed step, the next command).
+ * `--ip` prints only the server's IPv4 address, for scripts such as
+ * `ssh deploy@$(opscrew status --ip)`.
  */
 export function register(program: Command, ctx: CliContext): void {
   program
     .command("status")
     .description("Show which OpsCrew phases have run and where a move between providers stands")
-    .action(async () => {
-      const paths = resolveProjectPaths(ctx.cwd, { env: ctx.env });
+    .option(
+      "--ip",
+      "Print only the server's IPv4 address (for scripts, e.g. ssh deploy@$(opscrew status --ip))",
+    )
+    .action(async (flags: { ip?: boolean }) => {
+      const deps = createPhaseDeps(ctx, { ai: false });
+      const { paths } = deps;
+      // A missing or unreadable plan simply means nothing is deployed and no move is recorded.
+      const plan = await readArtifact("plan", paths.files.plan).catch(() => undefined);
+      if (flags.ip === true) {
+        const address = await addressOf(deps, plan);
+        if (address === undefined) {
+          throw new OpsCrewError(
+            "PHASE_PRECONDITION",
+            "OpsCrew does not know the server's address on this computer.",
+            {
+              hint: "Run `opscrew status --ip` on the computer that ran `opscrew provision` (the address is kept there, in .opscrew/server.json), or run `opscrew provision` here first.",
+            },
+          );
+        }
+        ctx.stdout(`${address.ipv4}\n`);
+        return;
+      }
       const state = await new ProjectStateStore(paths.files.state).read();
-      // A missing or unreadable plan simply means no move is recorded.
-      const move = await readArtifact("plan", paths.files.plan)
-        .then(retargetStatusLine)
-        .catch(() => undefined);
+      const move = plan === undefined ? undefined : retargetStatusLine(plan);
       const moveLines = move === undefined ? [] : ["", "Move in progress:", move];
+      const serverLines = addressLines(await addressOf(deps, plan));
       if (Object.keys(state.phases).length === 0) {
         ctx.stdout("No phases have run yet. Start with `opscrew scan`.\n");
-        if (moveLines.length > 0) ctx.stdout(`${moveLines.join("\n")}\n`);
+        const extra = [...serverLines, ...moveLines];
+        if (extra.length > 0) ctx.stdout(`${extra.join("\n")}\n`);
         return;
       }
       const width = Math.max(...PHASES.map((phase) => phase.length));
@@ -39,7 +89,7 @@ export function register(program: Command, ctx: CliContext): void {
         const summary = record.summary === undefined ? "" : `  ${record.summary}`;
         lines.push(`  ${name}  ${record.status.padEnd(7)}  ${record.at}${summary}`);
       }
-      lines.push(...moveLines);
+      lines.push(...serverLines, ...moveLines);
       ctx.stdout(`${lines.join("\n")}\n`);
     });
 }

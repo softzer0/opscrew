@@ -10,6 +10,7 @@ import type { PhaseDeps } from "../context";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { runPhaseFlow } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
+import { hasDeployment } from "../shared";
 
 export interface DnsOptions extends ProvisionOptions {
   /** New or changed domain, for example `app.example.com`. Defaults to the plan's domain. */
@@ -75,8 +76,9 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
     }
   }
 
+  const running = hasDeployment(plan);
   const approvalNotes: string[] = [];
-  if (switchesRunningServer(plan, domain, changed)) {
+  if (running && switchesRunningServer(plan, domain, changed)) {
     const note = `The server is already running. Once this plan is applied, ports 80 and 443 accept only Cloudflare's addresses and ${domain} points at the server through Cloudflare, but the server keeps its current web configuration: the app is unreachable (by its domain and by the server's IP address) until the pull request with the new Caddyfile is merged and deployed.`;
     deps.reporter.warn(note);
     approvalNotes.push(`Warning: ${note}`);
@@ -85,19 +87,17 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
   return runPhaseFlow(
     deps,
     "dns",
-    { ...rest, secrets: rest.secrets ?? plan.deployment.serverIpv4 === undefined },
+    { ...rest, secrets: rest.secrets ?? !running },
     { approvalNotes },
   );
 }
 
 /**
- * True when applying moves an already deployed server behind Cloudflare (or to a new domain):
- * this run changed the domain, or the recorded URL is not yet the domain's (an earlier
- * `--plan-only` run changed it).
+ * True when applying moves the running server behind Cloudflare (or to a new domain): this run
+ * changed the domain, or the recorded URL is not yet the domain's (an earlier `--plan-only` run
+ * changed it; without a domain no URL is recorded).
  */
 function switchesRunningServer(plan: DeployPlan, domain: string, changed: boolean): boolean {
-  if (plan.deployment.serverIpv4 === undefined) return false;
   if (!plan.dns.proxied || plan.security.httpAllowedFrom !== "cloudflare") return false;
-  const url = plan.deployment.url;
-  return changed || (url !== undefined && url !== `https://${domain}`);
+  return changed || plan.deployment.url !== `https://${domain}`;
 }

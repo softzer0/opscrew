@@ -306,12 +306,12 @@ export function domainTestPlan(
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: {},
     ...(options.deployed || options.moving
-      ? { deployment: { serverIpv4: "203.0.113.10" } }
+      ? { deployment: { lastApplyAt: "2026-10-01T11:00:00.000Z" } }
       : {}),
     ...(options.moving
       ? {
           retarget: {
-            from: { target, serverIpv4: "203.0.113.10" },
+            from: { target },
             step: "started",
             startedAt: "2026-10-12T09:00:00.000Z",
           },

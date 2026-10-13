@@ -35,7 +35,10 @@ export interface RenderContext {
     /** Cloudflare edge ranges used to restrict ports 80/443 when proxied. */
     ipRanges?: { ipv4: string[]; ipv6: string[] };
   };
-  /** Known after the first apply; used for the no-domain health URL and the runbook. */
+  /**
+   * The server's addresses from OpsCrew's local state (they are never in the plan), for the
+   * runbook. The runbook leaves them out when the domain is behind Cloudflare's proxy.
+   */
   serverIpv4?: string;
   serverIpv6?: string;
   /** Digest-pinned image for the optional Trivy scan step, e.g. `aquasec/trivy:0.75.0@sha256:…`. */

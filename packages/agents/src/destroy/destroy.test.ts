@@ -15,7 +15,7 @@ import {
   SERVER_IPV4,
   testPlan,
 } from "../provision/__fixtures__/fakes";
-import { ensureStatePassphrase } from "../shared";
+import { ensureStatePassphrase, readServerAddresses } from "../shared";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import {
   type DestroyScript,
@@ -79,7 +79,7 @@ function deployedPlan(options: Parameters<typeof testPlan>[0] = {}): DeployPlan 
     ...plan,
     deployment: {
       ...plan.deployment,
-      url: options.domain ? `https://${options.domain}` : `http://${SERVER_IPV4}`,
+      ...(options.domain ? { url: `https://${options.domain}` } : {}),
       lastCompletedPhase: "provision",
       lastPlanHash: "a".repeat(64),
       lastApplyAt: "2026-10-10T09:00:00.000Z",
@@ -240,7 +240,7 @@ async function writeSnapshotRecord(deps: Setup["deps"], record: unknown): Promis
 /** The project is exactly as before the run: deployment recorded, secrets, host key, record. */
 async function expectNothingCleanedUp(s: Setup) {
   const plan = await readArtifact("plan", s.deps.paths.files.plan);
-  expect(plan.deployment.serverIpv4).toBe(SERVER_IPV4);
+  expect((await readServerAddresses(s.deps.paths)).deployment?.ipv4).toBe(SERVER_IPV4);
   expect(plan.deployment.destroyedAt).toBeUndefined();
   expect(s.github.deleted).toEqual([]);
   await expect(readFile(s.deps.paths.files.knownHosts, "utf8")).resolves.toContain(SERVER_IPV4);
@@ -255,8 +255,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     const { deps, engine, servers, github, handler, services, events } = s;
     const serverAddressWhenSecretsGo: (string | undefined)[] = [];
     github.onDelete = async () => {
-      const current = await readArtifact("plan", deps.paths.files.plan);
-      serverAddressWhenSecretsGo.push(current.deployment.serverIpv4);
+      serverAddressWhenSecretsGo.push((await readServerAddresses(deps.paths)).deployment?.ipv4);
     };
 
     const result = await runDestroy(deps, { services });
@@ -783,7 +782,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(s.deps.audit.entries.filter((e) => e.kind === "secret-set")).toEqual([]);
     // the rest of the cleanup still happens
     const plan = await readArtifact("plan", s.deps.paths.files.plan);
-    expect(plan.deployment.serverIpv4).toBeUndefined();
+    expect((await readServerAddresses(s.deps.paths)).deployment).toBeUndefined();
     expect(plan.deployment.destroyedAt).toBe(NOW);
     expect(await readFile(s.deps.paths.files.knownHosts, "utf8")).toBe(`${OTHER_HOST}\n`);
     expect(existsSync(s.secretsRecord)).toBe(false);
@@ -842,8 +841,10 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect((error as OpsCrewError).hint).toContain("Secrets (read and write).");
     expect((error as OpsCrewError).hint).toContain("run `opscrew destroy` again");
     expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect", "destroy"]);
-    const plan = await readArtifact("plan", s.deps.paths.files.plan);
-    expect(plan.deployment.serverIpv4).toBe(SERVER_IPV4);
+    expect((await readServerAddresses(s.deps.paths)).deployment?.ipv4).toBe(SERVER_IPV4);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).deployment.destroyedAt).toBe(
+      undefined,
+    );
   });
 
   it("a refused secret cleanup leaves the plan as it was; running again finishes the cleanup", async () => {
@@ -857,7 +858,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     });
     expect(s.engine.applied.map((a) => a.kind)).toEqual(["unprotect", "destroy"]);
     let plan = await readArtifact("plan", s.deps.paths.files.plan);
-    expect(plan.deployment.serverIpv4).toBe(SERVER_IPV4);
+    expect((await readServerAddresses(s.deps.paths)).deployment?.ipv4).toBe(SERVER_IPV4);
     expect(plan.deployment.destroyedAt).toBeUndefined();
 
     s.servers.servers = [];
@@ -884,8 +885,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     const plan: DeployPlan = {
       ...digitalOceanPlan(),
       retarget: {
-        from: { target: from.target, serverIpv4: SERVER_IPV4, url: `http://${SERVER_IPV4}` },
-        next: { serverIpv4: "198.51.100.20" },
+        from: { target: from.target },
         step: "deployed",
         startedAt: NOW,
       },
@@ -1198,7 +1198,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on DigitalOcean", () => {
     expect(existsSync(s.secretsRecord)).toBe(false);
     expect(existsSync(snapshotRecord(deps))).toBe(false);
     const plan = await readArtifact("plan", deps.paths.files.plan);
-    expect(plan.deployment.serverIpv4).toBeUndefined();
+    expect((await readServerAddresses(deps.paths)).deployment).toBeUndefined();
     expect(plan.deployment.destroyedAt).toBe(NOW);
     expect(plan.approvals).toEqual([
       { planHash: destroy?.planHash, approver: "test-user", at: NOW, kind: "iac-apply" },

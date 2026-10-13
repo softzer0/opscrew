@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readServerAddresses } from "@opscrew/agents";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
 import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
@@ -227,8 +228,8 @@ describe.skipIf(!(HETZNER.token && DIGITALOCEAN.token && withGitHub))(
         alsoTokens: [DIGITALOCEAN],
         afterDeploy: async (run) => {
           const planFile = join(run.repo, "opscrew/plan.yaml");
-          const before = await readArtifact("plan", planFile);
-          const oldIp = before.deployment.serverIpv4 as string;
+          const servers = () => readServerAddresses(resolveProjectPaths(run.repo));
+          const oldIp = (await servers()).deployment?.ipv4 as string;
           const marker = `opscrew-e2e-${Date.now()}`;
           const psql = (sql: string) =>
             `cd /srv/app && docker compose exec -T db psql -U app -d app -tAc "${sql}"`;
@@ -240,12 +241,12 @@ describe.skipIf(!(HETZNER.token && DIGITALOCEAN.token && withGitHub))(
           const moved = await readArtifact("plan", planFile);
           expect(moved.target.provider).toBe("digitalocean");
           expect(moved.retarget?.step).toBe("switched");
-          const newIp = moved.deployment.serverIpv4 as string;
+          const newIp = (await servers()).deployment?.ipv4 as string;
           expect(newIp).not.toBe(oldIp);
           // SC-501: the row written before the move is in the new server's database …
           expect(await run.ssh(newIp, psql("select v from opscrew_e2e"))).toContain(marker);
           // … and the app answers through its URL on the new server.
-          const health = new URL(moved.app.healthPath, moved.deployment.url as string);
+          const health = new URL(moved.app.healthPath, moved.deployment.url ?? `http://${newIp}`);
           expect((await fetch(health)).status, `GET ${health}`).toBe(200);
 
           const finish = ["--finish", "--confirm", run.appName, "--no-snapshot", "--yes"];

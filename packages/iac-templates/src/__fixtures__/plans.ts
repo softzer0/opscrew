@@ -17,7 +17,6 @@ export interface TestPlanOptions {
   waf?: boolean;
   backups?: boolean;
   postgres?: boolean;
-  ip?: string;
 }
 
 const TARGETS = {
@@ -70,7 +69,6 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: o.waf === false ? { wafCustomRules: false } : {},
-    deployment: o.ip ? { serverIpv4: o.ip, serverIpv6: "2a03:b0c0:3:d0::1" } : {},
   });
 }
 

@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { readServerAddresses } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
+import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
@@ -90,7 +92,10 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     expect(second.engine.calls).toEqual(["apply"]);
     expect(second.engine.applied[0]?.approval).toMatchObject({ approvedPlanHash: hash });
     const plan = await readArtifact("plan", path.join(project.root, "opscrew", "plan.yaml"));
-    expect(plan.deployment).toMatchObject({ serverIpv4: SERVER_IPV4, lastPlanHash: hash });
+    expect(plan.deployment).toMatchObject({ lastPlanHash: hash });
+    const paths = resolveProjectPaths(project.root, { env: project.env });
+    expect((await readServerAddresses(paths)).deployment?.ipv4).toBe(SERVER_IPV4);
+    expect(await readFile(paths.files.plan, "utf8")).not.toContain(SERVER_IPV4);
     expect(plan.approvals).toEqual([
       expect.objectContaining({ planHash: hash, approver: "--yes flag", kind: "iac-apply" }),
     ]);

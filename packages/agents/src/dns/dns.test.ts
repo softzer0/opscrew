@@ -136,8 +136,10 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     const { deps, services } = await setup();
     await runDns(deps, { domain: "shop.example.com", services });
     const plan = await readArtifact("plan", deps.paths.files.plan);
-    expect(plan.deployment.url).toBe("http://203.0.113.10");
-    // the fake engine reports the domain URL once the DNS module is applied
+    // The fake engine reports a URL on the server's IP, which is never committed.
+    expect(plan.deployment.url).toBeUndefined();
+    expect(await readFile(deps.paths.files.plan, "utf8")).not.toContain("203.0.113.10");
+    // the real engine reports the domain URL once the DNS module is applied
     await writeArtifact("plan", deps.paths.files.plan, {
       ...plan,
       deployment: { ...plan.deployment, url: "https://shop.example.com" },

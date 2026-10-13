@@ -12,7 +12,7 @@ import {
   ElicitRequestSchema,
   type ElicitResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { ProvisionServices } from "@opscrew/agents";
+import { hasDeployment, type ProvisionServices, recordServerAddress } from "@opscrew/agents";
 import { ScriptedRunner } from "@opscrew/agents/testing";
 import type {
   FetchLike,
@@ -23,7 +23,7 @@ import type {
   RemoteExec,
   ResourceChange,
 } from "@opscrew/contracts";
-import { findExecutable, NodeCommandRunner } from "@opscrew/core";
+import { findExecutable, NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultScanners } from "@opscrew/secops";
@@ -85,9 +85,7 @@ function testPlan(options: { deployed?: boolean } = {}) {
     dns: { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: {},
-    ...(options.deployed
-      ? { deployment: { serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6 } }
-      : {}),
+    ...(options.deployed ? { deployment: { lastApplyAt: "2026-10-11T11:00:00.000Z" } } : {}),
   });
 }
 
@@ -292,6 +290,10 @@ async function createProject(plan = testPlan()) {
   await git(root, "add", "Dockerfile", ".gitignore");
   await git(root, "commit", "-m", "init");
   await writeArtifact("plan", path.join(root, "opscrew", "plan.yaml"), plan);
+  // A deployed project: the server's address is in the local state, as provision leaves it.
+  if (hasDeployment(plan)) {
+    await recordServerAddress(resolveProjectPaths(root), { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 });
+  }
   await writeFile(path.join(root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
   return { root, bare, git };
 }

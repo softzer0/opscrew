@@ -16,6 +16,7 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
+import { readServerAddresses, serverAddress } from "../shared";
 import type { CloudflareApi, GitHubApi, ProvisionServices } from "./types";
 
 /** Cloudflare facts the render context needs. */
@@ -114,20 +115,27 @@ function canonicalAddress(value: string): string {
 }
 
 /**
+ * The addresses of the servers OpsCrew deployed for this project (from its local state): the one
+ * that receives traffic and, during a move, both servers.
+ */
+async function knownServers(deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
+  const local = await readServerAddresses(deps.paths);
+  return [await serverAddress(deps, plan), local.retarget?.from, local.retarget?.next].flatMap(
+    (address) => (address === undefined ? [] : [address.ipv4, address.ipv6 ?? ""]),
+  );
+}
+
+/**
  * A, AAAA and CNAME records at the app's hostnames that OpsCrew did not create: no OpsCrew comment
- * and not pointing at the server OpsCrew already deployed. Doubles as the DNS-read permission check.
+ * and not pointing at a server OpsCrew already deployed. Doubles as the DNS-read permission check.
  */
 async function foreignDnsRecords(
   api: CloudflareApi,
   zoneId: string,
-  plan: DeployPlan,
+  servers: readonly string[],
   hosts: readonly string[],
 ): Promise<CloudflareDnsRecord[]> {
-  const known = new Set(
-    [plan.deployment.serverIpv4, plan.deployment.serverIpv6]
-      .filter((ip): ip is string => ip !== undefined && ip !== "")
-      .map(canonicalAddress),
-  );
+  const known = new Set(servers.filter((ip) => ip !== "").map(canonicalAddress));
   const foreign: CloudflareDnsRecord[] = [];
   for (const host of hosts) {
     for (const record of await api.listDnsRecords(zoneId, { name: host })) {
@@ -200,7 +208,7 @@ export async function setupCloudflare(
       );
     }
     const hosts = plan.dns.www ? [domain, `www.${domain}`] : [domain];
-    const foreign = await foreignDnsRecords(api, zone.id, plan, hosts);
+    const foreign = await foreignDnsRecords(api, zone.id, await knownServers(deps, plan), hosts);
     const reportForeign = options.foreignRecords === "report";
     if (foreign.length > 0 && !reportForeign) {
       const lines = foreign.map((r) => `  ${r.type} ${r.name} ${r.content}`);

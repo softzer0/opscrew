@@ -6,6 +6,7 @@ import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { readServerAddresses } from "../shared";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import {
   createProject,
@@ -114,12 +115,22 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     }
 
     const plan = await readArtifact("plan", deps.paths.files.plan);
-    expect(plan.deployment).toMatchObject({
-      serverIpv4: SERVER_IPV4,
+    // No URL either: without a domain it would be the server's IP address.
+    expect(plan.deployment).toEqual({
       lastPlanHash: result.planHash,
       lastApplyAt: "2026-10-11T12:00:00.000Z",
       lastCompletedPhase: "provision",
     });
+    // The server's address is in OpsCrew's local state only, never in the repository or the PR.
+    expect((await readServerAddresses(deps.paths)).deployment).toEqual({
+      ipv4: SERVER_IPV4,
+      ipv6: SERVER_IPV6,
+    });
+    const published = `${await git(root, "show", "HEAD")}\n${github.pulls[0]?.body}`;
+    expect(published).toContain("opscrew/plan.yaml");
+    expect(published).not.toContain(SERVER_IPV4);
+    expect(published).not.toContain(SERVER_IPV6);
+    expect(github.pulls[0]?.body).toContain("deploys the app to the server.");
     expect(plan.approvals).toEqual([
       expect.objectContaining({ planHash: result.planHash, kind: "iac-apply" }),
     ]);
@@ -181,7 +192,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     await runProvision(deps, { services });
     const after = await readArtifact("plan", deps.paths.files.plan);
     expect(after.deployment.destroyedAt).toBeUndefined();
-    expect(after.deployment.serverIpv4).toBe(SERVER_IPV4);
+    expect((await readServerAddresses(deps.paths)).deployment?.ipv4).toBe(SERVER_IPV4);
   });
 
   it("clears the teardown record before a new apply starts, even when the apply fails", async () => {
@@ -484,6 +495,48 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(deps.reporter.text()).toContain("already has its own WAF custom rules");
     const plan = await readArtifact("plan", deps.paths.files.plan);
     expect(plan.dns.zone).toBe("example.com");
+  });
+
+  it("never publishes the server's address behind Cloudflare's proxy", async () => {
+    const { deps, services, root, git, github } = await setup({
+      plan: testPlan({ domain: "shop.example.com" }),
+      engine: new FakeEngine({
+        planJson: planJsonFor({ proxied: true }),
+        outputs: {
+          server_ipv4: SERVER_IPV4,
+          server_ipv6: SERVER_IPV6,
+          server_id: "4711",
+          server_name: "shop",
+          url: "https://shop.example.com",
+        },
+      }),
+      services: { cloudflare: fakeCloudflare() },
+    });
+    const result = await runProvision(deps, { services });
+    expect(result.prUrl).toBe("https://github.com/acme/shop/pull/7");
+
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    expect(plan.deployment.url).toBe("https://shop.example.com");
+    // Every committed file, the commit and the pull request: no address anywhere.
+    const tracked = (await git(root, "ls-files")).split("\n").filter((path) => path !== "");
+    expect(tracked).toContain("opscrew/plan.yaml");
+    const contents = await Promise.all(tracked.map((path) => readFile(join(root, path), "utf8")));
+    const published = [
+      ...contents,
+      await git(root, "show", "HEAD"),
+      github.pulls[0]?.title ?? "",
+      github.pulls[0]?.body ?? "",
+    ].join("\n");
+    expect(published).not.toContain(SERVER_IPV4);
+    expect(published).not.toContain(SERVER_IPV6);
+    expect(github.pulls[0]?.body).toContain("deploys the app to shop.example.com.");
+    // Kept locally (gitignored), and shown in this terminal where the user needs it.
+    expect((await readServerAddresses(deps.paths)).deployment).toEqual({
+      ipv4: SERVER_IPV4,
+      ipv6: SERVER_IPV6,
+    });
+    expect(tracked.some((path) => path.startsWith(".opscrew/"))).toBe(false);
+    expect(deps.reporter.text()).toContain(`The server at ${SERVER_IPV4} is ready.`);
   });
 
   it("keeps managing its own Cloudflare rules and records when run again", async () => {
@@ -845,10 +898,12 @@ describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
     const plan = await readArtifact("plan", run.deps.paths.files.plan);
     expect(plan.target.provider).toBe("digitalocean");
     expect(plan.deployment).toMatchObject({
-      serverIpv4: SERVER_IPV4,
-      serverIpv6: SERVER_IPV6,
       lastPlanHash: result.planHash,
       lastCompletedPhase: "provision",
+    });
+    expect((await readServerAddresses(run.deps.paths)).deployment).toEqual({
+      ipv4: SERVER_IPV4,
+      ipv6: SERVER_IPV6,
     });
     expect(run.github.secrets.get("OPSCREW_HOST")).toBe(SERVER_IPV4);
     expect(run.github.pulls[0]?.body).toContain("infrastructure code for the DigitalOcean Droplet");

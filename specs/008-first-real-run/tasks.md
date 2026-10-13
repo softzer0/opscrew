@@ -49,7 +49,7 @@ description: "Tasks for 008-first-real-run"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-engine --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T814 The server address is never published: no IP in pull requests ever; no IP in committed files (`opscrew/plan.yaml`, `opscrew/RUNBOOK.md`, reports) when the domain is behind Cloudflare's proxy — kept in OpsCrew's local state instead
+- [X] T814 The server address is never published: no IP in pull requests ever; no IP in committed files (`opscrew/plan.yaml`, `opscrew/RUNBOOK.md`, reports) when the domain is behind Cloudflare's proxy — kept in OpsCrew's local state instead
   - Owns: `packages/plan-schema/src/plan.ts` (+ tests), `packages/agents/src/**` except `drift/**` beyond the address read, `packages/iac-templates/src/runbook/**`, `packages/iac-templates/src/types.ts`, `packages/cli/src/**` where it prints or reads the address
   - Accept: PR bodies say "the server" or the domain, never an IP; `plan.yaml` never contains the server address (founder: no backward compatibility, OpsCrew is unreleased); with a proxied domain the runbook and the security/verify reports contain none either (tests grep committed files, commits and PR bodies for the fake IPs); every command reads the address through one helper from `.opscrew/server.json` (gitignored) with OpenTofu outputs as the fallback; the CLI shows it locally (`opscrew status`, `status --ip`).
   - Effort: xhigh

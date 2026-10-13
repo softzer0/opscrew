@@ -8,6 +8,7 @@
  */
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { readServerAddresses } from "@opscrew/agents";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { GIT, run } from "../../src/ui/__fixtures__/harness";
@@ -49,6 +50,9 @@ async function retarget(m: MoveProject, ...args: string[]) {
 
 const readPlan = (m: MoveProject): Promise<DeployPlan> => readArtifact("plan", m.paths.files.plan);
 
+/** The servers' addresses in OpsCrew's local state (`.opscrew/server.json`). */
+const localServers = (m: MoveProject) => readServerAddresses(m.paths);
+
 /** Start → renamed → created/deployed → switch planned: three stops, each with a hash. */
 async function moveUntilSwitchPlanned(m: MoveProject): Promise<string> {
   const start = await retarget(m, "--to", "digitalocean", "--yes");
@@ -61,9 +65,14 @@ async function moveUntilSwitchPlanned(m: MoveProject): Promise<string> {
   expect(plan.target.provider).toBe("digitalocean");
   expect(plan.retarget).toMatchObject({
     step: "started",
-    from: { serverIpv4: OLD_IPV4, target: { provider: "hetzner" } },
+    from: { target: { provider: "hetzner" } },
   });
-  expect(plan.deployment.serverIpv4).toBe(OLD_IPV4);
+  // The addresses are in the local state only, never in opscrew/plan.yaml.
+  expect(await localServers(m)).toMatchObject({
+    deployment: { ipv4: OLD_IPV4 },
+    retarget: { from: { ipv4: OLD_IPV4 } },
+  });
+  expect(await readFile(m.paths.files.plan, "utf8")).not.toContain(OLD_IPV4);
 
   // The same command again without --approve applies nothing and stops at a plan again.
   const again = await retarget(m, "--yes");
@@ -91,7 +100,8 @@ async function moveUntilSwitchPlanned(m: MoveProject): Promise<string> {
   expect(created.applied).toEqual([renamed.hash]);
   expect(created.text).toContain(`--allow-downtime --approve ${created.hash}`);
   plan = await readPlan(m);
-  expect(plan.retarget).toMatchObject({ step: "deployed", next: { serverIpv4: NEW.ipv4 } });
+  expect(plan.retarget).toMatchObject({ step: "deployed" });
+  expect((await localServers(m)).retarget?.next?.ipv4).toBe(NEW.ipv4);
   expect(m.github.secrets.get("OPSCREW_HOST")).toBe(NEW.ipv4);
   // The old server still serves users; the new one waits with Caddy stopped.
   expect(m.hosts.host(OLD_IPV4)).toMatchObject({ app: true, caddy: true });
@@ -121,7 +131,8 @@ describe.skipIf(GIT === undefined)("opscrew retarget (Hetzner Cloud → DigitalO
       expect(switched.text).toContain("opscrew retarget --finish");
       let plan = await readPlan(m);
       expect(plan.retarget?.step).toBe("switched");
-      expect(plan.deployment).toMatchObject({ serverIpv4: NEW.ipv4, url: `https://${DOMAIN}` });
+      expect(plan.deployment).toMatchObject({ url: `https://${DOMAIN}` });
+      expect((await localServers(m)).deployment?.ipv4).toBe(NEW.ipv4);
       expect(m.engine.dnsServer()?.ipv4).toBe(NEW.ipv4);
       expect(m.hosts.host(NEW.ipv4)).toMatchObject({ db: "orders before the move", app: true });
       expect(m.hosts.host(OLD_IPV4).app).toBe(false);
@@ -189,7 +200,12 @@ describe.skipIf(GIT === undefined)("opscrew retarget (Hetzner Cloud → DigitalO
       plan = await readPlan(m);
       expect(plan.retarget).toBeUndefined();
       expect(plan.target.provider).toBe("digitalocean");
-      expect(plan.deployment.serverIpv4).toBe(NEW.ipv4);
+      expect(await localServers(m)).toEqual({
+        schemaVersion: 1,
+        deployment: { ipv4: NEW.ipv4, ipv6: NEW.ipv6 },
+      });
+      const committed = await readFile(m.paths.files.plan, "utf8");
+      for (const ip of [OLD_IPV4, NEW.ipv4]) expect(committed).not.toContain(ip);
       expect(m.github.pulls).toHaveLength(1);
       const knownHosts = await readFile(m.paths.files.knownHosts, "utf8");
       expect(knownHosts).not.toContain(OLD_IPV4);
@@ -259,7 +275,8 @@ describe.skipIf(GIT === undefined)("opscrew retarget (Hetzner Cloud → DigitalO
       const plan = await readPlan(m);
       expect(plan.retarget).toBeUndefined();
       expect(plan.target).toEqual(m.plan.target);
-      expect(plan.deployment.serverIpv4).toBe(OLD_IPV4);
+      expect((await localServers(m)).deployment?.ipv4).toBe(OLD_IPV4);
+      expect((await localServers(m)).retarget).toBeUndefined();
       expect(m.hosts.host(OLD_IPV4)).toMatchObject({ app: true, caddy: true });
       expect(existsSync(m.paths.files.plan)).toBe(true);
     },

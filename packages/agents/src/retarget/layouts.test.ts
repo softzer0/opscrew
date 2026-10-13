@@ -69,8 +69,6 @@ describe("move layouts", () => {
 
   it("fills the old server's image when the plan omits it", () => {
     const { image: _image, ...target } = testPlan({ provider: "digitalocean" }).target;
-    expect(previousTarget({ from: { target, serverIpv4: "203.0.113.10" } }).image).toBe(
-      "ubuntu-24-04-x64",
-    );
+    expect(previousTarget({ from: { target } }).image).toBe("ubuntu-24-04-x64");
   });
 });

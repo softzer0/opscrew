@@ -3,7 +3,7 @@ import type { CheckResult, FetchLike, Severity } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
-import { providerConsole } from "../shared";
+import { providerConsole, type ServerAddress } from "../shared";
 import type { DnsResolver, TlsCertificateInfo, TlsConnect } from "./net";
 
 /** Cloudflare edge ranges (CIDRs) used to confirm proxied DNS records. */
@@ -23,6 +23,8 @@ export interface DeployRunInfo {
 /** Everything the verify checks need; every network function is injected. */
 export interface VerifyCheckContext {
   plan: DeployPlan;
+  /** The server's address from OpsCrew's local state (`serverAddress`); absent when unknown. */
+  server?: ServerAddress;
   resolver: DnsResolver;
   fetch: FetchLike;
   tlsConnect: TlsConnect;
@@ -103,12 +105,14 @@ export function verifyHosts(plan: DeployPlan): string[] {
   return plan.dns.www ? [domain, `www.${domain}`] : [domain];
 }
 
-/** `https://<domain>` with a domain, `http://<server IPv4>` without; undefined before provision. */
-export function siteUrl(plan: DeployPlan): string | undefined {
+/**
+ * `https://<domain>` with a domain, `http://<server IPv4>` without (`server` from OpsCrew's local
+ * state); undefined when neither is known.
+ */
+export function siteUrl(plan: DeployPlan, server?: ServerAddress): string | undefined {
   const [host] = verifyHosts(plan);
   if (host) return `https://${host}`;
-  const ip = plan.deployment.serverIpv4;
-  return ip ? `http://${ip}` : undefined;
+  return server ? `http://${server.ipv4}` : undefined;
 }
 
 /** True when web traffic may reach the server only through Cloudflare. */
@@ -159,8 +163,8 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
   const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
   const title = `DNS for ${host} points to the right place`;
   const { plan } = ctx;
-  const ipv4 = plan.deployment.serverIpv4;
-  const ipv6 = plan.deployment.serverIpv6;
+  const ipv4 = ctx.server?.ipv4;
+  const ipv6 = ctx.server?.ipv6;
   let a: string[];
   let aaaa: string[];
   try {
@@ -588,7 +592,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
   const id = "origin-not-direct";
   const title = "The server is not reachable around Cloudflare";
   const { plan } = ctx;
-  const ip = plan.deployment.serverIpv4;
+  const ip = ctx.server?.ipv4;
   if (plan.dns.provider !== "cloudflare" || !plan.dns.proxied) {
     return result(
       id,
@@ -608,7 +612,13 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
     );
   }
   if (!ip) {
-    return result(id, title, "medium", "skip", "Skipped: no server IP is recorded in the plan.");
+    return result(
+      id,
+      title,
+      "medium",
+      "skip",
+      "Skipped: OpsCrew does not know the server's address on this machine.",
+    );
   }
   const open = await ctx.tcpConnect(ip, 443, Math.min(ctx.timeoutMs ?? 3000, 3000));
   return open
@@ -713,7 +723,7 @@ export interface VerifyChecksOutcome {
 export async function runVerifyChecks(ctx: VerifyCheckContext): Promise<VerifyChecksOutcome> {
   const { plan } = ctx;
   const hosts = verifyHosts(plan);
-  const url = siteUrl(plan);
+  const url = siteUrl(plan, ctx.server);
   const checks: CheckResult[] = [];
   const [domain] = hosts;
 
@@ -735,7 +745,7 @@ export async function runVerifyChecks(ctx: VerifyCheckContext): Promise<VerifyCh
   }
 
   if (url === undefined) {
-    throw new Error("runVerifyChecks needs a domain or a server IP in the plan.");
+    throw new Error("runVerifyChecks needs a domain or the server's address.");
   }
   const site = await checkSiteReachable(url, ctx);
   checks.push(site.check);

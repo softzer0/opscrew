@@ -1,7 +1,6 @@
 import { posix } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
 import { defaultTcpConnect } from "@opscrew/secops";
-import { z } from "zod";
 import { formatMoney } from "../design";
 import { providerProfile } from "../providers";
 import {
@@ -11,7 +10,7 @@ import {
   type SavedPlan,
   setDeploySecrets,
 } from "../provision";
-import { providerConsole, waitForCloudInit, waitForPort } from "../shared";
+import { addressFromOutputs, providerConsole, waitForCloudInit, waitForPort } from "../shared";
 import { moveLayout, previousTarget } from "./layouts";
 import { planThenApply } from "./plans";
 import { stopService, waitAppHealthy } from "./server-ops";
@@ -21,8 +20,10 @@ import {
   type MoveSession,
   moveOf,
   pinHost,
+  recordNewServer,
   redactWith,
   saveMove,
+  savePlan,
   useLayout,
   waitsOf,
   withApply,
@@ -146,9 +147,6 @@ function assertCreateOnly(saved: Pick<SavedPlan, "changes">): void {
   );
 }
 
-const Ipv4Schema = z.ipv4();
-const Ipv6Schema = z.ipv6();
-
 /** Waits for SSH on the new server, pins its host key and waits for its first-boot setup. */
 async function waitForNewServer(session: MoveSession, host: string): Promise<void> {
   const { deps, services } = session;
@@ -193,7 +191,7 @@ async function waitForNewServer(session: MoveSession, host: string): Promise<voi
 
 /**
  * Step 3: the plan that creates the new server as `module.server` next to the old one; its
- * addresses (`other_server_*` outputs) become `retarget.next`; then SSH, host key, cloud-init.
+ * addresses (`other_server_*` outputs) go to OpsCrew's local state; then SSH, host key, cloud-init.
  */
 export async function createStep(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps } = session;
@@ -225,25 +223,23 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
     throw error;
   });
   if (outcome.kind === "pending") return pendingStop(session, outcome.planHash);
-  const ipv4 = Ipv4Schema.safeParse(outcome.outputs.other_server_ipv4);
-  const ipv6 = Ipv6Schema.safeParse(outcome.outputs.other_server_ipv6);
-  if (!ipv4.success) {
+  const next = addressFromOutputs(outcome.outputs, "other_server");
+  if (next === undefined) {
     throw new OpsCrewError(
       "ENGINE_FAILED",
       `The new ${fresh.noun}'s address is unknown after the apply.`,
       { hint: `Run \`${RUN_COMMAND}\` again; it reads the address from the infrastructure state.` },
     );
   }
-  const next = { serverIpv4: ipv4.data, ...(ipv6.success ? { serverIpv6: ipv6.data } : {}) };
-  const at = deps.clock.now().toISOString();
-  await saveMove(
-    session,
-    { ...moveOf(session), next },
-    outcome.kind === "applied" ? withApply(session.plan, outcome, at) : {},
-  );
-  await waitForNewServer(session, next.serverIpv4);
+  // The address goes to OpsCrew's local state, never into opscrew/plan.yaml.
+  await recordNewServer(session, next);
+  if (outcome.kind === "applied") {
+    const at = deps.clock.now().toISOString();
+    await savePlan(session, { ...session.plan, ...withApply(session.plan, outcome, at) });
+  }
+  await waitForNewServer(session, next.ipv4);
   await saveMove(session, { ...moveOf(session), step: "created" });
-  await auditStep(session, "created", `new ${fresh.noun} at ${next.serverIpv4} is ready`);
+  await auditStep(session, "created", `new ${fresh.noun} at ${next.ipv4} is ready`);
   return undefined;
 }
 
@@ -367,19 +363,19 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
 export async function deployStep(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  const next = move.next;
+  const next = session.servers.next;
   if (next === undefined) {
-    // A step `created` always has the address; re-reading the state repairs a hand-edited plan.
+    // A step `created` always has the address; the create step reads it from the state again.
     await saveMove(session, { ...move, step: "renamed" });
     return { step: "renamed", done: false, next: [`Run \`${RUN_COMMAND}\` again.`] };
   }
   const fresh = providerWords(plan.target.provider);
   const ops = redactWith(deps);
-  const where = { host: next.serverIpv4, owner: session.github.owner, repo: session.github.repo };
+  const where = { host: next.ipv4, owner: session.github.owner, repo: session.github.repo };
   if (await deploySecretsStoredFor(deps, where)) {
     deps.reporter.info("The GitHub deploy secrets already point to the new server.");
   } else {
-    await storeDeploySecrets(session, next.serverIpv4, "new");
+    await storeDeploySecrets(session, next.ipv4, "new");
   }
   await runDeployWorkflow(session);
   const remote = newRemote(session);
@@ -400,7 +396,7 @@ export async function deployStep(session: MoveSession): Promise<RetargetResult |
   deps.reporter.success(
     `The app runs on the new ${fresh.noun}; the old server still serves users.`,
   );
-  await auditStep(session, "deployed", `app deployed and healthy on ${next.serverIpv4}`);
+  await auditStep(session, "deployed", `app deployed and healthy on ${next.ipv4}`);
   return undefined;
 }
 

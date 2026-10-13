@@ -19,8 +19,14 @@ import type {
   RemoteExec,
   ResourceChange,
 } from "@opscrew/contracts";
-import type { CloudflareApi, GitHubApi, ProvisionServices } from "@opscrew/agents";
-import { NodeCommandRunner } from "@opscrew/core";
+import {
+  type CloudflareApi,
+  type GitHubApi,
+  hasDeployment,
+  type ProvisionServices,
+  recordServerAddress,
+} from "@opscrew/agents";
+import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { git, type TempProject, tempProject } from "./harness";
 
@@ -83,10 +89,15 @@ export function testPlan(options: TestPlanOptions = {}): DeployPlan {
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: options.httpAllowedFrom ? { httpAllowedFrom: options.httpAllowedFrom } : {},
-    ...(options.deployed
-      ? { deployment: { serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6 } }
-      : {}),
+    // A deployed plan records the apply; the server's address is in the local state only
+    // (`deployProject` writes it there, as provision does).
+    ...(options.deployed ? { deployment: { lastApplyAt: "2026-10-11T11:00:00.000Z" } } : {}),
   });
+}
+
+/** A deployed plan (see {@link testPlan}). */
+export function deployedPlan(options: Omit<TestPlanOptions, "deployed"> = {}): DeployPlan {
+  return testPlan({ ...options, deployed: true });
 }
 
 /** `show -json` shaped like the rendered root module; passes every policy unless told otherwise. */
@@ -460,7 +471,7 @@ export interface DeployProject extends TempProject {
   bare: string;
 }
 
-/** Creates a {@link DeployProject} for `plan`. */
+/** Creates a {@link DeployProject} for `plan` (see {@link writeProjectPlan}). */
 export async function deployProject(plan: DeployPlan = testPlan()): Promise<DeployProject> {
   const project = await tempProject();
   const bare = path.join(project.dir, "remote.git");
@@ -472,8 +483,25 @@ export async function deployProject(plan: DeployPlan = testPlan()): Promise<Depl
   await writeFile(path.join(project.root, ".gitignore"), ".opscrew/\n.env\n");
   await git(project.env, project.root, "add", "Dockerfile", ".gitignore");
   await git(project.env, project.root, "commit", "-q", "-m", "init");
-  await writeArtifact("plan", path.join(project.root, "opscrew", "plan.yaml"), plan);
+  await writeProjectPlan(project, plan);
   return { ...project, bare };
+}
+
+/**
+ * Writes `opscrew/plan.yaml` into `project` and, for a deployed plan, the server's address
+ * ({@link SERVER_IPV4}, {@link SERVER_IPV6}) into its local state, as provision leaves them.
+ * Returns the plan file's path.
+ */
+export async function writeProjectPlan(project: TempProject, plan: DeployPlan): Promise<string> {
+  const planFile = path.join(project.root, "opscrew", "plan.yaml");
+  await writeArtifact("plan", planFile, plan);
+  if (hasDeployment(plan)) {
+    await recordServerAddress(resolveProjectPaths(project.root, { env: project.env }), {
+      ipv4: SERVER_IPV4,
+      ipv6: SERVER_IPV6,
+    });
+  }
+  return planFile;
 }
 
 /** A hardened Ubuntu server answering the `secure` checks; `passwordAuth` leaves password login on. */

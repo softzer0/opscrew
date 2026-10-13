@@ -9,6 +9,8 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { readServerAddresses } from "@opscrew/agents";
+import { resolveProjectPaths } from "@opscrew/core";
 import { FakeAgentRuntime, fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, RequirementsSchema } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -187,15 +189,20 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
         expect(await readFile(file, "utf8"), file).not.toContain("delete_protection");
       }
 
-      // The outputs are recorded in plan.yaml exactly as on Hetzner.
+      // The apply is recorded in plan.yaml exactly as on Hetzner; the server's address (and the
+      // URL on it) only in OpsCrew's local state.
       const plan = await readPlan(project.root);
       expect(plan.target.provider).toBe("digitalocean");
       expect(plan.deployment).toMatchObject({
-        serverIpv4: SERVER_IPV4,
-        serverIpv6: SERVER_IPV6,
-        url: `http://${SERVER_IPV4}`,
         lastPlanHash: engine.applied[0]?.approval.approvedPlanHash,
       });
+      expect(plan.deployment.url).toBeUndefined();
+      const paths = resolveProjectPaths(project.root, { env: project.env });
+      expect((await readServerAddresses(paths)).deployment).toEqual({
+        ipv4: SERVER_IPV4,
+        ipv6: SERVER_IPV6,
+      });
+      expect(await readFile(paths.files.plan, "utf8")).not.toContain(SERVER_IPV4);
       expect(plan.approvals).toEqual([
         expect.objectContaining({
           kind: "iac-apply",

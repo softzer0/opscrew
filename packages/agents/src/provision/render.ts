@@ -21,7 +21,10 @@ export async function readRequirements(deps: PhaseDeps): Promise<Requirements | 
   }
 }
 
-/** The secret-free render context provision uses (shared with the read-only preview). */
+/**
+ * The secret-free render context provision uses (shared with the read-only preview). It never
+ * carries the server's address: the rendered files are committed.
+ */
 export function deploymentRenderContext(
   deps: PhaseDeps,
   input: {
@@ -32,7 +35,7 @@ export function deploymentRenderContext(
     cloudflare: CloudflareSetup | undefined;
   },
 ): RenderContext {
-  const { plan, requirements, cloudflare } = input;
+  const { requirements, cloudflare } = input;
   return {
     opscrewVersion: deps.version,
     github: { owner: input.github.owner, repo: input.github.repo },
@@ -49,8 +52,6 @@ export function deploymentRenderContext(
           },
         }
       : {}),
-    ...(plan.deployment.serverIpv4 ? { serverIpv4: plan.deployment.serverIpv4 } : {}),
-    ...(plan.deployment.serverIpv6 ? { serverIpv6: plan.deployment.serverIpv6 } : {}),
   };
 }
 

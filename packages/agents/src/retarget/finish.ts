@@ -22,6 +22,7 @@ import { publishDeploySetup } from "../provision";
 import { moveLayout, previousTarget, protectionVariable } from "./layouts";
 import { clearPending } from "./pending";
 import { deletionStep, planHeading } from "./plans";
+import { endMoveServers } from "./servers";
 
 import {
   auditStep,
@@ -267,7 +268,7 @@ async function finish(
   }
 
   // 5. Cleanup: host keys, final files, plan, snapshot record, phase.
-  if ((await forgetHostKeys(deps, [move.from.serverIpv4, move.from.serverIpv6])) > 0) {
+  if ((await forgetHostKeys(deps, [session.servers.from.ipv4, session.servers.from.ipv6])) > 0) {
     deps.reporter.info(`Removed the old ${words.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
   const { retarget: _finished, ...finalPlan } = session.plan;
@@ -275,6 +276,7 @@ async function finish(
   await savePlan(session, finalPlan);
   await removeSnapshotRecord(deps, "retarget");
   await clearPending(deps);
+  await endMoveServers(deps, session.servers.next);
   const freshWords = providerWords(fresh.provider);
   await deps.state.markPhase("retarget", "ok", `moved to ${freshWords.name}`);
   await auditStep(

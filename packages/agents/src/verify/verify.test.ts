@@ -6,11 +6,13 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
+import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, ScriptedRunner, type TestPhaseDeps } from "../testing";
 import {
   CLOUDFLARE_IPV4,
   CLOUDFLARE_IPV6,
   CLOUDFLARE_RANGES,
+  SERVER,
   SERVER_IPV4,
   SERVER_IPV6,
   type TestPlanOptions,
@@ -118,6 +120,8 @@ async function setup(
     clock: { now: () => new Date(NOW) },
   });
   await writeArtifact("plan", deps.paths.files.plan, testPlan(plan));
+  // What `opscrew provision` left in the local state.
+  if (plan.ip !== false) await recordServerAddress(deps.paths, SERVER);
   return Object.assign(deps, { token });
 }
 
@@ -158,8 +162,12 @@ describe("runVerify", () => {
     const runbook = await readFile(deps.paths.files.runbook, "utf8");
     expect(result.runbookPath).toBe("opscrew/RUNBOOK.md");
     expect(runbook).toContain("https://shop.example.com");
-    expect(runbook).toContain(SERVER_IPV4);
-    expect(runbook).toContain(`deploy@${SERVER_IPV4}`);
+    // Behind Cloudflare's proxy the committed runbook and plan never name the server's address.
+    for (const committed of [runbook, await readFile(deps.paths.files.plan, "utf8")]) {
+      expect(committed).not.toContain(SERVER_IPV4);
+      expect(committed).not.toContain(SERVER_IPV6);
+    }
+    expect(runbook).toContain("deploy@$(opscrew status --ip)");
     expect(runbook).toContain(deps.paths.projectId);
     expect(runbook).toContain("## Roll back");
     expect(runbook).toContain("ghcr.io/acme/shop");
@@ -276,8 +284,12 @@ describe("runVerify", () => {
     expect(result.passed).toBe(true);
     expect(result.url).toBe(base);
     expect(byId(result.checks, "dns-records").message).toContain("plain HTTP");
+    // The URL on the server's IP is not committed; the runbook shows the address (the app is
+    // served on it).
     const plan = await readArtifact("plan", deps.paths.files.plan);
-    expect(plan.deployment.url).toBe(base);
+    expect(plan.deployment.url).toBeUndefined();
+    expect(plan.deployment.lastCompletedPhase).toBe("verify");
+    expect(await readFile(deps.paths.files.plan, "utf8")).not.toContain(SERVER_IPV4);
     expect(await readFile(deps.paths.files.runbook, "utf8")).toContain(`deploy@${SERVER_IPV4}`);
     expect(deps.reporter.lines.filter((l) => l.level === "warn")).toHaveLength(2);
   });
@@ -336,7 +348,7 @@ describe("runVerify", () => {
     const result = await runVerify(deps, {
       resolver: {
         resolve4: async (host) => (host.startsWith("www.") ? ["198.51.100.7"] : [SERVER_IPV4]),
-        resolve6: async () => ["2a01:04f8:c17:1234:0:0:0:1"],
+        resolve6: async () => ["2001:0db8:0:0:0:0:0:10"],
       },
       fetch: fakeSite().fetch,
       tlsConnect: cert(),
@@ -347,6 +359,10 @@ describe("runVerify", () => {
     expect(www.status).toBe("fail");
     expect(www.message).toContain(`the server is ${SERVER_IPV4} / ${SERVER_IPV6}`);
     expect(byId(result.checks, "origin-not-direct").status).toBe("skip");
+    // DNS-only records publish the address anyway, so the runbook may show it.
+    const runbook = await readFile(deps.paths.files.runbook, "utf8");
+    expect(runbook).toContain(`| IPv4 / IPv6 | ${SERVER_IPV4} / ${SERVER_IPV6} |`);
+    expect(runbook).toContain(`deploy@${SERVER_IPV4}`);
   });
 
   it("fails when .env is served, but accepts an app fallback page", async () => {

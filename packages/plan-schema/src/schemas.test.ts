@@ -313,7 +313,7 @@ describe("DeployPlan retarget", () => {
       ...plan,
       target: { ...plan.target, provider: "digitalocean", image: undefined },
       retarget: {
-        from: { target: { ...previous, provider: "hetzner" }, serverIpv4: "203.0.113.10" },
+        from: { target: { ...previous, provider: "hetzner" } },
         step: "renamed",
         startedAt: "2026-10-13T09:00:00.000Z",
       },
@@ -323,5 +323,44 @@ describe("DeployPlan retarget", () => {
     expect(moving.retarget?.step).toBe("renamed");
     const bad = { ...moving, retarget: { ...moving.retarget, step: "halfway" } };
     expect(pathsOf(DeployPlanSchema.safeParse(bad))).toEqual(["retarget.step"]);
+  });
+});
+
+describe("DeployPlan keeps the server's address out of the repository", () => {
+  const IPV4 = "203.0.113.10";
+  const IPV6 = "2001:db8::10";
+
+  it("has no field for the server's addresses, in the deployment or a move", async () => {
+    const plan = parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+    expect(JSON.stringify(plan)).not.toContain(IPV4);
+    const withIp = { ...plan, deployment: { ...plan.deployment, serverIpv4: IPV4 } };
+    expect(pathsOf(DeployPlanSchema.safeParse(withIp))).toEqual(["deployment"]);
+    const withIpv6 = { ...plan, deployment: { ...plan.deployment, serverIpv6: IPV6 } };
+    expect(pathsOf(DeployPlanSchema.safeParse(withIpv6))).toEqual(["deployment"]);
+
+    const move = { from: { target: plan.target }, step: "created", startedAt: plan.createdAt };
+    expect(DeployPlanSchema.safeParse({ ...plan, retarget: move }).success).toBe(true);
+    const fromIp = { ...move, from: { ...move.from, serverIpv4: IPV4 } };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, retarget: fromIp }))).toEqual([
+      "retarget.from",
+    ]);
+    const fromUrl = { ...move, from: { ...move.from, url: "https://app.example.com" } };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, retarget: fromUrl }))).toEqual([
+      "retarget.from",
+    ]);
+    const next = { ...move, next: { serverIpv4: IPV4 } };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, retarget: next }))).toEqual(["retarget"]);
+  });
+
+  it("records the app's URL only when it names a domain, never the server's IP", async () => {
+    const plan = parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+    const at = (url: string) => ({ ...plan, deployment: { ...plan.deployment, url } });
+    expect(DeployPlanSchema.safeParse(at("https://app.example.com")).success).toBe(true);
+    expect(DeployPlanSchema.safeParse(at("http://app.example.com:8080/")).success).toBe(true);
+    for (const url of [`http://${IPV4}`, `https://${IPV4}/health`, `http://[${IPV6}]/`]) {
+      const result = DeployPlanSchema.safeParse(at(url));
+      expect(pathsOf(result), url).toEqual(["deployment.url"]);
+      expect(result.error?.issues[0]?.message).toContain("domain");
+    }
   });
 });
