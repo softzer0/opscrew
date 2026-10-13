@@ -3,6 +3,7 @@ import type {
   ResourceAction,
   ResourceChange,
   ResourceDrift,
+  ResourceMove,
 } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 
@@ -18,6 +19,12 @@ export interface ParsedPlan {
    * Present only when there is any. Carries attribute names, never values.
    */
   drift?: ResourceDrift[];
+  /**
+   * Resources whose state address changes (`previous_address`, from `moved` blocks), in the
+   * engine's order. Present only when there is any. A pure move is not a change; a moved and
+   * changed resource is also listed in `changes` at its new address.
+   */
+  moves?: ResourceMove[];
 }
 
 function invalid(detail: string): OpsCrewError {
@@ -124,7 +131,8 @@ function parseDrift(raw: unknown): ResourceDrift[] {
 
 /**
  * Summarises a plan produced by `tofu show -json` / `terraform show -json`, including any drift
- * the engine found while refreshing (`resource_drift`). Accepts the parsed
+ * the engine found while refreshing (`resource_drift`) and resources it moves in the state
+ * (`previous_address`). Accepts the parsed
  * object or the raw JSON text. Throws `OpsCrewError` (`ENGINE_FAILED`) when the input is not a
  * plan or contains an action it does not understand.
  */
@@ -143,20 +151,25 @@ export function parsePlanJson(json: unknown): ParsedPlan {
 
   const changes: ResourceChange[] = [];
   const counts = { create: 0, update: 0, delete: 0, replace: 0 };
+  const moves: ResourceMove[] = [];
   for (const entry of rawChanges) {
     if (!isRecord(entry) || !isRecord(entry.change)) throw invalid("malformed resource change");
-    const { address, type, name, provider_name: provider } = entry;
+    const { address, type, name, provider_name: provider, previous_address: previous } = entry;
     const actions = entry.change.actions;
     if (
       typeof address !== "string" ||
       typeof type !== "string" ||
       typeof name !== "string" ||
       !Array.isArray(actions) ||
-      !actions.every((a): a is string => typeof a === "string")
+      !actions.every((a): a is string => typeof a === "string") ||
+      (previous !== undefined && previous !== null && typeof previous !== "string")
     ) {
       throw invalid("malformed resource change");
     }
     const action = toAction(actions);
+    if (typeof previous === "string" && previous !== address) {
+      moves.push({ from: previous, to: address, type });
+    }
     if (action === "no-op" || action === "read") continue;
     counts[action]++;
     changes.push({
@@ -173,5 +186,6 @@ export function parsePlanJson(json: unknown): ParsedPlan {
     counts,
     hasDestroy: counts.delete + counts.replace > 0,
     ...(drift.length > 0 ? { drift } : {}),
+    ...(moves.length > 0 ? { moves } : {}),
   };
 }

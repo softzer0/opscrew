@@ -19,7 +19,7 @@ variable name (the redactor masks what follows).
 
 ## Phase 2: Building blocks (parallel)
 
-- [ ] T502 [P] [US1] [US2] Moved resources in plan summaries in `packages/iac-engine/src/`
+- [X] T502 [P] [US1] [US2] Moved resources in plan summaries in `packages/iac-engine/src/`
   - Owns: `packages/iac-engine/src/**`, `packages/iac-engine/test/**`
   - Reads: plan.md "Engine"; research.md "`moved` blocks"; `packages/contracts/src/iac.ts`
   - Depends: T501

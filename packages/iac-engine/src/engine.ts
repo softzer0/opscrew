@@ -185,6 +185,7 @@ class Engine implements IacEngine {
       hasDestroy: refreshOnly ? false : parsed.hasDestroy,
       planJson,
       ...(parsed.drift ? { drift: parsed.drift } : {}),
+      ...(parsed.moves && !refreshOnly ? { moves: parsed.moves } : {}),
     };
   }
 

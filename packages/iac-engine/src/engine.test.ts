@@ -263,6 +263,27 @@ describe("plan", () => {
     expect(none).not.toHaveProperty("drift");
   });
 
+  it("reports the moves of a moves-only plan without changes, and omits moves when there are none", async () => {
+    const runner = new ScriptedRunner()
+      .on("plan", writesPlan("MOVES"))
+      .on("show", { stdout: fixture("show-moves-terraform.json") });
+    const summary = await makeEngine(runner, "terraform").plan(dir, "p.tfplan");
+    expect(summary.changes).toEqual([]);
+    expect(summary.hasDestroy).toBe(false);
+    expect(summary.moves).toEqual([
+      {
+        from: "module.server.terraform_data.this",
+        to: "module.server_previous.terraform_data.this",
+        type: "terraform_data",
+      },
+    ]);
+
+    const plain = new ScriptedRunner()
+      .on("plan", writesPlan("PLAIN"))
+      .on("show", { stdout: fixture("show-create.json") });
+    expect(await makeEngine(plain).plan(dir, "p.tfplan")).not.toHaveProperty("moves");
+  });
+
   it("rejects refreshOnly combined with destroy before running anything", async () => {
     const stale = path.join(dir, "p.tfplan");
     await writeFile(stale, "OLD");

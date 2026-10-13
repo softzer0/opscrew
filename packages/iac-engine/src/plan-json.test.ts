@@ -194,3 +194,69 @@ describe("parsePlanJson drift", () => {
     );
   });
 });
+
+describe("parsePlanJson moves", () => {
+  const moved = {
+    from: "module.server.terraform_data.this",
+    to: "module.server_previous.terraform_data.this",
+    type: "terraform_data",
+  };
+
+  it.each([
+    ["OpenTofu", "show-moves-tofu.json"],
+    ["Terraform", "show-moves-terraform.json"],
+  ])("reports a moves-only %s plan as moves without changes", (_engine, file) => {
+    expect(parsePlanJson(fixture(file))).toEqual({
+      changes: [],
+      counts: { create: 0, update: 0, delete: 0, replace: 0 },
+      hasDestroy: false,
+      moves: [moved],
+    });
+  });
+
+  it("reports a moved and updated resource as a change at its new address and as a move", () => {
+    const parsed = parsePlanJson(fixture("show-move-update-tofu.json"));
+    expect(parsed.changes).toEqual([
+      {
+        address: "module.server_previous.terraform_data.this",
+        type: "terraform_data",
+        name: "this",
+        provider: "terraform.io/builtin/terraform",
+        action: "update",
+      },
+    ]);
+    expect(parsed.counts).toEqual({ create: 0, update: 1, delete: 0, replace: 0 });
+    expect(parsed.moves).toEqual([moved]);
+  });
+
+  it("omits moves when there are none or previous_address equals address", () => {
+    expect(parsePlanJson(fixture("show-mixed.json"))).not.toHaveProperty("moves");
+    const plan = {
+      resource_changes: [
+        {
+          address: "a.b",
+          previous_address: "a.b",
+          type: "a",
+          name: "b",
+          change: { actions: ["no-op"] },
+        },
+      ],
+    };
+    expect(parsePlanJson(plan)).not.toHaveProperty("moves");
+  });
+
+  it("rejects a previous_address that is not a string", () => {
+    const plan = {
+      resource_changes: [
+        {
+          address: "a.b",
+          previous_address: 3,
+          type: "a",
+          name: "b",
+          change: { actions: ["no-op"] },
+        },
+      ],
+    };
+    expect(() => parsePlanJson(plan)).toThrow(expect.objectContaining({ code: "ENGINE_FAILED" }));
+  });
+});
