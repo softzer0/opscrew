@@ -13,7 +13,7 @@ after an environment variable name.
 
 ## Phase 1: Foundation (lead)
 
-- [ ] T701 Registrar capabilities and optional methods, new env names and fake kinds, three connector skeletons, `fast-xml-parser`, lockfile, `connectDomain` stub and ADR 0009 (lead)
+- [X] T701 Registrar capabilities and optional methods, new env names and fake kinds, three connector skeletons, `fast-xml-parser`, lockfile, `connectDomain` stub and ADR 0009 (lead)
   - Accept: plan.md "Contracts"; Cloudflare adapter declares its capabilities; `pnpm check` passes.
   - Effort: lead
 

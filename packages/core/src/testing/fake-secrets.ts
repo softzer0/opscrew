@@ -23,6 +23,10 @@ export const FAKE_SECRET_KINDS = [
   "hcloud-token",
   "cloudflare-token",
   "digitalocean-token",
+  "porkbun-api-key",
+  "porkbun-secret-key",
+  "namecheap-api-key",
+  "godaddy-token",
   "generic-password",
 ] as const;
 export type FakeSecretKind = (typeof FAKE_SECRET_KINDS)[number];
@@ -110,6 +114,14 @@ export function fakeSecret(kind: FakeSecretKind, seed = "opscrew"): string {
     // Lower-case hex cannot spell FAKE; the `dop_v1_` prefix still marks it as a DigitalOcean token.
     case "digitalocean-token":
       return `dop_v1_${filler(s, 64, HEX)}`;
+    case "porkbun-api-key":
+      return `pk1_${filler(s, 64, HEX)}`;
+    case "porkbun-secret-key":
+      return `sk1_${filler(s, 64, HEX)}`;
+    case "namecheap-api-key":
+      return filler(s, 32, HEX);
+    case "godaddy-token":
+      return `gd_pat_${filler(s, 48)}`;
     case "generic-password":
       return `FakeP4ss-${filler(s, 16)}`;
   }

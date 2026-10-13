@@ -2,6 +2,7 @@ import type {
   DomainCheck,
   RegisteredDomain,
   Registrar,
+  RegistrarCapabilities,
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
@@ -25,6 +26,15 @@ const MAX_SUGGESTIONS_CHECKED = 20;
 /** The {@link Registrar} contract for one Cloudflare account. */
 export class CloudflareRegistrar implements Registrar {
   readonly id = "cloudflare" as const;
+  /** Cloudflare registrations always use Cloudflare's nameservers; DNSSEC is set on the zone. */
+  readonly capabilities: RegistrarCapabilities = {
+    purchase: true,
+    chooseYears: true,
+    nameservers: false,
+    records: false,
+    dnssec: false,
+    autoRenew: true,
+  };
   readonly #client: CloudflareRegistrarApi;
   readonly #accountId: string;
 

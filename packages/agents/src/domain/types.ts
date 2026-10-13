@@ -1,4 +1,11 @@
-import type { Currency, DomainCheck, Money, RegisteredDomain, Registrar } from "@opscrew/contracts";
+import type {
+  Currency,
+  DomainCheck,
+  Money,
+  RegisteredDomain,
+  Registrar,
+  RegistrarId,
+} from "@opscrew/contracts";
 
 /** A Cloudflare account the token can use. */
 export interface DomainAccount {
@@ -43,6 +50,11 @@ export interface DomainServices {
   accounts?: () => Promise<DomainAccount[]>;
   /** Registrar for one account (default: `CloudflareRegistrar`). */
   registrar?: (accountId: string) => Registrar;
+  /**
+   * The other registrars (feature 007), each for the single account its credentials belong to
+   * (default: built from their environment variables by `registrarFor`; absent when not set up).
+   */
+  registrars?: Partial<Record<Exclude<RegistrarId, "cloudflare">, Registrar>>;
   /** An extension's registrar settings; undefined when Cloudflare does not know it. */
   extension?: (accountId: string, tld: string) => Promise<DomainExtension | undefined>;
   zones?: DomainZoneApi;
@@ -54,6 +66,10 @@ export interface DomainServices {
 export interface SearchDomainsOptions {
   /** A name or keyword, for example `shopapp` or `shopapp.com`. */
   query: string;
+  /** Search at this registrar (default `cloudflare`). */
+  registrar?: RegistrarId;
+  /** Check the name at every configured registrar and list the prices side by side. */
+  compare?: boolean;
   /** Cloudflare account id when the token sees several. */
   account?: string;
   /**
@@ -76,6 +92,8 @@ export interface SearchDomainsResult {
 
 export interface BuyDomainOptions {
   domain: string;
+  /** Where to buy (default `cloudflare`); other registrars then point the domain at Cloudflare. */
+  registrar?: RegistrarId;
   /** Registration years, 1–10 (default 1). */
   years?: number;
   /**
@@ -155,4 +173,28 @@ export interface SetAutoRenewOptions {
   on: boolean;
   account?: string;
   services?: DomainServices;
+}
+
+export interface ConnectDomainOptions {
+  /** A domain the user already owns at a configured registrar. */
+  domain: string;
+  /** The registrar holding it (default: found among the configured registrars). */
+  registrar?: RegistrarId;
+  /** A BIND zone file with the current records, when the registrar does not host the DNS. */
+  recordsFile?: string;
+  /** Cloudflare account id when the token sees several. */
+  account?: string;
+  services?: DomainServices;
+}
+
+export interface ConnectDomainResult {
+  domain: string;
+  registrar: RegistrarId;
+  zoneId: string;
+  /** The Cloudflare nameservers the domain now points at. */
+  nameservers: string[];
+  /** Records copied into the Cloudflare zone. */
+  copied: number;
+  /** Plain-English next steps for the CLI to print. */
+  next: string[];
 }

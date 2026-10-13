@@ -336,6 +336,10 @@ describe("registerEnvSecrets", () => {
       "AWS_SECRET_ACCESS_KEY",
       "AWS_SESSION_TOKEN",
       "DIGITALOCEAN_TOKEN",
+      "NAMECHEAP_API_KEY",
+      "PORKBUN_API_KEY",
+      "PORKBUN_SECRET_API_KEY",
+      "GODADDY_API_TOKEN",
       "OPSCREW_STATE_PASSPHRASE",
       "TF_ENCRYPTION",
     ]);
