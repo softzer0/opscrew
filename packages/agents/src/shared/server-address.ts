@@ -165,6 +165,43 @@ async function nonEmpty(file: string): Promise<boolean> {
   }
 }
 
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The root-module outputs in `dir`, read from the local state file `statePath`. An engine reads
+ * outputs only once the root module is initialised with that backend path, which a computer with
+ * a copy of `.opscrew/tfstate` but no `.terraform/` under the root module has not done: then
+ * `init` (with `-backend-config=path=…`, as provision and drift run it) comes first, and it is run
+ * once more and the read retried when the first read fails (an old or different initialisation).
+ * The `init` is best effort; the read's own failure is what is thrown.
+ */
+export async function readOutputsAfterInit(
+  engine: IacEngine,
+  dir: string,
+  statePath: string,
+  env: Record<string, string | undefined>,
+): Promise<Record<string, unknown>> {
+  const init = () => engine.init(dir, { env, backendConfig: { path: statePath } }).catch(() => {});
+  let initialised = false;
+  if (!(await isDirectory(join(dir, ".terraform")))) {
+    await init();
+    initialised = true;
+  }
+  try {
+    return await engine.output(dir, { env });
+  } catch (error) {
+    if (initialised) throw error;
+    await init();
+    return engine.output(dir, { env });
+  }
+}
+
 /** The root-module outputs read with the project's engine, or `undefined` when that fails. */
 async function engineOutputs(
   deps: ServerAddressDeps,
@@ -194,7 +231,12 @@ async function engineOutputs(
         }
       }
     }
-    return await engine.output(join(deps.paths.root, plan.infra.dir), { env });
+    return await readOutputsAfterInit(
+      engine,
+      join(deps.paths.root, plan.infra.dir),
+      join(deps.paths.files.tfstateDir, STATE_FILE),
+      env,
+    );
   } catch {
     return undefined;
   }

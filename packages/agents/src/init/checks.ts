@@ -37,7 +37,12 @@ import {
   VPS_PROVIDERS,
   vpsConnector,
 } from "../providers";
-import { gitignoreCoversOpsCrew, OPSCREW_GITIGNORE_ENTRY, readGitignore } from "./gitignore";
+import {
+  describeGitignoreEntries,
+  GITIGNORE_ENTRIES,
+  missingGitignoreEntries,
+  readGitignore,
+} from "./gitignore";
 
 /** Outcome of one check. Only required checks fail; optional ones warn. */
 export type InitCheckStatus = "pass" | "warn" | "fail" | "skip";
@@ -232,7 +237,9 @@ export async function runInitChecks(
     }),
     guard("model", "Model credentials", false, () => checkModel(deps)),
     guard("scanners", "Optional scanners", false, async () => checkScanners(which)),
-    guard("gitignore", ".opscrew/ in .gitignore", false, () => checkGitignore(deps)),
+    guard("gitignore", ".opscrew/ and .terraform/ in .gitignore", false, () =>
+      checkGitignore(deps),
+    ),
   ]);
 
   return checks.map((check) => ({
@@ -904,12 +911,25 @@ function checkScanners(which: (name: string) => string | undefined): CheckResult
 
 async function checkGitignore(deps: PhaseDeps): Promise<CheckResult> {
   const text = await readGitignore(deps.paths.root);
-  if (text !== undefined && gitignoreCoversOpsCrew(text)) {
-    return { status: "pass", message: ".gitignore ignores .opscrew/." };
+  const missing = missingGitignoreEntries(text);
+  if (missing.length === 0) {
+    return {
+      status: "pass",
+      message: `.gitignore ignores ${describeGitignoreEntries(GITIGNORE_ENTRIES)}.`,
+    };
   }
+  const what = [
+    ...(missing.includes(".opscrew/")
+      ? ["OpsCrew's local state (saved plans, Terraform state)"]
+      : []),
+    ...(missing.includes(".terraform/")
+      ? ["the provider binaries OpenTofu or Terraform download under opscrew/infra/"]
+      : []),
+  ].join(" and ");
+  const named = describeGitignoreEntries(missing);
   return {
     status: "warn",
-    message: `${text === undefined ? "There is no .gitignore" : ".gitignore does not ignore .opscrew/"}, so OpsCrew's local state (saved plans, Terraform state) could be committed.`,
-    fix: `Run \`opscrew init --fix\` to add ${OPSCREW_GITIGNORE_ENTRY} to .gitignore, or add it yourself.`,
+    message: `${text === undefined ? "There is no .gitignore" : `.gitignore does not ignore ${named}`}, so ${what} could be committed.`,
+    fix: `Run \`opscrew init --fix\` to add ${named} to .gitignore, or add ${missing.length > 1 ? "them" : "it"} yourself.`,
   };
 }

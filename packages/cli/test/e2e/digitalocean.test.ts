@@ -161,6 +161,12 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
   it(
     "provision renders the DigitalOcean root module, applies the approved plan and records the outputs",
     async () => {
+      // The adapt pull request was merged on GitHub and the user is back on the updated main:
+      // provision branches the deployment files from the latest main only.
+      const { env, root } = project;
+      await git(env, root, "checkout", "-q", "main");
+      await git(env, root, "merge", "-q", "--ff-only", "opscrew/prepare-deploy");
+      await git(env, root, "push", "-q", "origin", "main");
       const before = await readPlan(project.root);
       const engine = new FakeEngine({
         planJson: digitalOceanPlanJsonFor(before),

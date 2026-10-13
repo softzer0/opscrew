@@ -31,7 +31,7 @@ import {
 } from "./plans";
 
 import { isAppHealthy } from "./server-ops";
-import { endMoveServers, loadMoveServers } from "./servers";
+import { endMoveServers, loadMoveServers, oldServer } from "./servers";
 import {
   auditStep,
   type MoveSession,
@@ -357,7 +357,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   if (abortProgress(session) < ABORT_PROGRESS["secrets-restored"]) {
     if (!stepBefore(move.step, "created")) {
       await recordAbort(session);
-      await storeDeploySecrets(session, session.servers.from.ipv4, "old");
+      await storeDeploySecrets(session, oldServer(session).ipv4, "old");
     }
     await recordAbortStep(
       session,
@@ -404,10 +404,11 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   const { retarget: _aborted, ...rest } = session.plan;
   const restored: DeployPlan = { ...rest, target: from, ...(cost !== undefined ? { cost } : {}) };
   await writeFinalFiles(session, restored, moveLayout("both", from, to), "infra");
-  const oldHost = session.servers.from.ipv4;
+  const oldAddress = oldServer(session);
+  const oldHost = oldAddress.ipv4;
   await savePlan(session, restored);
   await clearPending(deps);
-  await endMoveServers(deps, session.servers.from);
+  await endMoveServers(deps, oldAddress);
   await deps.state.markPhase(
     "retarget",
     "skipped",

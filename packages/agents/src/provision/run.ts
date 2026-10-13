@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { GitClient } from "@opscrew/connector-github";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
@@ -16,6 +16,8 @@ import {
   diffRenderedFiles,
   ensureDeployKey,
   ensureStatePassphrase,
+  hasDeployment,
+  hidesServerAddress,
   pinHostKey,
   providerConsole,
   recordServerAddress,
@@ -28,7 +30,7 @@ import {
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { requireNoMoveInProgress } from "./guard";
 import { planAndApply } from "./plan-apply";
-import { chooseDeployBranch, publishDeploySetup } from "./publish";
+import { chooseDeployBranch, localDeployBranch, publishDeploySetup } from "./publish";
 import { deploymentRenderContext, readRequirements } from "./render";
 import {
   buildAppEnvironment,
@@ -104,6 +106,47 @@ function quotePath(path: string): string {
 export interface PhaseFlowExtras {
   /** Plain-English warnings added to the infrastructure (`iac-apply`) approval details. */
   approvalNotes?: readonly string[];
+  /**
+   * The plan to deploy when the phase changed it in memory (`opscrew dns`); it is written to
+   * `opscrew/plan.yaml` by {@link PhaseFlowExtras.ready}, after the branch checks passed.
+   */
+  plan?: DeployPlan;
+  /**
+   * Runs once the preconditions and branch checks passed, before anything is written or applied
+   * (`opscrew dns` saves its plan change here, so a stop leaves the repository as it was).
+   */
+  ready?: () => Promise<void>;
+  /**
+   * Whether the server's address was public before this run (the deployment was served without
+   * Cloudflare's proxy). Default: judged from the committed `terraform.tfvars.json`.
+   */
+  addressWasPublic?: boolean;
+}
+
+/**
+ * Said once when a running deployment that was served without Cloudflare's proxy goes behind it:
+ * the proxy hides the address from now on, but it may already be known.
+ */
+export const ADDRESS_MAY_BE_PUBLIC_NOTE =
+  "The server's address may already be public: the app was served without Cloudflare's proxy, so earlier DNS records, the runbook or reports in the git history can show it. The proxy hides it from now on, but only a new server gets a fresh, private address (for example `opscrew retarget` to another provider, or `opscrew destroy` and `opscrew provision` again).";
+
+/**
+ * True when the committed `terraform.tfvars.json` (the files of the last run) has the domain
+ * without Cloudflare's proxy, or no domain (served on the server's address); `false` when the file
+ * is missing or unreadable (nothing is known).
+ */
+async function tfvarsShowPublicAddress(root: string, plan: DeployPlan): Promise<boolean> {
+  try {
+    const text = await readFile(join(root, plan.infra.dir, "terraform.tfvars.json"), "utf8");
+    const values = JSON.parse(text) as unknown;
+    return (
+      typeof values === "object" &&
+      values !== null &&
+      !("proxied" in values && values.proxied === true)
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -119,7 +162,7 @@ async function provisionFlow(
 ): Promise<ProvisionResult> {
   const services = options.services ?? {};
   const root = deps.paths.root;
-  let plan = await readArtifact("plan", deps.paths.files.plan);
+  let plan = extras.plan ?? (await readArtifact("plan", deps.paths.files.plan));
   const requirements = await readRequirements(deps);
 
   // 1–2. Preconditions and credentials
@@ -140,10 +183,19 @@ async function provisionFlow(
   await checkProvider(deps, profile.id, services);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
-  // The branch for the deployment files, picked before anything changes (a push needs it).
-  const publishes =
-    options.push !== false && !(options.planOnly && options.approvePlanHash === undefined);
-  const deployBranch = publishes ? await chooseDeployBranch(deps, git, github, phase) : undefined;
+  // The branch for the deployment files, picked (and checked to start from the latest
+  // `plan.cicd.branch`) before anything changes; `--plan-only` commits nothing.
+  const commits = !(options.planOnly && options.approvePlanHash === undefined);
+  const deployBranch = !commits
+    ? undefined
+    : options.push !== false
+      ? await chooseDeployBranch(deps, git, github, plan, phase)
+      : { branch: await localDeployBranch(git, plan, phase) };
+  await extras.ready?.();
+  const addressWasPublic = extras.addressWasPublic ?? (await tfvarsShowPublicAddress(root, plan));
+  if (addressWasPublic && hasDeployment(plan) && hidesServerAddress(plan)) {
+    deps.reporter.warn(ADDRESS_MAY_BE_PUBLIC_NOTE);
+  }
   const zoneLearned = cloudflare !== undefined && plan.dns.zone !== cloudflare.zoneName;
   if (cloudflare && zoneLearned) {
     plan = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };
@@ -177,12 +229,16 @@ async function provisionFlow(
   }
 
   // 4. Render (skipped when applying a saved plan: its files were written by the --plan-only run)
+  const knownServer = hidesServerAddress(plan)
+    ? undefined
+    : await serverAddress(deps, plan, { engine: async () => engine, engineEnv });
   const ctx = deploymentRenderContext(deps, {
     plan,
     requirements,
     github,
     deployPublicKey: deployKey.publicKeyOpenSsh,
     cloudflare,
+    server: knownServer,
   });
   const files = renderDeployment(plan, ctx);
   if (options.approvePlanHash === undefined) {

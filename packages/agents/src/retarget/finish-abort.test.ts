@@ -299,6 +299,49 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     });
   });
 
+  it("finishes once the old server is gone even when this computer lost its address", async () => {
+    const h = await moveHarness();
+    await run(h);
+    // The old server was deleted (an earlier finish, or by hand) and .opscrew/server.json is lost.
+    delete h.engine.state.servers.server_previous;
+    const servers = h.engine.state.outputs.servers as Record<string, unknown>;
+    delete servers.hetzner;
+    await rm(serverAddressesFile(h.paths));
+    const mark = h.events.length;
+
+    const result = await finish(h);
+
+    expect(result).toMatchObject({ step: "finished", done: true });
+    expect(trail(since(h, mark)).filter((line) => line.startsWith("apply"))).toEqual([]);
+    const text = h.reporter.text();
+    expect(text).toContain("The old server is already deleted; OpsCrew finishes the cleanup.");
+    expect(text).toContain("its SSH host key stays in OpsCrew's known_hosts");
+    expect((await readArtifact("plan", h.paths.files.plan)).retarget).toBeUndefined();
+    expect(await readServerAddresses(h.paths)).toEqual({
+      schemaVersion: 1,
+      deployment: { ipv4: h.newServer.ipv4, ipv6: h.newServer.ipv6 },
+    });
+  });
+
+  it("does not delete anything of an old server whose address this computer does not know", async () => {
+    const h = await moveHarness();
+    await run(h);
+    const servers = h.engine.state.outputs.servers as Record<string, unknown>;
+    delete servers.hetzner;
+    await rm(serverAddressesFile(h.paths));
+    const mark = h.events.length;
+
+    const error = await caught(finish(h));
+
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("the address of the server being replaced is neither");
+    expect(error.hint).toContain("opscrew retarget --finish");
+    expect(
+      trail(since(h, mark)).filter((line) => line.startsWith("apply") || line.startsWith("snap")),
+    ).toEqual([]);
+    expect(h.engine.state.servers.server_previous).toBeDefined();
+  });
+
   it("keeps the old server while the new one does not answer", async () => {
     const h = await moveHarness();
     const n = h.newServer.ipv4;

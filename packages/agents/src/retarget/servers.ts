@@ -14,10 +14,29 @@ import {
  * `opscrew/plan.yaml`.
  */
 export interface MoveServers {
-  /** The server being replaced (`plan.retarget.from`). */
-  from: ServerAddress;
+  /**
+   * The server being replaced (`plan.retarget.from`). Always known, except during `--finish`
+   * once that server is deleted and this computer lost its record (see {@link oldServer}).
+   */
+  from?: ServerAddress;
   /** The new server, once created. */
   next?: ServerAddress;
+}
+
+/** The error when the old server's address is needed but unknown on this computer. */
+export function unknownOldServer(command: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "OpsCrew cannot tell which server is which on this computer: the address of the server being replaced is neither in .opscrew/server.json nor in the infrastructure state, so it cannot continue the move. Nothing was changed.",
+    { hint: hintFor(command) },
+  );
+}
+
+/** The old server's address; stops with `PHASE_PRECONDITION` when it is unknown, never guessing. */
+export function oldServer(session: { servers: MoveServers; command: string }): ServerAddress {
+  const from = session.servers.from;
+  if (from === undefined) throw unknownOldServer(session.command);
+  return from;
 }
 
 /** Root-module outputs, read when the local state lacks an address (best effort). */
@@ -34,14 +53,16 @@ function hintFor(command: string): string {
  * being replaced is `plan.retarget.from.target`'s provider, the new one `plan.target`'s (a move
  * always changes the provider). Neither the step nor the last applied layout is used to guess
  * which server is which. What was found is recorded again. Stops with `PHASE_PRECONDITION`, before
- * acting on any server, when the old server's address is unknown; `ARTIFACT_INVALID` when the local
- * record is damaged.
+ * acting on any server, when the old server's address is unknown (unless `oldServerOptional`:
+ * `--finish`, where that server may already be deleted); `ARTIFACT_INVALID` when the local record
+ * is damaged.
  */
 export async function loadMoveServers(
   deps: Pick<PhaseDeps, "paths">,
   plan: DeployPlan,
   command: string,
   outputs: ReadOutputs,
+  options: { oldServerOptional?: boolean } = {},
 ): Promise<MoveServers> {
   const move = plan.retarget;
   if (move === undefined) {
@@ -59,15 +80,15 @@ export async function loadMoveServers(
       next ??= serverOfProvider(read, plan.target.provider);
     }
   }
-  if (from === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "OpsCrew cannot tell which server is which on this computer: the address of the server being replaced is neither in .opscrew/server.json nor in the infrastructure state, so it cannot continue the move. Nothing was changed.",
-      { hint: hintFor(command) },
-    );
-  }
-  const servers: MoveServers = { from, ...(next !== undefined ? { next } : {}) };
-  if (local?.from === undefined || (next !== undefined && local.next === undefined)) {
+  if (from === undefined && options.oldServerOptional !== true) throw unknownOldServer(command);
+  const servers: MoveServers = {
+    ...(from !== undefined ? { from } : {}),
+    ...(next !== undefined ? { next } : {}),
+  };
+  if (
+    (from !== undefined && local?.from === undefined) ||
+    (next !== undefined && local?.next === undefined)
+  ) {
     await recordMoveServers(deps, servers);
   }
   return servers;

@@ -5,7 +5,7 @@ import {
   serverAddress,
 } from "@opscrew/agents";
 import { PHASES } from "@opscrew/contracts";
-import { OpsCrewError, ProjectStateStore } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError, ProjectStateStore } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
@@ -23,8 +23,20 @@ async function addressOf(
   return plan === undefined ? undefined : serverAddress(deps, plan);
 }
 
-/** The lines that show the server's address on this computer. */
-function addressLines(address: ServerAddress | undefined): string[] {
+/**
+ * The lines that show the server's address on this computer. A damaged `.opscrew/server.json`
+ * (`ARTIFACT_INVALID`) does not stop `opscrew status`: the phases are still shown, with a note
+ * that says what to do.
+ */
+async function addressLines(deps: PhaseDeps, plan: DeployPlan | undefined): Promise<string[]> {
+  let address: ServerAddress | undefined;
+  try {
+    address = await addressOf(deps, plan);
+  } catch (error) {
+    if (!isUserFacingError(error) || error.code !== "ARTIFACT_INVALID") throw error;
+    const note = `Server address: unknown. ${error.message}${error.hint ? ` ${error.hint}` : ""}`;
+    return ["", deps.redactor.redact(note)];
+  }
   if (address === undefined) return [];
   return [
     "",
@@ -70,7 +82,7 @@ export function register(program: Command, ctx: CliContext): void {
       const state = await new ProjectStateStore(paths.files.state).read();
       const move = plan === undefined ? undefined : retargetStatusLine(plan);
       const moveLines = move === undefined ? [] : ["", "Move in progress:", move];
-      const serverLines = addressLines(await addressOf(deps, plan));
+      const serverLines = await addressLines(deps, plan);
       if (Object.keys(state.phases).length === 0) {
         ctx.stdout("No phases have run yet. Start with `opscrew scan`.\n");
         const extra = [...serverLines, ...moveLines];

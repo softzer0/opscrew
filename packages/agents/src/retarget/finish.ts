@@ -22,7 +22,7 @@ import { publishDeploySetup } from "../provision";
 import { moveLayout, previousTarget, protectionVariable } from "./layouts";
 import { clearPending } from "./pending";
 import { deletionStep, planHeading } from "./plans";
-import { endMoveServers } from "./servers";
+import { endMoveServers, unknownOldServer } from "./servers";
 
 import {
   auditStep,
@@ -108,6 +108,10 @@ async function finish(
     prefix: PREVIOUS,
   });
   const { serverInState, serverIds } = preview;
+  // Only finishing up after the old server is gone may go on without its address.
+  if (session.servers.from === undefined && preview.changes.length > 0) {
+    throw unknownOldServer(FINISH_COMMAND);
+  }
   const warning = dataWarning(session.plan, serverInState, old);
   const data = { postgres: session.plan.services.postgres, backups: old.backups };
   const snapshotFirst = serverInState && snapshotWanted(options.snapshot, data);
@@ -268,7 +272,13 @@ async function finish(
   }
 
   // 5. Cleanup: host keys, final files, plan, snapshot record, phase.
-  if ((await forgetHostKeys(deps, [session.servers.from.ipv4, session.servers.from.ipv6])) > 0) {
+  const from = session.servers.from;
+  if (from === undefined) {
+    // Host keys are pinned by address; without it they cannot be told from the new server's.
+    deps.reporter.info(
+      `OpsCrew no longer knows the old ${words.noun}'s address on this computer, so its SSH host key stays in OpsCrew's known_hosts (${deps.paths.files.knownHosts}). It is harmless; you can delete the old ${words.noun}'s lines there.`,
+    );
+  } else if ((await forgetHostKeys(deps, [from.ipv4, from.ipv6])) > 0) {
     deps.reporter.info(`Removed the old ${words.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
   const { retarget: _finished, ...finalPlan } = session.plan;
@@ -380,6 +390,7 @@ export async function finishRetarget(
       command: FINISH_COMMAND,
       providers: [move.from.target.provider, plan.target.provider],
       services: options.services ?? {},
+      oldServerOptional: true,
       ...(options.engine !== undefined ? { engine: options.engine } : {}),
       ...(options.approvePlanHash !== undefined
         ? { approvePlanHash: options.approvePlanHash }

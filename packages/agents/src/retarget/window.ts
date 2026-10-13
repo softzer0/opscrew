@@ -12,6 +12,7 @@ import {
   stopService,
   waitAppHealthy,
 } from "./server-ops";
+import { oldServer } from "./servers";
 import {
   auditMove,
   auditStep,
@@ -63,7 +64,7 @@ export function oldRemote(session: MoveBase): RemoteExec {
     session.deps,
     session.services,
     session.deployKey.privateKeyFile,
-    session.servers.from.ipv4,
+    oldServer(session).ipv4,
   );
 }
 
@@ -106,7 +107,7 @@ export async function restartOldApp(session: MoveBase, before = ""): Promise<voi
   let move = moveOf(session);
   if (move.oldAppStoppedAt === undefined) return;
   const { deps } = session;
-  const host = session.servers.from.ipv4;
+  const host = oldServer(session).ipv4;
   const stale = move.step === "migrated";
   if (stale) {
     await saveMove(session, { ...move, step: "deployed" });
@@ -247,7 +248,7 @@ export async function maintenanceWindow(
     kind: "remote-exec",
     title: `${MAINTENANCE_WINDOW_TITLE} stop ${plan.app.name} on the old server and copy its database (${sizeText(size)}) to the new server (${byHand ? `downtime: ${downtime} for the copy, plus ${plan.dns.domain !== undefined ? "your DNS change" : "your users' move to the new address"}` : `${downtime} of downtime`})`,
     details: [
-      ...windowCommands(session.servers.from.ipv4, next.ipv4, plan.app.port, plan.app.healthPath),
+      ...windowCommands(oldServer(session).ipv4, next.ipv4, plan.app.port, plan.app.healthPath),
       ...(byHand ? ["", ...warning] : []),
     ].join("\n"),
   });
@@ -266,7 +267,7 @@ export async function maintenanceWindow(
   await auditMove(session, {
     kind: "remote-exec",
     action: "maintenance window",
-    target: session.servers.from.ipv4,
+    target: oldServer(session).ipv4,
     decision: "approved",
     detail: `maintenance window started: database of ${size} bytes, ${downtime}`,
   });

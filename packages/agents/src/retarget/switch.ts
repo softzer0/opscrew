@@ -8,6 +8,7 @@ import { committableUrl, recordServerAddress, type ServerAddress } from "../shar
 import { moveLayout, previousTarget } from "./layouts";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { startService, stopService } from "./server-ops";
+import { oldServer } from "./servers";
 import {
   auditMove,
   auditStep,
@@ -473,7 +474,7 @@ async function settleSwitch(
     );
     const problem = await waitForDns(session, domain, {
       fresh: [next.ipv4, next.ipv6],
-      old: [session.servers.from.ipv4, session.servers.from.ipv6],
+      old: [oldServer(session).ipv4, oldServer(session).ipv6],
     });
     if (problem !== undefined) {
       throw refuse({
@@ -507,7 +508,7 @@ async function settleSwitch(
       await auditMove(session, {
         kind: "remote-exec",
         action: "stop app",
-        target: session.servers.from.ipv4,
+        target: oldServer(session).ipv4,
         decision: "approved",
       });
     } catch (error) {

@@ -10,7 +10,7 @@ import type { PhaseDeps } from "../context";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { runPhaseFlow } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
-import { hasDeployment } from "../shared";
+import { hasDeployment, hidesServerAddress } from "../shared";
 
 export interface DnsOptions extends ProvisionOptions {
   /** New or changed domain, for example `app.example.com`. Defaults to the plan's domain. */
@@ -42,6 +42,9 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
   }
   const domain = parsed.data;
 
+  // A running deployment served on its address, or on a domain without the proxy: the address
+  // may already be known, which the flow says once the proxy goes on.
+  const addressWasPublic = hasDeployment(plan) && !hidesServerAddress(plan);
   const changed = plan.dns.provider !== "cloudflare" || plan.dns.domain !== domain;
   if (changed) {
     const { zone, registration, ...rest } = plan.dns;
@@ -58,38 +61,45 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
       dns: { ...dns, provider: "cloudflare", domain, proxied: true },
       security: { ...plan.security, httpAllowedFrom: "cloudflare" },
     };
-    await writeArtifact("plan", deps.paths.files.plan, plan);
-    deps.reporter.info(`The plan now serves the app at https://${domain} through Cloudflare.`);
-
-    let requirements: Requirements | undefined;
-    try {
-      requirements = await readArtifact("requirements", deps.paths.files.requirements);
-    } catch (error) {
-      if ((error as { code?: string }).code !== "ARTIFACT_MISSING") throw error;
-    }
-    if (requirements) {
-      await writeArtifact("requirements", deps.paths.files.requirements, {
-        ...requirements,
-        domain,
-        dnsProvider: "cloudflare",
-      });
-    }
   }
-
+  const updated = plan;
   const running = hasDeployment(plan);
-  const approvalNotes: string[] = [];
-  if (running && switchesRunningServer(plan, domain, changed)) {
-    const note = `The server is already running. Once this plan is applied, ports 80 and 443 accept only Cloudflare's addresses and ${domain} points at the server through Cloudflare, but the server keeps its current web configuration: the app is unreachable (by its domain and by the server's IP address) until the pull request with the new Caddyfile is merged and deployed.`;
-    deps.reporter.warn(note);
-    approvalNotes.push(`Warning: ${note}`);
-  }
+  const switching = running && switchesRunningServer(plan, domain, changed);
 
+  /** Saves the plan change once the flow's checks passed (a stop leaves the files as they were). */
+  const ready = async (): Promise<void> => {
+    if (changed) {
+      await writeArtifact("plan", deps.paths.files.plan, updated);
+      deps.reporter.info(`The plan now serves the app at https://${domain} through Cloudflare.`);
+      let requirements: Requirements | undefined;
+      try {
+        requirements = await readArtifact("requirements", deps.paths.files.requirements);
+      } catch (error) {
+        if ((error as { code?: string }).code !== "ARTIFACT_MISSING") throw error;
+      }
+      if (requirements) {
+        await writeArtifact("requirements", deps.paths.files.requirements, {
+          ...requirements,
+          domain,
+          dnsProvider: "cloudflare",
+        });
+      }
+    }
+    if (switching) deps.reporter.warn(runningServerNote(domain));
+  };
+
+  const approvalNotes = switching ? [`Warning: ${runningServerNote(domain)}`] : [];
   return runPhaseFlow(
     deps,
     "dns",
     { ...rest, secrets: rest.secrets ?? !running },
-    { approvalNotes },
+    { approvalNotes, plan: updated, ready, addressWasPublic },
   );
+}
+
+/** The warning when the running server goes behind Cloudflare before its new Caddyfile deploys. */
+function runningServerNote(domain: string): string {
+  return `The server is already running. Once this plan is applied, ports 80 and 443 accept only Cloudflare's addresses and ${domain} points at the server through Cloudflare, but the server keeps its current web configuration: the app is unreachable (by its domain and by the server's IP address) until the pull request with the new Caddyfile is merged and deployed.`;
 }
 
 /**

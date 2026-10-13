@@ -100,16 +100,97 @@ function branchStop(
   );
 }
 
+/** Where the deployment files must start from, and how a stop is worded. */
+interface BaseCheck {
+  phase: PublishPhase;
+  /** `plan.cicd.branch`: the branch the pull request goes into (usually `main`). */
+  base: string;
+  /** The branch this clone is on (`HEAD` when detached). */
+  current: string;
+}
+
+/** The stop when the deployment files would not start from the latest {@link BaseCheck.base}. */
+function baseStop(check: BaseCheck, reason: string, rerun: string): OpsCrewError {
+  const { phase, base } = check;
+  return branchStop(phase, reason, {
+    rerun: `${rerun}, then run \`opscrew ${phase}\` again.`,
+    retarget: `Switch to the latest ${base} (\`git checkout ${base} && git pull\`), then ${PUBLISH_BY_HAND}`,
+  });
+}
+
+/**
+ * Stops (before anything changes) unless the deployment files start from the latest
+ * `plan.cicd.branch`, so the pull request never carries old or already-merged changes again: a new
+ * deploy branch is only created from that branch itself, and only when it has every commit GitHub
+ * has (`baseTip`); the deploy branch this clone is on is only reused when it has them too (a
+ * branch GitHub deleted after squash-merging its pull request does not). `baseTip` undefined: the
+ * tip is not known (no such branch on GitHub, or nothing fetched), so only the branch is checked.
+ */
+async function requireLatestBase(
+  git: GitClient,
+  check: BaseCheck,
+  target: { branch: string; baseTip: string | undefined },
+): Promise<void> {
+  const { base, current } = check;
+  const hasTip = target.baseTip === undefined || (await git.isAncestor(target.baseTip, "HEAD"));
+  const checkout = `Run \`git checkout ${base} && git pull\``;
+  if (target.branch === current) {
+    if (hasTip) return;
+    throw baseStop(
+      check,
+      `this clone is on ${current}, an earlier OpsCrew branch without the latest ${base} from GitHub (its pull request was probably merged)`,
+      checkout,
+    );
+  }
+  if (current !== base) {
+    const where =
+      current === "HEAD" ? "this clone is not on a branch" : `this clone is on ${current}`;
+    throw baseStop(
+      check,
+      `${where}, but the deployment files go on a new branch from the latest ${base}`,
+      checkout,
+    );
+  }
+  if (!hasTip) {
+    throw baseStop(
+      check,
+      `this clone's ${base} is behind GitHub, and the deployment files go on a new branch from the latest ${base}`,
+      "Run `git pull`",
+    );
+  }
+}
+
+/**
+ * `origin/<base>` as this clone last fetched it, when it has that remote-tracking branch (no
+ * network: for runs that do not reach GitHub).
+ */
+async function lastFetchedTip(git: GitClient, base: string): Promise<string | undefined> {
+  const ref = `refs/remotes/origin/${base}`;
+  // A ref is its own ancestor exactly when it names a commit in this clone.
+  return (await git.isAncestor(ref, ref)) ? ref : undefined;
+}
+
 /**
  * The branch for the deployment files chosen without reaching GitHub: the first of
  * {@link DEPLOY_SETUP_BRANCH}, `-2`, … that is the current branch or does not exist in this clone,
- * so a stale local branch (its pull request merged long ago) is never committed on.
+ * so a stale local branch (its pull request merged long ago) is never committed on. Like
+ * {@link chooseDeployBranch} it stops with `PHASE_PRECONDITION` unless the files start from
+ * `plan.cicd.branch`, here judged by what this clone last fetched (`origin/<branch>`).
  */
-export async function localDeployBranch(git: GitClient): Promise<string> {
+export async function localDeployBranch(
+  git: GitClient,
+  plan: Pick<DeployPlan, "cicd">,
+  phase: PublishPhase = "provision",
+): Promise<string> {
   const current = await git.currentBranch();
+  const check: BaseCheck = { phase, base: plan.cicd.branch, current };
   for (let i = 1; i <= 100; i++) {
     const branch = deployBranchName(i);
-    if (branch === current || !(await git.branchExists(branch))) return branch;
+    if (branch === current || !(await git.branchExists(branch))) {
+      const baseTip = await lastFetchedTip(git, check.base);
+      await requireLatestBase(git, check, { branch, baseTip });
+      return branch;
+    }
   }
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
@@ -128,33 +209,47 @@ export async function localDeployBranch(git: GitClient): Promise<string> {
  * local branch is never committed on). One with an open pull request is added to when this clone
  * is on that branch and the push is a fast-forward (its head is in this clone's branch, so OpsCrew
  * pushed it from here); otherwise this throws `PHASE_PRECONDITION` naming the pull request, and
- * nothing is force-pushed. When GitHub cannot be reached through git, it warns and picks the branch
- * from this clone alone ({@link localDeployBranch}). `phase` (default `provision`) words a stop for
- * the command that publishes: a finished retarget says the final files were not published.
+ * nothing is force-pushed. Any other branch must start from the latest `plan.cicd.branch` as
+ * GitHub has it (read with `git ls-remote`, nothing is fetched): a new branch is created only from
+ * that branch with every commit GitHub has, and the deploy branch this clone is on only when it
+ * has them too; otherwise this throws `PHASE_PRECONDITION` telling the user to check it out and
+ * pull (after `opscrew adapt` the clone is on the adapt branch, and after a squash merge neither
+ * that branch nor a merged deploy branch has `main`'s new commit, so a pull request from them
+ * would carry the merged changes again). When GitHub cannot be reached through git, it warns and
+ * picks the branch from this clone alone ({@link localDeployBranch}). `phase` (default
+ * `provision`) words a stop for the command that publishes: a finished retarget says the final
+ * files were not published.
  */
 export async function chooseDeployBranch(
   deps: PhaseDeps,
   git: GitClient,
   github: GitHubSetup,
+  plan: Pick<DeployPlan, "cicd">,
   phase: PublishPhase = "provision",
 ): Promise<DeployBranch> {
   const command = `opscrew ${phase}`;
   const current = await git.currentBranch();
-  for (let i = 1; i <= 100; i++) {
-    const branch = deployBranchName(i);
-    let sha: string | undefined;
+  const check: BaseCheck = { phase, base: plan.cicd.branch, current };
+  /** A branch's sha on GitHub; `null` when GitHub cannot be reached (this clone decides then). */
+  const remoteSha = async (branch: string): Promise<string | undefined | null> => {
     try {
-      sha = await git.remoteBranchSha(branch);
+      return await git.remoteBranchSha(branch);
     } catch (error) {
       if (!isUserFacingError(error)) throw error;
-      const local = await localDeployBranch(git);
       deps.reporter.warn(
         deps.redactor.redact(
-          `OpsCrew could not check GitHub for a branch left by an earlier run (${error.message}). It continues with ${local}.`,
+          `OpsCrew could not check GitHub for the latest ${check.base} or a branch left by an earlier run (${error.message}). It continues with what this clone knows.`,
         ),
       );
-      return { branch: local };
+      return null;
     }
+  };
+  const baseTip = await remoteSha(check.base);
+  if (baseTip === null) return { branch: await localDeployBranch(git, plan, phase) };
+  for (let i = 1; i <= 100; i++) {
+    const branch = deployBranchName(i);
+    const sha = await remoteSha(branch);
+    if (sha === null) return { branch: await localDeployBranch(git, plan, phase) };
     if (sha === undefined) {
       if (branch !== current && (await git.branchExists(branch))) {
         deps.reporter.info(
@@ -162,6 +257,7 @@ export async function chooseDeployBranch(
         );
         continue;
       }
+      await requireLatestBase(git, check, { branch, baseTip });
       return { branch };
     }
     const open = await github.api.findOpenPullRequest(github.owner, github.repo, branch);
@@ -231,8 +327,8 @@ export async function publishDeploySetup(
   const chosen =
     input.branch ??
     (input.push
-      ? await chooseDeployBranch(deps, git, github, phase)
-      : { branch: await localDeployBranch(git) });
+      ? await chooseDeployBranch(deps, git, github, plan, phase)
+      : { branch: await localDeployBranch(git, plan, phase) });
   const branch = chosen.branch;
   if ((await git.currentBranch()) !== branch) {
     if (await git.branchExists(branch)) await git.checkout(branch);

@@ -1,7 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { recordServerAddress } from "@opscrew/agents";
+import { recordServerAddress, serverAddressesFile } from "@opscrew/agents";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
 import { writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -43,6 +43,28 @@ describe("opscrew status and the server's address", () => {
     const ctx = createTestContext({ cwd: dir });
     expect(await main(argv("status", "--ip"), ctx)).toBe(0);
     expect(ctx.output).toBe(`${SERVER_IPV4}\n`);
+  });
+
+  it("still shows the phases when .opscrew/server.json is damaged, with a note on what to do", async () => {
+    await provisioned();
+    const paths = resolveProjectPaths(dir, { env: {} });
+    await writeFile(serverAddressesFile(paths), "{ not json");
+    const ctx = createTestContext({ cwd: dir });
+    expect(await main(argv("status"), ctx)).toBe(0);
+    expect(ctx.output).toMatch(/provision\s+ok/);
+    const note = ctx.output
+      .split("\n")
+      .filter((line) => line.startsWith("Server address: unknown."));
+    expect(note).toHaveLength(1);
+    expect(note[0]).toContain(".opscrew/server.json) is damaged");
+    expect(note[0]).toContain("Delete .opscrew/server.json and run the command again");
+    expect(ctx.output).not.toContain(SERVER_IPV4);
+
+    // --ip has nothing to print: it stops with the same explanation.
+    const ip = createTestContext({ cwd: dir });
+    expect(await main(argv("status", "--ip"), ip)).not.toBe(0);
+    expect(ip.output).toBe("");
+    expect(ip.errors).toContain("is damaged");
   });
 
   it("says where the address is when this computer does not know it", async () => {

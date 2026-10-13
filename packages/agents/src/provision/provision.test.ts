@@ -4,7 +4,8 @@ import { join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact } from "@opscrew/plan-schema";
+import { renderRunbook } from "@opscrew/iac-templates";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { readServerAddresses } from "../shared";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
@@ -27,11 +28,13 @@ import {
 } from "./__fixtures__/fakes";
 import { findSavedPlan } from "./plan-apply";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
-import { previewDeploymentFiles } from "./render";
-import { runProvision } from "./run";
+import { deploymentRenderContext, previewDeploymentFiles } from "./render";
+import { ADDRESS_MAY_BE_PUBLIC_NOTE, runProvision } from "./run";
 import type { ProvisionServices } from "./types";
 
 const STRIPE = fakeSecret("stripe-live-key");
+/** The pull request the first run opened, while it is still open. */
+const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
 const HCLOUD = fakeSecret("hcloud-token");
 
 interface SetupOptions {
@@ -376,6 +379,145 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     });
   });
 
+  describe("the deploy branch starts from the latest main", () => {
+    /** The user's `opscrew adapt` branch, squash-merged on GitHub; this clone is still on it. */
+    async function squashMergedAdapt(project: Awaited<ReturnType<typeof setup>>) {
+      const { git, root } = project;
+      await git(root, "push", "-q", "origin", "main");
+      await git(root, "checkout", "-q", "-b", "opscrew/prepare-deploy");
+      await writeFile(join(root, "Dockerfile"), "FROM node:22-alpine\nUSER node\nEXPOSE 3000\n");
+      await git(root, "commit", "-q", "-am", "chore(opscrew): prepare the app for deployment");
+      const squash = await git(
+        root,
+        "commit-tree",
+        "HEAD^{tree}",
+        "-p",
+        "main",
+        "-m",
+        "Adapt (#1)",
+      );
+      await git(root, "push", "-q", "origin", `${squash}:refs/heads/main`);
+      return squash;
+    }
+
+    it("stops on the adapt branch after a squash merge, then branches from the updated main", async () => {
+      const project = await setup();
+      const { deps, services, github, git, root, bare, engine, handler } = project;
+      const squash = await squashMergedAdapt(project);
+
+      const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message:
+          "This clone is on opscrew/prepare-deploy, but the deployment files go on a new branch from the latest main, so OpsCrew did not change anything.",
+        hint: "Run `git checkout main && git pull`, then run `opscrew provision` again.",
+      });
+      expect(engine.calls).toEqual([]);
+      expect(handler.requests).toEqual([]);
+      expect(existsSync(join(root, "opscrew", "infra", "prod", "main.tf"))).toBe(false);
+      expect(await git(root, "branch", "--show-current")).toBe("opscrew/prepare-deploy");
+      expect(github.pulls).toEqual([]);
+
+      await git(root, "checkout", "-q", "main");
+      await git(root, "pull", "-q", "--ff-only", bare, "main");
+      const result = await runProvision(deps, { services });
+
+      expect(result.branch).toBe(DEPLOY_SETUP_BRANCH);
+      expect(await git(root, "rev-parse", `${DEPLOY_SETUP_BRANCH}^`)).toBe(squash);
+      // The pull request holds the deployment files only, not the merged adapt changes again.
+      const changed = await git(bare, "diff", "--name-only", "main", DEPLOY_SETUP_BRANCH);
+      expect(changed).toContain("opscrew/plan.yaml");
+      expect(changed).not.toContain("Dockerfile");
+      expect(github.pulls).toEqual([
+        expect.objectContaining({ head: DEPLOY_SETUP_BRANCH, base: "main" }),
+      ]);
+    });
+
+    it("stops on a main that is behind GitHub", async () => {
+      const { deps, services, git, root, engine, handler } = await setup();
+      await git(root, "push", "-q", "origin", "main");
+      const ahead = await git(root, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "upstream");
+      await git(root, "push", "-q", "origin", `${ahead}:refs/heads/main`);
+
+      await expect(runProvision(deps, { services })).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message:
+          "This clone's main is behind GitHub, and the deployment files go on a new branch from the latest main, so OpsCrew did not change anything.",
+        hint: "Run `git pull`, then run `opscrew provision` again.",
+      });
+      expect(engine.calls).toEqual([]);
+      expect(handler.requests).toEqual([]);
+    });
+
+    it("without a push, stops on another branch than main before anything is applied", async () => {
+      const { deps, services, git, root, engine, handler } = await setup();
+      await git(root, "checkout", "-q", "-b", "feature");
+
+      await expect(runProvision(deps, { services, push: false })).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: expect.stringContaining("This clone is on feature, but the deployment files"),
+      });
+      expect(engine.calls).toEqual([]);
+      expect(handler.requests).toEqual([]);
+    });
+  });
+
+  it("says once that the address may already be public when the plan turns the proxy on", async () => {
+    const { deps, services, github, git, root, bare } = await setup({
+      services: { cloudflare: fakeCloudflare() },
+    });
+    await git(root, "push", "-q", "origin", "main");
+    await runProvision(deps, { services });
+    expect(deps.reporter.text()).not.toContain(ADDRESS_MAY_BE_PUBLIC_NOTE);
+    // Merged; the user then edits the plan to serve the app on a proxied domain.
+    await git(bare, "update-ref", "refs/heads/main", await git(root, "rev-parse", "HEAD"));
+    await git(root, "checkout", "-q", "main");
+    await git(root, "pull", "-q", "--ff-only", bare, "main");
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      dns: {
+        ...plan.dns,
+        provider: "cloudflare",
+        domain: "shop.example.com",
+        proxied: true,
+      },
+      security: { ...plan.security, httpAllowedFrom: "cloudflare" },
+    });
+    const printed = deps.reporter.text().length;
+
+    await runProvision(deps, { services });
+    expect(deps.reporter.text().slice(printed).split(ADDRESS_MAY_BE_PUBLIC_NOTE)).toHaveLength(2);
+
+    // The committed files now have the proxy: a later run says nothing.
+    github.openPulls.set(`${DEPLOY_SETUP_BRANCH}-2`, OPEN_PULL);
+    const again = deps.reporter.text().length;
+    await runProvision(deps, { services });
+    expect(deps.reporter.text().slice(again)).not.toContain(ADDRESS_MAY_BE_PUBLIC_NOTE);
+  });
+
+  it("renders with the known address, as verify does, unless the plan hides it", async () => {
+    const { deps } = await setup();
+    const input = {
+      requirements: undefined,
+      github: { owner: "acme", repo: "shop" },
+      deployPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey opscrew",
+      cloudflare: undefined,
+      server: { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 },
+    };
+    const open = testPlan();
+    const shown = deploymentRenderContext(deps, { ...input, plan: open });
+    expect(shown).toMatchObject({ serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6 });
+    expect(renderRunbook(open, shown).content).toContain(SERVER_IPV4);
+
+    const proxied = testPlan({ domain: "shop.example.com" });
+    const hidden = deploymentRenderContext(deps, { ...input, plan: proxied });
+    expect(hidden.serverIpv4).toBeUndefined();
+    expect(hidden.serverIpv6).toBeUndefined();
+    expect(JSON.stringify(hidden)).not.toContain(SERVER_IPV4);
+  });
+
   it("--plan-only saves the plan; --approve applies exactly that plan or refuses", async () => {
     const { deps, engine, services, github } = await setup({
       answer: (request) => request.kind !== "iac-apply" || request.planHash === approved,
@@ -541,7 +683,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
 
   it("keeps managing its own Cloudflare rules and records when run again", async () => {
     const cloudflare = fakeCloudflare();
-    const { deps, services, root, handler } = await setup({
+    const { deps, services, root, handler, github } = await setup({
       plan: testPlan({ domain: "shop.example.com" }),
       engine: new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
       services: { cloudflare },
@@ -559,6 +701,8 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       opscrewRecord("shop.example.com", "AAAA", SERVER_IPV6),
     );
     handler.requests.length = 0;
+    // The first run's pull request is still open, so the second run adds to it.
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
     await runProvision(deps, { services });
 
     expect(await readFile(tfvarsFile, "utf8")).toBe(first);

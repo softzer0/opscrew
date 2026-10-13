@@ -75,7 +75,7 @@ async function setup(
 
 describe.skipIf(!GIT)("opscrew init", () => {
   it("prints a passing checklist and the next steps when everything is ready", async () => {
-    const { ctx } = await setup({ gitignore: "node_modules/\n.opscrew/\n" });
+    const { ctx } = await setup({ gitignore: "node_modules/\n.opscrew/\n.terraform/\n" });
     expect(await run(ctx, "init", "--offline")).toBe(0);
     expect(ctx.output).toContain("OpsCrew preflight");
     expect(ctx.output).toMatch(/✓ .*OpenTofu 1\.13\.1/);
@@ -93,13 +93,22 @@ describe.skipIf(!GIT)("opscrew init", () => {
     expect(ctx.output).toContain("fix the items marked ✗");
   });
 
-  it("adds .opscrew/ to .gitignore with --fix and keeps what was there", async () => {
+  it("adds .opscrew/ and .terraform/ to .gitignore with --fix and keeps what was there", async () => {
     const { ctx, root } = await setup({ gitignore: "node_modules/\n" });
     expect(await run(ctx, "init", "--offline", "--fix")).toBe(0);
     expect(await readFile(path.join(root, ".gitignore"), "utf8")).toBe(
-      "node_modules/\n.opscrew/\n",
+      "node_modules/\n.opscrew/\n.terraform/\n",
     );
-    expect(ctx.output).toContain("added .opscrew/ to .gitignore");
+    expect(ctx.output).toContain("added .opscrew/ and .terraform/ to .gitignore");
+  });
+
+  it("with --fix adds only the missing line and says which", async () => {
+    const { ctx, root } = await setup({ gitignore: ".opscrew/\n" });
+    expect(await run(ctx, "init", "--offline", "--fix")).toBe(0);
+    expect(await readFile(path.join(root, ".gitignore"), "utf8")).toBe(".opscrew/\n.terraform/\n");
+    expect(ctx.output).toContain(
+      "✓ .opscrew/ and .terraform/ in .gitignore — added .terraform/ to .gitignore",
+    );
   });
 
   it("asks about .gitignore only after printing the checklist", async () => {
@@ -117,7 +126,7 @@ describe.skipIf(!GIT)("opscrew init", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatch(/^repo-write after: [\s\S]*OpsCrew preflight[\s\S]*! .*\.gitignore/);
     expect(await readFile(path.join(root, ".gitignore"), "utf8")).toBe(
-      "node_modules/\n.opscrew/\n",
+      "node_modules/\n.opscrew/\n.terraform/\n",
     );
   });
 

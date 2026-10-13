@@ -8,7 +8,13 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { diffRenderedFiles, ensureDeployKey } from "../shared";
+import {
+  diffRenderedFiles,
+  ensureDeployKey,
+  hidesServerAddress,
+  readServerAddresses,
+  type ServerAddress,
+} from "../shared";
 import { type CloudflareSetup, githubCoordinates, setupCloudflare } from "./credentials";
 import type { ProvisionServices } from "./types";
 
@@ -22,8 +28,10 @@ export async function readRequirements(deps: PhaseDeps): Promise<Requirements | 
 }
 
 /**
- * The secret-free render context provision uses (shared with the read-only preview). It never
- * carries the server's address: the rendered files are committed.
+ * The secret-free render context provision uses (shared with the read-only preview). The rendered
+ * files are committed, so it carries the server's address (`input.server`, from
+ * `serverAddress`) only when the plan does not hide it behind Cloudflare's proxy: then the
+ * runbook shows the same address `opscrew verify` writes into it, and never one behind the proxy.
  */
 export function deploymentRenderContext(
   deps: PhaseDeps,
@@ -33,14 +41,19 @@ export function deploymentRenderContext(
     github: { owner: string; repo: string };
     deployPublicKey: string;
     cloudflare: CloudflareSetup | undefined;
+    /** The server's address when known on this computer. */
+    server?: ServerAddress | undefined;
   },
 ): RenderContext {
   const { requirements, cloudflare } = input;
+  const server = hidesServerAddress(input.plan) ? undefined : input.server;
   return {
     opscrewVersion: deps.version,
     github: { owner: input.github.owner, repo: input.github.repo },
     deploySshPublicKey: input.deployPublicKey,
     projectId: deps.paths.projectId,
+    ...(server !== undefined ? { serverIpv4: server.ipv4 } : {}),
+    ...(server?.ipv6 !== undefined ? { serverIpv6: server.ipv6 } : {}),
     ...(requirements?.contactEmail ? { acmeEmail: requirements.contactEmail } : {}),
     ...(cloudflare
       ? {
@@ -119,9 +132,23 @@ export async function previewDeploymentFiles(
   });
   if (cloudflare) plan = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };
   const deployPublicKey = await deployPublicKeyFor(deps, options.createDeployKey !== false);
+  // The local record only (a preview runs no engine), and never a reason for it to fail.
+  const server = hidesServerAddress(plan)
+    ? undefined
+    : await readServerAddresses(deps.paths).then(
+        (record) => record.deployment,
+        () => undefined,
+      );
   const files = renderDeployment(
     plan,
-    deploymentRenderContext(deps, { plan, requirements, github, deployPublicKey, cloudflare }),
+    deploymentRenderContext(deps, {
+      plan,
+      requirements,
+      github,
+      deployPublicKey,
+      cloudflare,
+      server,
+    }),
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);
   return {

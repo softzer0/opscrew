@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { IacEngine, IacRunOptions } from "@opscrew/contracts";
+import type { IacEngine, IacInitOptions, IacRunOptions } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testPlan } from "../provision/__fixtures__/fakes";
@@ -32,7 +32,7 @@ class OutputEngine implements IacEngine {
 
   constructor(private readonly outputs: Record<string, unknown> | "fail") {}
 
-  async init(): Promise<void> {}
+  async init(_dir: string, _options?: IacInitOptions): Promise<void> {}
   async validate() {
     return { valid: true, diagnostics: [] };
   }
@@ -46,6 +46,28 @@ class OutputEngine implements IacEngine {
     this.calls.push({ dir, env: options?.env });
     if (this.outputs === "fail") throw new Error("Backend initialization required");
     return this.outputs;
+  }
+}
+
+/** Like a real engine: outputs can only be read once `init` set up the local backend. */
+class InitFirstEngine extends OutputEngine {
+  readonly inits: { dir: string; path: string | undefined }[] = [];
+
+  constructor(
+    outputs: Record<string, unknown>,
+    private initialised = false,
+  ) {
+    super(outputs);
+  }
+
+  override async init(dir: string, options?: IacInitOptions): Promise<void> {
+    this.inits.push({ dir, path: options?.backendConfig?.path });
+    this.initialised = true;
+  }
+
+  override async output(dir: string, options?: IacRunOptions): Promise<Record<string, unknown>> {
+    if (!this.initialised) throw new Error("Backend initialization required");
+    return super.output(dir, options);
   }
 }
 
@@ -155,6 +177,28 @@ describe("serverAddress", () => {
       ipv6: IPV6,
     });
     expect(engine.calls).toHaveLength(1);
+  });
+
+  it("initialises the root module first on a computer with a copied state but no .terraform/", async () => {
+    const deps = await withState();
+    const plan = applied();
+    const dir = join(deps.paths.root, plan.infra.dir);
+    const state = join(deps.paths.files.tfstateDir, "prod.tfstate");
+    const engine = new InitFirstEngine({ server_ipv4: IPV4 });
+    expect(await serverAddress(deps, plan, { engine: async () => engine })).toEqual({ ipv4: IPV4 });
+    expect(engine.inits).toEqual([{ dir, path: state }]);
+
+    // Initialised before (a .terraform/ is there): the read comes first, and `init` only after a
+    // failed one.
+    await recordServerAddress(deps.paths, undefined);
+    await mkdir(join(dir, ".terraform"), { recursive: true });
+    const ready = new InitFirstEngine({ server_ipv4: IPV4 }, true);
+    expect(await serverAddress(deps, plan, { engine: async () => ready })).toEqual({ ipv4: IPV4 });
+    expect(ready.inits).toEqual([]);
+    await recordServerAddress(deps.paths, undefined);
+    const stale = new InitFirstEngine({ server_ipv4: IPV4 });
+    expect(await serverAddress(deps, plan, { engine: async () => stale })).toEqual({ ipv4: IPV4 });
+    expect(stale.inits).toEqual([{ dir, path: state }]);
   });
 
   it("uses the caller's engine environment when given", async () => {

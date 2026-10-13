@@ -15,10 +15,40 @@ import {
   readyRemote,
   testPlan,
 } from "../provision/__fixtures__/fakes";
-import { runProvision } from "../provision/run";
+import { DEPLOY_SETUP_BRANCH } from "../provision/publish";
+import { ADDRESS_MAY_BE_PUBLIC_NOTE, runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { runDns } from "./run";
+
+/** The pull request an earlier run opened, while it is still open. */
+const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
+
+type Git = (cwd: string, ...args: string[]) => Promise<string>;
+
+/**
+ * GitHub merges the deploy pull request (a merge commit, or a squash commit with `squash`) and
+ * deletes its branch; unless `stay`, this clone checks out `main` and pulls. Returns main's tip.
+ */
+async function mergedOnGitHub(
+  git: Git,
+  root: string,
+  bare: string,
+  options: { squash?: boolean; stay?: boolean } = {},
+): Promise<string> {
+  const head = await git(root, "rev-parse", DEPLOY_SETUP_BRANCH);
+  const main = await git(root, "rev-parse", "main");
+  const tip = options.squash
+    ? await git(root, "commit-tree", `${head}^{tree}`, "-p", main, "-m", "Deployment (#7)")
+    : head;
+  await git(root, "push", "-q", "origin", `${tip}:refs/heads/main`);
+  await git(bare, "update-ref", "-d", `refs/heads/${DEPLOY_SETUP_BRANCH}`);
+  if (!options.stay) {
+    await git(root, "checkout", "-q", "main");
+    await git(root, "pull", "-q", "--ff-only", bare, "main");
+  }
+  return tip;
+}
 
 async function setup(options: { deployed?: boolean } = {}) {
   const project = await createProject(testPlan({ deployed: options.deployed ?? true }));
@@ -121,10 +151,12 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
   });
 
   it("says the deploy secrets are stored when provision stored them for this server", async () => {
-    const { deps, handler, github, services } = await setup({ deployed: false });
+    const { deps, handler, github, services, git, root, bare } = await setup({ deployed: false });
     await runProvision(deps, { services });
     expect(github.secrets.size).toBeGreaterThan(0);
     handler.requests.length = 0;
+    // The pull request was merged; this clone is back on the updated main.
+    await mergedOnGitHub(git, root, bare);
 
     await runDns(deps, { domain: "shop.example.com", services });
     expect(handler.requests.map((r) => r.kind)).not.toContain("github-secrets");
@@ -133,8 +165,10 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
   });
 
   it("does not warn when the domain and proxying stay the same", async () => {
-    const { deps, services } = await setup();
+    const { deps, services, github } = await setup();
     await runDns(deps, { domain: "shop.example.com", services });
+    // The first run's pull request is still open, so the second run adds to it.
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
     const plan = await readArtifact("plan", deps.paths.files.plan);
     // The fake engine reports a URL on the server's IP, which is never committed.
     expect(plan.deployment.url).toBeUndefined();
@@ -157,7 +191,7 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
       privacy: true,
       dnssec: true,
     };
-    const { deps, services } = await setup();
+    const { deps, services, github } = await setup();
     const plan = await readArtifact("plan", deps.paths.files.plan);
     const bought = {
       ...plan,
@@ -180,6 +214,7 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     expect(inside.dns.registration).toEqual(registration);
 
     // another domain: the registration would describe the old one, so it goes
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
     await writeArtifact("plan", deps.paths.files.plan, bought);
     await runDns(deps, { domain: "other.org", services }).catch(() => undefined);
     const other = await readArtifact("plan", deps.paths.files.plan);
@@ -209,5 +244,67 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     expect(handler.requests).toEqual([]);
     expect(deps.reporter.lines).toEqual([]);
     expect((await deps.state.read()).phases.dns).toBeUndefined();
+  });
+
+  it("never commits on a deploy branch GitHub deleted after squash-merging it", async () => {
+    const { deps, handler, github, engine, services, git, root, bare } = await setup({
+      deployed: false,
+    });
+    await git(root, "push", "-q", "origin", "main");
+    await runProvision(deps, { services });
+    // Squash-merged and deleted on GitHub; this clone is still on the old deploy branch.
+    const squash = await mergedOnGitHub(git, root, bare, { squash: true, stay: true });
+    const before = await readFile(deps.paths.files.plan, "utf8");
+    const calls = engine.calls.length;
+    handler.requests.length = 0;
+    const printed = deps.reporter.text().length;
+
+    const error = await runDns(deps, { domain: "shop.example.com", services }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: `This clone is on ${DEPLOY_SETUP_BRANCH}, an earlier OpsCrew branch without the latest main from GitHub (its pull request was probably merged), so OpsCrew did not change anything.`,
+      hint: "Run `git checkout main && git pull`, then run `opscrew dns` again.",
+    });
+    expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+    expect(engine.calls).toHaveLength(calls);
+    expect(handler.requests).toEqual([]);
+    expect(await git(root, "status", "--porcelain")).not.toMatch(/ (?:opscrew|\.github)\//);
+    expect(github.pulls).toHaveLength(1);
+    expect(deps.reporter.text().slice(printed)).not.toContain(ADDRESS_MAY_BE_PUBLIC_NOTE);
+
+    // As the hint says: the new branch starts from the squash commit, so its pull request holds
+    // only this run's changes.
+    await git(root, "checkout", "-q", "main");
+    await git(root, "pull", "-q", "--ff-only", bare, "main");
+    const result = await runDns(deps, { domain: "shop.example.com", services });
+    const branch = `${DEPLOY_SETUP_BRANCH}-2`;
+    expect(result.branch).toBe(branch);
+    expect(await git(root, "rev-parse", `${branch}^`)).toBe(squash);
+    expect(await git(root, "rev-parse", DEPLOY_SETUP_BRANCH)).not.toBe(squash);
+    expect(github.pulls.map((p) => p.head)).toEqual([DEPLOY_SETUP_BRANCH, branch]);
+  });
+
+  it("says once that the address may already be public when the proxy goes on", async () => {
+    // Deployed without a domain: the app was served on the server's address.
+    const { deps, services, github } = await setup();
+    await runDns(deps, { domain: "shop.example.com", services });
+    const text = deps.reporter.text();
+    expect(text.split(ADDRESS_MAY_BE_PUBLIC_NOTE)).toHaveLength(2);
+    expect(ADDRESS_MAY_BE_PUBLIC_NOTE).toContain("only a new server gets a fresh, private address");
+    expect(ADDRESS_MAY_BE_PUBLIC_NOTE).toContain("opscrew retarget");
+
+    // Already behind the proxy: nothing more to say.
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
+    await runDns(deps, { domain: "shop.example.com", services });
+    expect(deps.reporter.text().slice(text.length)).not.toContain(ADDRESS_MAY_BE_PUBLIC_NOTE);
+  });
+
+  it("does not say it for a deployment that was never served", async () => {
+    const { deps, services } = await setup({ deployed: false });
+    await runDns(deps, { domain: "shop.example.com", services });
+    expect(deps.reporter.text()).not.toContain(ADDRESS_MAY_BE_PUBLIC_NOTE);
   });
 });

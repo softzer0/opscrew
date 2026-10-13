@@ -39,6 +39,7 @@ import {
   ensureDeployKey,
   pinHostKey,
   providerConsole,
+  readOutputsAfterInit,
   type ServerAddress,
   SshRemoteExec,
   writeRenderedFiles,
@@ -216,6 +217,11 @@ export interface OpenSessionInput {
   services: RetargetServices;
   /** The servers when the caller knows them (a new move, or read before the session opened). */
   servers?: MoveServers;
+  /**
+   * `--finish`: the old server's address may be unknown (it may already be deleted); the finish
+   * stops itself when there is still something of it to delete.
+   */
+  oldServerOptional?: boolean;
 }
 
 /**
@@ -274,9 +280,16 @@ export async function openSession(
   const env = await engineEnvironment(deps, plan, engine, command);
   await mkdir(deps.paths.files.plansDir, { recursive: true });
   const dir = join(deps.paths.root, plan.infra.dir);
+  // Read only when the local record lacks an address; `init` first where the state was copied.
   const servers =
     input.servers ??
-    (await loadMoveServers(deps, plan, command, () => engine.output(dir, { env })));
+    (await loadMoveServers(
+      deps,
+      plan,
+      command,
+      () => readOutputsAfterInit(engine, dir, statePathOf(deps), env),
+      { oldServerOptional: input.oldServerOptional === true },
+    ));
   return {
     deps,
     services,

@@ -9,8 +9,12 @@ export {
   runInitChecks,
 } from "./checks";
 export {
+  describeGitignoreEntries,
   type EnsureGitignoreOptions,
   ensureGitignore,
+  GITIGNORE_ENTRIES,
+  type GitignoreEntry,
   gitignoreCoversOpsCrew,
-  OPSCREW_GITIGNORE_ENTRY,
+  gitignoreCoversTerraform,
+  missingGitignoreEntries,
 } from "./gitignore";

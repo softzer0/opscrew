@@ -1,4 +1,10 @@
-import { ensureGitignore, type InitCheck, initPassed, runInitChecks } from "@opscrew/agents";
+import {
+  describeGitignoreEntries,
+  ensureGitignore,
+  type InitCheck,
+  initPassed,
+  runInitChecks,
+} from "@opscrew/agents";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps } from "../deps";
@@ -26,15 +32,16 @@ function checklist(checks: readonly InitCheck[]): string {
 
 /**
  * `opscrew init`: checks everything the flow needs (git and a GitHub remote, OpenTofu or
- * Terraform, ssh, tokens and their access, an optional model key, `.opscrew/` in `.gitignore`) and
- * prints a checklist with the fix for every problem (FR-306). Offers to ignore `.opscrew/` (or does
- * it with `--fix`). Exit codes: 0 ready, 1 a required check failed, 2 error.
+ * Terraform, ssh, tokens and their access, an optional model key, `.opscrew/` and `.terraform/` in
+ * `.gitignore`) and prints a checklist with the fix for every problem (FR-306). Offers to add the
+ * missing `.gitignore` lines (or does it with `--fix`). Exit codes: 0 ready, 1 a required check
+ * failed, 2 error.
  */
 export function register(program: Command, ctx: CliContext): void {
   program
     .command("init")
     .description("Check that everything OpsCrew needs is installed and configured")
-    .option("--fix", "Add .opscrew/ to .gitignore without asking")
+    .option("--fix", "Add .opscrew/ and .terraform/ to .gitignore without asking")
     .option("--offline", "Do not verify tokens over the network (only check they are set)")
     .exitOverride(usageErrorsExit2)
     .action(async (flags: InitFlags) => {
@@ -50,12 +57,11 @@ export function register(program: Command, ctx: CliContext): void {
       const offerGitignore = gitignore !== undefined && gitignore.status !== "pass";
       // --fix asks nothing, so the checklist can already show the result.
       if (offerGitignore && flags.fix === true) {
-        const changed = await runPhaseCommand(ctx, () => ensureGitignore(deps, { fix: true }));
-        if (changed) {
+        const added = await runPhaseCommand(ctx, () => ensureGitignore(deps, { fix: true }));
+        if (added.length > 0) {
+          const message = `added ${describeGitignoreEntries(added)} to .gitignore`;
           checks = checks.map((check) =>
-            check.id === "gitignore"
-              ? { ...check, status: "pass", message: "added .opscrew/ to .gitignore" }
-              : check,
+            check.id === "gitignore" ? { ...check, status: "pass", message } : check,
           );
         }
       }

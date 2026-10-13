@@ -20,10 +20,12 @@ import { type TestPlanOptions, testPlan } from "../verify/__fixtures__/plan";
 import {
   ensureGitignore,
   gitignoreCoversOpsCrew,
+  gitignoreCoversTerraform,
   type InitCheck,
   type InitCheckId,
   type InitServices,
   initPassed,
+  missingGitignoreEntries,
   runInitChecks,
 } from "./index";
 
@@ -205,7 +207,10 @@ async function setup(o: Setup = {}): Promise<{ deps: TestPhaseDeps; calls: strin
     fetch,
     ...(o.runtime ? { runtime: o.runtime } : {}),
   });
-  await writeFile(join(deps.paths.root, ".gitignore"), o.gitignore ?? "node_modules/\n.opscrew/\n");
+  await writeFile(
+    join(deps.paths.root, ".gitignore"),
+    o.gitignore ?? "node_modules/\n.opscrew/\n.terraform/\n",
+  );
   return { deps, calls };
 }
 
@@ -737,6 +742,23 @@ describe("runInitChecks", () => {
     const gi = await check("gitignore", { gitignore: "node_modules/\n" });
     expect(gi.status).toBe("warn");
     expect(gi.fix).toContain("opscrew init --fix");
+    expect(gi.fix).toContain(".opscrew/ and .terraform/");
+  });
+
+  it("warns when .terraform/ (provider binaries under opscrew/infra/) is not in .gitignore", async () => {
+    const gi = await check("gitignore", { gitignore: ".opscrew/\n/.terraform/\n" });
+    expect(gi.status).toBe("warn");
+    expect(gi.message).toBe(
+      ".gitignore does not ignore .terraform/, so the provider binaries OpenTofu or Terraform download under opscrew/infra/ could be committed.",
+    );
+    expect(gi.fix).toBe(
+      "Run `opscrew init --fix` to add .terraform/ to .gitignore, or add it yourself.",
+    );
+    const covered = await check("gitignore", { gitignore: ".opscrew/\n**/.terraform/*\n" });
+    expect(covered).toMatchObject({
+      status: "pass",
+      message: ".gitignore ignores .opscrew/ and .terraform/.",
+    });
   });
 
   it("offline: never touches the network and says tokens were only checked for presence", async () => {
@@ -791,6 +813,19 @@ describe("gitignoreCoversOpsCrew", () => {
   });
 });
 
+describe("gitignoreCoversTerraform", () => {
+  it("recognises .terraform at any depth and honours negation", () => {
+    for (const line of [".terraform", ".terraform/", "**/.terraform/", "**/.terraform/*"]) {
+      expect(gitignoreCoversTerraform(`dist\n${line}\n`)).toBe(true);
+    }
+    // A rooted pattern does not reach opscrew/infra/prod/.terraform/.
+    expect(gitignoreCoversTerraform("/.terraform/\n")).toBe(false);
+    expect(gitignoreCoversTerraform(".terraform/\n!.terraform/\n")).toBe(false);
+    expect(missingGitignoreEntries(undefined)).toEqual([".opscrew/", ".terraform/"]);
+    expect(missingGitignoreEntries(".terraform/\n")).toEqual([".opscrew/"]);
+  });
+});
+
 describe("ensureGitignore", () => {
   async function deps(answers: boolean[] = [true]) {
     const handler = new ScriptedApprovalHandler(answers);
@@ -801,39 +836,52 @@ describe("ensureGitignore", () => {
   it("leaves the file alone when the approval is refused", async () => {
     const { d, handler, file } = await deps([false]);
     await writeFile(file, "node_modules/\n");
-    expect(await ensureGitignore(d)).toBe(false);
+    expect(await ensureGitignore(d)).toEqual([]);
     expect(await readFile(file, "utf8")).toBe("node_modules/\n");
     expect(handler.requests[0]?.kind).toBe("repo-write");
+    expect(handler.requests[0]?.title).toBe("Add .opscrew/ and .terraform/ to .gitignore");
+    expect(handler.requests[0]?.details).toContain("provider binaries");
     expect(d.reporter.text()).toContain("opscrew init --fix");
   });
 
   it("appends after approval, keeping CRLF line endings, and is idempotent", async () => {
     const { d, handler, file } = await deps([true]);
     await writeFile(file, "node_modules/\r\ndist/");
-    expect(await ensureGitignore(d)).toBe(true);
-    expect(await readFile(file, "utf8")).toBe("node_modules/\r\ndist/\r\n.opscrew/\r\n");
-    expect(await ensureGitignore(d)).toBe(false);
+    expect(await ensureGitignore(d)).toEqual([".opscrew/", ".terraform/"]);
+    expect(await readFile(file, "utf8")).toBe(
+      "node_modules/\r\ndist/\r\n.opscrew/\r\n.terraform/\r\n",
+    );
+    expect(await ensureGitignore(d)).toEqual([]);
     expect(handler.requests).toHaveLength(1);
   });
 
   it("creates .gitignore when missing", async () => {
     const { d, file } = await deps([true]);
-    expect(await ensureGitignore(d)).toBe(true);
-    expect(await readFile(file, "utf8")).toBe(".opscrew/\n");
+    expect(await ensureGitignore(d)).toEqual([".opscrew/", ".terraform/"]);
+    expect(await readFile(file, "utf8")).toBe(".opscrew/\n.terraform/\n");
   });
 
-  it("does nothing and asks nothing when already present", async () => {
+  it("adds only what is missing", async () => {
     const { d, handler, file } = await deps([true]);
     await writeFile(file, "/.opscrew/\n");
-    expect(await ensureGitignore(d)).toBe(false);
+    expect(await ensureGitignore(d)).toEqual([".terraform/"]);
+    expect(await readFile(file, "utf8")).toBe("/.opscrew/\n.terraform/\n");
+    expect(handler.requests[0]?.title).toBe("Add .terraform/ to .gitignore");
+    expect(d.reporter.text()).toContain("Added .terraform/ to .gitignore.");
+  });
+
+  it("does nothing and asks nothing when both are present", async () => {
+    const { d, handler, file } = await deps([true]);
+    await writeFile(file, "/.opscrew/\n**/.terraform/*\n");
+    expect(await ensureGitignore(d)).toEqual([]);
     expect(handler.requests).toHaveLength(0);
   });
 
   it("changes the file without asking with fix", async () => {
     const { d, handler, file } = await deps([false]);
     await writeFile(file, "node_modules/\n");
-    expect(await ensureGitignore(d, { fix: true })).toBe(true);
-    expect(await readFile(file, "utf8")).toBe("node_modules/\n.opscrew/\n");
+    expect(await ensureGitignore(d, { fix: true })).toEqual([".opscrew/", ".terraform/"]);
+    expect(await readFile(file, "utf8")).toBe("node_modules/\n.opscrew/\n.terraform/\n");
     expect(handler.requests).toHaveLength(0);
   });
 });
