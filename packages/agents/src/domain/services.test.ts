@@ -73,9 +73,33 @@ describe("defaultDomainServices", () => {
         ],
       }),
       "POST /zones": ok({ id: "z1", name: "shopapp.com", status: "pending", name_servers: [] }),
-      "GET /zones/z1/dnssec": [ok({ status: "disabled" }), ok({ status: "pending" })],
+      "GET /zones/z1/dnssec": [
+        ok({ status: "disabled" }),
+        ok({ status: "pending" }),
+        ok({
+          status: "pending",
+          key_tag: 2371,
+          algorithm: 13,
+          digest_type: 2,
+          digest: "ABCDEF0123",
+          ds: "shopapp.com. 3600 IN DS 2371 13 2 ABCDEF0123",
+        }),
+      ],
       "GET /zones?name=shopapp.com&per_page=1": ok([
         { id: "z1", name: "shopapp.com", status: "active", name_servers: [] },
+      ]),
+      "PUT /zones/z1/activation_check": ok({ id: "z1" }),
+      "POST /zones/z1/dns_records/batch": ok({ posts: [{ id: "r1" }] }),
+      "GET /zones/z1/dns_records?page=1&per_page=100": ok([
+        {
+          id: "r1",
+          type: "MX",
+          name: "shopapp.com",
+          content: "mx.mail.example",
+          ttl: 1,
+          priority: 10,
+        },
+        { id: "r2", type: "A", name: "shopapp.com", content: "203.0.113.5", ttl: 1, proxied: true },
       ]),
     });
     const deps = await createTestPhaseDeps({
@@ -93,6 +117,8 @@ describe("defaultDomainServices", () => {
     expect(await services.zones.createZone("acc-1", "shopapp.com")).toEqual({
       id: "z1",
       name: "shopapp.com",
+      status: "pending",
+      nameServers: [],
     });
     expect(api.calls.find((c) => c.path === "/zones")?.body).toEqual({
       name: "shopapp.com",
@@ -101,7 +127,26 @@ describe("defaultDomainServices", () => {
     });
     expect(await services.zones.dnssecEnabled?.("z1")).toBe(false);
     expect(await services.zones.dnssecEnabled?.("z1")).toBe(true);
-    expect(await services.zones.findZone("shopapp.com")).toEqual({ id: "z1", name: "shopapp.com" });
+    expect(await services.zones.dsRecord?.("z1")).toEqual({
+      keyTag: 2371,
+      algorithm: 13,
+      digestType: 2,
+      digest: "ABCDEF0123",
+      ds: "shopapp.com. 3600 IN DS 2371 13 2 ABCDEF0123",
+    });
+    expect(await services.zones.findZone("shopapp.com")).toEqual({
+      id: "z1",
+      name: "shopapp.com",
+      status: "active",
+      nameServers: [],
+    });
+    expect(await services.zones.activationCheck?.("z1")).toEqual({ requested: true });
+    const mx = { type: "MX", name: "shopapp.com", content: "mx.mail.example", priority: 10 };
+    expect(await services.zones.createRecords?.("z1", [{ ...mx, ttl: 1, proxied: false }])).toBe(1);
+    expect(await services.zones.listRecords?.("z1")).toEqual([
+      { type: "MX", name: "shopapp.com", content: "mx.mail.example", priority: 10 },
+      { type: "A", name: "shopapp.com", content: "203.0.113.5", proxied: true },
+    ]);
     expect(api.calls.every((c) => c.auth === `Bearer ${TOKEN}`)).toBe(true);
     // the token is registered with the redactor
     expect(deps.redactor.redact(`token ${TOKEN}`)).not.toContain(TOKEN);
@@ -130,7 +175,7 @@ describe("defaultDomainServices", () => {
 
     const [check] = await services.registrar("acc-1").check(["shopapp.com"]);
     expect(check).toMatchObject({ registrable: true });
-    expect(await services.zones.createZone("acc-1", "shopapp.com")).toEqual({
+    expect(await services.zones.createZone("acc-1", "shopapp.com")).toMatchObject({
       id: "sandbox",
       name: "shopapp.com",
     });

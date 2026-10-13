@@ -1,7 +1,15 @@
 import { CloudflareClient, CloudflareRegistrar } from "@opscrew/connector-cloudflare";
-import type { Registrar } from "@opscrew/contracts";
+import type { Registrar, RegistrarId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
+import {
+  configuredRegistrars,
+  type OtherRegistrarId,
+  REGISTRAR_IDS,
+  REGISTRAR_NAMES,
+  registrarFor,
+  registrarSandbox,
+} from "./registrars";
 import type { DomainAccount, DomainExtension, DomainServices, DomainZoneApi } from "./types";
 
 /** The collaborators of a domain command with every default filled in. */
@@ -10,9 +18,47 @@ export interface ResolvedDomainServices {
   registrar: (accountId: string) => Registrar;
   extension: (accountId: string, tld: string) => Promise<DomainExtension | undefined>;
   zones: DomainZoneApi;
+  /**
+   * The zone calls for a domain bought or managed at `registrar`: stand-ins when that registrar
+   * runs in its sandbox (the sandbox domain does not exist, so Cloudflare cannot add its zone),
+   * else `zones`.
+   */
+  zonesFor: (registrar: RegistrarId) => DomainZoneApi;
+  /** The adapter of another registrar (built once per run); stops when it is not set up. */
+  otherRegistrar: (id: OtherRegistrarId) => Registrar;
+  /** Registrars with credentials, Cloudflare first. */
+  configuredRegistrars: () => RegistrarId[];
   sleep: (ms: number) => Promise<void>;
   now: () => number;
 }
+
+/** Nameservers the stand-in zones report (real Cloudflare names, so registrar sandboxes accept them). */
+export const SANDBOX_NAMESERVERS: readonly string[] = [
+  "ada.ns.cloudflare.com",
+  "bob.ns.cloudflare.com",
+];
+
+/**
+ * Stand-in zone calls for registrar sandboxes: nothing is created at Cloudflare, DNSSEC stays off,
+ * records are counted but not stored.
+ */
+export const SANDBOX_ZONES: DomainZoneApi = {
+  simulated: true,
+  findZone: async () => undefined,
+  createZone: async (_accountId, name) => ({
+    id: "sandbox",
+    name,
+    status: "pending",
+    nameServers: [...SANDBOX_NAMESERVERS],
+  }),
+  enableDnssec: async () => {},
+  dnssecEnabled: async () => false,
+  dsRecord: async () => undefined,
+  activationCheck: async () => ({ requested: false, reason: "sandbox: no Cloudflare zone exists" }),
+  listRecords: async () => [],
+  createRecords: async (_zoneId, records) => records.length,
+  scanRecords: async () => [],
+};
 
 /** The Cloudflare collaborators: accounts, the registrar of one account, extensions and zones. */
 export type CloudflareDomainServices = Pick<
@@ -50,13 +96,6 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
       "Using Cloudflare's registrar sandbox (OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1): purchases are simulated and the zone and DNSSEC setup is skipped, but OpsCrew still records the domain in the project files (opscrew/requirements.yaml and opscrew/plan.yaml). Unset it to buy real domains.",
     );
   }
-  const sandboxZones: DomainZoneApi = {
-    simulated: true,
-    findZone: async () => undefined,
-    createZone: async (_accountId, name) => ({ id: "sandbox", name }),
-    enableDnssec: async () => {},
-    dnssecEnabled: async () => false,
-  };
   return {
     accounts: () => client.listAccounts(),
     registrar: (accountId) => new CloudflareRegistrar(client, accountId),
@@ -67,18 +106,13 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
         : { contactExtensionsRequired: found.contactExtensionsRequired };
     },
     zones: sandbox
-      ? sandboxZones
+      ? SANDBOX_ZONES
       : {
           findZone: async (name) => {
             const zone = await client.findZone(name);
-            return zone !== undefined && zone.name.toLowerCase() === name
-              ? { id: zone.id, name: zone.name }
-              : undefined;
+            return zone !== undefined && zone.name.toLowerCase() === name ? zone : undefined;
           },
-          createZone: async (accountId, name) => {
-            const zone = await client.createZone(accountId, name);
-            return { id: zone.id, name: zone.name };
-          },
+          createZone: (accountId, name) => client.createZone(accountId, name),
           enableDnssec: async (zoneId) => {
             await client.enableDnssec(zoneId);
           },
@@ -86,11 +120,73 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
             const { status } = await client.getDnssec(zoneId);
             return status === "active" || status === "pending";
           },
+          dsRecord: async (zoneId) => {
+            const { keyTag, algorithm, digestType, digest, ds } = await client.getDnssec(zoneId);
+            if (
+              keyTag === undefined ||
+              algorithm === undefined ||
+              digestType === undefined ||
+              digest === undefined
+            ) {
+              return undefined;
+            }
+            return { keyTag, algorithm, digestType, digest, ...(ds ? { ds } : {}) };
+          },
+          activationCheck: async (zoneId) => {
+            const result = await client.activationCheck(zoneId);
+            return result.requested
+              ? { requested: true }
+              : { requested: false, reason: result.reason };
+          },
+          listRecords: async (zoneId) =>
+            (await client.listDnsRecords(zoneId)).map(
+              ({ type, name, content, proxied, priority }) => ({
+                type,
+                name,
+                content,
+                ...(proxied === undefined ? {} : { proxied }),
+                ...(priority === undefined ? {} : { priority }),
+              }),
+            ),
+          createRecords: async (zoneId, records) =>
+            (await client.batchCreateRecords(zoneId, records)).length,
+          scanRecords: (zoneId) => client.scanDnsRecords(zoneId),
         },
   };
 }
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Other registrars: the given ones (tests), else built from the environment once per run. */
+function otherRegistrarServices(
+  deps: PhaseDeps,
+  given: DomainServices,
+): Pick<ResolvedDomainServices, "otherRegistrar" | "configuredRegistrars"> {
+  const built = new Map<OtherRegistrarId, Registrar>();
+  return {
+    otherRegistrar: (id) => {
+      if (given.registrars !== undefined) {
+        const registrar = given.registrars[id];
+        if (registrar !== undefined) return registrar;
+        throw new OpsCrewError("CREDENTIALS_MISSING", `${REGISTRAR_NAMES[id]} is not set up.`);
+      }
+      let registrar = built.get(id);
+      if (registrar === undefined) {
+        registrar = registrarFor(id, deps);
+        built.set(id, registrar);
+      }
+      return registrar;
+    },
+    configuredRegistrars: () => {
+      if (given.registrars === undefined) return configuredRegistrars(deps.env);
+      const cloudflare =
+        given.registrar !== undefined || (deps.env.CLOUDFLARE_API_TOKEN?.trim() ?? "") !== "";
+      return REGISTRAR_IDS.filter((id) =>
+        id === "cloudflare" ? cloudflare : given.registrars?.[id] !== undefined,
+      );
+    },
+  };
+}
 
 /** Fills the missing collaborators with the Cloudflare defaults (built only when needed). */
 export function resolveDomainServices(
@@ -99,22 +195,36 @@ export function resolveDomainServices(
 ): ResolvedDomainServices {
   const sleep = given.sleep ?? realSleep;
   const now = given.now ?? (() => performance.now());
+  const others = otherRegistrarServices(deps, given);
+  const zonesFor =
+    (zones: DomainZoneApi) =>
+    (registrar: RegistrarId): DomainZoneApi =>
+      given.zones === undefined &&
+      registrar !== "cloudflare" &&
+      registrarSandbox(registrar, deps.env)
+        ? SANDBOX_ZONES
+        : zones;
   if (given.accounts && given.registrar && given.extension && given.zones) {
     return {
       accounts: given.accounts,
       registrar: given.registrar,
       extension: given.extension,
       zones: given.zones,
+      zonesFor: zonesFor(given.zones),
+      ...others,
       sleep,
       now,
     };
   }
   const defaults = defaultDomainServices(deps);
+  const zones = given.zones ?? defaults.zones;
   return {
     accounts: given.accounts ?? defaults.accounts,
     registrar: given.registrar ?? defaults.registrar,
     extension: given.extension ?? defaults.extension,
-    zones: given.zones ?? defaults.zones,
+    zones,
+    zonesFor: zonesFor(zones),
+    ...others,
     sleep,
     now,
   };

@@ -1,9 +1,12 @@
+import type { CloudflareRecordInput } from "@opscrew/connector-cloudflare";
 import type {
   Currency,
   DomainCheck,
+  DsRecord,
   Money,
   RegisteredDomain,
   Registrar,
+  RegistrarDnsRecord,
   RegistrarId,
 } from "@opscrew/contracts";
 
@@ -13,7 +16,34 @@ export interface DomainAccount {
   name: string;
 }
 
-/** Zone calls the setup after a purchase needs (a Cloudflare client or a test fake). */
+/** A Cloudflare zone as the domain commands see it. */
+export interface DomainZone {
+  id: string;
+  name: string;
+  /** `pending` until the domain's nameservers point at Cloudflare, then `active`. */
+  status?: string;
+  /** The Cloudflare nameservers assigned to the zone (to set at another registrar). */
+  nameServers?: string[];
+}
+
+/** The DS record Cloudflare publishes for a zone's DNSSEC, to add at another registrar. */
+export interface ZoneDsRecord extends DsRecord {
+  /** The full DS record text, for registrars whose dashboard takes one line. */
+  ds?: string;
+}
+
+/** A DNS record already in a Cloudflare zone (to skip records copied by an earlier run). */
+export interface ZoneRecord {
+  type: string;
+  name: string;
+  content: string;
+  /** True when Cloudflare proxies the record (only HTTP and HTTPS reach the origin). */
+  proxied?: boolean;
+  /** MX priority. */
+  priority?: number;
+}
+
+/** Zone calls the domain commands need (a Cloudflare client or a test fake). */
 export interface DomainZoneApi {
   /**
    * True when these zone calls are stand-ins (Cloudflare's registrar sandbox): no zone exists and
@@ -22,17 +52,30 @@ export interface DomainZoneApi {
   readonly simulated?: boolean;
   /**
    * The zone named exactly `name` that the token can see. Read-only and not scoped to an account,
-   * so only `opscrew domain status` uses it (to read DNSSEC); setting up uses `createZone`.
+   * so only status reads and resumed runs use it; setting up uses `createZone`.
    */
-  findZone(name: string): Promise<{ id: string; name: string } | undefined>;
+  findZone(name: string): Promise<DomainZone | undefined>;
   /** Creates the zone on the account; returns the existing one only when it is in that account. */
-  createZone(accountId: string, name: string): Promise<{ id: string; name: string }>;
+  createZone(accountId: string, name: string): Promise<DomainZone>;
   enableDnssec(zoneId: string): Promise<void>;
   /**
    * Whether DNSSEC is on for the zone (Cloudflare `GET /zones/{id}/dnssec`: `active` or
    * `pending`). Without it, the setup always turns DNSSEC on and status reads the plan.
    */
   dnssecEnabled?(zoneId: string): Promise<boolean>;
+  /** The zone's DS record once DNSSEC is on (active or pending); undefined before. */
+  dsRecord?(zoneId: string): Promise<ZoneDsRecord | undefined>;
+  /**
+   * Asks Cloudflare to re-check the zone's nameservers now. `requested: false` (with the reason)
+   * when Cloudflare says it is too soon; it keeps checking on its own.
+   */
+  activationCheck?(zoneId: string): Promise<{ requested: boolean; reason?: string }>;
+  /** The records in the zone. */
+  listRecords?(zoneId: string): Promise<ZoneRecord[]>;
+  /** Creates records in one batch per call (all or none of a call); returns how many. */
+  createRecords?(zoneId: string, records: readonly CloudflareRecordInput[]): Promise<number>;
+  /** Cloudflare's scan of the domain's current public DNS (shown for review, never accepted). */
+  scanRecords?(zoneId: string): Promise<RegistrarDnsRecord[]>;
 }
 
 /** Registrar settings of an extension that matter to OpsCrew. */
@@ -52,7 +95,9 @@ export interface DomainServices {
   registrar?: (accountId: string) => Registrar;
   /**
    * The other registrars (feature 007), each for the single account its credentials belong to
-   * (default: built from their environment variables by `registrarFor`; absent when not set up).
+   * (default: built from their environment variables by `registrarFor`). When given, these are the
+   * only other registrars OpsCrew uses (tests); `configuredRegistrars` then lists Cloudflare plus
+   * these.
    */
   registrars?: Partial<Record<Exclude<RegistrarId, "cloudflare">, Registrar>>;
   /** An extension's registrar settings; undefined when Cloudflare does not know it. */
@@ -173,28 +218,4 @@ export interface SetAutoRenewOptions {
   on: boolean;
   account?: string;
   services?: DomainServices;
-}
-
-export interface ConnectDomainOptions {
-  /** A domain the user already owns at a configured registrar. */
-  domain: string;
-  /** The registrar holding it (default: found among the configured registrars). */
-  registrar?: RegistrarId;
-  /** A BIND zone file with the current records, when the registrar does not host the DNS. */
-  recordsFile?: string;
-  /** Cloudflare account id when the token sees several. */
-  account?: string;
-  services?: DomainServices;
-}
-
-export interface ConnectDomainResult {
-  domain: string;
-  registrar: RegistrarId;
-  zoneId: string;
-  /** The Cloudflare nameservers the domain now points at. */
-  nameservers: string[];
-  /** Records copied into the Cloudflare zone. */
-  copied: number;
-  /** Plain-English next steps for the CLI to print. */
-  next: string[];
 }

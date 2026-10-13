@@ -1,6 +1,6 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
-import type { ConnectDomainOptions, ConnectDomainResult } from "./types";
+import type { ConnectDomainOptions, ConnectDomainResult } from "./connect-types";
 
 /**
  * Moves a domain the user already owns onto Cloudflare DNS: copies its records into a new zone,

@@ -53,7 +53,7 @@ after an environment variable name.
 
 ## Phase 3: Seam (lead)
 
-- [ ] T706 `registrarFor`, configured registrars and dashboard links in `packages/agents/src/domain/registrars.ts` (lead)
+- [X] T706 `registrarFor`, configured registrars and dashboard links in `packages/agents/src/domain/registrars.ts` (lead)
   - Depends: T702–T705
   - Effort: lead
 
