@@ -62,7 +62,7 @@ variable name. Tasks touching the CLI wait for feature 005's CLI task (T509).
 
 ## Phase 4: Verification
 
-- [ ] T607 Sandbox purchase test and docs (lead) in `packages/cli/test/live/**` or `packages/connectors/cloudflare/test/live/**`, `docs/e2e.md`
+- [X] T607 Sandbox purchase test and docs (lead) in `packages/cli/test/live/**` or `packages/connectors/cloudflare/test/live/**`, `docs/e2e.md`
 - [ ] T608 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-601..FR-609
 
 ## Dependencies & waves

@@ -83,3 +83,24 @@ Some things are not removed:
 
 - **Cloudflare DNS records:** the IaC destroy removes them, but the API fallback does not. Check the zone if a run failed.
 - **GitHub repository state:** the pushed container image (GHCR package), merged branches and Actions secrets stay in the throwaway repository. The next run overwrites them.
+
+## Domain purchase (Cloudflare registrar sandbox)
+
+`packages/cli/test/live/domain.test.ts` checks `opscrew domain search` and `opscrew domain buy`
+against Cloudflare's registrar sandbox, which only simulates purchases (.com and .net). It runs
+when these are set:
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_CLOUDFLARE_REGISTRAR_TOKEN` | A Cloudflare token with Registrar access for the account. |
+| `OPSCREW_E2E_CLOUDFLARE_ACCOUNT_ID` | The account id to use. |
+
+The test sets `OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1`, which sends every registrar call to the
+sandbox and skips the zone and DNSSEC setup (the sandbox does not cover zones), so no real domain
+is bought and no zone is created. It checks that a script cannot buy without `--confirm`, buys a
+random `.com` with `--confirm` and `--max-price`, and confirms through the API that the sandbox
+registration succeeded. It runs in a planned project (analyze, interview and design on
+`examples/nextjs-postgres`), so it also checks that `opscrew/plan.yaml` records the purchase
+(`dns.registration`), that `opscrew domain status` shows it and that `opscrew domain auto-renew off
+--confirm <domain>` works. Response shapes and states are exercised along the way; the token
+permission name and multi-year billing still need a check against the real API.

@@ -105,6 +105,37 @@ describe("defaultDomainServices", () => {
     expect(deps.redactor.redact(`token ${TOKEN}`)).not.toContain(TOKEN);
   });
 
+  it("uses the registrar sandbox and never touches zones with OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1", async () => {
+    const SANDBOX = "/accounts/acc-1/registrar-sandbox";
+    const api = fakeApi({
+      [`POST ${SANDBOX}/domain-check`]: ok({
+        domains: [
+          {
+            name: "shopapp.com",
+            registrable: true,
+            tier: "standard",
+            pricing: { currency: "USD", registration_cost: "10.44", renewal_cost: "10.44" },
+          },
+        ],
+      }),
+    });
+    const deps = await createTestPhaseDeps({
+      env: { CLOUDFLARE_API_TOKEN: TOKEN, OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX: "1" },
+      fetch: api.fetch,
+    });
+
+    const services = defaultDomainServices(deps);
+
+    const [check] = await services.registrar("acc-1").check(["shopapp.com"]);
+    expect(check).toMatchObject({ registrable: true });
+    expect(await services.zones.createZone("acc-1", "shopapp.com")).toEqual({
+      id: "sandbox",
+      name: "shopapp.com",
+    });
+    await services.zones.enableDnssec("sandbox");
+    expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual([`POST ${SANDBOX}/domain-check`]);
+  });
+
   it("is used when no collaborators are injected, and stops without a token", async () => {
     const deps = await createTestPhaseDeps({ env: {} });
     expect(() => resolveDomainServices(deps, {})).toThrow(/CLOUDFLARE_API_TOKEN/);

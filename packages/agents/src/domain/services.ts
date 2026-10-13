@@ -24,6 +24,8 @@ export type CloudflareDomainServices = Pick<
  * The real Cloudflare collaborators, built from `CLOUDFLARE_API_TOKEN` with the run's `fetch`
  * (the token is registered with the redactor, as the connector does). Zones are created only in
  * the given account (`createZone` reuses an existing zone only when it belongs to that account).
+ * `OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1` (tests only) sends registrar calls to Cloudflare's
+ * sandbox and skips the zone and DNSSEC setup, which the sandbox does not cover.
  */
 export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices {
   const token = deps.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -35,7 +37,24 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
     );
   }
   deps.redactor.addLiteral(token, "cloudflare-token");
-  const client = new CloudflareClient({ token, fetch: deps.fetch, version: deps.version });
+  const sandbox = deps.env.OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX === "1";
+  const client = new CloudflareClient({
+    token,
+    fetch: deps.fetch,
+    version: deps.version,
+    ...(sandbox ? { registrarSandbox: true } : {}),
+  });
+  if (sandbox) {
+    deps.reporter.warn(
+      "Using Cloudflare's registrar sandbox (OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1): purchases are simulated and the zone and DNSSEC setup is skipped. Unset it to buy real domains.",
+    );
+  }
+  const sandboxZones: DomainZoneApi = {
+    findZone: async () => undefined,
+    createZone: async (_accountId, name) => ({ id: "sandbox", name }),
+    enableDnssec: async () => {},
+    dnssecEnabled: async () => false,
+  };
   return {
     accounts: () => client.listAccounts(),
     registrar: (accountId) => new CloudflareRegistrar(client, accountId),
@@ -45,25 +64,27 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
         ? undefined
         : { contactExtensionsRequired: found.contactExtensionsRequired };
     },
-    zones: {
-      findZone: async (name) => {
-        const zone = await client.findZone(name);
-        return zone !== undefined && zone.name.toLowerCase() === name
-          ? { id: zone.id, name: zone.name }
-          : undefined;
-      },
-      createZone: async (accountId, name) => {
-        const zone = await client.createZone(accountId, name);
-        return { id: zone.id, name: zone.name };
-      },
-      enableDnssec: async (zoneId) => {
-        await client.enableDnssec(zoneId);
-      },
-      dnssecEnabled: async (zoneId) => {
-        const { status } = await client.getDnssec(zoneId);
-        return status === "active" || status === "pending";
-      },
-    },
+    zones: sandbox
+      ? sandboxZones
+      : {
+          findZone: async (name) => {
+            const zone = await client.findZone(name);
+            return zone !== undefined && zone.name.toLowerCase() === name
+              ? { id: zone.id, name: zone.name }
+              : undefined;
+          },
+          createZone: async (accountId, name) => {
+            const zone = await client.createZone(accountId, name);
+            return { id: zone.id, name: zone.name };
+          },
+          enableDnssec: async (zoneId) => {
+            await client.enableDnssec(zoneId);
+          },
+          dnssecEnabled: async (zoneId) => {
+            const { status } = await client.getDnssec(zoneId);
+            return status === "active" || status === "pending";
+          },
+        },
   };
 }
 
