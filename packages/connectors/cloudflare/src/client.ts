@@ -76,6 +76,8 @@ export interface CloudflareZone {
   name: string;
   status: string;
   nameServers: string[];
+  /** The account that holds the zone, when Cloudflare says. */
+  accountId?: string;
 }
 
 export interface CloudflareDnsRecord {
@@ -352,7 +354,13 @@ function toScannedRecord(raw: z.infer<typeof ScannedRecordSchema>): RegistrarDns
 }
 
 function toZone(zone: z.infer<typeof ZoneSchema>): CloudflareZone {
-  return { id: zone.id, name: zone.name, status: zone.status, nameServers: zone.name_servers };
+  return {
+    id: zone.id,
+    name: zone.name,
+    status: zone.status,
+    nameServers: zone.name_servers,
+    ...(zone.account?.id ? { accountId: zone.account.id } : {}),
+  };
 }
 
 /**

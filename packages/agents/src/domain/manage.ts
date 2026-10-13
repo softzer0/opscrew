@@ -1,5 +1,11 @@
 import { zoneCandidates } from "@opscrew/connector-cloudflare";
-import type { ApprovalRequest, Money, RegisteredDomain, Registrar } from "@opscrew/contracts";
+import type {
+  ApprovalRequest,
+  Money,
+  RegisteredDomain,
+  Registrar,
+  RegistrarId,
+} from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -10,6 +16,7 @@ import {
   requireCloudflareToken,
   resolveAccount,
 } from "./common";
+import { buyCommandOf } from "./links";
 import {
   type ProjectFiles,
   readProjectFiles,
@@ -18,12 +25,20 @@ import {
   registrationMissing,
   syncPlanRegistration,
 } from "./project";
-import { purchaseRecordPath, readPurchaseRecord } from "./record";
+import { purchaseRecordPath, readPurchaseRecord, recordRegistrar } from "./record";
+import {
+  capabilitiesOf,
+  type OtherRegistrarId,
+  parseRegistrarId,
+  REGISTRAR_NAMES,
+  registrarLinks,
+} from "./registrars";
 import { type ResolvedDomainServices, resolveDomainServices } from "./services";
+import { dsRecordText } from "./switch";
 import type { DomainStatusOptions, DomainStatusResult, SetAutoRenewOptions } from "./types";
 
 /**
- * The yearly renewal price Cloudflare quotes for the domain's extension, when the live check
+ * The yearly renewal price the registrar quotes for the domain's extension, when the live check
  * returns one (a registered domain may come back without prices). Never throws.
  */
 export async function renewalPrice(
@@ -38,30 +53,38 @@ export async function renewalPrice(
   }
 }
 
-/** The `domain-settings` approval for turning auto-renew on or off (the domain typed to approve). */
+/**
+ * The `domain-settings` approval for turning auto-renew on or off (the domain typed to approve),
+ * naming the registrar that charges the renewal (default Cloudflare).
+ */
 export function autoRenewApproval(
   domain: string,
   info: RegisteredDomain,
   on: boolean,
   renewal: Money | undefined,
+  registrarId: RegistrarId = "cloudflare",
 ): ApprovalRequest {
+  const name = REGISTRAR_NAMES[registrarId];
+  const cloudflare = registrarId === "cloudflare";
   const expires = formatDate(info.expiresAt);
   const price =
     renewal === undefined
-      ? "the renewal price Cloudflare shows for the domain in its dashboard"
+      ? `the renewal price ${name} shows for the domain in its dashboard`
       : `${formatMoney(renewal)} per year`;
   const details = on
     ? [
         `Auto-renew: off → on`,
         `Expires: ${expires}`,
-        `Next renewal: up to 30 days before ${expires}, Cloudflare charges ${price} to your account's default payment method.`,
+        cloudflare
+          ? `Next renewal: up to 30 days before ${expires}, Cloudflare charges ${price} to your account's default payment method.`
+          : `Next renewal: before ${expires}, ${name} charges ${price} to your ${name} account (its balance or payment method).`,
         "Renewals cannot be refunded; turn auto-renew off again before then to stop it.",
       ]
     : [
         `Auto-renew: on → off`,
         `Expires: ${expires}`,
         `Renewal price: ${price}`,
-        `Nothing renews ${domain} automatically any more: it stops working on ${expires} unless you renew it in the Cloudflare dashboard or turn auto-renew on again, and an expired domain can be lost.`,
+        `Nothing renews ${domain} automatically any more: it stops working on ${expires} unless you renew it in the ${name} dashboard or turn auto-renew on again, and an expired domain can be lost.`,
       ];
   return {
     kind: "domain-settings",
@@ -162,13 +185,20 @@ function renewalNote(info: RegisteredDomain): string {
     : `Auto-renew is off: ${info.domain} stops working on ${expires} unless you renew it. Turn it on with \`opscrew domain auto-renew on\`.`;
 }
 
+/** The registrar holding the project's domain: the option, else the plan's, else Cloudflare. */
+function projectRegistrar(files: ProjectFiles, requested: RegistrarId | undefined): RegistrarId {
+  if (requested !== undefined) return parseRegistrarId(requested);
+  return files.plan?.dns.registration?.registrar ?? "cloudflare";
+}
+
 /**
  * `opscrew domain status`: registrar, expiry, auto-renew, lock, privacy and DNSSEC of the
- * project's domain, read live (DNSSEC from the zone when the zone calls can tell, else from the
- * plan). Without a domain in the project it says so; it also reports an unfinished purchase. When
- * the plan serves the app at a domain registered on the account (or a name inside it) but records
- * no `dns.registration` (bought before the plan existed), it fills it in after a `repo-write`
- * approval.
+ * project's domain, read live from the registrar that holds it (the plan's `dns.registration`
+ * registrar, Cloudflare by default; DNSSEC from the zone when the zone calls can tell, else from
+ * the plan). Without a domain in the project it says so; it also reports an unfinished purchase.
+ * When the plan serves the app at a domain registered on the Cloudflare account (or a name inside
+ * it) but records no `dns.registration` (bought before the plan existed), it fills it in after a
+ * `repo-write` approval. For other registrars it says where to change what their API cannot.
  */
 export async function domainStatus(
   deps: PhaseDeps,
@@ -189,7 +219,7 @@ export async function domainStatus(
     record === undefined
       ? []
       : [
-          `A purchase of ${record.domain} started on ${formatDate(record.requestedAt, record.requestedAt)} has not finished. Run \`opscrew domain buy ${record.domain}\` to finish it.`,
+          `A purchase of ${record.domain} started on ${formatDate(record.requestedAt, record.requestedAt)} has not finished. Run \`${buyCommandOf(record.domain, recordRegistrar(record))}\` to finish it.`,
         ];
   const name = registeredName(files);
   if (name === undefined) {
@@ -200,6 +230,17 @@ export async function domainStatus(
         "This project has no domain yet. Find one with `opscrew domain search <name>`, or use one you own with `opscrew dns --domain <domain>`.",
       ],
     };
+  }
+
+  const registrarId = projectRegistrar(files, options.registrar);
+  if (registrarId !== "cloudflare") {
+    return statusElsewhere(deps, files, {
+      name,
+      registrarId,
+      options,
+      pending,
+      finishPending,
+    });
   }
 
   const target = await connect(deps, name, options);
@@ -234,10 +275,103 @@ export async function domainStatus(
   };
 }
 
+/** The adapter of another registrar, with services that do not need a Cloudflare token. */
+function otherRegistrarTarget(
+  deps: PhaseDeps,
+  registrarId: OtherRegistrarId,
+  given: DomainStatusOptions["services"],
+): { services: ResolvedDomainServices; registrar: Registrar } {
+  const services = resolveDomainServices(deps, given, { requireCloudflare: false });
+  return { services, registrar: services.otherRegistrar(registrarId) };
+}
+
+/** Renewal note for a domain at another registrar, with the dashboard where the API cannot. */
+function renewalNoteElsewhere(
+  deps: PhaseDeps,
+  info: RegisteredDomain,
+  registrarId: OtherRegistrarId,
+  autoRenewApi: boolean,
+): string {
+  if (autoRenewApi) {
+    const expires = formatDate(info.expiresAt);
+    return info.autoRenew
+      ? `${info.domain} renews automatically before ${expires}. Turn that off with \`opscrew domain auto-renew off\`.`
+      : renewalNote(info);
+  }
+  const name = REGISTRAR_NAMES[registrarId];
+  const page = registrarLinks(registrarId, deps.env).domains;
+  const expires = formatDate(info.expiresAt);
+  return info.autoRenew
+    ? `${info.domain} renews automatically before ${expires} (${name}'s setting). Turn that off at ${page}; ${name}'s API cannot change it.`
+    : `Auto-renew is off: ${info.domain} stops working on ${expires} unless you renew it. Turn it on at ${page}; ${name}'s API cannot change it.`;
+}
+
+/** The zone's DS record from Cloudflare, when the token can read it; else undefined. */
+async function zoneDs(services: ResolvedDomainServices, name: string) {
+  if (services.zones.simulated === true || services.zones.dsRecord === undefined) return undefined;
+  try {
+    const zone = await services.zones.findZone(name);
+    if (zone === undefined || zone.name.toLowerCase() !== name) return undefined;
+    return await services.zones.dsRecord(zone.id);
+  } catch {
+    return undefined;
+  }
+}
+
+async function statusElsewhere(
+  deps: PhaseDeps,
+  files: ProjectFiles,
+  context: {
+    name: string;
+    registrarId: OtherRegistrarId;
+    options: DomainStatusOptions;
+    pending: Partial<Pick<DomainStatusResult, "pendingPurchase">>;
+    finishPending: string[];
+  },
+): Promise<DomainStatusResult> {
+  const { name, registrarId, options, pending, finishPending } = context;
+  const registrarName = REGISTRAR_NAMES[registrarId];
+  const page = registrarLinks(registrarId, deps.env).domains;
+  const { services, registrar } = otherRegistrarTarget(deps, registrarId, options.services);
+  const found = await findRegistration(registrar, files, name);
+  if (found === undefined) {
+    return {
+      ...pending,
+      next: [
+        ...finishPending,
+        `${name} is not registered in this ${registrarName} account, so OpsCrew cannot show its registration. Check ${page}, or set the ${registrarName} API keys of the account that holds it.`,
+      ],
+    };
+  }
+  const info: RegisteredDomain = { ...found, registrar: registrarId };
+  const caps = capabilitiesOf(registrar);
+  const dnssec = files.plan?.dns.registration?.dnssec;
+  const next = [...finishPending, renewalNoteElsewhere(deps, info, registrarId, caps.autoRenew)];
+  if (dnssec === false) {
+    if (caps.dnssec) {
+      next.push(
+        `DNSSEC is not published for ${info.domain}. Run \`${buyCommandOf(info.domain, registrarId)}\` to add the zone's DS record at ${registrarName}: OpsCrew does not buy the domain again, and it lists every change and asks before making it.`,
+      );
+    } else {
+      const ds = services.configuredRegistrars().includes("cloudflare")
+        ? await zoneDs(services, info.domain)
+        : undefined;
+      next.push(
+        ds === undefined
+          ? `DNSSEC is not published for ${info.domain}: ${registrarName}'s API cannot add DS records, so add the DS record Cloudflare shows for the zone (DNS → Settings → DNSSEC) at ${page}.`
+          : `DNSSEC is not published for ${info.domain}: ${registrarName}'s API cannot add DS records, so add this DS record at ${page}: ${dsRecordText(ds)}.`,
+      );
+    }
+  }
+  return { domain: info, ...(dnssec === undefined ? {} : { dnssec }), ...pending, next };
+}
+
 /**
  * `opscrew domain auto-renew on|off`: changes auto-renew of the project's domain after a
  * `domain-settings` approval that shows the next renewal date and price, then records it in
- * `plan.dns.registration`. Refusal stops with `APPROVAL_REFUSED`; nothing changes.
+ * `plan.dns.registration`. Refusal stops with `APPROVAL_REFUSED`; nothing changes. A registrar
+ * whose API cannot change auto-renew (Namecheap, GoDaddy) stops with its dashboard link before
+ * anything is asked or changed.
  */
 export async function setDomainAutoRenew(
   deps: PhaseDeps,
@@ -250,42 +384,84 @@ export async function setDomainAutoRenew(
       hint: "Buy one with `opscrew domain buy <domain>`, then try again.",
     });
   }
-  const target = await connect(deps, projectName, options);
-  const current = await findRegistration(target.registrar, files, projectName);
-  if (current === undefined) {
+  const registrarId = projectRegistrar(files, options.registrar);
+  const target =
+    registrarId === "cloudflare"
+      ? await connect(deps, projectName, options)
+      : { name: projectName, ...otherRegistrarTarget(deps, registrarId, options.services) };
+  const registrarName = REGISTRAR_NAMES[registrarId];
+  const onOff = options.on ? "on" : "off";
+  if (registrarId !== "cloudflare" && !capabilitiesOf(target.registrar).autoRenew) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${projectName} is not registered with Cloudflare Registrar on this account, so OpsCrew cannot change its auto-renew.`,
-      { hint: "Change it where you bought the domain, or pass the right account with --account." },
+      `${registrarName}'s API cannot change auto-renew, so OpsCrew did not turn it ${onOff} for ${projectName}. Nothing was changed.`,
+      {
+        hint: `Turn auto-renew ${onOff} for ${projectName} in the ${registrarName} dashboard (${registrarLinks(registrarId, deps.env).domains}).`,
+      },
     );
   }
+  const found = await findRegistration(target.registrar, files, projectName);
+  if (found === undefined) {
+    throw registrarId === "cloudflare"
+      ? new OpsCrewError(
+          "PHASE_PRECONDITION",
+          `${projectName} is not registered with Cloudflare Registrar on this account, so OpsCrew cannot change its auto-renew.`,
+          {
+            hint: "Change it where you bought the domain, or pass the right account with --account.",
+          },
+        )
+      : new OpsCrewError(
+          "PHASE_PRECONDITION",
+          `${projectName} is not registered in this ${registrarName} account, so OpsCrew cannot change its auto-renew.`,
+          {
+            hint: `Change it where you bought the domain, or set the ${registrarName} API keys of the account that holds it.`,
+          },
+        );
+  }
+  const current = registrarId === "cloudflare" ? found : { ...found, registrar: registrarId };
   const name = current.domain;
   const dnssec = files.plan?.dns.registration?.dnssec;
   const result = (info: RegisteredDomain): DomainStatusResult => ({
     domain: info,
     ...(dnssec === undefined ? {} : { dnssec }),
-    next: [renewalNote(info)],
+    next: [
+      registrarId === "cloudflare"
+        ? renewalNote(info)
+        : renewalNoteElsewhere(deps, info, registrarId, true),
+    ],
   });
   if (current.autoRenew === options.on) {
-    deps.reporter.info(`Auto-renew is already ${options.on ? "on" : "off"} for ${name}.`);
+    deps.reporter.info(`Auto-renew is already ${onOff} for ${name}.`);
     await syncPlanRegistration(deps, files.plan, current);
     return result(current);
   }
 
   const decision = await deps.approvals.request(
-    autoRenewApproval(name, current, options.on, await renewalPrice(target.registrar, name)),
+    autoRenewApproval(
+      name,
+      current,
+      options.on,
+      await renewalPrice(target.registrar, name),
+      registrarId,
+    ),
   );
   if (!decision.approved) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
       `Auto-renew was not changed: it stays ${current.autoRenew ? "on" : "off"} for ${name}.`,
       {
-        hint: `Run \`opscrew domain auto-renew ${options.on ? "on" : "off"}\` again to change it.`,
+        hint: `Run \`opscrew domain auto-renew ${onOff}\` again to change it.`,
       },
     );
   }
-  const updated = await target.registrar.setAutoRenew(name, options.on);
-  await auditDomain(deps, "set auto-renew", name, `auto-renew ${options.on ? "on" : "off"}`);
+  const changed = await target.registrar.setAutoRenew(name, options.on);
+  const updated = registrarId === "cloudflare" ? changed : { ...changed, registrar: registrarId };
+  await auditDomain(
+    deps,
+    "set auto-renew",
+    name,
+    registrarId === "cloudflare" ? `auto-renew ${onOff}` : `${registrarName}: auto-renew ${onOff}`,
+  );
   await syncPlanRegistration(deps, files.plan, updated);
   deps.reporter.success(`Auto-renew is now ${updated.autoRenew ? "on" : "off"} for ${name}.`);
   return result(updated);

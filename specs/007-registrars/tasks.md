@@ -59,7 +59,7 @@ after an environment variable name.
 
 ## Phase 4: Agents
 
-- [ ] T707 [US1] [US3] Buying through any registrar with the switch to Cloudflare, compare, status and auto-renew in `packages/agents/src/domain/`
+- [X] T707 [US1] [US3] Buying through any registrar with the switch to Cloudflare, compare, status and auto-renew in `packages/agents/src/domain/`
   - Owns: `packages/agents/src/domain/**` except `connect*.ts` and `registrars.ts`
   - Reads: spec.md US1, US3; plan.md "Buying elsewhere"; the 006 buy flow and its tests
   - Depends: T706

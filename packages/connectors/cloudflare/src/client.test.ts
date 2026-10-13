@@ -88,7 +88,13 @@ describe("CloudflareClient", () => {
     const { fetch, calls } = fakeFetch({
       "/zones?name=app.example.com": ok([]),
       "/zones?name=example.com": ok([
-        { id: "z1", name: "example.com", status: "active", name_servers: ["a.ns.cloudflare.com"] },
+        {
+          id: "z1",
+          name: "example.com",
+          status: "active",
+          name_servers: ["a.ns.cloudflare.com"],
+          account: { id: "acc-1", name: "Main" },
+        },
       ]),
     });
     const zone = await new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep }).findZone(
@@ -99,6 +105,7 @@ describe("CloudflareClient", () => {
       name: "example.com",
       status: "active",
       nameServers: ["a.ns.cloudflare.com"],
+      accountId: "acc-1",
     });
     expect(calls).toHaveLength(2);
   });

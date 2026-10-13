@@ -24,6 +24,8 @@ export interface DomainZone {
   status?: string;
   /** The Cloudflare nameservers assigned to the zone (to set at another registrar). */
   nameServers?: string[];
+  /** The Cloudflare account that holds the zone, when known. */
+  accountId?: string;
 }
 
 /** The DS record Cloudflare publishes for a zone's DNSSEC, to add at another registrar. */
@@ -106,6 +108,8 @@ export interface DomainServices {
   sleep?: (ms: number) => Promise<void>;
   /** Monotonic milliseconds for the registration wait. */
   now?: () => number;
+  /** Idempotency keys for purchases (default `crypto.randomUUID`). */
+  randomUUID?: () => string;
 }
 
 export interface SearchDomainsOptions {
@@ -126,13 +130,36 @@ export interface SearchDomainsOptions {
 }
 
 export interface SearchDomainsResult {
-  account: DomainAccount;
+  /** The Cloudflare account searched (absent for a search at another registrar). */
+  account?: DomainAccount;
+  /** The registrar searched, for a search at another registrar than Cloudflare. */
+  registrar?: RegistrarId;
   /**
    * Checked live, registrable names first (cheapest first year first). Names OpsCrew cannot buy
    * (premium, taken, extension sold only in the dashboard …) have `registrable: false` and a
-   * plain-English `reason`.
+   * plain-English `reason`. Empty for `compare` (see `comparison`).
    */
   results: DomainCheck[];
+  /** `compare`: each name with every configured registrar's offer. */
+  comparison?: DomainComparison[];
+}
+
+/** One registrar's live answer for a name. */
+export interface DomainOffer extends DomainCheck {
+  registrar: RegistrarId;
+  /** Plain English about the price, e.g. `priced in EUR; not compared with USD prices`. */
+  note?: string;
+}
+
+/**
+ * A name checked at every configured registrar. Offers are sorted by renewal price, then by
+ * first-year price, and by nothing else (no ranking, no referral data). Prices are compared in
+ * one currency only (the first priced offer's): offers in another currency follow with a `note`;
+ * offers that cannot be bought (or failed, with a plain `reason`) come last.
+ */
+export interface DomainComparison {
+  domain: string;
+  offers: DomainOffer[];
 }
 
 export interface BuyDomainOptions {
@@ -186,6 +213,10 @@ export interface DomainSetUpResult {
   recorded: { plan: boolean; requirements: boolean };
   /** Plain-English next steps for the CLI to print. */
   next: string[];
+  /** Where the domain is registered, when not at Cloudflare. */
+  registrar?: RegistrarId;
+  /** The Cloudflare zone's nameservers the domain points at (domains registered elsewhere). */
+  nameservers?: string[];
 }
 
 /**
@@ -202,6 +233,8 @@ export interface PurchaseForgottenResult {
 
 export interface DomainStatusOptions {
   account?: string;
+  /** The registrar holding the domain (default: the plan's `dns.registration.registrar`, else Cloudflare). */
+  registrar?: RegistrarId;
   services?: DomainServices;
 }
 
@@ -217,5 +250,7 @@ export interface DomainStatusResult {
 export interface SetAutoRenewOptions {
   on: boolean;
   account?: string;
+  /** The registrar holding the domain (default: the plan's `dns.registration.registrar`, else Cloudflare). */
+  registrar?: RegistrarId;
   services?: DomainServices;
 }

@@ -1,12 +1,14 @@
-import type { Registrar, RegistrationStatus } from "@opscrew/contracts";
+import type { Registrar, RegistrarId, RegistrationStatus } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
-import { auditDomain, DASHBOARD, errorText, providerText } from "./common";
+import { auditDomain, errorText, providerText } from "./common";
+import { buyCommandOf, registrarDashboard } from "./links";
 import { removePurchaseRecord } from "./record";
+import { REGISTRAR_NAMES } from "./registrars";
 import type { ResolvedDomainServices } from "./services";
 import type { DomainAccount } from "./types";
 
-/** How long OpsCrew waits for Cloudflare to finish a purchase before it stops (the rerun continues). */
+/** How long OpsCrew waits for the registrar to finish a purchase before it stops (the rerun continues). */
 export const REGISTRATION_TIMEOUT_MS = 10 * 60_000;
 const FIRST_POLL_MS = 2_000;
 const MAX_POLL_MS = 30_000;
@@ -17,27 +19,33 @@ const MAX_CHECK_FAILURES = 3;
 export interface PurchaseContext {
   deps: PhaseDeps;
   services: ResolvedDomainServices;
+  /** The adapter of `registrarId`. */
   registrar: Registrar;
+  /** Where the domain is bought. */
+  registrarId: RegistrarId;
+  /** The Cloudflare account the domain's zone lives in. */
   account: DomainAccount;
   domain: string;
   recordFile: string;
 }
 
 /** "`opscrew domain buy x` again: …", to follow "Run" or "then run". */
-const again = (domain: string) =>
-  `\`opscrew domain buy ${domain}\` again: OpsCrew continues the same purchase and never sends a second one.`;
+const again = (ctx: PurchaseContext) =>
+  `\`${buyCommandOf(ctx.domain, ctx.registrarId)}\` again: OpsCrew continues the same purchase and never sends a second one.`;
 
 /**
- * Polls the registration status (with backoff) until Cloudflare reports `succeeded`; nothing else
- * counts as bought. Never sends a purchase. Stops with a plain error on `action_required` or
- * `blocked` (record kept, the next run re-checks), `failed` (record removed; Cloudflare reports no
- * charge for a failed purchase), repeated status errors or the timeout (record kept).
+ * Polls the registration status (with backoff) until the registrar reports `succeeded`; nothing
+ * else counts as bought. Never sends a purchase. Stops with a plain error on `action_required` or
+ * `blocked` (record kept, the next run re-checks), `failed` (record removed: the registrar reports
+ * the purchase as not made), repeated status errors or the timeout (record kept). A registrar that
+ * does not list the order yet (status undefined) is waited for until the timeout.
  */
 export async function waitForRegistration(
   ctx: PurchaseContext,
   initial: RegistrationStatus,
 ): Promise<void> {
   const { deps, services, domain } = ctx;
+  const name = REGISTRAR_NAMES[ctx.registrarId];
   const started = services.now();
   let status: RegistrationStatus | undefined = initial;
   let delay = FIRST_POLL_MS;
@@ -54,7 +62,7 @@ export async function waitForRegistration(
         throw await stopped(ctx, status);
       }
       if (!announced) {
-        deps.reporter.step(`Waiting for Cloudflare to finish buying ${domain}…`);
+        deps.reporter.step(`Waiting for ${name} to finish buying ${domain}…`);
         announced = true;
       }
     }
@@ -73,7 +81,7 @@ export async function waitForRegistration(
         throw new OpsCrewError(
           "PROVIDER_ERROR",
           `OpsCrew could not check the purchase of ${domain}: ${errorText(deps, error)}. The purchase may still complete.`,
-          { hint: `Run ${again(domain)}`, cause: error },
+          { hint: `Run ${again(ctx)}`, cause: error },
         );
       }
     }
@@ -81,39 +89,58 @@ export async function waitForRegistration(
 }
 
 async function stopped(ctx: PurchaseContext, status: RegistrationStatus): Promise<OpsCrewError> {
-  const { deps, domain } = ctx;
-  await auditDomain(deps, "domain purchase", domain, `Cloudflare reported ${status.state}`);
+  const { deps, domain, registrarId } = ctx;
+  const name = REGISTRAR_NAMES[registrarId];
+  const dashboard = registrarDashboard(registrarId, deps.env);
+  const cloudflare = registrarId === "cloudflare";
+  await auditDomain(deps, "domain purchase", domain, `${name} reported ${status.state}`);
   const said = status.message ? providerText(ctx.deps, status.message) : "";
   const because = said === "" ? "." : `: ${said}.`;
   if (status.state === "failed") {
     await removePurchaseRecord(ctx.recordFile);
+    if (cloudflare) {
+      return new OpsCrewError(
+        "PROVIDER_ERROR",
+        `Cloudflare reported that buying ${domain} failed${because} Nothing is charged for a failed purchase.`,
+        {
+          hint: `OpsCrew never sends a second purchase for the same domain. Fix the cause in ${dashboard} and buy ${domain} there, or pick another name with \`opscrew domain search\`. After buying it in the dashboard, run \`opscrew domain buy ${domain}\` to set it up.`,
+        },
+      );
+    }
     return new OpsCrewError(
       "PROVIDER_ERROR",
-      `Cloudflare reported that buying ${domain} failed${because} Nothing is charged for a failed purchase.`,
+      `${name} reported that buying ${domain} failed${because}`,
       {
-        hint: `OpsCrew never sends a second purchase for the same domain. Fix the cause in ${DASHBOARD} and buy ${domain} there, or pick another name with \`opscrew domain search\`. After buying it in the dashboard, run \`opscrew domain buy ${domain}\` to set it up.`,
+        hint: `Check ${dashboard} and your ${name} billing, and fix the cause there. Then run \`${buyCommandOf(domain, registrarId)}\` to try again (OpsCrew checks ${name} and asks before buying), or pick another name with \`opscrew domain search\`.`,
       },
     );
   }
   const what =
     status.state === "blocked"
-      ? `Cloudflare blocked the purchase of ${domain}${because}`
-      : `Cloudflare needs you to act before it can finish buying ${domain}${because}`;
+      ? `${name} blocked the purchase of ${domain}${because}`
+      : `${name} needs you to act before it can finish buying ${domain}${because}`;
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${what} Nothing is charged until the purchase succeeds.`,
+    cloudflare ? `${what} Nothing is charged until the purchase succeeds.` : what,
     {
-      hint: `Resolve it in ${DASHBOARD} (for example a missing default contact or payment method, or an unverified email address), then run ${again(domain)}`,
+      hint: cloudflare
+        ? `Resolve it in ${dashboard} (for example a missing default contact or payment method, or an unverified email address), then run ${again(ctx)}`
+        : `Resolve it in ${dashboard}, then run ${again(ctx)}`,
     },
   );
 }
 
 function timedOut(ctx: PurchaseContext, status: RegistrationStatus | undefined): OpsCrewError {
-  const { domain } = ctx;
+  const { domain, registrarId } = ctx;
+  const name = REGISTRAR_NAMES[registrarId];
   const state = status === undefined ? "" : ` (${status.state.replace("_", " ")})`;
+  const wait =
+    registrarId === "cloudflare"
+      ? "Wait a few minutes"
+      : "Wait a few minutes (an order the registry does not confirm at once can take a few hours)";
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `Cloudflare is still processing the purchase of ${domain}${state}. It may still complete.`,
-    { hint: `Wait a few minutes, then run ${again(domain)}` },
+    `${name} is still processing the purchase of ${domain}${state}. It may still complete.`,
+    { hint: `${wait}, then run ${again(ctx)}` },
   );
 }

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type {
+  ApprovalDecision,
   ApprovalRequest,
   DomainCheck,
   Money,
@@ -19,7 +20,27 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { createTestPhaseDeps, ScriptedApprovalHandler, type TestPhaseDeps } from "../../testing";
-import type { DomainAccount, DomainServices, DomainZoneApi } from "../types";
+import type { OtherRegistrarId } from "../registrars";
+import type {
+  DomainAccount,
+  DomainServices,
+  DomainZone,
+  DomainZoneApi,
+  ZoneDsRecord,
+} from "../types";
+import { FakeRegistrar } from "./registrars";
+
+/** The nameservers Cloudflare assigns to the fake's new zones. */
+export const ZONE_NAMESERVERS: readonly string[] = ["kim.ns.cloudflare.com", "lee.ns.cloudflare.com"];
+
+/** The DS record the fake's zones publish once DNSSEC is on. */
+export const ZONE_DS: ZoneDsRecord = {
+  keyTag: 2371,
+  algorithm: 13,
+  digestType: 2,
+  digest: "ABCDEF0123",
+  ds: "shopapp.com. 3600 IN DS 2371 13 2 ABCDEF0123",
+};
 
 export const TOKEN = fakeSecret("cloudflare-token", "domain-tests");
 export const usd = (amount: number): Money => ({ amount, currency: "USD" });
@@ -47,6 +68,8 @@ type Operation =
   | "createZone"
   | "enableDnssec"
   | "dnssecEnabled"
+  | "dsRecord"
+  | "activationCheck"
   | "extension"
   | "sleep";
 
@@ -74,7 +97,9 @@ export class FakeCloudflare {
   /** Registrar messages per state. */
   messages: Partial<Record<RegistrationState, string>> = {};
   readonly domains = new Map<string, RegisteredDomain>();
-  readonly zones = new Map<string, { id: string; name: string }>();
+  readonly zones = new Map<string, DomainZone>();
+  /** What `activationCheck` answers. */
+  activation: { requested: boolean; reason?: string } = { requested: true };
   readonly dnssec = new Set<string>();
   /** Extensions whose registrar settings require contact extensions (Cloudflare's lookup). */
   readonly contactTlds = new Set(["us", "uk", "ca"]);
@@ -199,9 +224,14 @@ export class FakeCloudflare {
     },
     createZone: async (accountId, name) => {
       this.enter("createZone", `createZone ${accountId} ${name}`);
-      const zone = this.zones.get(name) ?? { id: `zone-${name}`, name };
+      const zone = this.zones.get(name) ?? {
+        id: `zone-${name}`,
+        name,
+        status: "pending",
+        nameServers: [...ZONE_NAMESERVERS],
+      };
       this.zones.set(name, zone);
-      return zone;
+      return { ...zone };
     },
     enableDnssec: async (zoneId) => {
       this.enter("enableDnssec", `enableDnssec ${zoneId}`);
@@ -210,6 +240,14 @@ export class FakeCloudflare {
     dnssecEnabled: async (zoneId) => {
       this.enter("dnssecEnabled", `dnssecEnabled ${zoneId}`);
       return this.dnssec.has(zoneId);
+    },
+    dsRecord: async (zoneId) => {
+      this.enter("dsRecord", `dsRecord ${zoneId}`);
+      return this.dnssec.has(zoneId) ? { ...ZONE_DS } : undefined;
+    },
+    activationCheck: async (zoneId) => {
+      this.enter("activationCheck", `activationCheck ${zoneId}`);
+      return { ...this.activation };
     },
   };
 
@@ -303,6 +341,14 @@ export type Answer = (
 export interface DomainProject {
   root: string;
   cf: FakeCloudflare;
+  /**
+   * A fake Porkbun, Namecheap or GoDaddy account (created on first use, with the capabilities of
+   * the real adapter unless given), passed to every later run as `services.registrars`.
+   */
+  other(
+    id: OtherRegistrarId,
+    capabilities?: ConstructorParameters<typeof FakeRegistrar>[2],
+  ): FakeRegistrar;
   /** A new run against the same project and the same Cloudflare. */
   run(options?: RunOptions): Promise<Run>;
   /** Writes a purchase record as an earlier run would have. */
@@ -315,6 +361,21 @@ export interface RunOptions {
   token?: string | null;
   /** Wall clock of the run (default 2026-10-11T12:00:00Z, see `createTestPhaseDeps`). */
   now?: string;
+  /** Approves like a blanket `--yes` would: approved, but without typing the domain. */
+  assumeYes?: boolean;
+}
+
+/** Approves every request without a typed confirmation, as a blanket `--yes` would. */
+class AssumeYesHandler extends ScriptedApprovalHandler {
+  constructor(private readonly onRequest: (request: ApprovalRequest) => void) {
+    super();
+  }
+
+  override async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    this.requests.push(request);
+    this.onRequest(request);
+    return { approved: true, approver: "--yes flag", decidedAt: RUN_NOW };
+  }
 }
 
 /** The default wall clock of a test run. */
@@ -333,6 +394,8 @@ export async function domainProject(
   const root = await mkdtemp(join(tmpdir(), "opscrew-domain-"));
   const cf = new FakeCloudflare();
   cf.checks.set("shopapp.com", buyable("shopapp.com"));
+  const others = new Map<OtherRegistrarId, FakeRegistrar>();
+  let keys = 0;
   if (options.plan) await writeArtifact("plan", join(root, "opscrew", "plan.yaml"), options.plan);
   if (options.requirements) {
     const file = join(root, "opscrew", "requirements.yaml");
@@ -340,10 +403,13 @@ export async function domainProject(
   }
   const run = async (runOptions: RunOptions = {}): Promise<Run> => {
     const answer = runOptions.answer ?? (() => true);
-    const handler = new ScriptedApprovalHandler((request) => {
-      cf.events.push(`approval ${request.kind}`);
-      return answer(request);
-    });
+    const handler =
+      runOptions.assumeYes === true
+        ? new AssumeYesHandler((request) => cf.events.push(`approval ${request.kind}`))
+        : new ScriptedApprovalHandler((request) => {
+            cf.events.push(`approval ${request.kind}`);
+            return answer(request);
+          });
     const token = runOptions.token === undefined ? TOKEN : runOptions.token;
     const now = new Date(runOptions.now ?? RUN_NOW);
     const deps = await createTestPhaseDeps({
@@ -356,11 +422,29 @@ export async function domainProject(
       interactive: runOptions.interactive ?? true,
       clock: { now: () => now },
     });
-    return { deps, handler, services: cf.services() };
+    const services: DomainServices = {
+      ...cf.services(),
+      // idempotency keys: deterministic, one per purchase record
+      randomUUID: () => `00000000-0000-4000-8000-${String(++keys).padStart(12, "0")}`,
+    };
+    if (others.size > 0) {
+      services.registrars = Object.fromEntries(
+        [...others].map(([id, fake]) => [id, fake.api()] as const),
+      );
+    }
+    return { deps, handler, services };
   };
   return {
     root,
     cf,
+    other(id, capabilities) {
+      let fake = others.get(id);
+      if (fake === undefined) {
+        fake = new FakeRegistrar(id, cf.events, capabilities);
+        others.set(id, fake);
+      }
+      return fake;
+    },
     run,
     async writeRecord(record) {
       const { deps } = await run();

@@ -30,6 +30,8 @@ export interface ResolvedDomainServices {
   configuredRegistrars: () => RegistrarId[];
   sleep: (ms: number) => Promise<void>;
   now: () => number;
+  /** A new idempotency key for a purchase. */
+  randomUUID: () => string;
 }
 
 /** Nameservers the stand-in zones report (real Cloudflare names, so registrar sandboxes accept them). */
@@ -188,14 +190,47 @@ function otherRegistrarServices(
   };
 }
 
+/** Says that a Cloudflare call needs `CLOUDFLARE_API_TOKEN` (calls made without the token). */
+function cloudflareTokenMissing(): OpsCrewError {
+  return new OpsCrewError(
+    "CREDENTIALS_MISSING",
+    "No Cloudflare API token found. Set CLOUDFLARE_API_TOKEN to a token for your Cloudflare account.",
+    { hint: "Create one at https://dash.cloudflare.com/profile/api-tokens, then try again." },
+  );
+}
+
+/** Zone calls without a Cloudflare token: each one stops with what to set. */
+const NO_CLOUDFLARE_ZONES: DomainZoneApi = {
+  findZone: async () => {
+    throw cloudflareTokenMissing();
+  },
+  createZone: async () => {
+    throw cloudflareTokenMissing();
+  },
+  enableDnssec: async () => {
+    throw cloudflareTokenMissing();
+  },
+};
+
+export interface ResolveOptions {
+  /**
+   * False when the command may run without Cloudflare (search, status and auto-renew at another
+   * registrar): without `CLOUDFLARE_API_TOKEN`, the Cloudflare collaborators then stop with what to
+   * set only when they are used. Default true: a missing token stops right away.
+   */
+  requireCloudflare?: boolean;
+}
+
 /** Fills the missing collaborators with the Cloudflare defaults (built only when needed). */
 export function resolveDomainServices(
   deps: PhaseDeps,
   given: DomainServices = {},
+  options: ResolveOptions = {},
 ): ResolvedDomainServices {
   const sleep = given.sleep ?? realSleep;
   const now = given.now ?? (() => performance.now());
-  const others = otherRegistrarServices(deps, given);
+  const randomUUID = given.randomUUID ?? (() => globalThis.crypto.randomUUID());
+  const others = { ...otherRegistrarServices(deps, given), sleep, now, randomUUID };
   const zonesFor =
     (zones: DomainZoneApi) =>
     (registrar: RegistrarId): DomainZoneApi =>
@@ -212,8 +247,25 @@ export function resolveDomainServices(
       zones: given.zones,
       zonesFor: zonesFor(given.zones),
       ...others,
-      sleep,
-      now,
+    };
+  }
+  if (options.requireCloudflare === false && !deps.env.CLOUDFLARE_API_TOKEN?.trim()) {
+    const zones = given.zones ?? NO_CLOUDFLARE_ZONES;
+    return {
+      accounts:
+        given.accounts ??
+        (async () => {
+          throw cloudflareTokenMissing();
+        }),
+      registrar:
+        given.registrar ??
+        (() => {
+          throw cloudflareTokenMissing();
+        }),
+      extension: given.extension ?? (async () => undefined),
+      zones,
+      zonesFor: zonesFor(zones),
+      ...others,
     };
   }
   const defaults = defaultDomainServices(deps);
@@ -225,7 +277,5 @@ export function resolveDomainServices(
     zones,
     zonesFor: zonesFor(zones),
     ...others,
-    sleep,
-    now,
   };
 }
