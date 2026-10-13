@@ -601,6 +601,9 @@ const REGISTRAR_PROBE_ACCOUNTS = 3;
 
 const REGISTRAR_FIX = `Buying domains is optional; to enable it add ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")} to the token at https://dash.cloudflare.com/profile/api-tokens.`;
 
+/** The permissions a purchase needs beyond the read the probe makes. */
+const REGISTRAR_EDIT_PERMISSIONS = `${CLOUDFLARE_REGISTRAR_PERMISSIONS[0]} and ${CLOUDFLARE_REGISTRAR_PERMISSIONS[1]}, with the zone permissions covering all zones of the account`;
+
 /** A refusal for missing permissions (401/403 or a permission/authentication error). */
 function isPermissionError(error: unknown): boolean {
   if (isUserFacingError(error) && error.code === "CREDENTIALS_INVALID") return true;
@@ -678,9 +681,10 @@ async function checkRegistrar(
     try {
       await client.domainCheck(account.id, [REGISTRAR_PROBE_DOMAIN]);
       const name = account.name ? ` (account ${account.name})` : "";
+      // Only a read was checked: the edit permissions cannot be checked without buying.
       return {
         status: "pass",
-        message: `CLOUDFLARE_API_TOKEN can buy domains through Cloudflare${name}.`,
+        message: `CLOUDFLARE_API_TOKEN can use Cloudflare Registrar (read)${name}. Buying also needs ${REGISTRAR_EDIT_PERMISSIONS}; OpsCrew cannot check these without buying.`,
       };
     } catch (error) {
       firstError ??= error;

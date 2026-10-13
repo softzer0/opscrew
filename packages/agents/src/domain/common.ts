@@ -1,3 +1,4 @@
+import { CLOUDFLARE_REGISTRAR_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import type { DomainCheck, Money } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { FqdnSchema } from "@opscrew/plan-schema";
@@ -8,10 +9,10 @@ import type { DomainAccount, MaxPrice } from "./types";
 /** Where users manage registrations by hand. */
 export const DASHBOARD =
   "the Cloudflare dashboard (https://dash.cloudflare.com, Domain Registration)";
-const TOKEN_PAGE = "https://dash.cloudflare.com/profile/api-tokens";
-/** Permissions a token needs to buy and set up domains (exact names confirmed by the sandbox test). */
-export const REGISTRAR_PERMISSIONS =
-  "Account → Registrar → Edit and Zone → Zone → Edit (account level), plus the zone permissions OpsCrew already lists";
+/** Where users create and edit Cloudflare API tokens. */
+export const TOKEN_PAGE = "https://dash.cloudflare.com/profile/api-tokens";
+/** Permissions a token needs to buy and set up domains (the connector's list, in one sentence). */
+export const REGISTRAR_PERMISSIONS = CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ");
 
 /**
  * Fallback when Cloudflare's extension lookup fails or does not know the extension: extensions
@@ -28,7 +29,7 @@ export function requireCloudflareToken(deps: PhaseDeps): void {
       "CREDENTIALS_MISSING",
       "No Cloudflare API token found. Set CLOUDFLARE_API_TOKEN to a token that can buy domains.",
       {
-        hint: `Create one at ${TOKEN_PAGE} with ${REGISTRAR_PERMISSIONS}, then try again.`,
+        hint: `Create one at ${TOKEN_PAGE} with these permissions: ${REGISTRAR_PERMISSIONS}. Then try again.`,
       },
     );
   }
@@ -155,15 +156,20 @@ export function parseMaxPrice(maxPrice: number | MaxPrice | undefined): MaxPrice
   return { amount: bound.amount, currency };
 }
 
-/** The account to use: the one the token sees, or the one named by id (or exact name). */
+/**
+ * The account to use: the one the token sees, or the one named by id (or exact name).
+ * `accountOption` names how the caller passes an account in the hints (default `--account`; the
+ * MCP tool passes its own input name).
+ */
 export function resolveAccount(
   accounts: readonly DomainAccount[],
   requested: string | undefined,
+  accountOption = "--account",
 ): DomainAccount {
   const wanted = requested?.trim();
   if (accounts.length === 0) {
     throw new OpsCrewError("CREDENTIALS_INVALID", "This Cloudflare token cannot see any account.", {
-      hint: `Create a token at ${TOKEN_PAGE} with ${REGISTRAR_PERMISSIONS}, then try again.`,
+      hint: `Create a token at ${TOKEN_PAGE} with these permissions: ${REGISTRAR_PERMISSIONS}. Then try again.`,
     });
   }
   if (wanted) {
@@ -174,7 +180,7 @@ export function resolveAccount(
       throw new OpsCrewError(
         "INVALID_INPUT",
         `This Cloudflare token cannot use the account "${wanted}". It can use ${listAccounts(accounts)}.`,
-        { hint: "Pass one of these account ids with --account." },
+        { hint: `Pass one of these account ids with ${accountOption}.` },
       );
     }
     return match;
@@ -184,7 +190,7 @@ export function resolveAccount(
   throw new OpsCrewError(
     "INVALID_INPUT",
     `This Cloudflare token can use ${accounts.length} accounts: ${listAccounts(accounts)}. OpsCrew needs to know which one the domain belongs to.`,
-    { hint: `Pass the account id with --account, for example --account ${only?.id ?? "<id>"}.` },
+    { hint: `Pass the account id with ${accountOption}, for example ${only?.id ?? "<id>"}.` },
   );
 }
 

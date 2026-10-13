@@ -129,7 +129,8 @@ export class ApprovalGate {
   /**
    * Validates the request, asks the handler and records the decision. Throws
    * `OpsCrewError("INVALID_INPUT")` for an `iac-apply` without a valid plan hash or an
-   * `allowDestroy` request without a confirmation phrase. A refusal is returned, not thrown.
+   * `allowDestroy`, `domain-purchase` or `domain-settings` request without a confirmation phrase.
+   * A refusal is returned, not thrown.
    */
   async request(request: ApprovalRequest): Promise<ApprovalRecord> {
     validateRequest(request);
@@ -233,6 +234,16 @@ function validateRequest(request: ApprovalRequest): void {
       "INVALID_INPUT",
       "A destructive change needs a confirmation phrase that the user must type.",
       { hint: "Set confirmPhrase to the name of the affected resource." },
+    );
+  }
+  if (
+    (request.kind === "domain-purchase" || request.kind === "domain-settings") &&
+    (request.confirmPhrase ?? "").trim() === ""
+  ) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "A domain purchase or domain setting needs a confirmation phrase that the user must type.",
+      { hint: "Set confirmPhrase to the domain name." },
     );
   }
 }

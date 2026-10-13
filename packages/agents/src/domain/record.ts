@@ -118,7 +118,7 @@ export function otherPurchaseInProgress(record: PurchaseRecord, domain: string):
     "PHASE_PRECONDITION",
     `An earlier OpsCrew run started buying ${record.domain} on ${formatDate(record.requestedAt, record.requestedAt)} and did not finish, so OpsCrew did not buy ${domain}.`,
     {
-      hint: `OpsCrew buys one domain at a time. Run \`opscrew domain buy ${record.domain}\` to finish that purchase first. If ${DASHBOARD} does not list ${record.domain} and you were not charged for it, run \`opscrew domain buy ${domain} --forget-pending-purchase\` to clear OpsCrew's note about it and buy ${domain}.`,
+      hint: `OpsCrew buys one domain at a time. Run \`opscrew domain buy ${record.domain}\` to finish that purchase first. If ${DASHBOARD} does not list ${record.domain} and you were not charged for it, run \`opscrew domain buy ${domain} --forget-pending-purchase\` to clear OpsCrew's note about it (that run buys nothing), then run \`opscrew domain buy ${domain}\` to buy ${domain}.`,
     },
   );
 }

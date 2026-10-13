@@ -147,6 +147,44 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     expect(deps.reporter.text().slice(before)).not.toContain("new Caddyfile");
   });
 
+  it("keeps a bought domain's registration only while the new name is inside it", async () => {
+    const registration = {
+      registrar: "cloudflare" as const,
+      expiresAt: "2027-10-11T12:00:05.000Z",
+      autoRenew: true,
+      privacy: true,
+      dnssec: true,
+    };
+    const { deps, services } = await setup();
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    const bought = {
+      ...plan,
+      dns: {
+        ...plan.dns,
+        provider: "cloudflare" as const,
+        domain: "shop.example.com",
+        zone: "example.com",
+        proxied: true,
+        registration,
+      },
+      security: { ...plan.security, httpAllowedFrom: "cloudflare" as const },
+    };
+    await writeArtifact("plan", deps.paths.files.plan, bought);
+
+    // another name inside the registered domain: the registration still describes it
+    await runDns(deps, { domain: "www.example.com", services });
+    const inside = await readArtifact("plan", deps.paths.files.plan);
+    expect(inside.dns).toMatchObject({ domain: "www.example.com", zone: "example.com" });
+    expect(inside.dns.registration).toEqual(registration);
+
+    // another domain: the registration would describe the old one, so it goes
+    await writeArtifact("plan", deps.paths.files.plan, bought);
+    await runDns(deps, { domain: "other.org", services }).catch(() => undefined);
+    const other = await readArtifact("plan", deps.paths.files.plan);
+    expect(other.dns.domain).toBe("other.org");
+    expect(other.dns.registration).toBeUndefined();
+  });
+
   it("asks for a domain when the plan has none and rejects invalid names", async () => {
     const { deps, services } = await setup();
     await expect(runDns(deps, { services })).rejects.toMatchObject({ code: "INVALID_INPUT" });

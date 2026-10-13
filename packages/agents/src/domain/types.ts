@@ -9,6 +9,11 @@ export interface DomainAccount {
 /** Zone calls the setup after a purchase needs (a Cloudflare client or a test fake). */
 export interface DomainZoneApi {
   /**
+   * True when these zone calls are stand-ins (Cloudflare's registrar sandbox): no zone exists and
+   * DNSSEC is never turned on, so the setup skips them and records DNSSEC as off.
+   */
+  readonly simulated?: boolean;
+  /**
    * The zone named exactly `name` that the token can see. Read-only and not scoped to an account,
    * so only `opscrew domain status` uses it (to read DNSSEC); setting up uses `createZone`.
    */
@@ -51,6 +56,11 @@ export interface SearchDomainsOptions {
   query: string;
   /** Cloudflare account id when the token sees several. */
   account?: string;
+  /**
+   * How the caller passes `account`, named in hints when the token sees several accounts (default
+   * `--account`; the MCP tool says "the `account` input").
+   */
+  accountOption?: string;
   services?: DomainServices;
 }
 

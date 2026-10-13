@@ -25,7 +25,8 @@ export type CloudflareDomainServices = Pick<
  * (the token is registered with the redactor, as the connector does). Zones are created only in
  * the given account (`createZone` reuses an existing zone only when it belongs to that account).
  * `OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1` (tests only) sends registrar calls to Cloudflare's
- * sandbox and skips the zone and DNSSEC setup, which the sandbox does not cover.
+ * sandbox and skips the zone and DNSSEC setup, which the sandbox does not cover (`zones.simulated`);
+ * the project files are still updated.
  */
 export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices {
   const token = deps.env.CLOUDFLARE_API_TOKEN?.trim();
@@ -46,10 +47,11 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
   });
   if (sandbox) {
     deps.reporter.warn(
-      "Using Cloudflare's registrar sandbox (OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1): purchases are simulated and the zone and DNSSEC setup is skipped. Unset it to buy real domains.",
+      "Using Cloudflare's registrar sandbox (OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1): purchases are simulated and the zone and DNSSEC setup is skipped, but OpsCrew still records the domain in the project files (opscrew/requirements.yaml and opscrew/plan.yaml). Unset it to buy real domains.",
     );
   }
   const sandboxZones: DomainZoneApi = {
+    simulated: true,
     findZone: async () => undefined,
     createZone: async (_accountId, name) => ({ id: "sandbox", name }),
     enableDnssec: async () => {},

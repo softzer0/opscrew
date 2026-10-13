@@ -24,6 +24,12 @@ Changed your mind about the provider later? `npx opscrew retarget --to <provider
 
 No domain yet? `npx opscrew domain search <name>` checks availability and prices with Cloudflare Registrar, and `npx opscrew domain buy <domain>` buys one at cost after you confirm the price, then sets up its Cloudflare zone, DNSSEC and auto-renew and uses it for your deployment. Namecheap, Porkbun and GoDaddy follow.
 
+Before you buy:
+
+- Domain purchases cannot be refunded. You type the domain name to confirm; scripts also need `--confirm <domain>` and `--max-price <amount>`.
+- Auto-renew is on by default: Cloudflare charges the renewal to your account's default payment method up to 30 days before the domain expires. Turn it off with `npx opscrew domain auto-renew off` (or buy with `--no-auto-renew`).
+- Buying needs extra permissions on your Cloudflare API token: Account → Registrar (edit) and Zone → Zone → Edit for all zones of the account. The zone permissions OpsCrew already asks for (Zone → Zone → Read, Zone → DNS → Edit, Zone → Config Rules → Edit, Zone → Zone WAF → Edit) must then cover all zones of the account, because a token limited to the zones you have today does not cover the zone of a domain you buy. If you keep the token limited, add the new domain's zone to it right after buying, before `opscrew dns` or `opscrew provision`.
+
 ## Development
 
 Requirements: Node.js 22+, pnpm 10+, and OpenTofu or Terraform for infrastructure tests.

@@ -43,7 +43,14 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
 
   const changed = plan.dns.provider !== "cloudflare" || plan.dns.domain !== domain;
   if (changed) {
-    const { zone: _staleZone, ...dns } = plan.dns;
+    const { zone, registration, ...rest } = plan.dns;
+    // A recorded registration (and its zone) stays only while the new name is inside the
+    // registered domain; otherwise both would describe another domain.
+    const keep =
+      registration !== undefined &&
+      zone !== undefined &&
+      (domain === zone || domain.endsWith(`.${zone}`));
+    const dns = keep ? { ...rest, zone, registration } : rest;
     plan = {
       ...plan,
       updatedAt: deps.clock.now().toISOString(),

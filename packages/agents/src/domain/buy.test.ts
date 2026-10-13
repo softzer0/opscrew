@@ -2,7 +2,7 @@ import { rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   buyable,
@@ -132,6 +132,13 @@ describe("buyDomain: the purchase", () => {
       domain: { domain: DOMAIN, autoRenew: true, expiresAt: "2027-10-11T12:00:05Z" },
     });
     expect(result.next.join("\n")).toContain("opscrew provision");
+    // a token limited to the zones that existed before does not cover the new zone
+    expect(result.next).toHaveLength(1);
+    expect(result.next[0]).toContain(
+      "If your Cloudflare token is limited to specific zones, first add the zone shopapp.com to it at https://dash.cloudflare.com/profile/api-tokens",
+    );
+    expect(result.next[0]).toContain("Zone → DNS → Edit");
+    expect(deps.reporter.text()).toContain("DNSSEC on.");
     expect(cf.dnssec.has(`zone-${DOMAIN}`)).toBe(true);
     expect(cf.autoRenewCalls).toEqual([]);
 
@@ -226,6 +233,55 @@ describe("buyDomain: the purchase", () => {
     expect(project.cf.count("findZone")).toBe(0);
     expect(project.cf.count("enableDnssec")).toBe(0);
     expect(deps.audit.entries.some((e) => e.action === "enable DNSSEC")).toBe(false);
+  });
+
+  it("never claims DNSSEC with the registrar sandbox's stand-in zones, and still records the domain", async () => {
+    const project = await domainProject({ plan: domainTestPlan() });
+    const { deps, handler, services } = await project.run();
+    const zones = { ...project.cf.zoneApi, simulated: true };
+
+    const result = setUp(
+      await buyDomain(deps, { domain: DOMAIN, services: { ...services, zones } }),
+    );
+
+    expect(handler.requests[0]?.details).toContain(
+      "Cloudflare zone and DNSSEC: skipped (Cloudflare's registrar sandbox has no zones)",
+    );
+    expect(handler.requests[0]?.details).not.toContain("DNSSEC: on");
+    expect(project.cf.count("enableDnssec")).toBe(0);
+    expect(project.cf.count("dnssecEnabled")).toBe(0);
+    const audit = deps.audit.entries;
+    expect(audit.some((e) => e.action === "enable DNSSEC" || e.action === "ensure zone")).toBe(
+      false,
+    );
+    expect(audit.find((e) => e.action === "domain purchase")?.detail).toContain(
+      "zone and DNSSEC skipped (registrar sandbox)",
+    );
+    expect(deps.reporter.text()).not.toContain("DNSSEC on");
+    expect(deps.reporter.text()).toContain("no zone or DNSSEC (registrar sandbox)");
+    expect(result.recorded.plan).toBe(true);
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    expect(plan.dns.registration?.dnssec).toBe(false);
+    expect(result.next.join("\n")).not.toContain("limited to specific zones");
+  });
+
+  it("records the registration in a plan written after the purchase on the next setup run", async () => {
+    const project = await domainProject();
+    const first = await project.run();
+    setUp(await buyDomain(first.deps, { domain: DOMAIN, services: first.services }));
+    const { deps, handler, services } = await project.run();
+    await writeArtifact("plan", deps.paths.files.plan, domainTestPlan({ domain: DOMAIN }));
+
+    const result = setUp(await buyDomain(deps, { domain: DOMAIN, services }));
+
+    expect(result.alreadyRegistered).toBe(true);
+    expect(handler.requests.map((r) => r.kind)).toEqual(["domain-settings"]);
+    expect(project.cf.registerCalls).toHaveLength(1);
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    expect(plan.dns).toMatchObject({
+      zone: DOMAIN,
+      registration: { registrar: "cloudflare", autoRenew: true, dnssec: true },
+    });
   });
 
   it("points a deployed app's next step at opscrew dns", async () => {
@@ -668,6 +724,11 @@ describe("buyDomain: never twice (SC-602)", () => {
     expect(stuck.message).not.toMatch(/nothing was bought/i);
     expect(stuck.hint).toContain("dash.cloudflare.com");
     expect(stuck.hint).toContain("--forget-pending-purchase");
+    // forgetting only clears the note; buying is the run after it
+    expect(stuck.hint).toContain(
+      "(that run buys nothing), then run `opscrew domain buy shopapp.com`",
+    );
+    expect(stuck.hint).not.toMatch(/note and buy/);
     expect(await exists(file)).toBe(true);
     expect(project.cf.count("register")).toBe(1);
 
@@ -769,6 +830,10 @@ describe("buyDomain: never twice (SC-602)", () => {
 
     const blocked = await caught(buyDomain(deps, { domain: DOMAIN, services }));
     expect(blocked.hint).toContain("opscrew domain buy shopapp.com --forget-pending-purchase");
+    expect(blocked.hint).toContain(
+      "(that run buys nothing), then run `opscrew domain buy shopapp.com` to buy shopapp.com",
+    );
+    expect(blocked.hint).not.toMatch(/about it and buy/);
 
     const result = await buyDomain(deps, { domain: DOMAIN, forgetPendingPurchase: true, services });
     expect(result).toMatchObject({ outcome: "forgotten", forgotten: "other.com" });

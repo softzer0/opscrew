@@ -30,13 +30,19 @@ export const CLOUDFLARE_TOKEN_PERMISSIONS = [
   "Zone → Zone WAF → Edit",
 ] as const;
 
+/** Where users create and edit Cloudflare API tokens. */
+const CLOUDFLARE_TOKEN_PAGE = "https://dash.cloudflare.com/profile/api-tokens";
+
 /**
- * Optional account-level permissions for buying domains, named as in the token builder. The
- * exact name of the Registrar permission is not confirmed yet.
+ * Optional permissions for buying domains, named as in the token builder: the account-level
+ * Registrar permission, zone creation, and the zone permissions for every zone of the account (a
+ * token limited to the zones that exist today does not cover the zone of a domain bought later).
+ * The exact name of the Registrar permission is not confirmed yet.
  */
 export const CLOUDFLARE_REGISTRAR_PERMISSIONS = [
   "Account → Registrar (edit)",
   "Zone → Zone → Edit for all zones of the account (to create the zone of a bought domain)",
+  `${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")} for all zones of the account, not only the zone you use today: a token limited to existing zones does not cover the zone of a domain you buy, so otherwise add that zone to the token right after buying`,
 ] as const;
 
 /** Rule phases OpsCrew may manage; it never takes over a phase the user already uses. */
@@ -209,7 +215,12 @@ export function zoneCandidates(domain: string): string[] {
 }
 
 function permissionHint(): string {
-  return `Create a token at https://dash.cloudflare.com/profile/api-tokens with: ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}; then set CLOUDFLARE_API_TOKEN.`;
+  return `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with: ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}; then set CLOUDFLARE_API_TOKEN.`;
+}
+
+/** Hint for a 4xx answer to a call that is not a registrar call: the token is the likely cause. */
+function tokenHint(): string {
+  return `The token in CLOUDFLARE_API_TOKEN may be mistyped, expired or revoked, or lack a permission. ${permissionHint()}`;
 }
 
 interface FailHints {
@@ -220,8 +231,21 @@ interface FailHints {
 }
 
 const REGISTRAR_HINTS: FailHints = {
-  auth: `Buying domains is optional and needs extra account-level permissions on the token: ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")}. Edit the token at https://dash.cloudflare.com/profile/api-tokens; then set CLOUDFLARE_API_TOKEN.`,
+  auth: `Buying domains is optional and needs extra permissions on the token: ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")}. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
   other: `Check the registrar settings at ${CLOUDFLARE_REGISTRAR_DASHBOARD}: buying needs a default payment method, a verified email and a default registrant contact on the account.`,
+};
+
+const ACCOUNT_HINT = `The token in CLOUDFLARE_API_TOKEN may be mistyped, expired or revoked, or cannot see any account. Check it at ${CLOUDFLARE_TOKEN_PAGE}; buying domains needs ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")}.`;
+
+/**
+ * Hints for listing accounts: a refusal there (Cloudflare answers a malformed token with 400) means
+ * the token itself does not work or cannot see an account, never a registrar billing setting.
+ */
+const ACCOUNT_HINTS: FailHints = { auth: ACCOUNT_HINT, other: ACCOUNT_HINT };
+
+/** Hints for zone calls on a zone the token's zone permissions may not cover (a bought domain). */
+const ZONE_COVERAGE_HINTS: FailHints = {
+  auth: `The token's zone permissions do not cover this zone. If the token is limited to specific zones, add this zone (or all zones of the account) to it at ${CLOUDFLARE_TOKEN_PAGE} with ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
 interface RequestOptions {
@@ -364,9 +388,9 @@ export class CloudflareClient {
     }
     const clientError = status >= 400 && status < 500 && status !== 429;
     throw new OpsCrewError("PROVIDER_ERROR", `Cloudflare could not ${what}: ${detail}.`, {
-      hint:
-        (clientError ? hints.other : undefined) ??
-        "Try again in a minute; if it keeps failing, check https://www.cloudflarestatus.com.",
+      hint: clientError
+        ? (hints.other ?? tokenHint())
+        : "Try again in a minute; if it keeps failing, check https://www.cloudflarestatus.com.",
     });
   }
 
@@ -513,7 +537,7 @@ export class CloudflareClient {
     for (let page = 1; ; page++) {
       const { status, body } = await this.#request(`/accounts?page=${page}&per_page=50`);
       if (!body.success || status >= 400) {
-        this.#fail(status, body, "list your accounts", REGISTRAR_HINTS);
+        this.#fail(status, body, "list your accounts", ACCOUNT_HINTS);
       }
       const list = this.#parse(z.array(AccountSchema), body.result, "list your accounts");
       for (const a of list) accounts.push({ id: a.id, name: a.name });
@@ -716,7 +740,7 @@ export class CloudflareClient {
     const zoneName = normalizeDomain(name);
     const what = `create the zone ${zoneName}`;
     const hints: FailHints = {
-      auth: `Creating a zone needs the token permission "${CLOUDFLARE_REGISTRAR_PERMISSIONS[1]}". Edit the token at https://dash.cloudflare.com/profile/api-tokens; then set CLOUDFLARE_API_TOKEN.`,
+      auth: `Creating a zone needs the token permission "${CLOUDFLARE_REGISTRAR_PERMISSIONS[1]}". Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
     };
     const { status, body } = await this.#request("/zones", {
       method: "POST",
@@ -751,7 +775,9 @@ export class CloudflareClient {
   async getDnssec(zoneId: string): Promise<CloudflareDnssec> {
     const what = "read the DNSSEC state";
     const path = `/zones/${encodeURIComponent(zoneId)}/dnssec`;
-    const result = await this.#get(path, DnssecSchema, what);
+    const { status, body } = await this.#request(path);
+    if (!body.success || status >= 400) this.#fail(status, body, what, ZONE_COVERAGE_HINTS);
+    const result = this.#parse(DnssecSchema, body.result, what);
     return { status: result.status, ...(result.ds ? { ds: result.ds } : {}) };
   }
 
@@ -762,7 +788,7 @@ export class CloudflareClient {
       method: "PATCH",
       body: { status: "active" },
     });
-    if (!body.success || status >= 400) this.#fail(status, body, what);
+    if (!body.success || status >= 400) this.#fail(status, body, what, ZONE_COVERAGE_HINTS);
     const result = this.#parse(DnssecSchema, body.result, what);
     return { status: result.status, ...(result.ds ? { ds: result.ds } : {}) };
   }

@@ -618,7 +618,44 @@ describe("CloudflareClient registrar calls", () => {
       "Cloudflare refused the request to check whether the domains can be registered: Authentication error.",
     );
     expect(error.hint).toContain(CLOUDFLARE_REGISTRAR_PERMISSIONS[0]);
+    expect(error.hint).toContain("for all zones of the account");
     expect((await plainError(cf.listAccounts())).hint).toMatch(/cloudflarestatus/);
+  });
+
+  it("blames the token, not registrar billing, when listing accounts is refused", async () => {
+    for (const status of [400, 401, 403]) {
+      const { cf } = client({
+        "GET /accounts?page=1&per_page=50": fail(status, [
+          { code: status === 400 ? 6003 : 10000, message: "Invalid request headers" },
+        ]),
+      });
+      const error = await plainError(cf.listAccounts());
+      expect(error.code).toBe(status === 400 ? "PROVIDER_ERROR" : "CREDENTIALS_INVALID");
+      expect(error.hint).toContain("may be mistyped, expired or revoked");
+      expect(error.hint).toContain("https://dash.cloudflare.com/profile/api-tokens");
+      expect(error.hint).toContain(CLOUDFLARE_REGISTRAR_PERMISSIONS[0]);
+      expect(error.hint).not.toMatch(/payment method|registrant contact|verified email/);
+      // never a colon right after the environment variable name
+      expect(error.hint).not.toContain("CLOUDFLARE_API_TOKEN:");
+    }
+  });
+
+  it("points other refused non-registrar calls at the token, and DNSSEC refusals at zone coverage", async () => {
+    const { cf } = client({
+      "GET /zones/z1/dns_records?page=1&per_page=100": fail(400, [
+        { code: 6111, message: "Invalid format for Authorization header" },
+      ]),
+      "PATCH /zones/z2/dnssec": fail(403, [{ code: 10000, message: "Authentication error" }]),
+      "GET /zones/z2/dnssec": fail(403, [{ code: 10000, message: "Authentication error" }]),
+    });
+    const records = await plainError(cf.listDnsRecords("z1"));
+    expect(records.hint).toContain("may be mistyped, expired or revoked");
+    expect(records.hint).not.toMatch(/cloudflarestatus|payment method/);
+    for (const call of [cf.enableDnssec("z2"), cf.getDnssec("z2")]) {
+      const error = await plainError(call);
+      expect(error.code).toBe("CREDENTIALS_INVALID");
+      expect(error.hint).toContain("add this zone (or all zones of the account)");
+    }
   });
 
   it("rejects malformed answers plainly", async () => {
@@ -704,7 +741,13 @@ describe("registrar credentials", () => {
     expect(scopes).toContain("Zone → DNS → Edit");
     expect(scopes).toContain("Account → Registrar (edit) (optional, for buying domains)");
     expect(scopes).toMatch(/Zone → Zone → Edit .*account.*optional/);
+    // a token limited to today's zones does not cover a bought domain's zone: say so plainly
+    expect(scopes).toMatch(
+      /Zone → DNS → Edit.*for all zones of the account.*add that zone to the token right after buying \(optional, for buying domains\)/,
+    );
     expect(connector.credentials.description).toMatch(/optional/);
+    expect(connector.credentials.description).toContain("cover all zones of the account");
+    expect(connector.credentials.description).toContain("add the new domain's zone to the token");
   });
 
   it("names unknown reason codes", () => {

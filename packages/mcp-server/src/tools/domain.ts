@@ -51,6 +51,7 @@ export function registerDomainCheckTool(server: McpServer, deps: ResolvedMcpDeps
         const result = await searchDomains(await call.phaseDeps(), {
           query,
           ...(account !== undefined ? { account } : {}),
+          accountOption: "the `account` input of opscrew_domain_check",
         });
         const header = `Checked live with Cloudflare Registrar (account ${result.account.name}).`;
         const body =

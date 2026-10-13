@@ -568,7 +568,13 @@ describe("runInitChecks", () => {
       const checks = await runInitChecks(deps, { services: services() });
       const reg = checks.find((c) => c.id === "registrar");
       expect(reg?.status).toBe("pass");
-      expect(reg?.message).toContain("can buy domains through Cloudflare");
+      // only a read was checked: it never claims the token can buy
+      expect(reg?.message).toContain("can use Cloudflare Registrar (read)");
+      expect(reg?.message).not.toContain("can buy domains");
+      expect(reg?.message).toContain("Buying also needs Account → Registrar (edit) and");
+      expect(reg?.message).toContain("Zone → Zone → Edit");
+      expect(reg?.message).toContain("OpsCrew cannot check these without buying");
+      expect(reg?.message).not.toContain("CLOUDFLARE_API_TOKEN:");
       expect(calls.some((u) => u.includes("/accounts/acct-1/registrar/domain-check"))).toBe(true);
       const registrarCalls = calls.filter((u) => u.includes("/registrar"));
       expect(registrarCalls.every((u) => u.endsWith("/registrar/domain-check"))).toBe(true);
@@ -582,6 +588,8 @@ describe("runInitChecks", () => {
       expect(reg.fix).toContain("Buying domains is optional");
       expect(reg.fix).toContain("Account → Registrar (edit)");
       expect(reg.fix).toContain("https://dash.cloudflare.com/profile/api-tokens");
+      // the zone permissions must also cover the zone of a domain bought later
+      expect(reg.fix).toContain("for all zones of the account, not only the zone you use today");
       expectNoCfToken(reg);
     });
 

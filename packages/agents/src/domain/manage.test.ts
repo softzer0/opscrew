@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { buyable, domainProject, domainTestPlan, TOKEN, visibleText } from "./__fixtures__/fakes";
 import { buyDomain } from "./buy";
@@ -82,6 +82,63 @@ describe("domainStatus", () => {
       requestedAt: "2026-10-11T11:59:00.000Z",
     });
     expect(result.next[0]).toContain("Run `opscrew domain buy shopapp.com` to finish it.");
+  });
+
+  it("records the registration of a domain bought before the plan existed, after a repo-write approval", async () => {
+    // bought with no project files, then `opscrew design` wrote a plan serving app.shopapp.com
+    const project = await domainProject();
+    const first = await project.run();
+    await buyDomain(first.deps, { domain: DOMAIN, services: first.services });
+    const { deps, handler, services } = await project.run();
+    const plan = domainTestPlan({ domain: `app.${DOMAIN}` });
+    await writeArtifact("plan", deps.paths.files.plan, plan);
+    expect(plan.dns.registration).toBeUndefined();
+
+    const result = await domainStatus(deps, { services });
+
+    expect(result.domain?.domain).toBe(DOMAIN);
+    expect(handler.requests.map((r) => r.kind)).toEqual(["repo-write"]);
+    expect(handler.requests[0]?.title).toBe(
+      "Record the registration of shopapp.com in opscrew/plan.yaml",
+    );
+    expect(handler.requests[0]?.details).toContain("dns.zone becomes shopapp.com");
+    expect(handler.requests[0]?.details).toContain("Nothing changes on Cloudflare.");
+    const after = await readArtifact("plan", deps.paths.files.plan);
+    expect(after.dns).toMatchObject({
+      provider: "cloudflare",
+      domain: `app.${DOMAIN}`,
+      zone: DOMAIN,
+      registration: {
+        registrar: "cloudflare",
+        registeredAt: "2026-10-11T12:00:05.000Z",
+        expiresAt: "2027-10-11T12:00:05.000Z",
+        autoRenew: true,
+        privacy: true,
+        dnssec: true,
+      },
+    });
+    // nothing changed on Cloudflare and the next status run asks nothing
+    expect(project.cf.registerCalls).toHaveLength(1);
+    const again = await project.run();
+    await domainStatus(again.deps, { services: again.services });
+    expect(again.handler.requests).toEqual([]);
+  });
+
+  it("leaves the plan unchanged when recording the registration is refused, and says so", async () => {
+    const project = await domainProject();
+    const first = await project.run();
+    await buyDomain(first.deps, { domain: DOMAIN, services: first.services });
+    const { deps, services } = await project.run({ answer: () => false });
+    const plan = domainTestPlan({ domain: DOMAIN });
+    await writeArtifact("plan", deps.paths.files.plan, plan);
+
+    const result = await domainStatus(deps, { services });
+
+    expect(result.domain?.domain).toBe(DOMAIN);
+    expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(plan);
+    expect(result.next.join("\n")).toContain(
+      "opscrew/plan.yaml does not record the registration of shopapp.com yet",
+    );
   });
 
   it("says when the plan's domain is not registered with Cloudflare Registrar", async () => {

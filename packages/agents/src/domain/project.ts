@@ -123,8 +123,6 @@ export async function recordDomain(
   if (files.plan !== undefined) {
     const plan = files.plan;
     const switching = plan.dns.provider !== "cloudflare" || plan.dns.domain !== hostname;
-    const registeredAt = toIsoDateTime(info.createdAt);
-    const expiresAt = toIsoDateTime(info.expiresAt);
     const next: DeployPlan = {
       ...plan,
       updatedAt: deps.clock.now().toISOString(),
@@ -134,14 +132,7 @@ export async function recordDomain(
         domain: hostname,
         zone: domain,
         ...(switching ? { proxied: true } : {}),
-        registration: {
-          registrar: info.registrar,
-          ...(registeredAt === undefined ? {} : { registeredAt }),
-          ...(expiresAt === undefined ? {} : { expiresAt }),
-          autoRenew: info.autoRenew,
-          privacy: info.privacy ?? true,
-          dnssec: options.dnssec,
-        },
+        registration: registrationOf(info, options.dnssec),
       },
       security: switching ? { ...plan.security, httpAllowedFrom: "cloudflare" } : plan.security,
     };
@@ -157,6 +148,53 @@ export async function recordDomain(
     recorded.requirements = true;
   }
   return recorded;
+}
+
+type Registration = NonNullable<DeployPlan["dns"]["registration"]>;
+
+/** `plan.dns.registration` from the registrar's details. */
+function registrationOf(info: RegisteredDomain, dnssec: boolean): Registration {
+  const registeredAt = toIsoDateTime(info.createdAt);
+  const expiresAt = toIsoDateTime(info.expiresAt);
+  return {
+    registrar: info.registrar,
+    ...(registeredAt === undefined ? {} : { registeredAt }),
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    autoRenew: info.autoRenew,
+    privacy: info.privacy ?? true,
+    dnssec,
+  };
+}
+
+/**
+ * Whether the plan lacks a registration it should have: it serves the app through Cloudflare at
+ * `registered` or a name inside it, and records no `dns.registration` (for example because the
+ * domain was bought before the plan existed).
+ */
+export function registrationMissing(plan: DeployPlan | undefined, registered: string): boolean {
+  if (plan === undefined || plan.dns.registration !== undefined) return false;
+  if (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined) return false;
+  return insideDomain(plan.dns.domain, registered);
+}
+
+/**
+ * Fills `plan.dns.registration` (and `dns.zone` when absent) for a domain registered on the
+ * account; the caller asks for the `repo-write` approval first.
+ */
+export async function recordRegistration(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: { domain: string; info: RegisteredDomain; dnssec: boolean },
+): Promise<void> {
+  await writeArtifact("plan", deps.paths.files.plan, {
+    ...plan,
+    updatedAt: deps.clock.now().toISOString(),
+    dns: {
+      ...plan.dns,
+      zone: plan.dns.zone ?? options.domain,
+      registration: registrationOf(options.info, options.dnssec),
+    },
+  });
 }
 
 /** Updates `plan.dns.registration.autoRenew` (and dates) when the plan records a registration. */

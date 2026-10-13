@@ -171,4 +171,22 @@ describe("opscrew_domain_check", () => {
     expect(text).toContain("optional");
     expect(JSON.stringify(result)).not.toContain(TOKEN);
   });
+
+  it("asks for the account through its own input, not a CLI flag, when the token sees several", async () => {
+    const { call } = await connect(
+      { CLOUDFLARE_API_TOKEN: TOKEN },
+      {
+        ...HAPPY,
+        "GET /accounts?page=1&per_page=50": ok([
+          { id: "acc-1", name: "Shop" },
+          { id: "acc-2", name: "Team" },
+        ]),
+      },
+    );
+    const result = await call({ query: "shopapp" });
+    expect(result.isError).toBe(true);
+    const text = textOf(result);
+    expect(text).toContain("the `account` input of opscrew_domain_check");
+    expect(text).not.toContain("--account");
+  });
 });

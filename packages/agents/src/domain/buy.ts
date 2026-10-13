@@ -1,3 +1,4 @@
+import { CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import type { Money, RegisteredDomain, RegistrationStatus } from "@opscrew/contracts";
 import { type ErrorCode, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
@@ -17,8 +18,10 @@ import {
   parseMaxPrice,
   parseYears,
   providerText,
+  REGISTRAR_PERMISSIONS,
   requireCloudflareToken,
   resolveAccount,
+  TOKEN_PAGE,
   tldOf,
   yearsText,
 } from "./common";
@@ -140,8 +143,11 @@ export async function buyDomain(
   };
   if (record !== undefined) return continueRecorded(ctx, record, options.autoRenew);
 
-  const existing = await ctx.registrar.registrationStatus(domain);
-  const owned = existing === undefined ? await ctx.registrar.getDomain(domain) : undefined;
+  const existing = await registrarRead(ctx, () => ctx.registrar.registrationStatus(domain));
+  const owned =
+    existing === undefined
+      ? await registrarRead(ctx, () => ctx.registrar.getDomain(domain))
+      : undefined;
   if (existing !== undefined || owned !== undefined) {
     // Already on the account (bought earlier, elsewhere, or a purchase under way): never buy again.
     if (existing !== undefined && existing.state !== "succeeded") {
@@ -165,6 +171,28 @@ export async function buyDomain(
     ...(maxPrice === undefined ? {} : { maxPrice }),
     ...(options.account === undefined ? {} : { account: options.account }),
   });
+}
+
+/**
+ * A registrar read made before anything is bought. Cloudflare refusing it (401/403) after the
+ * token could list the accounts means the token has DNS access but no Registrar access: that is
+ * said plainly, with the optional permissions to add.
+ */
+async function registrarRead<T>(ctx: PurchaseContext, read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (!isUserFacingError(error) || error.code !== "CREDENTIALS_INVALID") throw error;
+    const { domain, account } = ctx;
+    throw new OpsCrewError(
+      "CREDENTIALS_INVALID",
+      `This Cloudflare token cannot use Cloudflare Registrar on the account ${account.name} (${account.id}), so OpsCrew cannot buy ${domain} with it. Nothing was bought.`,
+      {
+        hint: `Buying domains is optional and needs these extra token permissions: ${REGISTRAR_PERMISSIONS}. Edit the token at ${TOKEN_PAGE}, then run \`opscrew domain buy ${domain}\` again. DNS and deployments keep working without them.`,
+        cause: error,
+      },
+    );
+  }
 }
 
 /** The account a recorded purchase was made on; a different `--account` stops the run. */
@@ -237,7 +265,7 @@ async function continueRecorded(
       "PHASE_PRECONDITION",
       `Cloudflare shows no purchase of ${domain}, but OpsCrew's purchase request of ${when} got no clear answer, so the purchase may still appear.`,
       {
-        hint: `Check ${DASHBOARD} and your Cloudflare billing. If ${domain} is listed, run \`opscrew domain buy ${domain}\` again to finish the setup. If it is not listed and you were not charged, run \`opscrew domain buy ${domain} --forget-pending-purchase\` to clear OpsCrew's note and buy it again.`,
+        hint: `Check ${DASHBOARD} and your Cloudflare billing. If ${domain} is listed, run \`opscrew domain buy ${domain}\` again to finish the setup. If it is not listed and you were not charged, run \`opscrew domain buy ${domain} --forget-pending-purchase\` to clear OpsCrew's note (that run buys nothing), then run \`opscrew domain buy ${domain}\` again to buy it.`,
       },
     );
   }
@@ -414,7 +442,7 @@ async function purchase(
 /** Live availability and price; stops unless the domain can be bought through the API. */
 async function quoteDomain(ctx: PurchaseContext, years: number): Promise<Quote> {
   const { domain } = ctx;
-  const checks = await ctx.registrar.check([domain]);
+  const checks = await registrarRead(ctx, () => ctx.registrar.check([domain]));
   const raw = checks.find((c) => c.domain.trim().toLowerCase() === domain);
   if (raw === undefined) {
     throw new OpsCrewError(
@@ -526,8 +554,7 @@ function purchaseDetails(
       ? `Auto-renew: on. Cloudflare charges the renewal (${renewal} per year) to your account's default payment method up to 30 days before the domain expires. Turn it off any time with \`opscrew domain auto-renew off\`.`
       : `Auto-renew: off. The domain expires after ${yearsText(years)} unless you renew it; turn auto-renew on with \`opscrew domain auto-renew on\`.`,
     "WHOIS privacy: on (your contact details are redacted from public WHOIS where the extension allows it).",
-    `Cloudflare zone: created for ${domain} in this account right after the purchase (an existing zone in this account is reused).`,
-    "DNSSEC: on (OpsCrew turns it on for the zone unless it is already on).",
+    ...zoneLines(ctx, true),
     "Registrant contact: your Cloudflare account's default contact is used; OpsCrew never reads or stores it.",
     "Payment: your Cloudflare account's default payment method is charged.",
   ];
@@ -635,7 +662,7 @@ async function finishPurchase(
   const { deps, domain } = ctx;
   let files: ProjectFiles;
   let changes: ProjectChanges;
-  let zoneId: string;
+  let zone: ZoneSetup;
   let info: RegisteredDomain;
   let recorded = { plan: false, requirements: false };
   let keptDomain: string | undefined;
@@ -646,7 +673,7 @@ async function finishPurchase(
     if (changes.replaces !== undefined && !(await approveDomainSwitch(ctx, files, changes))) {
       keptDomain = changes.replaces;
     }
-    zoneId = await ensureZoneAndDnssec(ctx);
+    zone = await ensureZoneAndDnssec(ctx);
     info = await registeredDetails(ctx);
     if (info.autoRenew !== options.autoRenew) {
       info = await ctx.registrar.setAutoRenew(domain, options.autoRenew);
@@ -662,7 +689,7 @@ async function finishPurchase(
         domain,
         hostname: changes.hostname,
         info,
-        dnssec: true,
+        dnssec: zone.dnssec,
       });
     }
   } catch (error) {
@@ -672,7 +699,7 @@ async function finishPurchase(
   return completed(ctx, {
     files,
     hostname: changes.hostname,
-    zoneId,
+    zone,
     info,
     recorded,
     ...(keptDomain === undefined ? {} : { keptDomain }),
@@ -700,8 +727,7 @@ async function setUpOwnedDomain(
     autoRenew !== undefined && autoRenew !== details.autoRenew ? autoRenew : undefined;
   const lines = [
     `${domain} is already registered on your Cloudflare account ${account.name} (${account.id}), so nothing is bought.`,
-    `Cloudflare zone: created for ${domain} in this account if it does not exist there yet (an existing zone in this account is reused).`,
-    "DNSSEC: turned on for the zone unless it is already on.",
+    ...zoneLines(ctx, false),
   ];
   if (autoRenewChange !== undefined) {
     const price = await renewalPrice(ctx.registrar, domain);
@@ -728,11 +754,11 @@ async function setUpOwnedDomain(
     );
   }
 
-  let zoneId: string;
+  let zone: ZoneSetup;
   let info = details;
   let recorded: { plan: boolean; requirements: boolean };
   try {
-    zoneId = await ensureZoneAndDnssec(ctx);
+    zone = await ensureZoneAndDnssec(ctx);
     if (autoRenewChange !== undefined) {
       info = await ctx.registrar.setAutoRenew(domain, autoRenewChange);
       await auditDomain(
@@ -746,7 +772,7 @@ async function setUpOwnedDomain(
       domain,
       hostname: changes.hostname,
       info,
-      dnssec: true,
+      dnssec: zone.dnssec,
     });
   } catch (error) {
     throw setupFailed(deps, domain, error);
@@ -754,7 +780,7 @@ async function setUpOwnedDomain(
   return completed(ctx, {
     files,
     hostname: changes.hostname,
-    zoneId,
+    zone,
     info,
     recorded,
     alreadyRegistered: true,
@@ -774,13 +800,21 @@ async function registeredDetails(ctx: PurchaseContext): Promise<RegisteredDomain
   return details;
 }
 
+/** The zone set up for the domain and whether DNSSEC is on for it. */
+interface ZoneSetup {
+  zoneId: string;
+  dnssec: boolean;
+}
+
 /**
  * The domain's zone in the purchase account (`createZone` reuses an existing zone only in that
- * account), with DNSSEC turned on unless it already is. Returns the zone id.
+ * account), with DNSSEC turned on unless it already is. With stand-in zones (registrar sandbox)
+ * nothing is set up or audited and DNSSEC stays off.
  */
-async function ensureZoneAndDnssec(ctx: PurchaseContext): Promise<string> {
+async function ensureZoneAndDnssec(ctx: PurchaseContext): Promise<ZoneSetup> {
   const { deps, domain, account, services } = ctx;
   const zone = await services.zones.createZone(account.id, domain);
+  if (services.zones.simulated === true) return { zoneId: zone.id, dnssec: false };
   await auditDomain(deps, "ensure zone", domain, `zone ${zone.id} in account ${account.id}`);
   const on =
     services.zones.dnssecEnabled === undefined
@@ -790,7 +824,25 @@ async function ensureZoneAndDnssec(ctx: PurchaseContext): Promise<string> {
     await services.zones.enableDnssec(zone.id);
     await auditDomain(deps, "enable DNSSEC", domain, `zone ${zone.id}`);
   }
-  return zone.id;
+  return { zoneId: zone.id, dnssec: true };
+}
+
+/** Approval lines about the zone and DNSSEC (stand-in zones: says they are skipped). */
+function zoneLines(ctx: PurchaseContext, purchase: boolean): string[] {
+  const { domain } = ctx;
+  if (ctx.services.zones.simulated === true) {
+    return [
+      "Cloudflare zone and DNSSEC: skipped (Cloudflare's registrar sandbox has no zones); DNSSEC is recorded as off.",
+    ];
+  }
+  return [
+    purchase
+      ? `Cloudflare zone: created for ${domain} in this account right after the purchase (an existing zone in this account is reused).`
+      : `Cloudflare zone: created for ${domain} in this account if it does not exist there yet (an existing zone in this account is reused).`,
+    purchase
+      ? "DNSSEC: on (OpsCrew turns it on for the zone unless it is already on)."
+      : "DNSSEC: turned on for the zone unless it is already on.",
+  ];
 }
 
 /** Asks before the bought domain replaces another one in the project files. */
@@ -821,7 +873,7 @@ async function completed(
   result: {
     files: ProjectFiles;
     hostname: string;
-    zoneId: string;
+    zone: ZoneSetup;
     info: RegisteredDomain;
     recorded: { plan: boolean; requirements: boolean };
     keptDomain?: string;
@@ -830,18 +882,25 @@ async function completed(
   },
 ): Promise<BuyDomainResult> {
   const { deps, domain } = ctx;
-  const { files, hostname, info, keptDomain } = result;
+  const { files, hostname, info, keptDomain, zone } = result;
+  const simulated = ctx.services.zones.simulated === true;
   const what = result.alreadyRegistered
     ? "already registered; set up"
     : `bought${result.total === undefined ? "" : ` (approved price ${formatMoney(result.total)})`}`;
+  const zoneState = simulated
+    ? "zone and DNSSEC skipped (registrar sandbox)"
+    : `DNSSEC ${zone.dnssec ? "on" : "off"}; zone ${zone.zoneId}`;
   await auditDomain(
     deps,
     "domain purchase",
     domain,
-    `${what}; expires ${formatDate(info.expiresAt)}; auto-renew ${info.autoRenew ? "on" : "off"}; DNSSEC on; zone ${result.zoneId}`,
+    `${what}; expires ${formatDate(info.expiresAt)}; auto-renew ${info.autoRenew ? "on" : "off"}; ${zoneState}`,
   );
+  const dnssecText = simulated
+    ? "no zone or DNSSEC (registrar sandbox)"
+    : `DNSSEC ${zone.dnssec ? "on" : "off"}`;
   deps.reporter.success(
-    `${domain} is ${result.alreadyRegistered ? "set up" : "yours"}: registered with Cloudflare until ${formatDate(info.expiresAt)}, auto-renew ${info.autoRenew ? "on" : "off"}, WHOIS privacy ${info.privacy === false ? "off" : "on"}, DNSSEC on.`,
+    `${domain} is ${result.alreadyRegistered ? "set up" : "yours"}: registered with Cloudflare until ${formatDate(info.expiresAt)}, auto-renew ${info.autoRenew ? "on" : "off"}, WHOIS privacy ${info.privacy === false ? "off" : "on"}, ${dnssecText}.`,
   );
 
   const next: string[] = [];
@@ -865,10 +924,16 @@ async function completed(
       `Run \`opscrew interview\` and give ${domain} as the domain, then \`opscrew design\`.`,
     );
   }
+  const [step] = next;
+  if (!simulated && step !== undefined) {
+    // A token limited to the zones that existed before does not cover this (possibly new) zone;
+    // said within the one next step, before the user runs it.
+    next[0] = `${step} If your Cloudflare token is limited to specific zones, first add the zone ${domain} to it at ${TOKEN_PAGE} (or set it to all zones of the account): \`opscrew dns\` and \`opscrew provision\` need the token's zone permissions (${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}) on ${domain} too.`;
+  }
   return {
     outcome: "set-up",
     domain: info,
-    zoneId: result.zoneId,
+    zoneId: zone.zoneId,
     ...(result.total === undefined ? {} : { total: result.total }),
     alreadyRegistered: result.alreadyRegistered,
     recorded: result.recorded,

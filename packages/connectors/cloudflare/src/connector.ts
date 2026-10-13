@@ -80,7 +80,7 @@ export function cloudflareConnector(options: CloudflareConnectorOptions): Cloudf
     credentials: {
       envVars: ["CLOUDFLARE_API_TOKEN"],
       description:
-        "Cloudflare API token limited to the zone that holds your domain. Buying domains with OpsCrew is optional and also needs the account-level permissions marked optional.",
+        "Cloudflare API token with the zone permissions below for the zone that holds your domain. Buying domains with OpsCrew is optional and also needs the permissions marked optional: then the zone permissions must cover all zones of the account, because a token limited to the zones you have today cannot set up a domain you buy (or add the new domain's zone to the token right after buying it).",
       scopes: [
         ...CLOUDFLARE_TOKEN_PERMISSIONS,
         ...CLOUDFLARE_REGISTRAR_PERMISSIONS.map((p) => `${p} (optional, for buying domains)`),

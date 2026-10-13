@@ -1,5 +1,7 @@
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
+import type { OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
@@ -221,5 +223,162 @@ describe("defaultDomainServices", () => {
     const plan = await readArtifact("plan", join(project.root, "opscrew", "plan.yaml"));
     expect(plan.dns.registration).toMatchObject({ registrar: "cloudflare", dnssec: true });
     expect(visibleText(run)).not.toContain(TOKEN);
+  });
+});
+
+describe("buyDomain through the Cloudflare adapter: refusals (fake API, no network)", () => {
+  const checkAnswer = ok({
+    domains: [
+      {
+        name: "shopapp.com",
+        registrable: true,
+        tier: "standard",
+        pricing: { currency: "USD", registration_cost: "10.44", renewal_cost: "10.44" },
+      },
+    ],
+  });
+  const refused = (status: number, code: number, message: string): Answer => ({
+    status,
+    body: { success: false, errors: [{ code, message }], messages: [], result: null },
+  });
+
+  async function runWith(routes: Record<string, Answer | Answer[]>, sandbox = false) {
+    const project = await domainProject({ plan: domainTestPlan() });
+    const api = fakeApi(routes);
+    const deps = await createTestPhaseDeps({
+      root: project.root,
+      env: {
+        OPSCREW_HOME: join(project.root, ".home-opscrew"),
+        CLOUDFLARE_API_TOKEN: TOKEN,
+        ...(sandbox ? { OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX: "1" } : {}),
+      },
+      fetch: api.fetch,
+      interactive: true,
+    });
+    let time = 0;
+    const services = {
+      sleep: async (ms: number) => {
+        time += ms;
+      },
+      now: () => time,
+    };
+    const outcome = await buyDomain(deps, { domain: "shopapp.com", services }).then(
+      (result) => ({ result, error: undefined }),
+      (error: unknown) => ({ result: undefined, error: error as OpsCrewError }),
+    );
+    const record = join(deps.paths.projectHomeDir, "domain-purchase.json");
+    return { ...outcome, api, deps, project, record };
+  }
+
+  it("stops with the dashboard link when Cloudflare refuses for a missing contact or payment method, after re-checking the status", async () => {
+    for (const reason of [
+      "The account has no default registrant contact.",
+      "No default payment method on file.",
+    ]) {
+      const { error, api, deps, record } = await runWith({
+        "GET /accounts?page=1&per_page=50": ok([{ id: "acc-1", name: "Shop" }]),
+        [`GET ${REG}/registrations/shopapp.com/registration-status`]:
+          notFound("Registration not found"),
+        [`GET ${REG}/registrations/shopapp.com`]: notFound("Registration not found"),
+        [`GET ${REG}/extensions/com`]: ok({ contact_extensions: [] }),
+        [`POST ${REG}/domain-check`]: checkAnswer,
+        [`POST ${REG}/registrations`]: refused(400, 1001, reason),
+      });
+
+      expect(error?.code).toBe("PHASE_PRECONDITION");
+      expect(error?.message).toContain(reason.replace(/\.$/, ""));
+      expect(error?.message).toContain("Nothing was bought.");
+      expect(error?.hint).toContain("https://dash.cloudflare.com (Domain Registration)");
+      expect(error?.hint).toMatch(/payment method.*registrant contact/);
+      const posts = api.calls.filter(
+        (c) => c.method === "POST" && c.path.endsWith("/registrations"),
+      );
+      expect(posts).toHaveLength(1);
+      // the status was read again after the refusal (before, right before buying, and after)
+      const statusReads = api.calls.filter((c) => c.path.endsWith("/registration-status"));
+      expect(statusReads).toHaveLength(3);
+      expect(api.calls.indexOf(statusReads[2] as (typeof api.calls)[number])).toBeGreaterThan(
+        api.calls.indexOf(posts[0] as (typeof api.calls)[number]),
+      );
+      expect(
+        await stat(record).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(false);
+      expect(visibleText(deps, error)).not.toContain(TOKEN);
+    }
+  });
+
+  it("explains a token with DNS access but no Registrar access, naming the optional permission; nothing bought", async () => {
+    const { error, api, deps, record } = await runWith({
+      "GET /accounts?page=1&per_page=50": ok([{ id: "acc-1", name: "Shop" }]),
+      [`GET ${REG}/registrations/shopapp.com/registration-status`]: refused(
+        403,
+        10000,
+        "Authentication error",
+      ),
+    });
+
+    expect(error?.code).toBe("CREDENTIALS_INVALID");
+    expect(error?.message).toBe(
+      "This Cloudflare token cannot use Cloudflare Registrar on the account Shop (acc-1), so OpsCrew cannot buy shopapp.com with it. Nothing was bought.",
+    );
+    expect(error?.hint).toContain("Buying domains is optional");
+    expect(error?.hint).toContain("Account → Registrar (edit)");
+    expect(error?.hint).toContain("https://dash.cloudflare.com/profile/api-tokens");
+    expect(error?.hint).toContain("DNS and deployments keep working without them");
+    expect(error?.hint).not.toContain("CLOUDFLARE_API_TOKEN:");
+    expect(api.calls.some((c) => c.method === "POST")).toBe(false);
+    expect(
+      await stat(record).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false);
+    expect(visibleText(deps, error)).not.toContain(TOKEN);
+  });
+
+  it("blames the token, not registrar billing, when the accounts cannot be listed", async () => {
+    const { error } = await runWith({
+      "GET /accounts?page=1&per_page=50": refused(400, 6003, "Invalid request headers"),
+    });
+    expect(error?.hint).toContain("may be mistyped, expired or revoked");
+    expect(error?.hint).not.toMatch(/payment method|registrant contact/);
+  });
+
+  it("records DNSSEC as off in the registrar sandbox and says the project files are updated", async () => {
+    const SANDBOX = "/accounts/acc-1/registrar-sandbox";
+    const { result, error, api, deps, project } = await runWith(
+      {
+        "GET /accounts?page=1&per_page=50": ok([{ id: "acc-1", name: "Shop" }]),
+        [`GET ${SANDBOX}/registrations/shopapp.com/registration-status`]: [
+          notFound("Registration not found"),
+          notFound("Registration not found"),
+          ok({ domain_name: "shopapp.com", state: "succeeded" }),
+        ],
+        [`GET ${SANDBOX}/registrations/shopapp.com`]: [
+          notFound("Registration not found"),
+          ok(registration),
+        ],
+        [`GET ${SANDBOX}/extensions/com`]: ok({ contact_extensions: [] }),
+        [`POST ${SANDBOX}/domain-check`]: checkAnswer,
+        [`POST ${SANDBOX}/registrations`]: ok(
+          { domain_name: "shopapp.com", state: "pending" },
+          202,
+        ),
+      },
+      true,
+    );
+
+    expect(error).toBeUndefined();
+    expect(result?.outcome).toBe("set-up");
+    expect(api.calls.some((c) => c.path.startsWith("/zones"))).toBe(false);
+    const text = deps.reporter.text();
+    expect(text).toContain("OpsCrew still records the domain in the project files");
+    expect(text).not.toContain("DNSSEC on");
+    expect(deps.audit.entries.some((e) => e.action === "enable DNSSEC")).toBe(false);
+    const plan = await readArtifact("plan", join(project.root, "opscrew", "plan.yaml"));
+    expect(plan.dns.registration).toMatchObject({ registrar: "cloudflare", dnssec: false });
   });
 });

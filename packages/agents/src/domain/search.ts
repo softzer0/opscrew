@@ -29,7 +29,7 @@ export async function searchDomains(
   const query = parseQuery(options.query);
   requireCloudflareToken(deps);
   const services = resolveDomainServices(deps, options.services);
-  const account = resolveAccount(await services.accounts(), options.account);
+  const account = resolveAccount(await services.accounts(), options.account, options.accountOption);
   const registrar = services.registrar(account.id);
 
   const suggestions = await registrar.suggest(query);

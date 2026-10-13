@@ -219,6 +219,26 @@ describe("ApprovalGate.request", () => {
     expect(handler.requests).toHaveLength(0);
   });
 
+  it("rejects a domain purchase or domain setting without a typed confirmation phrase", async () => {
+    const { gate, handler } = makeGate();
+    for (const kind of ["domain-purchase", "domain-settings"] as const) {
+      for (const confirmPhrase of [undefined, "", "   "]) {
+        await expect(
+          gate.request({ kind, title: "Buy shopapp.com", details: "", confirmPhrase }),
+        ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      }
+    }
+    expect(handler.requests).toHaveLength(0);
+    const typed = await gate.request({
+      kind: "domain-purchase",
+      title: "Buy shopapp.com",
+      details: "",
+      confirmPhrase: "shopapp.com",
+    });
+    expect(typed.approved).toBe(false);
+    expect(handler.requests).toHaveLength(1);
+  });
+
   // Spec US3 scenario 3: deletions require the exact typed phrase; anything else is a refusal.
   describe("destructive plans (US3 scenario 3)", () => {
     const destroyRequest: ApprovalRequest = {

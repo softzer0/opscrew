@@ -1,5 +1,7 @@
+import { zoneCandidates } from "@opscrew/connector-cloudflare";
 import type { ApprovalRequest, Money, RegisteredDomain, Registrar } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   auditDomain,
@@ -8,7 +10,14 @@ import {
   requireCloudflareToken,
   resolveAccount,
 } from "./common";
-import { readProjectFiles, registeredName, syncPlanRegistration } from "./project";
+import {
+  type ProjectFiles,
+  readProjectFiles,
+  recordRegistration,
+  registeredName,
+  registrationMissing,
+  syncPlanRegistration,
+} from "./project";
 import { purchaseRecordPath, readPurchaseRecord } from "./record";
 import { type ResolvedDomainServices, resolveDomainServices } from "./services";
 import type { DomainStatusOptions, DomainStatusResult, SetAutoRenewOptions } from "./types";
@@ -82,9 +91,65 @@ async function connect(
   return { name, services, registrar: services.registrar(account.id) };
 }
 
+/**
+ * The registration on the account that holds the project's domain: the plan's zone when it names
+ * one, else the domain itself or the nearest parent registered there (`app.shopapp.com` →
+ * `shopapp.com`). Errors on the first name stop the run; a parent that cannot be read is skipped.
+ */
+async function findRegistration(
+  registrar: Registrar,
+  files: ProjectFiles,
+  name: string,
+): Promise<RegisteredDomain | undefined> {
+  const names = files.plan?.dns.zone !== undefined ? [name] : zoneCandidates(name);
+  for (const [index, candidate] of names.entries()) {
+    try {
+      const info = await registrar.getDomain(candidate);
+      if (info !== undefined) return { ...info, domain: info.domain.trim().toLowerCase() };
+    } catch (error) {
+      if (index === 0) throw error;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Fills a missing `plan.dns.registration` for a domain registered on the account (bought before
+ * the plan existed) after a `repo-write` approval. Returns next steps when it was not recorded.
+ */
+async function fillPlanRegistration(
+  deps: PhaseDeps,
+  plan: DeployPlan | undefined,
+  info: RegisteredDomain,
+  dnssec: boolean | undefined,
+): Promise<string[]> {
+  const registered = info.domain;
+  if (plan === undefined || !registrationMissing(plan, registered)) return [];
+  const zone = plan.dns.zone === undefined ? `, and dns.zone becomes ${registered}` : "";
+  const decision = await deps.approvals.request({
+    kind: "repo-write",
+    title: `Record the registration of ${registered} in opscrew/plan.yaml`,
+    details: [
+      `${registered} is registered with Cloudflare Registrar on this account, but opscrew/plan.yaml does not record it (for example because it was bought before the plan existed).`,
+      `opscrew/plan.yaml: dns.registration records the registrar, the registration and expiry dates, auto-renew (${info.autoRenew ? "on" : "off"}), WHOIS privacy and DNSSEC (${dnssec === true ? "on" : "off"})${zone}.`,
+      "Nothing changes on Cloudflare.",
+    ].join("\n"),
+  });
+  if (!decision.approved) {
+    return [
+      `opscrew/plan.yaml does not record the registration of ${registered} yet. Run \`opscrew domain status\` in a terminal and approve recording it.`,
+    ];
+  }
+  await recordRegistration(deps, plan, { domain: registered, info, dnssec: dnssec === true });
+  deps.reporter.info(`OpsCrew recorded the registration of ${registered} in opscrew/plan.yaml.`);
+  return [];
+}
+
 /** Whether DNSSEC is on for the zone, when the zone calls can tell; else undefined. */
 async function dnssecState(services: ResolvedDomainServices, name: string) {
-  if (services.zones.dnssecEnabled === undefined) return undefined;
+  if (services.zones.dnssecEnabled === undefined || services.zones.simulated === true) {
+    return undefined;
+  }
   const zone = await services.zones.findZone(name);
   if (zone === undefined || zone.name.toLowerCase() !== name) return false;
   return services.zones.dnssecEnabled(zone.id);
@@ -100,7 +165,10 @@ function renewalNote(info: RegisteredDomain): string {
 /**
  * `opscrew domain status`: registrar, expiry, auto-renew, lock, privacy and DNSSEC of the
  * project's domain, read live (DNSSEC from the zone when the zone calls can tell, else from the
- * plan). Without a domain in the project it says so; it also reports an unfinished purchase.
+ * plan). Without a domain in the project it says so; it also reports an unfinished purchase. When
+ * the plan serves the app at a domain registered on the account (or a name inside it) but records
+ * no `dns.registration` (bought before the plan existed), it fills it in after a `repo-write`
+ * approval.
  */
 export async function domainStatus(
   deps: PhaseDeps,
@@ -135,7 +203,7 @@ export async function domainStatus(
   }
 
   const target = await connect(deps, name, options);
-  const info = await target.registrar.getDomain(name);
+  const info = await findRegistration(target.registrar, files, name);
   if (info === undefined) {
     return {
       ...pending,
@@ -145,8 +213,10 @@ export async function domainStatus(
       ],
     };
   }
-  const live = await dnssecState(target.services, name);
+  const registered = info.domain;
+  const live = await dnssecState(target.services, registered);
   const dnssec = live ?? files.plan?.dns.registration?.dnssec;
+  const notRecorded = await fillPlanRegistration(deps, files.plan, info, live);
   return {
     domain: info,
     ...(dnssec === undefined ? {} : { dnssec }),
@@ -156,9 +226,10 @@ export async function domainStatus(
       renewalNote(info),
       ...(dnssec === false
         ? [
-            `DNSSEC is off for ${name}. Run \`opscrew domain buy ${name}\` to turn it on: OpsCrew does not buy the domain again, and it lists every change and asks before making it.`,
+            `DNSSEC is off for ${registered}. Run \`opscrew domain buy ${registered}\` to turn it on: OpsCrew does not buy the domain again, and it lists every change and asks before making it.`,
           ]
         : []),
+      ...notRecorded,
     ],
   };
 }
@@ -173,21 +244,22 @@ export async function setDomainAutoRenew(
   options: SetAutoRenewOptions,
 ): Promise<DomainStatusResult> {
   const files = await readProjectFiles(deps);
-  const name = registeredName(files);
-  if (name === undefined) {
+  const projectName = registeredName(files);
+  if (projectName === undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", "This project has no domain yet.", {
       hint: "Buy one with `opscrew domain buy <domain>`, then try again.",
     });
   }
-  const target = await connect(deps, name, options);
-  const current = await target.registrar.getDomain(name);
+  const target = await connect(deps, projectName, options);
+  const current = await findRegistration(target.registrar, files, projectName);
   if (current === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${name} is not registered with Cloudflare Registrar on this account, so OpsCrew cannot change its auto-renew.`,
+      `${projectName} is not registered with Cloudflare Registrar on this account, so OpsCrew cannot change its auto-renew.`,
       { hint: "Change it where you bought the domain, or pass the right account with --account." },
     );
   }
+  const name = current.domain;
   const dnssec = files.plan?.dns.registration?.dnssec;
   const result = (info: RegisteredDomain): DomainStatusResult => ({
     domain: info,
