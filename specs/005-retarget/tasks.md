@@ -69,7 +69,7 @@ variable name (the redactor masks what follows).
 
 ## Phase 3: Orchestration
 
-- [ ] T508 [US1] [US2] [US3] The move: start, rename, create, deploy, migrate, switch, finish and abort in `packages/agents/src/retarget/`
+- [X] T508 [US1] [US2] [US3] The move: start, rename, create, deploy, migrate, switch, finish and abort in `packages/agents/src/retarget/`
   - Owns: `packages/agents/src/retarget/**` (except `server-ops*.ts`)
   - Reads: spec.md; plan.md "Orchestration"; the helpers from T502–T507
   - Depends: T502–T507

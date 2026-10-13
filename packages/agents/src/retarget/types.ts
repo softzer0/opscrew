@@ -1,8 +1,8 @@
 import type {
   CommandRunner,
+  ComputeCatalog,
   CredentialCheck,
   Money,
-  RemoteExec,
   ServerSnapshotApi,
   VpsProviderId,
 } from "@opscrew/contracts";
@@ -41,7 +41,7 @@ export interface RetargetGitHubApi extends GitHubApi {
  * from `PhaseDeps`; tests replace them with fakes.
  */
 export interface RetargetServices
-  extends Pick<ProvisionServices, "engine" | "cloudflare" | "tcpConnect" | "remote"> {
+  extends Pick<ProvisionServices, "engine" | "cloudflare" | "tcpConnect" | "remote" | "askEnv"> {
   /** Credential checks per provider (default: `vpsConnector(id).verifyCredentials`). */
   providers?: Partial<
     Record<VpsProviderId, { configured: boolean; verify(): Promise<CredentialCheck> }>
@@ -52,6 +52,16 @@ export interface RetargetServices
   runner?: CommandRunner;
   /** Server lookup and snapshots per provider (default: `vpsConnector(id).servers`). */
   servers?: Partial<Record<VpsProviderId, ServerSnapshotApi>>;
+  /**
+   * Price catalogues per provider, for the new server's options and the old server's cost after
+   * an abort (default: the provider connector's live catalogue, else its dated price list).
+   */
+  catalogs?: Partial<Record<VpsProviderId, ComputeCatalog>>;
+  /**
+   * The addresses a hostname resolves to from this computer, to confirm a DNS change the user made
+   * (default: `dns.promises.lookup` with `all: true`).
+   */
+  resolve?: (hostname: string) => Promise<string[]>;
   sleep?: (ms: number) => Promise<void>;
   /** Monotonic milliseconds for wait loops. */
   now?: () => number;
@@ -112,6 +122,11 @@ export interface AbortRetargetOptions {
 export interface RetargetResult {
   /** The step the move reached, or `finished` / `aborted`. */
   step: Retarget["step"] | "finished" | "aborted";
+  /**
+   * True when the command did all it can: the move switched (`runRetarget`), finished or aborted.
+   * False when it stopped on purpose (a plan to approve, a flag to pass); `next` says how to go on.
+   */
+  done: boolean;
   /** Set when a non-interactive run stopped before an apply: approve it with this hash. */
   pendingPlanHash?: string;
   /** Snapshot of the old server taken by `--finish`, when one was taken. */
