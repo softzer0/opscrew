@@ -126,7 +126,9 @@ const resetCalls = () => {
 const dockerCalls = () =>
   existsSync(join(work, "docker.log")) ? readFileSync(join(work, "docker.log"), "utf8") : "";
 
-describe.skipIf(!hasBash)("deploy start and rollback scripts", () => {
+// Each test runs bash several times; on Windows (Git Bash) under a parallel `pnpm check` that
+// can take longer than the default 5 seconds.
+describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000 }, () => {
   beforeEach(() => {
     work = mkdtempSync(join(tmpdir(), "opscrew-rollback-")).replaceAll("\\", "/");
     mkdirSync(join(work, "app"));
