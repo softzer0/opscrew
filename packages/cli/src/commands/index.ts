@@ -10,6 +10,7 @@ import * as init from "./init";
 import * as interview from "./interview";
 import * as mcp from "./mcp";
 import * as provision from "./provision";
+import * as retarget from "./retarget";
 import * as scan from "./scan";
 import * as secure from "./secure";
 import * as status from "./status";
@@ -33,6 +34,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   secure,
   verify,
   drift,
+  retarget,
   destroy,
   status,
   mcp,

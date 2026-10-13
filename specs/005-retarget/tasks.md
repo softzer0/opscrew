@@ -79,7 +79,7 @@ variable name (the redactor masks what follows).
 
 ## Phase 4: Interfaces (parallel)
 
-- [ ] T509 [P] [US1] [US2] [US3] [US4] `opscrew retarget` command, status line and an end-to-end move in `packages/cli/`
+- [X] T509 [P] [US1] [US2] [US3] [US4] `opscrew retarget` command, status line and an end-to-end move in `packages/cli/`
   - Owns: `packages/cli/src/**` (except `src/ui/__fixtures__/destroy.ts`), `packages/cli/test/e2e/**`
   - Reads: spec.md FR-501, FR-511; plan.md "CLI"
   - Depends: T508

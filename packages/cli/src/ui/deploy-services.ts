@@ -3,13 +3,14 @@ import type {
   DestroyServices,
   InitServices,
   ProvisionServices,
+  RetargetServices,
   RunSecureOptions,
   RunVerifyOptions,
 } from "@opscrew/agents";
 import type { CliContext } from "../context";
 
 /**
- * Network, engine and stream overrides for `provision`, `dns`, `secure`, `verify` and `mcp`. The
+ * Network, engine and stream overrides for `provision`, `dns`, `secure`, `verify`, `destroy`, `retarget` and `mcp`. The
  * real CLI uses none of these (each phase builds its defaults from the environment); tests attach
  * fakes with {@link withDeployServices} so commands never reach a cloud, a server or the network.
  */
@@ -26,6 +27,8 @@ export interface DeployServices {
   init?: InitServices;
   /** Engine, cloud provider, Cloudflare and GitHub fakes for `destroy`. */
   destroy?: DestroyServices;
+  /** Engine, both providers, Cloudflare, GitHub, SSH, catalogue and wait fakes for `retarget`. */
+  retarget?: RetargetServices;
 }
 
 const attached = new WeakMap<CliContext, DeployServices>();
