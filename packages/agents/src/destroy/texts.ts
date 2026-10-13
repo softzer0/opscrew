@@ -22,8 +22,8 @@ export interface DestroyTexts {
   snapshotBilled: string;
   /** How the app's servers are found, for example `labelled managed-by=opscrew,app=shop`. */
   lookup(app: string): string;
-  /** Hint when the provider token is missing. */
-  tokenHint: string;
+  /** Hint when the provider token is missing; `command` is the command to run again. */
+  tokenHint(command: string): string;
   /** Data lost with the server when backups are on and the provider deletes them with it. */
   deletedBackups?: string;
   /** What happens to the automatic backups when the provider keeps them after the deletion. */
@@ -43,7 +43,7 @@ function hetznerTexts(): DestroyTexts {
     snapshotBilling: "Hetzner bills snapshots per GB per month",
     snapshotBilled: "billed per GB per month",
     lookup: (app) => `labelled managed-by=opscrew,app=${app}`,
-    tokenHint:
+    tokenHint: () =>
       "Create a Read & Write API token in the Hetzner Cloud Console (your project → Security → API tokens).",
     deletedBackups: "Hetzner's automatic backups of the server",
   };
@@ -60,7 +60,8 @@ function digitalOceanTexts(): DestroyTexts {
     snapshotBilling: "DigitalOcean bills snapshots at $0.06 per GB per month",
     snapshotBilled: "billed at $0.06 per GB per month",
     lookup: (app) => `tagged opscrew-app:${app} and managed-by:opscrew`,
-    tokenHint: `Create a custom-scoped token at ${profile.tokenUrl}, then set it as ${profile.tokenVars[0]} and run \`opscrew destroy\` again.`,
+    tokenHint: (command) =>
+      `Create a custom-scoped token at ${profile.tokenUrl}, then set it as ${profile.tokenVars[0]} and run \`${command}\` again.`,
     keptBackups:
       "DigitalOcean keeps the Droplet's automatic backups until they expire, four weeks after they were taken",
     keptBackupsRemaining:

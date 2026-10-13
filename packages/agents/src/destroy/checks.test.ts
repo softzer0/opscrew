@@ -9,13 +9,38 @@ import {
   unprotectPlan,
 } from "./__fixtures__/fakes";
 import {
+  assertModulePrefix,
   dataWarning,
   deletesServer,
+  deletesUnconfirmedServer,
+  deletionPlanIsBounded,
+  deletionPlanProblems,
   destroyPlanProblems,
   removeHostKeys,
   serverIdsInPlan,
   unprotectPlanProblems,
 } from "./checks";
+
+const HCLOUD_PROVIDER = "registry.opentofu.org/hetznercloud/hcloud";
+
+/** A change at `address` (type and name from its last two parts). */
+function at(address: string, action: ResourceChange["action"] = "delete"): ResourceChange {
+  const parts = address.split(".");
+  return {
+    address,
+    type: parts[parts.length - 2] as string,
+    name: parts[parts.length - 1] as string,
+    provider: HCLOUD_PROVIDER,
+    action,
+  };
+}
+
+/** The old server's resources during a move, renamed to `module.server_previous`. */
+const PREVIOUS = [
+  at("module.server_previous.hcloud_ssh_key.deploy"),
+  at("module.server_previous.hcloud_firewall.this"),
+  at("module.server_previous.hcloud_server.this"),
+];
 
 const firewallCreate: ResourceChange = {
   address: "module.server.hcloud_firewall.this",
@@ -247,5 +272,202 @@ describe("dataWarning", () => {
     expect(dataWarning(noBackups, true)).toBe(
       "Deleting the Droplet also deletes the PostgreSQL database and any files the app stored on the Droplet. Only a snapshot keeps a copy.",
     );
+  });
+
+  it("words the warning for an explicit target (the old server during a move), not plan.target", () => {
+    const base = testPlan();
+    const plan = { ...base, target: { ...base.target, provider: "digitalocean" as const } };
+    const old = { provider: "hetzner" as const, backups: false };
+    expect(dataWarning(plan, true, old)).toBe(
+      "Deleting the server also deletes the PostgreSQL database and any files the app stored on the server. Only a snapshot keeps a copy.",
+    );
+  });
+});
+
+describe("deletionPlanProblems (prefix-bounded deletions of a move)", () => {
+  const prefix = "module.server_previous.";
+  const confirmed = new Set(PREVIOUS.map((c) => c.address));
+
+  it("accepts a plan that only deletes confirmed resources under the prefix", () => {
+    const problems = deletionPlanProblems(PREVIOUS, { prefix, confirmed });
+    expect(problems).toEqual({ notDeletes: [], outsidePrefix: [], unconfirmed: [] });
+    expect(deletionPlanIsBounded(problems)).toBe(true);
+    // before the confirmation (the preview) only the prefix and the action are checked
+    expect(deletionPlanIsBounded(deletionPlanProblems(PREVIOUS, { prefix }))).toBe(true);
+  });
+
+  it("refuses anything that is not a delete, even under the prefix", () => {
+    const changes = [
+      ...PREVIOUS.slice(0, 2),
+      at("module.server_previous.hcloud_server.this", "update"),
+      at("module.server_previous.hcloud_firewall.extra", "create"),
+      at("module.server_previous.hcloud_server.other", "replace"),
+    ];
+    const problems = deletionPlanProblems(changes, { prefix });
+    expect(problems.notDeletes).toEqual([
+      "update module.server_previous.hcloud_server.this",
+      "create module.server_previous.hcloud_firewall.extra",
+      "replace module.server_previous.hcloud_server.other",
+    ]);
+    expect(problems.outsidePrefix).toEqual([]);
+    expect(deletionPlanIsBounded(problems)).toBe(false);
+  });
+
+  it("refuses deletes outside the prefix: the new server, DNS, a look-alike module", () => {
+    const changes = [
+      ...PREVIOUS,
+      at("module.server.hcloud_server.this"),
+      at("module.dns.cloudflare_dns_record.a"),
+      at("module.server_previous_x.hcloud_server.this"),
+      at("hcloud_server.loose", "update"),
+    ];
+    const problems = deletionPlanProblems(changes, { prefix, confirmed });
+    expect(problems.outsidePrefix).toEqual([
+      "delete module.server.hcloud_server.this",
+      "delete module.dns.cloudflare_dns_record.a",
+      "delete module.server_previous_x.hcloud_server.this",
+      "update hcloud_server.loose",
+    ]);
+    expect(problems.unconfirmed).toEqual([]);
+    expect(deletionPlanIsBounded(problems)).toBe(false);
+  });
+
+  it("refuses deletes under the prefix that were not in the confirmed preview", () => {
+    const volume = at("module.server_previous.hcloud_volume.data");
+    expect(deletionPlanProblems([...PREVIOUS, volume], { prefix, confirmed })).toEqual({
+      notDeletes: [],
+      outsidePrefix: [],
+      unconfirmed: ["module.server_previous.hcloud_volume.data"],
+    });
+  });
+
+  it("bounds an abort to module.server. and leaves module.server_previous alone", () => {
+    const fresh = deployedResources();
+    const abort = deletionPlanProblems([...fresh, PREVIOUS[2] as ResourceChange], {
+      prefix: "module.server.",
+    });
+    expect(abort.outsidePrefix).toEqual(["delete module.server_previous.hcloud_server.this"]);
+    expect(deletionPlanIsBounded(deletionPlanProblems(fresh, { prefix: "module.server." }))).toBe(
+      true,
+    );
+  });
+
+  it("without a prefix checks the whole root (opscrew destroy)", () => {
+    const all = deployedResources({ dns: true });
+    const confirmedAll = new Set(all.map((c) => c.address));
+    expect(deletionPlanIsBounded(deletionPlanProblems(all, { confirmed: confirmedAll }))).toBe(
+      true,
+    );
+    expect(deletionPlanProblems([firewallCreate]).notDeletes).toEqual([
+      "create module.server.hcloud_firewall.this",
+    ]);
+  });
+});
+
+describe("module address prefixes", () => {
+  const invalid = ["module.server", "", "module.", "module.server.x.", "server.", "module.a b."];
+
+  it("accepts exactly one module with its trailing dot", () => {
+    expect(() => assertModulePrefix("module.server.")).not.toThrow();
+    expect(() => assertModulePrefix("module.server_previous.")).not.toThrow();
+    for (const prefix of invalid) {
+      expect(() => assertModulePrefix(prefix)).toThrow(
+        expect.objectContaining({ code: "INTERNAL" }),
+      );
+    }
+  });
+
+  it("refuses an invalid prefix in every bounded check, even with no changes", () => {
+    const { changes, planJson } = unprotectPlan();
+    for (const prefix of ["module.server", ""]) {
+      expect(() => deletionPlanProblems(PREVIOUS, { prefix })).toThrow(
+        expect.objectContaining({ code: "INTERNAL" }),
+      );
+      expect(() => deletionPlanProblems([], { prefix })).toThrow(
+        expect.objectContaining({ code: "INTERNAL" }),
+      );
+      expect(() => unprotectPlanProblems(changes, planJson, { prefix })).toThrow(
+        expect.objectContaining({ code: "INTERNAL" }),
+      );
+      expect(() => unprotectPlanProblems([], {}, { prefix })).toThrow(
+        expect.objectContaining({ code: "INTERNAL" }),
+      );
+    }
+  });
+
+  it("module.server. and module.server_previous. never match each other", () => {
+    const current = [at("module.server.hcloud_server.x")];
+    const previous = [at("module.server_previous.x")];
+    expect(deletionPlanProblems(previous, { prefix: "module.server." }).outsidePrefix).toEqual([
+      "delete module.server_previous.x",
+    ]);
+    expect(
+      deletionPlanProblems(current, { prefix: "module.server_previous." }).outsidePrefix,
+    ).toEqual(["delete module.server.hcloud_server.x"]);
+    expect(deletionPlanIsBounded(deletionPlanProblems(current, { prefix: "module.server." }))).toBe(
+      true,
+    );
+  });
+});
+
+describe("deletesUnconfirmedServer", () => {
+  const plan = (id: string | undefined) => ({
+    changes: PREVIOUS,
+    planJson: {
+      resource_changes: [
+        {
+          address: "module.server_previous.hcloud_server.this",
+          type: "hcloud_server",
+          change: { actions: ["delete"], before: id === undefined ? {} : { id }, after: null },
+        },
+      ],
+    },
+  });
+
+  it("accepts the confirmed server, whatever module it lives in", () => {
+    expect(serverIdsInPlan(plan("4711").planJson, "hetzner")).toEqual(["4711"]);
+    expect(deletesUnconfirmedServer(plan("4711"), "hetzner", ["4711"])).toBe(false);
+  });
+
+  it("refuses another server, or one the plan no longer names", () => {
+    expect(deletesUnconfirmedServer(plan("4712"), "hetzner", ["4711"])).toBe(true);
+    expect(deletesUnconfirmedServer(plan(undefined), "hetzner", ["4711"])).toBe(true);
+  });
+
+  it("has nothing to compare when the preview named no id or no server is deleted", () => {
+    expect(deletesUnconfirmedServer(plan("4712"), "hetzner", [])).toBe(false);
+    expect(deletesUnconfirmedServer({ changes: PREVIOUS.slice(0, 2) }, "hetzner", ["4711"])).toBe(
+      false,
+    );
+  });
+});
+
+describe("unprotectPlanProblems with a prefix (previous_delete_protection)", () => {
+  /** The protection-lifting plan with the server at `address`. */
+  const movedTo = (address: string) => {
+    const { changes, planJson } = unprotectPlan();
+    return {
+      changes: changes.map((c) => ({ ...c, address })),
+      planJson: {
+        ...planJson,
+        resource_changes: planJson.resource_changes.map((rc) => ({ ...rc, address })),
+      },
+    };
+  };
+
+  it("accepts lifting the old server's protection under the prefix", () => {
+    const { changes, planJson } = movedTo("module.server_previous.hcloud_server.this");
+    expect(unprotectPlanProblems(changes, planJson, { prefix: "module.server_previous." })).toEqual(
+      [],
+    );
+  });
+
+  it("refuses a protection change of a server outside the prefix", () => {
+    const { changes, planJson } = movedTo(SERVER_ADDRESS);
+    expect(unprotectPlanProblems(changes, planJson, { prefix: "module.server_previous." })).toEqual(
+      [`update ${SERVER_ADDRESS}`],
+    );
+    // without a prefix (opscrew destroy) the same plan is fine
+    expect(unprotectPlanProblems(changes, planJson)).toEqual([]);
   });
 });

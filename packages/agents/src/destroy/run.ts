@@ -7,64 +7,58 @@ import {
   githubConnector,
   resolveGitHubToken,
 } from "@opscrew/connector-github";
-import type {
-  ApprovalRecord,
-  AppServer,
-  IacEngine,
-  PlanSummary,
-  ResourceChange,
-  ServerSnapshotApi,
-  SnapshotRequest,
-  VpsProviderId,
-} from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, writeFileAtomic } from "@opscrew/core";
+import type { ApprovalRecord, IacEngine, ResourceChange } from "@opscrew/contracts";
+import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
-import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import {
-  type ProviderProfile,
-  planProvider,
-  providerProfile,
-  type VpsConnectorOptions,
-  vpsConnector,
-} from "../providers";
+import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import { checkProvider, githubCoordinates } from "../provision";
 import {
   dataWarning,
   deletesServer,
+  deletesUnconfirmedServer,
+  deletionPlanProblems,
   describeChanges,
-  destroyPlanProblems,
-  ProviderIdSchema,
-  removeHostKeys,
-  serverIdsInPlan,
-  unprotectPlanProblems,
 } from "./checks";
+import {
+  applyApprovedPlan,
+  confirmDeletion,
+  type DeletionSession,
+  discardPlan,
+  forgetHostKeys,
+  infraDeclaresVariable,
+  liftProtection,
+  previewDeletion,
+  remainingAfterDeletion,
+  removeSnapshotRecord,
+  savePlan,
+  snapshotKeptNote,
+  snapshotWanted,
+  takeSnapshotBeforeDelete,
+} from "./deletion";
 import { type DestroyTexts, destroyTexts } from "./texts";
 import type { DestroyGitHubApi, DestroyOptions, DestroyResult, DestroyServices } from "./types";
 
-const SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
+/** The command every hint of a stopped teardown tells the user to run again. */
+const COMMAND = "opscrew destroy";
+
 /**
  * Input variable that lifts the server's delete and rebuild protection (Hetzner root module, T303).
  * Providers without delete protection (DigitalOcean) have no such variable and get no `-var`.
  */
-const PROTECTION_OFF: Readonly<Record<string, string>> = { delete_protection: "false" };
+const PROTECTION_VARIABLE = "delete_protection";
 
 /** Everything the plan and apply steps share. */
 interface DestroyContext {
-  deps: PhaseDeps;
+  /** Engine, root module and wording shared with the move's deletion steps. */
+  session: DeletionSession;
   plan: DeployPlan;
-  provider: VpsProviderId;
   profile: ProviderProfile;
   texts: DestroyTexts;
-  engine: IacEngine;
-  /** Engine environment: provider tokens and `TF_ENCRYPTION`. Never logged. */
-  env: Record<string, string | undefined>;
-  /** Absolute root module directory. */
-  dir: string;
-  /** Prefix of this run's plan file names. */
-  stamp: string;
+  /** `-var`s of every plan: delete protection off where the provider has it. */
+  vars?: Readonly<Record<string, string>>;
 }
 
 /** Where the deploy secrets live, and why they cannot be removed when `api` is missing. */
@@ -84,8 +78,19 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-function lastLines(text: string, count = 8): string {
-  return text.trim().split(/\r?\n/).slice(-count).join("\n");
+/**
+ * 0. A move to another provider is in progress (`plan.retarget`): two servers may exist and the
+ * state is transitional, so destroy refuses before any check or change.
+ */
+function moveInProgress(plan: DeployPlan): OpsCrewError {
+  const to = providerProfile(planProvider(plan)).displayName;
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `A move to ${to} is in progress, so OpsCrew will not delete this deployment.`,
+    {
+      hint: "Run `opscrew retarget` to continue the move, `opscrew retarget --finish` to complete it once traffic reaches the new server, or `opscrew retarget --abort` to go back before the DNS switch. Then run `opscrew destroy` again if you still want to delete the deployment.",
+    },
+  );
 }
 
 function nothingDeployed(plan: DeployPlan): OpsCrewError {
@@ -121,9 +126,8 @@ async function requirePreconditions(
     );
   }
   const dir = join(deps.paths.root, plan.infra.dir);
-  let names: string[];
   try {
-    names = await readdir(dir);
+    await readdir(dir);
   } catch {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -135,10 +139,7 @@ async function requirePreconditions(
   }
   // Without delete protection there is nothing to lift, so no variable for it is needed.
   if (!profile.deleteProtection) return;
-  for (const name of names.filter((n) => n.endsWith(".tf")).sort()) {
-    const text = await readFile(join(dir, name), "utf8").catch(() => "");
-    if (/variable\s+"delete_protection"/.test(text)) return;
-  }
+  if (await infraDeclaresVariable(dir, PROTECTION_VARIABLE)) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     `The infrastructure code in ${plan.infra.dir} was generated by an older OpsCrew and cannot lift the server's delete protection. Nothing was changed.`,
@@ -275,430 +276,6 @@ async function setupEngine(
 }
 
 /**
- * Saves a plan under `.opscrew/plans/` (with delete protection off where the provider has it);
- * removes the file on failure.
- */
-async function makePlan(
-  ctx: DestroyContext,
-  suffix: string,
-  destroy: boolean,
-): Promise<PlanSummary> {
-  const file = join(ctx.deps.paths.files.plansDir, `${ctx.stamp}-${suffix}.tfplan`);
-  try {
-    return await ctx.engine.plan(ctx.dir, file, {
-      env: ctx.env,
-      ...(ctx.profile.deleteProtection ? { vars: { ...PROTECTION_OFF } } : {}),
-      ...(destroy ? { destroy: true } : {}),
-    });
-  } catch (error) {
-    await rm(file, { force: true });
-    throw error;
-  }
-}
-
-/** Deletes a plan file so it can never be applied later. */
-async function discard(summary: PlanSummary): Promise<void> {
-  await rm(summary.planFile, { force: true });
-}
-
-/** Applies an approved saved plan, audits the outcome and stops with the log tail on failure. */
-async function applyApproved(
-  ctx: DestroyContext,
-  summary: PlanSummary,
-  options: { allowDestroy: boolean; what: string; hint: string },
-): Promise<void> {
-  const { deps } = ctx;
-  const audit = (ok: boolean) =>
-    deps.audit.append({
-      kind: "iac",
-      actor: "opscrew",
-      action: "apply",
-      phase: "provision",
-      target: summary.planHash,
-      decision: ok ? "approved" : "refused",
-      detail: `${options.what}: ${ok ? "apply finished" : "apply failed"}`,
-    });
-  let result: Awaited<ReturnType<IacEngine["apply"]>>;
-  try {
-    result = await ctx.engine.apply(
-      ctx.dir,
-      summary.planFile,
-      { approvedPlanHash: summary.planHash, allowDestroy: options.allowDestroy },
-      { env: ctx.env },
-    );
-  } catch (error) {
-    await audit(false);
-    throw error;
-  }
-  await audit(result.ok);
-  if (!result.ok) {
-    const log = deps.redactor.redact(lastLines(result.log));
-    const what = options.what.charAt(0).toUpperCase() + options.what.slice(1);
-    throw new OpsCrewError("ENGINE_FAILED", `${what} failed:\n${log}`, { hint: options.hint });
-  }
-}
-
-/** Plain-English reason of a failed provider call, without a trailing full stop. */
-function failureReason(error: unknown): string {
-  return (isUserFacingError(error) ? error.message : "unexpected error").replace(/[.\s]+$/, "");
-}
-
-/**
- * The snapshot step failed, so nothing is deleted. After `snapshotServer` was called, whether the
- * provider had already started the snapshot is unknown (the connector starts and waits in one
- * call), so the hint covers both; `started` is false when the step failed before that call.
- */
-function snapshotFailed(ctx: DestroyContext, error: unknown, started = true): OpsCrewError {
-  const { deps, texts } = ctx;
-  const name = ctx.plan.app.name;
-  return new OpsCrewError(
-    "PROVIDER_ERROR",
-    deps.redactor.redact(
-      `The snapshot of ${name} failed: ${failureReason(error)}. Nothing was deleted.`,
-    ),
-    {
-      hint: started
-        ? `Check the ${texts.noun} and its snapshots in ${texts.console} (a snapshot may still be finishing). Then run \`opscrew destroy\` again, or \`opscrew destroy --no-snapshot\` once you have a snapshot or do not need one.`
-        : `Check the ${texts.noun} in ${texts.console}, then run \`opscrew destroy\` again, or \`opscrew destroy --no-snapshot\` to delete without a snapshot.`,
-    },
-  );
-}
-
-/** `20261011T120000Z`: a Hetzner label value (no colons), also used in the snapshot name. */
-function labelTime(date: Date): string {
-  return date
-    .toISOString()
-    .replace(/[-:]/g, "")
-    .replace(/\.\d+Z$/, "Z");
-}
-
-/** Whether this run takes a snapshot first (`auto`: when data lives only on the server). */
-function snapshotWanted(plan: DeployPlan, options: DestroyOptions): boolean {
-  const choice = options.snapshot ?? "auto";
-  return choice === "auto" ? plan.services.postgres || plan.target.backups : choice;
-}
-
-/** Where a destroy snapshot is remembered, so a re-run reuses it instead of taking another. */
-function snapshotRecordFile(deps: PhaseDeps): string {
-  return join(deps.paths.stateDir, "destroy-snapshot.json");
-}
-
-/**
- * The snapshot record, `{ provider, serverId, snapshotId, takenAt }` with string ids. Records of
- * OpsCrew 003 have no provider (they are Hetzner's) and numeric `serverId` and `imageId`.
- */
-const SnapshotRecordSchema = z.looseObject({
-  provider: z.string().optional(),
-  serverId: ProviderIdSchema,
-  snapshotId: ProviderIdSchema.optional(),
-  imageId: ProviderIdSchema.optional(),
-});
-
-interface SnapshotRecord {
-  provider: string;
-  serverId: string;
-  snapshotId: string;
-}
-
-/** The snapshot an earlier run recorded, or `undefined` when there is none or it is unreadable. */
-async function readSnapshotRecord(deps: PhaseDeps): Promise<SnapshotRecord | undefined> {
-  let json: unknown;
-  try {
-    json = JSON.parse(await readFile(snapshotRecordFile(deps), "utf8"));
-  } catch {
-    return undefined;
-  }
-  const parsed = SnapshotRecordSchema.safeParse(json);
-  if (!parsed.success) return undefined;
-  const snapshotId = parsed.data.snapshotId ?? parsed.data.imageId;
-  if (snapshotId === undefined) return undefined;
-  return {
-    provider: parsed.data.provider ?? "hetzner",
-    serverId: parsed.data.serverId,
-    snapshotId,
-  };
-}
-
-/** The default connector's waits use the services' sleep and clock when a test injects them. */
-function connectorOptions(services: DestroyServices): VpsConnectorOptions {
-  const { sleep, now } = services;
-  return {
-    ...(sleep ? { sleep } : {}),
-    ...(now ? { now: () => new Date(now()) } : {}),
-  };
-}
-
-/** The provider's server the confirmed teardown deletes, read from the preview destroy plan. */
-interface ServerToDelete {
-  /** True when the preview deletes the provider's server. */
-  inState: boolean;
-  /**
-   * Its provider ids as the infrastructure state records them (`change.before.id`): normally one;
-   * empty when the plan JSON does not say.
-   */
-  ids: readonly string[];
-}
-
-/** The provider's server API and the app's servers as it reports them; a failed lookup stops. */
-async function findServers(
-  ctx: DestroyContext,
-  services: DestroyServices,
-): Promise<{ api: ServerSnapshotApi; found: AppServer[] }> {
-  const { deps, provider, profile, texts } = ctx;
-  const api: ServerSnapshotApi | undefined =
-    services.servers ?? vpsConnector(provider, deps, connectorOptions(services)).servers;
-  if (!api) {
-    throw new OpsCrewError(
-      "CREDENTIALS_MISSING",
-      `No ${texts.displayName} token found: set ${profile.tokenVars.join(" or ")}.`,
-      { hint: texts.tokenHint },
-    );
-  }
-  try {
-    return { api, found: await api.findAppServers(ctx.plan.app.name) };
-  } catch (error) {
-    throw snapshotFailed(ctx, error, false);
-  }
-}
-
-/**
- * The server to snapshot: the one with the id the infrastructure state records for the server
- * the teardown deletes. Names need not be unique (an orphan from lost state, a second checkout),
- * so the name is only used when the plan does not say the id, and only when exactly one server has
- * it. Anything else stops the run before anything is changed.
- */
-function serverToSnapshot(
-  ctx: DestroyContext,
-  found: readonly AppServer[],
-  stateId: string | undefined,
-): AppServer {
-  const { texts } = ctx;
-  const { noun, displayName } = texts;
-  const name = ctx.plan.app.name;
-  const lookup = texts.lookup(name);
-  const yourself = `take a snapshot there yourself, then run \`opscrew destroy --no-snapshot\`.`;
-  if (stateId !== undefined) {
-    const server = found.find((s) => s.id === stateId);
-    if (server) return server;
-  } else {
-    const named = found.filter((s) => s.name === name);
-    if (named.length === 1 && named[0]) return named[0];
-    if (named.length > 1 || found.length > 1) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        named.length > 1
-          ? `Several ${noun}s ${lookup} are named ${name}, and the infrastructure state does not say which one the teardown deletes, so OpsCrew cannot tell which one to snapshot. Nothing was changed.`
-          : `Several ${noun}s are ${lookup} and none is named ${name}, so OpsCrew cannot tell which one to snapshot. Nothing was changed.`,
-        { hint: `Check the ${noun}s in ${texts.console}, ${yourself}` },
-      );
-    }
-  }
-  // The confirmed teardown deletes the server, so going on without its snapshot loses data.
-  const missing =
-    stateId !== undefined
-      ? `no ${noun} ${lookup} has the id ${stateId} that the infrastructure state records`
-      : `no ${noun} ${lookup} has that name`;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `OpsCrew could not find the ${noun} ${name} in ${displayName}: ${missing}, so it cannot take the snapshot before the teardown deletes it. Nothing was changed.`,
-    {
-      hint: `Check the ${noun} in ${texts.console} (\`opscrew drift\` shows what changed outside OpsCrew). If it still exists, ${yourself}`,
-    },
-  );
-}
-
-/**
- * 5. Snapshot of the server through the provider's `ServerSnapshotApi`, when one is wanted and the
- * confirmed teardown deletes the server, chosen by the id the infrastructure state records.
- * Reuses the snapshot an earlier run took of the same server on the same provider, and still
- * reports it when that run already deleted the server. Every snapshot attempt is audited, and any
- * failure stops the run before anything is deleted. Returns the snapshot id.
- */
-async function takeSnapshot(
-  ctx: DestroyContext,
-  options: DestroyOptions,
-  target: ServerToDelete,
-): Promise<string | undefined> {
-  const { deps, plan, provider, texts } = ctx;
-  const { noun, displayName } = texts;
-  const services = options.services ?? {};
-  const name = plan.app.name;
-  const choice = options.snapshot ?? "auto";
-  const recorded = await readSnapshotRecord(deps);
-  const earlier = recorded?.provider === provider ? recorded : undefined;
-
-  if (!target.inState && earlier) {
-    // An earlier run took the snapshot and deleted the server, then stopped (for example at the
-    // secret cleanup): the snapshot still exists and stays in the report.
-    deps.reporter.info(
-      `The snapshot taken by the earlier run is kept (${texts.snapshotRef(earlier.snapshotId)}).`,
-    );
-    return earlier.snapshotId;
-  }
-  if (!snapshotWanted(plan, options)) {
-    deps.reporter.info(
-      choice === false
-        ? "Skipping the snapshot, as requested."
-        : `No snapshot: the database does not run on the ${noun} and ${texts.company} backups are off.`,
-    );
-    return undefined;
-  }
-  if (!target.inState) {
-    // Nothing deletes it, and a snapshot that was not announced before the confirmation is not
-    // taken. The lookup only words the note, so a failed one never blocks the cleanup of the rest.
-    const found = await findServers(ctx, services).then(
-      (result) => result.found,
-      () => undefined,
-    );
-    deps.reporter.info(
-      found === undefined
-        ? `No snapshot: the teardown does not delete the ${noun} ${name}, so no snapshot is taken.`
-        : found.length === 0
-          ? `No snapshot: the ${noun} ${name} no longer exists in ${displayName}, so there is nothing to keep.`
-          : `No snapshot: the teardown does not delete the ${noun} ${name}, so its data stays where it is.`,
-    );
-    return undefined;
-  }
-  if (target.ids.length > 1) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The teardown deletes ${target.ids.length} ${noun}s (ids ${target.ids.join(", ")}), but OpsCrew only knows how to snapshot one, so it stopped. Nothing was changed.`,
-      {
-        hint: `Take snapshots in ${texts.console} yourself, then run \`opscrew destroy --no-snapshot\`.`,
-      },
-    );
-  }
-  const { api, found } = await findServers(ctx, services);
-  const server = serverToSnapshot(ctx, found, target.ids[0]);
-
-  // A run that stopped after its snapshot (refused, failed apply) reuses it on the next try.
-  if (earlier && earlier.serverId === server.id) {
-    deps.reporter.info(
-      `Reusing the snapshot taken by the earlier run (${texts.snapshotRef(earlier.snapshotId)}).`,
-    );
-    return earlier.snapshotId;
-  }
-
-  deps.reporter.step(
-    `Taking a snapshot of the ${noun} ${server.name} (this can take several minutes)`,
-  );
-  const takenAt = deps.clock.now();
-  const stamp = labelTime(takenAt);
-  const request: SnapshotRequest = {
-    name: `opscrew-${name}-before-destroy-${stamp}`,
-    description: `OpsCrew snapshot of ${name} before opscrew destroy (${takenAt.toISOString()})`,
-    // Never `managed-by`, so that cleanups by that label keep the snapshot.
-    labels: { app: name, "created-by": "opscrew", reason: "destroy", "taken-at": stamp },
-    timeoutMs: SNAPSHOT_TIMEOUT_MS,
-  };
-  // Audited before the call (so the log names it even if this process dies while waiting) and
-  // again with the outcome: the snapshot id, or why it failed.
-  const audit = (action: string, detail: string) =>
-    deps.audit.append({
-      kind: "provider-call",
-      actor: "opscrew",
-      action,
-      phase: "provision",
-      target: `${provider} server ${server.id}`,
-      detail: deps.redactor.redact(detail),
-    });
-  await audit("create snapshot", `snapshot ${request.name} of ${name} before destroy`);
-  let snapshotId: string;
-  try {
-    const result = await api.snapshotServer(server.id, request);
-    snapshotId = typeof result?.snapshotId === "string" ? result.snapshotId.trim() : "";
-    if (snapshotId === "") {
-      throw new OpsCrewError("PROVIDER_ERROR", `${displayName} did not report the snapshot's id.`);
-    }
-  } catch (error) {
-    await audit("snapshot failed", `snapshot ${request.name} of ${name}: ${failureReason(error)}`);
-    throw snapshotFailed(ctx, error);
-  }
-  await audit("snapshot ready", `snapshot ${snapshotId} of ${name} (${request.name})`);
-  deps.reporter.success(`The snapshot of ${name} is ready (${texts.snapshotRef(snapshotId)}).`);
-  const record = { provider, serverId: server.id, snapshotId, takenAt: takenAt.toISOString() };
-  await writeFileAtomic(snapshotRecordFile(deps), `${JSON.stringify(record)}\n`);
-  return snapshotId;
-}
-
-function snapshotKept(texts: DestroyTexts, snapshotId: string | undefined): string {
-  return snapshotId === undefined
-    ? ""
-    : ` The snapshot (${texts.snapshotRef(snapshotId)}) was kept; delete it in ${texts.console} if you do not need it.`;
-}
-
-/**
- * 6. Lifts delete protection with a plan that may only change the server's protection, after an
- * `iac-apply` approval. Returns whether protection is off now and the approval, when one was given.
- * Providers without delete protection (DigitalOcean) have nothing to lift: no plan, no approval.
- */
-async function liftProtection(
-  ctx: DestroyContext,
-  serverInState: boolean,
-  snapshotId: string | undefined,
-): Promise<{ off: boolean; approval?: ApprovalRecord }> {
-  const { deps, plan } = ctx;
-  const name = plan.app.name;
-  if (!ctx.profile.deleteProtection) return { off: false };
-  if (!serverInState) {
-    deps.reporter.info(
-      "The server is no longer in the infrastructure state, so there is no delete protection to lift.",
-    );
-    return { off: false };
-  }
-  deps.reporter.step(`Planning to lift delete protection on ${name}`);
-  const summary = await makePlan(ctx, "unprotect", false);
-  try {
-    if (summary.changes.length === 0) {
-      deps.reporter.info(`Delete protection on ${name} is already off.`);
-      return { off: true };
-    }
-    const problems = unprotectPlanProblems(summary.changes, summary.planJson);
-    if (problems.length > 0) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        [
-          `Lifting the delete protection on ${name} would also change other things, so OpsCrew stopped. Nothing was changed.`,
-          ...problems.map((p) => `  ${p}`),
-        ].join("\n"),
-        {
-          hint: "The infrastructure was probably changed outside OpsCrew, or its files no longer match what was applied. Run `opscrew drift` to see the differences and `opscrew provision` to bring everything back in line, then run `opscrew destroy` again.",
-        },
-      );
-    }
-    const approval = await deps.approvals.request({
-      kind: "iac-apply",
-      title: `Lift delete protection on ${name}`,
-      details: [
-        `${engineLabel(summary.engine.name)} ${summary.engine.version} plan:`,
-        ...describeChanges(summary.changes),
-        "This only turns off the server's delete and rebuild protection so that the next plan can delete it. Nothing is deleted yet.",
-        `Plan hash: ${summary.planHash}`,
-      ].join("\n"),
-      planHash: summary.planHash,
-    });
-    if (!approval.approved) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `Delete protection on ${name} was not lifted${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${snapshotKept(ctx.texts, snapshotId)}`,
-        { hint: "Run `opscrew destroy` again when you are ready." },
-      );
-    }
-    await deps.approvals.assertApprovedPlan(summary.planHash);
-    deps.reporter.step(`Lifting delete protection on ${name}`);
-    await applyApproved(ctx, summary, {
-      allowDestroy: false,
-      what: "lifting delete protection",
-      hint: "Fix the cause shown above, then run `opscrew destroy` again. Nothing was deleted.",
-    });
-    deps.reporter.success(`Delete protection on ${name} is off.`);
-    return { off: true, approval };
-  } finally {
-    await discard(summary);
-  }
-}
-
-/**
  * 7. The destroy plan, approved with `allowDestroy` and the typed server name, then applied.
  * Returns the deleted resources and the approval (none when nothing was left to delete).
  */
@@ -708,7 +285,8 @@ async function destroyInfrastructure(
   protectionOff: boolean,
   confirmed: { addresses: ReadonlySet<string>; serverIds: readonly string[] },
 ): Promise<{ destroyed: ResourceChange[]; approval?: ApprovalRecord }> {
-  const { deps, plan, texts } = ctx;
+  const { session, plan, texts } = ctx;
+  const { deps } = session;
   const name = plan.app.name;
   // Once this run lifted delete protection (Hetzner), every later stop says so and how to undo it.
   const lifted = protectionOff
@@ -719,19 +297,23 @@ async function destroyInfrastructure(
       ? `Run \`opscrew provision\` to turn delete protection back on, or ${hint.charAt(0).toLowerCase()}${hint.slice(1)}`
       : hint;
   deps.reporter.step("Planning the teardown");
-  const summary = await makePlan(ctx, "destroy", true);
+  const summary = await savePlan(session, "destroy", {
+    ...(ctx.vars ? { vars: ctx.vars } : {}),
+    destroy: true,
+  });
   try {
     if (summary.changes.length === 0) {
       deps.reporter.info("Nothing is left to delete.");
       return { destroyed: [] };
     }
-    const problems = destroyPlanProblems(summary.changes);
-    if (problems.length > 0) {
+    // The whole root module is deleted (no prefix), but only what the user confirmed.
+    const problems = deletionPlanProblems(summary.changes, { confirmed: confirmed.addresses });
+    if (problems.notDeletes.length > 0) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         [
           `The teardown plan would do more than delete, so OpsCrew stopped. ${protectionOff ? "Nothing was deleted." : "Nothing was changed."}${lifted}`,
-          ...problems.map((p) => `  ${p}`),
+          ...problems.notDeletes.map((p) => `  ${p}`),
         ].join("\n"),
         {
           hint: hintAfterLift(
@@ -740,13 +322,12 @@ async function destroyInfrastructure(
         },
       );
     }
-    const unexpected = summary.changes.filter((change) => !confirmed.addresses.has(change.address));
-    if (unexpected.length > 0) {
+    if (problems.unconfirmed.length > 0) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         [
           `The teardown plan now deletes resources that were not in the list you confirmed, so OpsCrew stopped. Nothing was deleted.${lifted}`,
-          ...unexpected.map((change) => `  ${change.address}`),
+          ...problems.unconfirmed.map((address) => `  ${address}`),
         ].join("\n"),
         {
           hint: hintAfterLift(
@@ -755,18 +336,12 @@ async function destroyInfrastructure(
         },
       );
     }
-    const serverDeleted = deletesServer(summary.changes, ctx.provider);
+    const serverDeleted = deletesServer(summary.changes, session.provider);
     // The snapshot was taken of the server in the confirmed preview; it must be the one deleted.
-    const serverIds = serverIdsInPlan(summary.planJson, ctx.provider);
-    const confirmedIds = new Set(confirmed.serverIds);
-    if (
-      confirmedIds.size > 0 &&
-      serverDeleted &&
-      (serverIds.length === 0 || serverIds.some((id) => !confirmedIds.has(id)))
-    ) {
+    if (deletesUnconfirmedServer(summary, session.provider, confirmed.serverIds)) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `The teardown plan now deletes a ${texts.noun} other than the one you confirmed (id ${confirmed.serverIds.join(", ")}), so OpsCrew stopped. Nothing was deleted.${lifted}${snapshotKept(texts, snapshotId)}`,
+        `The teardown plan now deletes a ${texts.noun} other than the one you confirmed (id ${confirmed.serverIds.join(", ")}), so OpsCrew stopped. Nothing was deleted.${lifted}${snapshotKeptNote(texts, snapshotId)}`,
         {
           hint: hintAfterLift(
             "Run `opscrew drift` to see what changed, then run `opscrew destroy` again to see the current list and confirm it.",
@@ -808,7 +383,7 @@ async function destroyInfrastructure(
     if (!approval.approved) {
       throw new OpsCrewError(
         "APPROVAL_REFUSED",
-        `The teardown was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${lifted}${snapshotKept(texts, snapshotId)}`,
+        `The teardown was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${lifted}${snapshotKeptNote(texts, snapshotId)}`,
         {
           hint: protectionOff
             ? `Run \`opscrew provision\` to turn delete protection back on, or run \`opscrew destroy\` again and type ${name} to delete the deployment.`
@@ -818,7 +393,7 @@ async function destroyInfrastructure(
     }
     await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
     deps.reporter.step("Deleting the infrastructure (this usually takes a minute or two)");
-    await applyApproved(ctx, summary, {
+    await applyApprovedPlan(session, summary, {
       allowDestroy: true,
       what: "deleting the infrastructure",
       hint: "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
@@ -826,7 +401,7 @@ async function destroyInfrastructure(
     deps.reporter.success(`Deleted ${count} ${count === 1 ? "resource" : "resources"}.`);
     return { destroyed: summary.changes, approval };
   } finally {
-    await discard(summary);
+    await discardPlan(summary);
   }
 }
 
@@ -886,26 +461,6 @@ async function removeDeploySecrets(deps: PhaseDeps, github: GitHubTarget): Promi
   return removed;
 }
 
-/** 8. Forgets the server's pinned SSH host key; other hosts in the file are kept. */
-async function forgetHostKey(deps: PhaseDeps, plan: DeployPlan, noun: string): Promise<void> {
-  const hosts = [plan.deployment.serverIpv4, plan.deployment.serverIpv6].filter(
-    (host): host is string => host !== undefined && host !== "",
-  );
-  if (hosts.length === 0) return;
-  const file = deps.paths.files.knownHosts;
-  let text: string;
-  try {
-    text = await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  const result = removeHostKeys(text, hosts);
-  if (result.removed === 0) return;
-  await writeFileAtomic(file, result.text, { mode: 0o644 });
-  deps.reporter.info(`Removed the ${noun}'s SSH host key from OpsCrew's known_hosts.`);
-}
-
 /** 8. The plan without the server's addresses, with `destroyedAt` and the approvals recorded. */
 function destroyedPlan(
   plan: DeployPlan,
@@ -938,15 +493,12 @@ function remainingAfterDestroy(input: {
   secretsRemoved: readonly string[];
 }): string[] {
   const { plan, texts, github } = input;
-  const items: string[] = [];
-  if (input.snapshotId !== undefined) {
-    items.push(
-      `The snapshot of ${plan.app.name} (${texts.snapshotRef(input.snapshotId)}). ${texts.snapshotBilling} and OpsCrew never deletes them; delete it in ${texts.console} when you no longer need it.`,
-    );
-  }
-  if (plan.target.backups && texts.keptBackupsRemaining) {
-    items.push(texts.keptBackupsRemaining);
-  }
+  const items = remainingAfterDeletion({
+    provider: plan.target.provider,
+    app: plan.app.name,
+    snapshotId: input.snapshotId,
+    backups: plan.target.backups,
+  });
   if (input.secretsRemoved.length === 0 && github.skipReason) {
     items.push(
       `The deploy secrets in GitHub Actions (${Object.values(DEPLOY_SECRETS).sort().join(", ")}): OpsCrew did not remove them because ${github.skipReason}. Delete them at ${secretsPage(github)}.`,
@@ -985,6 +537,8 @@ export async function runDestroy(
 ): Promise<DestroyResult> {
   const services = options.services ?? {};
   const plan = await readArtifact("plan", deps.paths.files.plan);
+  // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
+  if (plan.retarget !== undefined) throw moveInProgress(plan);
   const name = plan.app.name;
   const provider = planProvider(plan);
   const profile = providerProfile(provider);
@@ -1010,28 +564,33 @@ export async function runDestroy(
 
   // 3. Engine, state encryption, init
   const { engine, env } = await setupEngine(deps, plan, options, statePath);
-  const ctx: DestroyContext = {
+  const session: DeletionSession = {
     deps,
-    plan,
     provider,
-    profile,
-    texts,
+    app: name,
+    command: COMMAND,
+    what: "teardown",
+    phase: "provision",
     engine,
     env,
     dir: join(deps.paths.root, plan.infra.dir),
     stamp: deps.clock.now().toISOString().replace(/[:.]/g, "-"),
   };
+  const vars = profile.deleteProtection ? { [PROTECTION_VARIABLE]: "false" } : undefined;
+  const ctx: DestroyContext = { session, plan, profile, texts, ...(vars ? { vars } : {}) };
 
   // 4. Preview: what the teardown deletes (this plan is never applied)
   deps.reporter.step("Planning the teardown to see what it deletes");
-  const preview = await makePlan(ctx, "destroy-preview", true);
-  await discard(preview);
+  const preview = await previewDeletion(session, {
+    suffix: "destroy-preview",
+    ...(vars ? { vars } : {}),
+    destroy: true,
+  });
   if (preview.changes.length === 0 && plan.deployment.serverIpv4 === undefined) {
     throw nothingDeployed(plan);
   }
-  const serverInState = deletesServer(preview.changes, provider);
   // Which server that is, by the id the state records (names need not be unique).
-  const serverIds = serverInState ? serverIdsInPlan(preview.planJson, provider) : [];
+  const { serverInState, serverIds } = preview;
   if (preview.changes.length > 0) {
     deps.reporter.info(
       ["The teardown deletes these resources:", ...describeChanges(preview.changes)].join("\n"),
@@ -1041,7 +600,8 @@ export async function runDestroy(
   }
   const warning = dataWarning(plan, serverInState);
   if (warning) deps.reporter.warn(warning);
-  const snapshotFirst = serverInState && snapshotWanted(plan, options);
+  const data = { postgres: plan.services.postgres, backups: plan.target.backups };
+  const snapshotFirst = serverInState && snapshotWanted(options.snapshot, data);
   if (snapshotFirst) {
     deps.reporter.info(
       `A snapshot of the ${texts.noun} is taken first, so its data can be restored later (${texts.snapshotBilling}; \`--no-snapshot\` skips it).`,
@@ -1053,50 +613,53 @@ export async function runDestroy(
       `${profile.displayName} has no delete protection for ${texts.noun}s, so the only safeguard is OpsCrew's own confirmation: once you confirm with the name ${name}, the ${texts.noun} is deleted as soon as the destroy plan is applied.`,
     );
   }
-  if (options.confirm !== undefined && preview.changes.length > 0) {
-    const confirmed = await options.confirm({
+  await confirmDeletion(
+    session,
+    {
       name,
       provider,
       deleteProtection: profile.deleteProtection,
       resources: preview.changes,
       snapshot: snapshotFirst,
       ...(warning ? { dataWarning: warning } : {}),
-    });
-    await deps.audit.append({
-      kind: "approval",
-      actor: "user",
-      action: "destroy-confirm",
-      phase: "provision",
-      target: name,
-      decision: confirmed ? "approved" : "refused",
-      detail: `typed confirmation for deleting ${preview.changes.length} resources`,
-    });
-    if (!confirmed) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The ${texts.noun} name was not confirmed, so nothing was deleted and nothing was changed.`,
-        { hint: `Run \`opscrew destroy\` again and type ${name} when asked.` },
-      );
-    }
-  }
+    },
+    options.confirm,
+  );
 
   // 5. Snapshot (inside the confirmed flow: after the typed name, before anything is deleted)
-  const snapshotId = await takeSnapshot(ctx, options, { inState: serverInState, ids: serverIds });
+  const snapshotId = await takeSnapshotBeforeDelete(session, {
+    server: { inState: serverInState, ids: serverIds },
+    choice: options.snapshot ?? "auto",
+    data,
+    purpose: "destroy",
+    ...(services.servers ? { servers: services.servers } : {}),
+    ...(services.sleep ? { sleep: services.sleep } : {}),
+    ...(services.now ? { now: services.now } : {}),
+  });
 
   // 6. Lift delete protection (only where the provider has it)
-  const protection = await liftProtection(ctx, serverInState, snapshotId);
+  const protection = await liftProtection(session, {
+    variable: PROTECTION_VARIABLE,
+    serverInState,
+    ...(snapshotId !== undefined ? { snapshotId } : {}),
+    mismatchHint:
+      "The infrastructure was probably changed outside OpsCrew, or its files no longer match what was applied. Run `opscrew drift` to see the differences and `opscrew provision` to bring everything back in line, then run `opscrew destroy` again.",
+  });
 
   // 7. Destroy
   const { destroyed, approval: destroyApproval } = await destroyInfrastructure(
     ctx,
     snapshotId,
     protection.off,
-    { addresses: new Set(preview.changes.map((change) => change.address)), serverIds },
+    { addresses: preview.addresses, serverIds },
   );
 
   // 8. Cleanup: deploy secrets, pinned host key, plan, stored-secrets record, phase state
   const secretsRemoved = await removeDeploySecrets(deps, github);
-  await forgetHostKey(deps, plan, texts.noun);
+  const hosts = [plan.deployment.serverIpv4, plan.deployment.serverIpv6];
+  if ((await forgetHostKeys(deps, hosts)) > 0) {
+    deps.reporter.info(`Removed the ${texts.noun}'s SSH host key from OpsCrew's known_hosts.`);
+  }
   const at = deps.clock.now().toISOString();
   await writeArtifact(
     "plan",
@@ -1104,7 +667,7 @@ export async function runDestroy(
     destroyedPlan(plan, at, [protection.approval, destroyApproval]),
   );
   await rm(join(deps.paths.projectHomeDir, "deploy_secrets.json"), { force: true });
-  await rm(snapshotRecordFile(deps), { force: true });
+  await removeSnapshotRecord(deps, "destroy");
   await deps.state.markPhase("provision", "skipped", "infrastructure destroyed");
   await deps.audit.append({
     kind: "phase",

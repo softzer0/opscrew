@@ -43,7 +43,7 @@ variable name (the redactor masks what follows).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github`
   - Effort: medium
 
-- [ ] T505 [P] [US2] Reusable deletion helpers and the move guard in `packages/agents/src/destroy/`
+- [X] T505 [P] [US2] Reusable deletion helpers and the move guard in `packages/agents/src/destroy/`
   - Owns: `packages/agents/src/destroy/**`, `packages/cli/src/ui/__fixtures__/destroy.ts`
   - Reads: plan.md "Destroy pieces"; `specs/003-day2-operations/plan.md` "Destroy orchestration"
   - Depends: T501

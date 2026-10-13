@@ -879,6 +879,44 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     });
   });
 
+  it("refuses while a move to another provider is in progress, before any check or change", async () => {
+    const from = deployedPlan();
+    const plan: DeployPlan = {
+      ...digitalOceanPlan(),
+      retarget: {
+        from: { target: from.target, serverIpv4: SERVER_IPV4, url: `http://${SERVER_IPV4}` },
+        next: { serverIpv4: "198.51.100.20" },
+        step: "deployed",
+        startedAt: NOW,
+      },
+    };
+    const s = await setup({ plan });
+    let asked = false;
+    const error = await runDestroy(s.deps, {
+      services: s.services,
+      confirm: async () => {
+        asked = true;
+        return true;
+      },
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    const { code, message, hint } = error as OpsCrewError;
+    expect(code).toBe("PHASE_PRECONDITION");
+    expect(message).toBe(
+      "A move to DigitalOcean is in progress, so OpsCrew will not delete this deployment.",
+    );
+    expect(hint).toContain("`opscrew retarget` to continue the move");
+    expect(hint).toContain("`opscrew retarget --finish`");
+    expect(hint).toContain("`opscrew retarget --abort`");
+    expect(asked).toBe(false);
+    expect(s.engine.calls).toEqual([]);
+    expect(s.servers.lookups).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
+    expect(s.deps.audit.entries).toEqual([]);
+    await expectNothingCleanedUp(s);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).retarget?.step).toBe("deployed");
+  });
+
   it("stops before any credential check without local state or with old infrastructure code", async () => {
     const elsewhere = await setup({ state: false });
     await expect(

@@ -1,0 +1,725 @@
+import { readdir, readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import type {
+  ApprovalRecord,
+  AppServer,
+  IacEngine,
+  PhaseName,
+  PlanSummary,
+  ResourceChange,
+  ServerSnapshotApi,
+  SnapshotRequest,
+  VpsProviderId,
+} from "@opscrew/contracts";
+import { isUserFacingError, OpsCrewError, writeFileAtomic } from "@opscrew/core";
+import { engineLabel } from "@opscrew/iac-engine";
+import { z } from "zod";
+import type { PhaseDeps } from "../context";
+import { providerProfile, type VpsConnectorOptions, vpsConnector } from "../providers";
+import {
+  assertModulePrefix,
+  type DeletionBounds,
+  deletesServer,
+  deletesUnconfirmedServer,
+  deletionPlanProblems,
+  describeChanges,
+  ProviderIdSchema,
+  removeHostKeys,
+  serverIdsInPlan,
+  unprotectPlanProblems,
+} from "./checks";
+import { type DestroyTexts, destroyTexts } from "./texts";
+import type { DestroyPreview } from "./types";
+
+const SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * Who deletes what, for the shared deletion steps of `opscrew destroy` and of a move's finish and
+ * abort. Nothing here assumes the server is `module.server` or that the whole root is deleted.
+ */
+export interface DeletionScope {
+  deps: PhaseDeps;
+  /** Provider of the server being deleted (during a move: the old or the new server's). */
+  provider: VpsProviderId;
+  /** The app name: typed to confirm, used to find the server and to name its snapshot. */
+  app: string;
+  /** The command that continues after a stop, e.g. `opscrew destroy` or `opscrew retarget --finish`. */
+  command: string;
+  /** The deletion in plain English, as in "the teardown deletes", e.g. `teardown`. */
+  what: string;
+  /** Phase recorded in audit entries. */
+  phase: PhaseName;
+}
+
+/** A deletion scope with an initialised engine for one root module. */
+export interface DeletionSession extends DeletionScope {
+  engine: IacEngine;
+  /** Engine environment: provider tokens and `TF_ENCRYPTION`. Never logged. */
+  env: Record<string, string | undefined>;
+  /** Absolute root module directory. */
+  dir: string;
+  /** Prefix of this run's plan file names under `.opscrew/plans/`. */
+  stamp: string;
+}
+
+/** True when a `.tf` file in `dir` declares `variable "<name>"`. */
+export async function infraDeclaresVariable(dir: string, name: string): Promise<boolean> {
+  const names = await readdir(dir).catch(() => [] as string[]);
+  const pattern = new RegExp(`variable\\s+"${name.replace(/[^A-Za-z0-9_-]/g, "")}"`);
+  for (const file of names.filter((n) => n.endsWith(".tf")).sort()) {
+    const text = await readFile(join(dir, file), "utf8").catch(() => "");
+    if (pattern.test(text)) return true;
+  }
+  return false;
+}
+
+/** Saves a plan under `.opscrew/plans/<stamp>-<suffix>.tfplan`; removes the file on failure. */
+export async function savePlan(
+  session: DeletionSession,
+  suffix: string,
+  options: { vars?: Readonly<Record<string, string>>; destroy?: boolean } = {},
+): Promise<PlanSummary> {
+  const file = join(session.deps.paths.files.plansDir, `${session.stamp}-${suffix}.tfplan`);
+  try {
+    return await session.engine.plan(session.dir, file, {
+      env: session.env,
+      ...(options.vars ? { vars: { ...options.vars } } : {}),
+      ...(options.destroy ? { destroy: true } : {}),
+    });
+  } catch (error) {
+    await rm(file, { force: true });
+    throw error;
+  }
+}
+
+/** Deletes a plan file so it can never be applied later. */
+export async function discardPlan(summary: PlanSummary): Promise<void> {
+  await rm(summary.planFile, { force: true });
+}
+
+function lastLines(text: string, count = 8): string {
+  return text.trim().split(/\r?\n/).slice(-count).join("\n");
+}
+
+/**
+ * Applies an approved saved plan (the caller has asked for the approval and checked it with
+ * `assertApprovedPlan`), audits the outcome and stops with the redacted log tail on failure.
+ */
+export async function applyApprovedPlan(
+  session: DeletionSession,
+  summary: PlanSummary,
+  options: { allowDestroy: boolean; what: string; hint: string },
+): Promise<void> {
+  const { deps } = session;
+  const audit = (ok: boolean) =>
+    deps.audit.append({
+      kind: "iac",
+      actor: "opscrew",
+      action: "apply",
+      phase: session.phase,
+      target: summary.planHash,
+      decision: ok ? "approved" : "refused",
+      detail: `${options.what}: ${ok ? "apply finished" : "apply failed"}`,
+    });
+  let result: Awaited<ReturnType<IacEngine["apply"]>>;
+  try {
+    result = await session.engine.apply(
+      session.dir,
+      summary.planFile,
+      { approvedPlanHash: summary.planHash, allowDestroy: options.allowDestroy },
+      { env: session.env },
+    );
+  } catch (error) {
+    await audit(false);
+    throw error;
+  }
+  await audit(result.ok);
+  if (!result.ok) {
+    const log = deps.redactor.redact(lastLines(result.log));
+    const what = options.what.charAt(0).toUpperCase() + options.what.slice(1);
+    throw new OpsCrewError("ENGINE_FAILED", `${what} failed:\n${log}`, { hint: options.hint });
+  }
+}
+
+/** What a deletion would delete, from a preview plan that was discarded. */
+export interface DeletionPreview {
+  /** The planned changes (all deletes under the prefix when one was given). */
+  changes: ResourceChange[];
+  /** Their addresses: the set the user confirms ({@link DeletionBounds.confirmed}). */
+  addresses: ReadonlySet<string>;
+  /** True when the plan deletes (or replaces) the provider's server. */
+  serverInState: boolean;
+  /** That server's ids as the state records them (`serverIdsInPlan`); empty when not said. */
+  serverIds: string[];
+}
+
+/**
+ * Plans the deletion to show what it deletes, then discards the plan file (a preview is never
+ * applied). With `prefix`, the plan may only delete resources under it (else it stops with nothing
+ * changed); without, it is not checked here (a whole-root `destroy` plan only deletes).
+ */
+export async function previewDeletion(
+  session: DeletionSession,
+  options: {
+    suffix: string;
+    vars?: Readonly<Record<string, string>>;
+    destroy?: boolean;
+    prefix?: string;
+    /** Hint when the plan is out of bounds (default: check the console, then run again). */
+    hint?: string;
+  },
+): Promise<DeletionPreview> {
+  // A bad prefix is refused before anything is planned.
+  if (options.prefix !== undefined) assertModulePrefix(options.prefix);
+  const summary = await savePlan(session, options.suffix, {
+    ...(options.vars ? { vars: options.vars } : {}),
+    ...(options.destroy ? { destroy: true } : {}),
+  });
+  await discardPlan(summary);
+  if (options.prefix !== undefined) {
+    const texts = destroyTexts(session.provider);
+    assertDeletionPlan(
+      session,
+      summary,
+      { prefix: options.prefix },
+      {
+        note: "Nothing was changed.",
+        hint:
+          options.hint ??
+          `Check the ${texts.noun}s in ${texts.console} and the infrastructure files, then run \`${session.command}\` again.`,
+      },
+    );
+  }
+  const serverInState = deletesServer(summary.changes, session.provider);
+  return {
+    changes: summary.changes,
+    addresses: new Set(summary.changes.map((change) => change.address)),
+    serverInState,
+    serverIds: serverInState ? serverIdsInPlan(summary.planJson, session.provider) : [],
+  };
+}
+
+/**
+ * Stops with `PHASE_PRECONDITION` unless the deletion plan only deletes, only under
+ * `bounds.prefix`, only addresses in `bounds.confirmed` and (when `serverIds` is non-empty) no
+ * server other than those. `note` follows the first sentence (e.g. `Nothing was deleted.`).
+ */
+export function assertDeletionPlan(
+  scope: Pick<DeletionScope, "provider" | "what">,
+  summary: { changes: readonly ResourceChange[]; planJson?: unknown },
+  bounds: DeletionBounds & { serverIds?: readonly string[] },
+  stop: { note: string; hint: string },
+): void {
+  const problems = deletionPlanProblems(summary.changes, bounds);
+  const fail = (lead: string, lines: readonly string[] = []) =>
+    new OpsCrewError(
+      "PHASE_PRECONDITION",
+      [`${lead}, so OpsCrew stopped. ${stop.note}`, ...lines.map((l) => `  ${l}`)].join("\n"),
+      { hint: stop.hint },
+    );
+  const unbounded = [...new Set([...problems.notDeletes, ...problems.outsidePrefix])];
+  if (unbounded.length > 0) {
+    throw fail(
+      bounds.prefix === undefined
+        ? `The ${scope.what} plan would do more than delete`
+        : `The ${scope.what} plan would do more than delete resources under ${bounds.prefix}`,
+      unbounded,
+    );
+  }
+  if (problems.unconfirmed.length > 0) {
+    throw fail(
+      `The ${scope.what} plan now deletes resources that were not in the list you confirmed`,
+      problems.unconfirmed,
+    );
+  }
+  const ids = bounds.serverIds ?? [];
+  if (deletesUnconfirmedServer(summary, scope.provider, ids)) {
+    const noun = destroyTexts(scope.provider).noun;
+    throw fail(
+      `The ${scope.what} plan now deletes a ${noun} other than the one you confirmed (id ${ids.join(", ")})`,
+    );
+  }
+}
+
+/**
+ * The typed confirmation: asks `confirm` once with the preview (skipped without a hook or when
+ * nothing would be deleted), audits the answer and stops with `APPROVAL_REFUSED` (nothing changed)
+ * when it is not given.
+ */
+export async function confirmDeletion(
+  scope: DeletionScope,
+  preview: DestroyPreview,
+  confirm: ((preview: DestroyPreview) => Promise<boolean>) | undefined,
+): Promise<void> {
+  if (confirm === undefined || preview.resources.length === 0) return;
+  const confirmed = await confirm(preview);
+  await scope.deps.audit.append({
+    kind: "approval",
+    actor: "user",
+    action: "destroy-confirm",
+    phase: scope.phase,
+    target: preview.name,
+    decision: confirmed ? "approved" : "refused",
+    detail: `typed confirmation for deleting ${preview.resources.length} resources`,
+  });
+  if (!confirmed) {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      `The ${destroyTexts(preview.provider).noun} name was not confirmed, so nothing was deleted and nothing was changed.`,
+      { hint: `Run \`${scope.command}\` again and type ${preview.name} when asked.` },
+    );
+  }
+}
+
+/**
+ * Which run's snapshot record a snapshot belongs to. Each purpose has its own record
+ * (`.opscrew/<purpose>-snapshot.json`), so a move's finish never reuses a snapshot an earlier,
+ * stopped `opscrew destroy` took of the same server (it would miss everything written since).
+ */
+export type SnapshotPurpose = "destroy" | "retarget";
+
+/** Where a run of `purpose` remembers its snapshot so that a re-run reuses it. */
+export function snapshotRecordPath(deps: Pick<PhaseDeps, "paths">, purpose: SnapshotPurpose) {
+  return join(deps.paths.stateDir, `${purpose}-snapshot.json`);
+}
+
+/** Forgets the snapshot record of `purpose` (after the deletion completed). */
+export async function removeSnapshotRecord(
+  deps: Pick<PhaseDeps, "paths">,
+  purpose: SnapshotPurpose,
+): Promise<void> {
+  await rm(snapshotRecordPath(deps, purpose), { force: true });
+}
+
+/**
+ * The snapshot record, `{ provider, serverId, snapshotId, takenAt }` with string ids. Records of
+ * OpsCrew 003 have no provider (they are Hetzner's) and numeric `serverId` and `imageId`.
+ */
+const SnapshotRecordSchema = z.looseObject({
+  provider: z.string().optional(),
+  serverId: ProviderIdSchema,
+  snapshotId: ProviderIdSchema.optional(),
+  imageId: ProviderIdSchema.optional(),
+});
+
+interface SnapshotRecord {
+  provider: string;
+  serverId: string;
+  snapshotId: string;
+}
+
+/** The snapshot an earlier run recorded, or `undefined` when there is none or it is unreadable. */
+async function readSnapshotRecord(
+  deps: PhaseDeps,
+  purpose: SnapshotPurpose,
+): Promise<SnapshotRecord | undefined> {
+  let json: unknown;
+  try {
+    json = JSON.parse(await readFile(snapshotRecordPath(deps, purpose), "utf8"));
+  } catch {
+    return undefined;
+  }
+  const parsed = SnapshotRecordSchema.safeParse(json);
+  if (!parsed.success) return undefined;
+  const snapshotId = parsed.data.snapshotId ?? parsed.data.imageId;
+  if (snapshotId === undefined) return undefined;
+  return {
+    provider: parsed.data.provider ?? "hetzner",
+    serverId: parsed.data.serverId,
+    snapshotId,
+  };
+}
+
+/** Whether a snapshot is taken first (`auto`: when data lives only on the server). */
+export function snapshotWanted(
+  choice: "auto" | boolean | undefined,
+  data: { postgres: boolean; backups: boolean },
+): boolean {
+  const resolved = choice ?? "auto";
+  return resolved === "auto" ? data.postgres || data.backups : resolved;
+}
+
+/** `20261011T120000Z`: a Hetzner label value (no colons), also used in the snapshot name. */
+function labelTime(date: Date): string {
+  return date
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d+Z$/, "Z");
+}
+
+/** Plain-English reason of a failed provider call, without a trailing full stop. */
+function failureReason(error: unknown): string {
+  return (isUserFacingError(error) ? error.message : "unexpected error").replace(/[.\s]+$/, "");
+}
+
+/** ` The snapshot (…) was kept; …` after a stop, or nothing without a snapshot. */
+export function snapshotKeptNote(texts: DestroyTexts, snapshotId: string | undefined): string {
+  return snapshotId === undefined
+    ? ""
+    : ` The snapshot (${texts.snapshotRef(snapshotId)}) was kept; delete it in ${texts.console} if you do not need it.`;
+}
+
+/** Input of {@link takeSnapshotBeforeDelete}. */
+export interface SnapshotBeforeDeleteInput {
+  /** Whether the confirmed deletion deletes the server, and its ids from the plan JSON. */
+  server: { inState: boolean; ids: readonly string[] };
+  /** `--snapshot` (true), `--no-snapshot` (false) or `auto` (default). */
+  choice?: "auto" | boolean;
+  /** What lives only on the server; with `auto` a snapshot is taken when either is true. */
+  data: { postgres: boolean; backups: boolean };
+  /** Which record to reuse and write. */
+  purpose: SnapshotPurpose;
+  /** Server lookup and snapshots (default: the provider connector's `servers`). */
+  servers?: ServerSnapshotApi;
+  /** Delay between snapshot status polls (passed to the default connector). */
+  sleep?: (ms: number) => Promise<void>;
+  /** Clock in epoch milliseconds for the snapshot wait (passed to the default connector). */
+  now?: () => number;
+}
+
+/**
+ * The snapshot step failed, so nothing is deleted. After `snapshotServer` was called, whether the
+ * provider had already started the snapshot is unknown (the connector starts and waits in one
+ * call), so the hint covers both; `started` is false when the step failed before that call.
+ */
+function snapshotFailed(scope: DeletionScope, error: unknown, started = true): OpsCrewError {
+  const texts = destroyTexts(scope.provider);
+  const { command } = scope;
+  return new OpsCrewError(
+    "PROVIDER_ERROR",
+    scope.deps.redactor.redact(
+      `The snapshot of ${scope.app} failed: ${failureReason(error)}. Nothing was deleted.`,
+    ),
+    {
+      hint: started
+        ? `Check the ${texts.noun} and its snapshots in ${texts.console} (a snapshot may still be finishing). Then run \`${command}\` again, or \`${command} --no-snapshot\` once you have a snapshot or do not need one.`
+        : `Check the ${texts.noun} in ${texts.console}, then run \`${command}\` again, or \`${command} --no-snapshot\` to delete without a snapshot.`,
+    },
+  );
+}
+
+/** The provider's server API and the app's servers as it reports them; a failed lookup stops. */
+async function findServers(
+  scope: DeletionScope,
+  input: SnapshotBeforeDeleteInput,
+): Promise<{ api: ServerSnapshotApi; found: AppServer[] }> {
+  const { deps, provider } = scope;
+  const texts = destroyTexts(provider);
+  const options: VpsConnectorOptions = {
+    ...(input.sleep ? { sleep: input.sleep } : {}),
+    ...(input.now ? { now: () => new Date((input.now as () => number)()) } : {}),
+  };
+  const api = input.servers ?? vpsConnector(provider, deps, options).servers;
+  if (!api) {
+    throw new OpsCrewError(
+      "CREDENTIALS_MISSING",
+      `No ${texts.displayName} token found: set ${providerProfile(provider).tokenVars.join(" or ")}.`,
+      { hint: texts.tokenHint(scope.command) },
+    );
+  }
+  try {
+    return { api, found: await api.findAppServers(scope.app) };
+  } catch (error) {
+    throw snapshotFailed(scope, error, false);
+  }
+}
+
+/**
+ * The server to snapshot: the one with the id the infrastructure state records for the server
+ * the deletion deletes. Names need not be unique (an orphan from lost state, a second checkout),
+ * so the name is only used when the plan does not say the id, and only when exactly one server has
+ * it. Anything else stops the run before anything is changed.
+ */
+function serverToSnapshot(
+  scope: DeletionScope,
+  found: readonly AppServer[],
+  stateId: string | undefined,
+): AppServer {
+  const texts = destroyTexts(scope.provider);
+  const { noun, displayName } = texts;
+  const { app: name, what } = scope;
+  const lookup = texts.lookup(name);
+  const yourself = `take a snapshot there yourself, then run \`${scope.command} --no-snapshot\`.`;
+  if (stateId !== undefined) {
+    const server = found.find((s) => s.id === stateId);
+    if (server) return server;
+  } else {
+    const named = found.filter((s) => s.name === name);
+    if (named.length === 1 && named[0]) return named[0];
+    if (named.length > 1 || found.length > 1) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        named.length > 1
+          ? `Several ${noun}s ${lookup} are named ${name}, and the infrastructure state does not say which one the ${what} deletes, so OpsCrew cannot tell which one to snapshot. Nothing was changed.`
+          : `Several ${noun}s are ${lookup} and none is named ${name}, so OpsCrew cannot tell which one to snapshot. Nothing was changed.`,
+        { hint: `Check the ${noun}s in ${texts.console}, ${yourself}` },
+      );
+    }
+  }
+  // The confirmed deletion deletes the server, so going on without its snapshot loses data.
+  const missing =
+    stateId !== undefined
+      ? `no ${noun} ${lookup} has the id ${stateId} that the infrastructure state records`
+      : `no ${noun} ${lookup} has that name`;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `OpsCrew could not find the ${noun} ${name} in ${displayName}: ${missing}, so it cannot take the snapshot before the ${what} deletes it. Nothing was changed.`,
+    {
+      hint: `Check the ${noun} in ${texts.console} (\`opscrew drift\` shows what changed outside OpsCrew). If it still exists, ${yourself}`,
+    },
+  );
+}
+
+/**
+ * Snapshot of the server through the provider's `ServerSnapshotApi` before it is deleted, when one
+ * is wanted and the confirmed deletion deletes the server, chosen by the id the infrastructure
+ * state records (`input.server.ids`). Reuses the snapshot an earlier run of the same purpose took
+ * of the same server on the same provider, and still reports it when that run already deleted the
+ * server. Every snapshot attempt is audited, the record is written once the snapshot is ready, and
+ * any failure stops the run before anything is deleted. Returns the snapshot id.
+ */
+export async function takeSnapshotBeforeDelete(
+  scope: DeletionScope,
+  input: SnapshotBeforeDeleteInput,
+): Promise<string | undefined> {
+  const { deps, provider, app: name, what } = scope;
+  const texts = destroyTexts(provider);
+  const { noun, displayName } = texts;
+  const target = input.server;
+  const recorded = await readSnapshotRecord(deps, input.purpose);
+  const earlier = recorded?.provider === provider ? recorded : undefined;
+
+  if (!target.inState && earlier) {
+    // An earlier run took the snapshot and deleted the server, then stopped (for example at the
+    // secret cleanup): the snapshot still exists and stays in the report.
+    deps.reporter.info(
+      `The snapshot taken by the earlier run is kept (${texts.snapshotRef(earlier.snapshotId)}).`,
+    );
+    return earlier.snapshotId;
+  }
+  if (!snapshotWanted(input.choice, input.data)) {
+    deps.reporter.info(
+      input.choice === false
+        ? "Skipping the snapshot, as requested."
+        : `No snapshot: the database does not run on the ${noun} and ${texts.company} backups are off.`,
+    );
+    return undefined;
+  }
+  if (!target.inState) {
+    // Nothing deletes it, and a snapshot that was not announced before the confirmation is not
+    // taken. The lookup only words the note, so a failed one never blocks the cleanup of the rest.
+    const found = await findServers(scope, input).then(
+      (result) => result.found,
+      () => undefined,
+    );
+    deps.reporter.info(
+      found === undefined
+        ? `No snapshot: the ${what} does not delete the ${noun} ${name}, so no snapshot is taken.`
+        : found.length === 0
+          ? `No snapshot: the ${noun} ${name} no longer exists in ${displayName}, so there is nothing to keep.`
+          : `No snapshot: the ${what} does not delete the ${noun} ${name}, so its data stays where it is.`,
+    );
+    return undefined;
+  }
+  if (target.ids.length > 1) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The ${what} deletes ${target.ids.length} ${noun}s (ids ${target.ids.join(", ")}), but OpsCrew only knows how to snapshot one, so it stopped. Nothing was changed.`,
+      {
+        hint: `Take snapshots in ${texts.console} yourself, then run \`${scope.command} --no-snapshot\`.`,
+      },
+    );
+  }
+  const { api, found } = await findServers(scope, input);
+  const server = serverToSnapshot(scope, found, target.ids[0]);
+
+  // A run that stopped after its snapshot (refused, failed apply) reuses it on the next try.
+  if (earlier && earlier.serverId === server.id) {
+    deps.reporter.info(
+      `Reusing the snapshot taken by the earlier run (${texts.snapshotRef(earlier.snapshotId)}).`,
+    );
+    return earlier.snapshotId;
+  }
+
+  deps.reporter.step(
+    `Taking a snapshot of the ${noun} ${server.name} (this can take several minutes)`,
+  );
+  const takenAt = deps.clock.now();
+  const stamp = labelTime(takenAt);
+  const request: SnapshotRequest = {
+    name: `opscrew-${name}-before-${input.purpose}-${stamp}`,
+    description: `OpsCrew snapshot of ${name} before ${scope.command} (${takenAt.toISOString()})`,
+    // Never `managed-by`, so that cleanups by that label keep the snapshot.
+    labels: { app: name, "created-by": "opscrew", reason: input.purpose, "taken-at": stamp },
+    timeoutMs: SNAPSHOT_TIMEOUT_MS,
+  };
+  // Audited before the call (so the log names it even if this process dies while waiting) and
+  // again with the outcome: the snapshot id, or why it failed.
+  const audit = (action: string, detail: string) =>
+    deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action,
+      phase: scope.phase,
+      target: `${provider} server ${server.id}`,
+      detail: deps.redactor.redact(detail),
+    });
+  await audit("create snapshot", `snapshot ${request.name} of ${name} before ${input.purpose}`);
+  let snapshotId: string;
+  try {
+    const result = await api.snapshotServer(server.id, request);
+    snapshotId = typeof result?.snapshotId === "string" ? result.snapshotId.trim() : "";
+    if (snapshotId === "") {
+      throw new OpsCrewError("PROVIDER_ERROR", `${displayName} did not report the snapshot's id.`);
+    }
+  } catch (error) {
+    await audit("snapshot failed", `snapshot ${request.name} of ${name}: ${failureReason(error)}`);
+    throw snapshotFailed(scope, error);
+  }
+  await audit("snapshot ready", `snapshot ${snapshotId} of ${name} (${request.name})`);
+  deps.reporter.success(`The snapshot of ${name} is ready (${texts.snapshotRef(snapshotId)}).`);
+  const record = { provider, serverId: server.id, snapshotId, takenAt: takenAt.toISOString() };
+  await writeFileAtomic(snapshotRecordPath(deps, input.purpose), `${JSON.stringify(record)}\n`);
+  return snapshotId;
+}
+
+/** Input of {@link liftProtection}. */
+export interface LiftProtectionInput {
+  /**
+   * Root module variable that turns the protection off when set to `false`: `delete_protection`
+   * (destroy) or `previous_delete_protection` (a move's finish).
+   */
+  variable: string;
+  /** Only resources under this address prefix may change (e.g. `module.server_previous.`). */
+  prefix?: string;
+  /** False when the server is no longer in the state: nothing to lift, no plan. */
+  serverInState: boolean;
+  /** The snapshot taken first, mentioned when the user refuses. */
+  snapshotId?: string;
+  /** Hint when the plan would change more than the protection. */
+  mismatchHint: string;
+  /** Plan file name suffix (default `unprotect`). */
+  suffix?: string;
+}
+
+/**
+ * Lifts delete protection with a normal plan that sets `<variable>=false` and may only turn off
+ * `delete_protection`/`rebuild_protection` of `hcloud_server` resources (under `prefix`; values
+ * known only after apply count as changes), after an `iac-apply` approval bound to its hash.
+ * Returns whether protection is off now and the approval, when one was given. Providers without
+ * delete protection (DigitalOcean) have nothing to lift: no plan, no approval.
+ */
+export async function liftProtection(
+  session: DeletionSession,
+  input: LiftProtectionInput,
+): Promise<{ off: boolean; approval?: ApprovalRecord }> {
+  const { deps, app: name, command } = session;
+  if (input.prefix !== undefined) assertModulePrefix(input.prefix);
+  if (!providerProfile(session.provider).deleteProtection) return { off: false };
+  if (!input.serverInState) {
+    deps.reporter.info(
+      "The server is no longer in the infrastructure state, so there is no delete protection to lift.",
+    );
+    return { off: false };
+  }
+  deps.reporter.step(`Planning to lift delete protection on ${name}`);
+  const summary = await savePlan(session, input.suffix ?? "unprotect", {
+    vars: { [input.variable]: "false" },
+  });
+  try {
+    if (summary.changes.length === 0) {
+      deps.reporter.info(`Delete protection on ${name} is already off.`);
+      return { off: true };
+    }
+    const problems = unprotectPlanProblems(
+      summary.changes,
+      summary.planJson,
+      input.prefix === undefined ? {} : { prefix: input.prefix },
+    );
+    if (problems.length > 0) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        [
+          `Lifting the delete protection on ${name} would also change other things, so OpsCrew stopped. Nothing was changed.`,
+          ...problems.map((p) => `  ${p}`),
+        ].join("\n"),
+        { hint: input.mismatchHint },
+      );
+    }
+    const approval = await deps.approvals.request({
+      kind: "iac-apply",
+      title: `Lift delete protection on ${name}`,
+      details: [
+        `${engineLabel(summary.engine.name)} ${summary.engine.version} plan:`,
+        ...describeChanges(summary.changes),
+        "This only turns off the server's delete and rebuild protection so that the next plan can delete it. Nothing is deleted yet.",
+        `Plan hash: ${summary.planHash}`,
+      ].join("\n"),
+      planHash: summary.planHash,
+    });
+    if (!approval.approved) {
+      throw new OpsCrewError(
+        "APPROVAL_REFUSED",
+        `Delete protection on ${name} was not lifted${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${snapshotKeptNote(destroyTexts(session.provider), input.snapshotId)}`,
+        { hint: `Run \`${command}\` again when you are ready.` },
+      );
+    }
+    await deps.approvals.assertApprovedPlan(summary.planHash);
+    deps.reporter.step(`Lifting delete protection on ${name}`);
+    await applyApprovedPlan(session, summary, {
+      allowDestroy: false,
+      what: "lifting delete protection",
+      hint: `Fix the cause shown above, then run \`${command}\` again. Nothing was deleted.`,
+    });
+    deps.reporter.success(`Delete protection on ${name} is off.`);
+    return { off: true, approval };
+  } finally {
+    await discardPlan(summary);
+  }
+}
+
+/**
+ * Forgets the pinned SSH host keys of `hosts` (empty entries are ignored) in OpsCrew's
+ * known_hosts; other hosts in the file are kept. Returns how many lines were removed.
+ */
+export async function forgetHostKeys(
+  deps: Pick<PhaseDeps, "paths">,
+  hosts: readonly (string | undefined)[],
+): Promise<number> {
+  const wanted = hosts.filter((host): host is string => host !== undefined && host !== "");
+  if (wanted.length === 0) return 0;
+  const file = deps.paths.files.knownHosts;
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  const result = removeHostKeys(text, wanted);
+  if (result.removed === 0) return 0;
+  await writeFileAtomic(file, result.text, { mode: 0o644 });
+  return result.removed;
+}
+
+/**
+ * What the provider still keeps after a server was deleted, in plain English: the snapshot taken
+ * first, and automatic backups the provider keeps after the deletion (DigitalOcean).
+ */
+export function remainingAfterDeletion(input: {
+  provider: VpsProviderId;
+  app: string;
+  snapshotId?: string | undefined;
+  /** Whether the deleted server had the provider's automatic backups on. */
+  backups: boolean;
+}): string[] {
+  const texts = destroyTexts(input.provider);
+  const items: string[] = [];
+  if (input.snapshotId !== undefined) {
+    items.push(
+      `The snapshot of ${input.app} (${texts.snapshotRef(input.snapshotId)}). ${texts.snapshotBilling} and OpsCrew never deletes them; delete it in ${texts.console} when you no longer need it.`,
+    );
+  }
+  if (input.backups && texts.keptBackupsRemaining) items.push(texts.keptBackupsRemaining);
+  return items;
+}
