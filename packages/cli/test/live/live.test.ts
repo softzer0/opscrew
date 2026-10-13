@@ -321,12 +321,26 @@ async function deployAndTearDown(
     );
     const pull = (list.json as { number: number }[])[0];
     expect(pull, `an open pull request from ${head}`).toBeDefined();
-    const merged = await github("PUT", `/repos/${repoName}/pulls/${pull?.number}/merge`, {
-      merge_method: "squash",
-    });
-    expect(merged.status, "merge the pull request").toBe(200);
+    // GitHub computes mergeability in the background right after a pull request opens, and
+    // refuses a merge (405) until it has; wait for it, then retry a refused merge briefly.
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const state = await github("GET", `/repos/${repoName}/pulls/${pull?.number}`);
+      if ((state.json as { mergeable: boolean | null }).mergeable === true) break;
+      await sleep(5_000);
+    }
+    let merged = { status: 0, json: undefined as unknown };
+    for (let attempt = 0; attempt < 4; attempt++) {
+      merged = await github("PUT", `/repos/${repoName}/pulls/${pull?.number}/merge`, {
+        merge_method: "squash",
+      });
+      if (merged.status !== 405) break;
+      await sleep(5_000);
+    }
+    expect(merged.status, `merge the pull request: ${JSON.stringify(merged.json)}`).toBe(200);
     await git("fetch", "-q", "origin");
     await git("checkout", "-q", "-B", "main", "origin/main");
+    // The merge commit on main, whose workflow run the test waits for.
+    return (merged.json as { sha: string }).sha;
   };
 
   // A fresh copy of the example becomes the throwaway repository's main branch.
@@ -382,15 +396,17 @@ async function deployAndTearDown(
     expect(hash, "the plan hash is printed").toBeDefined();
     const applied = await opscrew("provision", "--approve", hash as string, "--yes");
     expect(applied.exitCode, applied.output).toBe(0);
-    await mergePullRequest("opscrew/deploy-setup");
+    const mergeSha = await mergePullRequest("opscrew/deploy-setup");
 
-    // The merge to main triggers the deploy workflow; wait for it.
+    // The merge to main triggers the deploy workflow; wait for the run of that exact commit (a
+    // run of an earlier pass on the same repository must never count, and the new run may take a
+    // few seconds to appear).
     const deadline = Date.now() + minutes(25);
     let conclusion: string | null = null;
     while (Date.now() < deadline) {
       const runs = await github(
         "GET",
-        `/repos/${repoName}/actions/workflows/opscrew-deploy.yml/runs?branch=main&per_page=1`,
+        `/repos/${repoName}/actions/workflows/opscrew-deploy.yml/runs?head_sha=${mergeSha}&per_page=1`,
       );
       const run = (runs.json as { workflow_runs?: { status: string; conclusion: string | null }[] })
         .workflow_runs?.[0];
