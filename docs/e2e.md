@@ -12,6 +12,14 @@ each cloud provider whose token is set (Hetzner Cloud, DigitalOcean, or both, on
 6. It runs `verify`, `secure` and `drift` (which must report no differences).
 7. It tears everything down with `opscrew destroy --confirm`.
 
+When both `OPSCREW_E2E_HCLOUD_TOKEN` and `OPSCREW_E2E_DIGITALOCEAN_TOKEN` are set, a third pass
+tests `opscrew retarget`: it deploys on Hetzner Cloud, writes a row into the app's database over
+SSH, moves the deployment to DigitalOcean non-interactively (each plan approved by the hash the
+previous run printed, `--allow-downtime`, and `--dns-switched` without a Cloudflare domain), reads
+the row back on the new server (SC-501), finishes the move (`--finish --confirm <name>`) and tears
+everything down. If the move stops half-way, the cleanup deletes what is left on both providers
+through their APIs.
+
 The test is skipped unless its environment variables are set, so normal runs and CI never start it.
 
 ## Setup

@@ -97,7 +97,7 @@ variable name (the redactor masks what follows).
 
 ## Phase 5: Verification
 
-- [ ] T511 Live move Hetzner → DigitalOcean with data check, finish and teardown (lead) in `packages/cli/test/live/**`, `docs/e2e.md`
+- [X] T511 Live move Hetzner → DigitalOcean with data check, finish and teardown (lead) in `packages/cli/test/live/**`, `docs/e2e.md`
 - [ ] T512 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-501..FR-512
 
 ## Dependencies & waves
