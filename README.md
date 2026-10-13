@@ -6,6 +6,30 @@ From a GitHub repo to a hardened production deployment on your own cloud. Any cl
 
 > Status: pre-alpha. Not ready for production use yet.
 
+## Quickstart
+
+You need Node.js 22+, git, OpenTofu or Terraform, a GitHub repository with your app, and an API token for Hetzner Cloud (`HCLOUD_TOKEN`) or DigitalOcean (`DIGITALOCEAN_TOKEN`). For a custom domain, add a Cloudflare token (`CLOUDFLARE_API_TOKEN`) and a domain whose DNS is on Cloudflare. A GitHub token (`GITHUB_TOKEN`, or a logged-in `gh`) lets OpsCrew open pull requests and set the deploy secrets. A model (`ANTHROPIC_API_KEY`) is optional: pass `--no-ai` to `analyze` and `adapt` to run without one.
+
+Run these in your app's repository, in order:
+
+1. `npx opscrew init` checks the tools and tokens and offers to add `.opscrew/` to `.gitignore`. Free.
+2. `npx opscrew analyze` finds the frameworks, services and environment variables. Free with `--no-ai`; with a model it costs a few cents.
+3. `npx opscrew interview` asks about traffic, budget, region, provider and your domain. Free.
+4. `npx opscrew design` proposes architectures with their estimated monthly cloud cost; you pick one. Free.
+5. `npx opscrew adapt` opens a pull request that prepares the app for a container: the Dockerfile, `.dockerignore` and `.env.example`, plus the code changes the plan needs (for Next.js OpsCrew makes them itself: standalone output and the `/api/health` route). Free with `--no-ai`, which lists any change left for you; for other stacks the health route is one of them, and deploys fail their health check until it exists. The Code-change agent makes those changes for you and costs model usage. Merge the pull request, then `git checkout main && git pull`.
+6. `npx opscrew provision` shows the infrastructure plan and creates the server only after you approve that exact plan. From here your cloud bills you (the estimate from step 4). It opens a second pull request with the deploy workflow; merging it runs the first deploy.
+7. `npx opscrew verify` checks that the app is up, healthy and served over TLS, and `npx opscrew secure` checks the server's hardening and writes the security report. Free.
+
+`npx opscrew destroy` deletes the deployment's infrastructure; it asks you to type the server name first and can take a snapshot. `npx opscrew scan` checks the repository for leaked secrets and risky config at any time, free.
+
+Until 0.1.0 is published to npm, run OpsCrew from a clone instead of `npx opscrew`:
+
+```bash
+git clone https://github.com/softzer0/opscrew.git && cd opscrew
+pnpm install && pnpm --filter opscrew build
+node packages/cli/dist/opscrew.js --cwd /path/to/your/app init   # then analyze, interview, ...
+```
+
 ## What OpsCrew does
 
 OpsCrew is an open-source crew of AI agents that does the DevOps and SecOps work for your app:
@@ -38,7 +62,8 @@ Requirements: Node.js 22+, pnpm 10+, and OpenTofu or Terraform for infrastructur
 
 ```bash
 pnpm install
-pnpm check      # lint + typecheck + test
+pnpm check                     # lint + typecheck + test
+node scripts/pack-smoke.mjs    # build, pack the CLI and run the tarball with npx in an empty folder
 ```
 
 Specifications live in `specs/` and the project constitution in `.specify/memory/constitution.md`.

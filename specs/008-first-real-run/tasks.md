@@ -76,7 +76,7 @@ description: "Tasks for 008-first-real-run"
 
 ## Phase 4: Release prep
 
-- [ ] T806 [US4] Version 0.1.0, README quickstart, pack and `npx` smoke test of the tarball
+- [X] T806 [US4] Version 0.1.0, README quickstart, pack and `npx` smoke test of the tarball
   - Owns: `packages/cli/package.json`, `README.md`, `scripts/pack-smoke.*`
   - Accept: SC-803; no publish.
   - Effort: medium
