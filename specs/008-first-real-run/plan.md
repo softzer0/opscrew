@@ -37,6 +37,29 @@ Code-change agent made. Two layers:
 account" with the connect command. Null MX (`0 .`) is recognised in the BIND reader and the record
 mapping with one message.
 
+### Re-runs and branches (T808, T811, T816)
+
+Before pushing a branch OpsCrew names, it checks the remote: an open pull request from it stops
+the run (adapt) or is added to only when this clone is on that branch and the push is a
+fast-forward (provision); a merged or closed one leaves the name taken, so the next free `-2`,
+`-3` … is used. Deploy branches start from `origin/<cicd.branch>`. Nothing is force-pushed.
+
+### Drift (T812, T813)
+
+Drift runs a refresh-only plan and drops, per resource type, the attributes the provider schema
+marks read-only (computed, neither optional nor required) and the mirrored relationships listed in
+`ProviderProfile.mirroredAttributes` (`hcloud_firewall.apply_to`). The schema comes from
+`providers schema -json` through an optional `ProviderSchemaReader` capability of
+`@opscrew/iac-engine` (the `IacEngine` contract is unchanged); when it cannot be read, drift says
+so and reports everything.
+
+### Server address (T814, T815; ADR 0010)
+
+`.opscrew/server.json` (gitignored) holds the deployment's address and, during a move, both
+servers'. One helper, `serverAddress`, reads it, with the root module's outputs as the fallback.
+The root module renders `servers`, keyed by provider, in every layout, so a move names its old and
+new servers without inferring anything from its step. `plan.yaml` no longer has address fields.
+
 ### Release prep (T806)
 
 Version 0.1.0 for the CLI package, README quickstart, `pnpm pack` of the bundled CLI and an `npx`

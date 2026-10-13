@@ -46,15 +46,31 @@ only the Code-change agent made, so every Next.js app deployed without a model f
 
 ## Requirements *(mandatory)*
 
-- **FR-801**: Every supported stack MUST build and serve without a model: build-critical changes
-  are applied deterministically where safe, and the generated Dockerfile builds without them.
+- **FR-801**: Every supported stack MUST build its image without a model. Next.js MUST also serve
+  without one: OpsCrew applies its build-critical edits and creates the health route itself where
+  safe, and the generated Dockerfile builds without them. For other stacks, where the health route
+  is an edit to existing code, OpsCrew says plainly that deploys fail their health check until it
+  exists.
 - **FR-802**: The gated live passes (Hetzner; Hetzner + Cloudflare domain) MUST succeed against
   real accounts and leave nothing billable behind.
 - **FR-803**: Domain search MUST distinguish a domain in the user's own account (any registrar)
-  from one registered by someone else, and name `opscrew domain connect`.
+  from one registered by someone else; at Porkbun, Namecheap or GoDaddy it names
+  `opscrew domain connect`, at Cloudflare it says the DNS is there already.
 - **FR-804**: The connect copy plan MUST name null MX records correctly.
 - **FR-805**: The CLI package MUST pack into a tarball that runs with `npx` on a clean folder
   (version 0.1.0, quickstart in the README); no publishing without approval.
+- **FR-807**: Re-running OpsCrew after an earlier OpsCrew branch or pull request (open, merged or
+  closed) MUST never fail a push, force-push or commit on a stale branch; deploy branches start
+  from the integration branch (T808, T811, T816).
+- **FR-808**: `opscrew drift` MUST report only what someone changed: values the cloud maintains
+  itself (read-only in the provider schema) and relationships a provider mirrors from the other
+  resource are not drift (T812, T813).
+- **FR-809**: The server address MUST never be published: never in `opscrew/plan.yaml`, pull
+  requests or commit messages, and not in the runbook or reports when the domain is behind
+  Cloudflare's proxy; it lives in `.opscrew/server.json` with OpenTofu outputs as the fallback
+  (T814, ADR 0010).
+- **FR-810**: A move between providers MUST identify its old and new servers by provider (the
+  `servers` output) and stop when it cannot tell them apart (T815).
 - **FR-806**: Every live run is recorded in `docs/e2e.md` ("Live results": date, pass, outcome,
   findings).
 

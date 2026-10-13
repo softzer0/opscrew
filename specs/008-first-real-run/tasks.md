@@ -45,13 +45,14 @@ description: "Tasks for 008-first-real-run"
 
 - [X] T813 Drift ignores read-only attributes for every provider (from the provider schema), keeping the explicit mirrored-relationship list (`hcloud_firewall.apply_to`)
   - Owns: `packages/iac-engine/src/**`, `packages/agents/src/drift/**`, `packages/agents/src/providers/**`
-  - Accept: `IacEngine` gains `providerSchemas(dir)` (`tofu|terraform providers schema -json` after init, zod-validated, cached per run); drift drops attributes that are computed and neither optional nor required for their resource type, and the mirrored ones; an update left with no attributes is dropped; schema unreadable → drift reports everything as today with a plain note; tests with recorded schema excerpts for digitalocean_tag counts, digitalocean_firewall status/pending_changes, hcloud_server status, cloudflare_dns_record modified_on, and real changes still reported (size, rules, firewall_ids, delete).
+  - Accept: an optional `ProviderSchemaReader` capability of `@opscrew/iac-engine` (`tofu|terraform providers schema -json` after init, cached per run; the `IacEngine` contract is unchanged; zod parsing in drift); drift drops attributes that are computed and neither optional nor required for their resource type, and the mirrored ones; an update left with no attributes is dropped; schema unreadable → drift reports everything as today with a plain note; tests with recorded schema excerpts for digitalocean_tag counts, digitalocean_firewall status/pending_changes, hcloud_server status, cloudflare_dns_record modified_on, and real changes still reported (size, rules, firewall_ids, delete).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-engine --filter=@opscrew/agents`
   - Effort: high
 
 - [X] T814 The server address is never published: no IP in pull requests ever; no IP in committed files (`opscrew/plan.yaml`, `opscrew/RUNBOOK.md`, reports) when the domain is behind Cloudflare's proxy — kept in OpsCrew's local state instead
   - Owns: `packages/plan-schema/src/plan.ts` (+ tests), `packages/agents/src/**` except `drift/**` beyond the address read, `packages/iac-templates/src/runbook/**`, `packages/iac-templates/src/types.ts`, `packages/cli/src/**` where it prints or reads the address
   - Accept: PR bodies say "the server" or the domain, never an IP; `plan.yaml` never contains the server address (founder: no backward compatibility, OpsCrew is unreleased); with a proxied domain the runbook and the security/verify reports contain none either (tests grep committed files, commits and PR bodies for the fake IPs); every command reads the address through one helper from `.opscrew/server.json` (gitignored) with OpenTofu outputs as the fallback; the CLI shows it locally (`opscrew status`, `status --ip`).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=@opscrew/iac-templates --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: xhigh
 
 - [X] T815 T814 review fixes: retarget never infers old/new servers from the step (outputs mapped by module, or stop when ambiguous); a fresh clone without local state gets a plain "run it where the server was provisioned" instead of a failed DNS check or "run provision"; the address is refreshed after a failed apply that replaced the server
@@ -79,6 +80,7 @@ description: "Tasks for 008-first-real-run"
 - [X] T806 [US4] Version 0.1.0, README quickstart, pack and `npx` smoke test of the tarball
   - Owns: `packages/cli/package.json`, `README.md`, `scripts/pack-smoke.*`
   - Accept: SC-803; no publish.
+  - Verify: `pnpm turbo run typecheck test build --filter=opscrew && node scripts/pack-smoke.mjs`
   - Effort: medium
 
 ## Phase 5: Verification

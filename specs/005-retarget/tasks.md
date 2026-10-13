@@ -2,6 +2,11 @@
 description: "Tasks for 005-retarget"
 ---
 
+> **Updated by feature 008 (2026-10-14, ADR 0010):** server addresses are no longer in
+> `opscrew/plan.yaml` (`retarget.from.serverIpv4/6`, `retarget.next` and `deployment.serverIpv4/6`
+> were removed); they live in `.opscrew/server.json`. The root module's `servers` output (keyed by
+> provider) replaced `other_server_*`, so the move names its servers by provider, not by step.
+
 # Tasks: Retarget
 
 **Input**: `specs/005-retarget/` (spec.md, plan.md, research.md) + features 000–004.
