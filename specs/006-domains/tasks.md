@@ -63,7 +63,12 @@ variable name. Tasks touching the CLI wait for feature 005's CLI task (T509).
 ## Phase 4: Verification
 
 - [X] T607 Sandbox purchase test and docs (lead) in `packages/cli/test/live/**` or `packages/connectors/cloudflare/test/live/**`, `docs/e2e.md`
-- [ ] T608 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-601..FR-609
+- [X] T608 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-601..FR-609
+
+## Phase 5: Converge (review of 2026-10-13 against FR-601..FR-609, US1–US4 and the constitution)
+
+- [X] T609 Token zone permissions cover a newly bought domain (texts, next step, README); init says Registrar read access only; `opscrew dns --domain` drops a stale registration; a plan created after the purchase gets `dns.registration` from `domain status`; the approval gate requires a typed phrase for domain kinds; honest sandbox and forget texts; token hints for non-registrar 4xx; buy-level tests for missing contact/payment and missing Registrar access in `packages/agents/src/{domain,dns,init}/`, `packages/core/src/approvals.ts`, `packages/connectors/cloudflare/src/`, `packages/mcp-server/src/tools/domain.ts`, `README.md` (FR-604, FR-606, FR-607, IX)
+- [X] T610 Spec, plan and docs text converged (purchase record rules, sandbox switch, multi-year bound, plan updates and approvals, auto-renew charge timing) and the sandbox test checks the plan, status and auto-renew; `domain status --yes` for scripts in `specs/006-domains/`, `docs/e2e.md`, `packages/cli/test/live/domain.test.ts`, `packages/cli/src/commands/domain.ts`
 
 ## Dependencies & waves
 
