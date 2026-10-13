@@ -186,7 +186,8 @@ function moving(plan: DeployPlan): string[] {
         "machine that ran `opscrew provision`, with the tokens of both providers set. OpsCrew creates a new server next " +
         `to the current one, deploys the app there with the deploy workflow${copy} and ${dns} Every change shows its ` +
         "plan and waits for your approval; in scripts, each plan stops with its hash and " +
-        "`opscrew retarget --approve <hash>` continues. If a run is interrupted, run `opscrew retarget` again: it " +
+        "`opscrew retarget --approve <hash>` continues, and `--yes` approves storing the GitHub deploy secrets, " +
+        "pushing and opening the pull request. If a run is interrupted, run `opscrew retarget` again: it " +
         "continues where it stopped, and `opscrew status` shows how far the move got.",
     ),
     "",
@@ -194,7 +195,8 @@ function moving(plan: DeployPlan): string[] {
       plan.services.postgres
         ? "- **Maintenance window:** the database is copied while the app is stopped, so the app is offline for a few " +
             "minutes. OpsCrew shows the database size and the expected downtime first and asks before it stops the app " +
-            "(in scripts, pass `--allow-downtime`). If the copy or the new app fails, the app starts again on the current server."
+            "(in scripts, pass `--allow-downtime`). If the copy or the new app fails, the app starts again on the current server." +
+            manualSwitchDowntime(plan)
         : "- **No maintenance window:** this app keeps no database on the server, so there is nothing to copy and the " +
             "current server serves users until DNS points at the new one.",
       "  ",
@@ -213,6 +215,30 @@ function moving(plan: DeployPlan): string[] {
     ),
     "",
   ];
+}
+
+/**
+ * Without OpsCrew-managed DNS (Cloudflare with a domain) the app on the old server stays stopped
+ * after the copy until the user's own switch has taken effect: say so (leading space included),
+ * or nothing when OpsCrew switches DNS itself.
+ */
+function manualSwitchDowntime(plan: DeployPlan): string {
+  if (plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined) return "";
+  if (plan.dns.domain === undefined) {
+    return (
+      " Without a domain, the downtime lasts for the copy plus the time your users need to switch to the new " +
+      "address: the app on the current server stays stopped from the copy on. In scripts, pass " +
+      "`--allow-downtime --dns-switched` together only when your users can switch right after the copy."
+    );
+  }
+  return (
+    " Without OpsCrew-managed DNS, the downtime lasts for the copy plus your DNS change: the app on the current " +
+    "server stays stopped until the records point to the new server and the change has reached your users, so " +
+    "lower the TTL of the DNS records beforehand (for example to 60 seconds). In scripts, pass " +
+    "`--allow-downtime --dns-switched` together only when the records are ready to change right after the copy; " +
+    "with `--allow-downtime` alone the run stops after the copy, with the app offline, until you change them and " +
+    "run `opscrew retarget --dns-switched`."
+  );
 }
 
 /**

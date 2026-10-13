@@ -1,20 +1,23 @@
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
-import type {
-  ApprovalRecord,
-  IacEngine,
-  PhaseName,
-  PlanSummary,
-  PolicyResult,
-  ResourceAction,
-  VpsProviderId,
+import {
+  type ApprovalRecord,
+  type IacEngine,
+  type Money,
+  type PhaseName,
+  type PlanSummary,
+  type PolicyResult,
+  type ResourceAction,
+  SEVERITIES,
+  type VpsProviderId,
 } from "@opscrew/contracts";
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { checkDialect, engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
 import type { SavedPlan } from "./types";
@@ -37,6 +40,12 @@ export interface PlanAndApplyOptions {
   phase?: PhaseName;
   /** Plain-English warnings added to the `iac-apply` approval details. */
   approvalNotes?: readonly string[];
+  /**
+   * Monthly cost change shown with the approval. Default: the plan's monthly cost (the plan
+   * creates the deployment's servers). `null`: the plan changes nothing that is billed (a DNS
+   * switch), so the approval claims no cost change.
+   */
+  costDelta?: Money | null;
 }
 
 /** Engine log text meaning an API refused the token's permissions (HTTP 403, read-only token). */
@@ -150,6 +159,14 @@ function resources(count: number): string {
   return `${count} resource${count === 1 ? "" : "s"}`;
 }
 
+/** `Estimated cost: €4.51 per month (…)`: the deployment's monthly price with its source. */
+function estimatedCost(deployPlan: DeployPlan): string {
+  const cost = deployPlan.cost.monthly;
+  // EUR prices (Hetzner) are quoted with or without VAT; USD prices (DigitalOcean) exclude sales tax.
+  const tax = cost.currency === "EUR" ? "VAT" : "tax";
+  return `Estimated cost: ${money(cost.amount, cost.currency)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${deployPlan.cost.pricesIncludeVat ? "incl." : "excl."} ${tax}).`;
+}
+
 /** True when the plan only renames resources in the state (`moved` blocks) and changes nothing. */
 export function isMovesOnly(saved: Pick<SavedPlan, "changes" | "moves">): boolean {
   return saved.changes.length === 0 && (saved.moves?.length ?? 0) > 0;
@@ -157,9 +174,15 @@ export function isMovesOnly(saved: Pick<SavedPlan, "changes" | "moves">): boolea
 
 /**
  * Plain-English plan summary shown before approval (resources, state renames, cost, policies,
- * hash). A plan that only renames resources in the state says that nothing changes in the cloud.
+ * hash). A plan that only renames resources in the state says that nothing changes in the cloud;
+ * with `costUnchanged` (a plan that only updates what is not billed, such as DNS records) the cost
+ * line says the cost does not change instead of quoting the deployment's monthly price.
  */
-export function describePlan(saved: SavedPlan, deployPlan: DeployPlan): string {
+export function describePlan(
+  saved: SavedPlan,
+  deployPlan: DeployPlan,
+  options: { costUnchanged?: boolean } = {},
+): string {
   const lines = [`${engineLabel(saved.engine.name)} ${saved.engine.version} plan:`];
   for (const change of saved.changes) {
     lines.push(`  ${SYMBOL[change.action]} ${change.action.padEnd(7)} ${change.address}`);
@@ -180,12 +203,11 @@ export function describePlan(saved: SavedPlan, deployPlan: DeployPlan): string {
     lines.push(
       `Changes: ${create} to create, ${update} to update, ${del} to delete, ${replace} to replace.${renamed}`,
     );
-    const cost = deployPlan.cost.monthly;
-    // EUR prices (Hetzner) are quoted with or without VAT; USD prices (DigitalOcean) exclude sales tax.
-    const tax = cost.currency === "EUR" ? "VAT" : "tax";
-    lines.push(
-      `Estimated cost: ${money(cost.amount, cost.currency)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${deployPlan.cost.pricesIncludeVat ? "incl." : "excl."} ${tax}).`,
-    );
+    if (options.costUnchanged === true) {
+      lines.push("Cost: unchanged (nothing that is billed is created or deleted).");
+    } else {
+      lines.push(estimatedCost(deployPlan));
+    }
   }
   const failed = saved.policy.filter((p) => !p.passed);
   lines.push(
@@ -207,10 +229,75 @@ async function saveSidecar(saved: SavedPlan): Promise<void> {
   await writeFileAtomic(sidecarFor(saved.planFile), `${JSON.stringify(saved, null, 2)}\n`);
 }
 
-/** The saved plan (from an earlier `--plan-only`) whose hash matches, if any. */
+const PlanHashSchema = z.string().regex(/^[0-9a-f]{64}$/i);
+
+/** Just enough of a sidecar to tell which plan it describes. */
+const SidecarHashSchema = z.looseObject({ planHash: z.string() });
+
+/** A sidecar written by `--plan-only` (or a move's deletion step), checked before any use. */
+const SavedPlanSchema = z.object({
+  planHash: PlanHashSchema,
+  planFile: z.string().min(1),
+  dir: z.string(),
+  engine: z.object({
+    name: z.enum(["tofu", "terraform"]),
+    version: z.string(),
+    binary: z.string(),
+  }),
+  createdAt: z.string(),
+  changes: z.array(
+    z.object({
+      address: z.string().min(1),
+      type: z.string(),
+      name: z.string(),
+      provider: z.string(),
+      action: z.enum(["create", "update", "delete", "replace", "read", "no-op"]),
+    }),
+  ),
+  moves: z
+    .array(z.object({ from: z.string().min(1), to: z.string().min(1), type: z.string() }))
+    .optional(),
+  counts: z.object({
+    create: z.number().int().nonnegative(),
+    update: z.number().int().nonnegative(),
+    delete: z.number().int().nonnegative(),
+    replace: z.number().int().nonnegative(),
+  }),
+  hasDestroy: z.boolean(),
+  policy: z.array(
+    z.object({
+      policyId: z.string(),
+      title: z.string(),
+      severity: z.enum(SEVERITIES),
+      passed: z.boolean(),
+      message: z.string(),
+      resource: z.string().optional(),
+    }),
+  ),
+  planJson: z
+    .unknown()
+    .refine((value) => value !== undefined && value !== null, "the plan JSON is missing"),
+});
+
+/** The first problem zod found, as `changes.0.address: …`. */
+function firstIssue(error: z.ZodError): string {
+  const issue = error.issues[0];
+  if (issue === undefined) return "unknown problem";
+  const path = issue.path.map(String).join(".");
+  return path === "" ? issue.message : `${path}: ${issue.message}`;
+}
+
+/**
+ * The saved plan (from an earlier `--plan-only`) whose hash matches, if any. Sidecars of other
+ * plans that cannot be read are ignored; the matching sidecar is validated in full (changes,
+ * moves, counts, policies, engine, plan JSON, hash) and an incomplete or damaged one stops with a
+ * plain `PLAN_HASH_MISMATCH` error (fail closed: it is never applied or shown as the plan) whose
+ * hint is `options.hint` (default: plan again and approve the new hash).
+ */
 export async function findSavedPlan(
   plansDir: string,
   planHash: string,
+  options: { hint?: string } = {},
 ): Promise<SavedPlan | undefined> {
   let names: string[];
   try {
@@ -223,12 +310,28 @@ export async function findSavedPlan(
     .filter((n) => n.endsWith(".tfplan.json"))
     .sort()
     .reverse()) {
+    let raw: unknown;
     try {
-      const saved = JSON.parse(await readFile(join(plansDir, name), "utf8")) as SavedPlan;
-      if (saved.planHash?.toLowerCase() === wanted) return saved;
+      raw = JSON.parse(await readFile(join(plansDir, name), "utf8"));
     } catch {
-      // ignore unreadable sidecars
+      continue; // an unreadable sidecar cannot name the wanted plan
     }
+    const named = SidecarHashSchema.safeParse(raw);
+    if (!named.success || named.data.planHash.toLowerCase() !== wanted) continue;
+    const saved = SavedPlanSchema.safeParse(raw);
+    if (!saved.success) {
+      throw new OpsCrewError(
+        "PLAN_HASH_MISMATCH",
+        `The saved plan with the hash ${planHash} is incomplete or damaged (${firstIssue(saved.error)}), so OpsCrew will not use it. Nothing was changed.`,
+        {
+          hint:
+            options.hint ??
+            "Run the command again without --approve to plan again, review the new plan and approve its hash.",
+        },
+      );
+    }
+    const { moves, planJson, ...rest } = saved.data;
+    return { ...rest, ...(moves !== undefined ? { moves } : {}), planJson };
   }
   return undefined;
 }
@@ -324,7 +427,9 @@ export async function planAndApply(
   const command = options.command ?? "opscrew provision";
   let saved: SavedPlan;
   if (options.approvePlanHash !== undefined) {
-    const found = await findSavedPlan(deps.paths.files.plansDir, options.approvePlanHash);
+    const found = await findSavedPlan(deps.paths.files.plansDir, options.approvePlanHash, {
+      hint: `Run \`${command} --plan-only\` again, review the plan and approve the new hash.`,
+    });
     if (!found) {
       throw new OpsCrewError(
         "PLAN_HASH_MISMATCH",
@@ -353,7 +458,7 @@ export async function planAndApply(
     saved = await freshPlan(deps, options);
   }
 
-  const details = describePlan(saved, deployPlan);
+  const details = describePlan(saved, deployPlan, { costUnchanged: options.costDelta === null });
   deps.reporter.info(details);
   const blocking = blockingPolicyFailures(saved.policy);
   if (blocking.length > 0) {
@@ -382,6 +487,11 @@ export async function planAndApply(
   const cloud = providerProfile(planProvider(deployPlan)).displayName;
   const providers = deployPlan.dns.provider === "cloudflare" ? `${cloud} and Cloudflare` : cloud;
   const notes = options.approvalNotes ?? [];
+  const costDelta = movesOnly
+    ? null
+    : options.costDelta === undefined
+      ? deployPlan.cost.monthly
+      : options.costDelta;
   const title = movesOnly
     ? `Rename ${resources(saved.moves?.length ?? 0)} in the infrastructure state (nothing changes in the cloud)`
     : `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`;
@@ -390,7 +500,7 @@ export async function planAndApply(
     title,
     details: notes.length > 0 ? `${details}\n\n${notes.join("\n")}` : details,
     planHash: saved.planHash,
-    ...(movesOnly ? {} : { costDelta: deployPlan.cost.monthly }),
+    ...(costDelta !== null ? { costDelta } : {}),
     policy: saved.policy,
     ...(saved.hasDestroy ? { allowDestroy: true, confirmPhrase: deployPlan.app.name } : {}),
   });

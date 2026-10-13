@@ -102,6 +102,14 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(plan.retarget?.oldAppStoppedAt).toBeDefined();
     expect(plan.deployment).toMatchObject({ serverIpv4: n, url: `https://${DOMAIN}` });
     expect(plan.approvals).toHaveLength(3);
+    // Honest cost: the plan that creates the new server shows its price; rename and switch none.
+    const applyRequests = h.handler.requests.filter((r) => r.kind === "iac-apply");
+    expect(applyRequests.map((r) => r.costDelta)).toEqual([
+      undefined,
+      plan.cost.monthly,
+      undefined,
+    ]);
+    expect(applyRequests[2]?.details).toContain("Cost: unchanged");
     expect(h.hosts.host(n)).toMatchObject({ app: true, caddy: true, db: "orders before the move" });
     expect(h.hosts.host(OLD_IPV4)).toMatchObject({ app: false, caddy: true });
     expect(h.hosts.host(OLD_IPV4).dump).toBeUndefined();
@@ -432,6 +440,84 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expectGated(h.events);
   });
 
+  it("DNS at another provider: says the downtime lasts until the user's DNS change is live", async () => {
+    const h = await moveHarness({ dns: "other" });
+    const n = h.newServer.ipv4;
+    h.handler.answer = (r) => {
+      if (r.kind === "remote-exec" && r.title.startsWith("Switch")) h.manual.ip = n;
+      return true;
+    };
+    let summary: RetargetSummary | undefined;
+    await run(h, {
+      confirmStart: async (s) => {
+        summary = s;
+        return true;
+      },
+    });
+    const window = summary?.steps.find((step) => step.startsWith("Maintenance window"));
+    expect(window).toContain(
+      "the app stays offline from then until your DNS change has reached your users",
+    );
+    const printed = h.reporter.text();
+    expect(printed).toContain("for the copy, plus the time your DNS change takes to reach");
+    expect(printed).toContain("Lower the TTL of those records beforehand");
+    expect(printed).toContain("pass `--allow-downtime --dns-switched` together only when");
+    const approval = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
+    expect(approval?.title).toContain("for the copy, plus your DNS change");
+    expect(approval?.details).toContain("Lower the TTL");
+    const confirm = h.handler.requests.find((r) => r.title.startsWith("Switch"));
+    expect(confirm?.details).toContain("so your users are offline until your DNS change");
+  });
+
+  it("DNS at another provider in a script: the window stop says the app stays stopped", async () => {
+    const h = await moveHarness({ dns: "other", interactive: false });
+    const stop = await drive(h);
+    expect(stop).toMatchObject({ step: "deployed", done: false });
+    const text = stop.next.join("\n");
+    expect(text).toContain("stays stopped until your DNS change has reached your users");
+    expect(text).toContain("Lower the TTL");
+    expect(text).toContain("`--allow-downtime --dns-switched`");
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+  });
+
+  it("with Cloudflare DNS the downtime is only the copy", async () => {
+    const h = await moveHarness();
+    let summary: RetargetSummary | undefined;
+    await run(h, {
+      confirmStart: async (s) => {
+        summary = s;
+        return true;
+      },
+    });
+    expect(summary?.steps.join(" ")).not.toContain("offline from then");
+    expect(h.reporter.text()).not.toContain("TTL");
+    const approval = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
+    expect(approval?.title).toContain("(about 3 minutes of downtime)");
+  });
+
+  it("a script resumed after the copy says users are offline while the switch plan waits", async () => {
+    const h = await moveHarness({ interactive: false });
+    crashAfter(h, "migrated");
+    await expect(drive(h, { allowDowntime: true })).rejects.toThrow("interrupted");
+    expect((await move(h))?.step).toBe("migrated");
+    h.cli.approve = undefined;
+    h.cli.allowDowntime = undefined;
+    const stop = await run(h);
+    expect(stop).toMatchObject({ step: "migrated", done: false });
+    const hash = stop.pendingPlanHash as string;
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    const text = stop.next.join("\n");
+    expect(text).toContain("The app on the old server is stopped");
+    expect(text).toContain("your users are offline until this switch is applied");
+    expect(text).toContain(`opscrew retarget --approve ${hash}`);
+    expect(h.hosts.host(OLD_IPV4).app).toBe(false);
+
+    h.cli.approve = hash;
+    expect(await run(h, { approvePlanHash: hash })).toMatchObject({ step: "switched", done: true });
+    expect(ops(h, OLD_IPV4, "dump")).toBe(1);
+    expectGated(h.events);
+  });
+
   it("without a domain the app moves to the new address", async () => {
     const h = await moveHarness({ dns: "none", postgres: false, interactive: false });
     const n = h.newServer.ipv4;
@@ -529,6 +615,28 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const error = await caught(run(h));
     expect(error.code).toBe("CREDENTIALS_MISSING");
     expect(error.message).toContain("DigitalOcean");
+    expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
+    expect(await move(h)).toBeUndefined();
+  });
+
+  it("stops before any plan when the GitHub token is missing", async () => {
+    const h = await moveHarness();
+    h.services.github = null;
+    const error = await caught(run(h));
+    expect(error.code).toBe("CREDENTIALS_MISSING");
+    expect(error.message).toContain("GitHub");
+    expect(error.hint).toBeTruthy();
+    expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
+    expect(await move(h)).toBeUndefined();
+  });
+
+  it("stops before any plan when the Cloudflare token is missing", async () => {
+    const h = await moveHarness();
+    h.services.cloudflare = null;
+    const error = await caught(run(h));
+    expect(error.code).toBe("CREDENTIALS_MISSING");
+    expect(error.message).toContain("No Cloudflare token found: set CLOUDFLARE_API_TOKEN");
+    expect(error.hint).toBeTruthy();
     expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
     expect(await move(h)).toBeUndefined();
   });

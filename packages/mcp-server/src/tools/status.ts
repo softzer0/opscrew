@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { moveInProgress, providerProfile } from "@opscrew/agents";
 import { PHASES, type PhaseName } from "@opscrew/contracts";
 import type { PhaseRecord } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
+import { type Retarget, readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
 import { exists, projectDirInput, relativeTo, runTool, withHint } from "./shared";
 
@@ -14,6 +14,25 @@ function nextStep(have: Record<string, boolean>): string {
   }
   if (!have.plan) return "Call opscrew_design_options and then opscrew_select_design.";
   return "Apply the pending code changes from opscrew/plan.yaml (opscrew-adapt skill), then provision with `npx opscrew provision` in a terminal.";
+}
+
+/**
+ * Which servers a move keeps billed: only the current one before the new one is created
+ * (`started`, `renamed`) and once an abort deleted it (`new-removed` and later); both otherwise.
+ */
+function billing(move: Retarget): string {
+  if (move.abort !== undefined && move.abort.step !== "started") {
+    return "The new server was deleted by the abort; only the previous server is billed.";
+  }
+  if (move.step === "started" || move.step === "renamed") {
+    return "The new server is not created yet; only the current server is billed.";
+  }
+  if (move.abort !== undefined) {
+    return "Both servers are billed until the abort deletes the new one.";
+  }
+  return move.step === "switched"
+    ? "Both servers are billed until `opscrew retarget --finish` deletes the old one."
+    : "Both servers are billed until the move is finished or aborted.";
 }
 
 /**
@@ -76,15 +95,18 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
                 from: plan.retarget.from.target.provider,
                 to: plan.target.provider,
                 step: plan.retarget.step,
+                ...(plan.retarget.abort !== undefined
+                  ? { abortStep: plan.retarget.abort.step }
+                  : {}),
                 startedAt: plan.retarget.startedAt,
               };
         const moveLines =
-          moveData === undefined
+          plan?.retarget === undefined || moveData === undefined
             ? []
             : [
                 "",
-                `Move: from ${providerProfile(moveData.from).displayName} to ${providerProfile(moveData.to).displayName}, last completed step: ${moveData.step}.`,
-                "Both servers are billed until the move is finished.",
+                `Move: from ${providerProfile(moveData.from).displayName} to ${providerProfile(moveData.to).displayName}, last completed step: ${moveData.step}${plan.retarget.abort === undefined ? "" : ` (being aborted, last abort step: ${plan.retarget.abort.step})`}.`,
+                billing(plan.retarget),
               ];
         const step =
           move === undefined

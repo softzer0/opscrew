@@ -46,8 +46,15 @@ import {
   writeFinalFiles,
 } from "./session";
 import { assertRenameOnly, pendingStop, storeDeploySecrets } from "./steps";
-import { assertDnsUpdatesOnly, managedDns } from "./switch";
-import { ABORT_COMMAND, FINISH_COMMAND, providerWords, RUN_COMMAND, resourcesText } from "./texts";
+import { assertDnsUpdatesOnly } from "./switch";
+import {
+  ABORT_COMMAND,
+  FINISH_COMMAND,
+  managedDns,
+  providerWords,
+  RUN_COMMAND,
+  resourcesText,
+} from "./texts";
 import type { AbortRetargetOptions, RetargetResult } from "./types";
 import { recoverInterruptedWindow, restartOldApp, stepBefore } from "./window";
 
@@ -302,6 +309,7 @@ async function pointDnsBack(
   const input: InfraPlanInput = {
     action: "abort-dns",
     files,
+    costDelta: null,
     check: (saved) =>
       assertDnsUpdatesOnly(saved, {
         what: "DNS restore",

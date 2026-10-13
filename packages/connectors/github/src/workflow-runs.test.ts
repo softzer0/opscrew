@@ -197,12 +197,39 @@ describe("waitForWorkflowRun", () => {
     const query = new URL(calls[0]?.url ?? "").searchParams;
     expect(query.get("event")).toBe("workflow_dispatch");
     expect(query.get("branch")).toBe("main");
-    expect(query.get("created")).toBe(">=2026-10-13T10:00:00Z");
+    // Two minutes of allowance for a local clock ahead of GitHub's.
+    expect(query.get("created")).toBe(">=2026-10-13T09:58:00Z");
     expect(calls.map((c) => new URL(c.url).pathname)).toEqual([
       "/repos/acme/shop/actions/workflows/opscrew-deploy.yml/runs",
       "/repos/acme/shop/actions/workflows/opscrew-deploy.yml/runs",
       "/repos/acme/shop/actions/runs/10",
     ]);
+  });
+
+  it("finds the run when the local clock is ahead of GitHub's (up to two minutes)", async () => {
+    const clock = fakeClock();
+    // This computer said 10:01:30 before the dispatch; GitHub stamped the run 10:00:05.
+    const { fetch } = fakeFetch({
+      [RUNS]: [
+        {
+          body: {
+            workflow_runs: [
+              run(20, "completed", "success", "2026-10-13T09:59:00Z"),
+              run(21, "completed", "failure", "2026-10-13T10:00:05Z"),
+            ],
+          },
+        },
+      ],
+    });
+    const result = await client(fetch, clock).waitForWorkflowRun("acme", "shop", {
+      workflowFile: FILE,
+      ref: "main",
+      since: "2026-10-13T10:01:30.000Z",
+      pollMs: 1000,
+    });
+    // The newest run is the dispatched one, even though it looks older than `since`.
+    expect(result).toMatchObject({ id: 21, conclusion: "failure" });
+    expect(clock.sleeps).toEqual([]);
   });
 
   it("times out with the run link when the run is known", async () => {

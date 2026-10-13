@@ -27,9 +27,12 @@ import {
   ABORT_COMMAND,
   approveCommand,
   downtimeMinutes,
+  downtimeUntilDnsChange,
   MAINTENANCE_WINDOW_TITLE,
+  manualSwitchDowntime,
   RUN_COMMAND,
   sizeText,
+  untilSwitched,
 } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
 
@@ -221,8 +224,13 @@ export async function maintenanceWindow(
   const size = await databaseSize(old, ops);
   const minutes = downtimeMinutes(size);
   const downtime = `about ${minutes} minutes`;
+  // Without managed DNS the old app stays stopped after the copy until the user's switch is live.
+  const byHand = downtimeUntilDnsChange(plan);
+  const warning = manualSwitchDowntime(plan);
   deps.reporter.info(
-    `The database is ${sizeText(size)}. Copying it takes ${downtime}; the app is offline for that long.`,
+    byHand
+      ? `The database is ${sizeText(size)}. Copying it takes ${downtime}; the app is offline from then ${untilSwitched(plan)}.`
+      : `The database is ${sizeText(size)}. Copying it takes ${downtime}; the app is offline for that long.`,
   );
   if (!deps.interactive && options.allowDowntime !== true) {
     const command =
@@ -231,7 +239,10 @@ export async function maintenanceWindow(
         : approveCommand(RUN_COMMAND, switchPlanHash, ["--allow-downtime"]);
     return {
       ...stopped(session, [
-        `The next step stops ${plan.app.name} on the old server for ${downtime} while its database is copied to the new server.`,
+        byHand
+          ? `The next step stops ${plan.app.name} on the old server while its database is copied to the new server (${downtime}), and it stays stopped ${untilSwitched(plan)}.`
+          : `The next step stops ${plan.app.name} on the old server for ${downtime} while its database is copied to the new server.`,
+        ...warning,
         `Run \`${command}\` when that is acceptable, or \`${ABORT_COMMAND}\` to undo the move.`,
       ]),
       ...(switchPlanHash !== undefined ? { pendingPlanHash: switchPlanHash } : {}),
@@ -239,13 +250,11 @@ export async function maintenanceWindow(
   }
   const approval = await deps.approvals.request({
     kind: "remote-exec",
-    title: `${MAINTENANCE_WINDOW_TITLE} stop ${plan.app.name} on the old server and copy its database (${sizeText(size)}) to the new server (${downtime} of downtime)`,
-    details: windowCommands(
-      move.from.serverIpv4,
-      next.serverIpv4,
-      plan.app.port,
-      plan.app.healthPath,
-    ).join("\n"),
+    title: `${MAINTENANCE_WINDOW_TITLE} stop ${plan.app.name} on the old server and copy its database (${sizeText(size)}) to the new server (${byHand ? `downtime: ${downtime} for the copy, plus ${plan.dns.domain !== undefined ? "your DNS change" : "your users' move to the new address"}` : `${downtime} of downtime`})`,
+    details: [
+      ...windowCommands(move.from.serverIpv4, next.serverIpv4, plan.app.port, plan.app.healthPath),
+      ...(byHand ? ["", ...warning] : []),
+    ].join("\n"),
   });
   if (!approval.approved) {
     throw new OpsCrewError(

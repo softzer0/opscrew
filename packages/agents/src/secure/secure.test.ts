@@ -298,10 +298,20 @@ describe("runSecure", () => {
       name: "this",
       values: { rule: [{ direction: "in", protocol: "tcp", port: "6379", source_ips: ["::/0"] }] },
     };
+    // A complete sidecar as `opscrew provision --plan-only` writes it (findSavedPlan validates it).
+    const planFile = join(deps.paths.files.plansDir, "2026-10-11T12-00-00-000Z.tfplan");
     await writeFile(
-      join(deps.paths.files.plansDir, "2026-10-11T12-00-00-000Z.tfplan.json"),
+      `${planFile}.json`,
       JSON.stringify({
         planHash,
+        planFile,
+        dir: join(deps.paths.root, "opscrew", "infra", "prod"),
+        engine: { name: "tofu", version: "1.13.1", binary: "/fake/tofu" },
+        createdAt: "2026-10-11T12:00:00.000Z",
+        changes: [],
+        counts: { create: 0, update: 0, delete: 0, replace: 0 },
+        hasDestroy: false,
+        policy: [],
         planJson: { planned_values: { root_module: { resources: [firewall] } } },
       }),
     );

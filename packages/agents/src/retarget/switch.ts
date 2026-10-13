@@ -19,7 +19,14 @@ import {
   withApply,
 } from "./session";
 import { pendingStop, reasonOf } from "./steps";
-import { ABORT_COMMAND, FINISH_COMMAND, providerWords, RUN_COMMAND } from "./texts";
+import {
+  ABORT_COMMAND,
+  FINISH_COMMAND,
+  managedDns,
+  providerWords,
+  RUN_COMMAND,
+  untilSwitched,
+} from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
 import {
   asOpsCrewError,
@@ -33,11 +40,6 @@ import {
 
 const URL_WAIT_MS = 5 * 60_000;
 const URL_INTERVAL_MS = 10_000;
-
-/** True when OpsCrew manages the app's DNS records (Cloudflare with a domain). */
-export function managedDns(plan: DeployPlan): boolean {
-  return plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
-}
 
 /** Where the app answers after the switch: its domain, else the new server's address. */
 function publicUrl(plan: DeployPlan, ipv4: string): string {
@@ -201,6 +203,8 @@ async function switchManagedDns(
     action: "switch",
     files,
     check: assertDnsOnly,
+    // DNS records are not billed: the new server's price was shown with the plan that created it.
+    costDelta: null,
     notes: [
       `This points ${plan.dns.domain} at the new ${fresh.noun}; the records are updated in place.`,
       `Then OpsCrew starts Caddy on the new ${fresh.noun}, checks the app through its domain and keeps the app on the old ${old.noun} stopped. After this the move can no longer be aborted.`,
@@ -208,7 +212,19 @@ async function switchManagedDns(
   };
   const prepared = await prepareInfraPlan(session, input);
   if (prepared.kind === "pending") {
-    return pendingStop(session, prepared.planHash, windowAhead ? ["--allow-downtime"] : []);
+    // Resumed after the copy (`migrated`): the old app is stopped, so users are offline meanwhile.
+    const offline =
+      !windowAhead && moveOf(session).oldAppStoppedAt !== undefined
+        ? [
+            `The app on the old ${old.noun} is stopped (its database was copied to the new ${fresh.noun}), so your users are offline until this switch is applied. Apply it soon, or run \`${ABORT_COMMAND}\` to start the old app again and undo the move.`,
+          ]
+        : [];
+    return pendingStop(
+      session,
+      prepared.planHash,
+      windowAhead ? ["--allow-downtime"] : [],
+      offline,
+    );
   }
   if (windowAhead) {
     if (prepared.kind === "ready" && deps.interactive) {
@@ -287,6 +303,11 @@ async function switchByHand(
       details: [
         ...records,
         "",
+        ...(moveOf(session).oldAppStoppedAt !== undefined
+          ? [
+              `The app on the old ${old.noun} is stopped (its database was copied), so your users are offline ${untilSwitched(plan)}.`,
+            ]
+          : []),
         `Confirm once you made this change. OpsCrew then starts Caddy on the new ${fresh.noun}, checks the app at ${url} and keeps the app on the old ${old.noun} stopped. After this the move can no longer be aborted.`,
       ].join("\n"),
     });

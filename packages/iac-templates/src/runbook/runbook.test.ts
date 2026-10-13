@@ -131,6 +131,27 @@ describe("renderRunbook", () => {
     expect(elsewhere).toMatch(/DNS records to change at your DNS provider/);
     expect(elsewhere).toContain("`--dns-switched`");
     expect(elsewhere).not.toContain("Cloudflare");
+
+    // Scripts also need --yes for the GitHub secrets, the push and the pull request.
+    for (const text of [section, stateless, elsewhere]) {
+      expect(text).toMatch(
+        /`--yes` approves storing the GitHub deploy secrets, pushing and opening the pull request/,
+      );
+    }
+
+    // Without managed DNS and with a database, the downtime lasts until the DNS change is live.
+    expect(elsewhere).toContain("the downtime lasts for the copy plus your DNS change");
+    expect(elsewhere).toContain("lower the TTL of the DNS records beforehand");
+    expect(elsewhere).toContain(
+      "pass `--allow-downtime --dns-switched` together only when the records are ready",
+    );
+    const noDomain = moving(plan());
+    expect(noDomain).toContain("the downtime lasts for the copy plus the time your users need");
+    expect(noDomain).not.toContain("TTL");
+    for (const text of [section, stateless]) {
+      expect(text).not.toContain("TTL");
+      expect(text).not.toContain("plus your DNS change");
+    }
   });
 
   it("explains how to tear the deployment down and what remains", () => {

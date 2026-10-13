@@ -72,8 +72,9 @@ docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB"' < back
 that ran \`opscrew provision\`, with the tokens of both providers set. OpsCrew creates a new server next to the current
 one, deploys the app there with the deploy workflow, copies the database and switches the Cloudflare DNS records to
 it. Every change shows its plan and waits for your approval; in scripts, each plan stops with its hash and
-\`opscrew retarget --approve <hash>\` continues. If a run is interrupted, run \`opscrew retarget\` again: it continues
-where it stopped, and \`opscrew status\` shows how far the move got.
+\`opscrew retarget --approve <hash>\` continues, and \`--yes\` approves storing the GitHub deploy secrets, pushing and
+opening the pull request. If a run is interrupted, run \`opscrew retarget\` again: it continues where it stopped, and
+\`opscrew status\` shows how far the move got.
 
 - **Maintenance window:** the database is copied while the app is stopped, so the app is offline for a few minutes.
   OpsCrew shows the database size and the expected downtime first and asks before it stops the app (in scripts, pass

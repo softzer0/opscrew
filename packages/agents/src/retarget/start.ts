@@ -24,10 +24,13 @@ import {
 import {
   ABORT_COMMAND,
   downtimeMinutes,
+  downtimeUntilDnsChange,
   FINISH_COMMAND,
+  manualSwitchDowntime,
   providerWords,
   RUN_COMMAND,
   sizeText,
+  untilSwitched,
 } from "./texts";
 import type { RetargetOptions, RetargetSummary } from "./types";
 
@@ -103,6 +106,10 @@ export function moveSummary(
   const old = providerWords(from.provider);
   const fresh = providerWords(to.provider);
   const minutes = databaseBytes === undefined ? undefined : downtimeMinutes(databaseBytes);
+  // Without managed DNS the old app stays stopped until the user's own switch has taken effect.
+  const offline = downtimeUntilDnsChange(plan)
+    ? `; the app stays offline from then ${untilSwitched(plan)}`
+    : "";
   return {
     from,
     to,
@@ -111,7 +118,7 @@ export function moveSummary(
       `Create the new ${fresh.noun} on ${fresh.name} (${to.serverType} in ${to.location}) next to the current one.`,
       `Point the GitHub deploy secrets at the new ${fresh.noun}, run the deploy workflow on ${plan.cicd.branch} and check the app there; its web server stays stopped until the switch.`,
       databaseBytes !== undefined
-        ? `Maintenance window (about ${minutes} minutes): stop the app on the old ${old.noun}, copy the database (${sizeText(databaseBytes)}) to the new ${fresh.noun} and start the app there.`
+        ? `Maintenance window (about ${minutes} minutes for the copy): stop the app on the old ${old.noun}, copy the database (${sizeText(databaseBytes)}) to the new ${fresh.noun} and start the app there${offline}.`
         : "No maintenance window: there is no self-hosted database to copy.",
       switchSentence(plan, fresh.noun),
       `Keep the old ${old.noun} (with its app stopped) until you run \`${FINISH_COMMAND}\`; until the switch, \`${ABORT_COMMAND}\` undoes the move.`,
@@ -129,9 +136,16 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
     `Moving ${plan.app.name} from ${old.name} (${summary.from.serverType} in ${summary.from.location}) to ${fresh.name} (${summary.to.serverType} in ${summary.to.location}):`,
     ...summary.steps.map((step, i) => `  ${i + 1}. ${step}`),
     `Extra cost while both servers run: ${formatMoney(summary.extraMonthly)} per month for the new ${fresh.noun}; the old ${old.noun} is billed until the move is finished.`,
-    summary.databaseBytes !== undefined
-      ? `Database: ${sizeText(summary.databaseBytes)}; expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes.`
-      : "Database: none on the server, so the app stays online until the switch.",
+    ...(summary.databaseBytes === undefined
+      ? ["Database: none on the server, so the app stays online until the switch."]
+      : downtimeUntilDnsChange(plan)
+        ? [
+            `Database: ${sizeText(summary.databaseBytes)}; expected downtime: about ${summary.expectedDowntimeMinutes} minutes for the copy, plus the time ${plan.dns.domain !== undefined ? "your DNS change takes to reach your users" : "your users take to switch to the new address"}.`,
+            ...manualSwitchDowntime(plan),
+          ]
+        : [
+            `Database: ${sizeText(summary.databaseBytes)}; expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes.`,
+          ]),
     `While the move runs, ${plan.infra.dir} holds a transitional version of the infrastructure files; \`${FINISH_COMMAND}\` publishes the final ones in a pull request.`,
   ].join("\n");
 }

@@ -1,5 +1,7 @@
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ResourceMove } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { FakeEngine, type FakeEngineScenario, testPlan } from "./__fixtures__/fakes";
@@ -158,5 +160,100 @@ describe("isMovesOnly and describePlan", () => {
     );
     expect(text).toContain("Cost: unchanged (nothing is created, updated or deleted).");
     expect(text).not.toContain("Estimated cost");
+  });
+});
+
+const DNS_UPDATE = [
+  {
+    address: "module.dns.cloudflare_dns_record.root_a",
+    type: "cloudflare_dns_record",
+    name: "root_a",
+    provider: "registry.opentofu.org/cloudflare/cloudflare",
+    action: "update" as const,
+  },
+];
+
+describe("planAndApply cost change", () => {
+  it("keeps the plan's monthly cost as the cost change by default", async () => {
+    const { deps, handler, options } = await setup({});
+    await planAndApply(deps, options);
+    expect(handler.requests[0]?.costDelta).toEqual(options.deployPlan.cost.monthly);
+  });
+
+  it("claims no cost change for a plan that changes nothing billed (costDelta null)", async () => {
+    const { deps, handler, options } = await setup({ changes: DNS_UPDATE });
+    await planAndApply(deps, { ...options, costDelta: null });
+    const request = handler.requests[0];
+    expect(request?.costDelta).toBeUndefined();
+    expect(request?.details).toContain(
+      "Cost: unchanged (nothing that is billed is created or deleted).",
+    );
+    expect(request?.details).not.toContain("Estimated cost");
+  });
+
+  it("uses an explicit cost change", async () => {
+    const { deps, handler, options } = await setup({});
+    const delta = { amount: 4.51, currency: "EUR" as const };
+    await planAndApply(deps, { ...options, costDelta: delta });
+    expect(handler.requests[0]?.costDelta).toEqual(delta);
+  });
+});
+
+describe("findSavedPlan validation", () => {
+  async function planned() {
+    const { deps, engine, handler, options } = await setup({});
+    const result = await planAndApply(deps, { ...options, planOnly: true });
+    const hash = result.planHash as string;
+    const sidecar = `${result.plan?.planFile}.json`;
+    const content = JSON.parse(await readFile(sidecar, "utf8")) as Record<string, unknown>;
+    return { deps, engine, handler, options, hash, sidecar, content };
+  }
+
+  it("returns a complete saved plan", async () => {
+    const { deps, hash } = await planned();
+    const saved = await findSavedPlan(deps.paths.files.plansDir, hash);
+    expect(saved?.planHash).toBe(hash);
+    expect(saved?.changes).toHaveLength(3);
+    expect(saved?.planJson).toBeDefined();
+  });
+
+  const DAMAGE: [string, (content: Record<string, unknown>) => void][] = [
+    ["without its changes", (c) => Reflect.deleteProperty(c, "changes")],
+    ["with a malformed change", (c) => Object.assign(c, { changes: [{ address: 7 }] })],
+    ["with malformed moves", (c) => Object.assign(c, { moves: [{ from: "module.server.x" }] })],
+    ["without the plan JSON", (c) => Reflect.deleteProperty(c, "planJson")],
+    ["without the engine", (c) => Reflect.deleteProperty(c, "engine")],
+  ];
+
+  it.each(DAMAGE)("fails closed for a sidecar %s", async (_what, damage) => {
+    const { deps, engine, handler, options, hash, sidecar, content } = await planned();
+    damage(content);
+    await writeFile(sidecar, JSON.stringify(content));
+    const error = await findSavedPlan(deps.paths.files.plansDir, hash).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error).toMatchObject({ code: "PLAN_HASH_MISMATCH" });
+    expect((error as OpsCrewError).message).toContain(
+      `The saved plan with the hash ${hash} is incomplete or damaged`,
+    );
+    expect((error as OpsCrewError).hint).toContain("plan again");
+
+    const applying = await planAndApply(deps, { ...options, approvePlanHash: hash }).catch(
+      (e: unknown) => e,
+    );
+    expect(applying).toMatchObject({ code: "PLAN_HASH_MISMATCH" });
+    expect((applying as OpsCrewError).hint).toContain("opscrew provision --plan-only");
+    expect(engine.calls).not.toContain("apply");
+    expect(handler.requests).toEqual([]);
+  });
+
+  it("ignores unreadable sidecars of other plans", async () => {
+    const { deps, hash } = await planned();
+    await writeFile(join(deps.paths.files.plansDir, "0-broken.tfplan.json"), "{ not json");
+    await writeFile(
+      join(deps.paths.files.plansDir, "1-other.tfplan.json"),
+      JSON.stringify({ planHash: "b".repeat(64) }),
+    );
+    expect((await findSavedPlan(deps.paths.files.plansDir, hash))?.planHash).toBe(hash);
+    expect(await findSavedPlan(deps.paths.files.plansDir, "c".repeat(64))).toBeUndefined();
   });
 });

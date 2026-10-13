@@ -92,6 +92,8 @@ function floorToSecond(iso: string): number {
 
 const DEFAULT_RUN_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_RUN_POLL_MS = 5_000;
+/** How far this computer's clock may run ahead of GitHub's when finding a dispatched run. */
+const CLOCK_SKEW_ALLOWANCE_MS = 2 * 60_000;
 
 const SECRET_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -343,8 +345,9 @@ export class GitHubClient {
 
   /**
    * Waits for a dispatched run to complete: the run `runId` when given, else the newest
-   * `workflow_dispatch` run on `ref` created at or after `since` (it may take a few polls to
-   * appear). Throws a plain `PROVIDER_ERROR` naming the run link on timeout.
+   * `workflow_dispatch` run on `ref` created at or after `since` minus two minutes (allowance for
+   * a local clock ahead of GitHub's; it may take a few polls to appear). Throws a plain
+   * `PROVIDER_ERROR` naming the run link on timeout.
    */
   async waitForWorkflowRun(
     owner: string,
@@ -361,7 +364,9 @@ export class GitHubClient {
   ): Promise<{ id: number; conclusion: string | null; htmlUrl: string }> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     const pollMs = options.pollMs ?? DEFAULT_RUN_POLL_MS;
-    const sinceMs = floorToSecond(options.since);
+    // `since` is this computer's time; GitHub stamps runs with its own clock, so a local clock
+    // ahead of GitHub's would hide the dispatched run. Look a little earlier and take the newest.
+    const sinceMs = floorToSecond(options.since) - CLOCK_SKEW_ALLOWANCE_MS;
     const createdSince = new Date(sinceMs).toISOString().replace(/\.\d{3}Z$/, "Z");
     const branch = options.ref.replace(/^refs\/heads\//, "");
     const deadline = this.#now() + timeoutMs;

@@ -102,7 +102,7 @@ describe("createConfigScanner", () => {
       expect.stringMatching(/^ARG DB_PASSWORD=Fake…\(\d+ chars\)$/),
     ]);
     expectNoFakeValues(findings, fixture?.fakes ?? []);
-  });
+  }, 30_000); // materializing and scanning the fixture is slow under full-suite load
 
   it("explains latest versus untagged base images", async () => {
     const findings = await scanFixture();

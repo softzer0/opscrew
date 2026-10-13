@@ -10,14 +10,22 @@ export interface MoveInProgress {
 
 /**
  * The plain-English notice for a move in progress (`plan.retarget` exists), or `undefined` when
- * no move is under way. `plan.target` is already the provider the move goes to.
+ * no move is under way. `plan.target` is already the provider the move goes to. Once an abort
+ * began (`retarget.abort`), the move can only be aborted, so the hint names only the abort.
  */
 export function moveInProgress(
   plan: Pick<DeployPlan, "target" | "retarget">,
 ): MoveInProgress | undefined {
   if (plan.retarget === undefined) return undefined;
+  const to = providerProfile(plan.target.provider).displayName;
+  if (plan.retarget.abort !== undefined) {
+    return {
+      message: `A move to ${to} is being aborted.`,
+      hint: "Run `opscrew retarget --abort` to finish the abort; it continues where it stopped and puts the app back on the previous server.",
+    };
+  }
   return {
-    message: `A move to ${providerProfile(plan.target.provider).displayName} is in progress.`,
+    message: `A move to ${to} is in progress.`,
     hint: "Run `opscrew retarget` to continue it, `opscrew retarget --finish` after the switch, or `opscrew retarget --abort` before it.",
   };
 }

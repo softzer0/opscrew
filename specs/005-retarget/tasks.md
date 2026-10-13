@@ -100,6 +100,11 @@ variable name (the redactor masks what follows).
 - [X] T511 Live move Hetzner → DigitalOcean with data check, finish and teardown (lead) in `packages/cli/test/live/**`, `docs/e2e.md`
 - [ ] T512 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-501..FR-512
 
+## Phase 6: Converge (review of 2026-10-13 against FR-501..FR-512, US1–US4 and the constitution)
+
+- [X] T513 No cost change shown for the DNS switch and abort-dns plans; downtime without OpsCrew-managed DNS includes the user's DNS change (summary, window, runbook); a resumed script at `migrated` says the app is offline; dispatched-run lookup tolerates clock skew; status and guard texts follow the move's step and abort; runbook names `--yes`; saved-plan sidecars validated with zod; missing GitHub/Cloudflare token tests in `packages/agents/src/{provision,retarget}/`, `packages/connectors/github/src/`, `packages/mcp-server/src/tools/status.ts`, `packages/iac-templates/src/runbook/` (IX, V)
+- [X] T514 Spec and plan text converged (switch plan prepared before the window, settle check before finish, abort-dns, pending-plan file, unmanaged DNS resolver check, `RetargetResult.done`, seven plan kinds, pre-protection Hetzner deployments) and the live test checks the app's URL after the move in `specs/005-retarget/`, `packages/cli/test/live/live.test.ts`
+
 ## Dependencies & waves
 
 - T501 first (serial, lead).

@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import type { ApprovalRecord, ApprovalRequest, PlanSummary } from "@opscrew/contracts";
+import type { ApprovalRecord, ApprovalRequest, Money, PlanSummary } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
@@ -49,6 +49,11 @@ export interface InfraPlanInput {
   check: (saved: SavedPlan) => void;
   /** Plain-English notes added to the approval details. */
   notes?: readonly string[];
+  /**
+   * Monthly cost change the approval shows (default: the new server's monthly price, right for
+   * the plan that creates it); `null` for a plan that changes nothing billed (DNS switch, restore).
+   */
+  costDelta?: Money | null;
 }
 
 /**
@@ -80,6 +85,7 @@ function planAndApplyOptions(session: MoveSession, input: InfraPlanInput): PlanA
     command: session.command,
     phase: "retarget",
     ...(input.notes && input.notes.length > 0 ? { approvalNotes: input.notes } : {}),
+    ...(input.costDelta !== undefined ? { costDelta: input.costDelta } : {}),
   };
 }
 
@@ -95,7 +101,16 @@ async function discardSaved(planFile: string): Promise<void> {
  */
 async function approvedSavedPlan(session: MoveSession, planHash: string): Promise<SavedPlan> {
   const { deps } = session;
-  const saved = await findSavedPlan(deps.paths.files.plansDir, planHash);
+  let saved: SavedPlan | undefined;
+  try {
+    saved = await findSavedPlan(deps.paths.files.plansDir, planHash, {
+      hint: `Run \`${session.command}\` without --approve to plan again, review the plan and approve the new hash.`,
+    });
+  } catch (error) {
+    // A damaged sidecar: forget the waiting plan so the next run plans this step again.
+    await clearPending(deps);
+    throw error;
+  }
   const intact =
     saved !== undefined && (await hashFile(saved.planFile).catch(() => "")) === saved.planHash;
   if (saved !== undefined && intact && saved.engine.name === session.engine.info.name) {

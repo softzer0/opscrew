@@ -575,5 +575,15 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     expect(lines.indexOf("apply updates=2")).toBeLessThan(lines.indexOf(`confirm ${APP}`));
     expect(h.engine.dnsServer()?.ipv4).toBe(OLD_IPV4);
     expectGated(h.events, true);
+    // Neither the switch nor the restore of the DNS records costs money: no cost change claimed.
+    const dnsApprovals = h.handler.requests.filter(
+      (r) => r.kind === "iac-apply" && r.title.includes("0 to create, 2 to update"),
+    );
+    expect(dnsApprovals).toHaveLength(2);
+    for (const request of dnsApprovals) {
+      expect(request.costDelta).toBeUndefined();
+      expect(request.details).toContain("Cost: unchanged");
+      expect(request.details).not.toContain("Estimated cost");
+    }
   });
 });
