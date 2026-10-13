@@ -67,7 +67,7 @@ after an environment variable name.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T708 [US2] Connecting a domain you already own in `packages/agents/src/domain/connect*.ts`
+- [X] T708 [US2] Connecting a domain you already own in `packages/agents/src/domain/connect*.ts`
   - Owns: `packages/agents/src/domain/connect*.ts` (+ tests, fixtures under `domain/__fixtures__/connect*`)
   - Reads: spec.md US2, edge cases; plan.md "Connect"; `switchToCloudflare` from T707
   - Depends: T707
