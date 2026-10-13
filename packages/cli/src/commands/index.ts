@@ -5,6 +5,7 @@ import * as analyze from "./analyze";
 import * as design from "./design";
 import * as destroy from "./destroy";
 import * as dns from "./dns";
+import * as domain from "./domain";
 import * as drift from "./drift";
 import * as init from "./init";
 import * as interview from "./interview";
@@ -31,6 +32,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   adapt,
   provision,
   dns,
+  domain,
   secure,
   verify,
   drift,

@@ -44,7 +44,7 @@ variable name. Tasks touching the CLI wait for feature 005's CLI task (T509).
 
 ## Phase 3: Interfaces
 
-- [ ] T605 [US1] [US2] [US3] `opscrew domain` commands in `packages/cli/src/`
+- [X] T605 [US1] [US2] [US3] `opscrew domain` commands in `packages/cli/src/`
   - Owns: `packages/cli/src/commands/domain.ts` and its test, the command registration and program test, `packages/cli/src/approval.ts` (typed purchase confirmation)
   - Reads: spec.md FR-601, FR-604; plan.md "CLI"
   - Depends: T603, feature 005 T509
