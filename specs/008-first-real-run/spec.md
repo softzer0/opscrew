@@ -2,7 +2,7 @@
 
 **Feature Branch**: `mvp` (Spec Kit feature dir `specs/008-first-real-run`)
 **Created**: 2026-10-13
-**Status**: In progress
+**Status**: Implemented (T801–T817; T810 dropped)
 **Input**: Founder go-ahead 2026-10-13 (real end-to-end run before more providers; tokens for a
 throwaway Hetzner project, a throwaway GitHub repository, a Cloudflare account and the founder's
 Namecheap account with poasjet.com, connected to Cloudflare for the test and restored to Afternic

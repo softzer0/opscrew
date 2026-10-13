@@ -60,7 +60,7 @@ description: "Tasks for 008-first-real-run"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T816 Converge fixes (agents and CLI): provision/dns never branch from a stale or wrong HEAD; `.terraform/` gitignored; runbook stable between provision and verify; `status` survives a damaged `server.json`; `--finish` completes after the old server is gone; outputs read after `init` on a computer with copied state; a note when an already-public address goes behind the proxy
+- [X] T816 Converge fixes (agents and CLI): provision/dns never branch from a stale or wrong HEAD; `.terraform/` gitignored; runbook stable between provision and verify; `status` survives a damaged `server.json`; `--finish` completes after the old server is gone; outputs read after `init` on a computer with copied state; a note when an already-public address goes behind the proxy
   - Owns: `packages/agents/src/{provision,dns,init,shared,retarget}/**`, `packages/cli/src/commands/status.ts` (+ test)
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
@@ -85,4 +85,4 @@ description: "Tasks for 008-first-real-run"
 
 ## Phase 5: Verification
 
-- [ ] T807 Feature verification (lead): `pnpm check`, live passes recorded, converge review; remind the founder to restore poasjet.com to Afternic
+- [X] T807 Feature verification (lead): `pnpm check`, live passes recorded, converge review; remind the founder to restore poasjet.com to Afternic
