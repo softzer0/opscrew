@@ -10,6 +10,7 @@ import type {
   PlanSummary,
   RemoteExec,
   ResourceChange,
+  ResourceMove,
   VpsProviderId,
 } from "@opscrew/contracts";
 import { type CloudflareDnsRecord, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
@@ -90,6 +91,23 @@ export function testPlan(options: PlanInputOptions = {}) {
     ...(options.deployed
       ? { deployment: { serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6 } }
       : {}),
+  });
+}
+
+/**
+ * A deployed Hetzner plan in the middle of `opscrew retarget` to DigitalOcean: `target` is already
+ * the new provider, `retarget.from` the live Hetzner server.
+ */
+export function movingPlan(step: "started" | "renamed" | "created" = "renamed") {
+  const from = testPlan({ deployed: true });
+  return DeployPlanSchema.parse({
+    ...from,
+    target: testPlan({ provider: "digitalocean" }).target,
+    retarget: {
+      from: { target: from.target, serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6 },
+      step,
+      startedAt: "2026-10-12T09:00:00.000Z",
+    },
   });
 }
 
@@ -339,6 +357,8 @@ const CREATE: ResourceChange[] = [
 export interface FakeEngineScenario {
   planJson?: unknown;
   changes?: ResourceChange[];
+  /** State renames (`moved` blocks) the plan reports. */
+  moves?: ResourceMove[];
   outputs?: Record<string, unknown>;
   applyOk?: boolean;
   /** Engine log of a failed apply (default: Hetzner's unavailable server type). */
@@ -398,6 +418,7 @@ export class FakeEngine implements IacEngine {
       },
       hasDestroy: changes.some((c) => c.action === "delete" || c.action === "replace"),
       planJson: this.scenario.planJson ?? planJsonFor(),
+      ...(this.scenario.moves !== undefined ? { moves: this.scenario.moves } : {}),
     };
   }
 

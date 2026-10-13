@@ -672,13 +672,12 @@ describe("runDesign", () => {
         }).catch((e: unknown) => e);
         expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
         const { message, hint } = error as { message: string; hint: string };
-        expect(message).toContain("deployed on Hetzner Cloud");
-        expect(message).toContain("asks for DigitalOcean");
-        expect(message).toContain(
-          "Moving a live deployment between providers is not supported yet",
+        expect(message).toBe(
+          "Your app is deployed on Hetzner Cloud (203.0.113.10), but opscrew/requirements.yaml now asks for DigitalOcean. opscrew/plan.yaml was not changed.",
         );
-        expect(hint).toContain("`opscrew destroy`");
-        expect(hint).toContain("`opscrew retarget`");
+        expect(hint).toBe(
+          "Run `opscrew retarget --to digitalocean` to move the deployment with its data, or `opscrew destroy` first and then `opscrew design`, or keep Hetzner Cloud by answering `opscrew interview` again.",
+        );
         expect(asked).toBe(false);
         expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
         expect((await deps.state.read()).phases.design?.status).toBe("failed");
@@ -718,11 +717,12 @@ describe("runDesign", () => {
         const error = await runDesign(deps, { catalog: doEuCatalog() }).catch((e: unknown) => e);
         expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
         const { message, hint } = error as { message: string; hint: string };
-        expect(message).toContain("An earlier apply may have created resources at Hetzner Cloud");
-        expect(message).toContain(
-          "Moving a live deployment between providers is not supported yet, so opscrew/plan.yaml was not changed.",
+        expect(message).toBe(
+          "An earlier apply may have created resources at Hetzner Cloud, but opscrew/requirements.yaml now asks for DigitalOcean. opscrew/plan.yaml was not changed.",
         );
-        expect(hint).toContain("Run `opscrew destroy` first");
+        expect(hint).toBe(
+          "Run `opscrew provision` to finish the deployment on Hetzner Cloud and then `opscrew retarget --to digitalocean` to move it with its data, or `opscrew destroy` first and then `opscrew design`, or keep Hetzner Cloud by answering `opscrew interview` again.",
+        );
         expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
       });
 
@@ -750,7 +750,7 @@ describe("runDesign", () => {
 
         const preview = await previewDesignOptions(deps, { catalog: doEuCatalog() });
         expect(preview.warnings.join("\n")).toContain(
-          "not supported yet, so `opscrew design` will stop",
+          "now asks for DigitalOcean. `opscrew design` will stop",
         );
       });
 
@@ -783,10 +783,10 @@ describe("runDesign", () => {
         const warning = preview.warnings.join("\n");
         expect(warning).toContain("Your app is deployed on Hetzner Cloud (203.0.113.10)");
         expect(warning).toContain(
-          "not supported yet, so `opscrew design` will stop without changing opscrew/plan.yaml.",
+          "now asks for DigitalOcean. `opscrew design` will stop without changing opscrew/plan.yaml.",
         );
         expect(warning).toMatch(
-          /`opscrew retarget` will move a live deployment in a later version\.$/,
+          /Run `opscrew retarget --to digitalocean` to move the deployment with its data, .*answering `opscrew interview` again\.$/,
         );
         expect(
           deps.reporter.lines.some((l) => l.level === "warn" && /Hetzner Cloud/.test(l.message)),
@@ -800,7 +800,67 @@ describe("runDesign", () => {
           destroyedAt: "2026-10-12T09:00:00.000Z",
         });
         const clean = await previewDesignOptions(destroyed.deps, { catalog: doEuCatalog() });
-        expect(clean.warnings.join("\n")).not.toContain("not supported yet");
+        expect(clean.warnings.join("\n")).not.toContain("now asks for DigitalOcean");
+      });
+    });
+
+    describe("while a move to another provider is in progress", () => {
+      /** A Hetzner deployment that `opscrew retarget` is moving to DigitalOcean. */
+      async function movingDeployment(): Promise<{ deps: TestPhaseDeps; before: string }> {
+        const deps = await setup();
+        await runDesign(deps, { catalog: euCatalog() });
+        const plan = await readArtifact("plan", deps.paths.files.plan);
+        await writeArtifact("plan", deps.paths.files.plan, {
+          ...plan,
+          target: {
+            provider: "digitalocean",
+            mode: "vps-compose",
+            location: "fra1",
+            serverType: "s-1vcpu-2gb",
+            image: "ubuntu-24-04-x64",
+            backups: true,
+          },
+          deployment: { serverIpv4: "203.0.113.10", lastApplyAt: "2026-10-11T12:30:00.000Z" },
+          retarget: {
+            from: { target: plan.target, serverIpv4: "203.0.113.10" },
+            step: "renamed",
+            startedAt: "2026-10-12T09:00:00.000Z",
+          },
+        });
+        await writeArtifact("requirements", deps.paths.files.requirements, doRequirements());
+        return { deps, before: await readFile(deps.paths.files.plan, "utf8") };
+      }
+
+      it("stops before anything else and leaves plan.yaml and the phase as they were", async () => {
+        const { deps, before } = await movingDeployment();
+        let asked = false;
+        const error = await runDesign(deps, {
+          catalog: doEuCatalog(),
+          choose: async (options) => {
+            asked = true;
+            return options[0]?.id ?? "";
+          },
+        }).catch((e: unknown) => e);
+        expect(error).toMatchObject({
+          code: "PHASE_PRECONDITION",
+          message: "A move to DigitalOcean is in progress.",
+          hint: "Run `opscrew retarget` to continue it, `opscrew retarget --finish` after the switch, or `opscrew retarget --abort` before it.",
+        });
+        expect(asked).toBe(false);
+        expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+        expect((await deps.state.read()).phases.design?.status).toBe("ok");
+      });
+
+      it("the preview still lists the options and warns that design would stop", async () => {
+        const { deps, before } = await movingDeployment();
+        const preview = await previewDesignOptions(deps, { catalog: doEuCatalog() });
+        expect(preview.options.length).toBeGreaterThan(0);
+        const warning = preview.warnings.join("\n");
+        expect(warning).toContain("A move to DigitalOcean is in progress.");
+        expect(warning).toContain("`opscrew design` will stop without changing opscrew/plan.yaml");
+        expect(warning).toContain("`opscrew retarget --finish` after the switch");
+        expect(warning).not.toContain("now asks for DigitalOcean");
+        expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
       });
     });
   });

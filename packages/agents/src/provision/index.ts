@@ -6,9 +6,11 @@ export {
   setupCloudflare,
   setupGitHub,
 } from "./credentials";
+export { type MoveInProgress, moveInProgress, requireNoMoveInProgress } from "./guard";
 export {
   describePlan,
   findSavedPlan,
+  isMovesOnly,
   type PlanAndApplyOptions,
   type PlanAndApplyResult,
   planAndApply,

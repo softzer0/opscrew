@@ -71,7 +71,7 @@ export async function publishDeploySetup(
     /** Whether the deploy secrets are known to be stored for this server (default true). */
     secretsStored?: boolean;
     /** Phase recorded in the audit log (default `provision`). */
-    phase?: Extract<PhaseName, "provision" | "dns">;
+    phase?: Extract<PhaseName, "provision" | "dns" | "retarget">;
   },
 ): Promise<PublishResult> {
   const { git, github, plan } = input;

@@ -14,12 +14,14 @@ import type {
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { renderDeployment } from "@opscrew/iac-templates";
+import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   CF_V4,
   CF_V6,
   createProject,
   fakeCloudflare,
+  movingPlan,
   projectRunner,
   testPlan,
 } from "../provision/__fixtures__/fakes";
@@ -385,6 +387,20 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
       expect(engine.calls).toEqual([]);
     },
   );
+
+  it("refuses while a move to another provider is in progress, before any check", async () => {
+    const { deps, engine, services } = await setup();
+    await writeArtifact("plan", deps.paths.files.plan, movingPlan("created"));
+    const error = await expectError(runDrift(deps, { services }), "PHASE_PRECONDITION");
+    expect(error.message).toBe("A move to DigitalOcean is in progress.");
+    expect(error.hint).toBe(
+      "Run `opscrew retarget` to continue it, `opscrew retarget --finish` after the switch, or `opscrew retarget --abort` before it.",
+    );
+    expect(engine.calls).toEqual([]);
+    expect(deps.reporter.lines).toEqual([]);
+    expect(deps.audit.entries).toEqual([]);
+    expect(await driftPlanFiles(deps.paths.files.plansDir)).toEqual([]);
+  });
 
   it("refuses when nothing is deployed", async () => {
     const { deps, engine, services } = await setup({ plan: testPlan() });

@@ -15,6 +15,7 @@ import {
   FakeGitHub,
   fakeCloudflare,
   HOST_KEY,
+  movingPlan,
   opscrewRecord,
   planJsonFor,
   projectRunner,
@@ -261,6 +262,28 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(applied).toMatchObject({ applied: true, planHash: approved });
     expect(engine.calls).toEqual(["init", "validate", "plan", "apply"]);
     expect(engine.applied[0]?.planFile).toBe(saved?.planFile);
+  });
+
+  it("stops before doing anything while a move to another provider is in progress", async () => {
+    const { deps, engine, handler, services, github, root } = await setup({ plan: movingPlan() });
+    const before = await readFile(join(root, "opscrew", "plan.yaml"), "utf8");
+    const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: "A move to DigitalOcean is in progress.",
+      hint: "Run `opscrew retarget` to continue it, `opscrew retarget --finish` after the switch, or `opscrew retarget --abort` before it.",
+    });
+    expect(engine.calls).toEqual([]);
+    expect(handler.requests).toEqual([]);
+    expect(github.secrets.size).toBe(0);
+    expect(deps.reporter.lines).toEqual([]);
+    expect(await readFile(join(root, "opscrew", "plan.yaml"), "utf8")).toBe(before);
+    expect((await deps.state.read()).phases.provision).toBeUndefined();
+    await expect(runProvision(deps, { services, planOnly: true })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+    });
+    expect(engine.calls).toEqual([]);
   });
 
   it("stops before approval when a security policy fails", async () => {

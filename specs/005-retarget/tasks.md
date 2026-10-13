@@ -51,7 +51,7 @@ variable name (the redactor masks what follows).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T506 [P] [US1] [US2] Applying moves-only plans and the move guards in `packages/agents/src/{provision,design,dns,drift}/`
+- [X] T506 [P] [US1] [US2] Applying moves-only plans and the move guards in `packages/agents/src/{provision,design,dns,drift}/`
   - Owns: `packages/agents/src/{provision,design,dns,drift}/**`
   - Reads: plan.md "Provision, design, dns, drift"
   - Depends: T501

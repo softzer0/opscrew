@@ -22,6 +22,7 @@ import {
   writeRenderedFiles,
 } from "../shared";
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
+import { requireNoMoveInProgress } from "./guard";
 import { planAndApply } from "./plan-apply";
 import { publishDeploySetup } from "./publish";
 import { deploymentRenderContext, readRequirements } from "./render";
@@ -391,11 +392,15 @@ export async function runPhaseFlow(
  * DigitalOcean, and Cloudflare DNS when planned) through
  * plan → policies → approval → apply, waits for it, stores the deploy secrets in GitHub Actions and
  * opens a pull request with the generated files. Safe to re-run: it plans only what is missing and
- * reuses the deploy key, state passphrase, pinned host key and generated passwords.
+ * reuses the deploy key, state passphrase, pinned host key and generated passwords. Stops with
+ * `PHASE_PRECONDITION` before doing anything while `opscrew retarget` is moving the deployment.
  */
-export function runProvision(
+export async function runProvision(
   deps: PhaseDeps,
   options: ProvisionOptions = {},
 ): Promise<ProvisionResult> {
+  // An unreadable plan is reported by the flow itself (and recorded as a failed phase).
+  const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
+  if (plan !== undefined) requireNoMoveInProgress(plan);
   return runPhaseFlow(deps, "provision", options);
 }

@@ -6,6 +6,7 @@ import type {
   PolicyResult,
   RemoteExec,
   ResourceChange,
+  ResourceMove,
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
@@ -84,6 +85,8 @@ export interface SavedPlan {
   engine: IacEngine["info"];
   createdAt: string;
   changes: ResourceChange[];
+  /** Resources the plan only renames in the state (`moved` blocks); absent when none. */
+  moves?: ResourceMove[];
   counts: { create: number; update: number; delete: number; replace: number };
   hasDestroy: boolean;
   policy: PolicyResult[];

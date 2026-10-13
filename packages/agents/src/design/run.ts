@@ -17,6 +17,7 @@ import { z } from "zod";
 import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
+import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
 import {
   type CodeChangeSignals,
   collectCodeChangeSignals,
@@ -66,12 +67,16 @@ const ScanFileSchema = z.looseObject({
  * static table with a warning), lets the user choose (or takes `optionId` / the recommendation),
  * derives the code changes and writes `opscrew/plan.yaml`. Marks the `design` phase.
  * @throws OpsCrewError `PHASE_PRECONDITION` (nothing written) when the plan has a live deployment
- * on another provider than the one requested.
+ * on another provider than the one requested, and (before reading anything else) while
+ * `opscrew retarget` is moving the deployment.
  */
 export async function runDesign(
   deps: PhaseDeps,
   options: RunDesignOptions = {},
 ): Promise<DesignResult> {
+  // A move in progress stops before anything else, without recording a failed design phase.
+  const onDisk = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
+  if (onDisk !== undefined) requireNoMoveInProgress(onDisk);
   try {
     return await design(deps, options);
   } catch (error) {
@@ -117,7 +122,8 @@ function warner(deps: PhaseDeps, warnings: string[]): (text: string) => void {
  * Prices the deployment options for the saved requirements without writing anything (no plan, no
  * phase state). `runDesign` builds on it; the MCP server uses it for its read-only preview. When
  * the existing plan has a live deployment on another provider than the one requested, the preview
- * still lists the options and adds a warning that `runDesign` would stop.
+ * still lists the options and adds a warning that `runDesign` would stop; the same while
+ * `opscrew retarget` is moving the deployment.
  */
 export async function previewDesignOptions(
   deps: PhaseDeps,
@@ -126,7 +132,11 @@ export async function previewDesignOptions(
   const inputs = await readInputs(deps, options.facts);
   const warnings: string[] = [];
   const previous = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
-  if (previous !== undefined) {
+  const move = previous === undefined ? undefined : moveInProgress(previous);
+  if (move !== undefined) {
+    const notice = `${move.message} \`opscrew design\` will stop without changing opscrew/plan.yaml until the move is finished or aborted. ${move.hint}`;
+    warner(deps, warnings)(notice);
+  } else if (previous !== undefined) {
     const block = providerSwitchBlock(
       previous,
       inputs.requirements,
@@ -310,9 +320,9 @@ export function liveDeploymentProvider(
 }
 
 /**
- * Why the requested provider cannot replace the plan's (a live deployment stays on its provider
- * until `opscrew retarget` exists), or `undefined` when the switch is allowed. `outcome` finishes
- * the first sentence of the message: what happened (or will happen) to `opscrew/plan.yaml`.
+ * Why the requested provider cannot replace the plan's (a live deployment moves only through
+ * `opscrew retarget`), or `undefined` when the switch is allowed. `outcome` is the message's last
+ * sentence: what happened (or will happen) to `opscrew/plan.yaml`.
  */
 function providerSwitchBlock(
   previous: DeployPlan,
@@ -330,9 +340,15 @@ function providerSwitchBlock(
     ipv4 !== undefined
       ? `Your app is deployed on ${from} (${ipv4})`
       : `An earlier apply may have created resources at ${from}`;
+  const retarget = `\`opscrew retarget --to ${requested}\``;
+  // A move starts from a deployed server, so without an address the deployment is finished first.
+  const move =
+    ipv4 !== undefined
+      ? `Run ${retarget} to move the deployment with its data`
+      : `Run \`opscrew provision\` to finish the deployment on ${from} and then ${retarget} to move it with its data`;
   return {
-    message: `${where}, but opscrew/requirements.yaml now asks for ${to}. Moving a live deployment between providers is not supported yet, so ${outcome}.`,
-    hint: `Run \`opscrew destroy\` first and then \`opscrew design\` again, or keep ${from} by choosing it again with \`opscrew interview\`. \`opscrew retarget\` will move a live deployment in a later version.`,
+    message: `${where}, but opscrew/requirements.yaml now asks for ${to}. ${outcome}.`,
+    hint: `${move}, or \`opscrew destroy\` first and then \`opscrew design\`, or keep ${from} by answering \`opscrew interview\` again.`,
   };
 }
 

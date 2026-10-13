@@ -127,7 +127,7 @@ export async function setDeploySecrets(
   github: GitHubSetup,
   secrets: Record<string, string>,
   variableNames: readonly string[],
-  phase: Extract<PhaseName, "provision" | "dns"> = "provision",
+  phase: Extract<PhaseName, "provision" | "dns" | "retarget"> = "provision",
 ): Promise<void> {
   const names = Object.keys(secrets).sort();
   const repo = `${github.owner}/${github.repo}`;

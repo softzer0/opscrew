@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider } from "../provision/credentials";
+import { requireNoMoveInProgress } from "../provision/guard";
 import { previewDeploymentFiles } from "../provision/render";
 import type { DriftOptions, DriftReport } from "./types";
 
@@ -109,13 +110,15 @@ async function encryptionEnv(
  * outside OpsCrew), the state with the infrastructure code (normal plan, changes not applied yet)
  * and the repository's generated files with what OpsCrew renders from `opscrew/plan.yaml`.
  * Read-only: never applies, writes its plan files under `.opscrew/plans/drift-*.tfplan` without a
- * sidecar (so they can never be approved) and deletes them afterwards, even on errors.
+ * sidecar (so they can never be approved) and deletes them afterwards, even on errors. Stops with
+ * `PHASE_PRECONDITION` while `opscrew retarget` is moving the deployment.
  */
 export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Promise<DriftReport> {
   const services = options.services ?? {};
   const plan = await readArtifact("plan", deps.paths.files.plan);
 
-  // 1. Preconditions: a deployment and its state (no network yet)
+  // 1. Preconditions: no move in progress, a deployment and its state (no network yet)
+  requireNoMoveInProgress(plan);
   if (!plan.deployment.serverIpv4 || plan.deployment.destroyedAt !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

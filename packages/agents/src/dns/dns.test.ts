@@ -9,6 +9,7 @@ import {
   FakeEngine,
   FakeGitHub,
   fakeCloudflare,
+  movingPlan,
   planJsonFor,
   projectRunner,
   readyRemote,
@@ -152,5 +153,21 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     await expect(
       runDns(deps, { domain: "https://shop.example.com/", services }),
     ).rejects.toMatchObject({ code: "INVALID_INPUT" });
+  });
+
+  it("stops before changing the plan or the requirements while a move is in progress", async () => {
+    const { deps, handler, engine, services } = await setup();
+    await writeArtifact("plan", deps.paths.files.plan, movingPlan());
+    const before = await readFile(deps.paths.files.plan, "utf8");
+    await expect(runDns(deps, { domain: "shop.example.com", services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: "A move to DigitalOcean is in progress.",
+      hint: expect.stringContaining("`opscrew retarget --abort` before it"),
+    });
+    expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+    expect(engine.calls).toEqual([]);
+    expect(handler.requests).toEqual([]);
+    expect(deps.reporter.lines).toEqual([]);
+    expect((await deps.state.read()).phases.dns).toBeUndefined();
   });
 });

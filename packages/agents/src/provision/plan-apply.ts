@@ -146,22 +146,47 @@ function money(amount: number, currency: string): string {
   return `${currency === "EUR" ? "€" : currency === "USD" ? "$" : `${currency} `}${amount.toFixed(2)}`;
 }
 
-/** Plain-English plan summary shown before approval (resources, cost, policies, hash). */
+function resources(count: number): string {
+  return `${count} resource${count === 1 ? "" : "s"}`;
+}
+
+/** True when the plan only renames resources in the state (`moved` blocks) and changes nothing. */
+export function isMovesOnly(saved: Pick<SavedPlan, "changes" | "moves">): boolean {
+  return saved.changes.length === 0 && (saved.moves?.length ?? 0) > 0;
+}
+
+/**
+ * Plain-English plan summary shown before approval (resources, state renames, cost, policies,
+ * hash). A plan that only renames resources in the state says that nothing changes in the cloud.
+ */
 export function describePlan(saved: SavedPlan, deployPlan: DeployPlan): string {
   const lines = [`${engineLabel(saved.engine.name)} ${saved.engine.version} plan:`];
   for (const change of saved.changes) {
     lines.push(`  ${SYMBOL[change.action]} ${change.action.padEnd(7)} ${change.address}`);
   }
-  const { create, update, delete: del, replace } = saved.counts;
-  lines.push(
-    `Changes: ${create} to create, ${update} to update, ${del} to delete, ${replace} to replace.`,
-  );
-  const cost = deployPlan.cost.monthly;
-  // EUR prices (Hetzner) are quoted with or without VAT; USD prices (DigitalOcean) exclude sales tax.
-  const tax = cost.currency === "EUR" ? "VAT" : "tax";
-  lines.push(
-    `Estimated cost: ${money(cost.amount, cost.currency)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${deployPlan.cost.pricesIncludeVat ? "incl." : "excl."} ${tax}).`,
-  );
+  const moves = saved.moves ?? [];
+  for (const move of moves) {
+    lines.push(`  → ${"moved".padEnd(7)} ${move.from} → ${move.to}`);
+  }
+  if (isMovesOnly(saved)) {
+    lines.push(
+      `Changes: none in the cloud; ${resources(moves.length)} renamed in the infrastructure state only.`,
+      "Cost: unchanged (nothing is created, updated or deleted).",
+    );
+  } else {
+    const { create, update, delete: del, replace } = saved.counts;
+    const renamed =
+      moves.length > 0 ? ` ${resources(moves.length)} renamed in the infrastructure state.` : "";
+    lines.push(
+      `Changes: ${create} to create, ${update} to update, ${del} to delete, ${replace} to replace.${renamed}`,
+    );
+    const cost = deployPlan.cost.monthly;
+    // EUR prices (Hetzner) are quoted with or without VAT; USD prices (DigitalOcean) exclude sales tax.
+    const tax = cost.currency === "EUR" ? "VAT" : "tax";
+    lines.push(
+      `Estimated cost: ${money(cost.amount, cost.currency)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${deployPlan.cost.pricesIncludeVat ? "incl." : "excl."} ${tax}).`,
+    );
+  }
   const failed = saved.policy.filter((p) => !p.passed);
   lines.push(
     `Security policies: ${saved.policy.length - failed.length} passed, ${failed.length} failed.`,
@@ -216,6 +241,7 @@ function toSaved(summary: PlanSummary, policy: PolicyResult[]): SavedPlan {
     engine: summary.engine,
     createdAt: summary.createdAt,
     changes: summary.changes,
+    ...(summary.moves !== undefined && summary.moves.length > 0 ? { moves: summary.moves } : {}),
     counts: summary.counts,
     hasDestroy: summary.hasDestroy,
     policy,
@@ -286,7 +312,9 @@ async function clearDestroyedAt(deps: PhaseDeps): Promise<void> {
  * Plan → policies → approval bound to the plan hash → apply (constitution I). With `planOnly` it
  * stops after saving the plan and printing its hash; with `approvePlanHash` it applies the saved
  * plan from that earlier run (plans are never re-made, so the hash the user reviewed is the one
- * applied). Policy failures (critical/high) stop before approval is requested.
+ * applied). Policy failures (critical/high) stop before approval is requested. A plan without
+ * changes is "already up to date" only when it has no state renames either: a moves-only plan is
+ * approved as a state rename (nothing changes in the cloud) and applied like any other.
  */
 export async function planAndApply(
   deps: PhaseDeps,
@@ -336,7 +364,9 @@ export async function planAndApply(
     );
   }
 
-  if (saved.changes.length === 0) {
+  // A plan that only renames resources in the state (`moved` blocks) still has to be applied.
+  const movesOnly = isMovesOnly(saved);
+  if (saved.changes.length === 0 && !movesOnly) {
     deps.reporter.success("The infrastructure is already up to date.");
     const outputs = await engine.output(dir, { env }).catch(() => ({}));
     return { planHash: saved.planHash, applied: false, outputs, plan: saved };
@@ -352,12 +382,15 @@ export async function planAndApply(
   const cloud = providerProfile(planProvider(deployPlan)).displayName;
   const providers = deployPlan.dns.provider === "cloudflare" ? `${cloud} and Cloudflare` : cloud;
   const notes = options.approvalNotes ?? [];
+  const title = movesOnly
+    ? `Rename ${resources(saved.moves?.length ?? 0)} in the infrastructure state (nothing changes in the cloud)`
+    : `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`;
   const approval = await deps.approvals.request({
     kind: "iac-apply",
-    title: `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`,
+    title,
     details: notes.length > 0 ? `${details}\n\n${notes.join("\n")}` : details,
     planHash: saved.planHash,
-    costDelta: deployPlan.cost.monthly,
+    ...(movesOnly ? {} : { costDelta: deployPlan.cost.monthly }),
     policy: saved.policy,
     ...(saved.hasDestroy ? { allowDestroy: true, confirmPhrase: deployPlan.app.name } : {}),
   });
@@ -371,7 +404,11 @@ export async function planAndApply(
   await deps.approvals.assertApprovedPlan(saved.planHash, { allowDestroy: saved.hasDestroy });
   if (deployPlan.deployment.destroyedAt !== undefined) await clearDestroyedAt(deps);
 
-  deps.reporter.step("Applying the plan (this usually takes one to three minutes)");
+  deps.reporter.step(
+    movesOnly
+      ? "Applying the plan (it only renames resources in the infrastructure state)"
+      : "Applying the plan (this usually takes one to three minutes)",
+  );
   const result = await engine.apply(
     dir,
     saved.planFile,
@@ -394,7 +431,11 @@ export async function planAndApply(
       hint: applyFailureHint(deps, fullLog, deployPlan, command),
     });
   }
-  deps.reporter.success("Infrastructure applied.");
+  deps.reporter.success(
+    movesOnly
+      ? "Renamed the resources in the infrastructure state; nothing changed in the cloud."
+      : "Infrastructure applied.",
+  );
   return {
     planHash: saved.planHash,
     applied: true,

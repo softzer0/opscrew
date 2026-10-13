@@ -7,6 +7,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { requireNoMoveInProgress } from "../provision/guard";
 import { runPhaseFlow } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
 
@@ -19,11 +20,13 @@ export interface DnsOptions extends ProvisionOptions {
  * `opscrew dns`: puts the app behind a Cloudflare domain (proxied records, host-scoped TLS strict,
  * WAF probe rules, web ports limited to Cloudflare) by updating the plan's DNS settings and running
  * the same plan → policies → approval → apply flow as provisioning. Deploy secrets are only set
- * again when no server exists yet.
+ * again when no server exists yet. Stops with `PHASE_PRECONDITION` before changing anything while
+ * `opscrew retarget` is moving the deployment.
  */
 export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise<ProvisionResult> {
   const { domain: requested, ...rest } = options;
   let plan = await readArtifact("plan", deps.paths.files.plan);
+  requireNoMoveInProgress(plan);
   const raw = (requested ?? plan.dns.domain)?.trim().toLowerCase();
   if (!raw) {
     throw new OpsCrewError("INVALID_INPUT", "No domain to set up.", {
