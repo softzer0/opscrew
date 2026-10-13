@@ -531,14 +531,18 @@ export class PorkbunRegistrar implements Registrar {
     } else if (missing.length > 0) {
       const names = list(missing.map((f) => f.scope));
       message += ` They do not allow ${list(missing.map((f) => `${f.feature} (the ${f.scope} permission)`))}.`;
-      fix = `Give the key the ${names} ${missing.length === 1 ? "permission" : "permissions"} at ${PORKBUN_API_SETTINGS_URL} (the gear icon next to the key), or create a key that has them.`;
+      fix = `Give the key the ${names} ${missing.length === 1 ? "permission" : "permissions"} at ${PORKBUN_API_SETTINGS_URL} (the gear icon next to the key), or create a key that has ${missing.length === 1 ? "it" : "them"}.`;
     }
+    // Without `domains` the key cannot switch nameservers, set auto-renew or change DNSSEC, which
+    // every purchase and connect needs; a key missing only `purchase` still connects domains.
+    const ok = !missing.some((f) => f.scope === "domains");
+    if (!ok) message += " OpsCrew needs the domains permission to point a domain at Cloudflare.";
     let balance: Money | undefined;
     try {
       balance = usd(await this.#client.balance());
     } catch {
       balance = undefined;
     }
-    return { ok: true, message, ...(fix ? { fix } : {}), ...(balance ? { balance } : {}) };
+    return { ok, message, ...(fix ? { fix } : {}), ...(balance ? { balance } : {}) };
   }
 }

@@ -787,7 +787,7 @@ async function afterApproval<T>(
   try {
     return await apply();
   } catch (error) {
-    const { deps, domain } = ctx;
+    const { deps } = ctx;
     const code: ErrorCode = isUserFacingError(error) ? (error.code as ErrorCode) : "INTERNAL";
     const hint = isUserFacingError(error) && error.hint ? `${error.hint.trim()} Then run` : "Run";
     throw new OpsCrewError(code, `OpsCrew could not finish ${what}: ${errorText(deps, error)}.`, {
@@ -864,11 +864,8 @@ async function applyConnect(
     domain,
     `${name}: zone ${zone.id}; ${plural(copied, "record")} copied; nameservers ${switched.outcome}; activation check ${activation.requested ? "requested" : "not requested"}`,
   );
-  const copiedText =
-    copied > 0 ? `${plural(copied, "record")} copied into its zone` : "its zone has its records";
-  deps.reporter.success(
-    `${domain} now uses Cloudflare DNS: ${copiedText}, and the nameservers at ${name} ${switched.outcome === "already" ? "already pointed" : "now point"} at ${listText(switched.nameservers)}.`,
-  );
+  // No success line here: the result (outcome, records copied, nameservers) is the summary the
+  // CLI prints, so the user reads it once.
   const next: string[] = [];
   if (zones.simulated !== true) {
     next.push(
@@ -1058,7 +1055,7 @@ async function removeOldDs(
 
 /** The next step about DNSSEC once the zone is active. */
 function dnssecLater(ctx: ConnectContext): string {
-  const { domain, registrar } = ctx;
+  const { registrar } = ctx;
   const name = nameOf(ctx);
   const how =
     capabilitiesOf(registrar).dnssec && registrar.addDsRecord !== undefined

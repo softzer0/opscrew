@@ -53,6 +53,31 @@ describe("domainStatus at another registrar", () => {
     // DNSSEC was not published through the API: the DS record to add is named
     expect(result.dnssec).toBe(false);
     expect(next).toContain("key tag 2371");
+    expect(next).not.toContain("opscrew domain connect");
+  });
+
+  it("points to connect (never buy) for the DS record at a registrar with a DNSSEC API", async () => {
+    const plan = domainTestPlan({ domain: DOMAIN });
+    const project = await domainProject({
+      plan: {
+        ...plan,
+        dns: {
+          ...plan.dns,
+          zone: DOMAIN,
+          registration: { registrar: "porkbun", autoRenew: true, privacy: true, dnssec: false },
+        },
+      },
+    });
+    project.other("porkbun").own(DOMAIN);
+    const { deps, services } = await project.run();
+
+    const result = await domainStatus(deps, { services });
+
+    const next = result.next.join("\n");
+    expect(next).toContain(
+      "Once Cloudflare shows its zone as active, run `opscrew domain connect shopapp.com` to add the zone's DS record at Porkbun",
+    );
+    expect(next).not.toContain("opscrew domain buy");
   });
 
   it("names the registrar in an unfinished purchase", async () => {

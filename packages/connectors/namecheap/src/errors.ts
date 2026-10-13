@@ -117,6 +117,15 @@ export function describe(errors: readonly NamecheapApiError[], scrub: (t: string
   return parts.join("; ") || "an error without details";
 }
 
+/**
+ * The one domain a call's verb phrase names (`register shopapp.com` → `shopapp.com`), for the
+ * commands a hint suggests; `<domain>` when it names none or several.
+ */
+function domainOf(what: string): string {
+  const names = what.match(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\b/gi) ?? [];
+  return names.length === 1 && names[0] !== undefined ? names[0].toLowerCase() : "<domain>";
+}
+
 /** Maps Namecheap's `Errors` to one plain-English {@link OpsCrewError} with a next step. */
 export function namecheapError(
   errors: readonly NamecheapApiError[],
@@ -171,7 +180,7 @@ export function namecheapError(
         "PHASE_PRECONDITION",
         `Namecheap cannot ${ctx.what} through its API (${detail}).${suffix}`,
         {
-          hint: `Buy it in the Namecheap dashboard at ${ctx.urls.domainList}, then run \`opscrew domain connect\`.`,
+          hint: `Buy it in the Namecheap dashboard at ${ctx.urls.domainList}, then run \`opscrew domain connect ${domainOf(ctx.what)}\`.`,
         },
       );
     case "unavailable":

@@ -244,6 +244,11 @@ describe("buyDomain at another registrar: the purchase (US1)", () => {
     const shown = `${deps.reporter.text()}\n${result.next.join("\n")}`;
     expect(shown).toContain("key tag 2371, algorithm 13, digest type 2, digest ABCDEF0123");
     expect(shown).toContain(NAMECHEAP_LINK);
+    // shown once: as a next step, not also as a warning
+    expect(shown.split("key tag 2371")).toHaveLength(2);
+    expect(result.next.join("\n")).toContain(
+      `Add this DS record for shopapp.com at ${NAMECHEAP_LINK} to turn DNSSEC on: key tag 2371`,
+    );
     const plan = await readArtifact("plan", deps.paths.files.plan);
     expect(plan.dns.registration).toMatchObject({ registrar: "namecheap", dnssec: false });
     // auto-renew cannot be set through the API: the account's setting stays, with the link
@@ -329,17 +334,41 @@ describe("buyDomain at another registrar: before the approval", () => {
     pb.account = {
       ok: true,
       message:
-        "The Porkbun API keys work. They do not allow changing nameservers (the domains permission)",
-      fix: `Give the key the domains permission at ${registrarLinks("porkbun").api}`,
+        "The Porkbun API keys work. They do not allow buying domains (the purchase permission)",
+      fix: `Give the key the purchase permission at ${registrarLinks("porkbun").api}`,
     };
     const { deps, services } = await project.run();
 
     await buyDomain(deps, { domain: DOMAIN, registrar: "porkbun", services });
 
     expect(deps.reporter.text()).toContain(
-      `warn: The Porkbun API keys work. They do not allow changing nameservers (the domains permission). Give the key the domains permission at ${registrarLinks("porkbun").api}.`,
+      `warn: The Porkbun API keys work. They do not allow buying domains (the purchase permission). Give the key the purchase permission at ${registrarLinks("porkbun").api}.`,
     );
     expect(pb.count("register")).toBe(1);
+  });
+
+  it("stops before the quote when the Porkbun key cannot change nameservers: no approval, nothing bought", async () => {
+    const { project, pb } = await porkbunProject();
+    pb.account = {
+      ok: false,
+      message:
+        "The Porkbun API keys work. They do not allow changing nameservers, auto-renew and DNSSEC (the domains permission), which OpsCrew needs to point a domain at Cloudflare",
+      fix: `Give the key the domains permission at ${registrarLinks("porkbun").api} (the gear icon next to the key), or create a key that has it`,
+    };
+    const { deps, handler, services } = await project.run();
+
+    const error = await caught(buyDomain(deps, { domain: DOMAIN, registrar: "porkbun", services }));
+
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("the domains permission");
+    expect(error.message).toContain("Nothing was bought");
+    expect(error.hint).toContain(
+      `Give the key the domains permission at ${registrarLinks("porkbun").api}`,
+    );
+    expect(pb.count("quote")).toBe(0);
+    expect(pb.count("register")).toBe(0);
+    expect(handler.requests).toEqual([]);
+    expect(project.cf.count("createZone")).toBe(0);
   });
 
   it("stops before asking when the account balance is lower than the price, naming both", async () => {
@@ -776,6 +805,39 @@ describe("buyDomain at another registrar: a domain already in the account", () =
       events.indexOf(`createZone acc-1 ${DOMAIN}`),
     );
     expect(pb.nameservers.get(DOMAIN)).toEqual(ZONE_NAMESERVERS);
+    // The zone is still pending: a DS record now could break DNSSEC validation, so connect adds it
+    // once the zone is active.
+    expect(details).toContain(
+      "DNSSEC: not changed now. The Cloudflare zone of shopapp.com is not active yet",
+    );
+    expect(pb.count("addDsRecord")).toBe(0);
+    expect(project.cf.count("enableDnssec")).toBe(0);
+    expect(result.next.join("\n")).toContain(
+      "once Cloudflare shows its zone as active, run `opscrew domain connect shopapp.com` to add it",
+    );
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    expect(plan.dns.registration).toMatchObject({ registrar: "porkbun", dnssec: false });
+  });
+
+  it("publishes the DS record of a domain the plan records when its zone is active already", async () => {
+    const { project, pb } = await porkbunProject({ plan: planAt("porkbun") });
+    pb.own(DOMAIN);
+    project.cf.zones.set(DOMAIN, {
+      id: ZONE,
+      name: DOMAIN,
+      status: "active",
+      nameServers: [...ZONE_NAMESERVERS],
+    });
+    const { deps, handler, services } = await project.run();
+
+    const result = setUp(await buyDomain(deps, { domain: DOMAIN, registrar: "porkbun", services }));
+
+    expect(handler.requests[0]?.details).toContain(
+      "DNSSEC: OpsCrew turns it on for the zone and adds the zone's DS record at Porkbun",
+    );
+    expect(project.cf.count("enableDnssec")).toBe(1);
+    expect(pb.count("addDsRecord")).toBe(1);
+    expect(result.next.join("\n")).not.toContain("opscrew domain connect");
     const plan = await readArtifact("plan", deps.paths.files.plan);
     expect(plan.dns.registration).toMatchObject({ registrar: "porkbun", dnssec: true });
   });

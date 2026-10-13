@@ -71,18 +71,31 @@ describe("switchToCloudflare", () => {
     expect(project.cf.count("enableDnssec")).toBe(1);
   });
 
-  it("prints the DS values and the dashboard link where the API cannot publish them; DNSSEC is then not claimed", async () => {
+  it("returns the DS values where the API cannot publish them (the caller shows them once); DNSSEC is then not claimed", async () => {
     const { fake, deps, ctx, target } = await setup("godaddy");
 
     const result = await switchToCloudflare(ctx, target);
 
     expect(result.ds).toMatchObject({ outcome: "manual", ds: { keyTag: 2371 } });
+    expect(result.ds.outcome === "manual" && dsRecordText(result.ds.ds ?? ZONE_DS)).toBe(
+      "key tag 2371, algorithm 13, digest type 2, digest ABCDEF0123",
+    );
     expect(result.dnssec).toBe(false);
     expect(fake.count("addDsRecord")).toBe(0);
-    const text = deps.reporter.text();
-    expect(text).toContain(dsRecordText(ZONE_DS));
-    expect(text).toContain("key tag 2371, algorithm 13, digest type 2, digest ABCDEF0123");
-    expect(text).toContain(registrarLinks("godaddy").domains);
+    expect(deps.reporter.text()).not.toContain("key tag 2371");
+    expect(deps.reporter.text()).not.toContain(registrarLinks("godaddy").domains);
+  });
+
+  it("leaves DNSSEC for later when asked to (a domain that may be live, zone not active)", async () => {
+    const { project, fake, ctx, target } = await setup();
+
+    const result = await switchToCloudflare(ctx, target, { publishDs: false });
+
+    expect(result.ds).toEqual({ outcome: "later" });
+    expect(result.dnssec).toBe(false);
+    expect(fake.count("addDsRecord")).toBe(0);
+    expect(project.cf.count("enableDnssec")).toBe(0);
+    expect(fake.nameservers.get(DOMAIN)).toEqual(ZONE_NAMESERVERS);
   });
 
   it("prints the nameservers and the dashboard link where the API cannot set them", async () => {

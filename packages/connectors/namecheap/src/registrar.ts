@@ -93,12 +93,12 @@ export class NamecheapRegistrar implements Registrar {
     this.#client = client;
   }
 
-  #extensionReason(tld: string): string {
-    return `Registering .${tld} at Namecheap needs registrant details (extended attributes) that OpsCrew does not collect; buy it in the Namecheap dashboard at ${this.#client.dashboard.domainList}, then run \`opscrew domain connect\`.`;
+  #extensionReason(domain: string, tld: string): string {
+    return `Registering .${tld} at Namecheap needs registrant details (extended attributes) that OpsCrew does not collect; buy it in the Namecheap dashboard at ${this.#client.dashboard.domainList}, then run \`opscrew domain connect ${domain}\`.`;
   }
 
-  #premiumReason(): string {
-    return `This is a premium domain; buy it in the Namecheap dashboard at ${this.#client.dashboard.domainList}, then run \`opscrew domain connect\`.`;
+  #premiumReason(domain: string): string {
+    return `This is a premium domain; buy it in the Namecheap dashboard at ${this.#client.dashboard.domainList}, then run \`opscrew domain connect ${domain}\`.`;
   }
 
   /** Live availability with first-year and renewal prices (fees included). */
@@ -143,13 +143,18 @@ export class NamecheapRegistrar implements Registrar {
           reason: "This domain is already registered by someone else.",
         });
       } else if (r.premium) {
-        checks.push({ domain, registrable: false, tier: "premium", reason: this.#premiumReason() });
+        checks.push({
+          domain,
+          registrable: false,
+          tier: "premium",
+          reason: this.#premiumReason(domain),
+        });
       } else if (NAMECHEAP_EXTENDED_ATTRIBUTE_TLDS.includes(tld)) {
         checks.push({
           domain,
           registrable: false,
           tier: "standard",
-          reason: this.#extensionReason(tld),
+          reason: this.#extensionReason(domain, tld),
         });
       } else {
         const [register, renew] = await pricesOf(tld);
@@ -209,7 +214,8 @@ export class NamecheapRegistrar implements Registrar {
       new OpsCrewError("PHASE_PRECONDITION", `Namecheap cannot sell ${name} through its API.`, {
         hint: reason,
       });
-    if (NAMECHEAP_EXTENDED_ATTRIBUTE_TLDS.includes(tld)) throw stop(this.#extensionReason(tld));
+    if (NAMECHEAP_EXTENDED_ATTRIBUTE_TLDS.includes(tld))
+      throw stop(this.#extensionReason(name, tld));
     const result = (await this.#client.checkDomains([name])).find((r) => r.domain === name);
     if (!result || result.error) {
       throw new OpsCrewError(
@@ -223,7 +229,7 @@ export class NamecheapRegistrar implements Registrar {
         hint: "Pick another name; `opscrew domain search` lists available ones.",
       });
     }
-    if (result.premium) throw stop(this.#premiumReason());
+    if (result.premium) throw stop(this.#premiumReason(name));
     const [register, renew] = await Promise.all([
       this.#client.getPricing("REGISTER", tld),
       this.#client.getPricing("RENEW", tld),
@@ -271,7 +277,7 @@ export class NamecheapRegistrar implements Registrar {
         "PHASE_PRECONDITION",
         `Namecheap cannot sell ${domain} through its API.`,
         {
-          hint: this.#extensionReason(tld),
+          hint: this.#extensionReason(domain, tld),
         },
       );
     }

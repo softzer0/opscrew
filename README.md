@@ -29,7 +29,7 @@ Prefer another registrar? Buy through Cloudflare (the default), Porkbun, Nameche
 Before you buy:
 
 - Domain purchases cannot be refunded. You type the domain name to confirm; scripts also need `--confirm <domain>` and `--max-price <amount>`.
-- Auto-renew is on by default: Cloudflare charges the renewal to your account's default payment method up to 30 days before the domain expires. Turn it off with `npx opscrew domain auto-renew off` (or buy with `--no-auto-renew`).
+- Auto-renew is on by default: Cloudflare charges the renewal to your account's default payment method up to 30 days before the domain expires. Turn it off with `npx opscrew domain auto-renew off` (or buy with `--no-auto-renew`). At Porkbun OpsCrew sets auto-renew through its API the same way; Namecheap and GoDaddy keep your account's own auto-renew setting, which you change in their dashboard.
 - Buying needs extra permissions on your Cloudflare API token: Account → Registrar (edit), only when buying through Cloudflare, and Zone → Zone → Edit for all zones of the account. The zone permissions OpsCrew already asks for (Zone → Zone → Read, Zone → DNS → Edit, Zone → Config Rules → Edit, Zone → Zone WAF → Edit) must then cover all zones of the account, because a token limited to the zones you have today does not cover the zone of a domain you buy. If you keep the token limited, add the new domain's zone to it right after buying, before `opscrew dns` or `opscrew provision`.
 
 ## Development

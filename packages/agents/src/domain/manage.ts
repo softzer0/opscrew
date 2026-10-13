@@ -349,8 +349,10 @@ async function statusElsewhere(
   const next = [...finishPending, renewalNoteElsewhere(deps, info, registrarId, caps.autoRenew)];
   if (dnssec === false) {
     if (caps.dnssec) {
+      // `connect` adds the DS record only once the zone is active (a DS record published earlier
+      // would stop resolvers that check DNSSEC from resolving the domain).
       next.push(
-        `DNSSEC is not published for ${info.domain}. Run \`${buyCommandOf(info.domain, registrarId)}\` to add the zone's DS record at ${registrarName}: OpsCrew does not buy the domain again, and it lists every change and asks before making it.`,
+        `DNSSEC is not published for ${info.domain}. Once Cloudflare shows its zone as active, run \`opscrew domain connect ${info.domain}\` to add the zone's DS record at ${registrarName}: it lists the change and asks before making it.`,
       );
     } else {
       const ds = services.configuredRegistrars().includes("cloudflare")

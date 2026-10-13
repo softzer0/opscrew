@@ -52,6 +52,11 @@ export interface DsPublication {
   outcome: "added" | "already" | "manual" | "pending" | "skipped";
 }
 
+/** DNSSEC left for later: the zone is not active yet (`opscrew domain connect` adds it then). */
+export interface DsLater {
+  outcome: "later";
+}
+
 export interface ActivationResult {
   requested: boolean;
   reason?: string;
@@ -60,7 +65,7 @@ export interface ActivationResult {
 export interface SwitchResult {
   zone: DomainZone;
   nameservers: NameserverSwitch;
-  ds: DsPublication;
+  ds: DsPublication | DsLater;
   activation: ActivationResult;
   /** True only when the DS record is published at the registry through the registrar's API. */
   dnssec: boolean;
@@ -164,7 +169,8 @@ export async function pointToZone(
 /**
  * Turns DNSSEC on for the zone (unless it is on) and publishes the zone's DS record at the
  * registry through the registrar's API (skipped when it is there already). Where the API cannot
- * publish DS records, shows the values with the dashboard link. Stand-in zones skip it all.
+ * publish DS records, returns the values (`manual`) for the caller to show with the dashboard
+ * link. Stand-in zones skip it all.
  */
 export async function publishDs(
   ctx: SwitchContext,
@@ -200,9 +206,7 @@ export async function publishDs(
     );
     return { ds, outcome: "added" };
   }
-  deps.reporter.warn(
-    `${name}'s API cannot publish DNSSEC records, so add this DS record for ${domain} in ${name}'s dashboard (${registrarLinks(registrarId, deps.env).domains}) to turn DNSSEC on: ${dsRecordText(ds)}.`,
-  );
+  // The caller shows the values with the dashboard link (once, in its next steps).
   return { ds, outcome: "manual" };
 }
 
@@ -240,16 +244,21 @@ export async function requestActivation(
 
 /**
  * The whole switch after a purchase (or for a domain already in the account), in order: zone →
- * nameservers → DS record (or the values and the link) → activation check. Resumable: run it again
- * after any failure.
+ * nameservers → DS record (or the values) → activation check. Resumable: run it again after any
+ * failure. `publishDs: false` leaves DNSSEC alone (`later`): a domain that may be live gets its DS
+ * record only once its zone is active, through `opscrew domain connect`.
  */
 export async function switchToCloudflare(
   ctx: SwitchContext,
   target: SwitchTarget,
+  options: { publishDs?: boolean } = {},
 ): Promise<SwitchResult> {
   const zone = await ensureZone(ctx, target);
   const nameservers = await pointToZone(ctx, { ...target, zone });
-  const ds = await publishDs(ctx, { ...target, zone });
+  const ds: DsPublication | DsLater =
+    options.publishDs === false && ctx.zones.simulated !== true
+      ? { outcome: "later" }
+      : await publishDs(ctx, { ...target, zone });
   const activation = await requestActivation(ctx, { ...target, zone });
   return {
     zone,

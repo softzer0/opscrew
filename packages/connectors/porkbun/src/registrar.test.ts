@@ -554,19 +554,52 @@ describe("PorkbunRegistrar", () => {
       expect(check.message).not.toContain("do not allow");
     });
 
-    it("names missing permissions plainly and where to change them", async () => {
+    it("names missing permissions plainly and where to change them; without domains it is not ok", async () => {
       const { registrar } = setup({
         "POST /ping": ok({ credentialsValid: true, account: "alice", scopes: ["read", "dns"] }),
         "GET /account/balance": err(500, "X", "down"),
       });
       const check = await registrar.accountCheck();
-      expect(check.ok).toBe(true);
+      expect(check.ok).toBe(false);
       expect(check.message).toContain("purchase");
       expect(check.message).toContain("domains");
+      expect(check.message).toContain(
+        "OpsCrew needs the domains permission to point a domain at Cloudflare.",
+      );
       expect(check.fix).toContain("https://porkbun.com/account/api");
       expect(check.fix).toContain("purchase");
       expect(check.fix).not.toContain("dns");
       expect(check.balance).toBeUndefined();
+    });
+
+    it("is not ok without the domains permission, naming it in the fix", async () => {
+      const { registrar } = setup({
+        "POST /ping": ok({ credentialsValid: true, scopes: ["read", "purchase"] }),
+        "GET /account/balance": ok({ balance: 500 }),
+      });
+      const check = await registrar.accountCheck();
+      expect(check.ok).toBe(false);
+      expect(check.message).toContain(
+        "They do not allow changing nameservers, auto-renew and DNSSEC (the domains permission).",
+      );
+      expect(check.fix).toBe(
+        "Give the key the domains permission at https://porkbun.com/account/api (the gear icon next to the key), or create a key that has it.",
+      );
+    });
+
+    it("stays ok without only the purchase permission, with the fix", async () => {
+      const { registrar } = setup({
+        "POST /ping": ok({ credentialsValid: true, scopes: ["read", "domains"] }),
+        "GET /account/balance": ok({ balance: 500 }),
+      });
+      const check = await registrar.accountCheck();
+      expect(check.ok).toBe(true);
+      expect(check.message).toContain(
+        "They do not allow buying domains (the purchase permission).",
+      );
+      expect(check.message).not.toContain("OpsCrew needs the domains permission");
+      expect(check.fix).toContain("Give the key the purchase permission");
+      expect(check.balance).toEqual(usd(5));
     });
 
     it("says when Porkbun does not report the key's permissions", async () => {

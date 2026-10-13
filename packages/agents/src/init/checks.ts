@@ -791,12 +791,16 @@ async function checkOtherRegistrar(
     };
   }
   if (result.ok) {
-    if (!result.balance) return { status: "pass", message: result.message };
-    const { amount, currency } = result.balance;
-    return {
-      status: "pass",
-      message: `${result.message.replace(/\.$/, "")} (balance ${amount.toFixed(2)} ${currency}).`,
-    };
+    // The balance is added unless the message states it already (Namecheap's does).
+    const balance = result.balance;
+    const message =
+      balance === undefined || /\bbalance\b/i.test(result.message)
+        ? result.message
+        : `${result.message.replace(/\.$/, "")} (balance ${balance.amount.toFixed(2)} ${balance.currency}).`;
+    // Usable with a caveat (for example a Porkbun key without the purchase permission).
+    return result.fix === undefined
+      ? { status: "pass", message }
+      : { status: "warn", message, fix: result.fix };
   }
   return {
     status: "warn",

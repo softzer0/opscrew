@@ -5,6 +5,7 @@ import type { ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { testPlan } from "../ui/__fixtures__/deploy";
 import {
   buyable,
   CF_NAMESERVERS,
@@ -631,6 +632,54 @@ describe("opscrew domain status and auto-renew --registrar", () => {
     expect(t.cf.events).not.toContain("accounts");
   });
 
+  it("status and auto-renew of a domain the plan records at Porkbun never ask for a Cloudflare account", async () => {
+    const t = await setup();
+    t.cf.accounts = [
+      { id: "acc-1", name: "Shop" },
+      { id: "acc-2", name: "Personal" },
+    ];
+    const plan = testPlan({ domain: "shopapp.dev" });
+    await writeArtifact("plan", path.join(t.project.root, "opscrew", "plan.yaml"), {
+      ...plan,
+      dns: {
+        ...plan.dns,
+        zone: "shopapp.dev",
+        registration: { registrar: "porkbun", autoRenew: true, privacy: true, dnssec: true },
+      },
+    });
+    const porkbun = t.cf.other("porkbun");
+    porkbun.own("shopapp.dev");
+    const ctx = t.context({ interactive: true });
+    expect(await run(ctx, "domain", "status")).toBe(0);
+    expect(ctx.prompts.calls).toEqual([]);
+    expect(ctx.output).toMatch(/Registrar\s+Porkbun/);
+    expect(t.cf.events).not.toContain("accounts");
+
+    const renew = t.context({ interactive: true, answers: ["shopapp.dev"] });
+    expect(await run(renew, "domain", "auto-renew", "off")).toBe(0);
+    expect(renew.prompts.calls.map((c) => c.kind)).toEqual(["text"]);
+    expect(porkbun.autoRenewCalls).toEqual([{ domain: "shopapp.dev", on: false }]);
+    expect(t.cf.events).not.toContain("accounts");
+  });
+
+  it("status of a Cloudflare domain still asks which of several accounts, once the agents need it", async () => {
+    const t = await setup();
+    t.cf.accounts = [
+      { id: "acc-1", name: "Shop" },
+      { id: "acc-2", name: "Personal" },
+    ];
+    await writeRequirements(t, "shopapp.com");
+    t.cf.own("shopapp.com");
+    const ctx = t.context({ interactive: true, answers: ["acc-1"] });
+    expect(await run(ctx, "domain", "status")).toBe(0);
+    expect(ctx.prompts.calls).toEqual([expect.objectContaining({ kind: "select" })]);
+    expect(ctx.output).toMatch(/Registrar\s+Cloudflare/);
+
+    const script = t.context();
+    expect(await run(script, "domain", "status")).toBe(2);
+    expect(script.errors).toContain("--account");
+  });
+
   it("auto-renew at Porkbun needs the typed domain; the hint keeps --registrar", async () => {
     const t = await setup();
     await writeRequirements(t, "shopapp.dev");
@@ -697,6 +746,8 @@ describe("opscrew domain connect", () => {
     expect(ctx.output).toContain(
       "example.com is connected: its DNS is on Cloudflare and its nameservers at Porkbun point at it.",
     );
+    // one success message: the summary
+    expect(ctx.output).not.toContain("now uses Cloudflare DNS");
     expect(ctx.output).toMatch(/^ {2}Registrar\s+Porkbun$/m);
     expect(ctx.output).toMatch(/^ {2}Records copied\s+2$/m);
     expect(ctx.output).toMatch(
@@ -797,9 +848,15 @@ describe("opscrew domain connect", () => {
     expect(t.cf.events).toContain("porkbun removeDsRecord example.com 4012");
     expect(t.cf.events.some((e) => e.startsWith("porkbun setNameservers"))).toBe(false);
     expect(ctx.output).toContain(
-      "example.com is not switched yet: OpsCrew waits until resolvers have forgotten its old DNSSEC records.",
+      "example.com is not switched yet: OpsCrew waits until resolvers have forgotten its old DNSSEC records, at ",
     );
     expect(ctx.output).toMatch(/^ {2}Records copied\s+2$/m);
+    // The command to run again is shown once (the agents' next step, with the run's flags).
+    const summary = ctx.output.slice(ctx.output.indexOf("example.com is not switched yet"));
+    expect(summary.split("again after")).toHaveLength(2);
+    expect(ctx.output).toContain(
+      "Run `opscrew domain connect example.com --registrar porkbun --account acc-1` again after ",
+    );
 
     // The next run still waits, for the same time: its JSON gives the exact moment.
     const again = t.context();
@@ -811,7 +868,7 @@ describe("opscrew domain connect", () => {
     expect(outcome).toBe("waiting-for-ds");
     const utc = new Date(waitUntil).toISOString().slice(0, 16).replace("T", " ");
     expect(ctx.output).toContain(
-      `Run \`opscrew domain connect example.com --registrar porkbun --account acc-1\` again after ${localAndUtc(waitUntil)}.`,
+      `forgotten its old DNSSEC records, at ${localAndUtc(waitUntil)}; see the next steps.`,
     );
     expect(localAndUtc(waitUntil)).toMatch(
       new RegExp(`^\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d local time \\(${utc} UTC\\)$`),

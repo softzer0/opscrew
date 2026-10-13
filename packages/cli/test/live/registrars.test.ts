@@ -10,7 +10,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NamecheapClient } from "@opscrew/connector-namecheap";
+import { NamecheapClient, NamecheapRegistrar } from "@opscrew/connector-namecheap";
 import { PorkbunClient, PorkbunRegistrar } from "@opscrew/connector-porkbun";
 import { NodeCommandRunner } from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
@@ -218,7 +218,7 @@ const namecheapReady = Boolean(
 );
 
 describe.skipIf(!namecheapReady)("live registrar purchase (Namecheap sandbox)", () => {
-  it("checks the account, buys with the default address and points the domain at Cloudflare", {
+  it("checks the account, buys with the default address, points the domain at Cloudflare and connects a second domain", {
     timeout: 20 * 60_000,
   }, async () => {
     const namecheapEnv: Record<string, string> = {
@@ -281,5 +281,40 @@ describe.skipIf(!namecheapReady)("live registrar purchase (Namecheap sandbox)", 
     // Auto-renew cannot change through Namecheap's API: OpsCrew says where, changes nothing.
     const renew = await opscrew("domain", "auto-renew", "off", "--confirm", domain);
     expect(renew.output).toContain("namecheap.com");
+
+    // A second sandbox domain on Namecheap's own DNS, connected through `domain connect`.
+    const registrar = new NamecheapRegistrar(client);
+    const owned = `opscrew-e2e-c${Date.now().toString(36)}.com`;
+    const quote = await registrar.quote(owned, 1);
+    const first = await registrar.register({
+      domain: owned,
+      years: 1,
+      autoRenew: false,
+      privacy: true,
+      quote,
+      idempotencyKey: `opscrew-e2e-${owned}`,
+    });
+    expect(first.state).toBe("succeeded");
+    const connected = await opscrew(
+      "domain",
+      "connect",
+      owned,
+      "--registrar",
+      "namecheap",
+      "--account",
+      account,
+      "--confirm",
+      owned,
+      "--yes",
+      "--json",
+    );
+    expect(connected.exitCode, connected.output).toBe(0);
+    const result = JSON.parse(connected.stdout) as { outcome: string; nameservers: string[] };
+    expect(result.outcome).toBe("connected");
+    const connectedDns = await client.getDnsList(owned);
+    expect(connectedDns.nameservers.map((n) => n.toLowerCase()).sort()).toEqual(
+      SANDBOX_NAMESERVERS,
+    );
+    expect(connected.output).not.toContain(E2E.namecheapKey as string);
   });
 });

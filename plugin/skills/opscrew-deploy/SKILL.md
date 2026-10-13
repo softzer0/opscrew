@@ -100,8 +100,11 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   nameservers are switched). When the user already owns a domain, tell them to run
   `npx opscrew domain connect <domain>`: it copies the current DNS records into a new Cloudflare
   zone first, shows them for approval, then switches the nameservers. If old DNSSEC (DS) records
-  are still published, the domain must wait until they are removed, and the user runs connect a
-  second time. Never ask the user for tokens, API keys or contact details (name, address, email,
+  are still published, OpsCrew removes them through the registrar's API after approval (or the
+  user removes them in the registrar's dashboard when the API cannot), and the nameserver switch
+  happens on a later `npx opscrew domain connect <domain>` run, at least 24 hours after they are
+  gone (the run says when). When the user removes them by hand it can take up to three runs. Never
+  ask the user for tokens, API keys or contact details (name, address, email,
   phone): registrars use the account's own contact, and OpsCrew never collects one.
 - **Monorepos.** When the repository has several apps, `opscrew_interview_questions` asks which one
   to deploy (`appDir`); ask the user, never guess.

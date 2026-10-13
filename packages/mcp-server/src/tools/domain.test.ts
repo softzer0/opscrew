@@ -229,6 +229,10 @@ describe("opscrew_domain_check at other registrars", () => {
     expect(instructions).toContain("npx opscrew domain buy <domain> [--registrar <id>]");
     expect(instructions).toContain("npx opscrew domain connect <domain>");
     expect(instructions).toMatch(/never asks? for contact details/i);
+    expect(instructions).toContain(
+      "GoDaddy uses the contact profile in GODADDY_PROFILE_ID when it is set, else the account's default profile, else the account's own details",
+    );
+    expect(instructions).not.toMatch(/\b[A-Z][A-Z0-9]*_[A-Z0-9_]+:/);
   });
 
   it("passes the registrar through and returns its live answers", async () => {

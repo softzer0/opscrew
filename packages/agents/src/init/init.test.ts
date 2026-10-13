@@ -955,6 +955,44 @@ describe("registrar account checks", () => {
     expect(byId("porkbun")?.fix).toContain("allow domain registration");
   });
 
+  it("warns with the fix when the account works with a caveat (a Porkbun key without purchase)", async () => {
+    const { checks, byId } = await run(all, async (id) =>
+      id === "porkbun"
+        ? {
+            ok: true,
+            message:
+              "The Porkbun API keys work. They do not allow buying domains (the purchase permission).",
+            fix: "Give the key the purchase permission at https://porkbun.com/account/api (the gear icon next to the key), or create a key that has it.",
+            balance: { amount: 5, currency: "USD" },
+          }
+        : { ok: true, message: "Works." },
+    );
+    const pb = byId("porkbun");
+    expect(pb?.status).toBe("warn");
+    expect(pb?.message).toContain("the purchase permission");
+    expect(pb?.message).toContain("(balance 5.00 USD)");
+    expect(pb?.fix).toContain("Give the key the purchase permission");
+    expect(initPassed(checks)).toBe(true);
+  });
+
+  it("does not repeat a balance the message already states", async () => {
+    const { byId } = await run(all, async (id) =>
+      id === "namecheap"
+        ? {
+            ok: true,
+            message:
+              "Namecheap API access works from 203.0.113.7; the account balance is 12.30 USD (API purchases are paid from it).",
+            balance: { amount: 12.3, currency: "USD" },
+          }
+        : { ok: true, message: "Works." },
+    );
+    const nc = byId("namecheap");
+    expect(nc?.status).toBe("pass");
+    expect(nc?.message).toBe(
+      "Namecheap API access works from 203.0.113.7; the account balance is 12.30 USD (API purchases are paid from it).",
+    );
+  });
+
   it("turns an exception into a warning with the plain message and hint; init still passes", async () => {
     const { checks, byId } = await run(all, async (id) => {
       if (id === "godaddy") {

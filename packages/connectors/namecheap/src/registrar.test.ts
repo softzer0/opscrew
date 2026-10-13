@@ -100,7 +100,7 @@ describe("NamecheapRegistrar", () => {
     expect(checks[1]).toMatchObject({ domain: "taken.com", registrable: false });
     expect(checks[1]?.reason).toMatch(/already registered/);
     expect(checks[2]).toMatchObject({ domain: "us.xyz", registrable: false, tier: "premium" });
-    expect(checks[2]?.reason).toContain("opscrew domain connect");
+    expect(checks[2]?.reason).toContain("`opscrew domain connect us.xyz`");
     expect(checks[3]).toMatchObject({ domain: "shopapp.co.uk", registrable: false });
     expect(checks[3]?.reason).toMatch(/extended attributes/);
     expect(of("domains.check")).toHaveLength(1);
@@ -131,11 +131,12 @@ describe("NamecheapRegistrar", () => {
     const premium = await failure(registrar.quote("us.xyz", 1));
     expect(premium.code).toBe("PHASE_PRECONDITION");
     expect(premium.hint).toContain(NAMECHEAP_DASHBOARD_URLS.domainList);
-    expect(premium.hint).toContain("opscrew domain connect");
+    expect(premium.hint).toContain("`opscrew domain connect us.xyz`");
     expect((await failure(registrar.quote("taken.com", 1))).message).toMatch(/already registered/);
     const before = calls.length;
     const us = await failure(registrar.quote("shopapp.us", 1));
     expect(us.hint).toMatch(/extended attributes/);
+    expect(us.hint).toContain("`opscrew domain connect shopapp.us`");
     expect(calls.length).toBe(before);
     expect((await failure(registrar.quote("shopapp.com", 0))).code).toBe("INVALID_INPUT");
   });

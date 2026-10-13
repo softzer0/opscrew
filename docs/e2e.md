@@ -131,6 +131,8 @@ the adapter, registers a second sandbox domain and moves it with `opscrew domain
 The Namecheap pass sets `NAMECHEAP_SANDBOX=1`, checks the balance, buys a random `.com` (the
 registration uses the sandbox account's default address, in memory only), confirms the
 registration and the nameservers through the API, and checks that `domain auto-renew` points to
-Namecheap's dashboard (Namecheap has no API for it).
+Namecheap's dashboard (Namecheap has no API for it). It then registers a second sandbox domain
+through the adapter (quote, then register), moves it with `opscrew domain connect --registrar
+namecheap`, and confirms through the API that its nameservers point at the stand-in zone.
 
 GoDaddy has no public test system for its v3 API, so its adapter is only tested with fakes.

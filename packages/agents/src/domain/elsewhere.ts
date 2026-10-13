@@ -411,9 +411,10 @@ function purchaseDetails(
 
 /**
  * Approval lines about the move to Cloudflare: zone, nameservers, DNSSEC, per the registrar's
- * capabilities (stand-in zones in a registrar sandbox: says so).
+ * capabilities (stand-in zones in a registrar sandbox: says so). `dnssecLater`: the zone is not
+ * active, so DNSSEC is left to `opscrew domain connect`.
  */
-function switchLines(ctx: PurchaseContext, purchase: boolean): string[] {
+function switchLines(ctx: PurchaseContext, purchase: boolean, dnssecLater = false): string[] {
   const { deps, domain, registrar } = ctx;
   const name = nameOf(ctx);
   const page = registrarLinks(ctx.registrarId, deps.env).domains;
@@ -430,9 +431,11 @@ function switchLines(ctx: PurchaseContext, purchase: boolean): string[] {
     caps.nameservers && registrar.setNameservers !== undefined
       ? `Nameservers: OpsCrew then points the nameservers of ${domain} at ${name} to the zone's Cloudflare nameservers (skipped when they already are).`
       : `Nameservers: ${name}'s API cannot change nameservers, so OpsCrew shows the zone's nameservers to set at ${page}.`,
-    caps.dnssec && registrar.addDsRecord !== undefined
-      ? `DNSSEC: OpsCrew turns it on for the zone and adds the zone's DS record at ${name} (skipped when it is already there).`
-      : `DNSSEC: OpsCrew turns it on for the zone; ${name}'s API cannot publish DNSSEC records, so OpsCrew shows the zone's DS record to add at ${page}.`,
+    dnssecLater
+      ? `DNSSEC: not changed now. The Cloudflare zone of ${domain} is not active yet, and a DS record published before it is would stop resolvers that check DNSSEC from resolving ${domain}; \`opscrew domain connect ${domain}\` adds it once the zone is active, and asks first.`
+      : caps.dnssec && registrar.addDsRecord !== undefined
+        ? `DNSSEC: OpsCrew turns it on for the zone and adds the zone's DS record at ${name} (skipped when it is already there).`
+        : `DNSSEC: OpsCrew turns it on for the zone; ${name}'s API cannot publish DNSSEC records, so OpsCrew shows the zone's DS record to add at ${page}.`,
     "Then OpsCrew asks Cloudflare to check the new nameservers; DNS for the domain is served by Cloudflare from then on.",
   ];
 }
@@ -527,9 +530,24 @@ export async function finishElsewhere(
 }
 
 /**
+ * Whether the domain's zone in the chosen Cloudflare account is active already (its nameservers
+ * point at Cloudflare). Unknown counts as not active.
+ */
+async function zoneIsActive(ctx: PurchaseContext): Promise<boolean> {
+  const zones = ctx.services.zonesFor(ctx.registrarId);
+  if (zones.simulated === true) return false;
+  const zone = await zones.findZone(ctx.domain).catch(() => undefined);
+  return (
+    zone?.status === "active" && (zone.accountId === undefined || zone.accountId === ctx.account.id)
+  );
+}
+
+/**
  * A domain already in the account at another registrar: nothing is bought, and nothing changes
  * before a `domain-settings` approval listing every change (zone, nameserver switch, DNSSEC,
- * auto-renew when asked for, project files). Refusal changes nothing.
+ * auto-renew when asked for, project files). Refusal changes nothing. The domain may be live, so
+ * its DS record is published only when its zone is active already; otherwise DNSSEC is left to
+ * `opscrew domain connect`, which adds it once the zone is active.
  */
 async function setUpOwnedElsewhere(
   ctx: PurchaseContext,
@@ -546,9 +564,12 @@ async function setUpOwnedElsewhere(
   const changes = projectChanges(files, domain);
   const autoRenewChange =
     autoRenew !== undefined && autoRenew !== details.autoRenew ? autoRenew : undefined;
+  // Stand-in zones (registrar sandbox) skip DNSSEC anyway.
+  const simulated = ctx.services.zonesFor(ctx.registrarId).simulated === true;
+  const dnssecNow = simulated || (await zoneIsActive(ctx));
   const lines = [
     `${domain} is already registered in your ${name} account, so nothing is bought.`,
-    ...switchLines(ctx, false),
+    ...switchLines(ctx, false, !dnssecNow),
   ];
   if (autoRenewChange !== undefined) {
     lines.push(
@@ -591,7 +612,9 @@ async function setUpOwnedElsewhere(
   let renewNext: string | undefined;
   let recorded: { plan: boolean; requirements: boolean };
   try {
-    switched = await switchToCloudflare(switchContext(ctx), switchTarget(ctx));
+    switched = await switchToCloudflare(switchContext(ctx), switchTarget(ctx), {
+      publishDs: dnssecNow,
+    });
     const applied = await applyAutoRenew(ctx, details, autoRenewChange);
     info = { ...applied.info, registrar: ctx.registrarId };
     renewNext = applied.next;
@@ -655,6 +678,7 @@ async function completedElsewhere(
     already: "DNSSEC on",
     manual: "DNSSEC still needs the DS record added (see below)",
     pending: "DNSSEC not published yet",
+    later: "DNSSEC added once the zone is active (see below)",
     skipped: "no Cloudflare zone or DNSSEC (registrar sandbox)",
   }[ds.outcome];
   deps.reporter.success(
@@ -674,6 +698,10 @@ async function completedElsewhere(
   } else if (ds.outcome === "pending") {
     next.push(
       `Run \`${buyCommandOf(domain, ctx.registrarId)}\` again in a few minutes to publish the DS record; it does not buy the domain again.`,
+    );
+  } else if (ds.outcome === "later") {
+    next.push(
+      `DNSSEC is not on for ${domain} yet: once Cloudflare shows its zone as active, run \`opscrew domain connect ${domain}\` to add it. It lists the change and asks first.`,
     );
   }
   if (result.renewNext !== undefined) next.push(result.renewNext);

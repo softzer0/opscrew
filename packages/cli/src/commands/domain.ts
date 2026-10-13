@@ -163,7 +163,7 @@ function sameDomain(a: string, b: string): boolean {
 export function parseMaxPriceFlag(value: string): MaxPrice {
   const match = /^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]{3})?\s*$/.exec(value);
   const hint =
-    "For example `--max-price 12.50` or `--max-price 12.50USD` (USD or EUR, the currency Cloudflare quotes).";
+    "For example `--max-price 12.50` or `--max-price 12.50USD` (USD or EUR, in the currency the registrar quotes).";
   const amount = match?.[1] === undefined ? Number.NaN : Number(match[1]);
   if (match === null || !Number.isFinite(amount) || amount <= 0) {
     throw new OpsCrewError(
@@ -284,13 +284,10 @@ export function localAndUtc(iso: string): string {
 }
 
 /**
- * What `opscrew domain connect` did, in plain words, then its details. `again` is the command to
- * run again (default `opscrew domain connect <domain>`; the CLI adds the run's flags).
+ * What `opscrew domain connect` did, in plain words, then its details. The command to run again
+ * is in the result's next steps (with the run's flags), so it is not repeated here.
  */
-export function renderConnectResult(
-  result: ConnectDomainResult,
-  again = `opscrew domain connect ${result.domain}`,
-): string {
+export function renderConnectResult(result: ConnectDomainResult): string {
   const { domain } = result;
   const name = registrarName(result.registrar);
   let summary: string;
@@ -302,7 +299,7 @@ export function renderConnectResult(
       summary =
         result.waitUntil === undefined
           ? `${domain} is not switched yet: its old DNSSEC records must be removed first (see the next steps).`
-          : `${domain} is not switched yet: OpsCrew waits until resolvers have forgotten its old DNSSEC records. Run \`${again}\` again after ${localAndUtc(result.waitUntil)}.`;
+          : `${domain} is not switched yet: OpsCrew waits until resolvers have forgotten its old DNSSEC records, at ${localAndUtc(result.waitUntil)}; see the next steps.`;
       break;
     case "dnssec-published":
       summary = result.dnssec
@@ -418,6 +415,11 @@ async function servicesFor(
           .then((accounts) => accounts.map((a) => ({ id: a.id, name: a.name })));
   const services: DomainServices = { ...given, accounts: async () => list };
   if (list.length < 2) return { services };
+  return { services, account: await chooseAccount(ctx, list) };
+}
+
+/** Asks a terminal user which of several Cloudflare accounts to use; returns its id. */
+async function chooseAccount(ctx: CliContext, list: readonly DomainAccount[]): Promise<string> {
   const prompts = promptsOf(ctx);
   const chosen = await prompts.select({
     message: "Which Cloudflare account should OpsCrew use?",
@@ -430,7 +432,45 @@ async function servicesFor(
       { hint: "Run the command again, or pass the account with --account <id>." },
     );
   }
-  return { services, account: chosen };
+  return chosen;
+}
+
+/**
+ * Services for `status` and `auto-renew`, where the agents decide whether Cloudflare is needed
+ * (the plan's registrar may be Porkbun, Namecheap or GoDaddy). The account list is read, and a
+ * terminal user asked to choose among several accounts, only when the agents ask for it; the
+ * agents then get the chosen account only. Without a terminal the agents' own "pass --account"
+ * error applies.
+ */
+function lazyServicesFor(
+  ctx: CliContext,
+  deps: PhaseDeps,
+  account: string | undefined,
+): { services?: DomainServices; account?: string } {
+  const given = deployServicesOf(ctx).domain;
+  const keep = {
+    ...(given === undefined ? {} : { services: given }),
+    ...(account === undefined ? {} : { account }),
+  };
+  const token = ctx.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!ctx.isInteractive || account !== undefined || !token) return keep;
+  let chosen: Promise<DomainAccount[]> | undefined;
+  const accounts = (): Promise<DomainAccount[]> => {
+    chosen ??= (async () => {
+      deps.redactor.addLiteral(token, "cloudflare-token");
+      const list: DomainAccount[] =
+        given?.accounts !== undefined
+          ? await given.accounts()
+          : await new CloudflareClient({ token, fetch: deps.fetch, version: deps.version })
+              .listAccounts()
+              .then((found) => found.map((a) => ({ id: a.id, name: a.name })));
+      if (list.length < 2) return list;
+      const id = await chooseAccount(ctx, list);
+      return list.filter((a) => a.id === id);
+    })();
+    return chosen;
+  };
+  return { services: { ...given, accounts } };
 }
 
 interface AccountFlag {
@@ -622,7 +662,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--max-price <amount>",
-      "The most you agree to pay now, for example 12.50 or 12.50USD (required without a terminal)",
+      "The most you agree to pay now, for example 12.50 or 12.50USD (USD or EUR, in the currency the registrar quotes; required without a terminal)",
     )
     .option(
       "--forget-pending-purchase",
@@ -784,7 +824,7 @@ export function register(program: Command, ctx: CliContext): void {
         ctx.stdout(`${JSON.stringify(result, null, 2)}\n`);
         return;
       }
-      ctx.stdout(`\n${renderConnectResult(result, again())}\n`);
+      ctx.stdout(`\n${renderConnectResult(result)}\n`);
       printNextSteps(ctx, result.next);
     });
 
@@ -808,12 +848,8 @@ export function register(program: Command, ctx: CliContext): void {
           ai: false,
           ...(flags.yes === true ? { assumeYes: true } : {}),
         });
-        const chosen = await servicesFor(
-          ctx,
-          deps,
-          flags.account?.trim() || undefined,
-          usesCloudflare(registrar),
-        );
+        // The agents decide whether Cloudflare is needed (the plan may name another registrar).
+        const chosen = lazyServicesFor(ctx, deps, flags.account?.trim() || undefined);
         return domainStatus(deps, {
           ...(registrar === undefined ? {} : { registrar }),
           ...chosen,
@@ -864,7 +900,7 @@ export function register(program: Command, ctx: CliContext): void {
               return handler;
             },
           });
-          const chosen = await servicesFor(ctx, deps, account, usesCloudflare(registrar));
+          const chosen = lazyServicesFor(ctx, deps, account);
           return setDomainAutoRenew(deps, {
             on: state === "on",
             ...(registrar === undefined ? {} : { registrar }),

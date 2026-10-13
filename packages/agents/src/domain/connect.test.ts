@@ -1067,7 +1067,8 @@ describe("connectDomain: DNSSEC once the zone is active", () => {
     );
     expect(result).toMatchObject({ outcome: "dnssec-published", dnssec: false });
     expect(result.next.join("\n")).toContain(dsRecordText(ZONE_DS));
-    expect(deps.reporter.text()).toContain(dsRecordText(ZONE_DS));
+    // shown once, as a next step
+    expect(deps.reporter.text()).not.toContain(dsRecordText(ZONE_DS));
 
     // DNSSEC is on and the API cannot publish: no approval, just the values again.
     const again = await cp.run();
