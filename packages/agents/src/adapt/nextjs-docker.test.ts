@@ -92,6 +92,15 @@ async function buildAndServe(variant: string, standalone: boolean): Promise<stri
     const logs = await docker(["logs", id], 30_000);
     throw new Error(`the app did not answer:\n${logs.stdout}\n${logs.stderr}`);
   }
+  // A static asset the page links must be served too, so a wrong `.next/static` copy fails here.
+  const asset = /\/_next\/static\/[^"'\s<>]+\.(?:js|css)/.exec(page)?.[0];
+  expect(asset, "the page links no /_next/static asset").toBeDefined();
+  const fetched = await docker(
+    ["exec", id, "wget", "-S", "-O", "/dev/null", `http://127.0.0.1:3000${asset}`],
+    30_000,
+  );
+  expect(fetched.exitCode, `${asset}: ${fetched.stderr}`).toBe(0);
+  expect(fetched.stderr).toMatch(/HTTP\/1\.1 200/);
   await rm(dir, { recursive: true, force: true });
   return script.stdout;
 }

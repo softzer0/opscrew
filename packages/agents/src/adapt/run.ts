@@ -28,9 +28,10 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import type { CodeChange } from "../design";
 import { writeRenderedFiles } from "../shared";
+import { nextHealthRoute } from "./health-route";
 import { isNextConfigPath, type StandaloneEdit, standaloneConfigEdit } from "./next-config";
 import { playbookFor } from "./playbooks";
-import { PULL_REQUEST_TITLE, renderPullRequestBody } from "./pr";
+import { healthCheckWarning, PULL_REQUEST_TITLE, renderPullRequestBody } from "./pr";
 import {
   buildCodeChangePrompt,
   CODE_CHANGE_MODEL,
@@ -138,8 +139,11 @@ const PLURAL = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /**
  * The adapt phase (plan.md "Adapt"): requires a clean working tree, creates the
- * `opscrew/prepare-deploy` branch, writes the Dockerfile, `.dockerignore` and `.env.example` when
- * the plan asks for them and they are missing, runs the Code-change agent (`edit-repo` profile)
+ * `opscrew/prepare-deploy` branch (the next free `-2`, `-3`, … when this clone or origin already has
+ * it; it stops before changing anything while a pull request from an earlier run's branch is still
+ * open), writes the Dockerfile, `.dockerignore` and `.env.example` when the plan asks for them and
+ * they are missing, makes the deterministic Next.js changes (standalone output, health route),
+ * runs the Code-change agent (`edit-repo` profile)
  * for the other pending changes when a model is configured, updates the statuses in
  * `opscrew/plan.yaml`, and then — each step after its own approval (`repo-write`, `git-push`,
  * `pull-request`) — commits, pushes and opens a pull request. A refused approval stops there and
@@ -214,7 +218,34 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   // 2. Branch from the current HEAD.
   const original = await git.currentBranch();
   const baseBranch = original === "HEAD" ? await git.defaultBranch() : original;
-  const branch = await pickBranch(git);
+  const remote = push ? await git.remoteUrl("origin") : undefined;
+  const repo = remote === undefined ? undefined : parseGitHubRepo(remote);
+  // Resolved once, when first needed: before the branch is picked only if origin has it already.
+  let client: Promise<AdaptGitHub | undefined> | undefined;
+  const gitHub = () => {
+    client ??= options.github === undefined ? defaultGitHub(deps) : Promise.resolve(options.github);
+    return client;
+  };
+  const branch = await pickBranch(
+    git,
+    remote === undefined
+      ? undefined
+      : {
+          openPullRequest: async (head) => {
+            const api = repo === undefined ? undefined : await gitHub();
+            if (repo === undefined || api === undefined) return { known: false };
+            try {
+              const pullRequest = await api.findOpenPullRequest(repo.owner, repo.repo, head);
+              return pullRequest === undefined ? { known: true } : { pullRequest, known: true };
+            } catch (error) {
+              if (!isUserFacingError(error)) throw error;
+              return { known: false };
+            }
+          },
+          info: (text) => reporter.info(say(text)),
+          warn,
+        },
+  );
   await git.createBranch(branch);
   await audit({ kind: "git", actor: "opscrew", action: "create branch", target: branch });
   reporter.info(
@@ -270,12 +301,43 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   for (const file of toWrite) createdFiles.push(file.path);
   if (createdFiles.length > 0) reporter.success(`Wrote ${createdFiles.join(", ")}.`);
 
-  // 3b. Next.js standalone output: edited by OpsCrew when the config is a plain object (or
-  // missing); any other shape stays with the Code-change agent or the user.
+  // 3b. Next.js: the standalone output, edited by OpsCrew when the config is a plain object (or
+  // missing), and the health route, created when it is a new file in a clear router; anything
+  // else stays with the Code-change agent or the user.
   const playbook = playbookFor(facts);
   const editedFiles: string[] = [];
   const manualReasons = new Map<string, string>();
+  const leaveToAgent = (change: CodeChange, note: string, reason: string) => {
+    // Notes for the pull request; the agent's report replaces them when it runs.
+    notes[change.id] = say(note);
+    manualReasons.set(change.id, reason);
+    forAgent.push(change);
+  };
   for (const change of pending.filter((c) => DETERMINISTIC[c.kind] === undefined)) {
+    if (playbook.id === "nextjs" && change.kind === "health-endpoint") {
+      const edit = await nextHealthRoute({
+        path: change.path,
+        healthPath: plan.app.healthPath,
+        exists: (path) => exists(join(paths.root, path)),
+      });
+      if (edit.action === "write") {
+        await writeFileAtomic(join(paths.root, edit.path), edit.content, { mode: 0o644 });
+        createdFiles.push(edit.path);
+        const check =
+          edit.middleware === undefined
+            ? undefined
+            : `Check that ${edit.middleware} does not redirect or protect ${plan.app.healthPath}: the deploy health check calls it without a session.`;
+        set(change, "applied", check === undefined ? edit.note : `${edit.note} ${check}`);
+        byOpsCrew.add(change.id);
+        reporter.success(`Created ${edit.path} for the deploy health check.`);
+        if (check !== undefined) warn(check);
+      } else if (edit.action === "none") {
+        set(change, "skipped", edit.reason);
+      } else {
+        leaveToAgent(change, `OpsCrew did not create it: ${edit.reason}`, edit.reason);
+      }
+      continue;
+    }
     if (
       playbook.id !== "nextjs" ||
       change.kind !== "build-config" ||
@@ -296,10 +358,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     } else if (edit.action === "none") {
       set(change, "skipped", edit.reason);
     } else {
-      // Notes for the pull request; the agent's report replaces them when it runs.
-      notes[change.id] = say(`OpsCrew did not edit it: ${edit.reason}`);
-      manualReasons.set(change.id, edit.reason);
-      forAgent.push(change);
+      leaveToAgent(change, `OpsCrew did not edit it: ${edit.reason}`, edit.reason);
     }
   }
 
@@ -360,6 +419,9 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   if (manual.length > 0) {
     reporter.info(`${PLURAL(manual.length, "change")} still to make by hand:`);
     for (const item of manual) reporter.info(`- ${item.instructions}`);
+  }
+  if (manual.some((item) => item.change.kind === "health-endpoint")) {
+    warn(healthCheckWarning(plan.app.healthPath));
   }
 
   // 7 (before the commit, so the committed plan carries the statuses). Update the plan.
@@ -460,7 +522,6 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     );
     return done(`committed ${sha.slice(0, 7)} on ${branch}`);
   }
-  const remote = await git.remoteUrl("origin");
   if (remote === undefined) {
     warn(
       `This repository has no \`origin\` remote, so OpsCrew did not push. Add your GitHub repository with \`git remote add origin <url>\`, then run \`git push -u origin ${branch}\`.`,
@@ -484,14 +545,13 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   await audit({ kind: "git", actor: "opscrew", action: "push", target: `origin ${branch}` });
   reporter.success(`Pushed ${branch} to origin.`);
 
-  const repo = parseGitHubRepo(remote);
   if (repo === undefined) {
     warn(`origin is not a GitHub repository, so open a pull request for ${branch} yourself.`);
     return done(`pushed ${branch}`);
   }
   const compareUrl = `https://github.com/${repo.owner}/${repo.repo}/compare/${encodeURI(baseBranch)}...${encodeURI(branch)}?expand=1`;
   try {
-    const github = options.github ?? (await defaultGitHub(deps));
+    const github = await gitHub();
     if (github === undefined) {
       warn(
         `No GitHub token was found, so OpsCrew did not open the pull request. Set GITHUB_TOKEN or run \`gh auth login\`, or open it yourself: ${compareUrl}`,
@@ -563,9 +623,54 @@ async function repoPrefix(deps: PhaseDeps, gitBin: string): Promise<string> {
   return result.exitCode === 0 ? result.stdout.trim() : "";
 }
 
-async function pickBranch(git: GitClient): Promise<string> {
+/** How adapt looks at origin before it picks a branch name (only when it will push). */
+interface OriginCheck {
+  /** The open pull request from `branch`, or undefined when there is none or it cannot tell. */
+  openPullRequest(branch: string): Promise<{ pullRequest?: PullRequest; known: boolean }>;
+  info(text: string): void;
+  warn(text: string): void;
+}
+
+/**
+ * The first free branch name: not in this clone and, when adapt will push, not on origin either,
+ * so the push never collides with a branch an earlier run left behind. A branch on origin with an
+ * open pull request stops adapt before it changes anything (that pull request is still the place
+ * to finish the earlier run); one without (merged or closed) is skipped, never pushed to.
+ */
+async function pickBranch(git: GitClient, origin?: OriginCheck): Promise<string> {
+  let check = origin;
   for (let i = 1; i <= 100; i++) {
     const name = i === 1 ? ADAPT_BRANCH : `${ADAPT_BRANCH}-${i}`;
+    if (check !== undefined) {
+      let sha: string | undefined;
+      try {
+        sha = await git.remoteBranchSha(name);
+      } catch (error) {
+        if (!isUserFacingError(error)) throw error;
+        check.warn(
+          `OpsCrew could not check origin for a branch left by an earlier run (${error.message}). It continues; if the push is refused, run \`opscrew adapt\` again when origin is reachable.`,
+        );
+        check = undefined;
+      }
+      if (sha !== undefined && check !== undefined) {
+        const { pullRequest, known } = await check.openPullRequest(name);
+        if (pullRequest !== undefined) {
+          throw new OpsCrewError(
+            "PHASE_PRECONDITION",
+            `The pull request from an earlier OpsCrew run is still open: ${pullRequest.url} (branch ${name}). OpsCrew did not change anything.`,
+            {
+              hint: "Merge or close that pull request on GitHub, then run `opscrew adapt` again.",
+            },
+          );
+        }
+        check.info(
+          known
+            ? `${name} is already on origin from an earlier run, and no pull request from it is open, so OpsCrew leaves it alone.`
+            : `${name} is already on origin, and OpsCrew cannot check its pull request, so OpsCrew leaves it alone.`,
+        );
+        continue;
+      }
+    }
     if (!(await git.branchExists(name))) return name;
   }
   throw new OpsCrewError(
@@ -640,27 +745,38 @@ const NEXT_CONFIG_NAMES = [
 
 /**
  * The deterministic standalone edit for the Next.js config at `path` (repo-relative). A config in
- * a subfolder also gets `outputFileTracingRoot` pointing back at the project root, and a missing
- * config is created only when no other `next.config.*` sits next to where the plan expects it.
+ * a subfolder also gets `outputFileTracingRoot` pointing back at the project root. OpsCrew edits
+ * (or creates) the config only when no other `next.config.*` sits next to it: Next.js reads just
+ * one of them, so editing the planned one could change nothing.
  */
 async function nextConfigEdit(root: string, path: string): Promise<StandaloneEdit> {
-  const dir = posix.dirname(path);
+  const folders = posix
+    .dirname(posix.normalize(path.replace(/\\/g, "/")))
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ".");
+  const dir = folders.join("/");
+  const planned = dir === "" ? posix.basename(path) : `${dir}/${posix.basename(path)}`;
   let content: string | undefined;
   try {
     content = await readFile(join(root, path), "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    for (const name of NEXT_CONFIG_NAMES) {
-      const other = dir === "." ? name : `${dir}/${name}`;
-      if (other !== path && (await exists(join(root, other)))) {
-        return {
-          action: "manual",
-          reason: `the plan expects ${path} but the app has ${other}; run \`opscrew design\` again.`,
-        };
-      }
-    }
   }
-  const tracingRoot = dir === "." ? undefined : "../".repeat(dir.split("/").length);
+  const others: string[] = [];
+  for (const name of NEXT_CONFIG_NAMES) {
+    const other = dir === "" ? name : `${dir}/${name}`;
+    if (other !== planned && (await exists(join(root, other)))) others.push(other);
+  }
+  if (others.length > 0) {
+    return {
+      action: "manual",
+      reason:
+        content === undefined
+          ? `the plan expects ${path} but the app has ${others.join(" and ")}; run \`opscrew design\` again.`
+          : `the app has ${[planned, ...others].join(" and ")}, and Next.js reads only one of them; delete the ones you do not use, then run \`opscrew design\` again.`,
+    };
+  }
+  const tracingRoot = folders.length === 0 ? undefined : "../".repeat(folders.length);
   return standaloneConfigEdit({
     path,
     content,

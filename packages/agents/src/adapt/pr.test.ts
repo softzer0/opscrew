@@ -36,8 +36,21 @@ describe("renderPullRequestBody", () => {
     expect(body).toContain("Rotate every secret");
     expect(body).toContain("`zod@^4`");
     expect(body).toContain('Finish the changes marked "to do"');
+    // The health endpoint is still to do: say what that means for deploys.
+    expect(body).toContain(
+      "**Until GET /api/health answers 200, every deploy fails its health check and is rolled back.**",
+    );
     expect(body.trimEnd().endsWith(PULL_REQUEST_FOOTER)).toBe(true);
     expect(PULL_REQUEST_FOOTER).toBe("Opened by OpsCrew");
+  });
+
+  it("says nothing about failing deploys once the health endpoint is done", () => {
+    const body = renderPullRequestBody({
+      changes: changes.map((change) => ({ ...change, status: "applied" as const })),
+      reports: [],
+      app: { name: "shop", port: 3000, healthPath: "/api/health" },
+    });
+    expect(body).not.toContain("fails its health check");
   });
 
   it("explains a missing scan and plain report paths without a repository", () => {

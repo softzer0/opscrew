@@ -16,7 +16,9 @@ export {
   planAndApply,
 } from "./plan-apply";
 export {
+  chooseDeployBranch,
   DEPLOY_SETUP_BRANCH,
+  type DeployBranch,
   deploySetupPullRequestBody,
   type PublishResult,
   publishDeploySetup,

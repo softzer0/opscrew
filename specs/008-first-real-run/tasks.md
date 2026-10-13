@@ -26,7 +26,7 @@ description: "Tasks for 008-first-real-run"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-cloudflare`
   - Effort: medium
 
-- [ ] T808 [US1] Re-runs and the health route without a model in `packages/agents/src/adapt/` (and the deploy PR flow)
+- [X] T808 [US1] Re-runs and the health route without a model in `packages/agents/src/adapt/` (and the deploy PR flow)
   - Owns: `packages/agents/src/adapt/**`, `packages/agents/src/provision/**`, `packages/connectors/github/src/**`
   - Accept: (a) a remote OpsCrew branch left from an earlier run never makes the push fail: with an open pull request from it, OpsCrew says so and stops before changing anything (or updates it when the remote head is OpsCrew's own commit — implementer's choice, explained); with none (merged or closed), it pushes to a new branch name and opens the PR; same for every branch OpsCrew pushes (adapt, the deploy/infra PR); (b) without a model, the Next.js health route is created deterministically (`app/api/health/route.ts` for the app router, `pages/api/health.ts` for the pages router, matching the plan's health path, never overwriting an existing file) and shown as an OpsCrew change; for stacks where the health route needs an edit to existing code, adapt says plainly that deploys fail their health check until it is added.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-github`

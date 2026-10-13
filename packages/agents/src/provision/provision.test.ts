@@ -230,13 +230,76 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     const firstKey = github.secrets.get("OPSCREW_SSH_PRIVATE_KEY");
     handler.requests.length = 0;
 
+    // The first run's pull request is still open: the second run adds to it.
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, {
+      number: 7,
+      url: "https://github.com/acme/shop/pull/7",
+    });
     const second = await runProvision(deps, { services });
     expect(github.secrets.get("OPSCREW_DB_ENV")).toBe(firstDb);
     expect(github.secrets.get("OPSCREW_SSH_PRIVATE_KEY")).toBe(firstKey);
     // files are unchanged, so no repo-write; the fake engine plans the same changes again
     expect(handler.requests.map((r) => r.kind)).not.toContain("repo-write");
     expect(handler.requests.map((r) => r.kind)).not.toContain("remote-exec");
-    expect(second.prUrl).toBeDefined();
+    expect(second.branch).toBe(DEPLOY_SETUP_BRANCH);
+    expect(second.prUrl).toBe("https://github.com/acme/shop/pull/7");
+    expect(github.pulls).toHaveLength(1);
+  });
+
+  describe("a deploy branch left on GitHub by an earlier run", () => {
+    const OPEN = { number: 4, url: "https://github.com/acme/shop/pull/4" };
+
+    it("opens the pull request from a new branch when the earlier one was merged or closed", async () => {
+      const { deps, services, github, git, root, bare } = await setup();
+      const main = await git(root, "rev-parse", "main");
+      await git(root, "push", "-q", "origin", `main:refs/heads/${DEPLOY_SETUP_BRANCH}`);
+      await git(root, "branch", DEPLOY_SETUP_BRANCH);
+
+      const result = await runProvision(deps, { services });
+
+      const branch = `${DEPLOY_SETUP_BRANCH}-2`;
+      expect(result.branch).toBe(branch);
+      expect(result.prUrl).toBe("https://github.com/acme/shop/pull/7");
+      expect(github.pulls).toEqual([expect.objectContaining({ head: branch, base: "main" })]);
+      expect(await git(bare, "rev-parse", branch)).toBe(await git(root, "rev-parse", "HEAD"));
+      // The old branch is never touched, on GitHub or here.
+      expect(await git(bare, "rev-parse", DEPLOY_SETUP_BRANCH)).toBe(main);
+      expect(await git(root, "rev-parse", DEPLOY_SETUP_BRANCH)).toBe(main);
+      expect(deps.reporter.text()).toContain(
+        `${DEPLOY_SETUP_BRANCH} is already on GitHub from an earlier run, and no pull request from it is open`,
+      );
+    });
+
+    it("stops before changing anything when its open pull request has commits this clone lacks", async () => {
+      const { deps, services, github, git, root, engine, handler } = await setup();
+      await git(root, "push", "-q", "origin", `main:refs/heads/${DEPLOY_SETUP_BRANCH}`);
+      github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN);
+
+      const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: expect.stringContaining(OPEN.url),
+        hint: expect.stringContaining("Merge or close it"),
+      });
+      expect(handler.requests).toEqual([]);
+      expect(engine.calls).toEqual([]);
+      expect(existsSync(join(root, "opscrew", "infra", "prod", "main.tf"))).toBe(false);
+      expect(github.pulls).toEqual([]);
+      expect((await deps.state.read()).phases.provision?.status).toBe("failed");
+    });
+
+    it("does not reach origin with --plan-only or --no-push", async () => {
+      const { deps, services, github, git, root } = await setup();
+      await git(root, "push", "-q", "origin", `main:refs/heads/${DEPLOY_SETUP_BRANCH}`);
+      github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN);
+
+      await runProvision(deps, { services, planOnly: true });
+      expect(github.lookups).toEqual([]);
+      const result = await runProvision(deps, { services, push: false });
+      expect(github.lookups).toEqual([]);
+      expect(result.branch).toBe(DEPLOY_SETUP_BRANCH);
+    });
   });
 
   it("--plan-only saves the plan; --approve applies exactly that plan or refuses", async () => {

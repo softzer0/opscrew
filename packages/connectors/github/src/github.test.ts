@@ -334,6 +334,36 @@ describe.skipIf(!git)("GitClient (real temporary repositories)", () => {
     expect(await client.defaultBranch()).toBe("main");
   });
 
+  it("reads a branch's sha where pushes go, and checks ancestry", async () => {
+    const { client, dir, exec } = await repo();
+    const missing = join(dir, "no-such-remote.git");
+    expect(await client.remoteBranchSha("opscrew/prepare-deploy")).toBeUndefined();
+    await client.createBranch("opscrew/prepare-deploy");
+    await writeFile(join(dir, "a.txt"), "a\n");
+    await client.add(["a.txt"]);
+    const first = await client.commit("first");
+    await client.push("opscrew/prepare-deploy");
+    // The fetch URL points nowhere: the branch is read from the push URL.
+    const bare = (await exec(dir, "remote", "get-url", "origin")).stdout.trim();
+    await exec(dir, "remote", "set-url", "origin", missing);
+    await exec(dir, "remote", "set-url", "--push", "origin", bare);
+    expect(await client.remoteBranchSha("opscrew/prepare-deploy")).toBe(first);
+    expect(await client.remoteBranchSha("opscrew/prepare")).toBeUndefined();
+
+    await writeFile(join(dir, "b.txt"), "b\n");
+    await client.add(["b.txt"]);
+    await client.commit("second");
+    expect(await client.isAncestor(first, "opscrew/prepare-deploy")).toBe(true);
+    expect(await client.isAncestor(first, "main")).toBe(false);
+    expect(await client.isAncestor("0".repeat(40), "main")).toBe(false);
+
+    await exec(dir, "remote", "set-url", "--push", "origin", missing);
+    await expect(client.remoteBranchSha("opscrew/prepare-deploy")).rejects.toMatchObject({
+      code: "COMMAND_FAILED",
+      message: expect.stringContaining("git ls-remote failed"),
+    });
+  });
+
   it("explains a missing git identity", async () => {
     const { client, dir, exec } = await repo();
     await exec(dir, "config", "--unset", "user.name");

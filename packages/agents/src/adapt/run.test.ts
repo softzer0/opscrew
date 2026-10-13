@@ -1,16 +1,19 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PhaseRequest } from "@opscrew/contracts";
 import { FakeAgentRuntime, type FakePhaseResponse } from "@opscrew/core/testing";
-import { readArtifact } from "@opscrew/plan-schema";
+import { type ProjectFacts, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import type { CodeChange } from "../design";
 import { ScriptedApprovalHandler } from "../testing";
 import {
   createTestRepo,
   FakeGitHub,
   GIT,
   git,
+  makePlan,
   nextChanges,
+  nextFacts,
   type TestRepo,
   type TestRepoOptions,
 } from "./__fixtures__/repo";
@@ -22,8 +25,6 @@ import {
   runAdapt,
 } from "./index";
 
-const HEALTH_ROUTE = 'export function GET() {\n  return Response.json({ status: "ok" });\n}\n';
-
 /** A Code-change agent that edits files directly (no tools) and reports statuses. */
 function editingAgent(
   override?: (request: PhaseRequest<unknown>) => Promise<FakePhaseResponse>,
@@ -34,8 +35,6 @@ function editingAgent(
         override ??
         (async (request) => {
           const root = request.projectRoot;
-          await mkdir(join(root, "app", "api", "health"), { recursive: true });
-          await writeFile(join(root, "app", "api", "health", "route.ts"), HEALTH_ROUTE);
           await writeFile(
             join(root, "lib", "stripe.ts"),
             "export const stripeKey = process.env.STRIPE_SECRET_KEY;\n",
@@ -45,7 +44,6 @@ function editingAgent(
             model: "claude-opus-5-5",
             output: {
               changes: [
-                { id: "health-endpoint", status: "applied", notes: "Added the app router route." },
                 { id: "secret-removal-1", status: "applied", notes: "Reads STRIPE_SECRET_KEY." },
               ],
             },
@@ -116,7 +114,15 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(result.branch).toBe(ADAPT_BRANCH);
     expect(result.baseBranch).toBe("main");
     expect(await git(repo.env, repo.root, "branch", "--show-current")).toBe(ADAPT_BRANCH);
-    expect(result.createdFiles).toEqual(["Dockerfile", ".dockerignore", ".env.example"]);
+    expect(result.createdFiles).toEqual([
+      "Dockerfile",
+      ".dockerignore",
+      ".env.example",
+      "app/api/health/route.ts",
+    ]);
+    const route = await readFile(join(repo.root, "app", "api", "health", "route.ts"), "utf8");
+    expect(route).toContain('export const dynamic = "force-dynamic";');
+    expect(route).toContain('return Response.json({ status: "ok" });');
     const dockerfile = await readFile(join(repo.root, "Dockerfile"), "utf8");
     expect(dockerfile).toMatch(/^FROM .* AS /m);
     expect(dockerfile).toContain("USER");
@@ -137,8 +143,9 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
       projectRoot: repo.root,
     });
     expect(request?.output?.name).toBe("code_change_report");
-    expect(request?.prompt).toContain("health-endpoint");
-    expect(request?.prompt).toContain("app/api/health/route.ts");
+    // OpsCrew created the health route itself, so the agent is not asked to either.
+    expect(request?.prompt).toContain("### secret-removal-1");
+    expect(request?.prompt).not.toContain("### health-endpoint");
     expect(request?.prompt).not.toContain("### dockerfile");
     // OpsCrew set the standalone output itself, so the agent is not asked to.
     expect(request?.prompt).not.toContain("### build-config");
@@ -216,7 +223,8 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(pr?.body.trimEnd().endsWith(PULL_REQUEST_FOOTER)).toBe(true);
     expect(pr?.body).toContain("app/api/health/route.ts");
     expect(pr?.body).toContain("in `next.config.mjs` (applied by OpsCrew)");
-    expect(pr?.body).toContain("in `app/api/health/route.ts` (applied):");
+    expect(pr?.body).toContain("in `app/api/health/route.ts` (applied by OpsCrew)");
+    expect(pr?.body).not.toContain("fails its health check");
     expect(pr?.body).toContain("| 1 | 2 | 0 | 3 | 0 |");
     expect(pr?.body).toContain(
       `https://github.com/acme/shop/blob/${ADAPT_BRANCH}/opscrew/plan.yaml`,
@@ -259,7 +267,11 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     const result = await runAdapt(repo.deps, { push: false });
 
     expect(await readFile(join(repo.root, "Dockerfile"), "utf8")).toBe(own);
-    expect(result.createdFiles).toEqual([".dockerignore", ".env.example"]);
+    expect(result.createdFiles).toEqual([
+      ".dockerignore",
+      ".env.example",
+      "app/api/health/route.ts",
+    ]);
     expect(await statusOf(repo)).toMatchObject({
       dockerfile: "skipped",
       dockerignore: "applied",
@@ -338,19 +350,24 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
 
     expect(repo.runtime?.requests).toHaveLength(0);
     expect(result.aiRan).toBe(false);
-    expect(result.manual.map((m) => m.change.id)).toEqual(["health-endpoint", "secret-removal-1"]);
-    expect(result.manual[0]?.instructions).toContain("app/api/health/route.ts");
+    expect(result.manual.map((m) => m.change.id)).toEqual(["secret-removal-1"]);
+    expect(result.manual[0]?.instructions).toContain("lib/stripe.ts");
     expect(await statusOf(repo)).toMatchObject({
       dockerfile: "applied",
-      "health-endpoint": "pending",
+      "health-endpoint": "applied",
       "build-config": "applied",
     });
+    // Without a model, the health route the deploy checks is created, and committed.
+    expect(result.createdFiles).toContain("app/api/health/route.ts");
+    expect(repo.deps.reporter.text()).toContain("Created app/api/health/route.ts");
+    expect(repo.deps.reporter.text()).not.toContain("fails its health check");
     // Without a model, the standalone output is still set, and committed.
     expect(await readFile(join(repo.root, "next.config.mjs"), "utf8")).toContain(
       'output: "standalone"',
     );
     const committed = await git(repo.env, repo.root, "show", "--name-only", "--format=", "HEAD");
     expect(committed.split("\n")).toContain("next.config.mjs");
+    expect(committed.split("\n")).toContain("app/api/health/route.ts");
     expect(repo.handler.requests.map((r) => r.kind)).toEqual(["repo-write"]);
     expect(result.committed).toBe(true);
     expect(result.pushed).toBe(false);
@@ -362,7 +379,8 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     const agent = editingAgent(async () => ({
       output: { changes: [{ id: "health-endpoint", status: "done" }] },
     }));
-    const repo = await setup({ agent });
+    // A health path other than /api/health is left to the agent.
+    const repo = await setup({ agent, healthPath: "/healthz" });
 
     const result = await runAdapt(repo.deps, { push: false });
 
@@ -371,8 +389,13 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
       "health-endpoint": "pending",
       "secret-removal-1": "pending",
     });
+    expect(await exists(repo, "app/api/health/route.ts")).toBe(false);
     expect(result.manual).toHaveLength(2);
-    expect(repo.deps.reporter.text()).toContain("did not finish");
+    const text = repo.deps.reporter.text();
+    expect(text).toContain("did not finish");
+    expect(text).toContain(
+      "Until GET /healthz answers 200, every deploy fails its health check and is rolled back.",
+    );
   });
 
   it("ignores unknown ids and keeps unreported changes pending", async () => {
@@ -384,7 +407,7 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
         ],
       },
     }));
-    const repo = await setup({ agent });
+    const repo = await setup({ agent, healthPath: "/healthz" });
 
     await runAdapt(repo.deps, { push: false });
 
@@ -459,6 +482,242 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(result.pushed).toBe(true);
     expect(result.pullRequest).toBeUndefined();
     expect(repo.deps.reporter.text()).toContain("No GitHub token was found");
+  });
+
+  it("counts only real folders for outputFileTracingRoot (a ./ prefix adds no level)", async () => {
+    const config = "const nextConfig = {};\nexport default nextConfig;\n";
+    const changes = nextChanges()
+      .filter((c) => c.kind === "build-config")
+      .map((c) => ({ ...c, path: "./apps/web/next.config.mjs" }));
+    const repo = await setup({
+      agent: null,
+      changes,
+      files: { "apps/web/next.config.mjs": config },
+    });
+
+    const result = await runAdapt(repo.deps, { ai: false, push: false });
+
+    expect(result.editedFiles).toEqual(["./apps/web/next.config.mjs"]);
+    const edited = await readFile(join(repo.root, "apps", "web", "next.config.mjs"), "utf8");
+    expect(edited).toContain('"../../"');
+    expect(edited).not.toContain('"../../../"');
+  });
+
+  it("does not pick between two Next.js configs next to each other", async () => {
+    const repo = await setup({
+      agent: null,
+      files: { "next.config.js": "module.exports = {};\n" },
+    });
+
+    const result = await runAdapt(repo.deps, { ai: false, push: false });
+
+    expect(await readFile(join(repo.root, "next.config.mjs"), "utf8")).toBe(
+      "const nextConfig = {};\nexport default nextConfig;\n",
+    );
+    expect(await readFile(join(repo.root, "next.config.js"), "utf8")).toBe(
+      "module.exports = {};\n",
+    );
+    expect(result.editedFiles).toEqual([]);
+    expect(await statusOf(repo)).toMatchObject({ "build-config": "pending" });
+    const item = result.manual.find((m) => m.change.id === "build-config");
+    expect(item?.instructions).toContain("next.config.mjs and next.config.js");
+  });
+
+  it("adds no second health route and no second output key when run again", async () => {
+    const repo = await setup({ agent: null });
+    const first = await runAdapt(repo.deps, { ai: false, push: false });
+    expect(first.createdFiles).toContain("app/api/health/route.ts");
+    const route = await readFile(join(repo.root, "app", "api", "health", "route.ts"), "utf8");
+
+    // `opscrew design` again: every change is pending once more.
+    await writeArtifact("plan", repo.deps.paths.files.plan, makePlan(nextChanges()));
+    const second = await runAdapt(repo.deps, { ai: false, push: false });
+
+    expect(second.branch).toBe(`${ADAPT_BRANCH}-2`);
+    expect(second.createdFiles).toEqual([]);
+    expect(second.editedFiles).toEqual([]);
+    expect(await statusOf(repo)).toMatchObject({
+      "health-endpoint": "skipped",
+      "build-config": "skipped",
+    });
+    expect(second.notes["health-endpoint"]).toContain(
+      "app/api/health/route.ts already answers /api/health",
+    );
+    expect(await readFile(join(repo.root, "app", "api", "health", "route.ts"), "utf8")).toBe(route);
+    const config = await readFile(join(repo.root, "next.config.mjs"), "utf8");
+    expect(config.match(/output:/g)).toHaveLength(1);
+  });
+
+  it("creates the pages router route in JavaScript and points at middleware", async () => {
+    const changes = nextChanges().map((c) =>
+      c.kind === "health-endpoint" ? { ...c, path: "pages/api/health.ts" } : c,
+    );
+    const repo = await setup({
+      agent: null,
+      changes,
+      files: {
+        "pages/index.js": "export default function Home() {\n  return null;\n}\n",
+        "middleware.js": "export function middleware() {}\n",
+      },
+    });
+    await git(repo.env, repo.root, "rm", "-q", "tsconfig.json", "app/page.tsx");
+    await git(repo.env, repo.root, "commit", "-q", "-m", "pages router in JavaScript");
+
+    const result = await runAdapt(repo.deps, { ai: false, push: false });
+
+    expect(result.createdFiles).toContain("pages/api/health.js");
+    const route = await readFile(join(repo.root, "pages", "api", "health.js"), "utf8");
+    expect(route).toContain('res.status(200).json({ status: "ok" });');
+    expect(await statusOf(repo)).toMatchObject({ "health-endpoint": "applied" });
+    expect(result.notes["health-endpoint"]).toContain("middleware.js");
+    expect(repo.deps.reporter.text()).toContain(
+      "Check that middleware.js does not redirect or protect /api/health",
+    );
+  });
+
+  it("leaves the route to the user when the Next.js router is not clear", async () => {
+    const repo = await setup({ agent: null });
+    await git(repo.env, repo.root, "rm", "-q", "app/page.tsx");
+    await git(repo.env, repo.root, "commit", "-q", "-m", "no router folder");
+
+    const result = await runAdapt(repo.deps, { ai: false, push: false });
+
+    expect(await exists(repo, "app/api/health/route.ts")).toBe(false);
+    const item = result.manual.find((m) => m.change.id === "health-endpoint");
+    expect(item?.instructions).toContain("no app/ folder");
+    expect(repo.deps.reporter.text()).toContain(
+      "Until GET /api/health answers 200, every deploy fails its health check and is rolled back.",
+    );
+  });
+
+  it("says plainly that deploys fail their health check while an edit is left by hand", async () => {
+    const facts: ProjectFacts = {
+      ...nextFacts(),
+      frameworks: [{ name: "express", version: "4.21.0", path: "." }],
+      appKind: "api",
+      build: { startCommand: "node server.js" },
+    };
+    const changes: CodeChange[] = [
+      {
+        id: "health-endpoint",
+        kind: "health-endpoint",
+        path: "server.js",
+        reason: "The deploy checks /health.",
+        status: "pending",
+      },
+    ];
+    const repo = await setup({
+      agent: null,
+      facts,
+      changes,
+      healthPath: "/health",
+      files: { "server.js": "require('express')().listen(3000);\n" },
+    });
+
+    const result = await runAdapt(repo.deps, { ai: false, push: false });
+
+    expect(result.manual.map((m) => m.change.id)).toEqual(["health-endpoint"]);
+    expect(repo.deps.reporter.text()).toContain(
+      "Until GET /health answers 200, every deploy fails its health check and is rolled back.",
+    );
+  });
+
+  describe("a branch left on GitHub by an earlier run", () => {
+    const OPEN = { number: 3, url: "https://github.com/acme/shop/pull/3" };
+    /** Pushes `main` to `branch` on origin, as an earlier run did. */
+    const leftOnOrigin = (repo: TestRepo, branch: string) =>
+      git(repo.env, repo.root, "push", "-q", "origin", `main:refs/heads/${branch}`);
+
+    it("stops before changing anything while its pull request is open", async () => {
+      const repo = await setup();
+      await leftOnOrigin(repo, ADAPT_BRANCH);
+      const github = new FakeGitHub(OPEN);
+
+      await expect(runAdapt(repo.deps, { github })).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: expect.stringContaining(OPEN.url),
+        hint: expect.stringContaining("Merge or close"),
+      });
+      expect(github.lookups).toEqual([`acme/shop:${ADAPT_BRANCH}`]);
+      expect(await git(repo.env, repo.root, "branch", "--show-current")).toBe("main");
+      expect(await git(repo.env, repo.root, "branch", "--list", "opscrew/*")).toBe("");
+      expect(await exists(repo, "Dockerfile")).toBe(false);
+      expect(repo.handler.requests).toHaveLength(0);
+      expect(repo.runtime?.requests).toHaveLength(0);
+      expect(github.created).toHaveLength(0);
+      expect(await git(repo.env, repo.bare, "rev-parse", ADAPT_BRANCH)).toBe(repo.initialSha);
+    });
+
+    it("pushes to a new branch and opens the pull request when the old one is merged or closed", async () => {
+      const repo = await setup();
+      await leftOnOrigin(repo, ADAPT_BRANCH);
+      await git(repo.env, repo.root, "branch", ADAPT_BRANCH);
+      const github = new FakeGitHub();
+
+      const result = await runAdapt(repo.deps, { github });
+
+      const branch = `${ADAPT_BRANCH}-2`;
+      expect(result.branch).toBe(branch);
+      expect(result.pushed).toBe(true);
+      expect(await git(repo.env, repo.bare, "rev-parse", branch)).toBe(result.commitSha);
+      // The old branch is never touched.
+      expect(await git(repo.env, repo.bare, "rev-parse", ADAPT_BRANCH)).toBe(repo.initialSha);
+      expect(github.created).toEqual([expect.objectContaining({ head: branch, base: "main" })]);
+      expect(result.pullRequest?.url).toBe("https://github.com/acme/shop/pull/7");
+      const text = repo.deps.reporter.text();
+      expect(text).toContain(
+        `${ADAPT_BRANCH} is already on origin from an earlier run, and no pull request from it is open`,
+      );
+      expect(text).toContain(`Created branch ${branch} from main.`);
+    });
+
+    it("stops at the first branch whose pull request is still open", async () => {
+      const repo = await setup();
+      await leftOnOrigin(repo, ADAPT_BRANCH);
+      await leftOnOrigin(repo, `${ADAPT_BRANCH}-2`);
+      const github = new FakeGitHub(OPEN, [`${ADAPT_BRANCH}-2`]);
+
+      await expect(runAdapt(repo.deps, { github })).rejects.toMatchObject({
+        message: expect.stringContaining(`${ADAPT_BRANCH}-2`),
+      });
+      expect(await git(repo.env, repo.root, "branch", "--show-current")).toBe("main");
+    });
+
+    it("never reuses a branch on origin when it cannot check its pull request", async () => {
+      const repo = await setup();
+      await leftOnOrigin(repo, ADAPT_BRANCH);
+
+      const result = await runAdapt(repo.deps);
+
+      expect(result.branch).toBe(`${ADAPT_BRANCH}-2`);
+      expect(result.pushed).toBe(true);
+      const text = repo.deps.reporter.text();
+      expect(text).toContain(`${ADAPT_BRANCH} is already on origin`);
+      expect(text).toContain("No GitHub token was found");
+    });
+
+    it("warns and continues when origin cannot be checked", async () => {
+      const repo = await setup({ approvals: [true, false] });
+      await git(repo.env, repo.root, "remote", "set-url", "--push", "origin", `${repo.bare}-gone`);
+
+      const result = await runAdapt(repo.deps, { github: new FakeGitHub() });
+
+      expect(result.branch).toBe(ADAPT_BRANCH);
+      expect(result.committed).toBe(true);
+      expect(repo.deps.reporter.text()).toContain(
+        "OpsCrew could not check origin for a branch left by an earlier run",
+      );
+    });
+
+    it("does not reach origin with --no-push", async () => {
+      const repo = await setup();
+      await leftOnOrigin(repo, ADAPT_BRANCH);
+
+      const result = await runAdapt(repo.deps, { github: new FakeGitHub(OPEN), push: false });
+
+      expect(result.branch).toBe(ADAPT_BRANCH);
+      expect(repo.runner.calls.some((call) => call.includes("ls-remote"))).toBe(false);
+    });
   });
 
   it("requires the plan", async () => {

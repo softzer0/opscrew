@@ -76,8 +76,9 @@ describe.skipIf(GIT === undefined)("opscrew adapt", () => {
       "chore(opscrew): prepare app for deployment",
     );
     expect(approvals.requests.map((r) => r.kind)).toEqual(["repo-write"]);
-    expect(ctx.output).toContain("still to make by hand");
-    expect(ctx.output).toContain("make the changes listed above by hand");
+    // Without a model OpsCrew makes the Next.js changes itself: nothing is left to do by hand.
+    expect(await exists(path.join(project.root, "app", "api", "health", "route.ts"))).toBe(true);
+    expect(ctx.output).not.toContain("still to make by hand");
     expect(ctx.output).toContain("git push -u origin opscrew/prepare-deploy");
     expect(ctx.output).toContain("opscrew provision");
     expect(ctx.output).not.toContain("Model cost");
@@ -87,6 +88,11 @@ describe.skipIf(GIT === undefined)("opscrew adapt", () => {
 
   it("runs the Code-change agent when a model is configured and prints its cost", async () => {
     project = await planned();
+    // A health path other than /api/health leaves the route to the Code-change agent.
+    const planFile = path.join(project.root, "opscrew", "plan.yaml");
+    const plan = await readFile(planFile, "utf8");
+    expect(plan).toContain("healthPath: /api/health");
+    await writeFile(planFile, plan.replace("healthPath: /api/health", "healthPath: /healthz"));
     const runtime = new FakeAgentRuntime({
       phases: { adapt: { output: { changes: [] }, costUsd: 0.75, model: "claude-test" } },
     });

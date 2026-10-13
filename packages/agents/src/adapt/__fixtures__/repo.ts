@@ -104,7 +104,7 @@ export function nextChanges(): CodeChange[] {
   ];
 }
 
-export function makePlan(codeChanges: CodeChange[]): DeployPlan {
+export function makePlan(codeChanges: CodeChange[], healthPath = "/api/health"): DeployPlan {
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-11T10:00:00.000Z",
@@ -112,7 +112,7 @@ export function makePlan(codeChanges: CodeChange[]): DeployPlan {
     app: {
       name: "shop",
       port: 3000,
-      healthPath: "/api/health",
+      healthPath,
       env: [
         { name: "DATABASE_URL", secret: true, source: "user" },
         { name: "STRIPE_SECRET_KEY", secret: true, source: "user" },
@@ -161,6 +161,10 @@ export interface TestRepoOptions {
   /** Origin URL; defaults to a GitHub URL whose pushes go to the bare repository. */
   remote?: string | null;
   depsOptions?: Parameters<typeof createTestPhaseDeps>[0];
+  /** Analysed facts (default: the Next.js shop). */
+  facts?: ProjectFacts;
+  /** The plan's health check path (default `/api/health`). */
+  healthPath?: string;
 }
 
 /**
@@ -182,6 +186,7 @@ export async function createTestRepo(options: TestRepoOptions = {}): Promise<Tes
     ".gitignore": ".env\n.opscrew/\nnode_modules/\n",
     "package.json": `${JSON.stringify({ name: "shop", scripts: { build: "next build", start: "next start" } }, null, 2)}\n`,
     "next.config.mjs": "const nextConfig = {};\nexport default nextConfig;\n",
+    "tsconfig.json": `${JSON.stringify({ compilerOptions: { strict: true, jsx: "preserve" } }, null, 2)}\n`,
     "app/page.tsx": "export default function Page() {\n  return <h1>Shop</h1>;\n}\n",
     "lib/db.ts": "export const url = process.env.DATABASE_URL;\n",
     "lib/stripe.ts": `export const stripeKey = "${codeSecret}";\n`,
@@ -216,13 +221,13 @@ export async function createTestRepo(options: TestRepoOptions = {}): Promise<Tes
     schemaVersion: 1,
     generatedAt: "2026-10-11T10:00:00.000Z",
     generator: { tool: "opscrew", version: "0.0.0-test" },
-    facts: nextFacts(),
+    facts: options.facts ?? nextFacts(),
     summary: "A Next.js shop.",
     risks: [],
     aiEnriched: false,
   };
   await writeArtifact("architecture", deps.paths.files.architecture, architecture);
-  await writeArtifact("plan", deps.paths.files.plan, makePlan(options.changes ?? nextChanges()));
+  await writeArtifact("plan", deps.paths.files.plan, makePlan(options.changes ?? nextChanges(), options.healthPath));
   await writeFile(deps.paths.files.scanReportMd, "# Security scan\n\nNo secrets shown here.\n");
   await mkdir(deps.paths.stateDir, { recursive: true });
   await writeFile(
@@ -236,10 +241,14 @@ export async function createTestRepo(options: TestRepoOptions = {}): Promise<Tes
 export class FakeGitHub implements AdaptGitHub {
   readonly created: Parameters<AdaptGitHub["createPullRequest"]>[0][] = [];
   readonly lookups: string[] = [];
-  constructor(private readonly open?: PullRequest) {}
+  /** `open` is returned for every head, or only for the branches in `heads` when given. */
+  constructor(
+    private readonly open?: PullRequest,
+    private readonly heads?: readonly string[],
+  ) {}
   async findOpenPullRequest(owner: string, repo: string, head: string) {
     this.lookups.push(`${owner}/${repo}:${head}`);
-    return this.open;
+    return this.heads === undefined || this.heads.includes(head) ? this.open : undefined;
   }
   async createPullRequest(input: Parameters<AdaptGitHub["createPullRequest"]>[0]) {
     this.created.push(input);

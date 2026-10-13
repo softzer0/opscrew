@@ -152,6 +152,28 @@ export class GitClient {
     ]);
   }
 
+  /**
+   * Commit sha of `branch` where `push` would send it (the remote's push URL), or undefined when
+   * the remote has no such branch. Reaches the remote; throws `COMMAND_FAILED` when it cannot.
+   */
+  async remoteBranchSha(branch: string, remote = "origin"): Promise<string | undefined> {
+    const url = (await this.#run(["remote", "get-url", "--push", remote])).stdout.trim();
+    // A URL that looks like an option is never passed as one; the remote name is used instead.
+    const target = url === "" || url.startsWith("-") ? remote : url;
+    const ref = `refs/heads/${branch}`;
+    const out = (await this.#run(["ls-remote", "--heads", target, ref])).stdout;
+    for (const line of out.split(/\r?\n/)) {
+      const [sha, name] = line.trim().split(/\s+/);
+      if (name === ref && sha !== undefined && /^[0-9a-f]{40,64}$/.test(sha)) return sha;
+    }
+    return undefined;
+  }
+
+  /** True when commit `ancestor` is in the history of `ref` (false when either is unknown here). */
+  async isAncestor(ancestor: string, ref: string): Promise<boolean> {
+    return (await this.#run(["merge-base", "--is-ancestor", ancestor, ref], true)).exitCode === 0;
+  }
+
   /** `git diff --stat` against HEAD including staged changes. */
   async diffStat(): Promise<string> {
     return (await this.#run(["diff", "--stat", "HEAD"], true)).stdout.trim();

@@ -448,7 +448,12 @@ export class FakeGitHub implements GitHubApi {
   readonly secrets = new Map<string, string>();
   readonly pulls: { head: string; base: string; title: string; body: string }[] = [];
   canPush = true;
+  /** Open pull request returned for every head (see `openPulls` for one per head). */
   openPull: { number: number; url: string } | undefined;
+  /** Open pull requests by head branch. */
+  readonly openPulls = new Map<string, { number: number; url: string }>();
+  /** Heads looked up with `findOpenPullRequest`. */
+  readonly lookups: string[] = [];
 
   async getRepo() {
     return { defaultBranch: "main", private: true, canPush: this.canPush };
@@ -459,8 +464,9 @@ export class FakeGitHub implements GitHubApi {
   async setActionsSecret(_owner: string, _repo: string, name: string, value: string) {
     this.secrets.set(name, value);
   }
-  async findOpenPullRequest() {
-    return this.openPull;
+  async findOpenPullRequest(_owner: string, _repo: string, head: string) {
+    this.lookups.push(head);
+    return this.openPulls.get(head) ?? this.openPull;
   }
   async createPullRequest(input: {
     owner: string;

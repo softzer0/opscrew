@@ -39,6 +39,11 @@ export interface PullRequestBodyInput {
   byOpsCrew?: readonly string[];
 }
 
+/** What a missing health endpoint means for deploys, in one plain sentence. */
+export function healthCheckWarning(healthPath: string): string {
+  return `Until GET ${healthPath} answers 200, every deploy fails its health check and is rolled back.`;
+}
+
 function link(path: string, input: PullRequestBodyInput): string {
   if (input.repo === undefined || input.branch === undefined) return `\`${path}\``;
   const url = `https://github.com/${input.repo.owner}/${input.repo.repo}/blob/${encodeURI(input.branch)}/${encodeURI(path)}`;
@@ -78,6 +83,10 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
   for (const change of input.changes) {
     lines.push(...changeLine(change, input.notes?.[change.id], byOpsCrew.has(change.id)));
   }
+  const health = input.app?.healthPath ?? "/health";
+  if (input.changes.some((c) => c.kind === "health-endpoint" && c.status === "pending")) {
+    lines.push("", `**${healthCheckWarning(health)}**`);
+  }
   if ((input.addedDependencies ?? []).length > 0) {
     lines.push("", "New dependencies added by the Code-change agent:");
     for (const dependency of input.addedDependencies ?? []) lines.push(`- \`${dependency}\``);
@@ -103,7 +112,6 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
 
   const name = input.app?.name ?? "app";
   const port = input.app?.port ?? 3000;
-  const health = input.app?.healthPath ?? "/health";
   lines.push(
     "",
     "## Review checklist",

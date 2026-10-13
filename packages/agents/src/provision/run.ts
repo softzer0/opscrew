@@ -24,7 +24,7 @@ import {
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { requireNoMoveInProgress } from "./guard";
 import { planAndApply } from "./plan-apply";
-import { publishDeploySetup } from "./publish";
+import { chooseDeployBranch, publishDeploySetup } from "./publish";
 import { deploymentRenderContext, readRequirements } from "./render";
 import {
   buildAppEnvironment,
@@ -116,6 +116,12 @@ async function provisionFlow(
   await checkProvider(deps, profile.id, services);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
+  // The branch for the deployment files, picked before anything changes (a push needs it).
+  const publishes =
+    options.push !== false && !(options.planOnly && options.approvePlanHash === undefined);
+  const deployBranch = publishes
+    ? await chooseDeployBranch(deps, git, github, `opscrew ${phase}`)
+    : undefined;
   const zoneLearned = cloudflare !== undefined && plan.dns.zone !== cloudflare.zoneName;
   if (cloudflare && zoneLearned) {
     plan = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };
@@ -344,6 +350,7 @@ async function provisionFlow(
     push: options.push !== false,
     secretsStored,
     phase,
+    ...(deployBranch === undefined ? {} : { branch: deployBranch }),
   });
   if (secretsStored) {
     deps.reporter.info(
