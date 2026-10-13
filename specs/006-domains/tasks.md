@@ -18,7 +18,7 @@ variable name. Tasks touching the CLI wait for feature 005's CLI task (T509).
 
 ## Phase 2: Building blocks (parallel)
 
-- [ ] T602 [P] [US1] [US3] Cloudflare Registrar client and `CloudflareRegistrar` in `packages/connectors/cloudflare/src/`
+- [X] T602 [P] [US1] [US3] Cloudflare Registrar client and `CloudflareRegistrar` in `packages/connectors/cloudflare/src/`
   - Owns: `packages/connectors/cloudflare/src/**`
   - Reads: plan.md "Cloudflare Registrar client"; research.md "Cloudflare Registrar API"; `packages/contracts/src/registrar.ts`
   - Depends: T601

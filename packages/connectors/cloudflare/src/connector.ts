@@ -1,7 +1,11 @@
 import type { AnyToolDefinition, Connector, CredentialCheck, FetchLike } from "@opscrew/contracts";
 import { Redactor } from "@opscrew/core";
 import { z } from "zod";
-import { CLOUDFLARE_TOKEN_PERMISSIONS, CloudflareClient } from "./client";
+import {
+  CLOUDFLARE_REGISTRAR_PERMISSIONS,
+  CLOUDFLARE_TOKEN_PERMISSIONS,
+  CloudflareClient,
+} from "./client";
 
 export interface CloudflareConnectorOptions {
   env: Record<string, string | undefined>;
@@ -10,6 +14,8 @@ export interface CloudflareConnectorOptions {
   baseUrl?: string;
   version?: string;
   sleep?: (ms: number) => Promise<void>;
+  /** Send registrar calls to Cloudflare's registrar sandbox. */
+  registrarSandbox?: boolean;
 }
 
 export interface CloudflareConnector extends Connector {
@@ -29,6 +35,7 @@ export function cloudflareConnector(options: CloudflareConnectorOptions): Cloudf
         ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
         ...(options.version ? { version: options.version } : {}),
         ...(options.sleep ? { sleep: options.sleep } : {}),
+        ...(options.registrarSandbox ? { registrarSandbox: true } : {}),
       })
     : undefined;
 
@@ -72,8 +79,12 @@ export function cloudflareConnector(options: CloudflareConnectorOptions): Cloudf
     displayName: "Cloudflare",
     credentials: {
       envVars: ["CLOUDFLARE_API_TOKEN"],
-      description: "Cloudflare API token limited to the zone that holds your domain.",
-      scopes: [...CLOUDFLARE_TOKEN_PERMISSIONS],
+      description:
+        "Cloudflare API token limited to the zone that holds your domain. Buying domains with OpsCrew is optional and also needs the account-level permissions marked optional.",
+      scopes: [
+        ...CLOUDFLARE_TOKEN_PERMISSIONS,
+        ...CLOUDFLARE_REGISTRAR_PERMISSIONS.map((p) => `${p} (optional, for buying domains)`),
+      ],
       createUrl: "https://dash.cloudflare.com/profile/api-tokens",
     },
     client,
