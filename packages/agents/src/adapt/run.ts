@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, posix } from "node:path";
 import {
   GitClient,
@@ -21,6 +21,7 @@ import { type RenderedFile, renderDockerAssets } from "@opscrew/iac-templates";
 import {
   type CodeChangeKind,
   type CodeChangeStatus,
+  type DeployPlan,
   readArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
@@ -104,6 +105,12 @@ export interface AdaptResult {
   commitSha?: string;
   pushed: boolean;
   pullRequest?: PullRequest;
+  /**
+   * The command that pushes the commit when OpsCrew did not (`--no-push`), checked against
+   * origin when it can be reached: `git push -u origin <branch>`, or
+   * `git push -u origin <branch>:<free name>` when origin already has the branch.
+   */
+  pushCommand?: string;
 }
 
 /**
@@ -148,6 +155,10 @@ const PLURAL = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
  * `opscrew/plan.yaml`, and then — each step after its own approval (`repo-write`, `git-push`,
  * `pull-request`) — commits, pushes and opens a pull request. A refused approval stops there and
  * leaves everything before it in place (uncommitted changes on the branch, or an unpushed commit).
+ * Run again on the branch of such an unpushed commit, it pushes that commit (renamed to a free
+ * branch name when origin has the branch already) and opens the pull request instead of starting
+ * over; with `--no-push` it says how to push it. A failed push says what to do; nothing is ever
+ * force-pushed.
  */
 export async function runAdapt(
   deps: PhaseDeps,
@@ -215,9 +226,8 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     );
   }
 
-  // 2. Branch from the current HEAD.
+  // 2. Branch from the current HEAD (or continue an earlier run's commit that was never pushed).
   const original = await git.currentBranch();
-  const baseBranch = original === "HEAD" ? await git.defaultBranch() : original;
   const remote = push ? await git.remoteUrl("origin") : undefined;
   const repo = remote === undefined ? undefined : parseGitHubRepo(remote);
   // Resolved once, when first needed: before the branch is picked only if origin has it already.
@@ -226,8 +236,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     client ??= options.github === undefined ? defaultGitHub(deps) : Promise.resolve(options.github);
     return client;
   };
-  const branch = await pickBranch(
-    git,
+  const originCheck: OriginCheck | undefined =
     remote === undefined
       ? undefined
       : {
@@ -244,8 +253,77 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
           },
           info: (text) => reporter.info(say(text)),
           warn,
+        };
+
+  const unpushed = await unpushedAdaptCommit(git, original);
+  if (unpushed !== undefined) {
+    const baseBranch = await git.defaultBranch();
+    const short = unpushed.slice(0, 7);
+    if (!push) {
+      const advice = await pushAdvice(git, original);
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `You are on ${original}, and OpsCrew's commit ${short} on it is not on origin yet, so OpsCrew did not start another run.`,
+        {
+          hint: say(
+            `${advice.text} Then open a pull request into ${baseBranch}. Or run \`opscrew adapt\` without --no-push: it pushes the commit and opens the pull request. To start over instead, run \`git checkout ${baseBranch}\` first.`,
+          ),
         },
-  );
+      );
+    }
+    reporter.info(
+      say(
+        `You are on ${original}, and OpsCrew's commit ${short} on it is not on origin yet, so OpsCrew pushes it and opens the pull request instead of starting another run. To start over, run \`git checkout ${baseBranch}\` and \`opscrew adapt\` again.`,
+      ),
+    );
+    const picked =
+      originCheck === undefined
+        ? { branch: original, originChecked: false }
+        : await pickBranch(git, originCheck, original);
+    if (picked.branch !== original) {
+      await git.renameBranch(original, picked.branch);
+      await audit({
+        kind: "git",
+        actor: "opscrew",
+        action: "rename branch",
+        target: `${original} -> ${picked.branch}`,
+      });
+      reporter.info(
+        `Renamed ${original} to ${picked.branch}, so the push does not touch the branch on origin.`,
+      );
+    }
+    return pushAndOpen({
+      deps,
+      git,
+      plan,
+      sha: unpushed,
+      remote,
+      repo,
+      gitHub,
+      originChecked: picked.originChecked,
+      artefacts: artefactPaths(deps),
+      byOpsCrew: [],
+      paths: {},
+      result: {
+        branch: picked.branch,
+        baseBranch,
+        createdFiles: [],
+        editedFiles: [],
+        changes: plan.codeChanges,
+        notes: {},
+        manual: [],
+        addedDependencies: [],
+        aiRan: false,
+        costUsd: 0,
+        committed: true,
+        commitSha: unpushed,
+        pushed: false,
+      },
+    });
+  }
+
+  const baseBranch = original === "HEAD" ? await git.defaultBranch() : original;
+  const { branch, originChecked } = await pickBranch(git, originCheck);
   await git.createBranch(branch);
   await audit({ kind: "git", actor: "opscrew", action: "create branch", target: branch });
   reporter.info(
@@ -306,6 +384,8 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   // else stays with the Code-change agent or the user.
   const playbook = playbookFor(facts);
   const editedFiles: string[] = [];
+  /** The file a change was really made in, when it is not the plan's path. */
+  const madeIn: Record<string, string> = {};
   const manualReasons = new Map<string, string>();
   const leaveToAgent = (change: CodeChange, note: string, reason: string) => {
     // Notes for the pull request; the agent's report replaces them when it runs.
@@ -319,10 +399,12 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
         path: change.path,
         healthPath: plan.app.healthPath,
         exists: (path) => exists(join(paths.root, path)),
+        folders: (path) => subfolders(join(paths.root, path)),
       });
       if (edit.action === "write") {
         await writeFileAtomic(join(paths.root, edit.path), edit.content, { mode: 0o644 });
         createdFiles.push(edit.path);
+        if (edit.path !== change.path) madeIn[change.id] = edit.path;
         const check =
           edit.middleware === undefined
             ? undefined
@@ -453,15 +535,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   };
 
   // 5. Show what changed, then commit after approval.
-  const artefacts = new Set(
-    [
-      paths.files.architecture,
-      paths.files.architectureMd,
-      paths.files.requirements,
-      paths.files.plan,
-      paths.files.scanReportMd,
-    ].map((file) => toPosixRelative(paths.root, file)),
-  );
+  const artefacts = new Set(artefactPaths(deps));
   const changed = (await git.status())
     .filter((entry) => entry.path.startsWith(prefix))
     .map((entry) => ({ ...entry, path: entry.path.slice(prefix.length) }));
@@ -505,23 +579,77 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     return result;
   }
   await git.add(toCommit.map((entry) => entry.path));
-  const sha = await git.commit(say(commitMessage(changes)));
+  const sha = await git.commit(say(commitMessage(changes, madeIn)));
   result.committed = true;
   result.commitSha = sha;
   await audit({ kind: "git", actor: "opscrew", action: "commit", target: branch, detail: sha });
   reporter.success(`Committed ${sha.slice(0, 7)} on ${branch}.`);
 
   // 6. Push and open the pull request, each after approval.
+  if (!push) {
+    const advice = await pushAdvice(git, branch);
+    result.pushCommand = advice.command;
+    reporter.info(say(`Not pushed (--no-push). ${advice.text} Then open a pull request.`));
+    await deps.state.markPhase("adapt", "ok", say(`committed ${sha.slice(0, 7)} on ${branch}`));
+    return result;
+  }
+  return pushAndOpen({
+    deps,
+    git,
+    plan,
+    sha,
+    remote,
+    repo,
+    gitHub,
+    originChecked,
+    artefacts: [...artefacts],
+    byOpsCrew: [...byOpsCrew],
+    paths: madeIn,
+    result,
+  });
+}
+
+/** What {@link pushAndOpen} needs: the commit, the branch it is on and where it goes. */
+interface PushContext {
+  deps: PhaseDeps;
+  git: GitClient;
+  plan: DeployPlan;
+  /** The OpsCrew commit on `result.branch`. */
+  sha: string;
+  /** origin's URL; undefined without an `origin` remote. */
+  remote: string | undefined;
+  /** The GitHub repository origin points at. */
+  repo: { owner: string; repo: string } | undefined;
+  gitHub: () => Promise<AdaptGitHub | undefined>;
+  /** False when origin could not be checked before the branch name was picked. */
+  originChecked: boolean;
+  /** Project-relative OpsCrew artefacts linked from the pull request when they exist. */
+  artefacts: readonly string[];
+  /** Ids of the changes OpsCrew made itself. */
+  byOpsCrew: readonly string[];
+  /** The file a change was really made in, when it is not the plan's path. */
+  paths: Readonly<Record<string, string>>;
+  /** The result so far: its branch, base, changes, notes and dependencies go into the PR. */
+  result: AdaptResult;
+}
+
+/**
+ * Pushes the OpsCrew commit and opens the pull request, each after its own approval. A refused
+ * approval, a missing token or a failed pull request is a warning that says how to continue; a
+ * failed push throws `COMMAND_FAILED` with what to do (nothing is ever force-pushed).
+ */
+async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
+  const { deps, git, plan, sha, remote, repo, gitHub, result } = ctx;
+  const { branch, baseBranch, changes, notes, addedDependencies } = result;
+  const { paths, reporter } = deps;
+  const say = (text: string) => deps.redactor.redact(text);
+  const warn = (text: string) => reporter.warn(say(text));
+  const audit = (entry: Omit<AuditInput, "phase">) =>
+    deps.audit.append({ ...entry, phase: "adapt", detail: entry.detail && say(entry.detail) });
   const done = async (summary: string) => {
     await deps.state.markPhase("adapt", "ok", say(summary));
     return result;
   };
-  if (!push) {
-    reporter.info(
-      `Not pushed (--no-push). When you are ready: \`git push -u origin ${branch}\`, then open a pull request.`,
-    );
-    return done(`committed ${sha.slice(0, 7)} on ${branch}`);
-  }
   if (remote === undefined) {
     warn(
       `This repository has no \`origin\` remote, so OpsCrew did not push. Add your GitHub repository with \`git remote add origin <url>\`, then run \`git push -u origin ${branch}\`.`,
@@ -540,7 +668,26 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     );
     return done(`committed ${sha.slice(0, 7)} on ${branch}, not pushed`);
   }
-  await git.push(branch, { setUpstream: true });
+  try {
+    await git.push(branch, { setUpstream: true });
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    const later = `Once origin is reachable, run \`opscrew adapt\` again on this branch: it pushes the commit${ctx.originChecked ? "" : " (to a free branch name when origin has this one)"} and opens the pull request.`;
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      say(
+        `OpsCrew committed ${sha.slice(0, 7)} on ${branch}, but the push to origin failed: ${error.message}`,
+      ),
+      {
+        hint: say(
+          ctx.originChecked
+            ? `Check that you can push to origin. ${later} Or push it yourself with \`git push -u origin ${branch}\` and open a pull request into ${baseBranch}.`
+            : `OpsCrew could not check origin before it picked ${branch}, so origin may already have a branch of that name from an earlier run. Push the commit to a free branch name yourself with \`git push -u origin ${branch}:<new name>\` and open a pull request into ${baseBranch}. ${later} Or run \`git checkout ${baseBranch}\` and \`opscrew adapt\` again to start over.`,
+        ),
+        cause: error,
+      },
+    );
+  }
   result.pushed = true;
   await audit({ kind: "git", actor: "opscrew", action: "push", target: `origin ${branch}` });
   reporter.success(`Pushed ${branch} to origin.`);
@@ -569,12 +716,13 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
         changes,
         notes,
         scanCounts: await readScanCounts(paths.files.scanReportJson),
-        reports: await existingFiles(paths.root, [...artefacts]),
+        reports: await existingFiles(paths.root, ctx.artefacts),
         repo,
         branch,
         app: { name: plan.app.name, port: plan.app.port, healthPath: plan.app.healthPath },
         addedDependencies,
-        byOpsCrew: [...byOpsCrew],
+        byOpsCrew: [...ctx.byOpsCrew],
+        paths: ctx.paths,
       }),
     );
     const prApproval = await deps.approvals.request({
@@ -631,16 +779,30 @@ interface OriginCheck {
   warn(text: string): void;
 }
 
+/** `opscrew/prepare-deploy`, then `-2`, `-3`, … */
+function adaptBranchName(i: number): string {
+  return i === 1 ? ADAPT_BRANCH : `${ADAPT_BRANCH}-${i}`;
+}
+
+/** A branch adapt creates. */
+const ADAPT_BRANCH_NAME = /^opscrew\/prepare-deploy(?:-[1-9][0-9]*)?$/;
+
 /**
- * The first free branch name: not in this clone and, when adapt will push, not on origin either,
- * so the push never collides with a branch an earlier run left behind. A branch on origin with an
- * open pull request stops adapt before it changes anything (that pull request is still the place
- * to finish the earlier run); one without (merged or closed) is skipped, never pushed to.
+ * The first free branch name: not in this clone (except `current`, the branch already holding
+ * the commit to push) and, when adapt will push, not on origin either, so the push never collides
+ * with a branch an earlier run left behind. A branch on origin with an open pull request stops
+ * adapt before it changes anything (that pull request is still the place to finish the earlier
+ * run); one without (merged or closed) is skipped, never pushed to. `originChecked` is false when
+ * origin was not checked (no push, or it could not be reached).
  */
-async function pickBranch(git: GitClient, origin?: OriginCheck): Promise<string> {
+async function pickBranch(
+  git: GitClient,
+  origin?: OriginCheck,
+  current?: string,
+): Promise<{ branch: string; originChecked: boolean }> {
   let check = origin;
   for (let i = 1; i <= 100; i++) {
-    const name = i === 1 ? ADAPT_BRANCH : `${ADAPT_BRANCH}-${i}`;
+    const name = adaptBranchName(i);
     if (check !== undefined) {
       let sha: string | undefined;
       try {
@@ -671,13 +833,93 @@ async function pickBranch(git: GitClient, origin?: OriginCheck): Promise<string>
         continue;
       }
     }
-    if (!(await git.branchExists(name))) return name;
+    if (name === current || !(await git.branchExists(name))) {
+      return { branch: name, originChecked: check !== undefined };
+    }
   }
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     `There are already 100 ${ADAPT_BRANCH} branches, so OpsCrew did not create another one.`,
     { hint: `Delete the old ones with \`git branch -D ${ADAPT_BRANCH}-<n>\`, then try again.` },
   );
+}
+
+/**
+ * The sha of OpsCrew's adapt commit at `HEAD` when it was never pushed: `branch` is an adapt
+ * branch, its last commit is the adapt commit, and neither origin's copy of the branch (as this
+ * clone last saw it) nor origin's default branch contains it. Reads only this clone.
+ */
+async function unpushedAdaptCommit(git: GitClient, branch: string): Promise<string | undefined> {
+  if (!ADAPT_BRANCH_NAME.test(branch)) return undefined;
+  if ((await git.commitSubject()) !== ADAPT_COMMIT_SUBJECT) return undefined;
+  const sha = await git.headSha();
+  if (await git.isAncestor(sha, `refs/remotes/origin/${branch}`)) return undefined;
+  if (await git.isAncestor(sha, `refs/remotes/origin/${await git.defaultBranch()}`)) {
+    return undefined;
+  }
+  return sha;
+}
+
+/**
+ * The command that pushes `branch` (and how to say it), checked read-only against origin when it
+ * can be reached: when origin already has `branch` from an earlier run, the commit goes to the
+ * next name that is free on origin and in this clone (`git push -u origin <branch>:<free name>`).
+ */
+async function pushAdvice(
+  git: GitClient,
+  branch: string,
+): Promise<{ command: string; text: string }> {
+  const plain = `git push -u origin ${branch}`;
+  if ((await git.remoteUrl("origin")) === undefined) {
+    return {
+      command: plain,
+      text: `When you are ready, add your GitHub repository with \`git remote add origin <url>\`, then run \`${plain}\`.`,
+    };
+  }
+  const unknown = {
+    command: plain,
+    text: `When you are ready: \`${plain}\`. OpsCrew could not check origin; if it already has ${branch} from an earlier run, push to a new branch name instead: \`git push -u origin ${branch}:<new name>\`.`,
+  };
+  try {
+    if ((await git.remoteBranchSha(branch)) === undefined) {
+      return { command: plain, text: `When you are ready: \`${plain}\`.` };
+    }
+    for (let i = 1; i <= 100; i++) {
+      const name = adaptBranchName(i);
+      if (name === branch || (await git.branchExists(name))) continue;
+      if ((await git.remoteBranchSha(name)) !== undefined) continue;
+      const command = `git push -u origin ${branch}:${name}`;
+      return {
+        command,
+        text: `${branch} is already on origin from an earlier run, so push this commit to a new branch when you are ready: \`${command}\`.`,
+      };
+    }
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+  }
+  return unknown;
+}
+
+/** The OpsCrew artefacts adapt commits and links (project-relative POSIX paths). */
+function artefactPaths(deps: PhaseDeps): string[] {
+  const { paths } = deps;
+  return [
+    paths.files.architecture,
+    paths.files.architectureMd,
+    paths.files.requirements,
+    paths.files.plan,
+    paths.files.scanReportMd,
+  ].map((file) => toPosixRelative(paths.root, file));
+}
+
+/** Names of the sub-folders of `dir` (`[]` when it is missing or unreadable). */
+async function subfolders(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
 }
 
 /** Why the Code-change agent will not run, or undefined when it will. */
@@ -717,10 +959,14 @@ function applyReport(
   return [...report.addedDependencies];
 }
 
-function commitMessage(changes: readonly CodeChange[]): string {
+/** The adapt commit message; `madeIn` names the real file when it is not the plan's path. */
+function commitMessage(
+  changes: readonly CodeChange[],
+  madeIn: Readonly<Record<string, string>>,
+): string {
   const done = changes.filter((change) => change.status === "applied");
   if (done.length === 0) return `${ADAPT_COMMIT_SUBJECT}\n`;
-  const lines = done.map((change) => `- ${change.kind}: ${change.path}`);
+  const lines = done.map((change) => `- ${change.kind}: ${madeIn[change.id] ?? change.path}`);
   return `${ADAPT_COMMIT_SUBJECT}\n\n${lines.join("\n")}\n`;
 }
 

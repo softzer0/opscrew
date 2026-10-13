@@ -135,6 +135,38 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     for (const secret of [STRIPE, ...Object.values(TOKENS)]) expect(printed).not.toContain(secret);
   });
 
+  it("says the final files were not published when an earlier run's pull request is in the way", async () => {
+    const h = await moveHarness();
+    await run(h);
+    // An earlier run's branch (pushed from another clone) with an open pull request.
+    await git.run("git", [
+      "-C",
+      h.root,
+      "push",
+      "-q",
+      "origin",
+      "HEAD:refs/heads/opscrew/deploy-setup",
+    ]);
+    const open = { number: 5, url: "https://github.com/acme/shop/pull/5" };
+    h.github.openPulls.set("opscrew/deploy-setup", open);
+    const before = await git.run("git", ["-C", h.root, "rev-parse", "HEAD"]);
+
+    const result = await finish(h);
+
+    expect(result).toMatchObject({ step: "finished", done: true });
+    const text = h.reporter.text();
+    expect(text).toContain(
+      `The move is finished, but the final files were not published; the pull request ${open.url} from an earlier OpsCrew run is still open`,
+    );
+    expect(text).not.toContain("opscrew provision");
+    expect(text).not.toContain("did not change anything");
+    expect(result.next[0]).toBe(
+      "Merge or close it on GitHub, then commit the changed files under opscrew/ on a new branch and open a pull request yourself, so the repository describes the deployment.",
+    );
+    expect(h.github.pulls).toEqual([]);
+    expect((await git.run("git", ["-C", h.root, "rev-parse", "HEAD"])).stdout).toBe(before.stdout);
+  });
+
   it("deletes an old DigitalOcean Droplet without a protection step", async () => {
     const h = await moveHarness({ from: "digitalocean" });
     await run(h);

@@ -20,6 +20,8 @@ export {
   DEPLOY_SETUP_BRANCH,
   type DeployBranch,
   deploySetupPullRequestBody,
+  localDeployBranch,
+  type PublishPhase,
   type PublishResult,
   publishDeploySetup,
 } from "./publish";

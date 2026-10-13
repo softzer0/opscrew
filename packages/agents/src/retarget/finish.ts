@@ -1,4 +1,4 @@
-import { OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
@@ -301,17 +301,25 @@ async function finish(
       ],
       push: true,
       secretsStored: true,
+      phase: "retarget",
     });
     publish = published.prUrl
       ? `Merge ${published.prUrl} so the repository describes the new deployment.`
       : `Push the branch ${published.branch} and open a pull request into ${branch} so the repository describes the new deployment.`;
   } catch (error) {
+    // A branch check (an earlier run's pull request) stops before anything is committed.
+    const stopped = isUserFacingError(error) && error.code === "PHASE_PRECONDITION";
     deps.reporter.warn(
       deps.redactor.redact(
-        `The move is finished, but publishing the final files failed: ${reasonOf(error)}.`,
+        stopped
+          ? `The move is finished, but ${error.message.charAt(0).toLowerCase()}${error.message.slice(1)}`
+          : `The move is finished, but publishing the final files failed: ${reasonOf(error)}.`,
       ),
     );
-    publish = `Commit the changed files under opscrew/ and open a pull request into ${branch} yourself, so the repository describes the new deployment.`;
+    publish =
+      stopped && error.hint !== undefined
+        ? deps.redactor.redact(error.hint)
+        : `Commit the changed files under opscrew/ and open a pull request into ${branch} yourself, so the repository describes the new deployment.`;
   }
   const remaining = remainingAfterDeletion({
     provider: old.provider,

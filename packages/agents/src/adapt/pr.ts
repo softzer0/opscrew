@@ -37,6 +37,11 @@ export interface PullRequestBodyInput {
   addedDependencies?: readonly string[];
   /** Ids of the changes OpsCrew made itself (templates and deterministic edits). */
   byOpsCrew?: readonly string[];
+  /**
+   * The file a change was really made in, by change id, when it differs from the plan's path
+   * (for example `route.js` where the plan says `route.ts`).
+   */
+  paths?: Readonly<Record<string, string>>;
 }
 
 /** What a missing health endpoint means for deploys, in one plain sentence. */
@@ -50,7 +55,12 @@ function link(path: string, input: PullRequestBodyInput): string {
   return `[\`${path}\`](${url})`;
 }
 
-function changeLine(change: CodeChange, notes: string | undefined, byOpsCrew: boolean): string[] {
+function changeLine(
+  change: CodeChange,
+  notes: string | undefined,
+  byOpsCrew: boolean,
+  path = change.path,
+): string[] {
   const box = change.status === "applied" ? "[x]" : "[ ]";
   const status =
     change.status === "pending"
@@ -59,7 +69,7 @@ function changeLine(change: CodeChange, notes: string | undefined, byOpsCrew: bo
         ? "applied by OpsCrew"
         : change.status;
   const lines = [
-    `- ${box} **${KIND_LABELS[change.kind]}** in \`${change.path}\` (${status}): ${change.reason}`,
+    `- ${box} **${KIND_LABELS[change.kind]}** in \`${path}\` (${status}): ${change.reason}`,
   ];
   const text = notes?.trim().replace(/\s+/g, " ");
   if (text) lines.push(`  - Notes: ${text}`);
@@ -81,7 +91,14 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
   if (input.changes.length === 0) lines.push("No code changes were needed.");
   const byOpsCrew = new Set(input.byOpsCrew ?? []);
   for (const change of input.changes) {
-    lines.push(...changeLine(change, input.notes?.[change.id], byOpsCrew.has(change.id)));
+    lines.push(
+      ...changeLine(
+        change,
+        input.notes?.[change.id],
+        byOpsCrew.has(change.id),
+        input.paths?.[change.id],
+      ),
+    );
   }
   const health = input.app?.healthPath ?? "/health";
   if (input.changes.some((c) => c.kind === "health-endpoint" && c.status === "pending")) {

@@ -6,6 +6,19 @@ function tree(...files: string[]) {
   return async (path: string) => files.some((file) => file === path || file.startsWith(`${path}/`));
 }
 
+/** `folders` over the same files: the sub-folders of a folder. */
+function folders(...files: string[]) {
+  return async (path: string) => {
+    const names = new Set<string>();
+    for (const file of files) {
+      if (!file.startsWith(`${path}/`)) continue;
+      const rest = file.slice(path.length + 1).split("/");
+      if (rest.length > 1) names.add(rest[0] as string);
+    }
+    return [...names];
+  };
+}
+
 const APP_ROUTE = "app/api/health/route.ts";
 
 describe("nextHealthRoute", () => {
@@ -17,19 +30,63 @@ describe("nextHealthRoute", () => {
     });
     expect(edit).toMatchObject({ action: "write", path: APP_ROUTE });
     if (edit.action !== "write") return;
-    expect(edit.content).toContain('export const dynamic = "force-dynamic";');
-    expect(edit.content).toContain('return Response.json({ status: "ok" });');
+    // NextResponse.json type-checks before TypeScript 5.2; `dynamic` breaks cacheComponents.
+    expect(edit.content).toContain('import { NextResponse } from "next/server";');
+    expect(edit.content).toContain('return NextResponse.json({ status: "ok" });');
+    expect(edit.content).not.toMatch(/[^t]Response\.json/);
+    expect(edit.content).not.toContain("dynamic");
     expect(edit.content).toContain("export function GET()");
+    expect(edit.note).toContain(`Created ${APP_ROUTE} by OpsCrew`);
     expect(edit.middleware).toBeUndefined();
   });
 
-  it("uses JavaScript when the app has no tsconfig.json", async () => {
+  it("uses JavaScript when the app has no tsconfig.json, and names that file", async () => {
     const edit = await nextHealthRoute({
       path: APP_ROUTE,
       healthPath: "/api/health",
       exists: tree("app/page.jsx", "jsconfig.json"),
     });
     expect(edit).toMatchObject({ action: "write", path: "app/api/health/route.js" });
+    if (edit.action !== "write") return;
+    expect(edit.note).toContain("Created app/api/health/route.js by OpsCrew");
+    expect(edit.content).toContain('return NextResponse.json({ status: "ok" });');
+    expect(edit.content).not.toContain("dynamic");
+  });
+
+  it("counts a route inside route groups as existing, also under src/", async () => {
+    for (const existing of [
+      "app/(api)/api/health/route.ts",
+      "app/api/(checks)/health/route.js",
+      "src/app/(site)/(api)/api/health/route.tsx",
+      "app/api/health/(x)/route.ts",
+    ]) {
+      const files = ["app/page.tsx", "tsconfig.json", existing];
+      const edit = await nextHealthRoute({
+        path: APP_ROUTE,
+        healthPath: "/api/health",
+        exists: tree(...files),
+        folders: folders(...files),
+      });
+      expect(edit, existing).toEqual({
+        action: "none",
+        reason: `${existing} already answers /api/health; OpsCrew left it as it is.`,
+      });
+    }
+    // Another path in a group, node_modules and an intercepting route do not count.
+    const others = [
+      "app/page.tsx",
+      "tsconfig.json",
+      "app/(api)/api/healthz/route.ts",
+      "app/node_modules/api/health/route.ts",
+      "app/(.)api/health/route.ts",
+    ];
+    const elsewhere = await nextHealthRoute({
+      path: APP_ROUTE,
+      healthPath: "/api/health",
+      exists: tree(...others),
+      folders: folders(...others),
+    });
+    expect(elsewhere).toMatchObject({ action: "write", path: APP_ROUTE });
   });
 
   it("creates the pages router route, in src/ and in a monorepo folder", async () => {

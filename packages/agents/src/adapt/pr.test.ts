@@ -81,6 +81,20 @@ describe("renderPullRequestBody", () => {
     expect(body).toContain("- [x] **Health endpoint** in `app/api/health/route.ts` (applied):");
   });
 
+  it("names the file a change was really made in", () => {
+    const applied = changes.map((change) => ({ ...change, status: "applied" as const }));
+    const body = renderPullRequestBody({
+      changes: applied,
+      reports: [],
+      byOpsCrew: ["health-endpoint"],
+      paths: { "health-endpoint": "app/api/health/route.js" },
+    });
+    expect(body).toContain(
+      "- [x] **Health endpoint** in `app/api/health/route.js` (applied by OpsCrew):",
+    );
+    expect(body).not.toContain("app/api/health/route.ts");
+  });
+
   it("is deterministic", () => {
     const input = { changes, reports: [], scanCounts: {} };
     expect(renderPullRequestBody(input)).toBe(renderPullRequestBody(input));

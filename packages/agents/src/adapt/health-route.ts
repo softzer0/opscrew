@@ -24,6 +24,51 @@ export interface NextHealthRouteInput {
   healthPath: string;
   /** Whether a repo-relative file or folder exists. */
   exists: (path: string) => Promise<boolean>;
+  /**
+   * Names of the sub-folders of a repo-relative folder (`[]` when it is missing), used to find a
+   * route inside route groups such as `app/(api)/api/health/route.ts`. Without it, route groups
+   * are not searched.
+   */
+  folders?: (path: string) => Promise<string[]>;
+}
+
+/** How deep OpsCrew looks below `app/` for a route inside route groups. */
+const MAX_GROUP_DEPTH = 8;
+
+/** A route group folder, `(name)`: it organises routes without adding a URL segment. */
+const ROUTE_GROUP = /^\([^()]+\)$/;
+
+/**
+ * The first `route.*` or `page.*` file under `appDir` that answers `/api/health` through route
+ * groups (`(group)` folders are skipped in the URL), searched at most {@link MAX_GROUP_DEPTH}
+ * folders deep, never inside `node_modules` or hidden folders.
+ */
+async function routeInGroups(
+  input: NextHealthRouteInput,
+  appDir: string,
+): Promise<string | undefined> {
+  const folders = input.folders;
+  if (folders === undefined) return undefined;
+  const walk = async (dir: string, rest: string[], depth: number): Promise<string | undefined> => {
+    if (rest.length === 0) {
+      for (const name of ["route", "page"]) {
+        for (const ext of EXTENSIONS) {
+          const file = `${dir}/${name}.${ext}`;
+          if (await input.exists(file)) return file;
+        }
+      }
+    }
+    if (depth >= MAX_GROUP_DEPTH) return undefined;
+    for (const child of await folders(dir)) {
+      if (child === "node_modules" || child.startsWith(".")) continue;
+      const next = ROUTE_GROUP.test(child) ? rest : child === rest[0] ? rest.slice(1) : undefined;
+      if (next === undefined) continue;
+      const found = await walk(`${dir}/${child}`, next, depth + 1);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  return walk(appDir, ["api", "health"], 0);
 }
 
 /** `<appDir>/` + optional `src/` + router + the route file for `/api/health`. */
@@ -32,11 +77,17 @@ const ROUTE_PATH =
 
 const EXTENSIONS = ["ts", "tsx", "js", "jsx"];
 
-const APP_ROUTE = `export const dynamic = "force-dynamic";
+/**
+ * The app router route, the same in TypeScript and JavaScript. `NextResponse.json` type-checks on
+ * every TypeScript version `next build` accepts (`Response.json` needs TypeScript 5.2), and no
+ * `dynamic` export: it is a build error with `cacheComponents` (Next.js 16), and a static 200 from
+ * the running server is all the health check needs.
+ */
+const APP_ROUTE = `import { NextResponse } from "next/server";
 
 /** Health check for the OpsCrew deploy workflow: answers 200 while the app is up. */
 export function GET() {
-  return Response.json({ status: "ok" });
+  return NextResponse.json({ status: "ok" });
 }
 `;
 
@@ -56,7 +107,8 @@ export default function handler(_req, res) {
 
 /**
  * The deterministic Next.js health route: a new file (never an edit), created only when the plan
- * checks `/api/health`, no route for that path exists in either router, and the router the plan
+ * checks `/api/health`, no route for that path exists in either router (nor inside app router
+ * route groups, when `folders` is given), and the router the plan
  * names is the one Next.js uses (its folder exists, and `src/` is not shadowed by a root `app/` or
  * `pages/`). TypeScript when the app has `tsconfig.json`, JavaScript otherwise.
  */
@@ -100,6 +152,13 @@ export async function nextHealthRoute(input: NextHealthRouteInput): Promise<Heal
         }
       }
     }
+    const grouped = await routeInGroups(input, at(`${base}app`));
+    if (grouped !== undefined) {
+      return {
+        action: "none",
+        reason: `${grouped} already answers ${NEXT_HEALTH_PATH}; OpsCrew left it as it is.`,
+      };
+    }
   }
 
   const router = app === undefined ? "pages" : "app";
@@ -133,7 +192,7 @@ export async function nextHealthRoute(input: NextHealthRouteInput): Promise<Heal
     action: "write",
     path,
     content,
-    note: `Created by OpsCrew: answers GET ${NEXT_HEALTH_PATH} with {"status":"ok"} for the deploy health check.`,
+    note: `Created ${path} by OpsCrew: answers GET ${NEXT_HEALTH_PATH} with {"status":"ok"} for the deploy health check.`,
     ...(middleware === undefined ? {} : { middleware }),
   };
 }

@@ -121,8 +121,9 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
       "app/api/health/route.ts",
     ]);
     const route = await readFile(join(repo.root, "app", "api", "health", "route.ts"), "utf8");
-    expect(route).toContain('export const dynamic = "force-dynamic";');
-    expect(route).toContain('return Response.json({ status: "ok" });');
+    expect(route).toContain('import { NextResponse } from "next/server";');
+    expect(route).toContain('return NextResponse.json({ status: "ok" });');
+    expect(route).not.toContain("dynamic");
     const dockerfile = await readFile(join(repo.root, "Dockerfile"), "utf8");
     expect(dockerfile).toMatch(/^FROM .* AS /m);
     expect(dockerfile).toContain("USER");
@@ -529,8 +530,12 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(first.createdFiles).toContain("app/api/health/route.ts");
     const route = await readFile(join(repo.root, "app", "api", "health", "route.ts"), "utf8");
 
-    // `opscrew design` again: every change is pending once more.
+    // The pull request is merged into main; then `opscrew design` again: every change is
+    // pending once more.
+    await git(repo.env, repo.root, "checkout", "-q", "main");
+    await git(repo.env, repo.root, "merge", "-q", "--ff-only", ADAPT_BRANCH);
     await writeArtifact("plan", repo.deps.paths.files.plan, makePlan(nextChanges()));
+    await git(repo.env, repo.root, "commit", "-q", "-am", "design again");
     const second = await runAdapt(repo.deps, { ai: false, push: false });
 
     expect(second.branch).toBe(`${ADAPT_BRANCH}-2`);
@@ -572,6 +577,49 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(result.notes["health-endpoint"]).toContain("middleware.js");
     expect(repo.deps.reporter.text()).toContain(
       "Check that middleware.js does not redirect or protect /api/health",
+    );
+  });
+
+  it("names the route file really created in the note, the pull request and the commit", async () => {
+    // Design saw TypeScript (route.ts), but the app folder has no tsconfig.json: route.js.
+    const repo = await setup({ agent: null });
+    await git(repo.env, repo.root, "rm", "-q", "tsconfig.json");
+    await git(repo.env, repo.root, "commit", "-q", "-m", "no tsconfig");
+    const github = new FakeGitHub();
+
+    const result = await runAdapt(repo.deps, { ai: false, github });
+
+    const real = "app/api/health/route.js";
+    expect(result.createdFiles).toContain(real);
+    expect(await exists(repo, "app/api/health/route.ts")).toBe(false);
+    expect(result.notes["health-endpoint"]).toContain(`Created ${real} by OpsCrew`);
+    const message = await git(repo.env, repo.root, "log", "-1", "--format=%B");
+    expect(message).toContain(`- health-endpoint: ${real}`);
+    expect(message).not.toContain("route.ts");
+    const body = github.created[0]?.body ?? "";
+    expect(body).toContain(`**Health endpoint** in \`${real}\` (applied by OpsCrew)`);
+    expect(body).not.toContain("app/api/health/route.ts");
+    // The plan keeps its own path as the change's id.
+    const plan = await readArtifact("plan", repo.deps.paths.files.plan);
+    expect(plan.codeChanges.find((c) => c.id === "health-endpoint")?.path).toBe(
+      "app/api/health/route.ts",
+    );
+  });
+
+  it("counts a health route inside a route group as existing", async () => {
+    const grouped = "app/(api)/api/health/route.ts";
+    const repo = await setup({
+      agent: null,
+      files: { [grouped]: "export function GET() {\n  return new Response('ok');\n}\n" },
+    });
+
+    const result = await runAdapt(repo.deps, { ai: false, push: false });
+
+    expect(result.createdFiles).not.toContain("app/api/health/route.ts");
+    expect(await exists(repo, "app/api/health/route.ts")).toBe(false);
+    expect(await statusOf(repo)).toMatchObject({ "health-endpoint": "skipped" });
+    expect(result.notes["health-endpoint"]).toBe(
+      `${grouped} already answers /api/health; OpsCrew left it as it is.`,
     );
   });
 
@@ -709,14 +757,108 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
       );
     });
 
-    it("does not reach origin with --no-push", async () => {
+    it("with --no-push, only reads origin to name a branch the push is not refused on", async () => {
       const repo = await setup();
       await leftOnOrigin(repo, ADAPT_BRANCH);
+      const github = new FakeGitHub(OPEN);
 
-      const result = await runAdapt(repo.deps, { github: new FakeGitHub(OPEN), push: false });
+      const result = await runAdapt(repo.deps, { github, push: false });
 
       expect(result.branch).toBe(ADAPT_BRANCH);
-      expect(repo.runner.calls.some((call) => call.includes("ls-remote"))).toBe(false);
+      expect(result.committed).toBe(true);
+      const command = `git push -u origin ${ADAPT_BRANCH}:${ADAPT_BRANCH}-2`;
+      expect(result.pushCommand).toBe(command);
+      expect(repo.deps.reporter.text()).toContain(
+        `${ADAPT_BRANCH} is already on origin from an earlier run, so push this commit to a new branch when you are ready: \`${command}\`.`,
+      );
+      expect(github.lookups).toEqual([]);
+      expect(repo.handler.requests.map((r) => r.kind)).toEqual(["repo-write"]);
+      expect(await remoteBranches(repo)).toBe(ADAPT_BRANCH);
+      expect(await git(repo.env, repo.bare, "rev-parse", ADAPT_BRANCH)).toBe(repo.initialSha);
+    });
+
+    it("with --no-push, names the plain push when origin does not have the branch", async () => {
+      const repo = await setup();
+
+      const result = await runAdapt(repo.deps, { push: false });
+
+      expect(result.pushCommand).toBe(`git push -u origin ${ADAPT_BRANCH}`);
+      expect(repo.deps.reporter.text()).toContain(
+        `Not pushed (--no-push). When you are ready: \`git push -u origin ${ADAPT_BRANCH}\`. Then open a pull request.`,
+      );
+    });
+
+    it("says what to do when the push is refused after origin could not be checked", async () => {
+      const repo = await setup();
+      // An earlier run's branch with other commits; origin cannot be read when adapt starts.
+      await git(repo.env, repo.root, "commit", "-q", "--allow-empty", "-m", "elsewhere");
+      await leftOnOrigin(repo, ADAPT_BRANCH);
+      await git(repo.env, repo.root, "push", "-q", "origin", `HEAD:refs/heads/${ADAPT_BRANCH}`);
+      await git(repo.env, repo.root, "reset", "-q", "--hard", repo.initialSha);
+      const runner = repo.runner as unknown as {
+        run: (c: string, a: readonly string[], o?: object) => Promise<unknown>;
+      };
+      const real = runner.run.bind(repo.runner);
+      runner.run = async (command, args, options) =>
+        args.includes("ls-remote")
+          ? { exitCode: 128, stdout: "", stderr: "fatal: unable to access origin" }
+          : real(command, args, options);
+
+      const error = await runAdapt(repo.deps, { github: new FakeGitHub() }).catch(
+        (e: unknown) => e,
+      );
+
+      expect(error).toMatchObject({
+        code: "COMMAND_FAILED",
+        message: expect.stringContaining(
+          `on ${ADAPT_BRANCH}, but the push to origin failed: git push failed`,
+        ),
+        hint: expect.stringContaining(
+          `Push the commit to a free branch name yourself with \`git push -u origin ${ADAPT_BRANCH}:<new name>\``,
+        ),
+      });
+      expect((error as { hint: string }).hint).toContain(
+        "Once origin is reachable, run `opscrew adapt` again on this branch",
+      );
+      expect((await repo.deps.state.read()).phases.adapt?.status).toBe("failed");
+
+      // Origin is reachable again: the re-run pushes that commit to a free name and opens the PR.
+      runner.run = real;
+      const sha = await git(repo.env, repo.root, "rev-parse", "HEAD");
+      const github = new FakeGitHub();
+      const again = await runAdapt(repo.deps, { github });
+
+      const branch = `${ADAPT_BRANCH}-2`;
+      expect(again).toMatchObject({ branch, pushed: true, commitSha: sha, baseBranch: "main" });
+      expect(await git(repo.env, repo.root, "branch", "--show-current")).toBe(branch);
+      expect(await git(repo.env, repo.bare, "rev-parse", branch)).toBe(sha);
+      expect(github.created).toEqual([expect.objectContaining({ head: branch, base: "main" })]);
+      expect(github.created[0]?.body).toContain("Production Dockerfile");
+      expect(repo.deps.reporter.text()).not.toContain("Nothing to commit");
+      expect(repo.deps.reporter.text()).toContain(`Renamed ${ADAPT_BRANCH} to ${branch}`);
+      expect(repo.handler.requests.map((r) => r.kind)).toEqual([
+        "repo-write",
+        "git-push",
+        "git-push",
+        "pull-request",
+      ]);
+    });
+
+    it("on the branch of an unpushed OpsCrew commit, --no-push says how to push it", async () => {
+      const repo = await setup({ approvals: [true, false] });
+      const first = await runAdapt(repo.deps, { github: new FakeGitHub() });
+      expect(first.pushed).toBe(false);
+
+      await expect(runAdapt(repo.deps, { push: false })).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: expect.stringContaining(
+          `You are on ${ADAPT_BRANCH}, and OpsCrew's commit ${first.commitSha?.slice(0, 7)} on it is not on origin yet`,
+        ),
+        hint: expect.stringContaining(`\`git push -u origin ${ADAPT_BRANCH}\``),
+      });
+      expect(await git(repo.env, repo.root, "branch", "--list", "opscrew/*")).toBe(
+        `* ${ADAPT_BRANCH}`,
+      );
     });
   });
 

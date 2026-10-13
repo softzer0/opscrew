@@ -119,9 +119,7 @@ async function provisionFlow(
   // The branch for the deployment files, picked before anything changes (a push needs it).
   const publishes =
     options.push !== false && !(options.planOnly && options.approvePlanHash === undefined);
-  const deployBranch = publishes
-    ? await chooseDeployBranch(deps, git, github, `opscrew ${phase}`)
-    : undefined;
+  const deployBranch = publishes ? await chooseDeployBranch(deps, git, github, phase) : undefined;
   const zoneLearned = cloudflare !== undefined && plan.dns.zone !== cloudflare.zoneName;
   if (cloudflare && zoneLearned) {
     plan = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };

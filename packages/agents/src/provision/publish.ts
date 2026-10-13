@@ -61,36 +61,108 @@ export interface DeployBranch {
   pullRequest?: PullRequest;
 }
 
+/** Phases that publish the deployment files. */
+export type PublishPhase = Extract<PhaseName, "provision" | "dns" | "retarget">;
+
+/** {@link DEPLOY_SETUP_BRANCH}, then `-2`, `-3`, … */
+function deployBranchName(i: number): string {
+  return i === 1 ? DEPLOY_SETUP_BRANCH : `${DEPLOY_SETUP_BRANCH}-${i}`;
+}
+
+/** What to do when the final files of a finished move were not published. */
+const PUBLISH_BY_HAND =
+  "commit the changed files under opscrew/ on a new branch and open a pull request yourself, so the repository describes the deployment.";
+
+/**
+ * A branch-check stop. Before a provision (or dns) run nothing has changed yet, and the user runs
+ * the command again; at the end of a finished retarget only the final files were not published,
+ * and the user publishes them by hand.
+ */
+function branchStop(
+  phase: PublishPhase,
+  reason: string,
+  hints: { rerun: string; retarget: string },
+): OpsCrewError {
+  if (phase === "retarget") {
+    return new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The final files were not published; ${reason}.`,
+      {
+        hint: hints.retarget,
+      },
+    );
+  }
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${reason.charAt(0).toUpperCase()}${reason.slice(1)}, so OpsCrew did not change anything.`,
+    { hint: hints.rerun },
+  );
+}
+
+/**
+ * The branch for the deployment files chosen without reaching GitHub: the first of
+ * {@link DEPLOY_SETUP_BRANCH}, `-2`, … that is the current branch or does not exist in this clone,
+ * so a stale local branch (its pull request merged long ago) is never committed on.
+ */
+export async function localDeployBranch(git: GitClient): Promise<string> {
+  const current = await git.currentBranch();
+  for (let i = 1; i <= 100; i++) {
+    const branch = deployBranchName(i);
+    if (branch === current || !(await git.branchExists(branch))) return branch;
+  }
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `There are already 100 ${DEPLOY_SETUP_BRANCH} branches in this clone, so OpsCrew did not create another one.`,
+    {
+      hint: `Delete the old ones with \`git branch -D ${DEPLOY_SETUP_BRANCH}-<n>\`, then try again.`,
+    },
+  );
+}
+
 /**
  * Picks the branch for the deployment files before anything changes, so the push never collides
  * with a branch an earlier run left on GitHub: {@link DEPLOY_SETUP_BRANCH}, or the next free
  * `-2`, `-3`, …. A branch on GitHub whose pull request is merged or closed is skipped (never
- * pushed to). One with an open pull request is added to when the push is a fast-forward (its head
- * is in this clone's branch of the same name, so OpsCrew pushed it from here); otherwise this
- * throws `PHASE_PRECONDITION` naming the pull request, and nothing is force-pushed. When GitHub
- * cannot be reached through git, it warns and keeps {@link DEPLOY_SETUP_BRANCH}.
+ * pushed to), and so is a branch only this clone has unless it is the current branch (a stale
+ * local branch is never committed on). One with an open pull request is added to when this clone
+ * is on that branch and the push is a fast-forward (its head is in this clone's branch, so OpsCrew
+ * pushed it from here); otherwise this throws `PHASE_PRECONDITION` naming the pull request, and
+ * nothing is force-pushed. When GitHub cannot be reached through git, it warns and picks the branch
+ * from this clone alone ({@link localDeployBranch}). `phase` (default `provision`) words a stop for
+ * the command that publishes: a finished retarget says the final files were not published.
  */
 export async function chooseDeployBranch(
   deps: PhaseDeps,
   git: GitClient,
   github: GitHubSetup,
-  command = "opscrew provision",
+  phase: PublishPhase = "provision",
 ): Promise<DeployBranch> {
+  const command = `opscrew ${phase}`;
+  const current = await git.currentBranch();
   for (let i = 1; i <= 100; i++) {
-    const branch = i === 1 ? DEPLOY_SETUP_BRANCH : `${DEPLOY_SETUP_BRANCH}-${i}`;
+    const branch = deployBranchName(i);
     let sha: string | undefined;
     try {
       sha = await git.remoteBranchSha(branch);
     } catch (error) {
       if (!isUserFacingError(error)) throw error;
+      const local = await localDeployBranch(git);
       deps.reporter.warn(
         deps.redactor.redact(
-          `OpsCrew could not check GitHub for a branch left by an earlier run (${error.message}). It continues with ${DEPLOY_SETUP_BRANCH}.`,
+          `OpsCrew could not check GitHub for a branch left by an earlier run (${error.message}). It continues with ${local}.`,
         ),
       );
-      return { branch: DEPLOY_SETUP_BRANCH };
+      return { branch: local };
     }
-    if (sha === undefined) return { branch };
+    if (sha === undefined) {
+      if (branch !== current && (await git.branchExists(branch))) {
+        deps.reporter.info(
+          `${branch} is only in this clone, from an earlier run, and you are not on it, so OpsCrew leaves it alone.`,
+        );
+        continue;
+      }
+      return { branch };
+    }
     const open = await github.api.findOpenPullRequest(github.owner, github.repo, branch);
     if (open === undefined) {
       deps.reporter.info(
@@ -99,30 +171,40 @@ export async function chooseDeployBranch(
       continue;
     }
     if ((await git.branchExists(branch)) && (await git.isAncestor(sha, branch))) {
-      deps.reporter.info(`Adding to the open pull request ${open.url} (branch ${branch}).`);
-      return { branch, pullRequest: open };
+      if (current === branch) {
+        deps.reporter.info(`Adding to the open pull request ${open.url} (branch ${branch}).`);
+        return { branch, pullRequest: open };
+      }
+      throw branchStop(
+        phase,
+        `the pull request ${open.url} from an earlier OpsCrew run is still open and the files belong on its branch ${branch}, but this clone is on ${current}`,
+        {
+          rerun: `Run \`git checkout ${branch}\`, then run \`${command}\` again. To start a new pull request instead, merge or close ${open.url} first.`,
+          retarget: `Add them to ${open.url} by committing the changed files under opscrew/ on ${branch} and pushing it, or merge or close that pull request, then ${PUBLISH_BY_HAND}`,
+        },
+      );
     }
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The pull request ${open.url} from an earlier OpsCrew run is still open, and its branch ${branch} has commits this clone does not have, so OpsCrew did not change anything.`,
+    throw branchStop(
+      phase,
+      `the pull request ${open.url} from an earlier OpsCrew run is still open, and its branch ${branch} has commits this clone does not have`,
       {
-        hint: `Merge or close it on GitHub, then run \`${command}\` again. To add to it instead, bring its commits here first (\`git fetch origin ${branch}\`, \`git checkout ${branch}\`, \`git pull\`).`,
+        rerun: `Merge or close it on GitHub, then run \`${command}\` again. To add to it instead, bring its commits here first (\`git fetch origin ${branch}\`, \`git checkout ${branch}\`, \`git pull\`).`,
+        retarget: `Merge or close it on GitHub, then ${PUBLISH_BY_HAND}`,
       },
     );
   }
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `There are already 100 ${DEPLOY_SETUP_BRANCH} branches on GitHub, so OpsCrew did not push another one.`,
-    { hint: "Delete the old ones on GitHub, then try again." },
-  );
+  throw branchStop(phase, `there are already 100 ${DEPLOY_SETUP_BRANCH} branches on GitHub`, {
+    rerun: "Delete the old ones on GitHub, then try again.",
+    retarget: `Delete the old ones on GitHub, then ${PUBLISH_BY_HAND}`,
+  });
 }
 
 /**
  * Commits the generated files and the plan on the deploy branch (`input.branch`, chosen with
- * {@link chooseDeployBranch} before anything changed; when absent it is chosen here, or is
- * {@link DEPLOY_SETUP_BRANCH} without a push), then (when `push`) pushes it and opens a pull
- * request into the deploy branch, each after its own approval. A refused push or pull request is
- * not an error: the commit stays local and the user is told how to continue.
+ * {@link chooseDeployBranch} before anything changed; when absent it is chosen here, or with
+ * {@link localDeployBranch} without a push), then (when `push`) pushes it and opens a pull request
+ * into the deploy branch, each after its own approval. A refused push or pull request is not an
+ * error: the commit stays local and the user is told how to continue.
  */
 export async function publishDeploySetup(
   deps: PhaseDeps,
@@ -134,8 +216,8 @@ export async function publishDeploySetup(
     push: boolean;
     /** Whether the deploy secrets are known to be stored for this server (default true). */
     secretsStored?: boolean;
-    /** Phase recorded in the audit log (default `provision`). */
-    phase?: Extract<PhaseName, "provision" | "dns" | "retarget">;
+    /** Phase recorded in the audit log and named in branch-check stops (default `provision`). */
+    phase?: PublishPhase;
     /** The branch from {@link chooseDeployBranch}, when the caller chose it up front. */
     branch?: DeployBranch;
   },
@@ -148,8 +230,8 @@ export async function publishDeploySetup(
   const chosen =
     input.branch ??
     (input.push
-      ? await chooseDeployBranch(deps, git, github, `opscrew ${phase}`)
-      : { branch: DEPLOY_SETUP_BRANCH });
+      ? await chooseDeployBranch(deps, git, github, phase)
+      : { branch: await localDeployBranch(git) });
   const branch = chosen.branch;
   if ((await git.currentBranch()) !== branch) {
     if (await git.branchExists(branch)) await git.checkout(branch);

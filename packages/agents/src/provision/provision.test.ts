@@ -289,6 +289,69 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       expect((await deps.state.read()).phases.provision?.status).toBe("failed");
     });
 
+    it("stops before any apply when a second run starts from another branch than the open PR's", async () => {
+      const { deps, services, github, git, root, engine, handler } = await setup();
+      await git(root, "add", "opscrew/plan.yaml");
+      await git(root, "commit", "-q", "-m", "plan");
+      await runProvision(deps, { services });
+      github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN);
+      await git(root, "checkout", "-q", "main");
+      const calls = engine.calls.length;
+      handler.requests.length = 0;
+
+      const error = await runProvision(deps, { services }).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: expect.stringContaining(`but this clone is on main, so OpsCrew did not change`),
+        hint: expect.stringContaining(
+          `Run \`git checkout ${DEPLOY_SETUP_BRANCH}\`, then run \`opscrew provision\` again.`,
+        ),
+      });
+      expect((error as Error).message).toContain(OPEN.url);
+      expect(engine.calls).toHaveLength(calls);
+      expect(handler.requests).toEqual([]);
+      expect(await git(root, "branch", "--show-current")).toBe("main");
+      // No generated file was written on main.
+      expect(await git(root, "status", "--porcelain")).not.toMatch(/ (?:opscrew|\.github)\//);
+    });
+
+    it("never commits on a stale local branch whose pull request was merged", async () => {
+      const { deps, services, github, git, root, bare } = await setup();
+      const first = await runProvision(deps, { services });
+      expect(first.branch).toBe(DEPLOY_SETUP_BRANCH);
+      // GitHub merged the pull request and deleted its branch; this clone pulled main.
+      const merged = await git(root, "rev-parse", DEPLOY_SETUP_BRANCH);
+      await git(bare, "update-ref", "refs/heads/main", merged);
+      await git(bare, "update-ref", "-d", `refs/heads/${DEPLOY_SETUP_BRANCH}`);
+      await git(root, "checkout", "-q", "main");
+      await git(root, "merge", "-q", "--ff-only", DEPLOY_SETUP_BRANCH);
+
+      const second = await runProvision(deps, { services });
+
+      const branch = `${DEPLOY_SETUP_BRANCH}-2`;
+      expect(second.branch).toBe(branch);
+      expect(await git(root, "branch", "--show-current")).toBe(branch);
+      expect(await git(root, "rev-parse", DEPLOY_SETUP_BRANCH)).toBe(merged);
+      expect(await git(bare, "rev-parse", branch)).toBe(await git(root, "rev-parse", "HEAD"));
+      expect(github.pulls.map((p) => p.head)).toEqual([DEPLOY_SETUP_BRANCH, branch]);
+      expect(deps.reporter.text()).toContain(
+        `${DEPLOY_SETUP_BRANCH} is only in this clone, from an earlier run, and you are not on it`,
+      );
+    });
+
+    it("without a push, commits on a new branch rather than on a stale local one", async () => {
+      const { deps, services, git, root } = await setup();
+      await git(root, "branch", DEPLOY_SETUP_BRANCH);
+
+      const result = await runProvision(deps, { services, push: false });
+
+      expect(result.branch).toBe(`${DEPLOY_SETUP_BRANCH}-2`);
+      expect(await git(root, "rev-parse", DEPLOY_SETUP_BRANCH)).toBe(
+        await git(root, "rev-parse", "main"),
+      );
+    });
+
     it("does not reach origin with --plan-only or --no-push", async () => {
       const { deps, services, github, git, root } = await setup();
       await git(root, "push", "-q", "origin", `main:refs/heads/${DEPLOY_SETUP_BRANCH}`);

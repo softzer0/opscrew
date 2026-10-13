@@ -364,6 +364,25 @@ describe.skipIf(!git)("GitClient (real temporary repositories)", () => {
     });
   });
 
+  it("reads a commit's subject and renames a branch without forcing", async () => {
+    const { client, dir } = await repo();
+    expect(await client.commitSubject()).toBe("init");
+    await client.createBranch("opscrew/prepare-deploy");
+    await writeFile(join(dir, "a.txt"), "a\n");
+    await client.add(["a.txt"]);
+    await client.commit("chore(opscrew): prepare app for deployment\n\n- a");
+    expect(await client.commitSubject("HEAD")).toBe("chore(opscrew): prepare app for deployment");
+    expect(await client.commitSubject("main")).toBe("init");
+
+    await client.renameBranch("opscrew/prepare-deploy", "opscrew/prepare-deploy-2");
+    expect(await client.currentBranch()).toBe("opscrew/prepare-deploy-2");
+    expect(await client.branchExists("opscrew/prepare-deploy")).toBe(false);
+    await expect(client.renameBranch("opscrew/prepare-deploy-2", "main")).rejects.toMatchObject({
+      code: "COMMAND_FAILED",
+    });
+    expect(await client.currentBranch()).toBe("opscrew/prepare-deploy-2");
+  });
+
   it("explains a missing git identity", async () => {
     const { client, dir, exec } = await repo();
     await exec(dir, "config", "--unset", "user.name");

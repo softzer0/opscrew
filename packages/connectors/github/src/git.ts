@@ -129,6 +129,16 @@ export class GitClient {
     await this.#run(["checkout", name]);
   }
 
+  /** Renames local branch `from` to `to` (refuses when `to` exists; never forced). */
+  async renameBranch(from: string, to: string): Promise<void> {
+    await this.#run(["branch", "-m", "--", from, to]);
+  }
+
+  /** Subject line of commit `ref` (default `HEAD`). */
+  async commitSubject(ref = "HEAD"): Promise<string> {
+    return (await this.#run(["log", "-1", "--format=%s", ref, "--"])).stdout.trim();
+  }
+
   async add(paths: readonly string[]): Promise<void> {
     if (paths.length === 0) return;
     await this.#run(["add", "--", ...paths]);

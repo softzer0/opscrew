@@ -21,9 +21,8 @@ function nextSteps(result: AdaptResult, manualCount: number): string[] {
   } else if (result.pushed) {
     steps.push(`open a pull request for ${result.branch}, review it and merge it.`);
   } else if (result.committed) {
-    steps.push(
-      `push ${result.branch} (\`git push -u origin ${result.branch}\`) and open a pull request.`,
-    );
+    const push = result.pushCommand ?? `git push -u origin ${result.branch}`;
+    steps.push(`push ${result.branch} (\`${push}\`) and open a pull request.`);
   } else if (result.changes.some((change) => change.status !== "pending")) {
     steps.push(`review the changes on ${result.branch} with \`git diff\` and commit them.`);
   }

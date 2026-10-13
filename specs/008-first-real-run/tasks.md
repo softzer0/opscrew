@@ -36,7 +36,7 @@ description: "Tasks for 008-first-real-run"
 
 - [X] T810 Dropped by the founder (2026-10-13): the opt-in Docker build test (T802, `OPSCREW_DOCKER_TESTS=1`) already checks the image build locally, and the deploy job needs a real server, so `act` would add a large download and little coverage
 
-- [ ] T811 [US1] T808 review fixes: provision re-runs from another branch, a health route that type-checks on TypeScript < 5.2, the real created path in the PR, push failures after an unreachable origin, retarget's publish phase, route groups, `--no-push` advice
+- [X] T811 [US1] T808 review fixes: provision re-runs from another branch, a health route that type-checks on TypeScript < 5.2, the real created path in the PR, push failures after an unreachable origin, retarget's publish phase, route groups, `--no-push` advice
   - Owns: `packages/agents/src/adapt/**`, `packages/agents/src/provision/**`, `packages/agents/src/retarget/finish.ts`, `packages/connectors/github/src/**`
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-github --filter=opscrew`
   - Effort: high
