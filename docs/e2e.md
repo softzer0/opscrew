@@ -110,6 +110,11 @@ registration succeeded. It runs in a planned project (analyze, interview and des
 --confirm <domain>` works. Response shapes and states are exercised along the way; the token
 permission name and multi-year billing still need a check against the real API.
 
+The pass currently stops before the purchase: the sandbox has no Express Mode, so it ignores the
+account's default registrant contact and wants the contact sent with each purchase, and OpsCrew
+never sends contact details. The real purchase of `opscrew.dev` (Live results, 2026-10-14) covers
+the purchase path against the real API instead.
+
 ## Domain purchases at Porkbun and Namecheap (registrar sandboxes)
 
 `packages/cli/test/live/registrars.test.ts` buys through Porkbun's and Namecheap's test systems,
@@ -160,3 +165,4 @@ GoDaddy has no public test system for its v3 API, so its adapter is only tested 
 | 2026-10-14 | Porkbun sandbox (buy, nameservers, DS records, `domain connect`) | **Passed** | A fresh sandbox domain has no nameservers, so `connect` takes the records from a BIND file (test updated) |
 | 2026-10-14 | Namecheap sandbox purchase | Stopped correctly | The sandbox account's default address has only a name and email; OpsCrew named the missing fields and bought nothing (account setup) |
 | 2026-10-14 | AI path (`analyze`, `adapt` with a model on examples/fastapi-redis) | `analyze` passed ($0.0034); `adapt` failed | The tool policy blocked the SDK's `StructuredOutput` tool, so the Code-change agent could not return its report after editing `main.py` correctly ($0.10) (T818) |
+| 2026-10-14 | **Real purchase: `opscrew domain buy opscrew.dev`** (interactive, PowerShell on Windows) | **Passed** | Bought at Cloudflare for $8.20 after the founder typed the domain; zone active with Cloudflare nameservers delegated, DNSSEC on (zone signed; the registry's DS record follows from Cloudflare Registrar), auto-renew and WHOIS privacy on |
