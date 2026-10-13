@@ -27,7 +27,7 @@ variable name (the redactor masks what follows).
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-engine`
   - Effort: high
 
-- [ ] T503 [P] [US1] [US2] Move layouts in the root module and the runbook section in `packages/iac-templates/`
+- [X] T503 [P] [US1] [US2] Move layouts in the root module and the runbook section in `packages/iac-templates/`
   - Owns: `packages/iac-templates/{src,modules,scripts}/**` (except `src/types.ts`, lead), their tests and snapshots
   - Reads: plan.md "Templates"; research.md; `packages/iac-templates/src/types.ts` (`InfraLayout`)
   - Depends: T501

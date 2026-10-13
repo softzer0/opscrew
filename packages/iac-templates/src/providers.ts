@@ -26,8 +26,13 @@ export interface ProviderText {
   deleteProtection: boolean;
   /** Root variable descriptions that name the provider. */
   descriptions: { location: string; serverType: string; backups: string };
-  /** Root module arguments of `module "server"` after `source`, in order (name, value). */
-  moduleArguments: readonly (readonly [string, string])[];
+  /**
+   * Arguments of a server module call after `source`, in order (name, value). `prefix` selects
+   * the root variables of that server: `""` for `module "server"`, `"previous_"` for
+   * `module "server_previous"`. The shared variables (app name, deploy key, CIDRs) and the labels
+   * or tags are the same for both servers.
+   */
+  moduleArguments(prefix: VariablePrefix): readonly (readonly [string, string])[];
   /** Runbook texts. */
   runbook: {
     backupsOnDatabaseCell: string;
@@ -48,10 +53,11 @@ export interface ProviderText {
   };
 }
 
+/** Prefix of a server module's root variables: none for `module "server"`. */
+export type VariablePrefix = "" | "previous_";
+
 const COMMON_ARGUMENTS = {
   name: ["name", "var.app_name"],
-  image: ["image", "var.image"],
-  backups: ["backups", "var.backups"],
   sshKey: ["ssh_public_key", "var.deploy_ssh_public_key"],
   sshCidrs: ["ssh_allowed_cidrs", "var.ssh_allowed_cidrs"],
   httpCidrs: ["http_allowed_cidrs", "var.http_allowed_cidrs"],
@@ -72,13 +78,13 @@ const PROVIDERS: Record<PlanProvider, ProviderText> = {
       serverType: "Hetzner Cloud server type.",
       backups: "Hetzner automated backups.",
     },
-    moduleArguments: [
+    moduleArguments: (prefix) => [
       COMMON_ARGUMENTS.name,
-      ["location", "var.location"],
-      ["server_type", "var.server_type"],
-      COMMON_ARGUMENTS.image,
-      COMMON_ARGUMENTS.backups,
-      ["delete_protection", "var.delete_protection"],
+      ["location", `var.${prefix}location`],
+      ["server_type", `var.${prefix}server_type`],
+      ["image", `var.${prefix}image`],
+      ["backups", `var.${prefix}backups`],
+      ["delete_protection", `var.${prefix}delete_protection`],
       COMMON_ARGUMENTS.sshKey,
       COMMON_ARGUMENTS.sshCidrs,
       COMMON_ARGUMENTS.httpCidrs,
@@ -129,12 +135,12 @@ const PROVIDERS: Record<PlanProvider, ProviderText> = {
       serverType: "DigitalOcean Droplet size.",
       backups: "DigitalOcean daily backups.",
     },
-    moduleArguments: [
+    moduleArguments: (prefix) => [
       COMMON_ARGUMENTS.name,
-      ["region", "var.location"],
-      ["size", "var.server_type"],
-      COMMON_ARGUMENTS.image,
-      COMMON_ARGUMENTS.backups,
+      ["region", `var.${prefix}location`],
+      ["size", `var.${prefix}server_type`],
+      ["image", `var.${prefix}image`],
+      ["backups", `var.${prefix}backups`],
       COMMON_ARGUMENTS.sshKey,
       COMMON_ARGUMENTS.sshCidrs,
       COMMON_ARGUMENTS.httpCidrs,
@@ -185,7 +191,10 @@ const PROVIDERS: Record<PlanProvider, ProviderText> = {
   },
 };
 
-/** Wording and HCL pieces for a plan's provider. */
-export function providerText(plan: DeployPlan): ProviderText {
-  return PROVIDERS[plan.target.provider];
+/**
+ * Wording and HCL pieces for a target's provider: a plan's `target`, a server of a move layout,
+ * or just `{ provider }`.
+ */
+export function providerText(target: { provider: PlanProvider }): ProviderText {
+  return PROVIDERS[target.provider];
 }

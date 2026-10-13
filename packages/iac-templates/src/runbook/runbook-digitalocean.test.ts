@@ -62,6 +62,23 @@ describe("renderRunbook for DigitalOcean", () => {
     expect(plain).toMatchSnapshot();
   });
 
+  it("explains how to move to another provider without naming one", () => {
+    const content = renderRunbook(doPlan({ domain: "shop.example.com" }), ctx).content;
+    const section = content
+      .slice(
+        content.indexOf("## Moving to another provider"),
+        content.indexOf("## Check for drift"),
+      )
+      .replace(/\s+/g, " ");
+    expect(section).toContain("`opscrew retarget --to <provider>`");
+    expect(section).toContain("`opscrew retarget --finish`");
+    expect(section).toContain("`opscrew retarget --abort`");
+    expect(section).toContain("**Maintenance window:**");
+    expect(section).toMatch(/both servers are billed until then/);
+    expect(section).toMatch(/only\s+before the DNS switch/);
+    expect(content).not.toMatch(/hetzner/i);
+  });
+
   it("is deterministic and contains no absolute paths", () => {
     const a = renderRunbook(doPlan({ ip: "203.0.113.10" }), ctx).content;
     expect(renderRunbook(doPlan({ ip: "203.0.113.10" }), ctx).content).toBe(a);

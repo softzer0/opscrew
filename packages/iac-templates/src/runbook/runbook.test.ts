@@ -92,6 +92,47 @@ describe("renderRunbook", () => {
     expect(section).toContain("opscrew/infra/");
   });
 
+  it("explains how to move to another provider, finish the move or abort it", () => {
+    // The section's text, with line breaks folded into spaces.
+    const moving = (p: DeployPlan) => {
+      const content = renderRunbook(p, ctx).content;
+      const section = content.slice(
+        content.indexOf("## Moving to another provider"),
+        content.indexOf("## Check for drift"),
+      );
+      expect(section).toMatch(/^## Moving to another provider\n\n/);
+      return section.replace(/\s+/g, " ");
+    };
+    const section = moving(plan({ domain: "shop.example.com", ip: "203.0.113.10" }));
+    expect(section).toContain("`opscrew retarget --to <provider>`");
+    expect(section).toContain("`opscrew retarget --finish`");
+    expect(section).toContain("`opscrew retarget --abort`");
+    expect(section).toContain("`opscrew retarget --approve <hash>`");
+    expect(section).toContain("`opscrew status`");
+    expect(section).toContain("switches the Cloudflare DNS records to it.");
+    expect(section).toContain("**Maintenance window:**");
+    expect(section).toContain("`--allow-downtime`");
+    expect(section).toMatch(/database size and the expected downtime/);
+    expect(section).toMatch(/old server keeps running until you run `opscrew retarget --finish`/);
+    expect(section).toMatch(/both servers are billed until then/);
+    expect(section).toMatch(/only\s+before the DNS switch/);
+    expect(section).toContain("`--confirm shop`");
+
+    const stateless = moving(plan({ postgres: false }));
+    expect(stateless).toContain("**No maintenance window:**");
+    expect(stateless).not.toContain("--allow-downtime");
+    expect(stateless).toContain("shows you the new server's address");
+    expect(stateless).toContain("`--dns-switched`");
+
+    const elsewhere = moving({
+      ...plan(),
+      dns: { provider: "none", domain: "shop.example.com", proxied: false, www: false },
+    });
+    expect(elsewhere).toMatch(/DNS records to change at your DNS provider/);
+    expect(elsewhere).toContain("`--dns-switched`");
+    expect(elsewhere).not.toContain("Cloudflare");
+  });
+
   it("explains how to tear the deployment down and what remains", () => {
     const content = renderRunbook(
       plan({ domain: "shop.example.com", ip: "203.0.113.10" }),

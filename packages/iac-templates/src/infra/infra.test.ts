@@ -4,11 +4,12 @@ import { dirname, join } from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
 import { checkDialect, detectEngines } from "@opscrew/iac-engine";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, type TestContext } from "vitest";
 import { collectModuleFiles, renderGeneratedModule } from "../../scripts/gen-modules";
+import { DIRECTIONS, LAYOUT_NAMES, moveLayout, testTarget } from "../__fixtures__/layouts";
 import { testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
-import type { RenderContext } from "../types";
+import type { RenderContext, RenderedFile } from "../types";
 import { httpAllowedCidrs, renderInfra, tfvars } from "./index";
 
 const CF = { ipv4: ["173.245.48.0/20", "103.21.244.0/22"], ipv6: ["2400:cb00::/32"] };
@@ -206,7 +207,8 @@ describe("generated modules", () => {
 });
 
 // Downloads the hcloud, digitalocean and cloudflare providers from the registry, so it only runs
-// with OPSCREW_IT=1. Binaries come from OPSCREW_TOFU_BIN / OPSCREW_TERRAFORM_BIN or PATH.
+// with OPSCREW_IT=1. Binaries come from OPSCREW_TOFU_BIN / OPSCREW_TERRAFORM_BIN or PATH. Covers
+// the plain root modules and every move layout in both directions.
 const runIt = process.env.OPSCREW_IT === "1";
 const detected = runIt ? await detectEngines() : [];
 if (!runIt) {
@@ -222,6 +224,34 @@ const validatedPlans = {
     testPlan({ provider: "digitalocean", domain: "shop.example.com", www: true, backups: true }),
 };
 
+/** Writes rendered files under `root`, initialises the root module and validates it. */
+async function initAndValidate(
+  test: TestContext,
+  name: string,
+  bin: string,
+  root: string,
+  files: readonly RenderedFile[],
+): Promise<void> {
+  for (const file of files) {
+    const target = join(root, file.path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, file.content);
+  }
+  const runner = new NodeCommandRunner();
+  const cwd = join(root, "opscrew/infra/prod");
+  const init = await runner.run(bin, ["init", "-backend=false", "-input=false", "-no-color"], {
+    cwd,
+  });
+  if (init.exitCode !== 0 && NETWORK_ERROR.test(init.stdout + init.stderr)) {
+    test.skip(
+      `${name} could not download the providers (network needed): ${init.stderr.trim().split("\n")[0]}`,
+    );
+  }
+  expect(init.exitCode, init.stdout + init.stderr).toBe(0);
+  const validate = await runner.run(bin, ["validate", "-no-color"], { cwd });
+  expect(validate.exitCode, validate.stdout + validate.stderr).toBe(0);
+}
+
 describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
   for (const name of ["tofu", "terraform"] as const) {
     const engine = detected.find((d) => d.name === name && d.supported);
@@ -233,35 +263,45 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
           : `[iac-templates] skipping ${name} validation: no usable ${name} binary (set OPSCREW_${name.toUpperCase()}_BIN or add it to PATH).`,
       );
     }
+    const bin = engine?.binary ?? name;
     for (const [provider, planFor] of Object.entries(validatedPlans)) {
       it.skipIf(!engine)(
         `validates the ${provider} root with ${name}`,
         async (test) => {
           const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-${provider}-`));
-          for (const file of renderInfra(planFor(), ctx({ cloudflare: cloudflare() }))) {
-            const target = join(root, file.path);
-            await mkdir(dirname(target), { recursive: true });
-            await writeFile(target, file.content);
-          }
-          const bin = engine?.binary ?? name;
-          const runner = new NodeCommandRunner();
-          const cwd = join(root, "opscrew/infra/prod");
-          const init = await runner.run(
+          await initAndValidate(
+            test,
+            name,
             bin,
-            ["init", "-backend=false", "-input=false", "-no-color"],
-            { cwd },
+            root,
+            renderInfra(planFor(), ctx({ cloudflare: cloudflare() })),
           );
-          if (init.exitCode !== 0 && NETWORK_ERROR.test(init.stdout + init.stderr)) {
-            test.skip(
-              `${name} could not download the providers (network needed): ${init.stderr.trim().split("\n")[0]}`,
-            );
-          }
-          expect(init.exitCode, init.stdout + init.stderr).toBe(0);
-          const validate = await runner.run(bin, ["validate", "-no-color"], { cwd });
-          expect(validate.exitCode, validate.stdout + validate.stderr).toBe(0);
         },
         300_000,
       );
+    }
+
+    // Every move layout uses both providers and Cloudflare, so the layouts share one directory per
+    // engine: the providers are downloaded once, and each layout re-runs init for its modules.
+    let layoutRoot: Promise<string> | undefined;
+    for (const [from, to] of DIRECTIONS) {
+      for (const layout of LAYOUT_NAMES) {
+        it.skipIf(!engine)(
+          `validates the ${layout} layout from ${from} to ${to} with ${name}`,
+          async (test) => {
+            layoutRoot ??= mkdtemp(join(tmpdir(), `opscrew-infra-${name}-layouts-`));
+            const files = renderInfra(
+              testPlan({ provider: to, domain: "shop.example.com", www: true }),
+              ctx({
+                cloudflare: cloudflare(),
+                layout: moveLayout(layout, testTarget(from), testTarget(to)),
+              }),
+            );
+            await initAndValidate(test, name, bin, await layoutRoot, files);
+          },
+          300_000,
+        );
+      }
     }
   }
 });

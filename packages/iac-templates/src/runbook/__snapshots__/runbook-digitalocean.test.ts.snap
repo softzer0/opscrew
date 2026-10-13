@@ -119,6 +119,25 @@ docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB"' < back
 - **Infrastructure code:** \`opscrew/infra/\` is plain Terraform/OpenTofu that you own. You can run it yourself; state is
   kept in \`.opscrew/tfstate/\` on the machine that ran \`opscrew provision\`.
 
+## Moving to another provider
+
+\`opscrew retarget --to <provider>\` moves this app to another provider without losing its data. Run it on the machine
+that ran \`opscrew provision\`, with the tokens of both providers set. OpsCrew creates a new server next to the current
+one, deploys the app there with the deploy workflow, copies the database and switches the Cloudflare DNS records to
+it. Every change shows its plan and waits for your approval; in scripts, each plan stops with its hash and
+\`opscrew retarget --approve <hash>\` continues. If a run is interrupted, run \`opscrew retarget\` again: it continues
+where it stopped, and \`opscrew status\` shows how far the move got.
+
+- **Maintenance window:** the database is copied while the app is stopped, so the app is offline for a few minutes.
+  OpsCrew shows the database size and the expected downtime first and asks before it stops the app (in scripts, pass
+  \`--allow-downtime\`). If the copy or the new app fails, the app starts again on the current server.
+- **Both servers cost money:** the old server keeps running until you run \`opscrew retarget --finish\` (its app is
+  stopped after the DNS switch), and both servers are billed until then. Finish deletes the old server the way
+  \`opscrew destroy\` would: it offers a snapshot, asks you to type the app name (\`--confirm shop\` in scripts) and opens
+  a pull request with the final infrastructure files.
+- **Abort:** \`opscrew retarget --abort\` deletes the new server and puts the app back on the current one, but only
+  before the DNS switch. After the switch, the way back is another \`opscrew retarget\`.
+
 ## Check for drift
 
 Run \`opscrew drift\` on the machine that ran \`opscrew provision\` (the state lives there). It compares three things:

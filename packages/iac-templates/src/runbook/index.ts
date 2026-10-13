@@ -27,7 +27,7 @@ function cell(text: string): string {
  * the real values from the plan. Deterministic; contains no secrets or absolute paths.
  */
 export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFile {
-  const provider = providerText(plan);
+  const provider = providerText(plan.target);
   const ip = plan.deployment.serverIpv4 ?? ctx.serverIpv4;
   const ipv6 = plan.deployment.serverIpv6 ?? ctx.serverIpv6;
   const hosts = siteHosts(plan);
@@ -123,6 +123,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "- **Infrastructure code:** `opscrew/infra/` is plain Terraform/OpenTofu that you own. You can run it yourself; state is",
     "  kept in `.opscrew/tfstate/` on the machine that ran `opscrew provision`.",
     "",
+    ...moving(plan),
     "## Check for drift",
     "",
     "Run `opscrew drift` on the machine that ran `opscrew provision` (the state lives there). It compares three things:",
@@ -161,6 +162,76 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     ...teardown(plan, repo, provider),
   );
   return { path: "opscrew/RUNBOOK.md", content: lines.join("\n"), kind: "doc" };
+}
+
+/**
+ * "Moving to another provider": `opscrew retarget`, the maintenance window (only with a database
+ * on the server), the cost of running both servers until `--finish`, and `--abort` before the DNS
+ * switch.
+ */
+function moving(plan: DeployPlan): string[] {
+  const confirm = "it continues once you confirm; in scripts, pass `--dns-switched`";
+  const dns =
+    plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined
+      ? "switches the Cloudflare DNS records to it."
+      : plan.dns.domain !== undefined
+        ? `shows you the DNS records to change at your DNS provider (${confirm}).`
+        : `shows you the new server's address (${confirm}).`;
+  const copy = plan.services.postgres ? ", copies the database" : "";
+  return [
+    "## Moving to another provider",
+    "",
+    ...wrap(
+      "`opscrew retarget --to <provider>` moves this app to another provider without losing its data. Run it on the " +
+        "machine that ran `opscrew provision`, with the tokens of both providers set. OpsCrew creates a new server next " +
+        `to the current one, deploys the app there with the deploy workflow${copy} and ${dns} Every change shows its ` +
+        "plan and waits for your approval; in scripts, each plan stops with its hash and " +
+        "`opscrew retarget --approve <hash>` continues. If a run is interrupted, run `opscrew retarget` again: it " +
+        "continues where it stopped, and `opscrew status` shows how far the move got.",
+    ),
+    "",
+    ...wrap(
+      plan.services.postgres
+        ? "- **Maintenance window:** the database is copied while the app is stopped, so the app is offline for a few " +
+            "minutes. OpsCrew shows the database size and the expected downtime first and asks before it stops the app " +
+            "(in scripts, pass `--allow-downtime`). If the copy or the new app fails, the app starts again on the current server."
+        : "- **No maintenance window:** this app keeps no database on the server, so there is nothing to copy and the " +
+            "current server serves users until DNS points at the new one.",
+      "  ",
+    ),
+    ...wrap(
+      "- **Both servers cost money:** the old server keeps running until you run `opscrew retarget --finish` (its app " +
+        "is stopped after the DNS switch), and both servers are billed until then. Finish deletes the old server the " +
+        "way `opscrew destroy` would: it offers a snapshot, asks you to type the app name " +
+        `(\`--confirm ${plan.app.name}\` in scripts) and opens a pull request with the final infrastructure files.`,
+      "  ",
+    ),
+    ...wrap(
+      "- **Abort:** `opscrew retarget --abort` deletes the new server and puts the app back on the current one, but " +
+        "only before the DNS switch. After the switch, the way back is another `opscrew retarget`.",
+      "  ",
+    ),
+    "",
+  ];
+}
+
+/**
+ * Wraps Markdown source text at `width` columns without breaking inline code spans; continuation
+ * lines start with `indent`.
+ */
+function wrap(text: string, indent = "", width = 118): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.match(/(?:`[^`]*`|[^\s`])+/g) ?? []) {
+    if (line !== "" && line.length + 1 + word.length > width) {
+      lines.push(line);
+      line = `${indent}${word}`;
+    } else {
+      line = line === "" ? word : `${line} ${word}`;
+    }
+  }
+  if (line !== "") lines.push(line);
+  return lines;
 }
 
 /** "Tear it down": what `opscrew destroy` deletes, the snapshot offer and what remains. */
