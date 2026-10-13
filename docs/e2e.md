@@ -141,3 +141,16 @@ through the adapter (quote, then register), moves it with `opscrew domain connec
 namecheap`, and confirms through the API that its nameservers point at the stand-in zone.
 
 GoDaddy has no public test system for its v3 API, so its adapter is only tested with fakes.
+
+## Live results
+
+| Date | Pass | Outcome | Findings and fixes |
+|---|---|---|---|
+| 2026-10-13 | `opscrew init`, `domain search --registrar namecheap` (real Hetzner, Cloudflare, Namecheap; read-only) | Passed | An account-owned Cloudflare token is handled; a domain in the user's own Namecheap account was called "registered by someone else" (fixed, T803) |
+| 2026-10-13 | `domain connect poasjet.com --registrar namecheap --records-file …` (real Namecheap and Cloudflare) | Passed | Zone active within minutes; a null MX was given a misleading reason (fixed, T803) |
+| 2026-10-13 | Hetzner, run 1 | Failed at the deploy workflow | The Next.js image needed `output: "standalone"`, a change only the Code-change agent made (fixed, T802); teardown left nothing |
+| 2026-10-13 | Hetzner, run 2 | Failed at `adapt` | The first run's `opscrew/prepare-deploy` branch was still on GitHub (product fix T808, test reset T809); the health route stayed a manual change without a model (fixed, T808) |
+| 2026-10-13 | Hetzner, run 3 | Test error | The test read the first run's failed workflow before the new run existed (test waits for the merge commit's run); the image built and pushed for real |
+| 2026-10-13 | Hetzner, runs 4–5 | Failed at `drift` | Deployed, verified and secured; drift reported the firewall's `apply_to`, which Hetzner mirrors from the server (fixed, T812; every provider's read-only values, T813) |
+| 2026-10-13 | Hetzner, run 6 | Test error | GitHub refused the merge while it was still computing mergeability (the test waits for it) |
+| 2026-10-13 | Hetzner, run 7 | **Passed** | Full flow in 6½ minutes: analyze → interview → design → adapt PR → provision → deploy workflow → verify → secure → drift clean → destroy; nothing left behind (SC-801) |
