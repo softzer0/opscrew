@@ -11,11 +11,23 @@ import {
   parseGitHubRepo,
   resolveGitHubToken,
 } from "@opscrew/connector-github";
-import type { CredentialCheck, CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
+import type {
+  CredentialCheck,
+  CredentialRequirement,
+  RegistrarAccountCheck,
+  VpsProviderId,
+} from "@opscrew/contracts";
 import { findExecutable, isUserFacingError } from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import {
+  type OtherRegistrarId,
+  REGISTRAR_ENV,
+  REGISTRAR_NAMES,
+  registrarFor,
+  registrarLinks,
+} from "../domain/registrars";
 import {
   type ProviderProfile,
   planProvider,
@@ -42,6 +54,10 @@ export type InitCheckId =
   | "cloudflare"
   /** Optional: whether the Cloudflare token can buy domains through Cloudflare Registrar. */
   | "registrar"
+  /** Optional, listed only when configured (even partly): registrar API access (feature 007). */
+  | "porkbun"
+  | "namecheap"
+  | "godaddy"
   | "github"
   | "model"
   | "scanners"
@@ -66,6 +82,8 @@ export interface InitServices {
   nodeVersion?: string;
   /** Time budget of each network check in milliseconds (default 10 000). */
   timeoutMs?: number;
+  /** Account check of a registrar other than Cloudflare (default: the adapter's `accountCheck`). */
+  registrarCheck?: (id: OtherRegistrarId) => Promise<RegistrarAccountCheck>;
 }
 
 export interface InitCheckOptions {
@@ -153,7 +171,16 @@ export async function runInitChecks(
   const budget = services.timeoutMs ?? NETWORK_TIMEOUT_MS;
 
   const providerTokens = VPS_PROVIDERS.flatMap((id) => providerProfile(id).tokenVars);
-  for (const name of [...providerTokens, "CLOUDFLARE_API_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]) {
+  const registrarSecrets = OTHER_REGISTRARS.flatMap((id) => REGISTRAR_ENV[id]).filter(
+    (name) => name !== "NAMECHEAP_API_USER",
+  );
+  for (const name of [
+    ...providerTokens,
+    "CLOUDFLARE_API_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    ...registrarSecrets,
+  ]) {
     const value = env[name]?.trim();
     if (value) deps.redactor.addLiteral(value, name);
   }
@@ -188,6 +215,16 @@ export async function runInitChecks(
     }),
     guard("registrar", "Buying domains through Cloudflare (optional)", false, () =>
       withBudget(checkRegistrar(deps, offline, cloudflare), budget, "Cloudflare", false),
+    ),
+    ...OTHER_REGISTRARS.filter((id) => REGISTRAR_ENV[id].some((name) => set(env, name))).map((id) =>
+      guard(id, `${REGISTRAR_NAMES[id]} API access (optional)`, false, () =>
+        withBudget(
+          checkOtherRegistrar(deps, offline, id, services.registrarCheck),
+          budget,
+          REGISTRAR_NAMES[id],
+          false,
+        ),
+      ),
     ),
     guard("github", "GitHub token", true, async () => {
       const info = await repoInfo;
@@ -691,6 +728,81 @@ async function checkRegistrar(
     }
   }
   return refused(firstError);
+}
+
+/** Registrars besides Cloudflare, in checklist order. */
+const OTHER_REGISTRARS: readonly OtherRegistrarId[] = ["porkbun", "namecheap", "godaddy"];
+
+/** What a registrar's credentials are called in messages. */
+const REGISTRAR_CREDENTIALS: Readonly<Record<OtherRegistrarId, string>> = {
+  porkbun: "API keys are",
+  namecheap: "API user and key are",
+  godaddy: "API token is",
+};
+
+/**
+ * Optional check (FR-707) of one registrar other than Cloudflare, listed when any of its variables
+ * is set: names missing variables, says only that the credentials are set when offline, else runs
+ * the adapter's `accountCheck` (Porkbun key scopes, Namecheap access and the IPv4 to whitelist,
+ * GoDaddy access). Never fails init and never puts a credential value into the text.
+ */
+async function checkOtherRegistrar(
+  deps: PhaseDeps,
+  offline: boolean,
+  id: OtherRegistrarId,
+  registrarCheck: InitServices["registrarCheck"],
+): Promise<CheckResult> {
+  const name = REGISTRAR_NAMES[id];
+  const vars = REGISTRAR_ENV[id];
+  const api = registrarLinks(id, deps.env).api;
+  const missing = vars.filter((variable) => !set(deps.env, variable));
+  if (missing.length > 0) {
+    return {
+      status: "warn",
+      message: `${name} is only partly set up, ${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not set. Buying domains through ${name} is optional.`,
+      fix: `Create API credentials at ${api} and set ${vars.join(" and ")}, or unset the others to not use ${name}.`,
+    };
+  }
+  if (offline) {
+    return {
+      status: "pass",
+      message: `${name} ${REGISTRAR_CREDENTIALS[id]} set; not checked offline (run \`opscrew init\` without --offline to check them).`,
+    };
+  }
+  let result: RegistrarAccountCheck;
+  try {
+    if (registrarCheck) {
+      result = await registrarCheck(id);
+    } else {
+      const registrar = registrarFor(id, deps);
+      if (!registrar.accountCheck) {
+        return {
+          status: "pass",
+          message: `${name} ${REGISTRAR_CREDENTIALS[id]} set; OpsCrew cannot check this account.`,
+        };
+      }
+      result = await registrar.accountCheck();
+    }
+  } catch (error) {
+    return {
+      status: "warn",
+      message: `Could not check the ${name} account. ${errorText(error)}`,
+      fix: `Buying domains through ${name} is optional; check the API settings at ${api} and run \`opscrew init\` again.`,
+    };
+  }
+  if (result.ok) {
+    if (!result.balance) return { status: "pass", message: result.message };
+    const { amount, currency } = result.balance;
+    return {
+      status: "pass",
+      message: `${result.message.replace(/\.$/, "")} (balance ${amount.toFixed(2)} ${currency}).`,
+    };
+  }
+  return {
+    status: "warn",
+    message: result.message,
+    fix: result.fix ?? `Check the API settings at ${api}, then run \`opscrew init\` again.`,
+  };
 }
 
 function githubFix(coordinates?: { owner: string; repo: string }): string {

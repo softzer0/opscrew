@@ -75,7 +75,7 @@ after an environment variable name.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T709 [P] [US3] Registrar checks in `opscrew init` in `packages/agents/src/init/`
+- [X] T709 [P] [US3] Registrar checks in `opscrew init` in `packages/agents/src/init/`
   - Owns: `packages/agents/src/init/**`
   - Depends: T706
   - Accept: one optional check per configured registrar via `accountCheck` (Porkbun scopes, Namecheap access + IPv4 to whitelist, GoDaddy access); offline → presence only; never fails init; secrets never printed.

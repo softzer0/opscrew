@@ -1,6 +1,12 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AgentRuntime, CommandResult, FetchLike } from "@opscrew/contracts";
+import type {
+  AgentRuntime,
+  CommandResult,
+  FetchLike,
+  RegistrarAccountCheck,
+} from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -829,5 +835,191 @@ describe("ensureGitignore", () => {
     expect(await ensureGitignore(d, { fix: true })).toBe(true);
     expect(await readFile(file, "utf8")).toBe("node_modules/\n.opscrew/\n");
     expect(handler.requests).toHaveLength(0);
+  });
+});
+
+describe("registrar account checks", () => {
+  const PORKBUN_KEY = fakeSecret("aws-secret-access-key", "porkbun-key");
+  const PORKBUN_SECRET = fakeSecret("aws-secret-access-key", "porkbun-secret");
+  const NAMECHEAP_KEY = fakeSecret("aws-secret-access-key", "namecheap-key");
+  const GODADDY_TOKEN = fakeSecret("aws-secret-access-key", "godaddy-token");
+  const SECRETS = [PORKBUN_KEY, PORKBUN_SECRET, NAMECHEAP_KEY, GODADDY_TOKEN];
+  const all = {
+    HCLOUD_TOKEN: HCLOUD,
+    GITHUB_TOKEN: GITHUB,
+    PORKBUN_API_KEY: PORKBUN_KEY,
+    PORKBUN_SECRET_API_KEY: PORKBUN_SECRET,
+    NAMECHEAP_API_USER: "shopowner",
+    NAMECHEAP_API_KEY: NAMECHEAP_KEY,
+    GODADDY_API_TOKEN: GODADDY_TOKEN,
+  };
+  const REGISTRAR_CHECKS: InitCheckId[] = ["porkbun", "namecheap", "godaddy"];
+
+  function expectNoSecrets(value: unknown): void {
+    const text = JSON.stringify(value);
+    for (const secret of SECRETS) expect(text).not.toContain(secret);
+    // No colon right after an environment variable name.
+    expect(text).not.toMatch(/\b[A-Z][A-Z0-9]*_[A-Z0-9_]+:/);
+  }
+
+  async function run(
+    env: Record<string, string | undefined>,
+    registrarCheck: InitServices["registrarCheck"],
+    offline = false,
+  ) {
+    const { deps } = await setup({ env });
+    const asked: string[] = [];
+    const extra: InitServices = registrarCheck
+      ? {
+          registrarCheck: (id) => {
+            asked.push(id);
+            return registrarCheck(id);
+          },
+        }
+      : {};
+    const checks = await runInitChecks(deps, {
+      ...(offline ? { offline: true } : {}),
+      services: services({}, extra),
+    });
+    const byId = (id: InitCheckId) => checks.find((c) => c.id === id);
+    return { checks, byId, asked };
+  }
+
+  it("adds no registrar line when no other registrar is configured", async () => {
+    const { checks, asked } = await run({ HCLOUD_TOKEN: HCLOUD }, async () => ({
+      ok: true,
+      message: "unused",
+    }));
+    expect(checks.some((c) => REGISTRAR_CHECKS.includes(c.id))).toBe(false);
+    expect(asked).toEqual([]);
+  });
+
+  it("checks every configured registrar and shows the message and balance", async () => {
+    const results: Record<string, RegistrarAccountCheck> = {
+      porkbun: { ok: true, message: "The Porkbun API keys work and can buy domains." },
+      namecheap: {
+        ok: true,
+        message: "Namecheap API access works from 203.0.113.7.",
+        balance: { amount: 12.3, currency: "USD" },
+      },
+      godaddy: { ok: true, message: "GoDaddy API access works." },
+    };
+    const { checks, byId, asked } = await run(all, async (id) => {
+      const result = results[id];
+      if (!result) throw new Error(`unexpected ${id}`);
+      return result;
+    });
+    expect([...asked].sort()).toEqual(["godaddy", "namecheap", "porkbun"]);
+    const ids = checks.map((c) => c.id);
+    const after = ids.indexOf("registrar") + 1;
+    expect(ids.slice(after, after + 3)).toEqual(REGISTRAR_CHECKS);
+    for (const id of REGISTRAR_CHECKS) expect(byId(id)?.status).toBe("pass");
+    expect(byId("porkbun")?.title).toContain("Porkbun");
+    expect(byId("porkbun")?.message).toContain("can buy domains");
+    expect(byId("namecheap")?.message).toContain("balance 12.30 USD");
+    expect(initPassed(checks)).toBe(true);
+    expectNoSecrets(checks);
+  });
+
+  it("warns with the IPv4 to whitelist when Namecheap refuses this address", async () => {
+    const { checks, byId } = await run(
+      { ...all, PORKBUN_API_KEY: undefined, PORKBUN_SECRET_API_KEY: undefined },
+      async (id) =>
+        id === "namecheap"
+          ? {
+              ok: false,
+              message: "Namecheap refused the API call from 198.51.100.4 (not whitelisted).",
+              fix: "Add 198.51.100.4 to the whitelisted IPs at https://ap.www.namecheap.com/settings/tools/apiaccess/.",
+            }
+          : { ok: true, message: "GoDaddy API access works." },
+    );
+    const nc = byId("namecheap");
+    expect(nc?.status).toBe("warn");
+    expect(nc?.message).toContain("not whitelisted");
+    expect(nc?.fix).toContain("198.51.100.4");
+    expect(initPassed(checks)).toBe(true);
+    expectNoSecrets(checks);
+  });
+
+  it("names Porkbun's missing permissions in the fix", async () => {
+    const { byId } = await run(all, async (id) =>
+      id === "porkbun"
+        ? {
+            ok: false,
+            message: "The Porkbun API keys cannot buy domains.",
+            fix: "Turn on API access for your domains and allow domain registration at https://porkbun.com/account/api.",
+          }
+        : { ok: true, message: "Works." },
+    );
+    expect(byId("porkbun")?.status).toBe("warn");
+    expect(byId("porkbun")?.fix).toContain("allow domain registration");
+  });
+
+  it("turns an exception into a warning with the plain message and hint; init still passes", async () => {
+    const { checks, byId } = await run(all, async (id) => {
+      if (id === "godaddy") {
+        throw new OpsCrewError(
+          "CREDENTIALS_INVALID",
+          `GoDaddy rejected the token ${GODADDY_TOKEN}.`,
+          { hint: "Create a new production key." },
+        );
+      }
+      if (id === "porkbun") throw new Error("socket hang up");
+      return { ok: true, message: "Namecheap API access works." };
+    });
+    const gd = byId("godaddy");
+    expect(gd?.status).toBe("warn");
+    expect(gd?.message).toContain("GoDaddy rejected the token");
+    expect(gd?.message).toContain("Create a new production key.");
+    expect(gd?.fix).toContain("https://");
+    expect(byId("porkbun")?.status).toBe("warn");
+    expect(byId("porkbun")?.message).toContain("socket hang up");
+    expect(byId("namecheap")?.status).toBe("pass");
+    expect(initPassed(checks)).toBe(true);
+    expectNoSecrets(checks);
+  });
+
+  it("uses the real registrar adapters by default and never fails init on their errors", async () => {
+    const { checks, byId } = await run({ ...all, NAMECHEAP_CLIENT_IP: "203.0.113.7" }, undefined);
+    for (const id of REGISTRAR_CHECKS) expect(["pass", "warn"]).toContain(byId(id)?.status);
+    expect(initPassed(checks)).toBe(true);
+    expectNoSecrets(checks);
+  });
+
+  it("offline: says the credentials are set and makes no call", async () => {
+    const { byId, asked } = await run(
+      all,
+      async () => {
+        throw new Error("must not be called offline");
+      },
+      true,
+    );
+    expect(asked).toEqual([]);
+    expect(byId("porkbun")?.message).toContain("Porkbun API keys are set");
+    for (const id of REGISTRAR_CHECKS) {
+      expect(byId(id)?.status).toBe("pass");
+      expect(byId(id)?.message).toContain("not checked offline");
+    }
+  });
+
+  it("names the missing variable when a registrar is only partly set up", async () => {
+    const { byId, asked, checks } = await run(
+      {
+        HCLOUD_TOKEN: HCLOUD,
+        GITHUB_TOKEN: GITHUB,
+        PORKBUN_API_KEY: PORKBUN_KEY,
+        NAMECHEAP_API_USER: "shopowner",
+      },
+      async () => ({ ok: true, message: "unused" }),
+    );
+    expect(asked).toEqual([]);
+    const pb = byId("porkbun");
+    expect(pb?.status).toBe("warn");
+    expect(pb?.message).toContain("PORKBUN_SECRET_API_KEY is not set");
+    expect(pb?.fix).toContain("https://");
+    expect(byId("namecheap")?.message).toContain("NAMECHEAP_API_KEY is not set");
+    expect(byId("godaddy")).toBeUndefined();
+    expect(initPassed(checks)).toBe(true);
+    expectNoSecrets(checks);
   });
 });
