@@ -52,7 +52,7 @@ variable name. Tasks touching the CLI wait for feature 005's CLI task (T509).
   - Verify: `pnpm turbo run typecheck test build --filter=opscrew`
   - Effort: high
 
-- [ ] T606 [P] [US4] `opscrew_domain_check`, skill and README in `packages/mcp-server/src/`, `plugin/`, `README.md`
+- [X] T606 [P] [US4] `opscrew_domain_check`, skill and README in `packages/mcp-server/src/`, `plugin/`, `README.md`
   - Owns: `packages/mcp-server/src/**`, `plugin/**`, `README.md`
   - Reads: spec.md US4, FR-608
   - Depends: T603

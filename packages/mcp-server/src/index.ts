@@ -1,7 +1,8 @@
 /**
  * @opscrew/mcp-server: the deterministic OpsCrew MCP server (`opscrew mcp`). Exposes the planning
  * tools (scan, detect, interview questions, save requirements, design options, select design,
- * status) and the deploy tools; tools never call a model and all output is redacted.
+ * status), the deploy tools, the read-only drift, preflight and domain checks; moving a deployment
+ * and buying a domain are terminal-only. Tools never call a model and all output is redacted.
  */
 export {
   CollectingReporter,

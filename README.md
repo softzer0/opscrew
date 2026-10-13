@@ -22,6 +22,8 @@ Supported clouds: Hetzner Cloud and DigitalOcean (Droplets), with optional Cloud
 
 Changed your mind about the provider later? `npx opscrew retarget --to <provider>` moves a live app between Hetzner Cloud and DigitalOcean with its data: it builds the new server next to the old one, copies the database in a short maintenance window, switches DNS, and deletes the old server only when you run `opscrew retarget --finish`.
 
+No domain yet? `npx opscrew domain search <name>` checks availability and prices with Cloudflare Registrar, and `npx opscrew domain buy <domain>` buys one at cost after you confirm the price, then sets up its Cloudflare zone, DNSSEC and auto-renew and uses it for your deployment. Namecheap, Porkbun and GoDaddy follow.
+
 ## Development
 
 Requirements: Node.js 22+, pnpm 10+, and OpenTofu or Terraform for infrastructure tests.

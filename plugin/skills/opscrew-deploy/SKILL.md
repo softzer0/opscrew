@@ -73,6 +73,16 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   names only), changes not applied yet and edited generated files, and changes nothing. To undo
   drift the user runs `npx opscrew provision`; to keep a console change, `opscrew/plan.yaml` must
   be updated to match first.
+- **Getting a domain.** When the user has no domain yet, call `opscrew_domain_check` with a name
+  or a domain. It checks availability live with Cloudflare Registrar and returns the first-year and
+  renewal prices with their currency, and a plain reason for names that cannot be bought through
+  the API (taken, premium, extensions sold only in the Cloudflare dashboard). Buying is
+  terminal-only on purpose; there is no tool for it. Tell the user to run
+  `npx opscrew domain buy <domain>` in their own terminal: it shows the price and asks them to type
+  the domain to confirm (scripts need `--confirm` and `--max-price`). It needs a Cloudflare token
+  with the optional Registrar permission. Afterwards OpsCrew creates the Cloudflare zone, turns on
+  DNSSEC, leaves auto-renew on (the default) and sets the domain in `opscrew/plan.yaml`. Buying
+  through Namecheap, Porkbun or GoDaddy comes later.
 - **Monorepos.** When the repository has several apps, `opscrew_interview_questions` asks which one
   to deploy (`appDir`); ask the user, never guess.
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`
