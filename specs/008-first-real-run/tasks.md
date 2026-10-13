@@ -76,7 +76,7 @@ description: "Tasks for 008-first-real-run"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/runtime-claude --filter=@opscrew/core --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T819 T818 review follow-ups: a tool call that never passed the PreToolUse gate stops the phase (audited as ungated); explicit hook timeouts (PreToolUse long enough for a human approval, PostToolUse redaction never skipped); hook-level tests for `node -e`, `sh -c`, a Grep path outside the project and a second foreign MCP prefix
+- [X] T819 T818 review follow-ups: a tool call that never passed the PreToolUse gate stops the phase (audited as ungated); explicit hook timeouts (PreToolUse long enough for a human approval, PostToolUse redaction never skipped); hook-level tests for `node -e`, `sh -c`, a Grep path outside the project and a second foreign MCP prefix
   - Owns: `packages/runtime-claude/src/**`
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/runtime-claude --filter=@opscrew/agents`
   - Effort: medium

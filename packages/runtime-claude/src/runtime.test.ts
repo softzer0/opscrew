@@ -1,10 +1,11 @@
 import { resolve } from "node:path";
-import type {
-  HookJSONOutput,
-  Options,
-  PermissionResult,
-  SDKMessage,
-  SdkMcpToolDefinition,
+import {
+  AbortError,
+  type HookJSONOutput,
+  type Options,
+  type PermissionResult,
+  type SDKMessage,
+  type SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ApprovalRequest,
@@ -32,8 +33,11 @@ interface ToolStep {
   tool: string;
   input: Record<string, unknown>;
   id?: string;
-  /** Which SDK entry point decides: the pre-tool-use hook (default), the callback, or both. */
-  via?: "hook" | "canUseTool" | "both";
+  /**
+   * Which SDK entry point decides: the pre-tool-use hook (default), the callback, or both.
+   * `none` runs the tool without either, as an SDK whose hooks were suppressed would.
+   */
+  via?: "hook" | "canUseTool" | "both" | "none";
   /** What the tool returned (default `"ok"`). */
   response?: unknown;
 }
@@ -61,6 +65,10 @@ function scriptedQuery(steps: Step[]) {
     return (async function* () {
       let n = 0;
       for (const step of steps) {
+        // Like the SDK, stop once the runtime aborts the query.
+        if (options.abortController?.signal.aborted === true) {
+          throw new AbortError("Claude Code process aborted by user");
+        }
         if ("throw" in step) throw step.throw;
         if (!isToolStep(step)) {
           yield step;
@@ -71,7 +79,7 @@ function scriptedQuery(steps: Step[]) {
         const outcome: ToolOutcome = { tool: step.tool, executed: false };
         const signal = new AbortController().signal;
         let allowed = true;
-        if (via !== "canUseTool") {
+        if (via === "hook" || via === "both") {
           const pre = options.hooks?.PreToolUse?.[0]?.hooks[0];
           if (pre === undefined) throw new Error("PreToolUse hook missing");
           outcome.hook = await pre(
@@ -92,7 +100,7 @@ function scriptedQuery(steps: Step[]) {
           ).hookSpecificOutput;
           allowed = specific?.permissionDecision === "allow";
         }
-        if (via !== "hook") {
+        if (via === "canUseTool" || via === "both") {
           const canUse = options.canUseTool;
           if (canUse === undefined) throw new Error("canUseTool missing");
           const permission = await canUse(step.tool, step.input, {
@@ -759,14 +767,18 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
     const steps: ToolStep[] = [
       { tool: "Bash", input: { command: "python -c 'print(1)'" } },
       { tool: "Bash", input: { command: "bash -c 'ls'" } },
+      { tool: "Bash", input: { command: "node -e 'process.exit(0)'" } },
+      { tool: "Bash", input: { command: "sh -c 'cat /etc/passwd'" } },
       { tool: "Read", input: { file_path: outside } },
       { tool: "Write", input: { file_path: outside, content: "x" } },
       { tool: "Edit", input: { file_path: outside, old_string: "a", new_string: "b" } },
       { tool: "Glob", input: { pattern: "../**/*" } },
+      { tool: "Grep", input: { pattern: "password", path: resolve(ROOT, "..", "elsewhere") } },
       { tool: "WebFetch", input: { url: "https://example.com", prompt: "read" } },
       { tool: "WebSearch", input: { query: "opscrew" } },
       { tool: "Task", input: { prompt: "help" } },
       { tool: "mcp__github__create_pull_request", input: {} },
+      { tool: "mcp__other__x", input: {} },
       { tool: "SomethingNew", input: {} },
       // allowed
       { tool: "Read", input: { file_path: inside } },
@@ -788,14 +800,18 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
     expect(executed).toEqual([
       "Bash:false",
       "Bash:false",
+      "Bash:false",
+      "Bash:false",
       "Read:false",
       "Write:false",
       "Edit:false",
       "Glob:false",
+      "Grep:false",
       "WebFetch:false",
       "WebSearch:false",
       "Task:false",
       "mcp__github__create_pull_request:false",
+      "mcp__other__x:false",
       "SomethingNew:false",
       "Read:true",
       "Edit:true",
@@ -803,7 +819,11 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
       "mcp__opscrew__hetzner_list_offers:true",
       "StructuredOutput:true",
     ]);
-    expect(audit.entries.filter((e) => e.kind === "tool-denied")).toHaveLength(11);
+    const denied = audit.entries.filter((e) => e.kind === "tool-denied");
+    expect(denied).toHaveLength(15);
+    expect(denied.map((e) => e.action)).toEqual(
+      executed.filter((e) => e.endsWith(":false")).map((e) => e.split(":")[0]),
+    );
     expect(audit.entries.filter((e) => e.kind === "tool-call").map((e) => e.action)).toEqual([
       "Read",
       "Edit",
@@ -1125,5 +1145,138 @@ describe("toSdkTools", () => {
     );
     const failed = await failing?.handler({}, {});
     expect(failed?.isError).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Ungated calls and hook timeouts
+// ---------------------------------------------------------------------------------------------
+
+describe("ClaudeAgentRuntime ungated tool calls", () => {
+  it("stops the phase when a tool ran without passing the gate", async () => {
+    const { runtime, audit, outcomes, ledger } = setup([
+      init(),
+      { tool: "Bash", input: { command: "rm -rf build" }, id: "ungated-1", via: "none" },
+      { tool: "Read", input: { file_path: resolve(ROOT, "a.txt") } },
+      success(),
+    ]);
+    const result = await runtime.runPhase(request({ phase: "adapt", profile: "edit-repo" }));
+    // The phase stopped right after the ungated call; nothing later ran.
+    expect(outcomes.map((o) => o.tool)).toEqual(["Bash"]);
+    expect(outcomes[0]?.post).toMatchObject({ continue: false });
+    expect(result.ok).toBe(false);
+    expect(result.stopReason).toBe("error");
+    expect(result.error).toMatch(/without passing its safety gate/);
+    expect(result.error).toMatch(/managed/i);
+    expect(ledger).toEqual([]);
+    const entry = audit.entries.find((e) => e.kind === "tool-call");
+    expect(entry).toMatchObject({
+      action: "Bash",
+      actor: "agent",
+      target: "rm -rf build",
+      detail: expect.stringMatching(/^ungated/),
+    });
+    expect(entry).not.toHaveProperty("decision");
+    expect(audit.entries.at(-1)).toMatchObject({
+      kind: "phase",
+      detail: expect.stringMatching(/^error/),
+    });
+  });
+
+  it("treats a call that ran after the gate denied it as ungated", async () => {
+    const audit = new MemoryAuditLog();
+    const runtime = new ClaudeAgentRuntime({
+      policy: new DefaultToolPolicy(),
+      audit,
+      redact: (text) => text,
+      env: { ANTHROPIC_API_KEY: "test" },
+      queryFn: (params) => {
+        const options = params.options ?? {};
+        return (async function* () {
+          const signal = new AbortController().signal;
+          const base = { session_id: SESSION, transcript_path: "", cwd: ROOT };
+          const input = { command: "curl https://example.com" };
+          await options.hooks?.PreToolUse?.[0]?.hooks[0]?.(
+            {
+              ...base,
+              hook_event_name: "PreToolUse",
+              tool_name: "Bash",
+              tool_input: input,
+              tool_use_id: "t1",
+            },
+            "t1",
+            { signal },
+          );
+          await options.hooks?.PostToolUse?.[0]?.hooks[0]?.(
+            {
+              ...base,
+              hook_event_name: "PostToolUse",
+              tool_name: "Bash",
+              tool_input: input,
+              tool_response: "ok",
+              tool_use_id: "t1",
+            },
+            "t1",
+            { signal },
+          );
+          if (options.abortController?.signal.aborted === true) throw new AbortError("aborted");
+          yield success();
+        })();
+      },
+    });
+    const result = await runtime.runPhase(request({ phase: "adapt", profile: "edit-repo" }));
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/safety gate/);
+    expect(audit.entries.map((e) => e.kind)).toEqual(["tool-denied", "tool-call", "phase"]);
+  });
+});
+
+describe("ClaudeAgentRuntime hook timeouts", () => {
+  it("gives the gate time for a human approval and the post hook a short limit", async () => {
+    const { runtime, calls } = setup([success()]);
+    await runtime.runPhase(request());
+    const hooks = onlyCall(calls).hooks;
+    expect(hooks?.PreToolUse?.[0]?.timeout).toBe(30 * 60);
+    expect(hooks?.PostToolUse?.[0]?.timeout).toBe(60);
+    expect(hooks?.PostToolUseFailure?.[0]?.timeout).toBe(60);
+  });
+
+  it("denies the call when the gate's hook is cancelled while waiting for approval", async () => {
+    const { runtime, calls, audit } = setup([success()], {
+      policy: stubPolicy({ decision: "ask", reason: "Needs a person." }),
+      // An approval that never answers, as a person away from the keyboard.
+      approvals: { request: () => new Promise(() => {}) },
+    });
+    await runtime.runPhase(request({ phase: "adapt", profile: "edit-repo" }));
+    const options = onlyCall(calls);
+    const hookTimedOut = new AbortController();
+    const pending = options.hooks?.PreToolUse?.[0]?.hooks[0]?.(
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "ls" },
+        tool_use_id: "slow-1",
+        session_id: SESSION,
+        transcript_path: "",
+        cwd: ROOT,
+      },
+      "slow-1",
+      { signal: hookTimedOut.signal },
+    );
+    hookTimedOut.abort();
+    expect(await pending).toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    });
+    // The permission callback, if the SDK falls back to it, repeats the denial.
+    const permission = await options.canUseTool?.(
+      "Bash",
+      { command: "ls" },
+      { signal: new AbortController().signal, toolUseID: "slow-1", requestId: "r1" },
+    );
+    expect(permission).toMatchObject({ behavior: "deny" });
+    expect(audit.entries.find((e) => e.kind === "tool-denied")).toMatchObject({
+      action: "Bash",
+      detail: expect.stringMatching(/too long/),
+    });
   });
 });

@@ -73,6 +73,26 @@ const CREDENTIAL_HINT =
   "CLAUDE_CODE_USE_BEDROCK=1, CLAUDE_CODE_USE_VERTEX=1 or CLAUDE_CODE_USE_FOUNDRY=1 with that " +
   "provider's credentials.";
 
+/**
+ * Seconds the SDK waits for the PreToolUse gate. An `ask` decision waits for a person to answer
+ * the approval prompt, and approvals have no deadline of their own, so the gate allows 30
+ * minutes. When the SDK cancels the hook (its timeout fired), the gate settles as a denial, the
+ * permission callback repeats it, and a call that runs anyway is caught as ungated: a timeout
+ * always fails closed.
+ */
+export const PRE_TOOL_USE_TIMEOUT_SECONDS = 30 * 60;
+
+/** Seconds for the post-tool hooks: redacting one tool result and one audit append. */
+export const POST_TOOL_USE_TIMEOUT_SECONDS = 60;
+
+const UNGATED_ERROR =
+  "OpsCrew stopped because a tool ran without passing its safety gate. This usually means " +
+  "managed Claude Code settings on this machine disable or restrict hooks (for example " +
+  "`disableAllHooks` or `allowManagedHooksOnly` in managed-settings.json, found under " +
+  "/etc/claude-code on Linux, /Library/Application Support/ClaudeCode on macOS or " +
+  "C:\\Program Files\\ClaudeCode on Windows). Check those settings with your administrator, " +
+  "then run OpsCrew again.";
+
 type Gate =
   | { allowed: true; decision: "allow" | "approved" }
   | { allowed: false; decision: "deny" | "refused"; reason: string };
@@ -137,6 +157,9 @@ class PhaseRun<T> {
   #model: string | undefined;
   #lastText = "";
   #refused = false;
+  /** Set when a tool ran without an allowing gate decision; the phase is stopped. */
+  #ungated = false;
+  #controller: AbortController | undefined;
 
   constructor(
     private readonly options: ClaudeAgentRuntimeOptions,
@@ -149,6 +172,7 @@ class PhaseRun<T> {
   async run(): Promise<PhaseResult<T>> {
     const { request } = this;
     const controller = new AbortController();
+    this.#controller = controller;
     const onAbort = () => controller.abort();
     if (this.#isAborted()) return this.#finish(this.#aborted());
     request.signal?.addEventListener("abort", onAbort, { once: true });
@@ -163,16 +187,20 @@ class PhaseRun<T> {
       for await (const message of stream) {
         if (message.type === "result") result = message;
         else this.#observe(message);
+        if (this.#ungated) break;
       }
     } catch (error) {
       failure =
-        this.#isAborted() || isAbortError(error)
+        this.#ungated || this.#isAborted() || isAbortError(error)
           ? this.#aborted()
           : this.#failed(`The Claude agent failed: ${errorMessage(error)}`);
     } finally {
       request.signal?.removeEventListener("abort", onAbort);
     }
 
+    if (this.#ungated) {
+      return this.#finish({ ...this.#empty(), stopReason: "error", error: UNGATED_ERROR });
+    }
     if (failure !== undefined) return this.#finish(failure);
     if (result === undefined) {
       return this.#finish(
@@ -222,9 +250,11 @@ class PhaseRun<T> {
       permissionMode: "default",
       canUseTool: this.#canUseTool,
       hooks: {
-        PreToolUse: [{ hooks: [this.#preToolUse] }],
-        PostToolUse: [{ hooks: [this.#postToolUse] }],
-        PostToolUseFailure: [{ hooks: [this.#postToolUse] }],
+        PreToolUse: [{ hooks: [this.#preToolUse], timeout: PRE_TOOL_USE_TIMEOUT_SECONDS }],
+        PostToolUse: [{ hooks: [this.#postToolUse], timeout: POST_TOOL_USE_TIMEOUT_SECONDS }],
+        PostToolUseFailure: [
+          { hooks: [this.#postToolUse], timeout: POST_TOOL_USE_TIMEOUT_SECONDS },
+        ],
       },
       settingSources: [],
       strictMcpConfig: true,
@@ -259,13 +289,18 @@ class PhaseRun<T> {
   // Tool gating
   // -------------------------------------------------------------------------------------------
 
-  readonly #preToolUse: HookCallback = async (input, toolUseId): Promise<HookJSONOutput> => {
+  readonly #preToolUse: HookCallback = async (
+    input,
+    toolUseId,
+    { signal },
+  ): Promise<HookJSONOutput> => {
     if (input.hook_event_name !== "PreToolUse") return {};
     this.#sessionId ??= input.session_id;
     const gate = await this.#gate(
       input.tool_name,
       input.tool_input,
       input.tool_use_id ?? toolUseId,
+      signal,
     );
     return {
       hookSpecificOutput: {
@@ -294,6 +329,7 @@ class PhaseRun<T> {
     const gate = await this.#gates.get(input.tool_use_id);
     const failed = input.hook_event_name === "PostToolUseFailure";
     const target = describeInput(input.tool_name, input.tool_input);
+    if (gate?.allowed !== true) return this.#stopUngated(input.tool_name, target, gate);
     try {
       await this.options.audit.append({
         kind: "tool-call",
@@ -302,7 +338,7 @@ class PhaseRun<T> {
         phase: this.request.phase,
         ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
         ...(target === undefined ? {} : { target: shorten(this.#redact(target)) }),
-        decision: gate?.allowed === true ? gate.decision : "allow",
+        decision: gate.decision,
         ...(failed ? { detail: this.#redact(`failed: ${input.error}`) } : {}),
       });
     } catch {
@@ -325,21 +361,98 @@ class PhaseRun<T> {
     return {};
   };
 
+  /**
+   * A tool ran although no gate decision allowed it (the SDK skipped the PreToolUse hook, or ran
+   * the call after the gate denied it or timed out). Audits it, stops the agent and makes the
+   * phase fail with `UNGATED_ERROR`.
+   */
+  async #stopUngated(
+    tool: string,
+    target: string | undefined,
+    gate: Gate | undefined,
+  ): Promise<HookJSONOutput> {
+    this.#ungated = true;
+    try {
+      await this.options.audit.append({
+        kind: "tool-call",
+        actor: "agent",
+        action: tool,
+        phase: this.request.phase,
+        ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
+        ...(target === undefined ? {} : { target: shorten(this.#redact(target)) }),
+        detail:
+          gate === undefined
+            ? "ungated: the tool ran without passing the OpsCrew safety gate"
+            : `ungated: the tool ran although the OpsCrew safety gate answered ${gate.decision}`,
+      });
+    } catch {
+      // Stopping the phase matters more than the audit line.
+    }
+    this.#emit({
+      kind: "tool-denied",
+      tool,
+      message: `${tool} ran without passing the safety gate; stopping.`,
+    });
+    this.#controller?.abort();
+    return { continue: false, stopReason: UNGATED_ERROR };
+  }
+
   /** Policy decision for one tool call, computed once per tool-use id (hook and callback share it). */
-  #gate(tool: string, input: unknown, toolUseId: string | undefined): Promise<Gate> {
+  #gate(
+    tool: string,
+    input: unknown,
+    toolUseId: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<Gate> {
     if (toolUseId !== undefined) {
       const known = this.#gates.get(toolUseId);
       if (known !== undefined) return known;
     }
-    const pending = this.#decide(tool, input).catch(
+    const decided = this.#decide(tool, input).catch(
       (): Gate => ({
         allowed: false,
         decision: "deny",
         reason: "OpsCrew could not check this tool call, so it was denied.",
       }),
     );
+    // A cancelled hook (the SDK's timeout fired) settles the gate as a denial: fail closed.
+    let settled = false;
+    void decided.then(() => {
+      settled = true;
+    });
+    const pending =
+      signal === undefined
+        ? decided
+        : Promise.race([
+            decided,
+            this.#onCancel(signal, () => settled, tool, describeInput(tool, input)),
+          ]);
     if (toolUseId !== undefined) this.#gates.set(toolUseId, pending);
     return pending;
+  }
+
+  /**
+   * Resolves to a denial once `signal` aborts before the decision settled; never settles
+   * otherwise (a late abort changes nothing and writes no audit line).
+   */
+  #onCancel(
+    signal: AbortSignal,
+    decided: () => boolean,
+    tool: string,
+    target: string | undefined,
+  ): Promise<Gate> {
+    const reason = "The safety check for this tool call took too long, so it was denied.";
+    return new Promise<void>((resolve) => {
+      const fire = () => {
+        if (!decided()) resolve();
+      };
+      if (signal.aborted) fire();
+      else signal.addEventListener("abort", fire, { once: true });
+    }).then(() =>
+      this.#deny(tool, target, "deny", reason).catch(
+        (): Gate => ({ allowed: false, decision: "deny", reason }),
+      ),
+    );
   }
 
   async #decide(tool: string, input: unknown): Promise<Gate> {
