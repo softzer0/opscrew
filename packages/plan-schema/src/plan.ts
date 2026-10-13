@@ -19,6 +19,46 @@ import {
 /** Services that conflict with a self-hosted Postgres container. */
 const POSTGRES_PROVIDERS = new Set(["postgres", "supabase"]);
 
+/** Where the app runs: provider, location, server size, image and backups. */
+export const DeployTargetSchema = z.strictObject({
+  provider: VpsProviderSchema,
+  mode: z.literal("vps-compose"),
+  /** Provider location or region, for example `nbg1` (Hetzner) or `fra1` (DigitalOcean). */
+  location: z.string().min(1),
+  /** Provider server type or size, for example `cpx22` or `s-2vcpu-4gb`. */
+  serverType: z.string().min(1),
+  /** Provider image name; the provider's Ubuntu 24.04 image when omitted (`DEFAULT_IMAGES`). */
+  image: z.string().min(1).optional(),
+  /** The provider's automated daily backups. */
+  backups: z.boolean(),
+});
+
+/**
+ * A move to another provider in progress (`opscrew retarget`). `plan.target` is already the new
+ * target; `plan.deployment` describes the server that receives traffic (the old one until the
+ * DNS switch).
+ */
+export const RetargetSchema = z.strictObject({
+  /** The deployment being replaced. */
+  from: z.strictObject({
+    target: DeployTargetSchema,
+    serverIpv4: z.ipv4(),
+    serverIpv6: z.ipv6().optional(),
+    url: z.url({ protocol: /^https?$/ }).optional(),
+  }),
+  /** The new server, once created. */
+  next: z.strictObject({ serverIpv4: z.ipv4(), serverIpv6: z.ipv6().optional() }).optional(),
+  /** Last completed step. */
+  step: z.enum(["started", "renamed", "created", "deployed", "migrated", "switched"]),
+  /** Set while OpsCrew keeps the old server's app stopped (maintenance window, after the switch). */
+  oldAppStoppedAt: IsoDateTimeSchema.optional(),
+  /** Present once `opscrew retarget --abort` began: its last completed step. */
+  abort: z
+    .strictObject({ step: z.enum(["started", "new-removed", "secrets-restored"]) })
+    .optional(),
+  startedAt: IsoDateTimeSchema,
+});
+
 const DeployPlanObjectSchema = z
   .strictObject({
     schemaVersion: z.literal(1),
@@ -44,18 +84,7 @@ const DeployPlanObjectSchema = z
         }),
       ),
     }),
-    target: z.strictObject({
-      provider: VpsProviderSchema,
-      mode: z.literal("vps-compose"),
-      /** Provider location or region, for example `nbg1` (Hetzner) or `fra1` (DigitalOcean). */
-      location: z.string().min(1),
-      /** Provider server type or size, for example `cpx22` or `s-2vcpu-4gb`. */
-      serverType: z.string().min(1),
-      /** Provider image name; the provider's Ubuntu 24.04 image when omitted (`DEFAULT_IMAGES`). */
-      image: z.string().min(1).optional(),
-      /** The provider's automated daily backups. */
-      backups: z.boolean(),
-    }),
+    target: DeployTargetSchema,
     services: z.strictObject({ postgres: z.boolean(), redis: z.boolean() }),
     externalServices: z.array(ServiceKindSchema),
     cost: CostEstimateSchema,
@@ -128,6 +157,7 @@ const DeployPlanObjectSchema = z
         destroyedAt: IsoDateTimeSchema.optional(),
       })
       .prefault({}),
+    retarget: RetargetSchema.optional(),
   })
   .superRefine((plan, ctx) => {
     if (plan.dns.provider === "cloudflare" && plan.dns.domain === undefined) {
@@ -156,13 +186,26 @@ export const DEFAULT_IMAGES: Readonly<Record<VpsProvider, string>> = {
   digitalocean: "ubuntu-24-04-x64",
 };
 
+/** The target with its image filled in from `DEFAULT_IMAGES` when omitted. */
+function withImage(target: z.output<typeof DeployTargetSchema>) {
+  return { ...target, image: target.image ?? DEFAULT_IMAGES[target.provider] };
+}
+
 /**
  * `opscrew/plan.yaml`: the chosen deployment. Parsing fills every documented default, including
  * `security.httpAllowedFrom` (`cloudflare` when `dns.proxied`, else `any`).
  */
 export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => ({
   ...plan,
-  target: { ...plan.target, image: plan.target.image ?? DEFAULT_IMAGES[plan.target.provider] },
+  target: withImage(plan.target),
+  ...(plan.retarget === undefined
+    ? {}
+    : {
+        retarget: {
+          ...plan.retarget,
+          from: { ...plan.retarget.from, target: withImage(plan.retarget.from.target) },
+        },
+      }),
   security: {
     sshAllowedCidrs: plan.security.sshAllowedCidrs,
     httpAllowedFrom:
@@ -173,3 +216,8 @@ export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => ({
   },
 }));
 export type DeployPlan = z.output<typeof DeployPlanSchema>;
+
+/** Where the app runs, with the image filled in. */
+export type DeployTarget = DeployPlan["target"];
+/** A move to another provider in progress. */
+export type Retarget = NonNullable<DeployPlan["retarget"]>;

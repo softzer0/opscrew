@@ -9,6 +9,7 @@ export * from "./init";
 export * from "./interview";
 export * from "./providers";
 export * from "./provision";
+export * from "./retarget";
 export * from "./secure";
 export * from "./shared";
 export * from "./verify";

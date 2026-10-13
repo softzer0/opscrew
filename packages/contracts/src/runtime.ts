@@ -11,6 +11,7 @@ export const PHASES = [
   "dns",
   "secure",
   "verify",
+  "retarget",
 ] as const;
 export type PhaseName = (typeof PHASES)[number];
 

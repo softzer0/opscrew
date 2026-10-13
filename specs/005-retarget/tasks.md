@@ -13,7 +13,7 @@ variable name (the redactor masks what follows).
 
 ## Phase 1: Foundation (lead, serial)
 
-- [ ] T501 Contracts, schemas, layout type, retarget stubs and ADR 0007 (lead) in `packages/contracts/src/{iac,runtime}.ts`, `packages/plan-schema/src/**` (+ JSON Schemas), `packages/iac-templates/src/types.ts`, `packages/agents/src/retarget/index.ts`, `packages/agents/src/index.ts`, `docs/adr/0007-retarget-in-one-state.md`
+- [X] T501 Contracts, schemas, layout type, retarget stubs and ADR 0007 (lead) in `packages/contracts/src/{iac,runtime}.ts`, `packages/plan-schema/src/**` (+ JSON Schemas), `packages/iac-templates/src/types.ts`, `packages/agents/src/retarget/index.ts`, `packages/agents/src/index.ts`, `docs/adr/0007-retarget-in-one-state.md`
   - Accept: plan.md "Contracts and schemas"; existing artefacts parse; `pnpm check` passes.
   - Effort: lead
 

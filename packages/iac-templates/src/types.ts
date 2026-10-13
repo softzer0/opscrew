@@ -1,3 +1,5 @@
+import type { DeployTarget, VpsProvider } from "@opscrew/plan-schema";
+
 /** Category of a rendered file, used for diff summaries and approvals. */
 export type RenderedFileKind = "infra" | "runtime" | "workflow" | "docker" | "doc";
 
@@ -40,4 +42,26 @@ export interface RenderContext {
   trivyImage?: string;
   /** OpsCrew project id (names `~/.opscrew/projects/<id>/` in the runbook; never an absolute path). */
   projectId?: string;
+  /**
+   * Which server modules the root module contains during a move to another provider
+   * (`opscrew retarget`). Without it the root module deploys `plan.target` as `module "server"`.
+   */
+  layout?: InfraLayout;
 }
+
+/** Server modules of the root module while a deployment moves to another provider. */
+export interface InfraLayout {
+  /** `module "server"` and the target it deploys; absent when the configuration has none. */
+  server?: DeployTarget;
+  /** `module "server_previous"`: the server being replaced. */
+  previous?: DeployTarget;
+  /** A `moved` block for the moves-only plans (rename before creating, rename back on abort). */
+  moved?: { from: ServerModule; to: ServerModule };
+  /** The module the DNS module and the `server_*` outputs follow (the one that gets traffic). */
+  live: ServerModule;
+  /** Every provider whose `required_providers` entry, provider block and module are rendered. */
+  providers: readonly VpsProvider[];
+}
+
+/** The two server module names a root module can contain. */
+export type ServerModule = "server" | "server_previous";

@@ -304,3 +304,24 @@ describe("DeployPlan target provider", () => {
     expect(explicit.target.image).toBe("ubuntu-22-04-x64");
   });
 });
+
+describe("DeployPlan retarget", () => {
+  it("records a move in progress and fills the previous target's image", async () => {
+    const plan = parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+    const { image: _image, ...previous } = plan.target;
+    const moving = DeployPlanSchema.parse({
+      ...plan,
+      target: { ...plan.target, provider: "digitalocean", image: undefined },
+      retarget: {
+        from: { target: { ...previous, provider: "hetzner" }, serverIpv4: "203.0.113.10" },
+        step: "renamed",
+        startedAt: "2026-10-13T09:00:00.000Z",
+      },
+    });
+    expect(moving.target.image).toBe("ubuntu-24-04-x64");
+    expect(moving.retarget?.from.target.image).toBe("ubuntu-24.04");
+    expect(moving.retarget?.step).toBe("renamed");
+    const bad = { ...moving, retarget: { ...moving.retarget, step: "halfway" } };
+    expect(pathsOf(DeployPlanSchema.safeParse(bad))).toEqual(["retarget.step"]);
+  });
+});

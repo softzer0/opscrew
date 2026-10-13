@@ -43,6 +43,20 @@ export interface PlanSummary {
    * refreshing. Present when the engine reports any; refresh-only plans carry only this.
    */
   drift?: ResourceDrift[];
+  /**
+   * Resources the plan only renames in the state (`moved` blocks, `previous_address`). A pure
+   * move is not a change; a plan with moves and no changes still has to be applied.
+   */
+  moves?: ResourceMove[];
+}
+
+/** A resource whose state address changes (a `moved` block); nothing changes in the cloud. */
+export interface ResourceMove {
+  /** Address before the plan, for example `module.server.hcloud_server.this`. */
+  from: string;
+  /** Address after the plan, for example `module.server_previous.hcloud_server.this`. */
+  to: string;
+  type: string;
 }
 
 /** One resource whose real state no longer matches the engine's state. */
