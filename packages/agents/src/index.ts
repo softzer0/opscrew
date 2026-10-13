@@ -4,6 +4,7 @@ export * from "./context";
 export * from "./design";
 export * from "./destroy";
 export * from "./dns";
+export * from "./domain";
 export * from "./drift";
 export * from "./init";
 export * from "./interview";

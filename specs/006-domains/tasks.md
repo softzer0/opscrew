@@ -12,7 +12,7 @@ variable name. Tasks touching the CLI wait for feature 005's CLI task (T509).
 
 ## Phase 1: Foundation (lead, serial)
 
-- [ ] T601 Registrar contract, `domain-purchase`/`domain-settings` approval kinds, `plan.dns.registration`, domain stubs, constitution amendment 1.1.0 and ADR 0008 (lead) in `packages/contracts/src/{safety,registrar,index}.ts`, `packages/plan-schema/src/**` (+ JSON Schemas), `packages/agents/src/domain/index.ts`, `packages/agents/src/index.ts`, `.specify/memory/constitution.md`, `docs/adr/0008-registrar-seam.md`
+- [X] T601 Registrar contract, `domain-purchase`/`domain-settings` approval kinds, `plan.dns.registration`, domain stubs, constitution amendment 1.1.0 and ADR 0008 (lead) in `packages/contracts/src/{safety,registrar,index}.ts`, `packages/plan-schema/src/**` (+ JSON Schemas), `packages/agents/src/domain/index.ts`, `packages/agents/src/index.ts`, `.specify/memory/constitution.md`, `docs/adr/0008-registrar-seam.md`
   - Accept: plan.md "Contracts"; `--yes` cannot approve the new kinds (test in `packages/cli/src/approval.test.ts`); `pnpm check` passes.
   - Effort: lead
 

@@ -95,6 +95,19 @@ describe("NonInteractiveApprovalHandler with --yes", () => {
     }
   });
 
+  it("never buys a domain or changes its settings", async () => {
+    for (const kind of ["domain-purchase", "domain-settings"] as const) {
+      const decision = await handler.request({
+        kind,
+        title: kind,
+        details: "",
+        ...(kind === "domain-purchase" ? { confirmPhrase: "shopapp.com" } : {}),
+      });
+      expect(decision.approved, kind).toBe(false);
+      expect(decision.reason).toMatch(/interactive terminal/);
+    }
+  });
+
   it("never approves anything that needs a typed confirmation", async () => {
     const decision = await handler.request({
       kind: "repo-write",

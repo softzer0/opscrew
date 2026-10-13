@@ -115,6 +115,13 @@ describe("JsonlApprovalStore", () => {
     expect(lines.map((line) => JSON.parse(line))).toEqual([record()]);
   });
 
+  it("reads back domain purchase and settings approvals", async () => {
+    const store = new JsonlApprovalStore(join(root, "domains", "approvals.jsonl"));
+    await store.append(record({ id: "p", kind: "domain-purchase", title: "Buy shopapp.com" }));
+    await store.append(record({ id: "s", kind: "domain-settings", title: "Auto-renew off" }));
+    expect((await store.list()).map((r) => r.kind)).toEqual(["domain-purchase", "domain-settings"]);
+  });
+
   it("treats a missing or empty file as no approvals", async () => {
     const file = join(root, "approvals.jsonl");
     const store = new JsonlApprovalStore(file);

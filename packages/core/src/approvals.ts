@@ -27,6 +27,8 @@ const APPROVAL_KINDS = [
   "github-secrets",
   "remote-exec",
   "tool-call",
+  "domain-purchase",
+  "domain-settings",
 ] as const satisfies readonly ApprovalKind[];
 
 const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({

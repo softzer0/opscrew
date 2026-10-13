@@ -9,6 +9,7 @@ import {
   PhaseNameSchema,
   PlanHashSchema,
   PortSchema,
+  RegistrarSchema,
   RepoPathSchema,
   ServiceKindSchema,
   UrlPathSchema,
@@ -114,6 +115,17 @@ const DeployPlanObjectSchema = z
       proxied: z.boolean().default(true),
       /** Also serve `www.<domain>`. */
       www: z.boolean().default(false),
+      /** Set when OpsCrew bought the domain (`opscrew domain buy`). */
+      registration: z
+        .strictObject({
+          registrar: RegistrarSchema,
+          registeredAt: IsoDateTimeSchema.optional(),
+          expiresAt: IsoDateTimeSchema.optional(),
+          autoRenew: z.boolean(),
+          privacy: z.boolean(),
+          dnssec: z.boolean(),
+        })
+        .optional(),
     }),
     cicd: z.strictObject({
       provider: z.literal("github-actions"),

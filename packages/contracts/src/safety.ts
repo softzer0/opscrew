@@ -36,7 +36,11 @@ export type ApprovalKind =
   | "pull-request"
   | "github-secrets"
   | "remote-exec"
-  | "tool-call";
+  | "tool-call"
+  /** Buying a domain: costs money, cannot be refunded; always typed, never granted by `--yes`. */
+  | "domain-purchase"
+  /** Changing a registered domain's settings (auto-renew). */
+  | "domain-settings";
 
 export interface PolicyResult {
   policyId: string;

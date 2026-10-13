@@ -73,6 +73,10 @@ export type Region = z.infer<typeof RegionSchema>;
 export const VpsProviderSchema = z.enum(["hetzner", "digitalocean"]);
 export type VpsProvider = z.infer<typeof VpsProviderSchema>;
 
+/** Registrars OpsCrew can buy domains with. */
+export const RegistrarSchema = z.enum(["cloudflare", "namecheap", "porkbun", "godaddy"]);
+export type Registrar = z.infer<typeof RegistrarSchema>;
+
 /** Expected monthly active users. */
 export const UserScaleSchema = z.enum(["<1k", "1k-10k", "10k-100k", ">100k"]);
 export type UserScale = z.infer<typeof UserScaleSchema>;

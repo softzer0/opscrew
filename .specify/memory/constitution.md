@@ -21,6 +21,9 @@ governs every specification, plan, task and line of code in this repository.
 - Every provider mutation and approval decision is appended to an audit log.
 - Approvals in non-interactive mode MUST name the plan hash explicitly (`--approve <hash>`);
   a blanket `--yes` for applies is forbidden.
+- Purchases (for example registering a domain) cost money and cannot be undone: they need an
+  approval of their own kind with the price shown and a typed confirmation of the item, are never
+  granted by a blanket flag, and in non-interactive mode need the exact item and a price bound.
 
 Rationale: an agent that mutates someone's production infrastructure is only acceptable if a
 human sees and approves every change.
@@ -127,8 +130,9 @@ human sees and approves every change.
 - Licensing: Apache-2.0 for everything outside `ee/`; FSL-1.1-ALv2 for `ee/`. No AGPL or
   non-commercial dependency may be linked into the CLI; such tools may only be invoked as optional
   external binaries. Semgrep-maintained rules are never used in the hosted control plane.
-- Provider order: Hetzner Cloud + Cloudflare (v1), then DigitalOcean, AWS, Google Cloud, Azure,
-  Contabo and Namecheap. Prices and availability are read live from provider APIs whenever
+- Provider order: hosting on Hetzner Cloud and DigitalOcean (with Cloudflare DNS), then AWS,
+  Google Cloud, Azure and Contabo; domains through Cloudflare Registrar first, then Namecheap,
+  Porkbun and GoDaddy. Prices and availability are read live from provider APIs whenever
   possible; any static fallback is labelled with its date.
 - CI/CD: GitHub Actions with OIDC federation for hyperscalers; per-repository deploy keys for VPS
   targets; third-party actions avoided or pinned by commit SHA.
@@ -165,4 +169,4 @@ human sees and approves every change.
 - Every plan includes a Constitution Check; violations are either fixed or justified in the plan's
   Complexity Tracking table. Every reviewer pass checks constitution compliance.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-11
+**Version**: 1.1.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-13
