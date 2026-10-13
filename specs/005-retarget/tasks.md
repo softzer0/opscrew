@@ -59,7 +59,7 @@ variable name (the redactor masks what follows).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T507 [P] [US1] Typed server operations for the move in `packages/agents/src/retarget/server-ops.ts`
+- [X] T507 [P] [US1] Typed server operations for the move in `packages/agents/src/retarget/server-ops.ts`
   - Owns: `packages/agents/src/retarget/server-ops.ts`, `packages/agents/src/retarget/server-ops.test.ts`
   - Reads: plan.md "Server operations"; research.md "What has to move"; `packages/agents/src/shared/{remote,wait}.ts`
   - Depends: T501
