@@ -4,7 +4,7 @@ export default defineConfig({
   entry: { opscrew: "src/bin.ts" },
   format: ["esm"],
   platform: "node",
-  target: "node20",
+  target: "node22",
   outDir: "dist",
   clean: true,
   // Workspace packages are consumed from TypeScript source, so they are bundled. Everything in

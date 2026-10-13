@@ -15,7 +15,7 @@ claude plugin install opscrew@opscrew
 Or inside a Claude Code session: `/plugin marketplace add opscrew/opscrew`, then
 `/plugin install opscrew@opscrew`.
 
-The plugin starts the OpsCrew MCP server with `npx -y opscrew@0.1.0 mcp`, so Node.js 20.19+ must be
+The plugin starts the OpsCrew MCP server with `npx -y opscrew@0.1.0 mcp`, so Node.js 22+ must be
 installed. On native Windows, if the server fails to start, change `plugin/.mcp.json` to use
 `"command": "cmd", "args": ["/c", "npx", "-y", "opscrew@0.1.0", "mcp"]`.
 

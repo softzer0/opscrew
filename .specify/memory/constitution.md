@@ -121,7 +121,8 @@ human sees and approves every change.
 
 ## Technology and Security Constraints
 
-- Language and runtime: TypeScript (strict, ESM) on Node.js >= 20.19; pnpm workspaces + Turborepo;
+- Language and runtime: TypeScript (strict, ESM) on Node.js >= 22 (Node.js 20 reached end of life in
+  April 2026); pnpm workspaces + Turborepo;
   TypeScript 7 for type checking; Biome for lint and format; Vitest for tests; zod 4 for schemas;
   `yaml` for YAML. Internal packages are consumed from source; the `opscrew` CLI is bundled.
 - Agent runtime: the Claude Agent SDK behind the `AgentRuntime` contract (bring your own key:
@@ -169,4 +170,4 @@ human sees and approves every change.
 - Every plan includes a Constitution Check; violations are either fixed or justified in the plan's
   Complexity Tracking table. Every reviewer pass checks constitution compliance.
 
-**Version**: 1.1.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-13
+**Version**: 1.2.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-14
