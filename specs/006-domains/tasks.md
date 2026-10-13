@@ -34,7 +34,7 @@ variable name. Tasks touching the CLI wait for feature 005's CLI task (T509).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T604 [P] [US3] Registrar access in the init checklist in `packages/agents/src/init/`
+- [X] T604 [P] [US3] Registrar access in the init checklist in `packages/agents/src/init/`
   - Owns: `packages/agents/src/init/**`
   - Reads: spec.md US3 AS3, FR-607
   - Depends: T601, T602

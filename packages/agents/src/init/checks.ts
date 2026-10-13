@@ -1,4 +1,9 @@
-import { CLOUDFLARE_TOKEN_PERMISSIONS, cloudflareConnector } from "@opscrew/connector-cloudflare";
+import {
+  CLOUDFLARE_REGISTRAR_PERMISSIONS,
+  CLOUDFLARE_TOKEN_PERMISSIONS,
+  type CloudflareConnector,
+  cloudflareConnector,
+} from "@opscrew/connector-cloudflare";
 import {
   GITHUB_TOKEN_PERMISSIONS,
   GitClient,
@@ -6,7 +11,7 @@ import {
   parseGitHubRepo,
   resolveGitHubToken,
 } from "@opscrew/connector-github";
-import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
+import type { CredentialCheck, CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { findExecutable, isUserFacingError } from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
 import { readArtifact } from "@opscrew/plan-schema";
@@ -35,6 +40,8 @@ export type InitCheckId =
   /** The cloud provider token (Hetzner Cloud or DigitalOcean); was `hetzner` before 004. */
   | "provider"
   | "cloudflare"
+  /** Optional: whether the Cloudflare token can buy domains through Cloudflare Registrar. */
+  | "registrar"
   | "github"
   | "model"
   | "scanners"
@@ -154,6 +161,8 @@ export async function runInitChecks(
   const repoInfo = inspectRepository(deps, which);
   const choice = await providerChoice(deps);
 
+  const cloudflare = cloudflareAccess(deps, offline);
+
   const checks = await Promise.all([
     guard("node", "Node.js", true, async () => checkNode(services.nodeVersion)),
     guard("git", "git", true, async () => checkGit((await repoInfo).git)),
@@ -171,12 +180,15 @@ export async function runInitChecks(
     guard("cloudflare", "Cloudflare token", false, async () => {
       const usage = await cloudflareUsage(deps);
       return withBudget(
-        checkCloudflare(deps, offline, usage),
+        checkCloudflare(deps, offline, usage, cloudflare),
         budget,
         "Cloudflare",
         usage.needed === true,
       );
     }),
+    guard("registrar", "Buying domains through Cloudflare (optional)", false, () =>
+      withBudget(checkRegistrar(deps, offline, cloudflare), budget, "Cloudflare", false),
+    ),
     guard("github", "GitHub token", true, async () => {
       const info = await repoInfo;
       return withBudget(checkGitHub(deps, offline, info), budget, "GitHub", true);
@@ -489,10 +501,37 @@ function cloudflareFix(domain?: string): string {
   return `Create a token at https://dash.cloudflare.com/profile/api-tokens with ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}${zone}, then set CLOUDFLARE_API_TOKEN.`;
 }
 
+/** The Cloudflare connector and a token verification shared by the Cloudflare checks. */
+interface CloudflareAccess {
+  connector: CloudflareConnector;
+  /** Verifies the token once, however many checks ask. */
+  verified: () => Promise<CredentialCheck>;
+}
+
+/** Online with a token set: the shared connector; otherwise undefined. */
+function cloudflareAccess(deps: PhaseDeps, offline: boolean): CloudflareAccess | undefined {
+  if (offline || !set(deps.env, "CLOUDFLARE_API_TOKEN")) return undefined;
+  const connector = cloudflareConnector({
+    env: deps.env,
+    fetch: deps.fetch,
+    redactor: deps.redactor,
+    version: deps.version,
+  });
+  let verification: Promise<CredentialCheck> | undefined;
+  return {
+    connector,
+    verified: () => {
+      verification ??= connector.verifyCredentials();
+      return verification;
+    },
+  };
+}
+
 async function checkCloudflare(
   deps: PhaseDeps,
   offline: boolean,
   usage: { needed: boolean | undefined; domain?: string },
+  access: CloudflareAccess | undefined,
 ): Promise<CheckResult> {
   const { needed, domain } = usage;
   const problem = needed === true ? "fail" : "warn";
@@ -520,15 +559,9 @@ async function checkCloudflare(
   if (offline) {
     return { status: "pass", message: `CLOUDFLARE_API_TOKEN is set (${OFFLINE_NOTE}).` };
   }
-  const connector = cloudflareConnector({
-    env: deps.env,
-    fetch: deps.fetch,
-    redactor: deps.redactor,
-    version: deps.version,
-  });
-  const client = connector.client;
-  if (!client) return { status: problem, message: "CLOUDFLARE_API_TOKEN is not set." };
-  const verified = await connector.verifyCredentials();
+  const client = access?.connector.client;
+  if (!access || !client) return { status: problem, message: "CLOUDFLARE_API_TOKEN is not set." };
+  const verified = await access.verified();
   if (!verified.ok) {
     return {
       status: problem,
@@ -558,6 +591,102 @@ async function checkCloudflare(
     status: "pass",
     message: `CLOUDFLARE_API_TOKEN works and can see the zone ${zone.name}.`,
   };
+}
+
+/** A probe name for the Registrar check; `domain-check` only reads, it buys nothing. */
+const REGISTRAR_PROBE_DOMAIN = "opscrew-registrar-check.com";
+
+/** Accounts the Registrar probe tries before giving up. */
+const REGISTRAR_PROBE_ACCOUNTS = 3;
+
+const REGISTRAR_FIX = `Buying domains is optional; to enable it add ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")} to the token at https://dash.cloudflare.com/profile/api-tokens.`;
+
+/** A refusal for missing permissions (401/403 or a permission/authentication error). */
+function isPermissionError(error: unknown): boolean {
+  if (isUserFacingError(error) && error.code === "CREDENTIALS_INVALID") return true;
+  const text = error instanceof Error ? error.message : String(error);
+  return /permission|unauthori[sz]ed|forbidden|authentication/i.test(text);
+}
+
+/** Plain cause of a refusal, without the connector's hint (the fix names the permissions). */
+function causeText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Optional check (FR-607): whether the Cloudflare token can buy domains. Lists the accounts and
+ * runs a read-only Registrar `domain-check` on a probe name; never fails init.
+ */
+async function checkRegistrar(
+  deps: PhaseDeps,
+  offline: boolean,
+  access: CloudflareAccess | undefined,
+): Promise<CheckResult> {
+  if (!set(deps.env, "CLOUDFLARE_API_TOKEN")) {
+    return {
+      status: "skip",
+      message:
+        "Not checked: CLOUDFLARE_API_TOKEN is not set. Buying domains through Cloudflare is optional.",
+    };
+  }
+  if (offline) {
+    return {
+      status: "skip",
+      message:
+        "Offline: not checked whether CLOUDFLARE_API_TOKEN can buy domains (optional); run `opscrew init` without --offline to check.",
+    };
+  }
+  const client = access?.connector.client;
+  if (!access || !client) return { status: "skip", message: "CLOUDFLARE_API_TOKEN is not set." };
+  const verified = await access.verified();
+  if (!verified.ok) {
+    return {
+      status: "skip",
+      message:
+        "Not checked because CLOUDFLARE_API_TOKEN does not work (see the Cloudflare token check).",
+    };
+  }
+  const refused = (error: unknown): CheckResult =>
+    isPermissionError(error)
+      ? {
+          status: "warn",
+          message: `CLOUDFLARE_API_TOKEN cannot buy domains through Cloudflare: ${causeText(error)}`,
+          fix: REGISTRAR_FIX,
+        }
+      : {
+          status: "warn",
+          message: `Could not check whether CLOUDFLARE_API_TOKEN can buy domains: ${errorText(error)}`,
+          fix: "Buying domains is optional and nothing else depends on it; run `opscrew init` again to check once more.",
+        };
+
+  let accounts: Awaited<ReturnType<typeof client.listAccounts>>;
+  try {
+    accounts = await client.listAccounts();
+  } catch (error) {
+    return refused(error);
+  }
+  if (accounts.length === 0) {
+    return {
+      status: "warn",
+      message:
+        "CLOUDFLARE_API_TOKEN cannot buy domains through Cloudflare: it cannot see any Cloudflare account.",
+      fix: REGISTRAR_FIX,
+    };
+  }
+  let firstError: unknown;
+  for (const account of accounts.slice(0, REGISTRAR_PROBE_ACCOUNTS)) {
+    try {
+      await client.domainCheck(account.id, [REGISTRAR_PROBE_DOMAIN]);
+      const name = account.name ? ` (account ${account.name})` : "";
+      return {
+        status: "pass",
+        message: `CLOUDFLARE_API_TOKEN can buy domains through Cloudflare${name}.`,
+      };
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  return refused(firstError);
 }
 
 function githubFix(coordinates?: { owner: string; repo: string }): string {

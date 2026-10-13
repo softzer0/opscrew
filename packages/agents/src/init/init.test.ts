@@ -72,6 +72,10 @@ interface NetOptions {
   /** Zone `example.com` is visible to the Cloudflare token. */
   zone?: boolean;
   github?: "push" | "read" | 404;
+  /** Registrar answer to domain-check: allowed, refused (permission), or another error. */
+  registrar?: "ok" | 403 | 400 | "hang";
+  /** Accounts the Cloudflare token can see (default one). */
+  accounts?: number;
 }
 
 function json(status: number, body: unknown): Response {
@@ -120,6 +124,35 @@ function fakeNet(o: NetOptions = {}): { fetch: FetchLike; calls: string[] } {
       }
       if (url.pathname.endsWith("/user/tokens/verify")) {
         return json(200, { success: true, errors: [], result: { status: "active" } });
+      }
+      if (url.pathname.endsWith("/accounts")) {
+        const count = o.accounts ?? 1;
+        const accounts = Array.from({ length: count }, (_, i) => ({
+          id: `acct-${i + 1}`,
+          name: `Shop ${i + 1}`,
+        }));
+        return json(200, { success: true, errors: [], result: accounts });
+      }
+      if (url.pathname.endsWith("/registrar/domain-check")) {
+        const mode = o.registrar ?? "ok";
+        if (mode === "hang") return new Promise<Response>(() => {});
+        if (mode === 403) {
+          return json(403, {
+            success: false,
+            errors: [{ code: 10000, message: "Authentication error" }],
+          });
+        }
+        if (mode === 400) {
+          return json(400, {
+            success: false,
+            errors: [{ code: 1001, message: "Registrar is not enabled on this account" }],
+          });
+        }
+        return json(200, {
+          success: true,
+          errors: [],
+          result: { domains: [{ name: "opscrew-registrar-check.com", registrable: false }] },
+        });
       }
       if (url.pathname.endsWith("/zones")) {
         const name = url.searchParams.get("name");
@@ -223,6 +256,7 @@ describe("runInitChecks", () => {
       "ssh",
       "provider",
       "cloudflare",
+      "registrar",
       "github",
       "model",
       "scanners",
@@ -520,6 +554,92 @@ describe("runInitChecks", () => {
     });
   });
 
+  describe("Cloudflare Registrar", () => {
+    const CF_TOKEN = fakeSecret("cloudflare-token", "registrar");
+    const env = { HCLOUD_TOKEN: HCLOUD, CLOUDFLARE_API_TOKEN: CF_TOKEN, GITHUB_TOKEN: GITHUB };
+
+    function expectNoCfToken(value: unknown): void {
+      expect(JSON.stringify(value)).not.toContain(CF_TOKEN);
+      expectNoTokens(value);
+    }
+
+    it("passes when the token can use the Registrar, with a cheap read that buys nothing", async () => {
+      const { deps, calls } = await setup({ env });
+      const checks = await runInitChecks(deps, { services: services() });
+      const reg = checks.find((c) => c.id === "registrar");
+      expect(reg?.status).toBe("pass");
+      expect(reg?.message).toContain("can buy domains through Cloudflare");
+      expect(calls.some((u) => u.includes("/accounts/acct-1/registrar/domain-check"))).toBe(true);
+      const registrarCalls = calls.filter((u) => u.includes("/registrar"));
+      expect(registrarCalls.every((u) => u.endsWith("/registrar/domain-check"))).toBe(true);
+      expect(initPassed(checks)).toBe(true);
+      expectNoCfToken(checks);
+    });
+
+    it("warns with the missing permissions when the Registrar refuses the token", async () => {
+      const reg = await check("registrar", { env, net: { registrar: 403 } });
+      expect(reg.status).toBe("warn");
+      expect(reg.fix).toContain("Buying domains is optional");
+      expect(reg.fix).toContain("Account → Registrar (edit)");
+      expect(reg.fix).toContain("https://dash.cloudflare.com/profile/api-tokens");
+      expectNoCfToken(reg);
+    });
+
+    it("warns with the missing permissions when the token sees no account", async () => {
+      const reg = await check("registrar", { env, net: { accounts: 0 } });
+      expect(reg.status).toBe("warn");
+      expect(reg.fix).toContain("Account → Registrar (edit)");
+    });
+
+    it("warns with the plain cause on other errors and never fails init", async () => {
+      const { deps } = await setup({ env, net: { registrar: 400 } });
+      const checks = await runInitChecks(deps, { services: services() });
+      const reg = checks.find((c) => c.id === "registrar");
+      expect(reg?.status).toBe("warn");
+      expect(reg?.message).toContain("Registrar is not enabled on this account");
+      expect(initPassed(checks)).toBe(true);
+      expectNoCfToken(checks);
+    });
+
+    it("stays a warning even when the plan needs Cloudflare", async () => {
+      const { deps } = await setup({ env, net: { registrar: 403 } });
+      await writeArtifact("plan", deps.paths.files.plan, testPlan());
+      const checks = await runInitChecks(deps, { services: services() });
+      expect(checks.find((c) => c.id === "cloudflare")?.status).toBe("pass");
+      expect(checks.find((c) => c.id === "registrar")?.status).toBe("warn");
+      expect(initPassed(checks)).toBe(true);
+    });
+
+    it("warns within the time budget when the Registrar does not answer", async () => {
+      const reg = await check(
+        "registrar",
+        { env, net: { registrar: "hang" } },
+        { services: services({}, { timeoutMs: 50 }) },
+      );
+      expect(reg.status).toBe("warn");
+      expect(reg.message).toContain("did not answer");
+    });
+
+    it("is not checked without a token or when the token does not work", async () => {
+      const none = await check("registrar", {
+        env: { HCLOUD_TOKEN: HCLOUD, GITHUB_TOKEN: GITHUB },
+      });
+      expect(none.status).toBe("skip");
+      const rejected = await check("registrar", { env, net: { cloudflare: 401 } });
+      expect(rejected.status).toBe("skip");
+      expect(rejected.message).toContain("does not work");
+    });
+
+    it("offline: says it was not checked and makes no call", async () => {
+      const { deps, calls } = await setup({ env });
+      const checks = await runInitChecks(deps, { offline: true, services: services() });
+      const reg = checks.find((c) => c.id === "registrar");
+      expect(reg?.status).toBe("skip");
+      expect(reg?.message).toContain("not checked");
+      expect(calls).toEqual([]);
+    });
+  });
+
   describe("GitHub", () => {
     it("fails without a token", async () => {
       const gh = await check("github", { env: { HCLOUD_TOKEN: HCLOUD } });
@@ -618,6 +738,9 @@ describe("runInitChecks", () => {
       expect(c?.status).toBe("pass");
       expect(c?.message).toContain("only checked that it is set");
     }
+    const registrar = checks.find((x) => x.id === "registrar");
+    expect(registrar?.status).toBe("skip");
+    expect(registrar?.message).toContain("not checked");
     expect(initPassed(checks)).toBe(true);
     expectNoTokens(checks);
 
