@@ -66,6 +66,24 @@ const hetzner = (method: string, path: string, body?: unknown) =>
 const digitalocean = (method: string, path: string, body?: unknown) =>
   api(DIGITALOCEAN_API, E2E.digitaloceanToken as string, method, path, body);
 
+/**
+ * Resets the throwaway repository before a pass: closes open pull requests and deletes every
+ * branch but `main`, so branches and pull requests of an earlier run never change this one.
+ */
+async function resetRepository(repoName: string): Promise<void> {
+  const pulls = await github("GET", `/repos/${repoName}/pulls?state=open&per_page=100`);
+  for (const pull of (pulls.json as { number: number }[] | undefined) ?? []) {
+    await github("PATCH", `/repos/${repoName}/pulls/${pull.number}`, { state: "closed" });
+  }
+  const branches = await github("GET", `/repos/${repoName}/branches?per_page=100`);
+  for (const branch of (branches.json as { name: string }[] | undefined) ?? []) {
+    if (branch.name === "main") continue;
+    const ref = branch.name.split("/").map(encodeURIComponent).join("/");
+    const deleted = await github("DELETE", `/repos/${repoName}/git/refs/heads/${ref}`);
+    expect(deleted.status, `delete the branch ${branch.name}`).toBe(204);
+  }
+}
+
 /** What differs between the providers in this test. */
 interface LiveProvider {
   id: "hetzner" | "digitalocean";
@@ -323,6 +341,7 @@ async function deployAndTearDown(
   await git("add", "-A");
   await git("commit", "-q", "-m", "e2e: examples/nextjs-postgres");
   await git("push", "-q", "--force", "origin", "main");
+  await resetRepository(repoName);
 
   let appName: string | undefined;
   try {

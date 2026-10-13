@@ -3,7 +3,9 @@
 `packages/cli/test/live/live.test.ts` runs the whole OpsCrew flow against real services, once for
 each cloud provider whose token is set (Hetzner Cloud, DigitalOcean, or both, one after the other):
 
-1. It force-pushes `examples/nextjs-postgres` to the `main` branch of a throwaway GitHub repository.
+1. It force-pushes `examples/nextjs-postgres` to the `main` branch of a throwaway GitHub repository,
+   then closes its open pull requests and deletes every other branch, so an earlier run never
+   changes this one.
 2. It runs `analyze --no-ai`, then `interview --answers` (with the provider and
    `OPSCREW_E2E_REGION`) and `design`.
 3. It runs `adapt --no-ai --yes` and merges that pull request through the GitHub API.
@@ -82,7 +84,10 @@ Teardown runs in a `finally` block, so it happens even after a failure:
 Some things are not removed:
 
 - **Cloudflare DNS records:** the IaC destroy removes them, but the API fallback does not. Check the zone if a run failed.
-- **GitHub repository state:** the pushed container image (GHCR package), merged branches and Actions secrets stay in the throwaway repository. The next run overwrites them.
+- **GitHub repository state:** the pushed container image (GHCR package), the Actions secrets and
+  the pull requests stay in the throwaway repository (GitHub cannot delete pull requests; the next
+  run closes open ones, deletes the branches and overwrites the rest). Delete and recreate the
+  repository for a completely clean slate.
 
 ## Domain purchase (Cloudflare registrar sandbox)
 

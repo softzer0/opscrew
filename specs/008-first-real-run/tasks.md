@@ -32,7 +32,7 @@ description: "Tasks for 008-first-real-run"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-github`
   - Effort: high
 
-- [ ] T809 Live test hygiene: the throwaway repository is reset (OpsCrew branches deleted, open PRs closed) before each pass (lead)
+- [X] T809 Live test hygiene: the throwaway repository is reset (OpsCrew branches deleted, open PRs closed) before each pass (lead)
 
 - [X] T810 Dropped by the founder (2026-10-13): the opt-in Docker build test (T802, `OPSCREW_DOCKER_TESTS=1`) already checks the image build locally, and the deploy job needs a real server, so `act` would add a large download and little coverage
 
