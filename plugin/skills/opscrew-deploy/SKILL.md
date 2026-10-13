@@ -78,6 +78,17 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`
   in their own terminal: it offers a snapshot first (the database is deleted with the server), asks
   them to type the server name and removes the deploy secrets from GitHub.
+- **Moving to another provider.** Moving a live app between Hetzner Cloud and DigitalOcean is
+  terminal-only on purpose; there is no tool for it, and you must not try to perform its steps
+  yourself. Tell the user to run `npx opscrew retarget --to <provider>` (`hetzner` or
+  `digitalocean`) in their own terminal. It creates the new server next to the old one and
+  deploys the app there, then copies the database in a short maintenance window (it shows the
+  expected downtime first) and switches DNS to the new server. After checking the app, the user
+  runs `npx opscrew retarget --finish` to delete the old server (it offers a snapshot and asks
+  them to type the app name). `npx opscrew retarget --abort` restores the old deployment, but only
+  before the DNS switch. Both servers are billed until the move is finished. `opscrew_status` (or
+  `npx opscrew status`) shows where a move stands; while it is in progress, design, provision and
+  drift stop with the commands to continue, finish or abort it, so pass those on to the user.
 
 If a tool returns an error, read its message and hint to the user and suggest the next step; do not
 work around OpsCrew's checks.

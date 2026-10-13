@@ -20,6 +20,8 @@ Everything OpsCrew produces is a plain file in your repo: infrastructure code, w
 
 Supported clouds: Hetzner Cloud and DigitalOcean (Droplets), with optional Cloudflare DNS. The interview asks which one to use. AWS, Google Cloud, Azure and Contabo follow.
 
+Changed your mind about the provider later? `npx opscrew retarget --to <provider>` moves a live app between Hetzner Cloud and DigitalOcean with its data: it builds the new server next to the old one, copies the database in a short maintenance window, switches DNS, and deletes the old server only when you run `opscrew retarget --finish`.
+
 ## Development
 
 Requirements: Node.js 22+, pnpm 10+, and OpenTofu or Terraform for infrastructure tests.

@@ -87,7 +87,7 @@ variable name (the redactor masks what follows).
   - Verify: `pnpm turbo run typecheck test build --filter=opscrew`
   - Effort: high
 
-- [ ] T510 [P] [US4] Deploy skill, README and MCP texts about moving providers in `plugin/`, `README.md`, `packages/mcp-server/src/`
+- [X] T510 [P] [US4] Deploy skill, README and MCP texts about moving providers in `plugin/`, `README.md`, `packages/mcp-server/src/`
   - Owns: `plugin/**`, `README.md`, `packages/mcp-server/src/**`
   - Reads: spec.md US4, FR-511
   - Depends: T508

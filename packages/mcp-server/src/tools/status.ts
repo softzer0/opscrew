@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { moveInProgress, providerProfile } from "@opscrew/agents";
 import { PHASES, type PhaseName } from "@opscrew/contracts";
 import type { PhaseRecord } from "@opscrew/core";
+import { readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
 import { exists, projectDirInput, relativeTo, runTool, withHint } from "./shared";
 
@@ -24,7 +26,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -61,7 +63,33 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
           const summary = record.summary === undefined ? "" : `  ${record.summary}`;
           return `  ${name}  ${record.status.padEnd(7)}  ${record.at}${summary}`;
         });
-        const step = nextStep(have);
+        // A move to another provider in progress (`opscrew retarget`): where it stands and the
+        // terminal command to continue it. An unreadable plan is not this tool's concern.
+        const plan = have.plan
+          ? await readArtifact("plan", paths.files.plan).catch(() => undefined)
+          : undefined;
+        const move = plan === undefined ? undefined : moveInProgress(plan);
+        const moveData =
+          plan?.retarget === undefined
+            ? undefined
+            : {
+                from: plan.retarget.from.target.provider,
+                to: plan.target.provider,
+                step: plan.retarget.step,
+                startedAt: plan.retarget.startedAt,
+              };
+        const moveLines =
+          moveData === undefined
+            ? []
+            : [
+                "",
+                `Move: from ${providerProfile(moveData.from).displayName} to ${providerProfile(moveData.to).displayName}, last completed step: ${moveData.step}.`,
+                "Both servers are billed until the move is finished.",
+              ];
+        const step =
+          move === undefined
+            ? nextStep(have)
+            : `${move.message} ${move.hint} Moves are terminal-only: ask the user to run these commands with npx in a terminal in the project directory.`;
         const text = [
           `OpsCrew phases in ${paths.root}:`,
           ...lines,
@@ -70,12 +98,19 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
           ...Object.values(artifacts).map(
             (a) => `  ${a.path}: ${a.exists ? "present" : "missing"}`,
           ),
+          ...moveLines,
           "",
           `Next: ${step}`,
         ].join("\n");
         return {
           text,
-          data: { projectDir: paths.root, phases, artifacts, nextStep: step },
+          data: {
+            projectDir: paths.root,
+            phases,
+            artifacts,
+            nextStep: step,
+            ...(moveData === undefined ? {} : { move: moveData }),
+          },
         };
       }),
   );
