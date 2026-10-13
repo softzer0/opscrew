@@ -29,6 +29,13 @@ export const PROFILE_TOOLS: Readonly<Record<ToolProfile, readonly BuiltinTool[]>
 
 const KNOWN_BUILTINS = new Set<string>(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]);
 
+/**
+ * The Claude Agent SDK's structured-output tool, offered to the model only when a phase asks for
+ * a structured result (`outputFormat`). Its input is the phase's final answer, which OpsCrew
+ * validates with zod afterwards; it reads and changes nothing, so every profile may call it.
+ */
+export const STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
+
 const ALWAYS_DENIED: Record<string, string> = {
   WebFetch: "Web access is not available to OpsCrew agents.",
   WebSearch: "Web access is not available to OpsCrew agents.",
@@ -1609,7 +1616,7 @@ export function nodeRealpath(absolute: string): string | undefined {
 
 /**
  * The default OpsCrew tool policy. Decides, in order: OpsCrew MCP tools (allow; other MCP
- * servers deny), `TodoWrite` (allow), never-allowed and unknown tools (deny), profile membership,
+ * servers deny), `TodoWrite` and `StructuredOutput` (allow), never-allowed and unknown tools (deny), profile membership,
  * file-path rules for `Read`/`Edit`/`MultiEdit`/`Write`/`Glob`/`Grep`, and Bash command rules
  * (deny list, allow list, otherwise `ask`). Any internal error denies the call.
  */
@@ -1641,7 +1648,7 @@ export class DefaultToolPolicy implements ToolPolicy {
         ? allow()
         : deny(`\`${tool}\` is not an OpsCrew tool; other MCP servers are not available.`);
     }
-    if (tool === "TodoWrite") return allow();
+    if (tool === "TodoWrite" || tool === STRUCTURED_OUTPUT_TOOL) return allow();
     const never = Object.hasOwn(ALWAYS_DENIED, tool) ? ALWAYS_DENIED[tool] : undefined;
     if (never !== undefined) return deny(never);
 

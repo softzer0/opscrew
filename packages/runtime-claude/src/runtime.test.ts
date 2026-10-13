@@ -295,7 +295,7 @@ describe("ClaudeAgentRuntime option mapping", () => {
     expect(options.cwd).toBe(ROOT);
     expect(options.model).toBe("claude-opus-5-5");
     expect(options.tools).toEqual(["Read", "Glob", "Grep"]);
-    expect(options.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+    expect(options.allowedTools).toBeUndefined();
     expect(options.disallowedTools).toEqual(
       expect.arrayContaining(["Edit", "Write", "Bash", "WebFetch", "WebSearch", "Task"]),
     );
@@ -325,7 +325,7 @@ describe("ClaudeAgentRuntime option mapping", () => {
       append: "You are the Analyst.",
     });
     expect(options.tools).toEqual(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]);
-    expect(options.allowedTools).toEqual(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]);
+    expect(options.allowedTools).toBeUndefined();
     expect(options.disallowedTools).not.toContain("Bash");
   });
 
@@ -341,7 +341,7 @@ describe("ClaudeAgentRuntime option mapping", () => {
     await runtime.runPhase(request({ phase: "design", profile: "none", tools: [lookup] }));
     const options = onlyCall(calls);
     expect(options.tools).toEqual([]);
-    expect(options.allowedTools).toEqual(["mcp__opscrew__hetzner_list_offers"]);
+    expect(options.allowedTools).toBeUndefined();
     expect(options.disallowedTools).toEqual(
       expect.arrayContaining(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]),
     );
@@ -355,7 +355,7 @@ describe("ClaudeAgentRuntime option mapping", () => {
     await runtime.runPhase(request({ builtinTools: ["Read", "Bash"] }));
     const options = onlyCall(calls);
     expect(options.tools).toEqual(["Read"]);
-    expect(options.allowedTools).toEqual(["Read"]);
+    expect(options.allowedTools).toBeUndefined();
     expect(options.disallowedTools).toEqual(expect.arrayContaining(["Glob", "Grep", "Bash"]));
   });
 
@@ -637,6 +637,207 @@ describe("ClaudeAgentRuntime tool gating", () => {
     });
     const result = await runtime.runPhase(request());
     expect(outcomes[0]?.executed).toBe(false);
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// One tool gate and structured results (T818)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The Claude Agent SDK's own check (sdk.mjs, CLAUDE_SDK_CAN_USE_TOOL_SHADOWED): with a
+ * `canUseTool` callback, `bypassPermissions` or any bare `allowedTools` entry auto-approves calls
+ * before the callback is consulted. Returns the shadowed names, or `undefined` when none are.
+ */
+function shadowedByOptions(options: Options): string[] | undefined {
+  if (options.canUseTool === undefined) return undefined;
+  if (options.permissionMode === "bypassPermissions") return ["*"];
+  const bare = (options.allowedTools ?? []).filter((name) => name !== "" && !name.includes("("));
+  return bare.length > 0 ? bare : undefined;
+}
+
+describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () => {
+  const lookup = {
+    name: "hetzner_list_offers",
+    description: "List server offers.",
+    inputSchema: z.object({ location: z.string() }),
+    mutates: false,
+    handler: async () => ({ text: "cx22" }),
+  };
+  const report = z.object({
+    changes: z.array(z.object({ id: z.string(), status: z.enum(["applied", "skipped"]) })),
+    path: z.string().optional(),
+  });
+  const profiles = ["none", "read-only", "edit-repo"] as const;
+
+  it.each(
+    profiles.flatMap((profile) => [
+      { profile, tools: false, output: false },
+      { profile, tools: true, output: true },
+    ]),
+  )(
+    "auto-approves nothing outside the gate ($profile, tools $tools, output $output)",
+    async (c) => {
+      const { runtime, calls } = setup([success({ structured_output: { changes: [] } })]);
+      await runtime.runPhase(
+        request({
+          profile: c.profile,
+          ...(c.tools ? { tools: [lookup] } : {}),
+          ...(c.output ? { output: { name: "code_change_report", schema: report } } : {}),
+        }),
+      );
+      const options = onlyCall(calls);
+      expect(shadowedByOptions(options)).toBeUndefined();
+      expect(options.allowedTools).toBeUndefined();
+      // Nothing prompts in a non-interactive run: the hook allows or denies every call, and the
+      // callback (consulted only if the SDK still wants a decision) repeats the same gate.
+      expect(options.permissionMode).toBe("default");
+      expect(options.allowDangerouslySkipPermissions).toBeUndefined();
+      expect(options.permissionPromptToolName).toBeUndefined();
+      expect(typeof options.canUseTool).toBe("function");
+      // The gate runs for every tool: no matcher narrows it.
+      expect(options.hooks?.PreToolUse).toHaveLength(1);
+      expect(options.hooks?.PreToolUse?.[0]?.matcher).toBeUndefined();
+      expect(options.hooks?.PostToolUse?.[0]?.matcher).toBeUndefined();
+      expect(options.hooks?.PostToolUseFailure?.[0]?.matcher).toBeUndefined();
+      // The SDK adds StructuredOutput itself when outputFormat is set; it is never a listed tool.
+      expect(options.tools).not.toContain("StructuredOutput");
+      expect(options.disallowedTools).not.toContain("StructuredOutput");
+      expect(options.outputFormat?.type).toBe(c.output ? "json_schema" : undefined);
+    },
+  );
+
+  it.each(profiles)(
+    "lets the %s agent return its structured result through StructuredOutput",
+    async (profile) => {
+      const events: RuntimeEvent[] = [];
+      const answer = { changes: [{ id: "c1", status: "applied" }], path: "/etc/passwd" };
+      const { runtime, audit, outcomes } = setup([
+        init(),
+        { tool: "StructuredOutput", input: answer, response: "Structured output provided" },
+        success({ result: "", structured_output: answer }),
+      ]);
+      const result = await runtime.runPhase(
+        request({
+          phase: "adapt",
+          profile,
+          output: { name: "code_change_report", schema: report },
+          onEvent: (event) => events.push(event),
+        }),
+      );
+      expect(outcomes[0]?.hook).toMatchObject({
+        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
+      });
+      expect(outcomes[0]?.executed).toBe(true);
+      expect(events.some((event) => event.kind === "tool-denied")).toBe(false);
+      expect(result).toMatchObject({ ok: true, stopReason: "completed", output: answer });
+      // The call is audited, but its input (the phase's answer) is not copied into the target.
+      const entry = audit.entries.find((e) => e.kind === "tool-call");
+      expect(entry).toMatchObject({ action: "StructuredOutput", decision: "allow" });
+      expect(entry).not.toHaveProperty("target");
+    },
+  );
+
+  it("denies StructuredOutput when the phase asked for no structured result", async () => {
+    const { runtime, audit, outcomes } = setup([
+      { tool: "StructuredOutput", input: { anything: true } },
+      success(),
+    ]);
+    await runtime.runPhase(request({ profile: "edit-repo" }));
+    expect(outcomes[0]?.executed).toBe(false);
+    expect(audit.entries.find((e) => e.kind === "tool-denied")).toMatchObject({
+      action: "StructuredOutput",
+      decision: "deny",
+      detail: expect.stringMatching(/structured result/),
+    });
+  });
+
+  it("the pre-tool-use hook alone denies what the policy denies and runs what it allows", async () => {
+    const inside = resolve(ROOT, "main.py");
+    const outside = resolve(ROOT, "..", "elsewhere", "notes.txt");
+    const steps: ToolStep[] = [
+      { tool: "Bash", input: { command: "python -c 'print(1)'" } },
+      { tool: "Bash", input: { command: "bash -c 'ls'" } },
+      { tool: "Read", input: { file_path: outside } },
+      { tool: "Write", input: { file_path: outside, content: "x" } },
+      { tool: "Edit", input: { file_path: outside, old_string: "a", new_string: "b" } },
+      { tool: "Glob", input: { pattern: "../**/*" } },
+      { tool: "WebFetch", input: { url: "https://example.com", prompt: "read" } },
+      { tool: "WebSearch", input: { query: "opscrew" } },
+      { tool: "Task", input: { prompt: "help" } },
+      { tool: "mcp__github__create_pull_request", input: {} },
+      { tool: "SomethingNew", input: {} },
+      // allowed
+      { tool: "Read", input: { file_path: inside } },
+      { tool: "Edit", input: { file_path: inside, old_string: "a", new_string: "b" } },
+      { tool: "Grep", input: { pattern: "REDIS_URL" } },
+      { tool: "mcp__opscrew__hetzner_list_offers", input: { location: "fsn1" } },
+      { tool: "StructuredOutput", input: { changes: [] } },
+    ];
+    const { runtime, audit, outcomes } = setup([init(), ...steps, success()]);
+    await runtime.runPhase(
+      request({
+        phase: "adapt",
+        profile: "edit-repo",
+        tools: [lookup],
+        output: { name: "code_change_report", schema: report },
+      }),
+    );
+    const executed = outcomes.map((o) => `${o.tool}:${o.executed}`);
+    expect(executed).toEqual([
+      "Bash:false",
+      "Bash:false",
+      "Read:false",
+      "Write:false",
+      "Edit:false",
+      "Glob:false",
+      "WebFetch:false",
+      "WebSearch:false",
+      "Task:false",
+      "mcp__github__create_pull_request:false",
+      "SomethingNew:false",
+      "Read:true",
+      "Edit:true",
+      "Grep:true",
+      "mcp__opscrew__hetzner_list_offers:true",
+      "StructuredOutput:true",
+    ]);
+    expect(audit.entries.filter((e) => e.kind === "tool-denied")).toHaveLength(11);
+    expect(audit.entries.filter((e) => e.kind === "tool-call").map((e) => e.action)).toEqual([
+      "Read",
+      "Edit",
+      "Grep",
+      "mcp__opscrew__hetzner_list_offers",
+      "StructuredOutput",
+    ]);
+  });
+
+  it("a permission callback after the hook repeats its decision: one evaluation, one audit", async () => {
+    const evaluate = vi.fn(new DefaultToolPolicy().evaluate.bind(new DefaultToolPolicy()));
+    const { runtime, audit, outcomes } = setup(
+      [
+        { tool: "Bash", input: { command: "python3 script.py" }, via: "both" },
+        { tool: "Read", input: { file_path: resolve(ROOT, "a.txt") }, via: "both" },
+        { tool: "StructuredOutput", input: { changes: [] }, via: "both" },
+        success({ structured_output: { changes: [] } }),
+      ],
+      { policy: { evaluate } },
+    );
+    const result = await runtime.runPhase(
+      request({
+        phase: "adapt",
+        profile: "edit-repo",
+        output: { name: "code_change_report", schema: report },
+      }),
+    );
+    expect(evaluate).toHaveBeenCalledTimes(3);
+    expect(outcomes.map((o) => [o.executed, o.permission?.behavior])).toEqual([
+      [false, "deny"],
+      [true, "allow"],
+      [true, "allow"],
+    ]);
+    expect(audit.entries.filter((e) => e.kind === "tool-denied")).toHaveLength(1);
     expect(result.ok).toBe(true);
   });
 });

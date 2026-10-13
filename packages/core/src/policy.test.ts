@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ToolCall, ToolDecision, ToolProfile } from "@opscrew/contracts";
 import { describe, expect, it } from "vitest";
-import { DefaultToolPolicy, isSecretPath, PROFILE_TOOLS, splitShellCommand } from "./policy";
+import {
+  DefaultToolPolicy,
+  isSecretPath,
+  PROFILE_TOOLS,
+  STRUCTURED_OUTPUT_TOOL,
+  splitShellCommand,
+} from "./policy";
 
 const PROFILES: ToolProfile[] = ["none", "read-only", "edit-repo"];
 
@@ -74,6 +80,19 @@ describe("DefaultToolPolicy: tool gating order", () => {
   it("allows TodoWrite in every profile", () => {
     for (const profile of PROFILES) {
       expect(decide("TodoWrite", { todos: [] }, profile).decision).toBe("allow");
+    }
+  });
+
+  it("allows the SDK's StructuredOutput tool in every profile, whatever its input (T818)", () => {
+    expect(STRUCTURED_OUTPUT_TOOL).toBe("StructuredOutput");
+    for (const profile of PROFILES) {
+      for (const input of [{}, { changes: [{ id: "c1", status: "applied" }] }, { path: "/etc" }]) {
+        expect(decide(STRUCTURED_OUTPUT_TOOL, input, profile).decision, profile).toBe("allow");
+      }
+      // Exact name only: look-alikes are unknown tools.
+      for (const tool of ["structuredoutput", "StructuredOutputs", "Structured_Output"]) {
+        expect(decide(tool, {}, profile).decision, `${tool} in ${profile}`).toBe("deny");
+      }
     }
   });
 

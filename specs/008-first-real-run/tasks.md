@@ -70,7 +70,7 @@ description: "Tasks for 008-first-real-run"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew`
   - Effort: medium
 
-- [ ] T818 The AI path works for real: the SDK's `StructuredOutput` tool is allowed by the tool policy (agents can return their structured result), and tool gating has one clear path (the PreToolUse hook) without the SDK's "canUseTool will not be invoked" shadowing
+- [X] T818 The AI path works for real: the SDK's `StructuredOutput` tool is allowed by the tool policy (agents can return their structured result), and tool gating has one clear path (the PreToolUse hook) without the SDK's "canUseTool will not be invoked" shadowing
   - Owns: `packages/runtime-claude/src/**`, `packages/core/src/policy.ts` (+ tests)
   - Accept: a real `opscrew adapt` with a model returns the Code-change agent's report (found 2026-10-14: "StructuredOutput denied: Unknown tool"); every phase with an output schema works; the PreToolUse gate still denies what the policy denies (shell interpreters, paths outside the project, web access) for built-in and MCP tools; no SDK shadowing warning; tests with the fake runtime and the SDK option shapes.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/runtime-claude --filter=@opscrew/core --filter=@opscrew/agents`

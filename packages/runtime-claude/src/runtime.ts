@@ -24,9 +24,9 @@ import type {
   RuntimeEvent,
   ToolPolicy,
 } from "@opscrew/contracts";
-import { PROFILE_TOOLS, sanitizeAgentEnv } from "@opscrew/core";
+import { PROFILE_TOOLS, STRUCTURED_OUTPUT_TOOL, sanitizeAgentEnv } from "@opscrew/core";
 import { z } from "zod";
-import { createToolServer, MCP_SERVER_NAME, mcpToolName } from "./tools";
+import { createToolServer, MCP_SERVER_NAME } from "./tools";
 
 /** The subset of the SDK's `query()` the runtime uses; `typeof query` satisfies it. */
 export type QueryFn = (params: { prompt: string; options?: Options }) => AsyncIterable<SDKMessage>;
@@ -79,9 +79,9 @@ type Gate =
 
 /**
  * `AgentRuntime` backed by the Claude Agent SDK (FR-010). Every tool call passes through the tool
- * policy in a pre-tool-use hook and in the permission callback (whatever the permission mode),
- * no user or project Claude settings are loaded, the agent environment is sanitised and every
- * text that leaves the runtime is redacted.
+ * policy once, in a pre-tool-use hook that nothing auto-approves around (the permission callback
+ * only repeats the hook's decision), no user or project Claude settings are loaded, the agent
+ * environment is sanitised and every text that leaves the runtime is redacted.
  */
 export class ClaudeAgentRuntime implements AgentRuntime {
   readonly id = "claude-agent-sdk";
@@ -198,9 +198,14 @@ class PhaseRun<T> {
       (name) => request.builtinTools === undefined || request.builtinTools.includes(name),
     );
     const tools = request.tools ?? [];
-    const mcpNames = tools.map((definition) => mcpToolName(definition.name));
     const systemPrompt = this.#redact(request.systemPrompt);
 
+    // One gate (constitution I): the PreToolUse hook (no matcher) decides every call, built-in,
+    // MCP or the SDK's StructuredOutput, and its allow or deny is final. No `allowedTools`: a
+    // bare entry would auto-approve the whole tool, so the SDK would skip `canUseTool`
+    // (CLAUDE_SDK_CAN_USE_TOOL_SHADOWED). `canUseTool` stays only as the prompt surface for a
+    // call the SDK still wants a decision on; it returns the hook's cached decision, so nothing
+    // prompts or blocks an allowed call in a non-interactive run, and nothing is decided twice.
     const options: Options = {
       abortController: controller,
       cwd: request.projectRoot,
@@ -210,7 +215,6 @@ class PhaseRun<T> {
           ? { type: "preset", preset: "claude_code", append: systemPrompt }
           : systemPrompt,
       tools: [...builtins],
-      allowedTools: [...builtins, ...mcpNames],
       disallowedTools: [
         ...ALL_BUILTINS.filter((name) => !builtins.includes(name)),
         ...ALWAYS_DISALLOWED,
@@ -340,6 +344,16 @@ class PhaseRun<T> {
 
   async #decide(tool: string, input: unknown): Promise<Gate> {
     const { request } = this;
+    // The policy allows StructuredOutput in every profile (it has no side effects); only this
+    // runtime knows whether the phase asked for a structured result at all.
+    if (tool === STRUCTURED_OUTPUT_TOOL && request.output === undefined) {
+      return this.#deny(
+        tool,
+        undefined,
+        "deny",
+        "This phase did not ask for a structured result, so StructuredOutput is not available.",
+      );
+    }
     const decision = this.options.policy.evaluate({
       tool,
       input: isRecord(input) ? input : {},
@@ -613,7 +627,8 @@ function toUsage(message: SDKResultMessage): PhaseUsage {
 
 /** A short, human-readable description of what a tool call touches (path, command, pattern). */
 function describeInput(tool: string, input: unknown): string | undefined {
-  if (!isRecord(input)) return undefined;
+  // StructuredOutput's input is the phase's answer, not something the call touches.
+  if (tool === STRUCTURED_OUTPUT_TOOL || !isRecord(input)) return undefined;
   const pick = (key: string) =>
     typeof input[key] === "string" ? (input[key] as string) : undefined;
   const value =
