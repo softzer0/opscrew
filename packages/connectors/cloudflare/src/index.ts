@@ -1,4 +1,5 @@
 export {
+  type ActivationCheckResult,
   CLOUDFLARE_API,
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
   CLOUDFLARE_TOKEN_PERMISSIONS,
@@ -21,5 +22,16 @@ export {
   type CloudflareConnectorOptions,
   cloudflareConnector,
 } from "./connector";
+export {
+  CLOUDFLARE_TRACE_URL,
+  type CloudflareRecordInput,
+  detectPublicIpv4,
+  mapRegistrarRecord,
+  mapRegistrarRecords,
+  quoteTxt,
+  type RecordCopyPlan,
+  type RecordMapping,
+  type SkippedRecord,
+} from "./records";
 export { CloudflareRegistrar, type CloudflareRegistrarApi } from "./registrar";
 export { registrarReasonText } from "./registrar-parse";

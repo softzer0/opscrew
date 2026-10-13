@@ -1,12 +1,15 @@
 import type {
   CredentialCheck,
   DomainCheck,
+  DsRecord,
   FetchLike,
   RegisteredDomain,
+  RegistrarDnsRecord,
   RegistrationStatus,
 } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
+import type { CloudflareRecordInput } from "./records";
 import {
   CLOUDFLARE_REGISTRAR_DASHBOARD,
   DomainListSchema,
@@ -82,6 +85,8 @@ export interface CloudflareDnsRecord {
   content: string;
   proxied?: boolean;
   ttl: number;
+  /** MX (and URI) priority; SRV keeps it in its data. */
+  priority?: number;
   /** Free-text record comment; OpsCrew's records carry {@link OPSCREW_MANAGED_COMMENT}. */
   comment?: string;
 }
@@ -126,12 +131,20 @@ export interface CloudflareRegistrationRequest {
 }
 
 /** DNSSEC state of a zone. */
-export interface CloudflareDnssec {
+export interface CloudflareDnssec extends Partial<DsRecord> {
   /** For example `pending` until the registrar publishes the DS record, then `active`. */
   status: string;
   /** DS record, when Cloudflare returns one. */
   ds?: string;
 }
+
+/**
+ * Answer to an activation check. Cloudflare limits how often a zone may be re-checked (every 5
+ * minutes on paid plans, hourly on free ones); a "too soon" answer is not an error.
+ */
+export type ActivationCheckResult =
+  | { requested: true }
+  | { requested: false; reason: string; retryAfterSeconds?: number };
 
 const Envelope = z.looseObject({
   success: z.boolean(),
@@ -172,6 +185,7 @@ const RecordSchema = z.looseObject({
   content: z.string().default(""),
   proxied: z.boolean().optional(),
   ttl: z.number(),
+  priority: z.number().nullable().optional(),
   comment: z.string().nullable().optional(),
 });
 
@@ -189,7 +203,42 @@ const IpsSchema = z.looseObject({
 
 const AccountSchema = z.looseObject({ id: z.string(), name: z.string().default("") });
 
-const DnssecSchema = z.looseObject({ status: z.string(), ds: z.string().nullable().optional() });
+const DsNumber = z.union([z.number(), z.string()]).nullable().optional();
+const DnssecSchema = z.looseObject({
+  status: z.string(),
+  ds: z.string().nullable().optional(),
+  key_tag: DsNumber,
+  algorithm: DsNumber,
+  digest_type: DsNumber,
+  digest: z.string().nullable().optional(),
+});
+
+/** One record of the scan review list (other fields are ignored). */
+const ScannedRecordSchema = z.looseObject({
+  type: z.string(),
+  name: z.string(),
+  content: z.string().nullable().optional(),
+  ttl: z.number().optional(),
+  priority: z.number().nullable().optional(),
+  data: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+
+const BatchResultSchema = z.looseObject({
+  posts: z
+    .array(z.looseObject({ id: z.string() }))
+    .nullable()
+    .optional(),
+});
+
+/**
+ * Most records one batch call creates. Cloudflare's limit depends on the plan (200 on Free, 3,500
+ * on paid plans); larger lists are split into several calls of 200, each its own transaction.
+ */
+const BATCH_LIMIT = 200;
+
+/** Reads of the scan review list while it is still empty after the trigger. */
+const SCAN_REVIEW_ATTEMPTS = 5;
+const SCAN_REVIEW_WAIT_MS = 2000;
 
 const MAX_RATE_LIMIT_RETRIES = 3;
 const MAX_SERVER_RETRIES = 2;
@@ -249,16 +298,57 @@ const ZONE_COVERAGE_HINTS: FailHints = {
 };
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH";
+  method?: "GET" | "POST" | "PATCH" | "PUT";
   body?: unknown;
   headers?: Record<string, string>;
   auth?: boolean;
   /** Retry network failures and 5xx answers; off for requests that must never run twice. */
   retryServerErrors?: boolean;
+  /** Wait and retry 429 answers (default true). */
+  retryRateLimit?: boolean;
 }
 
 function normalizeDomain(domain: string): string {
   return domain.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function dsNumber(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isInteger(value) ? value : undefined;
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value.trim());
+  return undefined;
+}
+
+/** DNSSEC state, with the DS fields when the zone has DNSSEC active or pending. */
+function toDnssec(result: z.infer<typeof DnssecSchema>): CloudflareDnssec {
+  const out: CloudflareDnssec = { status: result.status, ...(result.ds ? { ds: result.ds } : {}) };
+  if (result.status !== "active" && result.status !== "pending") return out;
+  const keyTag = dsNumber(result.key_tag);
+  const algorithm = dsNumber(result.algorithm);
+  const digestType = dsNumber(result.digest_type);
+  if (keyTag === undefined || algorithm === undefined || digestType === undefined) return out;
+  if (!result.digest) return out;
+  return { ...out, keyTag, algorithm, digestType, digest: result.digest };
+}
+
+/** A record of the scan review list as a registrar-style record (content in zone-file form). */
+function toScannedRecord(raw: z.infer<typeof ScannedRecordSchema>): RegistrarDnsRecord {
+  const type = raw.type.toUpperCase();
+  const data = raw.data ?? {};
+  const field = (key: string) => (data[key] == null ? "" : String(data[key]));
+  let content = raw.content ?? "";
+  if (type === "SRV" && data.target != null) {
+    content = [field("priority"), field("weight"), field("port"), field("target")].join(" ");
+  } else if (type === "CAA" && data.tag != null) {
+    content = `${field("flags") || "0"} ${field("tag")} "${field("value")}"`;
+  }
+  const priority = raw.priority ?? (type === "SRV" ? dsNumber(data.priority) : undefined);
+  return {
+    type,
+    name: normalizeDomain(raw.name),
+    content,
+    ...(raw.ttl === undefined ? {} : { ttl: raw.ttl }),
+    ...(priority == null ? {} : { priority }),
+  };
 }
 
 function toZone(zone: z.infer<typeof ZoneSchema>): CloudflareZone {
@@ -328,7 +418,11 @@ export class CloudflareClient {
           cause: error,
         });
       }
-      if (response.status === 429 && rateLimited < MAX_RATE_LIMIT_RETRIES) {
+      if (
+        response.status === 429 &&
+        (options.retryRateLimit ?? true) &&
+        rateLimited < MAX_RATE_LIMIT_RETRIES
+      ) {
         rateLimited++;
         const retryAfter = Number(response.headers.get("retry-after"));
         await this.#sleep(
@@ -487,6 +581,7 @@ export class CloudflareClient {
           content: r.content,
           ttl: r.ttl,
           ...(r.proxied === undefined ? {} : { proxied: r.proxied }),
+          ...(r.priority == null ? {} : { priority: r.priority }),
           ...(r.comment ? { comment: r.comment } : {}),
         });
       }
@@ -771,14 +866,17 @@ export class CloudflareClient {
     return toZone(zone);
   }
 
-  /** DNSSEC state of a zone (`active`, `pending`, `disabled` …). */
+  /**
+   * DNSSEC state of a zone (`active`, `pending`, `disabled` …). When DNSSEC is active or pending,
+   * also the DS fields to publish at another registrar (`keyTag`, `algorithm`, `digestType`,
+   * `digest`) and the full DS string (`ds`).
+   */
   async getDnssec(zoneId: string): Promise<CloudflareDnssec> {
     const what = "read the DNSSEC state";
     const path = `/zones/${encodeURIComponent(zoneId)}/dnssec`;
     const { status, body } = await this.#request(path);
     if (!body.success || status >= 400) this.#fail(status, body, what, ZONE_COVERAGE_HINTS);
-    const result = this.#parse(DnssecSchema, body.result, what);
-    return { status: result.status, ...(result.ds ? { ds: result.ds } : {}) };
+    return toDnssec(this.#parse(DnssecSchema, body.result, what));
   }
 
   /** Turns on DNSSEC for a zone (Cloudflare Registrar publishes the DS record itself). */
@@ -789,7 +887,93 @@ export class CloudflareClient {
       body: { status: "active" },
     });
     if (!body.success || status >= 400) this.#fail(status, body, what, ZONE_COVERAGE_HINTS);
-    const result = this.#parse(DnssecSchema, body.result, what);
-    return { status: result.status, ...(result.ds ? { ds: result.ds } : {}) };
+    return toDnssec(this.#parse(DnssecSchema, body.result, what));
+  }
+
+  /**
+   * Asks Cloudflare to re-check the zone's nameservers now (`PUT /zones/{id}/activation_check`).
+   * A rate-limited or "too soon" answer resolves with `requested: false` and the reason instead of
+   * throwing: Cloudflare keeps checking pending zones on its own schedule anyway.
+   */
+  async activationCheck(zoneId: string): Promise<ActivationCheckResult> {
+    const { status, body } = await this.#request(
+      `/zones/${encodeURIComponent(zoneId)}/activation_check`,
+      { method: "PUT", retryRateLimit: false },
+    );
+    if (body.success && status < 400) return { requested: true };
+    const detail = this.#detail(status, body);
+    const tooSoon =
+      status === 429 ||
+      (status >= 400 &&
+        status < 500 &&
+        status !== 401 &&
+        status !== 403 &&
+        /too (soon|many|often)|rate|once (per|every|an)|wait|recently|limit/i.test(detail));
+    if (tooSoon) {
+      return {
+        requested: false,
+        reason: `Cloudflare allows a nameserver re-check only every few minutes (hourly on free plans) and keeps checking on its own (${detail}).`,
+        retryAfterSeconds: status === 429 ? 300 : 3600,
+      };
+    }
+    this.#fail(status, body, "re-check the zone's nameservers", ZONE_COVERAGE_HINTS);
+  }
+
+  /**
+   * Creates DNS records with `POST /zones/{id}/dns_records/batch` (`posts[]`): each call is one
+   * transaction, so either all its records are created or none. Cloudflare limits a batch to 200
+   * records on the Free plan, so longer lists are sent in several calls of 200. Never retried on
+   * network or server errors. Returns the ids of the created records.
+   */
+  async batchCreateRecords(
+    zoneId: string,
+    records: readonly CloudflareRecordInput[],
+  ): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < records.length; i += BATCH_LIMIT) {
+      const posts = records.slice(i, i + BATCH_LIMIT);
+      const what = `create ${posts.length} DNS record${posts.length === 1 ? "" : "s"}`;
+      const { status, body } = await this.#request(
+        `/zones/${encodeURIComponent(zoneId)}/dns_records/batch`,
+        { method: "POST", body: { posts }, retryServerErrors: false },
+      );
+      if (!body.success || status >= 400) {
+        this.#fail(status, body, what, {
+          ...ZONE_COVERAGE_HINTS,
+          other: `None of the records in this call were created${ids.length > 0 ? ` (${ids.length} were created by earlier calls)` : ""}. Fix or leave out the record Cloudflare names, then run the command again.`,
+        });
+      }
+      const result = this.#parse(BatchResultSchema, body.result ?? {}, what);
+      ids.push(...(result.posts ?? []).map((r) => r.id));
+    }
+    return ids;
+  }
+
+  /**
+   * Asks Cloudflare to scan the domain's current public DNS (`/dns_records/scan/trigger`) and
+   * returns the records it found (`/dns_records/scan/review`). The review list is only read, never
+   * accepted or rejected: the connect flow shows the records and creates the approved ones itself.
+   * An empty list is read again up to 5 times, 2 seconds apart (the scan runs in the background).
+   */
+  async scanDnsRecords(zoneId: string): Promise<RegistrarDnsRecord[]> {
+    const base = `/zones/${encodeURIComponent(zoneId)}/dns_records/scan`;
+    const trigger = await this.#request(`${base}/trigger`, { method: "POST" });
+    if (!trigger.body.success || trigger.status >= 400) {
+      this.#fail(
+        trigger.status,
+        trigger.body,
+        "scan the domain's DNS records",
+        ZONE_COVERAGE_HINTS,
+      );
+    }
+    const what = "read the scanned DNS records";
+    for (let attempt = 1; ; attempt++) {
+      const { status, body } = await this.#request(`${base}/review`);
+      if (!body.success || status >= 400) this.#fail(status, body, what, ZONE_COVERAGE_HINTS);
+      const found =
+        this.#parse(z.array(ScannedRecordSchema).nullable().optional(), body.result, what) ?? [];
+      if (found.length > 0 || attempt >= SCAN_REVIEW_ATTEMPTS) return found.map(toScannedRecord);
+      await this.#sleep(SCAN_REVIEW_WAIT_MS);
+    }
   }
 }

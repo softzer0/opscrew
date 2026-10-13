@@ -43,7 +43,7 @@ after an environment variable name.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-godaddy`
   - Effort: high
 
-- [ ] T705 [P] [US1] [US2] Zone nameservers, activation check, record batch, record scan, DS values and public IPv4 in `packages/connectors/cloudflare/src/`
+- [X] T705 [P] [US1] [US2] Zone nameservers, activation check, record batch, record scan, DS values and public IPv4 in `packages/connectors/cloudflare/src/`
   - Owns: `packages/connectors/cloudflare/src/**`
   - Reads: plan.md "Cloudflare"; research.md "Cloudflare"
   - Depends: T701
