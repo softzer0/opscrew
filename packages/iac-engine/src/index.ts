@@ -25,3 +25,4 @@ export {
 } from "./engine";
 export { hashFile } from "./hash";
 export { type ParsedPlan, parsePlanJson } from "./plan-json";
+export { type ProviderSchemaReader, readsProviderSchemas } from "./provider-schemas";

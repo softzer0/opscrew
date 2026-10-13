@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type {
@@ -31,6 +31,12 @@ import { ensureDeployKey, ensureStatePassphrase, writeRenderedFiles } from "../s
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { renderDriftReport } from "./render";
 import { runDrift } from "./run";
+import {
+  mergeAttributes,
+  readOnlyAttributes,
+  SCHEMA_UNREADABLE_NOTE,
+  withoutIgnored,
+} from "./schema";
 import type { DriftReport } from "./types";
 
 const HCLOUD = fakeSecret("hcloud-token");
@@ -38,6 +44,16 @@ const HCLOUD_PROVIDER = "registry.opentofu.org/hetznercloud/hcloud";
 
 const FIREWALL = "module.server.hcloud_firewall.this";
 const SERVER = "module.server.hcloud_server.this";
+const DO_DROPLET = "module.server.digitalocean_droplet.this";
+const DO_FIREWALL = "module.server.digitalocean_firewall.this";
+const DO_TAG = "module.server.digitalocean_tag.this";
+const DNS_RECORD = "module.dns.cloudflare_dns_record.app";
+const WAF = "module.dns.cloudflare_ruleset.waf";
+
+/** Excerpts of a recorded `tofu providers schema -json` (hcloud, digitalocean, cloudflare). */
+const RECORDED_SCHEMAS: unknown = JSON.parse(
+  readFileSync(join(import.meta.dirname, "__fixtures__", "providers-schema.json"), "utf8"),
+);
 
 function resource(address: string) {
   const parts = address.split(".");
@@ -72,6 +88,11 @@ interface DriftScenario {
   pending?: ResourceChange[];
   /** Throw (after writing the plan file) from the refresh-only or the normal plan. */
   failOn?: "refresh" | "plan";
+  /**
+   * What `providerSchemas` returns (default: the recorded excerpts); `fail` throws like a failed
+   * command, `missing` leaves the capability out (an engine that cannot read schemas).
+   */
+  schemas?: unknown;
 }
 
 /** Engine fake for drift: scripted refresh-only and normal plans; `apply` is a test failure. */
@@ -79,11 +100,26 @@ class DriftEngine implements IacEngine {
   readonly info;
   readonly calls: string[] = [];
   readonly plans: PlanCall[] = [];
+  readonly schemaCalls: { dir: string; env: IacRunOptions["env"] }[] = [];
   initOptions: IacInitOptions | undefined;
+  providerSchemas?: (dir: string, options?: IacRunOptions) => Promise<unknown>;
 
   constructor(readonly scenario: DriftScenario = {}) {
     const name = scenario.name ?? "tofu";
     this.info = { name, version: "1.13.1", binary: `/fake/${name}` };
+    if (scenario.schemas !== "missing") {
+      this.providerSchemas = async (dir, options) => {
+        this.calls.push("providers-schema");
+        this.schemaCalls.push({ dir, env: options?.env });
+        if (scenario.schemas === "fail") {
+          throw new OpsCrewError(
+            "ENGINE_FAILED",
+            "OpenTofu providers schema failed (exit code 1).",
+          );
+        }
+        return scenario.schemas === undefined ? RECORDED_SCHEMAS : scenario.schemas;
+      };
+    }
   }
 
   async init(_dir: string, options?: IacInitOptions): Promise<void> {
@@ -348,6 +384,130 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect(second.clean).toBe(false);
   });
 
+  it("ignores values the cloud maintains itself (read-only in the provider schema)", async () => {
+    // Found by the first real runs: counts, status and timestamps change without anyone
+    // touching the console, so every refresh reported them as drift.
+    const engine = new DriftEngine({
+      drift: [
+        drifted(SERVER, "update", ["backup_window", "status"]),
+        drifted(FIREWALL, "update", ["apply_to"]),
+        drifted(DNS_RECORD, "update", [
+          "comment_modified_on",
+          "meta",
+          "modified_on",
+          "tags_modified_on",
+        ]),
+        drifted(WAF, "update", ["last_updated", "version"]),
+      ],
+      pending: [],
+    });
+    const { deps, services, root } = await setup({ engine });
+    const report = await runDrift(deps, { services });
+
+    expect(report.drift).toEqual([]);
+    expect(report.clean).toBe(true);
+    expect(report.notes).toBeUndefined();
+    expect(engine.calls).toEqual(["init", "plan:refresh-only", "providers-schema", "plan"]);
+    expect(engine.schemaCalls.map((call) => call.dir)).toEqual([
+      join(root, "opscrew", "infra", "prod"),
+    ]);
+    expect(engine.schemaCalls[0]?.env?.TF_ENCRYPTION).toContain("pbkdf2");
+    expect(renderDriftReport(report)).toContain("matches the plan");
+  });
+
+  it("ignores DigitalOcean tag counts, firewall status and droplet prices", async () => {
+    const token = fakeSecret("digitalocean-token", "drift-schema");
+    const engine = new DriftEngine({
+      drift: [
+        drifted(DO_TAG, "update", ["droplets_count", "total_resource_count"]),
+        drifted(DO_FIREWALL, "update", ["created_at", "pending_changes", "status"]),
+        drifted(DO_DROPLET, "update", ["locked", "price_hourly", "price_monthly", "status"]),
+      ],
+      pending: [],
+    });
+    const { deps, services } = await setup({
+      plan: testPlan({ deployed: true, provider: "digitalocean" }),
+      engine,
+      env: { HCLOUD_TOKEN: undefined, DIGITALOCEAN_TOKEN: token },
+    });
+    const report = await runDrift(deps, { services });
+    expect(report.drift).toEqual([]);
+    expect(report.clean).toBe(true);
+  });
+
+  it("still reports real changes next to read-only values, and deletes", async () => {
+    const engine = new DriftEngine({
+      drift: [
+        drifted(SERVER, "update", ["firewall_ids", "status"]),
+        drifted(DO_DROPLET, "update", ["price_monthly", "size"]),
+        drifted(DO_FIREWALL, "update", ["inbound_rule", "pending_changes"]),
+        drifted(WAF, "update", ["last_updated", "rules", "version"]),
+        drifted(DNS_RECORD, "update", ["content", "modified_on"]),
+        drifted(DO_TAG, "delete"),
+      ],
+      pending: [change(SERVER, "update")],
+    });
+    const { deps, services } = await setup({ engine });
+    const report = await runDrift(deps, { services });
+
+    expect(report.drift).toEqual([
+      drifted(DNS_RECORD, "update", ["content"]),
+      drifted(WAF, "update", ["rules"]),
+      drifted(DO_DROPLET, "update", ["size"]),
+      drifted(DO_FIREWALL, "update", ["inbound_rule"]),
+      drifted(DO_TAG, "delete"),
+      drifted(SERVER, "update", ["firewall_ids"]),
+    ]);
+    expect(report.clean).toBe(false);
+    expect(report.notes).toBeUndefined();
+    const text = renderDriftReport(report);
+    expect(text).toContain(`${DO_TAG} no longer exists`);
+    expect(text).toMatch(/hcloud_server\.this: firewall_ids changed/);
+    expect(text).not.toContain("provider schemas");
+  });
+
+  it.each([
+    ["the schema command fails", "fail"],
+    ["the schema has an unexpected shape", { provider_schemas: "nope" }],
+    ["the engine cannot read schemas", "missing"],
+  ])("reports everything as before with a plain note when %s", async (_, schemas) => {
+    const engine = new DriftEngine({
+      schemas,
+      drift: [
+        drifted(SERVER, "update", ["status"]),
+        drifted(FIREWALL, "update", ["apply_to", "rule"]),
+      ],
+      pending: [change(FIREWALL, "update")],
+    });
+    const { deps, services } = await setup({ engine });
+    const report = await runDrift(deps, { services });
+
+    // The mirrored attachment is still ignored: that list does not need the schema.
+    expect(report.drift).toEqual([
+      drifted(FIREWALL, "update", ["rule"]),
+      drifted(SERVER, "update", ["status"]),
+    ]);
+    expect(report.notes).toEqual([SCHEMA_UNREADABLE_NOTE]);
+    expect(report.clean).toBe(false);
+    const text = renderDriftReport(report);
+    expect(text).toContain(SCHEMA_UNREADABLE_NOTE);
+    expect(text).toMatch(/hcloud_server\.this: status changed/);
+    expect(engine.calls).not.toContain("apply");
+  });
+
+  it("adds no note when the schema is unreadable but only mirrored values changed", async () => {
+    const engine = new DriftEngine({
+      schemas: "fail",
+      drift: [drifted(FIREWALL, "update", ["apply_to"])],
+      pending: [],
+    });
+    const { deps, services } = await setup({ engine });
+    const report = await runDrift(deps, { services });
+    expect(report.drift).toEqual([]);
+    expect(report.notes).toBeUndefined();
+    expect(report.clean).toBe(true);
+  });
+
   it("reports a server deleted outside OpsCrew", async () => {
     const engine = new DriftEngine({
       drift: [drifted(SERVER, "delete")],
@@ -358,6 +518,7 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
 
     expect(report.drift).toEqual([drifted(SERVER, "delete")]);
     expect(report.pending).toEqual([change(SERVER, "create")]);
+    expect(engine.calls).not.toContain("providers-schema");
     const text = renderDriftReport(report);
     expect(text).toContain(`${SERVER} no longer exists`);
     expect(text).toMatch(/create\s+module\.server\.hcloud_server\.this/);
@@ -597,6 +758,63 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
   });
 });
 
+describe("read-only attributes from the provider schema", () => {
+  it("derives computed attributes that are neither optional nor required", () => {
+    const readOnly = readOnlyAttributes(RECORDED_SCHEMAS);
+    expect(readOnly?.digitalocean_tag).toEqual(
+      expect.arrayContaining(["droplets_count", "total_resource_count", "volumes_count"]),
+    );
+    expect(readOnly?.digitalocean_tag).not.toContain("name");
+    expect(readOnly?.digitalocean_firewall).toEqual(["created_at", "pending_changes", "status"]);
+    expect(readOnly?.digitalocean_droplet).toEqual(
+      expect.arrayContaining(["locked", "price_hourly", "price_monthly", "status"]),
+    );
+    expect(readOnly?.digitalocean_droplet).not.toContain("size");
+    expect(readOnly?.hcloud_server).toEqual(expect.arrayContaining(["backup_window", "status"]));
+    // Optional and computed: OpsCrew sets it, so a change is real.
+    expect(readOnly?.hcloud_server).not.toContain("firewall_ids");
+    // apply_to is a block, so the mirrored list keeps it out of drift instead.
+    expect(readOnly?.hcloud_firewall ?? []).not.toContain("apply_to");
+    expect(readOnly?.cloudflare_dns_record).toEqual(
+      expect.arrayContaining(["comment_modified_on", "meta", "modified_on", "tags_modified_on"]),
+    );
+    expect(readOnly?.cloudflare_dns_record).not.toContain("content");
+    expect(readOnly?.cloudflare_ruleset).toEqual(
+      expect.arrayContaining(["last_updated", "version"]),
+    );
+    expect(readOnly?.cloudflare_ruleset).not.toContain("rules");
+  });
+
+  it("accepts a document without providers and rejects one with a different shape", () => {
+    expect(readOnlyAttributes({ format_version: "1.0" })).toEqual({});
+    expect(readOnlyAttributes({ provider_schemas: [] })).toBeUndefined();
+    expect(readOnlyAttributes("not a schema")).toBeUndefined();
+  });
+
+  it("keeps deletes and updates without named attributes, drops emptied updates", () => {
+    const ignored = mergeAttributes(
+      { hcloud_firewall: ["apply_to"] },
+      { hcloud_server: ["status"], hcloud_firewall: ["apply_to"] },
+    );
+    expect(ignored).toEqual({ hcloud_firewall: ["apply_to"], hcloud_server: ["status"] });
+    expect(
+      withoutIgnored(
+        [
+          drifted(SERVER, "delete"),
+          drifted(SERVER, "update", []),
+          drifted(SERVER, "update", ["status"]),
+          drifted(FIREWALL, "update", ["apply_to", "rule"]),
+        ],
+        ignored,
+      ),
+    ).toEqual([
+      drifted(SERVER, "delete"),
+      drifted(SERVER, "update", []),
+      drifted(FIREWALL, "update", ["rule"]),
+    ]);
+  });
+});
+
 describe("renderDriftReport", () => {
   const base: DriftReport = {
     drift: [
@@ -638,5 +856,20 @@ describe("renderDriftReport", () => {
     const text = renderDriftReport(base);
     expect(text).toContain("OpenTofu 1.13.1");
     expect(text).toContain("2026-10-11T12:00:00.000Z");
+  });
+
+  it("prints the notes, also for a clean report", () => {
+    const note = "OpsCrew could not read something.";
+    expect(renderDriftReport({ ...base, notes: [note] })).toContain(note);
+    const clean: DriftReport = {
+      ...base,
+      drift: [],
+      pending: [],
+      files: { changed: [], created: [] },
+      clean: true,
+      notes: [note],
+    };
+    expect(renderDriftReport(clean)).toContain(note);
+    expect(renderDriftReport({ ...clean, notes: undefined })).not.toContain(note);
   });
 });

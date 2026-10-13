@@ -40,9 +40,11 @@ export function renderDriftReport(report: DriftReport): string {
   const foreign = [...(report.foreignDnsRecords ?? [])].sort(
     (a, b) => byText(a.name, b.name) || byText(a.type, b.type) || byText(a.content, b.content),
   );
+  const notes = (report.notes ?? []).map((note) => `Note: ${note}`);
   if (drift.length === 0 && pending.length === 0 && files.length === 0 && foreign.length === 0) {
     lines.push(
       "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
+      ...notes,
     );
     return lines.join("\n");
   }
@@ -102,6 +104,7 @@ export function renderDriftReport(report: DriftReport): string {
     );
   }
 
+  if (notes.length > 0) lines.push(...notes, "");
   lines.push("Nothing was changed: `opscrew drift` only reads.");
   return lines.join("\n");
 }

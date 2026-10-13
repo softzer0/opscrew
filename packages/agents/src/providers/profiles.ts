@@ -44,7 +44,9 @@ export interface ProviderProfile {
    * Attributes the provider fills in from a relationship OpsCrew manages on the other resource
    * (Hetzner mirrors the server's `firewall_ids` into the firewall's `apply_to`). They change on
    * refresh without anyone touching the console, so `opscrew drift` does not report them; a real
-   * change still shows on the resource OpsCrew manages the relationship on.
+   * change still shows on the resource OpsCrew manages the relationship on. Read-only values the
+   * cloud maintains itself (status, counts, timestamps) need no entry: drift takes them from the
+   * provider schema.
    */
   mirroredAttributes: Readonly<Record<string, readonly string[]>>;
 }

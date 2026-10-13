@@ -19,6 +19,7 @@ import { isUserFacingError, OpsCrewError, Redactor, registerEnvSecrets } from "@
 import { encryptionSecrets } from "./encryption";
 import { hashBytes } from "./hash";
 import { parsePlanJson } from "./plan-json";
+import type { ProviderSchemaReader } from "./provider-schemas";
 
 /** Default timeout for `apply`: 30 minutes. */
 export const APPLY_TIMEOUT_MS = 30 * 60_000;
@@ -71,15 +72,19 @@ const HINTS: Record<string, string> = {
   show: "Create the plan again; the saved plan file may be damaged or from another engine version.",
   apply: "Read the error above, fix the cause, then create a new plan and approve it again.",
   output: "Run the apply first; outputs exist only after a successful apply.",
+  "providers schema":
+    "Run init again in the infrastructure folder so the providers are installed, then try again.",
 };
 
-class Engine implements IacEngine {
+class Engine implements IacEngine, ProviderSchemaReader {
   readonly info: IacEngineInfo;
   private readonly runner: CommandRunner;
   private readonly baseEnv: Record<string, string | undefined>;
   private readonly redactor: Redactor;
   private readonly now: () => Date;
   private readonly label: string;
+  /** Parsed `providers schema -json` per resolved directory. */
+  private readonly schemas = new Map<string, unknown>();
 
   constructor(info: IacEngineInfo, options: EngineOptions) {
     this.info = { ...info };
@@ -299,6 +304,26 @@ class Engine implements IacEngine {
     return outputs;
   }
 
+  async providerSchemas(dir: string, options: IacRunOptions = {}): Promise<unknown> {
+    const cwd = path.resolve(dir);
+    if (this.schemas.has(cwd)) return this.schemas.get(cwd);
+    const step = "providers schema";
+    const result = await this.exec(step, cwd, ["providers", "schema", "-json"], options);
+    this.assertOk(step, result, options.timeoutMs);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      throw new OpsCrewError(
+        "ENGINE_FAILED",
+        `${this.label} printed provider schemas that could not be read.`,
+        { hint: HINTS[step] },
+      );
+    }
+    this.schemas.set(cwd, parsed);
+    return parsed;
+  }
+
   /** Runs `show -json <planFile>` and returns the parsed plan. */
   private async show(cwd: string, file: string, options: IacRunOptions): Promise<unknown> {
     const result = await this.exec("show", cwd, ["show", "-json", "-no-color", file], options);
@@ -415,7 +440,13 @@ class Engine implements IacEngine {
   }
 }
 
-/** Creates the `IacEngine` for a detected binary. All engine commands run through `runner`. */
-export function createEngine(info: IacEngineInfo, options: EngineOptions): IacEngine {
+/**
+ * Creates the `IacEngine` for a detected binary, which can also read provider schemas. All engine
+ * commands run through `runner`.
+ */
+export function createEngine(
+  info: IacEngineInfo,
+  options: EngineOptions,
+): IacEngine & ProviderSchemaReader {
   return new Engine(info, options);
 }

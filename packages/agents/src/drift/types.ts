@@ -37,4 +37,9 @@ export interface DriftReport {
   checkedAt: string;
   /** Cloud provider of the deployment, named in the report (absent in reports made before 004). */
   provider?: VpsProviderId;
+  /**
+   * Plain-English remarks about the check itself, for example that the provider schemas could
+   * not be read, so values the cloud maintains itself may show as drift. Absent when there are none.
+   */
+  notes?: string[];
 }

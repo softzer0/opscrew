@@ -5,6 +5,7 @@ import {
   OpsCrewError,
 } from "@opscrew/core";
 import { createEngine, type EngineOptions, engineLabel } from "./engine";
+import type { ProviderSchemaReader } from "./provider-schemas";
 
 /** Oldest supported engine version (both OpenTofu and Terraform). */
 export const MIN_ENGINE_VERSION = "1.6.0";
@@ -174,7 +175,7 @@ export interface SelectEngineOptions extends DetectOptions, Omit<EngineOptions, 
 export async function selectEngine(
   preference: EnginePreference,
   opts: SelectEngineOptions = {},
-): Promise<IacEngine> {
+): Promise<IacEngine & ProviderSchemaReader> {
   const runner = opts.runner ?? new NodeCommandRunner();
   const detected = await detectEngines({ ...opts, runner });
   const wanted = preference === "auto" ? ENGINES : ENGINES.filter((e) => e.name === preference);

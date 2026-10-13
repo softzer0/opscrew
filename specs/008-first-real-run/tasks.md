@@ -43,7 +43,7 @@ description: "Tasks for 008-first-real-run"
 
 - [X] T812 Hetzner firewall drift false positive: `apply_to` mirrored from the server's `firewall_ids` is ignored (lead)
 
-- [ ] T813 Drift ignores read-only attributes for every provider (from the provider schema), keeping the explicit mirrored-relationship list (`hcloud_firewall.apply_to`)
+- [X] T813 Drift ignores read-only attributes for every provider (from the provider schema), keeping the explicit mirrored-relationship list (`hcloud_firewall.apply_to`)
   - Owns: `packages/iac-engine/src/**`, `packages/agents/src/drift/**`, `packages/agents/src/providers/**`
   - Accept: `IacEngine` gains `providerSchemas(dir)` (`tofu|terraform providers schema -json` after init, zod-validated, cached per run); drift drops attributes that are computed and neither optional nor required for their resource type, and the mirrored ones; an update left with no attributes is dropped; schema unreadable → drift reports everything as today with a plain note; tests with recorded schema excerpts for digitalocean_tag counts, digitalocean_firewall status/pending_changes, hcloud_server status, cloudflare_dns_record modified_on, and real changes still reported (size, rules, firewall_ids, delete).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-engine --filter=@opscrew/agents`

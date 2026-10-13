@@ -10,6 +10,12 @@ import { planProvider, providerProfile } from "../providers";
 import { checkProvider } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { previewDeploymentFiles } from "../provision/render";
+import {
+  mergeAttributes,
+  providerReadOnlyAttributes,
+  SCHEMA_UNREADABLE_NOTE,
+  withoutIgnored,
+} from "./schema";
 import type { DriftOptions, DriftReport } from "./types";
 
 /** The engine state file `opscrew provision` uses (local backend). */
@@ -31,22 +37,6 @@ async function readOptional(path: string): Promise<string | undefined> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
-}
-
-/**
- * Drift without the attributes a provider mirrors from a relationship OpsCrew manages elsewhere
- * (see `ProviderProfile.mirroredAttributes`); an update left with no attributes is dropped.
- */
-export function withoutMirrored(
-  drift: readonly ResourceDrift[],
-  mirrored: Readonly<Record<string, readonly string[]>>,
-): ResourceDrift[] {
-  return drift.flatMap((entry) => {
-    const ignored = mirrored[entry.type];
-    if (entry.action !== "update" || ignored === undefined) return [entry];
-    const attributes = entry.attributes.filter((name) => !ignored.includes(name));
-    return attributes.length === 0 ? [] : [{ ...entry, attributes }];
-  });
 }
 
 const byAddress = (a: { address: string }, b: { address: string }) =>
@@ -180,16 +170,26 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   const pendingFile = join(deps.paths.files.plansDir, `drift-${stamp}-pending.tfplan`);
   let drift: ResourceDrift[];
   let pending: ResourceChange[];
+  const notes: string[] = [];
   try {
     await mkdir(deps.paths.files.plansDir, { recursive: true });
     deps.reporter.step(`Initialising ${engineLabel(engine.info.name)} in ${plan.infra.dir}`);
     await engine.init(dir, { env: engineEnv, backendConfig: { path: statePath } });
     deps.reporter.step("Reading the live infrastructure (nothing is changed)");
     const refreshed = await engine.plan(dir, refreshFile, { env: engineEnv, refreshOnly: true });
-    drift = withoutMirrored(
-      refreshed.drift ?? [],
-      providerProfile(provider).mirroredAttributes,
+    const refreshedDrift = refreshed.drift ?? [];
+    // Values the cloud maintains itself (status, counts, timestamps) change on every refresh; the
+    // provider schema names them, so read it (once, offline) only when something was updated.
+    const readOnly = refreshedDrift.some((entry) => entry.action === "update")
+      ? await providerReadOnlyAttributes(engine, dir, engineEnv)
+      : {};
+    drift = withoutIgnored(
+      refreshedDrift,
+      mergeAttributes(providerProfile(provider).mirroredAttributes, readOnly ?? {}),
     ).sort(byAddress);
+    if (readOnly === undefined && drift.some((entry) => entry.action === "update")) {
+      notes.push(SCHEMA_UNREADABLE_NOTE);
+    }
     deps.reporter.step("Comparing the state with the infrastructure code (nothing is applied)");
     const planned = await engine.plan(dir, pendingFile, { env: engineEnv });
     pending = [...planned.changes].sort(byAddress);
@@ -226,6 +226,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     engine: engine.info,
     checkedAt: deps.clock.now().toISOString(),
     provider,
+    ...(notes.length > 0 ? { notes } : {}),
   };
   await deps.audit.append({
     kind: "iac",
