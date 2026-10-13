@@ -227,6 +227,18 @@ output "server_name" {
 output "url" {
   value = "http://\${module.server.ipv4_address}"
 }
+
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    digitalocean = {
+      ipv4 = module.server.ipv4_address
+      ipv6 = module.server.ipv6_address
+      id   = module.server.server_id
+    }
+  }
+}
 "
 `;
 

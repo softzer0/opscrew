@@ -272,7 +272,7 @@ export function renderSecurityReport(input: SecurityReportInput): string {
   out.push("## Outside probes", "");
   if (input.probes.length === 0) {
     out.push(
-      "Skipped: OpsCrew does not know the server's address on this machine yet (run `opscrew provision` first).",
+      "Skipped: OpsCrew does not know the server's address on this computer. If the app is deployed, run `opscrew secure` on the computer that provisioned the server (its `.opscrew/` folder holds the address); otherwise deploy it first.",
       "",
     );
   } else {

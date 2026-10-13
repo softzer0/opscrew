@@ -370,7 +370,10 @@ describe("runSecure", () => {
     const a = await runSecure(before, { scanners: noScanners, tcpConnect: ports() });
     expect(a.hostChecks).toEqual([]);
     expect(a.probes).toEqual([]);
-    expect(a.report).toContain("Skipped: OpsCrew does not know a server for this project");
+    expect(a.report).toContain(
+      "Skipped: OpsCrew does not know the server's address on this computer",
+    );
+    expect(a.report).not.toContain("opscrew provision` first");
     expect(before.runner.calls).toEqual([]);
 
     const noKey = await setup({ httpAllowedFrom: "any" }, {}, { deployKey: false });

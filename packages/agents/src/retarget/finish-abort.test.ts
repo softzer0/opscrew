@@ -1,10 +1,10 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { previewDeploymentFiles } from "../provision";
-import { readServerAddresses } from "../shared";
+import { readServerAddresses, serverAddressesFile } from "../shared";
 import {
   caught,
   crashAfter,
@@ -272,6 +272,31 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     expect(checked).toBeGreaterThanOrEqual(0);
     expect(checked).toBeLessThan(confirmed);
     expect(h.engine.state.servers.server_previous).toBeUndefined();
+  });
+
+  it("a switch made by hand, local record gone: deletes the old server and keeps the new app", async () => {
+    // Without managed DNS no `switched` layout was applied: the state's live server is the old one.
+    const h = await moveHarness({ dns: "none", postgres: false });
+    const n = h.newServer.ipv4;
+    crashAfter(h, "switched");
+    await expect(run(h)).rejects.toThrow("interrupted");
+    await rm(serverAddressesFile(h.paths));
+    const mark = h.events.length;
+    expect(await finish(h)).toMatchObject({ step: "finished", done: true });
+    const lines = trail(since(h, mark));
+    expect(lines.slice(0, 2)).toEqual([`${n} start caddy`, `${OLD_IPV4} stop app`]);
+    expect(lines.filter((line) => line.startsWith(n))).toEqual([`${n} start caddy`]);
+    expect(h.engine.state.servers).toEqual({
+      server: expect.objectContaining({ provider: "digitalocean", ipv4: n }),
+    });
+    expect(h.hosts.host(n)).toMatchObject({ app: true, caddy: true });
+    const knownHosts = await readFile(h.paths.files.knownHosts, "utf8");
+    expect(knownHosts).not.toContain(OLD_IPV4);
+    expect(knownHosts).toContain(n);
+    expect(await readServerAddresses(h.paths)).toEqual({
+      schemaVersion: 1,
+      deployment: { ipv4: n, ipv6: h.newServer.ipv6 },
+    });
   });
 
   it("keeps the old server while the new one does not answer", async () => {
@@ -548,6 +573,29 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     expect(dumpAt).toBeGreaterThan(windowAt);
     expect(dnsAt).toBeGreaterThan(dumpAt);
     expect(h.events.filter((e) => e.type === "remote" && e.op === "dump")).toHaveLength(2);
+  });
+
+  it("with the local record gone too, starts the app on the old server (from the state)", async () => {
+    const h = await moveHarness();
+    crashAfter(h, "migrated");
+    await expect(run(h)).rejects.toThrow("interrupted");
+    expect(h.hosts.host(OLD_IPV4).app).toBe(false);
+    await rm(serverAddressesFile(h.paths));
+    // No working provider token is needed to start the old app again.
+    h.services.providers = {
+      ...h.services.providers,
+      digitalocean: { configured: true, verify: async () => ({ ok: false, message: "revoked" }) },
+    };
+    const mark = h.events.length;
+    const error = await caught(abort(h));
+    expect(error.code).toBe("CREDENTIALS_INVALID");
+    expect(trail(since(h, mark))).toEqual([`${OLD_IPV4} start app`]);
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+    expect(h.hosts.host(h.newServer.ipv4).db).toBe("orders before the move");
+    expect((await readServerAddresses(h.paths)).retarget).toEqual({
+      from: { ipv4: OLD_IPV4, ipv6: OLD_IPV6 },
+      next: { ipv4: h.newServer.ipv4, ipv6: h.newServer.ipv6 },
+    });
   });
 
   it("an abort whose old-app start fails still forces a fresh copy before any switch", async () => {

@@ -135,7 +135,6 @@ interface FakeConfig {
   moved?: [ModuleName, ModuleName];
   dns?: ModuleName;
   live?: ModuleName;
-  other?: ModuleName;
   variables: Set<string>;
 }
 
@@ -155,13 +154,11 @@ async function readConfig(dir: string): Promise<FakeConfig> {
   const moved = /moved \{\s*from\s*=\s*module\.(\w+)\s*to\s*=\s*module\.(\w+)/.exec(main);
   const dns = /module "dns" \{[\s\S]*?ipv4\s*=\s*module\.(\w+)\.ipv4_address/.exec(main);
   const live = /output "server_ipv4" \{\s*value\s*=\s*module\.(\w+)\./.exec(outputs);
-  const other = /output "other_server_ipv4" \{\s*value\s*=\s*module\.(\w+)\./.exec(outputs);
   return {
     modules,
     ...(moved ? { moved: [moved[1] as ModuleName, moved[2] as ModuleName] } : {}),
     ...(dns ? { dns: dns[1] as ModuleName } : {}),
     ...(live ? { live: live[1] as ModuleName } : {}),
-    ...(other ? { other: other[1] as ModuleName } : {}),
     variables: new Set([...variables.matchAll(/variable "(\w+)"/g)].map((v) => v[1] as string)),
   };
 }
@@ -200,7 +197,13 @@ function change(
  */
 export class FakeMoveEngine implements IacEngine {
   readonly info = { name: "tofu" as const, version: "1.13.1", binary: "/fake/tofu" };
-  readonly state: { servers: Partial<Record<ModuleName, FakeServer>>; dns?: string; serial: number };
+  readonly state: {
+    servers: Partial<Record<ModuleName, FakeServer>>;
+    dns?: string;
+    serial: number;
+    /** Root outputs as the last successful apply recorded them (what `output` reads, like tofu). */
+    outputs: Record<string, unknown>;
+  };
   /** Returns a failure log for an apply, e.g. to make the DNS switch fail. */
   failApply: ((effect: Effect) => string | undefined) | undefined;
   /** Throws from `plan` (e.g. a simulated interruption). */
@@ -225,7 +228,21 @@ export class FakeMoveEngine implements IacEngine {
       ipv6: SERVER_IPV6,
       protected: options.from === "hetzner",
     };
-    this.state = { servers: { server: old }, ...(options.dns ? { dns: old.id } : {}), serial: 0 };
+    this.state = {
+      servers: { server: old },
+      ...(options.dns ? { dns: old.id } : {}),
+      serial: 0,
+      // What `opscrew provision` applied: the root module without a move layout.
+      outputs: outputsOf(
+        {
+          modules: new Map<ModuleName, VpsProviderId>([["server", options.from]]),
+          live: "server",
+          variables: new Set(),
+        },
+        { server: old },
+        options.dns,
+      ),
+    };
   }
 
   /** The server whose id DNS points at. */
@@ -395,28 +412,44 @@ export class FakeMoveEngine implements IacEngine {
     }
     if (effect.dnsTo !== undefined) this.state.dns = effect.dnsTo;
     this.state.serial++;
-    return { ok: true, outputs: await this.output(dir), log: "Apply complete!" };
+    const config = await readConfig(dir);
+    this.state.outputs = outputsOf(config, this.state.servers, config.dns !== undefined);
+    return { ok: true, outputs: structuredClone(this.state.outputs), log: "Apply complete!" };
   }
 
-  async output(dir: string): Promise<Record<string, unknown>> {
-    const config = await readConfig(dir);
-    const live = config.live ? this.state.servers[config.live] : undefined;
-    const other = config.other ? this.state.servers[config.other] : undefined;
-    return {
-      ...(live
-        ? {
-            server_ipv4: live.ipv4,
-            server_ipv6: live.ipv6,
-            server_id: live.id,
-            server_name: APP,
-            url: config.dns ? `https://${DOMAIN}` : `http://${live.ipv4}`,
-          }
-        : {}),
-      ...(other
-        ? { other_server_ipv4: other.ipv4, other_server_ipv6: other.ipv6, other_server_id: other.id }
-        : {}),
-    };
+  /** The outputs the last successful apply recorded (a plan without changes does not update them). */
+  async output(_dir: string): Promise<Record<string, unknown>> {
+    return structuredClone(this.state.outputs);
   }
+}
+
+/**
+ * The root outputs of the rendered configuration over the servers in the state: `server_*` and
+ * `url` follow the live module, `servers` lists every server module's server by provider.
+ */
+function outputsOf(
+  config: FakeConfig,
+  servers: Partial<Record<ModuleName, FakeServer>>,
+  dns: boolean,
+): Record<string, unknown> {
+  const live = config.live ? servers[config.live] : undefined;
+  const byProvider: Record<string, { ipv4: string; ipv6: string; id: string }> = {};
+  for (const [m, provider] of config.modules) {
+    const server = servers[m];
+    if (server) byProvider[provider] = { ipv4: server.ipv4, ipv6: server.ipv6, id: server.id };
+  }
+  return {
+    ...(live
+      ? {
+          server_ipv4: live.ipv4,
+          server_ipv6: live.ipv6,
+          server_id: live.id,
+          server_name: APP,
+          url: dns ? `https://${DOMAIN}` : `http://${live.ipv4}`,
+        }
+      : {}),
+    servers: byProvider,
+  };
 }
 
 export interface FakeHost {

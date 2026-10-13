@@ -63,11 +63,28 @@ function outputs(outputsTf: string): Record<string, string> {
   );
 }
 
+/**
+ * The `servers` output of a root `outputs.tf`: provider → the module its entry reads (each entry
+ * must read `ipv4`, `ipv6` and `id` from that one module).
+ */
+function serversOutput(outputsTf: string): Record<string, string> {
+  const body =
+    /^output "servers" \{\n {2}value = \{\n([\s\S]*?)^ {2}\}\n\}$/m.exec(outputsTf)?.[1] ?? "";
+  const entries: Record<string, string> = {};
+  const entry =
+    /^ {4}(\w+) = \{\n {6}ipv4 = module\.(\w+)\.ipv4_address\n {6}ipv6 = module\.\2\.ipv6_address\n {6}id {3}= module\.\2\.server_id\n {4}\}$/gm;
+  let rest = body;
+  for (const m of body.matchAll(entry)) {
+    entries[m[1] ?? ""] = m[2] ?? "";
+    rest = rest.replace(m[0], "");
+  }
+  // Nothing else in the object.
+  expect(rest.trim()).toBe("");
+  return entries;
+}
+
 const variableNames = (variablesTf: string) =>
   [...variablesTf.matchAll(/^variable "([^"]+)"/gm)].map((m) => m[1]);
-
-const otherModule = (live: ServerModule): ServerModule =>
-  live === "server" ? "server_previous" : "server";
 
 describe("renderInfra move layouts (snapshots)", () => {
   for (const [from, to] of DIRECTIONS) {
@@ -173,33 +190,34 @@ describe("renderInfra move layouts", () => {
     }
   });
 
-  it("describes the other server only while both modules exist", () => {
+  it("lists every server by its provider, whichever module holds it", () => {
     for (const [from, to] of DIRECTIONS) {
       for (const name of LAYOUT_NAMES) {
         const layout = layoutFor(name, from, to);
-        const values = outputs(content(render(name, from, to), "prod/outputs.tf"));
+        const outputsTf = content(render(name, from, to), "prod/outputs.tf");
         const label = `${from} to ${to}, ${name}`;
-        if (layout.server && layout.previous) {
-          const other = otherModule(layout.live);
-          expect(values, label).toMatchObject({
-            other_server_ipv4: `module.${other}.ipv4_address`,
-            other_server_ipv6: `module.${other}.ipv6_address`,
-            other_server_id: `module.${other}.server_id`,
-          });
-        } else {
-          expect(
-            Object.keys(values).filter((k) => k.startsWith("other_")),
-            label,
-          ).toEqual([]);
-        }
-        expect(Object.keys(values).slice(0, 5), label).toEqual([
+        const expected: Record<string, ServerModule> = {};
+        if (layout.server) expected[layout.server.provider] = "server";
+        if (layout.previous) expected[layout.previous.provider] = "server_previous";
+        expect(serversOutput(outputsTf), label).toEqual(expected);
+        // The old server is always `from`'s provider and the new one `to`'s, in every layout.
+        if (layout.previous) expect(layout.previous.provider, label).toBe(from);
+        expect(Object.keys(outputs(outputsTf)), label).toEqual([
           "server_ipv4",
           "server_ipv6",
           "server_id",
           "server_name",
           "url",
         ]);
+        expect(outputsTf, label).not.toContain("other_");
       }
+    }
+  });
+
+  it("lists the one server by its provider without a move", () => {
+    for (const provider of ["hetzner", "digitalocean"] as const) {
+      const files = renderInfra(testPlan({ provider }), testContext());
+      expect(serversOutput(content(files, "prod/outputs.tf"))).toEqual({ [provider]: "server" });
     }
   });
 

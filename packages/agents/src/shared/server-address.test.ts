@@ -12,10 +12,12 @@ import {
   formatServerAddress,
   hasDeployment,
   hidesServerAddress,
+  infrastructureOutputs,
   readServerAddresses,
   recordServerAddress,
   serverAddress,
   serverAddressesFile,
+  serverOfProvider,
   updateServerAddresses,
   withoutServerAddress,
 } from "./index";
@@ -80,13 +82,45 @@ describe("the server's address in OpsCrew's local state", () => {
     });
   });
 
-  it("reads a damaged file as empty instead of failing", async () => {
+  it("stops with a plain error when the file is damaged, never reading it as empty", async () => {
+    const deps = await withState();
+    const file = serverAddressesFile(deps.paths);
+    const engine = new OutputEngine({ server_ipv4: IPV4 });
+    for (const damaged of [
+      "{ not json",
+      JSON.stringify({ schemaVersion: 1, deployment: "x" }),
+      JSON.stringify({ schemaVersion: 1, retarget: { from: { ipv4: "not an address" } } }),
+      JSON.stringify({ deployment: { ipv4: IPV4 } }),
+    ]) {
+      await writeFile(file, damaged);
+      for (const attempt of [
+        () => readServerAddresses(deps.paths),
+        () => serverAddress(deps, applied(), { engine: async () => engine }),
+        () => recordServerAddress(deps.paths, { ipv4: IPV4 }),
+      ]) {
+        const error = await attempt().then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(error, damaged).toMatchObject({ code: "ARTIFACT_INVALID" });
+        const { message, hint } = error as { message: string; hint: string };
+        expect(message).toContain(".opscrew/server.json");
+        expect(message).toContain("is damaged");
+        expect(hint).toContain("Delete .opscrew/server.json");
+        expect(hint).toContain("on the computer that provisioned the server");
+      }
+      // Nothing guessed, nothing overwritten.
+      expect(engine.calls).toEqual([]);
+      expect(await readFile(file, "utf8")).toBe(damaged);
+    }
+  });
+
+  it("stops with the same error when the file cannot be read", async () => {
     const deps = await createTestPhaseDeps();
-    await mkdir(deps.paths.stateDir, { recursive: true });
-    await writeFile(serverAddressesFile(deps.paths), "{ not json");
-    expect(await readServerAddresses(deps.paths)).toEqual({ schemaVersion: 1 });
-    await writeFile(serverAddressesFile(deps.paths), JSON.stringify({ deployment: "x" }));
-    expect(await readServerAddresses(deps.paths)).toEqual({ schemaVersion: 1 });
+    await mkdir(serverAddressesFile(deps.paths), { recursive: true });
+    await expect(readServerAddresses(deps.paths)).rejects.toMatchObject({
+      code: "ARTIFACT_INVALID",
+    });
   });
 });
 
@@ -159,17 +193,65 @@ describe("serverAddress", () => {
   });
 });
 
+describe("infrastructureOutputs", () => {
+  it("reads the outputs with the engine the caller prefers, when the state is here", async () => {
+    const deps = await withState();
+    await ensureStatePassphrase(deps.paths);
+    const engine = new OutputEngine({ server_ipv4: IPV4 });
+    const asked: string[] = [];
+    const outputs = await infrastructureOutputs(deps, testPlan(), {
+      engine: async (preference) => {
+        asked.push(preference);
+        return engine;
+      },
+      preference: "terraform",
+    });
+    expect(outputs).toEqual({ server_ipv4: IPV4 });
+    expect(asked).toEqual(["terraform"]);
+    expect(engine.calls[0]?.env?.TF_ENCRYPTION).toContain("pbkdf2");
+  });
+
+  it("is undefined without a state file or when the engine fails", async () => {
+    const engine = new OutputEngine({ server_ipv4: IPV4 });
+    const none = await createTestPhaseDeps();
+    expect(await infrastructureOutputs(none, testPlan(), { engine: async () => engine })).toBe(
+      undefined,
+    );
+    expect(engine.calls).toEqual([]);
+    const deps = await withState();
+    const failing = new OutputEngine("fail");
+    expect(
+      await infrastructureOutputs(deps, testPlan(), { engine: async () => failing }),
+    ).toBeUndefined();
+  });
+});
+
 describe("helpers", () => {
   it("reads addresses from root-module outputs", () => {
+    expect(addressFromOutputs({ server_ipv4: IPV4, server_ipv6: IPV6 })).toEqual({
+      ipv4: IPV4,
+      ipv6: IPV6,
+    });
+    expect(addressFromOutputs({ server_ipv4: IPV4, server_ipv6: "" })).toEqual({ ipv4: IPV4 });
+    expect(addressFromOutputs({ server_ipv4: "" })).toBeUndefined();
+  });
+
+  it("reads each provider's server from the `servers` output", () => {
     const outputs = {
       server_ipv4: IPV4,
-      server_ipv6: IPV6,
-      other_server_ipv4: "198.51.100.20",
-      other_server_ipv6: "not an address",
+      servers: {
+        hetzner: { ipv4: IPV4, ipv6: IPV6, id: "4711" },
+        digitalocean: { ipv4: "198.51.100.30", ipv6: "not an address", id: "3164445" },
+      },
     };
-    expect(addressFromOutputs(outputs)).toEqual({ ipv4: IPV4, ipv6: IPV6 });
-    expect(addressFromOutputs(outputs, "other_server")).toEqual({ ipv4: "198.51.100.20" });
-    expect(addressFromOutputs({ server_ipv4: "" })).toBeUndefined();
+    expect(serverOfProvider(outputs, "hetzner")).toEqual({ ipv4: IPV4, ipv6: IPV6 });
+    expect(serverOfProvider(outputs, "digitalocean")).toEqual({ ipv4: "198.51.100.30" });
+    expect(
+      serverOfProvider({ servers: { hetzner: outputs.servers.hetzner } }, "digitalocean"),
+    ).toBe(undefined);
+    for (const servers of [undefined, "x", null, { hetzner: "x" }, { hetzner: { ipv4: "" } }]) {
+      expect(serverOfProvider({ server_ipv4: IPV4, servers }, "hetzner")).toBeUndefined();
+    }
   });
 
   it("hides the address only behind Cloudflare's proxy", () => {

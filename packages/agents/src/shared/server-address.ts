@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { IacEngine } from "@opscrew/contracts";
-import { ensureStateDir, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
+import type { IacEngine, VpsProviderId } from "@opscrew/contracts";
+import { ensureStateDir, OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
 import { type EnginePreference, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -42,9 +42,21 @@ export function serverAddressesFile(paths: Pick<ProjectPaths, "stateDir">): stri
   return join(paths.stateDir, "server.json");
 }
 
+/** `.opscrew/server.json` exists but cannot be used: OpsCrew never guesses past it. */
+function damaged(reason: string): OpsCrewError {
+  return new OpsCrewError(
+    "ARTIFACT_INVALID",
+    `OpsCrew's record of the server addresses on this computer (.opscrew/server.json) is damaged (${reason}), so OpsCrew stopped instead of guessing the servers' addresses.`,
+    {
+      hint: "Delete .opscrew/server.json and run the command again: OpsCrew then reads the addresses from the infrastructure state in .opscrew/tfstate. If that state is not on this computer, run OpsCrew on the computer that provisioned the server.",
+    },
+  );
+}
+
 /**
- * Reads `.opscrew/server.json`. A missing or unreadable file reads as empty: it is a local record
- * that {@link serverAddress} rebuilds from the infrastructure state.
+ * Reads `.opscrew/server.json`. A missing file reads as empty (a local record that
+ * {@link serverAddress} rebuilds from the infrastructure state); a file that cannot be read or is
+ * not a valid record stops with `ARTIFACT_INVALID`, never read as empty.
  */
 export async function readServerAddresses(
   paths: Pick<ProjectPaths, "stateDir">,
@@ -52,16 +64,23 @@ export async function readServerAddresses(
   let text: string;
   try {
     text = await readFile(serverAddressesFile(paths), "utf8");
-  } catch {
-    return { ...EMPTY };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...EMPTY };
+    throw damaged("it cannot be read");
   }
+  let json: unknown;
   try {
-    const json = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-    const parsed = ServerAddressesSchema.safeParse(JSON.parse(json));
-    return parsed.success ? parsed.data : { ...EMPTY };
+    json = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
   } catch {
-    return { ...EMPTY };
+    throw damaged("it is not valid JSON");
   }
+  const parsed = ServerAddressesSchema.safeParse(json);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const where = issue?.path.map(String).join(".") ?? "";
+    throw damaged(where === "" ? "it is not a server record" : `${where} is not valid`);
+  }
+  return parsed.data;
 }
 
 /** Rewrites `.opscrew/server.json` (atomically, inside the gitignored `.opscrew/`). */
@@ -85,15 +104,40 @@ export async function recordServerAddress(
   );
 }
 
-/** The address in root-module outputs `<prefix>_ipv4` / `<prefix>_ipv6`, when valid. */
-export function addressFromOutputs(
+/** `{ ipv4, ipv6 }` when `ipv4` is a valid address (an invalid `ipv6` is left out). */
+function addressOf(ipv4: unknown, ipv6: unknown): ServerAddress | undefined {
+  const v4 = z.ipv4().safeParse(ipv4);
+  if (!v4.success) return undefined;
+  const v6 = z.ipv6().safeParse(ipv6);
+  return { ipv4: v4.data, ...(v6.success ? { ipv6: v6.data } : {}) };
+}
+
+/**
+ * The address of the server that receives the traffic, from the root-module outputs
+ * `server_ipv4` / `server_ipv6`, when valid.
+ */
+export function addressFromOutputs(outputs: Record<string, unknown>): ServerAddress | undefined {
+  return addressOf(outputs.server_ipv4, outputs.server_ipv6);
+}
+
+const ServersOutputSchema = z.record(
+  z.string(),
+  z.looseObject({ ipv4: z.unknown().optional(), ipv6: z.unknown().optional() }),
+);
+
+/**
+ * The address of `provider`'s server from the root-module output `servers` (every server keyed by
+ * its provider, whichever module holds it), when valid. A move always goes to another provider,
+ * so this tells the server being replaced from the new one without guessing.
+ */
+export function serverOfProvider(
   outputs: Record<string, unknown>,
-  prefix: "server" | "other_server" = "server",
+  provider: VpsProviderId,
 ): ServerAddress | undefined {
-  const ipv4 = z.ipv4().safeParse(outputs[`${prefix}_ipv4`]);
-  if (!ipv4.success) return undefined;
-  const ipv6 = z.ipv6().safeParse(outputs[`${prefix}_ipv6`]);
-  return { ipv4: ipv4.data, ...(ipv6.success ? { ipv6: ipv6.data } : {}) };
+  const servers = ServersOutputSchema.safeParse(outputs.servers);
+  if (!servers.success) return undefined;
+  const entry = servers.data[provider];
+  return entry === undefined ? undefined : addressOf(entry.ipv4, entry.ipv6);
 }
 
 /** True when the plan records an applied deployment that was not destroyed since. */
@@ -105,8 +149,10 @@ export function hasDeployment(plan: Pick<DeployPlan, "deployment">): boolean {
 export type ServerAddressDeps = Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor" | "clock">;
 
 export interface ServerAddressOptions {
-  /** Engine for the fallback (default: `selectEngine` with the plan's engine preference). */
+  /** Engine for the fallback (default: `selectEngine` with {@link preference}). */
   engine?: (preference: EnginePreference) => Promise<IacEngine>;
+  /** Engine preference (default: `plan.infra.engine`), for example from `--engine`. */
+  preference?: EnginePreference;
   /** Engine environment when the caller already built it (provider tokens, `TF_ENCRYPTION`). */
   engineEnv?: Record<string, string | undefined>;
 }
@@ -125,10 +171,11 @@ async function engineOutputs(
   plan: DeployPlan,
   options: ServerAddressOptions,
 ): Promise<Record<string, unknown> | undefined> {
+  const preference = options.preference ?? plan.infra.engine;
   try {
     const engine = options.engine
-      ? await options.engine(plan.infra.engine)
-      : await selectEngine(plan.infra.engine, {
+      ? await options.engine(preference)
+      : await selectEngine(preference, {
           runner: deps.runner,
           env: deps.env,
           redactor: deps.redactor,
@@ -154,6 +201,21 @@ async function engineOutputs(
 }
 
 /**
+ * The root-module outputs from the infrastructure state on this computer
+ * (`.opscrew/tfstate/prod.tfstate`, decrypted with the state passphrase when there is one), read
+ * with the project's engine; `undefined` without a state file or when the engine cannot read them.
+ * Needs no provider credentials.
+ */
+export async function infrastructureOutputs(
+  deps: ServerAddressDeps,
+  plan: DeployPlan,
+  options: ServerAddressOptions = {},
+): Promise<Record<string, unknown> | undefined> {
+  if (!(await nonEmpty(join(deps.paths.files.tfstateDir, STATE_FILE)))) return undefined;
+  return engineOutputs(deps, plan, options);
+}
+
+/**
  * The address of the server that receives the app's traffic: from OpsCrew's local state
  * (`.opscrew/server.json`), else, for an applied deployment whose infrastructure state is on this
  * computer, from the OpenTofu/Terraform outputs (`server_ipv4`, `server_ipv6`), which are then
@@ -168,8 +230,7 @@ export async function serverAddress(
   const local = (await readServerAddresses(deps.paths)).deployment;
   if (local !== undefined) return local;
   if (!hasDeployment(plan)) return undefined;
-  if (!(await nonEmpty(join(deps.paths.files.tfstateDir, STATE_FILE)))) return undefined;
-  const outputs = await engineOutputs(deps, plan, options);
+  const outputs = await infrastructureOutputs(deps, plan, options);
   const address = outputs === undefined ? undefined : addressFromOutputs(outputs);
   if (address !== undefined) {
     await recordServerAddress(deps.paths, address).catch(() => undefined);

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
@@ -6,7 +6,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
-import { recordServerAddress } from "../shared";
+import { recordServerAddress, serverAddressesFile } from "../shared";
 import { createTestPhaseDeps, ScriptedRunner, type TestPhaseDeps } from "../testing";
 import {
   CLOUDFLARE_IPV4,
@@ -509,6 +509,48 @@ describe("runVerify", () => {
     const run = byId(result.checks, "deploy-run");
     expect(run.status).toBe("warn");
     expect(run.message).toContain("GITHUB_TOKEN");
+  });
+
+  it("on a fresh clone, DNS checks say where to run verify instead of failing (no local record)", async () => {
+    const deps = await setup({ proxied: false, www: true });
+    await rm(serverAddressesFile(deps.paths));
+    const result = await runVerify(deps, {
+      resolver: resolver([SERVER_IPV4], [SERVER_IPV6]),
+      fetch: fakeSite().fetch,
+      tlsConnect: cert(),
+      tcpConnect: closed,
+    });
+    for (const id of ["dns-records", "dns-records-www"]) {
+      const check = byId(result.checks, id) as {
+        status: string;
+        message: string;
+        remediation?: string;
+      };
+      expect(check.status).toBe("warn");
+      expect(check.message).toContain(
+        "OpsCrew does not know the server's address on this computer",
+      );
+      expect(check.remediation).toBe(
+        "Run `opscrew verify` where the server was provisioned (its .opscrew/ folder holds the address).",
+      );
+      expect(`${check.message} ${check.remediation}`).not.toContain("opscrew dns");
+    }
+    expect(result.passed).toBe(true);
+  });
+
+  it("on a fresh clone without a domain, says where to run verify, never `opscrew provision`", async () => {
+    const deps = await setup({ domain: undefined });
+    await rm(serverAddressesFile(deps.paths));
+    const error = await runVerify(deps, { fetch: fakeSite().fetch }).then(
+      () => undefined,
+      (e: unknown) => e as { code: string; message: string; hint: string },
+    );
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect(error?.message).toContain("OpsCrew does not know the server's address on this computer");
+    expect(error?.hint).toContain(
+      "Run `opscrew verify` on the computer that provisioned the server",
+    );
+    expect(error?.hint).not.toContain("opscrew provision");
   });
 
   it("refuses to run before the server exists", async () => {

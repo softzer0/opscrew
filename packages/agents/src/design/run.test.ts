@@ -718,7 +718,8 @@ describe("runDesign", () => {
         expect(result.plan.target.provider).toBe("digitalocean");
       });
 
-      it("stops when an earlier apply may have created resources without recording an address", async () => {
+      it("on a fresh clone of a deployed app, says where to move it, never `opscrew provision`", async () => {
+        // The plan records the apply, but this computer has no local record of the server.
         const { deps, before } = await hetznerDeployment({
           lastPlanHash: "ab".repeat(32),
           lastApplyAt: "2026-10-11T12:30:00.000Z",
@@ -727,12 +728,19 @@ describe("runDesign", () => {
         expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
         const { message, hint } = error as { message: string; hint: string };
         expect(message).toBe(
-          "An earlier apply may have created resources at Hetzner Cloud, but opscrew/requirements.yaml now asks for DigitalOcean. opscrew/plan.yaml was not changed.",
+          "Your app is deployed on Hetzner Cloud, but opscrew/requirements.yaml now asks for DigitalOcean. opscrew/plan.yaml was not changed.",
         );
         expect(hint).toBe(
-          "Run `opscrew provision` to finish the deployment on Hetzner Cloud and then `opscrew retarget --to digitalocean` to move it with its data, or `opscrew destroy` first and then `opscrew design`, or keep Hetzner Cloud by answering `opscrew interview` again.",
+          "OpsCrew does not know the server's address on this computer: on the computer that provisioned it (its .opscrew/ folder holds the address), run `opscrew retarget --to digitalocean` to move the deployment with its data, or `opscrew destroy` there first and then `opscrew design`, or keep Hetzner Cloud by answering `opscrew interview` again.",
         );
+        expect(hint).not.toContain("opscrew provision");
         expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+
+        const preview = await previewDesignOptions(deps, { catalog: doEuCatalog() });
+        const warning = preview.warnings.join("\n");
+        expect(warning).toContain("Your app is deployed on Hetzner Cloud, but");
+        expect(warning).toContain("on the computer that provisioned it");
+        expect(warning).not.toContain("opscrew provision");
       });
 
       it("lets a plan that was planned but never applied switch providers", async () => {

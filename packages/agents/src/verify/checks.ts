@@ -41,6 +41,13 @@ export interface VerifyCheckContext {
   timeoutMs?: number;
 }
 
+/**
+ * What to do when the server's address is not on this computer (a fresh clone): it is kept in the
+ * `.opscrew/` folder where the server was provisioned, never in the repository.
+ */
+const UNKNOWN_ADDRESS_REMEDIATION =
+  "Run `opscrew verify` where the server was provisioned (its .opscrew/ folder holds the address).";
+
 /** Certificates that expire sooner than this fail the TLS check (Caddy renews 30 days ahead). */
 export const MIN_CERT_DAYS = 14;
 
@@ -233,8 +240,20 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
       { target: host },
     );
   }
+  if (ipv4 === undefined) {
+    // A fresh clone: the address lives in the `.opscrew/` folder of the computer that provisioned
+    // the server, so the records cannot be compared here (and `opscrew dns` would not help).
+    return result(
+      id,
+      title,
+      "high",
+      "warn",
+      `${host} resolves to ${addresses.join(", ")}, but OpsCrew does not know the server's address on this computer, so it cannot tell whether that is the server.`,
+      { remediation: UNKNOWN_ADDRESS_REMEDIATION, target: host },
+    );
+  }
   const wrong = [
-    ...a.filter((address) => ipv4 === undefined || !sameAddress(address, ipv4)),
+    ...a.filter((address) => !sameAddress(address, ipv4)),
     ...aaaa.filter((address) => ipv6 === undefined || !sameAddress(address, ipv6)),
   ];
   if (wrong.length > 0 || a.length === 0) {
@@ -244,7 +263,7 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
       title,
       "high",
       "fail",
-      `${host} resolves to ${addresses.join(", ")} but the server is ${expected || "not recorded yet"}.`,
+      `${host} resolves to ${addresses.join(", ")} but the server is ${expected}.`,
       {
         remediation:
           "Run `opscrew dns` to point the records at the server (DNS changes can take a few minutes).",
@@ -617,7 +636,8 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
       title,
       "medium",
       "skip",
-      "Skipped: OpsCrew does not know the server's address on this machine.",
+      "Skipped: OpsCrew does not know the server's address on this computer.",
+      { remediation: UNKNOWN_ADDRESS_REMEDIATION },
     );
   }
   const open = await ctx.tcpConnect(ip, 443, Math.min(ctx.timeoutMs ?? 3000, 3000));

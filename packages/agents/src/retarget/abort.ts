@@ -19,6 +19,7 @@ import {
   unprotectPlanProblems,
 } from "../destroy";
 import { providerProfile, vpsConnector } from "../providers";
+import { infrastructureOutputs } from "../shared";
 import { moveLayout, previousTarget, protectionVariable } from "./layouts";
 import { clearPending } from "./pending";
 import {
@@ -470,14 +471,21 @@ export async function abortRetarget(
   }
   try {
     const services = options.services ?? {};
-    // Users first: the old app runs again before anything else is checked.
+    // Users first: the old app runs again before anything else is checked (no provider token
+    // needed; the infrastructure state names the servers when the local record is gone).
     if (move.oldAppStoppedAt !== undefined) {
       const base = {
         deps,
         plan,
         services,
+        command: ABORT_COMMAND,
         deployKey: await readDeployKey(deps, ABORT_COMMAND),
-        servers: await loadMoveServers(deps, plan, ABORT_COMMAND),
+        servers: await loadMoveServers(deps, plan, ABORT_COMMAND, () =>
+          infrastructureOutputs(deps, plan, {
+            ...(services.engine ? { engine: services.engine } : {}),
+            ...(options.engine !== undefined ? { preference: options.engine } : {}),
+          }),
+        ),
       };
       if (stepBefore(move.step, "migrated")) await recoverInterruptedWindow(base);
       else await restartOldApp(base);

@@ -54,7 +54,7 @@ description: "Tasks for 008-first-real-run"
   - Accept: PR bodies say "the server" or the domain, never an IP; `plan.yaml` never contains the server address (founder: no backward compatibility, OpsCrew is unreleased); with a proxied domain the runbook and the security/verify reports contain none either (tests grep committed files, commits and PR bodies for the fake IPs); every command reads the address through one helper from `.opscrew/server.json` (gitignored) with OpenTofu outputs as the fallback; the CLI shows it locally (`opscrew status`, `status --ip`).
   - Effort: xhigh
 
-- [ ] T815 T814 review fixes: retarget never infers old/new servers from the step (outputs mapped by module, or stop when ambiguous); a fresh clone without local state gets a plain "run it where the server was provisioned" instead of a failed DNS check or "run provision"; the address is refreshed after a failed apply that replaced the server
+- [X] T815 T814 review fixes: retarget never infers old/new servers from the step (outputs mapped by module, or stop when ambiguous); a fresh clone without local state gets a plain "run it where the server was provisioned" instead of a failed DNS check or "run provision"; the address is refreshed after a failed apply that replaced the server
   - Owns: `packages/agents/src/{retarget,verify,design,shared,provision}/**`, `packages/iac-templates/src/infra/**`
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
   - Effort: xhigh

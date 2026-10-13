@@ -2,6 +2,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
+import { infrastructureOutputs } from "../shared";
 import { loadMoveServers } from "./servers";
 import {
   type MoveSession,
@@ -54,15 +55,22 @@ async function continueMove(
   }
   const services = options.services ?? {};
   // Users first: an interrupted maintenance window left the old app stopped. Starting it again
-  // only needs the deploy key, so a missing token cannot keep the app offline.
+  // only needs the deploy key (and the infrastructure state when the local record is gone), so a
+  // missing token cannot keep the app offline.
   let current = plan;
   if (move.oldAppStoppedAt !== undefined && stepBefore(move.step, "migrated")) {
     const base = {
       deps,
       plan,
       services,
+      command: RUN_COMMAND,
       deployKey: await readDeployKey(deps, RUN_COMMAND),
-      servers: await loadMoveServers(deps, plan, RUN_COMMAND),
+      servers: await loadMoveServers(deps, plan, RUN_COMMAND, () =>
+        infrastructureOutputs(deps, plan, {
+          ...(services.engine ? { engine: services.engine } : {}),
+          ...(options.engine !== undefined ? { preference: options.engine } : {}),
+        }),
+      ),
     };
     await recoverInterruptedWindow(base);
     current = base.plan;

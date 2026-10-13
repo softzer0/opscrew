@@ -18,7 +18,7 @@ import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
-import { serverAddress } from "../shared";
+import { hasDeployment, serverAddress } from "../shared";
 import {
   type CodeChangeSignals,
   collectCodeChangeSignals,
@@ -329,7 +329,10 @@ export function liveDeploymentProvider(
  * Why the requested provider cannot replace the plan's (a live deployment moves only through
  * `opscrew retarget`), or `undefined` when the switch is allowed. `outcome` is the message's last
  * sentence: what happened (or will happen) to `opscrew/plan.yaml`. `hasServer` says whether
- * OpsCrew knows the deployed server's address (`serverAddress`; a move starts from it).
+ * OpsCrew knows the deployed server's address (`serverAddress`; a move starts from it). A plan that
+ * records an applied deployment is deployed even when this computer lacks the address (a fresh
+ * clone): the move or the teardown then runs where the server was provisioned, never a second
+ * `opscrew provision` here (it would create another server).
  */
 function providerSwitchBlock(
   previous: DeployPlan,
@@ -343,17 +346,24 @@ function providerSwitchBlock(
   if (current === undefined || requested === current) return undefined;
   const from = providerProfile(current).displayName;
   const to = providerProfile(requested).displayName;
-  const where = hasServer
+  const deployed = hasServer || hasDeployment(previous);
+  const where = deployed
     ? `Your app is deployed on ${from}`
     : `An earlier apply may have created resources at ${from}`;
   const retarget = `\`opscrew retarget --to ${requested}\``;
-  // A move starts from a deployed server, so without its address the deployment is finished first.
-  const move = hasServer
-    ? `Run ${retarget} to move the deployment with its data`
-    : `Run \`opscrew provision\` to finish the deployment on ${from} and then ${retarget} to move it with its data`;
+  const keep = `or keep ${from} by answering \`opscrew interview\` again.`;
+  let hint: string;
+  if (hasServer) {
+    hint = `Run ${retarget} to move the deployment with its data, or \`opscrew destroy\` first and then \`opscrew design\`, ${keep}`;
+  } else if (deployed) {
+    hint = `OpsCrew does not know the server's address on this computer: on the computer that provisioned it (its .opscrew/ folder holds the address), run ${retarget} to move the deployment with its data, or \`opscrew destroy\` there first and then \`opscrew design\`, ${keep}`;
+  } else {
+    // A failed first apply here: a move starts from a deployed server, so it is finished first.
+    hint = `Run \`opscrew provision\` to finish the deployment on ${from} and then ${retarget} to move it with its data, or \`opscrew destroy\` first and then \`opscrew design\`, ${keep}`;
+  }
   return {
     message: `${where}, but opscrew/requirements.yaml now asks for ${to}. ${outcome}.`,
-    hint: `${move}, or \`opscrew destroy\` first and then \`opscrew design\`, or keep ${from} by answering \`opscrew interview\` again.`,
+    hint,
   };
 }
 

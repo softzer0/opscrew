@@ -45,8 +45,7 @@ import {
 } from "../shared";
 import type { MoveLayoutName } from "./layouts";
 import type { RedactText } from "./server-ops";
-import { loadMoveServers, type MoveServers, recordMoveServers } from "./servers";
-import { RUN_COMMAND } from "./texts";
+import { loadMoveServers, type MoveServers, recordMoveServers, unknownNewServer } from "./servers";
 import type { RetargetGitHubApi, RetargetServices } from "./types";
 
 /** Everything the steps of one run share: credentials checked, engine ready, files rendered. */
@@ -80,7 +79,10 @@ export interface MoveSession {
  * What reaching the servers and recording the move needs, without credentials or engine: enough
  * to start the old app again before anything else is checked.
  */
-export type MoveBase = Pick<MoveSession, "deps" | "plan" | "services" | "deployKey" | "servers">;
+export type MoveBase = Pick<
+  MoveSession,
+  "deps" | "plan" | "services" | "deployKey" | "servers" | "command"
+>;
 
 /** `.opscrew/tfstate/prod.tfstate`, as provision, destroy and drift use it. */
 export function statePathOf(deps: Pick<PhaseDeps, "paths">): string {
@@ -304,14 +306,13 @@ export async function recordNewServer(
   await recordMoveServers(session.deps, session.servers);
 }
 
-/** The new server's address; throws when it is not known yet (a bug: callers check first). */
-export function newServer(session: Pick<MoveSession, "servers">): ServerAddress {
+/**
+ * The new server's address; stops with `PHASE_PRECONDITION` when it is unknown on this computer
+ * (neither in the local state nor in the infrastructure state's outputs), never guessing.
+ */
+export function newServer(session: Pick<MoveSession, "servers" | "command">): ServerAddress {
   const next = session.servers.next;
-  if (next === undefined) {
-    throw new OpsCrewError("INTERNAL", "The new server's address is not recorded yet.", {
-      hint: `Run \`${RUN_COMMAND}\` again; it reads the address from the infrastructure state.`,
-    });
-  }
+  if (next === undefined) throw unknownNewServer(session.command);
   return next;
 }
 

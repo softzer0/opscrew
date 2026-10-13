@@ -12,7 +12,13 @@ import { renderRunbook } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import { committableUrl, hidesServerAddress, serverAddress, writeRenderedFiles } from "../shared";
+import {
+  committableUrl,
+  hasDeployment,
+  hidesServerAddress,
+  serverAddress,
+  writeRenderedFiles,
+} from "../shared";
 import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
 import { type DnsResolver, defaultDnsResolver, defaultTlsConnect, type TlsConnect } from "./net";
 
@@ -88,13 +94,22 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const server = await serverAddress(deps, plan);
   const url = siteUrl(plan, server);
   if (url === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "OpsCrew does not know the server's address on this machine yet, so there is nothing to verify.",
-      {
-        hint: "Run `opscrew provision` first (on this machine, it records the address), merge its pull request, then run `opscrew verify`.",
-      },
-    );
+    // Deployed, but not from here (a fresh clone): provisioning here would create a second server.
+    throw hasDeployment(plan)
+      ? new OpsCrewError(
+          "PHASE_PRECONDITION",
+          "OpsCrew does not know the server's address on this computer, and without a domain there is nothing else to verify.",
+          {
+            hint: "Run `opscrew verify` on the computer that provisioned the server (its .opscrew/ folder holds the address).",
+          },
+        )
+      : new OpsCrewError(
+          "PHASE_PRECONDITION",
+          "OpsCrew does not know the server's address on this computer yet, so there is nothing to verify.",
+          {
+            hint: "Run `opscrew provision` first (on this computer, it records the address), merge its pull request, then run `opscrew verify`.",
+          },
+        );
   }
   const fetch = options.fetch ?? deps.fetch;
   const github = await githubContext(deps, fetch);

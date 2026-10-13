@@ -725,6 +725,40 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     });
   });
 
+  it("after a failed apply that replaced the server, records the new server's address", async () => {
+    // The apply replaced the server, then failed: the state's outputs name the new server.
+    const replaced = { ipv4: "198.51.100.40", ipv6: "2001:db8:40::1" };
+    const engine = new FakeEngine({
+      applyOk: false,
+      outputs: { server_ipv4: replaced.ipv4, server_ipv6: replaced.ipv6, server_id: "4790" },
+    });
+    const { deps, services } = await setup({ engine, plan: testPlan({ deployed: true }) });
+    expect((await readServerAddresses(deps.paths)).deployment?.ipv4).toBe(SERVER_IPV4);
+    await expect(runProvision(deps, { services })).rejects.toMatchObject({
+      code: "ENGINE_FAILED",
+      message: expect.stringContaining("server type unavailable"),
+      hint: expect.stringContaining("opscrew design"),
+    });
+    expect(engine.calls.at(-1)).toBe("output");
+    expect((await readServerAddresses(deps.paths)).deployment).toEqual(replaced);
+  });
+
+  it("keeps the failed apply's own error when the outputs cannot be read after it", async () => {
+    const engine = new FakeEngine({ applyOk: false });
+    engine.output = async () => {
+      throw new Error("Error acquiring the state lock");
+    };
+    const { deps, services } = await setup({ engine, plan: testPlan({ deployed: true }) });
+    await expect(runProvision(deps, { services })).rejects.toMatchObject({
+      code: "ENGINE_FAILED",
+      message: expect.stringContaining("server type unavailable"),
+    });
+    expect((await readServerAddresses(deps.paths)).deployment).toEqual({
+      ipv4: SERVER_IPV4,
+      ipv6: SERVER_IPV6,
+    });
+  });
+
   it("names the exact SSH command when the first-boot setup times out", async () => {
     let clock = 0;
     const { deps, services } = await setup({

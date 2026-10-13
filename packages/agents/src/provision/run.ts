@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { GitClient } from "@opscrew/connector-github";
-import type { PhaseName } from "@opscrew/contracts";
+import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { renderDeployment } from "@opscrew/iac-templates";
@@ -47,6 +47,26 @@ async function exists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * After a failed apply: the apply may have replaced the server before it stopped, so the address
+ * in `.opscrew/server.json` is refreshed from the state's outputs. Best effort: when they cannot be
+ * read (or name no server) the record stays as it was, and the apply's own error is what the user
+ * sees either way.
+ */
+async function refreshServerAddress(
+  deps: PhaseDeps,
+  engine: IacEngine,
+  dir: string,
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  try {
+    const address = addressFromOutputs(await engine.output(dir, { env }));
+    if (address !== undefined) await recordServerAddress(deps.paths, address);
+  } catch {
+    // Keep the record; the failed apply is reported.
   }
 }
 
@@ -186,18 +206,29 @@ async function provisionFlow(
   }
 
   // 5. Plan → policies → approval → apply
-  const applied = await planAndApply(deps, {
-    engine,
-    dir: join(root, plan.infra.dir),
-    env: engineEnv,
-    deployPlan: plan,
-    files,
-    command: `opscrew ${phase}`,
-    phase,
-    ...(extras.approvalNotes ? { approvalNotes: extras.approvalNotes } : {}),
-    ...(options.approvePlanHash !== undefined ? { approvePlanHash: options.approvePlanHash } : {}),
-    ...(options.planOnly ? { planOnly: true } : {}),
-  });
+  const dir = join(root, plan.infra.dir);
+  let applied: Awaited<ReturnType<typeof planAndApply>>;
+  try {
+    applied = await planAndApply(deps, {
+      engine,
+      dir,
+      env: engineEnv,
+      deployPlan: plan,
+      files,
+      command: `opscrew ${phase}`,
+      phase,
+      ...(extras.approvalNotes ? { approvalNotes: extras.approvalNotes } : {}),
+      ...(options.approvePlanHash !== undefined
+        ? { approvePlanHash: options.approvePlanHash }
+        : {}),
+      ...(options.planOnly ? { planOnly: true } : {}),
+    });
+  } catch (error) {
+    if (isUserFacingError(error) && error.code === "ENGINE_FAILED") {
+      await refreshServerAddress(deps, engine, dir, engineEnv);
+    }
+    throw error;
+  }
   if (options.planOnly && options.approvePlanHash === undefined) {
     if (zoneLearned) await writeArtifact("plan", deps.paths.files.plan, plan);
     return {

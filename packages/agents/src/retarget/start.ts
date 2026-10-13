@@ -165,7 +165,10 @@ export async function startMove(
 ): Promise<MoveSession> {
   const address =
     plan.deployment.destroyedAt === undefined && (await stateExists(deps))
-      ? await serverAddress(deps, plan, { engine: options.services?.engine })
+      ? await serverAddress(deps, plan, {
+          engine: options.services?.engine,
+          ...(options.engine !== undefined ? { preference: options.engine } : {}),
+        })
       : undefined;
   if (address === undefined) throw nothingLive(plan);
   const requirements = await readRequirements(deps);

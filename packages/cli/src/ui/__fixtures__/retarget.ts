@@ -121,7 +121,6 @@ interface FakeConfig {
   moved?: [ModuleName, ModuleName];
   dns?: ModuleName;
   live?: ModuleName;
-  other?: ModuleName;
   variables: Set<string>;
 }
 
@@ -141,13 +140,11 @@ async function readConfig(dir: string): Promise<FakeConfig> {
   const moved = /moved \{\s*from\s*=\s*module\.(\w+)\s*to\s*=\s*module\.(\w+)/.exec(main);
   const dns = /module "dns" \{[\s\S]*?ipv4\s*=\s*module\.(\w+)\.ipv4_address/.exec(main);
   const live = /output "server_ipv4" \{\s*value\s*=\s*module\.(\w+)\./.exec(outputs);
-  const other = /output "other_server_ipv4" \{\s*value\s*=\s*module\.(\w+)\./.exec(outputs);
   return {
     modules,
     ...(moved ? { moved: [moved[1] as ModuleName, moved[2] as ModuleName] } : {}),
     ...(dns ? { dns: dns[1] as ModuleName } : {}),
     ...(live ? { live: live[1] as ModuleName } : {}),
-    ...(other ? { other: other[1] as ModuleName } : {}),
     variables: new Set([...variables.matchAll(/variable "(\w+)"/g)].map((v) => v[1] as string)),
   };
 }
@@ -422,7 +419,12 @@ export class FakeMoveEngine implements IacEngine {
   async output(dir: string): Promise<Record<string, unknown>> {
     const config = await readConfig(dir);
     const live = config.live ? this.state.servers[config.live] : undefined;
-    const other = config.other ? this.state.servers[config.other] : undefined;
+    // `servers`: every server module's server, keyed by its provider.
+    const servers: Record<string, { ipv4: string; ipv6: string; id: string }> = {};
+    for (const [m, provider] of config.modules) {
+      const server = this.state.servers[m];
+      if (server) servers[provider] = { ipv4: server.ipv4, ipv6: server.ipv6, id: server.id };
+    }
     return {
       ...(live
         ? {
@@ -433,13 +435,7 @@ export class FakeMoveEngine implements IacEngine {
             url: config.dns ? `https://${DOMAIN}` : `http://${live.ipv4}`,
           }
         : {}),
-      ...(other
-        ? {
-            other_server_ipv4: other.ipv4,
-            other_server_ipv6: other.ipv6,
-            other_server_id: other.id,
-          }
-        : {}),
+      servers,
     };
   }
 }

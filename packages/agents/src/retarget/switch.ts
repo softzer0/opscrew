@@ -132,8 +132,8 @@ function dnsHosts(plan: DeployPlan): string[] {
 }
 
 /**
- * Records the switch: the new server receives the traffic (its address in OpsCrew's local state,
- * the domain URL in `deployment`), the step `switched` (abort is over).
+ * Records the switch: the new server receives the traffic (its address in OpsCrew's local state
+ * first, then the domain URL in `deployment`) and the step is `switched` (abort is over).
  */
 async function recordSwitched(
   session: MoveSession,
@@ -141,8 +141,8 @@ async function recordSwitched(
 ): Promise<void> {
   const { deps } = session;
   const move = moveOf(session);
-  const next = session.servers.next;
-  if (next === undefined) return;
+  const next = newServer(session);
+  await recordServerAddress(deps.paths, next);
   const at = deps.clock.now().toISOString();
   const recorded = input.applied
     ? withApply(session.plan, input.applied, at)
@@ -158,7 +158,6 @@ async function recordSwitched(
       deployment: { ...deployment, ...(url !== undefined ? { url } : {}) },
     },
   );
-  await recordServerAddress(deps.paths, next);
   await auditStep(session, "switched", `traffic goes to the new server ${next.ipv4}`);
 }
 
@@ -191,6 +190,7 @@ async function switchManagedDns(
   session: MoveSession,
   options: Pick<RetargetOptions, "allowDowntime">,
   windowAhead: boolean,
+  next: ServerAddress,
 ): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
   const move = moveOf(session);
@@ -245,9 +245,7 @@ async function switchManagedDns(
   if (prepared.kind === "unchanged") {
     deps.reporter.info(`The DNS records of ${plan.dns.domain} already point to the new server.`);
     const url = UrlSchema.safeParse(prepared.outputs.url);
-    await recordSwitched(session, {
-      url: url.success ? url.data : publicUrl(plan, session.servers.next?.ipv4 ?? ""),
-    });
+    await recordSwitched(session, { url: url.success ? url.data : publicUrl(plan, next.ipv4) });
     return undefined;
   }
   let applied: Awaited<ReturnType<typeof applyInfraPlan>>;
@@ -258,7 +256,7 @@ async function switchManagedDns(
   }
   const url = UrlSchema.safeParse(applied.outputs.url);
   await recordSwitched(session, {
-    url: url.success ? url.data : publicUrl(plan, session.servers.next?.ipv4 ?? ""),
+    url: url.success ? url.data : publicUrl(plan, next.ipv4),
     applied: {
       planHash: prepared.planHash,
       ...(applied.approval ? { approval: applied.approval } : {}),
@@ -276,12 +274,10 @@ async function switchByHand(
   session: MoveSession,
   options: Pick<RetargetOptions, "allowDowntime" | "dnsSwitched">,
   windowAhead: boolean,
+  next: ServerAddress,
 ): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  const next = session.servers.next;
-  if (next === undefined)
-    return { step: move.step, done: false, next: [`Run \`${RUN_COMMAND}\` again.`] };
   if (windowAhead) {
     const window = await maintenanceWindow(session, options);
     if (window !== "done") return window;
@@ -347,10 +343,12 @@ export async function switchStep(
   session: MoveSession,
   options: Pick<RetargetOptions, "allowDowntime" | "dnsSwitched">,
 ): Promise<RetargetResult | undefined> {
+  // Stops before the window and the switch when the new server's address is unknown here.
+  const next = newServer(session);
   const windowAhead = session.plan.services.postgres && moveOf(session).step === "deployed";
   return managedDns(session.plan)
-    ? switchManagedDns(session, options, windowAhead)
-    : switchByHand(session, options, windowAhead);
+    ? switchManagedDns(session, options, windowAhead, next)
+    : switchByHand(session, options, windowAhead, next);
 }
 
 /** Polls `url` until it answers with a 2xx status; false (with the last answer) on timeout. */
@@ -538,6 +536,8 @@ export async function completeSwitch(session: MoveSession): Promise<RetargetResu
         { hint: `${hint} The move can no longer be aborted.` },
       ),
   );
+  // The new server receives the traffic (again in the local state if that record was lost).
+  await recordServerAddress(deps.paths, newServer(session));
   deps.reporter.success(`${plan.app.name} now runs on ${fresh.name} at ${site}.`);
   return {
     step: "switched",

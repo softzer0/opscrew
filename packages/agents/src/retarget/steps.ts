@@ -10,7 +10,7 @@ import {
   type SavedPlan,
   setDeploySecrets,
 } from "../provision";
-import { addressFromOutputs, providerConsole, waitForCloudInit, waitForPort } from "../shared";
+import { providerConsole, serverOfProvider, waitForCloudInit, waitForPort } from "../shared";
 import { moveLayout, previousTarget } from "./layouts";
 import { planThenApply } from "./plans";
 import { stopService, waitAppHealthy } from "./server-ops";
@@ -191,7 +191,8 @@ async function waitForNewServer(session: MoveSession, host: string): Promise<voi
 
 /**
  * Step 3: the plan that creates the new server as `module.server` next to the old one; its
- * addresses (`other_server_*` outputs) go to OpsCrew's local state; then SSH, host key, cloud-init.
+ * addresses (the new provider's entry of the `servers` output) go to OpsCrew's local state; then
+ * SSH, host key, cloud-init.
  */
 export async function createStep(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps } = session;
@@ -223,7 +224,8 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
     throw error;
   });
   if (outcome.kind === "pending") return pendingStop(session, outcome.planHash);
-  const next = addressFromOutputs(outcome.outputs, "other_server");
+  // The new server is the one on the new provider (a move always changes the provider).
+  const next = serverOfProvider(outcome.outputs, session.plan.target.provider);
   if (next === undefined) {
     throw new OpsCrewError(
       "ENGINE_FAILED",

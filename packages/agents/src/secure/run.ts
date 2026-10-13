@@ -149,7 +149,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   let hostChecksSkipped: string | undefined;
   if (host === undefined) {
     hostChecksSkipped =
-      "OpsCrew does not know a server for this project on this machine yet. Run `opscrew provision` first, or run the checks on the machine that provisioned the server.";
+      "OpsCrew does not know the server's address on this computer. If the app is deployed, run `opscrew secure` on the computer that provisioned the server (its `.opscrew/` folder holds the address); otherwise deploy it first.";
   } else {
     const remote =
       options.remote ??

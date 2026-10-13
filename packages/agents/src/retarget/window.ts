@@ -67,7 +67,7 @@ export function oldRemote(session: MoveBase): RemoteExec {
   );
 }
 
-/** The new server's shell; throws when its address is not recorded yet (a bug: callers check). */
+/** The new server's shell; stops (`newServer`) when its address is unknown on this computer. */
 export function newRemote(session: MoveBase): RemoteExec {
   return remoteFor(
     session.deps,

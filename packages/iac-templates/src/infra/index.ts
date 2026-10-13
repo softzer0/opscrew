@@ -57,8 +57,6 @@ interface RootShape {
   servers: ServerCall[];
   /** The server the DNS module and the `server_*` outputs follow. */
   live: ServerCall;
-  /** The other server while both modules exist. */
-  other?: ServerCall;
   moved?: { from: ServerModule; to: ServerModule };
   /** Providers whose requirement, provider block and module are rendered, in the given order. */
   providers: ProviderText[];
@@ -68,8 +66,7 @@ interface RootShape {
 
 /**
  * Resolves the root module's layout. Without `ctx.layout` this is `module "server"` for
- * `plan.target` and its provider only, which renders byte for byte what OpsCrew rendered before
- * moves existed. Throws for layouts the engines would reject.
+ * `plan.target` and its provider only. Throws for layouts the engines would reject.
  */
 function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   const layout: InfraLayout = ctx.layout ?? {
@@ -129,7 +126,6 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   return {
     servers,
     live,
-    other: servers.find((s) => s !== live),
     moved,
     providers: providers.map((provider) => providerText({ provider })),
     moving: ctx.layout !== undefined,
@@ -326,10 +322,34 @@ function output(name: string, value: string): string[] {
   return [`output "${name}" {`, `  value = ${value}`, "}", ""];
 }
 
+/**
+ * `output "servers"`: every server module's addresses and id, keyed by the server's provider. A
+ * move always goes to another provider, so OpsCrew tells the old server from the new one by
+ * provider, whichever module holds each and whichever layout was applied last.
+ */
+function serversOutput(shape: RootShape): string[] {
+  return [
+    "# Every server by provider. During a move to another provider, OpsCrew tells the server being",
+    "# replaced from the new one by their providers.",
+    'output "servers" {',
+    "  value = {",
+    ...shape.servers.flatMap(({ module, target }) => [
+      `    ${target.provider} = {`,
+      `      ipv4 = module.${module}.ipv4_address`,
+      `      ipv6 = module.${module}.ipv6_address`,
+      `      id   = module.${module}.server_id`,
+      "    }",
+    ]),
+    "  }",
+    "}",
+    "",
+  ];
+}
+
 function outputsTf(plan: DeployPlan, shape: RootShape): string {
   const live = shape.live.module;
   const url = usesCloudflare(plan) ? "module.dns.url" : `"http://\${module.${live}.ipv4_address}"`;
-  const lines = [
+  return [
     ROOT_HEADER,
     "",
     ...output("server_ipv4", `module.${live}.ipv4_address`),
@@ -337,17 +357,8 @@ function outputsTf(plan: DeployPlan, shape: RootShape): string {
     ...output("server_id", `module.${live}.server_id`),
     ...output("server_name", `module.${live}.server_name`),
     ...output("url", url),
-  ];
-  if (shape.other) {
-    const other = shape.other.module;
-    lines.push(
-      "# The other server during a move: the new one before the DNS switch, the previous one after.",
-      ...output("other_server_ipv4", `module.${other}.ipv4_address`),
-      ...output("other_server_ipv6", `module.${other}.ipv6_address`),
-      ...output("other_server_id", `module.${other}.server_id`),
-    );
-  }
-  return lines.join("\n");
+    ...serversOutput(shape),
+  ].join("\n");
 }
 
 /**
@@ -384,12 +395,14 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
 /**
  * The root module (`versions.tf`, `main.tf`, `variables.tf`, `outputs.tf`,
  * `terraform.tfvars.json`) under `plan.infra.dir`, plus vendored copies of the modules it uses
- * under the sibling `modules/` directory. Deterministic; contains no secrets.
+ * under the sibling `modules/` directory. Deterministic; contains no secrets. The `server_*` and
+ * `url` outputs follow the server that receives the traffic; `servers` lists every server by
+ * provider.
  *
  * With `ctx.layout` (a move to another provider) it renders the layout's server modules
  * (`module "server"`, `module "server_previous"`), its `moved` block, every listed provider's
- * requirement, provider block and vendored module, DNS and the `server_*` outputs from the live
- * module, and `other_server_*` outputs while both servers exist.
+ * requirement, provider block and vendored module, and DNS and the `server_*` outputs from the
+ * live module.
  */
 export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
   if (usesCloudflare(plan) && !ctx.cloudflare?.zoneId) {

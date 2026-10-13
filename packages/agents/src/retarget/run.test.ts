@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CommandResult } from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
@@ -547,6 +547,98 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     // The right servers were used: the old app is stopped, the new one serves.
     expect(h.hosts.host(OLD_IPV4).app).toBe(false);
     expect(h.hosts.host(fresh.ipv4)).toMatchObject({ app: true, caddy: true });
+  });
+
+  it("a switch made by hand, local record gone: the old and new servers are never swapped", async () => {
+    // Without managed DNS no `switched` layout is ever applied: module.server is still the new
+    // server, and the outputs' live server is still the old one.
+    const h = await moveHarness({ dns: "none", postgres: false });
+    const n = h.newServer.ipv4;
+    crashAfter(h, "switched");
+    await expect(run(h)).rejects.toThrow("interrupted");
+    expect(await move(h)).toMatchObject({ step: "switched" });
+    expect((await move(h))?.oldAppStoppedAt).toBeUndefined();
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+    await rm(serverAddressesFile(h.paths));
+
+    const mark = h.events.length;
+    expect(await run(h)).toMatchObject({ step: "switched", done: true });
+    expect(trail(h.events.slice(mark))).toEqual([`${n} start caddy`, `${OLD_IPV4} stop app`]);
+    expect(h.hosts.host(OLD_IPV4).app).toBe(false);
+    expect(h.hosts.host(n)).toMatchObject({ app: true, caddy: true });
+    // The record is rebuilt: both servers, and the new one receives the traffic.
+    const fresh = { ipv4: n, ipv6: h.newServer.ipv6 };
+    expect(await readServerAddresses(h.paths)).toEqual({
+      schemaVersion: 1,
+      deployment: fresh,
+      retarget: { from: { ipv4: OLD_IPV4, ipv6: OLD_IPV6 }, next: fresh },
+    });
+  });
+
+  it("a DNS switch applied but not recorded, local record gone: the servers are not swapped", async () => {
+    const h = await moveHarness({ postgres: false });
+    const n = h.newServer.ipv4;
+    // The process dies right after the third apply (the DNS switch), before it is recorded.
+    const append = h.audit.append.bind(h.audit);
+    let applied = 0;
+    h.audit.append = async (entry) => {
+      await append(entry);
+      if (entry.kind === "iac" && entry.action === "apply" && ++applied === 3) {
+        throw new Error("interrupted");
+      }
+    };
+    await caught(run(h));
+    expect(h.engine.dnsServer()?.ipv4).toBe(n);
+    expect((await move(h))?.step).toBe("deployed");
+    // The state's outputs now follow the new server as the live one.
+    expect(h.engine.state.outputs.server_ipv4).toBe(n);
+    await rm(serverAddressesFile(h.paths));
+
+    const mark = h.events.length;
+    expect(await run(h)).toMatchObject({ step: "switched", done: true });
+    expect(trail(h.events.slice(mark))).toEqual([`${n} start caddy`, `${OLD_IPV4} stop app`]);
+    expect(h.hosts.host(OLD_IPV4).app).toBe(false);
+    expect(h.hosts.host(n)).toMatchObject({ app: true, caddy: true });
+    const fresh = { ipv4: n, ipv6: h.newServer.ipv6 };
+    expect(await readServerAddresses(h.paths)).toEqual({
+      schemaVersion: 1,
+      deployment: fresh,
+      retarget: { from: { ipv4: OLD_IPV4, ipv6: OLD_IPV6 }, next: fresh },
+    });
+  });
+
+  it("stops without acting when it cannot tell which server is which", async () => {
+    const h = await moveHarness({ dns: "none", postgres: false, interactive: false });
+    await drive(h);
+    expect((await move(h))?.step).toBe("deployed");
+    await rm(serverAddressesFile(h.paths));
+    // A state without the `servers` output: only the live server is named.
+    h.engine.state.outputs = { server_ipv4: OLD_IPV4, server_ipv6: OLD_IPV6 };
+    const mark = h.events.length;
+    const error = await caught(run(h, { dnsSwitched: true }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("OpsCrew cannot tell which server is which on this computer");
+    expect(error.message).toContain("Nothing was changed.");
+    expect(error.hint).toContain("on the computer that started the move");
+    expect(trail(h.events.slice(mark))).toEqual([]);
+    expect((await move(h))?.step).toBe("deployed");
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+  });
+
+  it("a damaged local record stops the move before anything happens", async () => {
+    const h = await moveHarness({ dns: "none", postgres: false, interactive: false });
+    await drive(h);
+    await writeFile(serverAddressesFile(h.paths), '{"schemaVersion":1,"retarget":');
+    const mark = h.events.length;
+    const error = await caught(run(h, { dnsSwitched: true }));
+    expect(error.code).toBe("ARTIFACT_INVALID");
+    expect(error.message).toContain(".opscrew/server.json");
+    expect(error.hint).toContain("Delete .opscrew/server.json");
+    expect(trail(h.events.slice(mark))).toEqual([]);
+    expect((await move(h))?.step).toBe("deployed");
+    expect(await readFile(serverAddressesFile(h.paths), "utf8")).toBe(
+      '{"schemaVersion":1,"retarget":',
+    );
   });
 
   it("without a domain the app moves to the new address", async () => {

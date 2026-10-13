@@ -70,6 +70,18 @@ output "server_name" {
 output "url" {
   value = module.dns.url
 }
+
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    digitalocean = {
+      ipv4 = module.server_previous.ipv4_address
+      ipv6 = module.server_previous.ipv6_address
+      id   = module.server_previous.server_id
+    }
+  }
+}
 "
 `;
 
@@ -250,6 +262,18 @@ output "server_name" {
 
 output "url" {
   value = module.dns.url
+}
+
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    digitalocean = {
+      ipv4 = module.server.ipv4_address
+      ipv6 = module.server.ipv6_address
+      id   = module.server.server_id
+    }
+  }
 }
 "
 `;
@@ -443,17 +467,21 @@ output "url" {
   value = module.dns.url
 }
 
-# The other server during a move: the new one before the DNS switch, the previous one after.
-output "other_server_ipv4" {
-  value = module.server.ipv4_address
-}
-
-output "other_server_ipv6" {
-  value = module.server.ipv6_address
-}
-
-output "other_server_id" {
-  value = module.server.server_id
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    hetzner = {
+      ipv4 = module.server.ipv4_address
+      ipv6 = module.server.ipv6_address
+      id   = module.server.server_id
+    }
+    digitalocean = {
+      ipv4 = module.server_previous.ipv4_address
+      ipv6 = module.server_previous.ipv6_address
+      id   = module.server_previous.server_id
+    }
+  }
 }
 "
 `;
@@ -660,6 +688,18 @@ output "server_name" {
 output "url" {
   value = module.dns.url
 }
+
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    hetzner = {
+      ipv4 = module.server.ipv4_address
+      ipv6 = module.server.ipv6_address
+      id   = module.server.server_id
+    }
+  }
+}
 "
 `;
 
@@ -847,6 +887,18 @@ output "server_name" {
 
 output "url" {
   value = module.dns.url
+}
+
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    digitalocean = {
+      ipv4 = module.server_previous.ipv4_address
+      ipv6 = module.server_previous.ipv6_address
+      id   = module.server_previous.server_id
+    }
+  }
 }
 "
 `;
@@ -1040,17 +1092,21 @@ output "url" {
   value = module.dns.url
 }
 
-# The other server during a move: the new one before the DNS switch, the previous one after.
-output "other_server_ipv4" {
-  value = module.server_previous.ipv4_address
-}
-
-output "other_server_ipv6" {
-  value = module.server_previous.ipv6_address
-}
-
-output "other_server_id" {
-  value = module.server_previous.server_id
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    hetzner = {
+      ipv4 = module.server.ipv4_address
+      ipv6 = module.server.ipv6_address
+      id   = module.server.server_id
+    }
+    digitalocean = {
+      ipv4 = module.server_previous.ipv4_address
+      ipv6 = module.server_previous.ipv6_address
+      id   = module.server_previous.server_id
+    }
+  }
 }
 "
 `;
@@ -1286,6 +1342,18 @@ output "server_name" {
 output "url" {
   value = module.dns.url
 }
+
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    hetzner = {
+      ipv4 = module.server_previous.ipv4_address
+      ipv6 = module.server_previous.ipv6_address
+      id   = module.server_previous.server_id
+    }
+  }
+}
 "
 `;
 
@@ -1472,6 +1540,18 @@ output "server_name" {
 
 output "url" {
   value = module.dns.url
+}
+
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    hetzner = {
+      ipv4 = module.server.ipv4_address
+      ipv6 = module.server.ipv6_address
+      id   = module.server.server_id
+    }
+  }
 }
 "
 `;
@@ -1671,17 +1751,21 @@ output "url" {
   value = module.dns.url
 }
 
-# The other server during a move: the new one before the DNS switch, the previous one after.
-output "other_server_ipv4" {
-  value = module.server.ipv4_address
-}
-
-output "other_server_ipv6" {
-  value = module.server.ipv6_address
-}
-
-output "other_server_id" {
-  value = module.server.server_id
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    digitalocean = {
+      ipv4 = module.server.ipv4_address
+      ipv6 = module.server.ipv6_address
+      id   = module.server.server_id
+    }
+    hetzner = {
+      ipv4 = module.server_previous.ipv4_address
+      ipv6 = module.server_previous.ipv6_address
+      id   = module.server_previous.server_id
+    }
+  }
 }
 "
 `;
@@ -1888,6 +1972,18 @@ output "server_name" {
 output "url" {
   value = module.dns.url
 }
+
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    digitalocean = {
+      ipv4 = module.server.ipv4_address
+      ipv6 = module.server.ipv6_address
+      id   = module.server.server_id
+    }
+  }
+}
 "
 `;
 
@@ -2069,6 +2165,18 @@ output "server_name" {
 
 output "url" {
   value = module.dns.url
+}
+
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    hetzner = {
+      ipv4 = module.server_previous.ipv4_address
+      ipv6 = module.server_previous.ipv6_address
+      id   = module.server_previous.server_id
+    }
+  }
 }
 "
 `;
@@ -2268,17 +2376,21 @@ output "url" {
   value = module.dns.url
 }
 
-# The other server during a move: the new one before the DNS switch, the previous one after.
-output "other_server_ipv4" {
-  value = module.server_previous.ipv4_address
-}
-
-output "other_server_ipv6" {
-  value = module.server_previous.ipv6_address
-}
-
-output "other_server_id" {
-  value = module.server_previous.server_id
+# Every server by provider. During a move to another provider, OpsCrew tells the server being
+# replaced from the new one by their providers.
+output "servers" {
+  value = {
+    digitalocean = {
+      ipv4 = module.server.ipv4_address
+      ipv6 = module.server.ipv6_address
+      id   = module.server.server_id
+    }
+    hetzner = {
+      ipv4 = module.server_previous.ipv4_address
+      ipv6 = module.server_previous.ipv6_address
+      id   = module.server_previous.server_id
+    }
+  }
 }
 "
 `;

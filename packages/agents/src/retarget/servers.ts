@@ -2,9 +2,9 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
-  addressFromOutputs,
   readServerAddresses,
   type ServerAddress,
+  serverOfProvider,
   updateServerAddresses,
 } from "../shared";
 
@@ -23,51 +23,66 @@ export interface MoveServers {
 /** Root-module outputs, read when the local state lacks an address (best effort). */
 export type ReadOutputs = () => Promise<Record<string, unknown> | undefined>;
 
+/** Where to get the addresses when this computer does not have them. */
+function hintFor(command: string): string {
+  return `Run \`${command}\` on the computer that started the move, or copy its .opscrew/server.json (with the .opscrew/tfstate folder) here, then try again.`;
+}
+
 /**
- * The servers of the move recorded in `plan.retarget`. Each address comes from the local state;
- * a missing one from the deployment's address (the old server before the switch, the new one
- * after it), else from the root-module outputs (`server_*` follows the server that gets traffic,
- * `other_server_*` the other one). What was found is recorded again. Stops with
- * `PHASE_PRECONDITION` when the old server's address is unknown.
+ * The servers of the move recorded in `plan.retarget`. Each address comes from the local state,
+ * else from the root-module output `servers`, which lists every server by provider: the server
+ * being replaced is `plan.retarget.from.target`'s provider, the new one `plan.target`'s (a move
+ * always changes the provider). Neither the step nor the last applied layout is used to guess
+ * which server is which. What was found is recorded again. Stops with `PHASE_PRECONDITION`, before
+ * acting on any server, when the old server's address is unknown; `ARTIFACT_INVALID` when the local
+ * record is damaged.
  */
 export async function loadMoveServers(
   deps: Pick<PhaseDeps, "paths">,
   plan: DeployPlan,
   command: string,
-  outputs?: ReadOutputs,
+  outputs: ReadOutputs,
 ): Promise<MoveServers> {
   const move = plan.retarget;
-  const local = await readServerAddresses(deps.paths);
-  const switched = move?.step === "switched";
-  const created = move !== undefined && move.step !== "started" && move.step !== "renamed";
-  let from = local.retarget?.from ?? (switched ? undefined : local.deployment);
-  let next = local.retarget?.next ?? (switched ? local.deployment : undefined);
-  if ((from === undefined || (next === undefined && created)) && outputs !== undefined) {
+  if (move === undefined) {
+    throw new OpsCrewError("INTERNAL", "No move is recorded in opscrew/plan.yaml.", {
+      hint: "This is a bug in OpsCrew; please report it.",
+    });
+  }
+  const local = (await readServerAddresses(deps.paths)).retarget;
+  let from = local?.from;
+  let next = local?.next;
+  if (from === undefined || next === undefined) {
     const read = await outputs().catch(() => undefined);
     if (read !== undefined) {
-      const live = addressFromOutputs(read, "server");
-      const other = addressFromOutputs(read, "other_server");
-      from ??= switched ? other : live;
-      next ??= switched ? live : other;
+      from ??= serverOfProvider(read, move.from.target.provider);
+      next ??= serverOfProvider(read, plan.target.provider);
     }
   }
   if (from === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "OpsCrew does not know the address of the server being replaced on this computer, so it cannot continue the move. Nothing was changed.",
-      {
-        hint: `Run \`${command}\` on the computer that started the move, or copy its .opscrew/server.json (with the .opscrew/tfstate folder) here, then try again.`,
-      },
+      "OpsCrew cannot tell which server is which on this computer: the address of the server being replaced is neither in .opscrew/server.json nor in the infrastructure state, so it cannot continue the move. Nothing was changed.",
+      { hint: hintFor(command) },
     );
   }
   const servers: MoveServers = { from, ...(next !== undefined ? { next } : {}) };
-  if (
-    local.retarget?.from === undefined ||
-    (next !== undefined && local.retarget.next === undefined)
-  ) {
+  if (local?.from === undefined || (next !== undefined && local.next === undefined)) {
     await recordMoveServers(deps, servers);
   }
   return servers;
+}
+
+/**
+ * The error when the new server's address is needed but unknown on this computer: OpsCrew stops
+ * rather than guess.
+ */
+export function unknownNewServer(command: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "OpsCrew cannot tell which server is which on this computer: the new server's address is neither in .opscrew/server.json nor in the infrastructure state, so OpsCrew stopped before acting on it.",
+    { hint: hintFor(command) },
+  );
 }
 
 /** Records the move's servers in the local state. */
