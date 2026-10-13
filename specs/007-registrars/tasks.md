@@ -35,7 +35,7 @@ after an environment variable name.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-namecheap`
   - Effort: high
 
-- [ ] T704 [P] [US1] [US2] [US3] GoDaddy client and `GoDaddyRegistrar` in `packages/connectors/godaddy/src/`
+- [X] T704 [P] [US1] [US2] [US3] GoDaddy client and `GoDaddyRegistrar` in `packages/connectors/godaddy/src/`
   - Owns: `packages/connectors/godaddy/src/**`
   - Reads: plan.md "GoDaddy"; research.md "GoDaddy Domains API v3" (fetch the official OpenAPI document `https://developer.godaddy.com/openapi/domains-v3.json` once to confirm paths, the profile listing and field names; official sources only)
   - Depends: T701
