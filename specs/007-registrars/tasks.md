@@ -19,7 +19,7 @@ after an environment variable name.
 
 ## Phase 2: Adapters (parallel)
 
-- [ ] T702 [P] [US1] [US2] [US3] Porkbun client and `PorkbunRegistrar` in `packages/connectors/porkbun/src/`
+- [X] T702 [P] [US1] [US2] [US3] Porkbun client and `PorkbunRegistrar` in `packages/connectors/porkbun/src/`
   - Owns: `packages/connectors/porkbun/src/**`
   - Reads: plan.md "Porkbun"; research.md "Porkbun API v3"; `packages/contracts/src/registrar.ts`; the Cloudflare registrar adapter for conventions
   - Depends: T701
