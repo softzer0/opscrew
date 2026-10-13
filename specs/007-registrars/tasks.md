@@ -91,7 +91,7 @@ after an environment variable name.
   - Verify: `pnpm turbo run typecheck test build --filter=opscrew`
   - Effort: high
 
-- [ ] T711 [P] [US4] MCP check with registrar/compare, skill and README in `packages/mcp-server/src/`, `plugin/`, `README.md`
+- [X] T711 [P] [US4] MCP check with registrar/compare, skill and README in `packages/mcp-server/src/`, `plugin/`, `README.md`
   - Owns: `packages/mcp-server/src/**`, `plugin/**`, `README.md`
   - Depends: T707
   - Accept: `opscrew_domain_check` takes `registrar` or `compare`; no buying or connecting tool; skill and README describe the registrars, connect and the contact rule; `node plugin/validate.mjs` passes.

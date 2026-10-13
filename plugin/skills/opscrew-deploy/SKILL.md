@@ -74,15 +74,35 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   drift the user runs `npx opscrew provision`; to keep a console change, `opscrew/plan.yaml` must
   be updated to match first.
 - **Getting a domain.** When the user has no domain yet, call `opscrew_domain_check` with a name
-  or a domain. It checks availability live with Cloudflare Registrar and returns the first-year and
-  renewal prices with their currency, and a plain reason for names that cannot be bought through
-  the API (taken, premium, extensions sold only in the Cloudflare dashboard). Buying is
-  terminal-only on purpose; there is no tool for it. Tell the user to run
-  `npx opscrew domain buy <domain>` in their own terminal: it shows the price and asks them to type
-  the domain to confirm (scripts need `--confirm` and `--max-price`). It needs a Cloudflare token
-  with the optional Registrar permission. Afterwards OpsCrew creates the Cloudflare zone, turns on
-  DNSSEC, leaves auto-renew on (the default) and sets the domain in `opscrew/plan.yaml`. Buying
-  through Namecheap, Porkbun or GoDaddy comes later.
+  or a domain. It checks availability live and returns the first-year and renewal prices with
+  their currency, and a plain reason for names that cannot be bought through the API (taken,
+  premium, extensions sold only in a registrar's dashboard). It asks Cloudflare Registrar by
+  default; pass `registrar` (`porkbun`, `namecheap` or `godaddy`) to ask another registrar, or
+  `compare: true` to list the prices of every registrar that is set up side by side, cheapest
+  renewal first (sorted by price only, never by anything else). Each registrar is set up with
+  environment variables in the user's own shell or `.env`:
+  - Cloudflare uses `CLOUDFLARE_API_TOKEN` with the optional Registrar permission.
+  - Porkbun uses `PORKBUN_API_KEY` and `PORKBUN_SECRET_API_KEY`; a domain the user already has
+    at Porkbun also needs API access turned on for it in Porkbun's dashboard.
+  - Namecheap uses `NAMECHEAP_API_USER` and `NAMECHEAP_API_KEY`, and optionally
+    `NAMECHEAP_USERNAME` and `NAMECHEAP_CLIENT_IP`. The machine's public IPv4 address must be on
+    the API whitelist in Namecheap's dashboard, and Namecheap only enables API access for accounts
+    with 20 domains, a $50 balance or $50 spent.
+  - GoDaddy uses `GODADDY_API_TOKEN`, and optionally `GODADDY_PROFILE_ID` for a saved contact
+    profile.
+
+  Buying and connecting are terminal-only on purpose; there is no tool for either. To buy, tell the
+  user to run `npx opscrew domain buy <domain>` in their own terminal (add `--registrar <id>` to
+  buy at Porkbun, Namecheap or GoDaddy): it shows the price and asks them to type the domain to
+  confirm (scripts need `--confirm` and `--max-price`). Afterwards OpsCrew creates the Cloudflare
+  zone and sets the domain in `opscrew/plan.yaml`; at Cloudflare it also turns on DNSSEC and
+  leaves auto-renew on, and a domain bought elsewhere still gets its DNS moved to Cloudflare (its
+  nameservers are switched). When the user already owns a domain, tell them to run
+  `npx opscrew domain connect <domain>`: it copies the current DNS records into a new Cloudflare
+  zone first, shows them for approval, then switches the nameservers. If old DNSSEC (DS) records
+  are still published, the domain must wait until they are removed, and the user runs connect a
+  second time. Never ask the user for tokens, API keys or contact details (name, address, email,
+  phone): registrars use the account's own contact, and OpsCrew never collects one.
 - **Monorepos.** When the repository has several apps, `opscrew_interview_questions` asks which one
   to deploy (`appDir`); ask the user, never guess.
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`
