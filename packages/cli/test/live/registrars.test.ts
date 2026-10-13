@@ -191,10 +191,22 @@ describe.skipIf(!porkbunReady)("live registrar purchase (Porkbun sandbox)", () =
       idempotencyKey: `opscrew-e2e-${owned}`,
     });
     expect(first.state).toBe("succeeded");
+    // A fresh sandbox domain has no nameservers, so the registrar serves no records: the current
+    // records come from a BIND file, as for a domain whose DNS is hosted elsewhere.
+    await writeFile(
+      join(repo, "current.zone"),
+      `$ORIGIN ${owned}.
+$TTL 3600
+@ IN A 192.0.2.10
+@ IN TXT "v=spf1 -all"
+`,
+    );
     const connected = await opscrew(
       "domain",
       "connect",
       owned,
+      "--records-file",
+      "current.zone",
       "--registrar",
       "porkbun",
       "--account",
@@ -295,10 +307,22 @@ describe.skipIf(!namecheapReady)("live registrar purchase (Namecheap sandbox)", 
       idempotencyKey: `opscrew-e2e-${owned}`,
     });
     expect(first.state).toBe("succeeded");
+    // A fresh sandbox domain has no nameservers, so the registrar serves no records: the current
+    // records come from a BIND file, as for a domain whose DNS is hosted elsewhere.
+    await writeFile(
+      join(repo, "current.zone"),
+      `$ORIGIN ${owned}.
+$TTL 3600
+@ IN A 192.0.2.10
+@ IN TXT "v=spf1 -all"
+`,
+    );
     const connected = await opscrew(
       "domain",
       "connect",
       owned,
+      "--records-file",
+      "current.zone",
       "--registrar",
       "namecheap",
       "--account",
