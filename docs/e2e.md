@@ -104,3 +104,33 @@ registration succeeded. It runs in a planned project (analyze, interview and des
 (`dns.registration`), that `opscrew domain status` shows it and that `opscrew domain auto-renew off
 --confirm <domain>` works. Response shapes and states are exercised along the way; the token
 permission name and multi-year billing still need a check against the real API.
+
+## Domain purchases at Porkbun and Namecheap (registrar sandboxes)
+
+`packages/cli/test/live/registrars.test.ts` buys through Porkbun's and Namecheap's test systems,
+so no real domain is bought. Each pass runs when its variables are set, together with the
+Cloudflare pair above (the Cloudflare token is only used to resolve the account: registrar
+sandboxes get stand-in Cloudflare zones, because the sandbox domains do not exist).
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_PORKBUN_API_KEY` | A Porkbun **sandbox** API key (starts with `pk1_sb_`; the test refuses live keys). |
+| `OPSCREW_E2E_PORKBUN_SECRET_KEY` | Its secret key (`sk1_sb_…`). |
+| `OPSCREW_E2E_NAMECHEAP_API_USER` | The API user of an account at sandbox.namecheap.com (API access enabled, this computer's IPv4 whitelisted, some sandbox funds and a default address in the address book). |
+| `OPSCREW_E2E_NAMECHEAP_API_KEY` | Its sandbox API key. |
+| `OPSCREW_E2E_NAMECHEAP_USERNAME` | Optional; defaults to the API user. |
+| `OPSCREW_E2E_NAMECHEAP_CLIENT_IP` | Optional; the whitelisted IPv4 (detected through Cloudflare's trace page when unset). |
+
+The Porkbun pass resets the sandbox (fresh test credit), checks a random `.com` with
+`opscrew domain search --registrar porkbun`, checks that a script cannot buy without `--confirm`,
+buys it with `--confirm` and `--max-price`, and confirms through the API that the domain is
+registered and its nameservers point at the stand-in zone. It then checks that the plan records
+Porkbun, that `domain status` and `domain auto-renew off` work, adds and removes a DS record through
+the adapter, registers a second sandbox domain and moves it with `opscrew domain connect`.
+
+The Namecheap pass sets `NAMECHEAP_SANDBOX=1`, checks the balance, buys a random `.com` (the
+registration uses the sandbox account's default address, in memory only), confirms the
+registration and the nameservers through the API, and checks that `domain auto-renew` points to
+Namecheap's dashboard (Namecheap has no API for it).
+
+GoDaddy has no public test system for its v3 API, so its adapter is only tested with fakes.
