@@ -183,7 +183,7 @@ describe("errors", () => {
       code: "ARTIFACT_MISSING",
       file,
       issues: [],
-      hint: "Run `opscrew interview` to answer the questions again.",
+      hint: "Run `opscrew interview` to answer the deployment questions.",
     });
     expect((error as ArtifactError).message).toContain(file);
   });

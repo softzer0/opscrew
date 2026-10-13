@@ -41,11 +41,18 @@ export const ARTIFACT_FILES: Record<ArtifactKind, string> = {
   plan: "opscrew/plan.yaml",
 };
 
-/** Next step shown when an artefact is missing or invalid. */
+/** Next step shown when an artefact is invalid. */
 export const ARTIFACT_HINTS: Record<ArtifactKind, string> = {
   architecture: "Run `opscrew analyze` to regenerate it.",
   requirements: "Run `opscrew interview` to answer the questions again.",
   plan: "Run `opscrew design` to regenerate the plan, or fix the field shown above.",
+};
+
+/** Next step shown when an artefact does not exist yet. */
+export const ARTIFACT_MISSING_HINTS: Record<ArtifactKind, string> = {
+  architecture: "Run `opscrew analyze` to create it.",
+  requirements: "Run `opscrew interview` to answer the deployment questions.",
+  plan: "Run `opscrew design` to create the plan (after `opscrew analyze` and `opscrew interview`).",
 };
 
 /** First line of every YAML artefact. */
@@ -222,7 +229,7 @@ export async function readArtifact<K extends ArtifactKind>(
       throw new ArtifactError({
         code: "ARTIFACT_MISSING",
         file,
-        hint: ARTIFACT_HINTS[kind],
+        hint: ARTIFACT_MISSING_HINTS[kind],
         cause,
       });
     }
