@@ -43,6 +43,10 @@ describe("searchDomains", () => {
       "extension com",
       "extension net",
       "extension uk",
+      // names that cannot be bought are looked up in the account (none is yours here)
+      "getDomain shopapp.io",
+      "getDomain shopapp.co.uk",
+      "getDomain shopapp.ai",
     ]);
     expect(result.account).toEqual({ id: "acc-1", name: "Shop" });
     expect(result.results.map((r) => [r.domain, r.registrable])).toEqual([
@@ -164,5 +168,148 @@ describe("searchDomains", () => {
     await expect(searchDomains(deps, { query: "shopapp", services })).rejects.toMatchObject({
       code: "CREDENTIALS_INVALID",
     });
+  });
+});
+
+describe("searchDomains: names already in the user's account", () => {
+  const taken = (domain: string) => ({
+    domain,
+    registrable: false,
+    reason: "This domain is already registered by someone else.",
+  });
+
+  it("says a name the registrar reports taken is already in your account, with the connect command", async () => {
+    const project = await domainProject();
+    const nc = project.other("namecheap");
+    nc.checks.set("poasjet.com", taken("poasjet.com"));
+    nc.checks.set("poasjet.net", taken("poasjet.net"));
+    nc.checks.set("poasjet.org", buyable("poasjet.org"));
+    nc.own("poasjet.com");
+    const { deps, services } = await project.run({ token: null });
+
+    const result = await searchDomains(deps, {
+      query: "poasjet",
+      registrar: "namecheap",
+      services,
+    });
+
+    const byName = Object.fromEntries(result.results.map((r) => [r.domain, r]));
+    expect(byName["poasjet.com"]).toMatchObject({
+      registrable: false,
+      reason:
+        "Already in your Namecheap account. To use it with OpsCrew, run `opscrew domain connect poasjet.com`.",
+    });
+    expect(byName["poasjet.net"]?.reason).toBe(
+      "This domain is already registered by someone else.",
+    );
+    expect(byName["poasjet.org"]?.registrable).toBe(true);
+  });
+
+  it("keeps the registrar's reason when the ownership lookup fails, and never fails the search", async () => {
+    const project = await domainProject();
+    const pb = project.other("porkbun");
+    pb.checks.set("poasjet.com", taken("poasjet.com"));
+    pb.own("poasjet.com");
+    const { deps, services } = await project.run({ token: null });
+    const api = services.registrars?.porkbun;
+    if (api === undefined) throw new Error("no porkbun fake");
+    services.registrars = {
+      ...services.registrars,
+      porkbun: {
+        ...api,
+        ownsDomain: async () => {
+          throw new OpsCrewError("PROVIDER_ERROR", "Porkbun did not answer.");
+        },
+      },
+    };
+
+    const result = await searchDomains(deps, {
+      query: "poasjet.com",
+      registrar: "porkbun",
+      services,
+    });
+
+    expect(result.results.find((r) => r.domain === "poasjet.com")).toMatchObject({
+      registrable: false,
+      reason: "This domain is already registered by someone else.",
+    });
+  });
+
+  it("says a Cloudflare name is already in your Cloudflare account, looked up with getDomain", async () => {
+    const project = await domainProject();
+    const { cf } = project;
+    cf.checks.set("poasjet.com", taken("poasjet.com"));
+    cf.checks.set("poasjet.net", taken("poasjet.net"));
+    cf.own("poasjet.com");
+    cf.suggestions = [{ domain: "poasjet.net", registrable: false }];
+    const { deps, services } = await project.run();
+
+    const result = await searchDomains(deps, { query: "poasjet.com", services });
+
+    const reasons = Object.fromEntries(result.results.map((r) => [r.domain, r.reason]));
+    expect(reasons["poasjet.com"]).toBe(
+      "Already in your Cloudflare account; its DNS is on Cloudflare already.",
+    );
+    expect(reasons["poasjet.net"]).toBe("This domain is already registered by someone else.");
+    // only names that cannot be bought are looked up
+    expect(cf.events.filter((e) => e.startsWith("getDomain")).sort()).toEqual([
+      "getDomain poasjet.com",
+      "getDomain poasjet.net",
+    ]);
+  });
+
+  it("keeps Cloudflare's reason when getDomain fails", async () => {
+    const project = await domainProject();
+    const { cf } = project;
+    cf.checks.set("poasjet.com", taken("poasjet.com"));
+    cf.own("poasjet.com");
+    cf.failures.getDomain = () => new Error("Cloudflare is down");
+    const { deps, services } = await project.run();
+
+    const result = await searchDomains(deps, { query: "poasjet.com", services });
+
+    expect(result.results[0]?.reason).toBe("This domain is already registered by someone else.");
+    expect(visibleText(deps)).not.toContain(TOKEN);
+  });
+
+  it("marks owned names in a comparison, per registrar, and tolerates a failing lookup", async () => {
+    const project = await domainProject();
+    const { cf } = project;
+    cf.checks.set("poasjet.com", taken("poasjet.com"));
+    const nc = project.other("namecheap");
+    nc.checks.set("poasjet.com", taken("poasjet.com"));
+    nc.own("poasjet.com");
+    const gd = project.other("godaddy");
+    gd.checks.set("poasjet.com", taken("poasjet.com"));
+    gd.own("poasjet.com");
+    const pb = project.other("porkbun");
+    pb.checks.set("poasjet.com", buyable("poasjet.com", 11.08));
+    const { deps, services } = await project.run();
+    const godaddy = services.registrars?.godaddy;
+    if (godaddy === undefined) throw new Error("no godaddy fake");
+    services.registrars = {
+      ...services.registrars,
+      godaddy: {
+        ...godaddy,
+        ownsDomain: async () => {
+          throw new Error("GoDaddy timed out");
+        },
+      },
+    };
+
+    const result = await searchDomains(deps, { query: "poasjet.com", compare: true, services });
+
+    const offers = Object.fromEntries(
+      (result.comparison?.[0]?.offers ?? []).map((o) => [o.registrar, o]),
+    );
+    expect(offers.namecheap).toMatchObject({
+      registrable: false,
+      reason:
+        "Already in your Namecheap account. To use it with OpsCrew, run `opscrew domain connect poasjet.com`.",
+    });
+    expect(offers.godaddy?.reason).toBe("This domain is already registered by someone else.");
+    expect(offers.cloudflare?.reason).toBe("This domain is already registered by someone else.");
+    expect(offers.porkbun?.registrable).toBe(true);
+    expect(pb.count("check")).toBe(1);
   });
 });

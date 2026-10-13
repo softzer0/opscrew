@@ -154,9 +154,10 @@ export function mapRegistrarRecord(record: RegistrarDnsRecord, zoneName: string)
         return skip(`The ${label} has no priority.`);
       }
       if (!host) return skip(`The ${label} has no mail server.`);
+      // RFC 7505: any preference with the target "." says the name accepts no mail.
       if (host.trim() === ".") {
         return skip(
-          `The ${label} is a "null MX" (the domain accepts no mail); add it in Cloudflare yourself if you want to keep it.`,
+          `The ${label} is a null MX: ${name} accepts no mail; add it in Cloudflare yourself if you want to keep it.`,
         );
       }
       return create({ type, content: target(host, zone), priority });

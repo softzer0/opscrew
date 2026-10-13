@@ -1,4 +1,4 @@
-import type { DomainCheck, RegistrarId } from "@opscrew/contracts";
+import type { DomainCheck, Registrar, RegistrarId } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import {
@@ -26,6 +26,9 @@ import type {
 
 /** Names checked live per search (the Cloudflare check takes up to 20 at once). */
 const MAX_CHECKED = 20;
+
+/** Ownership lookups run at once for the names a search could not offer. */
+const OWNERSHIP_CONCURRENCY = 4;
 
 /**
  * Extensions a keyword is checked under at registrars other than Cloudflare and in comparisons
@@ -74,7 +77,11 @@ export async function searchDomains(
   }
   const checked = names.slice(0, MAX_CHECKED);
   if (checked.length === 0) return { account, results: [] };
-  const results = await cloudflareChecks(services, account, checked, registrar);
+  const results = await markOwned(
+    registrar,
+    "cloudflare",
+    await cloudflareChecks(services, account, checked, registrar),
+  );
   return { account, results: sortChecks(results) };
 }
 
@@ -190,7 +197,56 @@ async function otherChecks(
   const live = new Map(
     (await registrar.check(names)).map((c) => [c.domain.trim().toLowerCase(), c] as const),
   );
-  return names.map((name) => normaliseOffer(live.get(name), name, REGISTRAR_NAMES[registrarId]));
+  return markOwned(
+    registrar,
+    registrarId,
+    names.map((name) => normaliseOffer(live.get(name), name, REGISTRAR_NAMES[registrarId])),
+  );
+}
+
+/** The reason shown for a name that is already in the user's account at `registrarId`. */
+function ownedReason(registrarId: RegistrarId, domain: string): string {
+  return registrarId === "cloudflare"
+    ? "Already in your Cloudflare account; its DNS is on Cloudflare already."
+    : `Already in your ${REGISTRAR_NAMES[registrarId]} account. To use it with OpsCrew, run \`opscrew domain connect ${domain}\`.`;
+}
+
+/**
+ * Whether the account holds the domain: `ownsDomain` when the registrar has it, else `getDomain`
+ * (Cloudflare). Any failure counts as not known to be yours.
+ */
+async function ownedHere(registrar: Registrar, domain: string): Promise<boolean> {
+  try {
+    if (registrar.ownsDomain !== undefined) return (await registrar.ownsDomain(domain)) === true;
+    return (await registrar.getDomain(domain)) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Names the registrar reports not registrable but the account already holds get a reason that
+ * says so (and, at another registrar, names `opscrew domain connect`). Only those names are looked
+ * up, a few at a time; a failing lookup keeps the registrar's reason. `registrable` never changes.
+ */
+async function markOwned(
+  registrar: Registrar,
+  registrarId: RegistrarId,
+  checks: readonly DomainCheck[],
+): Promise<DomainCheck[]> {
+  const out = [...checks];
+  const pending = out.flatMap((c, i) => (c.registrable ? [] : [i]));
+  const worker = async () => {
+    for (let i = pending.shift(); i !== undefined; i = pending.shift()) {
+      const check = out[i] as DomainCheck;
+      if (await ownedHere(registrar, check.domain)) {
+        out[i] = { ...check, reason: ownedReason(registrarId, check.domain) };
+      }
+    }
+  };
+  const workers = Math.min(OWNERSHIP_CONCURRENCY, pending.length);
+  await Promise.all(Array.from({ length: workers }, worker));
+  return out;
 }
 
 /** A search at Porkbun, Namecheap or GoDaddy: no Cloudflare token or account needed. */
@@ -236,7 +292,9 @@ async function compareDomains(
           options.account,
           options.accountOption,
         );
-        return { checks: await cloudflareChecks(services, account, names), account };
+        const registrar = services.registrar(account.id);
+        const checks = await cloudflareChecks(services, account, names, registrar);
+        return { checks: await markOwned(registrar, "cloudflare", checks), account };
       } catch (error) {
         const hint = isUserFacingError(error) && error.hint ? providerText(deps, error.hint) : "";
         const reason = `${REGISTRAR_NAMES[id]} could not check it: ${errorText(deps, error)}${hint === "" ? "" : `. ${hint}`}`;

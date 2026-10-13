@@ -42,6 +42,18 @@ describe("mapRegistrarRecord", () => {
     );
   });
 
+  it('names a null MX (any preference, target ".") with one message', () => {
+    const message =
+      "The MX record for example.com is a null MX: example.com accepts no mail; add it in Cloudflare yourself if you want to keep it.";
+    expect(skippedReason(rec("MX", "example.com", "0 ."))).toBe(message);
+    expect(skippedReason(rec("MX", "example.com", ".", { priority: 0 }))).toBe(message);
+    expect(skippedReason(rec("MX", "example.com", " 10   . "))).toBe(message);
+    expect(skippedReason(rec("MX", "example.com", ".", { priority: 5 }))).toBe(message);
+    expect(skippedReason(rec("MX", "example.com", "", { priority: 0 }))).toBe(
+      "The MX record for example.com has no mail server.",
+    );
+  });
+
   it("copies A and AAAA records unproxied, keeping a valid TTL", () => {
     expect(created(rec("A", "example.com", "203.0.113.10", { ttl: 300 }))).toEqual({
       type: "A",

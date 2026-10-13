@@ -196,7 +196,8 @@ function recordData(
       return { content: (data[0] as Token).text.toLowerCase() };
     case "MX": {
       const priority = integer(data[0], 65535);
-      const exchange = host(data[1]);
+      // "." is a null MX (RFC 7505), kept as written for the copy plan to name.
+      const exchange = data[1]?.text === "." && !data[1].quoted ? "." : host(data[1]);
       if (data.length !== 2 || priority === undefined || exchange === undefined) {
         throw new Error("an MX record needs a preference and a mail server");
       }

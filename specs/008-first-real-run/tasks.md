@@ -20,7 +20,7 @@ description: "Tasks for 008-first-real-run"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T803 [P] [US3] Owned domains and null MX in `packages/agents/src/domain/` and `packages/connectors/cloudflare/src/records.ts`
+- [X] T803 [P] [US3] Owned domains and null MX in `packages/agents/src/domain/` and `packages/connectors/cloudflare/src/records.ts`
   - Owns: `packages/agents/src/domain/{search,connect-bind}.ts` (+ tests), `packages/connectors/cloudflare/src/records.ts` (+ test)
   - Accept: a name the registrar reports unavailable but the account holds → "already in your <Registrar> account" + `opscrew domain connect <domain>` (Porkbun/Namecheap/GoDaddy via `ownsDomain`, Cloudflare via `getDomain`), in search and compare; ownership lookups failing never fail the search; null MX (`0 .`) from a BIND file or a registrar named as a null MX ("accepts no mail") with one message.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-cloudflare`

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { mapRegistrarRecord } from "@opscrew/connector-cloudflare";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { parseBindZone, readBindFile } from "./connect-bind";
@@ -130,6 +131,30 @@ describe("parseBindZone", () => {
         ttl: 3600,
       },
     ]);
+  });
+
+  it('keeps a null MX (target ".") so the copy plan names it like a registrar\'s', () => {
+    const records = parseBindZone(
+      ["@ IN MX 0 .", "mail 300 IN MX 10 ."].join("\n"),
+      "poasjet.com",
+      "poasjet.zone",
+    );
+
+    expect(records).toEqual([
+      { type: "MX", name: "poasjet.com", content: ".", priority: 0 },
+      { type: "MX", name: "mail.poasjet.com", content: ".", priority: 10, ttl: 300 },
+    ]);
+    const fromFile = mapRegistrarRecord(records[0] as (typeof records)[number], "poasjet.com");
+    const fromRegistrar = mapRegistrarRecord(
+      { type: "MX", name: "poasjet.com", content: "0 ." },
+      "poasjet.com",
+    );
+    expect(fromFile).toEqual(fromRegistrar);
+    expect(fromFile).toEqual({
+      skipped: true,
+      reason:
+        "The MX record for poasjet.com is a null MX: poasjet.com accepts no mail; add it in Cloudflare yourself if you want to keep it.",
+    });
   });
 
   it("names the line of an unclosed quote without showing the line", () => {
