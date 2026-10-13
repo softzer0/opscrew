@@ -101,7 +101,7 @@ after an environment variable name.
 ## Phase 6: Verification
 
 - [X] T712 Sandbox tests for Porkbun and Namecheap and docs (lead) in `packages/cli/test/live/**`, `docs/e2e.md`
-- [ ] T713 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-701..FR-710
+- [X] T713 Feature verification (lead): `pnpm check`, bundle smoke test, converge review against FR-701..FR-710
 - [X] T714 Converge fixes from the T713 review (status DNSSEC hint, Porkbun scopes before buying, duplicate lines, init check wording, hints, docs, Namecheap connect in the sandbox test)
   - Owns: the files named in the T713 findings
   - Effort: high

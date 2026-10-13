@@ -2,7 +2,7 @@
 
 **Feature Branch**: `mvp` (Spec Kit feature dir `specs/007-registrars`)
 **Created**: 2026-10-13
-**Status**: Ready for implementation
+**Status**: Implemented (T701–T714)
 **Input**: Founder direction 2026-10-13 (domains through Cloudflare first, then Namecheap, Porkbun
 and GoDaddy for buying and managing domains); feature 006 (Registrar contract, typed and
 price-bounded purchases, Cloudflare Registrar); research `specs/007-registrars/research.md`.
