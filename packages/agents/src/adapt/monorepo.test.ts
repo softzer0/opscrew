@@ -143,5 +143,17 @@ describe.skipIf(GIT === undefined)("one app of a monorepo, from analyze to adapt
     const dockerfile = await readFile(join(root, "apps", "web", "Dockerfile"), "utf8");
     expect(dockerfile).toContain("apps/web/.next/standalone");
     expect(dockerfile).toMatch(/apps\/web\/server\.js/);
+
+    // The app has no Next.js config: OpsCrew creates one with standalone output traced from the
+    // repository root, without a model.
+    expect(buildConfig?.path).toBe("apps/web/next.config.mjs");
+    expect(adapt.createdFiles).toContain("apps/web/next.config.mjs");
+    const config = await readFile(join(root, "apps", "web", "next.config.mjs"), "utf8");
+    expect(config).toContain('output: "standalone"');
+    expect(config).toContain(
+      'outputFileTracingRoot: path.join(path.dirname(fileURLToPath(import.meta.url)), "../../")',
+    );
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    expect(plan.codeChanges.find((c) => c.kind === "build-config")?.status).toBe("applied");
   });
 });

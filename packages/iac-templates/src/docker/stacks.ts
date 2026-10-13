@@ -193,12 +193,37 @@ function jsFolderNote(facts: ProjectFacts, dir: string): string[] {
     : [`# The image is built from the repository root; the app lives in ${dir}.`];
 }
 
+/** Start script the Next.js build stage writes into the image (`/out` becomes `/app`). */
+const NEXT_START_SCRIPT = "/app/opscrew-start.sh";
+
 /**
- * Next.js standalone image. For an app in a monorepo folder (`facts.appDir`, or the `next`
- * framework's path), the image is still built from the repository root so the root lockfile and
- * workspace packages are available, and the standalone output is copied from
- * `<dir>/.next/standalone`, where the server lives at `<dir>/server.js` once
- * `outputFileTracingRoot` points at the repository root.
+ * Shell lines copying one standalone layout into `/out`: the standalone root, `.next/static` and
+ * `public` next to the server (in `serverDir`, relative to the standalone root), and a start
+ * script running that server.
+ */
+function standaloneToOut(dir: string, serverDir: string): string[] {
+  const inApp = (path: string) => (dir === "." ? path : `${dir}/${path}`);
+  const out = (path: string) => (serverDir === "." ? `/out/${path}` : `/out/${serverDir}/${path}`);
+  const server = serverDir === "." ? "/app/server.js" : `/app/${serverDir}/server.js`;
+  return [
+    `    cp -a ${shellQuote(`${inApp(".next/standalone")}/.`)} /out/ \\`,
+    `    && mkdir -p ${shellQuote(out(".next"))} \\`,
+    `    && cp -a ${shellQuote(inApp(".next/static"))} ${shellQuote(out(".next/static"))} \\`,
+    `    && cp -a ${shellQuote(inApp("public"))} ${shellQuote(out("public"))} \\`,
+    `    && printf '#!/bin/sh\\nexec node "%s"\\n' ${shellQuote(server)} > /out/opscrew-start.sh; \\`,
+  ];
+}
+
+/**
+ * Next.js image that builds whether or not the config sets `output: "standalone"`. The build stage
+ * gathers what runs into `/out` and writes `/out/opscrew-start.sh`: with standalone output, the
+ * standalone server plus `.next/static` and `public` (a small image); without it, the whole built
+ * app with its dependencies, started with `next start` on `$PORT` and `$HOSTNAME`. The runtime
+ * stage copies `/out` and runs the script, so a missed config edit costs image size, never a
+ * failed build. For an app in a monorepo folder (`facts.appDir`, or the `next` framework's path),
+ * the image is built from the repository root so the root lockfile and workspace packages are
+ * available; the standalone server is found at `<dir>/server.js` (with `outputFileTracingRoot` at
+ * the repository root) or at the standalone root.
  */
 export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): string {
   const dir = appDirectory(facts, "next-standalone");
@@ -207,18 +232,31 @@ export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): str
   const command = facts.build.buildCommand ?? jsScript(facts, dir, "build");
   // A `cd` must not leak into the `mkdir` that follows, which runs from the repository root.
   const build = /^cd\s/.test(command) ? `(${command})` : command;
-  const requirements = atRoot
-    ? ['# Requires `output: "standalone"` in next.config.* (OpsCrew adds it as a code change).']
+  const standalone = inApp(".next/standalone");
+  const notes = atRoot
+    ? [
+        '# Builds with or without `output: "standalone"` in next.config.* (OpsCrew adds it as a code',
+        "# change). With it, the image ships only the standalone server, .next/static and public;",
+        "# without it, the image holds the whole built app with its dependencies and runs",
+        "# `next start`. The build stage gathers what runs into /out, with /out/opscrew-start.sh as",
+        "# the entry point.",
+      ]
     : [
-        `# Requires \`output: "standalone"\` in ${dir}/next.config.* and, because the app lives in a`,
-        "# monorepo, `outputFileTracingRoot` pointing at the repository root, for example",
+        `# Builds with or without \`output: "standalone"\` in ${dir}/next.config.*. Because the app`,
+        "# lives in a monorepo, the standalone output also needs `outputFileTracingRoot` pointing at",
+        "# the repository root, for example",
         `# \`outputFileTracingRoot: path.join(__dirname, "${"../".repeat(dir.split("/").length)}")\` (OpsCrew adds both as a code change).`,
-        "# The image is built from the repository root so the root lockfile and workspace packages",
-        `# are available; the server starts from ${dir}/server.js.`,
+        `# With them, the image ships only the standalone server (started from ${dir}/server.js),`,
+        "# .next/static and public; without them, the image holds the whole built workspace with its",
+        "# dependencies and runs `next start` in the app folder. The build stage gathers what runs",
+        "# into /out, with /out/opscrew-start.sh as the entry point. The image is built from the",
+        "# repository root so the root lockfile and workspace packages are available.",
       ];
+  const resolveNext = `node -p "require.resolve('next/dist/bin/next')"`;
+  const nextBin = atRoot ? resolveNext : `cd ${shellQuote(dir)} && ${resolveNext}`;
   return [
     HEADER("next-standalone"),
-    ...requirements,
+    ...notes,
     "",
     "FROM node:22-alpine AS build",
     "WORKDIR /app",
@@ -227,16 +265,31 @@ export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): str
     "ENV NEXT_TELEMETRY_DISABLED=1",
     ...buildArgs(facts),
     `RUN ${build} && mkdir -p ${shellQuote(inApp("public"))}`,
+    "# The standalone server when the build made one, otherwise the whole app with `next start`.",
+    "RUN mkdir -p /out \\",
+    `  && if [ -f ${shellQuote(`${standalone}/${inApp("server.js")}`)} ]; then \\`,
+    ...standaloneToOut(dir, dir),
+    ...(atRoot
+      ? []
+      : [
+          `  elif [ -f ${shellQuote(`${standalone}/server.js`)} ]; then \\`,
+          ...standaloneToOut(dir, "."),
+        ]),
+    "  else \\",
+    `    rm -rf ${shellQuote(inApp(".next/cache"))} && cp -a . /out/ \\`,
+    // Assigned first, so a next binary that cannot be found fails the build, not the deploy.
+    `    && NEXT_BIN="$(${nextBin})" && [ -n "$NEXT_BIN" ] \\`,
+    `    && printf '#!/bin/sh\\ncd "%s"\\nexec node "%s" start --hostname "\${HOSTNAME:-0.0.0.0}" --port "\${PORT:-${port}}"\\n' \\`,
+    `      ${shellQuote(atRoot ? "/app" : `/app/${dir}`)} "$NEXT_BIN" > /out/opscrew-start.sh; \\`,
+    "  fi",
     "",
     "FROM node:22-alpine AS runtime",
     "WORKDIR /app",
     `ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=${port} HOSTNAME=0.0.0.0`,
-    copyFromBuild(`/app/${inApp("public")}`, `./${inApp("public")}`),
-    copyFromBuild(`/app/${inApp(".next/standalone")}`, "./"),
-    copyFromBuild(`/app/${inApp(".next/static")}`, `./${inApp(".next/static")}`),
+    copyFromBuild("/out", "./"),
     "USER node",
     `EXPOSE ${port}`,
-    `CMD ["node", ${JSON.stringify(inApp("server.js"))}]`,
+    `CMD ["sh", ${JSON.stringify(NEXT_START_SCRIPT)}]`,
     "",
   ].join("\n");
 }

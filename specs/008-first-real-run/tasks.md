@@ -13,7 +13,7 @@ description: "Tasks for 008-first-real-run"
 
 ## Phase 2: Fixes from the first live runs
 
-- [ ] T802 [P] [US1] Next.js builds without a model in `packages/agents/src/adapt/` and `packages/iac-templates/src/docker/`
+- [X] T802 [P] [US1] Next.js builds without a model in `packages/agents/src/adapt/` and `packages/iac-templates/src/docker/`
   - Owns: `packages/agents/src/adapt/**`, `packages/iac-templates/src/docker/**`
   - Reads: plan.md "Next.js without a model"; the Next.js playbook; the Dockerfile stacks and their tests
   - Accept: deterministic `output: "standalone"` edit for the plain-object config shapes (and a new `next.config.mjs` when none exists; `outputFileTracingRoot` for monorepo apps), shown in the PR as an OpsCrew change; other shapes stay agent/manual changes; the generated Next.js Dockerfile builds whether or not the config has standalone output (a real `docker build` test of `examples/nextjs-postgres` with and without the edit, run with OPSCREW_DOCKER_TESTS=1); existing tests pass.

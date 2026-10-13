@@ -5,7 +5,7 @@ export const nextjsPlaybook: Playbook = {
   id: "nextjs",
   title: "Next.js (standalone server)",
   guidance: [
-    'The container runs the standalone output (`node server.js`) with PORT and HOSTNAME=0.0.0.0 set, so the Next.js config must use output: "standalone".',
+    'The container runs the standalone output (`node server.js`) with PORT and HOSTNAME=0.0.0.0 set when the Next.js config uses output: "standalone" (OpsCrew sets it itself when the config is a plain object). Without it the image still builds but falls back to `next start` with every dependency, which is much larger.',
     "Variables starting with NEXT_PUBLIC_ are baked into the browser bundle at build time. Never put a secret in one.",
     "Read server-only secrets only in server code: route handlers, server components, server actions or API routes.",
   ],

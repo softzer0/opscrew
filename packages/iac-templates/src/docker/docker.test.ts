@@ -255,16 +255,23 @@ describe("renderDockerAssets", () => {
     expect(lines).toContain("COPY . .");
     expect(dockerfile).toContain("pnpm install --frozen-lockfile");
     expect(lines).toContain("RUN pnpm --filter web run build && mkdir -p apps/web/public");
-    expect(lines).toContain(
-      "COPY --from=build --chown=node:node /app/apps/web/.next/standalone ./",
+    // The server traced from the repository root (outputFileTracingRoot) ...
+    expect(lines).toContain("  && if [ -f apps/web/.next/standalone/apps/web/server.js ]; then \\");
+    expect(lines).toContain("    cp -a apps/web/.next/standalone/. /out/ \\");
+    expect(lines).toContain("    && cp -a apps/web/.next/static /out/apps/web/.next/static \\");
+    expect(lines).toContain("    && cp -a apps/web/public /out/apps/web/public \\");
+    expect(dockerfile).toContain(`exec node "%s"\\n' /app/apps/web/server.js`);
+    // ... or traced from the app folder ...
+    expect(lines).toContain("  elif [ -f apps/web/.next/standalone/server.js ]; then \\");
+    expect(lines).toContain("    && cp -a apps/web/.next/static /out/.next/static \\");
+    expect(dockerfile).toContain(`exec node "%s"\\n' /app/server.js`);
+    // ... or `next start` in the app folder.
+    expect(dockerfile).toContain(
+      `NEXT_BIN="$(cd apps/web && node -p "require.resolve('next/dist/bin/next')")" && [ -n "$NEXT_BIN" ]`,
     );
-    expect(lines).toContain(
-      "COPY --from=build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static",
-    );
-    expect(lines).toContain(
-      "COPY --from=build --chown=node:node /app/apps/web/public ./apps/web/public",
-    );
-    expect(lines).toContain('CMD ["node", "apps/web/server.js"]');
+    expect(dockerfile).toContain(`/app/apps/web "$NEXT_BIN" > /out/opscrew-start.sh`);
+    expect(lines).toContain("COPY --from=build --chown=node:node /out ./");
+    expect(lines).toContain('CMD ["sh", "/app/opscrew-start.sh"]');
     expect(dockerfile).not.toContain("/app/.next/standalone");
     expect(dockerfile).toContain("outputFileTracingRoot");
   });
@@ -277,9 +284,39 @@ describe("renderDockerAssets", () => {
     const dockerfile =
       renderDockerAssets(spaced, { appPort: 4000, healthPath: "/" })[0]?.content ?? "";
     expect(dockerfile).toContain(
-      'COPY --from=build --chown=node:node ["/app/apps/my web/.next/standalone", "./"]',
+      "  && if [ -f 'apps/my web/.next/standalone/apps/my web/server.js' ]; then \\",
     );
-    expect(dockerfile).toContain('CMD ["node", "apps/my web/server.js"]');
+    expect(dockerfile).toContain("    cp -a 'apps/my web/.next/standalone/.' /out/ \\");
+    expect(dockerfile).toContain(`exec node "%s"\\n' '/app/apps/my web/server.js'`);
+    expect(dockerfile).toContain(`NEXT_BIN="$(cd 'apps/my web' && node -p`);
+    expect(dockerfile).toContain(`'/app/apps/my web' "$NEXT_BIN" > /out/opscrew-start.sh`);
+  });
+
+  it("builds Next.js with or without standalone output and runs one start script", () => {
+    const dockerfile =
+      renderDockerAssets(nextApp, { appPort: 3000, healthPath: "/api/health" })[0]?.content ?? "";
+    const lines = dockerfile.split("\n");
+    const runtime = lines.indexOf("FROM node:22-alpine AS runtime");
+    expect(runtime).toBeGreaterThan(0);
+    const runtimeLines = lines.slice(runtime);
+    // The runtime stage copies one folder and runs one entry, as the non-root node user.
+    expect(runtimeLines.filter((line) => line.startsWith("COPY"))).toEqual([
+      "COPY --from=build --chown=node:node /out ./",
+    ]);
+    expect(runtimeLines).toContain("USER node");
+    expect(runtimeLines).toContain(
+      "ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0",
+    );
+    expect(runtimeLines.at(-2)).toBe('CMD ["sh", "/app/opscrew-start.sh"]');
+    // The build stage picks the standalone server when it exists, else `next start`.
+    expect(lines).toContain("  && if [ -f .next/standalone/server.js ]; then \\");
+    expect(dockerfile).not.toContain("elif");
+    expect(lines).toContain("  else \\");
+    expect(lines).toContain("    rm -rf .next/cache && cp -a . /out/ \\");
+    expect(dockerfile).toContain(
+      `start --hostname "\${HOSTNAME:-0.0.0.0}" --port "\${PORT:-3000}"`,
+    );
+    expect(dockerfile).toMatch(/^# Builds with or without `output: "standalone"`/m);
   });
 
   it("collects Django static files at build time without real settings", () => {
@@ -351,7 +388,8 @@ describe("renderDockerAssets for an app in a subfolder (facts.appDir)", () => {
       { appPort: 4000, healthPath: "/" },
     );
     expect(files[0]?.path).toBe("Dockerfile");
-    expect(files[0]?.content).toContain('CMD ["node", "server.js"]');
+    expect(files[0]?.content).toContain("  && if [ -f .next/standalone/server.js ]; then \\");
+    expect(files[0]?.content).toContain(`exec node "%s"\\n' /app/server.js`);
   });
 
   it("falls back to the framework path for every stack", () => {

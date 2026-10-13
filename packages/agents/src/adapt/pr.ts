@@ -35,6 +35,8 @@ export interface PullRequestBodyInput {
   app?: { name: string; port: number; healthPath: string };
   /** Packages the Code-change agent added. */
   addedDependencies?: readonly string[];
+  /** Ids of the changes OpsCrew made itself (templates and deterministic edits). */
+  byOpsCrew?: readonly string[];
 }
 
 function link(path: string, input: PullRequestBodyInput): string {
@@ -43,9 +45,14 @@ function link(path: string, input: PullRequestBodyInput): string {
   return `[\`${path}\`](${url})`;
 }
 
-function changeLine(change: CodeChange, notes: string | undefined): string[] {
+function changeLine(change: CodeChange, notes: string | undefined, byOpsCrew: boolean): string[] {
   const box = change.status === "applied" ? "[x]" : "[ ]";
-  const status = change.status === "pending" ? "to do" : change.status;
+  const status =
+    change.status === "pending"
+      ? "to do"
+      : change.status === "applied" && byOpsCrew
+        ? "applied by OpsCrew"
+        : change.status;
   const lines = [
     `- ${box} **${KIND_LABELS[change.kind]}** in \`${change.path}\` (${status}): ${change.reason}`,
   ];
@@ -61,13 +68,16 @@ function changeLine(change: CodeChange, notes: string | undefined): string[] {
  */
 export function renderPullRequestBody(input: PullRequestBodyInput): string {
   const lines: string[] = [
-    "This pull request prepares the app to run in a production container. OpsCrew wrote the deterministic files; the Code-change agent (when a model was configured) made the code edits. Nothing is deployed until you merge and approve the infrastructure plan.",
+    'This pull request prepares the app to run in a production container. OpsCrew wrote the deterministic files and edits (marked "applied by OpsCrew"); the Code-change agent (when a model was configured) made the other code edits. Nothing is deployed until you merge and approve the infrastructure plan.',
     "",
     "## Changes",
     "",
   ];
   if (input.changes.length === 0) lines.push("No code changes were needed.");
-  for (const change of input.changes) lines.push(...changeLine(change, input.notes?.[change.id]));
+  const byOpsCrew = new Set(input.byOpsCrew ?? []);
+  for (const change of input.changes) {
+    lines.push(...changeLine(change, input.notes?.[change.id], byOpsCrew.has(change.id)));
+  }
   if ((input.addedDependencies ?? []).length > 0) {
     lines.push("", "New dependencies added by the Code-change agent:");
     for (const dependency of input.addedDependencies ?? []) lines.push(`- \`${dependency}\``);

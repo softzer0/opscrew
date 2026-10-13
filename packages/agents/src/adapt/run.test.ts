@@ -47,7 +47,6 @@ function editingAgent(
               changes: [
                 { id: "health-endpoint", status: "applied", notes: "Added the app router route." },
                 { id: "secret-removal-1", status: "applied", notes: "Reads STRIPE_SECRET_KEY." },
-                { id: "build-config", status: "skipped", notes: "Left for the user to review." },
               ],
             },
           };
@@ -141,6 +140,12 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(request?.prompt).toContain("health-endpoint");
     expect(request?.prompt).toContain("app/api/health/route.ts");
     expect(request?.prompt).not.toContain("### dockerfile");
+    // OpsCrew set the standalone output itself, so the agent is not asked to.
+    expect(request?.prompt).not.toContain("### build-config");
+    expect(await readFile(join(repo.root, "next.config.mjs"), "utf8")).toBe(
+      'const nextConfig = {\n  output: "standalone",\n};\nexport default nextConfig;\n',
+    );
+    expect(result.editedFiles).toEqual(["next.config.mjs"]);
     for (const text of [request?.prompt, request?.systemPrompt]) {
       expect(text).not.toContain(repo.envSecret);
       expect(text).not.toContain(repo.codeSecret);
@@ -153,11 +158,11 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
       "env-example": "applied",
       "health-endpoint": "applied",
       "secret-removal-1": "applied",
-      "build-config": "skipped",
+      "build-config": "applied",
     };
     expect(await statusOf(repo)).toEqual(expected);
     expect(Object.fromEntries(result.changes.map((c) => [c.id, c.status]))).toEqual(expected);
-    expect(result.notes["build-config"]).toBe("Left for the user to review.");
+    expect(result.notes["build-config"]).toContain('OpsCrew set output: "standalone"');
     expect(result.aiRan).toBe(true);
     expect(result.costUsd).toBe(0.42);
     expect(await repo.deps.costs.total()).toBe(0.42);
@@ -176,6 +181,7 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
         "Dockerfile",
         "app/api/health/route.ts",
         "lib/stripe.ts",
+        "next.config.mjs",
         "opscrew/SECURITY_SCAN.md",
         "opscrew/architecture.json",
         "opscrew/plan.yaml",
@@ -209,6 +215,8 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     });
     expect(pr?.body.trimEnd().endsWith(PULL_REQUEST_FOOTER)).toBe(true);
     expect(pr?.body).toContain("app/api/health/route.ts");
+    expect(pr?.body).toContain("in `next.config.mjs` (applied by OpsCrew)");
+    expect(pr?.body).toContain("in `app/api/health/route.ts` (applied):");
     expect(pr?.body).toContain("| 1 | 2 | 0 | 3 | 0 |");
     expect(pr?.body).toContain(
       `https://github.com/acme/shop/blob/${ADAPT_BRANCH}/opscrew/plan.yaml`,
@@ -330,17 +338,19 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
 
     expect(repo.runtime?.requests).toHaveLength(0);
     expect(result.aiRan).toBe(false);
-    expect(result.manual.map((m) => m.change.id)).toEqual([
-      "health-endpoint",
-      "build-config",
-      "secret-removal-1",
-    ]);
+    expect(result.manual.map((m) => m.change.id)).toEqual(["health-endpoint", "secret-removal-1"]);
     expect(result.manual[0]?.instructions).toContain("app/api/health/route.ts");
     expect(await statusOf(repo)).toMatchObject({
       dockerfile: "applied",
       "health-endpoint": "pending",
-      "build-config": "pending",
+      "build-config": "applied",
     });
+    // Without a model, the standalone output is still set, and committed.
+    expect(await readFile(join(repo.root, "next.config.mjs"), "utf8")).toContain(
+      'output: "standalone"',
+    );
+    const committed = await git(repo.env, repo.root, "show", "--name-only", "--format=", "HEAD");
+    expect(committed.split("\n")).toContain("next.config.mjs");
     expect(repo.handler.requests.map((r) => r.kind)).toEqual(["repo-write"]);
     expect(result.committed).toBe(true);
     expect(result.pushed).toBe(false);
@@ -361,7 +371,7 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
       "health-endpoint": "pending",
       "secret-removal-1": "pending",
     });
-    expect(result.manual).toHaveLength(3);
+    expect(result.manual).toHaveLength(2);
     expect(repo.deps.reporter.text()).toContain("did not finish");
   });
 
@@ -381,11 +391,39 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(await statusOf(repo)).toMatchObject({
       dockerfile: "applied",
       "health-endpoint": "skipped",
-      "build-config": "pending",
+      "secret-removal-1": "pending",
     });
     const text = repo.deps.reporter.text();
     expect(text).toContain('unknown or repeated change "dockerfile"');
-    expect(text).toContain("build-config, secret-removal-1");
+    expect(text).toContain("did not report on secret-removal-1;");
+  });
+
+  it("leaves a Next.js config it cannot edit safely to the agent, with the reason", async () => {
+    const config = 'const nextConfig = { output: "export" };\nexport default nextConfig;\n';
+    const repo = await setup({ files: { "next.config.mjs": config }, agent: null });
+
+    const result = await runAdapt(repo.deps, { push: false });
+
+    expect(await readFile(join(repo.root, "next.config.mjs"), "utf8")).toBe(config);
+    expect(result.editedFiles).toEqual([]);
+    expect(await statusOf(repo)).toMatchObject({ "build-config": "pending" });
+    const item = result.manual.find((m) => m.change.id === "build-config");
+    expect(item?.instructions).toContain('sets output to "export"');
+    expect(result.notes["build-config"]).toContain("OpsCrew did not edit it");
+  });
+
+  it("creates next.config.mjs when the app has no Next.js config", async () => {
+    const repo = await setup({ agent: null });
+    await git(repo.env, repo.root, "rm", "-q", "next.config.mjs");
+    await git(repo.env, repo.root, "commit", "-q", "-m", "no config");
+
+    const result = await runAdapt(repo.deps, { ai: false, push: false });
+
+    expect(result.createdFiles).toContain("next.config.mjs");
+    expect(await readFile(join(repo.root, "next.config.mjs"), "utf8")).toContain(
+      'const nextConfig = {\n  output: "standalone",\n};',
+    );
+    expect(await statusOf(repo)).toMatchObject({ "build-config": "applied" });
   });
 
   it("skips the agent and the commit when nothing needs to change", async () => {

@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import {
   GitClient,
   GitHubClient,
@@ -15,6 +15,7 @@ import {
   isUserFacingError,
   OpsCrewError,
   toPosixRelative,
+  writeFileAtomic,
 } from "@opscrew/core";
 import { type RenderedFile, renderDockerAssets } from "@opscrew/iac-templates";
 import {
@@ -27,6 +28,7 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import type { CodeChange } from "../design";
 import { writeRenderedFiles } from "../shared";
+import { isNextConfigPath, type StandaloneEdit, standaloneConfigEdit } from "./next-config";
 import { playbookFor } from "./playbooks";
 import { PULL_REQUEST_TITLE, renderPullRequestBody } from "./pr";
 import {
@@ -84,6 +86,8 @@ export interface AdaptResult {
   baseBranch: string;
   /** Deterministic files OpsCrew wrote (repo-relative). */
   createdFiles: string[];
+  /** Existing files OpsCrew edited deterministically (repo-relative), such as `next.config.mjs`. */
+  editedFiles: string[];
   /** The plan's code changes with their updated statuses. */
   changes: CodeChange[];
   /** Notes per change id. */
@@ -228,6 +232,8 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   // 3. Deterministic files, only when missing.
   const createdFiles: string[] = [];
   const forAgent: CodeChange[] = [];
+  /** Ids of the changes OpsCrew made itself (shown as such in the pull request). */
+  const byOpsCrew = new Set<string>();
   const templated = pending.filter((change) => DETERMINISTIC[change.kind] !== undefined);
   let rendered: RenderedFile[] = [];
   if (templated.length > 0) {
@@ -257,15 +263,47 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     } else {
       toWrite.push({ ...template, path: change.path });
       set(change, "applied", "Written by OpsCrew from its template for this stack.");
+      byOpsCrew.add(change.id);
     }
   }
   await writeRenderedFiles(paths.root, toWrite);
   for (const file of toWrite) createdFiles.push(file.path);
   if (createdFiles.length > 0) reporter.success(`Wrote ${createdFiles.join(", ")}.`);
-  forAgent.push(...pending.filter((change) => DETERMINISTIC[change.kind] === undefined));
+
+  // 3b. Next.js standalone output: edited by OpsCrew when the config is a plain object (or
+  // missing); any other shape stays with the Code-change agent or the user.
+  const playbook = playbookFor(facts);
+  const editedFiles: string[] = [];
+  const manualReasons = new Map<string, string>();
+  for (const change of pending.filter((c) => DETERMINISTIC[c.kind] === undefined)) {
+    if (
+      playbook.id !== "nextjs" ||
+      change.kind !== "build-config" ||
+      !isNextConfigPath(change.path)
+    ) {
+      forAgent.push(change);
+      continue;
+    }
+    const edit = await nextConfigEdit(paths.root, change.path);
+    if (edit.action === "write") {
+      await writeFileAtomic(join(paths.root, change.path), edit.content);
+      (edit.created ? createdFiles : editedFiles).push(change.path);
+      set(change, "applied", edit.note);
+      byOpsCrew.add(change.id);
+      reporter.success(
+        `${edit.created ? "Created" : "Edited"} ${change.path} to build the standalone Next.js server.`,
+      );
+    } else if (edit.action === "none") {
+      set(change, "skipped", edit.reason);
+    } else {
+      // Notes for the pull request; the agent's report replaces them when it runs.
+      notes[change.id] = say(`OpsCrew did not edit it: ${edit.reason}`);
+      manualReasons.set(change.id, edit.reason);
+      forAgent.push(change);
+    }
+  }
 
   // 4. Code-change agent for everything else.
-  const playbook = playbookFor(facts);
   let aiRan = false;
   let costUsd = 0;
   let addedDependencies: string[] = [];
@@ -311,7 +349,14 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   }
   const manual: ManualChange[] = forAgent
     .filter((change) => !statuses.has(change.id))
-    .map((change) => ({ change, instructions: say(manualInstructions(change, playbook)) }));
+    .map((change) => {
+      const reason = manualReasons.get(change.id);
+      const instructions = manualInstructions(change, playbook);
+      return {
+        change,
+        instructions: say(reason === undefined ? instructions : `${instructions} (${reason})`),
+      };
+    });
   if (manual.length > 0) {
     reporter.info(`${PLURAL(manual.length, "change")} still to make by hand:`);
     for (const item of manual) reporter.info(`- ${item.instructions}`);
@@ -334,6 +379,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     branch,
     baseBranch,
     createdFiles,
+    editedFiles,
     changes,
     notes,
     manual,
@@ -468,6 +514,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
         branch,
         app: { name: plan.app.name, port: plan.app.port, healthPath: plan.app.healthPath },
         addedDependencies,
+        byOpsCrew: [...byOpsCrew],
       }),
     );
     const prApproval = await deps.approvals.request({
@@ -582,6 +629,43 @@ async function existingFiles(root: string, files: readonly string[]): Promise<st
   const found: string[] = [];
   for (const file of files) if (await exists(join(root, file))) found.push(file);
   return found;
+}
+
+const NEXT_CONFIG_NAMES = [
+  "next.config.ts",
+  "next.config.mjs",
+  "next.config.js",
+  "next.config.cjs",
+];
+
+/**
+ * The deterministic standalone edit for the Next.js config at `path` (repo-relative). A config in
+ * a subfolder also gets `outputFileTracingRoot` pointing back at the project root, and a missing
+ * config is created only when no other `next.config.*` sits next to where the plan expects it.
+ */
+async function nextConfigEdit(root: string, path: string): Promise<StandaloneEdit> {
+  const dir = posix.dirname(path);
+  let content: string | undefined;
+  try {
+    content = await readFile(join(root, path), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    for (const name of NEXT_CONFIG_NAMES) {
+      const other = dir === "." ? name : `${dir}/${name}`;
+      if (other !== path && (await exists(join(root, other)))) {
+        return {
+          action: "manual",
+          reason: `the plan expects ${path} but the app has ${other}; run \`opscrew design\` again.`,
+        };
+      }
+    }
+  }
+  const tracingRoot = dir === "." ? undefined : "../".repeat(dir.split("/").length);
+  return standaloneConfigEdit({
+    path,
+    content,
+    ...(tracingRoot === undefined ? {} : { tracingRoot }),
+  });
 }
 
 async function exists(file: string): Promise<boolean> {

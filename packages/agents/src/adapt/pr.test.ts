@@ -52,6 +52,22 @@ describe("renderPullRequestBody", () => {
     expect(body.trimEnd().endsWith(PULL_REQUEST_FOOTER)).toBe(true);
   });
 
+  it("marks the changes OpsCrew made itself", () => {
+    const applied = changes.map((change) => ({ ...change, status: "applied" as const }));
+    const body = renderPullRequestBody({
+      changes: applied,
+      notes: { "build-config": 'OpsCrew set output: "standalone" in next.config.mjs.' },
+      reports: [],
+      byOpsCrew: ["dockerfile", "build-config"],
+    });
+    expect(body).toContain(
+      "- [x] **Build configuration** in `next.config.mjs` (applied by OpsCrew): Reason for build-config.",
+    );
+    expect(body).toContain('  - Notes: OpsCrew set output: "standalone" in next.config.mjs.');
+    expect(body).toContain("- [x] **Production Dockerfile** in `Dockerfile` (applied by OpsCrew)");
+    expect(body).toContain("- [x] **Health endpoint** in `app/api/health/route.ts` (applied):");
+  });
+
   it("is deterministic", () => {
     const input = { changes, reports: [], scanCounts: {} };
     expect(renderPullRequestBody(input)).toBe(renderPullRequestBody(input));

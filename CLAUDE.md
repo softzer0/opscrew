@@ -41,6 +41,8 @@ pnpm turbo run typecheck test --filter=@opscrew/<pkg>   # one package
 OpenTofu and Terraform binaries for local development live in `.tools/bin` (gitignored). Tests that
 need them read `OPSCREW_TOFU_BIN` / `OPSCREW_TERRAFORM_BIN` or find them on `PATH`, and skip with a
 clear message when absent: `PATH="$PWD/.tools/bin:$PATH" pnpm test`.
+Tests that build real container images (they need Docker and the network) run only with
+`OPSCREW_DOCKER_TESTS=1`.
 
 ## Code conventions
 
