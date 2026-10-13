@@ -119,7 +119,7 @@ export interface CloudflareRegistrationRequest {
   privacy_mode: "redaction" | "off";
 }
 
-/** DNSSEC state of a zone after enabling it. */
+/** DNSSEC state of a zone. */
 export interface CloudflareDnssec {
   /** For example `pending` until the registrar publishes the DS record, then `active`. */
   status: string;
@@ -338,8 +338,9 @@ export class CloudflareClient {
     }
   }
 
-  #fail(status: number, body: EnvelopeBody, what: string, hints: FailHints = {}): never {
-    const detail =
+  /** Cloudflare's explanation of a failed answer, in plain English where the code is known. */
+  #detail(status: number, body: EnvelopeBody): string {
+    return (
       body.errors
         .map((e) =>
           (
@@ -348,7 +349,12 @@ export class CloudflareClient {
           ).replace(/\.$/, ""),
         )
         .filter(Boolean)
-        .join("; ") || `HTTP ${status}`;
+        .join("; ") || `HTTP ${status}`
+    );
+  }
+
+  #fail(status: number, body: EnvelopeBody, what: string, hints: FailHints = {}): never {
+    const detail = this.#detail(status, body);
     if (status === 401 || status === 403) {
       throw new OpsCrewError(
         "CREDENTIALS_INVALID",
@@ -574,8 +580,10 @@ export class CloudflareClient {
    * Starts a registration (billable, non-refundable once it succeeds) and returns the first
    * workflow status. Sends `Prefer: respond-async`; accepts 201 and 202 (both polled until
    * `succeeded`). Never retried on network or server errors, so it cannot buy twice. Only a clear
-   * rejection (401/403 or another 4xx except 429) is reported as such; every other unusable answer
-   * means the registration may have started.
+   * rejection is reported as such: 401/403 as `CREDENTIALS_INVALID`, and a Cloudflare error
+   * envelope with another 4xx except 429 (no default contact or payment method, domain taken …)
+   * as `PHASE_PRECONDITION` with Cloudflare's reason. Every other unusable answer is
+   * `PROVIDER_ERROR`: the registration may have started.
    */
   async createRegistration(
     accountId: string,
@@ -607,8 +615,18 @@ export class CloudflareClient {
       throw error;
     }
     const { status, body, envelope } = answer;
-    const rejected = status >= 400 && status < 500 && status !== 429;
-    if (rejected) this.#fail(status, body, what, REGISTRAR_HINTS);
+    if (status === 401 || status === 403) this.#fail(status, body, what, REGISTRAR_HINTS);
+    const clientError = status >= 400 && status < 500 && status !== 429;
+    if (clientError && envelope && !body.success) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `Cloudflare refused to register ${domain}: ${this.#detail(status, body)}.`,
+        {
+          hint: `Fix it at ${CLOUDFLARE_REGISTRAR_DASHBOARD} (buying needs a default payment method, a verified email address and a default registrant contact on the account), or pick another name.`,
+        },
+      );
+    }
+    if (clientError) throw uncertain(`HTTP ${status} without a clear Cloudflare answer`);
     if (status < 200 || status >= 300) throw uncertain(`HTTP ${status}`);
     if (!envelope) throw uncertain(`HTTP ${status} without a readable answer`);
     if (!body.success) throw uncertain(`HTTP ${status} reporting an error`);
@@ -727,6 +745,14 @@ export class CloudflareClient {
       );
     }
     return toZone(zone);
+  }
+
+  /** DNSSEC state of a zone (`active`, `pending`, `disabled` …). */
+  async getDnssec(zoneId: string): Promise<CloudflareDnssec> {
+    const what = "read the DNSSEC state";
+    const path = `/zones/${encodeURIComponent(zoneId)}/dnssec`;
+    const result = await this.#get(path, DnssecSchema, what);
+    return { status: result.status, ...(result.ds ? { ds: result.ds } : {}) };
   }
 
   /** Turns on DNSSEC for a zone (Cloudflare Registrar publishes the DS record itself). */

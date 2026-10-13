@@ -376,11 +376,13 @@ describe("CloudflareClient registrar calls", () => {
     expect(calls).toHaveLength(9);
   });
 
-  it("explains refused registrations without the token", async () => {
+  it("marks clear refusals (a Cloudflare error envelope with a 4xx) distinctly, without the token", async () => {
     const { cf } = client({
       [`POST ${REG}/registrations`]: [
         fail(400, [{ code: "domain_unavailable" }]),
         fail(400, [{ code: 1001, message: "No default payment method on file." }]),
+        fail(409, [{ code: 1002, message: "A registration for this domain already exists." }]),
+        fail(422, [{ code: 1003, message: "The account has no default registrant contact." }]),
         fail(403, [{ code: 10000, message: "Authentication error" }]),
       ],
     });
@@ -391,16 +393,40 @@ describe("CloudflareClient registrar calls", () => {
       privacy_mode: "off",
     } as const;
     const taken = await plainError(cf.createRegistration(ACCOUNT, request));
+    expect(taken.code).toBe("PHASE_PRECONDITION");
     expect(taken.message).toBe(
-      "Cloudflare could not register a.com: This domain is already registered by someone else.",
+      "Cloudflare refused to register a.com: This domain is already registered by someone else.",
     );
+    expect(taken.hint).toContain("dash.cloudflare.com");
     const billing = await plainError(cf.createRegistration(ACCOUNT, request));
+    expect(billing.code).toBe("PHASE_PRECONDITION");
     expect(billing.message).toContain("No default payment method on file.");
     expect(billing.hint).toMatch(/payment method.*registrant contact/);
+    const conflict = await plainError(cf.createRegistration(ACCOUNT, request));
+    expect(conflict.code).toBe("PHASE_PRECONDITION");
+    expect(conflict.message).toContain("already exists");
+    const contact = await plainError(cf.createRegistration(ACCOUNT, request));
+    expect(contact.code).toBe("PHASE_PRECONDITION");
+    expect(contact.message).toContain("no default registrant contact");
     const denied = await plainError(cf.createRegistration(ACCOUNT, request));
     expect(denied.code).toBe("CREDENTIALS_INVALID");
     expect(denied.hint).toContain("Account → Registrar (edit)");
     expect(denied.hint).toContain("optional");
+  });
+
+  it("treats a 4xx without a Cloudflare envelope as possibly started", async () => {
+    const { cf } = client({
+      [`POST ${REG}/registrations`]: [
+        { status: 400, raw: "<html>Bad request</html>" },
+        { status: 404, body: { hello: "world" } },
+        { status: 409, body: { success: true, errors: [], result: null } },
+      ],
+    });
+    for (let i = 0; i < 3; i++) {
+      const error = await plainError(cf.createRegistration(ACCOUNT, purchase));
+      expect(error.code).toBe("PROVIDER_ERROR");
+      expect(error.message).toContain("may still have started");
+    }
   });
 
   it("reads workflow states with Cloudflare's explanation", async () => {
@@ -566,6 +592,20 @@ describe("CloudflareClient registrar calls", () => {
       ds: "a.com. 3600 IN DS 2371 13 2 ABC",
     });
     expect(calls[0]).toMatchObject({ method: "PATCH", body: { status: "active" } });
+  });
+
+  it("reads the DNSSEC state of a zone", async () => {
+    const { cf, calls } = client({
+      "GET /zones/z1/dnssec": [
+        ok({ status: "active", ds: "a.com. DS" }),
+        ok({ status: "disabled" }),
+      ],
+      "GET /zones/z2/dnssec": fail(403, [{ message: "Authentication error" }]),
+    });
+    expect(await cf.getDnssec("z1")).toEqual({ status: "active", ds: "a.com. DS" });
+    expect(await cf.getDnssec("z1")).toEqual({ status: "disabled" });
+    expect(calls[0]).toMatchObject({ method: "GET", path: "/zones/z1/dnssec" });
+    expect((await plainError(cf.getDnssec("z2"))).code).toBe("CREDENTIALS_INVALID");
   });
 
   it("maps a missing registrar permission to a plain hint", async () => {

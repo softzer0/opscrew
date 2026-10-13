@@ -26,7 +26,7 @@ variable name. Tasks touching the CLI wait for feature 005's CLI task (T509).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare`
   - Effort: high
 
-- [ ] T603 [P] [US1] [US2] [US3] Search, buy, status and auto-renew in `packages/agents/src/domain/`
+- [X] T603 [P] [US1] [US2] [US3] Search, buy, status and auto-renew in `packages/agents/src/domain/`
   - Owns: `packages/agents/src/domain/**`
   - Reads: spec.md; plan.md "Orchestration"; `packages/contracts/src/registrar.ts`; `packages/agents/src/provision/credentials.ts` (Cloudflare setup patterns)
   - Depends: T601
