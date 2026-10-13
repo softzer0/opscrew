@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApiResponse Status="ERROR" xmlns="http://api.namecheap.com/xml.response">
+  <Errors>
+    <Error Number="2528166">Order creation failed: insufficient funds for Test Person</Error>
+  </Errors>
+  <Warnings />
+  <RequestedCommand>namecheap.domains.create</RequestedCommand>
+  <Server>PHX01SBAPIEXT05</Server>
+  <GMTTimeDifference>--4:00</GMTTimeDifference>
+  <ExecutionTime>0.031</ExecutionTime>
+</ApiResponse>

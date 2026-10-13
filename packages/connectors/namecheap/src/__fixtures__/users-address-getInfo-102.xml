@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApiResponse Status="OK" xmlns="http://api.namecheap.com/xml.response">
+  <Errors />
+  <Warnings />
+  <RequestedCommand>namecheap.users.address.getInfo</RequestedCommand>
+  <CommandResponse Type="namecheap.users.address.getInfo">
+    <GetAddressInfoResult>
+      <AddressId>102</AddressId>
+      <UserName>opscrew-sandbox</UserName>
+      <AddressName>Primary</AddressName>
+      <Default_YN>true</Default_YN>
+      <FirstName>Test</FirstName>
+      <LastName>Person</LastName>
+      <JobTitle>Fake Title</JobTitle>
+      <Organization>Fake Org Invalid</Organization>
+      <Address1>1 Test Street</Address1>
+      <Address2>Suite Fake</Address2>
+      <City>Testville</City>
+      <StateProvince>Teststate</StateProvince>
+      <StateProvinceChoice>S</StateProvinceChoice>
+      <Zip>00001-0000</Zip>
+      <Country>US</Country>
+      <Phone>1.5555550100</Phone>
+      <Fax></Fax>
+      <PhoneExt></PhoneExt>
+      <EmailAddress>test@example.invalid</EmailAddress>
+    </GetAddressInfoResult>
+  </CommandResponse>
+  <Server>PHX01SBAPIEXT05</Server>
+  <GMTTimeDifference>--4:00</GMTTimeDifference>
+  <ExecutionTime>0.512</ExecutionTime>
+</ApiResponse>

@@ -27,7 +27,7 @@ after an environment variable name.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-porkbun`
   - Effort: high
 
-- [ ] T703 [P] [US1] [US2] [US3] Namecheap client and `NamecheapRegistrar` in `packages/connectors/namecheap/src/`
+- [X] T703 [P] [US1] [US2] [US3] Namecheap client and `NamecheapRegistrar` in `packages/connectors/namecheap/src/`
   - Owns: `packages/connectors/namecheap/src/**`
   - Reads: plan.md "Namecheap"; research.md "Namecheap API"; `docs/adr/0009-registrar-contacts-and-connect.md`
   - Depends: T701

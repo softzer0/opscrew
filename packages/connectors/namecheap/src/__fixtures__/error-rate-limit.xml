@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApiResponse Status="ERROR" xmlns="http://api.namecheap.com/xml.response">
+  <Errors>
+    <Error Number="500000">Too many requests</Error>
+  </Errors>
+  <Warnings />
+  <RequestedCommand>namecheap.domains.check</RequestedCommand>
+  <Server>PHX01SBAPIEXT05</Server>
+  <GMTTimeDifference>--4:00</GMTTimeDifference>
+  <ExecutionTime>0.031</ExecutionTime>
+</ApiResponse>
