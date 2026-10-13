@@ -35,7 +35,7 @@ variable name (the redactor masks what follows).
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T504 [P] [US1] Workflow dispatch and run lookup in `packages/connectors/github/src/`
+- [X] T504 [P] [US1] Workflow dispatch and run lookup in `packages/connectors/github/src/`
   - Owns: `packages/connectors/github/src/**`
   - Reads: plan.md "GitHub connector"; research.md "GitHub workflow dispatch"
   - Depends: T501

@@ -19,6 +19,10 @@ export interface GitHubClientOptions {
   fetch: FetchLike;
   baseUrl?: string;
   version?: string;
+  /** Waits between polls (default: `setTimeout`); injected by tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Monotonic milliseconds for wait loops (default: `Date.now`); injected by tests. */
+  now?: () => number;
 }
 
 export interface RepoInfo {
@@ -48,18 +52,46 @@ const RepoSchema = z.looseObject({
 });
 const PullSchema = z.looseObject({ number: z.number(), html_url: z.string() });
 const PublicKeySchema = z.looseObject({ key_id: z.string(), key: z.string() });
-const RunsSchema = z.looseObject({
-  workflow_runs: z.array(
-    z.looseObject({
-      id: z.number(),
-      status: z.string(),
-      conclusion: z.string().nullable(),
-      html_url: z.string(),
-      head_sha: z.string(),
-      created_at: z.string(),
-    }),
-  ),
+const RunSchema = z.looseObject({
+  id: z.number(),
+  status: z.string(),
+  conclusion: z.string().nullable(),
+  html_url: z.string(),
+  head_sha: z.string(),
+  created_at: z.string(),
 });
+const RunsSchema = z.looseObject({ workflow_runs: z.array(RunSchema) });
+const DispatchSchema = z.looseObject({ workflow_run_id: z.number().optional() }).optional();
+
+function toWorkflowRun(run: z.infer<typeof RunSchema>): WorkflowRun {
+  return {
+    id: run.id,
+    status: run.status,
+    conclusion: run.conclusion,
+    htmlUrl: run.html_url,
+    headSha: run.head_sha,
+    createdAt: run.created_at,
+  };
+}
+
+/** The workflow file name GitHub accepts as a workflow id (`.github/workflows/x.yml` → `x.yml`). */
+function workflowId(workflowFile: string): string {
+  return encodeURIComponent(workflowFile.split("/").pop() ?? workflowFile);
+}
+
+/** `since` rounded down to whole seconds: GitHub's `created_at` has no milliseconds. */
+function floorToSecond(iso: string): number {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) {
+    throw new OpsCrewError("INVALID_INPUT", `"${iso}" is not a valid ISO time.`, {
+      hint: "Pass the time just before the dispatch, for example new Date().toISOString().",
+    });
+  }
+  return Math.floor(ms / 1000) * 1000;
+}
+
+const DEFAULT_RUN_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_RUN_POLL_MS = 5_000;
 
 const SECRET_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -77,12 +109,16 @@ export class GitHubClient {
   readonly #fetch: FetchLike;
   readonly #baseUrl: string;
   readonly #userAgent: string;
+  readonly #sleep: (ms: number) => Promise<void>;
+  readonly #now: () => number;
 
   constructor(options: GitHubClientOptions) {
     this.#token = options.token;
     this.#fetch = options.fetch;
     this.#baseUrl = (options.baseUrl ?? GITHUB_API).replace(/\/$/, "");
     this.#userAgent = `opscrew/${options.version ?? "0.1.0"}`;
+    this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#now = options.now ?? Date.now;
   }
 
   async #request(
@@ -244,28 +280,134 @@ export class GitHubClient {
     );
   }
 
+  /**
+   * Lists recent runs of a workflow, newest first. `event` and `createdSince` (ISO time) narrow
+   * the list to runs of that trigger created at or after that time.
+   */
   async listWorkflowRuns(
     owner: string,
     repo: string,
-    options: { workflowFile: string; branch?: string; perPage?: number },
+    options: {
+      workflowFile: string;
+      branch?: string;
+      perPage?: number;
+      event?: string;
+      createdSince?: string;
+    },
   ): Promise<WorkflowRun[]> {
     const what = "list workflow runs";
     const query = new URLSearchParams({ per_page: String(options.perPage ?? 5) });
     if (options.branch) query.set("branch", options.branch);
-    const file = options.workflowFile.split("/").pop() ?? options.workflowFile;
+    if (options.event) query.set("event", options.event);
+    if (options.createdSince) query.set("created", `>=${options.createdSince}`);
     const { json } = await this.#request(
       "GET",
-      `/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(file)}/runs?${query}`,
+      `/repos/${owner}/${repo}/actions/workflows/${workflowId(options.workflowFile)}/runs?${query}`,
       what,
     );
-    return this.#parse(RunsSchema, json, what).workflow_runs.map((run) => ({
-      id: run.id,
-      status: run.status,
-      conclusion: run.conclusion,
-      htmlUrl: run.html_url,
-      headSha: run.head_sha,
-      createdAt: run.created_at,
-    }));
+    return this.#parse(RunsSchema, json, what).workflow_runs.map(toWorkflowRun);
+  }
+
+  /** Reads one workflow run. */
+  async getWorkflowRun(owner: string, repo: string, runId: number): Promise<WorkflowRun> {
+    const what = `read workflow run ${runId}`;
+    const { json } = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs/${runId}`,
+      what,
+    );
+    return toWorkflowRun(this.#parse(RunSchema, json, what));
+  }
+
+  /**
+   * Starts a `workflow_dispatch` run of `workflowFile` on `ref`. Returns the run id when GitHub
+   * sends it (200 with `workflow_run_id`); an empty object for the older 204 answer.
+   */
+  async dispatchWorkflow(
+    owner: string,
+    repo: string,
+    workflowFile: string,
+    ref: string,
+  ): Promise<{ runId?: number }> {
+    const what = `start the workflow ${workflowFile} on ${ref}`;
+    const { status, json } = await this.#request(
+      "POST",
+      `/repos/${owner}/${repo}/actions/workflows/${workflowId(workflowFile)}/dispatches`,
+      what,
+      { ref },
+    );
+    if (status === 204) return {};
+    const runId = this.#parse(DispatchSchema, json, what)?.workflow_run_id;
+    return runId === undefined ? {} : { runId };
+  }
+
+  /**
+   * Waits for a dispatched run to complete: the run `runId` when given, else the newest
+   * `workflow_dispatch` run on `ref` created at or after `since` (it may take a few polls to
+   * appear). Throws a plain `PROVIDER_ERROR` naming the run link on timeout.
+   */
+  async waitForWorkflowRun(
+    owner: string,
+    repo: string,
+    options: {
+      workflowFile: string;
+      ref: string;
+      runId?: number;
+      /** ISO time just before the dispatch. */
+      since: string;
+      timeoutMs?: number;
+      pollMs?: number;
+    },
+  ): Promise<{ id: number; conclusion: string | null; htmlUrl: string }> {
+    const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+    const pollMs = options.pollMs ?? DEFAULT_RUN_POLL_MS;
+    const sinceMs = floorToSecond(options.since);
+    const createdSince = new Date(sinceMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+    const branch = options.ref.replace(/^refs\/heads\//, "");
+    const deadline = this.#now() + timeoutMs;
+    let runId = options.runId;
+    let htmlUrl: string | undefined;
+    for (;;) {
+      let run: WorkflowRun | undefined;
+      if (runId !== undefined) {
+        run = await this.getWorkflowRun(owner, repo, runId);
+      } else {
+        const runs = await this.listWorkflowRuns(owner, repo, {
+          workflowFile: options.workflowFile,
+          branch,
+          event: "workflow_dispatch",
+          createdSince,
+          perPage: 10,
+        });
+        run = runs
+          .filter((r) => Date.parse(r.createdAt) >= sinceMs)
+          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id - a.id)[0];
+        if (run) runId = run.id;
+      }
+      if (run) {
+        htmlUrl = run.htmlUrl;
+        if (run.status === "completed") {
+          return { id: run.id, conclusion: run.conclusion, htmlUrl: run.htmlUrl };
+        }
+      }
+      if (this.#now() >= deadline) break;
+      await this.#sleep(Math.max(0, Math.min(pollMs, deadline - this.#now())));
+    }
+    const minutes = Math.max(1, Math.round(timeoutMs / 60_000));
+    if (htmlUrl !== undefined) {
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `The ${options.workflowFile} run on ${branch} did not finish within ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+        { hint: `Follow it at ${htmlUrl}, then run the command again once it has finished.` },
+      );
+    }
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `GitHub did not show a run of ${options.workflowFile} on ${branch} within ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+      {
+        hint: `Check the Actions tab of https://github.com/${owner}/${repo} for the run, then run the command again.`,
+      },
+    );
   }
 
   /** The authenticated user's login (used to verify the token). */
