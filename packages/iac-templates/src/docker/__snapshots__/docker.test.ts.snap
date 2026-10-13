@@ -14,9 +14,10 @@ RUN pip install poetry && poetry config virtualenvs.create false && poetry insta
 COPY --chown=app:app . .
 RUN pip install gunicorn
 ENV DJANGO_WSGI_MODULE=shop_site.wsgi
-# Collects static files at build time (settings need STATIC_ROOT). The key below is a
-# throwaway value for this step only; the real SECRET_KEY is set when the container runs.
-RUN SECRET_KEY=build-only-placeholder-not-secret DJANGO_SECRET_KEY=build-only-placeholder-not-secret python manage.py collectstatic --noinput
+# Collects static files at build time when the settings set STATIC_ROOT (skipped otherwise).
+# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the
+# container runs.
+RUN export SECRET_KEY=build-only-placeholder-not-secret DJANGO_SECRET_KEY=build-only-placeholder-not-secret && static_root="$(python manage.py shell --verbosity 0 -c 'from django.conf import settings; print(settings.STATIC_ROOT or "")')" && if [ -n "$static_root" ]; then python manage.py collectstatic --noinput; else echo "collectstatic skipped: STATIC_ROOT is not set"; fi
 USER app
 EXPOSE 8000
 # Run migrations as part of your release process (for example \`python manage.py migrate\`).

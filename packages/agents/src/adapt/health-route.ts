@@ -1,3 +1,5 @@
+import { nextBasePath } from "./next-config";
+
 /** Health path OpsCrew's plans use for Next.js apps (`healthRouteFor` in design). */
 export const NEXT_HEALTH_PATH = "/api/health";
 
@@ -11,9 +13,11 @@ export type HealthRouteEdit =
       note: string;
       /** Middleware (or Next.js 16 `proxy`) file that might redirect or protect the path. */
       middleware?: string;
+      /** Set when the Next.js config sets `basePath`: what the plan's health path must become. */
+      basePathNote?: string;
     }
   /** A route for the path already exists. */
-  | { action: "none"; reason: string }
+  | { action: "none"; reason: string; basePathNote?: string }
   /** OpsCrew cannot tell safely where the route goes; the agent or the user adds it. */
   | { action: "manual"; reason: string };
 
@@ -30,6 +34,40 @@ export interface NextHealthRouteInput {
    * are not searched.
    */
   folders?: (path: string) => Promise<string[]>;
+  /**
+   * Content of a repo-relative file, or undefined when it is missing; used to read the Next.js
+   * config's `basePath`. Without it, `basePath` is not checked.
+   */
+  read?: (path: string) => Promise<string | undefined>;
+}
+
+const NEXT_CONFIGS = ["next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs"];
+
+/**
+ * A note when the app's Next.js config sets `basePath`: the route then answers at
+ * `<basePath>/api/health`, so the plan's `/api/health` check fails until the plan names that path.
+ * OpsCrew does not edit the plan from adapt.
+ */
+async function basePathNote(
+  read: NextHealthRouteInput["read"],
+  at: (path: string) => string,
+): Promise<string | undefined> {
+  if (read === undefined) return undefined;
+  const fix = "run `opscrew design` and set it, or edit app.healthPath in `opscrew/plan.yaml`";
+  for (const name of NEXT_CONFIGS) {
+    const file = at(name);
+    const content = await read(file);
+    if (content === undefined) continue;
+    const scan = nextBasePath(file, content);
+    if (scan.kind === "literal") {
+      const path = `${scan.value.replace(/\/+$/, "")}${NEXT_HEALTH_PATH}`;
+      return `${file} sets basePath "${scan.value}", so the health route answers at ${path}, not ${NEXT_HEALTH_PATH}: the plan's health check path must be ${path} (${fix}), or every deploy fails its health check.`;
+    }
+    if (scan.kind === "unknown") {
+      return `${file} mentions basePath in a way OpsCrew cannot read: if it sets one, the health route answers at <basePath>${NEXT_HEALTH_PATH} and the plan's health check path must be that (${fix}), or every deploy fails its health check.`;
+    }
+  }
+  return undefined;
 }
 
 /** How deep OpsCrew looks below `app/` for a route inside route groups. */
@@ -134,6 +172,8 @@ export async function nextHealthRoute(input: NextHealthRouteInput): Promise<Heal
   }
   const app = match.groups.app;
   const at = (path: string) => (dir === undefined ? path : `${dir}/${path}`);
+  const note = await basePathNote(input.read, at);
+  const withNote = note === undefined ? {} : { basePathNote: note };
 
   for (const base of ["", "src/"]) {
     for (const ext of EXTENSIONS) {
@@ -148,6 +188,7 @@ export async function nextHealthRoute(input: NextHealthRouteInput): Promise<Heal
           return {
             action: "none",
             reason: `${existing} already answers ${NEXT_HEALTH_PATH}; OpsCrew left it as it is.`,
+            ...withNote,
           };
         }
       }
@@ -157,6 +198,7 @@ export async function nextHealthRoute(input: NextHealthRouteInput): Promise<Heal
       return {
         action: "none",
         reason: `${grouped} already answers ${NEXT_HEALTH_PATH}; OpsCrew left it as it is.`,
+        ...withNote,
       };
     }
   }
@@ -194,5 +236,6 @@ export async function nextHealthRoute(input: NextHealthRouteInput): Promise<Heal
     content,
     note: `Created ${path} by OpsCrew: answers GET ${NEXT_HEALTH_PATH} with {"status":"ok"} for the deploy health check.`,
     ...(middleware === undefined ? {} : { middleware }),
+    ...withNote,
   };
 }

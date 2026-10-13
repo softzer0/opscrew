@@ -330,6 +330,22 @@ describe("renderDockerAssets", () => {
     expect(lines[collect]).toMatch(/python manage\.py collectstatic --noinput/);
   });
 
+  it("skips collectstatic when the Django settings have no STATIC_ROOT", () => {
+    const dockerfile =
+      renderDockerAssets(djangoApp, { appPort: 8000, healthPath: "/health" })[0]?.content ?? "";
+    const runs = dockerfile.split("\n").filter((line) => line.includes("collectstatic"));
+    const run = runs.find((line) => line.startsWith("RUN ")) ?? "";
+    expect(runs.filter((line) => line.startsWith("RUN "))).toHaveLength(1);
+    expect(run).toContain(
+      `static_root="$(python manage.py shell --verbosity 0 -c 'from django.conf import settings; print(settings.STATIC_ROOT or "")')"`,
+    );
+    expect(run).toContain(
+      'if [ -n "$static_root" ]; then python manage.py collectstatic --noinput; else echo "collectstatic skipped: STATIC_ROOT is not set"; fi',
+    );
+    // The placeholder key is exported for both the check and collectstatic.
+    expect(run).toMatch(/^RUN export SECRET_KEY=build-only-placeholder-not-secret /);
+  });
+
   it("refuses stacks without a template", () => {
     expect(() =>
       renderDockerAssets(facts({ languages: ["go"] }), { appPort: 8080, healthPath: "/" }),

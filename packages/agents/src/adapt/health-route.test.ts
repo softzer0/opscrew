@@ -185,3 +185,62 @@ describe("nextHealthRoute", () => {
     expect(proxy).toMatchObject({ action: "write", middleware: "src/proxy.ts" });
   });
 });
+
+describe("nextHealthRoute with a basePath", () => {
+  const reader =
+    (files: Record<string, string>) =>
+    async (path: string): Promise<string | undefined> =>
+      files[path];
+
+  it("still creates the route and names the path the plan must check", async () => {
+    const edit = await nextHealthRoute({
+      path: "apps/web/app/api/health/route.ts",
+      healthPath: "/api/health",
+      exists: tree("apps/web/app/page.tsx", "apps/web/tsconfig.json"),
+      read: reader({
+        "apps/web/next.config.ts":
+          'import type { NextConfig } from "next";\n\nconst nextConfig: NextConfig = {\n  basePath: "/docs/",\n};\n\nexport default nextConfig;\n',
+      }),
+    });
+    expect(edit).toMatchObject({ action: "write", path: "apps/web/app/api/health/route.ts" });
+    if (edit.action !== "write") return;
+    expect(edit.basePathNote).toContain(
+      'apps/web/next.config.ts sets basePath "/docs/", so the health route answers at /docs/api/health, not /api/health',
+    );
+    expect(edit.basePathNote).toContain("the plan's health check path must be /docs/api/health");
+    expect(edit.basePathNote).toContain("`opscrew design`");
+    expect(edit.basePathNote).toContain("`opscrew/plan.yaml`");
+  });
+
+  it("notes it for an existing route too, and when the value is not a plain string", async () => {
+    const edit = await nextHealthRoute({
+      path: APP_ROUTE,
+      healthPath: "/api/health",
+      exists: tree("app/api/health/route.ts"),
+      read: reader({
+        "next.config.mjs": "export default { basePath: process.env.BASE_PATH };\n",
+      }),
+    });
+    expect(edit).toMatchObject({ action: "none" });
+    expect(edit.action === "none" && edit.basePathNote).toContain(
+      "next.config.mjs mentions basePath in a way OpsCrew cannot read: if it sets one, the health route answers at <basePath>/api/health",
+    );
+  });
+
+  it("adds no note without a basePath", async () => {
+    for (const config of [
+      "export default {};\n",
+      'export default { basePath: "" };\n',
+      "// basePath: '/old'\nexport default { experimental: { basePath: 1 } };\n",
+    ]) {
+      const edit = await nextHealthRoute({
+        path: APP_ROUTE,
+        healthPath: "/api/health",
+        exists: tree("app/page.tsx"),
+        read: reader({ "next.config.mjs": config }),
+      });
+      expect(edit).toMatchObject({ action: "write" });
+      expect(edit.action === "write" && edit.basePathNote).toBeUndefined();
+    }
+  });
+});

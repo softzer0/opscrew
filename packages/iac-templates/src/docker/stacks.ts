@@ -453,6 +453,15 @@ export function fastapiDockerfile(facts: ProjectFacts, port: number): string {
 const DJANGO_BUILD_KEY =
   "SECRET_KEY=build-only-placeholder-not-secret DJANGO_SECRET_KEY=build-only-placeholder-not-secret";
 
+/**
+ * Runs `collectstatic` only when the settings define `STATIC_ROOT` (a fresh `startproject` app does
+ * not, and `collectstatic` would then fail the build). A settings import error still fails it.
+ */
+const DJANGO_COLLECTSTATIC =
+  `static_root="$(python manage.py shell --verbosity 0 -c 'from django.conf import settings; print(settings.STATIC_ROOT or "")')" && ` +
+  'if [ -n "$static_root" ]; then python manage.py collectstatic --noinput; ' +
+  'else echo "collectstatic skipped: STATIC_ROOT is not set"; fi';
+
 export function djangoDockerfile(facts: ProjectFacts, port: number): string {
   const module =
     pythonStart(facts, "python-django")?.match(/([\w.]+)\.wsgi/)?.[1] ??
@@ -461,9 +470,10 @@ export function djangoDockerfile(facts: ProjectFacts, port: number): string {
     ...pythonBase("python-django", port, facts),
     "RUN pip install gunicorn",
     `ENV DJANGO_WSGI_MODULE=${module}.wsgi`,
-    "# Collects static files at build time (settings need STATIC_ROOT). The key below is a",
-    "# throwaway value for this step only; the real SECRET_KEY is set when the container runs.",
-    `RUN ${DJANGO_BUILD_KEY} python manage.py collectstatic --noinput`,
+    "# Collects static files at build time when the settings set STATIC_ROOT (skipped otherwise).",
+    "# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the",
+    "# container runs.",
+    `RUN export ${DJANGO_BUILD_KEY} && ${DJANGO_COLLECTSTATIC}`,
     "USER app",
     `EXPOSE ${port}`,
     "# Run migrations as part of your release process (for example `python manage.py migrate`).",

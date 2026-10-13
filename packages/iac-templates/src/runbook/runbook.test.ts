@@ -84,6 +84,10 @@ describe("renderRunbook", () => {
     );
     expect(content).toContain("The server's IP address is not written in this repository");
     expect(content).toContain("`opscrew status --ip`");
+    // `npx` users have no `opscrew` on PATH: the runbook gives them a line that works too.
+    expect(content).toContain(
+      "# without a global install: ssh -i ~/.opscrew/projects/shop-0123456789ab/deploy_key deploy@$(npx opscrew status --ip)",
+    );
   });
 
   it("shows the address when the app is served on it or DNS is not proxied", () => {
@@ -92,6 +96,7 @@ describe("renderRunbook", () => {
     expect(noDomain).toContain(`| IPv4 / IPv6 | ${IPV4} / ${IPV6} |`);
     expect(noDomain).toContain(`deploy_key deploy@${IPV4}`);
     expect(noDomain).not.toContain("opscrew status --ip");
+    expect(noDomain).not.toContain("npx opscrew");
 
     const dnsOnly = renderRunbook(
       plan({ domain: "shop.example.com", proxied: false }),

@@ -94,6 +94,9 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "",
     "```bash",
     ssh,
+    ...(ip === undefined
+      ? [`# without a global install: ssh -i ${keyPath} deploy@$(npx opscrew status --ip)`]
+      : []),
     "cd /srv/app",
     "docker compose ps                 # what is running",
     "docker compose logs -f app        # follow the app's logs",

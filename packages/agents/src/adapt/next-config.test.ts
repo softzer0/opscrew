@@ -3,7 +3,51 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isNextConfigPath, type StandaloneEdit, standaloneConfigEdit } from "./next-config";
+import {
+  isNextConfigPath,
+  nextBasePath,
+  type StandaloneEdit,
+  standaloneConfigEdit,
+} from "./next-config";
+
+describe("nextBasePath", () => {
+  it("reads a literal basePath from the shapes OpsCrew edits", () => {
+    expect(nextBasePath("next.config.js", "module.exports = {basePath: '/docs'}\n")).toEqual({
+      kind: "literal",
+      value: "/docs",
+    });
+    expect(
+      nextBasePath(
+        "next.config.ts",
+        'const nextConfig: NextConfig = {\r\n  output: "standalone",\r\n  basePath: "/app",\r\n};\r\nexport default nextConfig;\r\n',
+      ),
+    ).toEqual({ kind: "literal", value: "/app" });
+  });
+
+  it("is none without a top-level basePath, or with an empty one", () => {
+    expect(nextBasePath("next.config.mjs", "export default {};\n")).toEqual({ kind: "none" });
+    expect(nextBasePath("next.config.mjs", 'export default { basePath: "" };\n')).toEqual({
+      kind: "none",
+    });
+    expect(
+      nextBasePath(
+        "next.config.mjs",
+        "/* basePath */\nexport default { images: { basePath: 1 } };\n",
+      ),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("is unknown when the value or the config cannot be read with certainty", () => {
+    for (const content of [
+      "export default { basePath: process.env.BASE_PATH };\n",
+      "const basePath = '/x';\nexport default { basePath };\n",
+      "export default () => ({ basePath: '/x' });\n",
+      "const base = { basePath: '/x' };\nexport default { ...base };\n",
+    ]) {
+      expect(nextBasePath("next.config.mjs", content)).toEqual({ kind: "unknown" });
+    }
+  });
+});
 
 const edit = (path: string, content: string | undefined, tracingRoot?: string) =>
   standaloneConfigEdit({ path, content, ...(tracingRoot === undefined ? {} : { tracingRoot }) });

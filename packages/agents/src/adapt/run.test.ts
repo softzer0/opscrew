@@ -436,6 +436,23 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(result.notes["build-config"]).toContain("OpsCrew did not edit it");
   });
 
+  it("creates the health route under a basePath and says the plan's path must change", async () => {
+    const config = 'const nextConfig = { basePath: "/shop" };\nexport default nextConfig;\n';
+    const repo = await setup({ files: { "next.config.mjs": config }, agent: null });
+    const before = (await readArtifact("plan", repo.deps.paths.files.plan)).app.healthPath;
+
+    const result = await runAdapt(repo.deps, { push: false });
+
+    expect(result.createdFiles).toContain("app/api/health/route.ts");
+    expect(await statusOf(repo)).toMatchObject({ "health-endpoint": "applied" });
+    const say =
+      "the plan's health check path must be /shop/api/health (run `opscrew design` and set it, or edit app.healthPath in `opscrew/plan.yaml`)";
+    expect(result.notes["health-endpoint"]).toContain(say);
+    expect(repo.deps.reporter.text()).toContain(say);
+    // adapt never edits the plan's health path itself.
+    expect((await readArtifact("plan", repo.deps.paths.files.plan)).app.healthPath).toBe(before);
+  });
+
   it("creates next.config.mjs when the app has no Next.js config", async () => {
     const repo = await setup({ agent: null });
     await git(repo.env, repo.root, "rm", "-q", "next.config.mjs");

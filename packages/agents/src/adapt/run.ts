@@ -400,7 +400,10 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
         healthPath: plan.app.healthPath,
         exists: (path) => exists(join(paths.root, path)),
         folders: (path) => subfolders(join(paths.root, path)),
+        read: (path) => readIfExists(join(paths.root, path)),
       });
+      // A basePath moves the route; the plan's health path is the user's (or design's) to change.
+      const basePath = edit.action === "manual" ? undefined : edit.basePathNote;
       if (edit.action === "write") {
         await writeFileAtomic(join(paths.root, edit.path), edit.content, { mode: 0o644 });
         createdFiles.push(edit.path);
@@ -409,12 +412,15 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
           edit.middleware === undefined
             ? undefined
             : `Check that ${edit.middleware} does not redirect or protect ${plan.app.healthPath}: the deploy health check calls it without a session.`;
-        set(change, "applied", check === undefined ? edit.note : `${edit.note} ${check}`);
+        const note = [edit.note, check, basePath].filter((line) => line !== undefined).join(" ");
+        set(change, "applied", note);
         byOpsCrew.add(change.id);
         reporter.success(`Created ${edit.path} for the deploy health check.`);
         if (check !== undefined) warn(check);
+        if (basePath !== undefined) warn(basePath);
       } else if (edit.action === "none") {
-        set(change, "skipped", edit.reason);
+        set(change, "skipped", basePath === undefined ? edit.reason : `${edit.reason} ${basePath}`);
+        if (basePath !== undefined) warn(basePath);
       } else {
         leaveToAgent(change, `OpsCrew did not create it: ${edit.reason}`, edit.reason);
       }
@@ -913,6 +919,16 @@ function artefactPaths(deps: PhaseDeps): string[] {
 }
 
 /** Names of the sub-folders of `dir` (`[]` when it is missing or unreadable). */
+/** A file's text, or undefined when it does not exist. */
+async function readIfExists(file: string): Promise<string | undefined> {
+  try {
+    return await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 async function subfolders(dir: string): Promise<string[]> {
   try {
     const entries = await readdir(dir, { withFileTypes: true });

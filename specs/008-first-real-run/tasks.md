@@ -65,7 +65,7 @@ description: "Tasks for 008-first-real-run"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T817 Converge fixes (templates, adapt, live test): Django builds without `STATIC_ROOT`; a Next.js `basePath` is handled or warned about for the health route; the runbook's SSH line works for `npx` users; the live domain pass asserts that the server address is in no committed file, commit message or pull request
+- [X] T817 Converge fixes (templates, adapt, live test): Django builds without `STATIC_ROOT`; a Next.js `basePath` is handled or warned about for the health route; the runbook's SSH line works for `npx` users; the live domain pass asserts that the server address is in no committed file, commit message or pull request
   - Owns: `packages/iac-templates/src/{docker,runbook}/**`, `packages/agents/src/adapt/**`, `packages/cli/test/live/live.test.ts`
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew`
   - Effort: medium

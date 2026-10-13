@@ -425,6 +425,7 @@ async function deployAndTearDown(
     expect(secure.output).toContain("SECURITY_REPORT.md");
     const drift = await opscrew("drift");
     expect(drift.exitCode, drift.output).toBe(0);
+    await expectAddressUnpublished(repo, repoName, env);
 
     if (options.afterDeploy !== undefined) {
       const paths = resolveProjectPaths(repo, { env });
@@ -482,6 +483,55 @@ async function deployAndTearDown(
       for (const p of involved)
         if (p !== live && appName !== undefined) await p.apiCleanup(appName);
     }
+  }
+}
+
+/**
+ * The server's address (from `.opscrew/server.json`) is in no commit message and no pull request
+ * title or body of the repository (any state), and, when the domain is behind Cloudflare's proxy,
+ * in no tracked file: a published origin address would let anyone go around Cloudflare.
+ */
+async function expectAddressUnpublished(
+  repo: string,
+  repoName: string,
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  const address = (await readServerAddresses(resolveProjectPaths(repo, { env }))).deployment;
+  expect(address, "the server's address is recorded in .opscrew/server.json").toBeDefined();
+  const needles = [address?.ipv4, address?.ipv6].filter((value): value is string => Boolean(value));
+  const git = (...args: string[]) => runner.run("git", ["-C", repo, ...args], { env });
+
+  const fetched = await git("fetch", "-q", "origin");
+  expect(fetched.exitCode, `git fetch: ${fetched.stderr}`).toBe(0);
+  const log = await git("log", "--all", "--format=%B");
+  expect(log.exitCode, `git log: ${log.stderr}`).toBe(0);
+  for (const needle of needles) {
+    expect(log.stdout.includes(needle), "the server address in a commit message").toBe(false);
+  }
+
+  for (let page = 1; ; page++) {
+    const pulls = await github(
+      "GET",
+      `/repos/${repoName}/pulls?state=all&per_page=100&page=${page}`,
+    );
+    expect(pulls.status, "list the pull requests").toBe(200);
+    const list = pulls.json as { number: number; title: string; body: string | null }[];
+    for (const pull of list) {
+      for (const needle of needles) {
+        expect(
+          `${pull.title}\n${pull.body ?? ""}`.includes(needle),
+          `the server address in pull request #${pull.number}`,
+        ).toBe(false);
+      }
+    }
+    if (list.length < 100) break;
+  }
+
+  const plan = await readArtifact("plan", join(repo, "opscrew/plan.yaml"));
+  if (plan.dns.provider === "cloudflare" && plan.dns.domain && plan.dns.proxied) {
+    const grep = await git("grep", "-n", "-F", ...needles.flatMap((needle) => ["-e", needle]));
+    // git grep exits 1 when nothing matches.
+    expect(grep.exitCode, `the server address in tracked files:\n${grep.stdout}`).toBe(1);
   }
 }
 

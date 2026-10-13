@@ -141,6 +141,33 @@ export function standaloneConfigEdit(input: StandaloneEditInput): StandaloneEdit
   };
 }
 
+/**
+ * The config's `basePath`, read with the same careful scan as the standalone edit: `none` when the
+ * exported object has no (or an empty) `basePath`, `literal` with its value when it is a plain
+ * string, and `unknown` when the file mentions `basePath` but OpsCrew cannot read it with certainty.
+ */
+export type BasePathScan =
+  | { kind: "none" }
+  | { kind: "literal"; value: string }
+  | { kind: "unknown" };
+
+/** The `basePath` a Next.js config sets (see {@link BasePathScan}); `path` gives its extension. */
+export function nextBasePath(path: string, content: string): BasePathScan {
+  if (!/\bbasePath\b/.test(content)) return { kind: "none" };
+  const ext = path.match(/\.(js|mjs|ts|cjs)$/)?.[1];
+  if (ext === undefined || /\r(?!\n)/.test(content)) return { kind: "unknown" };
+  const text = content.replace(/\r\n/g, "\n");
+  const found = findExportedObject(text, ext);
+  if (typeof found === "string") return { kind: "unknown" };
+  const scan = scanObject(text, found.open);
+  if (typeof scan === "string") return { kind: "unknown" };
+  const key = scan.keys.get("basePath");
+  if (key === undefined) return { kind: "none" };
+  const value = text.slice(key).match(/^\s*:\s*(["'`])([^"'`\n\\]*)\1\s*(?=[,}\n/])/)?.[2];
+  if (value === undefined) return { kind: "unknown" };
+  return value === "" ? { kind: "none" } : { kind: "literal", value };
+}
+
 function notes(name: string, created: boolean, tracing: boolean): string {
   const what = tracing
     ? 'output: "standalone" and outputFileTracingRoot (the repository root)'
