@@ -678,7 +678,7 @@ export class CloudflareClient {
   async domainSearch(accountId: string, query: string): Promise<DomainCheck[]> {
     const what = "search for domain names";
     const { status, body } = await this.#request(
-      this.#registrarPath(accountId, `/domain-search?${new URLSearchParams({ query })}`),
+      this.#registrarPath(accountId, `/domain-search?${new URLSearchParams({ q: query })}`),
     );
     if (!body.success || status >= 400) this.#fail(status, body, what, REGISTRAR_HINTS);
     const items = this.#parse(DomainListSchema, body.result, what);

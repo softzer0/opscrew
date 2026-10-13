@@ -214,7 +214,7 @@ describe("CloudflareClient registrar calls", () => {
     const { cf, calls } = client(
       {
         [`POST ${sandbox}/domain-check`]: ok([]),
-        [`GET ${sandbox}/domain-search?query=my+app`]: ok({ domains: [] }),
+        [`GET ${sandbox}/domain-search?q=my+app`]: ok({ domains: [] }),
         [`GET ${sandbox}/extensions/com`]: ok({}),
         [`POST ${sandbox}/registrations`]: ok({ domain_name: "a.com", state: "pending" }, 202),
         [`GET ${sandbox}/registrations/a.com/registration-status`]: ok({ state: "pending" }),
@@ -241,7 +241,7 @@ describe("CloudflareClient registrar calls", () => {
 
   it("searches cached suggestions", async () => {
     const { cf, calls } = client({
-      [`GET ${REG}/domain-search?query=coffee+shop`]: ok({
+      [`GET ${REG}/domain-search?q=coffee+shop`]: ok({
         domains: [
           { name: "coffeeshop.dev", pricing: pricing("12.00", "12.00") },
           { name: "coffee-shop.com", registrable: true, pricing: pricing("10.44", "10.44") },
@@ -682,7 +682,7 @@ describe("CloudflareRegistrar", () => {
         { name: "brew.dev", registrable: true, pricing: pricing("12.00", "12.00") },
         { name: "brew.com", registrable: false, reason: "domain_unavailable" },
       ]),
-      [`GET ${REG}/domain-search?query=brew`]: ok({
+      [`GET ${REG}/domain-search?q=brew`]: ok({
         domains: [{ name: "brew.dev" }, { name: "brew.com" }, { name: "brew.dev" }],
       }),
       [`POST ${REG}/registrations`]: ok({ domain_name: "brew.dev", state: "pending" }, 202),
@@ -722,7 +722,7 @@ describe("CloudflareRegistrar", () => {
   });
 
   it("skips the live check when there are no suggestions and validates years", async () => {
-    const { cf, calls } = client({ [`GET ${REG}/domain-search?query=zzz`]: ok([]) });
+    const { cf, calls } = client({ [`GET ${REG}/domain-search?q=zzz`]: ok([]) });
     const registrar = new CloudflareRegistrar(cf, ACCOUNT);
     expect(await registrar.suggest("zzz")).toEqual([]);
     expect(calls).toHaveLength(1);
