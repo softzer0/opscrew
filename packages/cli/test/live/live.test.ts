@@ -552,7 +552,13 @@ async function deployAndTearDown(
     expect(hash, "the plan hash is printed").toBeDefined();
     const applied = await opscrew("provision", "--approve", hash as string, "--yes");
     expect(applied.exitCode, applied.output).toBe(0);
-    const mergeSha = await mergePullRequest("opscrew/deploy-setup");
+    // OpsCrew picks the next free name (`opscrew/deploy-setup-2`) when an earlier pass's branch is
+    // still on GitHub, so take the branch provision created, like the adapt branch above.
+    const deployBranch = (
+      await git("for-each-ref", "--format=%(refname:short)", "refs/heads/opscrew/deploy-setup*")
+    ).split(/\r?\n/)[0];
+    expect(deployBranch, "provision created its deploy branch").toBeTruthy();
+    const mergeSha = await mergePullRequest(deployBranch as string);
 
     // The merge to main triggers the deploy workflow; wait for the run of that exact commit (a
     // run of an earlier pass on the same repository must never count, and the new run may take a
