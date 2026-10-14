@@ -53,6 +53,7 @@ async function everyPlan(): Promise<HostPlan[]> {
   const plans: HostPlan[] = [];
   const fresh = new FakeHost({ os: "debian-13", arch: "arm64" });
   fresh.packages.delete("ufw");
+  fresh.dpkgInterrupted = true;
   plans.push(
     planHost(await inspectHost(fresh), desiredFor(fresh, { portainer: portainerDesired() })),
   );
@@ -90,6 +91,7 @@ describe("generated scripts", () => {
       for (const key of allScripts(plan).keys()) keys.add(key.split("/").slice(0, 2).join("/"));
     expect([...keys].sort()).toEqual(
       [
+        "setup/package-repair",
         "setup/docker",
         "setup/docker-daemon",
         "setup/deploy-user",
@@ -350,12 +352,13 @@ ${catStub(content)}`;
 
   it("docker-daemon: never overwrites an existing daemon.json and restarts Docker only when idle", async () => {
     const { apply } = await stepOf((f) => desiredFor(f), "docker-daemon");
-    const body = apply.slice(apply.indexOf('if [ -e "$DAEMON_JSON" ]; then exit 0; fi'));
-    expect(body.length).toBeGreaterThan(0);
+    const start = apply.indexOf('if [ -e "$DAEMON_JSON" ] || own_settings; then exit 0; fi');
+    expect(start).toBeGreaterThan(0);
+    const body = apply.slice(start);
     expect(body.indexOf("exit 0")).toBeLessThan(body.indexOf('mv -f "$tmp" "$DAEMON_JSON"'));
     expect(body).toContain('dockerd --validate --config-file "$tmp"');
     expect(body).toMatch(
-      /if \[ -z "\$\(docker ps -q 2>\/dev\/null\)" \]; then\n {2}systemctl restart docker\nelse/,
+      /if busy; then[\s\S]*systemctl reload docker[\s\S]*else[\s\S]*systemctl restart docker/,
     );
   });
 

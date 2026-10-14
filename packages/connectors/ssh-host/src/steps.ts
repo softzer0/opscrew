@@ -35,7 +35,7 @@ import {
   RUNTIME_DIRS,
   SSHD_DROP_IN,
 } from "./facts";
-import { APT_FUNCTIONS, buildScript, type ScriptParams } from "./shell";
+import { APT_FUNCTIONS, APT_LOG, buildScript, type ScriptParams } from "./shell";
 import {
   ComposeTextSchema,
   type HostPlan,
@@ -137,8 +137,44 @@ verify_state || fail "$VERIFY_FAILED" 5`,
   );
 }
 
+/**
+ * A changing script. It ignores SIGHUP and SIGPIPE, so a dropped SSH session never stops it
+ * half-way (apt and dpkg keep going; their output goes to a log file, not the session).
+ */
 function applyScript(name: string, p: ScriptParams, helpers: string, body: string) {
-  return buildScript(`${name}.apply`, p, `${APT_FUNCTIONS}\n${helpers}\n${body}`);
+  return buildScript(`${name}.apply`, p, `trap '' HUP PIPE\n${APT_FUNCTIONS}\n${helpers}\n${body}`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// package-repair: finish an interrupted dpkg run before anything else uses apt
+
+function packageRepairScripts(): StepScripts {
+  const sp = { UPDATES: "/var/lib/dpkg/updates" };
+  const verify = `  [ -z "$(ls -A "$UPDATES" 2>/dev/null)" ]`;
+  const apply = `install -d -m 0700 "$(dirname '${APT_LOG}')"
+# Another apt run may still hold the lock (for example the one that was interrupted): wait for it.
+i=0
+until dpkg --configure -a >>'${APT_LOG}' 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -ge 60 ]; then
+    tail -n 5 '${APT_LOG}' >&2 || true
+    fail 'dpkg --configure -a did not finish; look at ${APT_LOG} on the server.'
+  fi
+  sleep 5
+done`;
+  return {
+    check: checkScript("package-repair", sp, "", verify, "echo prev.interrupted=true"),
+    apply: applyScript("package-repair", sp, "", apply),
+    verify: verifyScript(
+      "package-repair",
+      sp,
+      "",
+      verify,
+      "dpkg still reports an interrupted run.",
+    ),
+    doing: "finishing the interrupted package installation",
+    timeoutMs: 10 * MINUTE,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -181,21 +217,42 @@ if grep -qs 'download.docker.com' /etc/apt/sources.list /etc/apt/sources.list.d/
 [ "\${ID:-}" = "$DISTRO" ] || fail "This server no longer runs $DISTRO; inspect it again."
 codename="\${UBUNTU_CODENAME:-\${VERSION_CODENAME:-}}"
 [ -n "$codename" ] || fail 'OpsCrew could not read the release codename from /etc/os-release.'
+SOURCES=/etc/apt/sources.list.d/docker.sources
+KEY=/etc/apt/keyrings/docker.asc
+added_sources=no
+added_key=no
+# A failed install never leaves apt pointing at a repository OpsCrew just added.
+undo_repo() {
+  if [ "$added_sources" = yes ]; then rm -f "$SOURCES"; fi
+  if [ "$added_key" = yes ]; then rm -f "$KEY"; fi
+  if [ "$added_sources" = yes ]; then apt_get update >/dev/null 2>&1 || true; fi
+}
 if [ -n "$PACKAGES" ]; then
   if ! grep -qs 'download.docker.com' /etc/apt/sources.list /etc/apt/sources.list.d/*; then
     # Docker's apt repository, as Docker documents it (never the convenience script).
-    apt_get update
-    apt_get install ca-certificates curl
+    apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see ${APT_LOG} on the server.'
+    apt_get install ca-certificates curl || fail 'Installing ca-certificates and curl failed; see ${APT_LOG} on the server.'
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL "https://download.docker.com/linux/$DISTRO/gpg" -o /etc/apt/keyrings/docker.asc
-    chmod a+r /etc/apt/keyrings/docker.asc
+    if [ ! -e "$KEY" ]; then added_key=yes; fi
+    if ! curl -fsSL "https://download.docker.com/linux/$DISTRO/gpg" -o "$KEY"; then
+      undo_repo
+      fail "OpsCrew could not download Docker's signing key from download.docker.com; nothing was installed."
+    fi
+    chmod a+r "$KEY"
     arch=$(dpkg --print-architecture)
-    printf '%s\\n' 'Types: deb' "URIs: https://download.docker.com/linux/$DISTRO" "Suites: $codename" 'Components: stable' "Architectures: $arch" 'Signed-By: /etc/apt/keyrings/docker.asc' > /etc/apt/sources.list.d/docker.sources
-    chmod 0644 /etc/apt/sources.list.d/docker.sources
+    added_sources=yes
+    printf '%s\\n' 'Types: deb' "URIs: https://download.docker.com/linux/$DISTRO" "Suites: $codename" 'Components: stable' "Architectures: $arch" "Signed-By: $KEY" > "$SOURCES"
+    chmod 0644 "$SOURCES"
   fi
-  apt_get update
+  if ! apt_get update; then
+    undo_repo
+    fail "apt-get update failed with Docker's repository, so OpsCrew removed what it added; see ${APT_LOG} on the server."
+  fi
   # shellcheck disable=SC2086 # PACKAGES is a fixed, space-separated list.
-  apt_get install $PACKAGES
+  if ! apt_get install $PACKAGES; then
+    undo_repo
+    fail "Installing Docker failed, so OpsCrew removed the repository it added; see ${APT_LOG} on the server."
+  fi
 fi
 systemctl enable --now docker
 major=$(docker_major) || major=0
@@ -257,7 +314,7 @@ if getent group "$USER_NAME" >/dev/null 2>&1 && [ -z "$(getent group "$USER_NAME
   const helpers = `user_home() { getent passwd "$USER_NAME" | cut -d: -f6; }`;
   const verify = `  getent passwd "$USER_NAME" >/dev/null 2>&1 || return 1
   home=$(user_home)
-  grep -qxF -- "$PUBLIC_KEY" "$home/.ssh/authorized_keys" 2>/dev/null || return 1
+  [ "$(cat "$home/.ssh/authorized_keys" 2>/dev/null)" = "$PUBLIC_KEY" ] || return 1
   id -nG "$USER_NAME" | tr ' ' '\\n' | grep -qx docker || return 1`;
   const snapshot = `if getent passwd "$USER_NAME" >/dev/null 2>&1; then echo prev.existed=true; else echo prev.existed=false; fi
 if id -nG "$USER_NAME" 2>/dev/null | tr ' ' '\\n' | grep -qx docker; then echo prev.dockerGroup=true; else echo prev.dockerGroup=false; fi`;
@@ -269,13 +326,17 @@ if ! getent passwd "$USER_NAME" >/dev/null 2>&1; then
 fi
 home=$(user_home)
 if [ -z "$home" ] || [ "$home" = / ]; then fail "The $USER_NAME user has no home directory."; fi
+if [ -L "$home/.ssh" ]; then fail "$home/.ssh is a symbolic link; OpsCrew does not follow it."; fi
 install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$home/.ssh"
 keys="$home/.ssh/authorized_keys"
 if [ -L "$keys" ]; then fail "$keys is a symbolic link; OpsCrew does not follow it."; fi
-if [ ! -f "$keys" ]; then install -m 0600 -o "$USER_NAME" -g "$USER_NAME" /dev/null "$keys"; fi
-grep -qxF -- "$PUBLIC_KEY" "$keys" || printf '%s\\n' "$PUBLIC_KEY" >> "$keys"
-chown "$USER_NAME:$USER_NAME" "$keys"
-chmod 0600 "$keys"
+# OpsCrew created this user: its keys file holds exactly the current deploy key, so an old
+# deploy key stops working. Written beside the old file and renamed over it in one step.
+tmp=$(mktemp "$home/.ssh/.authorized_keys.XXXXXX")
+printf '%s\\n' "$PUBLIC_KEY" > "$tmp"
+chown "$USER_NAME:$USER_NAME" "$tmp"
+chmod 0600 "$tmp"
+mv -f "$tmp" "$keys"
 usermod -aG docker "$USER_NAME"`;
   return {
     check: checkScript("deploy-user", sp, helpers, verify, snapshot),
@@ -304,15 +365,21 @@ const SshdParams = z.object({
 const SSHD_RELOAD =
   "systemctl try-reload-or-restart ssh.service 2>/dev/null || systemctl try-reload-or-restart sshd.service";
 
-/** Dead-man capture shared by sshd setup and undo: restore the drop-in as it is right now. */
+/**
+ * Dead-man capture shared by sshd setup and undo: restore the drop-in as it is right now. The
+ * undo marks itself as fired first (so a cancel racing it knows), and brings a stopped or failed
+ * ssh unit back (reset-failed, then reload-or-restart; Debian/Ubuntu call it ssh.service).
+ */
 const SSHD_CAPTURE = `if [ -f ${SSHD_DROP_IN} ]; then cp -p ${SSHD_DROP_IN} ${DEAD_MAN_DIR}/sshd.prev; else rm -f ${DEAD_MAN_DIR}/sshd.prev; fi
 cat > ${DEAD_MAN_DIR}/sshd.undo.sh <<'OPSCREW_UNDO'
 #!/bin/sh
 # Written by OpsCrew: puts the previous SSH settings back.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+touch ${DEAD_MAN_DIR}/sshd.fired
 if [ -f ${DEAD_MAN_DIR}/sshd.prev ]; then cp -p ${DEAD_MAN_DIR}/sshd.prev ${SSHD_DROP_IN}; else rm -f ${SSHD_DROP_IN}; fi
-${SSHD_RELOAD} || true
+systemctl reset-failed ssh.service sshd.service >/dev/null 2>&1 || true
+systemctl reload-or-restart ssh.service >/dev/null 2>&1 || systemctl reload-or-restart sshd.service >/dev/null 2>&1 || true
 OPSCREW_UNDO`;
 
 function sshdScripts(purpose: HostPlan["purpose"], step: HostStep): StepScripts {
@@ -407,8 +474,16 @@ ${SSHD_RELOAD}`;
 // ---------------------------------------------------------------------------------------------
 // ufw
 
+const PortsOrEmptySchema = z.string().regex(/^(\d{1,5}( \d{1,5})*)?$/);
+const PolicySchema = z.enum(["", "allow", "deny", "reject"]);
+
 const UfwParams = z.object({
+  /** Every port SSH answers on (for the plan's text). */
   sshPorts: PortsSchema,
+  /** SSH ports no existing allow/limit rule covers yet: OpsCrew adds a rule for each. */
+  sshRulePorts: PortsOrEmptySchema,
+  /** Web rules (`80/tcp 443/tcp 443/udp`) no existing open rule covers yet. */
+  webRules: RulesSchema,
   web: z.boolean(),
   enable: z.boolean(),
   install: z.boolean(),
@@ -418,22 +493,47 @@ const UfwUndoParams = z.object({
   removeRules: RulesSchema,
   disable: z.boolean(),
   removePackage: z.boolean(),
+  defaultIncoming: PolicySchema,
+  defaultOutgoing: PolicySchema,
+  defaultRouted: PolicySchema,
 });
 
 const UFW_HELPERS = `ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
 ufw_added() { ufw show added 2>/dev/null || true; }
 has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
-has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }`;
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}`;
 
 function ufwScripts(purpose: HostPlan["purpose"], step: HostStep): StepScripts {
   const timer = "! systemctl is-active --quiet opscrew-undo-ufw.timer";
   if (purpose === "undo") {
     const p = params(step, UfwUndoParams);
-    const sp = { REMOVE_RULES: p.removeRules, DISABLE: p.disable, REMOVE_PACKAGE: p.removePackage };
+    const sp = {
+      REMOVE_RULES: p.removeRules,
+      DISABLE: p.disable,
+      REMOVE_PACKAGE: p.removePackage,
+      DEFAULT_INCOMING: p.defaultIncoming,
+      DEFAULT_OUTGOING: p.defaultOutgoing,
+      DEFAULT_ROUTED: p.defaultRouted,
+    };
     const verify = `  if ! command -v ufw >/dev/null 2>&1; then return 0; fi
   ADDED=$(ufw_added)
   for r in $REMOVE_RULES; do if has_rule "$r"; then return 1; fi; done
   if [ "$DISABLE" = true ] && ufw_active; then return 1; fi
+  if [ -n "$DEFAULT_INCOMING" ] && [ "$(ufw_policy INPUT)" != "$DEFAULT_INCOMING" ]; then return 1; fi
+  if [ -n "$DEFAULT_OUTGOING" ] && [ "$(ufw_policy OUTPUT)" != "$DEFAULT_OUTGOING" ]; then return 1; fi
+  if [ -n "$DEFAULT_ROUTED" ] && [ "$(ufw_policy FORWARD)" != "$DEFAULT_ROUTED" ]; then return 1; fi
   ${timer}`;
     const capture = `ADDED=$(ufw_added)
 was_active=no
@@ -442,11 +542,17 @@ if ufw_active; then was_active=yes; fi
   echo '#!/bin/sh'
   echo '# Written by OpsCrew: puts back the firewall rules OpsCrew was removing.'
   echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH'
+  echo 'touch ${DEAD_MAN_DIR}/ufw.fired'
+  policy_lines
   for r in $REMOVE_RULES; do if has_rule "$r"; then echo "ufw allow $r >/dev/null 2>&1 || true"; fi; done
   if [ "$was_active" = yes ]; then echo 'ufw --force enable >/dev/null 2>&1 || true'; fi
 } > ${DEAD_MAN_DIR}/ufw.undo.sh`;
     const apply = `command -v ufw >/dev/null 2>&1 || exit 0
 for r in $REMOVE_RULES; do ufw --force delete allow "$r" >/dev/null 2>&1 || true; done
+# The default policies OpsCrew set when it turned ufw on go back to what they were.
+if [ -n "$DEFAULT_INCOMING" ]; then ufw default "$DEFAULT_INCOMING" incoming >/dev/null; fi
+if [ -n "$DEFAULT_OUTGOING" ]; then ufw default "$DEFAULT_OUTGOING" outgoing >/dev/null; fi
+if [ -n "$DEFAULT_ROUTED" ]; then ufw default "$DEFAULT_ROUTED" routed >/dev/null; fi
 if [ "$DISABLE" = true ]; then ufw --force disable >/dev/null; fi`;
     return {
       check: checkScript(
@@ -479,26 +585,33 @@ if [ "$DISABLE" = true ]; then ufw --force disable >/dev/null; fi`;
   }
   const p = params(step, UfwParams);
   const sp = {
-    SSH_PORTS: p.sshPorts,
+    SSH_PORTS: p.sshRulePorts,
+    WEB_ADD: p.webRules,
     WEB: p.web,
     ENABLE: p.enable,
     WEB_RULES: WEB_RULES.join(" "),
     SSH_COMMENT: UFW_SSH_COMMENT,
     WEB_COMMENT: UFW_WEB_COMMENT,
   };
+  // SSH_PORTS and WEB_ADD hold only what no existing rule covers (the plan worked that out from
+  // the rules on the server, including source-limited and "limit" rules).
   const verify = `  command -v ufw >/dev/null 2>&1 || return 1
   ufw_active || return 1
   ADDED=$(ufw_added)
   for port in $SSH_PORTS; do has_rule "$port/tcp" || return 1; done
-  for r in $WEB_RULES; do
-    if [ "$WEB" = true ]; then has_rule "$r" || return 1
-    elif has_own_rule "$r" "$WEB_COMMENT"; then return 1; fi
-  done
+  for r in $WEB_ADD; do has_rule "$r" || return 1; done
+  if [ "$WEB" != true ]; then
+    for r in $WEB_RULES; do if has_own_rule "$r" "$WEB_COMMENT"; then return 1; fi; done
+  fi
   ${timer}`;
   const snapshot = `if command -v ufw >/dev/null 2>&1; then echo prev.installed=true; else echo prev.installed=false; fi
 if ufw_active; then echo prev.active=true; else echo prev.active=false; fi
-echo "prev.rules=$(ufw_added | sed -n -e "s/^ufw //" -e "s/ comment '.*'\\$//" -e '/^[a-z]/p' | tr '\\n' ',' | sed 's/,$//')"`;
-  // The undo the dead-man runs: delete the rules this change adds, turn ufw off if it was off.
+echo "prev.rules=$(ufw_added | sed -n -e "s/^ufw //" -e "s/ comment '.*'\\$//" -e '/^[a-z]/p' | tr '\\n' ',' | sed 's/,$//')"
+echo "prev.defaultIncoming=$(ufw_policy INPUT)"
+echo "prev.defaultOutgoing=$(ufw_policy OUTPUT)"
+echo "prev.defaultRouted=$(ufw_policy FORWARD)"`;
+  // The undo the dead-man runs: delete the rules this change adds, put the default policies back
+  // and turn ufw off if it was off.
   const capture = `ADDED=$(ufw_added)
 was_active=no
 if ufw_active; then was_active=yes; fi
@@ -506,12 +619,14 @@ if ufw_active; then was_active=yes; fi
   echo '#!/bin/sh'
   echo '# Written by OpsCrew: puts the previous firewall state back.'
   echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH'
+  echo 'touch ${DEAD_MAN_DIR}/ufw.fired'
   if [ "$was_active" = no ]; then echo 'ufw --force disable >/dev/null 2>&1 || true'; fi
+  policy_lines
   for port in $SSH_PORTS; do if ! has_rule "$port/tcp"; then echo "ufw --force delete allow $port/tcp >/dev/null 2>&1 || true"; fi; done
-  for r in $WEB_RULES; do
-    if [ "$WEB" = true ] && ! has_rule "$r"; then echo "ufw --force delete allow $r >/dev/null 2>&1 || true"; fi
-    if [ "$WEB" != true ] && has_own_rule "$r" "$WEB_COMMENT"; then echo "ufw allow $r comment '$WEB_COMMENT' >/dev/null 2>&1 || true"; fi
-  done
+  for r in $WEB_ADD; do if ! has_rule "$r"; then echo "ufw --force delete allow $r >/dev/null 2>&1 || true"; fi; done
+  if [ "$WEB" != true ]; then
+    for r in $WEB_RULES; do if has_own_rule "$r" "$WEB_COMMENT"; then echo "ufw allow $r comment '$WEB_COMMENT' >/dev/null 2>&1 || true"; fi; done
+  fi
 } > ${DEAD_MAN_DIR}/ufw.undo.sh`;
   const apply = `command -v ufw >/dev/null 2>&1 || fail 'ufw is not installed.'
 ADDED=$(ufw_added)
@@ -519,14 +634,15 @@ ADDED=$(ufw_added)
 for port in $SSH_PORTS; do
   if ! has_rule "$port/tcp"; then ufw allow "$port/tcp" comment "$SSH_COMMENT" >/dev/null; fi
 done
-for r in $WEB_RULES; do
-  if [ "$WEB" = true ]; then
-    if ! has_rule "$r"; then ufw allow "$r" comment "$WEB_COMMENT" >/dev/null; fi
-  elif has_own_rule "$r" "$WEB_COMMENT"; then
-    # Tunnel mode: remove web rules OpsCrew added earlier, never the server's own.
-    ufw --force delete allow "$r" >/dev/null
-  fi
+for r in $WEB_ADD; do
+  if ! has_rule "$r"; then ufw allow "$r" comment "$WEB_COMMENT" >/dev/null; fi
 done
+if [ "$WEB" != true ]; then
+  # Tunnel mode: remove web rules OpsCrew added earlier, never the server's own.
+  for r in $WEB_RULES; do
+    if has_own_rule "$r" "$WEB_COMMENT"; then ufw --force delete allow "$r" >/dev/null; fi
+  done
+fi
 if [ "$ENABLE" = true ] && ! ufw_active; then
   ufw default deny incoming >/dev/null
   ufw default allow outgoing >/dev/null
@@ -650,9 +766,18 @@ fi`,
       timeoutMs: 2 * MINUTE,
     };
   }
-  // The user's own daemon.json counts as in place: OpsCrew never overwrites it.
-  const verify = `  [ -f "$DAEMON_JSON" ]`;
-  const apply = `if [ -e "$DAEMON_JSON" ]; then exit 0; fi
+  // The user's own settings count as in place and are never overwritten: their daemon.json,
+  // the same options given as dockerd flags (Docker refuses to start when a flag and daemon.json
+  // set the same option), or an active Swarm (which does not allow live-restore).
+  const setupHelpers = `${helpers}
+own_settings() {
+  if systemctl show -p ExecStart docker 2>/dev/null | grep -Eq -- '--(log-driver|log-opt|live-restore|no-new-privileges)'; then return 0; fi
+  if systemctl is-active --quiet docker && [ "$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null)" = active ]; then return 0; fi
+  return 1
+}
+busy() { systemctl is-active --quiet docker && [ -n "$(docker ps -q 2>/dev/null)" ]; }`;
+  const verify = `  [ -f "$DAEMON_JSON" ] || own_settings`;
+  const apply = `if [ -e "$DAEMON_JSON" ] || own_settings; then exit 0; fi
 install -d -m 0755 /etc/docker
 tmp=$(mktemp /etc/docker/.daemon.XXXXXX)
 printf '%s' "$CONTENT_B64" | base64 -d > "$tmp"
@@ -661,26 +786,36 @@ if command -v dockerd >/dev/null 2>&1 && ! dockerd --validate --config-file "$tm
   rm -f "$tmp"
   fail 'Docker rejected the daemon settings, so OpsCrew left Docker as it was.'
 fi
-mv -f "$tmp" "$DAEMON_JSON"
-if [ -z "$(docker ps -q 2>/dev/null)" ]; then
-  systemctl restart docker
-else
+if busy; then
   # Running containers keep running: reload now; the rest applies at Docker's next restart.
-  systemctl reload docker
+  mv -f "$tmp" "$DAEMON_JSON"
+  if ! systemctl reload docker; then
+    rm -f "$DAEMON_JSON"
+    systemctl reload docker >/dev/null 2>&1 || true
+    fail 'Docker did not accept the new settings, so OpsCrew removed them again; Docker runs as before.'
+  fi
+else
+  mv -f "$tmp" "$DAEMON_JSON"
+  if ! systemctl restart docker; then
+    rm -f "$DAEMON_JSON"
+    systemctl reset-failed docker >/dev/null 2>&1 || true
+    systemctl restart docker >/dev/null 2>&1 || true
+    fail 'Docker did not start with the new settings, so OpsCrew removed them again and restarted Docker as before.'
+  fi
 fi`;
   return {
     check: checkScript(
       "docker-daemon",
       sp,
-      helpers,
+      setupHelpers,
       verify,
       `if [ -e "$DAEMON_JSON" ]; then echo prev.file=present; else echo prev.file=absent; fi`,
     ),
-    apply: applyScript("docker-daemon", sp, helpers, apply),
+    apply: applyScript("docker-daemon", sp, setupHelpers, apply),
     verify: verifyScript(
       "docker-daemon",
       sp,
-      helpers,
+      setupHelpers,
       verify,
       "/etc/docker/daemon.json is missing.",
     ),
@@ -765,48 +900,92 @@ done`;
 }
 
 // ---------------------------------------------------------------------------------------------
+// Removing a Compose project (the app at teardown, the add-ons)
+
+/**
+ * `remove_project <project> <compose file> <project dir> <delete data true|false>`: through the
+ * project's own compose file when it is there (never a compose file from the login's working
+ * directory), then whatever still carries the project's label: containers, networks and, only
+ * when deleting data, volumes. `project_gone <project> <volumes too>` checks the result.
+ */
+const PROJECT_HELPERS = `label_ids() {
+  docker "$1" ls -q --filter "label=com.docker.compose.project=$2" 2>/dev/null || true
+}
+remove_project() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  if ! systemctl is-active --quiet docker; then
+    systemctl start docker >/dev/null 2>&1 || fail 'Docker is not running, so OpsCrew cannot remove the containers. Start Docker, then try again.'
+  fi
+  if [ -f "$2" ]; then
+    if [ "$4" = true ]; then
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans --volumes >/dev/null 2>&1 || true
+    else
+      docker compose -p "$1" --project-directory "$3" -f "$2" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null) || ids=''
+  # shellcheck disable=SC2086 # ids are one word each.
+  if [ -n "$ids" ]; then docker rm -f $ids >/dev/null; fi
+  nets=$(label_ids network "$1")
+  # shellcheck disable=SC2086
+  if [ -n "$nets" ]; then docker network rm $nets >/dev/null 2>&1 || true; fi
+  if [ "$4" = true ]; then
+    vols=$(label_ids volume "$1")
+    # shellcheck disable=SC2086
+    if [ -n "$vols" ]; then docker volume rm $vols >/dev/null; fi
+  fi
+  return 0
+}
+project_gone() {
+  if ! command -v docker >/dev/null 2>&1; then return 0; fi
+  systemctl is-active --quiet docker || return 1
+  [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$1" 2>/dev/null)" ] || return 1
+  if [ "$2" = true ]; then [ -z "$(label_ids volume "$1")" ] || return 1; fi
+  return 0
+}`;
+
+// ---------------------------------------------------------------------------------------------
 // runtime-dirs
 
 function runtimeScripts(plan: HostPlan, step: HostStep): StepScripts {
   if (plan.purpose === "teardown") {
     const p = params(step, z.object({ app: AppNameSchema, deleteData: z.boolean() }));
-    const sp = { APP: p.app, DELETE_DATA: p.deleteData };
-    const verify = `  if command -v docker >/dev/null 2>&1; then
-    [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$APP" 2>/dev/null)" ] || return 1
-  fi
-  if [ -d /srv/app ] && [ -n "$(ls -A /srv/app)" ]; then return 1; fi
-  if [ "$DELETE_DATA" = true ] && [ -d /srv/data ] && [ -n "$(ls -A /srv/data)" ]; then return 1; fi
+    const sp = {
+      APP: p.app,
+      DELETE_DATA: p.deleteData,
+      APP_DIR: "/srv/app",
+      APP_COMPOSE: "/srv/app/compose.yaml",
+      DATA_DIR: "/srv/data",
+    };
+    const verify = `  project_gone "$APP" "$DELETE_DATA" || return 1
+  if [ -d "$APP_DIR" ] && [ -n "$(ls -A "$APP_DIR")" ]; then return 1; fi
+  if [ "$DELETE_DATA" = true ] && [ -d "$DATA_DIR" ] && [ -n "$(ls -A "$DATA_DIR")" ]; then return 1; fi
   return 0`;
-    const apply = `for d in ${RUNTIME_DIRS.join(" ")}; do
+    const apply = `for d in "$APP_DIR" "$DATA_DIR"; do
   if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
 done
-if command -v docker >/dev/null 2>&1; then
-  if [ "$DELETE_DATA" = true ]; then docker compose -p "$APP" down --remove-orphans --volumes >/dev/null 2>&1 || true
-  else docker compose -p "$APP" down --remove-orphans >/dev/null 2>&1 || true; fi
-  left=$(docker ps -aq --filter "label=com.docker.compose.project=$APP") || left=''
-  if [ -n "$left" ]; then
-    # shellcheck disable=SC2086 # container ids are one word each.
-    docker rm -f $left >/dev/null
-  fi
-fi
-if [ -d /srv/app ]; then find /srv/app -xdev -mindepth 1 -delete; fi
-if [ "$DELETE_DATA" = true ] && [ -d /srv/data ]; then find /srv/data -xdev -mindepth 1 -delete; fi`;
+remove_project "$APP" "$APP_COMPOSE" "$APP_DIR" "$DELETE_DATA"
+if [ -d "$APP_DIR" ]; then find "$APP_DIR" -xdev -mindepth 1 -delete; fi
+if [ "$DELETE_DATA" = true ] && [ -d "$DATA_DIR" ]; then find "$DATA_DIR" -xdev -mindepth 1 -delete; fi
+if [ "$DELETE_DATA" = true ] && ! project_gone "$APP" true; then
+  fail 'Some Docker volumes of the app could not be removed.'
+fi`;
     return {
       check: checkScript(
         "runtime-dirs.teardown",
         sp,
-        "",
+        PROJECT_HELPERS,
         verify,
-        `echo "prev.appFiles=$(ls -A /srv/app 2>/dev/null | wc -l)"
-echo "prev.dataFiles=$(ls -A /srv/data 2>/dev/null | wc -l)"`,
+        `echo "prev.appFiles=$(ls -A "$APP_DIR" 2>/dev/null | wc -l)"
+echo "prev.dataFiles=$(ls -A "$DATA_DIR" 2>/dev/null | wc -l)"`,
       ),
-      apply: applyScript("runtime-dirs.teardown", sp, "", apply),
+      apply: applyScript("runtime-dirs.teardown", sp, PROJECT_HELPERS, apply),
       verify: verifyScript(
         "runtime-dirs.teardown",
         sp,
-        "",
+        PROJECT_HELPERS,
         verify,
-        "Some of the app's containers or files are still on the server.",
+        "Some of the app's containers, volumes or files are still on the server.",
       ),
       doing: "removing the app's containers and files",
       timeoutMs: 10 * MINUTE,
@@ -900,7 +1079,7 @@ function markerScripts(plan: HostPlan, step: HostStep): StepScripts {
         "",
         `if [ -e "$MARKER_PATH" ]; then fail 'An OpsCrew app is still on this server; remove it first.'; fi
 rm -f "$READY_FLAG"
-rm -rf "$OPSCREW_DIR"`,
+rm -rf "$OPSCREW_DIR" "$(dirname '${APT_LOG}')"`,
       ),
       verify: verifyScript("app-marker.undo", sp, "", verify, `${OPSCREW_DIR} is still there.`),
       doing: "removing OpsCrew's records",
@@ -985,37 +1164,19 @@ function removeAddonScripts(
 ): StepScripts {
   const sp = { DIR: dir, PROJECT: project, DELETE_DATA: deleteData, ADDONS_ROOT, RUN_AS: runAs };
   const verify = `  [ ! -e "$DIR" ] || return 1
-  if command -v docker >/dev/null 2>&1; then
-    [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null)" ] || return 1
-    if [ "$DELETE_DATA" = true ]; then [ -z "$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT" 2>/dev/null)" ] || return 1; fi
-  fi
+  project_gone "$PROJECT" "$DELETE_DATA" || return 1
   return 0`;
-  const apply = `if command -v docker >/dev/null 2>&1; then
-  if [ "$DELETE_DATA" = true ]; then docker compose -p "$PROJECT" down --remove-orphans --volumes >/dev/null 2>&1 || true
-  else docker compose -p "$PROJECT" down --remove-orphans >/dev/null 2>&1 || true; fi
-  left=$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT") || left=''
-  if [ -n "$left" ]; then
-    # shellcheck disable=SC2086 # container ids are one word each.
-    docker rm -f $left >/dev/null
-  fi
-  if [ "$DELETE_DATA" = true ]; then
-    vols=$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT") || vols=''
-    if [ -n "$vols" ]; then
-      # shellcheck disable=SC2086 # volume names are one word each.
-      docker volume rm $vols >/dev/null
-    fi
-  fi
-fi
+  const apply = `remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" "$DELETE_DATA"
 rm -rf "$DIR"
 # OpsCrew's shared parent goes too once it is empty.
 if [ "$RUN_AS" = root ] && [ -d "$ADDONS_ROOT" ] && [ -z "$(ls -A "$ADDONS_ROOT")" ]; then rmdir "$ADDONS_ROOT"; fi`;
   return {
-    check: checkScript(`${name}.remove`, sp, "", verify, ""),
-    apply: applyScript(`${name}.remove`, sp, "", apply),
+    check: checkScript(`${name}.remove`, sp, PROJECT_HELPERS, verify, ""),
+    apply: applyScript(`${name}.remove`, sp, PROJECT_HELPERS, apply),
     verify: verifyScript(
       `${name}.remove`,
       sp,
-      "",
+      PROJECT_HELPERS,
       verify,
       `OpsCrew's ${name} is still on the server.`,
     ),
@@ -1286,6 +1447,8 @@ function dockerUndoScripts(): StepScripts {
 export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
   const id: HostStepId = step.id;
   switch (id) {
+    case "package-repair":
+      return packageRepairScripts();
     case "docker":
       return plan.purpose === "setup" ? dockerScripts(step) : dockerUndoScripts();
     case "docker-daemon":
@@ -1340,23 +1503,30 @@ systemctl stop "$UNIT.service" >/dev/null 2>&1 || true
 systemctl reset-failed "$UNIT.timer" "$UNIT.service" >/dev/null 2>&1 || true
 ${capture}
 chmod 0700 "${DEAD_MAN_DIR}/$STEP.undo.sh"
+# The undo touches $STEP.fired first, so a cancel racing it can tell.
+rm -f "${DEAD_MAN_DIR}/$STEP.fired"
 systemd-run --quiet --unit="$UNIT" --on-active="\${DELAY}s" --timer-property=AccuracySec=1s /bin/sh "${DEAD_MAN_DIR}/$STEP.undo.sh"
 systemctl is-active --quiet "$UNIT.timer" || fail 'OpsCrew could not schedule the automatic undo, so it changed nothing.'
 echo armed`,
   );
 }
 
-/** Cancels the scheduled undo; prints `cancelled`, or `fired` when it already ran. */
+/**
+ * Cancels the scheduled undo; prints `cancelled`, or `fired` when it already ran (or started).
+ * Stopping the timer cannot stop an undo that has begun, so the cancel waits for a running undo
+ * to finish and then asks the `$STEP.fired` mark the undo leaves first.
+ */
 export function cancelScript(step: GuardedStep): string {
   return buildScript(
     `deadman.cancel.${step}`,
     { STEP: step, UNIT: deadManUnit(step) },
-    `if systemctl is-active --quiet "$UNIT.timer"; then
-  systemctl stop "$UNIT.timer"
-  result=cancelled
-else
-  result=fired
-fi
+    `systemctl stop "$UNIT.timer" >/dev/null 2>&1 || true
+i=0
+while systemctl is-active --quiet "$UNIT.service" && [ "$i" -lt 60 ]; do
+  i=$((i + 1))
+  sleep 1
+done
+if [ -e "${DEAD_MAN_DIR}/$STEP.fired" ]; then result=fired; else result=cancelled; fi
 rm -f "${DEAD_MAN_DIR}/$STEP".*
 echo "$result"`,
   );
@@ -1371,6 +1541,16 @@ export function triggerScript(step: GuardedStep): string {
 systemctl stop "$UNIT.timer" >/dev/null 2>&1 || true
 rm -f "${DEAD_MAN_DIR}/$STEP".*
 echo restored`,
+  );
+}
+
+/** Read-only: prints `/etc/opscrew/app.json` (the app the server belongs to), or nothing. */
+export function readMarkerScript(): string {
+  return buildScript(
+    "marker.read",
+    { MARKER_PATH },
+    `if [ -f "$MARKER_PATH" ]; then cat "$MARKER_PATH"; fi`,
+    { tolerant: true },
   );
 }
 

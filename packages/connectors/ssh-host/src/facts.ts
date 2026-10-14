@@ -133,6 +133,10 @@ export const HostFactsSchema = z.object({
     ufw: z.enum(["absent", "inactive", "active"]),
     /** `ufw show added` rules without the `ufw ` prefix, e.g. `allow 22/tcp`. */
     ufwRules: z.array(z.object({ rule: z.string(), comment: z.string().nullable() })),
+    /** Default policies from `/etc/default/ufw` (`allow`, `deny`, `reject`), null when unknown. */
+    ufwDefaults: z
+      .object({ incoming: z.string(), outgoing: z.string(), routed: z.string() })
+      .nullable(),
     /** Plain descriptions of other firewalls found (firewalld, nftables, iptables rules). */
     foreign: z.array(z.string()),
   }),
@@ -147,8 +151,24 @@ export const HostFactsSchema = z.object({
     conflicting: z.array(z.string()),
     /** apt source files that point at download.docker.com. */
     sources: z.array(z.string()),
+    /** dockerd flags in its unit (`--log-driver`, ...) that daemon.json would duplicate. */
+    daemonFlags: z.array(z.string()),
+    /** The node is part of an active Swarm (live-restore cannot be used). */
+    swarm: z.boolean(),
   }),
-  containers: z.array(z.object({ name: z.string(), project: z.string(), ports: z.string() })),
+  /** All containers (running or not) with their Compose project label. */
+  containers: z.array(
+    z.object({ name: z.string(), project: z.string(), ports: z.string(), running: z.boolean() }),
+  ),
+  /** Compose projects that own at least one volume. */
+  volumeProjects: z.array(z.string()),
+  /**
+   * Ways users log in that OpsCrew cannot see keys or passwords for (directory services in
+   * nsswitch or PAM, sshd's AuthorizedKeysCommand). Turning passwords off needs an explicit choice.
+   */
+  directoryLogins: z.array(z.string()),
+  /** dpkg was interrupted (`/var/lib/dpkg/updates` is not empty). */
+  dpkgInterrupted: z.boolean(),
   /** Login users (root and uid >= 1000 with a login shell). */
   loginUsers: z.array(
     z.object({

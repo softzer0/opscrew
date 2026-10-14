@@ -22,7 +22,7 @@ import {
 } from "./constants";
 import { type HostFacts, HostFactsSchema, type HostRecordEntry, RUNTIME_DIRS } from "./facts";
 import { findings } from "./findings";
-import { isLoopback, majorOf, publishesPort } from "./parse";
+import { isLoopback, majorOf, publishesPort, ufwRuleCovers } from "./parse";
 import {
   type DesiredHost,
   DesiredHostSchema,
@@ -310,6 +310,18 @@ function dockerStep({ facts, found }: SetupContext): HostStep {
   }
 }
 
+/** An interrupted dpkg run (a dropped connection during apt) is finished first, as its own step. */
+function packageRepairStep(facts: HostFacts): HostStep | undefined {
+  if (!facts.dpkgInterrupted) return undefined;
+  return step(
+    "package-repair",
+    "Finish the interrupted package installation (dpkg --configure -a)",
+    "change",
+    {},
+    "A package installation on this server stopped part-way (for example because a connection dropped); apt refuses to install anything until it is finished.",
+  );
+}
+
 function dockerDaemonStep({ facts }: SetupContext): HostStep {
   const title = "Docker daemon settings: log rotation, no-new-privileges, live-restore";
   const params = { path: "/etc/docker/daemon.json" };
@@ -325,7 +337,20 @@ function dockerDaemonStep({ facts }: SetupContext): HostStep {
       "This server already has its own /etc/docker/daemon.json, so OpsCrew kept your Docker settings and changes nothing there.",
     );
   }
-  const busy = facts.containers.length > 0;
+  // Settings given as dockerd flags would clash with the same keys in daemon.json (Docker then
+  // refuses to start), and live-restore cannot be used in Swarm mode: those are the user's own.
+  if (facts.docker.daemonFlags.length > 0 || facts.docker.swarm) {
+    return step(
+      "docker-daemon",
+      title,
+      "in-place",
+      params,
+      facts.docker.swarm
+        ? "This server is part of a Docker Swarm, which does not allow live-restore, so OpsCrew kept your Docker settings and writes no daemon.json."
+        : `Docker is started with its own settings (${facts.docker.daemonFlags.join(", ")}), so OpsCrew kept your Docker settings and writes no daemon.json.`,
+    );
+  }
+  const busy = facts.containers.some((container) => container.running);
   return step(
     "docker-daemon",
     `Write /etc/docker/daemon.json: ${title.slice("Docker daemon settings: ".length)}`,
@@ -385,9 +410,11 @@ function deployUserStep({ facts, desired, found }: SetupContext): HostStep {
       "A deploy user exists that OpsCrew did not create.",
     );
   }
+  // OpsCrew owns this user, so its authorized_keys holds exactly the current deploy key.
+  const onlyKey = existing.keys.length === 1 && existing.keys[0] === desired.deploy.publicKey;
   const hasKey = existing.keys.some((line) => keyId(line) === keyId(desired.deploy.publicKey));
   const inDocker = existing.groups.includes("docker");
-  if (hasKey && inDocker) {
+  if (onlyKey && inDocker) {
     return step(
       "deploy-user",
       TITLES.deployUser,
@@ -401,7 +428,11 @@ function deployUserStep({ facts, desired, found }: SetupContext): HostStep {
     "Give the deploy user the deploy key and Docker access",
     "change",
     params,
-    `The deploy user ${hasKey ? "is not in the docker group" : "does not have the current deploy key"}.`,
+    !inDocker && onlyKey
+      ? "The deploy user is not in the docker group."
+      : hasKey
+        ? "authorized_keys is rewritten with exactly the current deploy key (other keys are revoked)."
+        : "The deploy key changed: authorized_keys is rewritten with the new key, so the old one stops working.",
   );
 }
 
@@ -421,17 +452,22 @@ function sshdStep({ facts, desired, found }: SetupContext): HostStep {
   const lacking = facts.loginUsers
     .filter((user) => user.uid !== 0 && user.password && !user.keys)
     .map((user) => user.name);
+  // Directory users (SSSD, LDAP, Kerberos, Winbind) have passwords and keys OpsCrew cannot see.
+  const directory = facts.directoryLogins;
   let disablePasswords: boolean;
-  if (lacking.length === 0) disablePasswords = true;
+  if (lacking.length === 0 && directory.length === 0) disablePasswords = true;
   else if (desired.disablePasswords !== undefined) disablePasswords = desired.disablePasswords;
   else {
-    found.push(findings.passwordUsersWithoutKeys(lacking));
+    if (lacking.length > 0) found.push(findings.passwordUsersWithoutKeys(lacking));
+    if (directory.length > 0) found.push(findings.directoryLogins(directory));
     return step(
       "sshd",
       TITLES.sshd,
       "blocked",
       { permitRootLogin },
-      `${lacking.join(", ")} log${lacking.length === 1 ? "s" : ""} in with a password and no SSH key; password logins stay as they are until you choose.`,
+      lacking.length > 0
+        ? `${lacking.join(", ")} log${lacking.length === 1 ? "s" : ""} in with a password and no SSH key; password logins stay as they are until you choose.`
+        : "Users from a directory service may log in with passwords; password logins stay as they are until you choose.",
     );
   }
   const kbdInteractiveOff = disablePasswords && sshd.authenticationMethods === "any";
@@ -484,8 +520,40 @@ function ufwStep({ facts, desired, found }: SetupContext): HostStep {
   const web = desired.access === "public";
   const portText = sshPorts.join(", ");
   const allowed = web ? `SSH (port ${portText}), HTTP and HTTPS` : `SSH (port ${portText})`;
+  const covering = (port: number, proto: "tcp" | "udp") =>
+    facts.firewall.ufwRules
+      .map((rule) => ({ rule: rule.rule, ...ufwRuleCovers(rule.rule, port, proto) }))
+      .filter((coverage) => coverage.covers);
+  const notes: string[] = [];
+  // An existing allow/limit rule for the SSH port counts. In tunnel mode any covering rule is
+  // enough (the tunnel reaches SSH on localhost); in public mode GitHub Actions connects from
+  // changing addresses, so the port must be open to every address.
+  const sshRulePorts = sshPorts.filter((port) => {
+    const rules = covering(port, "tcp");
+    if (!web) return rules.length === 0;
+    const open = rules.filter((rule) => !rule.limitedSource);
+    if (open.length === 0 && rules.length > 0) {
+      notes.push(
+        `Your firewall lets SSH (port ${port}) in only from some addresses (${rules.map((rule) => rule.rule).join("; ")}); OpsCrew's rule opens it to every address, because GitHub Actions deploys over SSH from changing addresses.`,
+      );
+    }
+    if (open.length > 0 && open.every((rule) => rule.rateLimited)) {
+      notes.push(
+        `Your "limit" rule rate-limits SSH on port ${port} (6 connections in 30 seconds per address); a deploy opens several SSH connections in a row.`,
+      );
+    }
+    return open.length === 0;
+  });
+  const webRules = web
+    ? WEB_RULES.filter((rule) => {
+        const [port, proto] = rule.split("/") as [string, "tcp" | "udp"];
+        return !covering(Number(port), proto).some((coverage) => !coverage.limitedSource);
+      })
+    : [];
   const params = {
     sshPorts: sshPorts.join(" "),
+    sshRulePorts: sshRulePorts.join(" "),
+    webRules: webRules.join(" "),
     web,
     enable: facts.firewall.ufw !== "active",
     install: facts.firewall.ufw === "absent",
@@ -494,14 +562,10 @@ function ufwStep({ facts, desired, found }: SetupContext): HostStep {
     found.push(findings.otherFirewall(facts.firewall.foreign));
     return step("ufw", TITLES.ufw, "blocked", params, "Another firewall manages this server.");
   }
-  const rules = new Set(facts.firewall.ufwRules.map((rule) => rule.rule));
-  const missing = [
-    ...sshPorts.map((port) => `allow ${port}/tcp`),
-    ...(web ? WEB_RULES.map((rule) => `allow ${rule}`) : []),
-  ].filter((rule) => !rules.has(rule));
   const staleWeb = web
     ? []
     : facts.firewall.ufwRules.filter((rule) => rule.comment === UFW_WEB_COMMENT);
+  const missing = [...sshRulePorts, ...webRules];
   if (facts.firewall.ufw === "active" && missing.length === 0 && staleWeb.length === 0) {
     if (!facts.pendingUndo.ufw) {
       return step("ufw", `Firewall (ufw) allows ${allowed}`, "in-place", params, "Already set.");
@@ -525,7 +589,7 @@ function ufwStep({ facts, desired, found }: SetupContext): HostStep {
     what,
     "change",
     params,
-    `${params.install ? "ufw is installed first. " : ""}The SSH rule for the port sshd really uses is added before anything else; the server turns the firewall back off on its own unless new logins work afterwards. Rules are marked "${UFW_SSH_COMMENT}"/"${UFW_WEB_COMMENT}" so only OpsCrew's own rules are ever removed.${extra}`,
+    `${params.install ? "ufw is installed first. " : ""}The SSH rule for the port sshd really uses is added before anything else (existing rules for it are kept and count); the server turns the firewall back off on its own unless new logins work afterwards. Rules are marked "${UFW_SSH_COMMENT}"/"${UFW_WEB_COMMENT}" so only OpsCrew's own rules are ever removed.${extra}${notes.length > 0 ? ` ${notes.join(" ")}` : ""}`,
   );
 }
 
@@ -779,11 +843,29 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
     return plan;
   }
   const ctx: SetupContext = { facts: f, desired: d, found: [] };
+  const sameApp = (owner: { app: string; projectId: string } | null | undefined) =>
+    owner?.app === d.app && (owner.projectId === "" || owner.projectId === d.projectId);
+  // The host record belongs to another app (its marker is gone but its host changes remain).
+  if (f.record !== null && f.record.app !== "" && !sameApp(f.record)) {
+    if (f.marker === null || sameApp(f.marker)) {
+      ctx.found.push(findings.hostRecordOtherApp(f.record.app));
+    }
+  }
+  // A Compose project with the app's name that OpsCrew did not deploy would be taken over.
+  const ours = sameApp(f.marker) || sameApp(f.record);
+  if (
+    !ours &&
+    (f.containers.some((container) => container.project === d.app) ||
+      f.volumeProjects.includes(d.app))
+  ) {
+    ctx.found.push(findings.composeProjectExists(d.app));
+  }
   if (d.access === "public") {
     const users = webPortUsers(f, d.app);
     if (users.length > 0) ctx.found.push(findings.portsInUse(users));
   }
   const steps = [
+    packageRepairStep(f),
     dockerStep(ctx),
     dockerDaemonStep(ctx),
     deployUserStep(ctx),
@@ -926,6 +1008,8 @@ export function planUndo(facts: HostFacts): HostPlan {
     };
   }
   const entry = (id: HostStepId) => setupEntry(f, id);
+  const repair = packageRepairStep(f);
+  if (repair) steps.push(repair);
 
   if (entry("portainer") && (f.portainer.installed || f.portainer.running)) {
     steps.push(
@@ -1004,15 +1088,35 @@ export function planUndo(facts: HostFacts): HostPlan {
     const removeRules = rulesToRemove(f, ufw.previous);
     const disable = ufw.previous.active === false && f.firewall.ufw === "active";
     const removePackage = ufw.previous.installed === false && f.packages.ufw;
-    const nothing = removeRules.length === 0 && !disable && !removePackage;
+    // OpsCrew set the default policies when it turned ufw on; put the old ones back.
+    const policy = (key: string) => {
+      const value = ufw.previous[key];
+      return ufw.previous.active === false &&
+        typeof value === "string" &&
+        /^(allow|deny|reject)$/.test(value)
+        ? value
+        : "";
+    };
+    const defaults = {
+      defaultIncoming: policy("defaultIncoming"),
+      defaultOutgoing: policy("defaultOutgoing"),
+      defaultRouted: policy("defaultRouted"),
+    };
+    const current = f.firewall.ufwDefaults;
+    const defaultsDiffer =
+      current !== null &&
+      ((defaults.defaultIncoming !== "" && defaults.defaultIncoming !== current.incoming) ||
+        (defaults.defaultOutgoing !== "" && defaults.defaultOutgoing !== current.outgoing) ||
+        (defaults.defaultRouted !== "" && defaults.defaultRouted !== current.routed));
+    const nothing = removeRules.length === 0 && !disable && !removePackage && !defaultsDiffer;
     steps.push(
       step(
         "ufw",
         disable
-          ? "Turn the ufw firewall off again and remove OpsCrew's rules"
+          ? "Turn the ufw firewall off again, remove OpsCrew's rules and put the previous default policies back"
           : "Remove the firewall rules OpsCrew added",
         nothing ? "in-place" : "change",
-        { removeRules: removeRules.join(" "), disable, removePackage },
+        { removeRules: removeRules.join(" "), disable, removePackage, ...defaults },
         removeRules.length > 0 ? `Rules: ${removeRules.join(", ")}.` : undefined,
       ),
     );

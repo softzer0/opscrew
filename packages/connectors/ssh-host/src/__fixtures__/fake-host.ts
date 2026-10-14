@@ -87,6 +87,7 @@ export interface FakeContainer {
   name: string;
   project: string;
   ports: string;
+  stopped?: boolean;
 }
 
 interface UfwRule {
@@ -168,6 +169,7 @@ export class FakeHost implements RemoteExec {
     allowUsers: [] as string[],
     allowGroups: [] as string[],
     allowTcpForwarding: "yes",
+    authorizedKeysCommand: "none",
   };
   sshdIncludesDropIns = true;
   sshdEarlierDropIn: Record<string, string> | null = null;
@@ -204,6 +206,16 @@ export class FakeHost implements RemoteExec {
   ];
   containers: FakeContainer[] = [];
   volumes = new Map<string, number>();
+  /** Directory services on the nsswitch passwd line (sss, ldap, ...). */
+  nssSources: string[] = [];
+  /** Directory PAM modules in use (pam_sss, ...). */
+  pamModules: string[] = [];
+  dpkgInterrupted = false;
+  /** dockerd flags in its systemd unit. */
+  dockerdFlags: string[] = [];
+  swarm = false;
+  /** /etc/default/ufw policies. */
+  ufwDefaults = { incoming: "deny", outgoing: "allow", routed: "deny" };
   users = new Map<string, { uid: number; password: boolean; keys: string[]; groups: string[] }>();
   dirs = new Map<string, { owner: string; group: string; mode: string; entries: number }>();
   portainerAdmin = false;
@@ -341,7 +353,7 @@ export class FakeHost implements RemoteExec {
       "usepam yes",
       `authenticationmethods ${this.sshdBase.authenticationMethods}`,
       "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2",
-      "authorizedkeyscommand none",
+      `authorizedkeyscommand ${this.sshdBase.authorizedKeysCommand}`,
       `allowtcpforwarding ${this.sshdBase.allowTcpForwarding}`,
       ...this.sshdBase.allowUsers.map((user) => `allowusers ${user}`),
       ...this.sshdBase.allowGroups.map((group) => `allowgroups ${group}`),
@@ -353,6 +365,15 @@ export class FakeHost implements RemoteExec {
     return [
       "Added user rules (see 'ufw status' for running firewall):",
       ...this.ufwRules.map((rule) => `ufw ${rule.rule}${rule.comment ? ` comment '${rule.comment}'` : ""}`),
+    ].join("\n");
+  }
+
+  private ufwDefaultsText(): string {
+    const word = { allow: "ACCEPT", deny: "DROP", reject: "REJECT" } as Record<string, string>;
+    return [
+      `DEFAULT_INPUT_POLICY="${word[this.ufwDefaults.incoming]}"`,
+      `DEFAULT_OUTPUT_POLICY="${word[this.ufwDefaults.outgoing]}"`,
+      `DEFAULT_FORWARD_POLICY="${word[this.ufwDefaults.routed]}"`,
     ].join("\n");
   }
 
@@ -387,7 +408,12 @@ export class FakeHost implements RemoteExec {
 
   private deployKeyOk(key: string): boolean {
     const deploy = this.users.get("deploy");
-    return deploy !== undefined && deploy.keys.includes(key) && deploy.groups.includes("docker");
+    return (
+      deploy !== undefined &&
+      deploy.keys.length === 1 &&
+      deploy.keys[0] === key &&
+      deploy.groups.includes("docker")
+    );
   }
 
   private markerOk(marker: string): boolean {
@@ -402,6 +428,12 @@ export class FakeHost implements RemoteExec {
   private removeProject(project: string, volumes: boolean): void {
     this.containers = this.containers.filter((container) => container.project !== project);
     if (volumes) this.volumes.delete(project);
+    // docker-proxy listeners go with the last container that published their port.
+    this.listeners = this.listeners.filter(
+      (listener) =>
+        listener.process !== "docker-proxy" ||
+        this.containers.some((container) => container.ports.includes(`:${listener.port}->`)),
+    );
   }
 
   private removeUnder(dir: string): void {
@@ -449,6 +481,9 @@ export class FakeHost implements RemoteExec {
     add("sshd-include", this.sshdIncludesDropIns ? "Include /etc/ssh/sshd_config.d/*.conf" : "", this.sshdIncludesDropIns ? 0 : 1);
     const dropIn = this.files.get(SSHD_DROP_IN);
     add("sshd-dropin", dropIn ?? "", dropIn === undefined ? 1 : 0);
+    add("logins-nss", `passwd:         files systemd${this.nssSources.map((s) => ` ${s}`).join("")}`);
+    add("logins-pam", this.pamModules.join("\n"), this.pamModules.length > 0 ? 0 : 1);
+    add("dpkg-interrupted", this.dpkgInterrupted ? "0001" : "", this.dpkgInterrupted ? 0 : 0);
     add(
       "listeners",
       this.listeners
@@ -482,9 +517,11 @@ export class FakeHost implements RemoteExec {
     if (this.installed("ufw")) {
       add("ufw-status", `Status: ${this.ufwActive ? "active" : "inactive"}`);
       add("ufw-added", this.ufwAdded());
+      add("ufw-defaults", this.ufwDefaultsText());
     } else {
       add("ufw-status", "", 127);
       add("ufw-added", "", 127);
+      add("ufw-defaults", "", 2);
     }
     add("iptables", this.iptables, this.iptables ? 0 : 127);
     add("ip6tables", this.ip6tables, this.ip6tables ? 0 : 127);
@@ -509,13 +546,22 @@ export class FakeHost implements RemoteExec {
     add("docker-sources", sources.join("\n"), sources.length > 0 ? 2 : 2);
     add(
       "containers",
-      this.containers.map((c) => `${c.name}|${c.project}|${c.ports}`).join("\n"),
+      this.dockerRunning
+        ? this.containers
+            .map((c) => `${c.name}|${c.project}|${c.stopped ? "" : c.ports}|${c.stopped ? "exited" : "running"}`)
+            .join("\n")
+        : "",
       this.dockerRunning ? 0 : 1,
     );
     add(
       "volumes",
-      [TUNNEL_PROJECT, PORTAINER_PROJECT].map((project) => `${project} ${this.volumes.get(project) ?? 0}`).join("\n"),
+      this.dockerRunning
+        ? [...this.volumes.entries()].flatMap(([project, count]) => Array(count).fill(project)).join("\n")
+        : "",
+      this.dockerRunning ? 0 : 1,
     );
+    add("docker-exec", `ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd -H fd:// ${this.dockerdFlags.join(" ")} }`);
+    add("docker-swarm", this.dockerRunning ? (this.swarm ? "active" : "inactive") : "", this.dockerRunning ? 0 : 1);
     add(
       "users",
       users
@@ -586,10 +632,13 @@ export class FakeHost implements RemoteExec {
 
   private ufwOk(params: Record<string, string>): boolean {
     if (!this.installed("ufw") || !this.ufwActive || this.timers.has("ufw")) return false;
-    for (const port of (params.SSH_PORTS ?? "").split(" ")) if (!this.hasRule(`${port}/tcp`)) return false;
-    for (const rule of (params.WEB_RULES ?? "").split(" ")) {
-      if (params.WEB === "true" && !this.hasRule(rule)) return false;
-      if (params.WEB !== "true" && this.ufwRules.some((r) => r.rule === `allow ${rule}` && r.comment === params.WEB_COMMENT)) return false;
+    const words = (value: string | undefined) => (value ?? "").split(" ").filter(Boolean);
+    for (const port of words(params.SSH_PORTS)) if (!this.hasRule(`${port}/tcp`)) return false;
+    for (const rule of words(params.WEB_ADD)) if (!this.hasRule(rule)) return false;
+    if (params.WEB !== "true") {
+      for (const rule of words(params.WEB_RULES)) {
+        if (this.ufwRules.some((r) => r.rule === `allow ${rule}` && r.comment === params.WEB_COMMENT)) return false;
+      }
     }
     return true;
   }
@@ -636,6 +685,8 @@ export class FakeHost implements RemoteExec {
       case "record.write":
         this.files.set(RECORD_PATH, p.RECORD ?? "");
         return result();
+      case "marker.read":
+        return result(this.files.get(MARKER_PATH) ?? "");
     }
     if (!root && !(name.startsWith("portainer") && p.RUN_AS === "login")) {
       return result("", 1, "Permission denied\n");
@@ -692,7 +743,8 @@ export class FakeHost implements RemoteExec {
           deploy = { uid: 1001, password: false, keys: [], groups: ["deploy"] };
           this.users.set("deploy", deploy);
         }
-        if (!deploy.keys.includes(p.PUBLIC_KEY ?? "")) deploy.keys.push(p.PUBLIC_KEY ?? "");
+        // Exactly the current key: older keys are revoked.
+        deploy.keys = [p.PUBLIC_KEY ?? ""];
         if (!deploy.groups.includes("docker")) deploy.groups.push("docker");
         return result();
       }
@@ -762,28 +814,34 @@ export class FakeHost implements RemoteExec {
           installed: this.installed("ufw"),
           active: this.ufwActive,
           rules: this.ufwRules.map((rule) => rule.rule).join(","),
+          defaultIncoming: this.installed("ufw") ? this.ufwDefaults.incoming : "",
+          defaultOutgoing: this.installed("ufw") ? this.ufwDefaults.outgoing : "",
+          defaultRouted: this.installed("ufw") ? this.ufwDefaults.routed : "",
         });
       case "ufw.apply": {
         if (!this.installed("ufw")) return fail("ufw is not installed.");
-        for (const port of (p.SSH_PORTS ?? "").split(" ")) {
+        const words = (value: string | undefined) => (value ?? "").split(" ").filter(Boolean);
+        for (const port of words(p.SSH_PORTS)) {
           if (!this.hasRule(`${port}/tcp`)) {
             this.ufwRules.push({ rule: `allow ${port}/tcp`, comment: p.SSH_COMMENT ?? null });
             this.ufwLog.push(`allow ${port}/tcp`);
           }
         }
-        for (const rule of (p.WEB_RULES ?? "").split(" ")) {
-          if (p.WEB === "true") {
-            if (!this.hasRule(rule)) {
-              this.ufwRules.push({ rule: `allow ${rule}`, comment: p.WEB_COMMENT ?? null });
-              this.ufwLog.push(`allow ${rule}`);
-            }
-          } else {
+        for (const rule of words(p.WEB_ADD)) {
+          if (!this.hasRule(rule)) {
+            this.ufwRules.push({ rule: `allow ${rule}`, comment: p.WEB_COMMENT ?? null });
+            this.ufwLog.push(`allow ${rule}`);
+          }
+        }
+        if (p.WEB !== "true") {
+          for (const rule of words(p.WEB_RULES)) {
             const before = this.ufwRules.length;
             this.ufwRules = this.ufwRules.filter((r) => !(r.rule === `allow ${rule}` && r.comment === p.WEB_COMMENT));
             if (this.ufwRules.length !== before) this.ufwLog.push(`delete allow ${rule}`);
           }
         }
         if (p.ENABLE === "true" && !this.ufwActive) {
+          this.ufwDefaults = { ...this.ufwDefaults, incoming: "deny", outgoing: "allow" };
           this.ufwActive = true;
           this.ufwLog.push("enable");
         }
@@ -798,6 +856,9 @@ export class FakeHost implements RemoteExec {
           !this.installed("ufw") ||
           (!removeRules.some((rule) => this.hasRule(rule)) &&
             !(p.DISABLE === "true" && this.ufwActive) &&
+            !(p.DEFAULT_INCOMING && p.DEFAULT_INCOMING !== this.ufwDefaults.incoming) &&
+            !(p.DEFAULT_OUTGOING && p.DEFAULT_OUTGOING !== this.ufwDefaults.outgoing) &&
+            !(p.DEFAULT_ROUTED && p.DEFAULT_ROUTED !== this.ufwDefaults.routed) &&
             !this.timers.has("ufw"));
         return name.endsWith("check") ? this.check(ok, { active: this.ufwActive }) : this.verify(ok, p);
       }
@@ -806,6 +867,9 @@ export class FakeHost implements RemoteExec {
           this.ufwRules = this.ufwRules.filter((r) => r.rule !== `allow ${rule}`);
           this.ufwLog.push(`delete allow ${rule}`);
         }
+        if (p.DEFAULT_INCOMING) this.ufwDefaults.incoming = p.DEFAULT_INCOMING;
+        if (p.DEFAULT_OUTGOING) this.ufwDefaults.outgoing = p.DEFAULT_OUTGOING;
+        if (p.DEFAULT_ROUTED) this.ufwDefaults.routed = p.DEFAULT_ROUTED;
         if (p.DISABLE === "true") {
           this.ufwActive = false;
           this.ufwLog.push("disable");
@@ -852,7 +916,7 @@ export class FakeHost implements RemoteExec {
 
       // docker daemon settings
       case "docker-daemon.check":
-        return this.check(this.files.has(DOCKER_DAEMON_JSON_PATH), {
+        return this.check(this.files.has(DOCKER_DAEMON_JSON_PATH) || this.dockerdFlags.length > 0 || this.swarm, {
           file: this.files.has(DOCKER_DAEMON_JSON_PATH) ? "present" : "absent",
         });
       case "docker-daemon.apply":
@@ -1047,6 +1111,14 @@ export class FakeHost implements RemoteExec {
       case "portainer.verify":
         return this.verify(this.portainerOk(p), p);
 
+      case "package-repair.check":
+        return this.check(!this.dpkgInterrupted, { interrupted: true });
+      case "package-repair.apply":
+        this.dpkgInterrupted = false;
+        return result();
+      case "package-repair.verify":
+        return this.verify(!this.dpkgInterrupted, p);
+
       case "docker.keep.check":
         return this.check(true);
     }
@@ -1068,9 +1140,11 @@ export class FakeHost implements RemoteExec {
       } else {
         const active = this.ufwActive;
         const rules = this.ufwRules.map((rule) => ({ ...rule }));
+        const defaults = { ...this.ufwDefaults };
         this.timers.set("ufw", () => {
           this.ufwActive = active;
           this.ufwRules = rules;
+          this.ufwDefaults = defaults;
           this.ufwLog.push("restored");
           this.timers.delete("ufw");
         });

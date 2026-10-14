@@ -24,6 +24,7 @@ import {
 import { foreignFirewalls } from "./firewall";
 import { canonicalJson } from "./hash";
 import {
+  dockerdFlags,
   EXIT_MARK,
   engineVersion,
   linesOf,
@@ -35,11 +36,13 @@ import {
   parseDirs,
   parseDpkg,
   parseFree,
+  parseNsswitchPasswd,
   parseOsRelease,
   parsePairs,
   parseSs,
   parseSshdT,
   parseUfwAdded,
+  parseUfwDefaults,
   parseUsers,
   SECTION_MARK,
   type Section,
@@ -119,9 +122,15 @@ const ADDONS_SNIPPET = `addon() {
 addon tunnel ${TUNNEL_DIR} tunnel.env
 addon portainer ${PORTAINER_DIR} admin_password`;
 
-const VOLUMES_SNIPPET = `for p in ${TUNNEL_PROJECT} ${PORTAINER_PROJECT}; do
-  printf '%s %s\\n' "$p" "$(docker volume ls -q --filter "label=com.docker.compose.project=$p" | wc -l)"
-done`;
+/** Directory services that log users in without local passwords or keys OpsCrew can see. */
+const DIRECTORY_PAM = "pam_(sss|ldap|krb5|winbind)";
+const PAM_FILES = [
+  "/etc/pam.d/common-auth",
+  "/etc/pam.d/common-account",
+  "/etc/pam.d/sshd",
+  "/etc/pam.d/system-auth",
+  "/etc/pam.d/password-auth",
+];
 
 /** Read-only inspection commands, one section each. */
 export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
@@ -141,6 +150,12 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
     "grep -Eis '^[[:space:]]*include[[:space:]].*sshd_config\\.d/' /etc/ssh/sshd_config",
   ],
   ["sshd-dropin", `cat ${SSHD_DROP_IN}`],
+  ["logins-nss", "grep -E '^[[:space:]]*passwd:' /etc/nsswitch.conf"],
+  [
+    "logins-pam",
+    `grep -hE '^[[:space:]]*[^#[:space:]].*${DIRECTORY_PAM}\\.so' ${PAM_FILES.join(" ")} | grep -oE '${DIRECTORY_PAM}' | sort -u`,
+  ],
+  ["dpkg-interrupted", "ls -A /var/lib/dpkg/updates"],
   ["listeners", "ss -H -ltnup"],
   [
     "units",
@@ -153,6 +168,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["ready", `test -f ${READY_FLAG}`],
   ["ufw-status", "ufw status"],
   ["ufw-added", "ufw show added"],
+  ["ufw-defaults", "grep -E '^DEFAULT_(INPUT|OUTPUT|FORWARD)_POLICY=' /etc/default/ufw"],
   ["iptables", "iptables-save"],
   ["ip6tables", "ip6tables-save"],
   ["nft", "nft list ruleset"],
@@ -161,19 +177,23 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
     "packages",
     `dpkg-query -W -f='\${Package}|\${Status}|\${Version}\\n' ${INSPECTED_PACKAGES.join(" ")}`,
   ],
+  // Client-only commands; everything that talks to dockerd waits for docker_up so a stopped
+  // daemon is never started by docker.socket just because OpsCrew looked.
   ["docker-cli", "docker --version"],
-  ["docker-server", "docker version --format '{{.Server.Version}}'"],
+  ["docker-server", "docker_up && docker version --format '{{.Server.Version}}'"],
   ["docker-compose", "docker compose version --short"],
   ["docker-buildx", "docker buildx version"],
+  ["docker-exec", "systemctl show -p ExecStart docker"],
+  ["docker-swarm", "docker_up && docker info --format '{{.Swarm.LocalNodeState}}'"],
   [
     "docker-sources",
     "grep -ls 'download.docker.com' /etc/apt/sources.list /etc/apt/sources.list.d/*",
   ],
   [
     "containers",
-    `docker ps --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}'`,
+    `docker_up && docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}|{{.State}}'`,
   ],
-  ["volumes", VOLUMES_SNIPPET],
+  ["volumes", `docker_up && docker volume ls --format '{{.Label "com.docker.compose.project"}}'`],
   ["users", USERS_SNIPPET],
   ["deploy", "getent passwd deploy >/dev/null && id -nG deploy"],
   [
@@ -200,7 +220,8 @@ export function inspectScript(): string {
     ([name, command]) =>
       `printf '\\n${SECTION_MARK}%s\\n' '${name}'\n{\n${command}\n} 2>/dev/null\nprintf '\\n${EXIT_MARK}%s\\n' "$?"`,
   ).join("\n");
-  return buildScript("inspect", {}, body, { tolerant: true });
+  const helpers = "docker_up() { systemctl is-active --quiet docker 2>/dev/null; }";
+  return buildScript("inspect", {}, `${helpers}\n${body}`, { tolerant: true });
 }
 
 /** Read-only probe: how the admin login becomes root. Prints root, sudo, sudo-password or none. */
@@ -210,13 +231,18 @@ export function privilegeProbeScript(): string {
     {},
     `if [ "$(id -u)" = 0 ]; then echo root
 elif command -v sudo >/dev/null 2>&1; then
-  out=$(sudo -n sh -c 'id -u' 2>&1 < /dev/null) || true
-  # sudo says "a password is required"; sudo-rs (Ubuntu 25.10+) "interactive authentication is required".
-  case "$out" in
-    0) echo sudo ;;
-    *password*|*authentication*) echo sudo-password ;;
-    *) echo none ;;
-  esac
+  # stdout alone decides: sudo may warn on stderr ("unable to resolve host") and still work.
+  out=$(sudo -n sh -c 'id -u' 2>/dev/null < /dev/null) || out=''
+  if [ "$(printf '%s\\n' "$out" | tail -n 1)" = 0 ]; then echo sudo
+  else
+    # stderr only tells a password prompt from a refusal. sudo says "a password is required";
+    # sudo-rs (Ubuntu 25.10+) says "interactive authentication is required".
+    err=$(sudo -n true 2>&1 >/dev/null < /dev/null) || true
+    case "$err" in
+      *password*|*authentication*) echo sudo-password ;;
+      *) echo none ;;
+    esac
+  fi
 else echo none; fi`,
     { tolerant: true },
   );
@@ -297,19 +323,26 @@ export function factsFromOutput(
 
   const text = (name: string) => section(sections, name).text;
   const containers = parseContainers(ok(sections, "containers"));
-  const volumes = parsePairs(text("volumes"));
+  const volumeProjects = [...new Set(linesOf(ok(sections, "volumes")))];
   const addons = parseAddons(text("addons"));
   const addon = (name: string, project: string) => {
     const found = addons.get(name);
     return {
       installed: found !== undefined,
       composeSha256: found?.composeSha256 ?? null,
-      running: containers.some((container) => container.project === project),
+      running: containers.some((container) => container.project === project && container.running),
       secretFile: found?.secretFile ?? false,
-      dataVolume: (Number.parseInt(volumes.get(project) ?? "0", 10) || 0) > 0,
+      dataVolume: volumeProjects.includes(project),
       tunnelId: found?.tunnelId ?? null,
     };
   };
+  const nss = parseNsswitchPasswd(ok(sections, "logins-nss"));
+  const pam = linesOf(ok(sections, "logins-pam"));
+  const directoryLogins = [
+    ...nss.map((source) => `${source} in /etc/nsswitch.conf`),
+    ...pam.map((module) => `${module} in PAM`),
+    ...(sshdSettings?.authorizedKeysCommand ? ["sshd's AuthorizedKeysCommand"] : []),
+  ];
 
   const dockerCli = ok(sections, "docker-cli");
   const repoVersion = packages.get("docker-ce");
@@ -361,6 +394,7 @@ export function factsFromOutput(
     firewall: {
       ufw,
       ufwRules: parseUfwAdded(text("ufw-added")),
+      ufwDefaults: parseUfwDefaults(ok(sections, "ufw-defaults")),
       foreign: foreignFirewalls({
         units,
         ufwActive: ufw === "active",
@@ -380,8 +414,13 @@ export function factsFromOutput(
       conflicting: CONFLICTING_PACKAGES.filter((name) => packages.has(name)),
       // grep -l exits 2 when one of the files is missing, even with matches.
       sources: linesOf(text("docker-sources")),
+      daemonFlags: dockerdFlags(ok(sections, "docker-exec")),
+      swarm: ok(sections, "docker-swarm").trim() === "active",
     },
     containers,
+    volumeProjects,
+    directoryLogins,
+    dpkgInterrupted: linesOf(ok(sections, "dpkg-interrupted")).length > 0,
     loginUsers: parseUsers(text("users")),
     deployUser:
       deploy.exit === 0

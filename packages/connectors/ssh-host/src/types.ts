@@ -6,6 +6,7 @@ export const HOST_PLAN_SCHEMA_VERSION = 1;
 
 /** Host steps in the order a setup plan runs them. */
 export const HOST_STEP_IDS = [
+  "package-repair",
   "docker",
   "docker-daemon",
   "deploy-user",

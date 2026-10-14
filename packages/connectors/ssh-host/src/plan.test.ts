@@ -2,6 +2,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost } from "./__fixtures__/fake-host";
 import {
+  applyApproved,
   DEPLOY_KEY,
   desiredFor,
   planFor,
@@ -92,6 +93,8 @@ describe("planHost: steps", () => {
     const publicPlan = await planFor(fake, desiredFor(fake, { sshPort: 2222 }));
     expect(paramsOf(publicPlan, "ufw")).toEqual({
       sshPorts: "2222",
+      sshRulePorts: "2222",
+      webRules: "80/tcp 443/tcp 443/udp",
       web: true,
       enable: true,
       install: false,
@@ -179,6 +182,122 @@ describe("planHost: steps", () => {
     fake.sshdBase.passwordAuthentication = false;
     fake.sshdBase.permitRootLogin = "prohibit-password";
     expect(stateOf(await planFor(fake), "sshd")).toBe("change");
+  });
+
+  const directoryCases: [string, (fake: FakeHost) => void, string][] = [
+    [
+      "sss on the nsswitch passwd line",
+      (fake) => {
+        fake.nssSources.push("sss");
+      },
+      "sss in /etc/nsswitch.conf",
+    ],
+    [
+      "pam_ldap",
+      (fake) => {
+        fake.pamModules.push("pam_ldap");
+      },
+      "pam_ldap in PAM",
+    ],
+    [
+      "pam_krb5",
+      (fake) => {
+        fake.pamModules.push("pam_krb5");
+      },
+      "pam_krb5 in PAM",
+    ],
+    [
+      "an AuthorizedKeysCommand",
+      (fake) => {
+        fake.sshdBase.authorizedKeysCommand = "/usr/bin/sss_ssh_authorizedkeys %u";
+      },
+      "sshd's AuthorizedKeysCommand",
+    ],
+  ];
+  it.each(directoryCases)(
+    "blocks turning passwords off with directory logins (%s) until chosen",
+    async (_what, arrange, named) => {
+      const fake = new FakeHost();
+      arrange(fake);
+      const plan = await planFor(fake);
+      expect(codes(plan)).toEqual(["directory-logins"]);
+      expect(plan.findings[0]?.message).toContain(named);
+      expect(stateOf(plan, "sshd")).toBe("blocked");
+      const chosen = planHost(
+        await inspectHost(fake),
+        desiredFor(fake, { disablePasswords: false }),
+      );
+      expect(codes(chosen)).toEqual([]);
+      expect(paramsOf(chosen, "sshd")).toMatchObject({ disablePasswords: false });
+    },
+  );
+
+  it("counts existing ufw rules for the SSH port, and says when OpsCrew widens a source limit", async () => {
+    const limited = new FakeHost();
+    limited.ufwActive = true;
+    limited.ufwRules = [{ rule: "allow from 10.0.0.0/8 to any port 22 proto tcp", comment: null }];
+    const publicPlan = await planFor(limited);
+    expect(paramsOf(publicPlan, "ufw")).toMatchObject({ sshRulePorts: "22" });
+    expect(publicPlan.steps.find((step) => step.id === "ufw")?.reason).toMatch(
+      /only from some addresses .*opens it to every address, because GitHub Actions/,
+    );
+    // Tunnel mode: the user's rule covers SSH, so no world-open rule is added.
+    const tunnelPlan = await planFor(limited, tunnelDesired(limited));
+    expect(paramsOf(tunnelPlan, "ufw")).toMatchObject({ sshRulePorts: "", webRules: "" });
+    expect(stateOf(tunnelPlan, "ufw")).toBe("in-place");
+
+    const rateLimited = new FakeHost();
+    rateLimited.ufwActive = true;
+    rateLimited.ufwRules = [
+      { rule: "limit 22/tcp", comment: null },
+      { rule: "allow 80", comment: null },
+    ];
+    const plan = await planFor(rateLimited);
+    expect(paramsOf(plan, "ufw")).toMatchObject({ sshRulePorts: "", webRules: "443/tcp 443/udp" });
+    expect(plan.steps.find((step) => step.id === "ufw")?.reason).toMatch(
+      /rate-limits SSH on port 22/,
+    );
+  });
+
+  it("keeps the user's Docker settings given as dockerd flags or with an active Swarm", async () => {
+    const flags = new FakeHost();
+    flags.packages.set("docker-ce", "5:28.5.1-1");
+    flags.packages.set("docker-compose-plugin", "2.39.4");
+    flags.packages.set("docker-buildx-plugin", "0.29.1");
+    flags.dockerRunning = true;
+    flags.dockerdFlags = ["--log-driver=journald"];
+    const kept = (await planFor(flags)).steps.find((step) => step.id === "docker-daemon");
+    expect(kept).toMatchObject({ state: "in-place" });
+    expect(kept?.reason).toMatch(/started with its own settings \(--log-driver\)/);
+    flags.dockerdFlags = [];
+    flags.swarm = true;
+    const swarm = (await planFor(flags)).steps.find((step) => step.id === "docker-daemon");
+    expect(swarm).toMatchObject({ state: "in-place" });
+    expect(swarm?.reason).toMatch(/Swarm/);
+  });
+
+  it("plans the interrupted package installation first", async () => {
+    const fake = new FakeHost();
+    fake.dpkgInterrupted = true;
+    const plan = await planFor(fake);
+    expect(plan.steps[0]).toMatchObject({ id: "package-repair", state: "change" });
+    await applyApproved(fake, plan);
+    expect(fake.dpkgInterrupted).toBe(false);
+    expect((await planFor(fake)).steps.some((step) => step.id === "package-repair")).toBe(false);
+  });
+
+  it("rewrites the deploy user's keys when another key is there", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    const deploy = fake.users.get("deploy");
+    deploy?.keys.push("ssh-ed25519 AAAAstale stale");
+    const plan = await planFor(fake);
+    expect(plan.steps.find((step) => step.id === "deploy-user")).toMatchObject({
+      state: "change",
+      reason: expect.stringMatching(/exactly the current deploy key/),
+    });
+    await applyApproved(fake, plan);
+    expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY]);
   });
 
   it("plans Portainer only when asked, local-only, with a password needed only for a new install", async () => {
@@ -376,6 +495,36 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     });
   }
 
+  it("blocks a Compose project with the app's name that OpsCrew did not deploy", async () => {
+    const fake = new FakeHost();
+    fake.dockerRunning = true;
+    fake.containers.push({ name: "shop-web-1", project: "shop", ports: "", stopped: true });
+    expect(codes(await planFor(fake))).toEqual(["compose-project-exists"]);
+    const volumes = new FakeHost();
+    volumes.dockerRunning = true;
+    volumes.volumes.set("shop", 1);
+    expect(codes(await planFor(volumes))).toEqual(["compose-project-exists"]);
+  });
+
+  it("lets the same app come back after its own teardown kept the data", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    deployApp(fake, "shop");
+    fake.volumes.set("shop", 2);
+    await applyApproved(fake, planTeardown(await inspectHost(fake), { deleteData: false }));
+    expect(fake.volumes.get("shop")).toBe(2);
+    expect(codes(await planFor(fake))).toEqual([]);
+  });
+
+  it("refuses a server whose host record belongs to another app", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    fake.files.delete("/etc/opscrew/app.json");
+    const plan = await planFor(fake, desiredFor(fake, { app: "blog", projectId: "blog-1" }));
+    expect(codes(plan)).toEqual(["host-record-other-app"]);
+    expect(plan.findings[0]?.hint).toMatch(/destroy --undo-host/);
+  });
+
   it("names what listens on the web ports", async () => {
     const fake = new FakeHost();
     fake.listeners.push({ proto: "tcp", address: "0.0.0.0", port: 443, process: "apache2" });
@@ -509,6 +658,9 @@ describe("planTeardown and planUndo", () => {
       removeRules: "22/tcp 80/tcp 443/tcp 443/udp",
       disable: true,
       removePackage: false,
+      defaultIncoming: "deny",
+      defaultOutgoing: "allow",
+      defaultRouted: "deny",
     });
     // fail2ban was not installed before OpsCrew: it goes again. The service of automatic
     // updates was already enabled, so it stays enabled.

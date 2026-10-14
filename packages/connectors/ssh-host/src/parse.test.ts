@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { foreignFirewalls, foreignIptables, foreignNft } from "./firewall";
 import {
+  dockerdFlags,
   engineVersion,
   isLoopback,
   isPublicAddress,
@@ -11,13 +12,16 @@ import {
   parseDirs,
   parseDpkg,
   parseFree,
+  parseNsswitchPasswd,
   parseOsRelease,
   parseSs,
   parseSshdT,
   parseUfwAdded,
+  parseUfwDefaults,
   parseUsers,
   publishesPort,
   splitSections,
+  ufwRuleCovers,
 } from "./parse";
 
 describe("splitSections", () => {
@@ -114,12 +118,16 @@ describe("parsers", () => {
   });
 
   it("reads containers and their published ports", () => {
-    const [caddy] = parseContainers("shop-caddy-1|shop|0.0.0.0:80->80/tcp, :::80->80/tcp");
+    const [caddy, old] = parseContainers(
+      "shop-caddy-1|shop|0.0.0.0:80->80/tcp, :::80->80/tcp|running\nold-db-1|old||exited",
+    );
     expect(caddy).toEqual({
       name: "shop-caddy-1",
       project: "shop",
       ports: "0.0.0.0:80->80/tcp, :::80->80/tcp",
+      running: true,
     });
+    expect(old).toEqual({ name: "old-db-1", project: "old", ports: "", running: false });
     expect(publishesPort(caddy?.ports ?? "", 80)).toBe(true);
     expect(publishesPort("127.0.0.1:18080->80/tcp", 18080)).toBe(false);
     expect(publishesPort("127.0.0.1:18080->80/tcp", 18080, true)).toBe(true);
@@ -146,6 +154,65 @@ describe("parsers", () => {
     expect(isPublicAddress("100.64.0.1")).toBe(false);
     expect(isPublicAddress("172.32.0.1")).toBe(true);
     expect(isPublicAddress("fe80::1")).toBe(false);
+  });
+
+  it("finds directory services in nsswitch, ufw's default policies and dockerd flags", () => {
+    expect(parseNsswitchPasswd("passwd:         files systemd sss [NOTFOUND=return] ldap")).toEqual(
+      ["sss", "ldap"],
+    );
+    expect(parseNsswitchPasswd("passwd:         files systemd")).toEqual([]);
+    expect(
+      parseUfwDefaults(
+        'DEFAULT_INPUT_POLICY="DROP"\nDEFAULT_OUTPUT_POLICY="ACCEPT"\nDEFAULT_FORWARD_POLICY="REJECT"',
+      ),
+    ).toEqual({ incoming: "deny", outgoing: "allow", routed: "reject" });
+    expect(parseUfwDefaults("")).toBeNull();
+    expect(
+      dockerdFlags(
+        "ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd -H fd:// --log-driver=journald --live-restore ; }",
+      ),
+    ).toEqual(["--log-driver", "--live-restore"]);
+    expect(dockerdFlags("ExecStart={ argv[]=/usr/bin/dockerd -H fd:// }")).toEqual([]);
+  });
+
+  it("tells which ufw rules let a port in, and from where", () => {
+    const covers = (rule: string, port = 22) => ufwRuleCovers(rule, port, "tcp");
+    expect(covers("allow 22/tcp")).toEqual({
+      covers: true,
+      limitedSource: false,
+      rateLimited: false,
+    });
+    expect(covers("allow 22")).toMatchObject({ covers: true });
+    expect(covers("limit 22/tcp")).toEqual({
+      covers: true,
+      limitedSource: false,
+      rateLimited: true,
+    });
+    expect(covers("allow OpenSSH")).toMatchObject({ covers: true });
+    expect(covers("limit ssh")).toMatchObject({ covers: true, rateLimited: true });
+    expect(covers("allow 2200:2300/tcp", 2222)).toMatchObject({ covers: true });
+    expect(covers("allow 22,80/tcp")).toMatchObject({ covers: true });
+    expect(covers("allow 22/udp")).toMatchObject({ covers: false });
+    expect(covers("deny 22/tcp")).toMatchObject({ covers: false });
+    expect(covers("allow out 22/tcp")).toMatchObject({ covers: false });
+    expect(covers("allow from 10.0.0.0/8 to any port 22 proto tcp")).toEqual({
+      covers: true,
+      limitedSource: true,
+      rateLimited: false,
+    });
+    expect(covers("allow proto tcp from any to any port 22")).toMatchObject({
+      covers: true,
+      limitedSource: false,
+    });
+    expect(covers("allow from 192.168.1.0/24")).toMatchObject({
+      covers: true,
+      limitedSource: true,
+    });
+    expect(covers("allow in on wg0 to any port 22")).toMatchObject({
+      covers: true,
+      limitedSource: true,
+    });
+    expect(covers("allow from 10.0.0.0/8 to any port 80")).toMatchObject({ covers: false });
   });
 
   it("reads users, dirs and apt settings", () => {

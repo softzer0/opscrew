@@ -6,7 +6,7 @@
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
 import { DEFAULT_DEAD_MAN_SECONDS } from "./constants";
-import { HOST_ADAPTER_VERSION, type HostRecord, HostRecordSchema } from "./facts";
+import { AppMarkerSchema, HOST_ADAPTER_VERSION, type HostRecord, HostRecordSchema } from "./facts";
 import { findings } from "./findings";
 import { hostPlanHash } from "./hash";
 import { probePrivilege } from "./inspect";
@@ -14,6 +14,7 @@ import { asLogin, asRoot, type Privilege } from "./shell";
 import {
   armScript,
   cancelScript,
+  readMarkerScript,
   readRecordScript,
   runAsOf,
   type StepScripts,
@@ -165,11 +166,18 @@ class Recorder {
       }
     }
     const plan = ctx.plan;
-    const marker = plan.steps.find((step) => step.id === "app-marker");
-    const projectId =
-      plan.purpose === "setup" && typeof marker?.params.projectId === "string"
-        ? marker.params.projectId
-        : (record?.projectId ?? "");
+    const projectId = plan.purpose === "setup" ? planProjectId(plan) : (record?.projectId ?? "");
+    // Never take over the record of another app: its host changes are its to undo.
+    if (
+      record !== undefined &&
+      record.app !== "" &&
+      plan.app !== "" &&
+      (record.app !== plan.app ||
+        (projectId !== "" && record.projectId !== "" && record.projectId !== projectId))
+    ) {
+      const finding = findings.hostRecordOtherApp(record.app);
+      throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
+    }
     if (record === undefined) {
       record = {
         schemaVersion: 1,
@@ -373,6 +381,41 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
   return true;
 }
 
+/** The project id a setup plan binds the server to (from its app-marker step). */
+function planProjectId(plan: HostPlan): string {
+  const marker = plan.steps.find((step) => step.id === "app-marker");
+  return typeof marker?.params.projectId === "string" ? marker.params.projectId : "";
+}
+
+/**
+ * Read-only, before the first change of a setup plan: the server must not belong to another app
+ * (another OpsCrew run may have claimed it since the plan was made).
+ */
+async function claimCheck(ctx: Context): Promise<void> {
+  const result = await runOk(
+    ctx,
+    wrapRoot(ctx, readMarkerScript()),
+    { timeoutMs: 60_000 },
+    "checking which app the server belongs to",
+  );
+  const text = result.stdout.trim();
+  if (text === "") return;
+  let marker: { app: string; projectId: string } | undefined;
+  try {
+    marker = AppMarkerSchema.parse(JSON.parse(text));
+  } catch {
+    const finding = findings.markerDamaged();
+    throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
+  }
+  const projectId = planProjectId(ctx.plan);
+  if (marker.app === ctx.plan.app && (projectId === "" || marker.projectId === projectId)) return;
+  const finding =
+    marker.app === ctx.plan.app
+      ? findings.sameAppOtherProject(marker.app, marker.projectId)
+      : findings.anotherApp(marker.app);
+  throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
+}
+
 function refuse(message: string, hint: string): OpsCrewError {
   return new OpsCrewError("PHASE_PRECONDITION", message, { hint });
 }
@@ -494,6 +537,7 @@ export async function applyHostPlan(
       throw refuse(finding.message, finding.hint);
     }
     ctx.privilege = privilege;
+    if (valid.purpose === "setup") await claimCheck(ctx);
     ctx.recorder = await Recorder.load(ctx);
   }
 

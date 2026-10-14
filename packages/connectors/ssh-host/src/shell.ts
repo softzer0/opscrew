@@ -66,9 +66,19 @@ export function asLogin(script: string): string {
   return `sh -c ${shellQuote(script)}`;
 }
 
-/** Shell lines shared by scripts that install packages: apt waits for other apt runs. */
+/** Where package steps write apt's output (root only; no secrets ever reach apt). */
+export const APT_LOG = "/var/log/opscrew/apt.log";
+
+/**
+ * Shell lines shared by the scripts. apt waits for other apt runs, writes its output to
+ * {@link APT_LOG} (so a dropped SSH session cannot break it with a closed pipe) and, when it
+ * fails, prints the last lines of that log for the error message.
+ */
 export const APT_FUNCTIONS = `apt_get() {
-  apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
+  install -d -m 0700 "$(dirname '${APT_LOG}')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'${APT_LOG}' 2>&1; then return 0; fi
+  tail -n 5 '${APT_LOG}' >&2 2>/dev/null || true
+  return 1
 }
 is_installed() {
   dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'

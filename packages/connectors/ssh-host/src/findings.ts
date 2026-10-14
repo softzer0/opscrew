@@ -57,6 +57,21 @@ export const findings = {
     message: `${list(users)} ${users.length === 1 ? "logs" : "log"} in with a password and ${users.length === 1 ? "has" : "have"} no SSH key. Turning password logins off would lock ${users.length === 1 ? "that user" : "them"} out.`,
     hint: "Give each of them an SSH key first, or decide explicitly: turn password logins off anyway, or leave password logins as they are.",
   }),
+  directoryLogins: (what: readonly string[]): HostFinding => ({
+    code: "directory-logins",
+    message: `Users on this server may come from a directory service (${list(what)}). OpsCrew cannot see whether they log in with passwords, so turning password logins off could lock them out.`,
+    hint: "Make sure those users log in with SSH keys, then decide explicitly: turn password logins off anyway, or leave password logins as they are.",
+  }),
+  hostRecordOtherApp: (app: string): HostFinding => ({
+    code: "host-record-other-app",
+    message: `OpsCrew prepared this server for the app "${app}" before, and its record of those host changes (/etc/opscrew/host.json) still belongs to "${app}".`,
+    hint: `Undo those host changes first with opscrew destroy --undo-host in the project of "${app}", then run opscrew provision again.`,
+  }),
+  composeProjectExists: (app: string): HostFinding => ({
+    code: "compose-project-exists",
+    message: `This server already has Docker containers or volumes of a Compose project named "${app}" that OpsCrew did not deploy. OpsCrew's app would take them over.`,
+    hint: `Remove that project (or rename it), or give the app another name, ${RERUN}.`,
+  }),
   portsInUse: (what: readonly string[]): HostFinding => ({
     code: "web-ports-in-use",
     message: `Ports 80 or 443 are already in use on this server: ${list(what)}. OpsCrew's web server needs them to serve the app directly.`,

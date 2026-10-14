@@ -321,6 +321,58 @@ describe("docker daemon settings", () => {
   });
 });
 
+describe("claims", () => {
+  it("refuses at apply time when another app claimed the server after the plan was made", async () => {
+    const fake = new FakeHost();
+    const plan = await planFor(fake);
+    fake.files.set("/etc/opscrew/app.json", '{"app":"blog","projectId":"blog-1"}');
+    fake.calls.length = 0;
+    const error = await rejection(applyApproved(fake, plan));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toMatch(/already runs the OpsCrew app "blog"/);
+    expect(fake.names()).toEqual(["privilege", "marker.read"]);
+    expect(fake.files.get("/etc/opscrew/app.json")).toBe('{"app":"blog","projectId":"blog-1"}');
+  });
+
+  it("refuses to take over the host record of another app", async () => {
+    const fake = new FakeHost();
+    const plan = await planFor(fake);
+    fake.files.set(
+      "/etc/opscrew/host.json",
+      JSON.stringify({
+        schemaVersion: 1,
+        app: "blog",
+        projectId: "blog-1",
+        opscrewVersion: "0.1.0",
+        changes: [],
+      }),
+    );
+    fake.calls.length = 0;
+    const error = await rejection(applyApproved(fake, plan));
+    expect(error.message).toMatch(/still belongs to "blog"/);
+    expect(fake.names()).toEqual(["privilege", "marker.read", "record.read"]);
+    expect(JSON.parse(fake.files.get("/etc/opscrew/host.json") ?? "{}").app).toBe("blog");
+  });
+});
+
+describe("ufw default policies", () => {
+  it("go back to what they were when the host changes are undone", async () => {
+    const fake = new FakeHost();
+    fake.ufwDefaults = { incoming: "allow", outgoing: "allow", routed: "reject" };
+    await provision(fake);
+    expect(fake.ufwDefaults).toMatchObject({ incoming: "deny", outgoing: "allow" });
+    expect(record(fake).changes.find((entry) => entry.step === "ufw")?.previous).toMatchObject({
+      defaultIncoming: "allow",
+      defaultOutgoing: "allow",
+      defaultRouted: "reject",
+    });
+    fake.files.delete("/etc/opscrew/app.json");
+    await applyApproved(fake, planUndo(await inspectHost(fake)));
+    expect(fake.ufwDefaults).toEqual({ incoming: "allow", outgoing: "allow", routed: "reject" });
+    expect(fake.ufwActive).toBe(false);
+  });
+});
+
 describe("applyHostPlan refuses", () => {
   it("a plan whose hash is not the approved one, before touching the server", async () => {
     const fake = new FakeHost();

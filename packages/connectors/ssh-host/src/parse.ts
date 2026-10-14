@@ -217,12 +217,122 @@ export function majorOf(version: string | null): number {
   return Number.isInteger(major) ? major : 0;
 }
 
-/** `docker ps --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}'`. */
-export function parseContainers(text: string): { name: string; project: string; ports: string }[] {
+/**
+ * `docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}|{{.State}}'`
+ * (all containers, running or not).
+ */
+export function parseContainers(
+  text: string,
+): { name: string; project: string; ports: string; running: boolean }[] {
   return linesOf(text).flatMap((line) => {
-    const [name, project, ...ports] = line.split("|");
-    return name ? [{ name, project: project ?? "", ports: ports.join("|") }] : [];
+    const fields = line.split("|");
+    const [name, project] = fields;
+    if (!name) return [];
+    const state = fields.length >= 4 ? (fields[fields.length - 1] ?? "") : "running";
+    const ports = fields.slice(2, fields.length >= 4 ? -1 : undefined).join("|");
+    return [{ name, project: project ?? "", ports, running: state === "running" }];
   });
+}
+
+/** Directory services on the `passwd:` line of `/etc/nsswitch.conf` (sss, ldap, winbind, nis). */
+export function parseNsswitchPasswd(text: string): string[] {
+  const line = linesOf(text).find((item) => /^passwd:/.test(item)) ?? "";
+  const sources = line
+    .replace(/^passwd:/, "")
+    .replace(/\[[^\]]*\]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  return [...new Set(sources.filter((source) => /^(sss|ldap|winbind|nis|nisplus)$/.test(source)))];
+}
+
+const UFW_POLICY: Readonly<Record<string, string>> = {
+  ACCEPT: "allow",
+  DROP: "deny",
+  REJECT: "reject",
+};
+
+/** `/etc/default/ufw` policies as ufw words (`allow`, `deny`, `reject`); null when unreadable. */
+export function parseUfwDefaults(
+  text: string,
+): { incoming: string; outgoing: string; routed: string } | null {
+  const value = (key: string) => {
+    const match = new RegExp(`^DEFAULT_${key}_POLICY="?([A-Z]+)"?`, "m").exec(text);
+    return match?.[1] ? UFW_POLICY[match[1]] : undefined;
+  };
+  const incoming = value("INPUT");
+  const outgoing = value("OUTPUT");
+  const routed = value("FORWARD");
+  if (!incoming || !outgoing || !routed) return null;
+  return { incoming, outgoing, routed };
+}
+
+/** dockerd flags in `systemctl show -p ExecStart docker` that daemon.json would also set. */
+export function dockerdFlags(text: string): string[] {
+  const found = text.match(/--(log-driver|log-opt|live-restore|no-new-privileges)\b/g) ?? [];
+  return [...new Set(found)];
+}
+
+/** What a ufw rule (as in `ufw show added`, without `ufw `) does for a port. */
+export interface UfwCoverage {
+  /** The rule lets the port in (allow or limit, incoming). */
+  covers: boolean;
+  /** Only from some addresses (`from <source>` other than `any`). */
+  limitedSource: boolean;
+  /** A `limit` (rate-limited) rule. */
+  rateLimited: boolean;
+}
+
+/** Port specs (`22`, `22/tcp`, `20:30/tcp`, `22,80/tcp`) and the protocol they apply to. */
+function portSpecCovers(spec: string, port: number, proto: "tcp" | "udp"): boolean {
+  const [ports = "", specProto] = spec.split("/");
+  if (specProto !== undefined && specProto !== proto) return false;
+  return ports.split(",").some((part) => {
+    const [low, high] = part.split(":").map((value) => Number.parseInt(value, 10));
+    if (low === undefined || Number.isNaN(low)) return false;
+    return high === undefined || Number.isNaN(high) ? port === low : port >= low && port <= high;
+  });
+}
+
+/** Application profiles and service names that mean SSH on port 22. */
+const SSH_NAMES = new Set(["openssh", "ssh"]);
+
+/**
+ * Whether an added ufw rule lets `port/proto` in. Understands the simple syntax (`allow 22/tcp`,
+ * `limit ssh`, `allow OpenSSH`) and the full one (`allow from 10.0.0.0/8 to any port 22 proto tcp`).
+ */
+export function ufwRuleCovers(rule: string, port: number, proto: "tcp" | "udp"): UfwCoverage {
+  const none = { covers: false, limitedSource: false, rateLimited: false };
+  const words = rule.trim().split(/\s+/);
+  const action = words.shift();
+  if (action !== "allow" && action !== "limit") return none;
+  if (words[0] === "in") words.shift();
+  if (words[0] === "out") return none;
+  const rateLimited = action === "limit";
+  if (!words.includes("from") && !words.includes("to") && !words.includes("on")) {
+    const spec = words.join(" ");
+    if (words.length !== 1) return none;
+    const covers = SSH_NAMES.has(spec.toLowerCase())
+      ? port === 22 && proto === "tcp"
+      : portSpecCovers(spec, port, proto);
+    return { covers, limitedSource: false, rateLimited };
+  }
+  const after = (key: string, from = 0) => {
+    const index = words.indexOf(key, from);
+    return index >= 0 ? words[index + 1] : undefined;
+  };
+  const ruleProto = after("proto");
+  if (ruleProto !== undefined && ruleProto !== proto) return none;
+  const toIndex = words.indexOf("to");
+  const destPort = toIndex >= 0 ? after("port", toIndex) : undefined;
+  const app = toIndex >= 0 ? after("app", toIndex) : undefined;
+  let covers: boolean;
+  if (destPort !== undefined) covers = portSpecCovers(destPort, port, proto);
+  else if (app !== undefined) covers = SSH_NAMES.has(app.toLowerCase()) && port === 22;
+  else covers = true; // no destination port: every port
+  const source = after("from");
+  // A source address or an interface (`on eth0`) narrows who can come in.
+  const limitedSource = (source !== undefined && source !== "any") || words.includes("on");
+  return { covers, limitedSource, rateLimited };
 }
 
 /**
