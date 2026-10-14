@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ResourceMove } from "@opscrew/contracts";
+import type { ResourceChange, ResourceMove } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
@@ -20,8 +20,8 @@ const MOVES: ResourceMove[] = [
   },
 ];
 
-async function setup(scenario: FakeEngineScenario) {
-  const handler = new ScriptedApprovalHandler(() => true);
+async function setup(scenario: FakeEngineScenario, approve = true) {
+  const handler = new ScriptedApprovalHandler(() => approve);
   const deps = await createTestPhaseDeps({ approvalHandler: handler });
   const engine = new FakeEngine(scenario);
   const deployPlan = testPlan({ deployed: true, domain: "shop.example.com" });
@@ -172,6 +172,42 @@ const DNS_UPDATE = [
     action: "update" as const,
   },
 ];
+
+describe("planAndApply refusal hint", () => {
+  const DNS_DELETE = DNS_UPDATE.map((change) => ({ ...change, action: "delete" as const }));
+
+  async function refused(changes: ResourceChange[], command?: string): Promise<string> {
+    const { deps, engine, options } = await setup({ changes }, false);
+    const error = await planAndApply(deps, {
+      ...options,
+      ...(command === undefined ? {} : { command }),
+    }).catch((e: unknown) => e);
+    expect(engine.calls).not.toContain("apply");
+    expect(error).toBeInstanceOf(OpsCrewError);
+    return (error as OpsCrewError).hint ?? "";
+  }
+
+  it("names only --approve for a plan that removes nothing", async () => {
+    const hint = await refused(DNS_UPDATE);
+    expect(hint).toMatch(
+      /^To apply it later without prompts, run: opscrew provision --approve [0-9a-f]{64}$/,
+    );
+  });
+
+  it("adds --confirm <app> for provision when the plan needs the typed app name", async () => {
+    const hint = await refused(DNS_DELETE);
+    expect(hint).toMatch(
+      /^To apply it later without prompts, run: opscrew provision --approve [0-9a-f]{64} --confirm shop$/,
+    );
+  });
+
+  it("points `opscrew dns` (no --confirm) to a terminal or opscrew provision", async () => {
+    const hint = await refused(DNS_DELETE, "opscrew dns");
+    expect(hint).toBe(
+      "This plan deletes or replaces resources, so it needs the app's name: run `opscrew dns` in a terminal and type shop when asked, or in a script run `opscrew provision --plan-only` and then the command it prints (with --confirm shop).",
+    );
+  });
+});
 
 describe("planAndApply cost change", () => {
   it("keeps the plan's monthly cost as the cost change by default", async () => {

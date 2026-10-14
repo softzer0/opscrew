@@ -158,6 +158,9 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     expect(await run(ctx, "provision", "--plan-only")).toBe(1);
     expect(ctx.errors).toContain("Nothing was written and nothing was created.");
     expect(ctx.errors).toContain("add --yes");
+    expect(ctx.errors).toContain(
+      "a plan that deletes or replaces resources also needs --confirm <app name> (opscrew provision --approve <hash> --confirm <app name>), other destroys and changed host keys need an interactive terminal.",
+    );
     expect(engine.calls).toEqual([]);
   });
 
@@ -193,6 +196,98 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     expect(`${ctx.output}${ctx.errors}`).not.toContain(stripe);
   });
 
+  describe("a plan that removes something (needs the app's name)", () => {
+    /** A plan that replaces the server: its `iac-apply` asks for the app's name "shop". */
+    const removal = () =>
+      new FakeEngine({
+        changes: [
+          {
+            address: "module.server.hcloud_server.this",
+            type: "hcloud_server",
+            name: "this",
+            provider: "registry.opentofu.org/hetznercloud/hcloud",
+            action: "replace",
+          },
+        ],
+      });
+
+    async function planned(): Promise<string> {
+      project = await deployProject();
+      const first = context(project, { engine: removal() });
+      expect(await run(first.ctx, "provision", "--plan-only", "--yes")).toBe(0);
+      const hash = printedHash(first.ctx.output);
+      expect(first.ctx.output).toContain(
+        `    opscrew provision --approve ${hash} --yes --confirm shop\n`,
+      );
+      expect(first.ctx.output).toContain(
+        "This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm shop in the command above in a script.",
+      );
+      return hash;
+    }
+
+    it("--approve <hash> --confirm <app> applies exactly that plan in a script", async () => {
+      const hash = await planned();
+      const second = context(project as DeployProject, { engine: removal() });
+      expect(
+        await run(second.ctx, "provision", "--approve", hash, "--confirm", "shop", "--yes"),
+      ).toBe(0);
+      expect(second.engine.calls).toEqual(["apply"]);
+      expect(second.engine.applied[0]?.approval).toMatchObject({
+        approvedPlanHash: hash,
+        allowDestroy: true,
+      });
+      expect(second.ctx.output).toContain("(confirmed with --confirm shop)");
+    });
+
+    it("stops before anything runs when --confirm is not the app's name", async () => {
+      const hash = await planned();
+      const second = context(project as DeployProject, { engine: removal() });
+      expect(
+        await run(second.ctx, "provision", "--approve", hash, "--confirm", "shopp", "--yes"),
+      ).toBe(1);
+      expect(second.ctx.errors).toContain(
+        "--confirm shopp does not match the app's name, so nothing was changed.",
+      );
+      expect(second.ctx.errors).toContain("opscrew provision --approve <hash> … --confirm shop");
+      expect(second.engine.calls).toEqual([]);
+    });
+
+    it("refuses a script without --confirm, naming the flag; --yes never approves it", async () => {
+      const hash = await planned();
+      const second = context(project as DeployProject, { engine: removal() });
+      expect(await run(second.ctx, "provision", "--approve", hash, "--yes")).toBe(1);
+      expect(second.ctx.errors).toContain("add --confirm shop");
+      expect(second.ctx.errors).toContain(
+        `To apply it later without prompts, run: opscrew provision --approve ${hash} --confirm shop`,
+      );
+      expect(second.engine.calls).not.toContain("apply");
+    });
+
+    it("refuses --confirm when the plan's hash is not listed in --approve", async () => {
+      project = await deployProject();
+      const { ctx, engine } = context(project, { engine: removal() });
+      expect(await run(ctx, "provision", "--confirm", "shop", "--yes")).toBe(1);
+      expect(ctx.errors).toContain("only together with --approve and that plan's hash");
+      expect(engine.calls).not.toContain("apply");
+    });
+
+    it("still asks for the typed name in a terminal", async () => {
+      project = await deployProject();
+      const approvals = new ApproveAll();
+      const { ctx, engine } = context(project, {
+        engine: removal(),
+        interactive: true,
+        approvals,
+      });
+      expect(await run(ctx, "provision")).toBe(0);
+      expect(engine.calls).toContain("apply");
+      expect(approvals.requests.find((r) => r.kind === "iac-apply")).toMatchObject({
+        allowDestroy: true,
+        confirmPhrase: "shop",
+      });
+    });
+  });
+
   it("shows the options in --help", async () => {
     project = await deployProject();
     const { ctx } = context(project);
@@ -203,6 +298,7 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
       "--engine <name>",
       "--no-push",
       "--yes",
+      "--confirm <name>",
     ]) {
       expect(ctx.output).toContain(option);
     }

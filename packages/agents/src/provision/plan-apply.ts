@@ -447,6 +447,28 @@ async function clearDestroyedAt(deps: PhaseDeps): Promise<void> {
   await writeArtifact("plan", deps.paths.files.plan, { ...onDisk, deployment });
 }
 
+/** Commands with `--confirm <app>`, which approves a plan that needs the typed app name. */
+const CONFIRM_COMMANDS = ["opscrew provision", "opscrew retarget"];
+
+/**
+ * How to apply a refused plan later. A plan that needs the typed app name (`confirmPhrase`) also
+ * needs `--confirm <app>`; a command without that flag (`opscrew dns`, `opscrew portainer …`)
+ * points to a terminal instead, and `opscrew dns` also to `opscrew provision` for scripts.
+ */
+function approveLaterHint(command: string, planHash: string, confirmPhrase?: string): string {
+  if (confirmPhrase === undefined) {
+    return `To apply it later without prompts, run: ${command} --approve ${planHash}`;
+  }
+  if (CONFIRM_COMMANDS.some((name) => command === name || command.startsWith(`${name} `))) {
+    return `To apply it later without prompts, run: ${command} --approve ${planHash} --confirm ${confirmPhrase}`;
+  }
+  const script =
+    command === "opscrew dns"
+      ? `, or in a script run \`opscrew provision --plan-only\` and then the command it prints (with --confirm ${confirmPhrase})`
+      : "";
+  return `This plan deletes or replaces resources, so it needs the app's name: run \`${command}\` in a terminal and type ${confirmPhrase} when asked${script}.`;
+}
+
 /**
  * Plan → policies → approval bound to the plan hash → apply (constitution I). With `planOnly` it
  * stops after saving the plan and printing its hash; with `approvePlanHash` it applies the saved
@@ -556,7 +578,13 @@ export async function planAndApply(
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
       `The infrastructure plan was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was changed.`,
-      { hint: `To apply it later without prompts, run: ${command} --approve ${saved.planHash}` },
+      {
+        hint: approveLaterHint(
+          command,
+          saved.planHash,
+          saved.hasDestroy ? deployPlan.app.name : undefined,
+        ),
+      },
     );
   }
   await deps.approvals.assertApprovedPlan(saved.planHash, { allowDestroy: saved.hasDestroy });

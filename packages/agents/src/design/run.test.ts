@@ -12,6 +12,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { runInterview } from "../interview";
 import { cloudTarget } from "../providers";
 import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
@@ -565,6 +566,80 @@ describe("runDesign", () => {
       expect(result.plan.dns.proxied).toBe(false);
       expect(result.plan.security.httpAllowedFrom).toBe("any");
       expect(result.plan.security.sshAllowedCidrs).toEqual(["203.0.113.7/32"]);
+    });
+
+    describe("with Portainer enabled", () => {
+      const onCloudflare = makeRequirements({
+        dnsProvider: "cloudflare",
+        domain: "shop.example.com",
+      });
+      const PORTAINER = {
+        enabled: true,
+        version: "2.33.1",
+        access: "subdomain" as const,
+        hostname: "portainer.example.com",
+        allowedEmails: ["ops@example.com"],
+      };
+
+      /** A deployed plan on Cloudflare after `opscrew portainer enable --subdomain portainer`. */
+      async function withPortainer(): Promise<TestPhaseDeps> {
+        const deps = await setup(staticSpaFacts(), onCloudflare);
+        await runDesign(deps, { catalog: euCatalog(), optionId: "hetzner-single-cx13-fsn1" });
+        const plan = deployed(await readArtifact("plan", deps.paths.files.plan));
+        await writeArtifact("plan", deps.paths.files.plan, {
+          ...plan,
+          dns: { ...plan.dns, zone: "example.com" },
+          portainer: PORTAINER,
+        });
+        return deps;
+      }
+
+      it("re-running interview and design keeps plan.portainer exactly as it was", async () => {
+        const deps = await withPortainer();
+        await runInterview(deps, {
+          answers: {
+            expectedMonthlyUsers: "1k-10k",
+            budgetMonthly: { amount: 20, currency: "EUR" },
+            region: "eu-central",
+            uptime: "standard",
+            dataCriticality: "none",
+            domain: "shop.example.com",
+            dnsProvider: "cloudflare",
+            keepExternalServices: [],
+          },
+        });
+        const result = await runDesign(deps, {
+          catalog: euCatalog(),
+          optionId: "hetzner-single-cx13-fsn1",
+        });
+        const plan = await readArtifact("plan", deps.paths.files.plan);
+        expect(plan.portainer).toEqual(PORTAINER);
+        expect(result.plan.portainer).toEqual(PORTAINER);
+        expect(plan.dns.zone).toBe("example.com");
+      });
+
+      it("keeps a Portainer reached only through an SSH tunnel on a plan without Cloudflare", async () => {
+        const local = { enabled: true, version: "2.33.1", access: "local" as const };
+        const deps = await existingPlan("hetzner-single-cx13-fsn1", (plan) => ({
+          ...deployed(plan),
+          portainer: local,
+        }));
+        const result = await runDesign(deps, {
+          catalog: euCatalog(),
+          optionId: "hetzner-single-cx13-fsn1",
+        });
+        expect(result.plan.portainer).toEqual(local);
+      });
+
+      it("stops without touching plan.yaml when its subdomain no longer fits the new DNS", async () => {
+        const deps = await withPortainer();
+        const before = await readFile(deps.paths.files.plan, "utf8");
+        await writeArtifact("requirements", deps.paths.files.requirements, makeRequirements());
+        await expect(
+          runDesign(deps, { catalog: euCatalog(), optionId: "hetzner-single-cx13-fsn1" }),
+        ).rejects.toThrow(/Portainer is served on portainer\.example\.com through Cloudflare/);
+        expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+      });
     });
   });
 

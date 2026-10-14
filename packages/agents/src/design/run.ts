@@ -605,14 +605,24 @@ async function requireChosenApp(
  * `deployment`, `approvals`, `security`, `infra` and the status of code changes that are still
  * the same change (id, kind and path). `security.httpAllowedFrom` is re-derived when the DNS proxy
  * setting changed, so a Cloudflare-only allow-list never outlives the Cloudflare proxy.
+ * `portainer` is kept exactly as it was, with the Cloudflare zone learned for it (`dns.zone`)
+ * while the app's domain is still on Cloudflare inside that zone. A Portainer subdomain the new
+ * DNS settings no longer allow stops design before plan.yaml changes.
  */
 function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
   const key = (change: DeployPlan["codeChanges"][number]) =>
     `${change.id}\u0000${change.kind}\u0000${change.path}`;
   const statuses = new Map(previous.codeChanges.map((change) => [key(change), change.status]));
   const { httpAllowedFrom, ...security } = previous.security;
-  return DeployPlanSchema.parse({
+  const zone = previous.dns.zone;
+  const sameZone =
+    fresh.dns.zone === undefined &&
+    zone !== undefined &&
+    fresh.dns.provider === "cloudflare" &&
+    (fresh.dns.domain === zone || (fresh.dns.domain ?? "").endsWith(`.${zone}`));
+  const kept = DeployPlanSchema.safeParse({
     ...fresh,
+    ...(sameZone ? { dns: { ...fresh.dns, zone } } : {}),
     codeChanges: fresh.codeChanges.map((change) => ({
       ...change,
       status: statuses.get(key(change)) ?? change.status,
@@ -621,7 +631,20 @@ function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
     security: previous.dns.proxied === fresh.dns.proxied ? previous.security : security,
     approvals: previous.approvals,
     deployment: previous.deployment,
+    ...(previous.portainer === undefined ? {} : { portainer: previous.portainer }),
   });
+  if (kept.success) return kept.data;
+  const portainer = previous.portainer;
+  if (portainer?.access === "subdomain") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `Portainer is served on ${portainer.hostname ?? "a subdomain"} through Cloudflare, but the new requirements no longer put the app's domain on Cloudflare${zone === undefined ? "" : ` in the zone ${zone}`}, so OpsCrew cannot keep it. plan.yaml was not changed.`,
+      {
+        hint: "Keep the domain on Cloudflare when you run `opscrew interview`, or turn Portainer off with `opscrew portainer disable` first, then run `opscrew design` again.",
+      },
+    );
+  }
+  throw kept.error;
 }
 
 /**

@@ -8,10 +8,12 @@ import {
   type ProvisionResult,
   runProvision,
 } from "@opscrew/agents";
+import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
 import { z } from "zod";
+import { APPROVE_BY_HASH_KINDS } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import {
@@ -39,6 +41,8 @@ export interface InfraFlags {
   hostKey?: string;
   /** `--password-logins off|keep` (`provision` only): the choice a server with password users needs. */
   passwordLogins?: "off" | "keep";
+  /** `--confirm <app>` (`provision` only): the app's name, for a plan that removes something. */
+  confirm?: string;
 }
 
 /** Help text of `--yes` for the commands that write files, secrets and pull requests. */
@@ -111,7 +115,12 @@ export function approveOptions(
 }
 
 /** The command that applies the plans a `--plan-only` run saved, with the flags that matter. */
-function approveCommand(command: string, hashes: readonly string[], flags: InfraFlags): string {
+function approveCommand(
+  command: string,
+  hashes: readonly string[],
+  flags: InfraFlags,
+  confirm?: string,
+): string {
   return [
     `opscrew ${command}`,
     ...hashes.map((hash) => `--approve ${hash}`),
@@ -120,6 +129,7 @@ function approveCommand(command: string, hashes: readonly string[], flags: Infra
     ...(flags.passwordLogins === undefined ? [] : [`--password-logins ${flags.passwordLogins}`]),
     ...(flags.push === false ? ["--no-push"] : []),
     ...(flags.yes === true ? ["--yes"] : []),
+    ...(confirm === undefined ? [] : [`--confirm ${confirm}`]),
   ].join(" ");
 }
 
@@ -162,6 +172,55 @@ export async function hostPlanChanges(
 }
 
 /**
+ * The typed confirmation for a plan that removes something (an `iac-apply` or `host-apply` that
+ * asks for the app's name, for example the switch between serving an own server directly and
+ * through the tunnel, which deletes the old DNS records). With `--confirm <app>` it approves
+ * exactly that plan when its hash is also one of the `--approve` values; without `--confirm`, a run
+ * nobody can answer is refused with the flag to add, and `--yes` never approves it. Every other
+ * request (and this one in a terminal without `--confirm`, which asks for the name) goes to `base`.
+ */
+export class RemovalConfirmation implements ApprovalHandler {
+  constructor(
+    private readonly base: ApprovalHandler,
+    private readonly app: string,
+    private readonly confirmed: boolean,
+    private readonly hashes: readonly string[],
+    private readonly interactive: boolean,
+    private readonly print: (text: string) => void,
+  ) {}
+
+  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    const removal =
+      APPROVE_BY_HASH_KINDS.includes(request.kind) && request.confirmPhrase !== undefined;
+    if (!removal) return this.base.request(request);
+    const decide = (approved: boolean, extra: Partial<ApprovalDecision>): ApprovalDecision => ({
+      approved,
+      approver: "--approve and --confirm flags",
+      decidedAt: new Date().toISOString(),
+      ...extra,
+    });
+    if (this.confirmed) {
+      const wanted = request.planHash?.toLowerCase();
+      const listed =
+        isPlanHash(request.planHash) && this.hashes.some((hash) => hash.toLowerCase() === wanted);
+      if (request.confirmPhrase === this.app && listed) {
+        this.print(`  ✓ ${request.title} (confirmed with --confirm ${this.app})\n`);
+        return decide(true, { confirmation: this.app });
+      }
+      return decide(false, {
+        reason: `--confirm ${this.app} approves a plan that deletes or replaces resources only together with --approve and that plan's hash ${request.planHash ?? ""}`,
+      });
+    }
+    if (!this.interactive) {
+      return decide(false, {
+        reason: `this plan deletes or replaces resources, which needs the app's name: add --confirm ${request.confirmPhrase} (with --approve and the plan's hash), or run the command in a terminal`,
+      });
+    }
+    return this.base.request(request);
+  }
+}
+
+/**
  * Runs `provision` or `dns` from the command line: checks the flags, builds the phase deps (with
  * the `--approve <hash>` / `--yes` approval handler when no human is present and the terminal
  * prompt for production values when one is), runs the phase, maps errors to exit codes 1/2 and
@@ -175,15 +234,53 @@ export async function runInfraCommand(
   run: (deps: PhaseDeps, options: ProvisionOptions) => Promise<ProvisionResult>,
 ): Promise<void> {
   const planOnly = flags.planOnly === true;
+  // A wrong `--confirm` name is its own error, not a missing `--yes`.
+  let wrongName = false;
+  const yesHint = assumeYesHint(ctx, flags.yes, command);
   const result = await runPhaseCommand(
     ctx,
     async () => {
       const hashes = checkApproveFlags(command, flags);
       const hostKey = flags.hostKey?.trim();
+      const confirm = flags.confirm?.trim();
+      // `--confirm` exists on `provision` only; without a plan the phase explains what to run.
+      const app =
+        command === "provision"
+          ? await readArtifact("plan", createPhaseDeps(ctx, { ai: false }).paths.files.plan)
+              .then((plan) => plan.app.name)
+              .catch((error: unknown) => {
+                if (confirm !== undefined) throw error;
+                return undefined;
+              })
+          : undefined;
+      if (confirm !== undefined && confirm !== app) {
+        wrongName = true;
+        throw new OpsCrewError(
+          "APPROVAL_REFUSED",
+          `--confirm ${confirm} does not match the app's name, so nothing was changed.`,
+          {
+            hint: `To apply a plan that deletes or replaces resources in a script, run \`opscrew ${command} --approve <hash> … --confirm ${app}\`.`,
+          },
+        );
+      }
       const deps = createPhaseDeps(ctx, {
         ai: false,
         ...(hashes.length === 0 ? {} : { approvePlanHashes: hashes }),
         ...(flags.yes === true ? { assumeYes: true } : {}),
+        ...(app === undefined
+          ? {}
+          : {
+              wrapApprovals: (base: ApprovalHandler) =>
+                new RemovalConfirmation(
+                  base,
+                  app,
+                  confirm !== undefined,
+                  hashes,
+                  // A person can answer: a terminal, or (in tests) an attached approval handler.
+                  ctx.isInteractive || servicesOf(ctx).approvalHandler !== undefined,
+                  ctx.stdout,
+                ),
+            }),
       });
       const prompts = promptsOf(ctx);
       const secretPrompt = servicesOf(ctx).prompts === undefined ? clackSecretPrompt : undefined;
@@ -202,11 +299,14 @@ export async function runInfraCommand(
       const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
       const own = plan?.target.provider === "own";
       const planned: PlannedHash[] = [];
+      let removes = false;
       if (planOnly) {
-        if (
-          result.planHash !== undefined &&
-          (await findSavedPlan(deps.paths.files.plansDir, result.planHash)) !== undefined
-        ) {
+        const saved =
+          result.planHash === undefined
+            ? undefined
+            : await findSavedPlan(deps.paths.files.plansDir, result.planHash);
+        if (result.planHash !== undefined && saved !== undefined) {
+          removes = saved.hasDestroy;
           planned.push({
             label: own ? "infrastructure (Cloudflare)" : "infrastructure",
             hash: result.planHash,
@@ -219,9 +319,9 @@ export async function runInfraCommand(
           planned.push({ label: "host plan for your server", hash: result.hostPlanHash });
         }
       }
-      return { result, planned, own };
+      return { result, planned, own, confirmApp: removes ? app : undefined };
     },
-    assumeYesHint(ctx, flags.yes),
+    (error) => (wrongName ? undefined : yesHint(error)),
   );
 
   const { outputs, applied } = result.result;
@@ -234,8 +334,14 @@ export async function runInfraCommand(
           command,
           result.planned.map((plan) => plan.hash),
           flags,
+          result.confirmApp,
         ),
       );
+      if (result.confirmApp !== undefined) {
+        ctx.stdout(
+          `This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm ${result.confirmApp} in the command above in a script.\n`,
+        );
+      }
       return;
     }
     ctx.stdout(
@@ -299,6 +405,10 @@ export function register(program: Command, ctx: CliContext): void {
       "Commit the generated files locally but do not push or open a pull request",
     )
     .option("--yes", YES_DESCRIPTION)
+    .option(
+      "--confirm <name>",
+      "The app's name, to apply a plan that deletes or replaces resources without a prompt (for scripts; with --approve and that plan's hash)",
+    )
     .exitOverride(usageErrorsExit2)
     .action((flags: InfraFlags) => runInfraCommand(ctx, "provision", flags, runProvision));
 }

@@ -40,17 +40,25 @@ export async function runPhaseCommand<T>(
   }
 }
 
-/** Hint for an approval refused in a non-interactive run without `--yes`. */
+/**
+ * Hint for an approval refused in a non-interactive run without `--yes`. For `provision`, which has
+ * `--confirm <app>`, it also says how a script applies a plan that deletes or replaces resources.
+ */
 export function assumeYesHint(
   ctx: CliContext,
   yes: boolean | undefined,
+  command?: string,
 ): (error: unknown) => string | undefined {
+  const deletions =
+    command === "provision"
+      ? "a plan that deletes or replaces resources also needs --confirm <app name> (opscrew provision --approve <hash> --confirm <app name>), other destroys and changed host keys need an interactive terminal."
+      : "destroys and changed host keys need an interactive terminal.";
   return (error) =>
     !ctx.isInteractive &&
     yes !== true &&
     isUserFacingError(error) &&
     error.code === "APPROVAL_REFUSED"
-      ? "This run is not interactive: add --yes to approve writing the generated files, storing the GitHub secrets, pushing and opening the pull request. Infrastructure changes need --approve <hash>; destroys and changed host keys need an interactive terminal."
+      ? `This run is not interactive: add --yes to approve writing the generated files, storing the GitHub secrets, pushing and opening the pull request. Infrastructure changes need --approve <hash>; ${deletions}`
       : undefined;
 }
 
