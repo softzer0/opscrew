@@ -139,7 +139,7 @@ description: "Tasks for 008-first-real-run"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 - [X] T824 Local Docker pass green over every example; fixes appended as tasks (lead)
-- [ ] T825 Hetzner pass for every app of the matrix, `fastapi-redis` and `slog_cvrp_app` with a model; results in `docs/e2e.md` (lead)
+- [X] T825 Hetzner pass for every app of the matrix, `fastapi-redis` and `slog_cvrp_app` with a model; results in `docs/e2e.md` (lead)
 
 ## Phase 3: Live runs (lead)
 
