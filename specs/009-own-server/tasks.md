@@ -78,6 +78,13 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: medium
 
+- [ ] T912 [P] OpsCrew-created servers install Docker Engine 28 or newer from Docker's repository (found by T907: cloud-init installs the distribution's `docker.io`, which may be older than 28, where ports published on 127.0.0.1 are reachable from layer-2 neighbours — moby/moby#49325) in `packages/iac-templates/modules/{hetzner-vps,digitalocean-droplet}/cloud-init.yaml.tftpl`
+  - Owns: `packages/iac-templates/modules/hetzner-vps/**`, `packages/iac-templates/modules/digitalocean-droplet/**`, `packages/iac-templates/src/generated/modules.ts` (regenerated), their tests
+  - Reads: research.md R1 (Docker's apt repository with a deb822 source and `/etc/apt/keyrings/docker.asc`); cloud-init's `apt` module docs (official) for adding a repository with a key; the current cloud-init template
+  - Accept: new servers get `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin` and `docker-compose-plugin` from `download.docker.com` for the image's release and architecture (no `docker.io`/`docker-compose-v2`), the rest of cloud-init unchanged (deploy user, sshd, fail2ban, ufw, unattended-upgrades, `/var/lib/opscrew-ready`); `user_data` stays in `ignore_changes` (existing servers are not rebuilt); both engines validate; a test renders the template and checks the packages and the repository.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` (and `OPSCREW_IT=1` engine validation)
+  - Effort: medium
+
 ## Phase 4: Surfaces and live test
 
 - [ ] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
