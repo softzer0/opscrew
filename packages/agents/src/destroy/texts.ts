@@ -1,5 +1,5 @@
 import type { VpsProviderId } from "@opscrew/contracts";
-import { ownServerNotYet, providerProfile } from "../providers";
+import { providerProfile } from "../providers";
 
 /**
  * Teardown wording that differs per provider. The Hetzner texts are exactly those of feature 003;
@@ -69,8 +69,39 @@ function digitalOceanTexts(): DestroyTexts {
   };
 }
 
-/** The teardown wording for `provider`; throws for a server the user owns. */
+/**
+ * A server the user owns: OpsCrew never deletes it and has no snapshots or provider backups there
+ * (backups are the user's responsibility), so the snapshot texts say that instead.
+ */
+function ownTexts(): DestroyTexts {
+  const profile = providerProfile("own");
+  return {
+    displayName: profile.displayName,
+    noun: profile.serverNoun,
+    company: "",
+    console: "your server",
+    snapshotRef: () => "no snapshot (OpsCrew cannot take snapshots of your own server)",
+    snapshotBilling:
+      "OpsCrew cannot take snapshots of your own server; backups are your responsibility",
+    snapshotBilled: "not available on your own server",
+    lookup: (app) => `marked as running the OpsCrew app ${app} (/etc/opscrew/app.json)`,
+    tokenHint: () =>
+      "No API token is needed for your own server: OpsCrew connects over SSH with the login from `opscrew interview`.",
+  };
+}
+
+/**
+ * The question before a teardown, asking for the name to type. OpsCrew's servers are named after
+ * the app; on a server the user owns the app's name is typed, and the server itself stays.
+ */
+export function destroyConfirmPrompt(name: string, provider: VpsProviderId): string {
+  return provider === "own"
+    ? `Type ${name} (the app's name) to remove the app as listed above; your server itself stays (anything else cancels)`
+    : `Type ${name} to delete everything listed above (anything else cancels)`;
+}
+
+/** The teardown wording for `provider`, including a server the user owns. */
 export function destroyTexts(provider: VpsProviderId): DestroyTexts {
-  if (provider === "own") throw ownServerNotYet();
+  if (provider === "own") return ownTexts();
   return provider === "digitalocean" ? digitalOceanTexts() : hetznerTexts();
 }

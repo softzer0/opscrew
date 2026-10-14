@@ -3,17 +3,16 @@ import { siteHosts } from "../runtime";
 import { PORTAINER_PORT, portainerHostname, sshHostname, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 
-const PENDING = "_(set by `opscrew provision`)_";
-
 function cell(text: string): string {
   return text.replace(/\|/g, "\\|");
 }
 
 /**
- * `opscrew/RUNBOOK.md` for a server the user already owns. The server's address is shown only in
- * public mode without Cloudflare's proxy (as for OpsCrew-created servers, ADR 0010); a tunnel
- * server has no public address at all. No server price: the user already pays for the server.
- * Backups are the user's responsibility, and the Portainer password is only named by its file.
+ * `opscrew/RUNBOOK.md` for a server the user already owns. The server's address never appears in
+ * it, in any mode (FR-902, stricter than ADR 0010's exception for unproxied servers): commands name
+ * `<server>`, and `ctx.serverIpv4`/`serverIpv6` are ignored. No server price: the user already
+ * pays for the server. Backups are the user's responsibility, and the Portainer password is only
+ * named by its file.
  */
 export function renderOwnRunbook(
   plan: DeployPlan,
@@ -23,14 +22,12 @@ export function renderOwnRunbook(
   const tunnel = tunnelMode(plan);
   const cloudflare = plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
   const proxied = cloudflare && plan.dns.proxied;
-  const hidden = tunnel || proxied;
-  const ip = hidden ? undefined : ctx.serverIpv4;
-  const ipv6 = hidden ? undefined : ctx.serverIpv6;
   const hosts = siteHosts(plan);
-  const url = hosts.length > 0 ? `https://${hosts[0]}` : ip ? `http://${ip}` : PENDING;
+  const url =
+    hosts.length > 0 ? `https://${hosts[0]}` : "`http://<server>` (your server's address)";
   const projectDir = `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}`;
   const keyPath = `${projectDir}/deploy_key`;
-  const server = ip ?? "<server>";
+  const server = "<server>";
   // Both commands connect to the server directly (in tunnel mode over the user's own network), so
   // sshd's port applies whenever it is not 22.
   const port = ctx.sshPort !== undefined && ctx.sshPort !== 22 ? `-p ${ctx.sshPort} ` : "";
@@ -46,7 +43,7 @@ export function renderOwnRunbook(
     ? "none needed: the server is reached through a Cloudflare Tunnel"
     : proxied
       ? "kept private behind Cloudflare: `opscrew status` shows them"
-      : `${ip ?? PENDING} / ${ipv6 ?? "none"}`;
+      : "kept out of this repository: `opscrew status` shows them";
   const db = plan.services.postgres
     ? "PostgreSQL 17 in a container on the server, data in `/srv/data/postgres`; backups are your responsibility"
     : plan.externalServices.length > 0
@@ -122,23 +119,19 @@ export function renderOwnRunbook(
     "docker compose restart app        # restart the app",
     "```",
     "",
-    ...(ip === undefined
+    "`<server>` is the address you gave OpsCrew; it is not written in this repository. `opscrew status` shows it on the",
+    "machine that ran `opscrew provision`.",
+    ...(tunnel
       ? [
-          "`<server>` is the address you gave OpsCrew; it is not written in this repository. `opscrew status` shows it on the",
-          "machine that ran `opscrew provision`.",
-          ...(tunnel
-            ? [
-                `The tunnel's SSH hostname (\`${sshHost}\`) only lets the deploy workflow in; connect over your own network`,
-                "or VPN as you did when you ran `opscrew provision`.",
-              ]
-            : proxied
-              ? [
-                  "Cloudflare's proxy hides the address, and a published address would let anyone go around Cloudflare.",
-                ]
-              : []),
-          "",
+          `The tunnel's SSH hostname (\`${sshHost}\`) only lets the deploy workflow in; connect over your own network`,
+          "or VPN as you did when you ran `opscrew provision`.",
         ]
-      : []),
+      : proxied
+        ? [
+            "Cloudflare's proxy hides the address, and a published address would let anyone go around Cloudflare.",
+          ]
+        : []),
+    "",
     "The deploy key is stored only on the machine where you ran `opscrew provision` (and as a GitHub Actions",
     "secret). OpsCrew turned off password logins on the server.",
     "",

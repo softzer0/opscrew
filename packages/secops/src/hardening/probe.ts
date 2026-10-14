@@ -77,6 +77,11 @@ export interface SshPasswordProbeOptions {
   knownHostsFile: string;
   user?: string;
   port?: number;
+  /**
+   * A server the user owns whose password logins were kept by the user's explicit choice: offered
+   * passwords are then reported as a warning, not a failure.
+   */
+  passwordsKept?: boolean;
 }
 
 /**
@@ -125,7 +130,18 @@ export async function probeSshPasswordAuth(
     };
   }
   const offered = methods.split(",").map((m) => m.trim());
-  return offered.includes("password") || offered.includes("keyboard-interactive")
+  const passwords = offered.includes("password") || offered.includes("keyboard-interactive");
+  if (passwords && options.passwordsKept === true) {
+    return {
+      ...base,
+      status: "warn",
+      message:
+        "The server still offers password login over SSH, because you chose to keep password logins.",
+      remediation:
+        "Give every user of the server an SSH key, then run `opscrew provision --password-logins off`.",
+    };
+  }
+  return passwords
     ? {
         ...base,
         status: "fail",

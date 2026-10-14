@@ -2,7 +2,7 @@ import type { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { GitHubClient } from "@opscrew/connector-github";
 import type { ResourceChange, ServerSnapshotApi, VpsProviderId } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
-import type { ProvisionServices } from "../provision";
+import type { OwnServerServices, ProvisionServices } from "../provision";
 
 /** The GitHub call the secret cleanup needs (a `GitHubClient` or a test fake). */
 export type DestroyGitHubApi = Pick<GitHubClient, "deleteActionsSecret">;
@@ -28,6 +28,8 @@ export interface DestroyServices extends Pick<ProvisionServices, "engine" | "pro
   sleep?: (ms: number) => Promise<void>;
   /** Clock in epoch milliseconds for the snapshot wait (passed to the default connector). */
   now?: () => number;
+  /** A server the user owns: its shell, the host adapter and the login check (fakes in tests). */
+  own?: OwnServerServices;
 }
 
 export interface DestroyOptions {
@@ -41,16 +43,40 @@ export interface DestroyOptions {
   services?: DestroyServices;
   /**
    * Asked once after the preview and before anything changes (the snapshot, the protection lift):
-   * the CLI shows the list and has the user type the server name. Returning false stops the run
+   * the CLI shows the list and has the user type the server name (on a server the user owns, the
+   * app's name; ask with `preview.confirmPrompt`). Returning false stops the run
    * with nothing changed. Without it, the approvals of each plan are the only confirmation.
    */
   confirm?: (preview: DestroyPreview) => Promise<boolean>;
+  /**
+   * A server the user owns: also delete the app's data (`/srv/data`, its Docker volumes and
+   * Portainer's data). Off by default: OpsCrew takes no snapshot of the user's own server, so the
+   * data is kept unless asked for; deleting it needs the teardown approval with `allowDestroy` and
+   * the typed app name.
+   */
+  deleteData?: boolean;
+  /**
+   * A server the user owns: after removing the app, also reverse OpsCrew's own host changes (deploy
+   * user, SSH and firewall settings, automatic updates, runtime directories), as a separate host
+   * plan with its own `host-apply` approval (`--undo-host`). Also works after an earlier destroy.
+   */
+  undoHost?: boolean;
+  /**
+   * A server the user owns: `--host-key SHA256:…`, the fingerprint to trust on the first
+   * connection from this computer when nobody can answer a prompt.
+   */
+  hostKey?: string;
 }
 
 /** What the teardown would delete, shown before the user confirms. */
 export interface DestroyPreview {
-  /** The server name the user types to confirm. */
+  /** The name the user types to confirm: the server's (the app's name) or, on their own server, the app's. */
   name: string;
+  /**
+   * The question to ask before the user types {@link name} (`destroyConfirmPrompt`); set by
+   * `opscrew destroy`. On a server the user owns it asks for the app's name and says the server stays.
+   */
+  confirmPrompt?: string;
   /** The planned provider. */
   provider: VpsProviderId;
   /**
@@ -63,6 +89,11 @@ export interface DestroyPreview {
   snapshot: boolean;
   /** Plain-English warning about data that lives only on the server, when there is any. */
   dataWarning?: string;
+  /**
+   * A server the user owns: what the teardown host plan removes from the server (step titles). The
+   * server itself always stays.
+   */
+  hostSteps?: string[];
 }
 
 export interface DestroyResult {
@@ -77,4 +108,9 @@ export interface DestroyResult {
   secretsRemoved: string[];
   /** Plain-English list of what still exists and what the user may want to do about it. */
   remaining: string[];
+  /**
+   * A server the user owns: the SHA-256 hashes of the host plans this run applied (their files are
+   * `.opscrew/plans/host-<hash>.json`): the teardown and, with `undoHost`, the undo.
+   */
+  hostPlans?: { teardown?: string; undo?: string };
 }

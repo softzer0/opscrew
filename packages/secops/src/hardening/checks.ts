@@ -254,6 +254,147 @@ const pendingSecurityUpdates: HostCheck = {
   },
 };
 
+/** How OpsCrew set up a server the user already owns, as its host checks need to know it. */
+export interface OwnServerHardening {
+  /** Every port sshd really listens on (from the host plan); never assumed to be 22. */
+  sshPorts: readonly number[];
+  /** The admin login is root, so root keeps key-only logins (`PermitRootLogin prohibit-password`). */
+  rootLogin: boolean;
+  /** The user explicitly chose to keep password logins (`--password-logins keep`). */
+  passwordsKept: boolean;
+}
+
+const OWN_SSH_REMEDIATION =
+  "Run `opscrew provision` again: its host plan puts OpsCrew's SSH settings back (nothing changes without your approval).";
+
+/** The value of `key` in an sshd config text (lower case), or undefined when it is not set. */
+function sshdValue(config: string, key: string): string | undefined {
+  for (const raw of config.split(/\r?\n/)) {
+    const line = raw.trim().toLowerCase();
+    if (line === "" || line.startsWith("#")) continue;
+    const [name, value] = line.split(/\s+/);
+    if (name === key) return value;
+  }
+  return undefined;
+}
+
+/**
+ * OpsCrew's SSH settings on a server the user owns: no password logins (unless the user chose to
+ * keep them, a warning), and no root login, or key-only root login when the user logs in as root.
+ * Keyboard-interactive is not required here: OpsCrew turns it off only where it would allow
+ * passwords, and the outside probe checks what SSH really offers.
+ */
+function ownSshDropin(own: OwnServerHardening): HostCheck {
+  return {
+    ...sshDropin,
+    title: own.rootLogin
+      ? "SSH allows keys only, root logs in with a key only"
+      : "SSH allows keys only, no root login",
+    evaluate(result) {
+      if (result.exitCode !== 0) {
+        return check(
+          this,
+          "fail",
+          `The OpsCrew SSH settings file ${SSH_DROPIN} is missing.`,
+          OWN_SSH_REMEDIATION,
+        );
+      }
+      const root = sshdValue(result.stdout, "permitrootlogin");
+      const keyOnlyRoot = root === "prohibit-password" || root === "without-password";
+      const problems: string[] = [];
+      if (!(root === "no" || (own.rootLogin && keyOnlyRoot))) {
+        problems.push(
+          own.rootLogin
+            ? `PermitRootLogin is ${root ?? "not set"}, but it should be prohibit-password (root logs in with a key only) or no`
+            : `PermitRootLogin is ${root ?? "not set"}, but it should be no (you log in as a user with sudo)`,
+        );
+      }
+      const passwords = sshdValue(result.stdout, "passwordauthentication") !== "no";
+      if (passwords && !own.passwordsKept) problems.push("password login is still allowed");
+      if (problems.length > 0) {
+        return check(
+          this,
+          "fail",
+          `SSH hardening is incomplete: ${problems.join("; ")}.`,
+          OWN_SSH_REMEDIATION,
+        );
+      }
+      const rootText = keyOnlyRoot
+        ? "root keeps key-only logins because you connect as root (the stricter option is a user with sudo and no root login)"
+        : "root cannot log in";
+      if (passwords) {
+        return check(
+          this,
+          "warn",
+          `SSH still accepts password logins because you chose to keep them (some users of this server log in with a password); ${rootText}.`,
+          "Give those users SSH keys, then run `opscrew provision --password-logins off` to turn password logins off.",
+        );
+      }
+      return check(this, "pass", `SSH accepts keys only; ${rootText}.`);
+    },
+  };
+}
+
+/** Only sshd's real ports and the web ports may listen on public addresses of a server the user owns. */
+function ownListeningPorts(own: OwnServerHardening): HostCheck {
+  const ssh = [...new Set(own.sshPorts)].sort((a, b) => a - b);
+  const allowed = new Set([...ssh, 80, 443]);
+  const sshText = `SSH (port ${ssh.join(", ")})`;
+  return {
+    ...listeningPorts,
+    evaluate(result) {
+      if (result.exitCode !== 0)
+        return check(this, "warn", "Could not list listening ports (ss failed).");
+      const unexpected = publicListeningPorts(result.stdout).filter((p) => !allowed.has(p));
+      return unexpected.length === 0
+        ? check(this, "pass", `Only ${sshText} and the web ports listen on public addresses.`)
+        : check(
+            this,
+            "fail",
+            `Unexpected ports listen on public addresses: ${unexpected.join(", ")} (SSH uses ${ssh.join(", ")}).`,
+            "Do not publish container ports other than Caddy's; reach databases over the internal Docker network. If it is a service of yours that must be reachable, make sure the firewall (ufw) lets in only what it should.",
+          );
+    },
+  };
+}
+
+/** The host checks for a server the user already owns (see {@link OwnServerHardening}). */
+export function ownServerHostChecks(own: OwnServerHardening): readonly HostCheck[] {
+  const replaced: Readonly<Record<string, HostCheck>> = {
+    "setup-finished": {
+      ...setupFinished,
+      title: "Server setup by OpsCrew finished",
+      evaluate(result) {
+        return result.stdout.trim() === "yes"
+          ? check(this, "pass", "OpsCrew's host setup finished.")
+          : check(
+              this,
+              "fail",
+              "OpsCrew's host setup did not finish, so hardening may be incomplete.",
+              "Run `opscrew provision` again: it shows what is still missing and changes nothing without your approval.",
+            );
+      },
+    },
+    "ssh-hardening": ownSshDropin(own),
+    ufw: {
+      ...ufwEnabled,
+      evaluate(result) {
+        if (result.exitCode === 0) return check(this, "pass", "ufw is enabled.");
+        return check(
+          this,
+          "fail",
+          result.exitCode === 1
+            ? "ufw is installed but disabled, so it filters nothing."
+            : "ufw is not installed (or /etc/ufw/ufw.conf cannot be read).",
+          "Run `opscrew provision` again: its host plan turns ufw back on with the SSH rule first (nothing changes without your approval).",
+        );
+      },
+    },
+    "listening-ports": ownListeningPorts(own),
+  };
+  return HOST_CHECKS.map((hostCheck) => replaced[hostCheck.id] ?? hostCheck);
+}
+
 /** All host checks, in report order. */
 export const HOST_CHECKS: readonly HostCheck[] = [
   setupFinished,

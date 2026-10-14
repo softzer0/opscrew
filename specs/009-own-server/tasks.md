@@ -55,7 +55,7 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T906 [P] [US4] Drift, destroy, secure and verify for own servers in `packages/agents/src/{drift,destroy,secure,verify}/`
+- [X] T906 [P] [US4] Drift, destroy, secure and verify for own servers in `packages/agents/src/{drift,destroy,secure,verify}/`
   - Owns: `packages/agents/src/drift/**`, `packages/agents/src/destroy/**`, `packages/agents/src/secure/**`, `packages/agents/src/verify/**`
   - Reads: plan.md "Day 2"; contracts/cli.md "Destroy"; spec FR-911, FR-912, FR-913
   - Depends: T902, T903, T904

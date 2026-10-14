@@ -1,4 +1,5 @@
-export { probeExpectedPorts } from "./probes";
+export { type OwnSecureTarget, ownSecureTarget, withoutOwnServer } from "./own";
+export { probeExpectedPorts, probeOwnServerPorts } from "./probes";
 export {
   renderSecurityReport,
   renderSecuritySummary,

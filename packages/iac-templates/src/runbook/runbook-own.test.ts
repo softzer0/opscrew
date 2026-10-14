@@ -32,23 +32,27 @@ describe("renderRunbook for a server the user owns", () => {
     expect(text).not.toMatch(/Hetzner|DigitalOcean|Droplet/);
   });
 
-  it("shows the address only in public mode without Cloudflare's proxy", () => {
+  it("never shows the server's address, in any mode (FR-902)", () => {
     const direct = runbook({});
-    expect(direct).toContain(`| IPv4 / IPv6 | ${IPV4} / ${IPV6} |`);
-    expect(direct).toContain(
-      `ssh -i ~/.opscrew/projects/shop-0123456789ab/deploy_key deploy@${IPV4}`,
-    );
-    expect(direct).toContain(`| App | http://${IPV4} |`);
-
+    const proxiedPlan = testPlan({ provider: "own", domain: "shop.example.com" });
+    const dnsOnly = renderRunbook(
+      { ...proxiedPlan, dns: { ...proxiedPlan.dns, proxied: false } },
+      ctx,
+    ).content;
     const proxied = runbook({ domain: "shop.example.com" });
-    expect(proxied).not.toContain(IPV4);
-    expect(proxied).not.toContain(IPV6);
-    expect(proxied).toContain("kept private behind Cloudflare");
-    expect(proxied).toContain("deploy@<server>");
-
     const tunnel = runbook({ access: "tunnel", domain: "shop.example.com" });
-    expect(tunnel).not.toContain(IPV4);
-    expect(tunnel).not.toContain(IPV6);
+    for (const text of [direct, dnsOnly, proxied, tunnel]) {
+      expect(text).not.toContain(IPV4);
+      expect(text).not.toContain(IPV6);
+      expect(text).toContain("deploy@<server>");
+      expect(text).toContain("`<server>` is the address you gave OpsCrew");
+    }
+    expect(direct).toContain("| App | `http://<server>` (your server's address) |");
+    expect(direct).toContain(
+      "| IPv4 / IPv6 | kept out of this repository: `opscrew status` shows them |",
+    );
+    expect(dnsOnly).toContain("| App | https://shop.example.com |");
+    expect(proxied).toContain("kept private behind Cloudflare");
   });
 
   it("explains the tunnel and its SSH hostname in tunnel mode", () => {
@@ -112,7 +116,7 @@ describe("renderRunbook for a server the user owns", () => {
           : { access, domain: "shop.example.com", portainer: { access: "local" } },
         { ...ctx, sshPort: 2222 },
       );
-      const server = access === "public" ? IPV4 : "<server>";
+      const server = "<server>";
       expect(text).toContain(`ssh -p 2222 -i ${key} deploy@${server}`);
       expect(text).toContain(`ssh -p 2222 -i ${key} -N -L 9443:127.0.0.1:9443 deploy@${server}`);
       expect(text).not.toMatch(/ssh -i /);

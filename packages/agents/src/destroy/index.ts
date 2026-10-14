@@ -36,7 +36,7 @@ export {
   takeSnapshotBeforeDelete,
 } from "./deletion";
 export { runDestroy } from "./run";
-export { type DestroyTexts, destroyTexts } from "./texts";
+export { type DestroyTexts, destroyConfirmPrompt, destroyTexts } from "./texts";
 export type {
   DestroyCloudflareApi,
   DestroyGitHubApi,

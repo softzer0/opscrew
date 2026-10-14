@@ -8,10 +8,11 @@ import {
 } from "@opscrew/connector-github";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
-import { renderRunbook } from "@opscrew/iac-templates";
+import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
 import {
   committableUrl,
   hasDeployment,
@@ -91,7 +92,8 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   reporter.step("Verifying the deployment");
 
   const plan = await readArtifact("plan", paths.files.plan);
-  const server = await serverAddress(deps, plan);
+  // Through a Cloudflare Tunnel only the domain is checked: the server has no address to probe.
+  const server = tunnelMode(plan) ? undefined : await serverAddress(deps, plan);
   const url = siteUrl(plan, server);
   if (url === undefined) {
     // Deployed, but not from here (a fresh clone): provisioning here would create a second server.
@@ -172,7 +174,16 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
 
   // The runbook is committed: it shows the address only when the domain is not behind
   // Cloudflare's proxy (or there is no domain, so the app is served on the address).
-  const shown = server !== undefined && !hidesServerAddress(current) ? server : undefined;
+  // A server the user owns never has its address committed, in any mode (FR-902).
+  const shown =
+    server !== undefined && current.target.provider !== "own" && !hidesServerAddress(current)
+      ? server
+      : undefined;
+  // A server the user owns: sshd's port as the last provision rendered it (committed tfvars).
+  const sshPort =
+    current.target.provider === "own"
+      ? ownRenderFromTfvars(await committedTfvars(paths.root, current)).sshPort
+      : undefined;
   const runbook = renderRunbook(current, {
     opscrewVersion: deps.version,
     github: github.repo ?? { owner: "<owner>", repo: "<repo>" },
@@ -180,6 +191,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     projectId: paths.projectId,
     ...(shown !== undefined ? { serverIpv4: shown.ipv4 } : {}),
     ...(shown?.ipv6 !== undefined ? { serverIpv6: shown.ipv6 } : {}),
+    ...(sshPort !== undefined ? { sshPort } : {}),
   });
   await writeRenderedFiles(paths.root, [runbook]);
   const runbookPath = toPosixRelative(paths.root, paths.files.runbook);

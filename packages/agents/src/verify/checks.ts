@@ -1,5 +1,6 @@
 import { BlockList, isIPv6 } from "node:net";
 import type { CheckResult, FetchLike, Severity } from "@opscrew/contracts";
+import { tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
@@ -83,6 +84,17 @@ function profileOf(plan: DeployPlan): ProviderProfile {
   return providerProfile(planProvider(plan));
 }
 
+/** Where to look when the server seems down: the provider's console, or the user's own server. */
+function serverRunningHint(plan: DeployPlan): string {
+  if (plan.target.provider !== "own") {
+    const profile = profileOf(plan);
+    return `that the ${profile.serverNoun} is running (${providerConsole(profile)})`;
+  }
+  return tunnelMode(plan)
+    ? "that your server is running and its Cloudflare Tunnel connector is up (`docker compose -p opscrew-tunnel ps` on the server)"
+    : "that your server is running";
+}
+
 function errorText(error: unknown): string {
   if (error instanceof Error) {
     const cause = (error as { cause?: unknown }).cause;
@@ -122,9 +134,14 @@ export function siteUrl(plan: DeployPlan, server?: ServerAddress): string | unde
   return server ? `http://${server.ipv4}` : undefined;
 }
 
-/** True when web traffic may reach the server only through Cloudflare. */
+/**
+ * True when web traffic may reach the server only through Cloudflare. Never on a server the user
+ * owns: its firewall (ufw) opens the web ports to every address in public mode, and in tunnel mode
+ * no web port is open at all.
+ */
 export function originIsCloudflareOnly(plan: DeployPlan): boolean {
   return (
+    plan.target.provider !== "own" &&
     plan.dns.provider === "cloudflare" &&
     plan.dns.proxied &&
     plan.security.httpAllowedFrom === "cloudflare"
@@ -170,8 +187,10 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
   const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
   const title = `DNS for ${host} points to the right place`;
   const { plan } = ctx;
-  const ipv4 = ctx.server?.ipv4;
-  const ipv6 = ctx.server?.ipv6;
+  // Through a Cloudflare Tunnel the records are always proxied CNAMEs: they resolve to Cloudflare.
+  const tunnel = tunnelMode(plan);
+  const ipv4 = tunnel ? undefined : ctx.server?.ipv4;
+  const ipv6 = tunnel ? undefined : ctx.server?.ipv6;
   let a: string[];
   let aaaa: string[];
   try {
@@ -191,7 +210,7 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
     });
   }
   const addresses = [...a, ...aaaa];
-  if (plan.dns.proxied) {
+  if (plan.dns.proxied || tunnel) {
     const exposed = addresses.filter(
       (address) =>
         (ipv4 !== undefined && sameAddress(address, ipv4)) ||
@@ -236,7 +255,9 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
       title,
       "high",
       "pass",
-      `${host} resolves to Cloudflare (${addresses.join(", ")}); the server's IP stays hidden.`,
+      tunnel
+        ? `${host} resolves to Cloudflare (${addresses.join(", ")}); the app is served through the Cloudflare Tunnel.`
+        : `${host} resolves to Cloudflare (${addresses.join(", ")}); the server's IP stays hidden.`,
       { target: host },
     );
   }
@@ -334,7 +355,7 @@ export async function checkSiteReachable(
         "fail",
         `Could not reach ${target}: ${errorText(error)}.`,
         {
-          remediation: `Check that the latest deploy run succeeded and that the ${profileOf(ctx.plan).serverNoun} is running (${providerConsole(profileOf(ctx.plan))}).`,
+          remediation: `Check that the latest deploy run succeeded and ${serverRunningHint(ctx.plan)}.`,
           target,
         },
       ),
@@ -357,8 +378,9 @@ export async function checkTls(host: string, ctx: VerifyCheckContext): Promise<C
       "fail",
       `Could not open an HTTPS connection to ${host}: ${errorText(error)}.`,
       {
-        remediation:
-          "Check that ports 80 and 443 are open and that Caddy is running (`docker compose logs caddy`).",
+        remediation: tunnelMode(ctx.plan)
+          ? "Cloudflare answers HTTPS for the tunnel: check that the domain uses Cloudflare's nameservers and that the record is proxied, then run `opscrew provision` to see what is missing."
+          : "Check that ports 80 and 443 are open and that Caddy is running (`docker compose logs caddy`).",
         target: host,
       },
     );
@@ -612,6 +634,24 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
   const title = "The server is not reachable around Cloudflare";
   const { plan } = ctx;
   const ip = ctx.server?.ipv4;
+  if (tunnelMode(plan)) {
+    return result(
+      id,
+      title,
+      "medium",
+      "skip",
+      "Skipped: the app is served through a Cloudflare Tunnel, so the server opens no web port that could be reached around Cloudflare (`opscrew secure` checks that from outside).",
+    );
+  }
+  if (plan.target.provider === "own" && plan.dns.provider === "cloudflare" && plan.dns.proxied) {
+    return result(
+      id,
+      title,
+      "medium",
+      "skip",
+      "Skipped: on your own server the firewall (ufw) accepts web traffic from every address; OpsCrew does not limit it to Cloudflare there. A Cloudflare Tunnel (`opscrew interview`, answering that the internet cannot reach the server) keeps the server out of reach.",
+    );
+  }
   if (plan.dns.provider !== "cloudflare" || !plan.dns.proxied) {
     return result(
       id,

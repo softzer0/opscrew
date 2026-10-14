@@ -18,6 +18,32 @@ const byAddress = (a: { address: string }, b: { address: string }) =>
 const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
+ * The "next steps" after a drift report, for the terminal. On a server the user owns, changes are
+ * made on the server (over SSH) or in the Cloudflare dashboard; there is no provider console.
+ */
+export function driftNextSteps(report: Pick<DriftReport, "clean" | "provider">): string[] {
+  if (report.provider === "own") {
+    return report.clean
+      ? [
+          "nothing to do; run `opscrew drift` again after changes on the server (ssh) or in the Cloudflare dashboard.",
+        ]
+      : [
+          "to undo changes made outside OpsCrew and apply pending code, run `opscrew provision` (it shows the plans first and changes nothing without your approval).",
+          "to keep a change made on the server (ssh) or in the Cloudflare dashboard, update opscrew/plan.yaml to match before you provision again.",
+        ];
+  }
+  const cloud = providerProfile(report.provider ?? "hetzner").displayName;
+  return report.clean
+    ? [
+        `nothing to do; run \`opscrew drift\` again after changes in the ${cloud} or Cloudflare console.`,
+      ]
+    : [
+        "to undo changes made outside OpsCrew and apply pending code, run `opscrew provision` (it shows the plan first).",
+        "to keep a change made in the console, update opscrew/plan.yaml to match before you provision again.",
+      ];
+}
+
+/**
  * Plain-text drift report for the terminal: resources changed outside OpsCrew (attribute names,
  * never values), pending infrastructure changes and generated files that differ. Deterministic:
  * the same report always renders the same text, whatever the order of its lists.
@@ -28,9 +54,11 @@ export function renderDriftReport(report: DriftReport): string {
     "",
   ];
   const drift = [...report.drift].sort(byAddress);
+  const ownServer = report.provider === "own";
   const cloud = report.provider
     ? `the ${providerProfile(report.provider).displayName}`
     : "your cloud provider's";
+  const host = report.host?.differences ?? [];
   const pending = [...report.pending].sort(byAddress);
   const files = [
     ...report.files.changed.map((path) => ({ path, label: "changed" })),
@@ -41,17 +69,36 @@ export function renderDriftReport(report: DriftReport): string {
     (a, b) => byText(a.name, b.name) || byText(a.type, b.type) || byText(a.content, b.content),
   );
   const notes = (report.notes ?? []).map((note) => `Note: ${note}`);
-  if (drift.length === 0 && pending.length === 0 && files.length === 0 && foreign.length === 0) {
+  if (
+    drift.length === 0 &&
+    pending.length === 0 &&
+    files.length === 0 &&
+    foreign.length === 0 &&
+    host.length === 0
+  ) {
     lines.push(
-      "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
+      ownServer
+        ? "The deployment matches the plan: your server is set up as OpsCrew left it, and the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
+        : "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
       ...notes,
     );
     return lines.join("\n");
   }
 
+  if (host.length > 0) {
+    lines.push(`Your server differs from what OpsCrew set up (${host.length}):`);
+    for (const item of host) lines.push(`  ~ ${item.title}: ${item.detail}`);
+    lines.push(
+      "`opscrew provision` shows a host plan that puts OpsCrew's setup back; nothing on the server changes until you approve it. If you changed something on purpose, keep in mind that the next provision undoes it.",
+      "",
+    );
+  }
+
   if (drift.length > 0) {
     lines.push(
-      `Resources changed outside OpsCrew (${drift.length}), for example in ${cloud} or Cloudflare console:`,
+      ownServer
+        ? `Resources changed outside OpsCrew (${drift.length}), for example in the Cloudflare dashboard:`
+        : `Resources changed outside OpsCrew (${drift.length}), for example in ${cloud} or Cloudflare console:`,
     );
     for (const item of drift) {
       if (item.action === "delete") {

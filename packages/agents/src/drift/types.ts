@@ -6,11 +6,17 @@ import type {
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { ProvisionServices } from "../provision/types";
+import type { HostDrift } from "./host";
 
 export interface DriftOptions {
   /** Overrides `plan.infra.engine`. */
   engine?: EnginePreference;
-  /** Engine, cloud provider and Cloudflare fakes for tests (same shape as provision's). */
+  /**
+   * A server the user owns: `--host-key SHA256:…`, the fingerprint to trust on the first
+   * connection from this computer when nobody can answer a prompt.
+   */
+  hostKey?: string;
+  /** Engine, cloud provider, Cloudflare and own-server fakes for tests (same shape as provision's). */
   services?: ProvisionServices;
 }
 
@@ -30,7 +36,12 @@ export interface DriftReport {
    * in the Cloudflare dashboard). Type, name and content, sorted by name.
    */
   foreignDnsRecords: { type: string; name: string; content: string }[];
-  /** True when nothing drifted, nothing is pending and every file matches. */
+  /**
+   * A server the user owns: how it differs from what OpsCrew set up (SSH settings, firewall rules,
+   * deploy user, runtime directories, the add-on and app containers). Never an address or secret.
+   */
+  host?: HostDrift;
+  /** True when nothing drifted, nothing is pending and every file (and the server) matches. */
   clean: boolean;
   engine: IacEngineInfo;
   /** ISO time of the check. */

@@ -1,20 +1,13 @@
-import { access, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { cloudflareConnector } from "@opscrew/connector-cloudflare";
-import {
-  GitClient,
-  GitHubClient,
-  githubConnector,
-  resolveGitHubToken,
-} from "@opscrew/connector-github";
-import type { ApprovalRecord, IacEngine, ResourceChange } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
-import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
+import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
+import { engineLabel } from "@opscrew/iac-engine";
 import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { cloudTarget, type ProviderProfile, planProvider, providerProfile } from "../providers";
-import { checkProvider, githubCoordinates } from "../provision";
+import { checkProvider } from "../provision";
 import { hasDeployment, recordServerAddress, serverAddress } from "../shared";
 import {
   dataWarning,
@@ -23,6 +16,19 @@ import {
   deletionPlanProblems,
   describeChanges,
 } from "./checks";
+import {
+  COMMAND,
+  checkCloudflare,
+  destroyedPlan,
+  exists,
+  type GitHubTarget,
+  nothingDeployed,
+  removeDeploySecrets,
+  resolveGitHub,
+  secretsPage,
+  setupEngine,
+  stateNotHere,
+} from "./common";
 import {
   applyApprovedPlan,
   confirmDeletion,
@@ -39,11 +45,9 @@ import {
   snapshotWanted,
   takeSnapshotBeforeDelete,
 } from "./deletion";
-import { type DestroyTexts, destroyTexts } from "./texts";
-import type { DestroyGitHubApi, DestroyOptions, DestroyResult, DestroyServices } from "./types";
-
-/** The command every hint of a stopped teardown tells the user to run again. */
-const COMMAND = "opscrew destroy";
+import { destroyOwnServer } from "./own";
+import { type DestroyTexts, destroyConfirmPrompt, destroyTexts } from "./texts";
+import type { DestroyOptions, DestroyResult } from "./types";
 
 /**
  * Input variable that lifts the server's delete and rebuild protection (Hetzner root module, T303).
@@ -62,23 +66,6 @@ interface DestroyContext {
   vars?: Readonly<Record<string, string>>;
 }
 
-/** Where the deploy secrets live, and why they cannot be removed when `api` is missing. */
-interface GitHubTarget {
-  owner?: string;
-  repo?: string;
-  api?: DestroyGitHubApi;
-  skipReason?: string;
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * 0. A move to another provider is in progress (`plan.retarget`): two servers may exist and the
  * state is transitional, so destroy refuses before any check or change.
@@ -90,18 +77,6 @@ function moveInProgress(plan: DeployPlan): OpsCrewError {
     `A move to ${to} is in progress, so OpsCrew will not delete this deployment.`,
     {
       hint: "Run `opscrew retarget` to continue the move, `opscrew retarget --finish` to complete it once traffic reaches the new server, or `opscrew retarget --abort` to go back before the DNS switch. Then run `opscrew destroy` again if you still want to delete the deployment.",
-    },
-  );
-}
-
-function nothingDeployed(plan: DeployPlan): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    "Nothing is deployed for this project, so there is nothing to destroy.",
-    {
-      hint: plan.deployment.destroyedAt
-        ? `OpsCrew already tore this deployment down (${plan.deployment.destroyedAt}). Run \`opscrew provision\` to create a new one.`
-        : "Run `opscrew provision` to create a deployment.",
     },
   );
 }
@@ -118,13 +93,7 @@ async function requirePreconditions(
 ) {
   if (!(await exists(statePath))) {
     if (!hasDeployment(plan)) throw nothingDeployed(plan);
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The infrastructure state of ${plan.app.name} is not on this computer (.opscrew/tfstate/prod.tfstate), so OpsCrew cannot tell what to delete. Nothing was changed.`,
-      {
-        hint: "Run `opscrew destroy` on the computer that ran `opscrew provision`, or copy its .opscrew/tfstate folder (and, with OpenTofu, its state passphrase from ~/.opscrew/projects/<project>/state_passphrase) here, then try again.",
-      },
-    );
+    throw stateNotHere(plan);
   }
   const dir = join(deps.paths.root, plan.infra.dir);
   try {
@@ -148,132 +117,6 @@ async function requirePreconditions(
       hint: "Run `opscrew provision` to regenerate the infrastructure files (its plan should show no changes), then run `opscrew destroy` again.",
     },
   );
-}
-
-/** 2. Cloudflare token (only when the plan manages DNS there); stops when it is missing or broken. */
-async function checkCloudflare(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  services: DestroyServices,
-): Promise<boolean> {
-  if (plan.dns.provider !== "cloudflare") return false;
-  const connector = cloudflareConnector({
-    env: deps.env,
-    fetch: deps.fetch,
-    redactor: deps.redactor,
-    version: deps.version,
-  });
-  const requirement = connector.credentials;
-  const api = services.cloudflare === undefined ? (connector.client ?? null) : services.cloudflare;
-  const help = `It needs: ${requirement.scopes.join(", ")}. Create one at ${requirement.createUrl}`;
-  if (api === null) {
-    throw new OpsCrewError(
-      "CREDENTIALS_MISSING",
-      `No Cloudflare token found: set ${requirement.envVars.join(" or ")}. Nothing was changed.`,
-      {
-        hint: `The deployment's DNS records for ${plan.dns.domain ?? "the app"} are on Cloudflare; deleting the server without them would leave them pointing at a dead address. ${help}`,
-      },
-    );
-  }
-  const check = await api.verifyToken();
-  if (!check.ok) {
-    throw new OpsCrewError(
-      "CREDENTIALS_INVALID",
-      `Cloudflare: ${deps.redactor.redact(check.message)}`,
-      {
-        hint: `The token ${help}`,
-      },
-    );
-  }
-  return true;
-}
-
-/** 2. GitHub repository and token for the secret cleanup; optional, so problems become a reason. */
-async function resolveGitHub(deps: PhaseDeps, services: DestroyServices): Promise<GitHubTarget> {
-  const git = new GitClient({
-    cwd: deps.paths.root,
-    runner: deps.runner,
-    env: deps.env,
-    redactor: deps.redactor,
-  });
-  let coordinates: { owner: string; repo: string };
-  try {
-    if (!(await git.isRepo())) return { skipReason: "this project is not a git repository" };
-    coordinates = await githubCoordinates(git);
-  } catch {
-    return { skipReason: "the repository has no GitHub remote named origin" };
-  }
-  let api: DestroyGitHubApi | null | undefined = services.github;
-  if (api === undefined) {
-    const token = await resolveGitHubToken(deps.env, deps.runner);
-    if (token) deps.redactor.addLiteral(token, "github-token");
-    api = token ? new GitHubClient({ token, fetch: deps.fetch, version: deps.version }) : null;
-  }
-  if (api === null) {
-    const variables = githubConnector({ token: undefined, fetch: deps.fetch }).credentials.envVars;
-    return {
-      ...coordinates,
-      skipReason: `no GitHub token was found (set ${variables.join(" or ")}, or sign in with \`gh auth login\`)`,
-    };
-  }
-  return { ...coordinates, api };
-}
-
-function secretsPage(github: GitHubTarget): string {
-  return github.owner && github.repo
-    ? `https://github.com/${github.owner}/${github.repo}/settings/secrets/actions`
-    : "your repository's Settings → Secrets and variables → Actions";
-}
-
-/** 3. Engine, state encryption and `init` with the same backend path as provisioning. */
-async function setupEngine(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  options: DestroyOptions,
-  statePath: string,
-): Promise<{ engine: IacEngine; env: Record<string, string | undefined> }> {
-  const services = options.services ?? {};
-  const preference = options.engine ?? plan.infra.engine;
-  const engine = services.engine
-    ? await services.engine(preference)
-    : await selectEngine(preference, {
-        runner: deps.runner,
-        env: deps.env,
-        redactor: deps.redactor,
-        now: () => deps.clock.now(),
-      });
-  deps.reporter.info(`Using ${engineLabel(engine.info.name)} ${engine.info.version}.`);
-  const env: Record<string, string | undefined> = { ...deps.env };
-  if (plan.infra.stateEncryption) {
-    if (engine.info.name === "tofu") {
-      // Read, never create: a new passphrase could not decrypt the existing state.
-      const passphrase = (
-        await readFile(deps.paths.files.statePassphrase, "utf8").catch(() => undefined)
-      )?.trim();
-      if (!passphrase) {
-        throw new OpsCrewError(
-          "PHASE_PRECONDITION",
-          "The OpenTofu state is encrypted, but this computer does not have its passphrase. Nothing was changed.",
-          {
-            hint: `Copy the state passphrase file from the computer that ran \`opscrew provision\` to ${deps.paths.files.statePassphrase}, then run \`opscrew destroy\` again.`,
-          },
-        );
-      }
-      deps.redactor.addLiteral(passphrase, "state-passphrase");
-      env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
-    } else {
-      deps.reporter.warn(
-        "Terraform cannot read state that OpenTofu encrypted. If OpenTofu provisioned this deployment, run `opscrew destroy --engine tofu` instead.",
-      );
-    }
-  }
-  await mkdir(deps.paths.files.plansDir, { recursive: true });
-  deps.reporter.step(`Initialising ${engineLabel(engine.info.name)} in ${plan.infra.dir}`);
-  await engine.init(join(deps.paths.root, plan.infra.dir), {
-    env,
-    backendConfig: { path: statePath },
-  });
-  return { engine, env };
 }
 
 /**
@@ -406,85 +249,6 @@ async function destroyInfrastructure(
   }
 }
 
-/** 8. Removes the deploy secrets after a `github-secrets` approval. Names only, never values. */
-async function removeDeploySecrets(deps: PhaseDeps, github: GitHubTarget): Promise<string[]> {
-  const { api, owner, repo } = github;
-  if (!api || !owner || !repo) return [];
-  const names = Object.values(DEPLOY_SECRETS).sort();
-  const where = `${owner}/${repo}`;
-  const approval = await deps.approvals.request({
-    kind: "github-secrets",
-    title: `Remove the deploy secrets from ${where}`,
-    details: [
-      "GitHub Actions secrets to delete (names only):",
-      ...names.map((name) => `  ${name}`),
-      "Without them the deploy workflow cannot reach a server; `opscrew provision` stores new ones.",
-    ].join("\n"),
-  });
-  if (!approval.approved) {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      `The deploy secrets were not removed from ${where}. The infrastructure is deleted.`,
-      {
-        hint: "Run `opscrew destroy` again to remove them and finish the cleanup (the pinned host key and opscrew/plan.yaml).",
-      },
-    );
-  }
-  const removed: string[] = [];
-  for (const name of names) {
-    try {
-      await api.deleteActionsSecret(owner, repo, name);
-    } catch (error) {
-      const reason = isUserFacingError(error) ? error.message : "unexpected error";
-      throw new OpsCrewError(
-        error instanceof OpsCrewError ? error.code : "PROVIDER_ERROR",
-        deps.redactor.redact(
-          `The infrastructure is deleted, but removing the GitHub secret ${name} failed: ${reason}`,
-        ),
-        {
-          hint: `${error instanceof OpsCrewError && error.hint ? `${error.hint} ` : ""}Then run \`opscrew destroy\` again to finish the cleanup.`,
-        },
-      );
-    }
-    await deps.audit.append({
-      kind: "secret-set",
-      actor: "opscrew",
-      action: `delete secret ${name}`,
-      phase: "provision",
-      target: where,
-      decision: "approved",
-    });
-    removed.push(name);
-  }
-  deps.reporter.success(
-    `Removed ${removed.length} deploy secrets from GitHub Actions in ${where}.`,
-  );
-  return removed;
-}
-
-/** 8. The plan without the app's URL, with `destroyedAt` and the approvals recorded. */
-function destroyedPlan(
-  plan: DeployPlan,
-  at: string,
-  approvals: readonly (ApprovalRecord | undefined)[],
-): DeployPlan {
-  const { url, lastCompletedPhase, ...kept } = plan.deployment;
-  const recorded = approvals
-    .filter((a): a is ApprovalRecord => a?.planHash !== undefined)
-    .map((a) => ({
-      planHash: a.planHash as string,
-      approver: a.approver,
-      at: a.decidedAt,
-      kind: "iac-apply",
-    }));
-  return {
-    ...plan,
-    updatedAt: at,
-    approvals: [...plan.approvals, ...recorded],
-    deployment: { ...kept, destroyedAt: at },
-  };
-}
-
 /** 9. What still exists after the teardown, in plain English. */
 function remainingAfterDestroy(input: {
   plan: DeployPlan;
@@ -532,6 +296,9 @@ function remainingAfterDestroy(input: {
  * approval), the pinned host key and the server's address in OpsCrew's local state. A refusal or
  * failure at any step leaves everything after it untouched, and running it again continues where
  * it stopped.
+ *
+ * A server the user owns is never deleted, rebuilt or snapshotted: see `destroyOwnServer` (the
+ * Cloudflare resources, then a teardown host plan, then optionally the undo host plan).
  */
 export async function runDestroy(
   deps: PhaseDeps,
@@ -541,6 +308,7 @@ export async function runDestroy(
   const plan = await readArtifact("plan", deps.paths.files.plan);
   // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
+  if (plan.target.provider === "own") return destroyOwnServer(deps, plan, options);
   const name = plan.app.name;
   const provider = planProvider(plan);
   const profile = providerProfile(provider);
@@ -624,6 +392,7 @@ export async function runDestroy(
     session,
     {
       name,
+      confirmPrompt: destroyConfirmPrompt(name, provider),
       provider,
       deleteProtection: profile.deleteProtection,
       resources: preview.changes,
@@ -662,7 +431,11 @@ export async function runDestroy(
   );
 
   // 8. Cleanup: deploy secrets, pinned host key, plan, stored-secrets record, phase state
-  const secretsRemoved = await removeDeploySecrets(deps, github);
+  const secretsRemoved = await removeDeploySecrets(deps, github, {
+    names: Object.values(DEPLOY_SECRETS),
+    done: "The infrastructure is deleted.",
+    reach: "a server",
+  });
   if ((await forgetHostKeys(deps, [address?.ipv4, address?.ipv6])) > 0) {
     deps.reporter.info(`Removed the ${texts.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
@@ -670,7 +443,10 @@ export async function runDestroy(
   await writeArtifact(
     "plan",
     deps.paths.files.plan,
-    destroyedPlan(plan, at, [protection.approval, destroyApproval]),
+    destroyedPlan(plan, at, [
+      { record: protection.approval, kind: "iac-apply" },
+      { record: destroyApproval, kind: "iac-apply" },
+    ]),
   );
   await recordServerAddress(deps.paths, undefined);
   await rm(join(deps.paths.projectHomeDir, "deploy_secrets.json"), { force: true });
