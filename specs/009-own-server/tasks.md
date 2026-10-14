@@ -150,6 +150,13 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
+- [ ] T922 Follow-ups of T921's review: a proper `planAndApply` hook instead of the approval-note array the wrapped engine fills during `plan()`, a repeated sentence in a Portainer error, and the tunnel-only plan in the same `opscrew destroy` run on Hetzner/DigitalOcean, in `packages/agents/src/{provision,portainer,destroy,shared}/`
+  - Owns: `packages/agents/src/provision/plan-apply.ts`, `packages/agents/src/provision/{own,run}.ts`, `packages/agents/src/portainer/run.ts`, `packages/agents/src/destroy/run.ts`, `packages/agents/src/shared/tunnel-connections.ts` (+ tests in each)
+  - Reads: `connectorFirst`, `tunnelSafeEngine`, `approvalNotes` and `noteSavedPlan` (T921); `infrastructureStopped` in `portainer/run.ts`; `onlyTunnelBusy` in `destroy/run.ts`
+  - Accept: (1) `planAndApply` takes explicit options for this, e.g. `approvalNotes(plan)` (computed from the plan it is about to show) and `beforeApply(plan)` (runs after the approval and before `engine.apply`, and only then), and the T921 flows use them instead of wrapping the engine and filling an array during `plan()`; order, texts, approvals and plan hashes unchanged (the T921 tests pass unchanged, plus tests of the hooks themselves). (2) `infrastructureStopped` does not repeat what the refusal already says ("Nothing on … was changed and nothing in Cloudflare was deleted" followed by "nothing in Cloudflare or on the server changed"). (3) Hetzner/DigitalOcean destroy with a Portainer subdomain: when the apply deleted the server but Cloudflare refused the tunnel (1022), OpsCrew waits until Cloudflare reports no connections (bounded) and then plans and shows the tunnel-only deletion with its own `iac-apply` approval (typed name as for destroy) in the same run; if the wait times out, today's plain message and rerun stay; tests.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: high
+
 ## Phase 4: Surfaces and live test
 
 - [X] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
