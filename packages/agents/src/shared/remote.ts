@@ -79,9 +79,50 @@ export class SshRemoteExec implements RemoteExec {
     options: { timeoutMs?: number; input?: string } = {},
   ): Promise<CommandResult> {
     const { runner, ...rest } = this.#options;
-    return runner.run("ssh", [...sshArgs(rest), command], {
+    const sent = remoteInvocation(command, options.input);
+    return runner.run("ssh", [...sshArgs(rest), sent.command], {
       timeoutMs: options.timeoutMs ?? 60_000,
-      ...(options.input === undefined ? {} : { input: options.input }),
+      ...(sent.input === undefined ? {} : { input: sent.input }),
     });
   }
+}
+
+/**
+ * Longest command (UTF-8 bytes) sent on the ssh command line. Longer ones, and any with a
+ * newline, go over stdin: Git for Windows' `ssh` (an MSYS program) receives only about 8 KiB of a
+ * command-line argument and native Windows OpenSSH about 32 KiB.
+ */
+export const MAX_INLINE_COMMAND_BYTES = 2_000;
+
+/**
+ * The short POSIX command line that runs a command arriving on stdin: it copies exactly `bytes`
+ * bytes into a private temporary file (`dd bs=1` never reads past them, so the caller's `input`
+ * that follows stays on stdin for the command and never touches the file), refuses to run a
+ * command that arrived short (exit 125), runs it with `sh`, keeps its exit code and removes the
+ * file in every case.
+ */
+export function stdinBootstrap(bytes: number): string {
+  return (
+    "umask 077; f=$(mktemp) || exit 125; trap 'rm -f \"$f\"' EXIT HUP INT TERM; " +
+    `dd bs=1 count=${bytes} of="$f" 2>/dev/null; ` +
+    `[ $(wc -c < "$f") -eq ${bytes} ] || ` +
+    '{ echo "opscrew: the command did not arrive in full" >&2; exit 125; }; ' +
+    'sh "$f"; exit $?'
+  );
+}
+
+/**
+ * What goes on the ssh command line and stdin for `command` with optional stdin `input`. Short
+ * single-line commands are sent as they are; others become `stdinBootstrap` with the command's
+ * bytes on stdin, followed by `input`.
+ */
+export function remoteInvocation(
+  command: string,
+  input?: string,
+): { command: string; input?: string } {
+  const bytes = Buffer.byteLength(command, "utf8");
+  if (bytes <= MAX_INLINE_COMMAND_BYTES && !command.includes("\n")) {
+    return input === undefined ? { command } : { command, input };
+  }
+  return { command: stdinBootstrap(bytes), input: command + (input ?? "") };
 }
