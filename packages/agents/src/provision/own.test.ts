@@ -8,6 +8,7 @@ import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import type { PortainerServices } from "../portainer";
 import {
   type OwnServerConnectionInput,
   readOwnServer,
@@ -39,7 +40,7 @@ import {
 } from "./__fixtures__/own";
 import { hostPlanFile } from "./own";
 import { runProvision } from "./run";
-import type { ProvisionOptions, ProvisionServices } from "./types";
+import type { ProvisionOptions } from "./types";
 
 const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
 
@@ -79,13 +80,15 @@ async function setup(o: OwnSetup = {}) {
     o.own ?? { host: OWN_IPV4, port: 22, user: "root", agent: true, reachable: true },
   );
   const zeroTrust = o.zeroTrust ?? fakeZeroTrust();
-  const services: ProvisionServices = {
+  const services: PortainerServices = {
     engine: async () => engine,
     github,
     cloudflare: ownCloudflare(),
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own: { host, zeroTrust, homeDir: home },
+    // The account has no one-time PIN login method yet (a Portainer subdomain creates one).
+    accessLoginMethods: { oneTimePin: async () => undefined },
   };
   return { ...project, deps, engine, host, github, handler, services, runner, home, zeroTrust };
 }

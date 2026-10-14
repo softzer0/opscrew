@@ -4,10 +4,15 @@ import { GitClient } from "@opscrew/connector-github";
 import type { ApprovalRecord, IacEngine, PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
-import { usesTunnel } from "@opscrew/iac-templates";
+import { portainerHostname, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import {
+  type AccessLoginMethodsApi,
+  cloudflareAccessLoginMethods,
+  oneTimePinIdentityProvider,
+} from "../portainer/access";
 import { planProvider, providerProfile } from "../providers";
 import {
   addressFromOutputs,
@@ -213,29 +218,42 @@ async function savedInfrastructureHashes(
 }
 
 /**
- * The own-server render inputs: sshd's port on the server (the tunnel's SSH route) and, when the
- * plan has Cloudflare Access, whether this configuration creates the account's Zero Trust
- * organization (read from Cloudflare, keeping the one an earlier run created) and the one-time PIN
- * login method the last run used.
+ * The Cloudflare Access render inputs of any plan with a tunnel and Access (an own server in
+ * tunnel mode, or a Portainer subdomain on any target): whether this configuration creates the
+ * account's Zero Trust organization (read from Cloudflare, keeping the one an earlier run created)
+ * and, with a Portainer subdomain, which one-time PIN login method its Access application uses
+ * (the one the last render named; unset when the state holds OpsCrew's own; else the account's
+ * existing one). Without them a re-run would plan to delete the organization or to create a
+ * second PIN login method. `undefined` when the plan has no tunnel.
+ *
+ * The lookup of login methods is `services.accessLoginMethods` when given (tests; the Portainer
+ * commands' services carry it), else Cloudflare's API.
  */
-async function ownRenderInput(
+async function accessRenderInput(
   deps: PhaseDeps,
   services: ProvisionServices,
   plan: DeployPlan,
   cloudflare: CloudflareSetup | undefined,
-  run: OwnServerRun,
-): Promise<OwnRenderInput> {
-  const input: OwnRenderInput = { sshPort: run.sshPort };
-  if (!usesTunnel(plan) || cloudflare?.accountId === undefined) return input;
+): Promise<OwnRenderInput | undefined> {
+  if (!usesTunnel(plan) || cloudflare?.accountId === undefined) return undefined;
   const previous = await committedTfvars(deps.paths.root, plan);
-  input.createZeroTrustOrganization = await createZeroTrustOrganization({
-    api: services.own?.zeroTrust ?? cloudflareZeroTrust(deps),
-    accountId: cloudflare.accountId,
-    zone: cloudflare.zoneName,
-    previous: previous?.create_zero_trust_organization === true,
-  });
-  const pin = previous?.one_time_pin_identity_provider_id;
-  if (typeof pin === "string" && pin !== "") input.oneTimePinIdentityProviderId = pin;
+  const input: OwnRenderInput = {
+    createZeroTrustOrganization: await createZeroTrustOrganization({
+      api: services.own?.zeroTrust ?? cloudflareZeroTrust(deps),
+      accountId: cloudflare.accountId,
+      zone: cloudflare.zoneName,
+      previous: previous?.create_zero_trust_organization === true,
+    }),
+  };
+  if (portainerHostname(plan) !== undefined) {
+    const lookup = (services as { accessLoginMethods?: AccessLoginMethodsApi }).accessLoginMethods;
+    const pin = await oneTimePinIdentityProvider({
+      previous,
+      accountId: cloudflare.accountId,
+      api: lookup ?? cloudflareAccessLoginMethods(deps),
+    });
+    if (pin !== undefined) input.oneTimePinIdentityProviderId = pin;
+  }
   return input;
 }
 
@@ -369,7 +387,7 @@ async function provisionFlow(
     await ownEngineEnv(deps, ownRun, engineEnv, () =>
       infrastructureOutputs(deps, plan, { engine: async () => engine, engineEnv }),
     );
-    ownRender = await ownRenderInput(deps, services, plan, cloudflare, ownRun);
+    ownRender = { sshPort: ownRun.sshPort };
     // Switching between public and tunnel mode: the old records go first, in an apply of their own.
     // Only a saved removal plan is applied as the removal (never the new setup's plan).
     const removal = await removeOldAccessMode(deps, {
@@ -407,6 +425,9 @@ async function provisionFlow(
   }
 
   // 4. Render (skipped when applying a saved plan: its files were written by the --plan-only run)
+  // Cloudflare Access settings for any plan with a tunnel (own servers, Portainer subdomains).
+  const access = await accessRenderInput(deps, services, plan, cloudflare);
+  if (access !== undefined) ownRender = { ...ownRender, ...access };
   const knownServer =
     hidesServerAddress(plan) || ownServer
       ? undefined
