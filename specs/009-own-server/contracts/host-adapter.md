@@ -49,9 +49,10 @@ export interface DesiredHost {
   portainer?: { version: string; compose: { initial: string; final: string } };
   /**
    * Only when the site is served directly behind Cloudflare's proxy (the user's explicit choice):
-   * Cloudflare's current ranges, sorted and de-duplicated, for the `web-filter` step.
+   * Cloudflare's current IPv4 ranges, sorted and de-duplicated, for the `web-filter` step (the site
+   * is published on IPv4 only in this mode, so nothing listens on IPv6 80/443).
    */
-  webFilter?: { ipv4: readonly string[]; ipv6: readonly string[] };
+  webFilter?: { ipv4: readonly string[] };
   /** The user's explicit choice when other logins still use passwords (else the step blocks). */
   disablePasswords?: boolean;
 }
@@ -101,7 +102,7 @@ Rules:
 - Teardown and add-on removal never rely on the login's working directory: an explicit project
   directory and Compose file, or removal by the `com.docker.compose.project` label.
 - A setup apply re-checks the server's claim before its first change and refuses another app's server.
-- `web-filter`: a chain in Docker's `DOCKER-USER` (IPv4 and IPv6) that passes connections whose
+- `web-filter`: a chain in Docker's IPv4 `DOCKER-USER` that passes connections whose
   original destination port is 80 or 443 only from the given ranges and drops the rest, installed
   by a unit that runs before Docker and that Docker requires (fail closed: no filter, no Docker);
   other published ports and the user's own rules are untouched; undo removes the chain, its jump

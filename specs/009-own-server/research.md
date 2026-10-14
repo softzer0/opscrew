@@ -45,7 +45,11 @@ marked **confirm live** are checked by the gated live test or a CI smoke test be
   connections whose original destination port is 80 or 443 (`conntrack --ctorigdstport`), sources
   in Cloudflare's IPv4/IPv6 ranges pass and everything else is dropped; the rules are installed by a
   unit that runs before Docker and that Docker requires, so Docker never publishes ports without the
-  filter (fail closed). Without either, public mode is DNS only (not proxied). Rejected: Caddy
+  filter (fail closed). In this mode the site is published on IPv4 only (Caddy binds `0.0.0.0`, no
+  AAAA record; visitors still get IPv6 from Cloudflare's edge): Docker serves an IPv6 host port of a
+  container without IPv6 through docker-proxy on the INPUT path, which `DOCKER-USER` never sees
+  (found by the T913 review), so the filter is IPv4 only and the mode needs a public IPv4 address.
+  Without either, public mode is DNS only (not proxied). Rejected: Caddy
   refusing non-Cloudflare clients (the ports still accept connections); editing ufw's `after.rules`
   (changes the filtering of every container the user runs).
 
