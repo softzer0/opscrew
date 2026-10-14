@@ -114,6 +114,18 @@ function mainTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
   return lines.join("\n");
 }
 
+/**
+ * `output "cloudflare_rulesets"`: the ids of the zone entrypoint rulesets the DNS module manages,
+ * by phase. OpsCrew manages a phase whose entrypoint carries its name only when this output names
+ * that ruleset (another OpsCrew deployment in the zone holds it otherwise). Rendered wherever the
+ * root has `module "dns"`.
+ */
+export const RULESETS_OUTPUT = [
+  "# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones",
+  "# another deployment holds alone.",
+  ...output("cloudflare_rulesets", "module.dns.ruleset_ids"),
+];
+
 function outputsTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
   const lines = [ROOT_HEADER, ""];
   if (tunnelMode(plan)) {
@@ -134,6 +146,7 @@ function outputsTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
       "}",
       "",
     );
+    if (usesCloudflare(plan)) lines.push(...RULESETS_OUTPUT);
   }
   if (pieces) lines.push(...pieces.outputs);
   return lines.join("\n");

@@ -17,6 +17,7 @@ import {
   FakeGitHub,
   fakeCloudflare,
   HOST_KEY,
+  heldRulesetsOutput,
   movingPlan,
   opscrewRecord,
   planJsonFor,
@@ -25,6 +26,7 @@ import {
   SERVER_IPV4,
   SERVER_IPV6,
   testPlan,
+  writeFakeState,
 } from "./__fixtures__/fakes";
 import { findSavedPlan } from "./plan-apply";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
@@ -746,10 +748,22 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     const cloudflare = fakeCloudflare();
     const { deps, services, root, handler, github } = await setup({
       plan: testPlan({ domain: "shop.example.com" }),
-      engine: new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
+      engine: new FakeEngine({
+        planJson: planJsonFor({ proxied: true }),
+        // The state's outputs after the first apply: the ids of the rulesets it created.
+        outputs: {
+          server_ipv4: SERVER_IPV4,
+          server_ipv6: SERVER_IPV6,
+          server_id: "4711",
+          server_name: "shop",
+          url: "https://shop.example.com",
+          cloudflare_rulesets: heldRulesetsOutput(),
+        },
+      }),
       services: { cloudflare },
     });
     await runProvision(deps, { services });
+    await writeFakeState(deps.paths);
     const tfvarsFile = join(root, "opscrew/infra/prod/terraform.tfvars.json");
     const first = await readFile(tfvarsFile, "utf8");
     expect(JSON.parse(first)).toMatchObject({ manage_config_rule: true, manage_waf_rules: true });
@@ -769,6 +783,25 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(await readFile(tfvarsFile, "utf8")).toBe(first);
     expect(handler.requests.map((r) => r.kind)).not.toContain("repo-write");
     expect(deps.reporter.text()).not.toContain("already has its own");
+    expect(deps.reporter.text()).not.toContain("Another OpsCrew deployment");
+  });
+
+  it("leaves OpsCrew's rulesets of another deployment alone in a new project and says how to free them", async () => {
+    const { deps, services, root } = await setup({
+      plan: testPlan({ domain: "shop.example.com" }),
+      engine: new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
+      services: { cloudflare: fakeCloudflare({ configRules: "opscrew", wafRules: "opscrew" }) },
+    });
+    await runProvision(deps, { services });
+    const tfvars = JSON.parse(
+      await readFile(join(root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
+    );
+    expect(tfvars).toMatchObject({ manage_config_rule: false, manage_waf_rules: false });
+    const text = deps.reporter.text();
+    expect(text).toContain(
+      "Another OpsCrew deployment (or one whose state is gone) holds the example.com zone's configuration rules",
+    );
+    expect(text).toContain("DELETE /zones/zone-123/rulesets/rs-http_request_firewall_custom");
   });
 
   it("leaves an empty rule phase it did not create alone and explains what to do", async () => {

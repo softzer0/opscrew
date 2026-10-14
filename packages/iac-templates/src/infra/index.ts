@@ -14,7 +14,7 @@ import {
   variablesTf,
   versionsTf,
 } from "./hcl";
-import { ownRoot } from "./own";
+import { ownRoot, RULESETS_OUTPUT } from "./own";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
 export { zeroTrustAuthDomain } from "./tunnel";
@@ -324,6 +324,7 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
     ...output("server_name", `module.${live}.server_name`),
     ...output("url", url),
     ...serversOutput(shape),
+    ...(usesCloudflare(plan) ? RULESETS_OUTPUT : []),
     ...(pieces?.outputs ?? []),
   ].join("\n");
 }

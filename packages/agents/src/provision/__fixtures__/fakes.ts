@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -13,7 +13,7 @@ import type {
   ResourceMove,
 } from "@opscrew/contracts";
 import { type CloudflareDnsRecord, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
-import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
+import { NodeCommandRunner, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
 import {
   type CloudProvider,
   type DeployPlan,
@@ -580,11 +580,34 @@ export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudfl
         exists: true,
         ownedByOpsCrew: owner === "opscrew",
         ruleCount: owner === "user-empty" ? 0 : 1,
-        id: `rs-${phase}`,
+        id: fakeRulesetId(phase),
       };
     },
     getIpRanges: async () => ({ ipv4: CF_V4, ipv6: CF_V6 }),
   };
+}
+
+/** The id {@link fakeCloudflare} gives a zone's entrypoint ruleset of `phase`. */
+export const fakeRulesetId = (phase: string) => `rs-${phase}`;
+
+/**
+ * The root-module output `cloudflare_rulesets` of a project whose state holds both of
+ * {@link fakeCloudflare}'s entrypoint rulesets (override a phase with another id or `null`).
+ */
+export function heldRulesetsOutput(
+  overrides: Partial<Record<"http_config_settings" | "http_request_firewall_custom", unknown>> = {},
+) {
+  return {
+    http_config_settings: fakeRulesetId("http_config_settings"),
+    http_request_firewall_custom: fakeRulesetId("http_request_firewall_custom"),
+    ...overrides,
+  };
+}
+
+/** Writes a non-empty (fake) infrastructure state file, as an apply leaves one. */
+export async function writeFakeState(paths: ProjectPaths): Promise<void> {
+  await mkdir(paths.files.tfstateDir, { recursive: true });
+  await writeFile(join(paths.files.tfstateDir, "prod.tfstate"), JSON.stringify({ fake: true }));
 }
 
 /** Remote shell fake: cloud-init is finished. */

@@ -54,6 +54,12 @@ output "servers" {
     }
   }
 }
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
+}
 "
 `;
 

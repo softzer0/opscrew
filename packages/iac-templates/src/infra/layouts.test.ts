@@ -208,6 +208,7 @@ describe("renderInfra move layouts", () => {
           "server_id",
           "server_name",
           "url",
+          "cloudflare_rulesets",
         ]);
         expect(outputsTf, label).not.toContain("other_");
       }

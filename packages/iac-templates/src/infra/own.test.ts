@@ -123,6 +123,10 @@ describe("renderInfra for a server the user owns (public)", () => {
     expect(outputs).toContain('output "url" {\n  value = module.dns.url\n}');
     expect(outputs).toMatch(/output "servers" \{\s+value = \{\s+own = \{/);
     expect(outputs).not.toMatch(/server_id|server_name/);
+    // The DNS module's rulesets, by phase, so OpsCrew tells them from another deployment's.
+    expect(outputs).toContain(
+      'output "cloudflare_rulesets" {\n  value = module.dns.ruleset_ids\n}',
+    );
   });
 
   it("renders an empty root without a domain, with the URL on the address", () => {
@@ -208,6 +212,8 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
     }
     expect(outputs).toContain('output "ssh_hostname" {\n  value = var.ssh_hostname\n}');
     expect(outputs).toContain('output "tunnel_id" {\n  value = module.tunnel.tunnel_id\n}');
+    // No DNS module in tunnel mode, so no ruleset ids (provision keeps managing the WAF rule).
+    expect(outputs).not.toContain("cloudflare_rulesets");
   });
 
   it("routes www through the tunnel and protects the app's hostnames with the WAF rule", () => {

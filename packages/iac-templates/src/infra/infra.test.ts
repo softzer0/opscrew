@@ -7,7 +7,7 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it, type TestContext } from "vitest";
 import { collectModuleFiles, renderGeneratedModule } from "../../scripts/gen-modules";
 import { DIRECTIONS, LAYOUT_NAMES, moveLayout, testTarget } from "../__fixtures__/layouts";
-import { testPlan } from "../__fixtures__/plans";
+import { testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
 import { httpAllowedCidrs, renderInfra, tfvars } from "./index";
@@ -125,6 +125,39 @@ describe("renderInfra", () => {
       manage_waf_rules: true,
       http_allowed_cidrs: [...CF.ipv4, ...CF.ipv6],
     });
+  });
+
+  it("outputs the ids of the zone rulesets the DNS module manages wherever it renders the module", () => {
+    const outputsOf = (files: RenderedFile[]) =>
+      files.find((f) => f.path === "opscrew/infra/prod/outputs.tf")?.content ?? "";
+    const rulesets = ['output "cloudflare_rulesets" {', "  value = module.dns.ruleset_ids", "}"];
+    for (const provider of ["hetzner", "digitalocean"] as const) {
+      for (const manage of [true, false]) {
+        const files = renderInfra(
+          testPlan({ provider, domain: "shop.example.com" }),
+          testContext({ cloudflare: testCloudflare(manage) }),
+        );
+        expect(outputsOf(files), `${provider}, managed: ${manage}`).toContain(rulesets.join("\n"));
+      }
+      // No domain: no DNS module, no output.
+      expect(outputsOf(renderInfra(testPlan({ provider }), testContext()))).not.toContain(
+        "cloudflare_rulesets",
+      );
+    }
+    const own = renderInfra(
+      testPlan({ provider: "own", domain: "shop.example.com" }),
+      testContext({ cloudflare: testCloudflare() }),
+    );
+    expect(outputsOf(own)).toContain(rulesets.join("\n"));
+    // The module's output: one id (or null) per phase.
+    const moduleOutputs = MODULE_FILES["cloudflare-dns/outputs.tf"] ?? "";
+    expect(moduleOutputs).toContain('output "ruleset_ids"');
+    expect(moduleOutputs).toContain(
+      "http_config_settings         = one(cloudflare_ruleset.config[*].id)",
+    );
+    expect(moduleOutputs).toContain(
+      "http_request_firewall_custom = one(cloudflare_ruleset.waf[*].id)",
+    );
   });
 
   it("leaves existing Cloudflare rulesets alone", () => {

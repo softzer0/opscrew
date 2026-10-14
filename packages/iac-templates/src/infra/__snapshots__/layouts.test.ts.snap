@@ -82,6 +82,12 @@ output "servers" {
     }
   }
 }
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
+}
 "
 `;
 
@@ -274,6 +280,12 @@ output "servers" {
       id   = module.server.server_id
     }
   }
+}
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
 }
 "
 `;
@@ -482,6 +494,12 @@ output "servers" {
       id   = module.server_previous.server_id
     }
   }
+}
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
 }
 "
 `;
@@ -700,6 +718,12 @@ output "servers" {
     }
   }
 }
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
+}
 "
 `;
 
@@ -899,6 +923,12 @@ output "servers" {
       id   = module.server_previous.server_id
     }
   }
+}
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
 }
 "
 `;
@@ -1107,6 +1137,12 @@ output "servers" {
       id   = module.server_previous.server_id
     }
   }
+}
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
 }
 "
 `;
@@ -1354,6 +1390,12 @@ output "servers" {
     }
   }
 }
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
+}
 "
 `;
 
@@ -1552,6 +1594,12 @@ output "servers" {
       id   = module.server.server_id
     }
   }
+}
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
 }
 "
 `;
@@ -1766,6 +1814,12 @@ output "servers" {
       id   = module.server_previous.server_id
     }
   }
+}
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
 }
 "
 `;
@@ -1984,6 +2038,12 @@ output "servers" {
     }
   }
 }
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
+}
 "
 `;
 
@@ -2177,6 +2237,12 @@ output "servers" {
       id   = module.server_previous.server_id
     }
   }
+}
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
 }
 "
 `;
@@ -2391,6 +2457,12 @@ output "servers" {
       id   = module.server_previous.server_id
     }
   }
+}
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone.
+output "cloudflare_rulesets" {
+  value = module.dns.ruleset_ids
 }
 "
 `;
