@@ -151,6 +151,7 @@ export class FakeHost implements RemoteExec {
   os: { id: string; versionId: string; codename: string; pretty: string; idLike: string };
   arch: string;
   systemd = true;
+  flock = true;
   /** `ip -o addr show scope global` lines (a home server behind NAT by default). */
   addresses = [
     "2: eth0    inet 192.168.1.20/24 brd 192.168.1.255 scope global dynamic eth0\\       valid_lft 86000sec preferred_lft 86000sec",
@@ -476,6 +477,7 @@ export class FakeHost implements RemoteExec {
       `Filesystem     1-blocks       Used   Available Capacity Mounted on\n/dev/sda1   80000000000 20000000000 ${this.diskFreeBytes} 25% /`,
     );
     add("systemd", "", this.systemd ? 0 : 1);
+    add("flock", this.flock ? "/usr/bin/flock" : "", this.flock ? 0 : 1);
     add("addresses", this.addresses.join("\n"));
     add("sshd", root ? this.sshdT() : "", root ? 0 : 1);
     add("sshd-include", this.sshdIncludesDropIns ? "Include /etc/ssh/sshd_config.d/*.conf" : "", this.sshdIncludesDropIns ? 0 : 1);

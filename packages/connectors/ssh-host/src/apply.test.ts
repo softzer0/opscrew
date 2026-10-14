@@ -355,6 +355,23 @@ describe("claims", () => {
   });
 });
 
+describe("host record", () => {
+  it("keeps the project id when a plan without an app marker runs as root", async () => {
+    const fake = new FakeHost();
+    await provision(fake, desiredFor(fake, { portainer: portainerDesired() }), {
+      secrets: { portainerPassword: portainerPassword() },
+    });
+    const off = planPortainer({
+      app: "shop",
+      dir: "/srv/opscrew/portainer",
+      runAs: "root",
+      disable: { deleteData: false },
+    });
+    await applyApproved(fake, off);
+    expect(record(fake)).toMatchObject({ app: "shop", projectId: "shop-0123456789ab" });
+  });
+});
+
 describe("ufw default policies", () => {
   it("go back to what they were when the host changes are undone", async () => {
     const fake = new FakeHost();

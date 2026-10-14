@@ -80,6 +80,9 @@ exec '${this.realInstall}' "$@"`,
     for (const name of ["chown", "usermod", "useradd", "userdel", "groupdel", "pkill", "sleep"]) {
       this.stub(name, "exit 0");
     }
+    // Not every test machine has util-linux's flock (Git Bash does not); the scripts run one at a
+    // time here, so the lock is always free. The handshake's marks are what the tests check.
+    this.stub("flock", "exit 0", { log: false });
   }
 
   /** Path under the root, native (for fs calls). */

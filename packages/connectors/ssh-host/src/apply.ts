@@ -166,7 +166,11 @@ class Recorder {
       }
     }
     const plan = ctx.plan;
-    const projectId = plan.purpose === "setup" ? planProjectId(plan) : (record?.projectId ?? "");
+    // A plan without an app-marker step (planPortainer run as root) never blanks the project id.
+    const projectId =
+      plan.purpose === "setup"
+        ? planProjectId(plan) || (record?.projectId ?? "")
+        : (record?.projectId ?? "");
     // Never take over the record of another app: its host changes are its to undo.
     if (
       record !== undefined &&
@@ -305,8 +309,9 @@ async function guardedApply(
 
   let cancel: CommandResult | undefined;
   try {
+    // Longer than the cancel's own wait for a running undo (flock -w 80).
     cancel = await ctx.remote.run(wrap(ctx, step, cancelScript(deadMan.step)), {
-      timeoutMs: 60_000,
+      timeoutMs: 90_000,
     });
   } catch {
     cancel = undefined;

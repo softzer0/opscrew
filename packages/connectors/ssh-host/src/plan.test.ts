@@ -229,6 +229,9 @@ describe("planHost: steps", () => {
       );
       expect(codes(chosen)).toEqual([]);
       expect(paramsOf(chosen, "sshd")).toMatchObject({ disablePasswords: false });
+      expect(chosen.steps.find((step) => step.id === "sshd")?.title).toContain(
+        "password logins left as they are (you chose to keep them; users may come from a directory service)",
+      );
     },
   );
 
@@ -513,7 +516,48 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     fake.volumes.set("shop", 2);
     await applyApproved(fake, planTeardown(await inspectHost(fake), { deleteData: false }));
     expect(fake.volumes.get("shop")).toBe(2);
-    expect(codes(await planFor(fake))).toEqual([]);
+    const plan = await planFor(fake);
+    expect(codes(plan)).toEqual([]);
+    // The app-marker apply checks the project again on the server; here it is OpsCrew's own.
+    expect(paramsOf(plan, "app-marker")).toMatchObject({ ownProject: true });
+  });
+
+  it("marks a fresh server's Compose project as not OpsCrew's own", async () => {
+    const fake = new FakeHost();
+    expect(paramsOf(await planFor(fake), "app-marker")).toEqual({
+      app: "shop",
+      projectId: "shop-0123456789ab",
+      ownProject: false,
+    });
+  });
+
+  it("refuses to plan while an installed Docker is stopped, unless the server is already ours", async () => {
+    const fake = new FakeHost();
+    fake.packages.set("docker-ce", "5:28.5.1-1");
+    fake.packages.set("docker-compose-plugin", "2.39.4");
+    fake.packages.set("docker-buildx-plugin", "0.29.1");
+    fake.dockerRunning = false;
+    const plan = await planFor(fake);
+    expect(codes(plan)).toEqual(["docker-stopped"]);
+    expect(plan.findings[0]).toMatchObject({
+      message: "Docker is installed but not running, so OpsCrew cannot see its containers.",
+      hint: "Start Docker (`sudo systemctl start docker`), then plan again.",
+    });
+    // Inspection never started it.
+    expect(fake.dockerRunning).toBe(false);
+
+    const ours = new FakeHost();
+    await provision(ours);
+    ours.dockerRunning = false;
+    const again = await planFor(ours);
+    expect(codes(again)).toEqual([]);
+    expect(again.steps.find((step) => step.id === "docker")?.params.action).toBe("start");
+  });
+
+  it("needs flock for the automatic undo", async () => {
+    const fake = new FakeHost();
+    fake.flock = false;
+    expect(codes(await planFor(fake))).toEqual(["no-flock"]);
   });
 
   it("refuses a server whose host record belongs to another app", async () => {

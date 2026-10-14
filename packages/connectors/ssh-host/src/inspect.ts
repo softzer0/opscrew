@@ -143,6 +143,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["free", "free -b"],
   ["df", "df -P -B1 /"],
   ["systemd", "test -d /run/systemd/system"],
+  ["flock", "command -v flock"],
   ["addresses", "ip -o addr show scope global"],
   ["sshd", "sshd -T"],
   [
@@ -385,6 +386,7 @@ export function factsFromOutput(
     diskFreeBytes: disk.available,
     diskTotalBytes: disk.size,
     systemd: section(sections, "systemd").exit === 0,
+    flock: section(sections, "flock").exit === 0,
     addresses: parseAddresses(ok(sections, "addresses")),
     sshd,
     listeners: parseSs(text("listeners")),

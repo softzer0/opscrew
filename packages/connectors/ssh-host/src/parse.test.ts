@@ -213,6 +213,19 @@ describe("parsers", () => {
       limitedSource: true,
     });
     expect(covers("allow from 10.0.0.0/8 to any port 80")).toMatchObject({ covers: false });
+    // A destination address other than any, or a source port, narrows the rule too.
+    expect(covers("allow to 203.0.113.10 port 22 proto tcp")).toMatchObject({
+      covers: true,
+      limitedSource: true,
+    });
+    expect(covers("allow from any port 1024:65535 to any port 22")).toMatchObject({
+      covers: true,
+      limitedSource: true,
+    });
+    expect(covers("allow from any to any port 22")).toMatchObject({
+      covers: true,
+      limitedSource: false,
+    });
   });
 
   it("reads users, dirs and apt settings", () => {

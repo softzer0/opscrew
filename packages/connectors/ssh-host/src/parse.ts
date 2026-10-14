@@ -329,9 +329,18 @@ export function ufwRuleCovers(rule: string, port: number, proto: "tcp" | "udp"):
   if (destPort !== undefined) covers = portSpecCovers(destPort, port, proto);
   else if (app !== undefined) covers = SSH_NAMES.has(app.toLowerCase()) && port === 22;
   else covers = true; // no destination port: every port
-  const source = after("from");
-  // A source address or an interface (`on eth0`) narrows who can come in.
-  const limitedSource = (source !== undefined && source !== "any") || words.includes("on");
+  const fromIndex = words.indexOf("from");
+  const source = fromIndex >= 0 ? words[fromIndex + 1] : undefined;
+  // `from X port N`: only connections from that source port.
+  const sourcePort = fromIndex >= 0 && words[fromIndex + 2] === "port";
+  const destination = toIndex >= 0 ? words[toIndex + 1] : undefined;
+  // A source address or port, a destination address other than `any`, or an interface
+  // (`on eth0`) narrows the rule: it does not open the port to every address.
+  const limitedSource =
+    (source !== undefined && source !== "any") ||
+    sourcePort ||
+    (destination !== undefined && destination !== "any") ||
+    words.includes("on");
   return { covers, limitedSource, rateLimited };
 }
 

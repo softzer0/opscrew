@@ -154,7 +154,8 @@ function packageRepairScripts(): StepScripts {
   const apply = `install -d -m 0700 "$(dirname '${APT_LOG}')"
 # Another apt run may still hold the lock (for example the one that was interrupted): wait for it.
 i=0
-until dpkg --configure -a >>'${APT_LOG}' 2>&1; do
+# Never waits on a conffile question or reads the session's stdin.
+until dpkg --force-confdef --force-confold --configure -a </dev/null >>'${APT_LOG}' 2>&1; do
   i=$((i + 1))
   if [ "$i" -ge 60 ]; then
     tail -n 5 '${APT_LOG}' >&2 || true
@@ -219,12 +220,15 @@ codename="\${UBUNTU_CODENAME:-\${VERSION_CODENAME:-}}"
 [ -n "$codename" ] || fail 'OpsCrew could not read the release codename from /etc/os-release.'
 SOURCES=/etc/apt/sources.list.d/docker.sources
 KEY=/etc/apt/keyrings/docker.asc
+KEY_OLD=/etc/apt/keyrings/.docker.asc.opscrew-old
 added_sources=no
 added_key=no
-# A failed install never leaves apt pointing at a repository OpsCrew just added.
+# A failed install never leaves apt pointing at a repository OpsCrew just added, and a key that
+# was there before comes back as it was.
 undo_repo() {
   if [ "$added_sources" = yes ]; then rm -f "$SOURCES"; fi
-  if [ "$added_key" = yes ]; then rm -f "$KEY"; fi
+  if [ "$added_key" = yes ]; then rm -f "$KEY"
+  elif [ -e "$KEY_OLD" ]; then mv -f "$KEY_OLD" "$KEY"; fi
   if [ "$added_sources" = yes ]; then apt_get update >/dev/null 2>&1 || true; fi
 }
 if [ -n "$PACKAGES" ]; then
@@ -233,12 +237,15 @@ if [ -n "$PACKAGES" ]; then
     apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see ${APT_LOG} on the server.'
     apt_get install ca-certificates curl || fail 'Installing ca-certificates and curl failed; see ${APT_LOG} on the server.'
     install -m 0755 -d /etc/apt/keyrings
-    if [ ! -e "$KEY" ]; then added_key=yes; fi
-    if ! curl -fsSL "https://download.docker.com/linux/$DISTRO/gpg" -o "$KEY"; then
-      undo_repo
+    # Downloaded beside the key and renamed only once complete: an existing key is never cut short.
+    tmpkey=$(mktemp /etc/apt/keyrings/.docker.XXXXXX)
+    if ! curl -fsSL "https://download.docker.com/linux/$DISTRO/gpg" -o "$tmpkey"; then
+      rm -f "$tmpkey"
       fail "OpsCrew could not download Docker's signing key from download.docker.com; nothing was installed."
     fi
-    chmod a+r "$KEY"
+    chmod a+r "$tmpkey"
+    if [ -e "$KEY" ]; then cp -p "$KEY" "$KEY_OLD"; else added_key=yes; fi
+    mv -f "$tmpkey" "$KEY"
     arch=$(dpkg --print-architecture)
     added_sources=yes
     printf '%s\\n' 'Types: deb' "URIs: https://download.docker.com/linux/$DISTRO" "Suites: $codename" 'Components: stable' "Architectures: $arch" "Signed-By: $KEY" > "$SOURCES"
@@ -253,6 +260,7 @@ if [ -n "$PACKAGES" ]; then
     undo_repo
     fail "Installing Docker failed, so OpsCrew removed the repository it added; see ${APT_LOG} on the server."
   fi
+  rm -f "$KEY_OLD"
 fi
 systemctl enable --now docker
 major=$(docker_major) || major=0
@@ -376,6 +384,10 @@ cat > ${DEAD_MAN_DIR}/sshd.undo.sh <<'OPSCREW_UNDO'
 # Written by OpsCrew: puts the previous SSH settings back.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+# Takes turns with a cancel: whoever holds the lock first decides; a cancelled undo does nothing.
+exec 9>${DEAD_MAN_DIR}/sshd.lock
+flock 9
+if [ -e ${DEAD_MAN_DIR}/sshd.cancelled ]; then exit 0; fi
 touch ${DEAD_MAN_DIR}/sshd.fired
 if [ -f ${DEAD_MAN_DIR}/sshd.prev ]; then cp -p ${DEAD_MAN_DIR}/sshd.prev ${SSHD_DROP_IN}; else rm -f ${SSHD_DROP_IN}; fi
 systemctl reset-failed ssh.service sshd.service >/dev/null 2>&1 || true
@@ -542,6 +554,9 @@ if ufw_active; then was_active=yes; fi
   echo '#!/bin/sh'
   echo '# Written by OpsCrew: puts back the firewall rules OpsCrew was removing.'
   echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH'
+  echo 'exec 9>${DEAD_MAN_DIR}/ufw.lock'
+  echo 'flock 9'
+  echo 'if [ -e ${DEAD_MAN_DIR}/ufw.cancelled ]; then exit 0; fi'
   echo 'touch ${DEAD_MAN_DIR}/ufw.fired'
   policy_lines
   for r in $REMOVE_RULES; do if has_rule "$r"; then echo "ufw allow $r >/dev/null 2>&1 || true"; fi; done
@@ -619,6 +634,9 @@ if ufw_active; then was_active=yes; fi
   echo '#!/bin/sh'
   echo '# Written by OpsCrew: puts the previous firewall state back.'
   echo 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH'
+  echo 'exec 9>${DEAD_MAN_DIR}/ufw.lock'
+  echo 'flock 9'
+  echo 'if [ -e ${DEAD_MAN_DIR}/ufw.cancelled ]; then exit 0; fi'
   echo 'touch ${DEAD_MAN_DIR}/ufw.fired'
   if [ "$was_active" = no ]; then echo 'ufw --force disable >/dev/null 2>&1 || true'; fi
   policy_lines
@@ -786,17 +804,19 @@ if command -v dockerd >/dev/null 2>&1 && ! dockerd --validate --config-file "$tm
   rm -f "$tmp"
   fail 'Docker rejected the daemon settings, so OpsCrew left Docker as it was.'
 fi
+# Docker really uses the file once live-restore (one of OpsCrew's settings) shows up in docker info.
+applied() { [ "$(docker info --format '{{.LiveRestoreEnabled}}' 2>/dev/null)" = true ]; }
 if busy; then
   # Running containers keep running: reload now; the rest applies at Docker's next restart.
   mv -f "$tmp" "$DAEMON_JSON"
-  if ! systemctl reload docker; then
+  if ! systemctl reload docker || ! applied; then
     rm -f "$DAEMON_JSON"
     systemctl reload docker >/dev/null 2>&1 || true
-    fail 'Docker did not accept the new settings, so OpsCrew removed them again; Docker runs as before.'
+    fail 'Docker did not take the new settings, so OpsCrew removed them again; Docker runs as before.'
   fi
 else
   mv -f "$tmp" "$DAEMON_JSON"
-  if ! systemctl restart docker; then
+  if ! systemctl restart docker || ! applied; then
     rm -f "$DAEMON_JSON"
     systemctl reset-failed docker >/dev/null 2>&1 || true
     systemctl restart docker >/dev/null 2>&1 || true
@@ -1091,17 +1111,34 @@ rm -rf "$OPSCREW_DIR" "$(dirname '${APT_LOG}')"`,
     z.object({
       app: AppNameSchema,
       projectId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/),
+      ownProject: z.boolean(),
     }),
   );
   const sp = {
     MARKER_PATH,
     MARKER: JSON.stringify({ app: p.app, projectId: p.projectId }),
     READY_FLAG,
+    APP: p.app,
+    OWN_PROJECT: p.ownProject,
   };
   const verify = `  [ -f "$MARKER_PATH" ] && [ "$(cat "$MARKER_PATH")" = "$MARKER" ] && [ -f "$READY_FLAG" ]`;
   const apply = `install -d -m 0700 ${OPSCREW_DIR}
 if [ -f "$MARKER_PATH" ] && [ "$(cat "$MARKER_PATH")" != "$MARKER" ]; then
   fail 'Another OpsCrew app is already on this server; one server runs one OpsCrew app for now.'
+fi
+# Before the server is marked for the app: no Compose project of that name that OpsCrew did not
+# deploy (the plan checked; this checks again on the server itself).
+if [ ! -f "$MARKER_PATH" ] && [ "$OWN_PROJECT" != true ] && command -v docker >/dev/null 2>&1; then
+  if ! systemctl is-active --quiet docker; then
+    fail 'Docker is installed but not running, so OpsCrew cannot see its containers. Start Docker (sudo systemctl start docker), then plan again.'
+  fi
+  containers=$(docker ps -aq --filter "label=com.docker.compose.project=$APP") ||
+    fail 'OpsCrew could not list the Docker containers on this server, so it does not mark the server for the app.'
+  volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$APP") ||
+    fail 'OpsCrew could not list the Docker volumes on this server, so it does not mark the server for the app.'
+  if [ -n "$containers$volumes" ]; then
+    fail "Docker already has containers or volumes of a Compose project named $APP that OpsCrew did not deploy, so OpsCrew does not mark this server for the app."
+  fi
 fi
 tmp=$(mktemp ${OPSCREW_DIR}/.app.XXXXXX)
 printf '%s\\n' "$MARKER" > "$tmp"
@@ -1503,8 +1540,9 @@ systemctl stop "$UNIT.service" >/dev/null 2>&1 || true
 systemctl reset-failed "$UNIT.timer" "$UNIT.service" >/dev/null 2>&1 || true
 ${capture}
 chmod 0700 "${DEAD_MAN_DIR}/$STEP.undo.sh"
-# The undo touches $STEP.fired first, so a cancel racing it can tell.
-rm -f "${DEAD_MAN_DIR}/$STEP.fired"
+# The undo and a cancel take turns with flock on $STEP.lock: the undo marks $STEP.fired, the
+# cancel marks $STEP.cancelled. Both marks start out absent.
+rm -f "${DEAD_MAN_DIR}/$STEP.fired" "${DEAD_MAN_DIR}/$STEP.cancelled"
 systemd-run --quiet --unit="$UNIT" --on-active="\${DELAY}s" --timer-property=AccuracySec=1s /bin/sh "${DEAD_MAN_DIR}/$STEP.undo.sh"
 systemctl is-active --quiet "$UNIT.timer" || fail 'OpsCrew could not schedule the automatic undo, so it changed nothing.'
 echo armed`,
@@ -1513,21 +1551,29 @@ echo armed`,
 
 /**
  * Cancels the scheduled undo; prints `cancelled`, or `fired` when it already ran (or started).
- * Stopping the timer cannot stop an undo that has begun, so the cancel waits for a running undo
- * to finish and then asks the `$STEP.fired` mark the undo leaves first.
+ * Stopping the timer cannot stop an undo that has begun, so the cancel and the undo take turns
+ * with `flock` on `$STEP.lock`: an undo holding the lock finishes first and leaves `$STEP.fired`;
+ * otherwise the cancel leaves `$STEP.cancelled`, and an undo that starts later does nothing.
+ * The lock and the cancelled mark stay until the next arm.
  */
 export function cancelScript(step: GuardedStep): string {
   return buildScript(
     `deadman.cancel.${step}`,
     { STEP: step, UNIT: deadManUnit(step) },
     `systemctl stop "$UNIT.timer" >/dev/null 2>&1 || true
-i=0
-while systemctl is-active --quiet "$UNIT.service" && [ "$i" -lt 60 ]; do
-  i=$((i + 1))
-  sleep 1
-done
-if [ -e "${DEAD_MAN_DIR}/$STEP.fired" ]; then result=fired; else result=cancelled; fi
-rm -f "${DEAD_MAN_DIR}/$STEP".*
+install -d -m 0700 ${OPSCREW_DIR} ${DEAD_MAN_DIR}
+exec 9>"${DEAD_MAN_DIR}/$STEP.lock"
+if flock -w 80 9; then
+  if [ -e "${DEAD_MAN_DIR}/$STEP.fired" ]; then result=fired
+  else
+    touch "${DEAD_MAN_DIR}/$STEP.cancelled"
+    result=cancelled
+  fi
+else
+  # An undo still holds the lock after 80 seconds: count the change as undone.
+  result=fired
+fi
+rm -f "${DEAD_MAN_DIR}/$STEP.undo.sh" "${DEAD_MAN_DIR}/$STEP.prev" "${DEAD_MAN_DIR}/$STEP.fired"
 echo "$result"`,
   );
 }

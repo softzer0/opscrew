@@ -2,6 +2,7 @@
  * The host scripts' behaviour in a real POSIX shell: real files under a temporary root, stubbed
  * commands for everything that would change the machine (see `__fixtures__/shell-harness.ts`).
  */
+import { readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
 import { DOCKER_DAEMON_JSON } from "./constants";
@@ -66,19 +67,24 @@ esac`;
 
 /** docker: containers, networks and volumes of the project live in state files. */
 const DOCKER = `case "$1 $2" in
-  "ps -aq") cat "$S/containers" 2>/dev/null ;;
-  "ps -q") cat "$S/running" 2>/dev/null ;;
+  "ps -aq") cat "$S/containers" 2>/dev/null || true ;;
+  "ps -q") cat "$S/running" 2>/dev/null || true ;;
   "rm -f") : > "$S/containers" ;;
-  "network ls") cat "$S/networks" 2>/dev/null ;;
+  "network ls") cat "$S/networks" 2>/dev/null || true ;;
   "network rm") : > "$S/networks" ;;
-  "volume ls") cat "$S/volumes" 2>/dev/null ;;
+  "volume ls") cat "$S/volumes" 2>/dev/null || true ;;
   "volume rm") if [ ! -e "$S/volumes-stick" ]; then : > "$S/volumes"; fi ;;
   "compose -p") : > "$S/containers"; case "$*" in *--volumes*) : > "$S/volumes" ;; esac ;;
-  "info --format") cat "$S/swarm" 2>/dev/null || echo inactive ;;
+  "info --format")
+    case "$3" in
+      *LiveRestore*) cat "$S/liverestore" 2>/dev/null || echo true ;;
+      *) cat "$S/swarm" 2>/dev/null || echo inactive ;;
+    esac ;;
   *) exit 0 ;;
 esac`;
 
-describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", () => {
+// Each test starts real shells, which is slow on Windows when every package tests at once.
+describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", { timeout: 60_000 }, () => {
   let h: ShellHarness;
   const harness = () => {
     h = new ShellHarness();
@@ -132,27 +138,58 @@ describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", () => {
       expect(h.exists(DROPIN)).toBe(false);
     });
 
-    it("cancel stops a waiting timer and reports cancelled", () => {
+    it("cancel stops a waiting timer, reports cancelled, and a late undo then does nothing", () => {
       const h = harness();
-      h.write("/state/active.opscrew-undo-sshd.timer", "");
+      h.write(DROPIN, "PermitRootLogin yes\n");
+      const deadMan = sshd().deadMan;
+      if (!deadMan) throw new Error("no dead-man");
+      expect(h.run(armScript(deadMan, 180)).status).toBe(0);
+      // Keep a copy of the undo: systemd may have started it just before the timer was stopped.
+      const undo = h.read(`${DM}/sshd.undo.sh`) ?? "";
+      h.write(DROPIN, "PermitRootLogin no\n");
       const cancel = h.run(cancelScript("sshd"));
       expect(cancel.stdout.trim()).toBe("cancelled");
       expect(h.calls()).toContain("systemctl stop opscrew-undo-sshd.timer");
       expect(h.exists("/state/active.opscrew-undo-sshd.timer")).toBe(false);
+      expect(h.exists(`${DM}/sshd.cancelled`)).toBe(true);
+      // The late undo takes the lock after the cancel, sees the cancelled mark and changes nothing.
+      h.write("/late-undo.sh", undo);
+      h.clearCalls();
+      expect(h.runFile("/late-undo.sh").status).toBe(0);
+      expect(h.read(DROPIN)).toBe("PermitRootLogin no\n");
+      expect(h.exists(`${DM}/sshd.fired`)).toBe(false);
+      expect(h.calls()).toEqual([]);
     });
 
-    it("cancel waits for an undo that already started and reports fired", () => {
+    it("cancel after an undo that already ran reports fired", () => {
       const h = harness();
-      // The timer elapsed: the undo service runs for two more checks, and marked itself fired.
-      h.write("/state/busy.opscrew-undo-sshd.service", "2");
-      h.write(`${DM}/sshd.fired`, "");
+      h.write(DROPIN, "PermitRootLogin yes\n");
+      const deadMan = sshd().deadMan;
+      if (!deadMan) throw new Error("no dead-man");
+      h.run(armScript(deadMan, 180));
+      h.write(DROPIN, "PermitRootLogin no\n");
+      // The timer elapsed and the undo took the lock first.
+      h.write("/state/active.opscrew-undo-sshd.timer", "");
+      expect(h.runFile(`${DM}/sshd.undo.sh`).status).toBe(0);
       const cancel = h.run(cancelScript("sshd"));
       expect(cancel.stdout.trim()).toBe("fired");
-      const polls = h
-        .calls()
-        .filter((call) => call === "systemctl is-active --quiet opscrew-undo-sshd.service");
-      expect(polls.length).toBe(3);
+      expect(h.read(DROPIN)).toBe("PermitRootLogin yes\n");
+      expect(h.exists(`${DM}/sshd.cancelled`)).toBe(false);
       expect(h.exists(`${DM}/sshd.fired`)).toBe(false);
+    });
+
+    it("cancel takes the lock with a timeout and arm clears the marks", () => {
+      const cancel = cancelScript("sshd");
+      expect(cancel).toContain('exec 9>"/etc/opscrew/deadman/$STEP.lock"');
+      expect(cancel).toContain("if flock -w 80 9; then");
+      const deadMan = sshd().deadMan;
+      if (!deadMan) throw new Error("no dead-man");
+      expect(armScript(deadMan, 180)).toContain(
+        'rm -f "/etc/opscrew/deadman/$STEP.fired" "/etc/opscrew/deadman/$STEP.cancelled"',
+      );
+      expect(deadMan.capture).toMatch(
+        /exec 9>\/etc\/opscrew\/deadman\/sshd\.lock\nflock 9\nif \[ -e \/etc\/opscrew\/deadman\/sshd\.cancelled \]; then exit 0; fi\ntouch \/etc\/opscrew\/deadman\/sshd\.fired/,
+      );
     });
 
     it("trigger runs the undo now (stubs reach the child script) and cleans up", () => {
@@ -344,6 +381,54 @@ describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", () => {
     });
   });
 
+  describe("app marker", () => {
+    const marker = (ownProject: boolean) =>
+      scriptsFor("setup", "app-marker", { app: "shop", projectId: "shop-1", ownProject });
+
+    it("is not written over a Compose project of that name that OpsCrew did not deploy", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.write("/state/active.docker", "");
+      h.write("/state/volumes", "shop_pgdata\n");
+      const run = h.run(marker(false).apply);
+      expect(run.status).toBe(3);
+      expect(run.stderr).toContain("Compose project named shop that OpsCrew did not deploy");
+      expect(h.exists("/etc/opscrew/app.json")).toBe(false);
+      expect(h.calls()).toContain(
+        "docker volume ls -q --filter label=com.docker.compose.project=shop",
+      );
+    });
+
+    it("is not written while Docker is stopped (its containers cannot be seen)", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      const run = h.run(marker(false).apply);
+      expect(run.status).toBe(3);
+      expect(run.stderr).toContain("Docker is installed but not running");
+      expect(h.calls().some((call) => call.startsWith("docker "))).toBe(false);
+      expect(h.exists("/etc/opscrew/app.json")).toBe(false);
+    });
+
+    it("is written when the project is OpsCrew's own (data kept by an earlier teardown)", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.write("/state/active.docker", "");
+      h.write("/state/volumes", "shop_caddy_data\n");
+      const run = h.run(marker(true).apply);
+      expect(run.status, run.stderr).toBe(0);
+      expect(h.read("/etc/opscrew/app.json")).toBe('{"app":"shop","projectId":"shop-1"}\n');
+      expect(h.exists("/var/lib/opscrew-ready")).toBe(true);
+    });
+
+    it("is written on a server without any project of that name", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.write("/state/active.docker", "");
+      expect(h.run(marker(false).apply).status).toBe(0);
+      expect(h.exists("/etc/opscrew/app.json")).toBe(true);
+    });
+  });
+
   describe("deploy user", () => {
     it("writes authorized_keys atomically with exactly the current key (old keys revoked)", () => {
       const h = harness();
@@ -417,7 +502,29 @@ esac`,
       );
       expect(run.status).toBe(3);
       expect(h.exists("/etc/apt/sources.list.d/docker.sources")).toBe(false);
-      expect(h.exists("/etc/apt/keyrings/docker.asc")).toBe(true);
+      // The key that was there before is back, exactly as it was.
+      expect(h.read("/etc/apt/keyrings/docker.asc")).toBe("USER KEY\n");
+      expect(h.exists("/etc/apt/keyrings/.docker.asc.opscrew-old")).toBe(false);
+    });
+
+    it("a failed key download never cuts an existing key short", () => {
+      const h = harness();
+      setup(h);
+      h.write("/etc/apt/keyrings/docker.asc", "USER KEY\n");
+      // curl writes part of the key, then fails.
+      h.stub(
+        "curl",
+        `for a do if [ "$prev" = -o ]; then printf 'PART' > "$a"; fi; prev=$a; done; exit 22`,
+      );
+      const run = h.run(
+        scriptsFor("setup", "docker", { distro: "ubuntu", action: "install" }).apply,
+      );
+      expect(run.status).toBe(3);
+      expect(run.stderr).toContain("could not download Docker's signing key");
+      expect(h.read("/etc/apt/keyrings/docker.asc")).toBe("USER KEY\n");
+      const keyrings = h.native("/etc/apt/keyrings");
+      expect(readdirSync(keyrings)).toEqual(["docker.asc"]);
+      expect(h.exists("/etc/apt/sources.list.d/docker.sources")).toBe(false);
     });
 
     const daemon = (h: ShellHarness) => {
@@ -455,6 +562,32 @@ esac`,
       expect(busy.calls()).toContain("systemctl reload docker");
       expect(busy.calls()).not.toContain("systemctl restart docker");
       busy.dispose();
+    });
+
+    it("docker-daemon: a reload Docker does not act on removes the file again and fails", () => {
+      const h = harness();
+      const { apply } = daemon(h);
+      h.write("/state/running", "c1\n");
+      h.write("/state/liverestore", "false\n");
+      const run = h.run(apply);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain(
+        "Docker did not take the new settings, so OpsCrew removed them again",
+      );
+      expect(h.exists("/etc/docker/daemon.json")).toBe(false);
+      expect(h.calls().filter((call) => call === "systemctl reload docker")).toHaveLength(2);
+      expect(h.calls()).not.toContain("systemctl restart docker");
+      expect(h.calls()).toContain("docker info --format {{.LiveRestoreEnabled}}");
+    });
+
+    it("docker-daemon: a restart that does not pick up the file is rolled back too", () => {
+      const h = harness();
+      const { apply } = daemon(h);
+      h.write("/state/liverestore", "false\n");
+      const run = h.run(apply);
+      expect(run.status).not.toBe(0);
+      expect(h.exists("/etc/docker/daemon.json")).toBe(false);
+      expect(h.calls().filter((call) => call === "systemctl restart docker")).toHaveLength(2);
     });
 
     it("docker-daemon: dockerd flags or an active Swarm count as the user's own settings", () => {
@@ -495,15 +628,20 @@ esac`,
       h.write("/state/dpkg-tries", "0");
       h.stub(
         "dpkg",
-        `n=$(cat "$S/dpkg-tries"); echo $((n + 1)) > "$S/dpkg-tries"
+        `if IFS= read -r line; then echo "$line" >> "$S/dpkg-stdin"; fi
+n=$(cat "$S/dpkg-tries"); echo $((n + 1)) > "$S/dpkg-tries"
 if [ "$n" -lt 2 ]; then echo 'dpkg: error: dpkg frontend lock is locked by another process'; exit 2; fi
 rm -f '${h.posix("/var/lib/dpkg/updates/0001")}'`,
       );
       const { check, apply, verify } = scriptsFor("setup", "package-repair", {});
       expect(h.run(check).stdout).toContain("state=change");
-      const run = h.run(apply);
+      // Whatever the session sends on stdin never reaches dpkg (no conffile prompt can block).
+      const run = h.run(apply, "y\ny\ny\n");
       expect(run.status, run.stderr).toBe(0);
-      expect(h.calls().filter((call) => call === "dpkg --configure -a")).toHaveLength(3);
+      expect(
+        h.calls().filter((call) => call === "dpkg --force-confdef --force-confold --configure -a"),
+      ).toHaveLength(3);
+      expect(h.exists("/state/dpkg-stdin")).toBe(false);
       expect(h.run(verify).status).toBe(0);
       expect(h.read("/var/log/opscrew/apt.log")).toContain("frontend lock");
     });

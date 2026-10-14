@@ -30,6 +30,17 @@ export const findings = {
     message: `This server's processor architecture is ${arch || "unknown"}; OpsCrew supports amd64 and arm64.`,
     hint: "Use a 64-bit server (x86-64 or ARM64). On a Raspberry Pi, install the 64-bit OS.",
   }),
+  noFlock: (): HostFinding => ({
+    code: "no-flock",
+    message:
+      "This server has no flock command (from util-linux), which OpsCrew's automatic undo of SSH and firewall changes relies on.",
+    hint: `Install util-linux ("sudo apt-get install util-linux"), ${RERUN}.`,
+  }),
+  dockerStopped: (): HostFinding => ({
+    code: "docker-stopped",
+    message: "Docker is installed but not running, so OpsCrew cannot see its containers.",
+    hint: "Start Docker (`sudo systemctl start docker`), then plan again.",
+  }),
   noSystemd: (): HostFinding => ({
     code: "no-systemd",
     message:

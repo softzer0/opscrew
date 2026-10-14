@@ -92,6 +92,8 @@ export const HostFactsSchema = z.object({
   diskFreeBytes: z.number().nonnegative(),
   diskTotalBytes: z.number().nonnegative(),
   systemd: z.boolean(),
+  /** `flock` (util-linux) is there: the automatic undo and its cancel take turns with it. */
+  flock: z.boolean(),
   /**
    * Global addresses of the server's real interfaces (not container bridges or VPNs), and whether
    * the internet could reach each one. Local state only: never write them to committed files.

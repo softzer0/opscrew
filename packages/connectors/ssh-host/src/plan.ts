@@ -472,9 +472,15 @@ function sshdStep({ facts, desired, found }: SetupContext): HostStep {
   }
   const kbdInteractiveOff = disablePasswords && sshd.authenticationMethods === "any";
   const params = { permitRootLogin, disablePasswords, kbdInteractiveOff };
+  const why = [
+    ...(lacking.length > 0
+      ? [`${lacking.join(", ")} log${lacking.length === 1 ? "s" : ""} in with a password`]
+      : []),
+    ...(directory.length > 0 ? ["users may come from a directory service"] : []),
+  ];
   const passwordText = disablePasswords
     ? "password logins off"
-    : `password logins left as they are (you chose to keep them for ${lacking.join(", ")})`;
+    : `password logins left as they are (you chose to keep them${why.length > 0 ? `; ${why.join("; ")}` : ""})`;
   // OpsCrew's drop-in must be there too: drift and `opscrew secure` read it.
   const inPlace =
     sshd.permitRootLogin === permitRootLogin &&
@@ -639,7 +645,12 @@ function runtimeStep({ facts, found }: SetupContext): HostStep {
 }
 
 function markerStep({ facts, desired, found }: SetupContext): HostStep {
-  const params = { app: desired.app, projectId: desired.projectId };
+  // A Compose project named like the app may only exist when OpsCrew deployed this app here before
+  // (its record says so, for example data kept by a teardown); the apply checks again.
+  const ownProject =
+    facts.record?.app === desired.app &&
+    (facts.record.projectId === "" || facts.record.projectId === desired.projectId);
+  const params = { app: desired.app, projectId: desired.projectId, ownProject };
   const title = `Mark this server as running the OpsCrew app "${desired.app}"`;
   const marker = facts.marker;
   if (marker === null) {
@@ -853,6 +864,11 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
   }
   // A Compose project with the app's name that OpsCrew did not deploy would be taken over.
   const ours = sameApp(f.marker) || sameApp(f.record);
+  // A stopped dockerd hides its containers and volumes: never start it from an inspection.
+  if (f.docker.kind === "docker-repo" && !f.docker.running && !ours) {
+    ctx.found.push(findings.dockerStopped());
+  }
+  if (!f.flock) ctx.found.push(findings.noFlock());
   if (
     !ours &&
     (f.containers.some((container) => container.project === d.app) ||
@@ -995,6 +1011,7 @@ export function planUndo(facts: HostFacts): HostPlan {
   if (f.recordDamaged) found.push(findings.recordDamaged());
   if (f.markerDamaged) found.push(findings.markerDamaged());
   if (f.marker !== null) found.push(findings.appStillDeployed(f.marker.app));
+  if (!f.flock) found.push(findings.noFlock());
   const record = f.record;
   const steps: HostStep[] = [];
   const app = record?.app ?? "";

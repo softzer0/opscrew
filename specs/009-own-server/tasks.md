@@ -21,7 +21,7 @@ network or model.
 
 ## Phase 2: Packages (parallel)
 
-- [ ] T902 [P] [US1] [US2] [US4] Host adapter: inspect, plan, apply with dead-man switches, record, teardown and undo in `packages/connectors/ssh-host/src/`
+- [X] T902 [P] [US1] [US2] [US4] Host adapter: inspect, plan, apply with dead-man switches, record, teardown and undo in `packages/connectors/ssh-host/src/`
   - Owns: `packages/connectors/ssh-host/src/**`
   - Reads: contracts/host-adapter.md; data-model.md "Host facts", "Host plan", "Host setup record"; research.md R1, R2, R5, R6; `packages/contracts/src/io.ts` (`RemoteExec`); `packages/iac-templates/modules/hetzner-vps/cloud-init.yaml.tftpl` (what OpsCrew-created servers get; do not copy `AllowUsers` or `disable_root`)
   - Depends: T901
