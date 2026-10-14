@@ -1,6 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { CLOUDFLARE_API } from "@opscrew/connector-cloudflare";
-import type { ApprovalRecord, IacEngine, PlanSummary, ResourceChange } from "@opscrew/contracts";
+import type { ApprovalRecord, IacEngine, ResourceChange } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -8,9 +7,9 @@ import type { PhaseDeps } from "../context";
 /**
  * Cloudflare refuses to delete a tunnel while its connector (`cloudflared`) is still connected
  * (error 1022). Wherever an approved plan deletes the app's tunnel, OpsCrew therefore removes the
- * connector on the server first (its own host approval, asked before anything changes), then waits
- * here with read-only calls until Cloudflare reports no active connections, and only then applies
- * the deletion.
+ * connector on the server first (its own host approval, asked after the plan's approval and before
+ * anything changes), then waits here with read-only calls until Cloudflare reports no active
+ * connections, and only then applies the deletion.
  */
 
 /** The resource type of a Cloudflare Tunnel in the infrastructure code. */
@@ -257,16 +256,16 @@ export function tunnelBusyError(input: {
   );
 }
 
-/** What the engine wrapper knows about a saved plan before applying it. */
+/** What the hooks know about the plan being approved and applied (a `SavedPlan` fits). */
 export interface PlanToApply {
-  planFile: string;
-  /** The approved hash (`approval.approvedPlanHash` of the apply). */
+  /** The plan's hash (the one approved). */
   planHash: string;
-  changes: readonly ResourceChange[];
-  planJson: unknown;
+  changes: readonly Pick<ResourceChange, "type" | "action">[];
+  /** The plan JSON (sensitive values masked): names the tunnel's id and account. */
+  planJson?: unknown;
 }
 
-/** An engine that runs a step before applying a plan that deletes the tunnel (see below). */
+/** An engine that notes an apply Cloudflare refused with error 1022 (see below). */
 export interface TunnelSafeEngine extends IacEngine {
   /** True once an apply failed with Cloudflare's error 1022 (the tunnel still had connections). */
   readonly refusedBusyTunnel: boolean;
@@ -274,47 +273,12 @@ export interface TunnelSafeEngine extends IacEngine {
   readonly onlyBusyTunnel: boolean;
 }
 
-/** The plan a saved plan file holds: from this run's `plan`, or its `--plan-only` sidecar. */
-async function savedPlanOf(
-  planFile: string,
-  planHash: string,
-  planned: ReadonlyMap<string, PlanSummary>,
-): Promise<PlanToApply | undefined> {
-  const summary = planned.get(planFile);
-  if (summary !== undefined) {
-    return { planFile, planHash, changes: summary.changes, planJson: summary.planJson };
-  }
-  const raw = await readFile(`${planFile}.json`, "utf8").catch(() => undefined);
-  if (raw === undefined) return undefined;
-  const parsed = z
-    .looseObject({
-      changes: z.array(z.looseObject({ type: z.string(), action: z.string() })),
-      planJson: z.unknown(),
-    })
-    .safeParse(JSON.parse(raw));
-  if (!parsed.success) return undefined;
-  return {
-    planFile,
-    planHash,
-    changes: parsed.data.changes as unknown as ResourceChange[],
-    planJson: parsed.data.planJson,
-  };
-}
-
 /**
- * Wraps an engine so that applying an (already approved) plan that deletes the Cloudflare Tunnel
- * first runs `beforeTunnelDeletion` (remove the connector on the server, then wait for the
- * connections to close); it may throw to stop before the apply. Every other call, and every plan
- * that deletes no tunnel, goes to `engine` unchanged. It also notes an apply that failed with
- * Cloudflare's error 1022, so the caller can say so in plain words. `onTunnelPlanned` hears of
- * every plan this engine makes that deletes the tunnel, before it is shown for approval.
+ * Wraps an engine for applies outside `planAndApply` (destroy's approved plans) so that an apply
+ * that failed with Cloudflare's error 1022 is noted and the caller can say so in plain words.
+ * Every call goes to `engine` unchanged.
  */
-export function tunnelSafeEngine(
-  engine: IacEngine,
-  beforeTunnelDeletion?: (plan: PlanToApply) => Promise<void>,
-  onTunnelPlanned?: (summary: PlanSummary) => void,
-): TunnelSafeEngine {
-  const planned = new Map<string, PlanSummary>();
+export function tunnelSafeEngine(engine: IacEngine): TunnelSafeEngine {
   let refused = false;
   let only = false;
   return {
@@ -330,17 +294,8 @@ export function tunnelSafeEngine(
     init: (dir, options) => engine.init(dir, options),
     validate: (dir, options) => engine.validate(dir, options),
     output: (dir, options) => engine.output(dir, options),
-    plan: async (dir, planFile, options) => {
-      const summary = await engine.plan(dir, planFile, options);
-      planned.set(planFile, summary);
-      if (deletesTunnel(summary.changes)) onTunnelPlanned?.(summary);
-      return summary;
-    },
+    plan: (dir, planFile, options) => engine.plan(dir, planFile, options),
     apply: async (dir, planFile, approval, options) => {
-      if (beforeTunnelDeletion !== undefined) {
-        const plan = await savedPlanOf(planFile, approval.approvedPlanHash, planned);
-        if (plan !== undefined && deletesTunnel(plan.changes)) await beforeTunnelDeletion(plan);
-      }
       const result = await engine.apply(dir, planFile, approval, options);
       if (!result.ok && isTunnelBusyText(result.log)) {
         refused = true;
@@ -395,19 +350,24 @@ export interface HostChangeResult {
 export const SERVER_GOES_FIRST =
   "Before applying it: the change on your server goes first, because Cloudflare deletes a tunnel only after its connector has stopped.";
 
-/** {@link connectorFirst}: the engine to plan and apply with, and what happened around it. */
-export interface ConnectorFirst {
-  engine: TunnelSafeEngine;
+/** The `planAndApply` hooks of {@link connectorFirst} (spread them into its options). */
+export interface TunnelPlanHooks {
   /**
-   * Notes for the `iac-apply` approval (pass as `approvalNotes`; read when the approval is asked):
-   * the note that the change on the server is shown and applied first is added once a plan
-   * deletes the tunnel.
+   * The approval's notes: the given ones, plus, when the plan deletes the tunnel, that the change
+   * on the server is shown next and applied first.
    */
-  notes: string[];
+  approvalNotes: (plan: PlanToApply) => readonly string[];
+  /** After the approval of a plan that deletes the tunnel: the host change, then the wait. */
+  beforeApply: (plan: PlanToApply) => Promise<void>;
+  /** Notes an apply Cloudflare refused with error 1022. */
+  applyFailed: (log: string) => void;
+}
+
+/** {@link connectorFirst}: the hooks to plan and apply with, and what happened around them. */
+export interface ConnectorFirst {
+  hooks: TunnelPlanHooks;
   /** The host change, once it finished (in this run it may have had nothing left to change). */
   readonly host: HostChangeResult | undefined;
-  /** Adds the note for a saved plan (`--approve <hash>`) that deletes the tunnel. */
-  noteSavedPlan(changes: readonly Pick<ResourceChange, "type" | "action">[]): void;
   /**
    * The error to show when the plan-and-apply stopped: Cloudflare's 1022 in plain words, and what
    * is already done once the host change finished.
@@ -416,16 +376,16 @@ export interface ConnectorFirst {
 }
 
 /**
- * Plans and applies through `engine` so that a plan deleting the Cloudflare Tunnel runs after the
- * host change that removes its connector: once the plan is approved, OpsCrew says so, shows the
- * host change, asks for its own `host-apply` approval (by its hash) and applies it (`hostChange`),
- * then waits until Cloudflare reports no active connections and only then applies the plan. A
- * refused host change names both hashes to approve later; `done` is said whenever the host change
+ * `planAndApply` hooks so that a plan deleting the Cloudflare Tunnel is applied after the host
+ * change that removes its connector: its approval says so; once it is approved, OpsCrew says so
+ * again, shows the host change, asks for its own `host-apply` approval (by its hash) and applies
+ * it (`hostChange`), then waits until Cloudflare reports no active connections and only then lets
+ * the plan be applied. A plan that deletes no tunnel is approved and applied as usual. A refused
+ * host change names both hashes to approve later; `done` is said whenever the host change
  * finished (even with nothing left to change in this run) but the deletion did not follow.
  */
 export function connectorFirst(
   deps: Pick<PhaseDeps, "fetch" | "redactor" | "version" | "env" | "clock" | "reporter">,
-  engine: IacEngine,
   input: {
     command: string;
     app: string;
@@ -439,12 +399,10 @@ export function connectorFirst(
     notes?: readonly string[];
   },
 ): ConnectorFirst {
-  const notes = [...(input.notes ?? [])];
+  const notes = input.notes ?? [];
   const note = `The change on ${input.where} is shown next and applied first: Cloudflare deletes a tunnel only after its connector has stopped, so OpsCrew applies this plan after that.`;
-  const addNote = () => {
-    if (!notes.includes(note)) notes.push(note);
-  };
   let host: HostChangeResult | undefined;
+  let refusedBusy = false;
   const refusedFirst = (error: unknown, planHash: string): unknown => {
     if (!(error instanceof OpsCrewError) || error.code !== "APPROVAL_REFUSED") return error;
     const hostHash = input.hostHash();
@@ -463,35 +421,35 @@ export function connectorFirst(
       },
     );
   };
-  const wrapped = tunnelSafeEngine(
-    engine,
-    async (saved) => {
+  const hooks: TunnelPlanHooks = {
+    approvalNotes: (plan) =>
+      deletesTunnel(plan.changes) && !notes.includes(note) ? [...notes, note] : notes,
+    beforeApply: async (plan) => {
+      if (!deletesTunnel(plan.changes)) return;
       deps.reporter.info(SERVER_GOES_FIRST);
       try {
         host = await input.hostChange();
       } catch (error) {
-        throw refusedFirst(error, saved.planHash);
+        throw refusedFirst(error, plan.planHash);
       }
-      await requireTunnelClosed(deps, saved, {
+      await requireTunnelClosed(deps, plan, {
         command: input.command,
         already: input.done,
         ...(input.sleep !== undefined ? { options: { sleep: input.sleep } } : {}),
       });
     },
-    addNote,
-  );
+    applyFailed: (log) => {
+      if (isTunnelBusyText(log)) refusedBusy = true;
+    },
+  };
   return {
-    engine: wrapped,
-    notes,
+    hooks,
     get host() {
       return host;
     },
-    noteSavedPlan: (changes) => {
-      if (deletesTunnel(changes)) addNote();
-    },
     stopped: (error) => {
       if (!(error instanceof OpsCrewError)) return error;
-      if (wrapped.refusedBusyTunnel) {
+      if (refusedBusy) {
         return tunnelBusyError({
           command: input.command,
           reason: "refused",

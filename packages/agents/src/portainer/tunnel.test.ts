@@ -265,6 +265,16 @@ describe.skipIf(!hasGit)("portainer disable when the tunnel is deleted (Hetzner)
     );
   });
 
+  it("a refused host plan says once that nothing changed, after the files written", async () => {
+    const s = await cloudOnSubdomain();
+    s.answer((request) => request.kind !== "host-apply");
+    const error = await failure(portainerDisable(s.deps, { services: s.services }));
+    expect(error.message).toMatch(
+      /^The host plan was not approved\. The repository files were written \([^)]+\); nothing in Cloudflare or on the server changed\.$/,
+    );
+    expect(error.message).not.toContain("Nothing on the server was changed");
+  });
+
   it("--plan-only shows both plans; --approve with both hashes applies the host plan first", async () => {
     const s = await cloudOnSubdomain();
     const planned = await portainerDisable(s.deps, { planOnly: true, services: s.services });

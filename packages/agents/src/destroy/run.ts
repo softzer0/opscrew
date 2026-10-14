@@ -10,10 +10,12 @@ import { cloudTarget, type ProviderProfile, planProvider, providerProfile } from
 import { checkProvider } from "../provision";
 import { hasDeployment, recordServerAddress, serverAddress } from "../shared";
 import {
+  deletedTunnel,
   deletesTunnel,
   requireTunnelClosed,
   tunnelBusyError,
   tunnelSafeEngine,
+  waitForTunnelToClose,
 } from "../shared/tunnel-connections";
 import {
   dataWarning,
@@ -136,7 +138,12 @@ async function destroyInfrastructure(
   snapshotId: string | undefined,
   protectionOff: boolean,
   confirmed: { addresses: ReadonlySet<string>; serverIds: readonly string[] },
-): Promise<{ destroyed: ResourceChange[]; approval?: ApprovalRecord }> {
+): Promise<{
+  destroyed: ResourceChange[];
+  approval?: ApprovalRecord;
+  /** The approval of the tunnel-only plan, when Cloudflare refused the tunnel at first. */
+  tunnelApproval?: ApprovalRecord;
+}> {
   const { session, plan, texts } = ctx;
   const { deps } = session;
   const name = plan.app.name;
@@ -250,8 +257,9 @@ async function destroyInfrastructure(
     }
     await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
     // Portainer's subdomain: its tunnel connector runs on the server. Deleted with the server, its
-    // connections may outlast it and Cloudflare refuses the tunnel (1022); a rerun that deletes
-    // only the tunnel first waits until Cloudflare reports no active connections.
+    // connections may outlast it and Cloudflare refuses the tunnel (1022); then this run waits
+    // until Cloudflare reports no active connections and deletes the tunnel with a plan of its own
+    // (see deleteTunnelLeft). A rerun that deletes only the tunnel waits first, too.
     const tunnel = deletesTunnel(summary.changes);
     const tunnelLeft = `The ${texts.noun} is deleted; the Cloudflare Tunnel is still there.`;
     if (tunnel && !serverDeleted) {
@@ -271,6 +279,22 @@ async function destroyInfrastructure(
       });
     } catch (error) {
       if (!engine.refusedBusyTunnel || !(error instanceof OpsCrewError)) throw error;
+      if (engine.onlyBusyTunnel && serverDeleted) {
+        // The connector went with the server, but its connections outlasted it: wait, then show
+        // and apply the plan for the tunnel that is left, in this same run.
+        const tunnelApproval = await deleteTunnelLeft(ctx, summary, {
+          refused: error,
+          tunnelLeft,
+          confirmed: confirmed.addresses,
+          snapshotId,
+        });
+        deps.reporter.success(`Deleted ${count} ${count === 1 ? "resource" : "resources"}.`);
+        return {
+          destroyed: summary.changes,
+          approval,
+          ...(tunnelApproval !== undefined ? { tunnelApproval } : {}),
+        };
+      }
       if (engine.onlyBusyTunnel) {
         throw tunnelBusyError({
           command: COMMAND,
@@ -287,6 +311,123 @@ async function destroyInfrastructure(
     }
     deps.reporter.success(`Deleted ${count} ${count === 1 ? "resource" : "resources"}.`);
     return { destroyed: summary.changes, approval };
+  } finally {
+    await discardPlan(summary);
+  }
+}
+
+/**
+ * 7b. The destroy plan deleted the server, but Cloudflare refused its tunnel (1022) because the
+ * connector's connections outlasted the server. Waits (read-only, bounded) until Cloudflare
+ * reports no active connections, then plans the deletion of what is left, shows it with its own
+ * `iac-apply` approval (`allowDestroy` and the typed app name, as for the teardown; only deletes
+ * of what the user confirmed) and applies it. Stops with the plain 1022 message (run it again in a
+ * few minutes) when the connections do not close in time, and with a plain next step when that
+ * plan is refused (then nothing more is deleted). Returns the approval (none when nothing was
+ * left).
+ */
+async function deleteTunnelLeft(
+  ctx: DestroyContext,
+  first: { planJson: unknown },
+  input: {
+    refused: OpsCrewError;
+    tunnelLeft: string;
+    confirmed: ReadonlySet<string>;
+    snapshotId: string | undefined;
+  },
+): Promise<ApprovalRecord | undefined> {
+  const { session, plan, texts } = ctx;
+  const { deps } = session;
+  const name = plan.app.name;
+  const busy = () =>
+    tunnelBusyError({
+      command: COMMAND,
+      reason: "refused",
+      already: input.tunnelLeft,
+      cause: input.refused,
+    });
+  const tunnel = deletedTunnel(first.planJson);
+  if (tunnel === undefined) throw busy();
+  deps.reporter.info(
+    `The ${texts.noun} is deleted, but Cloudflare refused to delete the app's Cloudflare Tunnel while it still had active connections (they can outlast the ${texts.noun} for a few minutes). OpsCrew waits until they close, then shows the plan that deletes the tunnel.`,
+  );
+  const wait = await waitForTunnelToClose(
+    deps,
+    tunnel,
+    ctx.sleep !== undefined ? { sleep: ctx.sleep } : {},
+  );
+  if (!wait.closed) throw busy();
+
+  deps.reporter.step("Planning the deletion of the Cloudflare Tunnel");
+  const summary = await savePlan(session, "destroy-tunnel", {
+    ...(ctx.vars ? { vars: ctx.vars } : {}),
+    destroy: true,
+  });
+  try {
+    if (summary.changes.length === 0) {
+      deps.reporter.info("Nothing is left to delete.");
+      return undefined;
+    }
+    // Only deletes of what the user confirmed, and no server (it is deleted already).
+    const problems = deletionPlanProblems(summary.changes, { confirmed: input.confirmed });
+    const outside = [
+      ...problems.notDeletes,
+      ...problems.unconfirmed.map((address) => `delete ${address}`),
+      ...summary.changes
+        .filter((change) => deletesServer([change], session.provider))
+        .map(
+          (change) => `${change.action} ${change.address} (the ${texts.noun} is deleted already)`,
+        ),
+    ];
+    if (outside.length > 0) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        [
+          `The plan for what is left would do more than delete what you confirmed, so OpsCrew stopped. ${input.tunnelLeft}`,
+          ...outside.map((problem) => `  ${problem}`),
+        ].join("\n"),
+        {
+          hint: "Run `opscrew drift` to see what changed, then run `opscrew destroy` again to see the current list and confirm it.",
+        },
+      );
+    }
+    const count = summary.changes.length;
+    const approval = await deps.approvals.request({
+      kind: "iac-apply",
+      title: `Delete the Cloudflare Tunnel of ${name} (${count} ${count === 1 ? "resource" : "resources"} to delete)`,
+      details: [
+        `${engineLabel(summary.engine.name)} ${summary.engine.version} destroy plan:`,
+        ...describeChanges(summary.changes),
+        `The ${texts.noun} is deleted already; Cloudflare reports no active connections for the tunnel now, so this plan deletes what is left.`,
+        `Plan hash: ${summary.planHash}`,
+      ].join("\n"),
+      planHash: summary.planHash,
+      allowDestroy: true,
+      confirmPhrase: name,
+    });
+    if (!approval.approved) {
+      throw new OpsCrewError(
+        "APPROVAL_REFUSED",
+        `The deletion of the app's Cloudflare Tunnel was not approved${approval.reason ? ` (${approval.reason})` : ""}. ${input.tunnelLeft}${snapshotKeptNote(texts, input.snapshotId)}`,
+        {
+          hint: `Run \`opscrew destroy\` again and type ${name} when you are ready (in a script: \`opscrew destroy --confirm ${name}\`); it deletes what is left.`,
+        },
+      );
+    }
+    await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
+    deps.reporter.step("Deleting the Cloudflare Tunnel");
+    const engine = tunnelSafeEngine(session.engine);
+    try {
+      await applyApprovedPlan({ ...session, engine }, summary, {
+        allowDestroy: true,
+        what: "deleting the Cloudflare Tunnel",
+        hint: `${input.tunnelLeft} Fix the cause shown above, then run \`opscrew destroy\` again; it continues with what is left.`,
+      });
+    } catch (error) {
+      if (engine.refusedBusyTunnel && engine.onlyBusyTunnel) throw busy();
+      throw error;
+    }
+    return approval;
   } finally {
     await discardPlan(summary);
   }
@@ -473,12 +614,14 @@ export async function runDestroy(
   });
 
   // 7. Destroy
-  const { destroyed, approval: destroyApproval } = await destroyInfrastructure(
-    ctx,
-    snapshotId,
-    protection.off,
-    { addresses: preview.addresses, serverIds },
-  );
+  const {
+    destroyed,
+    approval: destroyApproval,
+    tunnelApproval,
+  } = await destroyInfrastructure(ctx, snapshotId, protection.off, {
+    addresses: preview.addresses,
+    serverIds,
+  });
 
   // 8. Cleanup: deploy secrets, pinned host key, plan, stored-secrets record, phase state
   const secretsRemoved = await removeDeploySecrets(deps, github, {
@@ -496,6 +639,7 @@ export async function runDestroy(
     destroyedPlan(plan, at, [
       { record: protection.approval, kind: "iac-apply" },
       { record: destroyApproval, kind: "iac-apply" },
+      { record: tunnelApproval, kind: "iac-apply" },
     ]),
   );
   await recordServerAddress(deps.paths, undefined);

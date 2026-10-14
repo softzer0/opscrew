@@ -482,7 +482,7 @@ async function provisionFlow(
   const cloudConnector = (planOnly: boolean) =>
     cloudConnectorRemoval(deps, { plan, services, command, planOnly, shown: cloudShown });
   const first = ownRun
-    ? ownConnectorFirst(deps, engine, {
+    ? ownConnectorFirst(deps, {
         run: ownRun,
         plan,
         deployPublicKey: deployKey.publicKeyOpenSsh,
@@ -492,7 +492,7 @@ async function provisionFlow(
         done: "The change on your server is applied (its Cloudflare Tunnel connector is removed); the Cloudflare Tunnel this plan deletes is still there.",
         ...(extras.approvalNotes ? { notes: extras.approvalNotes } : {}),
       })
-    : connectorFirst(deps, engine, {
+    : connectorFirst(deps, {
         command,
         app: plan.app.name,
         where: "the server",
@@ -502,21 +502,17 @@ async function provisionFlow(
         ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
         ...(extras.approvalNotes ? { notes: extras.approvalNotes } : {}),
       });
-  if (approveHash !== undefined) {
-    const savedPlan = await findSavedPlan(deps.paths.files.plansDir, approveHash);
-    if (savedPlan !== undefined) first.noteSavedPlan(savedPlan.changes);
-  }
   let applied: Awaited<ReturnType<typeof planAndApply>>;
   try {
     applied = await planAndApply(deps, {
-      engine: first.engine,
+      engine,
       dir,
       env: engineEnv,
       deployPlan: plan,
       files,
       command,
       phase,
-      approvalNotes: first.notes,
+      ...first.hooks,
       ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
       ...(options.planOnly ? { planOnly: true } : {}),
     });

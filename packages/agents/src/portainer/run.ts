@@ -533,7 +533,7 @@ async function runChange(
   if (tunnelInvolved) {
     const { engine: inner, env } = await engineFor(deps, plan, options);
     // Applying a plan that deletes the tunnel: the server first, then the wait, then the deletion.
-    const first = connectorFirst(deps, inner, {
+    const first = connectorFirst(deps, {
       command,
       app: plan.app.name,
       where: ownRun ? "your server" : "the server",
@@ -542,10 +542,6 @@ async function runChange(
       done: CONNECTOR_GONE,
       ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
     });
-    if (approveHash !== undefined) {
-      const saved = await findSavedPlan(deps.paths.files.plansDir, approveHash);
-      if (saved !== undefined) first.noteSavedPlan(saved.changes);
-    }
     if (ownRun) {
       await ownEngineEnv(deps, ownRun, env, () =>
         infrastructureOutputs(deps, plan, { engine: async () => inner, engineEnv: env }),
@@ -554,8 +550,8 @@ async function runChange(
     let result: Awaited<ReturnType<typeof planAndApply>>;
     try {
       result = await planAndApply(deps, {
-        engine: first.engine,
-        approvalNotes: first.notes,
+        engine: inner,
+        ...first.hooks,
         dir: join(deps.paths.root, plan.infra.dir),
         env,
         deployPlan: plan,
@@ -723,6 +719,10 @@ function forThisCommand(error: unknown, command: string): unknown {
   });
 }
 
+/** How a refusal says that nothing changed (replaced by one sentence after the files written). */
+const REFUSAL_ENDING =
+  / Nothing (?:was changed|on (?:your|the) server was changed and nothing in Cloudflare was deleted)\.$/;
+
 /**
  * The error of an infrastructure plan that was refused or failed after this run wrote repository
  * files: it lists them. A refusal changed nothing in Cloudflare or on the server; a failed apply
@@ -735,9 +735,11 @@ function infrastructureStopped(
 ): unknown {
   if (!(error instanceof OpsCrewError) || written.length === 0) return error;
   const files = `The repository files were written (${written.join(", ")})`;
+  // The refusal's own ending ("Nothing was changed.", or "Nothing on the server was changed and
+  // nothing in Cloudflare was deleted." when the host change went first) is said once, at the end.
   const message =
     error.code === "APPROVAL_REFUSED"
-      ? `${error.message.replace(/ Nothing was changed\.$/, "")} ${files}; nothing in Cloudflare or on the server changed.`
+      ? `${error.message.replace(REFUSAL_ENDING, "")} ${files}; nothing in Cloudflare or on the server changed.`
       : `${error.message}\n${files}.`;
   return new OpsCrewError(error.code, deps.redactor.redact(message), {
     ...(error.hint !== undefined ? { hint: error.hint } : {}),

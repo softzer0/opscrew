@@ -6,13 +6,16 @@ import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
+import { BUSY_TUNNEL_LOG } from "./__fixtures__/tunnel";
 import {
+  connectorFirst,
   deletedTunnel,
   deletesTunnel,
   isTunnelBusyText,
   onlyTunnelBusy,
   readTunnelConnections,
   requireTunnelClosed,
+  SERVER_GOES_FIRST,
   TUNNEL_RESOURCE_TYPE,
   tunnelBusyError,
   tunnelSafeEngine,
@@ -267,10 +270,9 @@ describe("Cloudflare's error 1022", () => {
     expect(error.hint).toContain("Run `opscrew portainer disable` again in a few minutes");
   });
 
-  it("tunnelSafeEngine runs the step before a tunnel deletion only, and notes a 1022", async () => {
+  it("tunnelSafeEngine passes every call through and notes a 1022", async () => {
     const dir = await mkdtemp(join(tmpdir(), "opscrew-tunnel-engine-"));
     const order: string[] = [];
-    let changes: PlanSummary["changes"] = [];
     let result: IacApplyResult = { ok: true, outputs: {}, log: "Apply complete!" };
     const inner: IacEngine = {
       info: { name: "tofu", version: "1.13.1", binary: "/fake/tofu" },
@@ -278,6 +280,7 @@ describe("Cloudflare's error 1022", () => {
       validate: async () => ({ valid: true, diagnostics: [] }),
       output: async () => ({}),
       plan: async (_dir, planFile) => {
+        order.push("plan");
         await writeFile(planFile, "plan");
         return {
           engine: { name: "tofu", version: "1.13.1", binary: "/fake/tofu" },
@@ -285,54 +288,149 @@ describe("Cloudflare's error 1022", () => {
           planFile,
           planHash: "0".repeat(64),
           createdAt: "2026-10-14T12:00:00.000Z",
-          changes,
-          counts: { create: 0, update: 0, delete: changes.length, replace: 0 },
-          hasDestroy: changes.length > 0,
+          changes: TUNNEL_CHANGES,
+          counts: { create: 0, update: 0, delete: 1, replace: 0 },
+          hasDestroy: true,
           planJson: {},
-        };
+        } satisfies PlanSummary;
       },
       apply: async () => {
         order.push("apply");
         return result;
       },
     };
-    const engine = tunnelSafeEngine(inner, async () => void order.push("before"));
+    const engine = tunnelSafeEngine(inner);
     const approval = { approvedPlanHash: "0".repeat(64), allowDestroy: true };
-
-    // No tunnel deleted: straight to the apply.
-    changes = [
-      {
-        address: "module.dns.cloudflare_dns_record.a",
-        type: "cloudflare_dns_record",
-        name: "a",
-        provider: "cf",
-        action: "delete",
-      },
-    ];
     await engine.plan(dir, join(dir, "a.tfplan"));
     await engine.apply(dir, join(dir, "a.tfplan"), approval);
-    expect(order).toEqual(["apply"]);
-
-    // A tunnel deleted: the step first; a 1022 is noted.
-    changes = [
-      {
-        address: "module.tunnel.x.this",
-        type: TUNNEL_RESOURCE_TYPE,
-        name: "this",
-        provider: "cf",
-        action: "delete",
-      },
-    ];
-    await engine.plan(dir, join(dir, "b.tfplan"));
+    expect(order).toEqual(["plan", "apply"]);
+    expect(engine.refusedBusyTunnel).toBe(false);
     result = { ok: false, outputs: {}, log };
-    await engine.apply(dir, join(dir, "b.tfplan"), approval);
-    expect(order).toEqual(["apply", "before", "apply"]);
+    await engine.apply(dir, join(dir, "a.tfplan"), approval);
     expect(engine.refusedBusyTunnel).toBe(true);
+    expect(engine.onlyBusyTunnel).toBe(true);
+  });
+});
 
-    // A plan saved by an earlier --plan-only run is read from its sidecar.
-    await writeFile(join(dir, "c.tfplan"), "plan");
-    await writeFile(join(dir, "c.tfplan.json"), JSON.stringify({ changes, planJson: {} }));
-    await engine.apply(dir, join(dir, "c.tfplan"), approval);
-    expect(order).toEqual(["apply", "before", "apply", "before", "apply"]);
+const TUNNEL_CHANGES: PlanSummary["changes"] = [
+  {
+    address: "module.tunnel.x.this",
+    type: TUNNEL_RESOURCE_TYPE,
+    name: "this",
+    provider: "cf",
+    action: "delete",
+  },
+];
+
+const DNS_CHANGES: PlanSummary["changes"] = [
+  {
+    address: "module.dns.cloudflare_dns_record.a",
+    type: "cloudflare_dns_record",
+    name: "a",
+    provider: "cf",
+    action: "delete",
+  },
+];
+
+describe("connectorFirst hooks", () => {
+  const planJson = {
+    resource_changes: [
+      {
+        type: TUNNEL_RESOURCE_TYPE,
+        mode: "managed",
+        change: {
+          actions: ["delete"],
+          before: { id: TUNNEL.tunnelId, account_id: TUNNEL.accountId },
+        },
+      },
+    ],
+  };
+  const tunnelPlan = { planHash: "a".repeat(64), changes: TUNNEL_CHANGES, planJson };
+  const dnsPlan = { planHash: "b".repeat(64), changes: DNS_CHANGES, planJson: {} };
+
+  async function setup(answers: (() => Response)[], hostChange?: () => Promise<never>) {
+    const order: string[] = [];
+    const f = scriptedFetch(answers);
+    const d = await deps(async (input, init) => {
+      order.push("poll");
+      return f.fetch(input, init);
+    });
+    const first = connectorFirst(d, {
+      command: "opscrew portainer disable",
+      app: "shop",
+      where: "the server",
+      hostChange:
+        hostChange ??
+        (async () => {
+          order.push("host");
+          return { hash: "c".repeat(64), applied: true };
+        }),
+      hostHash: () => "c".repeat(64),
+      done: "The connector is removed.",
+      sleep: async () => undefined,
+      notes: ["Warning: given."],
+    });
+    return { d, first, order };
+  }
+
+  it("adds the note only for a plan that deletes the tunnel, after the given ones", async () => {
+    const { first } = await setup([json(tunnelBody("down"))]);
+    expect(first.hooks.approvalNotes(dnsPlan)).toEqual(["Warning: given."]);
+    expect(first.hooks.approvalNotes(tunnelPlan)).toEqual([
+      "Warning: given.",
+      "The change on the server is shown next and applied first: Cloudflare deletes a tunnel only after its connector has stopped, so OpsCrew applies this plan after that.",
+    ]);
+    // Asking again adds nothing twice.
+    expect(first.hooks.approvalNotes(tunnelPlan)).toHaveLength(2);
+  });
+
+  it("beforeApply: nothing for other plans; the host change, then the wait, for the tunnel's deletion", async () => {
+    const { d, first, order } = await setup([
+      json(tunnelBody("healthy", 1)),
+      json(tunnelBody("down")),
+    ]);
+    await first.hooks.beforeApply(dnsPlan);
+    expect(order).toEqual([]);
+    expect(first.host).toBeUndefined();
+    await first.hooks.beforeApply(tunnelPlan);
+    expect(order).toEqual(["host", "poll", "poll"]);
+    expect(first.host?.applied).toBe(true);
+    expect(d.reporter.text()).toContain(SERVER_GOES_FIRST);
+  });
+
+  it("a refused host change names both hashes; a 1022 heard by applyFailed is said in plain words", async () => {
+    const refusal = new OpsCrewError(
+      "APPROVAL_REFUSED",
+      "The host plan was not approved. Nothing on the server was changed.",
+    );
+    const refused = await setup([json(tunnelBody("down"))], async () => {
+      throw refusal;
+    });
+    const error = (await refused.first.hooks
+      .beforeApply(tunnelPlan)
+      .catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.message).toBe(
+      "The host plan was not approved. Nothing on the server was changed and nothing in Cloudflare was deleted.",
+    );
+    expect(error.hint).toContain(
+      `opscrew portainer disable --approve ${"a".repeat(64)} --approve ${"c".repeat(64)}`,
+    );
+    expect(refused.order).toEqual([]);
+
+    const { first } = await setup([json(tunnelBody("down"))]);
+    await first.hooks.beforeApply(tunnelPlan);
+    const failed = new OpsCrewError("ENGINE_FAILED", "Applying the plan failed:\n…");
+    // Another failure keeps its words and says what is done already.
+    expect((first.stopped(failed) as OpsCrewError).message).toBe(
+      "Applying the plan failed:\n…\nThe connector is removed.",
+    );
+    first.hooks.applyFailed("Error: something else");
+    expect((first.stopped(failed) as OpsCrewError).code).toBe("ENGINE_FAILED");
+    first.hooks.applyFailed(BUSY_TUNNEL_LOG);
+    const plain = first.stopped(failed) as OpsCrewError;
+    expect(plain.code).toBe("PROVIDER_ERROR");
+    expect(plain.message).toBe(
+      "Cloudflare refused to delete the app's Cloudflare Tunnel because it still has active connections, so the tunnel is still there. The connector is removed.",
+    );
   });
 });

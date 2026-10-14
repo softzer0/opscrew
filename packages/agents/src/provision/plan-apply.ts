@@ -41,8 +41,20 @@ export interface PlanAndApplyOptions {
   command?: string;
   /** Phase recorded in the audit log (default `provision`). */
   phase?: PhaseName;
-  /** Plain-English warnings added to the `iac-apply` approval details. */
-  approvalNotes?: readonly string[];
+  /**
+   * Plain-English warnings added to the `iac-apply` approval details: a fixed list, or computed
+   * from the plan about to be shown for approval (this run's plan, or the saved plan of
+   * `approvePlanHash`). Not asked for when no approval is requested (`planOnly`, no changes).
+   */
+  approvalNotes?: readonly string[] | ((plan: SavedPlan) => readonly string[]);
+  /**
+   * Awaited once the approval is granted and checked, right before the engine applies the plan;
+   * never on a refusal, with `planOnly` or for a plan without changes. It may throw to stop before
+   * the apply (for example: the host change that removes a tunnel's connector goes first).
+   */
+  beforeApply?: (plan: SavedPlan) => Promise<void>;
+  /** Hears of a failed apply, with the redacted engine log, before the error is thrown. */
+  applyFailed?: (log: string, plan: SavedPlan) => void;
   /**
    * Monthly cost change shown with the approval. Default: the plan's monthly cost (the plan
    * creates the deployment's servers); `null` for a server the user owns. `null`: the plan changes
@@ -475,7 +487,8 @@ function approveLaterHint(command: string, planHash: string, confirmPhrase?: str
  * plan from that earlier run (plans are never re-made, so the hash the user reviewed is the one
  * applied). Policy failures (critical/high) stop before approval is requested. A plan without
  * changes is "already up to date" only when it has no state renames either: a moves-only plan is
- * approved as a state rename (nothing changes in the cloud) and applied like any other.
+ * approved as a state rename (nothing changes in the cloud) and applied like any other. The hooks
+ * (`approvalNotes`, `beforeApply`, `applyFailed`) see the plan being approved and applied.
  */
 export async function planAndApply(
   deps: PhaseDeps,
@@ -555,7 +568,10 @@ export async function planAndApply(
     : cloudflare
       ? `${cloud} and Cloudflare`
       : cloud;
-  const notes = options.approvalNotes ?? [];
+  const notes =
+    typeof options.approvalNotes === "function"
+      ? options.approvalNotes(saved)
+      : (options.approvalNotes ?? []);
   const costDelta = movesOnly
     ? null
     : costDeltaOption === undefined
@@ -588,6 +604,7 @@ export async function planAndApply(
     );
   }
   await deps.approvals.assertApprovedPlan(saved.planHash, { allowDestroy: saved.hasDestroy });
+  if (options.beforeApply !== undefined) await options.beforeApply(saved);
   if (deployPlan.deployment.destroyedAt !== undefined) await clearDestroyedAt(deps);
 
   deps.reporter.step(
@@ -613,6 +630,7 @@ export async function planAndApply(
   if (!result.ok) {
     // The message shows the last lines; the hint reads every error block of the redacted log.
     const fullLog = deps.redactor.redact(result.log);
+    options.applyFailed?.(fullLog, saved);
     throw new OpsCrewError("ENGINE_FAILED", `Applying the plan failed:\n${lastLines(fullLog)}`, {
       hint: applyFailureHint(deps, fullLog, deployPlan, command),
     });

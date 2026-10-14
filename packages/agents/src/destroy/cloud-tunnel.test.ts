@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApprovalRequest } from "@opscrew/contracts";
@@ -34,7 +35,16 @@ import type { DestroyServices } from "./types";
  * and the tunnel (with its record and Access). The first apply can fail with Cloudflare's 1022
  * after deleting everything else, as when the connector's connections outlast the Droplet.
  */
-async function deployed() {
+async function deployed(
+  o: {
+    /** Polls that still report connections after the Droplet is gone. */
+    closeAfter?: number;
+    /** The connections never close. */
+    never?: boolean;
+    /** Refuse the second `iac-apply` approval (the tunnel-only plan). */
+    refuseTunnelPlan?: boolean;
+  } = {},
+) {
   const events: string[] = [];
   const base = testPlan({ provider: "digitalocean", domain: "shop.example.com", deployed: true });
   const plan = {
@@ -71,9 +81,11 @@ async function deployed() {
     engine.script.resources = tunnelDeletes().filter((c) => c.type === TUNNEL_RESOURCE_TYPE);
     return { ok: false, outputs: {}, log: BUSY_TUNNEL_LOG };
   };
+  let iacApprovals = 0;
   const handler = new ScriptedApprovalHandler((request: ApprovalRequest) => {
     events.push(`approval:${request.kind}`);
-    return true;
+    if (request.kind === "iac-apply") iacApprovals++;
+    return !(o.refuseTunnelPlan === true && request.kind === "iac-apply" && iacApprovals === 2);
   });
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -84,7 +96,12 @@ async function deployed() {
     GITHUB_TOKEN: undefined,
     GH_TOKEN: undefined,
   };
-  const api = fakeTunnelApi({ events, connectorRunning: () => false });
+  const api = fakeTunnelApi({
+    events,
+    connectorRunning: () => false,
+    ...(o.closeAfter !== undefined ? { closeAfter: o.closeAfter } : {}),
+    ...(o.never !== undefined ? { never: o.never } : {}),
+  });
   const deps = await createTestPhaseDeps({
     root: project.root,
     env,
@@ -108,18 +125,79 @@ async function deployed() {
     github: new FakeDestroyGitHub(events),
     sleep: async () => undefined,
   };
-  return { ...project, deps, engine, events, services };
+  return { ...project, deps, engine, events, services, handler, api };
+}
+
+/** The events from the first (refused) apply on, without the preview's and cleanup's. */
+function afterFirstApply(events: readonly string[]): string[] {
+  const from = events.indexOf("apply:destroy");
+  return events
+    .slice(from)
+    .filter((e) => ["approval:iac-apply", "poll", "plan:destroy", "apply:destroy"].includes(e));
+}
+
+async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
+  const error = await promise.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(error).toBeInstanceOf(OpsCrewError);
+  return error as OpsCrewError;
 }
 
 describe.skipIf(!findExecutable("git"))(
   "opscrew destroy on DigitalOcean with Portainer's tunnel",
   () => {
-    it("a 1022 says the Droplet is deleted and the tunnel is not; the rerun waits and deletes the tunnel", async () => {
-      const s = await deployed();
-      const error = (await runDestroy(s.deps, { services: s.services, snapshot: false }).catch(
-        (e: unknown) => e,
-      )) as OpsCrewError;
-      expect(error).toBeInstanceOf(OpsCrewError);
+    it("a 1022 after the Droplet is deleted: the same run waits, shows the tunnel-only plan and finishes", async () => {
+      const s = await deployed({ closeAfter: 2 });
+      const result = await runDestroy(s.deps, { services: s.services, snapshot: false });
+      expect(afterFirstApply(s.events)).toEqual([
+        "apply:destroy",
+        "poll",
+        "poll",
+        "poll",
+        "plan:destroy",
+        "approval:iac-apply",
+        "apply:destroy",
+      ]);
+      // The tunnel-only plan has its own approval: allowDestroy and the typed app name.
+      const requests = s.handler.requests.filter((r) => r.kind === "iac-apply");
+      expect(requests).toHaveLength(2);
+      const tunnelOnly = requests[1];
+      expect(tunnelOnly).toMatchObject({
+        title: "Delete the Cloudflare Tunnel of shop (1 resource to delete)",
+        allowDestroy: true,
+        confirmPhrase: "shop",
+      });
+      expect(tunnelOnly?.planHash).not.toBe(requests[0]?.planHash);
+      expect(tunnelOnly?.details).toContain(
+        "  - delete  module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+      );
+      expect(tunnelOnly?.details).toContain(
+        "The Droplet is deleted already; Cloudflare reports no active connections for the tunnel now, so this plan deletes what is left.",
+      );
+      expect(tunnelOnly?.details).toContain(`Plan hash: ${tunnelOnly?.planHash}`);
+      expect(s.engine.applied.at(-1)?.approval).toEqual({
+        approvedPlanHash: tunnelOnly?.planHash,
+        allowDestroy: true,
+      });
+      expect(result.destroyed.map((c) => c.type)).toContain("digitalocean_droplet");
+      expect(result.destroyed.map((c) => c.type)).toContain(TUNNEL_RESOURCE_TYPE);
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      expect(plan.deployment.destroyedAt).toBeDefined();
+      expect(plan.approvals.slice(-2).map((a) => a.planHash)).toEqual(
+        requests.map((r) => r.planHash),
+      );
+      const text = s.deps.reporter.text();
+      expect(text).toContain(
+        "The Droplet is deleted, but Cloudflare refused to delete the app's Cloudflare Tunnel while it still had active connections (they can outlast the Droplet for a few minutes). OpsCrew waits until they close, then shows the plan that deletes the tunnel.",
+      );
+      expect(text).not.toContain("1022");
+    });
+
+    it("connections that never close: the plain message, and the rerun waits and deletes the tunnel", async () => {
+      const s = await deployed({ never: true });
+      const error = await failure(runDestroy(s.deps, { services: s.services, snapshot: false }));
       expect(error.code).toBe("PROVIDER_ERROR");
       expect(error.message).toBe(
         "Cloudflare refused to delete the app's Cloudflare Tunnel because it still has active connections, so the tunnel is still there. The Droplet is deleted; the Cloudflare Tunnel is still there.",
@@ -130,10 +208,13 @@ describe.skipIf(!findExecutable("git"))(
       expect(
         (await readArtifact("plan", s.deps.paths.files.plan)).deployment.destroyedAt,
       ).toBeUndefined();
-      // The first apply did not wait: the connector went with the Droplet in that same apply.
-      expect(s.events).not.toContain("poll");
+      // It waited after the Droplet was gone, and planned nothing more.
+      expect(afterFirstApply(s.events).slice(0, 2)).toEqual(["apply:destroy", "poll"]);
+      expect(afterFirstApply(s.events)).not.toContain("plan:destroy");
+      expect(s.handler.requests.filter((r) => r.kind === "iac-apply")).toHaveLength(1);
 
       s.events.length = 0;
+      s.deps.fetch = fakeTunnelApi({ events: s.events, connectorRunning: () => false }).fetch;
       const result = await runDestroy(s.deps, { services: s.services, snapshot: false });
       const order = s.events.filter((e) =>
         ["approval:iac-apply", "poll", "apply:destroy"].includes(e),
@@ -143,6 +224,32 @@ describe.skipIf(!findExecutable("git"))(
       expect(
         (await readArtifact("plan", s.deps.paths.files.plan)).deployment.destroyedAt,
       ).toBeDefined();
+    });
+
+    it("a refused tunnel-only plan deletes nothing more and says how to finish", async () => {
+      const s = await deployed({ refuseTunnelPlan: true });
+      const error = await failure(runDestroy(s.deps, { services: s.services, snapshot: false }));
+      expect(error.code).toBe("APPROVAL_REFUSED");
+      expect(error.message).toBe(
+        "The deletion of the app's Cloudflare Tunnel was not approved. The Droplet is deleted; the Cloudflare Tunnel is still there.",
+      );
+      expect(error.hint).toBe(
+        "Run `opscrew destroy` again and type shop when you are ready (in a script: `opscrew destroy --confirm shop`); it deletes what is left.",
+      );
+      // One apply only (the Droplet's); the tunnel-only plan was shown and not applied.
+      expect(s.events.filter((e) => e === "apply:destroy")).toHaveLength(1);
+      expect(afterFirstApply(s.events)).toEqual([
+        "apply:destroy",
+        "poll",
+        "plan:destroy",
+        "approval:iac-apply",
+      ]);
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      expect(plan.deployment.destroyedAt).toBeUndefined();
+      // The refused plan is discarded, so it can never be applied later.
+      const tunnelOnly = s.handler.requests.filter((r) => r.kind === "iac-apply")[1];
+      expect(tunnelOnly).toBeDefined();
+      expect(existsSync(s.engine.planFiles.at(-1) as string)).toBe(false);
     });
   },
 );

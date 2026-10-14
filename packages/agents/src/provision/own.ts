@@ -41,7 +41,7 @@ import {
   deletesTunnel,
   type HostChangeResult,
 } from "../shared/tunnel-connections";
-import { findSavedPlan, type PlanAndApplyResult, planAndApply } from "./plan-apply";
+import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import type { CloudflareApi, HostAdapterApi, ProvisionOptions, ProvisionServices } from "./types";
 
 /** Cloudflare's IP ranges, the only sources of web traffic when the site is served directly behind the proxy. */
@@ -500,20 +500,16 @@ export async function removeOldAccessMode(
   const first =
     server === undefined
       ? undefined
-      : ownConnectorFirst(deps, input.engine, {
+      : ownConnectorFirst(deps, {
           ...server,
           plan,
           phase: input.phase,
           done: `Your server is switched to ${MODE_TEXT[target.access]} already (its Cloudflare Tunnel connector is removed); the current setup's Cloudflare resources are still there, so the app is unreachable until the switch finishes.`,
         });
-  if (first !== undefined && input.approvePlanHash !== undefined) {
-    const saved = await findSavedPlan(deps.paths.files.plansDir, input.approvePlanHash);
-    if (saved !== undefined) first.noteSavedPlan(saved.changes);
-  }
   let result: PlanAndApplyResult;
   try {
     result = await planAndApply(deps, {
-      engine: first?.engine ?? input.engine,
+      engine: input.engine,
       dir: input.dir,
       env: input.env,
       deployPlan: plan,
@@ -523,7 +519,7 @@ export async function removeOldAccessMode(
       destroy: true,
       costDelta: null,
       approvalTitle: `Remove ${removed} before switching your server to ${MODE_TEXT[target.access]} (first of two applies)`,
-      ...(first !== undefined ? { approvalNotes: first.notes } : {}),
+      ...first?.hooks,
       ...(input.approvePlanHash !== undefined ? { approvePlanHash: input.approvePlanHash } : {}),
       ...(input.planOnly ? { planOnly: true } : {}),
     });
@@ -552,7 +548,6 @@ export async function removeOldAccessMode(
  */
 export function ownConnectorFirst(
   deps: PhaseDeps,
-  engine: IacEngine,
   input: {
     run: OwnServerRun;
     plan: DeployPlan;
@@ -575,7 +570,7 @@ export function ownConnectorFirst(
       phase: input.phase,
       withoutTunnel: true,
     });
-  const first = connectorFirst(deps, engine, {
+  const first = connectorFirst(deps, {
     command: `opscrew ${input.phase}`,
     app: input.plan.app.name,
     where: "your server",

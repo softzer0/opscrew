@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { FakeEngine, type FakeEngineScenario, testPlan } from "./__fixtures__/fakes";
 import { describePlan, findSavedPlan, isMovesOnly, planAndApply } from "./plan-apply";
+import type { SavedPlan } from "./types";
 
 const MOVES: ResourceMove[] = [
   {
@@ -291,5 +292,112 @@ describe("findSavedPlan validation", () => {
     );
     expect((await findSavedPlan(deps.paths.files.plansDir, hash))?.planHash).toBe(hash);
     expect(await findSavedPlan(deps.paths.files.plansDir, "c".repeat(64))).toBeUndefined();
+  });
+});
+
+describe("planAndApply hooks", () => {
+  /** A setup whose approvals and engine applies are logged in `order`, with the hooks. */
+  async function hooked(scenario: FakeEngineScenario, approve = true) {
+    const order: string[] = [];
+    const handler = new ScriptedApprovalHandler(() => {
+      order.push("approve");
+      return approve;
+    });
+    const deps = await createTestPhaseDeps({ approvalHandler: handler });
+    const engine = new FakeEngine(scenario);
+    const apply = engine.apply.bind(engine);
+    engine.apply = async (dir, planFile, approval) => {
+      order.push("apply");
+      return apply(dir, planFile, approval);
+    };
+    const seen: { notes: string[]; before: string[]; failed: string[] } = {
+      notes: [],
+      before: [],
+      failed: [],
+    };
+    const options = {
+      engine,
+      dir: join(deps.paths.root, "opscrew", "infra", "prod"),
+      env: {},
+      deployPlan: testPlan({ deployed: true, domain: "shop.example.com" }),
+      files: [],
+      approvalNotes: (plan: SavedPlan) => {
+        order.push("notes");
+        seen.notes.push(plan.planHash);
+        return [`Note for ${plan.changes.length} change(s).`];
+      },
+      beforeApply: async (plan: SavedPlan) => {
+        order.push("before");
+        seen.before.push(plan.planHash);
+      },
+      applyFailed: (log: string, plan: SavedPlan) => {
+        order.push("failed");
+        seen.failed.push(`${plan.planHash}:${log}`);
+      },
+    };
+    return { deps, engine, handler, options, order, seen };
+  }
+
+  it("asks for the notes from the plan shown and runs beforeApply once, after the approval", async () => {
+    const s = await hooked({ changes: DNS_UPDATE });
+    const result = await planAndApply(s.deps, s.options);
+    expect(result.applied).toBe(true);
+    expect(s.order).toEqual(["notes", "approve", "before", "apply"]);
+    expect(s.seen.notes).toEqual([result.planHash]);
+    expect(s.seen.before).toEqual([result.planHash]);
+    expect(s.seen.failed).toEqual([]);
+    expect(s.handler.requests[0]?.details).toMatch(
+      /Plan hash: [0-9a-f]{64}\n\nNote for 1 change\(s\)\.$/,
+    );
+  });
+
+  it("never runs beforeApply on a refusal or with --plan-only; the saved plan gets its notes too", async () => {
+    const refused = await hooked({ changes: DNS_UPDATE }, false);
+    const error = await planAndApply(refused.deps, refused.options).catch((e: unknown) => e);
+    expect((error as OpsCrewError).code).toBe("APPROVAL_REFUSED");
+    expect(refused.order).toEqual(["notes", "approve"]);
+    expect(refused.engine.applied).toEqual([]);
+
+    const s = await hooked({ changes: DNS_UPDATE });
+    const planned = await planAndApply(s.deps, { ...s.options, planOnly: true });
+    expect(planned.applied).toBe(false);
+    expect(s.order).toEqual([]);
+
+    const applied = await planAndApply(s.deps, {
+      ...s.options,
+      approvePlanHash: planned.planHash as string,
+    });
+    expect(applied.applied).toBe(true);
+    expect(s.order).toEqual(["notes", "approve", "before", "apply"]);
+    expect(s.seen.notes).toEqual([planned.planHash]);
+    expect(s.seen.before).toEqual([planned.planHash]);
+    expect(s.handler.requests[0]?.details).toContain("Note for 1 change(s).");
+  });
+
+  it("stops before the apply when beforeApply throws, and hears of a failed apply", async () => {
+    const s = await hooked({ changes: DNS_UPDATE });
+    const stop = new OpsCrewError("PROVIDER_ERROR", "Stopped before the apply.");
+    const error = await planAndApply(s.deps, {
+      ...s.options,
+      beforeApply: async () => {
+        s.order.push("before");
+        throw stop;
+      },
+    }).catch((e: unknown) => e);
+    expect(error).toBe(stop);
+    expect(s.order).toEqual(["notes", "approve", "before"]);
+    expect(s.engine.applied).toEqual([]);
+
+    const failing = await hooked({ changes: DNS_UPDATE, applyOk: false, applyLog: "Error: boom" });
+    const failed = await planAndApply(failing.deps, failing.options).catch((e: unknown) => e);
+    expect((failed as OpsCrewError).code).toBe("ENGINE_FAILED");
+    expect(failing.order).toEqual(["notes", "approve", "before", "apply", "failed"]);
+    expect(failing.seen.failed).toEqual([`${failing.seen.before[0]}:Error: boom`]);
+  });
+
+  it("still takes a fixed list of notes", async () => {
+    const s = await hooked({ changes: DNS_UPDATE });
+    await planAndApply(s.deps, { ...s.options, approvalNotes: ["Warning: fixed."] });
+    expect(s.handler.requests[0]?.details).toMatch(/\n\nWarning: fixed\.$/);
   });
 });
