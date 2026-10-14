@@ -1,0 +1,13 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "api",
+    "frameworkNames": ["express"],
+    "port": 3000,
+    "services": ["postgres"],
+    "languages": ["javascript"],
+    "secretEnv": ["DATABASE_URL"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore", "env-example"]
+}

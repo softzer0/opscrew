@@ -1,0 +1,12 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "api",
+    "frameworkNames": ["nestjs"],
+    "port": 3000,
+    "services": [],
+    "languages": ["typescript"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore", "health-endpoint", "env-example"]
+}

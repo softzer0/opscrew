@@ -46,6 +46,41 @@ const EXAMPLES = readdirSync(EXAMPLES_DIR, { withFileTypes: true })
 
 /** Interview answers per example; a mix of regions, budgets, domains and kept services. */
 const ANSWERS: Record<string, Record<string, unknown>> = {
+  "django-postgres": {
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: "20 EUR",
+    region: "eu-central",
+    uptime: "standard",
+    dataCriticality: "important",
+  },
+  "express-api": {
+    expectedMonthlyUsers: "1k-10k",
+    budgetMonthly: "20 EUR",
+    region: "eu-central",
+    uptime: "standard",
+    dataCriticality: "important",
+  },
+  "fastify-api": {
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: "20 EUR",
+    region: "eu-central",
+    uptime: "standard",
+    dataCriticality: "important",
+  },
+  "hono-api": {
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: "10 EUR",
+    region: "eu-central",
+    uptime: "best-effort",
+    dataCriticality: "none",
+  },
+  "nestjs-api": {
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: "10 EUR",
+    region: "eu-central",
+    uptime: "best-effort",
+    dataCriticality: "none",
+  },
   "fastapi-redis": {
     expectedMonthlyUsers: "1k-10k",
     budgetMonthly: "20 EUR",

@@ -1,0 +1,12 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "api",
+    "frameworkNames": ["fastify"],
+    "port": 3000,
+    "services": ["redis"],
+    "languages": ["javascript"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore", "env-example"]
+}

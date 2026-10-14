@@ -1,0 +1,14 @@
+{
+  "name": "fastify-api-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "fastify": "5.12.7",
+    "ioredis": "6.0.0"
+  }
+}

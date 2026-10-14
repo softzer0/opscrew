@@ -1,0 +1,13 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "fullstack",
+    "frameworkNames": ["django"],
+    "port": 8000,
+    "services": ["postgres"],
+    "languages": ["python"],
+    "secretEnv": ["DJANGO_SECRET_KEY"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore", "env-example"]
+}

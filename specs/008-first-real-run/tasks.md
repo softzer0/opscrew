@@ -83,7 +83,7 @@ description: "Tasks for 008-first-real-run"
 
 ## Phase 2b: Framework matrix (founder, 2026-10-14; FR-811, SC-804)
 
-- [ ] T820 [P] Example apps, Python and Node backends: `examples/django-postgres` (Postgres), `examples/express-api` (Postgres), `examples/nestjs-api`, `examples/fastify-api` (Redis), `examples/hono-api`
+- [X] T820 [P] Example apps, Python and Node backends: `examples/django-postgres` (Postgres), `examples/express-api` (Postgres), `examples/nestjs-api`, `examples/fastify-api` (Redis), `examples/hono-api`
   - Owns: `examples/django-postgres/**`, `examples/express-api/**`, `examples/nestjs-api/**`, `examples/fastify-api/**`, `examples/hono-api/**`
   - Accept: FR-811. Each app is small and idiomatic for its framework (the way its docs start a project), pins exact dependency versions, serves a health route that `@opscrew/detect` finds (so a run works without a model, `codeChanges` without `health-endpoint`), starts without its database or Redis being reachable (connect lazily, the health route touches neither), reads its port and connection URLs from the environment, and has an `expected.json` that `packages/cli/test/e2e/examples.test.ts` checks; any planted `.env` uses `{{FAKE:<kind>}}` markers. Where detection or the generated Dockerfile gets one of them wrong, keep the app idiomatic and report the gap instead of bending the app around it.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
