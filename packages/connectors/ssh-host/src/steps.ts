@@ -1022,17 +1022,21 @@ rm -f "$DIR/admin_password"`;
 }
 
 /**
- * A one-step host plan that turns Portainer on (or off) in `dir`, for servers OpsCrew created
- * (Hetzner, DigitalOcean), where it runs as the SSH login (the deploy user, in its home directory).
- * Apply it with `applyHostPlan` like any host plan; it needs no root and writes no host record.
+ * A one-step host plan that turns Portainer on or off in `dir`. On servers OpsCrew created
+ * (Hetzner, DigitalOcean) it runs as the SSH login (`runAs: "login"`, the default: the deploy user
+ * in its home directory), needs no root and writes no host record. On a server the user owns use
+ * `runAs: "root"` with `dir` = `PORTAINER_DIR` (for example to turn it off and delete its data;
+ * turning it on there is part of `planHost`). Apply it with `applyHostPlan` like any host plan.
  */
 export function planPortainer(options: {
   app: string;
   dir: string;
+  runAs?: RunAs;
   enable?: { version: string; compose: { initial: string; final: string }; needsPassword: boolean };
   disable?: { deleteData: boolean };
 }): HostPlan {
   const { app, dir, enable, disable } = options;
+  const runAs = options.runAs ?? "login";
   if ((enable === undefined) === (disable === undefined)) {
     throw new OpsCrewError("INVALID_INPUT", "Turn Portainer either on or off, not both.");
   }
@@ -1040,12 +1044,12 @@ export function planPortainer(options: {
     ? {
         version: enable.version,
         dir,
-        runAs: "login",
+        runAs,
         composeInitial: enable.compose.initial,
         composeFinal: enable.compose.final,
         needsPassword: enable.needsPassword,
       }
-    : { remove: true, deleteData: disable?.deleteData === true, dir, runAs: "login" };
+    : { remove: true, deleteData: disable?.deleteData === true, dir, runAs };
   const plan: HostPlan = {
     schemaVersion: 1,
     purpose: "setup",

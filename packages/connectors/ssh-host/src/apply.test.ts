@@ -602,6 +602,34 @@ describe("planPortainer (servers OpsCrew created)", () => {
     expect(fake.volumes.has("opscrew-portainer")).toBe(false);
   });
 
+  it("turns Portainer off and deletes its data on a server the user owns (root)", async () => {
+    const fake = new FakeHost();
+    await provision(fake, desiredFor(fake, { portainer: portainerDesired() }), {
+      secrets: { portainerPassword: portainerPassword() },
+    });
+    const off = planPortainer({
+      app: "shop",
+      dir: "/srv/opscrew/portainer",
+      runAs: "root",
+      disable: { deleteData: true },
+    });
+    const result = await applyApproved(fake, off);
+    expect(result.applied).toEqual(["portainer"]);
+    expect(fake.containers.some((container) => container.project === "opscrew-portainer")).toBe(
+      false,
+    );
+    expect(fake.volumes.has("opscrew-portainer")).toBe(false);
+    expect(fake.files.has("/srv/opscrew/portainer/compose.yaml")).toBe(false);
+    expect(() =>
+      planPortainer({
+        app: "shop",
+        dir: "/home/deploy/portainer",
+        runAs: "root",
+        disable: { deleteData: false },
+      }),
+    ).toThrow(/invalid parameters/);
+  });
+
   it("refuses a root Portainer outside OpsCrew's directory and odd paths", () => {
     expect(() =>
       planPortainer({ app: "shop", dir: "/home/deploy/../../etc", disable: { deleteData: false } }),
