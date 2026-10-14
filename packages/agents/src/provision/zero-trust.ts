@@ -40,6 +40,12 @@ const OrganizationSchema = z.looseObject({ auth_domain: z.string().min(1) });
 /** Cloudflare's answer when an account has no Zero Trust organization yet. */
 const NO_ORGANIZATION = /not (?:been )?found|does not exist|no (?:zero trust )?organi[sz]ation/i;
 
+/**
+ * Cloudflare's answer (HTTP 403, error 9999) when the account never turned on Zero Trust; checked
+ * before the permission errors so the user is not sent to fix a token that is fine.
+ */
+const ACCESS_NOT_ENABLED = /access\.api\.error\.not_enabled|access is not enabled/i;
+
 function permissionHint(): string {
   return `Create a Cloudflare API token at https://dash.cloudflare.com/profile/api-tokens with ${tunnelTokenPermissions()}, set CLOUDFLARE_API_TOKEN to it, then run the command again.`;
 }
@@ -86,9 +92,18 @@ export function cloudflareZeroTrust(
           },
         );
       }
-      if (response.status === 404) return undefined;
       const body = EnvelopeSchema.safeParse(await response.json().catch(() => ({})));
       const envelope = body.success ? body.data : {};
+      if ((envelope.errors ?? []).some((e) => ACCESS_NOT_ENABLED.test(e.message))) {
+        throw new OpsCrewError(
+          "PHASE_PRECONDITION",
+          "Cloudflare Access is not turned on for this Cloudflare account yet. OpsCrew needs it to protect the SSH hostname in tunnel mode and the Portainer subdomain. Nothing was changed.",
+          {
+            hint: "Open the Zero Trust dashboard at https://one.dash.cloudflare.com/, choose a team name and the Free plan, then run the command again.",
+          },
+        );
+      }
+      if (response.status === 404) return undefined;
       if (response.status === 401 || response.status === 403) {
         throw new OpsCrewError(
           "CREDENTIALS_INVALID",
