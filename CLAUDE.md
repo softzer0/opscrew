@@ -28,6 +28,9 @@ it is the source of truth and overrides this file.
 - `packages/mcp-server` — deterministic MCP server (`opscrew mcp`).
 - `plugin/` — Claude Code plugin (skills + MCP config).
 - `examples/` — fixture apps for end-to-end tests. `docs/adr/` — architecture decision records.
+- `docs/guide/` — user documentation in Markdown, one topic per page, written for users (later built
+  with Astro Starlight and served at docs.opscrew.dev). Features document themselves here; the
+  README stays a short pitch and quickstart that links to these pages.
 
 ## Commands
 

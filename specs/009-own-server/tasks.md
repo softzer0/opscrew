@@ -73,11 +73,11 @@ network or model.
 
 ## Phase 4: Surfaces and live test
 
-- [ ] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, README in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `README.md`
-  - Owns: `packages/cli/src/**`, `packages/cli/test/e2e/**`, `packages/mcp-server/src/**`, `plugin/**`, `README.md`
+- [ ] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
+  - Owns: `packages/cli/src/**`, `packages/cli/test/e2e/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/own-server.md`, `docs/guide/portainer.md`, `README.md` (one link line only)
   - Reads: contracts/cli.md; spec FR-917
   - Depends: T905, T906, T907
-  - Accept: `--host-key`, repeated `--approve`, `--undo-host`, the `portainer` commands; the CLI interview passes `askServer` (own-server questions work in a terminal) and the MCP interview questions include `buildServerQuestions()`; design's callers (CLI and MCP) run `connectOwnServer`/`inspectOwnServer` before design and pass the facts; the CLI options table (`ui/options.ts`) and the MCP design tool never print a price or "prices live from …" for an own server (FR-913); MCP tools with the same approvals (no auto-approval); the examples end-to-end suite runs one example through an own-server plan with fakes; README section "Your own server".
+  - Accept: `--host-key`, repeated `--approve`, `--undo-host`, the `portainer` commands; the CLI interview passes `askServer` (own-server questions work in a terminal) and the MCP interview questions include `buildServerQuestions()`; design's callers (CLI and MCP) run `connectOwnServer`/`inspectOwnServer` before design and pass the facts; the CLI options table (`ui/options.ts`) and the MCP design tool never print a price or "prices live from …" for an own server (FR-913); MCP tools with the same approvals (no auto-approval); the examples end-to-end suite runs one example through an own-server plan with fakes; user docs `docs/guide/own-server.md` and `docs/guide/portainer.md` (written for users: what OpsCrew changes on the server, the two approvals, tunnel mode, undo, backups, Portainer access) and one README line linking to them — no new README section.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: medium
 
