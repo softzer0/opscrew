@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { builtInHealthEndpoint, healthRouteFromPath, scanSource } from "./sources";
+import {
+  builtInHealthEndpoint,
+  healthRouteFromPath,
+  type NestGlobalPrefix,
+  nestGlobalPrefix,
+  nestRoutePath,
+  nextBasePathLiteral,
+  scanSource,
+} from "./sources";
 
 describe("environment variables in a source file", () => {
   it("lists names and whether each read has a default", () => {
@@ -236,5 +244,66 @@ describe("health endpoints the framework answers by itself", () => {
       ).toBeUndefined();
     }
     expect(builtInHealthEndpoint({})).toBeUndefined();
+  });
+
+  it("Spring Boot: an explicit exposure list must name health or *", () => {
+    const build = { "build.gradle": "implementation 'spring-boot-starter-actuator'\n" };
+    const props = (text: string) =>
+      builtInHealthEndpoint({ ...build, "src/main/resources/application.properties": text });
+    const yml = (text: string) =>
+      builtInHealthEndpoint({ ...build, "src/main/resources/application.yml": text });
+    expect(props("management.endpoints.web.exposure.include=info,metrics\n")).toBeUndefined();
+    expect(props("management.endpoints.web.exposure.include=info, health\n")).toBe(
+      "/actuator/health",
+    );
+    expect(props("management.endpoints.web.exposure.include=*\n")).toBe("/actuator/health");
+    expect(
+      props(
+        "management.endpoints.web.exposure.include[0]=info\nmanagement.endpoints.web.exposure.include[1]=prometheus\n",
+      ),
+    ).toBeUndefined();
+    expect(props("management.endpoints.web.exposure.include[0]=health\n")).toBe("/actuator/health");
+    const exposure = (value: string) =>
+      `management:\n  endpoints:\n    web:\n      exposure:\n        include: ${value}\n`;
+    expect(yml(exposure("info"))).toBeUndefined();
+    expect(yml(exposure('"*"'))).toBe("/actuator/health");
+    expect(yml(exposure("[info, metrics]"))).toBeUndefined();
+    expect(yml(exposure("\n          - info\n          - health"))).toBe("/actuator/health");
+    expect(yml("management.endpoints.web.exposure.include: prometheus\n")).toBeUndefined();
+  });
+});
+
+describe("NestJS global prefix and Next.js basePath", () => {
+  it("reads the prefix and the exact paths it excludes", () => {
+    expect(nestGlobalPrefix("app.setGlobalPrefix('api');")).toEqual({
+      kind: "literal",
+      prefix: "api",
+      exclude: [],
+    });
+    expect(
+      nestGlobalPrefix(
+        "app.setGlobalPrefix(\"/v1/\", {\n  exclude: ['health', '/status/', { path: 'ready', method: RequestMethod.GET }],\n});",
+      ),
+    ).toEqual({ kind: "literal", prefix: "v1", exclude: ["health", "status", "ready"] });
+    expect(nestGlobalPrefix("app.setGlobalPrefix(PREFIX);")).toEqual({ kind: "unknown" });
+    expect(nestGlobalPrefix("// app.setGlobalPrefix('api');\nawait app.listen(3000);")).toBe(
+      undefined,
+    );
+    expect(nestGlobalPrefix("app.setGlobalPrefix('');")).toBeUndefined();
+  });
+
+  it("places a controller route under the prefix unless it is excluded exactly", () => {
+    const prefix: NestGlobalPrefix = { kind: "literal", prefix: "api", exclude: ["health"] };
+    expect(nestRoutePath("/health", prefix)).toBe("/health");
+    expect(nestRoutePath("/healthz", prefix)).toBe("/api/healthz");
+    expect(nestRoutePath("/health", undefined)).toBe("/health");
+    expect(nestRoutePath("/health", { kind: "unknown" })).toBeUndefined();
+  });
+
+  it("reads a literal basePath", () => {
+    expect(nextBasePathLiteral('const nextConfig = { basePath: "/docs/" };')).toBe("/docs");
+    expect(nextBasePathLiteral("export default { basePath: process.env.BASE };")).toBeUndefined();
+    expect(nextBasePathLiteral('// basePath: "/old"\nexport default {};')).toBeUndefined();
+    expect(nextBasePathLiteral(undefined)).toBeUndefined();
   });
 });

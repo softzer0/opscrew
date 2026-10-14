@@ -60,9 +60,13 @@ import {
   ServiceCollector,
 } from "./services";
 import {
+  BUILT_IN_HEALTH_FILES,
+  builtInHealthEndpoint,
   healthRouteFromPath,
   isAppCodeFile,
   isSourceFile,
+  nestRoutePath,
+  nextBasePathLiteral,
   portsInCommand,
   pythonModule,
   type SourceSignals,
@@ -674,12 +678,36 @@ export async function detectProjectDetails(
     if (output) build.outputDir = joinRel(appDir, output);
   }
 
-  // Health endpoint: file-system routes and literal route registrations in app code.
+  // Health endpoint: file-system routes and literal route registrations in app code. NestJS
+  // controllers answer under the app's global prefix and Next.js routes under its basePath.
+  const nestPrefix = appCode
+    .map((file) => signals.get(file)?.nestPrefix)
+    .find((prefix) => prefix !== undefined);
+  const nextBase = appFrameworkNames.has("next")
+    ? nextBasePathLiteral(
+        await read(filesIn(appDir, (n) => /^next\.config\.[cm]?[jt]s$/.test(n))[0] ?? ""),
+      )
+    : undefined;
   let healthEndpoint: string | undefined;
   for (const file of appCode) {
-    healthEndpoint =
-      healthRouteFromPath(relativeTo(appDir, file)) ?? signals.get(file)?.healthPaths[0];
-    if (healthEndpoint) break;
+    const found = signals.get(file);
+    const fromPath = healthRouteFromPath(relativeTo(appDir, file));
+    const route = fromPath ?? found?.healthPaths[0];
+    if (!route) continue;
+    if (fromPath !== undefined) healthEndpoint = `${nextBase ?? ""}${route}`;
+    else if (found?.decoratorHealthPaths.includes(route)) {
+      healthEndpoint = nestRoutePath(route, nestPrefix) ?? route;
+    } else healthEndpoint = route;
+    break;
+  }
+  // Endpoints the framework answers by itself (Rails /up, Laravel /up, Spring Boot Actuator).
+  if (healthEndpoint === undefined) {
+    const texts: Record<string, string> = {};
+    for (const name of BUILT_IN_HEALTH_FILES) {
+      const text = await read(joinRel(appDir, name));
+      if (text !== undefined) texts[name] = text;
+    }
+    healthEndpoint = builtInHealthEndpoint(texts);
   }
 
   // Runtime versions.

@@ -3,7 +3,7 @@
  * (Nuxt, SvelteKit, Astro, Remix, React Router, SolidStart), plus the entry in `app/routes.ts`
  * for React Router's config routes. Next.js keeps its own module (`../health-route`).
  */
-import { nextHealthRoute } from "../health-route";
+import { NEXT_HEALTH_PATH, nextHealthRoute, nextLiteralBasePath } from "../health-route";
 import { appFolder, packageDependencies, under } from "./common";
 import { jsImports, jsStyle, scanJs, usesSemicolons } from "./js";
 import { appendElement, applyInsertions, escapeRegExp, type Insertion } from "./text";
@@ -15,6 +15,7 @@ import {
   manual,
   movedPathNote,
   PLAN_PATH_FIX,
+  planPathNote,
   protectCheck,
 } from "./types";
 
@@ -496,15 +497,31 @@ async function solidStart(ctx: FileContext): Promise<HealthEdit> {
 
 /** Next.js: the existing deterministic route (`../health-route`), unchanged. */
 async function next(input: HealthRouteInput): Promise<HealthEdit> {
+  // A literal basePath: the route answers under it, and the plan's path follows (a plan that
+  // already names `<basePath>/api/health` is the same route).
+  const base = await nextLiteralBasePath(input.path, (path) => input.repo.read(path));
+  const prefix = base?.value.replace(/\/+$/, "");
+  const moved = prefix === undefined ? undefined : `${prefix}${NEXT_HEALTH_PATH}`;
   const edit = await nextHealthRoute({
     path: input.path,
-    healthPath: input.healthPath,
+    healthPath:
+      moved !== undefined && input.healthPath === moved ? NEXT_HEALTH_PATH : input.healthPath,
     exists: (path) => input.repo.exists(path),
     folders: (path) => input.repo.folders(path),
     read: (path) => input.repo.read(path),
   });
   if (edit.action === "manual") return edit;
-  const pathNote = edit.basePathNote === undefined ? {} : { pathNote: edit.basePathNote };
+  const pathNote =
+    base !== undefined && moved !== undefined
+      ? {
+          ...(moved === input.healthPath
+            ? {}
+            : { pathNote: planPathNote(`${base.file} sets basePath "${base.value}"`, moved) }),
+          healthPath: moved,
+        }
+      : edit.basePathNote === undefined
+        ? {}
+        : { pathNote: edit.basePathNote };
   if (edit.action === "none") return { action: "none", reason: edit.reason, ...pathNote };
   return {
     action: "write",

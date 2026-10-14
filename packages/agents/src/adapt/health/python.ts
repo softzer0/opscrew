@@ -27,6 +27,7 @@ import {
   pyImportName,
   pyImports,
   scanPy,
+  statementAt,
 } from "./py";
 import { applyInsertions, type Insertion, listing, partsOf, prependElement } from "./text";
 import { addedNote, type HealthEdit, type HealthRouteInput, manual } from "./types";
@@ -286,6 +287,8 @@ const SPECS: readonly PySpec[] = [
     name: "Starlette",
     targets: ["starlette.applications.Starlette"],
     mentions: /\bstarlette\b/,
+    // `return Starlette(routes=routes)` needs no variable: the route goes into the list.
+    forms: ["assign", "other"],
     build: starletteEdit,
   },
   {
@@ -335,6 +338,9 @@ function starletteEdit(ctx: PyContext): Insertion[] | string {
   const routes = parts.find((part) => part.name === "routes");
   const statement = ctx.call.statement;
   if (routes === undefined) {
+    if (ctx.call.name === undefined) {
+      return `the Starlette app in ${ctx.file} (line ${statement.first + 1}) gets no routes list and is not assigned to a variable OpsCrew can add a route to`;
+    }
     const handler = starletteHandler(ctx, statement.indent);
     return [
       ...handler.imports,
@@ -355,11 +361,9 @@ function starletteEdit(ctx: PyContext): Insertion[] | string {
   if (value.startsWith("[")) {
     open = routes.valueStart;
   } else if (/^[A-Za-z_]\w*$/.test(value)) {
-    open = listAssignment(ctx.src, value, statement.indent);
-    const owner = ctx.src.statements.find(
-      (s) =>
-        open !== undefined && s.start <= open && open < (ctx.src.starts[s.last + 1] ?? Infinity),
-    );
+    open = listAssignment(ctx.src, value, statement.indent) ?? listAssignment(ctx.src, value, "");
+    // The handler goes right above the list, at the list's own level.
+    const owner = open === undefined ? undefined : statementAt(ctx.src, open);
     if (owner !== undefined) holder = owner;
   }
   if (open === undefined) {
@@ -421,7 +425,12 @@ function tornadoEdit(ctx: PyContext): Insertion[] | string {
   const handler = className(ctx, "HealthHandler");
   const first = ctx.src.text.slice(open + 1, open + 80).trimStart();
   const raw = /^\(\s*r["']/.test(first) ? "r" : "";
-  const top = topLevel(ctx.src, ctx.call.statement);
+  // The class must exist before the list is built: above the outermost statement that holds the
+  // list or the call, whichever comes first.
+  const holder = statementAt(ctx.src, open) ?? ctx.call.statement;
+  const top = [topLevel(ctx.src, holder), topLevel(ctx.src, ctx.call.statement)].reduce((a, b) =>
+    a.first <= b.first ? a : b,
+  );
   const entry = prependElement(
     ctx.src.text,
     ctx.src.code,
@@ -460,14 +469,29 @@ function pyramidEdit(ctx: PyContext): Insertion[] | string {
         : `${statement.indent}${ctx.src.unit}`;
   }
   const top = topLevel(ctx.src, statement);
+  // NO_PERMISSION_REQUIRED: a default permission (set_default_permission) must not protect it.
+  const open = pyImportName(
+    ctx.src,
+    ctx.imports,
+    "pyramid.security",
+    "NO_PERMISSION_REQUIRED",
+    "PYRAMID_NO_PERMISSION_REQUIRED",
+    frameworkImport(ctx),
+  );
   return [
+    ...(open.insertion === undefined ? [] : [open.insertion]),
     blockBefore(ctx.src, top, [
       `def ${ctx.handler}(request):`,
       `${ctx.src.unit}return ${okBody(ctx)}`,
     ]),
     linesAfter(ctx.src, statement.last, [
       `${indent}${config}.add_route(${lit(ctx, routeName)}, ${lit(ctx, ctx.healthPath)})`,
-      `${indent}${config}.add_view(${ctx.handler}, route_name=${lit(ctx, routeName)}, renderer=${lit(ctx, "json")})`,
+      `${indent}${config}.add_view(`,
+      `${indent}${ctx.src.unit}${ctx.handler},`,
+      `${indent}${ctx.src.unit}route_name=${lit(ctx, routeName)},`,
+      `${indent}${ctx.src.unit}renderer=${lit(ctx, "json")},`,
+      `${indent}${ctx.src.unit}permission=${open.local},`,
+      `${indent})`,
     ]),
   ];
 }
@@ -560,7 +584,13 @@ function pythonEdit(
     files: [{ path: file, content, created: false }],
     path: file,
     note: addedNote(file, input.healthPath, spec.name),
-    checks: pythonChecks(spec.name, file, src.text, input.healthPath),
+    checks: pythonChecks(
+      spec.name,
+      file,
+      src.text,
+      src.code.slice(call.open, call.close),
+      input.healthPath,
+    ),
   };
 }
 
@@ -580,12 +610,25 @@ function startedBy(input: HealthRouteInput, found: readonly Found[]): Found[] {
   return found.filter((f) => files.has(f.file));
 }
 
-/** Middleware or hooks that run for every route and might protect the health path. */
-function pythonChecks(framework: string, file: string, text: string, healthPath: string): string[] {
+/**
+ * Middleware, hooks, app-wide dependencies (FastAPI) and guards (Litestar) that run for every
+ * route and might protect the health path; `args` are the app constructor's arguments.
+ */
+function pythonChecks(
+  framework: string,
+  file: string,
+  text: string,
+  args: string,
+  healthPath: string,
+): string[] {
+  const kinds: string[] = [];
   const hooks =
-    /\.(?:add_middleware|before_request|before_serving|middleware)\b|\bmiddlewares?\s*=/.test(text);
-  if (!hooks) return [];
+    /\.(?:add_middleware|before_request|before_serving|middleware|on_request)\b|\bmiddlewares?\s*=|\bhook\s*\(\s*["']before_request["']/;
+  if (hooks.test(text)) kinds.push("middleware or request hooks");
+  if (/\bdependencies\s*=/.test(args)) kinds.push("app-wide dependencies");
+  if (/\bguards\s*=/.test(args)) kinds.push("app-wide guards");
+  if (kinds.length === 0) return [];
   return [
-    `Check that the middleware or request hooks in ${file} do not redirect or protect ${healthPath}: ${framework} runs them for every route, and the deploy health check calls it without a session.`,
+    `Check that the ${listing(kinds)} in ${file} do not redirect or protect ${healthPath}: ${framework} runs them for every route, and the deploy health check calls it without a session.`,
   ];
 }

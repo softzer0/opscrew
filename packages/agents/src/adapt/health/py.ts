@@ -130,7 +130,7 @@ export function scanPy(text: string): PySource {
 }
 
 /** The statement that holds an offset. */
-function statementAt(src: PySource, offset: number): PyStatement | undefined {
+export function statementAt(src: PySource, offset: number): PyStatement | undefined {
   let found: PyStatement | undefined;
   for (const statement of src.statements) {
     if (statement.start > offset) break;

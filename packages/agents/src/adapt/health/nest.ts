@@ -4,6 +4,7 @@
  * `start/routes.ts`.
  */
 import { posix } from "node:path";
+import { nestGlobalPrefix, nestRoutePath } from "@opscrew/detect";
 import {
   appCodeFiles,
   appFolder,
@@ -25,11 +26,12 @@ import {
 } from "./text";
 import {
   createdNote,
+  existsReason,
   type HealthEdit,
   type HealthRouteInput,
   manual,
-  movedPathNote,
   PLAN_PATH_FIX,
+  planPathNote,
 } from "./types";
 
 const NEST_CREATE = "@nestjs/core.NestFactory.create";
@@ -75,25 +77,40 @@ function declaredPaths(src: JsSource): string[] {
   return paths;
 }
 
+/** A decorator the project defines to mark routes public for its guards (`SetMetadata`). */
+const PUBLIC_DECORATOR =
+  /export\s+const\s+(Public|IsPublic|AllowAnonymous|SkipAuth|NoAuth)\s*=\s*\([^)]*\)\s*(?::\s*[\w<>.]+\s*)?=>\s*SetMetadata\s*\(/;
+
+/** A module specifier from `from` to `to` (both repo-relative), `./x` style, `.js` optional. */
+function specifier(from: string, to: string, js: boolean): string {
+  const relative = posix
+    .relative(posix.dirname(from), to)
+    .replace(/\.[cm]?[jt]s$/, js ? ".js" : "");
+  return relative.startsWith(".") ? relative : `./${relative}`;
+}
+
 /** The NestJS health route, or undefined when the app has no `NestFactory.create` call. */
 export async function nestHealthRoute(input: HealthRouteInput): Promise<HealthEdit | undefined> {
   const files = await appCodeFiles(input.repo, input.facts, /\.[cm]?[jt]s$/);
+  const sources = new Map<string, JsSource>();
   const calls: { file: string; src: JsSource; open: number }[] = [];
-  const wanted = input.healthPath.replace(/\/+$/, "");
+  /** Files that guard every route (`APP_GUARD`, `app.useGlobalGuards`). */
+  const guarded: string[] = [];
+  const publicDecorators: { file: string; name: string }[] = [];
   for (const file of files) {
     const text = await readSource(input.repo, file);
     if (text === undefined) continue;
-    if (/@(?:Controller|Get|All)\(/.test(text)) {
-      const src = scanJs(text);
-      if (declaredPaths(src).includes(wanted)) {
-        return {
-          action: "none",
-          reason: `${file} already answers ${input.healthPath}; OpsCrew left it as it is.`,
-        };
-      }
+    if (
+      !/@(?:Controller|Get|All|Head)\(|NestFactory|APP_GUARD|useGlobalGuards|SetMetadata/.test(text)
+    ) {
+      continue;
     }
-    if (!text.includes("NestFactory")) continue;
     const src = scanJs(text);
+    sources.set(file, src);
+    if (/\buseGlobalGuards\s*\(|\bAPP_GUARD\b/.test(src.code)) guarded.push(file);
+    const decorator = PUBLIC_DECORATOR.exec(src.code)?.[1];
+    if (decorator !== undefined) publicDecorators.push({ file, name: decorator });
+    if (!text.includes("NestFactory")) continue;
     for (const call of findCalls(src, jsImports(src), new Set([NEST_CREATE]))) {
       calls.push({ file, src, open: call.open });
     }
@@ -105,6 +122,41 @@ export async function nestHealthRoute(input: HealthRouteInput): Promise<HealthEd
     );
   }
   const { file: main, src: mainSrc, open } = calls[0] as (typeof calls)[number];
+  const prefix = nestGlobalPrefix(mainSrc.text);
+  const prefixSource =
+    prefix?.kind === "literal" ? `${main} sets the global prefix "${prefix.prefix}"` : "";
+  const planned = input.healthPath.length > 1 ? input.healthPath.replace(/\/+$/, "") : "/";
+  // The controller's own path: the plan's path without the global prefix when it starts with it.
+  let route = planned.replace(/^\/+/, "");
+  if (prefix?.kind === "literal" && route.startsWith(`${prefix.prefix}/`)) {
+    route = route.slice(prefix.prefix.length + 1);
+  }
+  const moved = (actual: string) =>
+    actual === planned ? {} : { healthPath: actual, pathNote: planPathNote(prefixSource, actual) };
+
+  // A controller that already answers the path (under the prefix, when there is one).
+  for (const [file, src] of sources) {
+    for (const declared of declaredPaths(src)) {
+      if (declared !== `/${route}` && declared !== planned) continue;
+      const actual = nestRoutePath(declared, prefix);
+      if (actual === undefined) {
+        return {
+          action: "none",
+          reason: existsReason(file, declared),
+          pathNote: unknownPrefixNote(main, declared),
+        };
+      }
+      if (actual !== planned && declared !== `/${route}`) continue;
+      return { action: "none", reason: existsReason(file, actual), ...moved(actual) };
+    }
+  }
+  if (prefix?.kind === "unknown") {
+    return manual(
+      `${main} sets a global prefix OpsCrew cannot read, so it cannot tell where a new route would answer.`,
+    );
+  }
+  const actual = nestRoutePath(`/${route}`, prefix) as string;
+
   const first = (partsOf(mainSrc.code, open, ":") ?? [])[0];
   const moduleName = first === undefined ? "" : mainSrc.code.slice(first.start, first.end).trim();
   if (!/^[A-Za-z_$][\w$]*$/.test(moduleName)) {
@@ -160,8 +212,8 @@ export async function nestHealthRoute(input: HealthRouteInput): Promise<HealthEd
     if (entry === undefined) return manual(`@Module in ${moduleFile} is not closed.`);
     insertions.push(entry);
   }
-  const extension = imports.some((entry) => /^\.{1,2}\/.*\.js$/.test(entry.module)) ? ".js" : "";
-  const importLine = `import { HealthController } from ${q}./health.controller${extension}${q}${s}`;
+  const js = imports.some((entry) => /^\.{1,2}\/.*\.js$/.test(entry.module));
+  const importLine = `import { HealthController } from ${q}./health.controller${js ? ".js" : ""}${q}${s}`;
   const last = imports.at(-1);
   if (last === undefined) {
     insertions.push({ offset: 0, text: `${importLine}${style.eol}${style.eol}` });
@@ -169,11 +221,18 @@ export async function nestHealthRoute(input: HealthRouteInput): Promise<HealthEd
     const line = lineAt(lineStarts(moduleText), last.end - 1);
     insertions.push(afterLineInsertion(moduleText, line, importLine, style.eol));
   }
-  const route = input.healthPath.replace(/^\/+|\/+$/g, "");
+  // Global guards: the project's own "public" decorator when it has exactly one, else a check.
+  const checks: string[] = [];
+  const marker =
+    guarded.length > 0 && publicDecorators.length === 1 ? publicDecorators[0] : undefined;
   const content = [
     `import { Controller, Get } from ${q}@nestjs/common${q}${s}`,
+    ...(marker === undefined
+      ? []
+      : [`import { ${marker.name} } from ${q}${specifier(controller, marker.file, js)}${q}${s}`]),
     "",
     "/** Health check for the OpsCrew deploy workflow: answers 200 while the app is up. */",
+    ...(marker === undefined ? [] : [`@${marker.name}()`]),
     `@Controller(${q}${route}${q})`,
     "export class HealthController {",
     `${u}@Get()`,
@@ -183,38 +242,20 @@ export async function nestHealthRoute(input: HealthRouteInput): Promise<HealthEd
     "}",
     "",
   ].join(style.eol);
-  const checks: string[] = [];
-  let pathNote: string | undefined;
-  const prefix = /\.setGlobalPrefix\(\s*(["'`])([^"'`]*)\1/.exec(mainSrc.text);
-  if (prefix?.[2] !== undefined && mainSrc.code[prefix.index] === ".") {
-    const value = prefix[2].replace(/^\/+|\/+$/g, "");
-    const args = mainSrc.text.slice(prefix.index, prefix.index + 300);
-    const excluded = /exclude/.test(args) && args.includes(route);
-    if (value !== "" && !excluded) {
-      pathNote = movedPathNote(
-        `${main} sets the global prefix "${value}"`,
-        `/${value}${input.healthPath}`,
-        input.healthPath,
-      );
-    }
-  } else if (/\.setGlobalPrefix\(/.test(mainSrc.code)) {
-    pathNote = `${main} sets a global prefix OpsCrew cannot read: the health route answers at /<prefix>${input.healthPath}, and the plan's health check path must be that (${PLAN_PATH_FIX}), or every deploy fails its health check.`;
+  if (guarded.length > 0 && marker === undefined) {
+    checks.push(
+      `Check that the global guards in ${guarded.join(" and ")} let GET ${actual} through (mark HealthController with the decorator your guards use for public routes): the deploy health check calls it without a session.`,
+    );
   }
   if (/\.enableVersioning\(/.test(mainSrc.code)) {
     checks.push(
-      `${main} enables API versioning: if it sets a default version, mark HealthController with @Version(VERSION_NEUTRAL) so it still answers ${input.healthPath}.`,
+      `${main} enables API versioning: if it sets a default version, mark HealthController with @Version(VERSION_NEUTRAL) so it still answers ${actual}.`,
     );
   }
-  const guards = /\buseGlobalGuards\(|\bAPP_GUARD\b/;
-  const guarded = [
-    ...(guards.test(mainSrc.code) ? [main] : []),
-    ...(guards.test(moduleSrc.code) ? [moduleFile] : []),
-  ];
-  if (guarded.length > 0) {
-    checks.push(
-      `Check that the global guards in ${guarded.join(" and ")} let GET ${input.healthPath} through (mark HealthController with the decorator your guards use for public routes): the deploy health check calls it without a session.`,
-    );
-  }
+  const marked =
+    marker === undefined
+      ? ""
+      : ` Marked @${marker.name}() (from ${marker.file}) so the global guards let it through.`;
   return {
     action: "write",
     framework: "NestJS",
@@ -223,10 +264,15 @@ export async function nestHealthRoute(input: HealthRouteInput): Promise<HealthEd
       { path: moduleFile, content: applyInsertions(moduleText, insertions), created: false },
     ],
     path: controller,
-    note: `${createdNote(controller, input.healthPath)} Registered in ${moduleFile}.`,
+    note: `${createdNote(controller, actual)} Registered in ${moduleFile}.${marked}`,
     checks,
-    ...(pathNote === undefined ? {} : { pathNote }),
+    ...moved(actual),
   };
+}
+
+/** The note for an existing controller route under a global prefix OpsCrew cannot read. */
+function unknownPrefixNote(main: string, route: string): string {
+  return `${main} sets a global prefix OpsCrew cannot read: the health route answers at /<prefix>${route}, and the plan's health check path must be that (${PLAN_PATH_FIX}), or every deploy fails its health check.`;
 }
 
 /** One line inserted after line `line`. */

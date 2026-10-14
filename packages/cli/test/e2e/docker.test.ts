@@ -429,9 +429,10 @@ describe.skipIf(SKIP !== undefined)(
             }
           }
 
-          // Without a model only Next.js gets a health route; for other stacks a pending
-          // health-endpoint change is the Code-change agent's (documented --no-ai behaviour, the
-          // live pass with a model covers it). Then an answer below 500 on the plan's port will do.
+          // Without a model OpsCrew adds the health route itself for the frameworks it knows
+          // (FR-816; the plan read above already has any path adapt moved under a prefix). A
+          // health-endpoint change still pending is the Code-change agent's (documented --no-ai
+          // behaviour, the live pass with a model covers it): then any answer on the path will do.
           const healthChange = plan.codeChanges.find((c) => c.kind === "health-endpoint");
           const leftToModel = healthChange?.status === "pending";
           const databaseRoute = release ? DATABASE_ROUTES[example] : undefined;

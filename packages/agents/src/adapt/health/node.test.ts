@@ -561,17 +561,131 @@ describe("Hono, Koa, Elysia, Hapi, Restify", () => {
       "Check that the onRequest/preHandler hooks in app.js do not protect /health: Fastify runs them for every route, and the deploy health check calls it without a session.",
     ]);
   });
+});
 
-  it("Feathers stays with the Code-change agent", async () => {
-    expect(
-      await reason({
+describe("Feathers 5", () => {
+  it("with the Express transport: an Express route, not a service", async () => {
+    const { edit, content } = await edited(
+      {
+        "src/app.ts": lines(
+          "import { feathers } from '@feathersjs/feathers'",
+          "import express, { json, rest, urlencoded } from '@feathersjs/express'",
+          "",
+          "export const app = express(feathers())",
+          "app.use(json())",
+          "app.configure(rest())",
+        ),
+      },
+      "src/app.ts",
+    );
+    expect(edit).toMatchObject({ framework: "Feathers (Express)", path: "src/app.ts" });
+    expect(content).toContain(
+      lines(
+        "export const app = express(feathers())",
+        "",
+        "app.get('/health', (_req, res) => {",
+        "  res.json({ status: 'ok' })",
+        "})",
+        "",
+        "app.use(json())",
+      ),
+    );
+    expect(content).not.toContain("app.use('/health'");
+  });
+
+  it("with the Koa transport: a first Koa middleware", async () => {
+    const { edit, content } = await edited(
+      {
         "src/app.ts": lines(
           'import { feathers } from "@feathersjs/feathers";',
-          'import { koa, rest } from "@feathersjs/koa";',
+          'import { bodyParser, koa, rest } from "@feathersjs/koa";',
           "",
           "export const app = koa(feathers());",
+          "app.use(bodyParser());",
+        ),
+      },
+      "src/app.ts",
+    );
+    expect(edit).toMatchObject({ framework: "Feathers (Koa)" });
+    expect(content).toContain(
+      'export const app = koa(feathers());\n\napp.use(async (ctx, next) => {\n  if (ctx.method === "GET" && ctx.path === "/health") {',
+    );
+  });
+
+  it("without a transport it stays with the Code-change agent", async () => {
+    expect(
+      await reason({
+        "src/app.js": lines(
+          'const { feathers } = require("@feathersjs/feathers");',
+          "const app = feathers();",
+          "module.exports = app;",
         ),
       }),
-    ).toContain("Feathers registers routes as services");
+    ).toContain("not wrapped in the Express or Koa transport");
+  });
+});
+
+describe("several app objects", () => {
+  /** An Express app exported by app.js and served by index.js, and a metrics app of its own. */
+  const layout = {
+    "package.json": JSON.stringify({ scripts: { start: "node index.js" } }),
+    "app.js": lines(
+      'const express = require("express");',
+      "",
+      "const app = express();",
+      'app.get("/", (req, res) => res.send("hi"));',
+      "",
+      "module.exports = app;",
+    ),
+    "index.js": lines(
+      'const app = require("./app");',
+      'require("./metrics");',
+      "",
+      "app.listen(process.env.PORT || 3000);",
+    ),
+    "metrics.js": lines(
+      'const express = require("express");',
+      "",
+      "const metrics = express();",
+      'metrics.get("/metrics", (req, res) => res.send(""));',
+      "metrics.listen(9100);",
+    ),
+  };
+
+  it("edits the app the start command's entry serves, never the metrics app", async () => {
+    const started = { ...node, build: { startCommand: "npm start" } };
+    const edit = await healthRouteEdit(healthInput("node-server", started, layout));
+    expect(edit).toMatchObject({ action: "write", path: "app.js" });
+    const content = written(edit, "app.js");
+    expect(content).toContain('const app = express();\n\napp.get("/health", (_req, res) => {');
+    expect(syntaxError(content)).toBeUndefined();
+  });
+
+  it("leaves it pending when nothing says which app is served", async () => {
+    expect(await reason(layout)).toBe(
+      "OpsCrew found 2 app objects (Express in app.js line 3 and Express in metrics.js line 3), so it cannot tell which one serves the app.",
+    );
+  });
+
+  it("follows an export served elsewhere when only one app is served", async () => {
+    const edit = await healthRouteEdit(
+      healthInput("node-server", node, {
+        "src/app.ts": lines(
+          'import { Hono } from "hono";',
+          'import { users } from "./users";',
+          "",
+          "export const app = new Hono();",
+          'app.route("/users", users);',
+        ),
+        "src/users.ts": lines('import { Hono } from "hono";', "export const users = new Hono();"),
+        "src/server.ts": lines(
+          'import { serve } from "@hono/node-server";',
+          'import { app } from "./app";',
+          "",
+          "serve({ fetch: app.fetch, port: 3000 });",
+        ),
+      }),
+    );
+    expect(edit).toMatchObject({ action: "write", path: "src/app.ts" });
   });
 });

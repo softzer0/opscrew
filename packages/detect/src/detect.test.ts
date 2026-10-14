@@ -533,3 +533,84 @@ describe("production start command", () => {
     expect((await detectProject(root)).build.startCommand).toBe("npm start");
   });
 });
+
+describe("health endpoints the plan can check", () => {
+  it("uses the endpoint Rails 7.1+ and Laravel 11+ answer by themselves (/up)", async () => {
+    const rails = await tree({
+      Gemfile: 'source "https://rubygems.org"\ngem "rails", "~> 7.2.0"\n',
+      "config/routes.rb": [
+        "Rails.application.routes.draw do",
+        '  get "up" => "rails/health#show", as: :rails_health_check',
+        "end",
+      ].join("\n"),
+      "app/controllers/application_controller.rb": "class ApplicationController; end\n",
+    });
+    expect((await detectProject(rails)).healthEndpoint).toBe("/up");
+    const laravel = await tree({
+      "composer.json": JSON.stringify({ require: { "laravel/framework": "^11.0" } }),
+      "bootstrap/app.php": [
+        "<?php",
+        "return Application::configure(basePath: dirname(__DIR__))",
+        "    ->withRouting(",
+        "        web: __DIR__.'/../routes/web.php',",
+        "        health: '/up',",
+        "    )->create();",
+      ].join("\n"),
+    });
+    expect((await detectProject(laravel)).healthEndpoint).toBe("/up");
+  });
+
+  it("uses Spring Boot Actuator's /actuator/health, and an explicit code route first", async () => {
+    const pom =
+      "<project><dependencies><dependency><artifactId>spring-boot-starter-actuator</artifactId></dependency></dependencies></project>\n";
+    const spring = await tree({
+      "pom.xml": pom,
+      "src/main/resources/application.properties": "server.servlet.context-path=/shop\n",
+    });
+    expect((await detectProject(spring)).healthEndpoint).toBe("/shop/actuator/health");
+    const hidden = await tree({
+      "pom.xml": pom,
+      "src/main/resources/application.yml":
+        "management:\n  endpoints:\n    web:\n      exposure:\n        include: info\n",
+    });
+    expect((await detectProject(hidden)).healthEndpoint).toBeUndefined();
+    const express = await tree({
+      "package.json": JSON.stringify({ dependencies: { express: "^5" } }),
+      "server.js": 'app.get("/healthz", (req, res) => res.send("ok"));\n',
+      "config/routes.rb": 'get "up" => "rails/health#show"\n',
+    });
+    expect((await detectProject(express)).healthEndpoint).toBe("/healthz");
+  });
+
+  it("puts a NestJS controller route under the global prefix unless it is excluded", async () => {
+    const nest = (call: string) =>
+      tree({
+        "package.json": JSON.stringify({ dependencies: { "@nestjs/core": "^11" } }),
+        "src/main.ts": `async function bootstrap() {\n  const app = await NestFactory.create(AppModule);\n  ${call}\n  await app.listen(3000);\n}\n`,
+        "src/health.controller.ts":
+          '@Controller("health")\nexport class HealthController {\n  @Get()\n  check() {}\n}\n',
+      });
+    const endpoint = async (call: string) => (await detectProject(await nest(call))).healthEndpoint;
+    expect(await endpoint('app.setGlobalPrefix("api");')).toBe("/api/health");
+    for (const excluded of [
+      "app.setGlobalPrefix('api', { exclude: ['health'] });",
+      "app.setGlobalPrefix('/api/', { exclude: ['/health'] });",
+      "app.setGlobalPrefix('api', { exclude: [{ path: 'health', method: RequestMethod.GET }] });",
+    ]) {
+      expect(await endpoint(excluded), excluded).toBe("/health");
+    }
+    expect(
+      await endpoint("app.setGlobalPrefix('api', { exclude: ['healthz', 'health/(.*)'] });"),
+    ).toBe("/api/health");
+  });
+
+  it("puts a Next.js route under a literal basePath", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({ dependencies: { next: "^15", react: "^19" } }),
+      "next.config.mjs": 'export default { basePath: "/docs/" };\n',
+      "app/page.tsx": "export default function Page() {}\n",
+      "app/api/health/route.ts": "export function GET() {}\n",
+    });
+    expect((await detectProject(root)).healthEndpoint).toBe("/docs/api/health");
+  });
+});

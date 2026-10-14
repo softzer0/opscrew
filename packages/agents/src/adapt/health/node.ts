@@ -1,16 +1,19 @@
 /**
  * Health routes for Node.js frameworks that register routes in code: the route goes right after
- * the one app object is created (Express, Fastify, Hono, Koa, Elysia, Hapi, Restify), so it comes
- * before any middleware the app adds later. Feathers registers routes as services and stays with
- * the Code-change agent.
+ * the one app object is created (Express, Fastify, Hono, Koa, Elysia, Hapi, Restify, and Feathers
+ * with its Express or Koa transport), so it comes before any middleware the app adds later.
+ * Feathers without one of those transports stays with the Code-change agent.
  */
+import { posix } from "node:path";
 import {
   appCodeFiles,
+  appFolder,
   type PathUse,
   pathTaken,
   pathVariants,
   readSource,
   routeUses,
+  under,
 } from "./common";
 import {
   creationOf,
@@ -25,6 +28,7 @@ import {
 import {
   applyInsertions,
   eolOf,
+  escapeRegExp,
   type Insertion,
   indentOf,
   isBlank,
@@ -71,16 +75,51 @@ interface NodeSpec {
 
 const ok = (q: Snippet["q"]) => `{ status: ${q("ok")} }`;
 
+/** An Express GET route (also on a Feathers app with the Express transport). */
+const expressLines = ({ app, path, q, s, u }: Snippet) => [
+  `${app}.get(${q(path)}, (_req, res) => {`,
+  `${u}res.json(${ok(q)})${s}`,
+  `})${s}`,
+];
+
+/** Koa has no router of its own: a first middleware answers the path (also on Feathers' Koa). */
+const koaLines = ({ app, path, q, s, u }: Snippet) => [
+  `${app}.use(async (ctx, next) => {`,
+  `${u}if (ctx.method === ${q("GET")} && ctx.path === ${q(path)}) {`,
+  `${u}${u}ctx.body = ${ok(q)}${s}`,
+  `${u}${u}return${s}`,
+  `${u}}`,
+  `${u}await next()${s}`,
+  `})${s}`,
+];
+
+/** Feathers' own app object: what a transport wraps (`express(feathers())`). */
+const FEATHERS_CORE = [
+  "@feathersjs/feathers",
+  "@feathersjs/feathers.feathers",
+  "@feathersjs/feathers.default",
+];
+
 const SPECS: readonly NodeSpec[] = [
   {
     name: "Express",
     targets: ["express"],
     modules: ["express"],
-    lines: ({ app, path, q, s, u }) => [
-      `${app}.get(${q(path)}, (_req, res) => {`,
-      `${u}res.json(${ok(q)})${s}`,
-      `})${s}`,
-    ],
+    lines: expressLines,
+  },
+  {
+    // Feathers 5 with the Express transport: `const app = express(feathers())` is an Express app.
+    name: "Feathers (Express)",
+    targets: ["@feathersjs/express", "@feathersjs/express.default", "@feathersjs/express.express"],
+    modules: ["@feathersjs/express"],
+    lines: expressLines,
+  },
+  {
+    // Feathers 5 with the Koa transport: `const app = koa(feathers())` takes Koa middleware.
+    name: "Feathers (Koa)",
+    targets: ["@feathersjs/koa.koa", "@feathersjs/koa", "@feathersjs/koa.default"],
+    modules: ["@feathersjs/koa"],
+    lines: koaLines,
   },
   {
     name: "Fastify",
@@ -107,16 +146,7 @@ const SPECS: readonly NodeSpec[] = [
     name: "Koa",
     targets: ["koa", "koa.default", "koa.Koa"],
     modules: ["koa"],
-    // Koa has no router of its own: a first middleware answers the path.
-    lines: ({ app, path, q, s, u }) => [
-      `${app}.use(async (ctx, next) => {`,
-      `${u}if (ctx.method === ${q("GET")} && ctx.path === ${q(path)}) {`,
-      `${u}${u}ctx.body = ${ok(q)}${s}`,
-      `${u}${u}return${s}`,
-      `${u}}`,
-      `${u}await next()${s}`,
-      `})${s}`,
-    ],
+    lines: koaLines,
   },
   {
     name: "Elysia",
@@ -153,15 +183,12 @@ const SPECS: readonly NodeSpec[] = [
     global: { pattern: /\.(?:use|pre)\(/, what: "the server.use() and server.pre() handlers" },
   },
   {
+    // A Feathers app without the Express or Koa transport (or one built elsewhere).
     name: "Feathers",
-    targets: [
-      "@feathersjs/feathers",
-      "@feathersjs/feathers.feathers",
-      "@feathersjs/feathers.default",
-    ],
+    targets: FEATHERS_CORE,
     modules: ["@feathersjs/feathers"],
     pending:
-      "Feathers registers routes as services, and whether a new one answers over HTTP depends on how the app configures its transport, so OpsCrew leaves the health route to the Code-change agent",
+      "the Feathers app is not wrapped in the Express or Koa transport here (`express(feathers())` or `koa(feathers())`), and Feathers registers routes as services, so OpsCrew leaves the health route to the Code-change agent",
   },
 ];
 
@@ -181,18 +208,142 @@ function importQuote(imports: readonly JsImport[], spec: NodeSpec): string | und
   )?.quote;
 }
 
-/**
- * True when the file serves this app object: `app.listen(…)`, `app.fetch` (Hono, Bun, Deno),
- * `serve(app)` / `createServer(app)`, or `.listen(…)` at the end of its creation chain.
- */
-function isServed(found: Found): boolean {
-  const creation = creationOf(found.src, found.call);
-  if (creation === undefined) return false;
-  if (creation.chain.some((link) => link.name === "listen")) return true;
-  const name = creation.name.replace(/\$/g, "\\$");
+/** A scanned file that may serve an app: it calls `.listen`, `.fetch`, `serve(` or `createServer(`. */
+interface Server {
+  file: string;
+  src: JsSource;
+  imports: JsImport[];
+}
+
+const SERVES = /\.\s*(?:listen|fetch)\b|\b(?:serve|createServer)\s*\(/;
+
+/** True when `code` serves the variable `name`: `name.listen(…)`, `name.fetch`, `serve(name)`. */
+function servesName(code: string, name: string): boolean {
+  const n = escapeRegExp(name);
   return new RegExp(
-    `\\b${name}\\s*\\.\\s*(?:fetch|listen)\\b|\\b(?:serve|createServer)\\s*\\(\\s*${name}\\b`,
-  ).test(found.src.code);
+    `(?<![\\w$.])${n}\\s*\\.\\s*(?:fetch|listen)\\b|\\b(?:serve|createServer)\\s*\\(\\s*${n}\\b`,
+  ).test(code);
+}
+
+/** The names a module exports the app variable under: `default` and/or named exports. */
+function exportNames(src: JsSource, name: string, declaredExported: boolean): Set<string> {
+  const names = new Set<string>(declaredExported ? [name] : []);
+  const n = escapeRegExp(name);
+  if (
+    new RegExp(`\\bmodule\\.exports\\s*=\\s*${n}\\s*(?:;|$)`, "m").test(src.code) ||
+    new RegExp(`\\bexport\\s+default\\s+${n}\\b`).test(src.code)
+  ) {
+    names.add("default");
+  }
+  for (const match of src.code.matchAll(/\bexport\s*\{([^}]*)\}/g)) {
+    for (const item of (match[1] ?? "").split(",")) {
+      const [local, as, exported] = item.trim().split(/\s+/);
+      if (local === name) names.add(as === "as" && exported ? exported : local);
+    }
+  }
+  for (const match of src.code.matchAll(
+    new RegExp(`\\b(?:module\\.)?exports\\.([\\w$]+)\\s*=\\s*${n}\\b`, "g"),
+  )) {
+    if (match[1]) names.add(match[1]);
+  }
+  const object = /\bmodule\.exports\s*=\s*\{([^}]*)\}/.exec(src.code)?.[1];
+  for (const item of object?.split(",") ?? []) {
+    const [key, value] = item.split(":").map((part) => part.trim());
+    if (key && (value ?? key) === name) names.add(key);
+  }
+  return names;
+}
+
+/** The file a relative import specifier from `from` names, among `files`. */
+function resolveIn(
+  files: ReadonlySet<string>,
+  from: string,
+  specifier: string,
+): string | undefined {
+  if (!specifier.startsWith(".")) return undefined;
+  const base = posix.normalize(posix.join(posix.dirname(from), specifier));
+  const stem = base.replace(/\.[cm]?js$/, "");
+  const candidates = [
+    base,
+    ...["js", "ts", "mjs", "cjs", "mts", "cts"].map((ext) => `${stem}.${ext}`),
+    `${stem}/index.js`,
+    `${stem}/index.ts`,
+  ];
+  return candidates.find((candidate) => files.has(candidate));
+}
+
+/**
+ * The files that serve an app object: its own file (`app.listen(…)`, `app.fetch`, `serve(app)`,
+ * `.listen(…)` at the end of its creation chain) and files that import its export and serve it.
+ */
+function servedBy(found: Found, servers: readonly Server[], files: ReadonlySet<string>): string[] {
+  const creation = creationOf(found.src, found.call);
+  if (creation === undefined) return [];
+  const by: string[] = [];
+  if (
+    creation.chain.some((link) => link.name === "listen") ||
+    servesName(found.src.code, creation.name)
+  ) {
+    by.push(found.file);
+  }
+  const exported = found.src.code.startsWith("export", creation.start);
+  const names = exportNames(found.src, creation.name, exported);
+  if (names.size === 0) return by;
+  for (const server of servers) {
+    if (server.file === found.file) continue;
+    for (const entry of server.imports) {
+      if (resolveIn(files, server.file, entry.module) !== found.file) continue;
+      for (const [local, imported] of entry.bindings) {
+        if (names.has(imported) && servesName(server.src.code, local)) by.push(server.file);
+      }
+    }
+  }
+  return by;
+}
+
+/**
+ * The app's entry file from its start command (`node index.js`, `npm start` → the `start`
+ * script, `node dist/main` → `src/main.ts`) or `main` in package.json, if it is one of `files`.
+ */
+async function entryFile(
+  input: HealthRouteInput,
+  files: ReadonlySet<string>,
+): Promise<string | undefined> {
+  const dir = appFolder(input.facts);
+  let manifest: { scripts?: Record<string, string>; main?: string } = {};
+  try {
+    manifest = JSON.parse((await input.repo.read(under(dir, "package.json"))) ?? "{}");
+  } catch {
+    // An unreadable package.json names no entry.
+  }
+  let command = (input.facts.build.startCommand ?? "").replace(/^cd\s+\S+\s*&&\s*/, "");
+  const script = /^(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?([\w:.-]+)/.exec(command)?.[1];
+  if (script !== undefined) command = manifest.scripts?.[script] ?? "";
+  const tokens = command.split(/\s+/).filter((token) => token !== "");
+  const runner = tokens.findIndex((token) =>
+    /^(?:node|nodemon|tsx|ts-node|ts-node-dev|bun|deno)$/.test(token),
+  );
+  const candidates = [
+    ...(runner === -1 ? [] : tokens.slice(runner + 1).filter((token) => !token.startsWith("-"))),
+    ...(manifest.main === undefined ? [] : [manifest.main]),
+  ];
+  for (const raw of candidates) {
+    const path = raw.replace(/^["']|["']$/g, "").replace(/^\.\//, "");
+    const stem = path.replace(/\.[cm]?[jt]s$/, "");
+    const source = stem.replace(/^(?:dist|build|out)\//, "src/");
+    for (const option of [
+      path,
+      ...["js", "ts", "mjs", "cjs", "mts"].map((ext) => `${stem}.${ext}`),
+      `${stem}/index.js`,
+      `${stem}/index.ts`,
+      `${source}.ts`,
+      `${source}.js`,
+    ]) {
+      const file = under(dir, option);
+      if (files.has(file)) return file;
+    }
+  }
+  return undefined;
 }
 
 /** Lines inserted after `line`, with one blank line on each side where there is none. */
@@ -219,7 +370,9 @@ export function jsBlockAfter(text: string, line: number, block: readonly string[
  */
 export async function nodeHealthRoute(input: HealthRouteInput): Promise<HealthEdit | undefined> {
   const files = await appCodeFiles(input.repo, input.facts, /\.[cm]?[jt]s$/);
-  const found: Found[] = [];
+  const fileSet = new Set(await input.repo.files());
+  const all: Found[] = [];
+  const servers: Server[] = [];
   const uses: PathUse[] = [];
   const paths = pathVariants(input.healthPath);
   for (const file of files) {
@@ -227,19 +380,33 @@ export async function nodeHealthRoute(input: HealthRouteInput): Promise<HealthEd
     if (text === undefined) continue;
     const specs = SPECS.filter((spec) => spec.modules.some((module) => text.includes(module)));
     const quick = paths.some((path) => text.includes(path));
-    if (specs.length === 0 && !quick) continue;
+    const serves = SERVES.test(text);
+    if (specs.length === 0 && !quick && !serves) continue;
     const src = scanJs(text);
     if (quick) uses.push(...routeUses(file, text, src.code, paths));
-    if (specs.length === 0) continue;
     const imports = jsImports(src);
+    if (serves) servers.push({ file, src, imports });
     for (const spec of specs) {
       for (const call of findCalls(src, imports, new Set(spec.targets))) {
-        found.push({ file, src, imports, call, spec });
+        all.push({ file, src, imports, call, spec });
       }
     }
   }
   const taken = pathTaken(uses, input.healthPath);
   if (taken !== undefined) return taken;
+  // `express(feathers())`: the Feathers app inside a transport is the same app.
+  const found = all.filter(
+    (f) =>
+      f.spec.pending === undefined ||
+      !all.some(
+        (t) =>
+          t !== f &&
+          t.file === f.file &&
+          t.spec.pending === undefined &&
+          t.call.open < f.call.start &&
+          f.call.start < t.call.close,
+      ),
+  );
   if (found.length === 0) return undefined;
   const starts = new Map<string, number[]>();
   const lineOf = (f: Found) => {
@@ -247,15 +414,30 @@ export async function nodeHealthRoute(input: HealthRouteInput): Promise<HealthEd
     starts.set(f.file, s);
     return s.filter((start) => start <= f.call.start).length;
   };
-  // Several apps (Hono and Elysia sub-apps, an Express admin app): the one the file serves.
-  const served = found.length > 1 ? found.filter(isServed) : found;
-  if (served.length !== 1) {
+  // Several apps (Hono and Elysia sub-apps, a metrics or admin app): the one that is served, in
+  // its own file or by a file that imports it; else the one the start command's entry serves or
+  // creates.
+  let chosen = found;
+  if (found.length > 1) {
+    const served = found
+      .map((f) => ({ f, by: servedBy(f, servers, fileSet) }))
+      .filter((s) => s.by.length > 0);
+    chosen = served.length === 1 ? served.map((s) => s.f) : [];
+    if (chosen.length === 0) {
+      const entry = await entryFile(input, fileSet);
+      if (entry !== undefined) {
+        chosen = served.filter((s) => s.by.includes(entry)).map((s) => s.f);
+        if (chosen.length === 0) chosen = found.filter((f) => f.file === entry);
+      }
+    }
+  }
+  if (chosen.length !== 1) {
     const where = found.map((f) => `${f.spec.name} in ${f.file} line ${lineOf(f)}`);
     return manual(
       `OpsCrew found ${found.length} app objects (${listing(where)}), so it cannot tell which one serves the app.`,
     );
   }
-  const only = served[0] as Found;
+  const only = chosen[0] as Found;
   const { file, src, imports, call, spec } = only;
   const line = lineOf(only);
   if (spec.pending !== undefined) return manual(`${spec.pending}.`);

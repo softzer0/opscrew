@@ -51,6 +51,10 @@ export interface SourceSignals {
   envReads: EnvRead[];
   ports: number[];
   healthPaths: string[];
+  /** The `healthPaths` declared with NestJS decorators (they answer under the global prefix). */
+  decoratorHealthPaths: string[];
+  /** The NestJS global prefix the file sets with `app.setGlobalPrefix(…)`, if it sets one. */
+  nestPrefix?: NestGlobalPrefix;
   appObjects: PythonAppObject[];
   /** URL schemes seen in string literals (`postgres`, `mysql`, `mongodb`, `redis`). */
   urlSchemes: string[];
@@ -226,7 +230,9 @@ export function scanSource(text: string): SourceSignals {
   for (const match of text.matchAll(ROUTE_CONFIG_HEALTH)) {
     if (match[1]) healthPaths.push(`/${match[1]}`);
   }
-  healthPaths.push(...decoratorHealthPaths(text));
+  const decorated = decoratorHealthPaths(text);
+  healthPaths.push(...decorated);
+  const nestPrefix = nestGlobalPrefix(text);
   const appObjects: PythonAppObject[] = [];
   for (const match of text.matchAll(APP_OBJECT)) {
     if (match[1] && match[2]) {
@@ -261,10 +267,97 @@ export function scanSource(text: string): SourceSignals {
     envReads,
     ports,
     healthPaths,
+    decoratorHealthPaths: decorated,
+    ...(nestPrefix === undefined ? {} : { nestPrefix }),
     appObjects,
     urlSchemes: [...urlSchemes].sort(),
     configPrefixes: [...configPrefixes].sort(),
   };
+}
+
+/**
+ * A NestJS global prefix: `literal` with the prefix and the paths its `exclude` option lists
+ * (without leading or trailing slashes), or `unknown` when the prefix is not a string literal.
+ */
+export type NestGlobalPrefix =
+  | { kind: "literal"; prefix: string; exclude: string[] }
+  | { kind: "unknown" };
+
+/** The offset just after the bracket closing the one at `open`, skipping strings. */
+function closeOf(text: string, open: number): number | undefined {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const char = text[i] as string;
+    if (char === '"' || char === "'" || char === "`") {
+      const end = text.indexOf(char, i + 1);
+      if (end === -1) return undefined;
+      i = end;
+    } else if ("([{".includes(char)) depth++;
+    else if (")]}".includes(char) && --depth === 0) return i + 1;
+  }
+  return undefined;
+}
+
+const SLASHES = /^\/+|\/+$/g;
+
+/**
+ * The global prefix `app.setGlobalPrefix("api", { exclude: ["health", { path: "status" }] })`
+ * sets, from a NestJS bootstrap file; undefined when the file sets none (or an empty one).
+ */
+export function nestGlobalPrefix(text: string): NestGlobalPrefix | undefined {
+  for (const match of text.matchAll(/\.setGlobalPrefix\s*\(/g)) {
+    const lineStart = text.lastIndexOf("\n", match.index) + 1;
+    if (/^\s*(?:\/\/|\*)/.test(text.slice(lineStart, match.index))) continue;
+    const open = match.index + match[0].length - 1;
+    const close = closeOf(text, open);
+    if (close === undefined) return { kind: "unknown" };
+    const args = text.slice(open + 1, close - 1);
+    const first = /^\s*(["'`])([^"'`$]*)\1\s*(?:,|$)/.exec(args);
+    if (first?.[2] === undefined) return { kind: "unknown" };
+    const prefix = first[2].replace(SLASHES, "");
+    if (prefix === "") return undefined;
+    const exclude: string[] = [];
+    const list = /\bexclude\s*:\s*\[/.exec(args);
+    if (list !== null) {
+      const start = list.index + list[0].length - 1;
+      const end = closeOf(args, start) ?? args.length;
+      const items = args.slice(start + 1, end - 1);
+      for (const item of items.matchAll(/(?:^|[,[{]|\bpath\s*:)\s*(["'`])([^"'`]*)\1/g)) {
+        exclude.push((item[2] ?? "").replace(SLASHES, ""));
+      }
+    }
+    return { kind: "literal", prefix, exclude };
+  }
+  return undefined;
+}
+
+/**
+ * The `basePath` a Next.js config sets as a plain string (`/docs`), without a trailing slash;
+ * undefined when it sets none, an empty one or one that is not a string literal.
+ */
+export function nextBasePathLiteral(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined;
+  const code = text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join("\n");
+  const value = /\bbasePath\s*:\s*(["'`])(\/[^"'`$]*)\1/.exec(code)?.[2]?.replace(/\/+$/, "");
+  return value === "" ? undefined : value;
+}
+
+/**
+ * Where a NestJS controller route (`/health`) answers under a global prefix: `/<prefix>/health`
+ * unless the prefix's `exclude` lists exactly that path; undefined when the prefix is unknown.
+ */
+export function nestRoutePath(
+  route: string,
+  prefix: NestGlobalPrefix | undefined,
+): string | undefined {
+  if (prefix === undefined) return route;
+  if (prefix.kind === "unknown") return undefined;
+  const bare = route.replace(SLASHES, "");
+  if (prefix.exclude.includes(bare)) return route;
+  return `/${prefix.prefix}${bare === "" ? "" : `/${bare}`}`;
 }
 
 /** Python module path for a unit-relative file (`app/main.py` → `app.main`). */
@@ -346,7 +439,8 @@ function urlSegment(value: string | undefined): string {
  * (`health: '/up'` in `bootstrap/app.php`) and Spring Boot Actuator (`spring-boot-starter-actuator`
  * in `pom.xml` or `build.gradle` → `/actuator/health`, under `server.servlet.context-path` and
  * `management.endpoints.web.base-path` from `application.properties|yml`; none when the health
- * endpoint is turned off or served on a separate management port). `texts` maps the
+ * endpoint is turned off, left out of an explicit `exposure.include` list, or served on a separate
+ * management port). `texts` maps the
  * {@link BUILT_IN_HEALTH_FILES} that exist to their content.
  */
 export function builtInHealthEndpoint(texts: Readonly<Record<string, string>>): string | undefined {
@@ -376,6 +470,15 @@ export function builtInHealthEndpoint(texts: Readonly<Record<string, string>>): 
     for (const [key, value] of springProperties(props)) properties.set(key, value);
   }
   const is = (key: string, pattern: RegExp) => pattern.test(properties.get(key) ?? "");
+  // An explicit exposure list replaces the default (health): it must name health or `*`.
+  const includeKey = "management.endpoints.web.exposure.include";
+  const included = [...properties]
+    .filter(([key]) => key === includeKey || key.startsWith(`${includeKey}[`))
+    .flatMap(([, value]) => value.split(","))
+    .map((value) => value.trim().replace(/^["']|["']$/g, ""));
+  if (included.length > 0 && !included.some((value) => value === "health" || value === "*")) {
+    return undefined;
+  }
   if (
     properties.has("management.server.port") ||
     is("management.endpoint.health.enabled", /^false$/i) ||

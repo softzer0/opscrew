@@ -109,30 +109,142 @@ describe("NestJS", () => {
     }
   });
 
-  it("says where the route answers under a global prefix", async () => {
-    const main = MAIN.replace(
-      "  await app.listen",
-      '  app.setGlobalPrefix("api");\n  await app.listen',
-    );
+  const withPrefix = (call: string) =>
+    MAIN.replace("  await app.listen", `  ${call}\n  await app.listen`);
+
+  it("keeps the controller under a literal global prefix and moves the plan's path", async () => {
     const edit = await healthRouteEdit(
-      healthInput("node-server", nest, nestApp({ "src/main.ts": main })),
+      healthInput(
+        "node-server",
+        nest,
+        nestApp({ "src/main.ts": withPrefix('app.setGlobalPrefix("api");') }),
+      ),
     );
+    expect(edit).toMatchObject({ action: "write", healthPath: "/api/health" });
+    expect(written(edit, "src/health.controller.ts")).toContain('@Controller("health")');
     expect(edit.action === "write" && edit.pathNote).toBe(
-      'src/main.ts sets the global prefix "api", so the health route answers at /api/health, not /health: the plan\'s health check path must be /api/health (run `opscrew design` and set it, or edit app.healthPath in `opscrew/plan.yaml`), or every deploy fails its health check.',
+      'src/main.ts sets the global prefix "api", so the health route answers at /api/health; OpsCrew set app.healthPath in `opscrew/plan.yaml` to /api/health to match.',
     );
+    // A plan that already names the prefixed path gets the same controller and no change.
+    const named = await healthRouteEdit(
+      healthInput(
+        "node-server",
+        nest,
+        nestApp({ "src/main.ts": withPrefix('app.setGlobalPrefix("api");') }),
+        "/api/health",
+      ),
+    );
+    expect(written(named, "src/health.controller.ts")).toContain('@Controller("health")');
+    expect(named.action === "write" && named.healthPath).toBeUndefined();
   });
 
-  it("names global guards the user should check", async () => {
-    const module = MODULE.replace(
-      "  providers: [AppService],",
-      "  providers: [AppService, { provide: APP_GUARD, useClass: AuthGuard }],",
+  it("compares exclude entries exactly, and leaves an unreadable prefix to the agent", async () => {
+    for (const call of [
+      "app.setGlobalPrefix('api', { exclude: ['health'] });",
+      "app.setGlobalPrefix('api', { exclude: ['/health'] });",
+      "app.setGlobalPrefix('api', { exclude: [{ path: 'health', method: RequestMethod.GET }] });",
+    ]) {
+      const edit = await healthRouteEdit(
+        healthInput("node-server", nest, nestApp({ "src/main.ts": withPrefix(call) })),
+      );
+      expect(edit, call).toMatchObject({ action: "write" });
+      expect(edit.action === "write" && edit.healthPath, call).toBeUndefined();
+    }
+    const near = await healthRouteEdit(
+      healthInput(
+        "node-server",
+        nest,
+        nestApp({
+          "src/main.ts": withPrefix("app.setGlobalPrefix('api', { exclude: ['healthz'] });"),
+        }),
+      ),
+    );
+    expect(near.action === "write" && near.healthPath).toBe("/api/health");
+    expect(
+      await healthRouteEdit(
+        healthInput(
+          "node-server",
+          nest,
+          nestApp({ "src/main.ts": withPrefix("app.setGlobalPrefix(config.prefix);") }),
+        ),
+      ),
+    ).toEqual({
+      action: "manual",
+      reason:
+        "src/main.ts sets a global prefix OpsCrew cannot read, so it cannot tell where a new route would answer.",
+    });
+  });
+
+  it("moves the plan's path to an existing controller route under the prefix", async () => {
+    const health = CONTROLLER.replace(
+      "  @Get()",
+      '  @Get("health")\n  health() {\n    return { status: "ok" };\n  }\n\n  @Get()',
     );
     const edit = await healthRouteEdit(
-      healthInput("node-server", nest, nestApp({ "src/app.module.ts": module })),
+      healthInput(
+        "node-server",
+        nest,
+        nestApp({
+          "src/main.ts": withPrefix("app.setGlobalPrefix('api');"),
+          "src/app.controller.ts": health,
+        }),
+      ),
+    );
+    expect(edit).toEqual({
+      action: "none",
+      reason: "src/app.controller.ts already answers /api/health; OpsCrew left it as it is.",
+      healthPath: "/api/health",
+      pathNote:
+        'src/main.ts sets the global prefix "api", so the health route answers at /api/health; OpsCrew set app.healthPath in `opscrew/plan.yaml` to /api/health to match.',
+    });
+  });
+
+  it("names global guards found anywhere in the app", async () => {
+    const edit = await healthRouteEdit(
+      healthInput(
+        "node-server",
+        nest,
+        nestApp({
+          "src/auth/auth.module.ts": lines(
+            'import { APP_GUARD } from "@nestjs/core";',
+            "export const guards = [{ provide: APP_GUARD, useClass: JwtGuard }];",
+          ),
+        }),
+      ),
     );
     expect(edit.action === "write" && edit.checks).toEqual([
-      "Check that the global guards in src/app.module.ts let GET /health through (mark HealthController with the decorator your guards use for public routes): the deploy health check calls it without a session.",
+      "Check that the global guards in src/auth/auth.module.ts let GET /health through (mark HealthController with the decorator your guards use for public routes): the deploy health check calls it without a session.",
     ]);
+  });
+
+  it("marks the controller with the project's own public decorator", async () => {
+    const edit = await healthRouteEdit(
+      healthInput(
+        "node-server",
+        nest,
+        nestApp({
+          "src/main.ts": MAIN.replace(
+            "  await app.listen",
+            "  app.useGlobalGuards(new JwtAuthGuard(app.get(Reflector)));\n  await app.listen",
+          ),
+          "src/auth/public.decorator.ts": lines(
+            'import { SetMetadata } from "@nestjs/common";',
+            'export const IS_PUBLIC_KEY = "isPublic";',
+            "export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);",
+          ),
+        }),
+      ),
+    );
+    const controller = written(edit, "src/health.controller.ts");
+    expect(controller).toContain(
+      'import { Controller, Get } from "@nestjs/common";\nimport { Public } from "./auth/public.decorator";\n',
+    );
+    expect(controller).toContain('@Public()\n@Controller("health")\n');
+    expect(syntaxError(controller)).toBeUndefined();
+    expect(edit.action === "write" && edit.checks).toEqual([]);
+    expect(edit.action === "write" && edit.note).toContain(
+      "Marked @Public() (from src/auth/public.decorator.ts) so the global guards let it through.",
+    );
   });
 
   it("keeps .js import specifiers and adds a controllers list when the module has none", async () => {

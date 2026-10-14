@@ -47,6 +47,29 @@ describe("Next.js (unchanged, through the registry)", () => {
       "Check that middleware.ts does not redirect or protect /api/health: the deploy health check calls it without a session.",
     ]);
   });
+
+  it("moves the plan's path under a literal basePath, and accepts a plan that already has it", async () => {
+    const files = {
+      "app/page.tsx": "export default function Page() {}\n",
+      "tsconfig.json": "{}",
+      "next.config.mjs": 'export default { basePath: "/docs" };\n',
+    };
+    const input = (healthPath: string) => ({
+      ...healthInput("nextjs", ssr("next"), files, healthPath),
+      path: "app/api/health/route.ts",
+    });
+    const moved = await healthRouteEdit(input("/api/health"));
+    expect(moved).toMatchObject({
+      action: "write",
+      path: "app/api/health/route.ts",
+      healthPath: "/docs/api/health",
+      pathNote:
+        'next.config.mjs sets basePath "/docs", so the health route answers at /docs/api/health; OpsCrew set app.healthPath in `opscrew/plan.yaml` to /docs/api/health to match.',
+    });
+    const already = await healthRouteEdit(input("/docs/api/health"));
+    expect(already).toMatchObject({ action: "write", path: "app/api/health/route.ts" });
+    expect(already.action === "write" && already.pathNote).toBeUndefined();
+  });
 });
 
 describe("Nuxt", () => {

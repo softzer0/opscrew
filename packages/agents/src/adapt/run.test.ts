@@ -436,21 +436,40 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(result.notes["build-config"]).toContain("OpsCrew did not edit it");
   });
 
-  it("creates the health route under a basePath and says the plan's path must change", async () => {
+  it("creates the health route under a basePath and moves the plan's path in the same commit", async () => {
     const config = 'const nextConfig = { basePath: "/shop" };\nexport default nextConfig;\n';
     const repo = await setup({ files: { "next.config.mjs": config }, agent: null });
-    const before = (await readArtifact("plan", repo.deps.paths.files.plan)).app.healthPath;
+    const github = new FakeGitHub();
 
-    const result = await runAdapt(repo.deps, { push: false });
+    const result = await runAdapt(repo.deps, { github });
 
     expect(result.createdFiles).toContain("app/api/health/route.ts");
     expect(await statusOf(repo)).toMatchObject({ "health-endpoint": "applied" });
     const say =
-      "the plan's health check path must be /shop/api/health (run `opscrew design` and set it, or edit app.healthPath in `opscrew/plan.yaml`)";
+      'next.config.mjs sets basePath "/shop", so the health route answers at /shop/api/health; OpsCrew set app.healthPath in `opscrew/plan.yaml` to /shop/api/health to match.';
     expect(result.notes["health-endpoint"]).toContain(say);
     expect(repo.deps.reporter.text()).toContain(say);
-    // adapt never edits the plan's health path itself.
-    expect((await readArtifact("plan", repo.deps.paths.files.plan)).app.healthPath).toBe(before);
+    // The plan follows the route, committed with it and named in the pull request.
+    expect((await readArtifact("plan", repo.deps.paths.files.plan)).app.healthPath).toBe(
+      "/shop/api/health",
+    );
+    const committed = await git(repo.env, repo.root, "show", "HEAD:opscrew/plan.yaml");
+    expect(committed).toContain("healthPath: /shop/api/health");
+    expect(github.created[0]?.body).toContain("http://localhost:3000/shop/api/health");
+  });
+
+  it("leaves the plan's path alone under a basePath it cannot read", async () => {
+    const config = "export default { basePath: process.env.BASE_PATH };\n";
+    const repo = await setup({ files: { "next.config.mjs": config }, agent: null });
+
+    const result = await runAdapt(repo.deps, { push: false });
+
+    expect(result.notes["health-endpoint"]).toContain(
+      "next.config.mjs mentions basePath in a way OpsCrew cannot read",
+    );
+    expect((await readArtifact("plan", repo.deps.paths.files.plan)).app.healthPath).toBe(
+      "/api/health",
+    );
   });
 
   it("creates next.config.mjs when the app has no Next.js config", async () => {
@@ -779,7 +798,8 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     it("names the reason in the pull request when it cannot tell where the route goes", async () => {
       const repo = await setup({
         agent: null,
-        facts,
+        // No start command, so nothing says which of the two apps is served.
+        facts: { ...facts, build: {} },
         changes,
         healthPath: "/health",
         files: {

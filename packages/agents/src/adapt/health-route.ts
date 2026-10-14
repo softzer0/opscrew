@@ -113,6 +113,31 @@ async function routeInGroups(
 const ROUTE_PATH =
   /^(?:(?<dir>.+)\/)?(?<src>src\/)?(?:(?<app>app)\/api\/health\/route|(?<pages>pages)\/api\/health)\.[cm]?[jt]sx?$/;
 
+/**
+ * The `basePath` the Next.js config of the app at the plan's route path sets as a plain string,
+ * with that config file; undefined when it sets none or one OpsCrew cannot read.
+ */
+export async function nextLiteralBasePath(
+  path: string,
+  read: (path: string) => Promise<string | undefined>,
+): Promise<{ file: string; value: string } | undefined> {
+  const match = ROUTE_PATH.exec(path);
+  if (match?.groups === undefined) return undefined;
+  let { dir, src = "" } = match.groups;
+  if (src === "" && dir !== undefined && (dir === "src" || dir.endsWith("/src"))) {
+    dir = dir === "src" ? undefined : dir.slice(0, -"/src".length);
+  }
+  for (const name of NEXT_CONFIGS) {
+    const file = dir === undefined ? name : `${dir}/${name}`;
+    const content = await read(file);
+    if (content === undefined) continue;
+    const scan = nextBasePath(file, content);
+    if (scan.kind === "literal") return { file, value: scan.value };
+    if (scan.kind === "unknown") return undefined;
+  }
+  return undefined;
+}
+
 const EXTENSIONS = ["ts", "tsx", "js", "jsx"];
 
 /**

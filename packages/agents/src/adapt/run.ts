@@ -188,7 +188,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     deps.audit.append({ ...entry, phase: "adapt", detail: entry.detail && say(entry.detail) });
 
   reporter.step("Preparing the code for deployment");
-  const plan = await readArtifact("plan", paths.files.plan);
+  let plan = await readArtifact("plan", paths.files.plan);
   const { facts } = await readArtifact("architecture", paths.files.architecture);
 
   // 1. Preconditions: a git repository with at least one commit and a clean working tree.
@@ -398,6 +398,8 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     forAgent.push(change);
   };
   let projectFiles: Promise<readonly string[]> | undefined;
+  /** True when adapt changed `app.healthPath` to where the new route answers. */
+  let planChanged = false;
   for (const change of pending.filter((c) => DETERMINISTIC[c.kind] === undefined)) {
     if (change.kind === "health-endpoint") {
       // The health route for every stack OpsCrew knows (FR-816), before the Code-change agent.
@@ -416,9 +418,15 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
           folders: (path) => subfolders(join(paths.root, path)),
         },
       });
-      // A base path or global prefix moves the route; the plan's health path is the user's (or
-      // design's) to change.
+      // A literal global prefix or basePath moves the route: the plan's health path follows it in
+      // the same pull request. One OpsCrew cannot read is only named (the user's to set).
       const pathNote = edit.action === "manual" ? undefined : edit.pathNote;
+      const moved = edit.action === "manual" ? undefined : edit.healthPath;
+      if (moved !== undefined && moved !== plan.app.healthPath) {
+        plan = { ...plan, app: { ...plan.app, healthPath: moved } };
+        planChanged = true;
+      }
+      const tell = (text: string) => (moved === undefined ? warn(text) : reporter.info(say(text)));
       if (edit.action === "write") {
         for (const file of edit.files) {
           const target = join(paths.root, file.path);
@@ -439,10 +447,10 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
             : `Added the ${edit.framework} health route for the deploy health check (${edit.files.map((f) => f.path).join(", ")}).`,
         );
         for (const check of edit.checks) warn(check);
-        if (pathNote !== undefined) warn(pathNote);
+        if (pathNote !== undefined) tell(pathNote);
       } else if (edit.action === "none") {
         set(change, "skipped", pathNote === undefined ? edit.reason : `${edit.reason} ${pathNote}`);
-        if (pathNote !== undefined) warn(pathNote);
+        if (pathNote !== undefined) tell(pathNote);
       } else {
         leaveToAgent(change, `OpsCrew did not add it: ${edit.reason}`, edit.reason);
       }
@@ -539,7 +547,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     const status = statuses.get(change.id);
     return status === undefined ? change : { ...change, status };
   });
-  if (statuses.size > 0) {
+  if (statuses.size > 0 || planChanged) {
     await writeArtifact("plan", paths.files.plan, {
       ...plan,
       codeChanges: changes,

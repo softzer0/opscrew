@@ -716,6 +716,13 @@ describe("other Python frameworks", () => {
     );
     expect(content).toContain(
       lines(
+        "from pyramid.config import Configurator",
+        "from pyramid.security import NO_PERMISSION_REQUIRED",
+        "from pyramid.response import Response",
+      ),
+    );
+    expect(content).toContain(
+      lines(
         "def health(request):",
         '    return {"status": "ok"}',
         "",
@@ -723,7 +730,12 @@ describe("other Python frameworks", () => {
         'if __name__ == "__main__":',
         "    with Configurator() as config:",
         '        config.add_route("health", "/health")',
-        '        config.add_view(health, route_name="health", renderer="json")',
+        "        config.add_view(",
+        "            health,",
+        '            route_name="health",',
+        '            renderer="json",',
+        "            permission=NO_PERMISSION_REQUIRED,",
+        "        )",
         '        config.add_route("hello", "/")',
       ),
     );
@@ -735,7 +747,7 @@ describe("other Python frameworks", () => {
           "",
           "def main(global_config, **settings):",
           "    config = Configurator(settings=settings)",
-          "    config.scan()",
+          '    config.set_default_permission("view")',
           "    return config.make_wsgi_app()",
         ),
       },
@@ -744,6 +756,7 @@ describe("other Python frameworks", () => {
     expect(factory.content).toBe(
       lines(
         "from pyramid.config import Configurator",
+        "from pyramid.security import NO_PERMISSION_REQUIRED",
         "",
         "",
         "def health(request):",
@@ -753,9 +766,96 @@ describe("other Python frameworks", () => {
         "def main(global_config, **settings):",
         "    config = Configurator(settings=settings)",
         '    config.add_route("health", "/health")',
-        '    config.add_view(health, route_name="health", renderer="json")',
-        "    config.scan()",
+        "    config.add_view(",
+        "        health,",
+        '        route_name="health",',
+        '        renderer="json",',
+        "        permission=NO_PERMISSION_REQUIRED,",
+        "    )",
+        '    config.set_default_permission("view")',
         "    return config.make_wsgi_app()",
+      ),
+    );
+  });
+
+  it("Tornado: the handler class comes before a handlers list held in a variable", async () => {
+    const head = [
+      "import tornado.ioloop",
+      "import tornado.web",
+      "",
+      "",
+      "class MainHandler(tornado.web.RequestHandler):",
+      "    def get(self):",
+      '        self.write("Hello")',
+      "",
+      "",
+    ];
+    const list = ["handlers = [", '    (r"/", MainHandler),', "]"];
+    const expected = [
+      "class HealthHandler(tornado.web.RequestHandler):",
+      "    def get(self):",
+      '        self.write({"status": "ok"})',
+      "",
+      "",
+      "handlers = [",
+      '    (r"/health", HealthHandler),',
+      '    (r"/", MainHandler),',
+      "]",
+    ];
+    const moduleLevel = await edited(
+      {
+        "app.py": lines(...head, ...list, "", "app = tornado.web.Application(handlers)"),
+      },
+      "app.py",
+    );
+    expect(moduleLevel.content).toContain(lines(...expected));
+    expect(moduleLevel.content.endsWith("\n\napp = tornado.web.Application(handlers)\n")).toBe(
+      true,
+    );
+    const factory = await edited(
+      {
+        "app.py": lines(
+          ...head,
+          ...list,
+          "",
+          "",
+          "def make_app():",
+          "    return tornado.web.Application(handlers)",
+        ),
+      },
+      "app.py",
+    );
+    expect(factory.content).toContain(lines(...expected));
+    // Defined before use: the class comes before the list that names it.
+    const order = (text: string) =>
+      text.indexOf("class HealthHandler") < text.indexOf('(r"/health", HealthHandler)');
+    expect(order(moduleLevel.content) && order(factory.content)).toBe(true);
+  });
+
+  it("Starlette: the handler comes before a module-level routes list a factory uses", async () => {
+    const { content } = await edited(
+      {
+        "app.py": lines(
+          "from starlette.applications import Starlette",
+          "from starlette.responses import JSONResponse",
+          "from starlette.routing import Route",
+          "",
+          'routes = [Route("/", home)]',
+          "",
+          "",
+          "def create_app():",
+          "    return Starlette(routes=routes)",
+        ),
+      },
+      "app.py",
+    );
+    expect(content).toContain(
+      lines(
+        "async def health(request):",
+        '    return JSONResponse({"status": "ok"})',
+        "",
+        "",
+        'routes = [Route("/health", health), Route("/", home)]',
       ),
     );
   });
@@ -773,5 +873,62 @@ describe("other Python frameworks", () => {
     expect(edit.action === "write" && edit.checks).toEqual([
       "Check that the middleware or request hooks in main.py do not redirect or protect /health: FastAPI runs them for every route, and the deploy health check calls it without a session.",
     ]);
+  });
+
+  it("names app-wide dependencies, guards and request hooks", async () => {
+    const check = async (file: string, text: string) => {
+      const edit = await healthRouteEdit(healthInput("generic", python, { [file]: text }));
+      return edit.action === "write" ? edit.checks : [];
+    };
+    expect(
+      await check(
+        "main.py",
+        lines(
+          "from fastapi import Depends, FastAPI",
+          "app = FastAPI(dependencies=[Depends(verify_token)])",
+        ),
+      ),
+    ).toEqual([
+      "Check that the app-wide dependencies in main.py do not redirect or protect /health: FastAPI runs them for every route, and the deploy health check calls it without a session.",
+    ]);
+    expect(
+      await check(
+        "app.py",
+        lines("from litestar import Litestar", "app = Litestar([], guards=[requires_login])"),
+      ),
+    ).toEqual([
+      "Check that the app-wide guards in app.py do not redirect or protect /health: Litestar runs them for every route, and the deploy health check calls it without a session.",
+    ]);
+    for (const [file, text] of [
+      [
+        "server.py",
+        lines(
+          "from sanic import Sanic",
+          'app = Sanic("app")',
+          "@app.on_request",
+          "async def auth(request): ...",
+        ),
+      ],
+      [
+        "server.py",
+        lines(
+          "from sanic import Sanic",
+          'app = Sanic("app")',
+          '@app.middleware("request")',
+          "async def auth(request): ...",
+        ),
+      ],
+      [
+        "app.py",
+        lines(
+          "from bottle import Bottle",
+          "app = Bottle()",
+          "@app.hook('before_request')",
+          "def auth(): ...",
+        ),
+      ],
+    ] as const) {
+      expect((await check(file, text))[0], text).toContain("middleware or request hooks");
+    }
   });
 });

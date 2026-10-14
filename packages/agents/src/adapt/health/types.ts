@@ -46,11 +46,16 @@ export type HealthEdit =
       note: string;
       /** Things the user should check (middleware that might protect the path …). */
       checks: string[];
-      /** Set when the route answers at another path than the plan's: what the plan must say. */
+      /** Set when the route may answer at another path than the plan's: what the plan must say. */
       pathNote?: string;
+      /**
+       * The path the route really answers at when it is not the plan's (a NestJS global prefix,
+       * a Next.js basePath): adapt writes it to `app.healthPath` in the same pull request.
+       */
+      healthPath?: string;
     }
   /** A route for the path already exists. */
-  | { action: "none"; reason: string; pathNote?: string }
+  | { action: "none"; reason: string; pathNote?: string; healthPath?: string }
   /** OpsCrew cannot tell safely where the route goes; the agent or the user adds it. */
   | { action: "manual"; reason: string };
 
@@ -69,6 +74,11 @@ export function manual(reason: string): HealthEdit {
 /** The note for a route that answers at `actual` instead of the plan's `planned` path. */
 export function movedPathNote(source: string, actual: string, planned: string): string {
   return `${source}, so the health route answers at ${actual}, not ${planned}: the plan's health check path must be ${actual} (${PLAN_PATH_FIX}), or every deploy fails its health check.`;
+}
+
+/** The note for a route that answers at `actual`, which adapt writes to the plan. */
+export function planPathNote(source: string, actual: string): string {
+  return `${source}, so the health route answers at ${actual}; OpsCrew set app.healthPath in \`opscrew/plan.yaml\` to ${actual} to match.`;
 }
 
 /** The check for middleware (or hooks) that might redirect or protect the health path. */
