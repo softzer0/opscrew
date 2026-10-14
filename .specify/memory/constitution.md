@@ -13,7 +13,8 @@ governs every specification, plan, task and line of code in this repository.
   `plan -> policy checks -> explicit human approval -> apply`. Nothing is ever auto-applied on a
   first run, and no code path may apply a change that was not shown to the user first.
 - An apply MUST be bound to the exact plan that was approved: the plan file's SHA-256 hash is
-  recorded with the approval, and the IaC engine refuses to apply a plan whose hash differs.
+  recorded with the approval, and the IaC engine (or, for changes to a server the user already
+  owns, OpsCrew's host adapter) refuses to apply a plan whose hash differs.
 - Destructive operations (destroy, delete, replace with data loss, DNS zone deletion, server
   rebuild) are denied by default. They require an approval flagged `allowDestroy` plus a typed
   confirmation of the affected resource name.
@@ -131,10 +132,10 @@ human sees and approves every change.
 - Licensing: Apache-2.0 for everything outside `ee/`; FSL-1.1-ALv2 for `ee/`. No AGPL or
   non-commercial dependency may be linked into the CLI; such tools may only be invoked as optional
   external binaries. Semgrep-maintained rules are never used in the hosted control plane.
-- Provider order: hosting on Hetzner Cloud and DigitalOcean (with Cloudflare DNS), then AWS,
-  Google Cloud, Azure and Contabo; domains through Cloudflare Registrar first, then Namecheap,
-  Porkbun and GoDaddy. Prices and availability are read live from provider APIs whenever
-  possible; any static fallback is labelled with its date.
+- Provider order: hosting on Hetzner Cloud, DigitalOcean and servers the user already owns (over
+  SSH), with Cloudflare DNS, then AWS, Google Cloud, Azure and Contabo; domains through Cloudflare
+  Registrar first, then Namecheap, Porkbun and GoDaddy. Prices and availability are read live from
+  provider APIs whenever possible; any static fallback is labelled with its date.
 - CI/CD: GitHub Actions with OIDC federation for hyperscalers; per-repository deploy keys for VPS
   targets; third-party actions avoided or pinned by commit SHA.
 
@@ -170,4 +171,4 @@ human sees and approves every change.
 - Every plan includes a Constitution Check; violations are either fixed or justified in the plan's
   Complexity Tracking table. Every reviewer pass checks constitution compliance.
 
-**Version**: 1.2.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-14
+**Version**: 1.3.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-14
