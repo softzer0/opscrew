@@ -98,8 +98,16 @@ export function cloudflareZeroTrust(
       }
       const errors = (envelope.errors ?? []).map((e) => e.message).join("; ");
       if (envelope.success === true && response.status < 400) {
+        // Only an absent or null result means "no organization"; anything else must name its team
+        // domain, or OpsCrew cannot tell whose organization it is (fail closed).
+        if (envelope.result === undefined || envelope.result === null) return undefined;
         const organization = OrganizationSchema.safeParse(envelope.result);
-        return organization.success ? { authDomain: organization.data.auth_domain } : undefined;
+        if (organization.success) return { authDomain: organization.data.auth_domain };
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          "Cloudflare answered with a Zero Trust organization OpsCrew could not read (it names no team domain), so OpsCrew cannot tell whether to create one. Nothing was changed.",
+          { hint: "Run the command again in a minute. If it keeps failing, report it." },
+        );
       }
       if (NO_ORGANIZATION.test(errors)) return undefined;
       throw new OpsCrewError(

@@ -18,6 +18,7 @@ import {
   ensureStatePassphrase,
   hasDeployment,
   hidesServerAddress,
+  infrastructureOutputs,
   pinHostKey,
   providerConsole,
   recordOwnServer,
@@ -172,29 +173,43 @@ async function tfvarsShowPublicAddress(root: string, plan: DeployPlan): Promise<
   return values !== undefined && !("proxied" in values && values.proxied === true);
 }
 
+/** The saved infrastructure plans the `--approve` hashes name. */
+interface SavedInfrastructureHashes {
+  /** The main plan to apply instead of planning again (never a removal plan). */
+  apply?: string;
+  /** A server the user owns: the saved removal plan of a switch between public and tunnel mode. */
+  removal?: string;
+}
+
 /**
- * The `--approve` hash that names the saved infrastructure plan. Servers OpsCrew creates have one
- * plan, so it is the first hash given. A server the user owns has two (infrastructure and host):
- * the hash whose saved infrastructure plan exists and was not applied yet (a script that names both
- * hashes again after the infrastructure was applied plans afresh, which finds nothing to change);
- * the host plan's hash is granted by the approval handler.
+ * The saved infrastructure plans the `--approve` hashes name. Servers OpsCrew creates have one
+ * plan, so the main plan is the first hash given. A server the user owns has more (infrastructure,
+ * host and, during a switch between public and tunnel mode, the removal of the old setup): the
+ * main plan is the hash whose saved plan exists, is not a removal and was not applied yet (a script
+ * that names both hashes again after the infrastructure was applied plans afresh, which finds
+ * nothing to change); a saved removal plan is kept apart and only ever applied as the removal; the
+ * host plan's hash is granted by the approval handler.
  */
-async function savedInfrastructureHash(
+async function savedInfrastructureHashes(
   deps: PhaseDeps,
   options: ProvisionOptions,
   plan: DeployPlan,
-): Promise<string | undefined> {
+): Promise<SavedInfrastructureHashes> {
   const hashes = [
     ...(options.approvePlanHash !== undefined ? [options.approvePlanHash] : []),
     ...(options.approvePlanHashes ?? []),
   ];
-  if (plan.target.provider !== "own") return hashes[0];
+  if (plan.target.provider !== "own") return hashes[0] === undefined ? {} : { apply: hashes[0] };
   const applied = plan.deployment.lastPlanHash?.toLowerCase();
+  const found: SavedInfrastructureHashes = {};
   for (const hash of hashes) {
     if (hash.toLowerCase() === applied) continue;
-    if ((await findSavedPlan(deps.paths.files.plansDir, hash)) !== undefined) return hash;
+    const saved = await findSavedPlan(deps.paths.files.plansDir, hash);
+    if (saved === undefined) continue;
+    if (saved.planFile.endsWith(REMOVAL_PLAN_SUFFIX)) found.removal ??= hash;
+    else found.apply ??= hash;
   }
-  return undefined;
+  return found;
 }
 
 /**
@@ -287,8 +302,9 @@ async function provisionFlow(
   await checkProvider(deps, profile.id, services);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
-  // The saved infrastructure plan an `--approve` names (applied instead of planning again).
-  let approveHash = await savedInfrastructureHash(deps, options, plan);
+  // The saved infrastructure plans the `--approve` hashes name (applied instead of planning again).
+  const saved = await savedInfrastructureHashes(deps, options, plan);
+  const approveHash = saved.apply;
   // The branch for the deployment files, picked (and checked to start from the latest
   // `plan.cicd.branch`) before anything changes; `--plan-only` commits nothing.
   const commits = !(options.planOnly && approveHash === undefined);
@@ -350,24 +366,30 @@ async function provisionFlow(
       deployPublicKey: deployKey.publicKeyOpenSsh,
       deployKeyFile: deployKey.privateKeyFile,
     });
-    await ownEngineEnv(deps, ownRun, engineEnv);
+    await ownEngineEnv(deps, ownRun, engineEnv, () =>
+      infrastructureOutputs(deps, plan, { engine: async () => engine, engineEnv }),
+    );
     ownRender = await ownRenderInput(deps, services, plan, cloudflare, ownRun);
     // Switching between public and tunnel mode: the old records go first, in an apply of their own.
     // Only a saved removal plan is applied as the removal (never the new setup's plan).
-    const saved =
-      approveHash === undefined
-        ? undefined
-        : await findSavedPlan(deps.paths.files.plansDir, approveHash);
-    const removalHash = saved?.planFile.endsWith(REMOVAL_PLAN_SUFFIX) ? approveHash : undefined;
     const removal = await removeOldAccessMode(deps, {
       engine,
       dir,
       env: engineEnv,
       plan,
-      ...(removalHash !== undefined ? { approvePlanHash: removalHash } : {}),
+      ...(saved.removal !== undefined ? { approvePlanHash: saved.removal } : {}),
       ...(options.planOnly ? { planOnly: true } : {}),
       phase,
     });
+    if (removal === undefined && saved.removal !== undefined) {
+      throw new OpsCrewError(
+        "PLAN_HASH_MISMATCH",
+        `The plan ${saved.removal} you approved removes the current setup before a switch between public and tunnel mode, but no switch is pending, so OpsCrew did not apply it. Nothing was changed.`,
+        {
+          hint: `Run \`opscrew ${phase} --plan-only\`, review the plan and approve the new hash.`,
+        },
+      );
+    }
     if (removal !== undefined) {
       const pending = (removal.plan?.changes.length ?? 0) > 0 && !removal.applied;
       if (options.planOnly && pending) {
@@ -380,7 +402,6 @@ async function provisionFlow(
           outputs: {},
         };
       }
-      if (removalHash !== undefined) approveHash = undefined; // it named the removal
       if (removal.approval) approvals.push(planApproval(removal.approval, "iac-apply"));
     }
   }
@@ -451,7 +472,7 @@ async function provisionFlow(
           ? applied.outputs
           : await engine.output(dir, { env: engineEnv }).catch(() => ({}));
       const tunnelKnown =
-        ownRun.target.access === "public" ||
+        !usesTunnel(plan) ||
         (stringOutput(outputs, "tunnel_id") !== undefined && !changesTunnel(applied.plan));
       if (tunnelKnown) {
         const host = await applyOwnHostPlan(deps, ownRun, {
@@ -485,7 +506,22 @@ async function provisionFlow(
   const now = deps.clock.now().toISOString();
   let address: ServerAddress | undefined;
   if (ownRun) {
+    // Right after the infrastructure apply, as for cloud servers: the DNS records now point at this
+    // address (none in tunnel mode), and a later switch's removal plan needs it.
     address = ownRun.address;
+    await recordServerAddress(deps.paths, address);
+    const connection = ownRun.session.connection;
+    if (
+      address !== undefined &&
+      (connection.publicIpv4 !== address.ipv4 || connection.publicIpv6 !== address.ipv6)
+    ) {
+      const { publicIpv4: _v4, publicIpv6: _v6, ...rest } = connection;
+      await recordOwnServer(deps.paths, {
+        ...rest,
+        publicIpv4: address.ipv4,
+        ...(address.ipv6 !== undefined ? { publicIpv6: address.ipv6 } : {}),
+      });
+    }
   } else {
     address =
       addressFromOutputs(applied.outputs) ??
@@ -525,8 +561,7 @@ async function provisionFlow(
   };
   let host: OwnHostResult | undefined;
   if (ownRun) {
-    // 7 (own server). Host plan → policy → host-apply approval by its hash → apply, then record
-    // the address in the local state (none in tunnel mode).
+    // 7 (own server). Host plan → policy → host-apply approval by its hash → apply.
     const outputs =
       Object.keys(applied.outputs).length > 0
         ? applied.outputs
@@ -539,19 +574,6 @@ async function provisionFlow(
       phase,
     });
     if (host.approval) approvals.push(planApproval(host.approval, "host-apply"));
-    await recordServerAddress(deps.paths, address);
-    const connection = ownRun.session.connection;
-    if (
-      address !== undefined &&
-      (connection.publicIpv4 !== address.ipv4 || connection.publicIpv6 !== address.ipv6)
-    ) {
-      const { publicIpv4: _v4, publicIpv6: _v6, ...rest } = connection;
-      await recordOwnServer(deps.paths, {
-        ...rest,
-        publicIpv4: address.ipv4,
-        ...(address.ipv6 !== undefined ? { publicIpv6: address.ipv6 } : {}),
-      });
-    }
     plan = record(host.applied);
     await writeArtifact("plan", deps.paths.files.plan, plan);
     secretsTarget = ownDeployTarget(deps, ownRun, { plan, outputs });

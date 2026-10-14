@@ -47,7 +47,7 @@ network or model.
 
 ## Phase 3: Flows (parallel after Phase 2)
 
-- [ ] T905 [US1] [US2] [US3] Provision for own servers in `packages/agents/src/provision/`
+- [X] T905 [US1] [US2] [US3] Provision for own servers in `packages/agents/src/provision/`
   - Owns: `packages/agents/src/provision/**`, `packages/agents/src/shared/{remote,wait}.ts`, `packages/agents/src/shared/own-server.ts` (new), `packages/agents/src/init/**`
   - Reads: plan.md "Provision for own servers"; contracts/cli.md "Provision"; spec FR-902, FR-903, FR-905, FR-910
   - Depends: T902, T903, T904

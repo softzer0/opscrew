@@ -165,6 +165,10 @@ describe("opscrew init for a server the user owns", () => {
     const provider = find(list, "provider");
     expect(provider.status).toBe("fail");
     expect(provider.message).toContain("/nowhere/id_ed25519");
+    // The fix says what to do: give the key's path again (or the agent); never a passphrase.
+    expect(provider.fix).toContain("opscrew interview");
+    expect(provider.fix).toContain("`agent`");
+    expect(provider.message).not.toContain(provider.fix as string);
   });
 
   it("never says to delete a damaged server.json", async () => {

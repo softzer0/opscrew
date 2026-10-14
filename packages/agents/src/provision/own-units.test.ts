@@ -74,6 +74,17 @@ describe("Zero Trust organization", () => {
       json(400, { success: false, errors: [{ code: 12106, message: "organization not found" }] }),
     );
     expect(await cloudflareZeroTrust(notFound.deps).organization(ACCOUNT_ID)).toBeUndefined();
+    const empty = await zeroTrustDeps(() => json(200, { success: true, errors: [], result: null }));
+    expect(await cloudflareZeroTrust(empty.deps).organization(ACCOUNT_ID)).toBeUndefined();
+  });
+
+  it("fails closed on an organization without a team domain", async () => {
+    const { deps } = await zeroTrustDeps(() =>
+      json(200, { success: true, errors: [], result: { name: "Somebody's team" } }),
+    );
+    await expect(cloudflareZeroTrust(deps).organization(ACCOUNT_ID)).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+    });
   });
 
   it("names the missing permissions on a refusal and never shows the token", async () => {

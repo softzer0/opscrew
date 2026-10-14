@@ -472,7 +472,8 @@ async function checkOwnServerLogin(deps: PhaseDeps, choice: ProviderChoice): Pro
   try {
     await requireOwnServerKey(connection, deps.env);
   } catch (error) {
-    return { status: "fail", message: errorText(error) };
+    if (!isUserFacingError(error)) throw error;
+    return { status: "fail", message: error.message, ...(error.hint ? { fix: error.hint } : {}) };
   }
   const login = await vpsConnector("own", deps, {
     ownLogin: ownServerLogin(connection),

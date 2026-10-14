@@ -50,7 +50,9 @@ export {
   type PlanAndApplyOptions,
   type PlanAndApplyResult,
   planAndApply,
+  REMOVAL_PLAN_SUFFIX,
 } from "./plan-apply";
+export { maskBySensitivity, maskSensitivePlanJson, SENSITIVE_VALUE } from "./plan-json";
 export {
   chooseDeployBranch,
   DEPLOY_SETUP_BRANCH,

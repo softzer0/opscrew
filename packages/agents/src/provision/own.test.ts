@@ -577,7 +577,125 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     });
     expect(s.engine.applies.map((a) => a.destroy)).toEqual([true, false]);
     expect(s.engine.plans.map((p) => p.destroy)).toEqual([true, false]);
+    // The approved removal plan was applied as the removal only, never as the main plan.
+    expect(s.engine.applies[0]?.planFile.endsWith("-removal.tfplan")).toBe(true);
+    expect(s.engine.applies[1]?.planFile.endsWith("-removal.tfplan")).toBe(false);
+    expect(s.engine.applies[1]?.planFile).toBe(s.engine.plans[1]?.planFile);
     expect(s.host.applies).toHaveLength(1);
+  });
+
+  it("refuses an approved removal plan when no switch is pending, and changes nothing", async () => {
+    const token = `eyJ${fakeSecret("cloudflare-token", "no-switch")}`;
+    const outputs = tunnelOutputs({ token, clientId: "client-id", clientSecret: "client-x" });
+    const s = await setup({
+      plan: ownPlan({ access: "tunnel" }),
+      own: {
+        host: OWN_IPV4,
+        port: 22,
+        user: "root",
+        agent: true,
+        reachable: false,
+        hostKey: ED25519_FINGERPRINT,
+      },
+      engine: new OwnEngine(TUNNEL_CHANGES, outputs, publicOutputs()),
+    });
+    await mkdir(s.deps.paths.files.tfstateDir, { recursive: true });
+    await writeFile(join(s.deps.paths.files.tfstateDir, "prod.tfstate"), "{}");
+    const planned = await runProvision(s.deps, { services: s.services, planOnly: true });
+    // Meanwhile the switch happened another way: the state already holds the tunnel.
+    s.engine.state = { ...outputs };
+
+    const error = (await runProvision(s.deps, {
+      services: s.services,
+      approvePlanHashes: [planned.planHash as string],
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("PLAN_HASH_MISMATCH");
+    expect(error.message).toContain("no switch is pending");
+    expect(error.message).toContain("Nothing was changed");
+    expect(error.hint).toContain("--plan-only");
+    expect(s.engine.applies).toHaveLength(0);
+    expect(s.host.applies).toHaveLength(0);
+    expect(kinds(s)).not.toContain("iac-apply");
+  });
+
+  it("feeds the old address from the state's outputs to the removal when the local record is gone", async () => {
+    const token = `eyJ${fakeSecret("cloudflare-token", "outputs")}`;
+    const s = await setup({
+      plan: ownPlan({ access: "tunnel" }),
+      own: {
+        host: OWN_IPV4,
+        port: 22,
+        user: "root",
+        agent: true,
+        reachable: false,
+        hostKey: ED25519_FINGERPRINT,
+      },
+      engine: new OwnEngine(
+        TUNNEL_CHANGES,
+        tunnelOutputs({ token, clientId: "client-id", clientSecret: "client-x" }),
+        publicOutputs(),
+      ),
+    });
+    await mkdir(s.deps.paths.files.tfstateDir, { recursive: true });
+    await writeFile(join(s.deps.paths.files.tfstateDir, "prod.tfstate"), "{}");
+    expect((await readServerAddresses(s.deps.paths)).deployment).toBeUndefined();
+
+    await runProvision(s.deps, { services: s.services });
+    expect(s.engine.plans[0]?.destroy).toBe(true);
+    expect(s.engine.plans[0]?.env.TF_VAR_server_ipv4).toBe(OWN_IPV4);
+  });
+
+  it("records the address right after the infrastructure apply and audits the host apply's start and failure", async () => {
+    const s = await setup();
+    s.host.fail = Object.assign(
+      new OpsCrewError("COMMAND_FAILED", "OpsCrew stopped while installing Docker: apt failed."),
+      { applied: ["docker"] },
+    );
+    await expect(
+      runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT }),
+    ).rejects.toThrow(/installing Docker/);
+    expect(s.engine.applies).toHaveLength(1);
+    // The DNS records point at the address now, so it is recorded although the host apply failed.
+    expect((await readServerAddresses(s.deps.paths)).deployment).toEqual({ ipv4: OWN_IPV4 });
+    expect((await readOwnServer(s.deps.paths))?.publicIpv4).toBe(OWN_IPV4);
+
+    const hash = s.handler.requests.find((r) => r.kind === "host-apply")?.planHash;
+    const actions = s.deps.audit.entries.map((e) => e.action);
+    const started = s.deps.audit.entries.find((e) => e.action === "host apply started");
+    const failed = s.deps.audit.entries.find((e) => e.action === "host apply failed");
+    expect(started).toMatchObject({ target: hash, decision: "approved" });
+    expect(started?.detail).toContain("docker");
+    expect(started?.detail).toContain("sshd");
+    expect(failed).toMatchObject({ target: hash, decision: "refused" });
+    expect(failed?.detail).toBe("steps applied before the failure: docker");
+    expect(actions.indexOf("host apply started")).toBeLessThan(
+      actions.indexOf("host apply failed"),
+    );
+
+    // Without a report from the adapter, the entry points to the server's own record.
+    s.host.fail = new OpsCrewError("COMMAND_FAILED", "OpsCrew lost the connection.");
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow(/lost the/);
+    const second = s.deps.audit.entries.filter((e) => e.action === "host apply failed")[1];
+    expect(second?.detail).toContain("/etc/opscrew/host.json");
+  });
+
+  it("runs the tunnel connector for a Portainer subdomain on a public server too", async () => {
+    const token = `eyJ${fakeSecret("cloudflare-token", "portainer")}`;
+    const s = await setup({
+      plan: ownPlan({ portainerSubdomain: true }),
+      engine: new OwnEngine(PUBLIC_CHANGES, {
+        ...publicOutputs(),
+        tunnel_id: TUNNEL_ID,
+        tunnel_token: token,
+        portainer_url: "https://portainer.example.com",
+      }),
+    });
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+    expect(existsSync(join(s.root, "opscrew/runtime/cloudflared/compose.yaml"))).toBe(true);
+    const apply = s.host.applies[0];
+    expect(apply?.options.secrets?.tunnelToken).toBe(token);
+    expect(s.zeroTrust.asked).toEqual([ACCOUNT_ID]);
+    expect(everythingPrinted(s.deps)).not.toContain(token);
   });
 
   it("never asks to replace a token when the server's login is missing", async () => {

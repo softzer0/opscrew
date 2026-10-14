@@ -15,10 +15,12 @@ import {
   renderPortainerCompose,
   renderTunnelConnectorCompose,
   sshHostname,
+  usesTunnel,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, OwnDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
+  addressFromOutputs,
   infrastructureOutputs,
   knownHostsName,
   randomPassword,
@@ -93,7 +95,8 @@ function serverSshPort(facts: HostFacts, loginPort: number): number {
 
 /**
  * The desired state of the server for the plan: the app, the admin login, the deploy key, SSH and
- * firewall settings for the access mode, the tunnel connector (with the tunnel's id) and Portainer
+ * firewall settings for the access mode, the tunnel connector (with the tunnel's id) whenever the
+ * plan has a Cloudflare Tunnel (tunnel mode, or a Portainer subdomain in either mode) and Portainer
  * when the plan turns it on.
  */
 export function desiredHost(
@@ -108,13 +111,12 @@ export function desiredHost(
 ): DesiredHost {
   const { plan } = input;
   const { connection } = run.session;
-  const tunnel =
-    run.target.access === "tunnel"
-      ? {
-          compose: renderTunnelConnectorCompose(plan).content,
-          tunnelId: input.tunnelId ?? PENDING_TUNNEL_ID,
-        }
-      : undefined;
+  const tunnel = usesTunnel(plan)
+    ? {
+        compose: renderTunnelConnectorCompose(plan).content,
+        tunnelId: input.tunnelId ?? PENDING_TUNNEL_ID,
+      }
+    : undefined;
   const portainer = plan.portainer?.enabled
     ? {
         version: plan.portainer.version,
@@ -304,15 +306,20 @@ export async function prepareOwnServer(
 /**
  * The engine environment for an own server: its public address as `TF_VAR_server_ipv4` and
  * `TF_VAR_server_ipv6`, never in a file (FR-902). In tunnel mode the address of an earlier public
- * setup (from the local state) still feeds the old configuration while its records are removed.
+ * setup still feeds the old configuration while its records are removed: from the local state, else
+ * from the infrastructure state's outputs (`outputs`, read only when needed).
  */
 export async function ownEngineEnv(
   deps: Pick<PhaseDeps, "paths">,
   run: Pick<OwnServerRun, "address" | "target">,
   env: Record<string, string | undefined>,
+  outputs?: () => Promise<Record<string, unknown> | undefined>,
 ): Promise<void> {
+  const recorded = (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
   const address =
-    run.address ?? (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
+    run.address ??
+    recorded ??
+    (outputs === undefined ? undefined : addressFromOutputs((await outputs()) ?? {}));
   delete env.TF_VAR_server_ipv4;
   delete env.TF_VAR_server_ipv6;
   if (address === undefined) return;
@@ -401,6 +408,16 @@ function tunnelOutputs(
   return { id, token };
 }
 
+/**
+ * The steps a failed host apply had applied, when the adapter's error reports them (an `applied`
+ * list of step ids); only ids of the plan's changes count. `undefined` when not reported.
+ */
+function appliedBeforeFailure(error: unknown, changeIds: readonly string[]): string[] | undefined {
+  const reported = (error as { applied?: unknown } | null)?.applied;
+  if (!Array.isArray(reported)) return undefined;
+  return reported.filter((id): id is string => typeof id === "string" && changeIds.includes(id));
+}
+
 /** Outcome of {@link applyOwnHostPlan}. */
 export interface OwnHostResult {
   plan: HostPlan;
@@ -429,7 +446,8 @@ export async function applyOwnHostPlan(
     phase: Extract<PhaseName, "provision" | "dns">;
   },
 ): Promise<OwnHostResult> {
-  const tunnel = run.target.access === "tunnel" ? tunnelOutputs(deps, input.outputs) : undefined;
+  // The connector runs whenever the plan has a tunnel: tunnel mode or a Portainer subdomain.
+  const tunnel = usesTunnel(input.plan) ? tunnelOutputs(deps, input.outputs) : undefined;
   const plan = planHost(
     run.facts,
     desiredHost(deps, run, {
@@ -479,6 +497,16 @@ export async function applyOwnHostPlan(
   deps.reporter.step(
     `Preparing your server (${changes.length} change${changes.length === 1 ? "" : "s"}; installing Docker can take a few minutes)`,
   );
+  const changeIds = changes.map((step) => step.id);
+  await deps.audit.append({
+    kind: "remote-exec",
+    actor: "opscrew",
+    action: "host apply started",
+    phase: input.phase,
+    target: hash,
+    decision: "approved",
+    detail: `steps to change: ${changeIds.join(", ")}`,
+  });
   let result: Awaited<ReturnType<HostAdapterApi["apply"]>>;
   try {
     result = await run.host.apply(run.session.remote, plan, {
@@ -489,14 +517,18 @@ export async function applyOwnHostPlan(
       now: () => deps.clock.now(),
     });
   } catch (error) {
+    const done = appliedBeforeFailure(error, changeIds);
     await deps.audit.append({
       kind: "remote-exec",
       actor: "opscrew",
-      action: "host apply",
+      action: "host apply failed",
       phase: input.phase,
       target: hash,
       decision: "refused",
-      detail: "host apply failed",
+      detail:
+        done === undefined
+          ? "the host adapter did not report which steps were applied before the failure; /etc/opscrew/host.json on the server lists every change"
+          : `steps applied before the failure: ${done.length > 0 ? done.join(", ") : "none"}`,
     });
     throw error;
   }

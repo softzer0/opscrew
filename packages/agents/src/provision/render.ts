@@ -8,7 +8,7 @@ import {
   type RenderedFileKind,
   renderDeployment,
   renderTunnelConnectorCompose,
-  tunnelMode,
+  usesTunnel,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -98,13 +98,13 @@ export function deploymentRenderContext(
 }
 
 /**
- * Every file provision writes for the plan: the deployment (`renderDeployment`) and, when an own
- * server is served through a Cloudflare Tunnel, the tunnel connector's Compose file
- * (`opscrew/runtime/cloudflared/compose.yaml`, which the host plan installs on the server).
+ * Every file provision writes for the plan: the deployment (`renderDeployment`) and, whenever the
+ * plan has a Cloudflare Tunnel (an own server in tunnel mode, or a Portainer subdomain), the tunnel
+ * connector's Compose file (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server).
  */
 export function deploymentFiles(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
   const files = renderDeployment(plan, ctx);
-  return tunnelMode(plan) ? [...files, renderTunnelConnectorCompose(plan, ctx)] : files;
+  return usesTunnel(plan) ? [...files, renderTunnelConnectorCompose(plan, ctx)] : files;
 }
 
 /**

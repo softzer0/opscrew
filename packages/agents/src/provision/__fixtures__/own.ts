@@ -63,6 +63,8 @@ export interface OwnPlanOptions {
   /** Default `shop.example.com` on Cloudflare (proxied); `null` for no domain. */
   domain?: string | null;
   postgres?: boolean;
+  /** Portainer on `portainer.example.com` behind Cloudflare Access (a tunnel in either mode). */
+  portainerSubdomain?: boolean;
 }
 
 /** A valid own-server `opscrew/plan.yaml` for the `shop` app. */
@@ -101,10 +103,27 @@ export function ownPlan(o: OwnPlanOptions = {}): DeployPlan {
     codeChanges: [],
     infra: { engine: "tofu" },
     dns: domain
-      ? { provider: "cloudflare", domain, proxied: true, www: false }
+      ? {
+          provider: "cloudflare",
+          domain,
+          proxied: true,
+          www: false,
+          ...(o.portainerSubdomain ? { zone: "example.com" } : {}),
+        }
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: {},
+    ...(o.portainerSubdomain
+      ? {
+          portainer: {
+            enabled: true,
+            version: "2.33.1",
+            access: "subdomain",
+            hostname: "portainer.example.com",
+            allowedEmails: ["owner@example.com"],
+          },
+        }
+      : {}),
   });
 }
 
@@ -346,6 +365,8 @@ export interface FakeApply {
 export class FakeHostServer implements HostAdapterApi {
   readonly applies: FakeApply[] = [];
   inspections = 0;
+  /** Thrown by the next `apply` (after its hash check), as a failing step would. */
+  fail: Error | undefined;
   constructor(public facts: HostFacts = freshFacts()) {}
 
   async inspect(_remote: RemoteExec): Promise<HostFacts> {
@@ -357,6 +378,11 @@ export class FakeHostServer implements HostAdapterApi {
     if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");
     const record: FakeApply = { plan, options };
     this.applies.push(record);
+    if (this.fail !== undefined) {
+      const error = this.fail;
+      this.fail = undefined;
+      throw error;
+    }
     const changes = plan.steps.filter((step) => step.state === "change");
     if (changes.some((step) => step.id === "sshd" || step.id === "ufw")) {
       record.verified = await options.verifyLogin();
