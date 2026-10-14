@@ -20,7 +20,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
-import { infrastructureOutputs, readServerAddresses, serverAddress } from "../shared";
+import { infrastructureOutputs, readServerAddresses, STATE_FILE, serverAddress } from "../shared";
 import {
   ownServerLogin,
   ownServerNotSetUp,
@@ -211,10 +211,10 @@ const OPSCREW_RULESET_NAME: Record<RulePhase, string> = {
   http_request_firewall_custom: "OpsCrew custom rules",
 };
 
-/** The project's infrastructure state file (`.opscrew/tfstate/prod.tfstate`). */
-const STATE_FILE = "prod.tfstate";
-
-/** The root-module output `cloudflare_rulesets` (`module.dns.ruleset_ids`): an id or null per phase. */
+/**
+ * The root-module output `cloudflare_rulesets` (`module.dns.ruleset_ids`, or the tunnel's WAF
+ * ruleset in tunnel mode): an id or null per phase.
+ */
 const RulesetIdsSchema = z.looseObject({
   http_config_settings: z.string().nullable().optional(),
   http_request_firewall_custom: z.string().nullable().optional(),

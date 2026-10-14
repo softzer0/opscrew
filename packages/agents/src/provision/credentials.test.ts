@@ -52,6 +52,7 @@ const SERVER = {
 const TARGETS: { label: string; plan: () => DeployPlan; own: boolean }[] = [
   { label: "Hetzner", plan: () => testPlan({ domain: "shop.example.com" }), own: false },
   { label: "an own server", plan: () => ownPlan(), own: true },
+  { label: "an own server in tunnel mode", plan: () => ownPlan({ access: "tunnel" }), own: true },
 ];
 
 const PHASES: { phase: Phase; key: "configRules" | "wafRules"; flag: string; rules: string }[] = [
@@ -181,6 +182,43 @@ describe("setupCloudflare: which entrypoint rulesets OpsCrew manages", () => {
       });
     }
   }
+
+  it("tunnel mode: decides on the tunnel's WAF ruleset with the tunnel root's output (no configuration rule)", async () => {
+    const target = TARGETS[2] as (typeof TARGETS)[number];
+    const waf = PHASES[1] as (typeof PHASES)[number];
+    // The tunnel root's `cloudflare_rulesets`: the WAF id, and null for the configuration rule.
+    const tunnelOutputs = (id: string | null) => ({
+      url: "https://shop.example.com",
+      tunnel_id: "tunnel-1",
+      cloudflare_rulesets: heldRulesetsOutput({ http_config_settings: null, [waf.phase]: id }),
+    });
+    const ours = await run(target, waf, "opscrew", {
+      kind: "outputs",
+      outputs: tunnelOutputs(fakeRulesetId(waf.phase)),
+    });
+    expect(await managed(ours.setup, waf.flag), "this project's").toBe(true);
+    expect(ours.deps.reporter.text()).not.toContain("Another OpsCrew deployment");
+
+    const fresh = await run(target, waf, "opscrew", { kind: "none" });
+    expect(await managed(fresh.setup, waf.flag), "fresh project").toBe(false);
+    expect(fresh.deps.reporter.text()).toContain(
+      "Another OpsCrew deployment (or one whose state is gone) holds the example.com zone's WAF custom rules",
+    );
+
+    const another = await run(target, waf, "opscrew", {
+      kind: "outputs",
+      outputs: tunnelOutputs(null),
+    });
+    expect(await managed(another.setup, waf.flag), "another deployment's").toBe(false);
+    expect(another.deps.reporter.text()).toContain("Another OpsCrew deployment");
+
+    const before = await run(target, waf, "opscrew", {
+      kind: "outputs",
+      outputs: { url: "https://shop.example.com", tunnel_id: "tunnel-1" },
+    });
+    expect(await managed(before.setup, waf.flag), "pre-change state").toBe(true);
+    expect(before.deps.reporter.text()).not.toContain("Another OpsCrew deployment");
+  });
 
   it("reads the state once for both phases", async () => {
     const deps = await createTestPhaseDeps();

@@ -259,6 +259,15 @@ output "deploy_service_token_client_secret" {
   value     = module.access.ssh_service_token_client_secret
   sensitive = true
 }
+
+# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
+# another deployment holds alone. Tunnel mode has no configuration rule.
+output "cloudflare_rulesets" {
+  value = {
+    http_config_settings         = null
+    http_request_firewall_custom = module.tunnel.waf_ruleset_id
+  }
+}
 "
 `;
 

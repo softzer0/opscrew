@@ -8,6 +8,11 @@ output "cname_target" {
   value       = "${cloudflare_zero_trust_tunnel_cloudflared.this.id}.cfargotunnel.com"
 }
 
+output "waf_ruleset_id" {
+  description = "Id of the zone's WAF custom rules entrypoint ruleset this module manages (null when it manages none). OpsCrew tells its own ruleset from another deployment's by this id."
+  value       = one(cloudflare_ruleset.waf[*].id)
+}
+
 output "hostnames" {
   description = "Hostnames the tunnel serves."
   value       = [for route in var.routes : route.hostname]

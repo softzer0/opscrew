@@ -10,6 +10,7 @@ import {
   testContext,
   testPlan,
 } from "../__fixtures__/plans";
+import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
 import { renderInfra, tfvars } from "./index";
 
@@ -212,8 +213,21 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
     }
     expect(outputs).toContain('output "ssh_hostname" {\n  value = var.ssh_hostname\n}');
     expect(outputs).toContain('output "tunnel_id" {\n  value = module.tunnel.tunnel_id\n}');
-    // No DNS module in tunnel mode, so no ruleset ids (provision keeps managing the WAF rule).
-    expect(outputs).not.toContain("cloudflare_rulesets");
+    // The tunnel's WAF ruleset, in the same shape as the DNS module's ids (no configuration rule).
+    expect(outputs).toContain(
+      [
+        'output "cloudflare_rulesets" {',
+        "  value = {",
+        "    http_config_settings         = null",
+        "    http_request_firewall_custom = module.tunnel.waf_ruleset_id",
+        "  }",
+        "}",
+      ].join("\n"),
+    );
+    expect(outputs.match(/output "cloudflare_rulesets"/g)).toHaveLength(1);
+    expect(MODULE_FILES["cloudflare-tunnel/outputs.tf"]).toContain(
+      "value       = one(cloudflare_ruleset.waf[*].id)",
+    );
   });
 
   it("routes www through the tunnel and protects the app's hostnames with the WAF rule", () => {
@@ -373,6 +387,9 @@ describe("renderInfra with Portainer on an OpsCrew-created server", () => {
       expect(main).toContain('module "tunnel" {');
       expect(main).not.toMatch(/ssh_hostname|localhost:18080|waf_hostnames/);
       expect(file(files, "prod/outputs.tf")).toContain('output "tunnel_token" {');
+      // The rulesets stay the DNS module's: the tunnel adds no second `cloudflare_rulesets`.
+      expect(file(files, "prod/outputs.tf").match(/output "cloudflare_rulesets"/g)).toHaveLength(1);
+      expect(file(files, "prod/outputs.tf")).toContain("value = module.dns.ruleset_ids");
       expect(files.some((f) => f.path.endsWith("modules/cloudflare-access/main.tf"))).toBe(true);
       expect(checkDialect(files.filter((f) => f.path.endsWith(".tf")))).toEqual([]);
     });

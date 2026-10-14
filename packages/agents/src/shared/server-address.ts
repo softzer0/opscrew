@@ -112,7 +112,7 @@ export type ServerAddresses = z.infer<typeof ServerAddressesSchema>;
 const EMPTY: ServerAddresses = { schemaVersion: 1 };
 
 /** The engine state file provision, destroy and drift use. */
-const STATE_FILE = "prod.tfstate";
+export const STATE_FILE = "prod.tfstate";
 
 /** Path of `.opscrew/server.json`. */
 export function serverAddressesFile(paths: Pick<ProjectPaths, "stateDir">): string {

@@ -218,6 +218,20 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
   if (portainer !== undefined) {
     outputs.push(...output("portainer_url", '"https://${var.portainer_hostname}"'));
   }
+  if (tunnel) {
+    // Same shape as the DNS module's `ruleset_ids` in public mode: one id (or null) per phase.
+    outputs.push(
+      "# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones",
+      "# another deployment holds alone. Tunnel mode has no configuration rule.",
+      'output "cloudflare_rulesets" {',
+      "  value = {",
+      "    http_config_settings         = null",
+      "    http_request_firewall_custom = module.tunnel.waf_ruleset_id",
+      "  }",
+      "}",
+      "",
+    );
+  }
 
   return {
     main,
