@@ -28,7 +28,14 @@ import {
   STRIPE,
   TOKENS,
 } from "./__fixtures__/move";
+import {
+  PRISMA_P3018,
+  RELEASE_OUTPUT_FRAGMENTS,
+  SQLALCHEMY_ERROR,
+} from "./__fixtures__/release-output";
+import type { MoveSession } from "./session";
 import type { RetargetSummary } from "./types";
+import { maintenanceWindow } from "./window";
 
 const applies = (h: MoveHarness) => h.events.filter((e) => e.type === "apply");
 const ops = (h: MoveHarness, host: string, op: string) =>
@@ -79,6 +86,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       `${OLD_IPV4} dump`,
       `scp ${OLD_IPV4} -> ${n}`,
       `${n} stop app`,
+      `${n} empty db`,
       `${n} restore`,
       `${OLD_IPV4} rm dump`,
       `${n} rm dump`,
@@ -87,6 +95,11 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       "apply updates=2",
       `${n} start caddy`,
     ]);
+    // Without a release service in the new server's compose file, no release runs in the window.
+    expect(ops(h, n, "release")).toBe(0);
+    const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
+    expect(window?.details).not.toContain("release");
+    expect(window?.details).not.toContain("--clean");
     expectGated(h.events);
     // The DNS switch was planned before the maintenance window (no plan fails while offline).
     const planned = h.events.findLastIndex((e) => e.type === "plan");
@@ -237,6 +250,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     { what: "the dump", on: "old", op: "dump" },
     { what: "the copy", on: "old", op: "scp" },
     { what: "stopping the new app", on: "new", op: "stop app" },
+    { what: "emptying the new database", on: "new", op: "empty db" },
     { what: "the restore", on: "new", op: "restore" },
     { what: "deleting the old dump", on: "old", op: "rm dump" },
     { what: "starting the new app", on: "new", op: "start app" },
@@ -275,6 +289,197 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       expect(result).toMatchObject({ step: "switched", done: true });
       expect(h.hosts.host(n).db).toBe("orders before the move");
       expectGated(h.events);
+    },
+  );
+
+  it("T831: with a release command the copy goes onto an empty database and is migrated before the app starts", async () => {
+    const h = await moveHarness({ release: true });
+    const n = h.newServer.ipv4;
+    const result = await run(h);
+    expect(result).toMatchObject({ step: "switched", done: true });
+    const lines = trail(h.events);
+    const from = lines.indexOf(`${OLD_IPV4} stop app`);
+    expect(lines.slice(from, lines.indexOf(`${n} start app`) + 1)).toEqual([
+      `${OLD_IPV4} stop app`,
+      `${OLD_IPV4} dump`,
+      `scp ${OLD_IPV4} -> ${n}`,
+      `${n} stop app`,
+      `${n} empty db`,
+      `${n} restore`,
+      `${n} release`,
+      `${OLD_IPV4} rm dump`,
+      `${n} rm dump`,
+      `${n} start app`,
+    ]);
+    // The new server's compose file is read before the window is approved.
+    const probe = h.events.findIndex((e) => e.type === "remote" && e.op === "services?");
+    const approval = h.events.findIndex(
+      (e) => e.type === "approval" && e.title.startsWith("Maintenance"),
+    );
+    expect(probe).toBeGreaterThanOrEqual(0);
+    expect(probe).toBeLessThan(approval);
+    expect(h.events[probe]).toMatchObject({ host: n });
+    // The old data, migrated forward to the version deployed on the new server.
+    expect(h.hosts.host(n).db).toBe("orders before the move (migrated)");
+    const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
+    expect(window?.details).toContain(
+      "docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'",
+    );
+    expect(window?.details).toContain("docker compose run --rm --no-deps -T release");
+    expect(window?.details).not.toContain("--clean");
+    const actions = h.audit.entries.map((e) => e.action);
+    expect(actions).toContain("empty database");
+    expect(actions).toContain("run release command");
+    expect(h.reporter.text()).toContain("release command");
+    expectGated(h.events);
+  });
+
+  it.each([
+    { tool: "Prisma P3018", output: PRISMA_P3018 },
+    { tool: "SQLAlchemy", output: SQLALCHEMY_ERROR },
+  ])(
+    "T831: a failed release command ($tool) in the window rolls back to the old app and says so, without its output",
+    async ({ output }) => {
+      const h = await moveHarness({ release: true });
+      const n = h.newServer.ipv4;
+      let failed = false;
+      h.hosts.fail = (ip, op) => {
+        if (ip !== n || op !== "release" || failed) return undefined;
+        failed = true;
+        return { exitCode: 1, stdout: output, stderr: output };
+      };
+      const error = await caught(run(h));
+      expect(error.code).toBe("COMMAND_FAILED");
+      expect(error.message).toContain("The maintenance window failed");
+      expect(error.message).toContain(
+        `Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on ${n}: it exited with code 1`,
+      );
+      expect(error.message).toContain("it ran only on the copy of the database on the new server");
+      expect(error.message).toContain("The app on the old server runs again");
+      expect(error.hint).toContain("The old server keeps serving your users.");
+      expect(error.hint).toContain("app.releaseCommand");
+      expect(error.hint).toContain("docker compose run --rm --no-deps -T release");
+      expect(error.hint).toContain("opscrew retarget");
+      // Migration output quotes rows and SQL parameters: none of it is shown or audited.
+      const printed = `${everythingPrinted(h)}\n${error.message}\n${error.hint}`;
+      for (const fragment of RELEASE_OUTPUT_FRAGMENTS) expect(printed).not.toContain(fragment);
+      const lines = trail(h.events);
+      expect(lines.slice(lines.indexOf(`${n} release`))).toEqual([
+        `${n} release`,
+        `${OLD_IPV4} rm dump`,
+        `${n} rm dump`,
+        `${n} start app`,
+        `${OLD_IPV4} start app`,
+      ]);
+      const state = await move(h);
+      expect(state?.step).toBe("deployed");
+      expect(state?.oldAppStoppedAt).toBeUndefined();
+      expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+      expect(h.hosts.host(OLD_IPV4).dump).toBeUndefined();
+      expect(h.hosts.host(n).dump).toBeUndefined();
+      expect(h.engine.dnsServer()?.ipv4).toBe(OLD_IPV4);
+      expect(h.audit.entries).toContainEqual(
+        expect.objectContaining({ action: "maintenance window", decision: "refused" }),
+      );
+
+      // A re-run repeats the window from a fresh, empty database.
+      const result = await run(h);
+      expect(result).toMatchObject({ step: "switched", done: true });
+      expect(h.hosts.host(n).db).toBe("orders before the move (migrated)");
+      expectGated(h.events);
+    },
+  );
+
+  it("T831: stops before the window, with nothing changed, when the new server's services cannot be read", async () => {
+    const h = await moveHarness({ release: true });
+    h.hosts.fail = (ip, op) =>
+      ip === h.newServer.ipv4 && op === "services?"
+        ? fail("no configuration file provided")
+        : undefined;
+    const error = await caught(run(h));
+    expect(error.message).toContain("read the Compose services");
+    expect(windowStarted(h)).toBe(false);
+    expect(ops(h, OLD_IPV4, "stop app")).toBe(0);
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+    expect((await move(h))?.oldAppStoppedAt).toBeUndefined();
+  });
+
+  it.each([
+    { what: "unreadable", result: fail("pg_restore: error: input file is too short") },
+    {
+      what: "different from the old server's dump",
+      result: {
+        exitCode: 0,
+        stdout: `${"0".repeat(64)}  /srv/app/opscrew-move.dump\n`,
+        stderr: "",
+      },
+    },
+  ])("T831: a copied dump that is $what drops nothing and rolls back", async ({ result }) => {
+    const h = await moveHarness({ release: true });
+    const n = h.newServer.ipv4;
+    let failed = false;
+    h.hosts.fail = (ip, op) => {
+      if (ip !== n || op !== "verify dump" || failed) return undefined;
+      failed = true;
+      return result;
+    };
+    const error = await caught(run(h));
+    expect(error.message).toContain("The maintenance window failed");
+    expect(error.message).toContain(n);
+    expect(error.message).toContain("The app on the old server runs again");
+    expect(ops(h, n, "empty db")).toBe(0);
+    expect(ops(h, n, "restore")).toBe(0);
+    expect(ops(h, n, "release")).toBe(0);
+    expect(ops(h, n, "stop app")).toBe(0);
+    expect(h.hosts.host(n).db).toBe("schema of HEAD");
+    const state = await move(h);
+    expect(state?.step).toBe("deployed");
+    expect(state?.oldAppStoppedAt).toBeUndefined();
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+    expect(h.hosts.host(OLD_IPV4).dump).toBeUndefined();
+    expect(h.hosts.host(n).dump).toBeUndefined();
+  });
+
+  it("FR-810: stops before any server command when the recorded servers share an address", async () => {
+    const h = await moveHarness({ interactive: false });
+    // A script without --allow-downtime stops right before the window.
+    const stopped = await drive(h);
+    expect(stopped.step).toBe("deployed");
+    const file = serverAddressesFile(h.paths);
+    const record = JSON.parse(await readFile(file, "utf8"));
+    record.retarget.next = { ipv4: OLD_IPV4, ipv6: h.newServer.ipv6 };
+    await writeFile(file, `${JSON.stringify(record)}\n`);
+    h.events.length = 0;
+    h.cli.allowDowntime = true;
+    const error = await caught(run(h, { allowDowntime: true }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "OpsCrew cannot tell which server is which on this computer: the server being replaced and the new server have the same address in .opscrew/server.json or in the infrastructure state, so it cannot continue the move. Nothing was changed.",
+    );
+    expect(error.hint).toContain(".opscrew/server.json");
+    expect(h.events.filter((e) => e.type === "remote" || e.type === "scp")).toEqual([]);
+    expect(h.hosts.host(OLD_IPV4)).toMatchObject({ app: true, db: "orders before the move" });
+  });
+
+  it.each([
+    { same: "IPv4", next: { ipv4: OLD_IPV4 } },
+    { same: "IPv6", next: { ipv4: "198.51.100.99", ipv6: OLD_IPV6.toUpperCase() } },
+  ])(
+    "FR-810: the maintenance window refuses two servers with the same $same address before any command",
+    async ({ next }) => {
+      const h = await moveHarness();
+      const session = {
+        deps: h.deps,
+        services: h.services,
+        plan: h.plan,
+        command: "opscrew retarget",
+        servers: { from: { ipv4: OLD_IPV4, ipv6: OLD_IPV6 }, next },
+      } as unknown as MoveSession;
+      const error = await caught(maintenanceWindow(session, { allowDowntime: true }));
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain("OpsCrew cannot tell which server is which on this computer");
+      expect(error.message).toContain("Nothing was changed.");
+      expect(h.events).toEqual([]);
     },
   );
 

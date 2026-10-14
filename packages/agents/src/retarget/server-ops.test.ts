@@ -5,16 +5,25 @@ import { describe, expect, it } from "vitest";
 import { sshArgs } from "../shared";
 import { ScriptedRunner } from "../testing";
 import {
+  PRISMA_P3018,
+  RELEASE_OUTPUT_FRAGMENTS,
+  SQLALCHEMY_ERROR,
+} from "./__fixtures__/release-output";
+import {
   copyDump,
   DUMP_PATH,
   databaseSize,
   dumpDatabase,
+  hasReleaseService,
   isAppHealthy,
   moveTimeoutMs,
+  recreateDatabase,
   removeDump,
   restoreDatabase,
+  runRelease,
   startService,
   stopService,
+  verifyDump,
   waitAppHealthy,
 } from "./server-ops";
 
@@ -267,10 +276,31 @@ describe("database", () => {
     expect(remote.calls).toEqual([
       {
         command:
-          "cd /srv/app && chmod 600 /srv/app/opscrew-move.dump && docker compose exec -T db pg_restore -U app -d app --clean --if-exists --no-owner --single-transaction < /srv/app/opscrew-move.dump",
+          "cd /srv/app && chmod 600 /srv/app/opscrew-move.dump && docker compose exec -T db pg_restore -U app -d app --no-owner --single-transaction < /srv/app/opscrew-move.dump",
         timeoutMs: 5 * MIN,
       },
     ]);
+  });
+
+  it("recreates the app database empty from the maintenance database, ending stray sessions", async () => {
+    const remote = new FakeRemote("h");
+    await recreateDatabase(remote, { redact: identity });
+    expect(remote.calls).toEqual([
+      {
+        command:
+          "cd /srv/app && docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'",
+        timeoutMs: 2 * MIN,
+      },
+    ]);
+    const error = await caught(
+      recreateDatabase(
+        new FakeRemote("198.51.100.7", () => fail('psql: error: database "postgres" not found')),
+        { redact: identity },
+      ),
+    );
+    expect(error.code).toBe("COMMAND_FAILED");
+    expect(error.message).toContain("empty the database on 198.51.100.7");
+    expect(error.hint).toContain("docker compose logs --tail 100 db");
   });
 
   it("never puts dump output or row data into errors", async () => {
@@ -426,5 +456,118 @@ describe("copyDump", () => {
     expect(error.message).toContain("Host key verification failed");
     expect(error.message).not.toContain(token);
     expect(error.message).not.toContain("PGDMP");
+  });
+});
+
+describe("release", () => {
+  it("finds the release service in the server's compose file", async () => {
+    const remote = new FakeRemote("h", () => ok("app\nrelease\ndb\ncaddy\n"));
+    expect(await hasReleaseService(remote, { redact: identity })).toBe(true);
+    expect(remote.calls).toEqual([
+      {
+        command: "cd /srv/app && docker compose --profile release config --services",
+        timeoutMs: MIN,
+      },
+    ]);
+    const without = new FakeRemote("h", () => ok("app\ndb\ncaddy\n"));
+    expect(await hasReleaseService(without, { redact: identity })).toBe(false);
+    const similar = new FakeRemote("h", () => ok("app\nrelease-notes\n"));
+    expect(await hasReleaseService(similar, { redact: identity })).toBe(false);
+    const error = await caught(
+      hasReleaseService(new FakeRemote("h", () => fail("no configuration file provided")), {
+        redact: identity,
+      }),
+    );
+    expect(error.message).toContain("read the Compose services on h");
+  });
+
+  it("runs the release service in a one-off container with a size-scaled timeout", async () => {
+    const remote = new FakeRemote("h");
+    await runRelease(remote, 250 * MB);
+    expect(remote.calls).toEqual([
+      {
+        command: "cd /srv/app && docker compose run --rm --no-deps -T release",
+        timeoutMs: moveTimeoutMs(250 * MB),
+      },
+    ]);
+  });
+
+  it.each([
+    { tool: "Prisma P3018", stderr: PRISMA_P3018 },
+    { tool: "SQLAlchemy", stderr: SQLALCHEMY_ERROR },
+  ])("a failed release ($tool) shows the exit code and none of its output", async ({ stderr }) => {
+    const remote = new FakeRemote("198.51.100.7", () => ({
+      exitCode: 1,
+      stdout: stderr,
+      stderr,
+    }));
+    const error = await caught(runRelease(remote, 0));
+    expect(error.code).toBe("COMMAND_FAILED");
+    expect(error.message).toBe(
+      "Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on 198.51.100.7: it exited with code 1 (it ran only on the copy of the database on the new server; your users' data on the old server is untouched).",
+    );
+    expect(error.hint).toContain("The old server keeps serving your users.");
+    expect(error.hint).toContain(
+      "`ssh deploy@198.51.100.7`, then `cd /srv/app && docker compose run --rm --no-deps -T release`",
+    );
+    expect(error.hint).toContain("app.releaseCommand");
+    for (const fragment of RELEASE_OUTPUT_FRAGMENTS) {
+      expect(`${error.message}\n${error.hint}`).not.toContain(fragment);
+    }
+  });
+
+  it("a release that times out or loses the connection says so plainly", async () => {
+    const slow = new FakeRemote("h", () => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: SQLALCHEMY_ERROR,
+      timedOut: true,
+    }));
+    const late = await caught(runRelease(slow, 0));
+    expect(late.message).toContain("it did not finish within 5 minutes");
+    const broken = new FakeRemote("h", () => {
+      throw new Error(SQLALCHEMY_ERROR);
+    });
+    const lost = await caught(runRelease(broken, 0));
+    expect(lost.message).toContain("the SSH connection failed");
+    for (const fragment of RELEASE_OUTPUT_FRAGMENTS) {
+      expect(`${late.message}${late.hint}${lost.message}${lost.hint}`).not.toContain(fragment);
+    }
+  });
+});
+
+describe("verifyDump", () => {
+  const hash = "a".repeat(64);
+
+  it("checks that Postgres can read the dump and returns its SHA-256", async () => {
+    const remote = new FakeRemote("h", () => ok(`${hash}  ${DUMP_PATH}\n`));
+    expect(await verifyDump(remote, 250 * MB, { redact: identity })).toBe(hash);
+    expect(remote.calls).toEqual([
+      {
+        command:
+          "cd /srv/app && docker compose exec -T db pg_restore --list < /srv/app/opscrew-move.dump > /dev/null && sha256sum /srv/app/opscrew-move.dump",
+        timeoutMs: moveTimeoutMs(250 * MB),
+      },
+    ]);
+  });
+
+  it("fails plainly on an unreadable dump or a missing checksum", async () => {
+    const unreadable = await caught(
+      verifyDump(
+        new FakeRemote("198.51.100.7", () =>
+          fail("pg_restore: error: input file does not appear to be a valid archive"),
+        ),
+        0,
+        { redact: identity },
+      ),
+    );
+    expect(unreadable.code).toBe("COMMAND_FAILED");
+    expect(unreadable.message).toContain("read the database dump on 198.51.100.7");
+    expect(unreadable.message).toContain("does not appear to be a valid archive");
+    expect(unreadable.hint).toContain("opscrew retarget");
+    const garbled = await caught(
+      verifyDump(new FakeRemote("h", () => ok("oops\n")), 0, { redact: identity }),
+    );
+    expect(garbled.message).toContain("did not report a checksum");
   });
 });

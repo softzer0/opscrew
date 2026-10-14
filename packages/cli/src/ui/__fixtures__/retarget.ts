@@ -458,7 +458,10 @@ function opOf(command: string): string {
   if (command.includes("--entrypoint wget caddy")) return "health";
   if (command.includes("pg_database_size")) return "db size";
   if (command.includes("pg_dump")) return "dump";
+  if (command.includes("pg_restore --list")) return "verify dump";
   if (command.includes("pg_restore")) return "restore";
+  if (command.includes("DROP DATABASE")) return "empty db";
+  if (command.endsWith("config --services")) return "services?";
   if (command.startsWith("rm -f /srv/app/opscrew-move.dump")) return "rm dump";
   return command;
 }
@@ -522,6 +525,16 @@ export class FakeHosts {
         if (h.dump === undefined) return { exitCode: 1, stdout: "", stderr: "No such file" };
         h.db = h.dump;
         return ok();
+      case "verify dump":
+        if (h.dump === undefined) return { exitCode: 1, stdout: "", stderr: "No such file" };
+        return ok(
+          `${createHash("sha256").update(h.dump).digest("hex")}  /srv/app/opscrew-move.dump\n`,
+        );
+      case "empty db":
+        h.db = "empty";
+        return ok();
+      case "services?":
+        return ok("app\ndb\ncaddy\n");
       case "rm dump":
         h.dump = undefined;
         return ok();

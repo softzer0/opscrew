@@ -6,13 +6,17 @@ import {
   DUMP_PATH,
   databaseSize,
   dumpDatabase,
+  hasReleaseService,
+  recreateDatabase,
   removeDump,
   restoreDatabase,
+  runRelease,
   startService,
   stopService,
+  verifyDump,
   waitAppHealthy,
 } from "./server-ops";
-import { oldServer } from "./servers";
+import { assertDistinctServers, oldServer } from "./servers";
 import {
   auditMove,
   auditStep,
@@ -174,16 +178,32 @@ export async function recoverInterruptedWindow(session: MoveBase): Promise<void>
 }
 
 /** The commands of the window, listed in its approval. */
-function windowCommands(oldHost: string, newHost: string, port: number, path: string): string[] {
+function windowCommands(
+  oldHost: string,
+  newHost: string,
+  port: number,
+  path: string,
+  release: boolean,
+): string[] {
   return [
     `On the old server (${oldHost}), in /srv/app:`,
     "  docker compose stop app",
     `  docker compose exec -T db pg_dump -U app -Fc app > ${DUMP_PATH}`,
     "Between the servers, through this computer (OpenSSH):",
     `  scp -3 deploy@${oldHost}:${DUMP_PATH} deploy@${newHost}:${DUMP_PATH}`,
+    `On both servers, before anything is dropped: docker compose exec -T db pg_restore --list < ${DUMP_PATH} > /dev/null && sha256sum ${DUMP_PATH}`,
+    "  (the copy must be readable and match the dump on the old server)",
     `On the new server (${newHost}), in /srv/app:`,
     "  docker compose stop app",
-    `  docker compose exec -T db pg_restore -U app -d app --clean --if-exists --no-owner --single-transaction < ${DUMP_PATH}`,
+    "  docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'",
+    "    (recreates the new server's database empty, so afterwards it holds exactly the copy)",
+    `  docker compose exec -T db pg_restore -U app -d app --no-owner --single-transaction < ${DUMP_PATH}`,
+    ...(release
+      ? [
+          "  docker compose run --rm --no-deps -T release",
+          "    (app.releaseCommand migrates the copied data to the version deployed on the new server; the app stays offline while it runs)",
+        ]
+      : []),
     `  rm -f ${DUMP_PATH} (on both servers)`,
     `  docker compose up -d app, then a health check of http://app:${port}${path}`,
     "If any of these fails, OpsCrew deletes the dump files and starts the app on the old server again.",
@@ -198,9 +218,11 @@ function stopped(session: MoveSession, next: string[]): RetargetResult {
 /**
  * The maintenance window (self-hosted Postgres only): database size and expected downtime →
  * `remote-exec` approval listing the commands (scripts need `allowDowntime`) → `oldAppStoppedAt`
- * → stop the old app → dump → copy server to server → stop the new app → restore → delete both
- * dumps → start the new app → health check → `migrated`. Any failure deletes the dumps, starts the
- * old app again, clears `oldAppStoppedAt` and stops with the cause (the step stays `deployed`).
+ * → stop the old app → dump → copy server to server → check that the copy is readable and
+ * matches the dump → stop the new app → recreate the new database empty → restore → the release command, when the new server's compose file has a
+ * `release` service → delete both dumps → start the new app → health check → `migrated`. Any
+ * failure (a failed release command too) deletes the dumps, starts the old app again, clears
+ * `oldAppStoppedAt` and stops with the cause (the step stays `deployed`).
  */
 export async function maintenanceWindow(
   session: MoveSession,
@@ -209,6 +231,8 @@ export async function maintenanceWindow(
   switchPlanHash?: string,
 ): Promise<"done" | RetargetResult> {
   const { deps, plan } = session;
+  // Before any command reaches a server: the window drops the new server's database.
+  assertDistinctServers(session.servers, session.command);
   const move = moveOf(session);
   const next = session.servers.next;
   if (next === undefined) return stopped(session, [`Run \`${RUN_COMMAND}\` again.`]);
@@ -218,6 +242,9 @@ export async function maintenanceWindow(
 
   deps.reporter.step("Measuring the database on the old server");
   const size = await databaseSize(old, ops);
+  // The version deployed on the new server may be newer than the old server's: its release
+  // command (the deploy runs it too) migrates the copied data forward before the app starts.
+  const release = await hasReleaseService(fresh, ops);
   const minutes = downtimeMinutes(size);
   const downtime = `about ${minutes} minutes`;
   // Without managed DNS the old app stays stopped after the copy until the user's switch is live.
@@ -248,7 +275,13 @@ export async function maintenanceWindow(
     kind: "remote-exec",
     title: `${MAINTENANCE_WINDOW_TITLE} stop ${plan.app.name} on the old server and copy its database (${sizeText(size)}) to the new server (${byHand ? `downtime: ${downtime} for the copy, plus ${plan.dns.domain !== undefined ? "your DNS change" : "your users' move to the new address"}` : `${downtime} of downtime`})`,
     details: [
-      ...windowCommands(oldServer(session).ipv4, next.ipv4, plan.app.port, plan.app.healthPath),
+      ...windowCommands(
+        oldServer(session).ipv4,
+        next.ipv4,
+        plan.app.port,
+        plan.app.healthPath,
+        release,
+      ),
       ...(byHand ? ["", ...warning] : []),
     ].join("\n"),
   });
@@ -281,6 +314,7 @@ export async function maintenanceWindow(
     await audited("stop app", old.host, () => stopService(old, "app", ops));
     deps.reporter.step(`Copying the database (${sizeText(size)}) to the new server`);
     await audited("dump database", old.host, () => dumpDatabase(old, size, ops));
+    const dumped = await verifyDump(old, size, ops);
     await audited("copy database dump", `${old.host} -> ${fresh.host}`, () =>
       copyDump(session.services.runner ?? deps.runner, {
         ...ops,
@@ -291,10 +325,39 @@ export async function maintenanceWindow(
         sizeBytes: size,
       }),
     );
-    // The new app's database connections would block `pg_restore --clean`.
+    // The new database is dropped below: only after a copy Postgres can read and that matches
+    // the dump on the old server byte for byte.
+    const copied = await verifyDump(fresh, size, ops);
+    if (copied !== dumped) {
+      throw new OpsCrewError(
+        "COMMAND_FAILED",
+        `The database dump copied to the new server (${fresh.host}) differs from the dump on the old server (${old.host}).`,
+        {
+          hint: `Check the free disk space on both servers (\`df -h /srv/app\`); \`${RUN_COMMAND}\` makes and copies a new dump.`,
+        },
+      );
+    }
+    await auditMove(session, {
+      kind: "remote-exec",
+      action: "verify database dump",
+      target: fresh.host,
+      decision: "approved",
+      detail: "the copied dump is readable and matches the dump on the old server",
+    });
+    // The new app must not use the database while it is replaced and migrated.
     newAppStopped = true;
     await audited("stop app", fresh.host, () => stopService(fresh, "app", ops));
+    // The new server's database holds what its deploy created (at HEAD, possibly newer than the
+    // old server's version): restoring over it would mix both schemas. It is recreated empty, so
+    // the restore holds exactly the old server's data and its migration table.
+    await audited("empty database", fresh.host, () => recreateDatabase(fresh, ops));
     await audited("restore database", fresh.host, () => restoreDatabase(fresh, size, ops));
+    if (release) {
+      deps.reporter.step(
+        "Running the release command (app.releaseCommand) on the copied database, migrating it to the version on the new server",
+      );
+      await audited("run release command", fresh.host, () => runRelease(fresh, size));
+    }
     await audited("remove database dump", old.host, () => removeDump(old, ops));
     await audited("remove database dump", fresh.host, () => removeDump(fresh, ops));
     deps.reporter.step("Starting the app on the new server");

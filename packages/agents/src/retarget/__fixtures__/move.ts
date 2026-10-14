@@ -470,7 +470,11 @@ function opOf(command: string): string {
   if (command.includes("--entrypoint wget caddy")) return "health";
   if (command.includes("pg_database_size")) return "db size";
   if (command.includes("pg_dump")) return "dump";
+  if (command.includes("pg_restore --list")) return "verify dump";
   if (command.includes("pg_restore")) return "restore";
+  if (command.includes("DROP DATABASE")) return "empty db";
+  if (command.endsWith("config --services")) return "services?";
+  if (command.endsWith("docker compose run --rm --no-deps -T release")) return "release";
   if (command.startsWith("rm -f /srv/app/opscrew-move.dump")) return "rm dump";
   return command;
 }
@@ -481,6 +485,12 @@ export class FakeHosts {
   /** Makes an operation fail (a result) or the connection break (an error). */
   fail: ((host: string, op: string) => CommandResult | Error | undefined) | undefined;
   dbSize = 52_428_800;
+  /**
+   * The deployed compose file has a `release` service (the plan has `app.releaseCommand`): the
+   * deploy migrates the new server's empty database to HEAD, and `release` marks the database
+   * as migrated.
+   */
+  release = false;
 
   constructor(readonly events: MoveEvent[]) {}
 
@@ -533,7 +543,31 @@ export class FakeHosts {
           return { exitCode: 1, stdout: "", stderr: 'pg_restore: error: database "app" is being accessed by other users' };
         }
         if (h.dump === undefined) return { exitCode: 1, stdout: "", stderr: "No such file" };
+        // Without `--clean`, a restore onto a database that holds tables fails.
+        if (h.db !== "empty") {
+          return {
+            exitCode: 1,
+            stdout: "",
+            stderr: 'pg_restore: error: could not execute query: ERROR:  relation "orders" already exists',
+          };
+        }
         h.db = h.dump;
+        return ok();
+      case "verify dump":
+        if (h.dump === undefined) return { exitCode: 1, stdout: "", stderr: "No such file" };
+        return ok(
+          `${createHash("sha256").update(h.dump).digest("hex")}  /srv/app/opscrew-move.dump\n`,
+        );
+      case "empty db":
+        h.db = "empty";
+        return ok();
+      case "services?":
+        return ok(this.release ? "app\nrelease\ndb\ncaddy\n" : "app\ndb\ncaddy\n");
+      case "release":
+        if (!this.release) {
+          return { exitCode: 1, stdout: "", stderr: "no such service: release" };
+        }
+        h.db = `${h.db} (migrated)`;
         return ok();
       case "rm dump":
         h.dump = undefined;
@@ -558,9 +592,13 @@ export class FakeHosts {
     return { exitCode: 0, stdout: "", stderr: "" };
   }
 
-  /** What the deploy workflow does on `ip`: the app and Caddy run, with an empty database. */
+  /**
+   * What the deploy workflow does on `ip`: the app and Caddy run, with an empty database (that
+   * the release command, when there is one, migrated to the schema of HEAD).
+   */
   deploy(ip: string): void {
     const h = this.host(ip);
+    if (this.release) h.db = "schema of HEAD";
     h.app = true;
     h.caddy = true;
   }
@@ -667,6 +705,8 @@ export interface MoveHarnessOptions {
   dns?: "cloudflare" | "other" | "none";
   postgres?: boolean;
   interactive?: boolean;
+  /** The plan has `app.releaseCommand`, so the deployed compose file has a `release` service. */
+  release?: boolean;
 }
 
 /** A provisioned project (git repo, plan, state, keys) with every fake a move talks to. */
@@ -684,7 +724,11 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
   const plan: DeployPlan = DeployPlanSchema.parse({
     ...base,
     // Without the Postgres container nothing derives DATABASE_URL (design leaves it out).
-    app: { ...base.app, env: base.app.env.filter((v) => postgres || v.name !== "DATABASE_URL") },
+    app: {
+      ...base.app,
+      env: base.app.env.filter((v) => postgres || v.name !== "DATABASE_URL"),
+      ...(options.release === true ? { releaseCommand: "python manage.py migrate --noinput" } : {}),
+    },
     ...(dns === "other" ? { dns: { provider: "none", domain: DOMAIN, proxied: false } } : {}),
     deployment: {
       ...base.deployment,
@@ -742,6 +786,7 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
   const handler = new RecordingHandler(events);
   const approvals = new ApprovalGate({ handler, store: new MemoryApprovalStore(), audit, clock });
   const hosts = new FakeHosts(events);
+  hosts.release = options.release === true;
   Object.assign(hosts.host(SERVER_IPV4), { app: true, caddy: true, db: "orders before the move" });
   const engine = new FakeMoveEngine(events, { from, dns: dns === "cloudflare" });
   const github = new FakeMoveGitHub(events, hosts);

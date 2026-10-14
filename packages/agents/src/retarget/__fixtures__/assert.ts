@@ -46,7 +46,10 @@ export function trail(events: readonly MoveEvent[]): string[] {
         return [`apply ${parts.join(" ")}`];
       }
       case "remote":
-        return e.op === "ready?" || e.op === "health" ? [] : [`${e.host} ${e.op}`];
+        // Read-only checks are left out.
+        return ["ready?", "health", "services?", "verify dump"].includes(e.op)
+          ? []
+          : [`${e.host} ${e.op}`];
       case "scp":
         return [`scp ${e.from} -> ${e.to}`];
       case "dispatch":

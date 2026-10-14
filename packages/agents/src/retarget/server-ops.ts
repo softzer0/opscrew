@@ -294,8 +294,28 @@ export async function dumpDatabase(
 }
 
 /**
- * Restores {@link DUMP_PATH} into the `app` database in one transaction, replacing existing
- * objects. Timeout scaled by {@link moveTimeoutMs}.
+ * Drops the `app` database and creates it again empty (owner `app`, as the Postgres image's
+ * first start did), from the `postgres` maintenance database. `WITH (FORCE)` ends any session
+ * still connected. Everything goes: every schema, extension and migration table, so a restore
+ * afterwards holds exactly the dump.
+ */
+export async function recreateDatabase(
+  remote: RemoteExec,
+  options: ServerOpOptions,
+): Promise<void> {
+  await runStep(
+    remote,
+    `cd /srv/app && docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'`,
+    2 * MINUTE,
+    { what: "empty the database", hint: dbHint(remote.host), filter: withoutData },
+    options.redact,
+  );
+}
+
+/**
+ * Restores {@link DUMP_PATH} into the `app` database in one transaction. The database must be
+ * empty ({@link recreateDatabase}); nothing is dropped first. Timeout scaled by
+ * {@link moveTimeoutMs}.
  */
 export async function restoreDatabase(
   remote: RemoteExec,
@@ -304,11 +324,95 @@ export async function restoreDatabase(
 ): Promise<void> {
   await runStep(
     remote,
-    `cd /srv/app && chmod 600 ${DUMP_PATH} && docker compose exec -T db pg_restore -U app -d app --clean --if-exists --no-owner --single-transaction < ${DUMP_PATH}`,
+    `cd /srv/app && chmod 600 ${DUMP_PATH} && docker compose exec -T db pg_restore -U app -d app --no-owner --single-transaction < ${DUMP_PATH}`,
     moveTimeoutMs(sizeBytes),
     { what: "restore the database", hint: dbHint(remote.host), filter: withoutData },
     options.redact,
   );
+}
+
+/** The Compose service that runs `app.releaseCommand` (only `docker compose run` starts it). */
+const RELEASE_SERVICE = "release";
+const RELEASE_COMMAND = `docker compose run --rm --no-deps -T ${RELEASE_SERVICE}`;
+
+/**
+ * True when `/srv/app/compose.yaml` on the server defines the `release` service: the deployed
+ * version has a release command, and its deploy workflow runs it before each new version starts.
+ */
+export async function hasReleaseService(
+  remote: RemoteExec,
+  options: ServerOpOptions,
+): Promise<boolean> {
+  const result = await runStep(
+    remote,
+    `cd /srv/app && docker compose --profile ${RELEASE_SERVICE} config --services`,
+    MINUTE,
+    { what: "read the Compose services", hint: composePsHint(remote.host) },
+    options.redact,
+  );
+  return result.stdout.split(/\r?\n/).some((line) => line.trim() === RELEASE_SERVICE);
+}
+
+/**
+ * Runs the `release` service (`app.releaseCommand`, usually the database migrations) once in a
+ * one-off container of the deployed image, without starting other services. Timeout scaled by
+ * {@link moveTimeoutMs}: migrations of the copied data take longer on a larger database.
+ *
+ * A failure names only the exit code: migration output quotes rows and SQL parameters (Prisma
+ * `DbError { detail: … }`, SQLAlchemy `[parameters: …]`), so none of it reaches errors, logs or
+ * the audit log. The hint says how to see it on the server.
+ */
+export async function runRelease(remote: RemoteExec, sizeBytes: number): Promise<void> {
+  const timeoutMs = moveTimeoutMs(sizeBytes);
+  const failed = (why: string) =>
+    new OpsCrewError(
+      "COMMAND_FAILED",
+      `Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on ${remote.host}: ${why} (it ran only on the copy of the database on the new server; your users' data on the old server is untouched).`,
+      {
+        hint: `The old server keeps serving your users. See the release command's full output on the new server: \`ssh deploy@${remote.host}\`, then \`cd /srv/app && ${RELEASE_COMMAND}\` (it runs on the copy only). Fix the release command (app.releaseCommand in opscrew/plan.yaml) or the app's migrations so they run on the old server's data, and push the fix (the deploy workflow now deploys to the new server).`,
+      },
+    );
+  let result: CommandResult;
+  try {
+    result = await remote.run(`cd /srv/app && ${RELEASE_COMMAND}`, { timeoutMs });
+  } catch {
+    throw failed("the SSH connection failed");
+  }
+  if (result.timedOut) throw failed(`it did not finish within ${duration(timeoutMs)}`);
+  if (result.exitCode !== 0) throw failed(`it exited with code ${result.exitCode}`);
+}
+
+/**
+ * Checks the dump at {@link DUMP_PATH}: Postgres can read its table of contents
+ * (`pg_restore --list`), and returns its SHA-256, so the copy on the new server can be compared
+ * with the dump on the old one before anything is dropped. Timeout scaled by {@link moveTimeoutMs}.
+ */
+export async function verifyDump(
+  remote: RemoteExec,
+  sizeBytes: number,
+  options: ServerOpOptions,
+): Promise<string> {
+  const step = {
+    what: "read the database dump",
+    hint: `The dump is incomplete or damaged; OpsCrew makes a new one when you run \`opscrew retarget\` again. If it fails again, check the free disk space on both servers (\`ssh deploy@${remote.host} df -h /srv/app\`).`,
+    filter: withoutData,
+  };
+  const result = await runStep(
+    remote,
+    `cd /srv/app && docker compose exec -T db pg_restore --list < ${DUMP_PATH} > /dev/null && sha256sum ${DUMP_PATH}`,
+    moveTimeoutMs(sizeBytes),
+    step,
+    options.redact,
+  );
+  const hash = /^([0-9a-f]{64})\s/.exec(result.stdout.trim())?.[1];
+  if (hash === undefined) {
+    throw failure(
+      { ...step, where: `on ${remote.host}` },
+      "sha256sum did not report a checksum",
+      options.redact,
+    );
+  }
+  return hash;
 }
 
 /** Deletes {@link DUMP_PATH}; a missing file is not an error. */
