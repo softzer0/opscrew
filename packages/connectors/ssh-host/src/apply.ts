@@ -421,6 +421,22 @@ async function claimCheck(ctx: Context): Promise<void> {
   throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
 }
 
+/**
+ * The error of a failed step with `applied`: the steps of this plan that changed the server before
+ * it (in order), so callers can audit them. Step ids only; never a secret.
+ */
+function withApplied(error: unknown, applied: readonly HostStepId[]): unknown {
+  if (typeof error === "object" && error !== null) {
+    Object.defineProperty(error, "applied", {
+      value: [...applied],
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return error;
+}
+
 function refuse(message: string, hint: string): OpsCrewError {
   return new OpsCrewError("PHASE_PRECONDITION", message, { hint });
 }
@@ -428,7 +444,8 @@ function refuse(message: string, hint: string): OpsCrewError {
 /**
  * Applies an approved host plan. Refuses with PLAN_HASH_MISMATCH when the plan's hash is not
  * `approvedHash`, and with PHASE_PRECONDITION when it has findings or blocked steps or a secret
- * it needs is missing.
+ * it needs is missing. When a step fails, the error carries `applied: HostStepId[]`, the steps
+ * that changed the server before it.
  * Secrets go to the server only on stdin, into root-only files; they never appear in commands,
  * records or errors. Every change is recorded in `/etc/opscrew/host.json` before it is made.
  */
@@ -554,7 +571,13 @@ export async function applyHostPlan(
       skipped.push(step.id);
       continue;
     }
-    if (await runStep(ctx, step, work.scripts)) applied.push(step.id);
+    let changed: boolean;
+    try {
+      changed = await runStep(ctx, step, work.scripts);
+    } catch (error) {
+      throw withApplied(error, applied);
+    }
+    if (changed) applied.push(step.id);
     else skipped.push(step.id);
   }
   return { applied, skipped };

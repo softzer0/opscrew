@@ -773,6 +773,34 @@ describe("undo", () => {
   });
 });
 
+describe("apply errors name the steps applied before the failure", () => {
+  it("a failing step's error carries `applied`, in order, without the failed step", async () => {
+    const fake = new FakeHost();
+    const plan = await planFor(fake);
+    fake.failScripts.set("fail2ban.apply", "fail2ban did not start");
+    const error = await rejection(applyApproved(fake, plan));
+    const before = plan.steps
+      .slice(
+        0,
+        plan.steps.findIndex((step) => step.id === "fail2ban"),
+      )
+      .filter((step) => step.state === "change")
+      .map((step) => step.id);
+    expect(before).toContain("ufw");
+    expect((error as OpsCrewError & { applied?: unknown }).applied).toEqual(before);
+    expect(error.message).toContain("fail2ban did not start");
+  });
+
+  it("is empty when the first change fails", async () => {
+    const fake = new FakeHost();
+    const plan = await planFor(fake);
+    const first = plan.steps.find((step) => step.state === "change")?.id as string;
+    fake.failScripts.set(`${first}.apply`, "nope");
+    const error = await rejection(applyApproved(fake, plan));
+    expect((error as OpsCrewError & { applied?: unknown }).applied).toEqual([]);
+  });
+});
+
 describe("planPortainer (servers OpsCrew created)", () => {
   it("runs as the login without root and writes no host record", async () => {
     const fake = new FakeHost({ login: "deploy", sudo: "none" });
