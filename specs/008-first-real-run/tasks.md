@@ -93,7 +93,7 @@ description: "Tasks for 008-first-real-run"
   - Accept: FR-811, with the same rules as T820; the server-rendered apps serve a health route the framework's own way (Nuxt server route, SvelteKit `+server.ts`, React Router resource route, Astro endpoint).
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: medium
-- [ ] T822 [P] The live test deploys any app: `OPSCREW_E2E_APP` is an example name (default `nextjs-postgres`) or `github:<owner>/<repo>@<commit>` (a public repository fetched at that full commit SHA and committed into the throwaway repository; the source repository is never written to); the test name, commit message and logs name the app; the health check uses the plan's health path; `docs/e2e.md` documents the variable and how to run the matrix one app after another
+- [X] T822 [P] The live test deploys any app: `OPSCREW_E2E_APP` is an example name (default `nextjs-postgres`) or `github:<owner>/<repo>@<commit>` (a public repository fetched at that full commit SHA and committed into the throwaway repository; the source repository is never written to); the test name, commit message and logs name the app; the health check uses the plan's health path; `docs/e2e.md` documents the variable and how to run the matrix one app after another
   - Owns: `packages/cli/test/live/live.test.ts`, `docs/e2e.md`
   - Accept: FR-811; without `OPSCREW_E2E_APP` the pass is unchanged; an unknown example or a ref that is not a full commit SHA stops before any cloud call with a plain message.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`

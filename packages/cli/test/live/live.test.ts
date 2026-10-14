@@ -2,12 +2,12 @@
  * Live end-to-end test against a real cloud (Hetzner Cloud and/or DigitalOcean), GitHub (a
  * throwaway repository) and optionally Cloudflare. Each provider runs only when its
  * OPSCREW_E2E_* token is set; see docs/e2e.md. It creates a real server for a few minutes (cents)
- * and always tears it down, even when a step fails.
+ * and always tears it down, even when a step fails. OPSCREW_E2E_APP picks the app to deploy.
  */
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { existsSync, statSync } from "node:fs";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readServerAddresses } from "@opscrew/agents";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
@@ -30,7 +30,7 @@ const withDns = Boolean(E2E.cloudflareToken && E2E.domain);
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const CLI = join(REPO_ROOT, "packages/cli/dist/opscrew.js");
-const EXAMPLE = join(REPO_ROOT, "examples/nextjs-postgres");
+const EXAMPLES = join(REPO_ROOT, "examples");
 const HETZNER_API = "https://api.hetzner.cloud/v1";
 const DIGITALOCEAN_API = "https://api.digitalocean.com/v2";
 const GITHUB_API = "https://api.github.com";
@@ -38,6 +38,148 @@ const GITHUB_API = "https://api.github.com";
 const runner = new NodeCommandRunner();
 const minutes = (n: number) => n * 60_000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The app a live pass deploys, from OPSCREW_E2E_APP. */
+type E2eApp =
+  | { kind: "example"; name: string; label: string }
+  | { kind: "github"; owner: string; repo: string; commit: string; label: string };
+
+const DEFAULT_E2E_APP = "nextjs-postgres";
+const GITHUB_APP = /^github:([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)@(.*)$/;
+
+/**
+ * Parses OPSCREW_E2E_APP: an example name under `examples/` (default `nextjs-postgres`) or
+ * `github:<owner>/<repo>@<40-character commit SHA>`. Throws a plain message for anything else.
+ */
+function parseE2eApp(value: string | undefined, exampleExists: (name: string) => boolean): E2eApp {
+  const raw = value?.trim() || DEFAULT_E2E_APP;
+  if (raw.startsWith("github:")) {
+    const match = GITHUB_APP.exec(raw);
+    const [, owner = "", repo = "", commit = ""] = match ?? [];
+    if (!match || repo === "." || repo === "..") {
+      throw new Error(
+        `OPSCREW_E2E_APP="${raw}" is not github:<owner>/<repo>@<commit>, for example github:octocat/hello-world@<40-character commit SHA>.`,
+      );
+    }
+    if (!/^[0-9a-fA-F]{40}$/.test(commit)) {
+      throw new Error(
+        `OPSCREW_E2E_APP="${raw}" must pin a full 40-character commit SHA after "@", not "${commit}" (branches, tags and short SHAs can move). Copy it from the commit page on GitHub.`,
+      );
+    }
+    const sha = commit.toLowerCase();
+    return { kind: "github", owner, repo, commit: sha, label: `github:${owner}/${repo}@${sha}` };
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(raw) || !exampleExists(raw)) {
+    throw new Error(
+      `OPSCREW_E2E_APP="${raw}" is not an example under examples/ and not github:<owner>/<repo>@<commit>. Use a folder name from examples/, for example ${DEFAULT_E2E_APP}.`,
+    );
+  }
+  return { kind: "example", name: raw, label: `examples/${raw}` };
+}
+
+const isExample = (name: string) => {
+  try {
+    return statSync(join(EXAMPLES, name)).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/** The parsed app, or the reason OPSCREW_E2E_APP was refused (each pass stops on it first). */
+const APP: E2eApp | Error = (() => {
+  try {
+    return parseE2eApp(process.env.OPSCREW_E2E_APP, isExample);
+  } catch (error) {
+    return error as Error;
+  }
+})();
+const APP_LABEL =
+  APP instanceof Error ? `OPSCREW_E2E_APP=${process.env.OPSCREW_E2E_APP}` : APP.label;
+const isDefaultApp =
+  !(APP instanceof Error) && APP.kind === "example" && APP.name === DEFAULT_E2E_APP;
+
+describe("OPSCREW_E2E_APP", () => {
+  const exists = (name: string) => ["nextjs-postgres", "fastapi-redis"].includes(name);
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+
+  it("defaults to examples/nextjs-postgres", () => {
+    for (const value of [undefined, "", "  "]) {
+      expect(parseE2eApp(value, exists)).toEqual({
+        kind: "example",
+        name: "nextjs-postgres",
+        label: "examples/nextjs-postgres",
+      });
+    }
+  });
+
+  it("accepts an example name", () => {
+    expect(parseE2eApp("fastapi-redis", exists).label).toBe("examples/fastapi-redis");
+  });
+
+  it("accepts a public repository at a full commit SHA", () => {
+    expect(parseE2eApp(`github:softzer0/slog_cvrp_app@${sha.toUpperCase()}`, exists)).toEqual({
+      kind: "github",
+      owner: "softzer0",
+      repo: "slog_cvrp_app",
+      commit: sha,
+      label: `github:softzer0/slog_cvrp_app@${sha}`,
+    });
+  });
+
+  it("refuses an unknown example or a path", () => {
+    expect(() => parseE2eApp("rails-app", exists)).toThrow(/not an example under examples\//);
+    expect(() => parseE2eApp("../nextjs-postgres", exists)).toThrow(/not an example/);
+    expect(() => parseE2eApp("README.md", () => false)).toThrow(/not an example/);
+  });
+
+  it("refuses a ref that is not a full commit SHA", () => {
+    for (const ref of ["main", "v1.0.0", sha.slice(0, 7), `${sha}0`, ""]) {
+      expect(() => parseE2eApp(`github:octocat/hello-world@${ref}`, exists)).toThrow(
+        /full 40-character commit SHA/,
+      );
+    }
+  });
+
+  it("refuses a malformed repository", () => {
+    for (const value of [`github:octocat@${sha}`, `github:/x@${sha}`, `github:a/b/c@${sha}`]) {
+      expect(() => parseE2eApp(value, exists)).toThrow(/not github:<owner>\/<repo>@<commit>/);
+    }
+  });
+});
+
+/**
+ * Puts the app's files into `dest`: a fresh copy of the example, or the public repository fetched
+ * at exactly the pinned commit without its `.git` (read-only: nothing is ever pushed to it).
+ */
+async function materializeApp(app: E2eApp, dest: string): Promise<void> {
+  if (app.kind === "example") {
+    await materializeFixture(join(EXAMPLES, app.name), dest);
+    return;
+  }
+  const source = await mkdtemp(join(tmpdir(), "opscrew-e2e-source-"));
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  const git = async (...args: string[]) => {
+    const result = await runner.run("git", ["-C", source, ...args], {
+      env,
+      timeoutMs: minutes(5),
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Could not fetch ${app.label} (git ${args[0]}): ${result.stderr.trim()}. Check that the repository is public and the commit exists.`,
+      );
+    }
+    return result.stdout.trim();
+  };
+  await git("init", "-q");
+  const url = `https://github.com/${app.owner}/${app.repo}.git`;
+  await git("fetch", "-q", "--depth", "1", url, app.commit);
+  await git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", "FETCH_HEAD");
+  expect(await git("rev-parse", "HEAD"), "the fetched commit").toBe(app.commit);
+  await cp(source, dest, {
+    recursive: true,
+    filter: (path) => !relative(source, path).split(sep).includes(".git"),
+  });
+}
 
 async function api(
   base: string,
@@ -194,7 +336,7 @@ async function retryDelete(request: () => Promise<{ status: number }>): Promise<
 
 for (const provider of [HETZNER, DIGITALOCEAN]) {
   describe.skipIf(!(provider.token && withGitHub))(`live end-to-end on ${provider.name}`, () => {
-    it("deploys examples/nextjs-postgres from a GitHub repository and tears everything down", {
+    it(`deploys ${APP_LABEL} from a GitHub repository and tears everything down`, {
       timeout: minutes(75),
     }, async () => {
       await deployAndTearDown(provider);
@@ -218,7 +360,8 @@ async function retargetUntilDone(run: LiveRun, first: string[], next: string[]):
   throw new Error("opscrew retarget did not finish after 12 runs");
 }
 
-describe.skipIf(!(HETZNER.token && DIGITALOCEAN.token && withGitHub))(
+// The move checks a row in the app's Postgres service, so it runs with the default app only.
+describe.skipIf(!(HETZNER.token && DIGITALOCEAN.token && withGitHub && isDefaultApp))(
   "live move from Hetzner Cloud to DigitalOcean",
   () => {
     it("keeps the data, switches DNS, finishes the move and tears everything down", {
@@ -279,6 +422,9 @@ async function deployAndTearDown(
   provider: LiveProvider,
   options: DeployOptions = {},
 ): Promise<void> {
+  // An invalid OPSCREW_E2E_APP stops here, before any GitHub or cloud call.
+  if (APP instanceof Error) throw APP;
+  const app = APP;
   expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
   const work = await mkdtemp(join(tmpdir(), "opscrew-e2e-"));
   const repo = join(work, "repo");
@@ -344,8 +490,9 @@ async function deployAndTearDown(
     return (merged.json as { sha: string }).sha;
   };
 
-  // A fresh copy of the example becomes the throwaway repository's main branch.
-  await materializeFixture(EXAMPLE, repo);
+  // A fresh copy of the app becomes the throwaway repository's main branch.
+  console.log(`OpsCrew E2E: deploying ${app.label} on ${provider.name}`);
+  await materializeApp(app, repo);
   await writeFile(join(work, "production.env"), "");
   await git("init", "-q", "-b", "main");
   await git("config", "user.name", "OpsCrew E2E");
@@ -354,7 +501,7 @@ async function deployAndTearDown(
   await git("config", "http.https://github.com/.extraheader", `AUTHORIZATION: basic ${basic}`);
   await git("remote", "add", "origin", `https://github.com/${repoName}.git`);
   await git("add", "-A");
-  await git("commit", "-q", "-m", "e2e: examples/nextjs-postgres");
+  await git("commit", "-q", "-m", `e2e: ${app.label}`);
   await git("push", "-q", "--force", "origin", "main");
   await resetRepository(repoName);
 
@@ -421,11 +568,21 @@ async function deployAndTearDown(
 
     const verify = await opscrew("verify");
     expect(verify.exitCode, verify.output).toBe(0);
+    // The app answers on the health path OpsCrew planned for it (not a framework default).
+    const deployed = await readArtifact("plan", join(repo, "opscrew/plan.yaml"));
+    const ipv4 = (await readServerAddresses(resolveProjectPaths(repo, { env }))).deployment?.ipv4;
+    const health = new URL(deployed.app.healthPath, deployed.deployment.url ?? `http://${ipv4}`);
+    const answered = await fetch(health);
+    console.log(
+      `OpsCrew E2E: ${app.label} answered ${answered.status} on ${deployed.app.healthPath}`,
+    );
+    expect(answered.status, `GET ${deployed.app.healthPath}`).toBe(200);
     const secure = await opscrew("secure");
     expect(secure.output).toContain("SECURITY_REPORT.md");
     const drift = await opscrew("drift");
     expect(drift.exitCode, drift.output).toBe(0);
     await expectAddressUnpublished(repo, repoName, env);
+    console.log(`OpsCrew E2E: ${app.label} deployed, verified, secured and drift-free`);
 
     if (options.afterDeploy !== undefined) {
       const paths = resolveProjectPaths(repo, { env });

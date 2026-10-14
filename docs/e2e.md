@@ -3,7 +3,8 @@
 `packages/cli/test/live/live.test.ts` runs the whole OpsCrew flow against real services, once for
 each cloud provider whose token is set (Hetzner Cloud, DigitalOcean, or both, one after the other):
 
-1. It force-pushes `examples/nextjs-postgres` to the `main` branch of a throwaway GitHub repository,
+1. It force-pushes the app (`examples/nextjs-postgres` by default, see
+   [Choosing the app](#choosing-the-app)) to the `main` branch of a throwaway GitHub repository,
    then closes its open pull requests and deletes every other branch, so an earlier run never
    changes this one.
 2. It runs `analyze --no-ai`, then `interview --answers` (with the provider and
@@ -11,7 +12,8 @@ each cloud provider whose token is set (Hetzner Cloud, DigitalOcean, or both, on
 3. It runs `adapt --no-ai --yes` and merges that pull request through the GitHub API.
 4. It runs `provision --plan-only --yes` and then `provision --approve <hash> --yes`, which creates a real server (or Droplet).
 5. It merges the deployment pull request and waits for the `opscrew-deploy.yml` workflow to succeed.
-6. It runs `verify`, `secure` and `drift` (which must report no differences).
+6. It runs `verify`, checks that the app answers 200 on the health path from `opscrew/plan.yaml`,
+   then runs `secure` and `drift` (which must report no differences).
 7. It tears everything down with `opscrew destroy --confirm`.
 
 When both `OPSCREW_E2E_HCLOUD_TOKEN` and `OPSCREW_E2E_DIGITALOCEAN_TOKEN` are set, a third pass
@@ -20,7 +22,8 @@ SSH, moves the deployment to DigitalOcean non-interactively (each plan approved 
 previous run printed, `--allow-downtime`, and `--dns-switched` without a Cloudflare domain), reads
 the row back on the new server (SC-501), finishes the move (`--finish --confirm <name>`) and tears
 everything down. If the move stops half-way, the cleanup deletes what is left on both providers
-through their APIs.
+through their APIs. The move reads its row from the app's Postgres service, so it runs only with
+the default app.
 
 The test is skipped unless its environment variables are set, so normal runs and CI never start it.
 
@@ -30,6 +33,7 @@ The test is skipped unless its environment variables are set, so normal runs and
 |---|---|
 | `OPSCREW_E2E_HCLOUD_TOKEN` | Runs the Hetzner Cloud pass. API token (Read & Write); use a separate, empty project. |
 | `OPSCREW_E2E_DIGITALOCEAN_TOKEN` | Runs the DigitalOcean pass. Personal access token with the custom scopes listed in `specs/004-digitalocean/research.md` (or Full Access); use a separate team or an account with nothing else in it. |
+| `OPSCREW_E2E_APP` | Optional, the app to deploy: a folder name under `examples/` (default `nextjs-postgres`) or `github:<owner>/<repo>@<commit>`. See [Choosing the app](#choosing-the-app). |
 | `OPSCREW_E2E_REGION` | Optional interview region, default `eu-central` (Nuremberg/Falkenstein on Hetzner, Frankfurt/Amsterdam on DigitalOcean). |
 | `OPSCREW_E2E_GITHUB_REPO` | `owner/name` of a **throwaway** repository. The test force-pushes its `main` branch. |
 | `OPSCREW_E2E_GITHUB_TOKEN` | Fine-grained token for that repository only. It needs Contents, Pull requests, Secrets, Actions and Workflows (read and write), plus Metadata (read). |
@@ -52,6 +56,38 @@ OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E
 # DigitalOcean instead (set both tokens to run both passes, one after the other)
 OPSCREW_E2E_DIGITALOCEAN_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_TOKEN=… \
   pnpm --filter opscrew exec vitest run test/live
+```
+
+### Choosing the app
+
+`OPSCREW_E2E_APP` picks what the test deploys. Without it the test deploys
+`examples/nextjs-postgres`, exactly as before.
+
+- `OPSCREW_E2E_APP=fastapi-redis` deploys `examples/fastapi-redis` (any folder under `examples/`).
+- `OPSCREW_E2E_APP=github:<owner>/<repo>@<commit>` deploys a public GitHub repository at exactly
+  that commit. The commit must be the full 40-character SHA (branches, tags and short SHAs can
+  move). The test fetches only that commit (`git fetch --depth 1`, no token), drops the source's
+  `.git` and commits the files into the throwaway repository. It never pushes or writes to the
+  source repository.
+
+The value is checked before any GitHub or cloud call: an unknown example or a ref that is not a
+full commit SHA stops the test with a plain message. The test title, the commit message in the
+throwaway repository (`e2e: examples/<name>` or `e2e: github:<owner>/<repo>@<sha>`) and the
+`OpsCrew E2E:` log lines name the app. The test takes the health path from the plan OpsCrew wrote
+(`opscrew/plan.yaml`), not from a framework default.
+
+To run the framework matrix, run one app after another (each pass creates and destroys its own
+server; the throwaway repository is reset before each one):
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_TOKEN=…
+for app in nextjs-postgres fastapi-redis static-vite \
+  "github:softzer0/slog_cvrp_app@<40-character commit SHA>"; do
+  echo "=== $app"
+  OPSCREW_E2E_APP="$app" npx vitest run test/live/live.test.ts || echo "FAILED: $app"
+done
 ```
 
 The DigitalOcean pass also confirms the facts `specs/004-digitalocean/research.md` marks as
