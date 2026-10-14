@@ -1,0 +1,11 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "ssr",
+    "frameworkNames": ["astro"],
+    "port": 3000,
+    "services": []
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore"]
+}

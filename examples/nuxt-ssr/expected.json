@@ -1,0 +1,12 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "ssr",
+    "languages": ["typescript"],
+    "frameworkNames": ["nuxt", "vue"],
+    "port": 3000,
+    "services": []
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore"]
+}

@@ -46,6 +46,41 @@ const EXAMPLES = readdirSync(EXAMPLES_DIR, { withFileTypes: true })
 
 /** Interview answers per example; a mix of regions, budgets, domains and kept services. */
 const ANSWERS: Record<string, Record<string, unknown>> = {
+  "angular-static": {
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: "10 EUR",
+    region: "eu-central",
+    uptime: "best-effort",
+    dataCriticality: "none",
+  },
+  "astro-ssr": {
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: "10 EUR",
+    region: "eu-central",
+    uptime: "standard",
+    dataCriticality: "none",
+  },
+  "nuxt-ssr": {
+    expectedMonthlyUsers: "1k-10k",
+    budgetMonthly: "20 EUR",
+    region: "eu-central",
+    uptime: "standard",
+    dataCriticality: "none",
+  },
+  "react-router-ssr": {
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: "10 EUR",
+    region: "eu-central",
+    uptime: "standard",
+    dataCriticality: "none",
+  },
+  "sveltekit-ssr": {
+    expectedMonthlyUsers: "<1k",
+    budgetMonthly: "10 EUR",
+    region: "eu-central",
+    uptime: "best-effort",
+    dataCriticality: "none",
+  },
   "django-postgres": {
     expectedMonthlyUsers: "<1k",
     budgetMonthly: "20 EUR",

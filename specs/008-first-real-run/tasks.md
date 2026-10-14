@@ -88,7 +88,7 @@ description: "Tasks for 008-first-real-run"
   - Accept: FR-811. Each app is small and idiomatic for its framework (the way its docs start a project), pins exact dependency versions, serves a health route that `@opscrew/detect` finds (so a run works without a model, `codeChanges` without `health-endpoint`), starts without its database or Redis being reachable (connect lazily, the health route touches neither), reads its port and connection URLs from the environment, and has an `expected.json` that `packages/cli/test/e2e/examples.test.ts` checks; any planted `.env` uses `{{FAKE:<kind>}}` markers. Where detection or the generated Dockerfile gets one of them wrong, keep the app idiomatic and report the gap instead of bending the app around it.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: medium
-- [ ] T821 [P] Example apps, frontends: `examples/angular-static`, `examples/nuxt-ssr`, `examples/sveltekit-ssr` (adapter-node), `examples/react-router-ssr` (framework mode), `examples/astro-ssr` (`@astrojs/node` standalone)
+- [X] T821 [P] Example apps, frontends: `examples/angular-static`, `examples/nuxt-ssr`, `examples/sveltekit-ssr` (adapter-node), `examples/react-router-ssr` (framework mode), `examples/astro-ssr` (`@astrojs/node` standalone)
   - Owns: `examples/angular-static/**`, `examples/nuxt-ssr/**`, `examples/sveltekit-ssr/**`, `examples/react-router-ssr/**`, `examples/astro-ssr/**`
   - Accept: FR-811, with the same rules as T820; the server-rendered apps serve a health route the framework's own way (Nuxt server route, SvelteKit `+server.ts`, React Router resource route, Astro endpoint).
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`

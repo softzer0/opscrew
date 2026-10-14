@@ -1,0 +1,11 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "static-spa",
+    "languages": ["typescript"],
+    "frameworkNames": ["angular"],
+    "services": []
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerfile", "dockerignore"]
+}
