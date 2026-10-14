@@ -24,6 +24,8 @@ const E2E = {
   cloudflareToken: process.env.OPSCREW_E2E_CLOUDFLARE_TOKEN,
   domain: process.env.OPSCREW_E2E_DOMAIN,
   region: process.env.OPSCREW_E2E_REGION ?? "eu-central",
+  /** A file of production values for the app (`NAME=value` lines), copied in for `provision`. */
+  appEnvFile: process.env.OPSCREW_E2E_APP_ENV,
 };
 const withGitHub = Boolean(E2E.githubRepo && E2E.githubToken);
 const withDns = Boolean(E2E.cloudflareToken && E2E.domain);
@@ -501,7 +503,11 @@ async function deployAndTearDown(
   // A fresh copy of the app becomes the throwaway repository's main branch.
   console.log(`OpsCrew E2E: deploying ${app.label} on ${provider.name}`);
   await materializeApp(app, repo);
-  await writeFile(join(work, "production.env"), "");
+  // Production values the app needs and OpsCrew cannot derive or generate (OPSCREW_E2E_APP_ENV).
+  await writeFile(
+    join(work, "production.env"),
+    E2E.appEnvFile ? await readFile(E2E.appEnvFile, "utf8") : "",
+  );
   await git("init", "-q", "-b", "main");
   await git("config", "user.name", "OpsCrew E2E");
   await git("config", "user.email", "e2e@example.invalid");
