@@ -29,6 +29,7 @@ import {
 import { convertMoney, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
 import { buildDesignOptions, minimumMonthlyCost } from "./options";
 import { optionToPlan } from "./plan";
+import { releaseCommandNote } from "./release";
 import { designWording } from "./wording";
 
 export interface RunDesignOptions {
@@ -294,6 +295,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       `Wrote ${planFile}: ${chosen.title}, ${cost}/month${inBudget}, ${codeChanges.length} code change${codeChanges.length === 1 ? "" : "s"} to make.`,
     ),
   );
+  const migrations = releaseCommandNote(plan, facts);
+  if (migrations?.warning) warn(migrations.text);
+  else if (migrations !== undefined) reporter.info(say(migrations.text));
   reporter.info("Next: run `opscrew adapt` to prepare the code in a pull request.");
   await deps.state.markPhase(
     "design",

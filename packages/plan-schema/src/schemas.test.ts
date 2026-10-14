@@ -157,6 +157,18 @@ describe("ProjectFacts", () => {
     expect(pathsOf(ProjectFactsSchema.safeParse(wrong))).toEqual(["envVars.0.hasDefault"]);
   });
 
+  it("records an optional one-line release command", async () => {
+    const f = await facts();
+    expect(ProjectFactsSchema.parse(f).build.releaseCommand).toBeUndefined();
+    const command = "cd backend && python manage.py migrate --noinput";
+    const withRelease = { ...f, build: { ...f.build, releaseCommand: command } };
+    expect(ProjectFactsSchema.parse(withRelease).build.releaseCommand).toBe(command);
+    for (const bad of ["", "   ", "a\nb"]) {
+      const wrong = { ...f, build: { ...f.build, releaseCommand: bad } };
+      expect(pathsOf(ProjectFactsSchema.safeParse(wrong)), bad).toEqual(["build.releaseCommand"]);
+    }
+  });
+
   it("rejects credentials in the git remote URL and env var values as names", async () => {
     const f = await facts();
     const withToken = {
@@ -309,6 +321,19 @@ describe("DeployPlan target provider", () => {
     expect(parsed.app.env).toEqual(env);
     const wrong = { ...plan, app: { ...plan.app, env: [{ ...env[1], optional: "yes" }] } };
     expect(pathsOf(DeployPlanSchema.safeParse(wrong))).toEqual(["app.env.0.optional"]);
+  });
+
+  it("carries an optional release command that the user may change or remove", async () => {
+    const plan = await validPlan();
+    expect(plan.app.releaseCommand).toBeUndefined();
+    const app = { ...plan.app, releaseCommand: "python manage.py migrate --noinput" };
+    expect(DeployPlanSchema.parse({ ...plan, app }).app.releaseCommand).toBe(
+      "python manage.py migrate --noinput",
+    );
+    const multiLine = { ...plan, app: { ...plan.app, releaseCommand: "migrate\nrm -rf /" } };
+    expect(pathsOf(DeployPlanSchema.safeParse(multiLine))).toEqual(["app.releaseCommand"]);
+    const blank = { ...plan, app: { ...plan.app, releaseCommand: " " } };
+    expect(pathsOf(DeployPlanSchema.safeParse(blank))).toEqual(["app.releaseCommand"]);
   });
 
   it("fills the provider's own Ubuntu image when the image is omitted", async () => {

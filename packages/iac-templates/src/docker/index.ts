@@ -18,7 +18,10 @@ export {
   CLIENT_ENV_PREFIXES,
   type DockerStack,
   detectStack,
+  type ImageReleaseCommand,
+  imageReleaseCommand,
   isClientExposedEnvName,
+  releaseCommandInImage,
 } from "./stacks";
 
 export interface DockerAssetOptions {

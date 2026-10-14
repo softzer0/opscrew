@@ -25,6 +25,7 @@ export {
   minimumMonthlyCost,
 } from "./options";
 export { appNameFor, appPortFor, type OptionToPlanInput, optionToPlan } from "./plan";
+export { type ReleaseCommandNote, releaseCommandNote } from "./release";
 export {
   type DesignPreview,
   type DesignResult,

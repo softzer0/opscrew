@@ -1,6 +1,13 @@
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { containerPort, detectStack, isClientExposedEnvName, renderDockerAssets } from "./index";
+import {
+  containerPort,
+  detectStack,
+  imageReleaseCommand,
+  isClientExposedEnvName,
+  releaseCommandInImage,
+  renderDockerAssets,
+} from "./index";
 
 function facts(overrides: Partial<ProjectFacts>): ProjectFacts {
   return {
@@ -169,6 +176,61 @@ describe("detectStack", () => {
     expect(detectStack(djangoApp)).toBe("python-django");
     expect(detectStack(pythonApp)).toBe("python-generic");
     expect(detectStack(facts({ languages: ["go"] }))).toBeUndefined();
+  });
+
+  it("runs the release command from the image's working folder", () => {
+    const release = (sample: ProjectFacts, releaseCommand?: string) =>
+      releaseCommandInImage({
+        ...sample,
+        build: releaseCommand ? { ...sample.build, releaseCommand } : sample.build,
+      });
+    expect(release(djangoApp)).toBeUndefined();
+    expect(release(djangoApp, "python manage.py migrate --noinput")).toBe(
+      "python manage.py migrate --noinput",
+    );
+    // A Python image holds only the app folder, so the folder prefix goes.
+    expect(release(pythonSubfolderApi, "cd services/api && alembic upgrade head")).toBe(
+      "alembic upgrade head",
+    );
+    expect(release(pythonSubfolderApi, "cd services/api/db && alembic upgrade head")).toBe(
+      "cd db && alembic upgrade head",
+    );
+    expect(release(pythonSubfolderApi, "./migrate.sh")).toBe("./migrate.sh");
+    // A Node.js image holds the whole repository, so the command runs as detected.
+    expect(release(npmWorkspaceApi, "cd apps/api && npx prisma migrate deploy")).toBe(
+      "cd apps/api && npx prisma migrate deploy",
+    );
+    // A static site has no app container to run it in.
+    expect(release(viteApp, "echo never")).toBeUndefined();
+  });
+
+  it("leaves out what the Next.js standalone image cannot run, saying why", () => {
+    const withRelease = (sample: ProjectFacts, releaseCommand: string) => ({
+      ...sample,
+      build: { ...sample.build, releaseCommand },
+    });
+    const prisma = imageReleaseCommand(withRelease(nextApp, "npx prisma migrate deploy"));
+    expect(prisma.command).toBeUndefined();
+    expect(prisma.notRun).toContain("Prisma migrations");
+    expect(prisma.notRun).toContain("app.releaseCommand");
+    const monorepo = imageReleaseCommand(
+      withRelease(nextMonorepoApp, "cd apps/web && node scripts/migrate.js"),
+    );
+    expect(monorepo.command).toBeUndefined();
+    expect(monorepo.notRun).toContain("apps/web");
+    expect(imageReleaseCommand(withRelease(nextApp, "node scripts/migrate.js"))).toEqual({
+      command: "node scripts/migrate.js",
+    });
+    expect(imageReleaseCommand(nextApp)).toEqual({});
+  });
+
+  it("tells a Django app whose migrations OpsCrew runs where the command lives", () => {
+    const migrated = renderDockerAssets(
+      { ...djangoApp, build: { releaseCommand: "python manage.py migrate --noinput" } },
+      { appPort: 8000, healthPath: "/health" },
+    )[0]?.content;
+    expect(migrated).toContain("app.releaseCommand in opscrew/plan.yaml");
+    expect(migrated).not.toContain("as part of your release process");
   });
 
   it("serves static sites on 8080", () => {

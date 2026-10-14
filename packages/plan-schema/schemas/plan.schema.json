@@ -45,6 +45,10 @@
           "type": "string",
           "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
         },
+        "releaseCommand": {
+          "type": "string",
+          "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+        },
         "env": {
           "type": "array",
           "items": {

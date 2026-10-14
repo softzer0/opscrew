@@ -44,6 +44,8 @@ export interface PullRequestBodyInput {
   paths?: Readonly<Record<string, string>>;
   /** The background-jobs note (FR-812) when the app also runs jobs that are not deployed yet. */
   backgroundJobs?: string;
+  /** The database-migrations note (FR-813): the release command every deploy runs. */
+  migrations?: string;
 }
 
 /** What a missing health endpoint means for deploys, in one plain sentence. */
@@ -113,6 +115,9 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
 
   if (input.backgroundJobs !== undefined) {
     lines.push("", "## Background jobs", "", input.backgroundJobs);
+  }
+  if (input.migrations !== undefined) {
+    lines.push("", "## Database migrations", "", input.migrations);
   }
 
   lines.push("", "## Reports", "");

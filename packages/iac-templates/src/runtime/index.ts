@@ -33,6 +33,22 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
   };
   const dependsOn: Record<string, { condition: string }> = {};
   const services: Record<string, unknown> = { app };
+  const release = plan.app.releaseCommand;
+  if (release !== undefined) {
+    // A one-off container of the app's image, environment and network; only
+    // `docker compose run release` starts it (the deploy does, before the app is replaced).
+    services.release = {
+      image: app.image,
+      profiles: ["release"],
+      env_file: ["app.env"],
+      environment: { PORT: String(plan.app.port) },
+      // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
+      command: ["sh", "-c", release.replaceAll("$", () => "$$")],
+      ...hardening,
+      cap_drop: ["ALL"],
+      networks: ["internal"],
+    };
+  }
 
   if (plan.services.postgres) {
     services.db = {
@@ -80,9 +96,13 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
     networks: { internal: {} },
     volumes: { caddy_data: {}, caddy_config: {} },
   };
+  const header =
+    release === undefined
+      ? HEADER
+      : `${HEADER}\n# \`release\` runs app.releaseCommand from opscrew/plan.yaml before each new version starts.`;
   return {
     path: "opscrew/runtime/compose.yaml",
-    content: `${HEADER}\n${stringify(document, { lineWidth: 0 })}`,
+    content: `${header}\n${stringify(document, { lineWidth: 0 })}`,
     kind: "runtime",
   };
 }

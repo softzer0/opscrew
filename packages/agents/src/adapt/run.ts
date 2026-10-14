@@ -27,7 +27,7 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { backgroundJobsWarning, type CodeChange } from "../design";
+import { backgroundJobsWarning, type CodeChange, releaseCommandNote } from "../design";
 import { writeRenderedFiles } from "../shared";
 import { nextHealthRoute } from "./health-route";
 import { isNextConfigPath, type StandaloneEdit, standaloneConfigEdit } from "./next-config";
@@ -294,6 +294,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     }
     return pushAndOpen({
       backgroundJobs: backgroundJobsWarning(facts),
+      migrations: releaseCommandNote(plan, facts)?.text,
       deps,
       git,
       plan,
@@ -602,6 +603,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   }
   return pushAndOpen({
     backgroundJobs: backgroundJobsWarning(facts),
+    migrations: releaseCommandNote(plan, facts)?.text,
     deps,
     git,
     plan,
@@ -641,6 +643,8 @@ interface PushContext {
   result: AdaptResult;
   /** The background-jobs note for the pull request, when the app runs jobs (FR-812). */
   backgroundJobs: string | undefined;
+  /** The database-migrations note for the pull request (FR-813). */
+  migrations: string | undefined;
 }
 
 /**
@@ -721,6 +725,7 @@ async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
       reporter.success(`A pull request for ${branch} is already open: ${existing.url}`);
       return done(`pull request #${existing.number}`);
     }
+    const { migrations } = ctx;
     const body = say(
       renderPullRequestBody({
         changes,
@@ -734,6 +739,7 @@ async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
         byOpsCrew: [...ctx.byOpsCrew],
         paths: ctx.paths,
         ...(ctx.backgroundJobs === undefined ? {} : { backgroundJobs: ctx.backgroundJobs }),
+        ...(migrations === undefined ? {} : { migrations }),
       }),
     );
     const prApproval = await deps.approvals.request({

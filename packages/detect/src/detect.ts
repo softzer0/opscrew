@@ -43,6 +43,7 @@ import {
   uniqueSorted,
 } from "./paths";
 import { detectPlatform } from "./platform";
+import { detectReleaseCommand } from "./release";
 import {
   addDependencyServices,
   addDjangoServices,
@@ -529,9 +530,8 @@ export async function detectProjectDetails(
     const command = jsRun(jsPm, "build", member);
     build.buildCommand = member ? command : cdPrefix(command);
   }
-  const procfileWeb = /^web:\s*(.+)$/m
-    .exec((await read(joinRel(appDir, "Procfile"))) ?? "")?.[1]
-    ?.trim();
+  const procfile = await read(joinRel(appDir, "Procfile"));
+  const procfileWeb = /^web:\s*(.+)$/m.exec(procfile ?? "")?.[1]?.trim();
   const appCode = scopedFiles.filter(
     (f) => isWithin(appDir, f) && isAppCodeFile(relativeTo(appDir, f)),
   );
@@ -597,6 +597,17 @@ export async function detectProjectDetails(
       start = cdPrefix(`node ${appPackage.main}`);
     }
     if (start) build.startCommand = start;
+    const release = detectReleaseCommand({
+      appDir,
+      files: scopedFiles,
+      procfile,
+      flaskenv: await read(joinRel(appDir, ".flaskenv")),
+      startCommand: start,
+      unit: primary?.unit,
+      frameworks: appFrameworkNames,
+      ecosystem,
+    });
+    if (release) build.releaseCommand = release;
   } else {
     const output = await staticOutputDir(primary, read, filesIn);
     if (output) build.outputDir = joinRel(appDir, output);

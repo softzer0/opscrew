@@ -116,6 +116,10 @@
               "type": "string",
               "minLength": 1
             },
+            "releaseCommand": {
+              "type": "string",
+              "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+            },
             "outputDir": {
               "type": "string",
               "minLength": 1

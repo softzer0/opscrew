@@ -3,6 +3,7 @@ import { CostEstimateSchema } from "./design";
 import {
   CodeChangeKindSchema,
   CodeChangeStatusSchema,
+  CommandLineSchema,
   EnvVarNameSchema,
   FqdnSchema,
   IsoDateTimeSchema,
@@ -89,6 +90,12 @@ const DeployPlanObjectSchema = z
       healthPath: UrlPathSchema.default("/health"),
       buildContext: RepoPathSchema.default("."),
       dockerfile: RepoPathSchema.default("Dockerfile"),
+      /**
+       * Runs before each new version takes traffic (database migrations), in a one-off container
+       * of the new image with the app's environment, from the image's working folder. A failure
+       * stops the deploy and the previous version keeps serving. Change or remove it freely.
+       */
+      releaseCommand: CommandLineSchema.optional(),
       /** Names only, never values. */
       env: z.array(
         z.strictObject({

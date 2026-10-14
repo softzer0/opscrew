@@ -7,21 +7,26 @@
  * (the plan's port, placeholder connection URLs, all capabilities dropped) and the plan's health
  * path (static apps: also `/`) must answer HTTP 200 within two minutes. When the plan leaves the
  * health route to the Code-change agent (a pending `health-endpoint` change, which `--no-ai`
- * does not write), any HTTP answer on that path passes with a note.
+ * does not write), any HTTP answer on that path passes with a note. A plan with a release command
+ * (`app.releaseCommand`, database migrations) is started like the deploy workflow starts it
+ * instead: OpsCrew's Compose file, the backing services, the `release` service run once, then the
+ * app, which must also answer 200 on a route that writes to the database (`DATABASE_ROUTES`).
  *
  * It pulls base images and packages, so it runs only on request: OPSCREW_DOCKER_TESTS=1 with a
  * running Docker daemon (skipped otherwise). OPSCREW_DOCKER_EXAMPLES=a,b limits the run to those
  * examples. Containers and images are always removed.
  */
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
 import { FakeAgentRuntime } from "@opscrew/core/testing";
+import { renderCompose } from "@opscrew/iac-templates";
 import { ArchitectureSchema, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 import {
   EXAMPLES_DIR,
   GIT,
@@ -72,9 +77,23 @@ const runner = new NodeCommandRunner({ defaultTimeoutMs: TEN_MINUTES });
 /** Everything this file started or built, removed in afterAll even when a test failed. */
 const containers = new Set<string>();
 const images = new Set<string>();
+/** Compose projects (name → compose file) started by this file. */
+const composeProjects = new Map<string, string>();
 
 async function docker(args: string[], timeoutMs = 60_000) {
   return runner.run(DOCKER ?? "docker", args, { timeoutMs });
+}
+
+async function compose(name: string, file: string, args: string[], timeoutMs = TWO_MINUTES) {
+  return docker(["compose", "-p", name, "-f", file, ...args], timeoutMs);
+}
+
+/** Stops a Compose project and removes its containers, network and volumes. */
+async function composeDown(name: string): Promise<void> {
+  const file = composeProjects.get(name);
+  if (file === undefined) return;
+  await compose(name, file, ["down", "-v", "--remove-orphans"]);
+  composeProjects.delete(name);
 }
 
 async function removeContainer(name: string): Promise<void> {
@@ -122,6 +141,43 @@ function placeholder(name: string): string {
   return "opscrew-placeholder";
 }
 
+/**
+ * Paths that write to the database, so they answer HTTP 200 only once the release command has
+ * created the tables (checked in addition to the health path).
+ */
+const DATABASE_ROUTES: Readonly<Record<string, string>> = { "django-postgres": "/" };
+
+/**
+ * The Compose file OpsCrew deploys (`renderCompose`), adapted to this computer: the data
+ * directories under /srv become named volumes, the app's port is published on 127.0.0.1 and
+ * Caddy is left out (TLS and the proxy are not under test). The `release` service is unchanged.
+ */
+function localCompose(plan: DeployPlan): string {
+  const rendered = renderCompose(plan, {
+    opscrewVersion: "0.0.0-test",
+    github: { owner: "opscrew-test", repo: "app" },
+    deploySshPublicKey: "ssh-ed25519 AAAA opscrew-test",
+  });
+  const doc = parse(rendered.content) as {
+    services: Record<string, { volumes?: string[]; ports?: string[] }>;
+    volumes: Record<string, unknown>;
+  };
+  delete doc.services.caddy;
+  doc.volumes = {};
+  for (const service of Object.values(doc.services)) {
+    service.volumes = service.volumes?.map((volume) => {
+      const match = /^\/srv\/data\/([\w-]+):(.+)$/.exec(volume);
+      if (!match?.[1]) return volume;
+      doc.volumes[match[1]] = {};
+      return `${match[1]}:${match[2]}`;
+    });
+    if (service.volumes === undefined) delete service.volumes;
+  }
+  const app = doc.services.app;
+  if (app) app.ports = [`127.0.0.1::${plan.app.port}`];
+  return stringify(doc, { lineWidth: 0 });
+}
+
 /** What the repository looks like after `adapt`: enough to build and start the app. */
 interface Prepared {
   plan: DeployPlan;
@@ -136,6 +192,7 @@ describe.skipIf(SKIP !== undefined)(
     : `local Docker pass over examples/ (skipped: ${SKIP})`,
   () => {
     afterAll(async () => {
+      for (const name of [...composeProjects.keys()]) await composeDown(name);
       for (const name of [...containers]) await removeContainer(name);
       for (const tag of [...images]) await removeImage(tag);
     }, TWO_MINUTES);
@@ -173,6 +230,66 @@ describe.skipIf(SKIP !== undefined)(
         return output;
       }
 
+      /**
+       * Starts the app the way the deploy workflow does when the plan has a release command:
+       * OpsCrew's Compose file with `.env` naming the image, the backing services up and healthy,
+       * the `release` service run once in a one-off container (a failure fails the test with its
+       * output), then the app. Values are placeholders except the database connection, which uses
+       * a password generated for this run. Returns the app container's name.
+       */
+      async function deployWithRelease(plan: DeployPlan, env: Map<string, string>) {
+        if (project === undefined) throw new Error("no project");
+        const server = path.join(project.dir, "server");
+        await mkdir(server, { recursive: true });
+        const file = path.join(server, "compose.yaml");
+        await writeFile(file, localCompose(plan));
+        await writeFile(path.join(server, ".env"), `APP_IMAGE=${tag}\n`);
+        const appEnv = new Map(env);
+        appEnv.delete("PORT");
+        if (plan.services.postgres) {
+          const password = randomBytes(16).toString("hex");
+          await writeFile(
+            path.join(server, "db.env"),
+            `POSTGRES_USER=app\nPOSTGRES_DB=app\nPOSTGRES_PASSWORD=${password}\n`,
+          );
+          appEnv.set("DATABASE_URL", `postgres://app:${password}@db:5432/app`);
+        }
+        if (plan.services.redis) appEnv.set("REDIS_URL", "redis://cache:6379");
+        await writeFile(
+          path.join(server, "app.env"),
+          [...appEnv].map(([name, value]) => `${name}=${value}\n`).join(""),
+        );
+        composeProjects.set(container, file);
+
+        const backing = [
+          ...(plan.services.postgres ? ["db"] : []),
+          ...(plan.services.redis ? ["cache"] : []),
+        ];
+        if (backing.length > 0) {
+          const up = await compose(container, file, ["up", "-d", "--wait", ...backing]);
+          if (up.exitCode !== 0) {
+            throw new Error(`${example}: the backing services did not start:\n${tail(up.stderr)}`);
+          }
+        }
+        const ran = await compose(
+          container,
+          file,
+          ["run", "--rm", "--no-deps", "-T", "release"],
+          TEN_MINUTES,
+        );
+        if (ran.exitCode !== 0) {
+          throw new Error(
+            `${example}: the release command \`${plan.app.releaseCommand}\` failed (exit ${ran.exitCode}):\n${tail(`${ran.stdout}\n${ran.stderr}`)}`,
+          );
+        }
+        console.info(`${example}: release command output:\n${tail(ran.stdout, 20)}`);
+        const started = await compose(container, file, ["up", "-d", "app"]);
+        if (started.exitCode !== 0) {
+          throw new Error(`${example}: docker compose up app failed:\n${tail(started.stderr)}`);
+        }
+        return `${container}-app-1`;
+      }
+
       beforeAll(async () => {
         project = await tempProject(example);
         const { env, root, dir } = project;
@@ -186,6 +303,7 @@ describe.skipIf(SKIP !== undefined)(
       }, STEP_TIMEOUT);
 
       afterAll(async () => {
+        await composeDown(container);
         await removeContainer(container);
         await removeImage(tag);
         await project?.cleanup();
@@ -282,23 +400,27 @@ describe.skipIf(SKIP !== undefined)(
           }
           if (plan.services.postgres) env.set("DATABASE_URL", placeholder("DATABASE_URL"));
           if (plan.services.redis) env.set("REDIS_URL", placeholder("REDIS_URL"));
-          containers.add(container);
-          const started = await docker([
-            "run",
-            "-d",
-            "--name",
-            container,
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges:true",
-            "-p",
-            `127.0.0.1::${port}`,
-            ...[...env].flatMap(([name, value]) => ["-e", `${name}=${value}`]),
-            tag,
-          ]);
-          if (started.exitCode !== 0) {
-            throw new Error(`${example}: docker run failed:\n${tail(started.stderr)}`);
+          const release = plan.app.releaseCommand !== undefined;
+          const app = release ? await deployWithRelease(plan, env) : container;
+          if (!release) {
+            containers.add(container);
+            const started = await docker([
+              "run",
+              "-d",
+              "--name",
+              container,
+              "--cap-drop",
+              "ALL",
+              "--security-opt",
+              "no-new-privileges:true",
+              "-p",
+              `127.0.0.1::${port}`,
+              ...[...env].flatMap(([name, value]) => ["-e", `${name}=${value}`]),
+              tag,
+            ]);
+            if (started.exitCode !== 0) {
+              throw new Error(`${example}: docker run failed:\n${tail(started.stderr)}`);
+            }
           }
 
           // Without a model only Next.js gets a health route; for other stacks a pending
@@ -306,14 +428,19 @@ describe.skipIf(SKIP !== undefined)(
           // live pass with a model covers it). Then an answer below 500 on the plan's port will do.
           const healthChange = plan.codeChanges.find((c) => c.kind === "health-endpoint");
           const leftToModel = healthChange?.status === "pending";
+          const databaseRoute = release ? DATABASE_ROUTES[example] : undefined;
           const paths = [
-            ...new Set([plan.app.healthPath, ...(appKind === "static-spa" ? ["/"] : [])]),
+            ...new Set([
+              plan.app.healthPath,
+              ...(appKind === "static-spa" ? ["/"] : []),
+              ...(databaseRoute !== undefined ? [databaseRoute] : []),
+            ]),
           ];
-          const result = await waitForHealth(container, port, paths, {
+          const result = await waitForHealth(app, port, paths, {
             anyStatus: leftToModel ? plan.app.healthPath : undefined,
           });
           if (result.failure !== undefined) {
-            const logs = await docker(["logs", "--tail", "80", container]);
+            const logs = await docker(["logs", "--tail", "80", app]);
             const pending = leftToModel
               ? " The plan's health-endpoint change is still pending (left to the Code-change agent by adapt --no-ai)."
               : "";

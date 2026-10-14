@@ -48,6 +48,45 @@ function block(lines: string[], indent: number): string[] {
   return lines.map((line) => (line.length > 0 ? `${pad}${line}` : ""));
 }
 
+/**
+ * Where the release command's output stays: on the server, readable only by the deploy user. It is
+ * never printed in the workflow log, which is public for public repositories, because a failed
+ * migration can quote rows of the database.
+ */
+const RELEASE_LOG = "/srv/app/release.log";
+
+/** Shown when the release command fails; names neither the server nor any secret. */
+const RELEASE_FAILED = `::error::The release command (app.releaseCommand in opscrew/plan.yaml) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in ${RELEASE_LOG} (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the command or the app and push again.`;
+
+const RELEASE_DONE = `The release command finished; its output is in ${RELEASE_LOG} on the server.`;
+
+/**
+ * Server-side commands (in /srv/app, after the registry login) that start the new image. Without a
+ * release command: write `.env` with the new image, pull, `up`. With one: pull the new image (named
+ * through the environment, so `.env` still names the running version), start the backing services,
+ * run the `release` service of compose.yaml in a one-off container of the new image, and only when
+ * it succeeds write `.env` and replace the app. A failure leaves the running version untouched.
+ */
+function switchCommands(plan: DeployPlan): string {
+  const writeEnv = "printf 'APP_IMAGE=%s\\n' '${IMAGE}' > .env";
+  if (plan.app.releaseCommand === undefined) {
+    return `${writeEnv}; docker compose pull; docker compose up -d --remove-orphans`;
+  }
+  const backing = [
+    ...(plan.services.postgres ? ["db"] : []),
+    ...(plan.services.redis ? ["cache"] : []),
+  ];
+  return [
+    "export APP_IMAGE='${IMAGE}'",
+    "docker compose pull",
+    ...(backing.length > 0 ? [`docker compose up -d --wait ${backing.join(" ")}`] : []),
+    `if ! (umask 077; docker compose run --rm --no-deps -T release > ${RELEASE_LOG} 2>&1); then echo '${RELEASE_FAILED}'; exit 1; fi`,
+    `echo '${RELEASE_DONE}'`,
+    writeEnv,
+    "docker compose up -d --remove-orphans",
+  ].join("; ");
+}
+
 /** `.github/workflows/opscrew-deploy.yml`: build → push to GHCR → deploy over SSH with rollback. */
 export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   const context = plan.app.buildContext || ".";
@@ -161,7 +200,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     `    ${SSH_OPTS}`,
     '    ssh "${ssh_opts[@]}" "deploy@${HOST}" \'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous; fi\'',
     '    printf \'%s\\n\' "$REGISTRY_TOKEN" | ssh "${ssh_opts[@]}" "deploy@${HOST}" "docker login ghcr.io -u \'${GITHUB_ACTOR}\' --password-stdin"',
-    "    ssh \"${ssh_opts[@]}\" \"deploy@${HOST}\" \"set -e; trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT; cd /srv/app; printf 'APP_IMAGE=%s\\n' '${IMAGE}' > .env; docker compose pull; docker compose up -d --remove-orphans\"",
+    `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "set -e; trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT; cd /srv/app; ${switchCommands(plan)}"`,
     "- id: health",
     "  name: Check that the app is healthy",
     "  env:",

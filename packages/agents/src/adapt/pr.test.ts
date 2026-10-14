@@ -52,6 +52,14 @@ describe("renderPullRequestBody", () => {
     expect(renderPullRequestBody({ changes, reports: [] })).not.toContain("Background jobs");
   });
 
+  it("says which migration command every deploy runs, and only when there is a note", () => {
+    const note = "Every deploy runs `python manage.py migrate --noinput` (database migrations).";
+    const body = renderPullRequestBody({ changes, reports: [], migrations: note });
+    expect(body).toContain(`## Database migrations\n\n${note}`);
+    expect(body.indexOf("## Database migrations")).toBeLessThan(body.indexOf("## Reports"));
+    expect(renderPullRequestBody({ changes, reports: [] })).not.toContain("migrations");
+  });
+
   it("says nothing about failing deploys once the health endpoint is done", () => {
     const body = renderPullRequestBody({
       changes: changes.map((change) => ({ ...change, status: "applied" as const })),

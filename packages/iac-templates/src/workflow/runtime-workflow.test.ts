@@ -20,13 +20,20 @@ function plan(
     redis?: boolean;
     imageScan?: boolean;
     port?: number;
+    release?: string;
   } = {},
 ): DeployPlan {
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-11T12:00:00.000Z",
     updatedAt: "2026-10-11T12:00:00.000Z",
-    app: { name: "shop", port: o.port ?? 3000, healthPath: "/api/health", env: [] },
+    app: {
+      name: "shop",
+      port: o.port ?? 3000,
+      healthPath: "/api/health",
+      env: [],
+      ...(o.release === undefined ? {} : { releaseCommand: o.release }),
+    },
     target: {
       provider: "hetzner",
       mode: "vps-compose",
@@ -92,6 +99,38 @@ describe("renderCompose", () => {
     const doc = parse(renderCompose(plan({ postgres: false, redis: false }), ctx).content);
     expect(Object.keys(doc.services)).toEqual(["app", "caddy"]);
     expect(doc.services.app.depends_on).toBeUndefined();
+  });
+
+  it("adds no release service without a release command", () => {
+    const content = renderCompose(plan(), ctx).content;
+    expect(content).not.toContain("release");
+  });
+
+  it("runs the release command as a one-off service of the app image, environment and network", () => {
+    const command = "python manage.py migrate --noinput && echo $HOME ${X}";
+    const file = renderCompose(plan({ release: command }), ctx);
+    const doc = parse(file.content);
+    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache", "caddy"]);
+    const { app, release } = doc.services;
+    expect(release.image).toBe(app.image);
+    expect(release.env_file).toEqual(app.env_file);
+    expect(release.environment).toEqual(app.environment);
+    expect(release.networks).toEqual(app.networks);
+    expect(release.cap_drop).toEqual(["ALL"]);
+    expect(release.security_opt).toEqual(app.security_opt);
+    // Only `docker compose run` starts it, never `docker compose up`, and it never restarts.
+    expect(release.profiles).toEqual(["release"]);
+    expect(release.restart).toBeUndefined();
+    expect(release.ports).toBeUndefined();
+    expect(release.depends_on).toBeUndefined();
+    // `$` is escaped so Compose passes the command to the shell unchanged.
+    expect(release.command).toEqual([
+      "sh",
+      "-c",
+      "python manage.py migrate --noinput && echo $$HOME $${X}",
+    ]);
+    expect(file.content).toContain("app.releaseCommand");
+    expect(file.content).toMatchSnapshot();
   });
 });
 
@@ -232,6 +271,64 @@ describe("renderWorkflow", () => {
     expect(
       noScan.jobs.build.steps.some((s: Step) => s.run?.includes("docker logout ghcr.io")),
     ).toBe(true);
+  });
+
+  it("runs no release step without a release command", () => {
+    expect(withDomain.content).not.toContain("release");
+  });
+
+  describe("with a release command", () => {
+    const remoteDeploy = (p: DeployPlan) => {
+      const deploy = parse(renderWorkflow(p, ctx).content).jobs.deploy.steps as Step[];
+      const start = deploy.find((s) => s.id === "start")?.run ?? "";
+      return (
+        start
+          .split("\n")
+          .filter((line) => line.includes("ssh "))
+          .at(-1) ?? ""
+      );
+    };
+
+    it("starts the backing services and runs the command in the new image before the switch", () => {
+      const remote = remoteDeploy(plan({ release: "python manage.py migrate --noinput" }));
+      const order = [
+        "export APP_IMAGE='${IMAGE}'",
+        "docker compose pull",
+        "docker compose up -d --wait db cache",
+        "docker compose run --rm --no-deps -T release",
+        "> .env",
+        "docker compose up -d --remove-orphans",
+      ].map((part) => remote.indexOf(part));
+      expect(order.every((index) => index >= 0)).toBe(true);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+      // The command itself lives in compose.yaml, not in the workflow.
+      expect(remote).not.toContain("manage.py");
+    });
+
+    it("waits only for the backing services the plan has", () => {
+      const dbOnly = remoteDeploy(plan({ release: "x", redis: false }));
+      expect(dbOnly).toContain("docker compose up -d --wait db;");
+      const none = remoteDeploy(plan({ release: "x", postgres: false, redis: false }));
+      expect(none).not.toContain("--wait");
+      expect(none).toContain("docker compose run --rm --no-deps -T release");
+    });
+
+    it("stops with a plain message that names neither the server nor a secret", () => {
+      const remote = remoteDeploy(plan({ release: "x" }));
+      const message = /echo '(::error::[^']*)'/.exec(remote)?.[1] ?? "";
+      expect(message).toContain("release command");
+      expect(message).toContain("app.releaseCommand");
+      expect(message).toContain("previous version keeps serving");
+      expect(message).not.toMatch(/\$|HOST|secrets/);
+    });
+
+    it("matches the snapshot", () => {
+      const content = renderWorkflow(
+        plan({ domain: "shop.example.com", release: "python manage.py migrate --noinput" }),
+        ctx,
+      ).content;
+      expect(content).toMatchSnapshot();
+    });
   });
 
   it("refuses a Trivy image that is not pinned by digest", () => {

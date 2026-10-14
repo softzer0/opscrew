@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AppKindSchema,
+  CommandLineSchema,
   EnvVarNameSchema,
   LanguageSchema,
   PackageManagerSchema,
@@ -60,6 +61,11 @@ export const ProjectFactsSchema = z.strictObject({
     installCommand: z.string().min(1).optional(),
     buildCommand: z.string().min(1).optional(),
     startCommand: z.string().min(1).optional(),
+    /**
+     * Command that prepares the database before each new version takes traffic (migrations), run
+     * from the repository root like `startCommand`. Absent when the app has none.
+     */
+    releaseCommand: CommandLineSchema.optional(),
     outputDir: z.string().min(1).optional(),
   }),
   port: PortSchema.optional(),

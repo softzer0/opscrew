@@ -52,6 +52,14 @@ type Step = { id?: string; name?: string; run?: string };
 const deploySteps: Step[] = parse(renderWorkflow(plan, ctx).content).jobs.deploy.steps;
 const startScript = deploySteps.find((s) => s.id === "start")?.run ?? "";
 const rollbackScript = deploySteps.find((s) => s.name?.startsWith("Roll back"))?.run ?? "";
+const releasePlan = DeployPlanSchema.parse({
+  ...plan,
+  app: { ...plan.app, releaseCommand: "python manage.py migrate --noinput" },
+});
+const releaseStartScript =
+  (parse(renderWorkflow(releasePlan, ctx).content).jobs.deploy.steps as Step[]).find(
+    (s) => s.id === "start",
+  )?.run ?? "";
 
 const NEW = `ghcr.io/acme/shop@sha256:${"b".repeat(64)}`;
 const OLD = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
@@ -70,6 +78,8 @@ const PRELUDE = [
   '  case "$1 $2" in',
   '    "login ghcr.io") cat > /dev/null; [[ -z "${DOCKER_LOGIN_FAIL:-}" ]] ;;',
   '    "compose up") [[ -z "${COMPOSE_UP_FAIL:-}" ]] || return 1 ;;',
+  '    "compose run") echo "run image=${APP_IMAGE:-}" >> "$WORK/docker.log"',
+  '      if [[ -n "${RELEASE_FAIL:-}" ]]; then echo "django.db.utils.OperationalError: no such table"; return 3; fi ;;',
   "    *) return 0 ;;",
   "  esac",
   "}",
@@ -210,6 +220,44 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 30_000
     expect(rollback.status).toBe(1);
     expect(rollback.output).toContain("could not restore");
     expect(read(".env")).toBe(`APP_IMAGE=${NEW}`);
+  });
+
+  it("runs the release command in the new image before switching to it", () => {
+    server({ ".env": OLD });
+    const start = run(releaseStartScript);
+    expect(start.status).toBe(0);
+    expect(read(".env")).toBe(`APP_IMAGE=${NEW}`);
+    expect(read(".env.previous")).toBe(`APP_IMAGE=${OLD}`);
+    const calls = dockerCalls().split("\n");
+    const at = (prefix: string) => calls.findIndex((line) => line.startsWith(prefix));
+    expect(at("docker compose pull")).toBeGreaterThan(-1);
+    expect(at("docker compose pull")).toBeLessThan(at("docker compose up -d --wait db"));
+    expect(at("docker compose up -d --wait db")).toBeLessThan(at("docker compose run"));
+    expect(at("docker compose run")).toBeLessThan(at("docker compose up -d --remove-orphans"));
+    expect(calls).toContain("docker compose run --rm --no-deps -T release");
+    expect(calls).toContain(`run image=${NEW}`);
+  });
+
+  it("stops before the switch when the release command fails, keeping the running version", () => {
+    server({ ".env": OLD, ".env.previous": OLDER });
+    const start = run(releaseStartScript, { RELEASE_FAIL: "1" });
+    expect(start.status).not.toBe(0);
+    // The release output can quote rows, so it stays on the server, never in the workflow log.
+    expect(start.output).not.toContain("no such table");
+    expect(read("release.log")).toContain("no such table");
+    expect(start.output).toContain("::error::The release command");
+    expect(start.output).not.toContain("203.0.113.10");
+    expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+    expect(dockerCalls()).not.toContain("--remove-orphans");
+    expect(dockerCalls()).toContain("docker logout ghcr.io");
+
+    resetCalls();
+    const rollback = run(rollbackScript);
+    expect(rollback.status).toBe(1);
+    expect(rollback.output).not.toContain("restored");
+    expect(rollback.output).toContain("still runs the version it had");
+    expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+    expect(dockerCalls()).toBe("");
   });
 
   it("refuses an image that is not pinned by digest before touching the server", () => {

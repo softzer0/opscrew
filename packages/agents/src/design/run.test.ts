@@ -15,6 +15,7 @@ import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
 import {
   euCatalog,
+  makeFacts,
   makeRequirements,
   nextPostgresFacts,
   staticSpaFacts,
@@ -145,6 +146,43 @@ describe("runDesign", () => {
     expect(text).toContain("recommended");
     expect(text).toContain("Wrote opscrew/plan.yaml");
     expect(text).toContain("opscrew adapt");
+  });
+
+  it("says which release command every deploy runs and where to change it", async () => {
+    const deps = await setup(
+      makeFacts({
+        languages: ["python"],
+        packageManager: "pip",
+        frameworks: [{ name: "django", path: "." }],
+        appKind: "fullstack",
+        port: 8000,
+        build: { releaseCommand: "python manage.py migrate --noinput" },
+        services: [{ kind: "postgres", evidence: ["dependency:psycopg"] }],
+      }),
+    );
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.plan.app.releaseCommand).toBe("python manage.py migrate --noinput");
+    const text = deps.reporter.text();
+    expect(text).toContain("Every deploy runs `python manage.py migrate --noinput`");
+    expect(text).toContain("app.releaseCommand");
+  });
+
+  it("warns when the image cannot run the migrations OpsCrew found", async () => {
+    const deps = await setup(
+      nextPostgresFacts({
+        build: { buildCommand: "npm run build", releaseCommand: "npx prisma migrate deploy" },
+      }),
+    );
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.plan.app.releaseCommand).toBeUndefined();
+    expect(result.warnings.join("\n")).toContain("OpsCrew found Prisma migrations");
+    expect(deps.reporter.text()).not.toContain("no database migration command");
+  });
+
+  it("says nothing about migrations for an app without a command or a database", async () => {
+    const deps = await setup();
+    await runDesign(deps, { catalog: euCatalog() });
+    expect(deps.reporter.text()).not.toContain("releaseCommand");
   });
 
   it("uses --option when given and rejects an unknown id with the valid ones", async () => {

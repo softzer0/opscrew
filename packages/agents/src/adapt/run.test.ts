@@ -495,6 +495,23 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(body).toContain("run the worker yourself");
   });
 
+  it("tells the pull request which migration command every deploy runs", async () => {
+    const repo = await setup();
+    const plan = await readArtifact("plan", repo.deps.paths.files.plan);
+    await writeArtifact("plan", repo.deps.paths.files.plan, {
+      ...plan,
+      app: { ...plan.app, releaseCommand: "npx prisma migrate deploy" },
+    });
+    const github = new FakeGitHub();
+
+    await runAdapt(repo.deps, { github });
+
+    const body = github.created[0]?.body ?? "";
+    expect(body).toContain("## Database migrations");
+    expect(body).toContain("Every deploy runs `npx prisma migrate deploy`");
+    expect(body).toContain("app.releaseCommand");
+  });
+
   it("says nothing about background jobs for an app without them", async () => {
     const repo = await setup();
     const github = new FakeGitHub();

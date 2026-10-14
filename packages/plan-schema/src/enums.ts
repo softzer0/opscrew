@@ -129,6 +129,14 @@ export const RepoPathSchema = z
       "must be a repo-relative path with forward slashes such as `apps/web/Dockerfile` (no leading `/`, drive letter, backslash or `..`)",
   });
 
+/**
+ * One shell command on a single line, for example `python manage.py migrate --noinput`: not
+ * blank, no line breaks or NUL characters.
+ */
+export const CommandLineSchema = z.string().regex(/^[^\r\n\0]*\S[^\r\n\0]*$/, {
+  message: "must be one shell command on a single line",
+});
+
 /** Lower-case fully qualified domain name, for example `app.example.com`. */
 export const FqdnSchema = z
   .string()

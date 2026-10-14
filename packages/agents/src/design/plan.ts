@@ -1,4 +1,4 @@
-import { containerPort, detectStack } from "@opscrew/iac-templates";
+import { containerPort, detectStack, releaseCommandInImage } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -51,7 +51,7 @@ export function appPortFor(facts: ProjectFacts): number {
 }
 
 /**
- * Turns the chosen option into `opscrew/plan.yaml` content: app (name, port, health path,
+ * Turns the chosen option into `opscrew/plan.yaml` content: app (name, port, health path, release command,
  * environment variable names), target (the option's provider and its default image), services, cost, code changes, DNS from the requirements and
  * GitHub Actions + GHCR for CI/CD. Every documented default is filled by `DeployPlanSchema`.
  * @throws ZodError when the result is not a valid plan (a bug, never user input).
@@ -90,6 +90,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
           ...(requirements.domain !== undefined ? { domain: requirements.domain } : {}),
         };
 
+  const releaseCommand = releaseCommandInImage(facts);
+
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: input.createdAt ?? now,
@@ -100,6 +102,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       healthPath: healthRouteFor(facts, input.signals).path,
       // An app in a subfolder is built from the repository root (`buildContext` stays `.`).
       ...(appDirOf(facts) !== "." ? { dockerfile: appDockerfile(facts).path } : {}),
+      // Database migrations, run before each new version takes traffic (FR-813).
+      ...(releaseCommand !== undefined ? { releaseCommand } : {}),
       env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     },
     target: {

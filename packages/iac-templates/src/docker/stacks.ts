@@ -430,12 +430,68 @@ function pythonInstall(facts: ProjectFacts, dir: string): string[] {
  */
 function pythonStart(facts: ProjectFacts, stack: DockerStack): string | undefined {
   const start = facts.build.startCommand;
-  const dir = appDirectory(facts, stack);
-  if (start === undefined || dir === ".") return start;
-  for (const prefix of [`cd ${dir} && `, `cd ${shellQuote(dir)} && `]) {
-    if (start.startsWith(prefix)) return start.slice(prefix.length);
+  return start === undefined ? undefined : inAppFolder(start, appDirectory(facts, stack));
+}
+
+/**
+ * A command detection wrote for the repository root, as it runs in an image that holds only `dir`
+ * (copied to the working folder): `cd <dir> && ` goes and `cd <dir>/<sub> && ` becomes
+ * `cd <sub> && `. Other commands are returned unchanged.
+ */
+function inAppFolder(command: string, dir: string): string {
+  if (dir === ".") return command;
+  for (const folder of [dir, shellQuote(dir)]) {
+    if (command.startsWith(`cd ${folder} && `)) return command.slice(`cd ${folder} && `.length);
+    const sub = new RegExp(`^cd ${escapeRegExp(folder)}/(\\S+) && `).exec(command);
+    if (sub) return `cd ${sub[1]} && ${command.slice(sub[0].length)}`;
   }
-  return start;
+  return command;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** The detected release command as the app's image runs it, or why the image cannot. */
+export interface ImageReleaseCommand {
+  /** The command for `app.releaseCommand`, when the image can run it. */
+  command?: string;
+  /** Plain-English reason the detected command was left out of the plan, and what to do. */
+  notRun?: string;
+}
+
+/**
+ * The detected release command (`facts.build.releaseCommand`) as it runs in the app's image.
+ * Python images hold only the app folder, so the folder prefix detection added is dropped;
+ * Node.js server images hold the repository and keep it. The Next.js standalone image holds
+ * neither the Prisma CLI nor the app folder of a monorepo for sure, so such commands are left out
+ * with a reason. Empty without a release command or for a static site (no app container).
+ */
+export function imageReleaseCommand(facts: ProjectFacts): ImageReleaseCommand {
+  const command = facts.build.releaseCommand;
+  const stack = detectStack(facts);
+  if (command === undefined || stack === undefined || stack === "static-spa") return {};
+  if (stack.startsWith("python-")) {
+    return { command: inAppFolder(command, appDirectory(facts, stack)) };
+  }
+  if (stack !== "next-standalone") return { command };
+  if (/\bprisma\s+migrate\b/.test(command)) {
+    return {
+      notRun: `OpsCrew found Prisma migrations, but the Next.js standalone image does not include the Prisma CLI or the prisma/migrations folder, so deploys cannot run \`${command}\`. Run the migrations another way: change the Dockerfile so the image keeps the Prisma CLI and the prisma folder, then set \`app.releaseCommand\` in opscrew/plan.yaml; or run \`npx prisma migrate deploy\` yourself against the production database before each deploy that changes the schema.`,
+    };
+  }
+  const dir = appDirectory(facts, stack);
+  if (dir !== "." && command.startsWith("cd ")) {
+    return {
+      notRun: `The release command \`${command}\` changes into ${dir}, which the Next.js standalone image may not contain, so OpsCrew left it out of the plan. Set \`app.releaseCommand\` in opscrew/plan.yaml to a command that runs from the image's working folder (/app).`,
+    };
+  }
+  return { command };
+}
+
+/** `app.releaseCommand` for the plan: {@link imageReleaseCommand}'s command, when there is one. */
+export function releaseCommandInImage(facts: ProjectFacts): string | undefined {
+  return imageReleaseCommand(facts).command;
 }
 
 /** Uvicorn target (`module:app`) from the detected start command, or `main:app`. */
@@ -486,7 +542,9 @@ export function djangoDockerfile(facts: ProjectFacts, port: number): string {
     `RUN export ${DJANGO_BUILD_KEY} && ${DJANGO_COLLECTSTATIC}`,
     "USER app",
     `EXPOSE ${port}`,
-    "# Run migrations as part of your release process (for example `python manage.py migrate`).",
+    facts.build.releaseCommand === undefined
+      ? "# Run migrations as part of your release process (for example `python manage.py migrate`)."
+      : "# The OpsCrew deploy runs the migrations (app.releaseCommand in opscrew/plan.yaml) first.",
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell variables expanded inside the container.
     'CMD ["sh", "-c", "gunicorn ${DJANGO_WSGI_MODULE} --bind 0.0.0.0:${PORT}"]',
     "",
