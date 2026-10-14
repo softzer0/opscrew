@@ -681,35 +681,45 @@ function imageOf(compose: string): string | undefined {
   return /^\s*image:\s*["']?([^"'\s]+)/m.exec(compose)?.[1];
 }
 
+/**
+ * The Cloudflare Tunnel connector runs whenever the caller passes one: tunnel mode, or a Portainer
+ * subdomain in either mode (the tunnel then serves only Portainer's hostname). Without one, a
+ * connector OpsCrew left behind is removed.
+ */
 function tunnelStep({ facts, desired, found }: SetupContext): HostStep | undefined {
   const tunnel = facts.tunnel;
-  if (desired.access !== "tunnel" || desired.tunnel === undefined) {
+  const tunnelMode = desired.access === "tunnel";
+  if (desired.tunnel === undefined) {
     if (!tunnel.installed && !tunnel.running) return undefined;
     return step(
       "tunnel-connector",
       "Remove the Cloudflare Tunnel connector",
       "change",
       { remove: true },
-      "The app is now served directly, so the tunnel connector is no longer needed.",
+      "No Cloudflare Tunnel is planned any more (the app is served directly and Portainer has no subdomain), so the connector is no longer needed.",
     );
   }
-  const busy = localPortUsers(
-    facts,
-    TUNNEL_APP_PORT,
-    facts.marker?.app === desired.app ? desired.app : null,
-  );
-  if (busy.length > 0) found.push(findings.tunnelPortInUse(busy));
-  // The tunnel reaches SSH at ssh://localhost:<port>: sshd must listen on loopback or everywhere.
-  const sshPorts = realSshPorts(facts, desired);
-  const sshListeners = facts.listeners.filter(
-    (listener) => listener.proto === "tcp" && sshPorts.includes(listener.port),
-  );
-  const local = (address: string) =>
-    isLoopback(address) || ["0.0.0.0", "*", "[::]", "::"].includes(address);
-  if (sshListeners.length > 0 && !sshListeners.some((listener) => local(listener.address))) {
-    found.push(
-      findings.sshdNotLocal(sshListeners.map((listener) => `${listener.address}:${listener.port}`)),
+  if (tunnelMode) {
+    const busy = localPortUsers(
+      facts,
+      TUNNEL_APP_PORT,
+      facts.marker?.app === desired.app ? desired.app : null,
     );
+    if (busy.length > 0) found.push(findings.tunnelPortInUse(busy));
+    // The tunnel reaches SSH at ssh://localhost:<port>: sshd must listen on loopback or everywhere.
+    const sshPorts = realSshPorts(facts, desired);
+    const sshListeners = facts.listeners.filter(
+      (listener) => listener.proto === "tcp" && sshPorts.includes(listener.port),
+    );
+    const local = (address: string) =>
+      isLoopback(address) || ["0.0.0.0", "*", "[::]", "::"].includes(address);
+    if (sshListeners.length > 0 && !sshListeners.some((listener) => local(listener.address))) {
+      found.push(
+        findings.sshdNotLocal(
+          sshListeners.map((listener) => `${listener.address}:${listener.port}`),
+        ),
+      );
+    }
   }
   const { compose, tunnelId } = desired.tunnel;
   // A different tunnel id means a new tunnel: its token must be written and the connector restarted.
@@ -735,12 +745,15 @@ function tunnelStep({ facts, desired, found }: SetupContext): HostStep | undefin
       "The tunnel was replaced: OpsCrew writes the new tunnel's token (supplied at apply time, never part of this plan) and restarts the connector.",
     );
   }
+  const serves = tunnelMode
+    ? `the app answers it on 127.0.0.1:${TUNNEL_APP_PORT}`
+    : "it serves only Portainer's subdomain (the app stays served directly)";
   return step(
     "tunnel-connector",
     title,
     "change",
     params,
-    `cloudflared runs as its own Compose project in /srv/opscrew/cloudflared and connects out to Cloudflare; no inbound port is opened, and the app answers it on 127.0.0.1:${TUNNEL_APP_PORT}. Its token is written to a root-only file at apply time and is never part of this plan.`,
+    `cloudflared runs as its own Compose project in /srv/opscrew/cloudflared and connects out to Cloudflare; no inbound port is opened, and ${serves}. Its token is written to a root-only file at apply time and is never part of this plan.`,
   );
 }
 
@@ -816,8 +829,9 @@ function allBlocked(desired: DesiredHost): HostStep[] {
       reason,
     ),
   ];
-  if (desired.access === "tunnel")
+  if (desired.tunnel !== undefined) {
     steps.push(step("tunnel-connector", TITLES.tunnel, "blocked", {}, reason));
+  }
   if (desired.portainer) steps.push(step("portainer", TITLES.portainer, "blocked", {}, reason));
   return steps;
 }

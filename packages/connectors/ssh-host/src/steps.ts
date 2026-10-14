@@ -1229,19 +1229,37 @@ const RemoveParams = z.object({
   runAs: z.enum(["root", "login"]).optional(),
 });
 
+/** Where a tunnel connector step runs: root steps live in OpsCrew's root-owned directory only. */
+function tunnelLocation(step: HostStep, dir: string, runAs: RunAs): void {
+  if (runAs === "root" && dir !== TUNNEL_DIR) throw invalid(step, "dir");
+}
+
 function tunnelScripts(plan: HostPlan, step: HostStep): StepScripts {
   if (plan.purpose !== "setup" || step.params.remove === true) {
-    params(step, RemoveParams);
-    return removeAddonScripts("tunnel-connector", TUNNEL_DIR, TUNNEL_PROJECT, false);
+    const p = params(step, RemoveParams);
+    const dir = p.dir ?? TUNNEL_DIR;
+    const runAs = p.runAs ?? "root";
+    tunnelLocation(step, dir, runAs);
+    return removeAddonScripts("tunnel-connector", dir, TUNNEL_PROJECT, false, runAs);
   }
   const p = params(
     step,
-    z.object({ compose: ComposeTextSchema, tunnelId: TunnelIdSchema, needsToken: z.boolean() }),
+    z.object({
+      compose: ComposeTextSchema,
+      tunnelId: TunnelIdSchema,
+      needsToken: z.boolean(),
+      dir: DirSchema.optional(),
+      runAs: z.enum(["root", "login"]).optional(),
+    }),
   );
+  const dir = p.dir ?? TUNNEL_DIR;
+  const runAs = p.runAs ?? "root";
+  tunnelLocation(step, dir, runAs);
   const sp = {
-    DIR: TUNNEL_DIR,
+    DIR: dir,
     PROJECT: TUNNEL_PROJECT,
     ADDONS_ROOT,
+    RUN_AS: runAs,
     COMPOSE_B64: base64(p.compose),
     COMPOSE_SHA256: sha256(p.compose),
     TUNNEL_ID: p.tunnelId,
@@ -1252,7 +1270,8 @@ function tunnelScripts(plan: HostPlan, step: HostStep): StepScripts {
   compose_is "$COMPOSE_SHA256" || return 1
   running || return 1`;
   const apply = `umask 077
-install -d -m 0700 "$ADDONS_ROOT" "$DIR"
+if [ "$RUN_AS" = root ]; then install -d -m 0700 "$ADDONS_ROOT"; fi
+install -d -m 0700 "$DIR"
 token=''
 IFS= read -r token || true
 recreate=''
@@ -1415,6 +1434,10 @@ rm -f "$DIR/admin_password"`;
  * in its home directory), needs no root and writes no host record. On a server the user owns use
  * `runAs: "root"` with `dir` = `PORTAINER_DIR` (for example to turn it off and delete its data;
  * turning it on there is part of `planHost`). Apply it with `applyHostPlan` like any host plan.
+ *
+ * `connector` adds the Cloudflare Tunnel connector that serves Portainer's subdomain, run the same
+ * way in its own `dir` (its token is supplied at apply as `tunnelToken`), or `{ dir, remove: true }`
+ * removes one an earlier subdomain left behind. It comes before the Portainer step.
  */
 export function planPortainer(options: {
   app: string;
@@ -1422,12 +1445,39 @@ export function planPortainer(options: {
   runAs?: RunAs;
   enable?: { version: string; compose: { initial: string; final: string }; needsPassword: boolean };
   disable?: { deleteData: boolean };
+  connector?:
+    | { dir: string; compose: string; tunnelId: string; needsToken: boolean }
+    | { dir: string; remove: true };
 }): HostPlan {
-  const { app, dir, enable, disable } = options;
+  const { app, dir, enable, disable, connector } = options;
   const runAs = options.runAs ?? "login";
   if ((enable === undefined) === (disable === undefined)) {
     throw new OpsCrewError("INVALID_INPUT", "Turn Portainer either on or off, not both.");
   }
+  const connectorStep: HostStep | undefined =
+    connector === undefined
+      ? undefined
+      : "remove" in connector
+        ? {
+            id: "tunnel-connector",
+            title: "Remove the Cloudflare Tunnel connector that served Portainer's subdomain",
+            state: "change",
+            params: { remove: true, dir: connector.dir, runAs },
+          }
+        : {
+            id: "tunnel-connector",
+            title: `Run the Cloudflare Tunnel connector for Portainer's subdomain${imageIn(connector.compose)}`,
+            state: "change",
+            reason:
+              "cloudflared runs as its own Compose project and connects out to Cloudflare; no inbound port is opened. Its token is written to a file only its owner can read at apply time and is never part of this plan.",
+            params: {
+              compose: connector.compose,
+              tunnelId: connector.tunnelId,
+              needsToken: connector.needsToken,
+              dir: connector.dir,
+              runAs,
+            },
+          };
   const params: Record<string, string | number | boolean> = enable
     ? {
         version: enable.version,
@@ -1443,6 +1493,7 @@ export function planPortainer(options: {
     purpose: "setup",
     app,
     steps: [
+      ...(connectorStep === undefined ? [] : [connectorStep]),
       {
         id: "portainer",
         title: enable
@@ -1457,13 +1508,25 @@ export function planPortainer(options: {
     findings: [],
   };
   // Validate now so a bad directory or version fails before anything is approved.
-  stepScripts(plan, plan.steps[0] as HostStep);
+  for (const item of plan.steps) stepScripts(plan, item);
   return plan;
 }
 
-/** How a step's scripts run: Portainer steps for Hetzner/DigitalOcean run as the login. */
+/** ` (<image>)` for a Compose file's first image, for a step title. */
+function imageIn(compose: string): string {
+  const image = /^\s*image:\s*["']?([^"'\s]+)/m.exec(compose)?.[1];
+  return image === undefined ? "" : ` (${image})`;
+}
+
+/**
+ * How a step's scripts run: the Portainer and tunnel connector steps for Hetzner/DigitalOcean run
+ * as the login (the deploy user); everything else as root.
+ */
 export function runAsOf(step: HostStep): RunAs {
-  return step.id === "portainer" && step.params.runAs === "login" ? "login" : "root";
+  return (step.id === "portainer" || step.id === "tunnel-connector") &&
+    step.params.runAs === "login"
+    ? "login"
+    : "root";
 }
 
 // ---------------------------------------------------------------------------------------------

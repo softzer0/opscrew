@@ -798,6 +798,56 @@ describe("planPortainer (servers OpsCrew created)", () => {
     expect(fake.volumes.has("opscrew-portainer")).toBe(false);
   });
 
+  it("runs the tunnel connector for Portainer's subdomain as the login, and removes it", async () => {
+    const fake = new FakeHost({ login: "deploy", sudo: "none" });
+    const plan = planPortainer({
+      app: "shop",
+      dir: "/home/deploy/opscrew/portainer",
+      enable: { ...portainerDesired(), needsPassword: true },
+      connector: {
+        dir: "/home/deploy/opscrew/cloudflared",
+        compose: TUNNEL_COMPOSE,
+        tunnelId: TUNNEL_ID,
+        needsToken: true,
+      },
+    });
+    expect(plan.steps.map((step) => step.id)).toEqual(["tunnel-connector", "portainer"]);
+    const token = tunnelToken();
+    const result = await applyApproved(fake, plan, {
+      secrets: { tunnelToken: token, portainerPassword: portainerPassword() },
+    });
+    expect(result.applied).toEqual(["tunnel-connector", "portainer"]);
+    expect(fake.calls.every((call) => !call.sudo)).toBe(true);
+    expect(fake.files.get("/home/deploy/opscrew/cloudflared/tunnel.env")).toBe(
+      `TUNNEL_TOKEN=${token}\n`,
+    );
+    expect(fake.files.has("/srv/opscrew/cloudflared/tunnel.env")).toBe(false);
+    expect(JSON.stringify(plan)).not.toContain(token);
+
+    const off = planPortainer({
+      app: "shop",
+      dir: "/home/deploy/opscrew/portainer",
+      disable: { deleteData: false },
+      connector: { dir: "/home/deploy/opscrew/cloudflared", remove: true },
+    });
+    const removed = await applyApproved(fake, off);
+    expect(removed.applied).toEqual(["tunnel-connector", "portainer"]);
+    expect(fake.files.has("/home/deploy/opscrew/cloudflared/tunnel.env")).toBe(false);
+    expect(fake.volumes.has("opscrew-portainer")).toBe(true);
+  });
+
+  it("refuses a root tunnel connector outside OpsCrew's directory", () => {
+    expect(() =>
+      planPortainer({
+        app: "shop",
+        dir: "/srv/opscrew/portainer",
+        runAs: "root",
+        disable: { deleteData: false },
+        connector: { dir: "/home/deploy/opscrew/cloudflared", remove: true },
+      }),
+    ).toThrow(/invalid parameters/);
+  });
+
   it("turns Portainer off and deletes its data on a server the user owns (root)", async () => {
     const fake = new FakeHost();
     await provision(fake, desiredFor(fake, { portainer: portainerDesired() }), {

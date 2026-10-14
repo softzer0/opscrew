@@ -690,7 +690,8 @@ export class FakeHost implements RemoteExec {
       case "marker.read":
         return result(this.files.get(MARKER_PATH) ?? "");
     }
-    if (!root && !(name.startsWith("portainer") && p.RUN_AS === "login")) {
+    const loginAddon = name.startsWith("portainer") || name.startsWith("tunnel-connector");
+    if (!root && !(loginAddon && p.RUN_AS === "login")) {
       return result("", 1, "Permission denied\n");
     }
     const deadMan = /^deadman\.(arm|cancel|trigger)\.(sshd|ufw)$/.exec(name);

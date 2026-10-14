@@ -7,10 +7,12 @@ import {
   desiredFor,
   planFor,
   portainerDesired,
+  portainerPassword,
   provision,
   TUNNEL_COMPOSE,
   TUNNEL_ID,
   tunnelDesired,
+  tunnelToken,
 } from "./__fixtures__/helpers";
 import { canonicalJson, hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
@@ -596,6 +598,47 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     expect(plan.findings[0]?.message).toContain("203.0.113.10:22");
     // Public mode does not need it.
     expect(codes(await planFor(fake))).toEqual([]);
+  });
+
+  it("runs the tunnel connector in public mode for a Portainer subdomain, without tunnel-mode checks", async () => {
+    const fake = new FakeHost();
+    // sshd only on the public address and 18080 taken: both matter only in tunnel mode.
+    fake.listeners = [
+      { proto: "tcp", address: "203.0.113.10", port: 22, process: "sshd" },
+      { proto: "tcp", address: "127.0.0.1", port: 18080, process: "node" },
+    ];
+    const desired = desiredFor(fake, {
+      tunnel: { compose: TUNNEL_COMPOSE, tunnelId: TUNNEL_ID },
+      portainer: portainerDesired(),
+    });
+    const plan = await planFor(fake, desired);
+    expect(codes(plan)).toEqual([]);
+    expect(stateOf(plan, "tunnel-connector")).toBe("change");
+    expect(paramsOf(plan, "tunnel-connector")).toEqual({
+      compose: TUNNEL_COMPOSE,
+      tunnelId: TUNNEL_ID,
+      needsToken: true,
+    });
+    expect(plan.steps.find((step) => step.id === "tunnel-connector")?.reason).toContain(
+      "Portainer's subdomain",
+    );
+    // Without a tunnel the public-mode plan has no connector step at all.
+    expect(stateOf(await planFor(fake, desiredFor(fake)), "tunnel-connector")).toBeUndefined();
+  });
+
+  it("keeps the connector in public mode on a re-run, and removes it once no tunnel is planned", async () => {
+    const fake = new FakeHost();
+    const desired = desiredFor(fake, {
+      tunnel: { compose: TUNNEL_COMPOSE, tunnelId: TUNNEL_ID },
+      portainer: portainerDesired(),
+    });
+    await provision(fake, desired, {
+      secrets: { tunnelToken: tunnelToken(), portainerPassword: portainerPassword() },
+    });
+    expect(stateOf(await planFor(fake, desired), "tunnel-connector")).toBe("in-place");
+    const without = await planFor(fake, desiredFor(fake, { portainer: portainerDesired() }));
+    expect(stateOf(without, "tunnel-connector")).toBe("change");
+    expect(paramsOf(without, "tunnel-connector")).toEqual({ remove: true });
   });
 
   it("needs SSH local forwarding for the Portainer tunnel command", async () => {
