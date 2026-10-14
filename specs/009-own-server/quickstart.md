@@ -23,8 +23,9 @@
 4. `opscrew portainer enable`: nothing answers on 9443/9000/8000 from outside; through the printed
    tunnel command the UI answers and the admin exists.
 5. Directly behind Cloudflare's proxy with the filter (answer changed in the interview, then
-   `provision`): the domain answers through Cloudflare; 80/443 on the server's own IPv4 and IPv6
-   addresses do not answer from the test machine; after a reboot of the server the filter is back before Docker
+   `provision`, then a deploy): the domain answers through Cloudflare; 80/443 on the server's own
+   IPv4 and IPv6 addresses do not answer from the test machine; on the server `ss -ltnu` shows
+   no `[::]:80`/`[::]:443` listener; after a reboot of the server the filter is back before Docker
    serves anything (the domain answers again, the address still does not); `drift` is clean.
 6. Through the tunnel (answer changed again, then `provision`; switching runs in two steps): ufw
    allows only SSH; the app answers on the domain through the tunnel; a merged change deploys
