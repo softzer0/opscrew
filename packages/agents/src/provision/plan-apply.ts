@@ -152,6 +152,9 @@ function applyFailureHint(
   return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
 }
 
+/** File name ending of a saved plan that removes everything in the state (`destroy: true`). */
+export const REMOVAL_PLAN_SUFFIX = "-removal.tfplan";
+
 export interface PlanAndApplyResult {
   planHash?: string;
   applied: boolean;
@@ -414,7 +417,7 @@ async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise
   const stamp = deps.clock.now().toISOString().replace(/[:.]/g, "-");
   const planFile = join(
     deps.paths.files.plansDir,
-    `${stamp}${options.destroy === true ? "-removal" : ""}.tfplan`,
+    options.destroy === true ? `${stamp}${REMOVAL_PLAN_SUFFIX}` : `${stamp}.tfplan`,
   );
   deps.reporter.step(
     options.destroy === true

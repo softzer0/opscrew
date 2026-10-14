@@ -40,7 +40,7 @@ import {
   prepareOwnServer,
   removeOldAccessMode,
 } from "./own";
-import { findSavedPlan, planAndApply } from "./plan-apply";
+import { findSavedPlan, planAndApply, REMOVAL_PLAN_SUFFIX } from "./plan-apply";
 import { chooseDeployBranch, localDeployBranch, publishDeploySetup } from "./publish";
 import {
   committedTfvars,
@@ -353,12 +353,18 @@ async function provisionFlow(
     await ownEngineEnv(deps, ownRun, engineEnv);
     ownRender = await ownRenderInput(deps, services, plan, cloudflare, ownRun);
     // Switching between public and tunnel mode: the old records go first, in an apply of their own.
+    // Only a saved removal plan is applied as the removal (never the new setup's plan).
+    const saved =
+      approveHash === undefined
+        ? undefined
+        : await findSavedPlan(deps.paths.files.plansDir, approveHash);
+    const removalHash = saved?.planFile.endsWith(REMOVAL_PLAN_SUFFIX) ? approveHash : undefined;
     const removal = await removeOldAccessMode(deps, {
       engine,
       dir,
       env: engineEnv,
       plan,
-      ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
+      ...(removalHash !== undefined ? { approvePlanHash: removalHash } : {}),
       ...(options.planOnly ? { planOnly: true } : {}),
       phase,
     });
@@ -374,7 +380,7 @@ async function provisionFlow(
           outputs: {},
         };
       }
-      approveHash = undefined; // the approved hash (if any) named the removal
+      if (removalHash !== undefined) approveHash = undefined; // it named the removal
       if (removal.approval) approvals.push(planApproval(removal.approval, "iac-apply"));
     }
   }

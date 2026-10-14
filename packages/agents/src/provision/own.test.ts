@@ -519,6 +519,45 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(plan.approvals.map((a) => a.kind)).toEqual(["iac-apply", "iac-apply", "host-apply"]);
   });
 
+  it("--plan-only during a mode switch shows only the removal; approving its hash applies it, then the new setup", async () => {
+    const token = `eyJ${fakeSecret("cloudflare-token", "switch-plan")}`;
+    const s = await setup({
+      plan: ownPlan({ access: "tunnel" }),
+      own: {
+        host: OWN_IPV4,
+        port: 22,
+        user: "root",
+        agent: true,
+        reachable: false,
+        hostKey: ED25519_FINGERPRINT,
+      },
+      engine: new OwnEngine(
+        TUNNEL_CHANGES,
+        tunnelOutputs({ token, clientId: "client-id", clientSecret: "client-secret-x" }),
+        publicOutputs(),
+      ),
+    });
+    await mkdir(s.deps.paths.files.tfstateDir, { recursive: true });
+    await writeFile(join(s.deps.paths.files.tfstateDir, "prod.tfstate"), "{}");
+    await recordServerAddress(s.deps.paths, { ipv4: OWN_IPV4 });
+
+    const planned = await runProvision(s.deps, { services: s.services, planOnly: true });
+    expect(planned.planHash).toBeDefined();
+    expect(planned.hostPlanHash).toBeUndefined();
+    expect(s.engine.plans.map((p) => p.destroy)).toEqual([true]);
+    expect(s.engine.applies).toHaveLength(0);
+    expect(kinds(s)).toEqual([]);
+    expect(s.deps.reporter.text()).toContain("After this removal is applied");
+
+    await runProvision(s.deps, {
+      services: s.services,
+      approvePlanHashes: [planned.planHash as string],
+    });
+    expect(s.engine.applies.map((a) => a.destroy)).toEqual([true, false]);
+    expect(s.engine.plans.map((p) => p.destroy)).toEqual([true, false]);
+    expect(s.host.applies).toHaveLength(1);
+  });
+
   it("never asks to replace a token when the server's login is missing", async () => {
     const s = await setup();
     await recordOwnServer(s.deps.paths, undefined);
