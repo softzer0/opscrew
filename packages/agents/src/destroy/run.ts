@@ -368,22 +368,27 @@ async function deleteTunnelLeft(
       deps.reporter.info("Nothing is left to delete.");
       return undefined;
     }
-    // Only deletes of what the user confirmed, and no server (it is deleted already).
+    // Only deletes of what the user confirmed, and no server.
+    const servers = summary.changes.filter((change) => deletesServer([change], session.provider));
+    const serverAddresses = new Set(servers.map((change) => change.address));
     const problems = deletionPlanProblems(summary.changes, { confirmed: input.confirmed });
     const outside = [
       ...problems.notDeletes,
-      ...problems.unconfirmed.map((address) => `delete ${address}`),
-      ...summary.changes
-        .filter((change) => deletesServer([change], session.provider))
-        .map(
-          (change) => `${change.action} ${change.address} (the ${texts.noun} is deleted already)`,
-        ),
+      ...problems.unconfirmed
+        .filter((address) => !serverAddresses.has(address))
+        .map((address) => `delete ${address}`),
+      ...servers.map(
+        (change) =>
+          `${change.action} ${change.address} (a ${texts.noun}: this plan may delete only what is left of the tunnel)`,
+      ),
     ];
     if (outside.length > 0) {
+      // With a server still in the plan, nothing is claimed about what the first apply deleted.
+      const already = servers.length > 0 ? "" : ` ${input.tunnelLeft}`;
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         [
-          `The plan for what is left would do more than delete what you confirmed, so OpsCrew stopped. ${input.tunnelLeft}`,
+          `The plan for what is left would do more than delete what you confirmed, so OpsCrew stopped before applying it.${already}`,
           ...outside.map((problem) => `  ${problem}`),
         ].join("\n"),
         {
@@ -391,6 +396,13 @@ async function deleteTunnelLeft(
         },
       );
     }
+    // Shown before the approval, which the typed name may already grant (the CLI).
+    deps.reporter.info(
+      [
+        "The plan for what is left deletes these resources:",
+        ...describeChanges(summary.changes),
+      ].join("\n"),
+    );
     const count = summary.changes.length;
     const approval = await deps.approvals.request({
       kind: "iac-apply",

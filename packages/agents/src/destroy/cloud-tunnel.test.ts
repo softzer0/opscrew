@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ApprovalRequest } from "@opscrew/contracts";
+import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
@@ -43,6 +43,8 @@ async function deployed(
     never?: boolean;
     /** Refuse the second `iac-apply` approval (the tunnel-only plan). */
     refuseTunnelPlan?: boolean;
+    /** What the plan for what is left deletes besides the tunnel. */
+    alsoLeft?: ResourceChange[];
   } = {},
 ) {
   const events: string[] = [];
@@ -78,7 +80,10 @@ async function deployed(
     if (!busy) return innerApply(dir, planFile, approval);
     busy = false;
     events.push("apply:destroy");
-    engine.script.resources = tunnelDeletes().filter((c) => c.type === TUNNEL_RESOURCE_TYPE);
+    engine.script.resources = [
+      ...tunnelDeletes().filter((c) => c.type === TUNNEL_RESOURCE_TYPE),
+      ...(o.alsoLeft ?? []),
+    ];
     return { ok: false, outputs: {}, log: BUSY_TUNNEL_LOG };
   };
   let iacApprovals = 0;
@@ -193,6 +198,10 @@ describe.skipIf(!findExecutable("git"))(
         "The Droplet is deleted, but Cloudflare refused to delete the app's Cloudflare Tunnel while it still had active connections (they can outlast the Droplet for a few minutes). OpsCrew waits until they close, then shows the plan that deletes the tunnel.",
       );
       expect(text).not.toContain("1022");
+      // What the second approval covers is printed, too (the typed name may approve it in the CLI).
+      expect(text).toContain(
+        "The plan for what is left deletes these resources:\n  - delete  module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+      );
     });
 
     it("connections that never close: the plain message, and the rerun waits and deletes the tunnel", async () => {
@@ -250,6 +259,58 @@ describe.skipIf(!findExecutable("git"))(
       const tunnelOnly = s.handler.requests.filter((r) => r.kind === "iac-apply")[1];
       expect(tunnelOnly).toBeDefined();
       expect(existsSync(s.engine.planFiles.at(-1) as string)).toBe(false);
+    });
+
+    /** Runs a destroy whose plan for what is left also has `alsoLeft`: the guard must stop it. */
+    async function guarded(alsoLeft: ResourceChange[]) {
+      const s = await deployed({ alsoLeft });
+      const error = await failure(runDestroy(s.deps, { services: s.services, snapshot: false }));
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      // Planned, never shown for approval, never applied; the plan file is gone.
+      expect(afterFirstApply(s.events)).toEqual(["apply:destroy", "poll", "plan:destroy"]);
+      expect(s.events.filter((e) => e === "apply:destroy")).toHaveLength(1);
+      expect(s.handler.requests.filter((r) => r.kind === "iac-apply")).toHaveLength(1);
+      expect(existsSync(s.engine.planFiles.at(-1) as string)).toBe(false);
+      expect(
+        (await readArtifact("plan", s.deps.paths.files.plan)).deployment.destroyedAt,
+      ).toBeUndefined();
+      expect(s.deps.reporter.text()).not.toContain(
+        "The plan for what is left deletes these resources:",
+      );
+      return error;
+    }
+
+    it("the plan for what is left may not delete an address that was not confirmed", async () => {
+      const error = await guarded([
+        {
+          address: "module.extra.cloudflare_dns_record.other",
+          type: "cloudflare_dns_record",
+          name: "other",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "delete",
+        },
+      ]);
+      expect(error.message).toBe(
+        [
+          "The plan for what is left would do more than delete what you confirmed, so OpsCrew stopped before applying it. The Droplet is deleted; the Cloudflare Tunnel is still there.",
+          "  delete module.extra.cloudflare_dns_record.other",
+        ].join("\n"),
+      );
+    });
+
+    it("the plan for what is left may not delete a Droplet, and claims nothing about it", async () => {
+      const droplets = deployedResources({ provider: "digitalocean" }).filter(
+        (c) => c.type === "digitalocean_droplet",
+      );
+      expect(droplets).toHaveLength(1);
+      const error = await guarded(droplets);
+      expect(error.message).toBe(
+        [
+          "The plan for what is left would do more than delete what you confirmed, so OpsCrew stopped before applying it.",
+          `  delete ${droplets[0]?.address} (a Droplet: this plan may delete only what is left of the tunnel)`,
+        ].join("\n"),
+      );
+      expect(error.message).not.toContain("is deleted");
     });
   },
 );
