@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
-import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import { DEPLOY_SECRETS, TUNNEL_DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
@@ -108,12 +108,18 @@ function reportUnsetVariables(deps: PhaseDeps, environment: AppEnvironment): voi
   }
 }
 
-/** The GitHub Actions secrets the deploy workflow reads. */
+/**
+ * The GitHub Actions secrets the deploy workflow reads. In tunnel mode (a server the user owns
+ * without a public address) `tunnel` adds the Cloudflare Access service token the workflow reaches
+ * SSH through; `host` is then the tunnel's SSH hostname and `knownHosts` holds the server's host
+ * key under that name.
+ */
 export function deploySecrets(input: {
   host: string;
   privateKey: string;
   knownHosts: string;
   environment: AppEnvironment;
+  tunnel?: { serviceTokenId: string; serviceTokenSecret: string };
 }): Record<string, string> {
   return {
     [DEPLOY_SECRETS.host]: input.host,
@@ -124,6 +130,12 @@ export function deploySecrets(input: {
       ? { [DEPLOY_SECRETS.dbEnv]: input.environment.dbEnv }
       : {}),
     [DEPLOY_SECRETS.buildEnv]: input.environment.buildEnv,
+    ...(input.tunnel !== undefined
+      ? {
+          [TUNNEL_DEPLOY_SECRETS.serviceTokenId]: input.tunnel.serviceTokenId,
+          [TUNNEL_DEPLOY_SECRETS.serviceTokenSecret]: input.tunnel.serviceTokenSecret,
+        }
+      : {}),
   };
 }
 

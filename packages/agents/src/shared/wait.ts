@@ -1,4 +1,6 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { TcpConnect } from "@opscrew/secops";
@@ -144,4 +146,89 @@ export async function pinHostKey(options: PinHostKeyOptions): Promise<PinnedHost
     changed: previous.length > 0,
     created: previous.length === 0,
   };
+}
+
+/** A host key the server presented: its type (`ssh-ed25519`), base64 key and fingerprint. */
+export interface ScannedHostKey {
+  type: string;
+  key: string;
+  /** `SHA256:` and the unpadded base64 SHA-256 of the key, as `ssh-keygen -lf` prints it. */
+  fingerprint: string;
+}
+
+/** A pinned host key fingerprint: `SHA256:` and 43 base64 characters. */
+export const HOST_KEY_FINGERPRINT = /^SHA256:[A-Za-z0-9+/]{43}$/;
+
+/**
+ * The SHA-256 fingerprint of an SSH public key (the base64 field of a key line), written as
+ * OpenSSH prints it: `SHA256:` and the unpadded base64 digest.
+ */
+export function hostKeyFingerprint(keyBase64: string): string {
+  const digest = createHash("sha256").update(Buffer.from(keyBase64, "base64")).digest("base64");
+  return `SHA256:${digest.replace(/=+$/, "")}`;
+}
+
+/** How known_hosts names a server: `host` on port 22, `[host]:port` on any other port. */
+export function knownHostsName(host: string, port = 22): string {
+  return port === 22 ? host : `[${host}]:${port}`;
+}
+
+/** Ed25519 first, then ECDSA, then RSA: the order a user is shown and asked to confirm. */
+function keyRank(type: string): number {
+  if (type === "ssh-ed25519") return 0;
+  if (type.startsWith("ecdsa-")) return 1;
+  if (type === "ssh-rsa") return 2;
+  return 3;
+}
+
+/**
+ * The host keys the server at `host:port` presents (`ssh-keyscan`), Ed25519 first, each with its
+ * SHA-256 fingerprint. Empty when the server did not answer. `ssh-keyscan` alone cannot tell a
+ * real server from a man in the middle: a caller pins a key only after the user confirmed its
+ * fingerprint (or named it with `--host-key`).
+ */
+export async function scanHostKeys(options: {
+  host: string;
+  port?: number;
+  runner: CommandRunner;
+}): Promise<ScannedHostKey[]> {
+  const scan = await options.runner.run(
+    "ssh-keyscan",
+    ["-T", "10", "-p", String(options.port ?? 22), "-t", "ed25519,ecdsa,rsa", options.host],
+    { timeoutMs: 30_000 },
+  );
+  const seen = new Set<string>();
+  const keys: ScannedHostKey[] = [];
+  for (const line of parseKeyscan(scan.stdout)) {
+    const [, type, key] = line.split(/\s+/);
+    if (type === undefined || key === undefined || !/^[A-Za-z0-9+/]+={0,3}$/.test(key)) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keys.push({ type, key, fingerprint: hostKeyFingerprint(key) });
+  }
+  return keys.sort((a, b) => keyRank(a.type) - keyRank(b.type));
+}
+
+/**
+ * Replaces the entries of `name` (see {@link knownHostsName}) in a known_hosts file with `keys`,
+ * keeping every other host's entries, and returns the new lines for `name`.
+ */
+export async function writeKnownHost(
+  file: string,
+  name: string,
+  keys: readonly Pick<ScannedHostKey, "type" | "key">[],
+): Promise<string> {
+  let existing = "";
+  try {
+    existing = await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const others = parseKeyscan(existing).filter(
+    (line) => !(line.split(/\s+/)[0] ?? "").split(",").includes(name),
+  );
+  const lines = keys.map((k) => `${name} ${k.type} ${k.key}`);
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${[...others, ...lines].join("\n")}\n`, { mode: 0o644 });
+  return `${lines.join("\n")}\n`;
 }

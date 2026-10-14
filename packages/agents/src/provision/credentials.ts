@@ -13,11 +13,19 @@ import {
 } from "@opscrew/connector-github";
 import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { portainerHostname, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
 import { readServerAddresses, serverAddress } from "../shared";
+import {
+  ownServerLogin,
+  ownServerNotSetUp,
+  readOwnServerRecord,
+  requireOwnServerKey,
+} from "../shared/own-server";
 import type { CloudflareApi, GitHubApi, ProvisionServices } from "./types";
+import { tunnelTokenPermissions } from "./zero-trust";
 
 /** Cloudflare facts the render context needs. */
 export interface CloudflareSetup {
@@ -26,6 +34,11 @@ export interface CloudflareSetup {
   manageConfigRule: boolean;
   manageWafRules: boolean;
   ipRanges?: { ipv4: string[]; ipv6: string[] };
+  /**
+   * The account that holds the zone. Always known when the plan has a Cloudflare Tunnel (an own
+   * server in tunnel mode, or a Portainer subdomain): tunnels and Access belong to the account.
+   */
+  accountId?: string;
   /**
    * A/AAAA/CNAME records at the app's hostnames that OpsCrew did not create; only collected when
    * `setupCloudflare` runs with `foreignRecords: "report"` (otherwise they stop the run).
@@ -81,12 +94,50 @@ function accountBlocked(profile: ProviderProfile, message: string) {
   );
 }
 
-/** Stops unless the provider's token (for example `HCLOUD_TOKEN`) is set and works. */
+/**
+ * How OpsCrew reaches a server the user owns, for hints: never an API token, always the SSH login
+ * from the interview and the host key.
+ */
+export const OWN_SERVER_CONNECT_HINT =
+  "No API token is needed for your own server: OpsCrew connects over SSH with the login from `opscrew interview` (the server's address, SSH port, user, and your key file or `agent` for the SSH agent; never a password) and asks you to confirm the server's host key on the first connection (`--host-key SHA256:…` in scripts). Run `opscrew interview` to fix the login, then try again.";
+
+/**
+ * A server the user owns: its SSH login must be recorded (`.opscrew/server.json` → `own`) and its
+ * key file on this computer. The connection and the host key are checked when OpsCrew connects.
+ */
+async function checkOwnServer(
+  deps: PhaseDeps,
+  services: Pick<ProvisionServices, "provider" | "own">,
+): Promise<void> {
+  if (services.provider !== undefined) {
+    const result = await services.provider.verify();
+    if (result.ok) return;
+    throw new OpsCrewError("PHASE_PRECONDITION", result.message, {
+      hint: OWN_SERVER_CONNECT_HINT,
+    });
+  }
+  const connection = await readOwnServerRecord(deps.paths);
+  if (connection === undefined) throw ownServerNotSetUp();
+  await requireOwnServerKey(connection, deps.env, services.own?.homeDir);
+  const check = await vpsConnector("own", deps, {
+    ownLogin: ownServerLogin(connection),
+  }).verifyCredentials();
+  if (!check.ok) {
+    throw new OpsCrewError("PHASE_PRECONDITION", check.message, { hint: OWN_SERVER_CONNECT_HINT });
+  }
+}
+
+/**
+ * Stops unless the provider's token (for example `HCLOUD_TOKEN`) is set and works. A server the
+ * user owns has no token: its SSH login must be recorded instead, and the hints say how to
+ * connect (interview answers, host key), never to replace a token.
+ */
 export async function checkProvider(
   deps: PhaseDeps,
   provider: VpsProviderId,
-  services: Pick<ProvisionServices, "provider">,
+  services: Pick<ProvisionServices, "provider" | "own">,
 ): Promise<void> {
+  if (provider === "own") return checkOwnServer(deps, services);
   const connector = vpsConnector(provider, deps);
   const profile = providerProfile(provider);
   const check = services.provider ?? {
@@ -171,9 +222,44 @@ function mayManagePhase(
 }
 
 /**
+ * The tunnel's other hostnames in the zone: the SSH hostname in tunnel mode (`ssh-<app>.<zone>`)
+ * and Portainer's subdomain when opted in. Their records must not exist unless OpsCrew made them.
+ */
+function tunnelHosts(plan: DeployPlan, zone: string): string[] {
+  const portainer = portainerHostname(plan);
+  return [
+    ...(tunnelMode(plan) ? [`ssh-${plan.app.name}.${zone}`] : []),
+    ...(portainer !== undefined ? [portainer] : []),
+  ];
+}
+
+/**
+ * The account that holds the zone, which owns the tunnel and Access: the one Cloudflare names
+ * with the zone, else the token's only account.
+ */
+async function tunnelAccount(
+  api: CloudflareApi,
+  zone: { name: string; accountId?: string },
+): Promise<string> {
+  if (zone.accountId !== undefined && zone.accountId !== "") return zone.accountId;
+  const accounts = (await api.listAccounts?.()) ?? [];
+  const only = accounts.length === 1 ? accounts[0] : undefined;
+  if (only !== undefined) return only.id;
+  throw new OpsCrewError(
+    "CREDENTIALS_INVALID",
+    `Cloudflare did not say which account holds ${zone.name}, and the token ${accounts.length === 0 ? "sees no account" : "sees several accounts"}, so OpsCrew cannot tell where to create the Cloudflare Tunnel.`,
+    {
+      hint: `Create a token for the account that holds ${zone.name} with ${tunnelTokenPermissions()}, set CLOUDFLARE_API_TOKEN to it, then run the command again.`,
+    },
+  );
+}
+
+/**
  * Cloudflare checks for a plan with a Cloudflare domain: token, zone, existing DNS records at the
- * app's hostnames (stops when records OpsCrew did not create are there), which rule phases OpsCrew
- * may manage (never a phase the user owns; always its own) and the edge IP ranges when proxied.
+ * app's hostnames (and the tunnel's SSH and Portainer hostnames; stops when records OpsCrew did
+ * not create are there), which rule phases OpsCrew may manage (never a phase the user owns; always
+ * its own), the edge IP ranges when proxied, and the zone's account when the plan has a
+ * Cloudflare Tunnel.
  */
 export async function setupCloudflare(
   deps: PhaseDeps,
@@ -207,7 +293,10 @@ export async function setupCloudflare(
         },
       );
     }
-    const hosts = plan.dns.www ? [domain, `www.${domain}`] : [domain];
+    const hosts = [
+      ...(plan.dns.www ? [domain, `www.${domain}`] : [domain]),
+      ...tunnelHosts(plan, zone.name),
+    ];
     const foreign = await foreignDnsRecords(api, zone.id, await knownServers(deps, plan), hosts);
     const reportForeign = options.foreignRecords === "report";
     if (foreign.length > 0 && !reportForeign) {
@@ -254,11 +343,13 @@ export async function setupCloudflare(
         },
         zone.id,
       );
+    const accountId = usesTunnel(plan) ? await tunnelAccount(api, zone) : zone.accountId;
     const setup: CloudflareSetup = {
       zoneId: zone.id,
       zoneName: zone.name,
       manageConfigRule,
       manageWafRules,
+      ...(accountId !== undefined ? { accountId } : {}),
       ...(reportForeign && foreign.length > 0
         ? {
             foreignRecords: foreign.map((r) => ({
@@ -275,8 +366,9 @@ export async function setupCloudflare(
     return setup;
   } catch (error) {
     if (error instanceof OpsCrewError && error.code === "CREDENTIALS_INVALID") {
+      const needs = usesTunnel(plan) ? tunnelTokenPermissions() : requirement.scopes.join(", ");
       throw new OpsCrewError("CREDENTIALS_INVALID", error.message, {
-        hint: `The Cloudflare token needs: ${requirement.scopes.join(", ")}. Create one at ${requirement.createUrl}`,
+        hint: `The Cloudflare token needs: ${needs}. Create one at ${requirement.createUrl}`,
       });
     }
     throw error;

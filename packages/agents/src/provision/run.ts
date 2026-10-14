@@ -1,10 +1,10 @@
-import { access, readFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { GitClient } from "@opscrew/connector-github";
-import type { IacEngine, PhaseName } from "@opscrew/contracts";
+import type { ApprovalRecord, IacEngine, PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
-import { renderDeployment } from "@opscrew/iac-templates";
+import { usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -20,25 +20,43 @@ import {
   hidesServerAddress,
   pinHostKey,
   providerConsole,
+  recordOwnServer,
   recordServerAddress,
+  type ServerAddress,
   SshRemoteExec,
   serverAddress,
   waitForCloudInit,
   waitForPort,
   writeRenderedFiles,
 } from "../shared";
-import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
+import { type CloudflareSetup, checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { requireNoMoveInProgress } from "./guard";
-import { planAndApply } from "./plan-apply";
+import {
+  applyOwnHostPlan,
+  type OwnHostResult,
+  type OwnServerRun,
+  ownDeployTarget,
+  ownEngineEnv,
+  prepareOwnServer,
+  removeOldAccessMode,
+} from "./own";
+import { findSavedPlan, planAndApply } from "./plan-apply";
 import { chooseDeployBranch, localDeployBranch, publishDeploySetup } from "./publish";
-import { deploymentRenderContext, readRequirements } from "./render";
+import {
+  committedTfvars,
+  deploymentFiles,
+  deploymentRenderContext,
+  type OwnRenderInput,
+  readRequirements,
+} from "./render";
 import {
   buildAppEnvironment,
   deploySecrets,
   deploySecretsStoredFor,
   setDeploySecrets,
 } from "./secrets";
-import type { ProvisionOptions, ProvisionResult } from "./types";
+import type { ProvisionOptions, ProvisionResult, ProvisionServices, SavedPlan } from "./types";
+import { cloudflareZeroTrust, createZeroTrustOrganization } from "./zero-trust";
 
 const SSH_WAIT_MS = 5 * 60_000;
 const CLOUD_INIT_WAIT_MS = 8 * 60_000;
@@ -75,6 +93,20 @@ async function refreshServerAddress(
 function stringOutput(outputs: Record<string, unknown>, name: string): string | undefined {
   const value = outputs[name];
   return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/** Sensitive root-module outputs (the tunnel and Access tokens): never returned or printed. */
+const SENSITIVE_OUTPUTS = new Set([
+  "tunnel_token",
+  "deploy_service_token_client_id",
+  "deploy_service_token_client_secret",
+]);
+
+/** The outputs without the sensitive ones, for the result (callers print or forward it). */
+function publicOutputs(outputs: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(outputs).filter(([name]) => !SENSITIVE_OUTPUTS.has(name)),
+  );
 }
 
 async function requireDockerfile(deps: PhaseDeps, git: GitClient, plan: DeployPlan) {
@@ -136,23 +168,90 @@ export const ADDRESS_MAY_BE_PUBLIC_NOTE =
  * is missing or unreadable (nothing is known).
  */
 async function tfvarsShowPublicAddress(root: string, plan: DeployPlan): Promise<boolean> {
-  try {
-    const text = await readFile(join(root, plan.infra.dir, "terraform.tfvars.json"), "utf8");
-    const values = JSON.parse(text) as unknown;
-    return (
-      typeof values === "object" &&
-      values !== null &&
-      !("proxied" in values && values.proxied === true)
-    );
-  } catch {
-    return false;
+  const values = await committedTfvars(root, plan);
+  return values !== undefined && !("proxied" in values && values.proxied === true);
+}
+
+/**
+ * The `--approve` hash that names the saved infrastructure plan. Servers OpsCrew creates have one
+ * plan, so it is the first hash given. A server the user owns has two (infrastructure and host):
+ * the hash whose saved infrastructure plan exists and was not applied yet (a script that names both
+ * hashes again after the infrastructure was applied plans afresh, which finds nothing to change);
+ * the host plan's hash is granted by the approval handler.
+ */
+async function savedInfrastructureHash(
+  deps: PhaseDeps,
+  options: ProvisionOptions,
+  plan: DeployPlan,
+): Promise<string | undefined> {
+  const hashes = [
+    ...(options.approvePlanHash !== undefined ? [options.approvePlanHash] : []),
+    ...(options.approvePlanHashes ?? []),
+  ];
+  if (plan.target.provider !== "own") return hashes[0];
+  const applied = plan.deployment.lastPlanHash?.toLowerCase();
+  for (const hash of hashes) {
+    if (hash.toLowerCase() === applied) continue;
+    if ((await findSavedPlan(deps.paths.files.plansDir, hash)) !== undefined) return hash;
   }
+  return undefined;
+}
+
+/**
+ * The own-server render inputs: sshd's port on the server (the tunnel's SSH route) and, when the
+ * plan has Cloudflare Access, whether this configuration creates the account's Zero Trust
+ * organization (read from Cloudflare, keeping the one an earlier run created) and the one-time PIN
+ * login method the last run used.
+ */
+async function ownRenderInput(
+  deps: PhaseDeps,
+  services: ProvisionServices,
+  plan: DeployPlan,
+  cloudflare: CloudflareSetup | undefined,
+  run: OwnServerRun,
+): Promise<OwnRenderInput> {
+  const input: OwnRenderInput = { sshPort: run.sshPort };
+  if (!usesTunnel(plan) || cloudflare?.accountId === undefined) return input;
+  const previous = await committedTfvars(deps.paths.root, plan);
+  input.createZeroTrustOrganization = await createZeroTrustOrganization({
+    api: services.own?.zeroTrust ?? cloudflareZeroTrust(deps),
+    accountId: cloudflare.accountId,
+    zone: cloudflare.zoneName,
+    previous: previous?.create_zero_trust_organization === true,
+  });
+  const pin = previous?.one_time_pin_identity_provider_id;
+  if (typeof pin === "string" && pin !== "") input.oneTimePinIdentityProviderId = pin;
+  return input;
+}
+
+/** True when the infrastructure plan creates, replaces or deletes the Cloudflare Tunnel itself. */
+function changesTunnel(saved: SavedPlan | undefined): boolean {
+  return (saved?.changes ?? []).some(
+    (change) => change.type === "cloudflare_zero_trust_tunnel_cloudflared",
+  );
+}
+
+/** An approval as `opscrew/plan.yaml` keeps it (informational; the approval store is authoritative). */
+function planApproval(record: ApprovalRecord, kind: "iac-apply" | "host-apply") {
+  return {
+    planHash: record.planHash as string,
+    approver: record.approver,
+    at: record.decidedAt,
+    kind,
+  };
 }
 
 /**
  * Provision and DNS share this flow: credentials → engine, deploy key and state encryption →
  * render (approved write) → plan, policies, approval, apply → record the deployment → wait for the
  * server and pin its host key → deploy secrets → commit, push and pull request.
+ *
+ * A server the user owns (`target.provider: own`) differs after the credentials: connect and
+ * confirm its host key, inspect it read-only and stop on blocking findings before any change; the
+ * address reaches the engine only as `TF_VAR_*`; a switch between public and tunnel mode first
+ * removes the old records (an apply of its own); after the infrastructure apply the host plan is
+ * saved, shown, approved by its hash and applied; then the address is recorded and the deploy
+ * secrets (with the tunnel's service token) are stored.
  */
 async function provisionFlow(
   deps: PhaseDeps,
@@ -164,6 +263,7 @@ async function provisionFlow(
   const root = deps.paths.root;
   let plan = extras.plan ?? (await readArtifact("plan", deps.paths.files.plan));
   const requirements = await readRequirements(deps);
+  const ownServer = plan.target.provider === "own";
 
   // 1–2. Preconditions and credentials
   const git = new GitClient({
@@ -179,20 +279,28 @@ async function provisionFlow(
   }
   await requireDockerfile(deps, git, plan);
   const profile = providerProfile(planProvider(plan));
-  deps.reporter.step(`Checking your ${profile.displayName}, Cloudflare and GitHub access`);
+  deps.reporter.step(
+    ownServer
+      ? "Checking the login to your server, Cloudflare and GitHub access"
+      : `Checking your ${profile.displayName}, Cloudflare and GitHub access`,
+  );
   await checkProvider(deps, profile.id, services);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
+  // The saved infrastructure plan an `--approve` names (applied instead of planning again).
+  let approveHash = await savedInfrastructureHash(deps, options, plan);
   // The branch for the deployment files, picked (and checked to start from the latest
   // `plan.cicd.branch`) before anything changes; `--plan-only` commits nothing.
-  const commits = !(options.planOnly && options.approvePlanHash === undefined);
+  const commits = !(options.planOnly && approveHash === undefined);
   const deployBranch = !commits
     ? undefined
     : options.push !== false
       ? await chooseDeployBranch(deps, git, github, plan, phase)
       : { branch: await localDeployBranch(git, plan, phase) };
   await extras.ready?.();
-  const addressWasPublic = extras.addressWasPublic ?? (await tfvarsShowPublicAddress(root, plan));
+  // The note's advice (a new server for a fresh address) is for servers OpsCrew creates.
+  const addressWasPublic =
+    !ownServer && (extras.addressWasPublic ?? (await tfvarsShowPublicAddress(root, plan)));
   if (addressWasPublic && hasDeployment(plan) && hidesServerAddress(plan)) {
     deps.reporter.warn(ADDRESS_MAY_BE_PUBLIC_NOTE);
   }
@@ -227,11 +335,55 @@ async function provisionFlow(
       );
     }
   }
+  const dir = join(root, plan.infra.dir);
+  const approvals: { planHash: string; approver: string; at: string; kind: string }[] = [];
+
+  // 3b. A server the user owns: connect and confirm its host key, inspect it (read-only) and stop
+  // on blocking findings before anything changes; its address reaches the engine only as TF_VAR_*.
+  let ownRun: OwnServerRun | undefined;
+  let ownRender: OwnRenderInput | undefined;
+  if (ownServer) {
+    ownRun = await prepareOwnServer(deps, {
+      plan,
+      options,
+      services,
+      deployPublicKey: deployKey.publicKeyOpenSsh,
+      deployKeyFile: deployKey.privateKeyFile,
+    });
+    await ownEngineEnv(deps, ownRun, engineEnv);
+    ownRender = await ownRenderInput(deps, services, plan, cloudflare, ownRun);
+    // Switching between public and tunnel mode: the old records go first, in an apply of their own.
+    const removal = await removeOldAccessMode(deps, {
+      engine,
+      dir,
+      env: engineEnv,
+      plan,
+      ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
+      ...(options.planOnly ? { planOnly: true } : {}),
+      phase,
+    });
+    if (removal !== undefined) {
+      const pending = (removal.plan?.changes.length ?? 0) > 0 && !removal.applied;
+      if (options.planOnly && pending) {
+        deps.reporter.info(
+          `After this removal is applied (\`opscrew ${phase} --approve ${removal.planHash}\`, typing the app name to confirm), run \`opscrew ${phase}\` again for the plan of the new setup.`,
+        );
+        return {
+          ...(removal.planHash ? { planHash: removal.planHash } : {}),
+          applied: false,
+          outputs: {},
+        };
+      }
+      approveHash = undefined; // the approved hash (if any) named the removal
+      if (removal.approval) approvals.push(planApproval(removal.approval, "iac-apply"));
+    }
+  }
 
   // 4. Render (skipped when applying a saved plan: its files were written by the --plan-only run)
-  const knownServer = hidesServerAddress(plan)
-    ? undefined
-    : await serverAddress(deps, plan, { engine: async () => engine, engineEnv });
+  const knownServer =
+    hidesServerAddress(plan) || ownServer
+      ? undefined
+      : await serverAddress(deps, plan, { engine: async () => engine, engineEnv });
   const ctx = deploymentRenderContext(deps, {
     plan,
     requirements,
@@ -239,9 +391,10 @@ async function provisionFlow(
     deployPublicKey: deployKey.publicKeyOpenSsh,
     cloudflare,
     server: knownServer,
+    ...(ownRender !== undefined ? { own: ownRender } : {}),
   });
-  const files = renderDeployment(plan, ctx);
-  if (options.approvePlanHash === undefined) {
+  const files = deploymentFiles(plan, ctx);
+  if (approveHash === undefined) {
     const diff = await diffRenderedFiles(root, files);
     const toWrite = [...diff.created, ...diff.changed];
     if (toWrite.length > 0) {
@@ -262,7 +415,6 @@ async function provisionFlow(
   }
 
   // 5. Plan → policies → approval → apply
-  const dir = join(root, plan.infra.dir);
   let applied: Awaited<ReturnType<typeof planAndApply>>;
   try {
     applied = await planAndApply(deps, {
@@ -274,21 +426,49 @@ async function provisionFlow(
       command: `opscrew ${phase}`,
       phase,
       ...(extras.approvalNotes ? { approvalNotes: extras.approvalNotes } : {}),
-      ...(options.approvePlanHash !== undefined
-        ? { approvePlanHash: options.approvePlanHash }
-        : {}),
+      ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
       ...(options.planOnly ? { planOnly: true } : {}),
     });
   } catch (error) {
-    if (isUserFacingError(error) && error.code === "ENGINE_FAILED") {
+    if (!ownServer && isUserFacingError(error) && error.code === "ENGINE_FAILED") {
       await refreshServerAddress(deps, engine, dir, engineEnv);
     }
     throw error;
   }
-  if (options.planOnly && options.approvePlanHash === undefined) {
+  if (applied.approval) approvals.push(planApproval(applied.approval, "iac-apply"));
+  if (options.planOnly && approveHash === undefined) {
+    let hostPlanHash: string | undefined;
+    if (ownRun) {
+      // The host plan can be shown now unless it needs a tunnel the plan has yet to create.
+      const outputs =
+        Object.keys(applied.outputs).length > 0
+          ? applied.outputs
+          : await engine.output(dir, { env: engineEnv }).catch(() => ({}));
+      const tunnelKnown =
+        ownRun.target.access === "public" ||
+        (stringOutput(outputs, "tunnel_id") !== undefined && !changesTunnel(applied.plan));
+      if (tunnelKnown) {
+        const host = await applyOwnHostPlan(deps, ownRun, {
+          plan,
+          outputs,
+          deployPublicKey: deployKey.publicKeyOpenSsh,
+          ...(options.passwordLogins !== undefined
+            ? { passwordLogins: options.passwordLogins }
+            : {}),
+          planOnly: true,
+          phase,
+        });
+        hostPlanHash = host.hash;
+      } else {
+        deps.reporter.info(
+          "The host plan for your server follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's id. Applying it shows the host plan and asks for its approval separately (in scripts: run with `--approve` and this hash, then again with `--approve` and the host plan's hash).",
+        );
+      }
+    }
     if (zoneLearned) await writeArtifact("plan", deps.paths.files.plan, plan);
     return {
       ...(applied.planHash ? { planHash: applied.planHash } : {}),
+      ...(hostPlanHash !== undefined ? { hostPlanHash } : {}),
       applied: false,
       outputs: {},
     };
@@ -297,124 +477,163 @@ async function provisionFlow(
   // 6. Record the deployment: the server's address in the local state (never in the repository),
   // the apply and the domain URL in the plan.
   const now = deps.clock.now().toISOString();
-  const address =
-    addressFromOutputs(applied.outputs) ??
-    (await serverAddress(deps, plan, { engine: async () => engine, engineEnv }));
-  if (address === undefined) {
-    throw new OpsCrewError("ENGINE_FAILED", "The server's address is unknown after the apply.", {
-      hint: "Run `opscrew provision` again; it reads the address from the infrastructure state.",
-    });
+  let address: ServerAddress | undefined;
+  if (ownRun) {
+    address = ownRun.address;
+  } else {
+    address =
+      addressFromOutputs(applied.outputs) ??
+      (await serverAddress(deps, plan, { engine: async () => engine, engineEnv }));
+    if (address === undefined) {
+      throw new OpsCrewError("ENGINE_FAILED", "The server's address is unknown after the apply.", {
+        hint: "Run `opscrew provision` again; it reads the address from the infrastructure state.",
+      });
+    }
+    await recordServerAddress(deps.paths, address);
   }
-  await recordServerAddress(deps.paths, address);
-  const ipv4 = address.ipv4;
   // Without a domain the output is `http://<server IP>`, which is not committed.
   const outputUrl = stringOutput(applied.outputs, "url");
   const url = outputUrl === undefined ? plan.deployment.url : committableUrl(outputUrl);
   // A new deployment after `opscrew destroy` is no longer destroyed.
   const { destroyedAt: _destroyedAt, url: _url, ...previousDeployment } = plan.deployment;
-  plan = {
-    ...plan,
+  const before = plan;
+  /** The plan with this run's approvals and applies (a host apply counts as an apply too). */
+  const record = (hostApplied: boolean): DeployPlan => ({
+    ...before,
     updatedAt: now,
-    approvals: applied.approval
-      ? [
-          ...plan.approvals,
-          {
-            planHash: applied.approval.planHash ?? (applied.planHash as string),
-            approver: applied.approval.approver,
-            at: applied.approval.decidedAt,
-            kind: "iac-apply",
-          },
-        ]
-      : plan.approvals,
+    approvals: [...before.approvals, ...approvals],
     deployment: {
       ...previousDeployment,
       ...(url ? { url } : {}),
       ...(applied.planHash && applied.applied ? { lastPlanHash: applied.planHash } : {}),
-      ...(applied.applied ? { lastApplyAt: now } : {}),
+      ...(applied.applied || hostApplied ? { lastApplyAt: now } : {}),
     },
-  };
+  });
+  plan = record(false);
   await writeArtifact("plan", deps.paths.files.plan, plan);
 
-  // 7. Wait for the server and pin its SSH host key
-  const sleep = services.sleep;
-  const clockMs = services.now;
-  const waits = { ...(sleep ? { sleep } : {}), ...(clockMs ? { now: clockMs } : {}) };
-  deps.reporter.step(`Waiting for the server at ${ipv4} to accept SSH`);
-  const sshOpen = await waitForPort(ipv4, 22, {
-    timeoutMs: SSH_WAIT_MS,
-    intervalMs: 5_000,
-    connect: services.tcpConnect ?? defaultTcpConnect,
-    ...waits,
-  });
-  if (!sshOpen) {
-    throw new OpsCrewError(
-      "PROVIDER_ERROR",
-      `The server at ${ipv4} did not open SSH within 5 minutes.`,
-      {
-        hint: `Check the ${profile.serverNoun} in the ${providerConsole(profile)}, then run \`opscrew ${phase}\` again; it continues where it stopped.`,
-      },
-    );
-  }
-  const pinned = await pinHostKey({
-    host: ipv4,
-    console: providerConsole(profile),
-    knownHostsFile: deps.paths.files.knownHosts,
-    runner: deps.runner,
-    confirmChangedKey: async ({ host, previous, current }) => {
-      const decision = await deps.approvals.request({
-        kind: "remote-exec",
-        title: `Trust the new SSH host key of ${host}`,
-        details: [
-          "The server's SSH host key is different from the one OpsCrew pinned earlier.",
-          "Only accept this if you rebuilt or replaced the server yourself.",
-          "Pinned:",
-          ...previous.map((line) => `  ${line}`),
-          "Now:",
-          ...current.map((line) => `  ${line}`),
-        ].join("\n"),
+  let secretsTarget: {
+    host: string;
+    knownHosts: string;
+    tunnel?: { serviceTokenId: string; serviceTokenSecret: string };
+  };
+  let host: OwnHostResult | undefined;
+  if (ownRun) {
+    // 7 (own server). Host plan → policy → host-apply approval by its hash → apply, then record
+    // the address in the local state (none in tunnel mode).
+    const outputs =
+      Object.keys(applied.outputs).length > 0
+        ? applied.outputs
+        : await engine.output(dir, { env: engineEnv }).catch(() => ({}));
+    host = await applyOwnHostPlan(deps, ownRun, {
+      plan,
+      outputs,
+      deployPublicKey: deployKey.publicKeyOpenSsh,
+      ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
+      phase,
+    });
+    if (host.approval) approvals.push(planApproval(host.approval, "host-apply"));
+    await recordServerAddress(deps.paths, address);
+    const connection = ownRun.session.connection;
+    if (
+      address !== undefined &&
+      (connection.publicIpv4 !== address.ipv4 || connection.publicIpv6 !== address.ipv6)
+    ) {
+      const { publicIpv4: _v4, publicIpv6: _v6, ...rest } = connection;
+      await recordOwnServer(deps.paths, {
+        ...rest,
+        publicIpv4: address.ipv4,
+        ...(address.ipv6 !== undefined ? { publicIpv6: address.ipv6 } : {}),
       });
-      return decision.approved;
-    },
-  });
-  const remote =
-    services.remote?.(ipv4) ??
-    new SshRemoteExec({
+    }
+    plan = record(host.applied);
+    await writeArtifact("plan", deps.paths.files.plan, plan);
+    secretsTarget = ownDeployTarget(deps, ownRun, { plan, outputs });
+  } else {
+    const ipv4 = (address as ServerAddress).ipv4;
+    // 7. Wait for the server and pin its SSH host key
+    const sleep = services.sleep;
+    const clockMs = services.now;
+    const waits = { ...(sleep ? { sleep } : {}), ...(clockMs ? { now: clockMs } : {}) };
+    deps.reporter.step(`Waiting for the server at ${ipv4} to accept SSH`);
+    const sshOpen = await waitForPort(ipv4, 22, {
+      timeoutMs: SSH_WAIT_MS,
+      intervalMs: 5_000,
+      connect: services.tcpConnect ?? defaultTcpConnect,
+      ...waits,
+    });
+    if (!sshOpen) {
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `The server at ${ipv4} did not open SSH within 5 minutes.`,
+        {
+          hint: `Check the ${profile.serverNoun} in the ${providerConsole(profile)}, then run \`opscrew ${phase}\` again; it continues where it stopped.`,
+        },
+      );
+    }
+    const pinned = await pinHostKey({
       host: ipv4,
-      keyFile: deployKey.privateKeyFile,
+      console: providerConsole(profile),
       knownHostsFile: deps.paths.files.knownHosts,
       runner: deps.runner,
-    });
-  deps.reporter.step("Waiting for the server to finish its first-boot setup (up to 8 minutes)");
-  const ready = await waitForCloudInit(remote, {
-    timeoutMs: CLOUD_INIT_WAIT_MS,
-    intervalMs: 10_000,
-    ...waits,
-  });
-  if (!ready) {
-    const check = `ssh -i ${quotePath(deployKey.privateKeyFile)} -o UserKnownHostsFile=${quotePath(deps.paths.files.knownHosts)} deploy@${ipv4} cloud-init status --long`;
-    throw new OpsCrewError(
-      "PROVIDER_ERROR",
-      "The server did not finish its first-boot setup within 8 minutes.",
-      {
-        hint: `Check what it is still doing (or what failed) with \`${check}\`, then run \`opscrew ${phase}\` again; it continues where it stopped.`,
+      confirmChangedKey: async ({ host: changedHost, previous, current }) => {
+        const decision = await deps.approvals.request({
+          kind: "remote-exec",
+          title: `Trust the new SSH host key of ${changedHost}`,
+          details: [
+            "The server's SSH host key is different from the one OpsCrew pinned earlier.",
+            "Only accept this if you rebuilt or replaced the server yourself.",
+            "Pinned:",
+            ...previous.map((line) => `  ${line}`),
+            "Now:",
+            ...current.map((line) => `  ${line}`),
+          ].join("\n"),
+        });
+        return decision.approved;
       },
-    );
+    });
+    const remote =
+      services.remote?.(ipv4) ??
+      new SshRemoteExec({
+        host: ipv4,
+        keyFile: deployKey.privateKeyFile,
+        knownHostsFile: deps.paths.files.knownHosts,
+        runner: deps.runner,
+      });
+    deps.reporter.step("Waiting for the server to finish its first-boot setup (up to 8 minutes)");
+    const ready = await waitForCloudInit(remote, {
+      timeoutMs: CLOUD_INIT_WAIT_MS,
+      intervalMs: 10_000,
+      ...waits,
+    });
+    if (!ready) {
+      const check = `ssh -i ${quotePath(deployKey.privateKeyFile)} -o UserKnownHostsFile=${quotePath(deps.paths.files.knownHosts)} deploy@${ipv4} cloud-init status --long`;
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        "The server did not finish its first-boot setup within 8 minutes.",
+        {
+          hint: `Check what it is still doing (or what failed) with \`${check}\`, then run \`opscrew ${phase}\` again; it continues where it stopped.`,
+        },
+      );
+    }
+    deps.reporter.success(`The server at ${ipv4} is ready.`);
+    secretsTarget = { host: ipv4, knownHosts: pinned.knownHostsLines };
   }
-  deps.reporter.success(`The server at ${ipv4} is ready.`);
 
   // 8–9. Production environment and GitHub Actions secrets
   let secretsStored = false;
   if (options.secrets !== false) {
     // Without a domain, host lists (`ALLOWED_HOSTS`) hold the address recorded in local state.
-    const environment = await buildAppEnvironment(deps, plan, services, ipv4);
+    const environment = await buildAppEnvironment(deps, plan, services, address?.ipv4);
     await setDeploySecrets(
       deps,
       github,
       deploySecrets({
-        host: ipv4,
+        host: secretsTarget.host,
         privateKey: deployKey.privateKeyOpenSsh,
-        knownHosts: pinned.knownHostsLines,
+        knownHosts: secretsTarget.knownHosts,
         environment,
+        ...(secretsTarget.tunnel !== undefined ? { tunnel: secretsTarget.tunnel } : {}),
       }),
       environment.names,
       phase,
@@ -422,7 +641,7 @@ async function provisionFlow(
     secretsStored = true;
   } else {
     secretsStored = await deploySecretsStoredFor(deps, {
-      host: ipv4,
+      host: secretsTarget.host,
       owner: github.owner,
       repo: github.repo,
     });
@@ -456,7 +675,8 @@ async function provisionFlow(
   return {
     ...(applied.planHash ? { planHash: applied.planHash } : {}),
     applied: applied.applied,
-    outputs: applied.outputs,
+    ...(host !== undefined ? { hostPlanHash: host.hash, hostApplied: host.applied } : {}),
+    outputs: publicOutputs(applied.outputs),
     branch: published.branch,
     ...(published.prUrl ? { prUrl: published.prUrl } : {}),
   };
@@ -495,6 +715,12 @@ export async function runPhaseFlow(
  * opens a pull request with the generated files. Safe to re-run: it plans only what is missing and
  * reuses the deploy key, state passphrase, pinned host key and generated passwords. Stops with
  * `PHASE_PRECONDITION` before doing anything while `opscrew retarget` is moving the deployment.
+ *
+ * On a server the user already owns (`target.provider: own`) it never creates or deletes the
+ * server: it confirms and pins the host key (`hostKey` in scripts), inspects the server, plans
+ * Cloudflare's records (or tunnel and Access) as infrastructure and the server's preparation as a
+ * host plan, applies each only after an approval bound to its hash (two `--approve` hashes in
+ * scripts), then stores the deploy secrets and opens the pull request.
  */
 export async function runProvision(
   deps: PhaseDeps,

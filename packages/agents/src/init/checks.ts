@@ -19,6 +19,7 @@ import type {
 } from "@opscrew/contracts";
 import { findExecutable, isUserFacingError } from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
+import { usesTunnel } from "@opscrew/iac-templates";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
@@ -37,6 +38,8 @@ import {
   VPS_PROVIDERS,
   vpsConnector,
 } from "../providers";
+import { CLOUDFLARE_TUNNEL_PERMISSIONS, tunnelTokenPermissions } from "../provision/zero-trust";
+import { ownServerLogin, readOwnServerRecord, requireOwnServerKey } from "../shared/own-server";
 import {
   describeGitignoreEntries,
   GITIGNORE_ENTRIES,
@@ -129,14 +132,24 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** How the plan (or, before design, the requirements) uses Cloudflare. */
+interface CloudflareUsage {
+  needed: boolean | undefined;
+  domain?: string;
+  /** The plan serves something through a Cloudflare Tunnel with Access (more permissions). */
+  tunnel?: boolean;
+}
+
 /** Whether the plan (or, before design, the requirements) puts the domain on Cloudflare. */
-async function cloudflareUsage(
-  deps: PhaseDeps,
-): Promise<{ needed: boolean | undefined; domain?: string }> {
+async function cloudflareUsage(deps: PhaseDeps): Promise<CloudflareUsage> {
   try {
     const plan = await readArtifact("plan", deps.paths.files.plan);
     return plan.dns.provider === "cloudflare"
-      ? { needed: true, ...(plan.dns.domain ? { domain: plan.dns.domain } : {}) }
+      ? {
+          needed: true,
+          ...(plan.dns.domain ? { domain: plan.dns.domain } : {}),
+          ...(usesTunnel(plan) ? { tunnel: true } : {}),
+        }
       : { needed: false };
   } catch {
     // No usable plan yet: fall back to the interview answers.
@@ -162,7 +175,8 @@ interface RepoInfo {
  * (cloud provider, Cloudflare, GitHub) run in parallel with a time budget each; with `offline`
  * they only look for the tokens. The cloud provider check looks at the planned provider's token
  * (else the interview answer's, else whichever single token is set) and never at the other
- * provider's. Required checks (Node, git repository, engine, ssh, cloud provider and GitHub tokens,
+ * provider's; a server the user already owns has no token, so the check looks at its recorded SSH
+ * login and key instead (the `ssh` check covers the binaries). Required checks (Node, git repository, engine, ssh, cloud provider and GitHub tokens,
  * Cloudflare when the plan uses it) fail; the rest only warn. Every message is redacted.
  */
 export async function runInitChecks(
@@ -422,11 +436,52 @@ async function providerChoice(deps: PhaseDeps): Promise<ProviderChoice> {
   return provider ? { provider, source: "token" } : { source: "none" };
 }
 
-/** Title of the provider check: `Hetzner Cloud token`, `DigitalOcean token` or a neutral one. */
+/**
+ * Title of the provider check: `Hetzner Cloud token`, `DigitalOcean token`, the SSH login of the
+ * user's own server (it has no token), or a neutral one.
+ */
 function providerTitle(choice: ProviderChoice): string {
+  if (choice.provider === "own") return "Your own server (SSH login)";
   return choice.provider
     ? `${providerProfile(choice.provider).displayName} token`
     : "Cloud provider token";
+}
+
+/**
+ * A server the user already owns needs no API token: the check looks at the SSH login the
+ * interview recorded (`.opscrew/server.json` → `own`) and the key file, and says how OpsCrew
+ * connects and confirms the host key. It never connects (provision does) and never names the
+ * server's address.
+ */
+async function checkOwnServerLogin(deps: PhaseDeps, choice: ProviderChoice): Promise<CheckResult> {
+  let connection: Awaited<ReturnType<typeof readOwnServerRecord>>;
+  try {
+    connection = await readOwnServerRecord(deps.paths);
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    return { status: "fail", message: error.message, ...(error.hint ? { fix: error.hint } : {}) };
+  }
+  const deploysTo = choice.source === "plan" ? "The plan deploys" : "Your interview answers deploy";
+  if (connection === undefined) {
+    return {
+      status: "fail",
+      message: `${deploysTo} to a server you already have, but OpsCrew does not know how to reach it on this computer (no address, SSH port, user or key is recorded).`,
+      fix: "Run `opscrew interview` and answer the questions about your server: its address, SSH port, user (root or a user with passwordless sudo) and your key file or `agent` for the SSH agent. No API token is needed, and OpsCrew never asks for a password or passphrase.",
+    };
+  }
+  try {
+    await requireOwnServerKey(connection, deps.env);
+  } catch (error) {
+    return { status: "fail", message: errorText(error) };
+  }
+  const login = await vpsConnector("own", deps, {
+    ownLogin: ownServerLogin(connection),
+  }).verifyCredentials();
+  const hostKey =
+    connection.hostKey !== undefined
+      ? ` Its SSH host key ${connection.hostKey} is pinned; a different key stops every command.`
+      : " On the first connection OpsCrew shows the server's SSH host key fingerprint for you to confirm (in scripts, pass it with `--host-key SHA256:…`).";
+  return { status: login.ok ? "pass" : "fail", message: `${login.message}${hostKey}` };
 }
 
 /** The first token variable of a provider that is set. */
@@ -480,9 +535,10 @@ async function checkProviderToken(
     return {
       status: "fail",
       message: `No cloud provider token is set (${VPS_PROVIDERS.map((id) => `${providerProfile(id).tokenVars[0]} for ${providerProfile(id).displayName}`).join(" or ")}).`,
-      fix: `OpsCrew needs one. ${fixes.join(" ")}`,
+      fix: `OpsCrew needs one. ${fixes.join(" ")} To deploy to a server you already have instead, no token is needed: choose it in \`opscrew interview\`.`,
     };
   }
+  if (provider === "own") return checkOwnServerLogin(deps, choice);
 
   const profile = providerProfile(provider);
   const connector = vpsConnector(provider, deps);
@@ -540,9 +596,17 @@ function lowerFirst(text: string): string {
   return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 }
 
-function cloudflareFix(domain?: string): string {
+function cloudflareFix(domain?: string, tunnel = false): string {
   const zone = domain ? ` for the zone that holds ${domain}` : "";
-  return `Create a token at https://dash.cloudflare.com/profile/api-tokens with ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}${zone}, then set CLOUDFLARE_API_TOKEN.`;
+  const permissions = tunnel ? tunnelTokenPermissions() : CLOUDFLARE_TOKEN_PERMISSIONS.join(", ");
+  return `Create a token at https://dash.cloudflare.com/profile/api-tokens with ${permissions}${zone}, then set CLOUDFLARE_API_TOKEN.`;
+}
+
+/** Said with a working token when the plan has a Cloudflare Tunnel: what else the token needs. */
+function tunnelNote(usage: CloudflareUsage): string {
+  return usage.tunnel === true
+    ? ` The Cloudflare Tunnel and Access also need ${CLOUDFLARE_TUNNEL_PERMISSIONS.join(", ")}; \`opscrew provision\` stops with the missing permission if one is not granted.`
+    : "";
 }
 
 /** The Cloudflare connector and a token verification shared by the Cloudflare checks. */
@@ -574,17 +638,18 @@ function cloudflareAccess(deps: PhaseDeps, offline: boolean): CloudflareAccess |
 async function checkCloudflare(
   deps: PhaseDeps,
   offline: boolean,
-  usage: { needed: boolean | undefined; domain?: string },
+  usage: CloudflareUsage,
   access: CloudflareAccess | undefined,
 ): Promise<CheckResult> {
   const { needed, domain } = usage;
+  const tunnel = usage.tunnel === true;
   const problem = needed === true ? "fail" : "warn";
   if (!set(deps.env, "CLOUDFLARE_API_TOKEN")) {
     if (needed === true) {
       return {
         status: "fail",
         message: `CLOUDFLARE_API_TOKEN is not set, but the plan puts ${domain ?? "the domain"} on Cloudflare.`,
-        fix: cloudflareFix(domain),
+        fix: cloudflareFix(domain, tunnel),
       };
     }
     if (needed === false) {
@@ -601,7 +666,10 @@ async function checkCloudflare(
     };
   }
   if (offline) {
-    return { status: "pass", message: `CLOUDFLARE_API_TOKEN is set (${OFFLINE_NOTE}).` };
+    return {
+      status: "pass",
+      message: `CLOUDFLARE_API_TOKEN is set (${OFFLINE_NOTE}).${tunnelNote(usage)}`,
+    };
   }
   const client = access?.connector.client;
   if (!access || !client) return { status: problem, message: "CLOUDFLARE_API_TOKEN is not set." };
@@ -610,7 +678,7 @@ async function checkCloudflare(
     return {
       status: problem,
       message: `CLOUDFLARE_API_TOKEN does not work: ${verified.message}`,
-      fix: cloudflareFix(domain),
+      fix: cloudflareFix(domain, tunnel),
     };
   }
   if (domain === undefined) return { status: "pass", message: "CLOUDFLARE_API_TOKEN works." };
@@ -621,19 +689,19 @@ async function checkCloudflare(
     return {
       status: problem,
       message: `CLOUDFLARE_API_TOKEN works but could not look up the zone of ${domain}: ${errorText(error)}`,
-      fix: cloudflareFix(domain),
+      fix: cloudflareFix(domain, tunnel),
     };
   }
   if (!zone) {
     return {
       status: problem,
       message: `CLOUDFLARE_API_TOKEN cannot see the zone of ${domain}: it is missing the "${CLOUDFLARE_TOKEN_PERMISSIONS[0]}" permission for that zone, or the domain is not on Cloudflare yet.`,
-      fix: `Add the domain to Cloudflare if it is not there yet. ${cloudflareFix(domain)}`,
+      fix: `Add the domain to Cloudflare if it is not there yet. ${cloudflareFix(domain, tunnel)}`,
     };
   }
   return {
     status: "pass",
-    message: `CLOUDFLARE_API_TOKEN works and can see the zone ${zone.name}.`,
+    message: `CLOUDFLARE_API_TOKEN works and can see the zone ${zone.name}.${tunnelNote(usage)}`,
   };
 }
 

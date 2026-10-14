@@ -15,12 +15,14 @@ import {
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { checkDialect, engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
+import { usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { cloudTarget, planProvider, providerProfile, vpsConnector } from "../providers";
+import { planProvider, providerProfile, vpsConnector } from "../providers";
 import type { SavedPlan } from "./types";
+import { tunnelTokenPermissions } from "./zero-trust";
 
 export interface PlanAndApplyOptions {
   engine: IacEngine;
@@ -42,10 +44,18 @@ export interface PlanAndApplyOptions {
   approvalNotes?: readonly string[];
   /**
    * Monthly cost change shown with the approval. Default: the plan's monthly cost (the plan
-   * creates the deployment's servers). `null`: the plan changes nothing that is billed (a DNS
-   * switch), so the approval claims no cost change.
+   * creates the deployment's servers); `null` for a server the user owns. `null`: the plan changes
+   * nothing that is billed (a DNS switch), so the approval claims no cost change.
    */
   costDelta?: Money | null;
+  /**
+   * Plan the removal of every resource in the state (`plan -destroy`), for example the old DNS
+   * records or tunnel before an own server switches between public and tunnel mode. Such a plan
+   * deletes resources, so its approval needs the typed app name.
+   */
+  destroy?: boolean;
+  /** Title of the approval instead of the default "Apply the infrastructure plan on …". */
+  approvalTitle?: string;
 }
 
 /** Engine log text meaning an API refused the token's permissions (HTTP 403, read-only token). */
@@ -86,7 +96,7 @@ function errorBlocks(log: string): string[] {
  * (`with module.dns.…` or `with module.server.…`), else the only API or resource type it names.
  */
 function blockOwner(block: string, provider: VpsProviderId): "cloudflare" | "provider" | undefined {
-  if (/\bwith module\.dns\./.test(block)) return "cloudflare";
+  if (/\bwith module\.(?:dns|tunnel|access)\./.test(block)) return "cloudflare";
   if (/\bwith module\.server\./.test(block)) return "provider";
   const cloudflare = CLOUDFLARE_API.test(block);
   const named = PROVIDER_API[provider].test(block);
@@ -119,7 +129,10 @@ function applyFailureHint(
     blocks.filter((block) => FORBIDDEN.test(block)).map((block) => blockOwner(block, provider)),
   );
   if (refused.has("cloudflare") && !refused.has("provider")) {
-    return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at https://dash.cloudflare.com/profile/api-tokens with ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. ${kept}`;
+    const permissions = usesTunnel(deployPlan)
+      ? tunnelTokenPermissions()
+      : CLOUDFLARE_TOKEN_PERMISSIONS.join(", ");
+    return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at https://dash.cloudflare.com/profile/api-tokens with ${permissions} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. ${kept}`;
   }
   if (refused.has("provider")) {
     const requirement = vpsConnector(provider, deps).credentials;
@@ -129,9 +142,11 @@ function applyFailureHint(
         : `these scopes (${requirement.scopes.join(", ")})`;
     return `${displayName} refused the request, so the API token is probably missing a permission OpsCrew needs. Create a token at ${requirement.createUrl} with ${needed}, set ${profile.tokenVars[0]} to it, then run \`${command}\` again. ${kept}`;
   }
-  if (profile.unavailable.test(errors) && !SERVICE_DOWN.test(errors)) {
+  const target = deployPlan.target;
+  // A server the user owns is never created, so no size can be unavailable.
+  if (target.provider !== "own" && profile.unavailable.test(errors) && !SERVICE_DOWN.test(errors)) {
     const size = provider === "hetzner" ? "server type" : "size";
-    const { serverType, location } = cloudTarget(deployPlan.target);
+    const { serverType, location } = target;
     return `${displayName} cannot create a ${serverType} ${serverNoun} in ${location} right now (the ${size} is unavailable or out of stock there). Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;
   }
   return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
@@ -397,9 +412,19 @@ async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise
   }
 
   const stamp = deps.clock.now().toISOString().replace(/[:.]/g, "-");
-  const planFile = join(deps.paths.files.plansDir, `${stamp}.tfplan`);
-  deps.reporter.step("Planning the infrastructure changes");
-  const summary = await engine.plan(dir, planFile, { env });
+  const planFile = join(
+    deps.paths.files.plansDir,
+    `${stamp}${options.destroy === true ? "-removal" : ""}.tfplan`,
+  );
+  deps.reporter.step(
+    options.destroy === true
+      ? "Planning the removal of the current infrastructure"
+      : "Planning the infrastructure changes",
+  );
+  const summary = await engine.plan(dir, planFile, {
+    env,
+    ...(options.destroy === true ? { destroy: true } : {}),
+  });
   return toSaved(summary, evaluatePlanPolicies(summary.planJson, options.deployPlan));
 }
 
@@ -461,7 +486,10 @@ export async function planAndApply(
     saved = await freshPlan(deps, options);
   }
 
-  const details = describePlan(saved, deployPlan, { costUnchanged: options.costDelta === null });
+  // A server the user owns costs nothing more: only Cloudflare records, the tunnel and Access.
+  const ownServer = deployPlan.target.provider === "own";
+  const costDeltaOption = options.costDelta === undefined && ownServer ? null : options.costDelta;
+  const details = describePlan(saved, deployPlan, { costUnchanged: costDeltaOption === null });
   deps.reporter.info(details);
   const blocking = blockingPolicyFailures(saved.policy);
   if (blocking.length > 0) {
@@ -488,16 +516,25 @@ export async function planAndApply(
 
   const { create, update, delete: del, replace } = saved.counts;
   const cloud = providerProfile(planProvider(deployPlan)).displayName;
-  const providers = deployPlan.dns.provider === "cloudflare" ? `${cloud} and Cloudflare` : cloud;
+  const cloudflare = deployPlan.dns.provider === "cloudflare";
+  // A server the user owns has no provider API: only Cloudflare resources are planned.
+  const providers = ownServer
+    ? cloudflare
+      ? "Cloudflare"
+      : "your server's configuration"
+    : cloudflare
+      ? `${cloud} and Cloudflare`
+      : cloud;
   const notes = options.approvalNotes ?? [];
   const costDelta = movesOnly
     ? null
-    : options.costDelta === undefined
+    : costDeltaOption === undefined
       ? deployPlan.cost.monthly
-      : options.costDelta;
+      : costDeltaOption;
   const title = movesOnly
     ? `Rename ${resources(saved.moves?.length ?? 0)} in the infrastructure state (nothing changes in the cloud)`
-    : `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`;
+    : (options.approvalTitle ??
+      `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`);
   const approval = await deps.approvals.request({
     kind: "iac-apply",
     title,

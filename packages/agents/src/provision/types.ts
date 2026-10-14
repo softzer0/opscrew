@@ -1,5 +1,6 @@
 import type { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { GitHubClient } from "@opscrew/connector-github";
+import type { ApplyOptions, ApplyResult, HostFacts, HostPlan } from "@opscrew/connector-ssh-host";
 import type {
   CredentialCheck,
   IacEngine,
@@ -10,13 +11,18 @@ import type {
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
-import type { EnvAnswer, EnvQuestion } from "../shared";
+import type { EnvAnswer, EnvQuestion, OwnServerConnection } from "../shared";
+import type { ZeroTrustApi } from "./zero-trust";
 
-/** The Cloudflare calls provisioning needs (a `CloudflareClient` or a test fake). */
+/**
+ * The Cloudflare calls provisioning needs (a `CloudflareClient` or a test fake). `listAccounts`
+ * finds the account of a Cloudflare Tunnel when the zone does not name it.
+ */
 export type CloudflareApi = Pick<
   CloudflareClient,
   "verifyToken" | "findZone" | "listDnsRecords" | "inspectEntrypointRuleset" | "getIpRanges"
->;
+> &
+  Partial<Pick<CloudflareClient, "listAccounts">>;
 
 /** The GitHub calls provisioning needs (a `GitHubClient` or a test fake). */
 export type GitHubApi = Pick<
@@ -49,6 +55,35 @@ export interface ProvisionServices {
   now?: () => number;
   /** Interactive question for each production environment value (CLI prompt). */
   askEnv?: (question: EnvQuestion) => Promise<EnvAnswer>;
+  /** A server the user owns: its shell, the host adapter and the Zero Trust lookup (fakes in tests). */
+  own?: OwnServerServices;
+}
+
+/** The host adapter calls provision makes on a server the user owns. */
+export interface HostAdapterApi {
+  inspect(remote: RemoteExec): Promise<HostFacts>;
+  apply(remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult>;
+}
+
+/**
+ * Collaborators for a server the user owns (`target.provider: own`). Each defaults to the real
+ * implementation: an SSH shell with the recorded admin login, `@opscrew/connector-ssh-host`, and
+ * Cloudflare's API with `CLOUDFLARE_API_TOKEN`.
+ */
+export interface OwnServerServices {
+  /** The admin login's shell (default: `SshRemoteExec` with the login from `.opscrew/server.json`). */
+  remote?: (connection: OwnServerConnection) => RemoteExec;
+  /** Inspection and apply (default: `inspectHost` and `applyHostPlan`). */
+  host?: Partial<HostAdapterApi>;
+  /**
+   * Proves after an SSH or firewall change that new logins still work (default: new SSH
+   * connections as the deploy user and the admin login, see `ownServerLoginCheck`).
+   */
+  verifyLogin?: () => Promise<boolean>;
+  /** The Cloudflare account's Zero Trust organization (default: Cloudflare's API). */
+  zeroTrust?: ZeroTrustApi;
+  /** Home directory for `~/` key paths (default: `HOME`, `USERPROFILE`, then the OS's). */
+  homeDir?: string;
 }
 
 export interface ProvisionOptions {
@@ -56,6 +91,24 @@ export interface ProvisionOptions {
   planOnly?: boolean;
   /** Apply the saved plan with exactly this hash (from an earlier `--plan-only` run). */
   approvePlanHash?: string;
+  /**
+   * Every hash given with `--approve` (each names one plan). On a server the user owns there are
+   * two plans: the saved infrastructure plan among them is applied as with `approvePlanHash`, and
+   * the host plan is granted by the approval handler when its hash is one of them. The CLI's
+   * non-interactive approval handler must approve `host-apply` requests by these hashes too.
+   */
+  approvePlanHashes?: readonly string[];
+  /**
+   * `--host-key SHA256:…`: the host key fingerprint of the user's own server, required on the
+   * first connection when nobody can answer a prompt.
+   */
+  hostKey?: string;
+  /**
+   * The user's explicit choice for password logins on their own server, needed only when other
+   * login users have a password and no SSH key: `off` turns password logins off anyway, `keep`
+   * leaves them as they are. Without it such a server's SSH step is blocked.
+   */
+  passwordLogins?: "off" | "keep";
   /** Overrides `plan.infra.engine`. */
   engine?: EnginePreference;
   /** Push the deploy branch and open a pull request (default true). */
@@ -69,6 +122,13 @@ export interface ProvisionResult {
   planHash?: string;
   /** True when this run applied an infrastructure plan. */
   applied: boolean;
+  /**
+   * A server the user owns: the host plan's SHA-256 hash (its file is
+   * `.opscrew/plans/host-<hash>.json`). With `--plan-only` it is the hash to approve.
+   */
+  hostPlanHash?: string;
+  /** A server the user owns: true when this run applied host changes. */
+  hostApplied?: boolean;
   /** Root-module outputs after the run (server IPs, id, name, url). */
   outputs: Record<string, unknown>;
   /** Pull request with the generated files, when one was opened or already open. */

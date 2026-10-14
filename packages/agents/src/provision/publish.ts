@@ -28,29 +28,47 @@ export function deploySetupPullRequestBody(
   options: { secretsStored?: boolean } = {},
 ): string {
   const profile = providerProfile(planProvider(plan));
-  const host = plan.dns.domain ?? `the ${profile.serverNoun}`;
+  const own = plan.target.provider === "own";
+  const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";
+  const host = plan.dns.domain ?? (own ? "your server" : `the ${profile.serverNoun}`);
+  const ready = own ? "Your server is prepared" : "The server is already running";
   const nextStep =
     options.secretsStored === false
       ? [
-          "The server is already running, but OpsCrew has no record of storing the deploy secrets in GitHub Actions for it, so a deploy would fail.",
+          `${ready}, but OpsCrew has no record of storing the deploy secrets in GitHub Actions for it, so a deploy would fail.`,
           `**Before merging, run \`opscrew provision\` in a terminal in the project directory.** It finds no infrastructure changes, asks for the production environment values and stores the secrets. After that, merging this pull request deploys the app to ${host}. When the first deploy finishes, run \`opscrew verify\`.`,
         ]
       : [
-          `The server is already running and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${host}.** After the first deploy finishes, run \`opscrew verify\`.`,
+          `${ready} and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${host}.** After the first deploy finishes, run \`opscrew verify\`.`,
         ];
+  const infra = own
+    ? tunnel
+      ? "the Cloudflare Tunnel that serves the app, its DNS records and the Cloudflare Access application GitHub Actions deploys through (works with OpenTofu and Terraform). OpsCrew never creates, reinstalls or deletes your server itself."
+      : `${plan.dns.provider === "cloudflare" ? "the Cloudflare DNS records that point the domain at your server" : "the outputs that describe your server"} (works with OpenTofu and Terraform). OpsCrew never creates, reinstalls or deletes your server itself.`
+    : `infrastructure code for the ${profile.displayName} ${profile.serverNoun}${plan.dns.provider === "cloudflare" ? " and the Cloudflare DNS records" : ""} (works with OpenTofu and Terraform).`;
   return [
     `This pull request adds the deployment setup that OpsCrew generated from \`opscrew/plan.yaml\` for **${plan.app.name}**:`,
     "",
-    `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: infrastructure code for the ${profile.displayName} ${profile.serverNoun}${plan.dns.provider === "cloudflare" ? " and the Cloudflare DNS records" : ""} (works with OpenTofu and Terraform).`,
-    "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server.",
+    `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: ${infra}`,
+    tunnel
+      ? "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server, and the Cloudflare Tunnel connector (`cloudflared/compose.yaml`; its token is only on the server)."
+      : "- `opscrew/runtime/`: Docker Compose and Caddy configuration for the server.",
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
     "- `opscrew/plan.yaml`: the deployment plan. The server's IP address is not in the repository; `opscrew status` shows it on the computer that ran `opscrew provision`.",
     "",
     ...nextStep,
+    ...(own
+      ? [
+          "",
+          "OpsCrew cannot turn on backups or snapshots on your own server; backups are your responsibility.",
+        ]
+      : []),
     "",
     "Review checklist:",
     "- [ ] The workflow only uses pinned, first-party actions.",
-    "- [ ] The firewall rules in the infrastructure code match what you expect.",
+    own
+      ? "- [ ] The host changes OpsCrew showed before applying them (Docker, the deploy user, SSH settings, the ufw firewall) match what you expect."
+      : "- [ ] The firewall rules in the infrastructure code match what you expect.",
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");
