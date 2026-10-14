@@ -15,13 +15,19 @@
 ## Gated live test (`OPSCREW_E2E_OWN_SERVER=1` with the Hetzner, GitHub and Cloudflare variables)
 
 1. The test creates a throwaway Hetzner server with its own SSH key (outside OpsCrew).
-2. Public mode: `opscrew interview` (own server, root, the test key) → `design` → `adapt` →
-   `provision` (confirm the host key, approve both plans) → merge the deploy PR → `verify`,
-   `secure`, `drift` clean. Expected: the app answers on the domain; root still logs in with its key.
+2. Directly, DNS only: `opscrew interview` (own server, root, the test key, served directly with
+   DNS only) → `design` → `adapt` → `provision` (confirm the host key, approve both plans) → merge
+   the deploy PR → `verify`, `secure`, `drift` clean. Expected: the app answers on the domain (not
+   proxied); root still logs in with its key.
 3. Re-run `provision`: both plans show no changes.
 4. `opscrew portainer enable`: nothing answers on 9443/9000/8000 from outside; through the printed
    tunnel command the UI answers and the admin exists.
-5. Tunnel mode (a second pass): ufw allows only SSH; the app answers on the domain through the
-   tunnel; a merged change deploys through the Access-protected SSH hostname.
-6. `opscrew destroy --undo-host`: the app, DNS, tunnel and Access are gone; the server still accepts
+5. Directly behind Cloudflare's proxy with the filter (answer changed in the interview, then
+   `provision`): the domain answers through Cloudflare; 80/443 on the server's own address do not
+   answer from the test machine; after a reboot of the server the filter is back before Docker
+   serves anything (the domain answers again, the address still does not); `drift` is clean.
+6. Through the tunnel (answer changed again, then `provision`; switching runs in two steps): ufw
+   allows only SSH; the app answers on the domain through the tunnel; a merged change deploys
+   through the Access-protected SSH hostname.
+7. `opscrew destroy --undo-host`: the app, DNS, tunnel and Access are gone; the server still accepts
    root with the key; the test then deletes the server through Hetzner's API.
