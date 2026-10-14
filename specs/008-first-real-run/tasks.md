@@ -138,7 +138,7 @@ description: "Tasks for 008-first-real-run"
   - Accept: FR-814; `softzer0/slog_cvrp_app` at 2b23564 plans Postgres and Redis, derives `DATABASE_URI` and `CELERY_BROKER_URI` (and `FLASK_REDIS_URL`), generates `FLASK_SECRET_KEY`, and leaves only real user values (`MAPBOX_API_KEY`, mail settings, `FLASK_ENV` if it has no default); apps reading only `DATABASE_URL`/`REDIS_URL` are unchanged; no value is ever read from a committed env file or logged.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
-- [ ] T824 Local Docker pass green over every example; fixes appended as tasks (lead)
+- [X] T824 Local Docker pass green over every example; fixes appended as tasks (lead)
 - [ ] T825 Hetzner pass for every app of the matrix, `fastapi-redis` and `slog_cvrp_app` with a model; results in `docs/e2e.md` (lead)
 
 ## Phase 3: Live runs (lead)
