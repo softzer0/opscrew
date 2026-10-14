@@ -308,6 +308,51 @@ describe("detectProject scenarios", () => {
   });
 });
 
+describe("Redwood projects", () => {
+  it("deploy the api side, built and served with the Redwood CLI", async () => {
+    const result = await detectProjectDetails(
+      await tree({
+        "package.json": JSON.stringify({
+          private: true,
+          workspaces: { packages: ["api", "web"] },
+          devDependencies: { "@redwoodjs/core": "8.4.0" },
+          packageManager: "yarn@4.6.0",
+        }),
+        "yarn.lock": "",
+        ".yarnrc.yml": "nodeLinker: node-modules\n",
+        "redwood.toml":
+          '[web]\n  port = 8910\n  apiUrl = "/.redwood/functions"\n[api]\n  port = 8911\n',
+        "api/package.json": JSON.stringify({
+          name: "api",
+          dependencies: { "@redwoodjs/api": "8.4.0", "@redwoodjs/graphql-server": "8.4.0" },
+        }),
+        "api/src/functions/graphql.ts": "export const handler = createGraphQLHandler({});\n",
+        "api/db/schema.prisma":
+          'datasource db {\n  provider = "postgresql"\n  url = env("DATABASE_URL")\n}\n',
+        "api/db/migrations/20240101000000_init/migration.sql": "CREATE TABLE a();",
+        "web/package.json": JSON.stringify({
+          name: "web",
+          dependencies: { "@redwoodjs/web": "8.4.0", react: "^18" },
+        }),
+        "web/src/App.tsx": "export default function App() { return null; }\n",
+      }),
+    );
+    expect(result.appDir).toBe("api");
+    expect(result.appCandidates).toEqual([]);
+    expect(result.facts.port).toBe(8911);
+    expect(result.facts.build).toMatchObject({
+      buildCommand: "yarn rw build api",
+      startCommand: "yarn rw serve api --port 8911",
+      releaseCommand: "yarn rw prisma migrate deploy",
+    });
+    expect(result.facts.frameworks.map((f) => `${f.path}:${f.name}`)).toContain("api:redwood");
+    // The web side is not silently dropped: the facts say it is not served yet.
+    expect(result.facts.notes).toHaveLength(1);
+    expect(result.facts.notes?.[0]).toContain("OpsCrew deploys only its api side (api)");
+    expect(result.facts.notes?.[0]).toContain("The web side is not served yet");
+  });
+});
+
 describe("production start command", () => {
   const nest = (scripts: Record<string, string>) =>
     tree({

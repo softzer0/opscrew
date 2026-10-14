@@ -120,6 +120,20 @@
               "type": "string",
               "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
             },
+            "releaseNote": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "atStartup": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["text", "atStartup"],
+              "additionalProperties": false
+            },
             "outputDir": {
               "type": "string",
               "minLength": 1
@@ -243,6 +257,14 @@
         "appDir": {
           "type": "string",
           "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+        },
+        "notes": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "git": {
           "type": "object",

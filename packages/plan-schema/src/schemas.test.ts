@@ -180,6 +180,34 @@ describe("ProjectFacts", () => {
     }
   });
 
+  it("records an optional note on migrations without a release command", async () => {
+    const f = await facts();
+    expect(ProjectFactsSchema.parse(f).build.releaseNote).toBeUndefined();
+    const releaseNote = { text: "Strapi runs them when it starts.", atStartup: true };
+    const withNote = { ...f, build: { ...f.build, releaseNote } };
+    expect(ProjectFactsSchema.parse(withNote).build.releaseNote).toEqual(releaseNote);
+    for (const bad of [
+      { text: "", atStartup: true },
+      { text: "x" },
+      { ...releaseNote, extra: 1 },
+    ]) {
+      const wrong = { ...f, build: { ...f.build, releaseNote: bad } };
+      expect(pathsOf(ProjectFactsSchema.safeParse(wrong))[0], JSON.stringify(bad)).toMatch(
+        /^build\.releaseNote/,
+      );
+    }
+  });
+
+  it("records optional notes on what OpsCrew deploys", async () => {
+    const f = await facts();
+    expect(ProjectFactsSchema.parse(f).notes).toBeUndefined();
+    const notes = ["Only the api side is deployed."];
+    expect(ProjectFactsSchema.parse({ ...f, notes }).notes).toEqual(notes);
+    for (const bad of [[], [""]]) {
+      expect(pathsOf(ProjectFactsSchema.safeParse({ ...f, notes: bad }))[0]).toMatch(/^notes/);
+    }
+  });
+
   it("rejects credentials in the git remote URL and env var values as names", async () => {
     const f = await facts();
     const withToken = {

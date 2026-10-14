@@ -295,6 +295,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     return pushAndOpen({
       backgroundJobs: backgroundJobsWarning(facts),
       migrations: releaseCommandNote(plan, facts)?.text,
+      appNotes: facts.notes,
       deps,
       git,
       plan,
@@ -604,6 +605,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   return pushAndOpen({
     backgroundJobs: backgroundJobsWarning(facts),
     migrations: releaseCommandNote(plan, facts)?.text,
+    appNotes: facts.notes,
     deps,
     git,
     plan,
@@ -645,6 +647,8 @@ interface PushContext {
   backgroundJobs: string | undefined;
   /** The database-migrations note for the pull request (FR-813). */
   migrations: string | undefined;
+  /** What detection noted about the app, for the pull request. */
+  appNotes: readonly string[] | undefined;
 }
 
 /**
@@ -740,6 +744,7 @@ async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
         paths: ctx.paths,
         ...(ctx.backgroundJobs === undefined ? {} : { backgroundJobs: ctx.backgroundJobs }),
         ...(migrations === undefined ? {} : { migrations }),
+        ...(ctx.appNotes === undefined ? {} : { appNotes: ctx.appNotes }),
       }),
     );
     const prApproval = await deps.approvals.request({

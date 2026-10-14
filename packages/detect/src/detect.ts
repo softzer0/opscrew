@@ -51,7 +51,7 @@ import {
   uniqueSorted,
 } from "./paths";
 import { detectPlatform } from "./platform";
-import { detectReleaseCommand } from "./release";
+import { detectRelease } from "./release";
 import {
   addDependencyServices,
   addDjangoServices,
@@ -588,6 +588,7 @@ export async function detectProjectDetails(
       defaultPort(primary?.frameworks ?? []))
     : undefined;
 
+  const notes: string[] = [];
   if (appKind !== "static-spa") {
     let start: string | undefined;
     const hasNpmDependency = (name: string) =>
@@ -630,8 +631,26 @@ export async function detectProjectDetails(
     } else if (appPackage?.main && primary?.roles.has("server")) {
       start = cdPrefix(`node ${appPackage.main}`);
     }
+    // Redwood: the api side is built and served with the Redwood CLI from the project root.
+    const redwoodToml = appFrameworkNames.has("redwood")
+      ? scopedFiles
+          .filter((f) => basenameRel(f) === "redwood.toml" && isWithin(dirnameRel(f), appDir))
+          .sort((a, b) => depthOf(b) - depthOf(a))[0]
+      : undefined;
+    if (redwoodToml) {
+      const root = dirnameRel(redwoodToml);
+      const inRoot = (command: string) => (root === "." ? command : `cd ${root} && ${command}`);
+      build.buildCommand ??= inRoot("yarn rw build api");
+      start ??= inRoot(`yarn rw serve api${port ? ` --port ${port}` : ""}`);
+      // Redwood's own Docker setup serves the web side from a second server that proxies API
+      // requests to this one; OpsCrew runs one app for now.
+      notes.push(
+        `This is a Redwood project: OpsCrew deploys only its api side (${appDir}) for now. The web side is not served yet, so the deployed app answers API requests only. Serving both sides arrives with support for apps made of several parts; meanwhile, host the web side's static build (\`yarn rw build web\`, in web/dist) elsewhere and point it at the deployed API.`,
+      );
+    }
     if (start) build.startCommand = start;
-    const release = detectReleaseCommand({
+    const pm = jsPm;
+    const release = await detectRelease({
       appDir,
       files: scopedFiles,
       procfile,
@@ -640,8 +659,16 @@ export async function detectProjectDetails(
       unit: primary?.unit,
       frameworks: appFrameworkNames,
       ecosystem,
+      read,
+      ...(pm
+        ? {
+            runScript: (script: string) =>
+              member ? jsRun(pm, script, member) : cdPrefix(jsRun(pm, script)),
+          }
+        : {}),
     });
-    if (release) build.releaseCommand = release;
+    if (release.command) build.releaseCommand = release.command;
+    if (release.note) build.releaseNote = release.note;
   } else {
     const output = await staticOutputDir(primary, read, filesIn);
     if (output) build.outputDir = joinRel(appDir, output);
@@ -716,6 +743,7 @@ export async function detectProjectDetails(
     monorepo,
     // Always set: `.` when the facts describe the repository root.
     appDir,
+    ...(notes.length > 0 ? { notes } : {}),
     git,
   };
 

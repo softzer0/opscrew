@@ -1,7 +1,13 @@
-import { findDependency, type Unit } from "./manifests";
-import { basenameRel, depthOf, dirnameRel, isWithin, relativeTo } from "./paths";
+import type { ReadText, Unit } from "./manifests";
+import { ReleaseContext, type ReleaseDetection } from "./release/context";
+import { anyStackRelease, nativeRelease } from "./release/native";
+import { nodeRelease } from "./release/node";
+import { pythonRelease } from "./release/python";
+import { pickMigrateScript, type RejectedScript, rejectedScriptsNote } from "./release/scripts";
 
-/** What {@link detectReleaseCommand} looks at. */
+export type { ReleaseDetection, ReleaseNote } from "./release/context";
+
+/** What {@link detectRelease} looks at. */
 export interface ReleaseInputs {
   /** Repo-relative directory of the app (`.` for the root). */
   appDir: string;
@@ -19,92 +25,53 @@ export interface ReleaseInputs {
   frameworks: ReadonlySet<string>;
   /** Which package ecosystem builds the app. */
   ecosystem: "js" | "python" | "none";
-}
-
-/** `cd <dir> && <command>`, or the command alone at the repository root. */
-function inFolder(dir: string, command: string): string {
-  return dir === "." ? command : `cd ${dir} && ${command}`;
-}
-
-/** The shallowest file of `files` named `name`, ties broken by path. */
-function shallowest(files: readonly string[], name: string): string | undefined {
-  return files
-    .filter((file) => basenameRel(file) === name)
-    .sort((a, b) => depthOf(a) - depthOf(b) || (a < b ? -1 : 1))[0];
-}
-
-/** A WSGI target such as `run:app` or `myproject:create_app()` (never `0.0.0.0:8000`). */
-const WSGI_TARGET = /^[A-Za-z_][\w.]*:[A-Za-z_]\w*(?:\(.*\))?$/;
-
-/** Targets Flask finds by itself (`app.py` or `wsgi.py` with an `app` object). */
-const DISCOVERED_TARGETS = new Set(["app", "app:app", "wsgi", "wsgi:app"]);
-
-/**
- * The Flask app for `flask db …`: `FLASK_APP` from a committed `.flaskenv`, else the target the
- * start command gives gunicorn. Undefined when Flask finds the app by itself or nothing says.
- */
-function flaskApp(flaskenv: string | undefined, startCommand: string | undefined) {
-  const fromEnv = /^[ \t]*(?:export[ \t]+)?FLASK_APP[ \t]*=[ \t]*["']?([^"'\s#]+)/m.exec(
-    flaskenv ?? "",
-  )?.[1];
-  const fromStart = /\bgunicorn\b(.*)$/
-    .exec(startCommand ?? "")?.[1]
-    ?.split(/\s+/)
-    .find((token) => WSGI_TARGET.test(token.replace(/^["']|["']$/g, "")))
-    ?.replace(/^["']|["']$/g, "");
-  const target = fromEnv ?? fromStart;
-  return target === undefined || DISCOVERED_TARGETS.has(target) ? undefined : target;
-}
-
-/** `FLASK_APP=<target> flask db <action>`, quoting the target when the shell needs it. */
-function flaskDb(action: string, target: string | undefined): string {
-  if (target === undefined) return `flask db ${action}`;
-  const value = /^[\w./:-]+$/.test(target) ? target : `'${target.replace(/'/g, `'\\''`)}'`;
-  return `FLASK_APP=${value} flask db ${action}`;
+  /** Reads a repo-relative file of `files` (config files, migrations, code); none when absent. */
+  read?: ReadText;
+  /** `<pm> run <script>` for the app in repository-root form (Node.js apps). */
+  runScript?: (script: string) => string;
 }
 
 /**
- * The command that prepares the database before each new version takes traffic, run from the
- * repository root like the start command: the Procfile `release:` line first (the Heroku
- * convention), else the framework's own migration command when the app has migrations:
- * Django `python manage.py migrate --noinput` (from the folder holding `manage.py`), Flask-Migrate
- * `flask db upgrade` (with a `migrations/` folder), Flask-DB `flask db migrate` (with a `db/`
- * folder), both naming the app with `FLASK_APP` when Flask would not find it by itself, Alembic
- * `alembic upgrade head` (from the folder holding `alembic.ini`) and Prisma
- * `npx prisma migrate deploy` (with `prisma/migrations/` and the `prisma` CLI as a dependency).
- * Whether the app's image can run it is decided when the plan is made. Undefined when none applies.
+ * Finds what prepares the database before each new version takes traffic, run from the repository
+ * root like the start command. In order: the Procfile `release:` line (the Heroku convention); a
+ * package.json script named `migrate`, `db:migrate`, `migrate:deploy` or `migrate:prod` (run like
+ * the start command; a script that resets, drops, rolls back, syncs, pushes or seeds a schema, runs
+ * such a script, or only starts a migration CLI is never used, and a note says so); then the tool
+ * of the app's stack, each only when the app has migrations for it (see `release/python.ts`,
+ * `release/node.ts` and `release/native.ts`). Apps that migrate when they start, and migrations
+ * whose tool the image would lack, get a note instead of a command. Whether the app's image can
+ * run the command is decided when the plan is made.
  */
-export function detectReleaseCommand(inputs: ReleaseInputs): string | undefined {
-  const { appDir, unit, frameworks, ecosystem } = inputs;
+export async function detectRelease(inputs: ReleaseInputs): Promise<ReleaseDetection> {
+  const { appDir, unit, ecosystem } = inputs;
   const procfileRelease = /^release:[ \t]*(\S.*)$/m.exec(inputs.procfile ?? "")?.[1]?.trim();
-  if (procfileRelease) return inFolder(appDir, procfileRelease);
+  const ctx = new ReleaseContext(
+    appDir,
+    inputs.files,
+    unit,
+    inputs.read ?? (async () => undefined),
+    inputs.startCommand,
+  );
+  if (procfileRelease) return { command: ctx.at(".", procfileRelease) };
 
-  const appFiles = inputs.files.filter((file) => isWithin(appDir, file));
-  const relative = appFiles.map((file) => relativeTo(appDir, file));
-  const has = (pattern: RegExp) => relative.some((file) => pattern.test(file));
-  const pypi = (name: string) => unit !== undefined && findDependency(unit, "pypi", name);
-
-  if (ecosystem === "python") {
-    const manage = frameworks.has("django") ? shallowest(appFiles, "manage.py") : undefined;
-    if (manage) return inFolder(dirnameRel(manage), "python manage.py migrate --noinput");
-    const flask = () => flaskApp(inputs.flaskenv, inputs.startCommand);
-    if (pypi("flask-migrate") && has(/(?:^|\/)migrations\/env\.py$/)) {
-      return inFolder(appDir, flaskDb("upgrade", flask()));
-    }
-    if (pypi("flask-db") && has(/(?:^|\/)db\/(?:alembic\.ini|env\.py)$/)) {
-      return inFolder(appDir, flaskDb("migrate", flask()));
-    }
-    const alembicIni = pypi("alembic") ? shallowest(appFiles, "alembic.ini") : undefined;
-    if (alembicIni) return inFolder(dirnameRel(alembicIni), "alembic upgrade head");
+  let rejected: RejectedScript[] = [];
+  if (ecosystem === "js" && inputs.runScript) {
+    const picked = pickMigrateScript(ctx.scripts);
+    if (picked.script) return { command: inputs.runScript(picked.script) };
+    rejected = picked.rejected;
   }
 
-  if (
-    ecosystem === "js" &&
-    unit !== undefined &&
-    findDependency(unit, "npm", "prisma") &&
-    has(/^prisma\/migrations\//)
-  ) {
-    return inFolder(appDir, "npx prisma migrate deploy");
-  }
-  return undefined;
+  const found =
+    (ecosystem === "python"
+      ? await pythonRelease(ctx, { flaskenv: inputs.flaskenv, frameworks: inputs.frameworks })
+      : undefined) ??
+    (ecosystem === "js" ? await nodeRelease(ctx) : undefined) ??
+    (await nativeRelease(ctx)) ??
+    anyStackRelease(ctx) ??
+    {};
+  if (rejected.length === 0) return found;
+  // A skipped script is worth a warning whatever else was found.
+  const skipped = rejectedScriptsNote(rejected, found.command !== undefined);
+  const text = found.note ? `${skipped} ${found.note.text}` : skipped;
+  return { ...found, note: { text, atStartup: false } };
 }

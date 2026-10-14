@@ -232,6 +232,8 @@ async function priceOptions(
   }
   const jobs = backgroundJobsWarning(facts);
   if (jobs !== undefined) warn(jobs);
+  // What detection noted about the app, such as parts of it OpsCrew does not deploy yet.
+  for (const note of facts.notes ?? []) warn(note);
   return { options: designOptions, priceSource, warnings, facts, requirements };
 }
 

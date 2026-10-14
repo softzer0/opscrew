@@ -78,6 +78,17 @@ export const ProjectFactsSchema = z.strictObject({
      * from the repository root like `startCommand`. Absent when the app has none.
      */
     releaseCommand: CommandLineSchema.optional(),
+    /**
+     * Detection's note on migrations, in plain English that says what to do next: why there is no
+     * release command (the app runs them itself when it starts, `atStartup`, or the tool would be
+     * missing where the command runs), or which package script it did not use and why.
+     */
+    releaseNote: z
+      .strictObject({
+        text: z.string().min(1),
+        atStartup: z.boolean(),
+      })
+      .optional(),
     outputDir: z.string().min(1).optional(),
   }),
   port: PortSchema.optional(),
@@ -135,6 +146,11 @@ export const ProjectFactsSchema = z.strictObject({
   monorepo: z.boolean(),
   /** Repo-relative directory of the app the facts describe (absent or `.` for the root). */
   appDir: RepoPathSchema.optional(),
+  /**
+   * Plain-English notes on what OpsCrew deploys that the user must know, for example a part of the
+   * app it does not serve yet; `design` and the adapt pull request show them. Absent when none.
+   */
+  notes: z.array(z.string().min(1)).min(1).optional(),
   git: z.strictObject({
     remoteUrl: z
       .string()

@@ -52,6 +52,16 @@ describe("renderPullRequestBody", () => {
     expect(renderPullRequestBody({ changes, reports: [] })).not.toContain("Background jobs");
   });
 
+  it("lists what detection noted about the app, and only when there is something", () => {
+    const note = "Only the API side of this app is deployed; its web side is not served yet.";
+    const body = renderPullRequestBody({ changes, reports: [], appNotes: [note] });
+    expect(body).toContain(`## Notes
+
+- ${note}`);
+    expect(body.indexOf("## Notes")).toBeLessThan(body.indexOf("## Reports"));
+    expect(renderPullRequestBody({ changes, reports: [] })).not.toContain("## Notes");
+  });
+
   it("says which migration command every deploy runs, and only when there is a note", () => {
     const note = "Every deploy runs `python manage.py migrate --noinput` (database migrations).";
     const body = renderPullRequestBody({ changes, reports: [], migrations: note });

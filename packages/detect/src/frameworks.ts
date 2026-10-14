@@ -42,6 +42,8 @@ const FRAMEWORK_RULES: readonly FrameworkRule[] = [
   { ecosystem: "npm", match: "@nestjs/core", name: "nestjs", role: "server" },
   { ecosystem: "npm", match: "hono", name: "hono", role: "server" },
   { ecosystem: "npm", match: "koa", name: "koa", role: "server" },
+  // The api side of a Redwood project (its web side is a React app built to static files).
+  { ecosystem: "npm", match: "@redwoodjs/api", name: "redwood", role: "server" },
   { ecosystem: "pypi", match: "fastapi", name: "fastapi", role: "server" },
   { ecosystem: "pypi", match: "flask", name: "flask", role: "server" },
   { ecosystem: "pypi", match: "django", name: "django", role: "django" },
@@ -165,5 +167,7 @@ export function defaultPort(frameworks: readonly DetectedFramework[]): number | 
   if (names.has("flask")) return 5000;
   if (names.has("rails")) return 3000;
   if (names.has("laravel")) return 8000;
+  // `yarn rw serve api` listens on 8911 by default.
+  if (names.has("redwood")) return 8911;
   return undefined;
 }

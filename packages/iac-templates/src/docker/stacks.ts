@@ -460,24 +460,127 @@ export interface ImageReleaseCommand {
   notRun?: string;
 }
 
+/** What a known migration command needs from the image that runs it. */
+interface ReleaseTool {
+  /** What OpsCrew found, for messages (`Drizzle migrations`). */
+  found: string;
+  /** Which kind of image can run it. */
+  runtime: "node" | "python" | "other";
+  /** What the image must contain, for messages (`the Diesel CLI`). */
+  needs: string;
+}
+
+const NODE_TOOL = (name: string): ReleaseTool => ({
+  found: `${name} migrations`,
+  runtime: "node",
+  needs: `the ${name} command-line tool and the migration files`,
+});
+const PYTHON_TOOL = (name: string): ReleaseTool => ({
+  found: `${name} migrations`,
+  runtime: "python",
+  needs: "Python and the app's Python packages",
+});
+const OTHER_TOOL = (found: string, needs: string): ReleaseTool => ({
+  found,
+  runtime: "other",
+  needs,
+});
+
+/** Migration commands detection writes (after any `cd …` and `VAR=value` prefixes). */
+const RELEASE_TOOLS: readonly [RegExp, ReleaseTool][] = [
+  [/^npx prisma\b/, NODE_TOOL("Prisma")],
+  [/^npx keystone\b/, NODE_TOOL("KeystoneJS")],
+  [/^npx drizzle-kit\b/, NODE_TOOL("Drizzle")],
+  [/^npx typeorm(?:-ts-node-\w+)?\b/, NODE_TOOL("TypeORM")],
+  [/^npx sequelize(?:-cli)?\b/, NODE_TOOL("Sequelize")],
+  [/^npx knex\b/, NODE_TOOL("Knex")],
+  [/^npx mikro-orm\b/, NODE_TOOL("MikroORM")],
+  [/^npx kysely\b/, NODE_TOOL("Kysely")],
+  [/^npx node-pg-migrate\b/, NODE_TOOL("node-pg-migrate")],
+  [/^npx db-migrate\b/, NODE_TOOL("db-migrate")],
+  [/^npx payload\b/, NODE_TOOL("Payload")],
+  [/^npx medusa\b/, NODE_TOOL("Medusa")],
+  [/^yarn rw\b/, NODE_TOOL("Redwood")],
+  [/^node ace\b/, NODE_TOOL("AdonisJS")],
+  [
+    /^(?:npm|pnpm|yarn|bun)\s/,
+    {
+      found: "a migration script in package.json",
+      runtime: "node",
+      needs: "the package scripts, the tools they call and the migration files",
+    },
+  ],
+  [/^python manage\.py\b/, PYTHON_TOOL("Django")],
+  [/^flask db\b/, PYTHON_TOOL("Flask")],
+  [/^alembic\b/, PYTHON_TOOL("Alembic")],
+  [/^aerich\b/, PYTHON_TOOL("Aerich")],
+  [/^tortoise\b/, PYTHON_TOOL("Tortoise ORM")],
+  [/^piccolo\b/, PYTHON_TOOL("Piccolo")],
+  [/^yoyo\b/, PYTHON_TOOL("Yoyo")],
+  [/^pw_migrate\b/, PYTHON_TOOL("peewee-migrate")],
+  [/^python craft\b/, PYTHON_TOOL("Masonite")],
+  [/^(?:bin\/rails|bundle exec)\b/, OTHER_TOOL("Ruby migrations", "Ruby and the app's gems")],
+  [/^php\b/, OTHER_TOOL("PHP migrations", "PHP and the app's Composer packages")],
+  [/^migrate -path\b/, OTHER_TOOL("golang-migrate migrations", "the golang-migrate CLI")],
+  [/^goose\b/, OTHER_TOOL("goose migrations", "the goose CLI")],
+  [/^atlas\b/, OTHER_TOOL("Atlas migrations", "the Atlas CLI")],
+  [/^diesel\b/, OTHER_TOOL("Diesel migrations", "the Diesel CLI")],
+  [/^sqlx\b/, OTHER_TOOL("sqlx migrations", "the sqlx CLI")],
+  [/^sea-orm-cli\b/, OTHER_TOOL("SeaORM migrations", "the SeaORM CLI")],
+  [/^(?:mix\b|bin\/\w+ eval\b)/, OTHER_TOOL("Ecto migrations", "the Elixir release of the app")],
+  [/^dotnet\b/, OTHER_TOOL("EF Core migrations", "the .NET SDK and the dotnet-ef tool")],
+];
+
+/** The migration tool a release command runs, when it is one detection writes. */
+function releaseToolOf(command: string): ReleaseTool | undefined {
+  const bare = command
+    .replace(/^(?:cd \S+ && )+/, "")
+    .replace(/^(?:[A-Za-z_]\w*=(?:'[^']*'|"[^"]*"|\S+) )+/, "");
+  return RELEASE_TOOLS.find(([pattern]) => pattern.test(bare))?.[1];
+}
+
+const IMAGE_NAMES: Record<Exclude<DockerStack, "static-spa">, string> = {
+  "next-standalone": "Next.js standalone",
+  "node-server": "Node.js",
+  "python-fastapi": "Python",
+  "python-django": "Python",
+  "python-generic": "Python",
+};
+
+/** Why an image of another kind cannot run the command (for example Rails in a Node.js image). */
+function wrongImage(tool: ReleaseTool, stack: Exclude<DockerStack, "static-spa">, command: string) {
+  return `OpsCrew found ${tool.found}, but \`${command}\` needs ${tool.needs}, which the ${IMAGE_NAMES[stack]} image OpsCrew builds for this app does not include, so deploys will not run it. Set \`app.releaseCommand\` in opscrew/plan.yaml to a command the image can run, or run the migrations yourself against the production database before each deploy that changes the schema.`;
+}
+
 /**
  * The detected release command (`facts.build.releaseCommand`) as it runs in the app's image.
- * Python images hold only the app folder, so the folder prefix detection added is dropped;
- * Node.js server images hold the repository and keep it. The Next.js standalone image holds
- * neither the Prisma CLI nor the app folder of a monorepo for sure, so such commands are left out
- * with a reason. Empty without a release command or for a static site (no app container).
+ * Python images hold only the app folder and its Python packages, so the folder prefix detection
+ * added is dropped; Node.js server images hold the repository with every installed package
+ * (development dependencies included) and keep it. A known migration command for another kind of
+ * image (Rails or Diesel, say, which OpsCrew cannot build images for yet) is left out with a reason,
+ * and so is a Node.js migration tool in the Next.js standalone image, which keeps only what the
+ * server needs, as well as a command that changes into a monorepo folder that image may lack.
+ * Empty without a release command or for a static site (no app container).
  */
 export function imageReleaseCommand(facts: ProjectFacts): ImageReleaseCommand {
   const command = facts.build.releaseCommand;
   const stack = detectStack(facts);
   if (command === undefined || stack === undefined || stack === "static-spa") return {};
-  if (stack.startsWith("python-")) {
-    return { command: inAppFolder(command, appDirectory(facts, stack)) };
+  const tool = releaseToolOf(command);
+  const python = stack.startsWith("python-");
+  if (tool !== undefined && tool.runtime !== (python ? "python" : "node")) {
+    return { notRun: wrongImage(tool, stack, command) };
   }
+  if (python) return { command: inAppFolder(command, appDirectory(facts, stack)) };
   if (stack !== "next-standalone") return { command };
   if (/\bprisma\s+migrate\b/.test(command)) {
     return {
       notRun: `OpsCrew found Prisma migrations, but the Next.js standalone image does not include the Prisma CLI or the prisma/migrations folder, so deploys cannot run \`${command}\`. Run the migrations another way: change the Dockerfile so the image keeps the Prisma CLI and the prisma folder, then set \`app.releaseCommand\` in opscrew/plan.yaml; or run \`npx prisma migrate deploy\` yourself against the production database before each deploy that changes the schema.`,
+    };
+  }
+  if (tool !== undefined) {
+    return {
+      notRun: `OpsCrew found ${tool.found}, but the Next.js standalone image keeps only the files the server needs, not ${tool.needs}, so deploys cannot run \`${command}\`. Run the migrations another way: change the Dockerfile so the image keeps them, then set \`app.releaseCommand\` in opscrew/plan.yaml; or run the command yourself against the production database before each deploy that changes the schema.`,
     };
   }
   const dir = appDirectory(facts, stack);

@@ -258,6 +258,14 @@ describe("runDesign", () => {
     );
   });
 
+  it("shows what detection noted about the app (for example the parts it does not deploy)", async () => {
+    const note = "Only the API side of this app is deployed; its web side is not served yet.";
+    const deps = await setup(nextPostgresFacts({ notes: [note] }));
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.warnings).toContain(note);
+    expect(deps.reporter.lines.some((l) => l.level === "warn" && l.message === note)).toBe(true);
+  });
+
   it("FR-812: no background-jobs warning for an app without them", async () => {
     const deps = await setup(nextPostgresFacts());
     const result = await runDesign(deps, { catalog: euCatalog() });

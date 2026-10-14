@@ -167,6 +167,10 @@ function dockerfileOf(sample: ProjectFacts, appPort = sample.port ?? 3000): stri
   return renderDockerAssets(sample, { appPort, healthPath: "/health" })[0]?.content ?? "";
 }
 
+function withReleaseOf(sample: ProjectFacts, releaseCommand: string) {
+  return imageReleaseCommand({ ...sample, build: { ...sample.build, releaseCommand } });
+}
+
 describe("detectStack", () => {
   it("maps each sample to its recipe", () => {
     expect(detectStack(nextApp)).toBe("next-standalone");
@@ -222,6 +226,72 @@ describe("detectStack", () => {
       command: "node scripts/migrate.js",
     });
     expect(imageReleaseCommand(nextApp)).toEqual({});
+  });
+
+  it("knows which images keep which migration tools", () => {
+    const withRelease = withReleaseOf;
+    // The Node.js server image keeps every installed package, development ones included.
+    for (const command of [
+      "npx drizzle-kit migrate",
+      "npx typeorm migration:run -d dist/data-source.js",
+      "npx knex migrate:latest",
+      "cd build && node ace migration:run --force",
+      "npm run db:migrate",
+    ]) {
+      expect(withRelease(expressApp, command)).toEqual({ command });
+    }
+    // The Next.js standalone image keeps only what the server needs.
+    for (const [command, found] of [
+      ["npx drizzle-kit migrate", "Drizzle migrations"],
+      ["npx payload migrate", "Payload migrations"],
+      ["npm run migrate", "a migration script in package.json"],
+    ] as const) {
+      const result = withRelease(nextApp, command);
+      expect(result.command).toBeUndefined();
+      expect(result.notRun).toContain(found);
+      expect(result.notRun).toContain("Next.js standalone image");
+      expect(result.notRun).toContain("app.releaseCommand");
+    }
+    // Python images run Python tools, from the app folder.
+    expect(withRelease(pythonSubfolderApi, "cd services/api && aerich upgrade")).toEqual({
+      command: "aerich upgrade",
+    });
+    expect(
+      withRelease(
+        fastapiApp,
+        'pw_migrate migrate --database "$DATABASE_URL" --directory migrations',
+      ),
+    ).toEqual({ command: 'pw_migrate migrate --database "$DATABASE_URL" --directory migrations' });
+    expect(withRelease(djangoApp, "FLASK_APP='app:create_app()' flask db upgrade")).toEqual({
+      command: "FLASK_APP='app:create_app()' flask db upgrade",
+    });
+    // A Node.js tool cannot run in a Python image, nor a Python one in a Node.js image.
+    const node = withRelease(fastapiApp, "npx prisma migrate deploy");
+    expect(node.command).toBeUndefined();
+    expect(node.notRun).toContain("Python image");
+    expect(withRelease(expressApp, "alembic upgrade head").notRun).toContain("Node.js image");
+  });
+
+  it("leaves out the commands of stacks OpsCrew cannot build yet", () => {
+    // A Rails app with a package.json is built as a Node.js server today.
+    for (const command of [
+      "bin/rails db:migrate",
+      "php artisan migrate --force",
+      'goose -dir db/migrations postgres "$DATABASE_URL" up',
+      "diesel migration run",
+      'bin/my_app eval "MyApp.Release.migrate"',
+      "dotnet ef database update",
+    ]) {
+      const result = withReleaseOf(expressApp, command);
+      expect(result.command).toBeUndefined();
+      expect(result.notRun).toContain(`\`${command}\``);
+    }
+    // Without an image recipe there is nothing to plan.
+    expect(
+      imageReleaseCommand(
+        facts({ languages: ["go"], build: { releaseCommand: "sqlx migrate run" } }),
+      ),
+    ).toEqual({});
   });
 
   it("tells a Django app whose migrations OpsCrew runs where the command lives", () => {

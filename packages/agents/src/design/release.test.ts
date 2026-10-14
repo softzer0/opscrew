@@ -78,6 +78,95 @@ describe("releaseCommandNote", () => {
     expect(note?.text).not.toContain("no database migration command");
   });
 
+  it("warns that a Next.js standalone image cannot run Drizzle migrations", async () => {
+    const facts = nextPostgresFacts({
+      build: { buildCommand: "npm run build", releaseCommand: "npx drizzle-kit migrate" },
+    });
+    const plan = await planFor(facts);
+    expect("releaseCommand" in plan.app).toBe(false);
+    const note = releaseCommandNote(plan, facts);
+    expect(note?.warning).toBe(true);
+    expect(note?.text).toContain("Drizzle migrations");
+    expect(note?.text).toContain("app.releaseCommand");
+  });
+
+  it("plans a Node.js server's migration tool as detected", async () => {
+    const facts = makeFacts({
+      frameworks: [{ name: "express", path: "." }],
+      port: 3000,
+      build: {
+        startCommand: "npm start",
+        releaseCommand: "npx typeorm migration:run -d dist/data-source.js",
+      },
+      services: [{ kind: "postgres", evidence: ["dependency:pg"] }],
+    });
+    const plan = await planFor(facts);
+    expect(plan.app.releaseCommand).toBe("npx typeorm migration:run -d dist/data-source.js");
+    expect(releaseCommandNote(plan, facts)?.warning).toBe(false);
+  });
+
+  it("warns when the image cannot run another stack's migrations (Rails in a Node.js image)", async () => {
+    const facts = makeFacts({
+      languages: ["javascript", "ruby"],
+      frameworks: [
+        { name: "express", path: "." },
+        { name: "rails", path: "." },
+      ],
+      port: 3000,
+      build: { startCommand: "npm start", releaseCommand: "bin/rails db:migrate" },
+      services: [{ kind: "postgres", evidence: ["dependency:pg"] }],
+    });
+    const plan = await planFor(facts);
+    expect("releaseCommand" in plan.app).toBe(false);
+    const note = releaseCommandNote(plan, facts);
+    expect(note?.warning).toBe(true);
+    expect(note?.text).toContain("`bin/rails db:migrate`");
+    expect(note?.text).toContain("Ruby");
+  });
+
+  it("shows detection's note on migrations the app runs when it starts (not a warning)", async () => {
+    const text =
+      "Strapi updates the database schema itself when it starts, so OpsCrew plans no separate release command.";
+    const facts = makeFacts({
+      frameworks: [{ name: "express", path: "." }],
+      port: 1337,
+      build: { startCommand: "npm start", releaseNote: { text, atStartup: true } },
+      services: [{ kind: "postgres", evidence: ["dependency:pg"] }],
+    });
+    const plan = await planFor(facts);
+    expect("releaseCommand" in plan.app).toBe(false);
+    expect(releaseCommandNote(plan, facts)).toEqual({ warning: false, text });
+  });
+
+  it("warns with detection's note when the migration tool would be missing", async () => {
+    const text =
+      "OpsCrew found Alembic migrations, but alembic is only a development dependency, so the app's image does not install it.";
+    const facts = djangoFacts();
+    const withNote = { ...facts, build: { releaseNote: { text, atStartup: false } } };
+    const plan = await planFor(withNote);
+    expect(releaseCommandNote(plan, withNote)).toEqual({ warning: true, text });
+  });
+
+  it("warns about a skipped package script next to the command that runs", async () => {
+    const text =
+      "OpsCrew did not use the package.json script `migrate` because it does more than apply pending migrations (`migrate reset`).";
+    const facts = makeFacts({
+      frameworks: [{ name: "express", path: "." }],
+      port: 3000,
+      build: {
+        startCommand: "npm start",
+        releaseCommand: "npx prisma migrate deploy",
+        releaseNote: { text, atStartup: false },
+      },
+      services: [{ kind: "postgres", evidence: ["dependency:pg"] }],
+    });
+    const plan = await planFor(facts);
+    const note = releaseCommandNote(plan, facts);
+    expect(note?.warning).toBe(true);
+    expect(note?.text).toContain("Every deploy runs `npx prisma migrate deploy`");
+    expect(note?.text).toContain(text);
+  });
+
   it("says nothing without a command or a database", () => {
     expect(
       releaseCommandNote({ app: {} as never, services: { postgres: false, redis: true } }),
