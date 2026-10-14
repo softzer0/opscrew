@@ -258,7 +258,7 @@ describe.skipIf(SKIP !== undefined)(
             path.join(server, "db.env"),
             `POSTGRES_USER=app\nPOSTGRES_DB=app\nPOSTGRES_PASSWORD=${password}\n`,
           );
-          appEnv.set("DATABASE_URL", `postgres://app:${password}@db:5432/app`);
+          appEnv.set("DATABASE_URL", `postgresql://app:${password}@db:5432/app`);
         }
         if (plan.services.redis) appEnv.set("REDIS_URL", "redis://cache:6379");
         await writeFile(

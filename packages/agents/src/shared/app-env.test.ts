@@ -213,7 +213,7 @@ describe("connection settings under the app's own names (FR-814)", () => {
       password: () => "db-password-0123456789",
     });
     const values = parseDotenv(result.appEnv);
-    expect(values.get("DATABASE_URL")).toBe("postgres://app:db-password-0123456789@db:5432/app");
+    expect(values.get("DATABASE_URL")).toBe("postgresql://app:db-password-0123456789@db:5432/app");
     // SQLAlchemy accepts only `postgresql://`; psycopg2 and node-postgres take both schemes.
     expect(values.get("DATABASE_URI")).toBe("postgresql://app:db-password-0123456789@db:5432/app");
     expect(values.get("REDIS_URL")).toBe("redis://cache:6379");

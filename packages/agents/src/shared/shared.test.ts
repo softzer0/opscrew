@@ -275,7 +275,7 @@ describe("production environment", () => {
       "POSTGRES_USER=app\nPOSTGRES_DB=app\nPOSTGRES_PASSWORD=P4ssw0rdP4ssw0rdP4ssw0rdP4ssw0rd\n",
     );
     expect(result.appEnv).toContain(
-      "DATABASE_URL=postgres://app:P4ssw0rdP4ssw0rdP4ssw0rdP4ssw0rd@db:5432/app",
+      "DATABASE_URL=postgresql://app:P4ssw0rdP4ssw0rdP4ssw0rdP4ssw0rd@db:5432/app",
     );
     expect(result.appEnv).not.toContain("localhost");
     expect(result.appEnv).toContain("REDIS_URL=redis://cache:6379");

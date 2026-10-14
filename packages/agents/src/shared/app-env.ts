@@ -226,9 +226,11 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     dbEnv = ["POSTGRES_USER=app", "POSTGRES_DB=app", `POSTGRES_PASSWORD=${password}`, ""].join(
       "\n",
     );
-    app.set("DATABASE_URL", `postgres://app:${password}@db:5432/app`);
-    // Other names get `postgresql://`: SQLAlchemy rejects `postgres://`, libpq accepts both.
-    serviceUrls.set("postgres", `postgresql://app:${password}@db:5432/app`);
+    // `postgresql://` for every name: SQLAlchemy rejects `postgres://`, while libpq, node-postgres,
+    // Prisma, Sequelize, dj-database-url, Rails and the Go and Rust drivers accept both.
+    const url = `postgresql://app:${password}@db:5432/app`;
+    app.set("DATABASE_URL", url);
+    serviceUrls.set("postgres", url);
   }
   if (plan.services.redis) {
     app.set("REDIS_URL", "redis://cache:6379");
