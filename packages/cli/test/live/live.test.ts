@@ -428,6 +428,7 @@ async function deployAndTearDown(
 ): Promise<void> {
   // An invalid OPSCREW_E2E_APP stops here, before any GitHub or cloud call.
   if (APP instanceof Error) throw APP;
+  const startedAt = new Date();
   if (withAi && !process.env.ANTHROPIC_API_KEY) {
     throw new Error("OPSCREW_E2E_AI=1 needs ANTHROPIC_API_KEY for the model.");
   }
@@ -588,7 +589,7 @@ async function deployAndTearDown(
     expect(secure.output).toContain("SECURITY_REPORT.md");
     const drift = await opscrew("drift");
     expect(drift.exitCode, drift.output).toBe(0);
-    await expectAddressUnpublished(repo, repoName, env);
+    await expectAddressUnpublished(repo, repoName, env, startedAt);
     console.log(`OpsCrew E2E: ${app.label} deployed, verified, secured and drift-free`);
 
     if (options.afterDeploy !== undefined) {
@@ -659,6 +660,7 @@ async function expectAddressUnpublished(
   repo: string,
   repoName: string,
   env: Record<string, string | undefined>,
+  since: Date,
 ): Promise<void> {
   const address = (await readServerAddresses(resolveProjectPaths(repo, { env }))).deployment;
   expect(address, "the server's address is recorded in .opscrew/server.json").toBeDefined();
@@ -679,13 +681,23 @@ async function expectAddressUnpublished(
       `/repos/${repoName}/pulls?state=all&per_page=100&page=${page}`,
     );
     expect(pulls.status, "list the pull requests").toBe(200);
-    const list = pulls.json as { number: number; title: string; body: string | null }[];
+    const list = pulls.json as {
+      number: number;
+      title: string;
+      body: string | null;
+      created_at: string;
+    }[];
     for (const pull of list) {
-      for (const needle of needles) {
-        expect(
-          `${pull.title}\n${pull.body ?? ""}`.includes(needle),
-          `the server address in pull request #${pull.number}`,
-        ).toBe(false);
+      const named = needles.some((needle) => `${pull.title}\n${pull.body ?? ""}`.includes(needle));
+      if (new Date(pull.created_at) >= since) {
+        expect(named, `the server address in pull request #${pull.number}`).toBe(false);
+      } else if (named) {
+        // Older runs' pull requests stay in the repository and Hetzner reuses addresses, so one
+        // from before T814 may name the address this server was given: worth knowing, not this
+        // run's leak. The address itself is never printed.
+        console.warn(
+          `OpsCrew E2E: pull request #${pull.number} (opened ${pull.created_at}, before this run) contains this server's address; an earlier server had the same one. Edit its description if it should not be public.`,
+        );
       }
     }
     if (list.length < 100) break;
