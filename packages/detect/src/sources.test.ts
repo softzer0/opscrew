@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { healthRouteFromPath, scanSource } from "./sources";
+import { builtInHealthEndpoint, healthRouteFromPath, scanSource } from "./sources";
 
 describe("environment variables in a source file", () => {
   it("lists names and whether each read has a default", () => {
@@ -24,6 +24,8 @@ describe("file-system health routes of SSR frameworks", () => {
     ["src/pages/api/status.js", "/api/status"],
     ["app/api/health/route.ts", "/api/health"],
     ["pages/api/health.ts", "/api/health"],
+    ["src/routes/health.ts", "/health"],
+    ["src/routes/api/health/index.js", "/api/health"],
   ])("%s → %s", (path, route) => {
     expect(healthRouteFromPath(path)).toBe(route);
   });
@@ -36,6 +38,8 @@ describe("file-system health routes of SSR frameworks", () => {
     "src/routes/users/+server.ts",
     "src/pages/health.astro",
     "src/pages/about.ts",
+    "src/routes/users.ts",
+    "src/routes/health.tsx",
   ])("ignores %s", (path) => {
     expect(healthRouteFromPath(path)).toBeUndefined();
   });
@@ -111,5 +115,124 @@ describe("decorator health routes (NestJS and similar)", () => {
       "class S { @Get() s() {} }",
     ].join("\n");
     expect(scanSource(text).healthPaths).toEqual(["/status"]);
+  });
+});
+
+describe("health routes registered in code by other frameworks", () => {
+  it.each([
+    ["Starlette Route", 'routes = [Route("/health", health), Route("/", home)]', "/health"],
+    ["Starlette add_route", 'app.add_route("/health", health, methods=["GET"])', "/health"],
+    ["Litestar @get", '@get("/healthz")\nasync def h() -> dict[str, str]: ...', "/healthz"],
+    ["Bottle @route", "@route('/ping')\ndef ping(): ...", "/ping"],
+    ["Falcon add_route", 'app.add_route("/health", HealthResource())', "/health"],
+    ["aiohttp add_get", 'app.router.add_get("/health", health)', "/health"],
+    ["Tornado tuple", 'tornado.web.Application([\n    (r"/health", HealthHandler),\n])', "/health"],
+    ["Tornado url", 'Application([url(r"/ready$", ReadyHandler)])', "/ready"],
+    ["Pyramid", 'config.add_route("health", "/health")', "/health"],
+    [
+      "Hapi",
+      'server.route({ method: "GET", path: "/health", handler: () => ({ status: "ok" }) });',
+      "/health",
+    ],
+    ["Koa middleware", 'if (ctx.method === "GET" && ctx.path === "/health") {', "/health"],
+    ["Elysia chain", 'new Elysia()\n  .get("/health", () => ({ status: "ok" }))', "/health"],
+    ["AdonisJS", "router.get('/health', () => ({ status: 'ok' }))", "/health"],
+  ])("%s", (_name, text, route) => {
+    expect(scanSource(text).healthPaths).toEqual([route]);
+  });
+
+  it("ignores other paths and look-alikes", () => {
+    expect(scanSource('Route("/users", users)').healthPaths).toEqual([]);
+    expect(scanSource('handlers = [(r"/", MainHandler)]').healthPaths).toEqual([]);
+    expect(scanSource('pairs = [("/health", "GET")]').healthPaths).toEqual([]);
+    expect(scanSource('config.add_route("health", "/users")').healthPaths).toEqual([]);
+    expect(scanSource('router.route({ path: "/users" })').healthPaths).toEqual([]);
+    expect(scanSource('if (ctx.path === "/users") {}').healthPaths).toEqual([]);
+    expect(scanSource('MyRoute("/health")').healthPaths).toEqual([]);
+  });
+});
+
+describe("health endpoints the framework answers by itself", () => {
+  it("Rails 7.1+: /up from config/routes.rb", () => {
+    const routes = [
+      "Rails.application.routes.draw do",
+      "  # Reveal health status on /up that returns 200 if the app boots with no exceptions.",
+      '  get "up" => "rails/health#show", as: :rails_health_check',
+      "end",
+    ].join("\n");
+    expect(builtInHealthEndpoint({ "config/routes.rb": routes })).toBe("/up");
+    expect(
+      builtInHealthEndpoint({ "config/routes.rb": "get '/healthz', to: 'rails/health#show'\n" }),
+    ).toBe("/healthz");
+    expect(
+      builtInHealthEndpoint({
+        "config/routes.rb": '  # get "up" => "rails/health#show", as: :rails_health_check\n',
+      }),
+    ).toBeUndefined();
+  });
+
+  it("Laravel 11+: the health option of withRouting in bootstrap/app.php", () => {
+    const app = [
+      "<?php",
+      "return Application::configure(basePath: dirname(__DIR__))",
+      "    ->withRouting(",
+      "        web: __DIR__.'/../routes/web.php',",
+      "        health: '/up',",
+      "    )",
+      "    ->create();",
+    ].join("\n");
+    expect(builtInHealthEndpoint({ "bootstrap/app.php": app })).toBe("/up");
+    expect(
+      builtInHealthEndpoint({
+        "bootstrap/app.php": app.replace("        health", "        // health"),
+      }),
+    ).toBeUndefined();
+  });
+
+  it("Spring Boot Actuator: /actuator/health, under the configured paths", () => {
+    const pom = [
+      "<dependency>",
+      "  <groupId>org.springframework.boot</groupId>",
+      "  <artifactId>spring-boot-starter-actuator</artifactId>",
+      "</dependency>",
+    ].join("\n");
+    expect(builtInHealthEndpoint({ "pom.xml": pom })).toBe("/actuator/health");
+    expect(
+      builtInHealthEndpoint({
+        "build.gradle.kts":
+          'implementation("org.springframework.boot:spring-boot-starter-actuator")\n',
+        "src/main/resources/application.properties":
+          "server.servlet.context-path=/api\nmanagement.endpoints.web.base-path=/manage\n",
+      }),
+    ).toBe("/api/manage/health");
+    expect(
+      builtInHealthEndpoint({
+        "build.gradle": "implementation 'org.springframework.boot:spring-boot-starter-actuator'\n",
+        "src/main/resources/application.yml":
+          "management:\n  endpoints:\n    web:\n      base-path: /\n",
+      }),
+    ).toBe("/health");
+  });
+
+  it("Spring Boot: nothing without Actuator, or when health is off or on another port", () => {
+    expect(
+      builtInHealthEndpoint({ "pom.xml": "<!-- spring-boot-starter-actuator -->\n" }),
+    ).toBeUndefined();
+    const gradle = "implementation 'org.springframework.boot:spring-boot-starter-actuator'\n";
+    for (const properties of [
+      "management.server.port=8081",
+      "management.endpoint.health.enabled=false",
+      "management.endpoints.web.exposure.exclude=*",
+      "management.endpoint.health.access=none",
+    ]) {
+      expect(
+        builtInHealthEndpoint({
+          "build.gradle": gradle,
+          "src/main/resources/application.properties": `${properties}\n`,
+        }),
+        properties,
+      ).toBeUndefined();
+    }
+    expect(builtInHealthEndpoint({})).toBeUndefined();
   });
 });

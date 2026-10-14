@@ -2,6 +2,7 @@
  * Per-file signal extraction from source code: environment-variable names, listening ports,
  * health routes, Python ASGI/WSGI app objects and database URL schemes. Pure functions over text.
  */
+import { parseAllDocuments } from "yaml";
 import { type EnvRead, extractEnvReads } from "./env";
 import { basenameRel } from "./paths";
 
@@ -70,10 +71,30 @@ const PORT_PATTERNS: RegExp[] = [
 ];
 
 const HEALTH_NAMES = "health|healthz|healthcheck|health-check|ping|status|up|ready|readyz|livez";
+/** A health path in quotes, captured without them (`/health`, `/api/ready/`). */
+const QUOTED_HEALTH = `["'\`](/(?:api/)?(?:${HEALTH_NAMES})/?)["'\`]`;
 const HEALTH_ROUTE = new RegExp(
-  `\\.(?:get|route|all|head|api_route)\\(\\s*["'\`](/(?:api/)?(?:${HEALTH_NAMES})/?)["'\`]`,
+  `\\.(?:get|route|all|head|api_route|add_route|add_get|add_api_route)\\(\\s*r?${QUOTED_HEALTH}`,
   "g",
 );
+/**
+ * Other ways to register a health route in code: Starlette `Route("/health", …)`, Litestar and
+ * Bottle `@get("/health")` (Bottle's `@route(…)` is matched by {@link ROUTE_CONFIG_HEALTH}),
+ * Tornado handler tuples `(r"/health", Handler)` and `url(…)`, Pyramid
+ * `config.add_route("name", "/health")`, Hapi `server.route({ method: "GET", path: "/health", … })`
+ * and a Koa middleware that checks `ctx.path === "/health"`.
+ */
+const CODE_HEALTH_ROUTES: readonly RegExp[] = [
+  new RegExp(`(?<![\\w.])Route\\(\\s*${QUOTED_HEALTH}`, "g"),
+  new RegExp(`@get\\(\\s*${QUOTED_HEALTH}`, "g"),
+  new RegExp(
+    `(?:\\burl|[[,]\\s*)\\(\\s*r?["'](/(?:api/)?(?:${HEALTH_NAMES})/?)\\$?["']\\s*,\\s*[A-Za-z_][\\w.]*\\s*[,)]`,
+    "g",
+  ),
+  new RegExp(`\\.add_route\\(\\s*["'][^"'\\n]*["']\\s*,\\s*${QUOTED_HEALTH}`, "g"),
+  new RegExp(`\\.route\\(\\s*\\{[^}]*?\\bpath\\s*:\\s*${QUOTED_HEALTH}`, "g"),
+  new RegExp(`\\bctx\\.(?:path|url)\\s*===?\\s*${QUOTED_HEALTH}`, "g"),
+];
 const DJANGO_HEALTH_ROUTE = new RegExp(
   `\\b(?:re_)?path\\(\\s*r?["']\\^?((?:api/)?(?:${HEALTH_NAMES})/?)\\$?["']`,
   "g",
@@ -97,6 +118,8 @@ const FILE_ROUTES: readonly RegExp[] = [
   new RegExp(`^src/routes/((?:api/)?(?:${HEALTH_NAMES}))/\\+server\\.[jt]s$`),
   // Astro endpoint: src/pages/<name>.ts
   new RegExp(`^src/pages/((?:api/)?(?:${HEALTH_NAMES}))\\.[cm]?[jt]s$`),
+  // SolidStart API route: src/routes/<name>.ts
+  new RegExp(`^src/routes/((?:api/)?(?:${HEALTH_NAMES}))(?:/index)?\\.[cm]?[jt]s$`),
 ];
 
 const APP_OBJECT =
@@ -148,8 +171,8 @@ export function portsInCommand(command: string): number[] {
 
 /**
  * Health route implied by a file-system route: Next.js (`app/api/health/route.ts` → `/api/health`),
- * Nuxt (`server/routes/health.ts`), SvelteKit (`src/routes/health/+server.ts`) and Astro endpoints
- * (`src/pages/health.ts`).
+ * Nuxt (`server/routes/health.ts`), SvelteKit (`src/routes/health/+server.ts`), Astro endpoints
+ * (`src/pages/health.ts`) and SolidStart API routes (`src/routes/health.ts`).
  */
 export function healthRouteFromPath(unitRelativePath: string): string | undefined {
   for (const pattern of FILE_ROUTES) {
@@ -194,6 +217,9 @@ export function scanSource(text: string): SourceSignals {
   }
   const healthPaths: string[] = [];
   for (const match of text.matchAll(HEALTH_ROUTE)) if (match[1]) healthPaths.push(match[1]);
+  for (const pattern of CODE_HEALTH_ROUTES) {
+    for (const match of text.matchAll(pattern)) if (match[1]) healthPaths.push(match[1]);
+  }
   for (const match of text.matchAll(DJANGO_HEALTH_ROUTE)) {
     if (match[1]) healthPaths.push(`/${match[1]}`);
   }
@@ -248,4 +274,120 @@ export function pythonModule(unitRelativePath: string): string {
     .replace(/\/__init__$/, "")
     .split("/")
     .join(".");
+}
+
+/**
+ * Unit-relative files that can declare a health endpoint the framework answers by itself (read by
+ * {@link builtInHealthEndpoint}).
+ */
+export const BUILT_IN_HEALTH_FILES: readonly string[] = [
+  "config/routes.rb",
+  "bootstrap/app.php",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "src/main/resources/application.properties",
+  "src/main/resources/application.yml",
+  "src/main/resources/application.yaml",
+];
+
+/** The text without comment lines (`#`, `//`) and XML or C-style comment blocks. */
+function uncommented(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*(?:#|\/\/)/.test(line))
+    .join("\n");
+}
+
+/** `key=value` / `key: value` pairs of a Spring Boot `application.properties` file. */
+function springProperties(text: string): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*[#!]/.test(line)) continue;
+    const match = /^\s*([\w.[\]-]+)\s*[=:]\s*(.*?)\s*$/.exec(line);
+    if (match?.[1]) values.set(match[1], match[2] ?? "");
+  }
+  return values;
+}
+
+/** The first YAML document of a Spring Boot `application.yml`, flattened to dotted keys. */
+function springYaml(text: string): Map<string, string> {
+  const values = new Map<string, string>();
+  let document: unknown;
+  try {
+    document = parseAllDocuments(text)[0]?.toJS();
+  } catch {
+    return values;
+  }
+  const walk = (node: unknown, prefix: string) => {
+    if (node !== null && typeof node === "object" && !Array.isArray(node)) {
+      for (const [key, value] of Object.entries(node)) {
+        walk(value, prefix === "" ? key : `${prefix}.${key}`);
+      }
+    } else if (prefix !== "" && node !== null && node !== undefined) {
+      values.set(prefix, String(node));
+    }
+  };
+  walk(document, "");
+  return values;
+}
+
+/** `/a/b` for `a/b/`, `/a/b` or `a/b`; empty for `/` and an empty value. */
+function urlSegment(value: string | undefined): string {
+  const trimmed = (value ?? "").trim().replace(/^\/+|\/+$/g, "");
+  return trimmed === "" ? "" : `/${trimmed}`;
+}
+
+/**
+ * The health endpoint the app's framework answers by itself, so no route has to be added: Rails
+ * 7.1+ (`get "up" => "rails/health#show"` in `config/routes.rb` → `/up`), Laravel 11+
+ * (`health: '/up'` in `bootstrap/app.php`) and Spring Boot Actuator (`spring-boot-starter-actuator`
+ * in `pom.xml` or `build.gradle` → `/actuator/health`, under `server.servlet.context-path` and
+ * `management.endpoints.web.base-path` from `application.properties|yml`; none when the health
+ * endpoint is turned off or served on a separate management port). `texts` maps the
+ * {@link BUILT_IN_HEALTH_FILES} that exist to their content.
+ */
+export function builtInHealthEndpoint(texts: Readonly<Record<string, string>>): string | undefined {
+  const routes = texts["config/routes.rb"];
+  if (routes !== undefined) {
+    const rails = /^\s*get\s+["']\/?([\w/-]+)["']\s*(?:=>|,\s*to:)\s*["']rails\/health#show["']/m;
+    const path = rails.exec(uncommented(routes))?.[1];
+    if (path) return `/${path}`;
+  }
+  const bootstrap = texts["bootstrap/app.php"];
+  if (bootstrap !== undefined) {
+    const path = /\bhealth\s*:\s*["'](\/[^"'\s]*)["']/.exec(uncommented(bootstrap))?.[1];
+    if (path) return path;
+  }
+  const builds = ["pom.xml", "build.gradle", "build.gradle.kts"]
+    .map((name) => texts[name])
+    .filter((text): text is string => text !== undefined);
+  if (!builds.some((text) => /spring-boot-starter-actuator/.test(uncommented(text)))) {
+    return undefined;
+  }
+  const properties = new Map<string, string>();
+  const yml =
+    texts["src/main/resources/application.yml"] ?? texts["src/main/resources/application.yaml"];
+  if (yml !== undefined) for (const [key, value] of springYaml(yml)) properties.set(key, value);
+  const props = texts["src/main/resources/application.properties"];
+  if (props !== undefined) {
+    for (const [key, value] of springProperties(props)) properties.set(key, value);
+  }
+  const is = (key: string, pattern: RegExp) => pattern.test(properties.get(key) ?? "");
+  if (
+    properties.has("management.server.port") ||
+    is("management.endpoint.health.enabled", /^false$/i) ||
+    is("management.endpoint.health.access", /^none$/i) ||
+    is("management.endpoints.web.exposure.exclude", /(?:^|,)\s*(?:health|\*)\s*(?:,|$)/) ||
+    is("management.endpoints.enabled-by-default", /^false$/i)
+  ) {
+    return undefined;
+  }
+  const context = urlSegment(
+    properties.get("server.servlet.context-path") ?? properties.get("spring.webflux.base-path"),
+  );
+  const base = urlSegment(properties.get("management.endpoints.web.base-path") ?? "/actuator");
+  return `${context}${base}/health`;
 }
