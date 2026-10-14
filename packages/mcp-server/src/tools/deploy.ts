@@ -1,8 +1,11 @@
+import { readFile } from "node:fs/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ElicitRequestFormParams } from "@modelcontextprotocol/sdk/types.js";
 import {
   describePlan,
   findSavedPlan,
+  hostPlanFile,
+  type PhaseDeps,
   type ProvisionResult,
   type ProvisionServices,
   previewDeploymentFiles,
@@ -231,7 +234,35 @@ function checkLines(checks: readonly CheckResult[]): string[] {
   );
 }
 
-function outputsLines(result: ProvisionResult): string[] {
+const SavedHostPlanSchema = z.looseObject({
+  steps: z.array(z.looseObject({ state: z.string() })),
+});
+
+/**
+ * A server the user owns: whether the saved host plan `hash` exists (`.opscrew/plans/host-<hash>.json`)
+ * and whether it changes something on the server.
+ */
+async function savedHostPlan(
+  phase: Pick<PhaseDeps, "paths">,
+  hash: string,
+): Promise<{ changes: boolean } | undefined> {
+  try {
+    const text = await readFile(hostPlanFile(phase.paths, hash), "utf8");
+    const plan = SavedHostPlanSchema.parse(JSON.parse(text));
+    return { changes: plan.steps.some((step) => step.state === "change") };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The host plan as OpsCrew described it while planning (from the collected messages). */
+function hostPlanText(messages: readonly { message: string }[]): string | undefined {
+  return messages.find((m) => m.message.startsWith("Host plan for your server"))?.message;
+}
+
+function outputsLines(result: ProvisionResult, own: boolean): string[] {
+  // A server the user owns: its address never leaves OpsCrew's local state.
+  if (own) return [];
   const out = result.outputs;
   const lines: string[] = [];
   for (const [key, label] of [
@@ -300,7 +331,7 @@ export function registerDeployTools(
     {
       title: "Plan the infrastructure",
       description:
-        "Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (Hetzner Cloud or DigitalOcean) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. Never applies anything: show the plan to the user, then call opscrew_apply with the hash. Needs the provider's API token (HCLOUD_TOKEN for Hetzner Cloud, DIGITALOCEAN_TOKEN for DigitalOcean) and GitHub access in the MCP server's environment.",
+        "Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (Hetzner Cloud or DigitalOcean) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. On a server the user already has, it also inspects the server read-only and returns the host plan (every change OpsCrew would make on the server) with its own hash. Never applies anything: show the plans to the user, then call opscrew_apply with the hashes. Needs the provider's API token (HCLOUD_TOKEN for Hetzner Cloud, DIGITALOCEAN_TOKEN for DigitalOcean; none for the user's own server, whose SSH host key must have been confirmed once) and GitHub access in the MCP server's environment.",
       inputSchema: {
         ...projectDirInput,
         engine: z
@@ -327,27 +358,47 @@ export function registerDeployTools(
           ...servicesOption(options),
         });
         const plan = await readArtifact("plan", phase.paths.files.plan);
-        const cost = plan.cost;
+        const own = plan.target.provider === "own";
+        const cost = own ? undefined : plan.cost;
         const saved =
           result.planHash === undefined
             ? undefined
             : await findSavedPlan(phase.paths.files.plansDir, result.planHash);
-        if (saved === undefined) {
+        // A server the user owns: the host plan, approved on its own by its hash.
+        const hostHash =
+          result.hostPlanHash !== undefined &&
+          (await savedHostPlan(phase, result.hostPlanHash))?.changes === true
+            ? result.hostPlanHash
+            : undefined;
+        const hostText = hostHash === undefined ? undefined : hostPlanText(call.reporter.messages);
+        const hashes = [
+          ...(saved !== undefined ? [saved.planHash] : []),
+          ...(hostHash !== undefined ? [hostHash] : []),
+        ];
+        const applyCommand = `opscrew provision ${hashes.map((h) => `--approve ${h}`).join(" ")}`;
+        if (saved === undefined && hostHash === undefined) {
           return {
-            text: "The infrastructure already matches the plan; there is nothing to apply. Next: call opscrew_secure and opscrew_verify, or run `opscrew provision` in a terminal to finish any remaining steps.",
+            text: own
+              ? "Cloudflare and the user's server already match the plans; there is nothing to apply. Next: call opscrew_secure and opscrew_verify, or run `opscrew provision` in a terminal to finish any remaining steps."
+              : "The infrastructure already matches the plan; there is nothing to apply. Next: call opscrew_secure and opscrew_verify, or run `opscrew provision` in a terminal to finish any remaining steps.",
             data: {
               upToDate: true,
               ...(result.planHash ? { planHash: result.planHash } : {}),
-              cost,
+              ...(cost === undefined ? {} : { cost }),
             },
           };
         }
+        const applyArgs =
+          saved !== undefined && hostHash !== undefined
+            ? `planHash ${saved.planHash} and hostPlanHash ${hostHash}`
+            : `planHash ${hashes[0]}`;
         const text = [
-          describePlan(saved, plan),
+          ...(saved !== undefined ? [describePlan(saved, plan)] : []),
+          ...(hostText !== undefined ? ["", hostText] : []),
           "",
-          "Nothing was created. Show this plan to the user. To apply exactly this plan, call opscrew_apply with this planHash: OpsCrew then asks the user to approve it in a dialog. Without that dialog, the user can run this in a terminal:",
-          `  opscrew provision --approve ${saved.planHash}`,
-          ...(saved.hasDestroy
+          `Nothing was created${own ? " and nothing on the user's server was changed" : ""}. Show ${hashes.length > 1 ? "both plans" : "this plan"} to the user. To apply exactly ${hashes.length > 1 ? "these plans" : "this plan"}, call opscrew_apply with ${applyArgs}: OpsCrew then asks the user to approve each in a dialog. Without that dialog, the user can run this in a terminal:`,
+          `  ${applyCommand}`,
+          ...(saved?.hasDestroy
             ? [
                 `This plan deletes or replaces resources; the user must type "${plan.app.name}" to approve it.`,
               ]
@@ -356,9 +407,10 @@ export function registerDeployTools(
         return {
           text,
           data: {
-            ...planData(saved),
-            cost,
-            applyCommand: `opscrew provision --approve ${saved.planHash}`,
+            ...(saved !== undefined ? planData(saved) : {}),
+            ...(hostHash !== undefined ? { hostPlanHash: hostHash } : {}),
+            ...(cost === undefined ? {} : { cost }),
+            applyCommand,
           },
         };
       }),
@@ -369,12 +421,18 @@ export function registerDeployTools(
     {
       title: "Apply an approved plan",
       description:
-        "Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (Hetzner Cloud or DigitalOcean, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with `opscrew provision` in a terminal. Refuses when the client cannot show dialogs.",
+        "Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (Hetzner Cloud or DigitalOcean, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). On a server the user already has, also pass hostPlanHash: the host plan is shown and approved in its own dialog before OpsCrew changes the server (when only a host plan was returned, pass it as planHash). Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with `opscrew provision` in a terminal. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
         planHash: z
           .string()
           .describe("SHA-256 hash of the saved plan, exactly as returned by opscrew_plan."),
+        hostPlanHash: z
+          .string()
+          .optional()
+          .describe(
+            "The user's own server: SHA-256 hash of the host plan, exactly as returned by opscrew_plan.",
+          ),
       },
       annotations: {
         readOnlyHint: false,
@@ -384,17 +442,18 @@ export function registerDeployTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, planHash }, extra: CallExtra) =>
+    ({ projectDir, planHash, hostPlanHash }, extra: CallExtra) =>
       runTool(deps, "opscrew_apply", projectDir, async (call) => {
-        if (!isPlanHash(planHash)) {
+        if (!isPlanHash(planHash) || (hostPlanHash !== undefined && !isPlanHash(hostPlanHash))) {
           throw new OpsCrewError(
             "INVALID_INPUT",
-            "planHash must be the 64-character SHA-256 hash returned by opscrew_plan.",
+            "planHash (and hostPlanHash) must be the 64-character SHA-256 hashes returned by opscrew_plan.",
             { hint: "Call opscrew_plan, show the plan to the user and pass its planHash." },
           );
         }
         const hash = planHash.toLowerCase();
-        const terminal = `opscrew provision --approve ${hash}`;
+        const hostHash = hostPlanHash?.toLowerCase();
+        const terminal = `opscrew provision --approve ${hash}${hostHash === undefined ? "" : ` --approve ${hostHash}`}`;
         if (!clientSupportsElicitation(server)) {
           throw new OpsCrewError(
             "APPROVAL_REFUSED",
@@ -411,17 +470,36 @@ export function registerDeployTools(
         });
         const phase = await call.phaseDeps({ approvalHandler: handler });
         const saved = await findSavedPlan(phase.paths.files.plansDir, hash);
-        if (saved === undefined) {
+        const plan = await readArtifact("plan", phase.paths.files.plan);
+        const own = plan.target.provider === "own";
+        // A server the user owns whose infrastructure needs no change: the hash names the host plan.
+        const hostOnly =
+          saved === undefined && own && (await savedHostPlan(phase, hash)) !== undefined;
+        if (saved === undefined && !hostOnly) {
           throw new OpsCrewError("PLAN_HASH_MISMATCH", `No saved plan has the hash ${hash}.`, {
             hint: "Call opscrew_plan again, show the new plan to the user and apply its hash.",
           });
         }
+        if (
+          hostHash !== undefined &&
+          (!own || (await savedHostPlan(phase, hostHash)) === undefined)
+        ) {
+          throw new OpsCrewError(
+            "PLAN_HASH_MISMATCH",
+            `No saved host plan has the hash ${hostHash}.`,
+            {
+              hint: "Call opscrew_plan again, show the new plans to the user and apply their hashes.",
+            },
+          );
+        }
         const secrets = (phase.env.OPSCREW_APP_ENV_FILE ?? "").trim() !== "";
         let result: ProvisionResult;
         try {
+          // The hashes only pick the saved plans: every approval still comes from the user's dialog.
           result = await runProvision(phase, {
-            approvePlanHash: hash,
-            engine: saved.engine.name,
+            ...(hostOnly ? { approvePlanHashes: [hash] } : { approvePlanHash: hash }),
+            ...(hostHash === undefined ? {} : { approvePlanHashes: [hostHash] }),
+            ...(saved === undefined ? {} : { engine: saved.engine.name }),
             secrets,
             ...servicesOption(options),
           });
@@ -435,10 +513,20 @@ export function registerDeployTools(
               "The deploy secrets are NOT stored yet: OpsCrew never asks for production values through this chat. Ask the user to run `opscrew provision` in a terminal in the project directory. It finds no infrastructure changes, then asks for the production environment values and stores the GitHub Actions secrets.",
             ];
         const text = [
-          result.applied
-            ? `Applied plan ${hash}.`
-            : `Plan ${hash} had nothing left to apply; the infrastructure already matches it.`,
-          ...outputsLines(result),
+          hostOnly
+            ? "The infrastructure needed no change."
+            : result.applied
+              ? `Applied plan ${hash}.`
+              : `Plan ${hash} had nothing left to apply; the infrastructure already matches it.`,
+          ...(own
+            ? [
+                result.hostApplied === true
+                  ? `Prepared the user's server (host plan ${result.hostPlanHash}).`
+                  : "The user's server needed no change.",
+                "OpsCrew cannot turn on backups or snapshots on the user's own server; backups are the user's responsibility.",
+              ]
+            : []),
+          ...outputsLines(result, own),
           ...(result.prUrl
             ? [`Pull request with the deployment files: ${result.prUrl}`]
             : result.branch
@@ -455,7 +543,10 @@ export function registerDeployTools(
           data: {
             planHash: hash,
             applied: result.applied,
-            outputs: result.outputs,
+            ...(result.hostPlanHash !== undefined
+              ? { hostPlanHash: result.hostPlanHash, hostApplied: result.hostApplied === true }
+              : {}),
+            outputs: own ? {} : result.outputs,
             secretsStored: secrets,
             approvals: handler.decisions,
             ...(result.prUrl ? { prUrl: result.prUrl } : {}),

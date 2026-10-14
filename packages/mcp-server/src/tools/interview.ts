@@ -1,9 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   buildQuestions,
+  buildServerQuestions,
   inferredAnswers,
   providerFromTokens,
   providerProfile,
+  readOwnServer,
   requestedProvider,
   runInterview,
 } from "@opscrew/agents";
@@ -50,8 +52,11 @@ function formatDefault(value: Question["default"]): string {
   return Array.isArray(value) ? value.join(", ") : String(value);
 }
 
+/** A question to render: an interview question or a follow-up about the user's own server. */
+type ShownQuestion = Omit<Question, "id"> & { id: string };
+
 /** One question as plain text: prompt, help, choices and default. */
-function renderQuestion(question: Question, index: number): string {
+function renderQuestion(question: ShownQuestion, index: number): string {
   const lines = [`${index + 1}. ${question.prompt} (answer id: ${question.id})`];
   if (question.help) lines.push(`   ${question.help}`);
   if (question.options && question.options.length > 0) {
@@ -76,7 +81,7 @@ const AnswerValueSchema = z.union([
 
 const ANSWER_HELP: Record<string, string> = {
   provider:
-    'Cloud provider for the server: "hetzner" (Hetzner Cloud) or "digitalocean" (DigitalOcean).',
+    'Where the app runs: "hetzner" (Hetzner Cloud), "digitalocean" (DigitalOcean) or "own" (a server the user already has; then also answer the server.* questions).',
   expectedMonthlyUsers: "One of <1k, 1k-10k, 10k-100k, >100k.",
   budgetMonthly:
     'Monthly hosting budget, for example "10 EUR", "$20" or { amount: 10, currency: "EUR" }.',
@@ -90,12 +95,41 @@ const ANSWER_HELP: Record<string, string> = {
   notes: "Anything else the user wants to note.",
 };
 
-const answersShape = Object.fromEntries(
-  QuestionIdSchema.options.map((id) => [
-    id,
-    AnswerValueSchema.optional().describe(ANSWER_HELP[id] ?? `Answer for ${id}.`),
-  ]),
-);
+/** The follow-ups for a server the user already has (`provider: own`); never a password. */
+const SERVER_ANSWER_HELP: Record<string, string> = {
+  "server.host":
+    "Own server: its IP address or host name. Kept on the user's computer only; leave it out to keep the saved one.",
+  "server.port": "Own server: the SSH port, usually 22.",
+  "server.user": "Own server: the SSH user, root or a user with passwordless sudo.",
+  "server.key":
+    'Own server: the path to the private key file (for example ~/.ssh/id_ed25519), or "agent" for the SSH agent. Never the key itself, a password or a passphrase.',
+  "server.reachable":
+    "Own server: true when the internet reaches it directly; false for a home server behind a router (then a Cloudflare Tunnel on the user's Cloudflare domain).",
+};
+
+const answersShape = {
+  ...Object.fromEntries(
+    QuestionIdSchema.options.map((id) => [
+      id,
+      AnswerValueSchema.optional().describe(ANSWER_HELP[id] ?? `Answer for ${id}.`),
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(SERVER_ANSWER_HELP).map(([id, help]) => [
+      id,
+      AnswerValueSchema.optional().describe(help),
+    ]),
+  ),
+};
+
+/** How OpsCrew reached the user's own server before (pre-filled defaults), if recorded. */
+async function previousServer(paths: ProjectPaths) {
+  try {
+    return await readOwnServer(paths);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * `opscrew_interview_questions` (read-only) and `opscrew_save_requirements` (writes
@@ -108,7 +142,7 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
     {
       title: "Interview questions",
       description:
-        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, the cloud provider (Hetzner Cloud or DigitalOcean), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, external services). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
+        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean or a server the user already has, with its SSH follow-up questions), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, external services). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -124,6 +158,11 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
         const context = inferredProvider !== undefined ? { inferredProvider } : {};
         const questions = buildQuestions(facts, previous, appCandidates, context);
         const inferred = inferredAnswers(facts, context);
+        const server = await previousServer(paths);
+        // The follow-ups for a server the user already has (asked only when provider is "own").
+        const serverQuestions = buildServerQuestions(
+          server === undefined ? {} : { previous: server },
+        );
         const text = [
           `Ask the user these ${questions.length} question${questions.length === 1 ? "" : "s"}, then call opscrew_save_requirements with the answers keyed by answer id.`,
           ...(previous !== undefined
@@ -131,11 +170,19 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
             : []),
           "",
           ...questions.map(renderQuestion),
+          "",
+          'Only when the user chooses "own" (a server they already have), also ask these and pass them as server.* answers. Never ask for a password, a passphrase or the private key itself: OpsCrew uses the key file or the SSH agent. The address stays on the user\'s computer only; do not write it into any file.',
+          ...(server !== undefined
+            ? ["How OpsCrew reached the server before is saved; leave server.host out to keep it."]
+            : []),
+          "",
+          ...serverQuestions.map(renderQuestion),
         ].join("\n");
         return {
           text,
           data: {
             questions,
+            serverQuestions,
             inferred,
             prefilled: previous !== undefined,
             factsSource: source,
@@ -181,9 +228,12 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
         const { requirements } = result;
         const file = relativeTo(phase.paths.root, phase.paths.files.requirements);
         const budget = requirements.budgetMonthly;
+        const own = requirements.provider === "own";
         const text = [
           `Saved ${file}.`,
-          `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
+          own
+            ? "- Where it runs: a server the user already has (how to reach it is saved in .opscrew/server.json on this computer only, never in the repository)"
+            : `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
           `- Expected monthly users: ${requirements.expectedMonthlyUsers}`,
           `- Budget: ${budget.amount} ${budget.currency} per month`,
           ...(requirements.region === undefined ? [] : [`- Region: ${requirements.region}`]),
@@ -196,7 +246,9 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
             ? [`- Keep external services: ${requirements.keepExternalServices.join(", ")}`]
             : []),
           "",
-          "Next: call opscrew_design_options to see deployment options with monthly costs.",
+          own
+            ? "Next: call opscrew_design_options; it connects to the server (read-only) to check that it fits the app. The first connection asks the user to confirm the server's SSH host key."
+            : "Next: call opscrew_design_options to see deployment options with monthly costs.",
         ].join("\n");
         return { text, data: { requirements, file } };
       }),

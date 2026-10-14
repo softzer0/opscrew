@@ -1,9 +1,9 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { PhaseDeps } from "@opscrew/agents";
+import { type PhaseDeps, readOwnServer, withoutOwnServer } from "@opscrew/agents";
 import type { ApprovalHandler, UserFacingError } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError, resolveProjectPaths } from "@opscrew/core";
 import { z } from "zod";
 import { CollectingReporter, type ReportedMessage, type ResolvedMcpDeps } from "../deps";
 
@@ -119,9 +119,40 @@ export function errorResult(
 }
 
 /**
+ * The names of the user's own server that must not reach the model: its address (IP or host name)
+ * and the public addresses OpsCrew recorded, from `.opscrew/server.json` (local state only).
+ */
+export async function ownServerNames(deps: ResolvedMcpDeps, projectDir: string): Promise<string[]> {
+  try {
+    const own = await readOwnServer(resolveProjectPaths(projectDir, { env: deps.env }));
+    if (own === undefined) return [];
+    return [own.host, own.publicIpv4, own.publicIpv6].filter(
+      (name): name is string => typeof name === "string" && name.trim() !== "",
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** `value` with every own-server name replaced by "your server" in every string, deeply. */
+function hideNames<T>(value: T, names: readonly string[]): T {
+  if (names.length === 0) return value;
+  const walk = (item: unknown): unknown => {
+    if (typeof item === "string") return withoutOwnServer(item, names);
+    if (Array.isArray(item)) return item.map(walk);
+    if (item !== null && typeof item === "object") {
+      return Object.fromEntries(Object.entries(item).map(([key, inner]) => [key, walk(inner)]));
+    }
+    return item;
+  };
+  return walk(value) as T;
+}
+
+/**
  * Runs one tool call: resolves `projectDir`, gives the body a collecting reporter and lazy
- * `PhaseDeps`, and maps the outcome to a redacted result (errors → `isError: true`). Unexpected
- * errors are logged (stderr in production) with their stack.
+ * `PhaseDeps`, and maps the outcome to a redacted result (errors → `isError: true`). The address
+ * of a server the user owns never leaves in a result (FR-902): it reads "your server" instead.
+ * Unexpected errors are logged (stderr in production) with their stack.
  */
 export async function runTool(
   deps: ResolvedMcpDeps,
@@ -129,9 +160,25 @@ export async function runTool(
   projectDirArg: string | undefined,
   body: (call: ToolCall) => Promise<ToolOutput>,
 ): Promise<CallToolResult> {
+  let projectDir: string | undefined;
+  const result = await runToolBody(deps, tool, projectDirArg, body, (dir) => {
+    projectDir = dir;
+  });
+  if (projectDir === undefined) return result;
+  return hideNames(result, await ownServerNames(deps, projectDir));
+}
+
+async function runToolBody(
+  deps: ResolvedMcpDeps,
+  tool: string,
+  projectDirArg: string | undefined,
+  body: (call: ToolCall) => Promise<ToolOutput>,
+  resolved: (projectDir: string) => void,
+): Promise<CallToolResult> {
   const reporter = new CollectingReporter(deps.redactor.redact);
   try {
     const projectDir = await resolveProjectDir(deps, projectDirArg);
+    resolved(projectDir);
     let built: Promise<PhaseDeps> | undefined;
     const call: ToolCall = {
       projectDir,

@@ -1,21 +1,28 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  connectOwnServer,
   type DesignPreview,
   type DesignResult,
   formatMoney,
+  inspectOwnServer,
+  type OwnServerDesignInput,
+  type OwnServerServices,
   type PhaseDeps,
   previewDesignOptions,
   priceLabel,
   providerProfile,
+  readOwnServer,
   requestedProvider,
   runAnalyze,
   runDesign,
 } from "@opscrew/agents";
+import type { ApprovalHandler } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { detectProject } from "@opscrew/detect";
 import { type DesignOption, readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
+import { clientSupportsElicitation, ElicitationApprovalHandler } from "./deploy";
 import { isMissingArtifact, projectDirInput, relativeTo, runTool, withHint } from "./shared";
 
 const REQUIREMENTS_HINT =
@@ -53,6 +60,81 @@ async function checkArchitecture(phase: PhaseDeps): Promise<boolean> {
   }
 }
 
+/** Test-only collaborators for the design tools (production connects over SSH). */
+export interface DesignToolOptions {
+  /** A server the user owns: its admin shell, the host adapter's inspection and home directory. */
+  own?: OwnServerServices;
+}
+
+/** Per-call context the SDK passes to a tool callback (only what the design tools use). */
+interface CallExtra {
+  requestId?: string | number;
+  signal?: AbortSignal;
+}
+
+/**
+ * The approval handler of a design tool call: a dialog for the user (MCP elicitation) when the
+ * client can show one. Design asks only one thing: trusting the SSH host key of the user's own
+ * server on the first connection. The model never approves it.
+ */
+function designApprovals(
+  server: McpServer,
+  deps: ResolvedMcpDeps,
+  extra: CallExtra,
+): { approvalHandler?: ApprovalHandler } {
+  if (!clientSupportsElicitation(server)) return {};
+  return {
+    approvalHandler: new ElicitationApprovalHandler(server, {
+      clock: deps.clock,
+      redact: deps.redactor.redact,
+      extra,
+    }),
+  };
+}
+
+/**
+ * A server the user owns: connects with the login the interview recorded and inspects the server
+ * read-only, so design can check that it fits the app. A host key that was never confirmed is
+ * shown to the user in a dialog (MCP elicitation); a client without dialogs gets the terminal
+ * command instead. `undefined` for the other providers.
+ */
+async function ownServerInput(
+  server: McpServer,
+  phase: PhaseDeps,
+  options: DesignToolOptions,
+): Promise<OwnServerDesignInput | undefined> {
+  const requirements = await readArtifact("requirements", phase.paths.files.requirements);
+  if (requirements.provider !== "own") return undefined;
+  const recorded = await readOwnServer(phase.paths).catch(() => undefined);
+  const pinned = recorded?.hostKey !== undefined;
+  if (recorded !== undefined && !pinned && !clientSupportsElicitation(server)) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "OpsCrew must confirm the SSH host key of the user's server once before it connects, and this MCP client cannot show the confirmation dialog. Nothing was changed.",
+      {
+        hint: "Ask the user to run `npx opscrew design` in a terminal in the project directory: it shows the server's fingerprint to check against the server and pins it. Then call this tool again.",
+      },
+    );
+  }
+  const own = options.own ?? {};
+  // Only the first connection asks (a dialog for the user); a pinned key is checked silently.
+  const session = await connectOwnServer(
+    { ...phase, interactive: !pinned },
+    {
+      ...(own.remote === undefined ? {} : { remote: own.remote }),
+      ...(own.homeDir === undefined ? {} : { homeDir: own.homeDir }),
+    },
+  );
+  const host = own.host;
+  const inspect =
+    host?.inspect === undefined
+      ? undefined
+      : (remote: Parameters<NonNullable<typeof host.inspect>>[0]) =>
+          (host as Required<typeof host>).inspect(remote);
+  const inspected = await inspectOwnServer(session, inspect === undefined ? {} : { inspect });
+  return { facts: inspected.server };
+}
+
 /**
  * Prices the options without writing anything to the project (`previewDesignOptions`). Without a
  * saved `architecture.json`, the facts come from a fresh deterministic detection.
@@ -61,10 +143,26 @@ async function previewDesign(
   deps: ResolvedMcpDeps,
   phase: PhaseDeps,
   hasArchitecture: boolean,
+  ownServer: OwnServerDesignInput | undefined,
 ): Promise<DesignPreview> {
   const quiet: PhaseDeps = { ...phase, reporter: new CollectingReporter(deps.redactor.redact) };
   const facts = hasArchitecture ? undefined : await detectProject(phase.paths.root);
-  return previewDesignOptions(quiet, facts ? { facts } : {});
+  return previewDesignOptions(quiet, {
+    ...(facts ? { facts } : {}),
+    ...(ownServer === undefined ? {} : { ownServer }),
+  });
+}
+
+/** True for the option on a server the user already owns, which has no price (FR-913). */
+function isOwnServer(option: DesignOption): boolean {
+  return option.target.provider === "own";
+}
+
+/** The option's cost in words: never a price for the user's own server. */
+function costText(option: DesignOption): string {
+  return isOwnServer(option)
+    ? "no server price (the user already pays for this server)"
+    : `${formatMoney(option.cost.monthly)}/month, ${priceLabel(option.cost)}`;
 }
 
 /**
@@ -78,48 +176,107 @@ function taxLabel(cost: Pick<DesignOption["cost"], "monthly" | "pricesIncludeVat
 
 /** Plain-text block for one option. */
 function renderOption(option: DesignOption): string {
+  const own = isOwnServer(option);
   const marks = [
-    option.fitsBudget ? "fits the budget" : "over budget",
+    ...(own ? [] : [option.fitsBudget ? "fits the budget" : "over budget"]),
     ...(option.recommended ? ["RECOMMENDED"] : []),
   ];
   const t = option.target;
   return [
-    `${option.title} (id: ${option.id}) — ${formatMoney(option.cost.monthly)}/month, ${priceLabel(option.cost)}; ${marks.join(", ")}`,
+    `${option.title} (id: ${option.id}) — ${costText(option)}${marks.length > 0 ? `; ${marks.join(", ")}` : ""}`,
     `  ${option.summary}`,
-    `  Server: ${t.serverType} in ${t.location}, ${t.vcpus} vCPU (${t.cpuType}), ${t.memoryGb} GB RAM, ${t.diskGb} GB disk`,
-    `  Cost: ${option.cost.breakdown.map((b) => `${b.item} ${formatMoney(b.monthly)}`).join("; ")}`,
+    `  Server: ${t.serverType} in ${t.location}, ${t.vcpus} vCPU (${t.cpuType}), ${t.memoryGb} GB RAM, ${t.diskGb} GB ${own ? "free disk" : "disk"}`,
+    ...(own
+      ? []
+      : [
+          `  Cost: ${option.cost.breakdown.map((b) => `${b.item} ${formatMoney(b.monthly)}`).join("; ")}`,
+        ]),
     ...option.tradeoffs.map((tradeoff) => `  - ${tradeoff}`),
   ].join("\n");
 }
 
 /**
- * `opscrew_design_options` (read-only preview of 2–3 priced options on the chosen provider) and
- * `opscrew_select_design` (writes `opscrew/plan.yaml` for the chosen option).
+ * Where the options' prices come from, for the heading: live from the provider's API; or, when its
+ * token is set but some rate is not in the API (DigitalOcean's backup percentage), live where the
+ * API returns them with the rest labelled by its published date (each option names the exact
+ * label); or the dated price list when no token is set.
  */
-export function registerDesignTools(server: McpServer, deps: ResolvedMcpDeps): void {
+function priceSourceText(
+  deps: Pick<ResolvedMcpDeps, "env">,
+  provider: Parameters<typeof providerProfile>[0],
+  priceSource: DesignPreview["priceSource"],
+): string {
+  const profile = providerProfile(provider);
+  if (priceSource === "live") return `prices live from ${profile.displayName}`;
+  const tokenSet = profile.tokenVars.some((name) => (deps.env[name] ?? "").trim() !== "");
+  return tokenSet
+    ? `prices live from ${profile.displayName}'s API where it returns them; rates it does not return are labelled with their published date on each option`
+    : "prices from a dated price list; estimates";
+}
+
+/** An option for the result data: the user's own server carries no cost and no budget check. */
+function optionData(option: DesignOption): Record<string, unknown> {
+  if (!isOwnServer(option)) return option;
+  const { cost: _cost, fitsBudget: _fits, ...rest } = option;
+  return { ...rest, price: "none: the user already pays for this server" };
+}
+
+/**
+ * `opscrew_design_options` (read-only preview of 2–3 priced options on the chosen provider, or the
+ * user's own server without a price) and `opscrew_select_design` (writes `opscrew/plan.yaml` for
+ * the chosen option). On a server the user owns both connect over SSH and inspect it read-only
+ * first; a host key seen for the first time is confirmed by the user in a dialog. `options` is for
+ * tests only.
+ */
+export function registerDesignTools(
+  server: McpServer,
+  deps: ResolvedMcpDeps,
+  options: DesignToolOptions = {},
+): void {
   server.registerTool(
     "opscrew_design_options",
     {
       title: "Deployment options",
       description:
-        "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices are live when the provider's API token (HCLOUD_TOKEN or DIGITALOCEAN_TOKEN) is set, otherwise a dated price list labelled as an estimate. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
+        "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with HCLOUD_TOKEN or DIGITALOCEAN_TOKEN set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ projectDir }) =>
+    ({ projectDir }, extra: CallExtra) =>
       runTool(deps, "opscrew_design_options", projectDir, async (call) => {
-        const phase = await call.phaseDeps();
+        const phase = await call.phaseDeps(designApprovals(server, deps, extra));
         await requireRequirements(phase);
         const hasArchitecture = await checkArchitecture(phase);
-        const result = await previewDesign(deps, phase, hasArchitecture);
+        const ownServer = await ownServerInput(server, phase, options);
+        const result = await previewDesign(deps, phase, hasArchitecture, ownServer);
         for (const warning of result.warnings) call.reporter.warn(warning);
         const recommended = result.options.find((o) => o.recommended);
         const requirements = await readArtifact("requirements", phase.paths.files.requirements);
+        if (ownServer !== undefined) {
+          const text = [
+            "Deployment on the user's own server (no server price: they already pay for it; OpsCrew cannot turn on backups there, so backups are the user's responsibility):",
+            "",
+            ...result.options.map(renderOption),
+            "",
+            `After the user agrees, call opscrew_select_design with the option id (${recommended?.id ?? result.options[0]?.id}).`,
+          ].join("\n");
+          return {
+            text,
+            data: {
+              options: result.options.map(optionData),
+              recommendedId: recommended?.id,
+              ownServer: true,
+              warnings: result.warnings,
+            },
+          };
+        }
         const fitting = result.options.some((o) => o.fitsBudget);
-        const providerName = providerProfile(requestedProvider(requirements)).displayName;
+        const provider = requestedProvider(requirements);
+        const providerName = providerProfile(provider).displayName;
         const tax = result.options[0] ? `, ${taxLabel(result.options[0].cost)}` : "";
+        const prices = priceSourceText(deps, provider, result.priceSource);
         const text = [
-          `Deployment options on ${providerName} (budget ${formatMoney(requirements.budgetMonthly)}/month, prices ${result.priceSource === "live" ? `live from ${providerName}` : "from a dated price list; estimates"}${tax}):`,
+          `Deployment options on ${providerName} (budget ${formatMoney(requirements.budgetMonthly)}/month, ${prices}${tax}):`,
           "",
           ...result.options.map(renderOption),
           "",
@@ -160,9 +317,9 @@ export function registerDesignTools(server: McpServer, deps: ResolvedMcpDeps): v
         openWorldHint: true,
       },
     },
-    ({ projectDir, optionId }) =>
+    ({ projectDir, optionId }, extra: CallExtra) =>
       runTool(deps, "opscrew_select_design", projectDir, async (call) => {
-        const phase = await call.phaseDeps();
+        const phase = await call.phaseDeps(designApprovals(server, deps, extra));
         await requireRequirements(phase);
         const hasArchitecture = await checkArchitecture(phase);
         const notes: string[] = [];
@@ -172,9 +329,13 @@ export function registerDesignTools(server: McpServer, deps: ResolvedMcpDeps): v
             `Wrote ${relativeTo(phase.paths.root, phase.paths.files.architecture)} from deterministic detection.`,
           );
         }
+        const ownServer = await ownServerInput(server, phase, options);
         let result: DesignResult;
         try {
-          result = await runDesign(phase, { optionId });
+          result = await runDesign(phase, {
+            optionId,
+            ...(ownServer === undefined ? {} : { ownServer }),
+          });
         } catch (error) {
           if (error instanceof OpsCrewError && error.code === "INVALID_INPUT") {
             withHint(
@@ -189,7 +350,7 @@ export function registerDesignTools(server: McpServer, deps: ResolvedMcpDeps): v
         const pending = plan.codeChanges.filter((change) => change.status === "pending");
         const text = [
           ...notes,
-          `Saved ${planFile}: ${chosen.title} (${chosen.id}), ${formatMoney(chosen.cost.monthly)}/month, ${priceLabel(chosen.cost)}.`,
+          `Saved ${planFile}: ${chosen.title} (${chosen.id}), ${costText(chosen)}.`,
           "",
           plan.codeChanges.length === 0
             ? "The app needs no code changes."
@@ -203,11 +364,11 @@ export function registerDesignTools(server: McpServer, deps: ResolvedMcpDeps): v
         return {
           text,
           data: {
-            chosen,
+            chosen: optionData(chosen),
             planFile,
             plan,
             codeChanges: plan.codeChanges,
-            priceSource: result.priceSource,
+            ...(ownServer === undefined ? { priceSource: result.priceSource } : {}),
             warnings: result.warnings,
           },
         };
