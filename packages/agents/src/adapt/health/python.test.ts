@@ -182,6 +182,29 @@ describe("FastAPI", () => {
     });
   });
 
+  it("picks the app the start command serves when a sub-app is mounted", async () => {
+    const files = {
+      "main.py": lines(
+        "from fastapi import FastAPI",
+        "",
+        "from v1.app import v1",
+        "",
+        "app = FastAPI()",
+        'app.mount("/v1", v1)',
+      ),
+      "v1/app.py": lines("from fastapi import FastAPI", "", "v1 = FastAPI()"),
+    };
+    const started = {
+      ...fastapi,
+      build: { startCommand: "uvicorn main:app --host 0.0.0.0 --port 8000" },
+    };
+    const edit = await healthRouteEdit(healthInput("fastapi", started, files));
+    expect(edit).toMatchObject({ action: "write", path: "main.py" });
+    expect(written(edit, "main.py")).toContain('app = FastAPI()\n\n\n@app.get("/health")');
+    const unknown = await healthRouteEdit(healthInput("fastapi", fastapi, files));
+    expect(unknown.action === "manual" && unknown.reason).toContain("found 2 app objects");
+  });
+
   it("leaves an app created in a class, or without a variable, to the agent", async () => {
     const inClass = await healthRouteEdit(
       healthInput("fastapi", fastapi, {

@@ -4,11 +4,13 @@
  */
 import {
   appCodeFiles,
+  appFolder,
   type PathUse,
   pathTaken,
   pathVariants,
   readSource,
   routeUses,
+  under,
 } from "./common";
 import {
   blockAfter,
@@ -518,7 +520,9 @@ function pythonEdit(
   texts: ReadonlyMap<string, string>,
 ): HealthEdit | undefined {
   if (found.length === 0) return undefined;
-  if (found.length > 1) {
+  // Several apps (a mounted sub-app): the one in the module the start command serves.
+  const started = found.length > 1 ? startedBy(input, found) : found;
+  if (started.length !== 1) {
     const where = found.map(
       (f) => `${f.spec.name} in ${f.file} line ${f.call.statement.first + 1}`,
     );
@@ -526,7 +530,7 @@ function pythonEdit(
       `OpsCrew found ${found.length} app objects (${listing(where)}), so it cannot tell which one serves the app.`,
     );
   }
-  const { file, src, imports, call, spec } = found[0] as Found;
+  const { file, src, imports, call, spec } = started[0] as Found;
   const forms = spec.forms ?? ["assign"];
   if (!forms.includes(call.form) || (call.form !== "other" && call.name === undefined)) {
     return manual(
@@ -560,12 +564,26 @@ function pythonEdit(
   };
 }
 
+/**
+ * The app objects in the module the start command serves (`uvicorn main:app`,
+ * `gunicorn "pkg:create_app()"`, `flask --app pkg run`), relative to the app folder.
+ */
+function startedBy(input: HealthRouteInput, found: readonly Found[]): Found[] {
+  const command = input.facts.build.startCommand ?? "";
+  const module =
+    /(?:^|[\s'"=])([A-Za-z_][\w.]*):[A-Za-z_]\w*(?:\(\))?(?=['"\s]|$)/.exec(command)?.[1] ??
+    /--app[=\s]+['"]?([A-Za-z_][\w.]*)/.exec(command)?.[1];
+  if (module === undefined) return [];
+  const dir = appFolder(input.facts);
+  const base = module.split(".").join("/");
+  const files = new Set([`${base}.py`, `${base}/__init__.py`].map((path) => under(dir, path)));
+  return found.filter((f) => files.has(f.file));
+}
+
 /** Middleware or hooks that run for every route and might protect the health path. */
 function pythonChecks(framework: string, file: string, text: string, healthPath: string): string[] {
   const hooks =
-    /\.(?:add_middleware|before_request|before_serving|middleware)\b|@\w+\.middleware\b|\bmiddleware\s*=/.test(
-      text,
-    );
+    /\.(?:add_middleware|before_request|before_serving|middleware)\b|\bmiddlewares?\s*=/.test(text);
   if (!hooks) return [];
   return [
     `Check that the middleware or request hooks in ${file} do not redirect or protect ${healthPath}: ${framework} runs them for every route, and the deploy health check calls it without a session.`,

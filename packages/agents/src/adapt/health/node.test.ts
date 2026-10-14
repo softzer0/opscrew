@@ -368,6 +368,33 @@ describe("Hono, Koa, Elysia, Hapi, Restify", () => {
     );
   });
 
+  it("Hono: picks the app that is served when routes are sub-apps", async () => {
+    const { edit } = await edited(
+      {
+        "src/index.ts": lines(
+          'import { serve } from "@hono/node-server";',
+          'import { Hono } from "hono";',
+          'import users from "./routes/users";',
+          "",
+          "const app = new Hono();",
+          'app.route("/users", users);',
+          "",
+          "serve({ fetch: app.fetch, port: 3000 });",
+        ),
+        "src/routes/users.ts": lines(
+          'import { Hono } from "hono";',
+          "",
+          "const users = new Hono();",
+          'users.get("/", (c) => c.json([]));',
+          "",
+          "export default users;",
+        ),
+      },
+      "src/index.ts",
+    );
+    expect(edit.action === "write" && edit.files.map((f) => f.path)).toEqual(["src/index.ts"]);
+  });
+
   it("Koa: a first middleware that answers the path", async () => {
     const { content } = await edited(
       {
@@ -448,8 +475,8 @@ describe("Hono, Koa, Elysia, Hapi, Restify", () => {
     );
   });
 
-  it("Hapi: server.route inside the init function", async () => {
-    const { content } = await edited(
+  it("Hapi: server.route inside the init function, without auth", async () => {
+    const { edit, content } = await edited(
       {
         "server.js": lines(
           '"use strict";',
@@ -462,6 +489,7 @@ describe("Hono, Koa, Elysia, Hapi, Restify", () => {
           '    host: "0.0.0.0",',
           "  });",
           "",
+          '  server.ext("onRequest", audit);',
           "  await server.start();",
           "};",
           "",
@@ -474,15 +502,23 @@ describe("Hono, Koa, Elysia, Hapi, Restify", () => {
       lines(
         "  });",
         "",
-        '  server.route({ method: "GET", path: "/health", handler: () => ({ status: "ok" }) });',
+        "  server.route({",
+        '    method: "GET",',
+        '    path: "/health",',
+        "    options: { auth: false },",
+        '    handler: () => ({ status: "ok" }),',
+        "  });",
         "",
-        "  await server.start();",
+        '  server.ext("onRequest", audit);',
       ),
     );
+    expect(edit.action === "write" && edit.checks).toEqual([
+      "Check that the onRequest extensions in server.js do not protect /health: Hapi runs them for every route, and the deploy health check calls it without a session.",
+    ]);
   });
 
   it("Restify: a GET handler that calls next", async () => {
-    const { content } = await edited(
+    const { edit, content } = await edited(
       {
         "server.js": lines(
           'const restify = require("restify");',
@@ -505,6 +541,25 @@ describe("Hono, Koa, Elysia, Hapi, Restify", () => {
         "server.use(restify.plugins.bodyParser());",
       ),
     );
+    expect(edit.action === "write" && edit.checks[0]).toContain(
+      "Check that the server.use() and server.pre() handlers in server.js do not protect /health: Restify runs them for every route",
+    );
+  });
+
+  it("Fastify: names hooks that run for every route", async () => {
+    const { edit } = await edited(
+      {
+        "app.js": lines(
+          'import Fastify from "fastify";',
+          "const app = Fastify();",
+          'app.addHook("onRequest", authenticate);',
+        ),
+      },
+      "app.js",
+    );
+    expect(edit.action === "write" && edit.checks).toEqual([
+      "Check that the onRequest/preHandler hooks in app.js do not protect /health: Fastify runs them for every route, and the deploy health check calls it without a session.",
+    ]);
   });
 
   it("Feathers stays with the Code-change agent", async () => {

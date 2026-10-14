@@ -62,6 +62,11 @@ interface NodeSpec {
   pending?: string;
   /** Elysia: the route goes into the app's method chain. */
   chain?: (snippet: Snippet) => string;
+  /**
+   * Code that runs for every route whatever its order (Fastify hooks, Restify `use`, Hapi
+   * extensions), and what to call it in the check the user gets.
+   */
+  global?: { pattern: RegExp; what: string };
 }
 
 const ok = (q: Snippet["q"]) => `{ status: ${q("ok")} }`;
@@ -87,6 +92,10 @@ const SPECS: readonly NodeSpec[] = [
       `${u}return ${ok(q)}${s}`,
       `})${s}`,
     ],
+    global: {
+      pattern: /\.addHook\(\s*["'](?:onRequest|preParsing|preValidation|preHandler)["']/,
+      what: "the onRequest/preHandler hooks",
+    },
   },
   {
     name: "Hono",
@@ -120,9 +129,16 @@ const SPECS: readonly NodeSpec[] = [
     name: "Hapi",
     targets: ["@hapi/hapi.server", "@hapi/hapi.Server", "hapi.server", "hapi.Server"],
     modules: ["hapi"],
-    lines: ({ app, path, q, s }) => [
-      `${app}.route({ method: ${q("GET")}, path: ${q(path)}, handler: () => (${ok(q)}) })${s}`,
+    // `auth: false`: a default auth strategy set later must not protect the health check.
+    lines: ({ app, path, q, s, u }) => [
+      `${app}.route({`,
+      `${u}method: ${q("GET")},`,
+      `${u}path: ${q(path)},`,
+      `${u}options: { auth: false },`,
+      `${u}handler: () => (${ok(q)}),`,
+      `})${s}`,
     ],
+    global: { pattern: /\.ext\(\s*["']onRequest["']/, what: "the onRequest extensions" },
   },
   {
     name: "Restify",
@@ -134,6 +150,7 @@ const SPECS: readonly NodeSpec[] = [
       `${u}return next()${s}`,
       `})${s}`,
     ],
+    global: { pattern: /\.(?:use|pre)\(/, what: "the server.use() and server.pre() handlers" },
   },
   {
     name: "Feathers",
@@ -162,6 +179,20 @@ function importQuote(imports: readonly JsImport[], spec: NodeSpec): string | und
   return imports.find((entry) =>
     spec.targets.some((target) => target === entry.module || target.startsWith(`${entry.module}.`)),
   )?.quote;
+}
+
+/**
+ * True when the file serves this app object: `app.listen(…)`, `app.fetch` (Hono, Bun, Deno),
+ * `serve(app)` / `createServer(app)`, or `.listen(…)` at the end of its creation chain.
+ */
+function isServed(found: Found): boolean {
+  const creation = creationOf(found.src, found.call);
+  if (creation === undefined) return false;
+  if (creation.chain.some((link) => link.name === "listen")) return true;
+  const name = creation.name.replace(/\$/g, "\\$");
+  return new RegExp(
+    `\\b${name}\\s*\\.\\s*(?:fetch|listen)\\b|\\b(?:serve|createServer)\\s*\\(\\s*${name}\\b`,
+  ).test(found.src.code);
 }
 
 /** Lines inserted after `line`, with one blank line on each side where there is none. */
@@ -216,13 +247,15 @@ export async function nodeHealthRoute(input: HealthRouteInput): Promise<HealthEd
     starts.set(f.file, s);
     return s.filter((start) => start <= f.call.start).length;
   };
-  if (found.length > 1) {
+  // Several apps (Hono and Elysia sub-apps, an Express admin app): the one the file serves.
+  const served = found.length > 1 ? found.filter(isServed) : found;
+  if (served.length !== 1) {
     const where = found.map((f) => `${f.spec.name} in ${f.file} line ${lineOf(f)}`);
     return manual(
       `OpsCrew found ${found.length} app objects (${listing(where)}), so it cannot tell which one serves the app.`,
     );
   }
-  const only = found[0] as Found;
+  const only = served[0] as Found;
   const { file, src, imports, call, spec } = only;
   const line = lineOf(only);
   if (spec.pending !== undefined) return manual(`${spec.pending}.`);
@@ -284,12 +317,19 @@ export async function nodeHealthRoute(input: HealthRouteInput): Promise<HealthEd
     const lines = (spec.lines?.(snippet) ?? []).map((l) => `${creation.indent}${l}`);
     insertion = jsBlockAfter(src.text, creation.lastLine, lines);
   }
+  const global = spec.global;
+  const checks =
+    global?.pattern.test(src.text) === true
+      ? [
+          `Check that ${global.what} in ${file} do not protect ${input.healthPath}: ${spec.name} runs them for every route, and the deploy health check calls it without a session.`,
+        ]
+      : [];
   return {
     action: "write",
     framework: spec.name,
     files: [{ path: file, content: applyInsertions(src.text, [insertion]), created: false }],
     path: file,
     note: addedNote(file, input.healthPath, spec.name),
-    checks: [],
+    checks,
   };
 }

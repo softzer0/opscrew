@@ -205,6 +205,16 @@ export async function nestHealthRoute(input: HealthRouteInput): Promise<HealthEd
       `${main} enables API versioning: if it sets a default version, mark HealthController with @Version(VERSION_NEUTRAL) so it still answers ${input.healthPath}.`,
     );
   }
+  const guards = /\buseGlobalGuards\(|\bAPP_GUARD\b/;
+  const guarded = [
+    ...(guards.test(mainSrc.code) ? [main] : []),
+    ...(guards.test(moduleSrc.code) ? [moduleFile] : []),
+  ];
+  if (guarded.length > 0) {
+    checks.push(
+      `Check that the global guards in ${guarded.join(" and ")} let GET ${input.healthPath} through (mark HealthController with the decorator your guards use for public routes): the deploy health check calls it without a session.`,
+    );
+  }
   return {
     action: "write",
     framework: "NestJS",

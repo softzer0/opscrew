@@ -122,6 +122,19 @@ describe("NestJS", () => {
     );
   });
 
+  it("names global guards the user should check", async () => {
+    const module = MODULE.replace(
+      "  providers: [AppService],",
+      "  providers: [AppService, { provide: APP_GUARD, useClass: AuthGuard }],",
+    );
+    const edit = await healthRouteEdit(
+      healthInput("node-server", nest, nestApp({ "src/app.module.ts": module })),
+    );
+    expect(edit.action === "write" && edit.checks).toEqual([
+      "Check that the global guards in src/app.module.ts let GET /health through (mark HealthController with the decorator your guards use for public routes): the deploy health check calls it without a session.",
+    ]);
+  });
+
   it("keeps .js import specifiers and adds a controllers list when the module has none", async () => {
     const module = lines(
       "import { Module } from '@nestjs/common'",
