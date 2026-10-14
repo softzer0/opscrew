@@ -103,7 +103,7 @@ description: "Tasks for 008-first-real-run"
   - Accept: FR-811; static examples are served and answer on `/`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` and `OPSCREW_DOCKER_TESTS=1 OPSCREW_DOCKER_EXAMPLES=nextjs-postgres,static-vite pnpm --filter opscrew exec vitest run test/e2e/docker.test.ts`
   - Effort: high
-- [ ] T826 [P] Background jobs are not silently dropped: when the facts show a web app that also uses a worker library (a `queue` service or a worker dependency such as celery, rq, dramatiq, huey, arq, bullmq, bull, sidekiq), `design` warns that only the web process is deployed for now and the background jobs will not run until worker support arrives (naming the library), and the adapt pull request body says the same
+- [X] T826 [P] Background jobs are not silently dropped: when the facts show a web app that also uses a worker library (a `queue` service or a worker dependency such as celery, rq, dramatiq, huey, arq, bullmq, bull, sidekiq), `design` warns that only the web process is deployed for now and the background jobs will not run until worker support arrives (naming the library), and the adapt pull request body says the same
   - Owns: `packages/agents/src/design/**`, `packages/agents/src/adapt/**`
   - Accept: FR-812; no warning for an app without worker libraries; the wording is plain English and says what to do meanwhile (run the worker yourself, e.g. on the same server).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`

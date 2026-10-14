@@ -155,6 +155,34 @@ describe("detectProject scenarios", () => {
       { kind: "queue", evidence: ["dependency:bullmq"] },
       { kind: "redis", evidence: ["dependency:bullmq"] },
     ]);
+    const node = await tree({
+      "package.json": JSON.stringify({
+        name: "n",
+        dependencies: {
+          express: "^5",
+          "bee-queue": "^1",
+          agenda: "^5",
+          "@temporalio/worker": "^1",
+        },
+      }),
+    });
+    const python = await tree({ "requirements.txt": "flask==3.1.0\ndramatiq\nhuey\narq\n" });
+    const evidence = async (root: string, kind: string) =>
+      (await detectProject(root)).services.find((s) => s.kind === kind)?.evidence.toSorted();
+    // Every background-job library shows as a queue, so OpsCrew can say it is not deployed (FR-812).
+    expect(await evidence(node, "queue")).toEqual([
+      "dependency:@temporalio/worker",
+      "dependency:agenda",
+      "dependency:bee-queue",
+    ]);
+    expect(await evidence(node, "redis")).toEqual(["dependency:bee-queue"]);
+    expect(await evidence(node, "mongodb")).toEqual(["dependency:agenda"]);
+    expect(await evidence(python, "queue")).toEqual([
+      "dependency:arq",
+      "dependency:dramatiq",
+      "dependency:huey",
+    ]);
+    expect(await evidence(python, "redis")).toEqual(["dependency:arq"]);
     const cra = await tree({
       "package.json": JSON.stringify({
         name: "c",
