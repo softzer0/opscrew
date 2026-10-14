@@ -55,12 +55,7 @@ import {
   SshRemoteExec,
   writeRenderedFiles,
 } from "../shared";
-import {
-  deletesTunnel,
-  requireTunnelClosed,
-  tunnelBusyError,
-  tunnelSafeEngine,
-} from "../shared/tunnel-connections";
+import { connectorFirst, deletesTunnel, type HostChangeResult } from "../shared/tunnel-connections";
 import { cloudflareAccessLoginMethods, oneTimePinIdentityProvider } from "./access";
 import {
   clearPendingPortainer,
@@ -528,9 +523,8 @@ async function runChange(
       shown,
     });
   };
-  /** The host change applied before the tunnel's deletion (see {@link hostChange}). */
-  let early: { hash: string; applied: boolean; approval?: ApprovalRecord } | undefined;
-  const connectorGone = () => (early?.applied === true ? CONNECTOR_GONE : undefined);
+  /** The host change that went before the tunnel's deletion (see {@link hostChange}). */
+  let early: HostChangeResult | undefined;
 
   // Infrastructure: the tunnel and Access (or their removal), through the IaC engine.
   let outputs: Record<string, unknown> = {};
@@ -539,18 +533,19 @@ async function runChange(
   if (tunnelInvolved) {
     const { engine: inner, env } = await engineFor(deps, plan, options);
     // Applying a plan that deletes the tunnel: the server first, then the wait, then the deletion.
-    const engine = tunnelSafeEngine(inner, async (saved) => {
-      try {
-        early = await hostChange({}, false);
-      } catch (error) {
-        throw forThisCommand(error, command, { nothingInCloudflare: true });
-      }
-      await requireTunnelClosed(deps, saved, {
-        command,
-        ...(connectorGone() !== undefined ? { already: connectorGone() } : {}),
-        ...(services.sleep !== undefined ? { options: { sleep: services.sleep } } : {}),
-      });
+    const first = connectorFirst(deps, inner, {
+      command,
+      app: plan.app.name,
+      where: ownRun ? "your server" : "the server",
+      hostChange: () => hostChange({}, false),
+      hostHash: () => shown.hostHash,
+      done: CONNECTOR_GONE,
+      ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
     });
+    if (approveHash !== undefined) {
+      const saved = await findSavedPlan(deps.paths.files.plansDir, approveHash);
+      if (saved !== undefined) first.noteSavedPlan(saved.changes);
+    }
     if (ownRun) {
       await ownEngineEnv(deps, ownRun, env, () =>
         infrastructureOutputs(deps, plan, { engine: async () => inner, engineEnv: env }),
@@ -559,7 +554,8 @@ async function runChange(
     let result: Awaited<ReturnType<typeof planAndApply>>;
     try {
       result = await planAndApply(deps, {
-        engine,
+        engine: first.engine,
+        approvalNotes: first.notes,
         dir: join(deps.paths.root, plan.infra.dir),
         env,
         deployPlan: plan,
@@ -577,25 +573,9 @@ async function runChange(
     } catch (error) {
       // `--approve <infrastructure plan hash>` without options then applies exactly this change.
       await planned();
-      const already = connectorGone();
-      const stopped =
-        engine.refusedBusyTunnel && error instanceof OpsCrewError && error.code === "ENGINE_FAILED"
-          ? tunnelBusyError({
-              command,
-              reason: "refused",
-              ...(already !== undefined ? { already } : {}),
-              cause: error,
-            })
-          : already !== undefined &&
-              error instanceof OpsCrewError &&
-              !error.message.includes(CONNECTOR_GONE)
-            ? new OpsCrewError(error.code, `${error.message}\n${already}`, {
-                ...(error.hint !== undefined ? { hint: error.hint } : {}),
-                cause: error,
-              })
-            : error;
-      throw infrastructureStopped(deps, stopped, written);
+      throw infrastructureStopped(deps, first.stopped(forThisCommand(error, command)), written);
     }
+    early = first.host;
     planHash = result.planHash;
     iacApplied = result.applied;
     if (result.approval) approvals.push({ record: result.approval, kind: "iac-apply" });
@@ -603,18 +583,18 @@ async function runChange(
     if (planOnly && pending) {
       await planned();
       // A plan that deletes the tunnel is applied after the host plan: both are shown now.
-      const first = deletesTunnel(result.plan?.changes ?? [])
+      const shownFirst = deletesTunnel(result.plan?.changes ?? [])
         ? await hostChange({}, true)
         : undefined;
       deps.reporter.info(
-        first !== undefined
-          ? `Approve both plans to apply them (\`${command} --approve ${planHash} --approve ${first.hash}\`): the host plan goes first, because Cloudflare deletes the tunnel only after its connector on the server has stopped.`
+        shownFirst !== undefined
+          ? `Approve both plans to apply them (\`${command} --approve ${planHash} --approve ${shownFirst.hash}\`, typing ${plan.app.name} to confirm): the change on ${ownRun ? "your server" : "the server"} goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`
           : `The host plan follows once this infrastructure plan is applied (\`${command} --approve ${planHash}\`), because it needs the Cloudflare Tunnel.`,
       );
       return {
         ...(planHash !== undefined ? { planHash } : {}),
         applied: false,
-        ...(first !== undefined ? { hostPlanHash: first.hash } : {}),
+        ...(shownFirst !== undefined ? { hostPlanHash: shownFirst.hash } : {}),
         hostApplied: false,
         files: written,
         status: await portainerStatusOf(deps, change.before),
@@ -731,25 +711,13 @@ const CONNECTOR_GONE =
 
 /**
  * A host step's error for this command: `applyOwnHostPlan` names `opscrew provision` in its hint,
- * but this change is finished by this command. With `nothingInCloudflare` (the host change that
- * goes before the tunnel's deletion), a refusal says that nothing was changed at all.
+ * but this change is finished by this command.
  */
-function forThisCommand(
-  error: unknown,
-  command: string,
-  options: { nothingInCloudflare?: boolean } = {},
-): unknown {
+function forThisCommand(error: unknown, command: string): unknown {
   if (!(error instanceof OpsCrewError)) return error;
   const hint = error.hint?.replace("opscrew provision --approve", `${command} --approve`);
-  const message =
-    options.nothingInCloudflare === true && error.code === "APPROVAL_REFUSED"
-      ? error.message.replace(
-          / Nothing on (?:your|the) server was changed\.$/,
-          " Nothing was changed.",
-        )
-      : error.message;
-  if (hint === error.hint && message === error.message) return error;
-  return new OpsCrewError(error.code, message, {
+  if (hint === error.hint) return error;
+  return new OpsCrewError(error.code, error.message, {
     ...(hint !== undefined ? { hint } : {}),
     cause: error,
   });
@@ -1045,6 +1013,63 @@ async function cloudHostChange(
     },
     command: input.command,
     ...(input.shown !== undefined ? { shown: input.shown } : {}),
+  });
+}
+
+/**
+ * Hetzner and DigitalOcean: the deploy user's add-on plan that removes the Cloudflare Tunnel
+ * connector of a Portainer subdomain the plan no longer has, keeping Portainer as the plan
+ * describes it (on and local only, or off with its data kept). It goes before a plan that deletes
+ * the tunnel (`opscrew provision`), with its own `host-apply` approval by its hash; with
+ * `planOnly` it is only shown and saved. `shown.hostHash` names its hash as soon as it is shown.
+ */
+export async function cloudConnectorRemoval(
+  deps: PhaseDeps,
+  input: {
+    plan: DeployPlan;
+    services: PortainerServices;
+    command: string;
+    planOnly: boolean;
+    shown: { hostHash?: string };
+  },
+): Promise<HostChangeResult> {
+  const { plan, services } = input;
+  const remote = await deployRemote(deps, services);
+  const enabled = plan.portainer?.enabled === true;
+  const hostPlan = planPortainer({
+    app: plan.app.name,
+    dir: CLOUD_PORTAINER_DIR,
+    runAs: "login",
+    ...(enabled
+      ? {
+          enable: {
+            version: plan.portainer?.version ?? PORTAINER_VERSION,
+            compose: {
+              initial: renderPortainerCompose(plan, { initialAdmin: true }).content,
+              final: renderPortainerCompose(plan, { initialAdmin: false }).content,
+            },
+            // Portainer runs already: its admin account exists.
+            needsPassword: false,
+          },
+        }
+      : { disable: { deleteData: false } }),
+    connector: { dir: CLOUD_TUNNEL_DIR, remove: true },
+  });
+  return applyAddonPlan(deps, {
+    plan: hostPlan,
+    remote,
+    apply: services.applyHost ?? applyHostPlan,
+    verifyLogin: async () => true,
+    title:
+      "Remove the Cloudflare Tunnel connector from the server (Portainer's subdomain is no longer planned)",
+    allowDestroy: false,
+    planOnly: input.planOnly,
+    secrets: async () => {
+      const portainerPassword = enabled ? await portainerPasswordToSend(deps, false) : undefined;
+      return portainerPassword !== undefined ? { portainerPassword } : {};
+    },
+    command: input.command,
+    shown: input.shown,
   });
 }
 

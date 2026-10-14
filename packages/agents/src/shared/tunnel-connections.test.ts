@@ -10,6 +10,7 @@ import {
   deletedTunnel,
   deletesTunnel,
   isTunnelBusyText,
+  onlyTunnelBusy,
   readTunnelConnections,
   requireTunnelClosed,
   TUNNEL_RESOURCE_TYPE,
@@ -254,6 +255,10 @@ describe("Cloudflare's error 1022", () => {
   it("is recognised and turned into a plain message", () => {
     expect(isTunnelBusyText(log)).toBe(true);
     expect(isTunnelBusyText("Error: 400 Bad Request port 1022 is in use")).toBe(false);
+    // Only the 1022, or something else failed as well.
+    expect(onlyTunnelBusy(log)).toBe(true);
+    expect(onlyTunnelBusy(`${log}\nError: deleting server: server is locked`)).toBe(false);
+    expect(onlyTunnelBusy("Apply complete!")).toBe(false);
     const error = tunnelBusyError({ command: "opscrew portainer disable", reason: "refused" });
     expect(error.message).toBe(
       "Cloudflare refused to delete the app's Cloudflare Tunnel because it still has active connections, so the tunnel is still there.",

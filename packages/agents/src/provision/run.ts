@@ -9,6 +9,7 @@ import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-sche
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { cloudflareAccessLoginMethods, oneTimePinIdentityProvider } from "../portainer/access";
+import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
 import {
   addressFromOutputs,
@@ -31,12 +32,14 @@ import {
   waitForPort,
   writeRenderedFiles,
 } from "../shared";
+import { connectorFirst, deletesTunnel, type HostChangeResult } from "../shared/tunnel-connections";
 import { type CloudflareSetup, checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { requireNoMoveInProgress } from "./guard";
 import {
   applyOwnHostPlan,
   type OwnHostResult,
   type OwnServerRun,
+  ownConnectorFirst,
   ownDeployTarget,
   ownEngineEnv,
   prepareOwnServer,
@@ -371,7 +374,7 @@ async function provisionFlow(
   let ownRun: OwnServerRun | undefined;
   let ownRender: OwnRenderInput | undefined;
   /** The host plan applied before a mode switch's removal deleted the tunnel. */
-  let earlyHost: OwnHostResult | undefined;
+  let earlyHost: HostChangeResult | undefined;
   if (ownServer) {
     ownRun = await prepareOwnServer(deps, {
       plan,
@@ -471,18 +474,49 @@ async function provisionFlow(
     }
   }
 
-  // 5. Plan → policies → approval → apply
+  // 5. Plan → policies → approval → apply. A plan that deletes the tunnel (for example when
+  // plan.yaml no longer has a Portainer subdomain) is applied only after the connector on the
+  // server is removed (its own host-apply approval) and Cloudflare reports no active connections.
+  const command = `opscrew ${phase}`;
+  const cloudShown: { hostHash?: string } = {};
+  const cloudConnector = (planOnly: boolean) =>
+    cloudConnectorRemoval(deps, { plan, services, command, planOnly, shown: cloudShown });
+  const first = ownRun
+    ? ownConnectorFirst(deps, engine, {
+        run: ownRun,
+        plan,
+        deployPublicKey: deployKey.publicKeyOpenSsh,
+        ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
+        phase,
+        ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
+        done: "The change on your server is applied (its Cloudflare Tunnel connector is removed); the Cloudflare Tunnel this plan deletes is still there.",
+        ...(extras.approvalNotes ? { notes: extras.approvalNotes } : {}),
+      })
+    : connectorFirst(deps, engine, {
+        command,
+        app: plan.app.name,
+        where: "the server",
+        hostChange: () => cloudConnector(false),
+        hostHash: () => cloudShown.hostHash,
+        done: "The Cloudflare Tunnel connector is removed from the server; the Cloudflare Tunnel this plan deletes is still there.",
+        ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
+        ...(extras.approvalNotes ? { notes: extras.approvalNotes } : {}),
+      });
+  if (approveHash !== undefined) {
+    const savedPlan = await findSavedPlan(deps.paths.files.plansDir, approveHash);
+    if (savedPlan !== undefined) first.noteSavedPlan(savedPlan.changes);
+  }
   let applied: Awaited<ReturnType<typeof planAndApply>>;
   try {
     applied = await planAndApply(deps, {
-      engine,
+      engine: first.engine,
       dir,
       env: engineEnv,
       deployPlan: plan,
       files,
-      command: `opscrew ${phase}`,
+      command,
       phase,
-      ...(extras.approvalNotes ? { approvalNotes: extras.approvalNotes } : {}),
+      approvalNotes: first.notes,
       ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
       ...(options.planOnly ? { planOnly: true } : {}),
     });
@@ -490,11 +524,23 @@ async function provisionFlow(
     if (!ownServer && isUserFacingError(error) && error.code === "ENGINE_FAILED") {
       await refreshServerAddress(deps, engine, dir, engineEnv);
     }
-    throw error;
+    throw first.stopped(error);
   }
   if (applied.approval) approvals.push(planApproval(applied.approval, "iac-apply"));
+  if (first.host !== undefined) {
+    earlyHost ??= first.host;
+    if (first.host.approval) approvals.push(planApproval(first.host.approval, "host-apply"));
+  }
   if (options.planOnly && approveHash === undefined) {
     let hostPlanHash: string | undefined;
+    const pending = (applied.plan?.changes.length ?? 0) > 0;
+    if (!ownRun && pending && deletesTunnel(applied.plan?.changes ?? [])) {
+      // The connector's removal goes before this plan: show it now, so both can be approved.
+      hostPlanHash = (await cloudConnector(true)).hash;
+      deps.reporter.info(
+        `Approve both plans to apply them (\`${command} --approve ${applied.planHash} --approve ${hostPlanHash}\`, typing ${plan.app.name} to confirm): the change on the server goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`,
+      );
+    }
     if (ownRun) {
       // The host plan can be shown now unless it needs a tunnel the plan has yet to create.
       const outputs =

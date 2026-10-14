@@ -7,13 +7,14 @@ import { hostPlanHash } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   createProject,
   FakeEngine,
   FakeGitHub,
   projectRunner,
+  readyRemote,
   SERVER_IPV4,
   testPlan,
 } from "../provision/__fixtures__/fakes";
@@ -42,9 +43,11 @@ import {
   tunnelDeletePlanJson,
   tunnelDeletes,
 } from "../shared/__fixtures__/tunnel";
+import { SERVER_GOES_FIRST } from "../shared/tunnel-connections";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { pendingPortainerFile } from "./pending";
 import { type PortainerServices, portainerDisable, portainerEnable } from "./run";
+import { CLOUD_PORTAINER_DIR, CLOUD_TUNNEL_DIR, PORTAINER_VERSION } from "./settings";
 
 const hasGit = findExecutable("git") !== undefined;
 const SUBDOMAIN = { subdomain: "portainer", allowEmails: ["owner@example.com"] };
@@ -159,6 +162,7 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
 
 const CONNECTOR_GONE =
   "The change on the server is applied (its Cloudflare Tunnel connector is removed); the Cloudflare Tunnel and Access for Portainer are still there.";
+const CONNECTOR_GONE_OWN = CONNECTOR_GONE;
 
 describe.skipIf(!hasGit)("portainer disable when the tunnel is deleted (Hetzner)", () => {
   it("approves both plans first, removes the connector, waits, then deletes the tunnel", async () => {
@@ -181,6 +185,15 @@ describe.skipIf(!hasGit)("portainer disable when the tunnel is deleted (Hetzner)
     });
     expect(result).toMatchObject({ applied: true, hostApplied: true });
     expect(s.engine.applied.at(-1)?.approval.approvedPlanHash).toBe(result.planHash);
+    // The infrastructure approval says the server's change comes first; the output reads in order.
+    const iac = s.handler.requests.find((r) => r.kind === "iac-apply");
+    expect(iac?.details).toContain(
+      "The change on the server is shown next and applied first: Cloudflare deletes a tunnel only after its connector has stopped, so OpsCrew applies this plan after that.",
+    );
+    const text = s.deps.reporter.text();
+    const goesFirst = text.indexOf(SERVER_GOES_FIRST);
+    expect(goesFirst).toBeGreaterThan(text.indexOf("Applying the plan"));
+    expect(goesFirst).toBeLessThan(text.lastIndexOf("Host plan"));
     const plan = await readArtifact("plan", s.deps.paths.files.plan);
     expect(plan.portainer).toBeUndefined();
     expect(plan.approvals.slice(-2).map((a) => a.kind)).toEqual(["iac-apply", "host-apply"]);
@@ -245,6 +258,11 @@ describe.skipIf(!hasGit)("portainer disable when the tunnel is deleted (Hetzner)
     expect(error.message).toContain("nothing in Cloudflare or on the server changed.");
     expect(s.events).toEqual(["approve:repo-write", "approve:iac-apply", "approve:host-apply"]);
     expect(s.connector()).toBe(true);
+    // Both hashes to approve later, and the typed name the deletion needs.
+    const [iac, host] = s.handler.requests.filter((r) => r.kind !== "repo-write");
+    expect(error.hint).toBe(
+      `Run \`opscrew portainer disable --approve ${iac?.planHash} --approve ${host?.planHash}\` when you are ready, typing shop to confirm: the change on the server goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`,
+    );
   });
 
   it("--plan-only shows both plans; --approve with both hashes applies the host plan first", async () => {
@@ -253,15 +271,18 @@ describe.skipIf(!hasGit)("portainer disable when the tunnel is deleted (Hetzner)
     expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
     expect(planned.hostPlanHash).toMatch(/^[0-9a-f]{64}$/);
     expect(s.deps.reporter.text()).toContain(
-      `Approve both plans to apply them (\`opscrew portainer disable --approve ${planned.planHash} --approve ${planned.hostPlanHash}\`): the host plan goes first, because Cloudflare deletes the tunnel only after its connector on the server has stopped.`,
+      `Approve both plans to apply them (\`opscrew portainer disable --approve ${planned.planHash} --approve ${planned.hostPlanHash}\`, typing shop to confirm): the change on the server goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`,
     );
     expect(s.events).toEqual(["approve:repo-write"]);
 
     s.events.length = 0;
+    s.handler.requests.length = 0;
     await portainerDisable(s.deps, {
       approvePlanHashes: [planned.planHash as string, planned.hostPlanHash as string],
       services: s.services,
     });
+    // The saved plan's approval says the server's change comes first, too.
+    expect(s.handler.requests[0]?.details).toContain("is shown next and applied first");
     expect(s.events).toEqual([
       "approve:iac-apply",
       "approve:host-apply",
@@ -283,8 +304,50 @@ describe.skipIf(!hasGit)("portainer disable when the tunnel is deleted (Hetzner)
     await portainerEnable(s.deps, { ...SUBDOMAIN, services: s.services });
     events.push(...s.events);
     expect(events).toEqual(["approve:iac-apply", "iac-apply", "approve:host-apply", "host"]);
+    expect(s.handler.requests.find((r) => r.kind === "iac-apply")?.details).not.toContain(
+      "applied first",
+    );
+    expect(s.deps.reporter.text()).not.toContain(SERVER_GOES_FIRST);
+  });
+
+  it("opscrew provision with a plan that no longer has the subdomain removes the connector first", async () => {
+    const s = await cloudOnSubdomain();
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    await writeArtifact("plan", s.deps.paths.files.plan, {
+      ...plan,
+      portainer: { enabled: true, version: PORTAINER_VERSION, access: "local" },
+    });
+    s.handler.requests.length = 0;
+    await runProvision(s.deps, {
+      services: { ...s.services, ...cloudProvisionServices() },
+      push: false,
+      secrets: false,
+    });
+    const order = s.events.filter((e) =>
+      ["approve:iac-apply", "approve:host-apply", "host", "poll", "iac-apply"].includes(e),
+    );
+    expect(order).toEqual(["approve:iac-apply", "approve:host-apply", "host", "poll", "iac-apply"]);
+    const removal = s.calls.at(-1)?.plan;
+    expect(removal?.steps.map((step) => step.id)).toEqual(["tunnel-connector", "portainer"]);
+    expect(removal?.steps[0]?.params).toMatchObject({ remove: true, dir: CLOUD_TUNNEL_DIR });
+    expect(removal?.steps[1]?.params).toMatchObject({ dir: CLOUD_PORTAINER_DIR, runAs: "login" });
+    expect(s.connector()).toBe(false);
+    const iac = s.handler.requests.find((r) => r.kind === "iac-apply");
+    expect(iac?.details).toContain("The change on the server is shown next and applied first");
+    const recorded = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(recorded.approvals.slice(-2).map((a) => a.kind)).toEqual(["iac-apply", "host-apply"]);
   });
 });
+
+/** What `opscrew provision` needs on Hetzner besides the Portainer fakes. */
+function cloudProvisionServices(): ProvisionServices {
+  return {
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    github: new FakeGitHub(),
+    tcpConnect: async () => true,
+    remote: readyRemote,
+  };
+}
 
 /** An own server in public mode with Portainer on a subdomain (the tunnel serves only Portainer). */
 async function ownOnSubdomain(o: { never?: boolean } = {}) {
@@ -294,9 +357,10 @@ async function ownOnSubdomain(o: { never?: boolean } = {}) {
   let deleting = false;
   deleteTunnelIn(engine, events, (options) => deleting && options?.destroy !== true);
   const host = new FakeHostServer(freshFacts());
+  let answer = (_request: ApprovalRequest): boolean => true;
   const handler = new ScriptedApprovalHandler((request) => {
     events.push(`approve:${request.kind}`);
-    return true;
+    return answer(request);
   });
   const home = await mkdtemp(join(tmpdir(), "opscrew-portainer-tunnel-"));
   const env: Record<string, string | undefined> = {
@@ -351,7 +415,18 @@ async function ownOnSubdomain(o: { never?: boolean } = {}) {
     connectorRunning: () => host.facts.tunnel.running,
     ...(o.never !== undefined ? { never: o.never } : {}),
   }).fetch;
-  return { deps, engine, host, events, services };
+  handler.requests.length = 0;
+  return {
+    deps,
+    engine,
+    host,
+    events,
+    services,
+    handler,
+    answer: (next: (request: ApprovalRequest) => boolean) => {
+      answer = next;
+    },
+  };
 }
 
 describe.skipIf(!hasGit)(
@@ -387,6 +462,63 @@ describe.skipIf(!hasGit)(
       // The server already has the change: its host plan changes nothing and needs no approval.
       expect(s.events).toEqual(["approve:iac-apply", "poll", "iac-apply"]);
       expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toBeUndefined();
+    });
+
+    it("a rerun that times out again still says the connector is gone", async () => {
+      const s = await ownOnSubdomain({ never: true });
+      await failure(portainerDisable(s.deps, { services: s.services }));
+      s.events.length = 0;
+      const again = await failure(portainerDisable(s.deps, { services: s.services }));
+      // Nothing left to change on the server in this run, yet its change is done.
+      expect(s.events.filter((e) => e === "host")).toEqual([]);
+      expect(again.message).toContain(`Nothing in Cloudflare was deleted. ${CONNECTOR_GONE_OWN}`);
+    });
+
+    it("opscrew provision with a plan that no longer has the subdomain removes the connector first", async () => {
+      const s = await ownOnSubdomain();
+      // plan.yaml no longer has Portainer (the fake server does not model Portainer's state).
+      const { portainer: _portainer, ...plan } = await readArtifact(
+        "plan",
+        s.deps.paths.files.plan,
+      );
+      await writeArtifact("plan", s.deps.paths.files.plan, plan);
+      await runProvision(s.deps, { services: s.services, push: false, secrets: false });
+      const order = s.events.filter((e) =>
+        ["approve:iac-apply", "approve:host-apply", "host", "poll", "iac-apply"].includes(e),
+      );
+      // The final host plan finds the server prepared: one host apply, before the deletion.
+      expect(order).toEqual([
+        "approve:iac-apply",
+        "approve:host-apply",
+        "host",
+        "poll",
+        "iac-apply",
+      ]);
+      expect(s.host.facts.tunnel.running).toBe(false);
+      expect(s.deps.reporter.text()).toContain(SERVER_GOES_FIRST);
+    });
+
+    it("a refused host plan in opscrew provision names both hashes and the typed name", async () => {
+      const s = await ownOnSubdomain();
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      await writeArtifact("plan", s.deps.paths.files.plan, {
+        ...plan,
+        portainer: { enabled: true, version: PORTAINER_VERSION, access: "local" },
+      });
+      s.answer((request) => request.kind !== "host-apply");
+      const error = await failure(
+        runProvision(s.deps, { services: s.services, push: false, secrets: false }),
+      );
+      expect(error.code).toBe("APPROVAL_REFUSED");
+      expect(error.message).toBe(
+        "The host plan was not approved. Nothing on your server was changed and nothing in Cloudflare was deleted.",
+      );
+      const iac = s.handler.requests.find((r) => r.kind === "iac-apply");
+      const host = s.handler.requests.find((r) => r.kind === "host-apply");
+      expect(error.hint).toBe(
+        `Run \`opscrew provision --approve ${iac?.planHash} --approve ${host?.planHash}\` when you are ready, typing shop to confirm: the change on your server goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`,
+      );
+      expect(s.host.facts.tunnel.running).toBe(true);
     });
   },
 );

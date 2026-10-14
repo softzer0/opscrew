@@ -36,12 +36,12 @@ import {
   ownServerPublicAddress,
 } from "../shared/own-server";
 import {
+  type ConnectorFirst,
+  connectorFirst,
   deletesTunnel,
-  requireTunnelClosed,
-  tunnelBusyError,
-  tunnelSafeEngine,
+  type HostChangeResult,
 } from "../shared/tunnel-connections";
-import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
+import { findSavedPlan, type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import type { CloudflareApi, HostAdapterApi, ProvisionOptions, ProvisionServices } from "./types";
 
 /** Cloudflare's IP ranges, the only sources of web traffic when the site is served directly behind the proxy. */
@@ -472,7 +472,7 @@ export async function removeOldAccessMode(
       sleep?: (ms: number) => Promise<void>;
     };
   },
-): Promise<(PlanAndApplyResult & { host?: OwnHostResult }) | undefined> {
+): Promise<(PlanAndApplyResult & { host?: HostChangeResult }) | undefined> {
   const { plan } = input;
   const target = ownTarget(plan);
   const outputs = await infrastructureOutputs(deps, plan, {
@@ -497,62 +497,23 @@ export async function removeOldAccessMode(
   const command = `opscrew ${input.phase}`;
   const server = input.host;
   // The host change that goes first when the removal deletes the tunnel (see above).
-  let host: OwnHostResult | undefined;
-  const hostFirst = (run: NonNullable<typeof server>, planOnly: boolean) =>
-    applyOwnHostPlan(deps, run.run, {
-      plan,
-      outputs: {},
-      deployPublicKey: run.deployPublicKey,
-      ...(run.passwordLogins !== undefined ? { passwordLogins: run.passwordLogins } : {}),
-      planOnly,
-      phase: input.phase,
-      withoutTunnel: true,
-    });
-  const already = () =>
-    host?.applied === true
-      ? `Your server is switched to ${MODE_TEXT[target.access]} already (its Cloudflare Tunnel connector is removed); the current setup's Cloudflare resources are still there, so the app is unreachable until the switch finishes.`
-      : undefined;
-  const engine =
+  const first =
     server === undefined
       ? undefined
-      : tunnelSafeEngine(input.engine, async (saved) => {
-          try {
-            host = await hostFirst(server, false);
-          } catch (error) {
-            if (!(error instanceof OpsCrewError) || error.code !== "APPROVAL_REFUSED") throw error;
-            throw new OpsCrewError(
-              error.code,
-              error.message.replace(
-                / Nothing on your server was changed\.$/,
-                " Nothing on your server was changed and nothing in Cloudflare was deleted.",
-              ),
-              { ...(error.hint !== undefined ? { hint: error.hint } : {}), cause: error },
-            );
-          }
-          if (host.applied) {
-            // The next host plan (of the new setup) starts from what the server is now.
-            server.run.facts = await server.run.host.inspect(server.run.session.remote);
-            await deps.audit.append({
-              kind: "remote-exec",
-              actor: "opscrew",
-              action: "inspect host (read-only)",
-              phase: input.phase,
-              target: "own server",
-              decision: "allow",
-              detail: "after removing the tunnel connector",
-            });
-          }
-          const done = already();
-          await requireTunnelClosed(deps, saved, {
-            command,
-            ...(done !== undefined ? { already: done } : {}),
-            ...(server.sleep !== undefined ? { options: { sleep: server.sleep } } : {}),
-          });
+      : ownConnectorFirst(deps, input.engine, {
+          ...server,
+          plan,
+          phase: input.phase,
+          done: `Your server is switched to ${MODE_TEXT[target.access]} already (its Cloudflare Tunnel connector is removed); the current setup's Cloudflare resources are still there, so the app is unreachable until the switch finishes.`,
         });
+  if (first !== undefined && input.approvePlanHash !== undefined) {
+    const saved = await findSavedPlan(deps.paths.files.plansDir, input.approvePlanHash);
+    if (saved !== undefined) first.noteSavedPlan(saved.changes);
+  }
   let result: PlanAndApplyResult;
   try {
     result = await planAndApply(deps, {
-      engine: engine ?? input.engine,
+      engine: first?.engine ?? input.engine,
       dir: input.dir,
       env: input.env,
       deployPlan: plan,
@@ -562,38 +523,95 @@ export async function removeOldAccessMode(
       destroy: true,
       costDelta: null,
       approvalTitle: `Remove ${removed} before switching your server to ${MODE_TEXT[target.access]} (first of two applies)`,
+      ...(first !== undefined ? { approvalNotes: first.notes } : {}),
       ...(input.approvePlanHash !== undefined ? { approvePlanHash: input.approvePlanHash } : {}),
       ...(input.planOnly ? { planOnly: true } : {}),
     });
   } catch (error) {
-    const done = already();
-    if (engine?.refusedBusyTunnel === true && error instanceof OpsCrewError) {
-      throw tunnelBusyError({
-        command,
-        reason: "refused",
-        ...(done !== undefined ? { already: done } : {}),
-        cause: error,
-      });
-    }
-    if (done !== undefined && error instanceof OpsCrewError && error.code === "ENGINE_FAILED") {
-      throw new OpsCrewError(error.code, `${error.message}\n${done}`, {
-        ...(error.hint !== undefined ? { hint: error.hint } : {}),
-        cause: error,
-      });
-    }
-    throw error;
+    throw first === undefined ? error : first.stopped(error);
   }
   // `--plan-only`: a removal that deletes the tunnel needs the host plan too; show it now.
   const pending = (result.plan?.changes.length ?? 0) > 0 && !result.applied;
   if (
-    server !== undefined &&
+    first !== undefined &&
     input.planOnly &&
     pending &&
     deletesTunnel(result.plan?.changes ?? [])
   ) {
-    host = await hostFirst(server, true);
+    return { ...result, host: await first.show() };
   }
-  return host === undefined ? result : { ...result, host };
+  return first?.host === undefined ? result : { ...result, host: first.host };
+}
+
+/**
+ * {@link connectorFirst} on a server the user owns: the host change that goes before a plan that
+ * deletes the tunnel is the host plan of `plan` without a tunnel connector (its own `host-apply`
+ * approval by its hash). After it applied, the server is inspected again, so the next host plan
+ * (of the new setup) starts from what the server is now. `show()` only shows and saves it
+ * (`--plan-only`).
+ */
+export function ownConnectorFirst(
+  deps: PhaseDeps,
+  engine: IacEngine,
+  input: {
+    run: OwnServerRun;
+    plan: DeployPlan;
+    deployPublicKey: string;
+    passwordLogins?: ProvisionOptions["passwordLogins"];
+    phase: Extract<PhaseName, "provision" | "dns">;
+    sleep?: (ms: number) => Promise<void>;
+    done: string;
+    notes?: readonly string[];
+  },
+): ConnectorFirst & { show(): Promise<OwnHostResult> } {
+  const { run } = input;
+  const apply = (planOnly: boolean) =>
+    applyOwnHostPlan(deps, run, {
+      plan: input.plan,
+      outputs: {},
+      deployPublicKey: input.deployPublicKey,
+      ...(input.passwordLogins !== undefined ? { passwordLogins: input.passwordLogins } : {}),
+      planOnly,
+      phase: input.phase,
+      withoutTunnel: true,
+    });
+  const first = connectorFirst(deps, engine, {
+    command: `opscrew ${input.phase}`,
+    app: input.plan.app.name,
+    where: "your server",
+    hostChange: async () => {
+      const host = await apply(false);
+      if (host.applied) {
+        run.facts = await run.host.inspect(run.session.remote);
+        await deps.audit.append({
+          kind: "remote-exec",
+          actor: "opscrew",
+          action: "inspect host (read-only)",
+          phase: input.phase,
+          target: "own server",
+          decision: "allow",
+          detail: "after removing the tunnel connector",
+        });
+      }
+      return host;
+    },
+    hostHash: () =>
+      hostPlanHash(
+        planHost(
+          run.facts,
+          desiredHost(deps, run, {
+            plan: input.plan,
+            deployPublicKey: input.deployPublicKey,
+            ...(input.passwordLogins !== undefined ? { passwordLogins: input.passwordLogins } : {}),
+            withoutTunnel: true,
+          }),
+        ),
+      ),
+    done: input.done,
+    ...(input.sleep !== undefined ? { sleep: input.sleep } : {}),
+    ...(input.notes !== undefined ? { notes: input.notes } : {}),
+  });
+  return Object.assign(first, { show: () => apply(true) });
 }
 
 /** The infrastructure outputs a tunnel-mode host plan needs: the tunnel's id and token. */

@@ -10,6 +10,12 @@ import { cloudTarget, type ProviderProfile, planProvider, providerProfile } from
 import { checkProvider } from "../provision";
 import { hasDeployment, recordServerAddress, serverAddress } from "../shared";
 import {
+  deletesTunnel,
+  requireTunnelClosed,
+  tunnelBusyError,
+  tunnelSafeEngine,
+} from "../shared/tunnel-connections";
+import {
   dataWarning,
   deletesServer,
   deletesUnconfirmedServer,
@@ -64,6 +70,8 @@ interface DestroyContext {
   texts: DestroyTexts;
   /** `-var`s of every plan: delete protection off where the provider has it. */
   vars?: Readonly<Record<string, string>>;
+  /** Delay between polls of the tunnel's connections (tests). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -217,6 +225,11 @@ async function destroyInfrastructure(
         ...describeChanges(summary.changes),
         ...(warning ? [warning] : []),
         snapshotLine,
+        ...(deletesTunnel(summary.changes) && !serverDeleted
+          ? [
+              "OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel (Cloudflare deletes a tunnel only after its connector has stopped).",
+            ]
+          : []),
         `Plan hash: ${summary.planHash}`,
       ].join("\n"),
       planHash: summary.planHash,
@@ -236,12 +249,42 @@ async function destroyInfrastructure(
       );
     }
     await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
+    // Portainer's subdomain: its tunnel connector runs on the server. Deleted with the server, its
+    // connections may outlast it and Cloudflare refuses the tunnel (1022); a rerun that deletes
+    // only the tunnel first waits until Cloudflare reports no active connections.
+    const tunnel = deletesTunnel(summary.changes);
+    const tunnelLeft = `The ${texts.noun} is deleted; the Cloudflare Tunnel is still there.`;
+    if (tunnel && !serverDeleted) {
+      await requireTunnelClosed(deps, summary, {
+        command: COMMAND,
+        already: tunnelLeft,
+        ...(ctx.sleep !== undefined ? { options: { sleep: ctx.sleep } } : {}),
+      });
+    }
     deps.reporter.step("Deleting the infrastructure (this usually takes a minute or two)");
-    await applyApprovedPlan(session, summary, {
-      allowDestroy: true,
-      what: "deleting the infrastructure",
-      hint: "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
-    });
+    const engine = tunnelSafeEngine(session.engine);
+    try {
+      await applyApprovedPlan(tunnel ? { ...session, engine } : session, summary, {
+        allowDestroy: true,
+        what: "deleting the infrastructure",
+        hint: "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
+      });
+    } catch (error) {
+      if (!engine.refusedBusyTunnel || !(error instanceof OpsCrewError)) throw error;
+      if (engine.onlyBusyTunnel) {
+        throw tunnelBusyError({
+          command: COMMAND,
+          reason: "refused",
+          already: tunnelLeft,
+          cause: error,
+        });
+      }
+      // Something else failed as well: its words stay, and the tunnel's refusal is explained.
+      throw new OpsCrewError(error.code, error.message, {
+        hint: `${error.hint ?? ""} Cloudflare also refused to delete the app's Cloudflare Tunnel because it still had active connections; that resolves itself within a few minutes.`.trim(),
+        cause: error,
+      });
+    }
     deps.reporter.success(`Deleted ${count} ${count === 1 ? "resource" : "resources"}.`);
     return { destroyed: summary.changes, approval };
   } finally {
@@ -347,7 +390,14 @@ export async function runDestroy(
     stamp: deps.clock.now().toISOString().replace(/[:.]/g, "-"),
   };
   const vars = profile.deleteProtection ? { [PROTECTION_VARIABLE]: "false" } : undefined;
-  const ctx: DestroyContext = { session, plan, profile, texts, ...(vars ? { vars } : {}) };
+  const ctx: DestroyContext = {
+    session,
+    plan,
+    profile,
+    texts,
+    ...(vars ? { vars } : {}),
+    ...(services.sleep ? { sleep: services.sleep } : {}),
+  };
 
   // 4. Preview: what the teardown deletes (this plan is never applied). The server's address is
   // read now, while the state still has it (its host key is forgotten after the teardown).

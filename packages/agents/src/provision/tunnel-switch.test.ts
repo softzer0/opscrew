@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import type { PortainerServices } from "../portainer";
 import { recordOwnServer } from "../shared";
 import { deleteTunnelIn, fakeTunnelApi, ORIGIN_IP } from "../shared/__fixtures__/tunnel";
+import { SERVER_GOES_FIRST } from "../shared/tunnel-connections";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { createProject, FakeGitHub } from "./__fixtures__/fakes";
 import {
@@ -167,6 +168,15 @@ describe.skipIf(!findExecutable("git"))(
       const plan = await readArtifact("plan", s.deps.paths.files.plan);
       expect(plan.approvals.map((a) => a.kind)).toEqual(["iac-apply", "host-apply", "iac-apply"]);
       expect(plan.deployment.lastApplyAt).toBeDefined();
+      // The removal's approval says the server goes first; the output reads in that order.
+      expect(s.handler.requests[0]?.details).toContain(
+        "The change on your server is shown next and applied first: Cloudflare deletes a tunnel only after its connector has stopped, so OpsCrew applies this plan after that.",
+      );
+      const text = s.deps.reporter.text();
+      expect(text.indexOf(SERVER_GOES_FIRST)).toBeGreaterThan(-1);
+      expect(text.indexOf(SERVER_GOES_FIRST)).toBeLessThan(
+        text.indexOf("Host plan for your server"),
+      );
       const printed = `${s.deps.reporter.text()}\n${JSON.stringify(s.deps.audit.entries)}`;
       expect(printed).not.toContain(ORIGIN_IP);
       expect(printed).not.toContain(s.apiToken);
@@ -219,6 +229,22 @@ describe.skipIf(!findExecutable("git"))(
       );
       expect(s.events).toEqual(["approve:iac-apply", "approve:host-apply"]);
       expect(s.host.facts.tunnel.running).toBe(true);
+      const [removal, host] = s.handler.requests;
+      expect(error.hint).toBe(
+        `Run \`opscrew provision --approve ${removal?.planHash} --approve ${host?.planHash}\` when you are ready, typing shop to confirm: the change on your server goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`,
+      );
+    });
+
+    it("a rerun that times out again still says the server is switched", async () => {
+      const s = await switchToPublic({ never: true });
+      await failure(runProvision(s.deps, { services: s.services }));
+      s.events.length = 0;
+      const again = await failure(runProvision(s.deps, { services: s.services }));
+      // The server has its change from the first run: nothing to apply on it now.
+      expect(s.events.filter((e) => e === "host")).toEqual([]);
+      expect(again.message).toBe(
+        `Cloudflare still reports active connections for the app's Cloudflare Tunnel after 3 minutes, so OpsCrew stopped before deleting it. Nothing in Cloudflare was deleted. ${SWITCHED}`,
+      );
     });
 
     it("--plan-only shows the removal and the host plan; approving both applies the host plan first", async () => {
