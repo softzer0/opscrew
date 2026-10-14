@@ -1,0 +1,451 @@
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  type ApplyOptions,
+  type ApplyResult,
+  type HostPlan,
+  hostPlanHash,
+} from "@opscrew/connector-ssh-host";
+import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
+import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { describe, expect, it } from "vitest";
+import {
+  createProject,
+  FakeEngine,
+  FakeGitHub,
+  projectRunner,
+  SERVER_IPV4,
+  testPlan,
+} from "../provision/__fixtures__/fakes";
+import {
+  ED25519_FINGERPRINT,
+  FakeHostServer,
+  fakeZeroTrust,
+  freshFacts,
+  OWN_IPV4,
+  OwnEngine,
+  ownCloudflare,
+  ownPlan,
+  ownRunner,
+  PUBLIC_CHANGES,
+  publicOutputs,
+  TUNNEL_ID,
+} from "../provision/__fixtures__/own";
+import { hostPlanFile, portainerPasswordFile } from "../provision/own";
+import { runProvision } from "../provision/run";
+import type { ProvisionServices } from "../provision/types";
+import { recordOwnServer } from "../shared";
+import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
+import { type PortainerServices, portainerDisable, portainerEnable } from "./run";
+import { CLOUD_PORTAINER_DIR, CLOUD_TUNNEL_DIR, PORTAINER_VERSION } from "./settings";
+import { portainerStatus } from "./status";
+
+const hasGit = findExecutable("git") !== undefined;
+
+/** The host adapter's apply as a fake: checks the hash binding and records what it got. */
+class FakeApply {
+  readonly calls: { plan: HostPlan; options: ApplyOptions }[] = [];
+  readonly apply = async (
+    _remote: RemoteExec,
+    plan: HostPlan,
+    options: ApplyOptions,
+  ): Promise<ApplyResult> => {
+    if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");
+    this.calls.push({ plan, options });
+    const changes = plan.steps.filter((step) => step.state === "change").map((step) => step.id);
+    return { applied: changes, skipped: [] };
+  };
+}
+
+const unused = (host: string): RemoteExec => ({
+  host,
+  run: async () => {
+    throw new Error("the fake apply should have handled this");
+  },
+});
+
+function tunnelSecrets() {
+  return { token: `eyJ${fakeSecret("cloudflare-token", "portainer-tunnel")}` };
+}
+
+async function cloudSetup(
+  o: {
+    plan?: DeployPlan;
+    answer?: (request: ApprovalRequest) => boolean | { approved: boolean; confirmation?: string };
+    engine?: FakeEngine;
+  } = {},
+) {
+  const project = await createProject(
+    o.plan ?? testPlan({ domain: "shop.example.com", deployed: true }),
+  );
+  const handler = new ScriptedApprovalHandler(o.answer ?? (() => true));
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    OPSCREW_HOME: join(project.root, ".home-opscrew"),
+    CLOUDFLARE_API_TOKEN: fakeSecret("cloudflare-token"),
+  };
+  const deps = await createTestPhaseDeps({
+    root: project.root,
+    env,
+    runner: projectRunner(),
+    approvalHandler: handler,
+  });
+  const host = new FakeApply();
+  const pins: string[] = [];
+  const services: PortainerServices = {
+    deployRemote: unused,
+    applyHost: host.apply,
+    cloudflare: ownCloudflare(),
+    ...(o.engine !== undefined ? { engine: async () => o.engine as FakeEngine } : {}),
+    own: { zeroTrust: fakeZeroTrust("someone-else.cloudflareaccess.com") },
+    accessLoginMethods: {
+      oneTimePin: async (accountId) => {
+        pins.push(accountId);
+        return "pin-existing";
+      },
+    },
+  };
+  return { ...project, deps, handler, host, services, pins };
+}
+
+const kinds = (handler: ScriptedApprovalHandler) => handler.requests.map((r) => r.kind);
+
+function printed(deps: Awaited<ReturnType<typeof cloudSetup>>["deps"]): string {
+  return `${deps.reporter.text()}\n${JSON.stringify(deps.audit.entries)}`;
+}
+
+describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy user)", () => {
+  it("enable: one host plan as the deploy user, approved by its hash, with the password only at apply", async () => {
+    const s = await cloudSetup();
+    const result = await portainerEnable(s.deps, { services: s.services });
+
+    expect(kinds(s.handler)).toEqual(["host-apply"]);
+    const request = s.handler.requests[0];
+    expect(request?.planHash).toBe(result.hostPlanHash);
+    expect(request?.allowDestroy).toBeUndefined();
+    expect(s.host.calls).toHaveLength(1);
+    const call = s.host.calls[0];
+    expect(call?.plan.steps.map((step) => step.id)).toEqual(["portainer"]);
+    expect(call?.plan.steps[0]?.params).toMatchObject({
+      version: PORTAINER_VERSION,
+      dir: CLOUD_PORTAINER_DIR,
+      runAs: "login",
+      needsPassword: true,
+    });
+    expect(call?.options.approvedHash).toBe(result.hostPlanHash);
+
+    // The password: generated here (0600), supplied at apply, nowhere else.
+    const passwordFile = portainerPasswordFile(s.deps.paths);
+    const password = (await readFile(passwordFile, "utf8")).trim();
+    expect(password).toMatch(/^[A-Za-z0-9]{32}$/);
+    if (process.platform !== "win32") expect((await stat(passwordFile)).mode & 0o777).toBe(0o600);
+    expect(call?.options.secrets).toEqual({ portainerPassword: password });
+    const planYaml = await readFile(s.deps.paths.files.plan, "utf8");
+    const hostPlanJson = await readFile(
+      hostPlanFile(s.deps.paths, result.hostPlanHash as string),
+      "utf8",
+    );
+    for (const text of [printed(s.deps), planYaml, hostPlanJson, JSON.stringify(result)]) {
+      expect(text).not.toContain(password);
+    }
+
+    // plan.yaml: on, pinned, local; the apply and approval are recorded.
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.portainer).toEqual({ enabled: true, version: PORTAINER_VERSION, access: "local" });
+    expect(plan.approvals.map((a) => a.kind)).toEqual(["host-apply"]);
+    // No infrastructure change: no engine, no Cloudflare render.
+    expect(result.planHash).toBeUndefined();
+    expect(result.files).toEqual([]);
+
+    // The status: tunnel command (port 22), local URL and the password file's path.
+    expect(result.status.tunnelCommand).toContain(`deploy@${SERVER_IPV4}`);
+    expect(result.status.tunnelCommand).toContain("-L 9443:127.0.0.1:9443");
+    expect(result.status.tunnelCommand).not.toContain(" -p ");
+    expect(result.status.passwordFile).toBe(passwordFile);
+    expect(s.deps.reporter.text()).toContain(passwordFile);
+    expect(s.deps.audit.entries.map((e) => e.action)).toContain("host step portainer");
+  });
+
+  it("enable --subdomain: tunnel and Access through iac-apply, then the connector and Portainer as the deploy user", async () => {
+    const { token } = tunnelSecrets();
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+          type: "cloudflare_zero_trust_tunnel_cloudflared",
+          name: "this",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "create",
+        },
+      ],
+      outputs: {
+        server_ipv4: SERVER_IPV4,
+        tunnel_id: TUNNEL_ID,
+        tunnel_token: token,
+        portainer_url: "https://portainer.example.com",
+      },
+    });
+    const s = await cloudSetup({ engine });
+    const result = await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+      services: s.services,
+    });
+
+    expect(kinds(s.handler)).toEqual(["repo-write", "iac-apply", "host-apply"]);
+    expect(result.applied).toBe(true);
+    const iac = s.handler.requests[1];
+    expect(iac?.planHash).toBe(result.planHash);
+    expect(iac?.costDelta).toBeUndefined();
+    const tfvars = JSON.parse(
+      await readFile(join(s.root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(tfvars).toMatchObject({
+      portainer_hostname: "portainer.example.com",
+      portainer_allowed_emails: ["owner@example.com"],
+      one_time_pin_identity_provider_id: "pin-existing",
+      create_zero_trust_organization: false,
+    });
+    expect(result.files).toContain("opscrew/infra/prod/terraform.tfvars.json");
+
+    const call = s.host.calls[0];
+    expect(call?.plan.steps.map((step) => step.id)).toEqual(["tunnel-connector", "portainer"]);
+    expect(call?.plan.steps[0]?.params).toMatchObject({
+      tunnelId: TUNNEL_ID,
+      dir: CLOUD_TUNNEL_DIR,
+      runAs: "login",
+    });
+    expect(call?.options.secrets?.tunnelToken).toBe(token);
+    expect(JSON.stringify(call?.plan)).not.toContain(token);
+    expect(printed(s.deps)).not.toContain(token);
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toMatchObject({
+      access: "subdomain",
+      hostname: "portainer.example.com",
+    });
+    expect(result.status.url).toBe("https://portainer.example.com");
+  });
+
+  it("refuses a subdomain without an email or without a Cloudflare domain, changing nothing", async () => {
+    const s = await cloudSetup();
+    const before = await readFile(s.deps.paths.files.plan, "utf8");
+    const noEmail = await portainerEnable(s.deps, {
+      subdomain: "portainer.example.com",
+      services: s.services,
+    }).catch((e: unknown) => e);
+    expect((noEmail as OpsCrewError).code).toBe("INVALID_INPUT");
+
+    const bare = await cloudSetup({ plan: testPlan({ deployed: true }) });
+    const noDomain = await portainerEnable(bare.deps, {
+      subdomain: "portainer.example.com",
+      allowEmails: ["a@example.com"],
+      services: bare.services,
+    }).catch((e: unknown) => e);
+    expect((noDomain as OpsCrewError).code).toBe("PHASE_PRECONDITION");
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(before);
+    expect(s.handler.requests).toHaveLength(0);
+    expect(bare.handler.requests).toHaveLength(0);
+  });
+
+  it("needs a deployment first", async () => {
+    const s = await cloudSetup({ plan: testPlan({ domain: "shop.example.com" }) });
+    const error = await portainerEnable(s.deps, { services: s.services }).catch((e: unknown) => e);
+    expect((error as OpsCrewError).code).toBe("PHASE_PRECONDITION");
+  });
+
+  it("disable keeps the data; deleting it needs allowDestroy and the typed app name", async () => {
+    const s = await cloudSetup();
+    await portainerEnable(s.deps, { services: s.services });
+    const kept = await portainerDisable(s.deps, { services: s.services });
+    const keep = s.host.calls[1];
+    expect(keep?.plan.steps.map((step) => step.params)).toEqual([
+      { remove: true, deleteData: false, dir: CLOUD_PORTAINER_DIR, runAs: "login" },
+    ]);
+    expect(s.handler.requests[1]?.allowDestroy).toBeUndefined();
+    expect(kept.hostApplied).toBe(true);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toBeUndefined();
+
+    // Deleting data: the typed confirmation must match the app's name.
+    const wrong = await cloudSetup({
+      answer: (r) => (r.allowDestroy ? { approved: true, confirmation: "not-the-app" } : true),
+    });
+    await portainerEnable(wrong.deps, { services: wrong.services });
+    const refused = await portainerDisable(wrong.deps, {
+      deleteData: true,
+      services: wrong.services,
+    }).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(OpsCrewError);
+    expect(wrong.host.calls).toHaveLength(1);
+    const ask = wrong.handler.requests.at(-1);
+    expect(ask).toMatchObject({ kind: "host-apply", allowDestroy: true, confirmPhrase: "shop" });
+
+    const ok = await cloudSetup();
+    await portainerEnable(ok.deps, { services: ok.services });
+    await portainerDisable(ok.deps, { deleteData: true, services: ok.services });
+    expect(ok.host.calls[1]?.plan.steps[0]?.params).toMatchObject({ deleteData: true });
+  });
+
+  it("status prints the tunnel command, the local URL and the password path, never the password", async () => {
+    const s = await cloudSetup();
+    await portainerEnable(s.deps, { services: s.services });
+    const password = (await readFile(portainerPasswordFile(s.deps.paths), "utf8")).trim();
+    const status = await portainerStatus(s.deps);
+    expect(status).toMatchObject({
+      enabled: true,
+      version: PORTAINER_VERSION,
+      access: "local",
+      localUrl: "https://localhost:9443",
+      passwordFileExists: true,
+    });
+    expect(JSON.stringify(status)).not.toContain(password);
+    expect(s.deps.reporter.text()).not.toContain(password);
+  });
+});
+
+async function ownSetup(o: { engine?: OwnEngine; port?: number } = {}) {
+  const project = await createProject(ownPlan());
+  const engine = o.engine ?? new OwnEngine(PUBLIC_CHANGES, publicOutputs());
+  const host = new FakeHostServer(freshFacts(o.port !== undefined ? { sshPorts: [o.port] } : {}));
+  const handler = new ScriptedApprovalHandler(() => true);
+  const home = await mkdtemp(join(tmpdir(), "opscrew-portainer-home-"));
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    OPSCREW_HOME: join(project.root, ".home-opscrew"),
+  };
+  delete env.TF_VAR_server_ipv4;
+  delete env.TF_VAR_server_ipv6;
+  const deps = await createTestPhaseDeps({
+    root: project.root,
+    env,
+    runner: ownRunner(),
+    approvalHandler: handler,
+  });
+  await recordOwnServer(deps.paths, {
+    host: OWN_IPV4,
+    port: o.port ?? 22,
+    user: "root",
+    agent: true,
+    reachable: true,
+  });
+  // Setup plans go to the fake server; the add-on plan that deletes Portainer's data is recorded.
+  const addonApplies: { plan: HostPlan; options: ApplyOptions }[] = [];
+  const adapter = {
+    inspect: (remote: RemoteExec) => host.inspect(remote),
+    apply: async (remote: RemoteExec, plan: HostPlan, options: ApplyOptions) => {
+      if (plan.steps.some((step) => step.id === "app-marker")) {
+        return host.apply(remote, plan, options);
+      }
+      if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");
+      addonApplies.push({ plan, options });
+      return { applied: plan.steps.map((step) => step.id), skipped: [] };
+    },
+  };
+  const services: ProvisionServices & PortainerServices = {
+    engine: async () => engine,
+    github: new FakeGitHub(),
+    cloudflare: ownCloudflare(),
+    tcpConnect: async () => true,
+    sleep: async () => undefined,
+    own: { host: adapter, zeroTrust: fakeZeroTrust(), homeDir: home },
+    accessLoginMethods: { oneTimePin: async () => undefined },
+  };
+  await runProvision(deps, { services, hostKey: ED25519_FINGERPRINT });
+  handler.requests.length = 0;
+  return { ...project, deps, engine, host, handler, services, addonApplies };
+}
+
+describe.skipIf(!hasGit)("Portainer on a server the user owns (host plan)", () => {
+  it("enable: the host plan adds the Portainer step and nothing else changes", async () => {
+    const s = await ownSetup();
+    const plans = s.engine.plans.length;
+    const result = await portainerEnable(s.deps, { services: s.services });
+    expect(kinds(s.handler)).toEqual(["host-apply"]);
+    expect(result.files).toEqual([]);
+    // No tunnel is involved, so no infrastructure plan.
+    expect(s.engine.plans).toHaveLength(plans);
+    const apply = s.host.applies.at(-1);
+    const step = apply?.plan.steps.find((item) => item.id === "portainer");
+    expect(step).toMatchObject({ state: "change" });
+    expect(step?.params).toMatchObject({ runAs: "root", needsPassword: true });
+    const password = (await readFile(portainerPasswordFile(s.deps.paths), "utf8")).trim();
+    expect(apply?.options.secrets).toEqual({ portainerPassword: password });
+    expect(s.deps.reporter.text()).not.toContain(password);
+    expect(JSON.stringify(s.deps.audit.entries)).not.toContain(password);
+    expect(result.status.tunnelCommand).toContain(`deploy@${OWN_IPV4}`);
+  });
+
+  it("enable --subdomain in public mode: tunnel and Access, then the connector stays in the host plan", async () => {
+    const { token } = tunnelSecrets();
+    const s = await ownSetup();
+    s.engine.changes = [
+      {
+        address: "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+        type: "cloudflare_zero_trust_tunnel_cloudflared",
+        name: "this",
+        provider: "registry.opentofu.org/cloudflare/cloudflare",
+        action: "create",
+      },
+    ];
+    s.engine.nextOutputs = { ...publicOutputs(), tunnel_id: TUNNEL_ID, tunnel_token: token };
+    const result = await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+      services: s.services,
+    });
+    expect(kinds(s.handler)).toEqual(["repo-write", "iac-apply", "host-apply"]);
+    expect(result.applied).toBe(true);
+    const apply = s.host.applies.at(-1);
+    const connector = apply?.plan.steps.find((item) => item.id === "tunnel-connector");
+    expect(connector).toMatchObject({ state: "change" });
+    expect(connector?.params).toMatchObject({ tunnelId: TUNNEL_ID });
+    expect(apply?.options.secrets?.tunnelToken).toBe(token);
+    expect(s.deps.reporter.text()).not.toContain(token);
+  });
+
+  it("disable --delete-data: the host plan removes Portainer, then the data with its own typed approval", async () => {
+    const s = await ownSetup();
+    await portainerEnable(s.deps, { services: s.services });
+    // What the next inspection finds: Portainer running with its data volume.
+    s.host.facts = {
+      ...s.host.facts,
+      portainer: {
+        installed: true,
+        composeSha256: "0".repeat(64),
+        running: true,
+        secretFile: false,
+        dataVolume: true,
+        tunnelId: null,
+      },
+    };
+    s.handler.requests.length = 0;
+    const result = await portainerDisable(s.deps, { deleteData: true, services: s.services });
+    const hostRequests = s.handler.requests.filter((r) => r.kind === "host-apply");
+    expect(hostRequests).toHaveLength(2);
+    expect(hostRequests[1]).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
+    expect(hostRequests[1]?.planHash).toBe(result.dataPlanHash);
+    // The host plan removed Portainer (data kept); then the data plan alone, as root.
+    const removal = s.host.applies.at(-1)?.plan.steps.find((step) => step.id === "portainer");
+    expect(removal?.params).toMatchObject({ remove: true, deleteData: false });
+    expect(s.addonApplies).toHaveLength(1);
+    const data = s.addonApplies[0];
+    expect(data?.options.approvedHash).toBe(result.dataPlanHash);
+    expect(data?.plan.steps).toEqual([
+      expect.objectContaining({
+        id: "portainer",
+        params: { remove: true, deleteData: true, dir: "/srv/opscrew/portainer", runAs: "root" },
+      }),
+    ]);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toBeUndefined();
+  });
+
+  it("status uses the server's SSH port", async () => {
+    const s = await ownSetup({ port: 2222 });
+    await portainerEnable(s.deps, { services: s.services });
+    const status = await portainerStatus(s.deps);
+    expect(status.tunnelCommand).toMatch(/^ssh -p 2222 -i /);
+    expect(status.tunnelCommand).toContain(`deploy@${OWN_IPV4}`);
+  });
+});

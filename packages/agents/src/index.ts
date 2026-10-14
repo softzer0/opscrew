@@ -8,6 +8,7 @@ export * from "./domain";
 export * from "./drift";
 export * from "./init";
 export * from "./interview";
+export * from "./portainer";
 export * from "./providers";
 export * from "./provision";
 export * from "./retarget";
