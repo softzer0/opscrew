@@ -21,6 +21,7 @@ import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
+import { maskSensitivePlanJson } from "./plan-json";
 import type { SavedPlan } from "./types";
 import { tunnelTokenPermissions } from "./zero-trust";
 
@@ -246,8 +247,10 @@ function sidecarFor(planFile: string): string {
   return `${planFile}.json`;
 }
 
+/** Writes the sidecar; the plan JSON never holds the prior state or a sensitive value there. */
 async function saveSidecar(saved: SavedPlan): Promise<void> {
-  await writeFileAtomic(sidecarFor(saved.planFile), `${JSON.stringify(saved, null, 2)}\n`);
+  const safe: SavedPlan = { ...saved, planJson: maskSensitivePlanJson(saved.planJson) };
+  await writeFileAtomic(sidecarFor(saved.planFile), `${JSON.stringify(safe, null, 2)}\n`);
 }
 
 const PlanHashSchema = z.string().regex(/^[0-9a-f]{64}$/i);
@@ -428,7 +431,9 @@ async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise
     env,
     ...(options.destroy === true ? { destroy: true } : {}),
   });
-  return toSaved(summary, evaluatePlanPolicies(summary.planJson, options.deployPlan));
+  // Policies, summaries and the saved sidecar only ever see non-sensitive values.
+  const planJson = maskSensitivePlanJson(summary.planJson);
+  return toSaved({ ...summary, planJson }, evaluatePlanPolicies(planJson, options.deployPlan));
 }
 
 /**

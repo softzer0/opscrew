@@ -9,6 +9,7 @@ import { applyApprovedPlan, type DeletionSession, savePlan as saveDeletionPlan }
 import {
   findSavedPlan,
   isMovesOnly,
+  maskSensitivePlanJson,
   type PlanAndApplyOptions,
   planAndApply,
   type SavedPlan,
@@ -245,7 +246,8 @@ function summaryOf(saved: SavedPlan): PlanSummary {
   };
 }
 
-function savedOf(summary: PlanSummary): SavedPlan {
+/** The sidecar saved next to a move's plan file (exported for tests). */
+export function savedOf(summary: PlanSummary): SavedPlan {
   return {
     planHash: summary.planHash,
     planFile: summary.planFile,
@@ -256,7 +258,8 @@ function savedOf(summary: PlanSummary): SavedPlan {
     counts: summary.counts,
     hasDestroy: summary.hasDestroy,
     policy: [],
-    planJson: summary.planJson,
+    // Saved next to the plan file: never the prior state or a sensitive value in clear.
+    planJson: maskSensitivePlanJson(summary.planJson),
   };
 }
 
