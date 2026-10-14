@@ -280,3 +280,184 @@ describe("detectProject scenarios", () => {
     expect(result.facts.frameworks).toEqual([{ name: "fastapi", path: "backend" }]);
   });
 });
+
+describe("production start command", () => {
+  const nest = (scripts: Record<string, string>) =>
+    tree({
+      "package.json": JSON.stringify({
+        name: "api",
+        scripts,
+        dependencies: { "@nestjs/core": "^11", "@nestjs/common": "^11" },
+      }),
+      "package-lock.json": "{}",
+      "src/main.ts": "bootstrap();",
+      "src/app.controller.ts":
+        '@Controller()\nexport class AppController {\n  @Get("health")\n  health() {}\n}',
+    });
+
+  it("prefers start:prod and finds the decorator health route (NestJS)", async () => {
+    const root = await nest({
+      build: "nest build",
+      start: "nest start",
+      "start:prod": "node dist/main",
+    });
+    const facts = await detectProject(root);
+    expect(facts.build.startCommand).toBe("npm run start:prod");
+    expect(facts.healthEndpoint).toBe("/health");
+  });
+
+  it("runs the built entry point when start recompiles and there is no start:prod", async () => {
+    const root = await nest({ build: "nest build", start: "nest start" });
+    expect((await detectProject(root)).build.startCommand).toBe("node dist/main");
+  });
+
+  it("uses main when start runs a TypeScript runner or watcher", async () => {
+    for (const start of [
+      "ts-node src/index.ts",
+      "tsx src/index.ts",
+      "nodemon src/index.js",
+      "ts-node-dev src/index.ts",
+      "node --watch src/index.js",
+    ]) {
+      const root = await tree({
+        "package.json": JSON.stringify({
+          name: "svc",
+          main: "dist/index.js",
+          scripts: { build: "tsc", start },
+          dependencies: { express: "^5" },
+        }),
+      });
+      expect((await detectProject(root)).build.startCommand).toBe("node dist/index.js");
+    }
+  });
+
+  it("keeps start when no built entry point can be inferred", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({
+        name: "svc",
+        main: "src/index.ts",
+        scripts: { start: "tsx src/index.ts" },
+        dependencies: { express: "^5" },
+      }),
+    });
+    expect((await detectProject(root)).build.startCommand).toBe("npm start");
+  });
+
+  it("starts a SvelteKit app built with adapter-node and finds its +server health route", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({
+        name: "kit",
+        type: "module",
+        scripts: { build: "vite build", dev: "vite dev" },
+        devDependencies: {
+          "@sveltejs/adapter-node": "6.0.0",
+          "@sveltejs/kit": "3.0.1",
+          svelte: "5.57.2",
+          vite: "8.3.4",
+        },
+      }),
+      "src/routes/+page.svelte": "<h1>Hi</h1>",
+      "src/routes/health/+server.ts":
+        "import { json } from '@sveltejs/kit';\nexport const GET = () => json({ status: 'ok' });",
+    });
+    const facts = await detectProject(root);
+    expect(facts.appKind).toBe("ssr");
+    expect(facts.port).toBe(3000);
+    expect(facts.build.startCommand).toBe("node build");
+    expect(facts.healthEndpoint).toBe("/health");
+  });
+
+  it("starts a standalone Astro server and finds its endpoint health route", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({
+        name: "astro-ssr",
+        type: "module",
+        scripts: { build: "astro build", dev: "astro dev" },
+        dependencies: { "@astrojs/node": "11.1.7", astro: "7.3.8" },
+      }),
+      "astro.config.mjs":
+        "import node from '@astrojs/node';\nexport default defineConfig({ output: 'server', adapter: node({ mode: 'standalone' }) });",
+      "src/pages/index.astro": "<h1>Hi</h1>",
+      "src/pages/health.ts": "export const GET = () => Response.json({ status: 'ok' });",
+    });
+    const facts = await detectProject(root);
+    expect(facts.appKind).toBe("ssr");
+    expect(facts.build.startCommand).toBe("node ./dist/server/entry.mjs");
+    expect(facts.healthEndpoint).toBe("/health");
+  });
+
+  it("does not start an Astro node adapter in middleware mode on its own", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({
+        name: "astro-mw",
+        dependencies: { "@astrojs/node": "11.1.7", astro: "7.3.8" },
+      }),
+      "astro.config.mjs": "export default defineConfig({ adapter: node({ mode: 'middleware' }) });",
+    });
+    expect((await detectProject(root)).build.startCommand).toBeUndefined();
+  });
+
+  it("detects React Router framework mode as SSR on port 3000 with its serve script", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({
+        name: "rr",
+        type: "module",
+        scripts: {
+          build: "react-router build",
+          dev: "react-router dev",
+          start: "react-router-serve ./build/server/index.js",
+        },
+        dependencies: {
+          "@react-router/node": "8.4.0",
+          "@react-router/serve": "8.4.0",
+          react: "19.3.0",
+          "react-dom": "19.3.0",
+          "react-router": "8.4.0",
+        },
+        devDependencies: { "@react-router/dev": "8.4.0", vite: "8.3.4" },
+      }),
+      "app/routes.ts":
+        'import { index, route } from "@react-router/dev/routes";\nexport default [index("routes/home.tsx"), route("health", "routes/health.ts")];',
+      "app/routes/health.ts": "export function loader() { return Response.json({}); }",
+    });
+    const facts = await detectProject(root);
+    expect(facts.appKind).toBe("ssr");
+    expect(facts.port).toBe(3000);
+    expect(facts.frameworks.map((f) => f.name)).toEqual(["react", "react-router", "vite"]);
+    expect(facts.build.startCommand).toBe("npm start");
+    expect(facts.healthEndpoint).toBe("/health");
+  });
+
+  it("treats react-router with @react-router/node as framework mode", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({
+        name: "rr",
+        dependencies: { "@react-router/node": "8", react: "19", "react-router": "8" },
+      }),
+    });
+    expect((await detectProject(root)).appKind).toBe("ssr");
+  });
+
+  it("keeps a library-mode react-router SPA static", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({
+        name: "spa",
+        dependencies: { react: "19", "react-router": "8" },
+        devDependencies: { vite: "8" },
+      }),
+    });
+    expect((await detectProject(root)).appKind).toBe("static-spa");
+  });
+
+  it("keeps an ordinary start script", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({
+        name: "svc",
+        main: "dist/index.js",
+        scripts: { start: "node server.js" },
+        dependencies: { express: "^5" },
+      }),
+    });
+    expect((await detectProject(root)).build.startCommand).toBe("npm start");
+  });
+});

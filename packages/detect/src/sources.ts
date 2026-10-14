@@ -71,9 +71,26 @@ const DJANGO_HEALTH_ROUTE = new RegExp(
   `\\b(?:re_)?path\\(\\s*r?["']\\^?((?:api/)?(?:${HEALTH_NAMES})/?)\\$?["']`,
   "g",
 );
-const FILE_ROUTE = new RegExp(
-  `^(?:src/)?(?:app/((?:api/)?(?:${HEALTH_NAMES}))/route|pages/(api/(?:${HEALTH_NAMES}))(?:/index)?)\\.[cm]?[jt]sx?$`,
+const HEALTH_PATH = new RegExp(`^/(?:api/)?(?:${HEALTH_NAMES})/?$`);
+/** `@Controller(...)`, `@Get(...)`, `@All(...)`, `@Head(...)` with an optional string argument. */
+const DECORATOR_ROUTE = /@(Controller|Get|All|Head)\(\s*(?:(["'`])([^"'`]*)\2\s*)?(\))?/g;
+/** React Router framework mode: `route("health", "routes/health.ts")` in `app/routes.ts`. */
+const ROUTE_CONFIG_HEALTH = new RegExp(
+  `(?<![.\\w])route\\(\\s*["'\`]/?((?:api/)?(?:${HEALTH_NAMES})/?)["'\`]`,
+  "g",
 );
+/** File-system routes; the first capture group is the route path without its leading slash. */
+const FILE_ROUTES: readonly RegExp[] = [
+  // Next.js: app/<name>/route.ts, pages/api/<name>.ts
+  new RegExp(`^(?:src/)?app/((?:api/)?(?:${HEALTH_NAMES}))/route\\.[cm]?[jt]sx?$`),
+  new RegExp(`^(?:src/)?pages/(api/(?:${HEALTH_NAMES}))(?:/index)?\\.[cm]?[jt]sx?$`),
+  // Nuxt: server/routes/<name>.ts → /<name>, server/api/<name>.ts → /api/<name>
+  new RegExp(`^server/(?:routes/|(?=api/))((?:api/)?(?:${HEALTH_NAMES}))(?:\\.get)?\\.[cm]?[jt]s$`),
+  // SvelteKit: src/routes/<name>/+server.ts
+  new RegExp(`^src/routes/((?:api/)?(?:${HEALTH_NAMES}))/\\+server\\.[jt]s$`),
+  // Astro endpoint: src/pages/<name>.ts
+  new RegExp(`^src/pages/((?:api/)?(?:${HEALTH_NAMES}))\\.[cm]?[jt]s$`),
+];
 
 const APP_OBJECT =
   /^([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[\w.]+\s*)?=\s*(?:fastapi\.|flask\.)?(FastAPI|Flask)\(/gm;
@@ -96,11 +113,41 @@ export function portsInCommand(command: string): number[] {
   return ports;
 }
 
-/** Health route implied by a file-system route (`app/api/health/route.ts` → `/api/health`). */
+/**
+ * Health route implied by a file-system route: Next.js (`app/api/health/route.ts` → `/api/health`),
+ * Nuxt (`server/routes/health.ts`), SvelteKit (`src/routes/health/+server.ts`) and Astro endpoints
+ * (`src/pages/health.ts`).
+ */
 export function healthRouteFromPath(unitRelativePath: string): string | undefined {
-  const match = FILE_ROUTE.exec(unitRelativePath);
-  const route = match?.[1] ?? match?.[2];
-  return route ? `/${route}` : undefined;
+  for (const pattern of FILE_ROUTES) {
+    const route = pattern.exec(unitRelativePath)?.[1];
+    if (route) return `/${route}`;
+  }
+  return undefined;
+}
+
+/**
+ * Health routes declared with decorators (NestJS style): `@Get("health")`, or `@Controller("health")`
+ * with `@Get()`. The path is the controller prefix joined with the method path; methods under a
+ * controller whose prefix is not a plain string are skipped.
+ */
+function decoratorHealthPaths(text: string): string[] {
+  const paths: string[] = [];
+  let prefix: string | undefined = "";
+  for (const match of text.matchAll(DECORATOR_ROUTE)) {
+    const literal = match[4] === undefined ? undefined : (match[3] ?? "");
+    if (match[1] === "Controller") {
+      prefix = literal;
+      continue;
+    }
+    if (prefix === undefined || literal === undefined) continue;
+    const path = `/${[prefix, literal]
+      .map((part) => part.replace(/^\/+|\/+$/g, ""))
+      .filter((part) => part !== "")
+      .join("/")}`;
+    if (HEALTH_PATH.test(path)) paths.push(path);
+  }
+  return paths;
 }
 
 /** Extracts all signals from one source file. */
@@ -117,6 +164,10 @@ export function scanSource(text: string): SourceSignals {
   for (const match of text.matchAll(DJANGO_HEALTH_ROUTE)) {
     if (match[1]) healthPaths.push(`/${match[1]}`);
   }
+  for (const match of text.matchAll(ROUTE_CONFIG_HEALTH)) {
+    if (match[1]) healthPaths.push(`/${match[1]}`);
+  }
+  healthPaths.push(...decoratorHealthPaths(text));
   const appObjects: PythonAppObject[] = [];
   for (const match of text.matchAll(APP_OBJECT)) {
     if (match[1] && match[2]) {

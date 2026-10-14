@@ -336,6 +336,29 @@ describe("renderDockerAssets", () => {
     expect(dockerfile).toMatch(/^# Builds with or without `output: "standalone"`/m);
   });
 
+  it("binds Node servers to all interfaces (HOST and PORT)", () => {
+    const lines = (
+      renderDockerAssets(expressApp, { appPort: 4000, healthPath: "/health" })[0]?.content ?? ""
+    ).split("\n");
+    expect(lines).toContain("ENV NODE_ENV=production PORT=4000 HOST=0.0.0.0");
+  });
+
+  it("installs a pinned gunicorn for Django only when the dependencies lack it", () => {
+    const lines = (
+      renderDockerAssets(djangoApp, { appPort: 8000, healthPath: "/health" })[0]?.content ?? ""
+    ).split("\n");
+    expect(lines).not.toContain("RUN pip install gunicorn");
+    const install =
+      lines.find((line) => line.includes("gunicorn") && line.startsWith("RUN ")) ?? "";
+    expect(install).toMatch(
+      /^RUN python -c "import gunicorn" 2>\/dev\/null \|\| pip install gunicorn==\d+\.\d+\.\d+$/,
+    );
+    expect(lines.indexOf(install)).toBeGreaterThan(
+      lines.findIndex((line) => line.includes("poetry install")),
+    );
+    expect(lines.indexOf(install)).toBeLessThan(lines.indexOf("USER app"));
+  });
+
   it("collects Django static files at build time without real settings", () => {
     const dockerfile =
       renderDockerAssets(djangoApp, { appPort: 8000, healthPath: "/health" })[0]?.content ?? "";

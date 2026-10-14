@@ -313,7 +313,8 @@ export function nodeServerDockerfile(facts: ProjectFacts, port: number): string 
     "",
     "FROM node:22-alpine AS runtime",
     "WORKDIR /app",
-    `ENV NODE_ENV=production PORT=${port}`,
+    // HOST: servers such as @astrojs/node standalone listen on localhost unless told otherwise.
+    `ENV NODE_ENV=production PORT=${port} HOST=0.0.0.0`,
   );
   if (needsCorepack(facts)) lines.push("RUN corepack enable");
   lines.push(
@@ -467,13 +468,17 @@ const DJANGO_COLLECTSTATIC =
   'if [ -n "$static_root" ]; then python manage.py collectstatic --noinput; ' +
   'else echo "collectstatic skipped: STATIC_ROOT is not set"; fi';
 
+/** gunicorn release installed for Django apps whose dependencies do not already include it. */
+const GUNICORN_VERSION = "26.2.0";
+
 export function djangoDockerfile(facts: ProjectFacts, port: number): string {
   const module =
     pythonStart(facts, "python-django")?.match(/([\w.]+)\.wsgi/)?.[1] ??
     facts.name.replace(/-/g, "_");
   return [
     ...pythonBase("python-django", port, facts),
-    "RUN pip install gunicorn",
+    "# gunicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
+    `RUN python -c "import gunicorn" 2>/dev/null || pip install gunicorn==${GUNICORN_VERSION}`,
     `ENV DJANGO_WSGI_MODULE=${module}.wsgi`,
     "# Collects static files at build time when the settings set STATIC_ROOT (skipped otherwise).",
     "# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the",

@@ -8,5 +8,5 @@
     "languages": ["typescript"]
   },
   "scan": { "clean": true, "mustInclude": [] },
-  "codeChanges": ["dockerfile", "dockerignore", "health-endpoint", "env-example"]
+  "codeChanges": ["dockerfile", "dockerignore", "env-example"]
 }

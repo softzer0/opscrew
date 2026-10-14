@@ -22,6 +22,7 @@ import {
 } from "./frameworks";
 import { readGitInfo } from "./git";
 import {
+  findDependency,
   matchesWorkspace,
   parseJson,
   type ReadText,
@@ -193,6 +194,30 @@ function jsInstallCommand(pm: JsPackageManager, locked: boolean, berry: boolean)
 
 function jsExec(pm: JsPackageManager): string {
   return { npm: "npx", pnpm: "pnpm exec", yarn: "yarn", bun: "bunx" }[pm];
+}
+
+/** Scripts that start the built app for production, preferred over `start`. */
+const PRODUCTION_SCRIPTS = ["start:prod", "start:production"] as const;
+
+/**
+ * A `start` script that compiles, watches or runs TypeScript at boot. Such a script fails in the
+ * image (the non-root user cannot rewrite the build output) or needs dev dependencies.
+ */
+const DEV_RUNNER = /(?:^|[\s;&|])(?:nest\s+start|ts-node(?:-dev)?|tsx|nodemon)\b|--watch\b/;
+
+/**
+ * The built entry point to run instead of a dev-runner `start`: `node dist/main` for `nest start`
+ * with a build script (Nest's default output), else `node <main>` when `main` names a JavaScript
+ * file outside `src/`. Undefined when neither can be inferred.
+ */
+function builtEntryPoint(
+  scripts: Record<string, string>,
+  main: string | undefined,
+): string | undefined {
+  if (/\bnest\s+start\b/.test(scripts.start ?? "") && scripts.build) return "node dist/main";
+  const entry = main?.replace(/^\.\//, "");
+  if (entry && /\.[cm]?js$/.test(entry) && !entry.startsWith("src/")) return `node ${entry}`;
+  return undefined;
 }
 
 /** `pm run <script>` (or the workspace-filtered form for a monorepo member). */
@@ -502,7 +527,12 @@ export async function detectProjectDetails(
     (f) => isWithin(appDir, f) && isAppCodeFile(relativeTo(appDir, f)),
   );
   const dockerText = dockerfile ? await read(dockerfile) : undefined;
-  const explicitPort = [scripts.start, procfileWeb]
+  const explicitPort = [
+    scripts["start:prod"],
+    scripts["start:production"],
+    scripts.start,
+    procfileWeb,
+  ]
     .flatMap((command) => (command ? portsInCommand(command) : []))
     .at(0);
   const exposedPort = Number(/^\s*EXPOSE\s+(\d{1,5})\b/im.exec(dockerText ?? "")?.[1]) || undefined;
@@ -517,7 +547,18 @@ export async function detectProjectDetails(
 
   if (appKind !== "static-spa") {
     let start: string | undefined;
-    if (jsPm && scripts.start) {
+    const hasNpmDependency = (name: string) =>
+      Boolean(primary && findDependency(primary.unit, "npm", name));
+    const prodScript = PRODUCTION_SCRIPTS.find((name) => scripts[name]);
+    const builtEntry =
+      scripts.start && DEV_RUNNER.test(scripts.start)
+        ? builtEntryPoint(scripts, appPackage?.main)
+        : undefined;
+    if (jsPm && prodScript) {
+      start = member ? jsRun(jsPm, prodScript, member) : cdPrefix(jsRun(jsPm, prodScript));
+    } else if (jsPm && builtEntry) {
+      start = cdPrefix(builtEntry);
+    } else if (jsPm && scripts.start) {
       start = member ? jsRun(jsPm, "start", member) : cdPrefix(jsRun(jsPm, "start"));
     } else if (procfileWeb) {
       start = cdPrefix(procfileWeb);
@@ -528,6 +569,21 @@ export async function detectProjectDetails(
       start = cdPrefix(`${jsExec(jsPm)} next start`);
     } else if (jsPm && appFrameworkNames.has("nuxt")) {
       start = cdPrefix("node .output/server/index.mjs");
+    } else if (
+      jsPm &&
+      appFrameworkNames.has("sveltekit") &&
+      hasNpmDependency("@sveltejs/adapter-node")
+    ) {
+      start = cdPrefix("node build");
+    } else if (
+      jsPm &&
+      appFrameworkNames.has("astro") &&
+      hasNpmDependency("@astrojs/node") &&
+      !/\bmode\s*:\s*["'`]middleware["'`]/.test(
+        (await read(filesIn(appDir, (n) => /^astro\.config\.[cm]?[jt]s$/.test(n))[0] ?? "")) ?? "",
+      )
+    ) {
+      start = cdPrefix("node ./dist/server/entry.mjs");
     } else if (appPackage?.main && primary?.roles.has("server")) {
       start = cdPrefix(`node ${appPackage.main}`);
     }

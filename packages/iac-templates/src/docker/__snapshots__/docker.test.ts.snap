@@ -12,7 +12,8 @@ RUN useradd --create-home --uid 10001 app
 COPY pyproject.toml poetry.lock* ./
 RUN pip install poetry && poetry config virtualenvs.create false && poetry install --only main --no-root
 COPY --chown=app:app . .
-RUN pip install gunicorn
+# gunicorn serves the app; it is added (pinned) only when the dependencies do not install it.
+RUN python -c "import gunicorn" 2>/dev/null || pip install gunicorn==26.2.0
 ENV DJANGO_WSGI_MODULE=shop_site.wsgi
 # Collects static files at build time when the settings set STATIC_ROOT (skipped otherwise).
 # The key below is a throwaway value for this step only; the real SECRET_KEY is set when the
@@ -37,7 +38,7 @@ RUN corepack enable && if [ -f yarn.lock ]; then yarn install --frozen-lockfile;
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
-ENV NODE_ENV=production PORT=4000
+ENV NODE_ENV=production PORT=4000 HOST=0.0.0.0
 RUN corepack enable
 COPY --from=build --chown=node:node /app ./
 USER node
@@ -222,7 +223,7 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
-ENV NODE_ENV=production PORT=4000
+ENV NODE_ENV=production PORT=4000 HOST=0.0.0.0
 COPY --from=build --chown=node:node /app ./
 USER node
 EXPOSE 4000

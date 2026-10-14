@@ -24,6 +24,9 @@ const FRAMEWORK_RULES: readonly FrameworkRule[] = [
   { ecosystem: "npm", match: "next", name: "next", role: "ssr" },
   { ecosystem: "npm", match: "nuxt", name: "nuxt", role: "ssr" },
   { ecosystem: "npm", match: "@remix-run/", name: "remix", role: "ssr" },
+  // React Router framework mode (`@react-router/dev`, `/node`, `/serve`); plain `react-router` is a
+  // client library and stays a UI dependency.
+  { ecosystem: "npm", match: "@react-router/", name: "react-router", role: "ssr" },
   { ecosystem: "npm", match: "@sveltejs/kit", name: "sveltekit", role: "ssr" },
   { ecosystem: "npm", match: "astro", name: "astro", role: "astro" },
   { ecosystem: "npm", match: "vite", name: "vite", role: "frontend" },
@@ -155,7 +158,7 @@ export function isServerUnit(unit: Unit, roles: ReadonlySet<FrameworkRole>): boo
 /** Default listening port of the unit's main framework. */
 export function defaultPort(frameworks: readonly DetectedFramework[]): number | undefined {
   const names = new Set(frameworks.map((f) => f.name));
-  if (names.has("next") || names.has("nuxt") || names.has("remix")) return 3000;
+  if (["next", "nuxt", "remix", "react-router"].some((n) => names.has(n))) return 3000;
   if (names.has("sveltekit") || names.has("astro")) return 3000;
   if (["express", "fastify", "nestjs", "hono", "koa"].some((n) => names.has(n))) return 3000;
   if (names.has("fastapi") || names.has("django")) return 8000;
