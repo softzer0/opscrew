@@ -9,6 +9,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { recordOwnServerAnswers } from "../interview";
 import { type OwnServerFacts, ownServerConnector } from "../providers";
+import { recordOwnServer } from "../shared";
 import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
 import {
   euCatalog,
@@ -270,12 +271,13 @@ async function setup(requirements: Requirements): Promise<TestPhaseDeps> {
   return deps;
 }
 
-const answers = (reachable: boolean) => ({
+const answers = (reachable: boolean, serve: "tunnel" | "proxy" | "dns-only" = "tunnel") => ({
   host: IPV4,
   port: 22,
   user: "root",
   agent: true,
   reachable,
+  serve,
 });
 
 describe("runDesign for a server the user owns", () => {
@@ -323,6 +325,71 @@ describe("runDesign for a server the user owns", () => {
       access: "tunnel",
     });
     expect(result.plan.dns).toMatchObject({ provider: "cloudflare", domain: "app.example.com" });
+  });
+
+  it("serves a reachable server with a Cloudflare domain as the user chose: the tunnel by default", async () => {
+    const requirements = ownRequirements({ domain: "app.example.com", dnsProvider: "cloudflare" });
+    const facts = { ...BIG, arch: "amd64" as const };
+
+    // No choice recorded, or the tunnel: the tunnel, also for a reachable server.
+    for (const serve of [undefined, "tunnel"] as const) {
+      const deps = await setup(requirements);
+      const { serve: _serve, ...base } = answers(true);
+      // A record from before the serving question existed has no `serve`.
+      if (serve === undefined) await recordOwnServer(deps.paths, base);
+      else await recordOwnServerAnswers(deps.paths, answers(true, serve));
+      const result = await runDesign(deps, { ownServer: { facts } });
+      expect(result.plan.target).toMatchObject({ access: "tunnel" });
+    }
+
+    // Behind Cloudflare's proxy with the web filter: only as the explicit choice.
+    const proxy = await setup(requirements);
+    await recordOwnServerAnswers(proxy.paths, answers(true, "proxy"));
+    const filtered = await runDesign(proxy, { ownServer: { facts } });
+    expect(filtered.plan.target).toMatchObject({ access: "public" });
+    expect(filtered.plan.dns).toMatchObject({ provider: "cloudflare", proxied: true });
+    expect(filtered.plan.security.httpAllowedFrom).toBe("cloudflare");
+    expect(filtered.chosen.summary).toMatch(/a filter in Docker lets only Cloudflare/);
+    expect(filtered.chosen.tradeoffs.join(" ")).toMatch(/fails closed/);
+
+    // DNS only: the server answers everyone; Cloudflare only answers DNS.
+    const dnsOnly = await setup(requirements);
+    await recordOwnServerAnswers(dnsOnly.paths, answers(true, "dns-only"));
+    const open = await runDesign(dnsOnly, { ownServer: { facts } });
+    expect(open.plan.target).toMatchObject({ access: "public" });
+    expect(open.plan.dns).toMatchObject({ provider: "cloudflare", proxied: false });
+    expect(open.plan.security.httpAllowedFrom).toBe("any");
+    expect(open.chosen.tradeoffs.join(" ")).toMatch(/neither hides nor protects/);
+  });
+
+  it("refuses the web filter plainly for a server known only by an IPv6 address", async () => {
+    const deps = await setup(
+      ownRequirements({ domain: "app.example.com", dnsProvider: "cloudflare" }),
+    );
+    await recordOwnServer(deps.paths, { ...answers(true, "proxy"), host: "2001:db8::10" });
+    const error = await runDesign(deps, { ownServer: { facts: BIG } }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringMatching(/needs your server's public IPv4 address/),
+      hint: expect.stringMatching(/Cloudflare Tunnel/),
+    });
+    await expect(readFile(deps.paths.files.plan, "utf8")).rejects.toThrow();
+    // With its public IPv4 address known, the filter mode is planned.
+    await recordOwnServer(deps.paths, {
+      ...answers(true, "proxy"),
+      host: "2001:db8::10",
+      publicIpv4: IPV4,
+    });
+    const result = await runDesign(deps, { ownServer: { facts: BIG } });
+    expect(result.plan.dns).toMatchObject({ proxied: true });
+  });
+
+  it("serves a reachable server without a Cloudflare domain with DNS only, whatever the answer", async () => {
+    const deps = await setup(ownRequirements());
+    await recordOwnServerAnswers(deps.paths, answers(true, "proxy"));
+    const result = await runDesign(deps, { ownServer: { facts: BIG } });
+    expect(result.plan.target).toMatchObject({ access: "public" });
+    expect(result.plan.dns).toMatchObject({ provider: "none", proxied: false });
   });
 
   it("refuses a tunnel without a Cloudflare domain before writing anything", async () => {

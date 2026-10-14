@@ -53,6 +53,7 @@ const ANSWERS = {
   "server.user": "root",
   "server.key": "agent",
   "server.reachable": true,
+  "server.serve": "proxy",
 };
 const STEP_TIMEOUT = 120_000;
 
@@ -189,6 +190,11 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
       expect(applied.code, applied.text).toBe(0);
       expect(host.applies).toHaveLength(1);
       expect(host.applies[0]?.options.approvedHash).toBe(hostHash);
+      // Served directly behind Cloudflare's proxy: the host plan has the (IPv4) web filter.
+      expect(host.applies[0]?.plan.steps.find((step) => step.id === "web-filter")).toMatchObject({
+        state: "change",
+        params: { ipv4: expect.stringMatching(/^\d+\.\d+\.\d+\.\d+\/\d+/) },
+      });
       expect(engine.applied).toHaveLength(1);
 
       const plan = await readPlan(project.root);

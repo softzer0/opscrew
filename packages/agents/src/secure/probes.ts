@@ -4,23 +4,35 @@ import type { TcpConnect } from "@opscrew/secops";
 import { planProvider, providerProfile } from "../providers";
 import { providerConsole } from "../shared";
 import { originIsCloudflareOnly } from "../verify/checks";
+import { hasIpv6Route } from "../verify/net";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 
 /**
  * Outside probes of the ports a server the user owns should (or should not) answer on. Public
- * mode: SSH on the server's port (deploys need it) and 80/443 (visitors need them). Tunnel mode:
+ * mode: SSH on the server's port (deploys need it) and 80/443 (visitors need them; behind
+ * Cloudflare's proxy only Cloudflare, so from here they should be closed, and answering is a
+ * finding). Tunnel mode:
  * no web port is expected at all (the app is reached only through the Cloudflare Tunnel), and SSH
  * answering from this machine is informational (deploys reach it through the tunnel).
  */
 export async function probeOwnServerPorts(
   host: string,
   plan: DeployPlan,
-  options: { connect: TcpConnect; sshPort: number; timeoutMs?: number },
+  options: {
+    connect: TcpConnect;
+    sshPort: number;
+    timeoutMs?: number;
+    /** Behind the web filter: the server's public IPv6 address, probed on 443 (must not answer). */
+    ipv6?: string;
+    /** Whether this computer can reach IPv6 addresses (default: it has a global IPv6 address). */
+    ipv6Route?: () => Promise<boolean>;
+  },
 ): Promise<CheckResult[]> {
   const timeoutMs = options.timeoutMs ?? 3000;
   const port = options.sshPort;
   const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";
+  const cloudflareOnly = !tunnel && originIsCloudflareOnly(plan);
   const [ssh, http, https] = await Promise.all(
     [port, 80, 443].map((p) => options.connect(host, p, timeoutMs)),
   );
@@ -78,6 +90,29 @@ export async function probeOwnServerPorts(
       });
       continue;
     }
+    if (cloudflareOnly) {
+      // Behind Cloudflare's proxy OpsCrew's web filter (DOCKER-USER) lets only Cloudflare's ranges
+      // in, as the cloud firewall does on Hetzner and DigitalOcean: a closed port is as intended.
+      out.push({
+        id: `port-${web}-cloudflare-only`,
+        title: `Web port ${web} only accepts Cloudflare`,
+        target: host,
+        ...(open
+          ? {
+              severity: "medium" as const,
+              status: "fail" as const,
+              message: `Port ${web} answers from this machine, so visitors can reach your server around Cloudflare's protection.`,
+              remediation:
+                "Run `opscrew drift` to see whether OpsCrew's web filter (in Docker's DOCKER-USER chain) is missing or was changed, then `opscrew provision`: it shows the change that lets only Cloudflare's IP ranges reach ports 80 and 443. You can ignore this only if this machine is itself on Cloudflare's network.",
+            }
+          : {
+              severity: "info" as const,
+              status: "pass" as const,
+              message: `Port ${web} is filtered for visitors that are not Cloudflare, as intended.`,
+            }),
+      });
+      continue;
+    }
     const base = {
       id: `port-${web}-open`,
       title: `Web port ${web} is reachable`,
@@ -96,7 +131,52 @@ export async function probeOwnServerPorts(
           },
     );
   }
+  if (cloudflareOnly && options.ipv6 !== undefined) {
+    out.push(await probeOwnIpv6(options.ipv6, options, timeoutMs));
+  }
   return out;
+}
+
+/**
+ * Behind OpsCrew's web filter the site is published on IPv4 only: 443 on the server's IPv6
+ * address must not answer (docker-proxy would serve it around DOCKER-USER). Skipped with a note
+ * when this computer has no IPv6 route.
+ */
+async function probeOwnIpv6(
+  ipv6: string,
+  options: { connect: TcpConnect; ipv6Route?: () => Promise<boolean> },
+  timeoutMs: number,
+): Promise<CheckResult> {
+  const base = {
+    id: "port-443-ipv6-closed",
+    title: "Web port 443 does not answer on IPv6 (the site is published on IPv4 only)",
+    target: ipv6,
+  };
+  if (!(await (options.ipv6Route ?? hasIpv6Route)())) {
+    return {
+      ...base,
+      severity: "info",
+      status: "skip",
+      message:
+        "Skipped: this computer has no IPv6 route, so it cannot try your server's IPv6 address. Run `opscrew secure` from a network with IPv6 to check it.",
+    };
+  }
+  return (await options.connect(ipv6, 443, timeoutMs))
+    ? {
+        ...base,
+        severity: "medium",
+        status: "fail",
+        message:
+          "Port 443 answers on your server's IPv6 address, so visitors can reach it around Cloudflare and OpsCrew's web filter.",
+        remediation:
+          "Something on your server publishes port 443 on IPv6 (for example a container or web server of your own). Stop it or make it listen on IPv4 only, then run `opscrew secure` again.",
+      }
+    : {
+        ...base,
+        severity: "info",
+        status: "pass",
+        message: "Port 443 does not answer on your server's IPv6 address, as intended.",
+      };
 }
 
 /**

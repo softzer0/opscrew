@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import {
   applyHostPlan,
   type DesiredHost,
@@ -8,6 +9,7 @@ import {
   hostPlanHash,
   inspectHost,
   planHost,
+  webFilterFacts,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, IacEngine, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
@@ -34,7 +36,10 @@ import {
   ownServerPublicAddress,
 } from "../shared/own-server";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
-import type { HostAdapterApi, ProvisionOptions, ProvisionServices } from "./types";
+import type { CloudflareApi, HostAdapterApi, ProvisionOptions, ProvisionServices } from "./types";
+
+/** Cloudflare's IP ranges, the only sources of web traffic when the site is served directly behind the proxy. */
+export type OwnWebSources = NonNullable<DesiredHost["webFilter"]>;
 
 /** What provision knows about the user's own server once it connected and inspected it. */
 export interface OwnServerRun {
@@ -43,6 +48,11 @@ export interface OwnServerRun {
   target: OwnDeployTarget;
   /** Public mode: the addresses DNS points to (local state only, never committed). */
   address?: ServerAddress;
+  /**
+   * Served directly behind Cloudflare's proxy ({@link ownWebFromCloudflare}): Cloudflare's IP
+   * ranges as read at the start of this run, for the host plan's web filter.
+   */
+  webSources?: OwnWebSources;
   /** The port sshd listens on, on the server: the tunnel's SSH route (`ssh://localhost:<port>`). */
   sshPort: number;
   host: HostAdapterApi;
@@ -106,6 +116,60 @@ function stringOutput(outputs: Record<string, unknown>, name: string): string | 
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+/**
+ * True when the user's own server serves the site directly behind Cloudflare's proxy (the user's
+ * explicit choice): public mode, the domain on Cloudflare, proxied, and `security.httpAllowedFrom:
+ * cloudflare` (the plan schema refuses `any` there). The host plan's web filter then lets only
+ * Cloudflare's IP ranges reach the web ports Docker publishes, as the cloud firewall does on
+ * Hetzner and DigitalOcean.
+ */
+export function ownWebFromCloudflare(plan: DeployPlan): boolean {
+  return (
+    plan.target.provider === "own" &&
+    plan.target.access === "public" &&
+    plan.dns.provider === "cloudflare" &&
+    plan.dns.proxied &&
+    plan.security.httpAllowedFrom === "cloudflare"
+  );
+}
+
+function rangesUnreadable(cause?: unknown): OpsCrewError {
+  return new OpsCrewError(
+    "PROVIDER_ERROR",
+    "OpsCrew could not read Cloudflare's IP ranges, which your server's web filter needs so that only Cloudflare can reach the app's web ports. Nothing was changed.",
+    {
+      hint: "Check this computer's internet connection (OpsCrew reads https://api.cloudflare.com/client/v4/ips, which needs no token), then run the command again. OpsCrew never opens the web ports to every address instead.",
+      ...(cause !== undefined ? { cause } : {}),
+    },
+  );
+}
+
+/**
+ * Cloudflare's current IP ranges for an own server behind Cloudflare's proxy
+ * ({@link ownWebFromCloudflare}); `undefined` for any other plan. Read from `api` (the provision
+ * services' Cloudflare client) or, without one, from Cloudflare's public endpoint (no token).
+ * Throws `PROVIDER_ERROR` in plain English when they cannot be read: OpsCrew never falls back to
+ * opening the web ports to every address.
+ */
+export async function ownWebSources(
+  deps: Pick<PhaseDeps, "fetch" | "version">,
+  plan: DeployPlan,
+  api?: Pick<CloudflareApi, "getIpRanges"> | null,
+): Promise<OwnWebSources | undefined> {
+  if (!ownWebFromCloudflare(plan)) return undefined;
+  const client = api ?? new CloudflareClient({ fetch: deps.fetch, version: deps.version });
+  let ranges: { ipv4: string[] };
+  try {
+    ranges = await client.getIpRanges();
+  } catch (error) {
+    throw rangesUnreadable(error);
+  }
+  if (!Array.isArray(ranges?.ipv4) || ranges.ipv4.length === 0) {
+    throw rangesUnreadable();
+  }
+  return { ipv4: [...ranges.ipv4] };
+}
+
 /** The port sshd listens on, on the server: the login's port when sshd uses it, else sshd's first. */
 function serverSshPort(facts: HostFacts, loginPort: number): number {
   const ports = facts.sshd?.ports ?? [];
@@ -116,12 +180,15 @@ function serverSshPort(facts: HostFacts, loginPort: number): number {
 /**
  * The desired state of the server for the plan: the app, the admin login, the deploy key, SSH and
  * firewall settings for the access mode, the tunnel connector (with the tunnel's id) whenever the
- * plan has a Cloudflare Tunnel (tunnel mode, or a Portainer subdomain in either mode) and Portainer
- * when the plan turns it on.
+ * plan has a Cloudflare Tunnel (tunnel mode, or a Portainer subdomain in either mode), Portainer
+ * when the plan turns it on, and the web filter with Cloudflare's ranges (`run.webSources`) when
+ * the site is served directly behind Cloudflare's proxy.
+ * @throws Error when the plan needs the web filter but `run.webSources` is missing: a host plan
+ * must never drop the filter because the ranges were not read.
  */
 export function desiredHost(
   deps: Pick<PhaseDeps, "paths">,
-  run: Pick<OwnServerRun, "session" | "facts" | "target">,
+  run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources">,
   input: {
     plan: DeployPlan;
     deployPublicKey: string;
@@ -130,6 +197,10 @@ export function desiredHost(
   },
 ): DesiredHost {
   const { plan } = input;
+  const filtered = ownWebFromCloudflare(plan);
+  if (filtered && run.webSources === undefined) {
+    throw new Error("The web filter needs Cloudflare's IP ranges (read them with ownWebSources).");
+  }
   const { connection } = run.session;
   const tunnel = usesTunnel(plan)
     ? {
@@ -158,6 +229,7 @@ export function desiredHost(
     access: run.target.access,
     ...(tunnel !== undefined ? { tunnel } : {}),
     ...(portainer !== undefined ? { portainer } : {}),
+    ...(filtered && run.webSources !== undefined ? { webFilter: run.webSources } : {}),
     ...(input.passwordLogins !== undefined
       ? { disablePasswords: input.passwordLogins === "off" }
       : {}),
@@ -253,6 +325,9 @@ export async function prepareOwnServer(
       adapter?.apply ? adapter.apply(remote, plan, options) : applyHostPlan(remote, plan, options),
   };
   if (target.access === "tunnel") sshHostname(plan); // a tunnel needs a Cloudflare domain
+  // Behind Cloudflare's proxy the firewall needs Cloudflare's current ranges; read them first, so
+  // a failure stops before anything is changed.
+  const webSources = await ownWebSources(deps, plan, input.services.cloudflare);
   deps.reporter.step("Connecting to your server");
   const session = await connectOwnServer(deps, {
     ...(input.options.hostKey !== undefined ? { hostKey: input.options.hostKey } : {}),
@@ -286,6 +361,7 @@ export async function prepareOwnServer(
     facts,
     target,
     sshPort: serverSshPort(facts, session.connection.port),
+    ...(webSources !== undefined ? { webSources } : {}),
     host,
     verifyLogin:
       own.verifyLogin ??
@@ -569,7 +645,33 @@ export async function applyOwnHostPlan(
   deps.reporter.success(
     `Prepared your server (${result.applied.length} change${result.applied.length === 1 ? "" : "s"} applied).`,
   );
+  if (switchesToWebFilter(run.facts, plan, input.plan.app.name, result.applied)) {
+    deps.reporter.warn(SWITCH_TO_FILTER_NOTE);
+  }
   return { plan, hash, applied: result.applied.length > 0, approval };
+}
+
+/** Said after a running app switched to the web filter mode (published on IPv4 only). */
+export const SWITCH_TO_FILTER_NOTE =
+  "Your site stops answering on the server's IPv6 address only after the next deploy re-creates Caddy (until then the running Caddy still listens on IPv6 ports 80 and 443, around the web filter): merge the deploy pull request, or re-run the deploy workflow now.";
+
+/**
+ * True when this apply installed the web filter for the first time on a server where the app
+ * already runs (a switch from DNS only or the tunnel): the running Caddy keeps its IPv6 listeners
+ * until the next deploy re-creates it with the filter mode's IPv4-only ports.
+ */
+function switchesToWebFilter(
+  facts: HostFacts,
+  plan: HostPlan,
+  app: string,
+  applied: readonly string[],
+): boolean {
+  const filter = plan.steps.find((step) => step.id === "web-filter");
+  if (filter === undefined || filter.params.remove === true || !applied.includes("web-filter")) {
+    return false;
+  }
+  const wasFiltered = webFilterFacts(facts).files.script !== null;
+  return !wasFiltered && facts.containers.some((container) => container.project === app);
 }
 
 /**

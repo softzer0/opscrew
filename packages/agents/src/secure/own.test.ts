@@ -262,6 +262,104 @@ describe("runSecure on a server the user owns", () => {
     expect(await readFile(deps.paths.files.securityReport, "utf8")).not.toContain(OWN_IPV4);
   });
 
+  it("behind Cloudflare's proxy: closed web ports are what OpsCrew set up, open ones a finding", async () => {
+    const options = {
+      plan: ownPlan(),
+      own: { host: OWN_IPV4, port: 22, user: "admin", agent: true, reachable: true },
+      hostPlan: setupPlan({ root: false, disablePasswords: true, sshPorts: "22" }),
+      deployment: OWN_IPV4,
+    };
+    const closed = await runSecure(await setup(options), {
+      scanners: noScanners,
+      tcpConnect: answering(22),
+    });
+    for (const port of [80, 443]) {
+      expect(find(closed.probes, `port-${port}-cloudflare-only`)).toMatchObject({
+        status: "pass",
+        severity: "info",
+      });
+    }
+    expect(closed.probes.some((probe) => probe.id === "port-80-open")).toBe(false);
+    expect(closed.passed).toBe(true);
+
+    const deps = await setup(options);
+    const open = await runSecure(deps, { scanners: noScanners, tcpConnect: answering(22, 443) });
+    expect(find(open.probes, "port-80-cloudflare-only").status).toBe("pass");
+    const https = find(open.probes, "port-443-cloudflare-only");
+    expect(https).toMatchObject({ status: "fail", severity: "medium" });
+    expect(https.message).toContain("around Cloudflare's protection");
+    expect(https.remediation).toContain("opscrew provision");
+    expect(open.passed).toBe(false);
+    expect(await readFile(deps.paths.files.securityReport, "utf8")).not.toContain(OWN_IPV4);
+  });
+
+  it("behind the web filter, 443 must not answer on the server's IPv6 address either", async () => {
+    const OWN_IPV6 = "2001:db8::10";
+    const options = {
+      plan: ownPlan(),
+      own: {
+        host: OWN_IPV4,
+        port: 22,
+        user: "admin",
+        agent: true,
+        reachable: true,
+        publicIpv6: OWN_IPV6,
+      },
+      hostPlan: setupPlan({ root: false, disablePasswords: true, sshPorts: "22" }),
+      deployment: OWN_IPV4,
+    };
+    // docker-proxy answers on IPv6 (around DOCKER-USER): a finding, the address never reported.
+    const deps = await setup(options);
+    const probed: string[] = [];
+    const open6 = await runSecure(deps, {
+      scanners: noScanners,
+      ipv6Route: async () => true,
+      tcpConnect: async (host, port) => {
+        probed.push(`${host}:${port}`);
+        return port === 22 || host === OWN_IPV6;
+      },
+    });
+    expect(probed).toContain(`${OWN_IPV6}:443`);
+    expect(find(open6.probes, "port-443-ipv6-closed")).toMatchObject({
+      status: "fail",
+      severity: "medium",
+    });
+    expect(open6.passed).toBe(false);
+    const report = await readFile(deps.paths.files.securityReport, "utf8");
+    expect(report).not.toContain(OWN_IPV6);
+    expect(report).not.toContain(OWN_IPV4);
+
+    // Closed on IPv6: as intended. No IPv6 route from this computer: skipped with a note.
+    const closed = await runSecure(await setup(options), {
+      scanners: noScanners,
+      ipv6Route: async () => true,
+      tcpConnect: answering(22),
+    });
+    expect(find(closed.probes, "port-443-ipv6-closed").status).toBe("pass");
+    const noRoute = await runSecure(await setup(options), {
+      scanners: noScanners,
+      ipv6Route: async () => false,
+      tcpConnect: answering(22),
+    });
+    expect(find(noRoute.probes, "port-443-ipv6-closed")).toMatchObject({ status: "skip" });
+    expect(find(noRoute.probes, "port-443-ipv6-closed").message).toMatch(/no IPv6 route/);
+
+    // DNS only: no IPv6 probe (the server answers everyone there).
+    const plan = ownPlan();
+    const dnsOnly = await runSecure(
+      await setup({
+        ...options,
+        plan: {
+          ...plan,
+          dns: { ...plan.dns, proxied: false },
+          security: { ...plan.security, httpAllowedFrom: "any" },
+        },
+      }),
+      { scanners: noScanners, ipv6Route: async () => true, tcpConnect: answering(22, 80, 443) },
+    );
+    expect(dnsOnly.probes.some((probe) => probe.id === "port-443-ipv6-closed")).toBe(false);
+  });
+
   it("without the applied host plan on this computer, a password-on drop-in fails", async () => {
     const deps = await setup({
       plan: ownPlan({ access: "tunnel" }),

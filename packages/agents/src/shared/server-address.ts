@@ -67,6 +67,14 @@ const OwnServerSchema = z
      * interview's answer, which design turns into the plan's `target.access`).
      */
     reachable: z.boolean().optional(),
+    /**
+     * How the site is served when the internet reaches the server and its domain is on
+     * Cloudflare (the interview's answer): through a Cloudflare Tunnel (the default when absent),
+     * directly behind Cloudflare's proxy with OpsCrew's web filter (`proxy`, the user's explicit
+     * choice), or directly with DNS only. Design turns it into the plan's `target.access` and
+     * `dns.proxied`.
+     */
+    serve: z.enum(["tunnel", "proxy", "dns-only"]).optional(),
     /** The addresses DNS points to in public mode. */
     publicIpv4: z.ipv4().optional(),
     publicIpv6: z.ipv6().optional(),

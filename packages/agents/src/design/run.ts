@@ -36,9 +36,14 @@ import { convertMoney, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cos
 import { buildDesignOptions, minimumMonthlyCost } from "./options";
 import {
   buildOwnServerOption,
+  mayHavePublicIpv4,
   OWN_SERVER_BACKUPS_NOTE,
   OWN_SERVER_PRICE_NOTE,
   type OwnServerAccess,
+  type OwnServerServing,
+  ownServerServing,
+  proxyNeedsIpv4Message,
+  servingAccess,
   tunnelDomainMessage,
   tunnelNeedsCloudflareDomain,
 } from "./own";
@@ -71,10 +76,12 @@ export interface OwnServerDesignInput {
   /** The inspected server, offered as the single option (ignored with a catalogue override). */
   facts?: OwnServerFacts;
   /**
-   * How the internet reaches the server; default: the interview's answer (`server.reachable`,
-   * `public` when reachable, else `tunnel`).
+   * How the internet reaches the server; default: the interview's answers. `public` means the
+   * server is reachable (it is then served as `serving` or the interview's `server.serve` says).
    */
   access?: OwnServerAccess;
+  /** How the site is served; default: the interview's answers (see `ownServerServing`). */
+  serving?: OwnServerServing;
 }
 
 export interface DesignResult {
@@ -139,6 +146,8 @@ export interface DesignPreview {
   requirements: Requirements;
   /** A server the user owns: how the internet reaches it (the plan's `target.access`). */
   access?: OwnServerAccess;
+  /** A server the user owns: how the site is served (tunnel, proxy with the filter, DNS only). */
+  serving?: OwnServerServing;
 }
 
 interface DesignInputs {
@@ -187,15 +196,21 @@ export async function previewDesignOptions(
 }
 
 /**
- * How the internet reaches the user's own server: `input.access`, else the interview's answer.
+ * How the user's own server serves the site: `input.serving`, else from `input.access` or the
+ * interview's answers (`server.reachable` and `server.serve`, see `ownServerServing`): the tunnel
+ * by default whenever the domain is on Cloudflare, behind Cloudflare's proxy with the web filter
+ * only as the explicit `proxy` answer, DNS only without a Cloudflare domain or as the answer.
  * @throws OpsCrewError `PHASE_PRECONDITION` when the interview has no answers about the server.
  */
 async function ownServerAccess(
   deps: PhaseDeps,
   input: OwnServerDesignInput | undefined,
-): Promise<OwnServerAccess> {
-  if (input?.access !== undefined) return input.access;
-  const reachable = (await readOwnServer(deps.paths))?.reachable;
+  requirements: Requirements,
+): Promise<OwnServerServing> {
+  if (input?.serving !== undefined) return input.serving;
+  if (input?.access === "tunnel") return "tunnel";
+  const recorded = await readOwnServer(deps.paths);
+  const reachable = input?.access === "public" ? true : recorded?.reachable;
   if (reachable === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -205,7 +220,12 @@ async function ownServerAccess(
       },
     );
   }
-  return reachable ? "public" : "tunnel";
+  const serving = ownServerServing({ reachable, serve: recorded?.serve, requirements });
+  if (serving === "proxy" && recorded !== undefined && !mayHavePublicIpv4(recorded)) {
+    const { message, hint } = proxyNeedsIpv4Message();
+    throw new OpsCrewError("PHASE_PRECONDITION", message, { hint });
+  }
+  return serving;
 }
 
 /** Warnings about the app itself: background jobs and what detection noted. */
@@ -229,14 +249,15 @@ async function priceOwnServer(
 ): Promise<DesignPreview> {
   const say = (text: string) => deps.redactor.redact(text);
   const warn = warner(deps, warnings);
-  const access = await ownServerAccess(deps, input);
+  const serving = await ownServerAccess(deps, input, requirements);
+  const access = servingAccess(serving);
   const catalog =
     override ??
     vpsConnector("own", deps, {
       now: () => deps.clock.now(),
       ...(input?.facts !== undefined ? { ownServer: input.facts } : {}),
     }).catalog();
-  const own = await buildOwnServerOption({ facts, requirements, catalog, access });
+  const own = await buildOwnServerOption({ facts, requirements, catalog, access, serving });
   for (const warning of own.warnings) warn(warning);
   const { option } = own;
   deps.reporter.info(
@@ -244,7 +265,15 @@ async function priceOwnServer(
   );
   deps.reporter.info(OWN_SERVER_BACKUPS_NOTE);
   appWarnings(facts, warn);
-  return { options: [option], priceSource: "live", warnings, facts, requirements, access };
+  return {
+    options: [option],
+    priceSource: "live",
+    warnings,
+    facts,
+    requirements,
+    access,
+    serving,
+  };
 }
 
 function lowerFirst(text: string): string {
@@ -365,12 +394,13 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   let ownServer = options.ownServer;
   if (requestedProvider(inputs.requirements) === "own") {
     // A tunnel without a Cloudflare domain cannot be provisioned: stop before writing anything.
-    const access = await ownServerAccess(deps, ownServer);
+    const serving = await ownServerAccess(deps, ownServer, inputs.requirements);
+    const access = servingAccess(serving);
     if (tunnelNeedsCloudflareDomain(inputs.requirements, access)) {
       const { message, hint } = tunnelDomainMessage();
       throw new OpsCrewError("PHASE_PRECONDITION", message, { hint });
     }
-    ownServer = { ...ownServer, access };
+    ownServer = { ...ownServer, access, serving };
   }
 
   const preview = await priceOptions(deps, inputs, options.catalog, warnings, ownServer);
@@ -394,6 +424,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     signals,
     ...(previous ? { createdAt: previous.createdAt } : {}),
     ...(preview.access !== undefined ? { access: preview.access } : {}),
+    ...(preview.serving !== undefined ? { serving: preview.serving } : {}),
   });
   const plan = previous ? keepPlanSettings(fresh, previous) : fresh;
   if (previous) for (const warning of serverChangeWarnings(previous, plan)) warn(warning);

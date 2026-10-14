@@ -358,6 +358,22 @@ const DeployPlanObjectSchema = z
           'can be "tunnel" only with a domain on Cloudflare (dns.provider "cloudflare" with dns.domain): the tunnel serves the app on that domain',
       });
     }
+    if (
+      plan.target.provider === "own" &&
+      plan.target.access === "public" &&
+      plan.dns.provider === "cloudflare" &&
+      plan.dns.proxied &&
+      plan.security.httpAllowedFrom === "any"
+    ) {
+      // Docker-published ports bypass the server's firewall: behind the proxy only OpsCrew's
+      // filter for Cloudflare's addresses keeps visitors from going around Cloudflare.
+      ctx.addIssue({
+        code: "custom",
+        path: ["security", "httpAllowedFrom"],
+        message:
+          'must be "cloudflare" when your own server serves the site directly behind Cloudflare\'s proxy (only OpsCrew\'s filter then keeps visitors from reaching the server around Cloudflare); to let everyone reach the server, set dns.proxied to false (DNS only), or use a Cloudflare Tunnel (target.access "tunnel")',
+      });
+    }
     if (plan.retarget !== undefined && plan.target.provider === "own") {
       ctx.addIssue({
         code: "custom",

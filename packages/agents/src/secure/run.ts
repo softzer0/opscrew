@@ -46,6 +46,8 @@ export interface RunSecureOptions {
   offline?: boolean;
   /** Probe timeout in milliseconds (default 3000). */
   probeTimeoutMs?: number;
+  /** Whether this computer can reach IPv6 addresses (default: it has a global IPv6 address). */
+  ipv6Route?: () => Promise<boolean>;
 }
 
 /** Outcome of {@link runSecure}. */
@@ -146,6 +148,8 @@ async function checkOwnServer(
       connect,
       timeoutMs,
       sshPort: own.sshPort,
+      ...(own.probeIpv6 !== undefined ? { ipv6: own.probeIpv6 } : {}),
+      ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
     })),
     ...(await probePorts(own.probeHost, { connect, timeoutMs, providerName: "ufw" })),
     await probeSshPasswordAuth(own.sshHost, {

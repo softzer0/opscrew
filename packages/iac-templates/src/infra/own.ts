@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { webFilterMode } from "../runtime";
 import { tunnelMode } from "../tunnel";
 import type { RenderContext } from "../types";
 import {
@@ -97,7 +98,10 @@ function mainTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
       "  domain             = var.domain",
       "  ipv4               = var.server_ipv4",
       "  ipv6               = var.server_ipv6",
-      "  ipv6_record        = var.server_ipv6 != null",
+      // Behind OpsCrew's web filter the site is published on IPv4 only: no AAAA record.
+      webFilterMode(plan)
+        ? "  ipv6_record        = false"
+        : "  ipv6_record        = var.server_ipv6 != null",
       "  proxied            = var.proxied",
       "  www                = var.www",
       "  manage_config_rule = var.manage_config_rule",

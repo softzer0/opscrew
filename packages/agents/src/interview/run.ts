@@ -179,6 +179,9 @@ export async function runInterview(
         ...(options.suggestedReachable !== undefined
           ? { suggestedReachable: options.suggestedReachable }
           : {}),
+        // Without a domain on Cloudflare the site can only be served with DNS only.
+        cloudflareDomain:
+          requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined,
       };
       if (!hasServerAnswers(split) && options.askServer !== undefined) {
         split = splitServerAnswers(await options.askServer(buildServerQuestions(serverContext)));

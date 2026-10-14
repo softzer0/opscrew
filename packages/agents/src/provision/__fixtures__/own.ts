@@ -8,6 +8,7 @@ import {
   HostFactsSchema,
   type HostPlan,
   hostPlanHash,
+  webFilterFileHashes,
 } from "@opscrew/connector-ssh-host";
 import type {
   CommandResult,
@@ -246,6 +247,22 @@ function paramsOf(plan: HostPlan, id: string): Params | undefined {
  * The facts of the server after `plan` was applied to it, so the next inspection plans no
  * changes (what OpsCrew's host adapter leaves behind, as far as planning can tell).
  */
+/** What inspection reports for a server with OpsCrew's web filter for these (sorted) ranges. */
+export function filteredFacts(ipv4: string[]): HostFacts["webFilter"] {
+  const hashes = webFilterFileHashes({ ipv4 });
+  return {
+    backend: "iptables",
+    commands: ["iptables", "iptables-restore"],
+    files: { script: hashes.script, unit: hashes.unit, dropIn: hashes.dropIn },
+    enabled: true,
+    active: true,
+    rules4: {
+      chain: { sources: ipv4, dropsRest: true, other: 0 },
+      dockerUser: { exists: true, leading: ["tcp/80", "tcp/443", "udp/443"], jumps: 3 },
+    },
+  };
+}
+
 export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
   const marker = paramsOf(plan, "app-marker") as Params;
   const app = String(marker.app);
@@ -280,8 +297,17 @@ export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
     previous,
   });
   const tunnelOn = tunnel !== undefined && tunnel.remove !== true;
+  // The web filter as the real adapter leaves it (or none when the plan removes it).
+  const filter = paramsOf(plan, "web-filter");
+  const webFilter =
+    filter === undefined
+      ? before.webFilter
+      : filter.remove === true
+        ? undefined
+        : filteredFacts(String(filter.ipv4).split(" "));
   return HostFactsSchema.parse({
     ...before,
+    webFilter,
     sshd: {
       ...before.sshd,
       permitRootLogin: sshd.permitRootLogin,

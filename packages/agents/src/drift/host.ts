@@ -8,6 +8,7 @@ import {
   type HostStepId,
   inspectHost,
   planHost,
+  webFilterFacts,
 } from "@opscrew/connector-ssh-host";
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -19,6 +20,8 @@ import {
   type OwnServerServices,
   ownTarget,
 } from "../provision";
+import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
+import type { CloudflareApi } from "../provision/types";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
 export interface HostDifference {
@@ -92,6 +95,7 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "deploy-user": "The deploy user",
   sshd: "SSH settings",
   ufw: "Firewall (ufw)",
+  "web-filter": "Web filter (only Cloudflare reaches ports 80 and 443)",
   fail2ban: "Brute-force protection (fail2ban)",
   "unattended-upgrades": "Automatic security updates",
   "runtime-dirs": "Runtime directories (/srv/app and /srv/data)",
@@ -206,6 +210,68 @@ function ufwDetails(facts: HostFacts, step: HostStep): string[] {
   return out;
 }
 
+/** The (IPv4) ranges a web-filter step lets in. */
+function filterRanges(step: Pick<HostStep, "params"> | undefined): string[] | undefined {
+  if (step === undefined || typeof step.params.ipv4 !== "string") return undefined;
+  return String(step.params.ipv4).split(" ").filter(Boolean);
+}
+
+const NEXT_STEP =
+  "Run `opscrew provision`: it shows the change and applies it only after you approve it.";
+
+/**
+ * The web filter differs from what the plan wants now: removed or edited on the server, its unit
+ * off, Cloudflare's ranges changed since the last applied host plan (`applied`), or a filter left
+ * although the site is no longer served directly behind Cloudflare's proxy.
+ */
+function webFilterDetails(facts: HostFacts, step: HostStep, applied?: HostPlan): string[] {
+  if (step.params.remove === true) {
+    return [
+      "OpsCrew's web filter is still on the server, although the site is no longer served directly behind Cloudflare's proxy, so visitors who do not come through Cloudflare cannot reach it.",
+    ];
+  }
+  const wf = webFilterFacts(facts);
+  const wanted = filterRanges(step) ?? [];
+  const before = filterRanges(applied?.steps.find((item) => item.id === "web-filter"));
+  const sameAs = (list: readonly string[]) =>
+    list.length === wanted.length && list.every((net) => wanted.includes(net));
+  const out: string[] = [];
+  if (wf.files.script === null && wf.rules4.chain === null) {
+    return [
+      `The web filter is missing, so visitors can reach your server around Cloudflare. ${NEXT_STEP}`,
+    ];
+  }
+  if (before !== undefined && !sameAs(before)) {
+    const added = wanted.filter((net) => !before.includes(net)).length;
+    const dropped = before.filter((net) => !wanted.includes(net)).length;
+    const parts = [
+      ...(added > 0 ? [`${added} new`] : []),
+      ...(dropped > 0 ? [`${dropped} no longer listed`] : []),
+    ];
+    out.push(
+      `Cloudflare's IP ranges changed since the last provision (${parts.join(", ")}), and the filter still lets in only the old list. ${NEXT_STEP}`,
+    );
+  } else {
+    if (wf.files.dropIn === null) {
+      out.push(
+        `Docker no longer requires the web filter (the docker.service.d drop-in is missing), so after a restart Docker could publish the web ports without it. ${NEXT_STEP}`,
+      );
+    }
+    if (!wf.enabled || !wf.active) {
+      out.push(`The web filter's unit is not enabled and running. ${NEXT_STEP}`);
+    }
+    const chain = wf.rules4.chain;
+    if (chain === null || !chain.dropsRest || chain.other > 0) {
+      out.push(`OpsCrew's chain OPSCREW-WEB was removed or edited. ${NEXT_STEP}`);
+    } else if (wf.rules4.dockerUser.leading.length < 3) {
+      out.push(
+        `OpsCrew's jumps are no longer the first rules of DOCKER-USER, so another rule may let visitors in around Cloudflare. ${NEXT_STEP}`,
+      );
+    }
+  }
+  return out;
+}
+
 function fail2banDetails(facts: HostFacts): string[] {
   if (!facts.packages.fail2ban) return ["fail2ban is no longer installed."];
   if (!facts.fail2ban.active) return ["fail2ban is not running."];
@@ -278,7 +344,7 @@ function portainerDetails(facts: HostFacts, step: HostStep): string[] {
 }
 
 /** What differs for one step that is not in place, in plain English. */
-function stepDetails(facts: HostFacts, step: HostStep): string[] {
+function stepDetails(facts: HostFacts, step: HostStep, applied?: HostPlan): string[] {
   switch (step.id) {
     case "package-repair":
       return ["A package installation stopped part-way (dpkg was interrupted)."];
@@ -294,6 +360,8 @@ function stepDetails(facts: HostFacts, step: HostStep): string[] {
       return sshdDetails(facts, step);
     case "ufw":
       return ufwDetails(facts, step);
+    case "web-filter":
+      return webFilterDetails(facts, step, applied);
     case "fail2ban":
       return fail2banDetails(facts);
     case "unattended-upgrades":
@@ -313,12 +381,14 @@ function stepDetails(facts: HostFacts, step: HostStep): string[] {
  * Every difference between the inspected server and what OpsCrew set up: OpsCrew's host record,
  * each step of the setup plan `setup` (planned from the same facts and the desired state) that is
  * not in place, the plan's findings (a blocked step always has one), and the app's containers.
- * Pure; holds no secret and no address.
+ * `applied` (the last setup plan the user approved) tells a change of Cloudflare's IP ranges from
+ * a filter someone changed on the server. Pure; holds no secret and no address.
  */
 export function hostDifferences(
   facts: HostFacts,
   setup: HostPlan,
   app: { name: string; projectId: string; deployed: boolean },
+  applied?: HostPlan,
 ): HostDifference[] {
   const out: HostDifference[] = [];
   const record = {
@@ -340,7 +410,7 @@ export function hostDifferences(
   }
   for (const step of setup.steps) {
     if (step.state !== "change") continue;
-    const details = stepDetails(facts, step);
+    const details = stepDetails(facts, step, applied);
     const shown = details.length > 0 ? details : [step.reason ?? "differs from OpsCrew's setup."];
     for (const detail of shown) out.push({ area: step.id, title: AREA_TITLES[step.id], detail });
   }
@@ -376,7 +446,13 @@ export function hostDifferences(
 export async function ownHostDrift(
   deps: PhaseDeps,
   plan: DeployPlan,
-  options: { own?: OwnServerServices; hostKey?: string; tunnelId?: string },
+  options: {
+    own?: OwnServerServices;
+    hostKey?: string;
+    tunnelId?: string;
+    /** Reads Cloudflare's current IP ranges (default: Cloudflare's public endpoint). */
+    cloudflare?: Pick<CloudflareApi, "getIpRanges"> | null;
+  },
 ): Promise<HostDrift> {
   const own = options.own ?? {};
   const deployPublicKey = (
@@ -412,9 +488,15 @@ export async function ownHostDrift(
   const setup = await lastHostSetup(deps, plan);
   const passwordLogins = passwordLoginChoice(setup, facts);
   const tunnelId = options.tunnelId ?? facts.tunnel.tunnelId ?? undefined;
+  const webSources = await driftWebSources(deps, plan, options.cloudflare, setup, facts);
   const desired = desiredHost(
     deps,
-    { session, facts, target: ownTarget(plan) },
+    {
+      session,
+      facts,
+      target: ownTarget(plan),
+      ...(webSources !== undefined ? { webSources } : {}),
+    },
     {
       plan,
       deployPublicKey,
@@ -423,10 +505,42 @@ export async function ownHostDrift(
     },
   );
   return {
-    differences: hostDifferences(facts, planHost(facts, desired), {
-      name: plan.app.name,
-      projectId: deps.paths.projectId,
-      deployed: plan.deployment.lastDeployAt !== undefined,
-    }),
+    differences: hostDifferences(
+      facts,
+      planHost(facts, desired),
+      {
+        name: plan.app.name,
+        projectId: deps.paths.projectId,
+        deployed: plan.deployment.lastDeployAt !== undefined,
+      },
+      setup,
+    ),
   };
+}
+
+/**
+ * Served directly behind Cloudflare's proxy: Cloudflare's current ranges, so a change of
+ * Cloudflare's list shows as drift. When they cannot be read, the comparison uses the ranges of
+ * the last applied host plan (or OpsCrew's chain on the server) and says so, instead of reporting
+ * a difference nobody made.
+ */
+async function driftWebSources(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  cloudflare: Pick<CloudflareApi, "getIpRanges"> | null | undefined,
+  setup: HostPlan | undefined,
+  facts: HostFacts,
+): Promise<OwnWebSources | undefined> {
+  if (!ownWebFromCloudflare(plan)) return undefined;
+  try {
+    return await ownWebSources(deps, plan, cloudflare);
+  } catch {
+    deps.reporter.warn(
+      "OpsCrew could not read Cloudflare's current IP ranges, so it compared the web filter with the ranges of the last provision. Run `opscrew drift` again when Cloudflare's API is reachable to see whether Cloudflare's list changed.",
+    );
+    const applied = filterRanges(setup?.steps.find((step) => step.id === "web-filter"));
+    const known = applied ?? webFilterFacts(facts).rules4.chain?.sources ?? [];
+    // Nothing known at all: Cloudflare's list cannot be guessed, and the filter is missing anyway.
+    return { ipv4: known.length > 0 ? known : ["0.0.0.0/32"] };
+  }
 }

@@ -2,9 +2,10 @@ import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { ownPlan } from "../provision/__fixtures__/own";
+import { CF_V4, CF_V6 } from "../provision/__fixtures__/fakes";
+import { ownCloudflare, ownPlan } from "../provision/__fixtures__/own";
 import {
   everythingPrinted,
   LAN_IPV4,
@@ -22,6 +23,12 @@ function edit(s: OwnProject, change: (facts: OwnProject["host"]["facts"]) => voi
   const facts = structuredClone(s.host.facts);
   change(facts);
   s.host.facts = HostFactsSchema.parse(facts);
+}
+
+/** The web filter facts of a prepared server (inspection always reports them). */
+function filterOf(facts: OwnProject["host"]["facts"]) {
+  if (facts.webFilter === undefined) throw new Error("no web filter facts");
+  return facts.webFilter;
 }
 
 const details = (report: Awaited<ReturnType<typeof runDrift>>) =>
@@ -182,6 +189,91 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
     const everything = `${renderDriftReport(report)}\n${JSON.stringify(report)}\n${everythingPrinted(s)}`;
     expect(everything).not.toContain(LAN_IPV4);
     for (const secret of Object.values(s.secrets)) expect(everything).not.toContain(secret);
+  });
+
+  describe("behind Cloudflare's proxy", () => {
+    /** Cloudflare's ranges as the fake API answers them from now on. */
+    function cloudflareAnswers(s: OwnProject, answer: () => { ipv4: string[]; ipv6: string[] }) {
+      s.services.cloudflare = { ...ownCloudflare(), getIpRanges: async () => answer() };
+    }
+
+    it("a change in Cloudflare's ranges is host drift with a plain next step", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      // Provisioned with Cloudflare's ranges: clean.
+      expect((await runDrift(s.deps, { services: s.services })).host).toEqual({
+        differences: [],
+      });
+
+      cloudflareAnswers(s, () => ({ ipv4: [CF_V4[0] as string, "131.0.72.0/22"], ipv6: CF_V6 }));
+      const report = await runDrift(s.deps, { services: s.services });
+      expect(report.clean).toBe(false);
+      expect(details(report)).toEqual([
+        "web-filter: Cloudflare's IP ranges changed since the last provision (1 new, 1 no longer listed), and the filter still lets in only the old list. Run `opscrew provision`: it shows the change and applies it only after you approve it.",
+      ]);
+      const text = renderDriftReport(report);
+      expect(text).toContain(
+        "~ Web filter (only Cloudflare reaches ports 80 and 443): Cloudflare's IP ranges changed",
+      );
+      expect(text).toContain("`opscrew provision` shows a host plan");
+      expect(s.host.applies).toHaveLength(1);
+      expect(s.handler.requests).toEqual([]);
+      expect(`${text}\n${JSON.stringify(report)}`).not.toContain(OWN_IPV4);
+    });
+
+    it("reports a filter Docker no longer requires, a stopped unit, edited rules or a missing filter", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      edit(s, (f) => {
+        filterOf(f).files.dropIn = null;
+        filterOf(f).active = false;
+        filterOf(f).rules4.dockerUser.leading = [];
+      });
+      expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
+        "web-filter: Docker no longer requires the web filter (the docker.service.d drop-in is missing), so after a restart Docker could publish the web ports without it. Run `opscrew provision`: it shows the change and applies it only after you approve it.",
+        "web-filter: The web filter's unit is not enabled and running. Run `opscrew provision`: it shows the change and applies it only after you approve it.",
+        "web-filter: OpsCrew's jumps are no longer the first rules of DOCKER-USER, so another rule may let visitors in around Cloudflare. Run `opscrew provision`: it shows the change and applies it only after you approve it.",
+      ]);
+      edit(s, (f) => {
+        filterOf(f).files.script = null;
+        filterOf(f).rules4.chain = null;
+      });
+      expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
+        "web-filter: The web filter is missing, so visitors can reach your server around Cloudflare. Run `opscrew provision`: it shows the change and applies it only after you approve it.",
+      ]);
+    });
+
+    it("compares with the last provision's ranges when Cloudflare cannot be reached", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      let reads = 0;
+      cloudflareAnswers(s, () => {
+        reads++;
+        // The file preview reads them first; the server comparison second.
+        if (reads === 2) throw new Error("getaddrinfo ENOTFOUND api.cloudflare.com");
+        return { ipv4: CF_V4, ipv6: CF_V6 };
+      });
+      const report = await runDrift(s.deps, { services: s.services });
+      expect(report.host).toEqual({ differences: [] });
+      expect(s.deps.reporter.text()).toContain(
+        "OpsCrew could not read Cloudflare's current IP ranges, so it compared the web filter with the ranges of the last provision.",
+      );
+    });
+
+    it("a filter left on a server that now serves DNS only is drift", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      await writeArtifact("plan", s.deps.paths.files.plan, {
+        ...plan,
+        dns: { ...plan.dns, proxied: false },
+        security: { ...plan.security, httpAllowedFrom: "any" },
+      });
+      const report = await runDrift(s.deps, { services: s.services });
+      expect(details(report)).toContain(
+        "web-filter: OpsCrew's web filter is still on the server, although the site is no longer served directly behind Cloudflare's proxy, so visitors who do not come through Cloudflare cannot reach it.",
+      );
+    });
   });
 
   it("next steps name the server and the Cloudflare dashboard for own servers, the console otherwise", () => {

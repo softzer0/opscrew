@@ -277,6 +277,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
       ...(services.own !== undefined ? { own: services.own } : {}),
       ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
       ...(tunnelId !== undefined ? { tunnelId } : {}),
+      ...(services.cloudflare !== undefined ? { cloudflare: services.cloudflare } : {}),
     });
   }
 

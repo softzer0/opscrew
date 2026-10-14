@@ -13,6 +13,29 @@ const HEADER = [
   "# The deploy workflow copies it to /srv/app on the server.",
 ].join("\n");
 
+/**
+ * True when a server the user owns serves the site directly behind Cloudflare's proxy with
+ * OpsCrew's web filter (public mode, a proxied Cloudflare domain, `security.httpAllowedFrom:
+ * cloudflare`). The site is then published on IPv4 only: Docker serves an IPv6 host port of a
+ * container without IPv6 through docker-proxy, around the filter in `DOCKER-USER`.
+ */
+export function webFilterMode(plan: DeployPlan): boolean {
+  return (
+    plan.target.provider === "own" &&
+    plan.target.access === "public" &&
+    plan.dns.provider === "cloudflare" &&
+    plan.dns.proxied &&
+    plan.security.httpAllowedFrom === "cloudflare"
+  );
+}
+
+/** Caddy's published ports: loopback in tunnel mode, IPv4 only in web-filter mode, else all. */
+function caddyPorts(plan: DeployPlan): string[] {
+  if (tunnelMode(plan)) return [`127.0.0.1:${TUNNEL_ORIGIN_PORT}:80`];
+  if (webFilterMode(plan)) return ["0.0.0.0:80:80", "0.0.0.0:443:443", "0.0.0.0:443:443/udp"];
+  return ["80:80", "443:443", "443:443/udp"];
+}
+
 /** Hostnames Caddy serves; empty when the plan has no domain yet. */
 export function siteHosts(plan: DeployPlan): string[] {
   const domain = plan.dns.domain;
@@ -84,10 +107,9 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
   services.caddy = {
     image: CADDY_IMAGE,
     restart: "unless-stopped",
-    // In tunnel mode only the tunnel connector (host network) reaches Caddy, on a loopback port.
-    ports: tunnelMode(plan)
-      ? [`127.0.0.1:${TUNNEL_ORIGIN_PORT}:80`]
-      : ["80:80", "443:443", "443:443/udp"],
+    // In tunnel mode only the tunnel connector (host network) reaches Caddy, on a loopback port;
+    // behind OpsCrew's web filter only IPv4 is published (the filter covers IPv4 only).
+    ports: caddyPorts(plan),
     volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data", "caddy_config:/config"],
     depends_on: ["app"],
     ...hardening,

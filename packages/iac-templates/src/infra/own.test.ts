@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: HCL interpolation in expected file contents, not JavaScript templates.
 import { checkDialect } from "@opscrew/iac-engine";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { moveLayout, testTarget } from "../__fixtures__/layouts";
 import {
@@ -33,6 +34,15 @@ function ownContext(overrides: Partial<RenderContext> = {}): RenderContext {
   return testContext({ serverIpv4: SERVER_IPV4, serverIpv6: SERVER_IPV6, ...overrides });
 }
 
+/** The plan served directly with DNS only (not proxied, web traffic from anywhere). */
+function dnsOnlyPlan(plan: DeployPlan): DeployPlan {
+  return DeployPlanSchema.parse({
+    ...plan,
+    dns: { ...plan.dns, proxied: false },
+    security: { ...plan.security, httpAllowedFrom: "any" },
+  });
+}
+
 function expectNoAddress(files: readonly RenderedFile[]): void {
   for (const f of files) {
     expect(f.content, f.path).not.toContain(SERVER_IPV4);
@@ -61,9 +71,23 @@ describe("renderInfra for a server the user owns (public)", () => {
     expect(file(files, "prod/versions.tf")).not.toMatch(/hcloud|digitalocean/);
     expect(main).toMatch(/^ {2}ipv4 +=\s*var\.server_ipv4$/m);
     expect(main).toMatch(/^ {2}ipv6 +=\s*var\.server_ipv6$/m);
-    // An IPv4-only server (no TF_VAR_server_ipv6) gets no AAAA record; known when planning.
-    expect(main).toMatch(/^ {2}ipv6_record +=\s*var\.server_ipv6 != null$/m);
-    expect(main).toMatchSnapshot("main.tf");
+    // Behind OpsCrew's web filter (proxied, the default here) the site is published on IPv4
+    // only: never an AAAA record.
+    expect(main).toMatch(/^ {2}ipv6_record +=\s*false$/m);
+    // DNS only: an IPv4-only server (no TF_VAR_server_ipv6) gets no AAAA record, known when
+    // planning; the file is exactly what it was before the web filter existed.
+    const dnsOnly = file(
+      renderInfra(dnsOnlyPlan(plan), ownContext({ cloudflare: testCloudflare() })),
+      "prod/main.tf",
+    );
+    expect(dnsOnly).toMatch(/^ {2}ipv6_record +=\s*var\.server_ipv6 != null$/m);
+    expect(dnsOnly).toMatchSnapshot("main.tf");
+    expect(main).toEqual(
+      dnsOnly.replace(
+        "  ipv6_record        = var.server_ipv6 != null",
+        "  ipv6_record        = false",
+      ),
+    );
     expect(file(files, "prod/variables.tf")).toMatchSnapshot("variables.tf");
     expect(file(files, "prod/outputs.tf")).toMatchSnapshot("outputs.tf");
     expect(file(files, "prod/versions.tf")).toMatchSnapshot("versions.tf");

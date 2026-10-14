@@ -15,7 +15,7 @@ import {
   type CodeChangeSignals,
   healthRouteFor,
 } from "./code-changes";
-import type { OwnServerAccess } from "./own";
+import type { OwnServerAccess, OwnServerServing } from "./own";
 
 export interface OptionToPlanInput {
   facts: ProjectFacts;
@@ -31,6 +31,12 @@ export interface OptionToPlanInput {
    * `tunnel` (a Cloudflare Tunnel).
    */
   access?: OwnServerAccess;
+  /**
+   * A server the user owns: how the site is served. `proxy` keeps the Cloudflare domain proxied
+   * (OpsCrew's web filter lets only Cloudflare in); `dns-only`, and a public server without it,
+   * turns the proxy off (DNS only).
+   */
+  serving?: OwnServerServing;
 }
 
 /**
@@ -131,9 +137,16 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   if (services.postgres) env.set("DATABASE_URL", derived("DATABASE_URL", true));
   if (services.redis) env.set("REDIS_URL", derived("REDIS_URL", false));
 
+  // A server the user owns serves directly behind Cloudflare's proxy only with OpsCrew's web
+  // filter (the explicit `proxy` choice); otherwise a public server is DNS only.
+  const ownDirect = option.target.provider === "own" && input.access === "public";
   const dns: Record<string, unknown> =
     requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined
-      ? { provider: "cloudflare", domain: requirements.domain }
+      ? {
+          provider: "cloudflare",
+          domain: requirements.domain,
+          ...(ownDirect && input.serving !== "proxy" ? { proxied: false } : {}),
+        }
       : {
           // Without Cloudflare nothing proxies the traffic, so HTTP must stay open to everyone.
           provider: "none",
@@ -163,6 +176,9 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     cost: option.cost,
     codeChanges: input.codeChanges,
     dns,
+    ...(ownDirect && input.serving === "proxy"
+      ? { security: { httpAllowedFrom: "cloudflare" } }
+      : {}),
     cicd: {
       provider: "github-actions",
       registry: "ghcr",

@@ -179,22 +179,114 @@ describe("runVerify on a server the user owns", () => {
     expect(dns.message).toContain("not a Cloudflare address");
   });
 
-  it("public mode: DNS is compared with the server; the origin check says ufw lets everyone in", async () => {
+  it("public mode behind Cloudflare's proxy: the origin check probes port 443 and names no address", async () => {
     const deps = await setup(ownPlan(), { host: OWN_IPV4, port: 22 });
     await recordServerAddress(deps.paths, { ipv4: OWN_IPV4 });
+    const probed: string[] = [];
+    const closed: TcpConnect = async (host, port) => {
+      probed.push(`${host}:${port}`);
+      return false;
+    };
     const result = await runVerify(deps, {
       resolver,
       fetch: fakeSite().fetch,
       tlsConnect: cert,
-      tcpConnect: noProbes,
+      tcpConnect: closed,
       cloudflareRanges: CLOUDFLARE_RANGES,
     });
     expect(result.passed).toBe(true);
+    expect(probed).toEqual([`${OWN_IPV4}:443`]);
     const origin = byId(result.checks, "origin-not-direct");
-    expect(origin.status).toBe("skip");
-    expect(origin.message).toContain("ufw");
+    expect(origin.status).toBe("pass");
+    expect(origin.message).toBe(
+      "Port 443 on your server is closed to direct visitors; only Cloudflare reaches it.",
+    );
+    expect(JSON.stringify(origin)).not.toContain(OWN_IPV4);
     // Behind Cloudflare's proxy the runbook never shows the address.
     expect(await readFile(deps.paths.files.runbook, "utf8")).not.toContain(OWN_IPV4);
+
+    // Port 443 answers directly: a failure with the next step, still without the address.
+    const open = await runVerify(deps, {
+      resolver,
+      fetch: fakeSite().fetch,
+      tlsConnect: cert,
+      tcpConnect: async () => true,
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    expect(open.passed).toBe(false);
+    const direct = byId(open.checks, "origin-not-direct");
+    expect(direct.status).toBe("fail");
+    expect(direct.message).toContain("visitors can reach it around Cloudflare's protection");
+    expect(direct.remediation).toContain("web filter (in Docker's DOCKER-USER chain)");
+    expect(direct.remediation).toContain("`opscrew provision`");
+    expect(JSON.stringify(direct)).not.toContain(OWN_IPV4);
+  });
+
+  it("behind the web filter, port 443 must not answer on the server's IPv6 address either", async () => {
+    const OWN_IPV6 = "2001:db8::10";
+    const deps = await setup(ownPlan(), { host: OWN_IPV4, port: 22 });
+    await recordServerAddress(deps.paths, { ipv4: OWN_IPV4, ipv6: OWN_IPV6 });
+    const run = (tcpConnect: TcpConnect, ipv6Route: boolean) =>
+      runVerify(deps, {
+        resolver,
+        fetch: fakeSite().fetch,
+        tlsConnect: cert,
+        tcpConnect,
+        ipv6Route: async () => ipv6Route,
+        cloudflareRanges: CLOUDFLARE_RANGES,
+      });
+    const probed: string[] = [];
+    const closed = await run(async (host, port) => {
+      probed.push(`${host}:${port}`);
+      return false;
+    }, true);
+    expect(probed).toEqual([`${OWN_IPV4}:443`, `${OWN_IPV6}:443`]);
+    expect(byId(closed.checks, "origin-not-direct")).toMatchObject({
+      status: "pass",
+      message:
+        "Port 443 on your server is closed to direct visitors (IPv4 and IPv6); only Cloudflare reaches it.",
+    });
+
+    // docker-proxy answering on IPv6 (around DOCKER-USER) is a failure, without the address.
+    const open6 = await run(async (host) => host === OWN_IPV6, true);
+    const direct = byId(open6.checks, "origin-not-direct");
+    expect(direct.status).toBe("fail");
+    expect(direct.message).toContain("Port 443 on your server's IPv6 address answers directly");
+    expect(JSON.stringify(direct)).not.toMatch(/2001:db8|203\.0\.113/);
+
+    // No IPv6 route from this computer: IPv4 only, and the result says so.
+    const probedNoRoute: string[] = [];
+    const noRoute = await run(async (host, port) => {
+      probedNoRoute.push(`${host}:${port}`);
+      return false;
+    }, false);
+    expect(probedNoRoute).toEqual([`${OWN_IPV4}:443`]);
+    expect(byId(noRoute.checks, "origin-not-direct").message).toMatch(
+      /could not try its IPv6 address: this computer has no IPv6 route/,
+    );
+  });
+
+  it("public mode without Cloudflare's proxy: the origin check is skipped, no probe", async () => {
+    const plan = ownPlan();
+    const deps = await setup(
+      {
+        ...plan,
+        dns: { ...plan.dns, proxied: false },
+        security: { ...plan.security, httpAllowedFrom: "any" },
+      },
+      { host: OWN_IPV4, port: 22 },
+    );
+    await recordServerAddress(deps.paths, { ipv4: OWN_IPV4 });
+    const result = await runVerify(deps, {
+      resolver: { resolve4: async () => [OWN_IPV4], resolve6: async () => [] },
+      fetch: fakeSite().fetch,
+      tlsConnect: cert,
+      tcpConnect: noProbes,
+    });
+    expect(byId(result.checks, "origin-not-direct")).toMatchObject({
+      status: "skip",
+      message: "Skipped: the site is not behind Cloudflare's proxy.",
+    });
   });
 
   it("never writes the address into the runbook, also without Cloudflare's proxy or without a domain", async () => {

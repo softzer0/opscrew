@@ -5,7 +5,7 @@ import { type OwnServerConnection, readOwnServer, recordOwnServer } from "../sha
 import type { InterviewAnswers } from "./questions";
 
 /** The follow-up answers for a server the user already has (`server.<field>` in answers files). */
-export const SERVER_FIELDS = ["host", "port", "user", "key", "reachable"] as const;
+export const SERVER_FIELDS = ["host", "port", "user", "key", "reachable", "serve"] as const;
 /** One follow-up answer for a server the user already has. */
 export type ServerField = (typeof SERVER_FIELDS)[number];
 /** Id of a follow-up question, for example `server.host`. */
@@ -34,7 +34,19 @@ export interface OwnServerAnswers {
   agent: boolean;
   /** True when the internet reaches the server directly; false means a Cloudflare Tunnel. */
   reachable: boolean;
+  /**
+   * How the site is served when the server is reachable and its domain is on Cloudflare: through
+   * a Cloudflare Tunnel (recommended, the default), directly behind Cloudflare's proxy with
+   * OpsCrew's web filter (`proxy`), or directly with DNS only. Without a Cloudflare domain only
+   * `dns-only` applies.
+   */
+  serve: OwnServerServe;
 }
+
+/** The interview's answer to how the site is served (see {@link OwnServerAnswers.serve}). */
+export type OwnServerServe = "tunnel" | "proxy" | "dns-only";
+
+const SERVE_VALUES = ["tunnel", "proxy", "dns-only"] as const;
 
 /** A DNS name or a single host label; never starts with `-`, so `ssh` cannot read it as an option. */
 const HOST_NAME =
@@ -57,6 +69,7 @@ const OwnServerAnswersSchema = z
       .optional(),
     agent: z.boolean(),
     reachable: z.boolean(),
+    serve: z.enum(SERVE_VALUES),
   })
   .refine((own) => own.agent !== (own.keyPath !== undefined));
 
@@ -159,7 +172,36 @@ export interface OwnServerContext {
   previous?: OwnServerConnection;
   /** Whether the internet reaches the server, as inspection suggests (wins over a guess). */
   suggestedReachable?: boolean;
+  /**
+   * Whether the app's domain is on Cloudflare (from the requirements answers). `false` leaves DNS
+   * only as the way to serve the site; `undefined` offers every choice and design decides.
+   */
+  cloudflareDomain?: boolean;
 }
+
+/** The serving answer when none is given: the earlier one, else the tunnel (DNS only without Cloudflare). */
+function serveDefault(context: OwnServerContext): OwnServerServe {
+  if (context.cloudflareDomain === false) return "dns-only";
+  return context.previous?.serve ?? "tunnel";
+}
+
+const SERVE_OPTIONS = [
+  {
+    value: "tunnel",
+    label: "Through a Cloudflare Tunnel (recommended)",
+    hint: "No web port is opened on your server: only Cloudflare reaches the app, and deploys go through the tunnel too.",
+  },
+  {
+    value: "proxy",
+    label: "Directly, behind Cloudflare's proxy, with a filter",
+    hint: "Ports 80 and 443 stay open, but a filter in Docker lets only Cloudflare's addresses in. Needs no Cloudflare Zero Trust. It fails closed: if the filter cannot be installed, Docker does not start and the site is down until it is fixed.",
+  },
+  {
+    value: "dns-only",
+    label: "Directly, DNS only (no Cloudflare protection)",
+    hint: "Everyone can reach your server on ports 80 and 443; Cloudflare only answers DNS, so it neither hides nor protects the server.",
+  },
+] as const;
 
 function reachableDefault(context: OwnServerContext, host?: string): boolean {
   if (context.suggestedReachable !== undefined) return context.suggestedReachable;
@@ -222,6 +264,25 @@ export function buildServerQuestions(context: OwnServerContext = {}): ServerQues
       default: reachableDefault(context),
       required: true,
     },
+    context.cloudflareDomain === false
+      ? {
+          id: "server.serve",
+          prompt: "How should your server serve the site?",
+          help: "Your domain is not on Cloudflare, so the site is served directly with DNS only: everyone can reach your server on ports 80 and 443. A Cloudflare Tunnel or Cloudflare's proxy needs the domain on your Cloudflare account.",
+          kind: "single-select",
+          options: [SERVE_OPTIONS[2]].map((option) => ({ ...option })),
+          default: "dns-only",
+          required: true,
+        }
+      : {
+          id: "server.serve",
+          prompt: "If the internet can reach your server, how should it serve the site?",
+          help: "Matters for a server the internet can reach with a domain on Cloudflare; a server it cannot reach always uses the Cloudflare Tunnel, and without a domain on Cloudflare the only choice is dns-only (a tunnel or Cloudflare's proxy needs the domain on your Cloudflare account). The tunnel is the safest choice: nothing on the server is open to the web.",
+          kind: "single-select",
+          options: SERVE_OPTIONS.map((option) => ({ ...option })),
+          default: serveDefault(context),
+          required: true,
+        },
   ];
 }
 
@@ -325,6 +386,29 @@ export function answersToOwnServer(
     if (reachable === undefined) problems.push("server.reachable: answer yes or no");
   }
 
+  let serve = serveDefault(context);
+  if (given("serve")) {
+    const answer = text("serve").toLowerCase();
+    if (!(SERVE_VALUES as readonly string[]).includes(answer)) {
+      problems.push("server.serve: answer tunnel, proxy or dns-only");
+    } else if (context.cloudflareDomain === false && answer !== "dns-only") {
+      problems.push(
+        "server.serve: without a domain on Cloudflare the site can only be served with DNS only (dns-only)",
+      );
+    } else {
+      serve = answer as OwnServerServe;
+    }
+  }
+
+  // Behind Cloudflare's proxy the web filter publishes the site on IPv4 only.
+  const knownIpv4 =
+    previous?.publicIpv4 !== undefined && host !== undefined && sameHost(previous.host, host);
+  if (serve === "proxy" && host?.includes(":") && !knownIpv4) {
+    problems.push(
+      "server.serve: proxy needs your server's public IPv4 address (behind Cloudflare's proxy OpsCrew publishes the site on IPv4 only); give the IPv4 address as server.host, or answer tunnel",
+    );
+  }
+
   if (problems.length > 0 || host === undefined || user === undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -341,6 +425,7 @@ export function answersToOwnServer(
     ...(agent ? {} : { keyPath }),
     agent,
     reachable: reachable ?? reachableDefault(context, host),
+    serve,
   });
 }
 

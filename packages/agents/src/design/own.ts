@@ -14,6 +14,64 @@ import { OWN_SERVER_MEMORY_TOLERANCE, ownServerFreeDiskGb, sizeFor } from "./siz
 /** How the internet reaches a server the user owns: directly, or through a Cloudflare Tunnel. */
 export type OwnServerAccess = OwnDeployTarget["access"];
 
+/**
+ * How a server the user owns serves the site: through a Cloudflare Tunnel (the default whenever
+ * the domain is on Cloudflare, and for a server the internet cannot reach), directly behind
+ * Cloudflare's proxy with OpsCrew's web filter (`proxy`, only as the user's explicit choice), or
+ * directly with DNS only (the only way without a Cloudflare domain).
+ */
+export type OwnServerServing = "tunnel" | "proxy" | "dns-only";
+
+/** True when the app's domain is on Cloudflare. */
+export function hasCloudflareDomain(
+  requirements: Pick<Requirements, "dnsProvider" | "domain">,
+): boolean {
+  return requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined;
+}
+
+/**
+ * The serving mode from the interview's answers: not reachable → the tunnel; reachable without a
+ * Cloudflare domain → DNS only; reachable with one → the answer (`proxy` or `dns-only`), else the
+ * tunnel.
+ */
+export function ownServerServing(input: {
+  reachable: boolean;
+  serve?: OwnServerServing | undefined;
+  requirements: Pick<Requirements, "dnsProvider" | "domain">;
+}): OwnServerServing {
+  if (!input.reachable) return "tunnel";
+  if (!hasCloudflareDomain(input.requirements)) return "dns-only";
+  return input.serve ?? "tunnel";
+}
+
+/**
+ * False when the server is known to have no public IPv4 address: OpsCrew reaches it by an IPv6
+ * address and found no public IPv4 address for it. Serving behind Cloudflare's proxy with the web
+ * filter publishes the site on IPv4 only, so it needs one. A host name may have one (provision
+ * checks it before any change).
+ */
+export function mayHavePublicIpv4(server: {
+  host: string;
+  publicIpv4?: string | undefined;
+}): boolean {
+  if (server.publicIpv4 !== undefined) return true;
+  return !server.host.includes(":");
+}
+
+/** The plain refusal when the web filter mode has no public IPv4 address to publish on. */
+export function proxyNeedsIpv4Message(): { message: string; hint: string } {
+  return {
+    message:
+      "Serving the site directly behind Cloudflare's proxy needs your server's public IPv4 address, because OpsCrew's web filter publishes the site on IPv4 only, and OpsCrew knows only an IPv6 address for your server.",
+    hint: "Run `opscrew interview` and choose the Cloudflare Tunnel (recommended; it needs no public address), or give the server's public IPv4 address as its address.",
+  };
+}
+
+/** The plan's `target.access` for a serving mode. */
+export function servingAccess(serving: OwnServerServing): OwnServerAccess {
+  return serving === "tunnel" ? "tunnel" : "public";
+}
+
 /** Said wherever OpsCrew designs, documents or removes a deployment on the user's own server. */
 export const OWN_SERVER_BACKUPS_NOTE =
   "OpsCrew cannot turn on backups or snapshots on your own server; backups are your responsibility.";
@@ -38,6 +96,8 @@ export interface OwnServerOptionInput {
   /** The own-server catalogue: the inspected server as its single offer. */
   catalog: ComputeCatalog;
   access: OwnServerAccess;
+  /** How the site is served (default: from `access`, a public server as DNS only). */
+  serving?: OwnServerServing;
 }
 
 export interface OwnServerDesign {
@@ -98,6 +158,7 @@ function joinWords(words: readonly string[]): string {
  */
 export async function buildOwnServerOption(input: OwnServerOptionInput): Promise<OwnServerDesign> {
   const { facts, requirements, catalog, access } = input;
+  const serving = input.serving ?? (access === "tunnel" ? "tunnel" : "dns-only");
   if (catalog.provider !== "own") {
     throw new Error(`Design needs the own-server catalogue but got the ${catalog.provider} one.`);
   }
@@ -153,7 +214,9 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
   const served =
     access === "tunnel"
       ? " The app is served through a Cloudflare Tunnel, so no ports are opened on the server."
-      : "";
+      : serving === "proxy"
+        ? " The app is served directly behind Cloudflare's proxy; a filter in Docker lets only Cloudflare's addresses reach ports 80 and 443."
+        : "";
   const summary = [
     `Your own server (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${joinWords(containers)} with Docker Compose behind Caddy.${served}`,
     OWN_SERVER_PRICE_NOTE,
@@ -163,7 +226,15 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
   const tradeoffs = [...warnings];
   if (access === "tunnel") {
     tradeoffs.push(
-      "The internet cannot reach your server, so OpsCrew serves the app through a Cloudflare Tunnel on your Cloudflare domain: no inbound ports are opened, and deploys from GitHub go through the tunnel too.",
+      "OpsCrew serves the app through a Cloudflare Tunnel on your Cloudflare domain: no inbound ports are opened, and deploys from GitHub go through the tunnel too.",
+    );
+  } else if (serving === "proxy") {
+    tradeoffs.push(
+      "Ports 80 and 443 stay open, but OpsCrew's filter in Docker's DOCKER-USER chain lets only Cloudflare's addresses through (no Cloudflare Zero Trust needed). It fails closed: if the filter cannot be installed, Docker does not start and the site is down until it is fixed. A Cloudflare Tunnel opens no port at all.",
+    );
+  } else if (hasCloudflareDomain(requirements)) {
+    tradeoffs.push(
+      "DNS only: your server answers everyone on ports 80 and 443, and Cloudflare only answers DNS, so it neither hides nor protects the server. A Cloudflare Tunnel opens no port at all.",
     );
   }
   if (arch === "arm64") {

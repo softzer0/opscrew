@@ -12,6 +12,8 @@ export interface OwnSecureTarget {
   sshPort: number;
   /** Where the outside probes go: the public address in public mode, the login's host in tunnel mode. */
   probeHost: string;
+  /** Public mode: the server's public IPv6 address, when known (probed in web-filter mode). */
+  probeIpv6?: string;
   access: "public" | "tunnel";
   /** What the host checks accept on this server (SSH ports, root login, the password choice). */
   hardening: OwnServerHardening;
@@ -56,6 +58,7 @@ export async function ownSecureTarget(
   const deployment = (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
   const access = plan.target.access;
   const publicIpv4 = deployment?.ipv4 ?? connection.publicIpv4;
+  const publicIpv6 = deployment?.ipv6 ?? connection.publicIpv6;
   const hidden = [
     connection.host,
     connection.publicIpv4,
@@ -67,6 +70,7 @@ export async function ownSecureTarget(
     sshHost: connection.host,
     sshPort: connection.port,
     probeHost: access === "public" ? (publicIpv4 ?? connection.host) : connection.host,
+    ...(access === "public" && publicIpv6 !== undefined ? { probeIpv6: publicIpv6 } : {}),
     access,
     hardening: {
       sshPorts,

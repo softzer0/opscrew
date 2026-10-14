@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
 import { detectEngines } from "@opscrew/iac-engine";
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it, type TestContext } from "vitest";
 import { testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
@@ -82,16 +83,23 @@ describe.skipIf(!runIt)("own-server DNS plans (integration)", () => {
     const engine = detected.find((d) => d.name === name && d.supported);
     const bin = engine?.binary ?? name;
 
+    /** DNS only by default; `filtered` serves behind Cloudflare's proxy with the web filter. */
     async function plan(
       test: TestContext,
       vars: Record<string, string>,
       state?: (registry: string) => string,
+      filtered = false,
     ): Promise<string> {
       const root = await mkdtemp(join(tmpdir(), `opscrew-dns-plan-${name}-`));
-      const files = renderInfra(
-        testPlan({ provider: "own", domain: "shop.example.com" }),
-        testContext({ cloudflare: testCloudflare(false) }),
-      );
+      const proxied = testPlan({ provider: "own", domain: "shop.example.com" });
+      const deployPlan = filtered
+        ? proxied
+        : DeployPlanSchema.parse({
+            ...proxied,
+            dns: { ...proxied.dns, proxied: false },
+            security: { ...proxied.security, httpAllowedFrom: "any" },
+          });
+      const files = renderInfra(deployPlan, testContext({ cloudflare: testCloudflare(false) }));
       for (const file of files) {
         const target = join(root, file.path);
         await mkdir(dirname(target), { recursive: true });
@@ -142,6 +150,21 @@ describe.skipIf(!runIt)("own-server DNS plans (integration)", () => {
       async (test) => {
         const out = await plan(test, { server_ipv4: "203.0.113.10", server_ipv6: "2001:db8::10" });
         expect(out).toContain("module.dns.cloudflare_dns_record.aaaa[0] will be created");
+      },
+      300_000,
+    );
+
+    it.skipIf(!engine)(
+      `gives no AAAA record behind the web filter, also with IPv6 (${name})`,
+      async (test) => {
+        const out = await plan(
+          test,
+          { server_ipv4: "203.0.113.10", server_ipv6: "2001:db8::10" },
+          undefined,
+          true,
+        );
+        expect(out).toContain("module.dns.cloudflare_dns_record.a will be created");
+        expect(out).not.toContain("cloudflare_dns_record.aaaa");
       },
       300_000,
     );

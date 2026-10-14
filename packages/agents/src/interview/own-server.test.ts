@@ -51,6 +51,7 @@ describe("questions for a server the user already has", () => {
       "server.user",
       "server.key",
       "server.reachable",
+      "server.serve",
     ]);
     for (const question of questions) {
       // Same shape as every other interview question.
@@ -82,9 +83,30 @@ describe("questions for a server the user already has", () => {
       "server.user": "admin",
       "server.key": "~/.ssh/id_ed25519",
       "server.reachable": false,
+      "server.serve": "tunnel",
     });
     const suggested = buildServerQuestions({ previous, suggestedReachable: true });
     expect(suggested.find((q) => q.id === "server.reachable")?.default).toBe(true);
+  });
+
+  it("asks how to serve the site: the tunnel recommended, the filter and DNS only explained", () => {
+    const serve = buildServerQuestions().find((q) => q.id === "server.serve");
+    expect(serve).toMatchObject({ kind: "single-select", default: "tunnel" });
+    expect(serve?.options?.map((o) => o.value)).toEqual(["tunnel", "proxy", "dns-only"]);
+    expect(serve?.options?.[0]?.label).toMatch(/recommended/);
+    expect(serve?.options?.[1]?.hint).toMatch(/needs no Cloudflare Zero Trust.*fails closed/i);
+    expect(serve?.options?.[2]?.hint).toMatch(/neither hides nor protects/);
+    // The earlier answer is the default next time.
+    const previous = { host: IPV4, port: 22, user: "root", agent: true, serve: "proxy" as const };
+    expect(buildServerQuestions({ previous }).find((q) => q.id === "server.serve")?.default).toBe(
+      "proxy",
+    );
+    // Without a domain on Cloudflare only DNS only is offered, and the help says why.
+    const only = buildServerQuestions({ cloudflareDomain: false }).find(
+      (q) => q.id === "server.serve",
+    );
+    expect(only?.options?.map((o) => o.value)).toEqual(["dns-only"]);
+    expect(only?.help).toMatch(/not on Cloudflare/);
   });
 
   it("guesses reachability from the address", () => {
@@ -116,6 +138,7 @@ describe("answersToOwnServer", () => {
       user: "root",
       agent: true,
       reachable: true,
+      serve: "tunnel",
     });
     const nested = split({
       host: "[2001:db8::10]",
@@ -131,7 +154,38 @@ describe("answersToOwnServer", () => {
       keyPath: "~/.ssh/id_ed25519",
       agent: false,
       reachable: false,
+      serve: "tunnel",
     });
+  });
+
+  it("takes how the site is served, and refuses anything else", () => {
+    const base = { host: IPV4, user: "root", key: "agent" };
+    for (const serve of ["tunnel", "proxy", "dns-only"] as const) {
+      expect(answersToOwnServer(split({ ...base, serve })).serve).toBe(serve);
+    }
+    expect(answersToOwnServer(split({ ...base, serve: "Proxy" })).serve).toBe("proxy");
+    expect(() => answersToOwnServer(split({ ...base, serve: "open" }))).toThrow(
+      expect.objectContaining({ message: expect.stringMatching(/server\.serve: answer tunnel/) }),
+    );
+    // Without a domain on Cloudflare only DNS only is possible.
+    expect(answersToOwnServer(split(base), { cloudflareDomain: false }).serve).toBe("dns-only");
+    expect(() =>
+      answersToOwnServer(split({ ...base, serve: "proxy" }), { cloudflareDomain: false }),
+    ).toThrow(
+      expect.objectContaining({ message: expect.stringMatching(/only be served with DNS only/) }),
+    );
+  });
+
+  it("refuses the web filter for a server known only by an IPv6 address", () => {
+    const v6 = { host: "2001:db8::10", user: "root", key: "agent", reachable: "yes" };
+    expect(() => answersToOwnServer(split({ ...v6, serve: "proxy" }))).toThrow(
+      expect.objectContaining({
+        code: "INVALID_INPUT",
+        message: expect.stringMatching(/proxy needs your server's public IPv4 address/),
+      }),
+    );
+    expect(answersToOwnServer(split({ ...v6, serve: "tunnel" })).serve).toBe("tunnel");
+    expect(answersToOwnServer(split({ ...v6, host: IPV4, serve: "proxy" })).serve).toBe("proxy");
   });
 
   it("suggests reachability from inspection, then the address", () => {
@@ -242,6 +296,7 @@ describe("runInterview with a server the user already has", () => {
       keyPath: "~/.ssh/id_ed25519",
       agent: false,
       reachable: false,
+      serve: "dns-only",
     });
     const text = await readFile(d.paths.files.requirements, "utf8");
     expect(text).toMatch(/provider: own/);
@@ -277,9 +332,55 @@ describe("runInterview with a server the user already has", () => {
       "server.user",
       "server.key",
       "server.reachable",
+      "server.serve",
     ]);
     expect(defaults).toMatchObject({ "server.host": IPV4, "server.user": "root" });
     expect(result.ownServer).toMatchObject({ user: "ubuntu", reachable: false });
+  });
+
+  it("offers every way to serve the site only with a domain on Cloudflare", async () => {
+    const serveQuestion = async (answers: InterviewAnswers) => {
+      const d = await deps();
+      let options: string[] = [];
+      let help = "";
+      await runInterview(d, {
+        ask: async () => ({ ...BASE, provider: "own", ...answers }),
+        askServer: async (questions) => {
+          const serve = questions.find((q) => q.id === "server.serve");
+          options = serve?.options?.map((o) => o.value) ?? [];
+          help = serve?.help ?? "";
+          return { "server.host": IPV4, "server.user": "root", "server.key": "agent" };
+        },
+      });
+      return { options, help, saved: await readOwnServer(d.paths) };
+    };
+    const cloudflare = await serveQuestion({
+      domain: "app.example.com",
+      dnsProvider: "cloudflare",
+    });
+    expect(cloudflare.options).toEqual(["tunnel", "proxy", "dns-only"]);
+    expect(cloudflare.saved?.serve).toBe("tunnel");
+    // A reachable server without a Cloudflare domain: DNS only, and the help says why.
+    const other = await serveQuestion({ domain: "app.example.com", dnsProvider: "other" });
+    expect(other.options).toEqual(["dns-only"]);
+    expect(other.help).toMatch(/not on Cloudflare/);
+    expect(other.saved?.serve).toBe("dns-only");
+
+    // An answers file that asks for the filter without a Cloudflare domain is refused plainly.
+    const d = await deps();
+    const error = await runInterview(d, {
+      answers: {
+        ...BASE,
+        provider: "own",
+        "server.host": IPV4,
+        "server.user": "root",
+        "server.serve": "proxy",
+      },
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringMatching(/only be served with DNS only/),
+    });
   });
 
   it("reuses the saved answers when none are given and fails plainly without any", async () => {
@@ -319,6 +420,7 @@ describe("runInterview with a server the user already has", () => {
       user: "admin",
       agent: true,
       reachable: true,
+      serve: "dns-only",
       hostKey: HOST_KEY,
       publicIpv4: IPV4,
     });
@@ -333,6 +435,7 @@ describe("runInterview with a server the user already has", () => {
       user: "admin",
       agent: true,
       reachable: true,
+      serve: "dns-only",
     });
 
     await recordOwnServer(d.paths, pinned);

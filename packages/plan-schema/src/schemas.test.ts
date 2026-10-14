@@ -499,6 +499,40 @@ describe("DeployPlan target on a server the user owns", () => {
     expect(DeployPlanSchema.safeParse({ ...plan, dns: noDns }).success).toBe(true);
   });
 
+  it("serves directly behind Cloudflare's proxy only with the filter for Cloudflare's addresses", async () => {
+    const plan = await validPlan();
+    const publicOwn = { ...own, access: "public" } as const;
+    const cloudflare = { provider: "cloudflare", domain: "shop.example.com", proxied: true };
+    const security = (httpAllowedFrom?: "any" | "cloudflare") => ({
+      ...(httpAllowedFrom !== undefined ? { httpAllowedFrom } : {}),
+    });
+    // Proxied: the filter (httpAllowedFrom cloudflare, the default when proxied).
+    const filtered = DeployPlanSchema.parse({
+      ...plan,
+      target: publicOwn,
+      dns: cloudflare,
+      security: security(),
+    });
+    expect(filtered.security.httpAllowedFrom).toBe("cloudflare");
+    // Proxied but open to every address: refused in plain words.
+    const open = DeployPlanSchema.safeParse({
+      ...plan,
+      target: publicOwn,
+      dns: cloudflare,
+      security: security("any"),
+    });
+    expect(pathsOf(open)).toEqual(["security.httpAllowedFrom"]);
+    expect(open.error?.issues[0]?.message).toContain("dns.proxied to false (DNS only)");
+    // DNS only, the tunnel, and servers OpsCrew creates are not affected.
+    for (const variant of [
+      { target: publicOwn, dns: { ...cloudflare, proxied: false }, security: security("any") },
+      { target: own, dns: cloudflare, security: security("any") },
+      { dns: cloudflare, security: security("any") },
+    ]) {
+      expect(DeployPlanSchema.safeParse({ ...plan, ...variant }).success).toBe(true);
+    }
+  });
+
   it("refuses a move to or from a server the user owns", async () => {
     const plan = await validPlan();
     const move = { from: { target: plan.target }, step: "started", startedAt: plan.createdAt };

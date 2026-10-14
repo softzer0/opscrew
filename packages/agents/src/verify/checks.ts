@@ -5,7 +5,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import { providerConsole, type ServerAddress } from "../shared";
-import type { DnsResolver, TlsCertificateInfo, TlsConnect } from "./net";
+import { type DnsResolver, hasIpv6Route, type TlsCertificateInfo, type TlsConnect } from "./net";
 
 /** Cloudflare edge ranges (CIDRs) used to confirm proxied DNS records. */
 export interface CloudflareRanges {
@@ -40,6 +40,11 @@ export interface VerifyCheckContext {
   deployRuns: () => Promise<DeployRunInfo[] | undefined>;
   /** Per-request timeout. Default 10 s (3 s for TCP). */
   timeoutMs?: number;
+  /**
+   * Whether this computer can reach IPv6 addresses (default: it has a global IPv6 address);
+   * without it the IPv6 probe of a server the user owns is skipped with a note.
+   */
+  ipv6Route?: () => Promise<boolean>;
 }
 
 /**
@@ -135,13 +140,14 @@ export function siteUrl(plan: DeployPlan, server?: ServerAddress): string | unde
 }
 
 /**
- * True when web traffic may reach the server only through Cloudflare. Never on a server the user
- * owns: its firewall (ufw) opens the web ports to every address in public mode, and in tunnel mode
- * no web port is open at all.
+ * True when web traffic may reach the server only through Cloudflare: behind Cloudflare's proxy
+ * with `security.httpAllowedFrom: cloudflare`, the cloud firewall (Hetzner, DigitalOcean) or, on a
+ * server the user owns in public mode, OpsCrew's web filter in Docker's DOCKER-USER chain lets
+ * ports 80/443 in only from Cloudflare's IP ranges. Never in tunnel mode, where no web port is open.
  */
 export function originIsCloudflareOnly(plan: DeployPlan): boolean {
   return (
-    plan.target.provider !== "own" &&
+    !(plan.target.provider === "own" && plan.target.access === "tunnel") &&
     plan.dns.provider === "cloudflare" &&
     plan.dns.proxied &&
     plan.security.httpAllowedFrom === "cloudflare"
@@ -628,6 +634,52 @@ export async function checkSensitiveFile(
   }
 }
 
+const OWN_ORIGIN_REMEDIATION =
+  "Run `opscrew drift` to see whether OpsCrew's web filter (in Docker's DOCKER-USER chain) is missing or was changed, then `opscrew provision`: it shows the change that lets only Cloudflare's IP ranges reach ports 80 and 443 (published on IPv4 only). If a rule of your own in DOCKER-USER comes before OpsCrew's (`sudo iptables -S DOCKER-USER`), or another program listens on port 443 over IPv6, remove it.";
+
+/**
+ * The origin check on a server the user owns behind OpsCrew's web filter: 443 must not answer on
+ * its IPv4 address (already probed: `open4`) nor, when it has one and this computer can reach
+ * IPv6, on its IPv6 address (the site is published on IPv4 only). The addresses never appear in
+ * the result (FR-902).
+ */
+async function ownOriginResult(
+  ctx: VerifyCheckContext,
+  open4: boolean,
+  timeout: number,
+): Promise<CheckResult> {
+  const id = "origin-not-direct";
+  const title = "The server is not reachable around Cloudflare";
+  const ipv6 = ctx.server?.ipv6;
+  const canTryIpv6 = ipv6 !== undefined && (await (ctx.ipv6Route ?? hasIpv6Route)());
+  const open6 = canTryIpv6 ? await ctx.tcpConnect(ipv6, 443, timeout) : false;
+  if (open4 || open6) {
+    const where =
+      open4 && open6 ? "IPv4 and IPv6 addresses" : open4 ? "IPv4 address" : "IPv6 address";
+    return result(
+      id,
+      title,
+      "medium",
+      "fail",
+      `Port 443 on your server's ${where} answers directly, so visitors can reach it around Cloudflare's protection.`,
+      { remediation: OWN_ORIGIN_REMEDIATION },
+    );
+  }
+  const note =
+    ipv6 === undefined
+      ? ""
+      : canTryIpv6
+        ? " (IPv4 and IPv6)"
+        : ". OpsCrew could not try its IPv6 address: this computer has no IPv6 route; run `opscrew verify` from a network with IPv6 to check it too";
+  return result(
+    id,
+    title,
+    "medium",
+    "pass",
+    `Port 443 on your server is closed to direct visitors${note}; only Cloudflare reaches it.`,
+  );
+}
+
 /** When only Cloudflare may reach the origin, TCP 443 on the server IP is filtered. */
 export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<CheckResult> {
   const id = "origin-not-direct";
@@ -641,15 +693,6 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
       "medium",
       "skip",
       "Skipped: the app is served through a Cloudflare Tunnel, so the server opens no web port that could be reached around Cloudflare (`opscrew secure` checks that from outside).",
-    );
-  }
-  if (plan.target.provider === "own" && plan.dns.provider === "cloudflare" && plan.dns.proxied) {
-    return result(
-      id,
-      title,
-      "medium",
-      "skip",
-      "Skipped: on your own server the firewall (ufw) accepts web traffic from every address; OpsCrew does not limit it to Cloudflare there. A Cloudflare Tunnel (`opscrew interview`, answering that the internet cannot reach the server) keeps the server out of reach.",
     );
   }
   if (plan.dns.provider !== "cloudflare" || !plan.dns.proxied) {
@@ -680,7 +723,9 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
       { remediation: UNKNOWN_ADDRESS_REMEDIATION },
     );
   }
-  const open = await ctx.tcpConnect(ip, 443, Math.min(ctx.timeoutMs ?? 3000, 3000));
+  const timeout = Math.min(ctx.timeoutMs ?? 3000, 3000);
+  const open = await ctx.tcpConnect(ip, 443, timeout);
+  if (plan.target.provider === "own") return ownOriginResult(ctx, open, timeout);
   return open
     ? result(
         id,

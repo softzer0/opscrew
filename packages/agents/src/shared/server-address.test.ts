@@ -259,6 +259,18 @@ describe("a server the user owns in OpsCrew's local state", () => {
     expect(error).toBeInstanceOf(Error);
   });
 
+  it("records how the site is served, and refuses any other answer", async () => {
+    const deps = await createTestPhaseDeps();
+    for (const serve of ["tunnel", "proxy", "dns-only"] as const) {
+      await recordOwnServer(deps.paths, { ...own, reachable: true, serve });
+      expect((await readOwnServer(deps.paths))?.serve).toBe(serve);
+    }
+    const error = await recordOwnServer(deps.paths, { ...own, serve: "open" } as never).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(Error);
+  });
+
   it("accepts absolute key paths on every system, spaces included", async () => {
     const deps = await createTestPhaseDeps();
     for (const keyPath of [

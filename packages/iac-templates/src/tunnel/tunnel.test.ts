@@ -1,7 +1,8 @@
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { renderCaddyfile, renderCompose } from "../runtime";
+import { renderCaddyfile, renderCompose, webFilterMode } from "../runtime";
 import {
   CLOUDFLARED_IMAGE,
   CLOUDFLARED_METRICS,
@@ -72,12 +73,39 @@ describe("runtime files in tunnel mode", () => {
     expect(caddyfile).toMatchSnapshot();
   });
 
-  it("keeps public-mode runtime files identical to OpsCrew-created servers", () => {
-    const own = testPlan({ provider: "own", domain: "shop.example.com" });
+  it("keeps DNS-only runtime files identical to OpsCrew-created servers", () => {
+    const filtered = testPlan({ provider: "own", domain: "shop.example.com" });
+    const own = DeployPlanSchema.parse({
+      ...filtered,
+      dns: { ...filtered.dns, proxied: false },
+      security: { ...filtered.security, httpAllowedFrom: "any" },
+    });
     const hetzner = testPlan({ domain: "shop.example.com" });
     const context = testContext({ acmeEmail: "ops@example.com" });
     expect(renderCompose(own, context)).toEqual(renderCompose(hetzner, context));
     expect(renderCaddyfile(own, context)).toEqual(renderCaddyfile(hetzner, context));
+  });
+
+  it("publishes Caddy on IPv4 only behind OpsCrew's web filter; the Caddyfile is unchanged", () => {
+    const filtered = testPlan({ provider: "own", domain: "shop.example.com" });
+    const hetzner = testPlan({ domain: "shop.example.com" });
+    const context = testContext({ acmeEmail: "ops@example.com" });
+    expect(webFilterMode(filtered)).toBe(true);
+    expect(webFilterMode(hetzner)).toBe(false);
+    expect(webFilterMode(tunnelPlan())).toBe(false);
+    const compose = parse(renderCompose(filtered, context).content);
+    expect(compose.services.caddy.ports).toEqual([
+      "0.0.0.0:80:80",
+      "0.0.0.0:443:443",
+      "0.0.0.0:443:443/udp",
+    ]);
+    // Hetzner and DigitalOcean (their cloud firewall filters both families) are unchanged.
+    expect(parse(renderCompose(hetzner, context).content).services.caddy.ports).toEqual([
+      "80:80",
+      "443:443",
+      "443:443/udp",
+    ]);
+    expect(renderCaddyfile(filtered, context)).toEqual(renderCaddyfile(hetzner, context));
   });
 });
 

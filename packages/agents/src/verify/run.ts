@@ -33,6 +33,8 @@ export interface RunVerifyOptions {
   tlsConnect?: TlsConnect;
   /** TCP probe (default `node:net`). */
   tcpConnect?: TcpConnect;
+  /** Whether this computer can reach IPv6 addresses (default: it has a global IPv6 address). */
+  ipv6Route?: () => Promise<boolean>;
   /** Cloudflare edge ranges (default: read from Cloudflare's public `/ips` endpoint when proxied). */
   cloudflareRanges?: CloudflareRanges;
   /** Request timeout in milliseconds (default 10 s). */
@@ -123,6 +125,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     fetch,
     tlsConnect: options.tlsConnect ?? defaultTlsConnect,
     tcpConnect: options.tcpConnect ?? defaultTcpConnect,
+    ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
     now: deps.clock.now(),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(await cloudflareRanges(deps, plan, fetch, options)),
