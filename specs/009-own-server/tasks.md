@@ -64,10 +64,10 @@ network or model.
   - Effort: high
 
 - [ ] T907 [P] [US5] Portainer on every target in `packages/agents/src/portainer/`
-  - Owns: `packages/agents/src/portainer/**`
+  - Owns: `packages/agents/src/portainer/**`, `packages/connectors/ssh-host/src/plan.ts` and `steps.ts` (the tunnel connector in public mode only, + tests)
   - Reads: plan.md "Portainer on every target"; contracts/cli.md "Portainer"; research.md R5; spec FR-914–FR-916
   - Depends: T902, T903
-  - Accept: enable/disable/status for own servers (host plan step) and for Hetzner/DigitalOcean (the `deploy` user's home, docker group); the password generated locally into `~/.opscrew/projects/<id>/portainer_password` (0600), supplied at apply only, the server file removed after the admin exists; status prints the tunnel command, the local URL and the password file's path, never the password; subdomain opt-in adds the tunnel and Access (`iac-apply`) and requires at least one allowed email and a Cloudflare domain; disable deletes data only with a typed confirmation.
+  - Accept: the host adapter (`packages/connectors/ssh-host/src/plan.ts` `tunnelStep`, extended into this task's Owns) accepts the tunnel connector in public mode when a Portainer subdomain needs it, and provision keeps it (found by the T905 review: otherwise a re-run of `opscrew provision` removes the connector and breaks the subdomain); enable/disable/status for own servers (host plan step) and for Hetzner/DigitalOcean (the `deploy` user's home, docker group); the password generated locally into `~/.opscrew/projects/<id>/portainer_password` (0600), supplied at apply only, the server file removed after the admin exists; status prints the tunnel command, the local URL and the password file's path, never the password; subdomain opt-in adds the tunnel and Access (`iac-apply`) and requires at least one allowed email and a Cloudflare domain; disable deletes data only with a typed confirmation.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
