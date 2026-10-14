@@ -81,6 +81,26 @@ export async function ensurePortainerPassword(
   return password;
 }
 
+/**
+ * The password to send when Portainer is started: a new one only when Portainer has no data yet
+ * (`required`), else the one in {@link portainerPasswordFile} when it is on this computer. Sending
+ * it whenever it exists means the first-start Compose file is used, so a Portainer whose earlier
+ * first start stopped before the admin existed still gets its admin; Portainer ignores it when an
+ * admin exists. `undefined` when it is not required and not on this computer.
+ */
+export async function portainerPasswordToSend(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+  required: boolean,
+): Promise<string | undefined> {
+  if (required) return ensurePortainerPassword(deps);
+  const existing = (
+    await readFile(portainerPasswordFile(deps.paths), "utf8").catch(() => "")
+  ).trim();
+  if (existing.length < 12) return undefined;
+  deps.redactor.addLiteral(existing, "portainer-password");
+  return existing;
+}
+
 function stringOutput(outputs: Record<string, unknown>, name: string): string | undefined {
   const value = outputs[name];
   return typeof value === "string" && value !== "" ? value : undefined;
@@ -489,7 +509,9 @@ export async function applyOwnHostPlan(
 
   const portainerStep = changes.find((step) => step.id === "portainer");
   const portainerPassword =
-    portainerStep?.params.needsPassword === true ? await ensurePortainerPassword(deps) : undefined;
+    portainerStep === undefined || portainerStep.params.remove === true
+      ? undefined
+      : await portainerPasswordToSend(deps, portainerStep.params.needsPassword === true);
   const secrets = {
     ...(tunnel !== undefined ? { tunnelToken: tunnel.token } : {}),
     ...(portainerPassword !== undefined ? { portainerPassword } : {}),

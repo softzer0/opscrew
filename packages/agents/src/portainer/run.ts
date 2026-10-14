@@ -6,6 +6,7 @@ import {
   type HostPlan,
   hostPlanHash,
   PORTAINER_DIR,
+  planHost,
   planPortainer,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, IacEngine, RemoteExec } from "@opscrew/contracts";
@@ -24,11 +25,12 @@ import { requireNoMoveInProgress } from "../provision/guard";
 import {
   applyOwnHostPlan,
   describeHostPlan,
-  ensurePortainerPassword,
+  desiredHost,
   hostPlanFile,
   type OwnServerRun,
   ownEngineEnv,
   portainerPasswordFile,
+  portainerPasswordToSend,
   prepareOwnServer,
 } from "../provision/own";
 import { findSavedPlan, planAndApply, REMOVAL_PLAN_SUFFIX } from "../provision/plan-apply";
@@ -323,10 +325,13 @@ async function applyAddonPlan(
     planOnly: boolean;
     secrets: () => Promise<{ tunnelToken?: string; portainerPassword?: string }>;
     command: string;
+    /** Receives the plan's hash as soon as it is shown (for an error after it). */
+    shown?: { hostHash?: string };
   },
 ): Promise<{ hash: string; applied: boolean; approval?: ApprovalRecord }> {
   const { plan } = input;
   const hash = hostPlanHash(plan);
+  if (input.shown !== undefined) input.shown.hostHash = hash;
   await writeFileAtomic(hostPlanFile(deps.paths, hash), `${JSON.stringify(plan, null, 2)}\n`);
   const details = describeHostPlan(plan, hash);
   deps.reporter.info(details);
@@ -525,8 +530,23 @@ async function runChange(
   let hostPlanHashValue: string | undefined;
   let hostApplied = false;
   let dataPlanHash: string | undefined;
+  const shown: { hostHash?: string } = {};
   try {
     if (ownRun) {
+      // The same host plan applyOwnHostPlan makes, so its hash can be named if it stops.
+      const tunnelId = usesTunnel(plan) ? stringOutput(outputs, "tunnel_id") : undefined;
+      if (!usesTunnel(plan) || tunnelId !== undefined) {
+        shown.hostHash = hostPlanHash(
+          planHost(
+            ownRun.facts,
+            desiredHost(deps, ownRun, {
+              plan,
+              deployPublicKey: deployKey.publicKeyOpenSsh,
+              ...(tunnelId !== undefined ? { tunnelId } : {}),
+            }),
+          ),
+        );
+      }
       const host = await applyOwnHostPlan(deps, ownRun, {
         plan,
         outputs,
@@ -567,6 +587,7 @@ async function runChange(
         facts: cloudFacts,
         planOnly,
         command,
+        shown,
       });
       hostPlanHashValue = result.hash;
       hostApplied = result.applied;
@@ -581,6 +602,24 @@ async function runChange(
         deps.paths.files.plan,
         recorded(deps, change.before, approvals, { iacHash: planHash, any: true }),
       );
+      // `--approve <host plan hash>` without options then finishes exactly this change.
+      await planned();
+      throw halfDone(deps, error, {
+        command,
+        enabling: change.command === "enable",
+        hostname: portainerHostname(plan) ?? portainerHostname(change.before),
+        ...(shown.hostHash !== undefined ? { hostHash: shown.hostHash } : {}),
+        written,
+      });
+    }
+    // A host plan was shown: `--approve <its hash>` without options applies exactly this change.
+    if (shown.hostHash !== undefined) await planned();
+    // applyOwnHostPlan names `opscrew provision` in its hint; this change is finished by this command.
+    if (error instanceof OpsCrewError && error.hint?.includes("opscrew provision --approve")) {
+      throw new OpsCrewError(error.code, error.message, {
+        hint: error.hint.replace("opscrew provision --approve", `${command} --approve`),
+        cause: error,
+      });
     }
     throw error;
   }
@@ -628,6 +667,49 @@ async function runChange(
     files: written,
     status,
   };
+}
+
+/**
+ * The error of a host step that stopped after the Cloudflare changes were applied: it says what
+ * is applied and what is not, how to finish (`--approve <host plan hash>`) or undo it, and which
+ * repository files were written. Redacted; never an address or a secret.
+ */
+function halfDone(
+  deps: Pick<PhaseDeps, "redactor">,
+  error: unknown,
+  input: {
+    command: string;
+    enabling: boolean;
+    hostname: string | undefined;
+    hostHash?: string;
+    written: readonly string[];
+  },
+): unknown {
+  if (!(error instanceof OpsCrewError)) return error;
+  const where = input.hostname !== undefined ? ` for ${input.hostname}` : "";
+  const state = input.enabling
+    ? "Portainer on the server is not"
+    : "Portainer is still on the server";
+  const files =
+    input.written.length > 0
+      ? ` Files written to the repository: ${input.written.join(", ")}.`
+      : "";
+  const finish =
+    input.hostHash !== undefined
+      ? `Run \`${input.command} --approve ${input.hostHash}\` to finish`
+      : `Run \`${input.command}\` again to finish`;
+  return new OpsCrewError(
+    error.code,
+    deps.redactor.redact(
+      `${error.message} The Cloudflare changes${where} (tunnel, Access, DNS) are applied; ${state}.${files}`,
+    ),
+    {
+      hint: deps.redactor.redact(
+        `${finish}, or \`opscrew provision\` to ${input.enabling ? "remove them" : "put them back"}.`,
+      ),
+      cause: error,
+    },
+  );
 }
 
 /**
@@ -770,11 +852,13 @@ async function cloudHostChange(
     facts: CloudFacts | undefined;
     planOnly: boolean;
     command: string;
+    shown?: { hostHash?: string };
   },
 ): Promise<{ hash: string; applied: boolean; approval?: ApprovalRecord }> {
   const { plan, outputs, remote } = input;
   const enabling = change.command === "enable";
-  // An existing data volume already holds the admin account: no new password then.
+  // With Portainer's data on the server a password is not required (an admin may exist); the
+  // local one is still sent when it is here, so an admin missing after a stopped first start is made.
   const needsPassword = enabling && input.facts?.dataVolume !== true;
   if (enabling && !needsPassword) {
     const file = portainerPasswordFile(deps.paths);
@@ -841,11 +925,18 @@ async function cloudHostChange(
         : "Remove Portainer from the server (its data stays)",
     allowDestroy: !enabling && change.deleteData,
     planOnly: input.planOnly,
-    secrets: async () => ({
-      ...(tunnelToken !== undefined ? { tunnelToken } : {}),
-      ...(needsPassword ? { portainerPassword: await ensurePortainerPassword(deps) } : {}),
-    }),
+    secrets: async () => {
+      // Required only without data; sent whenever it is on this computer (see portainerPasswordToSend).
+      const portainerPassword = enabling
+        ? await portainerPasswordToSend(deps, needsPassword)
+        : undefined;
+      return {
+        ...(tunnelToken !== undefined ? { tunnelToken } : {}),
+        ...(portainerPassword !== undefined ? { portainerPassword } : {}),
+      };
+    },
     command: input.command,
+    ...(input.shown !== undefined ? { shown: input.shown } : {}),
   });
 }
 

@@ -1105,7 +1105,11 @@ export class FakeHost implements RemoteExec {
         if (!this.portainerAdmin) {
           this.removeProject(p.PROJECT ?? "", false);
           this.files.delete(`${dir}/admin_password`);
-          return fail("Portainer started without an admin account, so OpsCrew stopped it.");
+          return fail(
+            password === ""
+              ? "Portainer has data on this server but no admin account, and no admin password reached the server, so OpsCrew stopped it. Run opscrew portainer disable --delete-data and turn Portainer on again."
+              : "Portainer started without an admin account, so OpsCrew stopped it.",
+          );
         }
         this.files.set(`${dir}/compose.yaml`, Buffer.from(p.FINAL_B64 ?? "", "base64").toString("utf8"));
         this.files.delete(`${dir}/admin_password`);

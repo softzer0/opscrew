@@ -4,6 +4,7 @@
  */
 import { readdirSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
+import { portainerDesired, portainerPassword } from "./__fixtures__/helpers";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
 import { DOCKER_DAEMON_JSON } from "./constants";
 import { inspectScript, privilegeProbeScript } from "./inspect";
@@ -378,6 +379,45 @@ describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", { timeout: 60_0
       expect(run.status, run.stderr).toBe(0);
       expect(h.calls().some((call) => call.startsWith("docker compose"))).toBe(false);
       expect(h.calls()).toContain("docker rm -f p1");
+    });
+  });
+
+  describe("Portainer without an admin account", () => {
+    const enable = () => {
+      const plan = planPortainer({
+        app: "shop",
+        dir: "/home/deploy/opscrew/portainer",
+        enable: { ...portainerDesired(), needsPassword: false },
+      });
+      const step = plan.steps[0];
+      if (!step) throw new Error("no step");
+      return stepScripts(plan, step).apply;
+    };
+
+    it("points to disable --delete-data when no password reached the server", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.stub("curl", "printf 404");
+      h.stub("sleep", "exit 0");
+      const run = h.run(enable());
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain("no admin password reached the server");
+      expect(run.stderr).toContain("opscrew portainer disable --delete-data");
+      expect(h.exists("/home/deploy/opscrew/portainer/admin_password")).toBe(false);
+    });
+
+    it("asks to turn it on again when a password was sent, and leaves no password file", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.stub("curl", "printf 404");
+      h.stub("sleep", "exit 0");
+      const run = h.run(enable(), `${portainerPassword()}\n`);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain(
+        "Turn Portainer on again so OpsCrew can set the admin password.",
+      );
+      expect(run.stderr).not.toContain("disable --delete-data");
+      expect(h.exists("/home/deploy/opscrew/portainer/admin_password")).toBe(false);
     });
   });
 

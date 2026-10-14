@@ -864,6 +864,27 @@ describe("planPortainer (servers OpsCrew created)", () => {
     expect(fake.volumes.has("opscrew-portainer")).toBe(true);
   });
 
+  it("data left without an admin: a password sent anyway creates the admin; none points to --delete-data", async () => {
+    const plan = planPortainer({
+      app: "shop",
+      dir: "/home/deploy/opscrew/portainer",
+      enable: { ...portainerDesired(), needsPassword: false },
+    });
+    // A first start that stopped before the admin existed left the volume behind.
+    const withFile = new FakeHost({ login: "deploy", sudo: "none" });
+    withFile.volumes.set("opscrew-portainer", 1);
+    const result = await applyApproved(withFile, plan, {
+      secrets: { portainerPassword: portainerPassword() },
+    });
+    expect(result.applied).toEqual(["portainer"]);
+    expect(withFile.portainerAdmin).toBe(true);
+
+    const without = new FakeHost({ login: "deploy", sudo: "none" });
+    without.volumes.set("opscrew-portainer", 1);
+    const error = await rejection(applyApproved(without, plan));
+    expect(error.message).toContain("opscrew portainer disable --delete-data");
+  });
+
   it("refuses a root tunnel connector outside OpsCrew's directory", () => {
     expect(() =>
       planPortainer({

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -449,6 +449,79 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     });
   });
 
+  it("sends the local password even when data exists, so an admin missing after a stopped first start is made", async () => {
+    const s = await cloudSetup({ volume: true });
+    const password = fakeSecret("generic-password", "portainer-earlier");
+    await mkdir(s.deps.paths.projectHomeDir, { recursive: true });
+    await writeFile(portainerPasswordFile(s.deps.paths), `${password}\n`, { mode: 0o600 });
+    await portainerEnable(s.deps, { services: s.services });
+    const call = s.host.calls[0];
+    // Not required (an admin may exist), but sent: Portainer ignores it when an admin exists.
+    expect(call?.plan.steps[0]?.params).toMatchObject({ needsPassword: false });
+    expect(call?.options.secrets).toEqual({ portainerPassword: password });
+    expect((await readFile(portainerPasswordFile(s.deps.paths), "utf8")).trim()).toBe(password);
+    expect(s.deps.reporter.lines.some((line) => line.level === "warn")).toBe(false);
+    expect(s.deps.reporter.text()).not.toContain(password);
+  });
+
+  it("Cloudflare applied but the host step refused: the error says so, and --approve <host hash> finishes it", async () => {
+    const { token } = tunnelSecrets();
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+          type: "cloudflare_zero_trust_tunnel_cloudflared",
+          name: "this",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "create",
+        },
+      ],
+      outputs: { server_ipv4: SERVER_IPV4, tunnel_id: TUNNEL_ID, tunnel_token: token },
+    });
+    let refuseHost = true;
+    const s = await cloudSetup({
+      engine,
+      answer: (r) => !(refuseHost && r.kind === "host-apply"),
+    });
+    const error = (await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+      services: s.services,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toContain(
+      "The Cloudflare changes for portainer.example.com (tunnel, Access, DNS) are applied; Portainer on the server is not.",
+    );
+    expect(error.message).toContain("opscrew/infra/prod/terraform.tfvars.json");
+    expect(error.message).not.toContain(SERVER_IPV4);
+    const hostHash = /--approve ([0-9a-f]{64})/.exec(error.hint ?? "")?.[1];
+    expect(hostHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(error.hint).toContain("or `opscrew provision` to remove them.");
+    expect(engine.applied).toHaveLength(1);
+    expect(s.host.calls).toHaveLength(0);
+    const halfway = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(halfway.portainer).toBeUndefined();
+    expect(halfway.deployment.lastPlanHash).toBe(engine.applied[0]?.approval.approvedPlanHash);
+
+    // The Cloudflare side is done; approving the host plan without options finishes the change.
+    refuseHost = false;
+    engine.scenario.changes = [];
+    const result = await portainerEnable(s.deps, {
+      approvePlanHashes: [hostHash as string],
+      services: s.services,
+    });
+    expect(result.hostPlanHash).toBe(hostHash);
+    expect(s.host.calls[0]?.options.approvedHash).toBe(hostHash);
+    expect(s.host.calls[0]?.options.secrets?.tunnelToken).toBe(token);
+    expect(engine.applied).toHaveLength(1);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toMatchObject({
+      access: "subdomain",
+      hostname: "portainer.example.com",
+      allowedEmails: ["owner@example.com"],
+    });
+    expect(existsSync(pendingPortainerFile(s.deps.paths))).toBe(false);
+  });
+
   it("keeps the admin account when Portainer's data is already on the server", async () => {
     const s = await cloudSetup({ volume: true });
     await portainerEnable(s.deps, { services: s.services });
@@ -653,6 +726,29 @@ describe.skipIf(!hasGit)("Portainer on a server the user owns (host plan)", () =
       }),
     ]);
     expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toBeUndefined();
+  });
+
+  it("sends the local password when Portainer's data is already there (no admin yet is possible)", async () => {
+    const s = await ownSetup();
+    const password = fakeSecret("generic-password", "portainer-own-earlier");
+    await mkdir(s.deps.paths.projectHomeDir, { recursive: true });
+    await writeFile(portainerPasswordFile(s.deps.paths), `${password}\n`, { mode: 0o600 });
+    s.host.facts = {
+      ...s.host.facts,
+      portainer: {
+        installed: true,
+        composeSha256: "0".repeat(64),
+        running: false,
+        secretFile: false,
+        dataVolume: true,
+        tunnelId: null,
+      },
+    };
+    await portainerEnable(s.deps, { services: s.services });
+    const apply = s.host.applies.at(-1);
+    const step = apply?.plan.steps.find((item) => item.id === "portainer");
+    expect(step?.params).toMatchObject({ needsPassword: false });
+    expect(apply?.options.secrets).toEqual({ portainerPassword: password });
   });
 
   it("status uses the server's SSH port", async () => {

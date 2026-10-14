@@ -1381,8 +1381,10 @@ if ! command -v curl >/dev/null 2>&1; then
   else fail 'curl is missing on the server; install it, then turn Portainer on again.'; fi
 fi
 pw=''
+sent=false
 IFS= read -r pw || true
 if [ -n "$pw" ]; then
+  sent=true
   tmp=$(mktemp "$DIR/.password.XXXXXX")
   printf '%s' "$pw" > "$tmp"
   pw=''
@@ -1402,7 +1404,8 @@ code=$(wait_up) || code=none
 if [ "$code" != 204 ]; then
   compose stop >/dev/null 2>&1 || true
   rm -f "$DIR/admin_password"
-  if [ "$code" = 404 ]; then fail 'Portainer started without an admin account, so OpsCrew stopped it. Turn Portainer on again so OpsCrew can set the admin password.'; fi
+  if [ "$code" = 404 ] && [ "$sent" = true ]; then fail 'Portainer started without an admin account, so OpsCrew stopped it. Turn Portainer on again so OpsCrew can set the admin password.'; fi
+  if [ "$code" = 404 ]; then fail 'Portainer has data on this server but no admin account, and no admin password reached the server, so OpsCrew stopped it. Run opscrew portainer disable --delete-data and turn Portainer on again, or copy the password file from the computer that turned Portainer on and run the command again.'; fi
   fail 'Portainer did not answer on 127.0.0.1:9443 within two minutes, so OpsCrew stopped it.'
 fi
 # The admin account exists: run without the one-time password file, then delete it.
