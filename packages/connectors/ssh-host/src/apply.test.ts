@@ -10,10 +10,13 @@ import {
   portainerDesired,
   portainerPassword,
   provision,
+  TUNNEL_COMPOSE,
+  TUNNEL_ID,
   tunnelDesired,
   tunnelToken,
 } from "./__fixtures__/helpers";
 import { applyHostPlan } from "./apply";
+import { DOCKER_DAEMON_JSON } from "./constants";
 import { HostRecordSchema } from "./facts";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
@@ -40,19 +43,32 @@ async function rejection(promise: Promise<unknown>): Promise<OpsCrewError> {
 describe("applyHostPlan on a fresh server", () => {
   it("prepares the server, records previous values first, and a re-run changes nothing", async () => {
     const fake = new FakeHost({ os: "debian-12" });
-    const { plan, result } = await provision(fake);
+    fake.upgradesServiceEnabled = false;
+    const { plan, result } = await provision(fake, desiredFor(fake), {
+      version: "1.4.0",
+      now: () => new Date("2026-10-14T12:00:00.000Z"),
+    });
     expect(result).toEqual({
       applied: [
         "docker",
+        "docker-daemon",
         "deploy-user",
         "sshd",
         "ufw",
+        "fail2ban",
         "unattended-upgrades",
         "runtime-dirs",
         "app-marker",
       ],
       skipped: [],
     });
+    // Parity with servers OpsCrew creates (what `opscrew secure` checks).
+    expect(fake.files.get("/etc/docker/daemon.json")).toBe(DOCKER_DAEMON_JSON);
+    expect(fake.dockerRestarts).toBe(1);
+    expect(fake.files.get("/etc/fail2ban/jail.d/opscrew.local")).toContain("port = 22\n");
+    expect(fake.fail2banActive).toBe(true);
+    expect(fake.upgradesServiceEnabled).toBe(true);
+    expect(fake.files.has("/var/lib/opscrew-ready")).toBe(true);
 
     // Docker 28+ from Docker's repository with the deb822 sources file.
     expect(fake.packages.get("docker-ce")).toMatch(/^5:29\./);
@@ -91,9 +107,23 @@ describe("applyHostPlan on a fresh server", () => {
     expect(host).toMatchObject({
       app: "shop",
       projectId: "shop-0123456789ab",
-      opscrewVersion: "0.1.0",
+      opscrewVersion: "1.4.0",
     });
     expect(host.changes.map((entry) => entry.step)).toEqual(plan.steps.map((step) => step.id));
+    expect(new Set(host.changes.map((entry) => entry.at))).toEqual(
+      new Set(["2026-10-14T12:00:00.000Z"]),
+    );
+    expect(host.changes.find((entry) => entry.step === "docker-daemon")?.previous).toEqual({
+      file: "absent",
+    });
+    expect(host.changes.find((entry) => entry.step === "fail2ban")?.previous).toEqual({
+      installed: false,
+      active: false,
+      jail: "absent",
+    });
+    expect(
+      host.changes.find((entry) => entry.step === "unattended-upgrades")?.previous,
+    ).toMatchObject({ serviceEnabled: false });
     expect(host.changes.find((entry) => entry.step === "sshd")?.previous).toEqual({
       dropIn: "absent",
       permitRootLogin: "yes",
@@ -212,6 +242,85 @@ describe("applyHostPlan on a fresh server", () => {
   });
 });
 
+describe("tunnel replaced", () => {
+  it("writes the new tunnel's token and restarts the connector, even with the same Compose file", async () => {
+    const fake = new FakeHost();
+    const first = tunnelToken();
+    await provision(fake, tunnelDesired(fake), { secrets: { tunnelToken: first } });
+    expect(fake.files.get("/srv/opscrew/cloudflared/tunnel.id")).toBe(`${TUNNEL_ID}\n`);
+
+    const replaced = tunnelDesired(fake, {
+      tunnel: { compose: TUNNEL_COMPOSE, tunnelId: "0a1b2c3d-2222-4e5f-8a9b-abcdefabcdef" },
+    });
+    const plan = await planFor(fake, replaced);
+    const step = plan.steps.find((item) => item.id === "tunnel-connector");
+    expect(step).toMatchObject({ state: "change", params: { needsToken: true } });
+    expect(step?.reason).toMatch(/tunnel was replaced/);
+    expect(plan.steps.filter((item) => item.state === "change").map((item) => item.id)).toEqual([
+      "tunnel-connector",
+    ]);
+
+    // The new token is needed: refused without it, before anything changes.
+    fake.calls.length = 0;
+    await expect(applyApproved(fake, plan)).rejects.toThrow(/needs the tunnel token/);
+    expect(fake.calls).toEqual([]);
+
+    const second = `${tunnelToken()}SECOND`;
+    const result = await applyApproved(fake, plan, { secrets: { tunnelToken: second } });
+    expect(result.applied).toEqual(["tunnel-connector"]);
+    expect(fake.files.get("/srv/opscrew/cloudflared/tunnel.env")).toBe(`TUNNEL_TOKEN=${second}\n`);
+    expect(fake.files.get("/srv/opscrew/cloudflared/tunnel.id")).toBe(
+      "0a1b2c3d-2222-4e5f-8a9b-abcdefabcdef\n",
+    );
+    expect(fake.tunnelRecreates).toBe(1);
+    expect(fake.calls.filter((call) => call.input !== undefined).map((call) => call.name)).toEqual([
+      "tunnel-connector.apply",
+    ]);
+    for (const call of fake.calls) expect(call.command).not.toContain(second);
+
+    const settled = await planFor(fake, replaced);
+    expect(settled.steps.every((item) => item.state === "in-place")).toBe(true);
+  });
+});
+
+describe("docker daemon settings", () => {
+  it("reload Docker instead of restarting it while containers run", async () => {
+    const fake = new FakeHost();
+    fake.packages.set("docker-ce", "5:28.5.1-1");
+    fake.packages.set("docker-compose-plugin", "2.39.4");
+    fake.packages.set("docker-buildx-plugin", "0.29.1");
+    fake.dockerRunning = true;
+    fake.containers.push({ name: "grafana", project: "monitoring", ports: "" });
+    await provision(fake);
+    expect(fake.files.get("/etc/docker/daemon.json")).toBe(DOCKER_DAEMON_JSON);
+    expect(fake.dockerRestarts).toBe(0);
+    expect(fake.dockerReloads).toBe(1);
+  });
+
+  it("are never overwritten, even when the user writes them between plan and apply", async () => {
+    const fake = new FakeHost();
+    const plan = await planFor(fake);
+    expect(plan.steps.find((step) => step.id === "docker-daemon")?.state).toBe("change");
+    fake.files.set("/etc/docker/daemon.json", '{ "data-root": "/mnt/docker" }\n');
+    const result = await applyApproved(fake, plan);
+    expect(result.skipped).toContain("docker-daemon");
+    expect(fake.files.get("/etc/docker/daemon.json")).toBe('{ "data-root": "/mnt/docker" }\n');
+  });
+
+  it("stay when the user changed OpsCrew's file before undo", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    fake.files.delete("/etc/opscrew/app.json");
+    fake.files.set("/etc/docker/daemon.json", '{ "log-driver": "journald" }\n');
+    const undo = planUndo(await inspectHost(fake));
+    expect(undo.steps.find((step) => step.id === "docker-daemon")).toMatchObject({
+      state: "in-place",
+    });
+    await applyApproved(fake, undo);
+    expect(fake.files.get("/etc/docker/daemon.json")).toBe('{ "log-driver": "journald" }\n');
+  });
+});
+
 describe("applyHostPlan refuses", () => {
   it("a plan whose hash is not the approved one, before touching the server", async () => {
     const fake = new FakeHost();
@@ -229,12 +338,15 @@ describe("applyHostPlan refuses", () => {
         verifyLogin: async () => true,
       }),
     );
-    expect(error.code).toBe("PHASE_PRECONDITION");
+    // The same code as the IaC engine's hash-bound apply.
+    expect(error.code).toBe("PLAN_HASH_MISMATCH");
     expect(error.message).toMatch(/not the one that was approved/);
     expect(fake.calls).toEqual([]);
-    await expect(
+    const malformed = await rejection(
       applyHostPlan(fake, plan, { approvedHash: "not-a-hash", verifyLogin: async () => true }),
-    ).rejects.toThrow(/not the one that was approved/);
+    );
+    expect(malformed.code).toBe("PLAN_HASH_MISMATCH");
+    expect(fake.calls).toEqual([]);
   });
 
   it("accepts the approved hash in upper case", async () => {
@@ -408,9 +520,11 @@ describe("resuming after an interruption", () => {
     const plan = await planFor(fake);
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
       ["docker", "in-place"],
+      ["docker-daemon", "in-place"],
       ["deploy-user", "in-place"],
       ["sshd", "in-place"],
       ["ufw", "in-place"],
+      ["fail2ban", "in-place"],
       ["unattended-upgrades", "change"],
       ["runtime-dirs", "change"],
       ["app-marker", "change"],
@@ -548,9 +662,22 @@ describe("undo", () => {
     expect(undo.findings).toEqual([]);
     const result = await applyApproved(fake, undo);
     expect(result).toEqual({
-      applied: ["runtime-dirs", "unattended-upgrades", "ufw", "sshd", "deploy-user", "app-marker"],
+      applied: [
+        "runtime-dirs",
+        "unattended-upgrades",
+        "fail2ban",
+        "ufw",
+        "sshd",
+        "deploy-user",
+        "docker-daemon",
+        "app-marker",
+      ],
       skipped: ["docker"],
     });
+    expect(fake.files.has("/etc/docker/daemon.json")).toBe(false);
+    expect(fake.files.has("/etc/fail2ban/jail.d/opscrew.local")).toBe(false);
+    expect(fake.packages.has("fail2ban")).toBe(false);
+    expect(fake.files.has("/var/lib/opscrew-ready")).toBe(false);
     expect(fake.users.has("deploy")).toBe(false);
     expect(fake.users.has("alice")).toBe(true);
     expect(fake.files.has("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe(false);

@@ -5,6 +5,8 @@
 import { createHash } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
 import {
+  FAIL2BAN_JAIL_PATH,
+  fail2banJail,
   MIN_DOCKER_MAJOR,
   PORTAINER_DIR,
   PORTAINER_PORT,
@@ -12,6 +14,7 @@ import {
   PORTAINER_REPOSITORY,
   SUPPORTED_ARCH,
   SUPPORTED_OS,
+  sshdDropIn,
   TUNNEL_APP_PORT,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
@@ -307,6 +310,59 @@ function dockerStep({ facts, found }: SetupContext): HostStep {
   }
 }
 
+function dockerDaemonStep({ facts }: SetupContext): HostStep {
+  const title = "Docker daemon settings: log rotation, no-new-privileges, live-restore";
+  const params = { path: "/etc/docker/daemon.json" };
+  if (facts.dockerDaemonJson === "opscrew") {
+    return step("docker-daemon", title, "in-place", params, "Already set.");
+  }
+  if (facts.dockerDaemonJson === "other") {
+    return step(
+      "docker-daemon",
+      title,
+      "in-place",
+      params,
+      "This server already has its own /etc/docker/daemon.json, so OpsCrew kept your Docker settings and changes nothing there.",
+    );
+  }
+  const busy = facts.containers.length > 0;
+  return step(
+    "docker-daemon",
+    `Write /etc/docker/daemon.json: ${title.slice("Docker daemon settings: ".length)}`,
+    "change",
+    params,
+    busy
+      ? "The same settings as on servers OpsCrew creates. Docker reloads them without restarting your running containers; log rotation and no-new-privileges apply to containers created after Docker's next restart."
+      : "The same settings as on servers OpsCrew creates; Docker restarts once to apply them (no containers are running).",
+  );
+}
+
+function fail2banStep({ facts, desired }: SetupContext): HostStep {
+  const ports = realSshPorts(facts, desired);
+  const params = { sshPorts: ports.join(" "), install: !facts.packages.fail2ban };
+  const title = `Brute-force protection: fail2ban jail for SSH (port ${ports.join(", ")})`;
+  const f2b = facts.fail2ban;
+  if (f2b.active && f2b.jail?.trim() === fail2banJail(ports).trim()) {
+    return step("fail2ban", title, "in-place", params, "Already running.");
+  }
+  if (f2b.active && f2b.sshdJail && f2b.jail === null) {
+    return step(
+      "fail2ban",
+      title,
+      "in-place",
+      params,
+      "fail2ban already guards SSH on this server with your own settings, so OpsCrew leaves them alone.",
+    );
+  }
+  return step(
+    "fail2ban",
+    title,
+    "change",
+    params,
+    `${params.install ? "Installs fail2ban and adds" : "Adds"} ${FAIL2BAN_JAIL_PATH}: 5 failed logins ban an address for an hour (read from the systemd journal).`,
+  );
+}
+
 function deployUserStep({ facts, desired, found }: SetupContext): HostStep {
   const params = { user: desired.deploy.user, publicKey: desired.deploy.publicKey };
   const existing = facts.deployUser;
@@ -383,10 +439,12 @@ function sshdStep({ facts, desired, found }: SetupContext): HostStep {
   const passwordText = disablePasswords
     ? "password logins off"
     : `password logins left as they are (you chose to keep them for ${lacking.join(", ")})`;
+  // OpsCrew's drop-in must be there too: drift and `opscrew secure` read it.
   const inPlace =
     sshd.permitRootLogin === permitRootLogin &&
     (!disablePasswords || !sshd.passwordAuthentication) &&
     (!kbdInteractiveOff || !sshd.kbdInteractiveAuthentication) &&
+    sshd.dropIn?.trim() === sshdDropIn(params).trim() &&
     !facts.pendingUndo.sshd;
   if (inPlace) {
     return step("sshd", `SSH: ${passwordText}, ${rootText}`, "in-place", params, "Already set.");
@@ -473,7 +531,7 @@ function ufwStep({ facts, desired, found }: SetupContext): HostStep {
 
 function upgradesStep({ facts }: SetupContext): HostStep {
   const params = { install: !facts.packages.unattendedUpgrades };
-  if (facts.packages.unattendedUpgrades && facts.autoUpgrades) {
+  if (facts.packages.unattendedUpgrades && facts.autoUpgrades && facts.autoUpgradesService) {
     return step("unattended-upgrades", TITLES.upgrades, "in-place", params, "Already on.");
   }
   return step(
@@ -526,10 +584,13 @@ function markerStep({ facts, desired, found }: SetupContext): HostStep {
       title,
       "change",
       params,
-      "Writes /etc/opscrew/app.json; one server runs one OpsCrew app.",
+      "Writes /etc/opscrew/app.json (one server runs one OpsCrew app) and /var/lib/opscrew-ready, the flag that says the setup finished.",
     );
   }
   if (marker.app === desired.app && marker.projectId === desired.projectId) {
+    if (!facts.ready) {
+      return step("app-marker", title, "change", params, "The setup-finished flag is missing.");
+    }
     return step("app-marker", title, "in-place", params, "Already marked.");
   }
   found.push(
@@ -575,17 +636,29 @@ function tunnelStep({ facts, desired, found }: SetupContext): HostStep | undefin
       findings.sshdNotLocal(sshListeners.map((listener) => `${listener.address}:${listener.port}`)),
     );
   }
-  const compose = desired.tunnel.compose;
-  const params = { compose, needsToken: !tunnel.secretFile };
+  const { compose, tunnelId } = desired.tunnel;
+  // A different tunnel id means a new tunnel: its token must be written and the connector restarted.
+  const sameTunnel = tunnel.tunnelId === tunnelId;
+  const params = { compose, tunnelId, needsToken: !tunnel.secretFile || !sameTunnel };
   const image = imageOf(compose);
   const title = `${TITLES.tunnel}${image ? ` (${image})` : ""}`;
   if (
     tunnel.installed &&
     tunnel.composeSha256 === sha256(compose) &&
     tunnel.running &&
-    tunnel.secretFile
+    tunnel.secretFile &&
+    sameTunnel
   ) {
     return step("tunnel-connector", title, "in-place", params, "Already running.");
+  }
+  if (tunnel.installed && tunnel.tunnelId !== null && !sameTunnel) {
+    return step(
+      "tunnel-connector",
+      title,
+      "change",
+      params,
+      "The tunnel was replaced: OpsCrew writes the new tunnel's token (supplied at apply time, never part of this plan) and restarts the connector.",
+    );
   }
   return step(
     "tunnel-connector",
@@ -653,9 +726,11 @@ function allBlocked(desired: DesiredHost): HostStep[] {
   const reason = "OpsCrew cannot prepare this server yet; see the findings.";
   const steps: HostStep[] = [
     step("docker", TITLES.docker, "blocked", {}, reason),
+    step("docker-daemon", "Docker daemon settings", "blocked", {}, reason),
     step("deploy-user", TITLES.deployUser, "blocked", {}, reason),
     step("sshd", TITLES.sshd, "blocked", {}, reason),
     step("ufw", TITLES.ufw, "blocked", {}, reason),
+    step("fail2ban", "Brute-force protection (fail2ban)", "blocked", {}, reason),
     step("unattended-upgrades", TITLES.upgrades, "blocked", {}, reason),
     step("runtime-dirs", TITLES.runtime, "blocked", {}, reason),
     step(
@@ -710,9 +785,11 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
   }
   const steps = [
     dockerStep(ctx),
+    dockerDaemonStep(ctx),
     deployUserStep(ctx),
     sshdStep(ctx),
     ufwStep(ctx),
+    fail2banStep(ctx),
     upgradesStep(ctx),
     runtimeStep(ctx),
     markerStep(ctx),
@@ -893,6 +970,7 @@ export function planUndo(facts: HostFacts): HostPlan {
   const upgrades = entry("unattended-upgrades");
   if (upgrades) {
     const removePackage = upgrades.previous.installed === false;
+    const disableService = !removePackage && upgrades.previous.serviceEnabled === false;
     steps.push(
       step(
         "unattended-upgrades",
@@ -900,7 +978,24 @@ export function planUndo(facts: HostFacts): HostPlan {
           ? "Remove OpsCrew's automatic-update settings and the unattended-upgrades package it installed"
           : "Remove OpsCrew's automatic-update settings",
         "change",
-        { removePackage },
+        { removePackage, disableService },
+      ),
+    );
+  }
+  const fail2ban = entry("fail2ban");
+  if (fail2ban) {
+    const removePackage = fail2ban.previous.installed === false && f.packages.fail2ban;
+    const disableService = !removePackage && fail2ban.previous.active === false;
+    steps.push(
+      step(
+        "fail2ban",
+        removePackage
+          ? "Remove OpsCrew's fail2ban jail and the fail2ban package it installed"
+          : "Remove OpsCrew's fail2ban jail for SSH",
+        f.fail2ban.jail !== null || removePackage || (disableService && f.fail2ban.active)
+          ? "change"
+          : "in-place",
+        { removePackage, disableService },
       ),
     );
   }
@@ -946,6 +1041,31 @@ export function planUndo(facts: HostFacts): HostPlan {
         {},
       ),
     );
+  }
+  const daemon = entry("docker-daemon");
+  if (daemon && daemon.previous.file === "absent") {
+    const title = "Remove the /etc/docker/daemon.json OpsCrew wrote";
+    if (f.dockerDaemonJson === "opscrew") {
+      steps.push(
+        step(
+          "docker-daemon",
+          title,
+          "change",
+          {},
+          "Docker reloads its settings; running containers keep running.",
+        ),
+      );
+    } else if (f.dockerDaemonJson === "other") {
+      steps.push(
+        step(
+          "docker-daemon",
+          title,
+          "in-place",
+          {},
+          "The file was changed after OpsCrew wrote it, so OpsCrew leaves it alone.",
+        ),
+      );
+    }
   }
   if (entry("docker")) {
     steps.push(

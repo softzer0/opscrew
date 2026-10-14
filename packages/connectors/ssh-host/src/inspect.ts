@@ -1,7 +1,16 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell and Go templates, not JavaScript templates.
 import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { PORTAINER_DIR, PORTAINER_PROJECT, TUNNEL_DIR, TUNNEL_PROJECT } from "./constants";
+import {
+  DOCKER_DAEMON_JSON,
+  DOCKER_DAEMON_JSON_PATH,
+  FAIL2BAN_JAIL_PATH,
+  PORTAINER_DIR,
+  PORTAINER_PROJECT,
+  READY_FLAG,
+  TUNNEL_DIR,
+  TUNNEL_PROJECT,
+} from "./constants";
 import {
   AppMarkerSchema,
   type HostFacts,
@@ -13,6 +22,7 @@ import {
   SSHD_DROP_IN,
 } from "./facts";
 import { foreignFirewalls } from "./firewall";
+import { canonicalJson } from "./hash";
 import {
   EXIT_MARK,
   engineVersion,
@@ -54,6 +64,7 @@ export const INSPECTED_PACKAGES = [
   "ufw",
   "unattended-upgrades",
   "curl",
+  "fail2ban",
 ] as const;
 
 /** Distribution packages Docker lists as conflicting with Docker Engine. */
@@ -99,7 +110,8 @@ const ADDONS_SNIPPET = `addon() {
     sum=$(sha256sum "$2/compose.yaml" | cut -d ' ' -f 1)
     secret=no
     if [ -s "$2/$3" ]; then secret=yes; fi
-    echo "$1 installed \${sum:--} $secret"
+    id=$(head -n 1 "$2/tunnel.id" 2>/dev/null) || id=''
+    echo "$1 installed \${sum:--} $secret \${id:--}"
   else
     echo "$1 absent"
   fi
@@ -132,8 +144,13 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["listeners", "ss -H -ltnup"],
   [
     "units",
-    `for u in nginx apache2 caddy traefik haproxy lighttpd firewalld nftables docker; do printf '%s %s\\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)"; done`,
+    `for u in nginx apache2 caddy traefik haproxy lighttpd firewalld nftables docker fail2ban; do printf '%s %s\\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)"; done`,
   ],
+  ["docker-daemon", `cat ${DOCKER_DAEMON_JSON_PATH}`],
+  ["fail2ban-jail", `cat ${FAIL2BAN_JAIL_PATH}`],
+  ["fail2ban-sshd", "fail2ban-client status sshd"],
+  ["upgrades-enabled", "systemctl is-enabled unattended-upgrades"],
+  ["ready", `test -f ${READY_FLAG}`],
   ["ufw-status", "ufw status"],
   ["ufw-added", "ufw show added"],
   ["iptables", "iptables-save"],
@@ -235,6 +252,14 @@ function ok(sections: Map<string, Section>, name: string): string {
   return found.exit === 0 ? found.text : "";
 }
 
+/** Whether `/etc/docker/daemon.json` is absent, OpsCrew's settings (as JSON), or the user's. */
+function daemonJson(found: Section): "absent" | "opscrew" | "other" {
+  if (found.exit !== 0) return "absent";
+  const ours = canonicalJson(JSON.parse(DOCKER_DAEMON_JSON));
+  const theirs = parseJson(found.text, (value) => canonicalJson(value));
+  return theirs === ours ? "opscrew" : "other";
+}
+
 function parseJson<T>(text: string, parse: (value: unknown) => T | undefined): T | undefined {
   try {
     return parse(JSON.parse(text));
@@ -282,6 +307,7 @@ export function factsFromOutput(
       running: containers.some((container) => container.project === project),
       secretFile: found?.secretFile ?? false,
       dataVolume: (Number.parseInt(volumes.get(project) ?? "0", 10) || 0) > 0,
+      tunnelId: found?.tunnelId ?? null,
     };
   };
 
@@ -368,8 +394,17 @@ export function factsFromOutput(
       ufw: packages.has("ufw"),
       unattendedUpgrades: packages.has("unattended-upgrades"),
       curl: packages.has("curl"),
+      fail2ban: packages.has("fail2ban"),
     },
     autoUpgrades: parseAptPeriodic(text("apt-periodic")),
+    autoUpgradesService: text("upgrades-enabled").trim() === "enabled",
+    dockerDaemonJson: daemonJson(section(sections, "docker-daemon")),
+    fail2ban: {
+      active: units.get("fail2ban") === "active",
+      jail: section(sections, "fail2ban-jail").exit === 0 ? text("fail2ban-jail") : null,
+      sshdJail: section(sections, "fail2ban-sshd").exit === 0,
+    },
+    ready: section(sections, "ready").exit === 0,
     dirs: parseDirs(text("dirs"), RUNTIME_DIRS),
     marker: markerValue ?? null,
     markerDamaged: marker.exit === 0 && markerValue === undefined,

@@ -5,6 +5,39 @@ export const MIN_DOCKER_MAJOR = 28;
 export const DOCKER_PACKAGES =
   "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin";
 
+/**
+ * OpsCrew's Docker daemon settings, the same as on servers it creates (cloud-init): log rotation,
+ * no-new-privileges and live-restore. Written only when the server has no daemon.json.
+ */
+export const DOCKER_DAEMON_JSON_PATH = "/etc/docker/daemon.json";
+export const DOCKER_DAEMON_JSON = `{
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
+  "no-new-privileges": true,
+  "live-restore": true
+}
+`;
+
+/** OpsCrew's fail2ban jail for SSH (journald backend: Debian 12+ has no /var/log/auth.log). */
+export const FAIL2BAN_JAIL_PATH = "/etc/fail2ban/jail.d/opscrew.local";
+
+/** The jail file for the given SSH ports. */
+export function fail2banJail(ports: readonly number[]): string {
+  return [
+    "# Managed by OpsCrew: brute-force protection for SSH.",
+    "[sshd]",
+    "enabled = true",
+    `port = ${ports.join(",")}`,
+    "backend = systemd",
+    "maxretry = 5",
+    "bantime = 1h",
+    "",
+  ].join("\n");
+}
+
+/** Set once the host setup finished (the same flag cloud-init sets; `opscrew secure` reads it). */
+export const READY_FLAG = "/var/lib/opscrew-ready";
+
 /** Root-owned directory for OpsCrew's add-on Compose projects on servers the user owns. */
 export const ADDONS_ROOT = "/srv/opscrew";
 
@@ -29,6 +62,21 @@ export const DEFAULT_DEAD_MAN_SECONDS = 180;
 /** First line of OpsCrew's sshd drop-in. */
 export const SSHD_HEADER =
   "# Managed by OpsCrew. `opscrew destroy --undo-host` puts the previous setting back.";
+
+/** The content of OpsCrew's sshd drop-in for the sshd step's parameters. */
+export function sshdDropIn(p: {
+  permitRootLogin: string;
+  disablePasswords: boolean;
+  kbdInteractiveOff: boolean;
+}): string {
+  return [
+    SSHD_HEADER,
+    `PermitRootLogin ${p.permitRootLogin}`,
+    ...(p.disablePasswords ? ["PasswordAuthentication no"] : []),
+    ...(p.kbdInteractiveOff ? ["KbdInteractiveAuthentication no"] : []),
+    "",
+  ].join("\n");
+}
 
 /** ufw rule comments that mark rules OpsCrew added. */
 export const UFW_SSH_COMMENT = "opscrew-ssh";

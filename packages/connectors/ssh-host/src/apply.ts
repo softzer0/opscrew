@@ -32,8 +32,9 @@ import {
 
 /**
  * Options the adapter passes to `RemoteExec.run`. `input` is written to the command's stdin and
- * is how secrets reach the server; a transport that ignores it makes the secret steps fail with
- * a plain message (their scripts refuse an empty stdin), never write an empty secret.
+ * is the only way secrets reach the server. A transport that dropped it would make the secret
+ * steps fail with a plain message (their scripts refuse an empty stdin), never write an empty
+ * secret.
  */
 interface RunOptions {
   timeoutMs?: number;
@@ -52,6 +53,10 @@ interface Context {
   verifyLogin: () => Promise<boolean>;
   deadManSeconds: number;
   recorder: Recorder | null;
+  /** Written to the host record as `opscrewVersion`. */
+  version: string;
+  /** Clock for the host record's timestamps. */
+  now: () => Date;
 }
 
 function nextStep(plan: HostPlan): string {
@@ -170,11 +175,11 @@ class Recorder {
         schemaVersion: 1,
         app: plan.app,
         projectId,
-        opscrewVersion: HOST_ADAPTER_VERSION,
+        opscrewVersion: ctx.version,
         changes: [],
       };
     } else if (plan.purpose === "setup") {
-      record = { ...record, app: plan.app, projectId, opscrewVersion: HOST_ADAPTER_VERSION };
+      record = { ...record, app: plan.app, projectId, opscrewVersion: ctx.version };
     }
     return new Recorder(ctx, record);
   }
@@ -190,7 +195,10 @@ class Recorder {
     }
     this.record = {
       ...this.record,
-      changes: [...this.record.changes, { step, purpose, at: new Date().toISOString(), previous }],
+      changes: [
+        ...this.record.changes,
+        { step, purpose, at: this.ctx.now().toISOString(), previous },
+      ],
     };
     await this.write();
   }
@@ -370,8 +378,9 @@ function refuse(message: string, hint: string): OpsCrewError {
 }
 
 /**
- * Applies an approved host plan. Refuses (PHASE_PRECONDITION) when the plan's hash is not
- * `approvedHash`, when it has findings or blocked steps, or when a secret it needs is missing.
+ * Applies an approved host plan. Refuses with PLAN_HASH_MISMATCH when the plan's hash is not
+ * `approvedHash`, and with PHASE_PRECONDITION when it has findings or blocked steps or a secret
+ * it needs is missing.
  * Secrets go to the server only on stdin, into root-only files; they never appear in commands,
  * records or errors. Every change is recorded in `/etc/opscrew/host.json` before it is made.
  */
@@ -389,10 +398,15 @@ export async function applyHostPlan(
   const valid = parsed.data;
   const hash = hostPlanHash(valid);
   if (!isPlanHash(opts?.approvedHash) || opts.approvedHash.toLowerCase() !== hash) {
-    throw refuse(
+    // Same code as the IaC engine's hash-bound apply.
+    throw new OpsCrewError(
+      "PLAN_HASH_MISMATCH",
       "This host plan is not the one that was approved, so OpsCrew changes nothing.",
-      "Look at the current host plan and approve it by its hash.",
+      { hint: "Look at the current host plan and approve it by its hash." },
     );
+  }
+  if (opts.version !== undefined && !/^[0-9A-Za-z.+-]{1,64}$/.test(opts.version)) {
+    throw new OpsCrewError("INVALID_INPUT", "The OpsCrew version must be a version string.");
   }
   if (valid.findings.length > 0) {
     throw refuse(
@@ -466,6 +480,8 @@ export async function applyHostPlan(
     verifyLogin: opts.verifyLogin,
     deadManSeconds,
     recorder: null,
+    version: opts.version ?? HOST_ADAPTER_VERSION,
+    now: opts.now ?? (() => new Date()),
   };
   const needsRoot = changes.some(({ step }) => runAsOf(step) === "root");
   if (needsRoot) {

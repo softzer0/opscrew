@@ -17,6 +17,7 @@ export {
   TUNNEL_PROJECT,
 } from "./constants";
 export {
+  HOST_ADAPTER_VERSION,
   type HostFacts,
   HostFactsSchema,
   type HostRecord,

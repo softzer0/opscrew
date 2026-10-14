@@ -28,9 +28,11 @@ describe("inspectHost", () => {
         expect(plan.findings).toEqual([]);
         expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
           ["docker", "change"],
+          ["docker-daemon", "change"],
           ["deploy-user", "change"],
           ["sshd", "change"],
           ["ufw", "change"],
+          ["fail2ban", "change"],
           ["unattended-upgrades", "change"],
           ["runtime-dirs", "change"],
           ["app-marker", "change"],

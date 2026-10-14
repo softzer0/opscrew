@@ -332,17 +332,25 @@ export function parseAddresses(
   return found;
 }
 
-/** Lines `<addon> absent` or `<addon> installed <sha256 of compose.yaml> <secret yes|no>`. */
-export function parseAddons(
-  text: string,
-): Map<string, { composeSha256: string | null; secretFile: boolean }> {
-  const addons = new Map<string, { composeSha256: string | null; secretFile: boolean }>();
+interface AddonLine {
+  composeSha256: string | null;
+  secretFile: boolean;
+  tunnelId: string | null;
+}
+
+/**
+ * Lines `<addon> absent` or `<addon> installed <sha256 of compose.yaml> <secret yes|no> <tunnel
+ * id or ->`.
+ */
+export function parseAddons(text: string): Map<string, AddonLine> {
+  const addons = new Map<string, AddonLine>();
   for (const line of linesOf(text)) {
-    const [name, state, sum, secret] = line.split(/\s+/);
+    const [name, state, sum, secret, id] = line.split(/\s+/);
     if (!name || state !== "installed") continue;
     addons.set(name, {
       composeSha256: sum && /^[0-9a-f]{64}$/.test(sum) ? sum : null,
       secretFile: secret === "yes",
+      tunnelId: id && /^[0-9A-Fa-f-]{8,64}$/.test(id) ? id : null,
     });
   }
   return addons;

@@ -12,9 +12,10 @@ import {
   tunnelDesired,
   tunnelToken,
 } from "./__fixtures__/helpers";
+import { sshdDropIn } from "./constants";
 import { inspectHost, inspectScript, privilegeProbeScript } from "./inspect";
 import { planHost, planTeardown, planUndo } from "./plan";
-import { asLogin, asRoot } from "./shell";
+import { asLogin, asRoot, shellQuote } from "./shell";
 import {
   armScript,
   cancelScript,
@@ -90,9 +91,11 @@ describe("generated scripts", () => {
     expect([...keys].sort()).toEqual(
       [
         "setup/docker",
+        "setup/docker-daemon",
         "setup/deploy-user",
         "setup/sshd",
         "setup/ufw",
+        "setup/fail2ban",
         "setup/unattended-upgrades",
         "setup/runtime-dirs",
         "setup/app-marker",
@@ -104,9 +107,11 @@ describe("generated scripts", () => {
         "teardown/app-marker",
         "undo/runtime-dirs",
         "undo/unattended-upgrades",
+        "undo/fail2ban",
         "undo/ufw",
         "undo/sshd",
         "undo/deploy-user",
+        "undo/docker-daemon",
         "undo/app-marker",
       ].sort(),
     );
@@ -159,7 +164,7 @@ describe("generated scripts", () => {
     for (const plan of await everyPlan()) {
       for (const [key, script] of allScripts(plan)) {
         const lines = script.split("\n");
-        expect(lines[0], key).toMatch(/^# opscrew-host: [a-z.-]+$/);
+        expect(lines[0], key).toMatch(/^# opscrew-host: [a-z0-9.-]+$/);
         // After the fixed environment (ending with umask) come only the quoted parameters.
         const params = lines.slice(lines.indexOf("umask 022") + 1);
         const end = params.findIndex((line) => !/^[A-Z][A-Z0-9_]*=/.test(line));
@@ -303,17 +308,55 @@ ufw() {
     ]);
   });
 
-  it("sshd: the check accepts without-password for prohibit-password and sees a password login left on", async () => {
+  it("sshd: the check accepts without-password for prohibit-password and needs OpsCrew's drop-in", async () => {
     const { check } = await stepOf((f) => desiredFor(f), "sshd");
+    const dropIn = sshdDropIn({
+      permitRootLogin: "prohibit-password",
+      disablePasswords: true,
+      kbdInteractiveOff: true,
+    });
+    const catStub = (content: string) =>
+      `cat() { if [ "$1" = /etc/ssh/sshd_config.d/10-opscrew.conf ]; then printf '%s' ${shellQuote(content)}; else command cat "$@"; fi; }`;
     const stubs = (
       password: string,
+      content: string,
     ) => `sshd() { printf '%s\\n' 'port 22' 'permitrootlogin without-password' 'passwordauthentication ${password}' 'kbdinteractiveauthentication no'; }
-systemctl() { return 3; }`;
-    expect(runWithStubs(stubs("no"), check).stdout).toContain("state=in-place");
-    const changed = runWithStubs(stubs("yes"), check).stdout;
+systemctl() { return 3; }
+${catStub(content)}`;
+    expect(runWithStubs(stubs("no", dropIn), check).stdout).toContain("state=in-place");
+    // Effective settings already right, but no OpsCrew drop-in: still a change (secure reads it).
+    expect(runWithStubs(stubs("no", "PermitRootLogin no\n"), check).stdout).toContain(
+      "state=change",
+    );
+    const changed = runWithStubs(stubs("yes", dropIn), check).stdout;
     expect(changed).toContain("state=change");
     expect(changed).toContain("prev.permitRootLogin=without-password");
     expect(changed).toContain("prev.passwordAuthentication=yes");
+  });
+
+  it("fail2ban: the jail covers every real SSH port and reads the systemd journal", async () => {
+    const { apply } = await stepOf(
+      (f) => desiredFor(f),
+      "fail2ban",
+      (f) => {
+        f.sshdBase.port = [22, 2222];
+      },
+    );
+    const jail = /^JAIL_B64='([^']*)'$/m.exec(apply)?.[1] ?? "";
+    expect(Buffer.from(jail, "base64").toString("utf8")).toBe(
+      "# Managed by OpsCrew: brute-force protection for SSH.\n[sshd]\nenabled = true\nport = 22,2222\nbackend = systemd\nmaxretry = 5\nbantime = 1h\n",
+    );
+  });
+
+  it("docker-daemon: never overwrites an existing daemon.json and restarts Docker only when idle", async () => {
+    const { apply } = await stepOf((f) => desiredFor(f), "docker-daemon");
+    const body = apply.slice(apply.indexOf('if [ -e "$DAEMON_JSON" ]; then exit 0; fi'));
+    expect(body.length).toBeGreaterThan(0);
+    expect(body.indexOf("exit 0")).toBeLessThan(body.indexOf('mv -f "$tmp" "$DAEMON_JSON"'));
+    expect(body).toContain('dockerd --validate --config-file "$tmp"');
+    expect(body).toMatch(
+      /if \[ -z "\$\(docker ps -q 2>\/dev\/null\)" \]; then\n {2}systemctl restart docker\nelse/,
+    );
   });
 
   it("docker: the check reads the engine's major version from the package version", async () => {

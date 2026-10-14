@@ -10,11 +10,16 @@ import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import {
   ADDONS_ROOT,
+  DOCKER_DAEMON_JSON,
+  DOCKER_DAEMON_JSON_PATH,
   DOCKER_PACKAGES,
+  FAIL2BAN_JAIL_PATH,
+  fail2banJail,
   MIN_DOCKER_MAJOR,
   PORTAINER_DIR,
   PORTAINER_PORT,
   PORTAINER_PROJECT,
+  READY_FLAG,
   SSHD_HEADER,
   TUNNEL_DIR,
   TUNNEL_PROJECT,
@@ -31,7 +36,13 @@ import {
   SSHD_DROP_IN,
 } from "./facts";
 import { APT_FUNCTIONS, buildScript, type ScriptParams } from "./shell";
-import { ComposeTextSchema, type HostPlan, type HostStep, type HostStepId } from "./types";
+import {
+  ComposeTextSchema,
+  type HostPlan,
+  type HostStep,
+  type HostStepId,
+  TunnelIdSchema,
+} from "./types";
 
 export const DEAD_MAN_DIR = `${OPSCREW_DIR}/deadman`;
 export const BACKUP_DIR = `${OPSCREW_DIR}/backup`;
@@ -350,8 +361,16 @@ ${SSHD_RELOAD}`;
   if [ "$PASSWORDS_OFF" = true ]; then printf '%s\\n' "$eff" | grep -qx 'passwordauthentication no' || return 1; fi
   if [ "$KBD_OFF" = true ]; then printf '%s\\n' "$eff" | grep -Eqx '(kbdinteractiveauthentication|challengeresponseauthentication) no' || return 1; fi
   return 0
-}`;
+}
+expected_dropin() {
+  printf '%s\\n' "$HEADER"
+  printf 'PermitRootLogin %s\\n' "$ROOT_LOGIN"
+  if [ "$PASSWORDS_OFF" = true ]; then printf '%s\\n' 'PasswordAuthentication no'; fi
+  if [ "$KBD_OFF" = true ]; then printf '%s\\n' 'KbdInteractiveAuthentication no'; fi
+}
+dropin_ok() { [ "$(cat "$DROPIN" 2>/dev/null)" = "$(expected_dropin)" ]; }`;
   const verify = `  config_ok || return 1
+  dropin_ok || return 1
   ${timer}`;
   const snapshot = `if [ -f "$DROPIN" ]; then echo prev.dropIn=present; else echo prev.dropIn=absent; fi
 eff=$(sshd -T 2>/dev/null) || eff=''
@@ -362,12 +381,7 @@ install -d -m 0700 ${OPSCREW_DIR} ${BACKUP_DIR}
 # Keep the file that was there before OpsCrew, once, for undo.
 if [ -f "$DROPIN" ] && [ ! -e "$BACKUP" ] && ! head -n 1 "$DROPIN" | grep -qxF -- "$HEADER"; then cp -p "$DROPIN" "$BACKUP"; fi
 tmp=$(mktemp /etc/ssh/sshd_config.d/.opscrew.XXXXXX)
-{
-  printf '%s\\n' "$HEADER"
-  printf 'PermitRootLogin %s\\n' "$ROOT_LOGIN"
-  if [ "$PASSWORDS_OFF" = true ]; then printf '%s\\n' 'PasswordAuthentication no'; fi
-  if [ "$KBD_OFF" = true ]; then printf '%s\\n' 'KbdInteractiveAuthentication no'; fi
-} > "$tmp"
+expected_dropin > "$tmp"
 chmod 0644 "$tmp"
 mv -f "$tmp" "$DROPIN"
 [ -d /run/sshd ] || install -d -m 0755 /run/sshd
@@ -543,10 +557,11 @@ ufw_active || fail 'ufw did not turn on.'`;
 function upgradesScripts(purpose: HostPlan["purpose"], step: HostStep): StepScripts {
   const sp = { CONF: AUTO_UPGRADES_FILE };
   if (purpose === "undo") {
-    const p = params(step, z.object({ removePackage: z.boolean() }));
+    const p = params(step, z.object({ removePackage: z.boolean(), disableService: z.boolean() }));
     const verify = `  [ ! -e "$CONF" ] || return 1
-  if [ "$REMOVE_PACKAGE" = true ]; then ! is_installed unattended-upgrades || return 1; fi`;
-    const up = { ...sp, REMOVE_PACKAGE: p.removePackage };
+  if [ "$REMOVE_PACKAGE" = true ]; then ! is_installed unattended-upgrades || return 1; fi
+  if [ "$DISABLE_SERVICE" = true ]; then [ "$(systemctl is-enabled unattended-upgrades 2>/dev/null)" != enabled ] || return 1; fi`;
+    const up = { ...sp, REMOVE_PACKAGE: p.removePackage, DISABLE_SERVICE: p.disableService };
     return {
       check: checkScript("unattended-upgrades.undo", up, "", verify, ""),
       apply: applyScript(
@@ -554,6 +569,7 @@ function upgradesScripts(purpose: HostPlan["purpose"], step: HostStep): StepScri
         up,
         "",
         `rm -f "$CONF"
+if [ "$DISABLE_SERVICE" = true ]; then systemctl disable --now unattended-upgrades.service >/dev/null 2>&1 || true; fi
 if [ "$REMOVE_PACKAGE" = true ] && is_installed unattended-upgrades; then apt_get remove unattended-upgrades; fi`,
       ),
       verify: verifyScript(
@@ -570,14 +586,20 @@ if [ "$REMOVE_PACKAGE" = true ] && is_installed unattended-upgrades; then apt_ge
   const verify = `  is_installed unattended-upgrades || return 1
   dump=$(apt-config dump 2>/dev/null) || return 1
   printf '%s\\n' "$dump" | grep -qx 'APT::Periodic::Update-Package-Lists "1";' || return 1
-  printf '%s\\n' "$dump" | grep -qx 'APT::Periodic::Unattended-Upgrade "1";' || return 1`;
+  printf '%s\\n' "$dump" | grep -qx 'APT::Periodic::Unattended-Upgrade "1";' || return 1
+  [ "$(systemctl is-enabled unattended-upgrades 2>/dev/null)" = enabled ] || return 1`;
   const snapshot = `if is_installed unattended-upgrades; then echo prev.installed=true; else echo prev.installed=false; fi
-if [ -e "$CONF" ]; then echo prev.file=present; else echo prev.file=absent; fi`;
+if [ -e "$CONF" ]; then echo prev.file=present; else echo prev.file=absent; fi
+if [ "$(systemctl is-enabled unattended-upgrades 2>/dev/null)" = enabled ]; then echo prev.serviceEnabled=true; else echo prev.serviceEnabled=false; fi`;
   const apply = `if ! is_installed unattended-upgrades; then apt_get update; apt_get install unattended-upgrades; fi
-tmp=$(mktemp /etc/apt/.opscrew.XXXXXX)
-printf '%s\\n' '// Managed by OpsCrew: automatic security updates.' 'APT::Periodic::Update-Package-Lists "1";' 'APT::Periodic::Unattended-Upgrade "1";' > "$tmp"
-chmod 0644 "$tmp"
-mv -f "$tmp" "$CONF"`;
+dump=$(apt-config dump 2>/dev/null) || dump=''
+if ! printf '%s\\n' "$dump" | grep -qx 'APT::Periodic::Unattended-Upgrade "1";' || ! printf '%s\\n' "$dump" | grep -qx 'APT::Periodic::Update-Package-Lists "1";'; then
+  tmp=$(mktemp /etc/apt/.opscrew.XXXXXX)
+  printf '%s\\n' '// Managed by OpsCrew: automatic security updates.' 'APT::Periodic::Update-Package-Lists "1";' 'APT::Periodic::Unattended-Upgrade "1";' > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$CONF"
+fi
+systemctl enable --now unattended-upgrades.service >/dev/null`;
   return {
     check: checkScript("unattended-upgrades", sp, "", verify, snapshot),
     apply: applyScript("unattended-upgrades", sp, "", apply),
@@ -589,6 +611,155 @@ mv -f "$tmp" "$CONF"`;
       "Automatic security updates are not on after the change (another file in /etc/apt/apt.conf.d may turn them off).",
     ),
     doing: "turning on automatic security updates",
+    timeoutMs: 10 * MINUTE,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// docker-daemon: OpsCrew's /etc/docker/daemon.json, only where there is none
+
+function dockerDaemonScripts(purpose: HostPlan["purpose"]): StepScripts {
+  const sp = {
+    DAEMON_JSON: DOCKER_DAEMON_JSON_PATH,
+    CONTENT_B64: base64(DOCKER_DAEMON_JSON),
+    CONTENT_SHA256: sha256(DOCKER_DAEMON_JSON),
+  };
+  const helpers = `ours() { [ -f "$DAEMON_JSON" ] && [ "$(sha256sum "$DAEMON_JSON" | cut -d ' ' -f 1)" = "$CONTENT_SHA256" ]; }`;
+  if (purpose === "undo") {
+    const verify = "  ! ours";
+    return {
+      check: checkScript("docker-daemon.undo", sp, helpers, verify, ""),
+      apply: applyScript(
+        "docker-daemon.undo",
+        sp,
+        helpers,
+        `# Only the file exactly as OpsCrew wrote it goes; a file the user changed stays.
+if ours; then
+  rm -f "$DAEMON_JSON"
+  systemctl reload docker >/dev/null 2>&1 || true
+fi`,
+      ),
+      verify: verifyScript(
+        "docker-daemon.undo",
+        sp,
+        helpers,
+        verify,
+        "OpsCrew's daemon.json is still there.",
+      ),
+      doing: "removing OpsCrew's Docker daemon settings",
+      timeoutMs: 2 * MINUTE,
+    };
+  }
+  // The user's own daemon.json counts as in place: OpsCrew never overwrites it.
+  const verify = `  [ -f "$DAEMON_JSON" ]`;
+  const apply = `if [ -e "$DAEMON_JSON" ]; then exit 0; fi
+install -d -m 0755 /etc/docker
+tmp=$(mktemp /etc/docker/.daemon.XXXXXX)
+printf '%s' "$CONTENT_B64" | base64 -d > "$tmp"
+chmod 0644 "$tmp"
+if command -v dockerd >/dev/null 2>&1 && ! dockerd --validate --config-file "$tmp" >/dev/null 2>&1; then
+  rm -f "$tmp"
+  fail 'Docker rejected the daemon settings, so OpsCrew left Docker as it was.'
+fi
+mv -f "$tmp" "$DAEMON_JSON"
+if [ -z "$(docker ps -q 2>/dev/null)" ]; then
+  systemctl restart docker
+else
+  # Running containers keep running: reload now; the rest applies at Docker's next restart.
+  systemctl reload docker
+fi`;
+  return {
+    check: checkScript(
+      "docker-daemon",
+      sp,
+      helpers,
+      verify,
+      `if [ -e "$DAEMON_JSON" ]; then echo prev.file=present; else echo prev.file=absent; fi`,
+    ),
+    apply: applyScript("docker-daemon", sp, helpers, apply),
+    verify: verifyScript(
+      "docker-daemon",
+      sp,
+      helpers,
+      verify,
+      "/etc/docker/daemon.json is missing.",
+    ),
+    doing: "writing Docker's daemon settings",
+    timeoutMs: 5 * MINUTE,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// fail2ban: a jail for SSH on every real sshd port
+
+function fail2banScripts(purpose: HostPlan["purpose"], step: HostStep): StepScripts {
+  if (purpose === "undo") {
+    const p = params(step, z.object({ removePackage: z.boolean(), disableService: z.boolean() }));
+    const sp = {
+      JAIL: FAIL2BAN_JAIL_PATH,
+      REMOVE_PACKAGE: p.removePackage,
+      DISABLE_SERVICE: p.disableService,
+    };
+    const verify = `  [ ! -e "$JAIL" ] || return 1
+  if [ "$REMOVE_PACKAGE" = true ]; then ! is_installed fail2ban || return 1; fi
+  if [ "$DISABLE_SERVICE" = true ]; then ! systemctl is-active --quiet fail2ban || return 1; fi`;
+    return {
+      check: checkScript("fail2ban.undo", sp, "", verify, ""),
+      apply: applyScript(
+        "fail2ban.undo",
+        sp,
+        "",
+        `rm -f "$JAIL"
+if [ "$REMOVE_PACKAGE" = true ]; then
+  if is_installed fail2ban; then apt_get remove fail2ban; fi
+elif [ "$DISABLE_SERVICE" = true ]; then
+  systemctl disable --now fail2ban >/dev/null 2>&1 || true
+else
+  systemctl try-reload-or-restart fail2ban >/dev/null 2>&1 || true
+fi`,
+      ),
+      verify: verifyScript(
+        "fail2ban.undo",
+        sp,
+        "",
+        verify,
+        "OpsCrew's fail2ban jail is still there.",
+      ),
+      doing: "removing OpsCrew's fail2ban jail",
+      timeoutMs: 10 * MINUTE,
+    };
+  }
+  const p = params(step, z.object({ sshPorts: PortsSchema, install: z.boolean() }));
+  const jail = fail2banJail(p.sshPorts.split(" ").map(Number));
+  const sp = { JAIL: FAIL2BAN_JAIL_PATH, JAIL_B64: base64(jail), JAIL_SHA256: sha256(jail) };
+  const verify = `  systemctl is-active --quiet fail2ban || return 1
+  [ -f "$JAIL" ] && [ "$(sha256sum "$JAIL" | cut -d ' ' -f 1)" = "$JAIL_SHA256" ] || return 1
+  fail2ban-client status sshd >/dev/null 2>&1 || return 1`;
+  const snapshot = `if is_installed fail2ban; then echo prev.installed=true; else echo prev.installed=false; fi
+if systemctl is-active --quiet fail2ban; then echo prev.active=true; else echo prev.active=false; fi
+if [ -e "$JAIL" ]; then echo prev.jail=present; else echo prev.jail=absent; fi`;
+  const apply = `if ! is_installed fail2ban || ! is_installed python3-systemd; then
+  apt_get update
+  apt_get install fail2ban python3-systemd
+fi
+install -d -m 0755 /etc/fail2ban/jail.d
+tmp=$(mktemp /etc/fail2ban/.opscrew.XXXXXX)
+printf '%s' "$JAIL_B64" | base64 -d > "$tmp"
+chmod 0644 "$tmp"
+mv -f "$tmp" "$JAIL"
+systemctl enable fail2ban >/dev/null 2>&1 || true
+systemctl restart fail2ban
+i=0
+until fail2ban-client status sshd >/dev/null 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -ge 15 ]; then fail 'fail2ban did not start its SSH jail; run "sudo fail2ban-client -t" on the server to see why.'; fi
+  sleep 2
+done`;
+  return {
+    check: checkScript("fail2ban", sp, "", verify, snapshot),
+    apply: applyScript("fail2ban", sp, "", apply),
+    verify: verifyScript("fail2ban", sp, "", verify, "fail2ban is not guarding SSH."),
+    doing: "setting up fail2ban",
     timeoutMs: 10 * MINUTE,
   };
 }
@@ -719,8 +890,8 @@ function markerScripts(plan: HostPlan, step: HostStep): StepScripts {
     };
   }
   if (plan.purpose === "undo") {
-    const sp = { OPSCREW_DIR, MARKER_PATH };
-    const verify = `  [ ! -e "$OPSCREW_DIR" ]`;
+    const sp = { OPSCREW_DIR, MARKER_PATH, READY_FLAG };
+    const verify = `  [ ! -e "$OPSCREW_DIR" ] && [ ! -e "$READY_FLAG" ]`;
     return {
       check: checkScript("app-marker.undo", sp, "", verify, ""),
       apply: applyScript(
@@ -728,6 +899,7 @@ function markerScripts(plan: HostPlan, step: HostStep): StepScripts {
         sp,
         "",
         `if [ -e "$MARKER_PATH" ]; then fail 'An OpsCrew app is still on this server; remove it first.'; fi
+rm -f "$READY_FLAG"
 rm -rf "$OPSCREW_DIR"`,
       ),
       verify: verifyScript("app-marker.undo", sp, "", verify, `${OPSCREW_DIR} is still there.`),
@@ -742,8 +914,12 @@ rm -rf "$OPSCREW_DIR"`,
       projectId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/),
     }),
   );
-  const sp = { MARKER_PATH, MARKER: JSON.stringify({ app: p.app, projectId: p.projectId }) };
-  const verify = `  [ -f "$MARKER_PATH" ] && [ "$(cat "$MARKER_PATH")" = "$MARKER" ]`;
+  const sp = {
+    MARKER_PATH,
+    MARKER: JSON.stringify({ app: p.app, projectId: p.projectId }),
+    READY_FLAG,
+  };
+  const verify = `  [ -f "$MARKER_PATH" ] && [ "$(cat "$MARKER_PATH")" = "$MARKER" ] && [ -f "$READY_FLAG" ]`;
   const apply = `install -d -m 0700 ${OPSCREW_DIR}
 if [ -f "$MARKER_PATH" ] && [ "$(cat "$MARKER_PATH")" != "$MARKER" ]; then
   fail 'Another OpsCrew app is already on this server; one server runs one OpsCrew app for now.'
@@ -751,7 +927,10 @@ fi
 tmp=$(mktemp ${OPSCREW_DIR}/.app.XXXXXX)
 printf '%s\\n' "$MARKER" > "$tmp"
 chmod 0644 "$tmp"
-mv -f "$tmp" "$MARKER_PATH"`;
+mv -f "$tmp" "$MARKER_PATH"
+# The same "setup finished" flag cloud-init sets on servers OpsCrew creates.
+install -d -m 0755 "$(dirname "$READY_FLAG")"
+touch "$READY_FLAG"`;
   return {
     check: checkScript(
       "app-marker",
@@ -857,22 +1036,28 @@ function tunnelScripts(plan: HostPlan, step: HostStep): StepScripts {
     params(step, RemoveParams);
     return removeAddonScripts("tunnel-connector", TUNNEL_DIR, TUNNEL_PROJECT, false);
   }
-  const p = params(step, z.object({ compose: ComposeTextSchema, needsToken: z.boolean() }));
+  const p = params(
+    step,
+    z.object({ compose: ComposeTextSchema, tunnelId: TunnelIdSchema, needsToken: z.boolean() }),
+  );
   const sp = {
     DIR: TUNNEL_DIR,
     PROJECT: TUNNEL_PROJECT,
     ADDONS_ROOT,
     COMPOSE_B64: base64(p.compose),
     COMPOSE_SHA256: sha256(p.compose),
+    TUNNEL_ID: p.tunnelId,
     NEEDS_TOKEN: p.needsToken,
   };
   const verify = `  [ -s "$DIR/tunnel.env" ] || return 1
+  [ "$(head -n 1 "$DIR/tunnel.id" 2>/dev/null)" = "$TUNNEL_ID" ] || return 1
   compose_is "$COMPOSE_SHA256" || return 1
   running || return 1`;
   const apply = `umask 077
 install -d -m 0700 "$ADDONS_ROOT" "$DIR"
 token=''
 IFS= read -r token || true
+recreate=''
 if [ -n "$token" ]; then
   case "$token" in
     *[!A-Za-z0-9+/=_.-]*) token=''; fail 'The tunnel token has unexpected characters, so it was not written.' ;;
@@ -882,11 +1067,16 @@ if [ -n "$token" ]; then
   token=''
   chmod 0600 "$tmp"
   mv -f "$tmp" "$DIR/tunnel.env"
+  # A new token means a new connector container, so it really uses it.
+  recreate=--force-recreate
 elif [ "$NEEDS_TOKEN" = true ] || [ ! -s "$DIR/tunnel.env" ]; then
   fail 'No tunnel token arrived on standard input, so the tunnel connector was not set up.'
 fi
+# The tunnel id is not secret: it tells a later plan whether the tunnel was replaced.
+printf '%s\\n' "$TUNNEL_ID" > "$DIR/tunnel.id"
 write_compose "$COMPOSE_B64"
-compose up -d --remove-orphans --quiet-pull >/dev/null 2>&1 || fail 'The tunnel connector did not start (docker compose up failed).'
+# shellcheck disable=SC2086 # recreate is empty or one flag.
+compose up -d --remove-orphans --quiet-pull $recreate >/dev/null 2>&1 || fail 'The tunnel connector did not start (docker compose up failed).'
 i=0
 until compose logs --no-color --tail 300 2>/dev/null | grep -q 'Registered tunnel connection'; do
   i=$((i + 1))
@@ -1098,6 +1288,10 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
   switch (id) {
     case "docker":
       return plan.purpose === "setup" ? dockerScripts(step) : dockerUndoScripts();
+    case "docker-daemon":
+      return dockerDaemonScripts(plan.purpose);
+    case "fail2ban":
+      return fail2banScripts(plan.purpose, step);
     case "deploy-user":
       return deployUserScripts(plan.purpose, step);
     case "sshd":

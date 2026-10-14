@@ -7,9 +7,11 @@ export const HOST_PLAN_SCHEMA_VERSION = 1;
 /** Host steps in the order a setup plan runs them. */
 export const HOST_STEP_IDS = [
   "docker",
+  "docker-daemon",
   "deploy-user",
   "sshd",
   "ufw",
+  "fail2ban",
   "unattended-upgrades",
   "runtime-dirs",
   "app-marker",
@@ -79,9 +81,11 @@ export interface DesiredHost {
   /**
    * Tunnel mode: the connector's Compose file as rendered by `@opscrew/iac-templates`
    * (`renderTunnelConnectorCompose`). It reads `TUNNEL_TOKEN` from `tunnel.env` beside it, which
-   * the adapter writes from the token supplied at apply. Required when `access` is `tunnel`.
+   * the adapter writes from the token supplied at apply. `tunnelId` (not secret) is recorded next
+   * to the connector: a different id means a new tunnel, so its token is written again and the
+   * connector restarted. Required when `access` is `tunnel`.
    */
-  tunnel?: { compose: string };
+  tunnel?: { compose: string; tunnelId: string };
   /**
    * Portainer CE, when on: the pinned version and its Compose files as rendered by
    * `renderPortainerCompose` (`initial` reads the one-time `./admin_password`, `final` does not).
@@ -106,6 +110,11 @@ export const ComposeTextSchema = z
   .max(MAX_COMPOSE_BYTES)
   .refine((text) => !text.includes("\0"), { message: "must not contain NUL bytes" });
 
+/** A Cloudflare Tunnel id (a UUID; not secret). */
+export const TunnelIdSchema = z.string().regex(/^[0-9A-Fa-f-]{8,64}$/, {
+  message: "must be a Cloudflare Tunnel id",
+});
+
 export const DesiredHostSchema = z
   .strictObject({
     app: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
@@ -129,6 +138,7 @@ export const DesiredHostSchema = z
         compose: ComposeTextSchema.refine((text) => text.includes("tunnel.env"), {
           message: "must read the token from tunnel.env",
         }),
+        tunnelId: TunnelIdSchema,
       })
       .optional(),
     portainer: z
@@ -160,6 +170,10 @@ export interface ApplyOptions {
   verifyLogin: () => Promise<boolean>;
   /** Seconds before the server undoes an sshd/ufw change on its own (default 180). */
   deadManSeconds?: number;
+  /** OpsCrew version written to the host record (default: this package's version). */
+  version?: string;
+  /** Clock for the host record's timestamps (default: the system clock). */
+  now?: () => Date;
 }
 
 export interface ApplyResult {

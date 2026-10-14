@@ -8,6 +8,7 @@ import {
   portainerDesired,
   provision,
   TUNNEL_COMPOSE,
+  TUNNEL_ID,
   tunnelDesired,
 } from "./__fixtures__/helpers";
 import { canonicalJson, hostPlanHash } from "./hash";
@@ -121,11 +122,63 @@ describe("planHost: steps", () => {
     const plan = await planFor(fake, tunnelDesired(fake));
     expect(paramsOf(plan, "tunnel-connector")).toEqual({
       compose: TUNNEL_COMPOSE,
+      tunnelId: TUNNEL_ID,
       needsToken: true,
     });
     expect(plan.steps.find((step) => step.id === "tunnel-connector")?.title).toContain(
       "cloudflare/cloudflared:2026.5.1",
     );
+  });
+
+  it("writes OpsCrew's daemon.json only where there is none, and never overwrites the user's", async () => {
+    const fresh = new FakeHost();
+    const plan = await planFor(fresh);
+    expect(stateOf(plan, "docker-daemon")).toBe("change");
+    expect(plan.steps.find((step) => step.id === "docker-daemon")?.reason).toMatch(/restarts once/);
+
+    const busy = new FakeHost();
+    busy.packages.set("docker-ce", "5:28.5.1-1");
+    busy.packages.set("docker-compose-plugin", "2.39.4");
+    busy.packages.set("docker-buildx-plugin", "0.29.1");
+    busy.dockerRunning = true;
+    busy.containers.push({ name: "grafana", project: "monitoring", ports: "" });
+    expect((await planFor(busy)).steps.find((step) => step.id === "docker-daemon")?.reason).toMatch(
+      /without restarting your running containers/,
+    );
+
+    busy.files.set("/etc/docker/daemon.json", '{ "data-root": "/mnt/docker" }\n');
+    const kept = (await planFor(busy)).steps.find((step) => step.id === "docker-daemon");
+    expect(kept?.state).toBe("in-place");
+    expect(kept?.reason).toMatch(/kept your Docker settings/);
+
+    busy.files.set(
+      "/etc/docker/daemon.json",
+      '{"live-restore":true,"no-new-privileges":true,"log-driver":"json-file","log-opts":{"max-file":"3","max-size":"10m"}}',
+    );
+    const same = (await planFor(busy)).steps.find((step) => step.id === "docker-daemon");
+    expect(same).toMatchObject({ state: "in-place", reason: "Already set." });
+  });
+
+  it("guards every real SSH port with fail2ban, and leaves the user's own sshd jail alone", async () => {
+    const fake = new FakeHost();
+    fake.sshdBase.port = [22, 2222];
+    expect(paramsOf(await planFor(fake), "fail2ban")).toEqual({
+      sshPorts: "22 2222",
+      install: true,
+    });
+    fake.packages.set("fail2ban", "1.0.2");
+    fake.fail2banActive = true;
+    fake.fail2banOwnJail = true;
+    const own = (await planFor(fake)).steps.find((step) => step.id === "fail2ban");
+    expect(own?.state).toBe("in-place");
+    expect(own?.reason).toMatch(/your own settings/);
+  });
+
+  it("writes OpsCrew's sshd drop-in even when the settings are already right", async () => {
+    const fake = new FakeHost();
+    fake.sshdBase.passwordAuthentication = false;
+    fake.sshdBase.permitRootLogin = "prohibit-password";
+    expect(stateOf(await planFor(fake), "sshd")).toBe("change");
   });
 
   it("plans Portainer only when asked, local-only, with a password needed only for a new install", async () => {
@@ -444,9 +497,11 @@ describe("planTeardown and planUndo", () => {
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
       ["runtime-dirs", "change"],
       ["unattended-upgrades", "change"],
+      ["fail2ban", "change"],
       ["ufw", "change"],
       ["sshd", "change"],
       ["deploy-user", "change"],
+      ["docker-daemon", "change"],
       ["docker", "in-place"],
       ["app-marker", "change"],
     ]);
@@ -454,6 +509,13 @@ describe("planTeardown and planUndo", () => {
       removeRules: "22/tcp 80/tcp 443/tcp 443/udp",
       disable: true,
       removePackage: false,
+    });
+    // fail2ban was not installed before OpsCrew: it goes again. The service of automatic
+    // updates was already enabled, so it stays enabled.
+    expect(paramsOf(plan, "fail2ban")).toEqual({ removePackage: true, disableService: false });
+    expect(paramsOf(plan, "unattended-upgrades")).toEqual({
+      removePackage: false,
+      disableService: false,
     });
     expect(plan.steps.find((step) => step.id === "docker")?.reason).toMatch(
       /does not remove Docker/,

@@ -7,9 +7,14 @@
 import { createHash } from "node:crypto";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import {
+  DOCKER_DAEMON_JSON,
+  DOCKER_DAEMON_JSON_PATH,
+  FAIL2BAN_JAIL_PATH,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
+  READY_FLAG,
   SSHD_HEADER,
+  sshdDropIn,
   TUNNEL_DIR,
   TUNNEL_PROJECT,
 } from "../constants";
@@ -202,6 +207,14 @@ export class FakeHost implements RemoteExec {
   users = new Map<string, { uid: number; password: boolean; keys: string[]; groups: string[] }>();
   dirs = new Map<string, { owner: string; group: string; mode: string; entries: number }>();
   portainerAdmin = false;
+  /** `systemctl is-enabled unattended-upgrades`. */
+  upgradesServiceEnabled = true;
+  fail2banActive = false;
+  /** The user's own fail2ban sshd jail (without OpsCrew's jail file). */
+  fail2banOwnJail = false;
+  dockerRestarts = 0;
+  dockerReloads = 0;
+  tunnelRecreates = 0;
   /** Pending dead-man switches: step -> restore. */
   timers = new Map<string, () => void>();
   armedSeconds: number[] = [];
@@ -347,8 +360,25 @@ export class FakeHost implements RemoteExec {
     return this.ufwRules.some((existing) => existing.rule === `allow ${rule}`);
   }
 
+  private expectedDropIn(p: Record<string, string>): string {
+    return sshdDropIn({
+      permitRootLogin: p.ROOT_LOGIN ?? "",
+      disablePasswords: p.PASSWORDS_OFF === "true",
+      kbdInteractiveOff: p.KBD_OFF === "true",
+    });
+  }
+
+  private dropInOk(p: Record<string, string>): boolean {
+    return this.files.get(SSHD_DROP_IN) === this.expectedDropIn(p);
+  }
+
   private autoUpgradesOn(): boolean {
     return this.installed("unattended-upgrades") && (this.distroAutoUpgrades || this.files.has(AUTO_UPGRADES_FILE));
+  }
+
+  private fail2banOk(p: Record<string, string>): boolean {
+    const jail = this.files.get(FAIL2BAN_JAIL_PATH);
+    return this.fail2banActive && jail !== undefined && sha256(jail) === p.JAIL_SHA256;
   }
 
   private running(project: string): boolean {
@@ -438,8 +468,17 @@ export class FakeHost implements RemoteExec {
         unit("firewalld", this.firewalld),
         unit("nftables", this.nftablesService),
         unit("docker", this.dockerRunning),
+        unit("fail2ban", this.fail2banActive),
       ].join("\n"),
     );
+    const daemon = this.files.get(DOCKER_DAEMON_JSON_PATH);
+    add("docker-daemon", daemon ?? "", daemon === undefined ? 1 : 0);
+    const jail = this.files.get(FAIL2BAN_JAIL_PATH);
+    add("fail2ban-jail", jail ?? "", jail === undefined ? 1 : 0);
+    const sshdJail = this.fail2banActive && (jail !== undefined || this.fail2banOwnJail);
+    add("fail2ban-sshd", sshdJail ? "Status for the jail: sshd" : "", sshdJail ? 0 : 255);
+    add("upgrades-enabled", this.upgradesServiceEnabled ? "enabled" : "disabled");
+    add("ready", "", this.files.has(READY_FLAG) ? 0 : 1);
     if (this.installed("ufw")) {
       add("ufw-status", `Status: ${this.ufwActive ? "active" : "inactive"}`);
       add("ufw-added", this.ufwAdded());
@@ -512,7 +551,8 @@ export class FakeHost implements RemoteExec {
     const addon = (name: string, dir: string, secret: string) => {
       const compose = this.files.get(`${dir}/compose.yaml`);
       if (compose === undefined) return `${name} absent`;
-      return `${name} installed ${sha256(compose)} ${this.files.get(`${dir}/${secret}`) ? "yes" : "no"}`;
+      const id = this.files.get(`${dir}/tunnel.id`)?.trim() || "-";
+      return `${name} installed ${sha256(compose)} ${this.files.get(`${dir}/${secret}`) ? "yes" : "no"} ${id}`;
     };
     add(
       "addons",
@@ -558,6 +598,7 @@ export class FakeHost implements RemoteExec {
     const compose = this.files.get(`${params.DIR}/compose.yaml`);
     return (
       Boolean(this.files.get(`${params.DIR}/tunnel.env`)) &&
+      this.files.get(`${params.DIR}/tunnel.id`)?.trim() === params.TUNNEL_ID &&
       compose !== undefined &&
       sha256(compose) === params.COMPOSE_SHA256 &&
       this.running(params.PROJECT ?? "")
@@ -667,7 +708,7 @@ export class FakeHost implements RemoteExec {
 
       // sshd
       case "sshd.check":
-        return this.check(this.sshdConfigOk(p) && !this.timers.has("sshd"), {
+        return this.check(this.sshdConfigOk(p) && this.dropInOk(p) && !this.timers.has("sshd"), {
           dropIn: this.files.has(SSHD_DROP_IN) ? "present" : "absent",
           permitRootLogin: this.effectiveSshd().permitrootlogin ?? "",
           passwordAuthentication: this.effectiveSshd().passwordauthentication ?? "",
@@ -677,10 +718,7 @@ export class FakeHost implements RemoteExec {
         if (current !== undefined && !this.files.has(SSHD_BACKUP) && !current.startsWith(SSHD_HEADER)) {
           this.files.set(SSHD_BACKUP, current);
         }
-        const lines = [p.HEADER ?? "", `PermitRootLogin ${p.ROOT_LOGIN}`];
-        if (p.PASSWORDS_OFF === "true") lines.push("PasswordAuthentication no");
-        if (p.KBD_OFF === "true") lines.push("KbdInteractiveAuthentication no");
-        this.files.set(SSHD_DROP_IN, `${lines.join("\n")}\n`);
+        this.files.set(SSHD_DROP_IN, this.expectedDropIn(p));
         if (this.sshdTestFails) {
           this.timers.get("sshd")?.();
           return fail("The new SSH settings did not pass sshd -t, so OpsCrew put the previous ones back.", 4);
@@ -693,7 +731,7 @@ export class FakeHost implements RemoteExec {
         return result();
       }
       case "sshd.verify":
-        return this.verify(this.sshdConfigOk(p) && !this.timers.has("sshd"), p);
+        return this.verify(this.sshdConfigOk(p) && this.dropInOk(p) && !this.timers.has("sshd"), p);
       case "sshd.undo.check": {
         const backup = this.files.get(SSHD_BACKUP);
         const done = backup !== undefined ? this.files.get(SSHD_DROP_IN) === backup : !this.files.has(SSHD_DROP_IN);
@@ -781,24 +819,93 @@ export class FakeHost implements RemoteExec {
 
       // unattended-upgrades
       case "unattended-upgrades.check":
-        return this.check(this.autoUpgradesOn(), {
+        return this.check(this.autoUpgradesOn() && this.upgradesServiceEnabled, {
           installed: this.installed("unattended-upgrades"),
           file: this.files.has(AUTO_UPGRADES_FILE) ? "present" : "absent",
+          serviceEnabled: this.upgradesServiceEnabled,
         });
       case "unattended-upgrades.apply":
-        this.packages.set("unattended-upgrades", "2.9.1");
-        this.files.set(AUTO_UPGRADES_FILE, 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n');
+        if (!this.installed("unattended-upgrades")) {
+          this.packages.set("unattended-upgrades", "2.9.1");
+          this.upgradesServiceEnabled = false;
+        }
+        if (!this.autoUpgradesOn()) {
+          this.files.set(AUTO_UPGRADES_FILE, 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n');
+        }
+        this.upgradesServiceEnabled = true;
         return result();
       case "unattended-upgrades.verify":
-        return this.verify(this.autoUpgradesOn(), p);
+        return this.verify(this.autoUpgradesOn() && this.upgradesServiceEnabled, p);
       case "unattended-upgrades.undo.check":
       case "unattended-upgrades.undo.verify": {
-        const ok = !this.files.has(AUTO_UPGRADES_FILE) && !(p.REMOVE_PACKAGE === "true" && this.installed("unattended-upgrades"));
+        const ok =
+          !this.files.has(AUTO_UPGRADES_FILE) &&
+          !(p.REMOVE_PACKAGE === "true" && this.installed("unattended-upgrades")) &&
+          !(p.DISABLE_SERVICE === "true" && this.upgradesServiceEnabled);
         return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
       }
       case "unattended-upgrades.undo.apply":
         this.files.delete(AUTO_UPGRADES_FILE);
+        if (p.DISABLE_SERVICE === "true") this.upgradesServiceEnabled = false;
         if (p.REMOVE_PACKAGE === "true") this.packages.delete("unattended-upgrades");
+        return result();
+
+      // docker daemon settings
+      case "docker-daemon.check":
+        return this.check(this.files.has(DOCKER_DAEMON_JSON_PATH), {
+          file: this.files.has(DOCKER_DAEMON_JSON_PATH) ? "present" : "absent",
+        });
+      case "docker-daemon.apply":
+        if (this.files.has(DOCKER_DAEMON_JSON_PATH)) return result();
+        this.files.set(DOCKER_DAEMON_JSON_PATH, Buffer.from(p.CONTENT_B64 ?? "", "base64").toString("utf8"));
+        if (this.containers.length === 0) this.dockerRestarts += 1;
+        else this.dockerReloads += 1;
+        return result();
+      case "docker-daemon.verify":
+        return this.verify(this.files.has(DOCKER_DAEMON_JSON_PATH), p);
+      case "docker-daemon.undo.check":
+      case "docker-daemon.undo.verify": {
+        const ok = this.files.get(DOCKER_DAEMON_JSON_PATH) !== DOCKER_DAEMON_JSON;
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "docker-daemon.undo.apply":
+        if (this.files.get(DOCKER_DAEMON_JSON_PATH) === DOCKER_DAEMON_JSON) {
+          this.files.delete(DOCKER_DAEMON_JSON_PATH);
+          this.dockerReloads += 1;
+        }
+        return result();
+
+      // fail2ban
+      case "fail2ban.check":
+        return this.check(this.fail2banOk(p), {
+          installed: this.installed("fail2ban"),
+          active: this.fail2banActive,
+          jail: this.files.has(FAIL2BAN_JAIL_PATH) ? "present" : "absent",
+        });
+      case "fail2ban.apply":
+        this.packages.set("fail2ban", "1.0.2");
+        this.packages.set("python3-systemd", "235");
+        this.files.set(FAIL2BAN_JAIL_PATH, Buffer.from(p.JAIL_B64 ?? "", "base64").toString("utf8"));
+        this.fail2banActive = true;
+        return result();
+      case "fail2ban.verify":
+        return this.verify(this.fail2banOk(p), p);
+      case "fail2ban.undo.check":
+      case "fail2ban.undo.verify": {
+        const ok =
+          !this.files.has(FAIL2BAN_JAIL_PATH) &&
+          !(p.REMOVE_PACKAGE === "true" && this.installed("fail2ban")) &&
+          !(p.DISABLE_SERVICE === "true" && this.fail2banActive);
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "fail2ban.undo.apply":
+        this.files.delete(FAIL2BAN_JAIL_PATH);
+        if (p.REMOVE_PACKAGE === "true") {
+          this.packages.delete("fail2ban");
+          this.fail2banActive = false;
+        } else if (p.DISABLE_SERVICE === "true") {
+          this.fail2banActive = false;
+        }
         return result();
 
       // runtime dirs
@@ -842,15 +949,18 @@ export class FakeHost implements RemoteExec {
 
       // app marker
       case "app-marker.check":
-        return this.check(this.markerOk(p.MARKER ?? ""), { marker: this.files.has(MARKER_PATH) ? "present" : "absent" });
+        return this.check(this.markerOk(p.MARKER ?? "") && this.files.has(READY_FLAG), {
+          marker: this.files.has(MARKER_PATH) ? "present" : "absent",
+        });
       case "app-marker.apply": {
         const current = this.files.get(MARKER_PATH);
         if (current !== undefined && current !== p.MARKER) return fail("Another OpsCrew app is already on this server.");
         this.files.set(MARKER_PATH, p.MARKER ?? "");
+        this.files.set(READY_FLAG, "");
         return result();
       }
       case "app-marker.verify":
-        return this.verify(this.markerOk(p.MARKER ?? ""), p);
+        return this.verify(this.markerOk(p.MARKER ?? "") && this.files.has(READY_FLAG), p);
       case "app-marker.teardown.check":
         return this.check(!this.files.has(MARKER_PATH));
       case "app-marker.teardown.apply":
@@ -859,13 +969,19 @@ export class FakeHost implements RemoteExec {
       case "app-marker.teardown.verify":
         return this.verify(!this.files.has(MARKER_PATH), p);
       case "app-marker.undo.check":
-        return this.check(![...this.files.keys()].some((path) => path.startsWith("/etc/opscrew/")));
+        return this.check(
+          ![...this.files.keys()].some((path) => path.startsWith("/etc/opscrew/")) && !this.files.has(READY_FLAG),
+        );
       case "app-marker.undo.apply":
         if (this.files.has(MARKER_PATH)) return fail("An OpsCrew app is still on this server; remove it first.");
+        this.files.delete(READY_FLAG);
         this.removeUnder("/etc/opscrew");
         return result();
       case "app-marker.undo.verify":
-        return this.verify(![...this.files.keys()].some((path) => path.startsWith("/etc/opscrew/")), p);
+        return this.verify(
+          ![...this.files.keys()].some((path) => path.startsWith("/etc/opscrew/")) && !this.files.has(READY_FLAG),
+          p,
+        );
 
       // tunnel connector
       case "tunnel-connector.check":
@@ -875,9 +991,11 @@ export class FakeHost implements RemoteExec {
         if (token !== "") {
           if (/[^A-Za-z0-9+/=_.-]/.test(token)) return fail("The tunnel token has unexpected characters, so it was not written.");
           this.files.set(`${p.DIR}/tunnel.env`, `TUNNEL_TOKEN=${token}\n`);
+          if (this.running(p.PROJECT ?? "")) this.tunnelRecreates += 1;
         } else if (p.NEEDS_TOKEN === "true" || !this.files.get(`${p.DIR}/tunnel.env`)) {
           return fail("No tunnel token arrived on standard input, so the tunnel connector was not set up.");
         }
+        this.files.set(`${p.DIR}/tunnel.id`, `${p.TUNNEL_ID}\n`);
         this.files.set(`${p.DIR}/compose.yaml`, Buffer.from(p.COMPOSE_B64 ?? "", "base64").toString("utf8"));
         if (!this.running(p.PROJECT ?? "")) {
           this.containers.push({ name: `${p.PROJECT}-cloudflared-1`, project: p.PROJECT ?? "", ports: "" });

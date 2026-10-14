@@ -65,6 +65,8 @@ const AddonSchema = z.object({
   secretFile: z.boolean(),
   /** A volume of the add-on's Compose project exists (Portainer: an admin may already exist). */
   dataVolume: z.boolean(),
+  /** Tunnel connector: the tunnel id recorded next to it (`tunnel.id`), null when absent. */
+  tunnelId: z.string().nullable(),
 });
 export type AddonFact = z.infer<typeof AddonSchema>;
 
@@ -157,9 +159,27 @@ export const HostFactsSchema = z.object({
     }),
   ),
   deployUser: z.object({ groups: z.array(z.string()), keys: z.array(z.string()) }).nullable(),
-  packages: z.object({ ufw: z.boolean(), unattendedUpgrades: z.boolean(), curl: z.boolean() }),
+  packages: z.object({
+    ufw: z.boolean(),
+    unattendedUpgrades: z.boolean(),
+    curl: z.boolean(),
+    fail2ban: z.boolean(),
+  }),
   /** Effective `APT::Periodic::Update-Package-Lists` and `Unattended-Upgrade` are both "1". */
   autoUpgrades: z.boolean(),
+  /** `systemctl is-enabled unattended-upgrades` says enabled (what `opscrew secure` checks). */
+  autoUpgradesService: z.boolean(),
+  /** `/etc/docker/daemon.json`: absent, OpsCrew's settings, or the user's own. */
+  dockerDaemonJson: z.enum(["absent", "opscrew", "other"]),
+  fail2ban: z.object({
+    active: z.boolean(),
+    /** Content of OpsCrew's jail file, null when absent. */
+    jail: z.string().nullable(),
+    /** An `sshd` jail is running (OpsCrew's or the user's own). */
+    sshdJail: z.boolean(),
+  }),
+  /** `/var/lib/opscrew-ready` exists (the setup finished). */
+  ready: z.boolean(),
   dirs: z.array(DirSchema),
   marker: AppMarkerSchema.nullable(),
   /** True when `/etc/opscrew/app.json` exists but could not be read as JSON. */
