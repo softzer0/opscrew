@@ -195,6 +195,8 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
   const { plan } = ctx;
   // Through a Cloudflare Tunnel the records are always proxied CNAMEs: they resolve to Cloudflare.
   const tunnel = tunnelMode(plan);
+  // A server the user owns: the messages say "your server" and never list its addresses.
+  const own = plan.target.provider === "own";
   const ipv4 = tunnel ? undefined : ctx.server?.ipv4;
   const ipv6 = tunnel ? undefined : ctx.server?.ipv6;
   let a: string[];
@@ -228,7 +230,9 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
         title,
         "high",
         "fail",
-        `${host} resolves to the server itself (${exposed.join(", ")}), so Cloudflare's proxy is bypassed and the server's IP is public.`,
+        own
+          ? `${host} resolves to your server itself, so Cloudflare's proxy is bypassed and your server's address is public.`
+          : `${host} resolves to the server itself (${exposed.join(", ")}), so Cloudflare's proxy is bypassed and the server's IP is public.`,
         {
           remediation:
             "Turn the proxy (orange cloud) back on for the record, or run `opscrew dns`.",
@@ -247,7 +251,9 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
           title,
           "high",
           "fail",
-          `${host} resolves to ${outside.join(", ")}, which is not a Cloudflare address.`,
+          own
+            ? `${host} resolves to an address that is not a Cloudflare address.`
+            : `${host} resolves to ${outside.join(", ")}, which is not a Cloudflare address.`,
           {
             remediation:
               "Make sure the domain uses Cloudflare's nameservers and the record is proxied, then run `opscrew dns`.",
@@ -263,7 +269,9 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
       "pass",
       tunnel
         ? `${host} resolves to Cloudflare (${addresses.join(", ")}); the app is served through the Cloudflare Tunnel.`
-        : `${host} resolves to Cloudflare (${addresses.join(", ")}); the server's IP stays hidden.`,
+        : own
+          ? `${host} resolves to Cloudflare (${addresses.join(", ")}); your server's address stays hidden.`
+          : `${host} resolves to Cloudflare (${addresses.join(", ")}); the server's IP stays hidden.`,
       { target: host },
     );
   }
@@ -275,7 +283,9 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
       title,
       "high",
       "warn",
-      `${host} resolves to ${addresses.join(", ")}, but OpsCrew does not know the server's address on this computer, so it cannot tell whether that is the server.`,
+      own
+        ? `${host} has DNS records, but OpsCrew does not know your server's address on this computer, so it cannot tell whether they point to your server.`
+        : `${host} resolves to ${addresses.join(", ")}, but OpsCrew does not know the server's address on this computer, so it cannot tell whether that is the server.`,
       { remediation: UNKNOWN_ADDRESS_REMEDIATION, target: host },
     );
   }
@@ -290,7 +300,11 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
       title,
       "high",
       "fail",
-      `${host} resolves to ${addresses.join(", ")} but the server is ${expected}.`,
+      own
+        ? wrong.length > 0
+          ? `${host} resolves not only to your server's address: ${wrong.length} record${wrong.length === 1 ? " points" : "s point"} somewhere else.`
+          : `${host} has no A record for your server's IPv4 address.`
+        : `${host} resolves to ${addresses.join(", ")} but the server is ${expected}.`,
       {
         remediation:
           "Run `opscrew dns` to point the records at the server (DNS changes can take a few minutes).",
@@ -303,7 +317,9 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
     title,
     "high",
     "pass",
-    `${host} resolves to the server (${addresses.join(", ")}).`,
+    own
+      ? `${host} resolves to your server's address.`
+      : `${host} resolves to the server (${addresses.join(", ")}).`,
     {
       target: host,
     },

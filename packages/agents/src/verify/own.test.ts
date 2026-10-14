@@ -321,6 +321,70 @@ describe("runVerify on a server the user owns", () => {
     }
   });
 
+  it("never names the server's addresses or login host name in the terminal, in any mode", async () => {
+    const OWN_IPV6 = "2001:db8::10";
+    const LOGIN = "home-server.example.net";
+    const plan = ownPlan();
+    const dnsOnly: DeployPlan = {
+      ...plan,
+      dns: { ...plan.dns, proxied: false },
+      security: { ...plan.security, httpAllowedFrom: "any" },
+    };
+    const cases: { plan: DeployPlan; records: string[][]; status: string; says: string }[] = [
+      // DNS only: the records point at the server, at it and somewhere else, or nowhere known.
+      {
+        plan: dnsOnly,
+        records: [[OWN_IPV4], [OWN_IPV6]],
+        status: "pass",
+        says: "resolves to your server's address",
+      },
+      {
+        plan: dnsOnly,
+        records: [[OWN_IPV4, "198.51.100.9"], []],
+        status: "fail",
+        says: "not only to your server's address",
+      },
+      // Behind Cloudflare's proxy and the web filter, a record that bypasses the proxy.
+      { plan, records: [[OWN_IPV4], []], status: "fail", says: "resolves to your server itself" },
+      // Tunnel mode: a record pointing at the server instead of Cloudflare.
+      {
+        plan: ownPlan({ access: "tunnel" }),
+        records: [[OWN_IPV4], []],
+        status: "fail",
+        says: "not a Cloudflare address",
+      },
+    ];
+    for (const item of cases) {
+      const deps = await setup(item.plan, { host: LOGIN, port: 22 });
+      await recordServerAddress(deps.paths, { ipv4: OWN_IPV4, ipv6: OWN_IPV6 });
+      const [v4 = [], v6 = []] = item.records;
+      const result = await runVerify(deps, {
+        resolver: { resolve4: async () => v4, resolve6: async () => v6 },
+        fetch: fakeSite().fetch,
+        tlsConnect: cert,
+        tcpConnect: async () => true,
+        ipv6Route: async () => true,
+        cloudflareRanges: CLOUDFLARE_RANGES,
+      });
+      const dns = byId(result.checks, "dns-records");
+      expect(dns.status).toBe(item.status);
+      expect(dns.message).toContain(item.says);
+      const terminal = deps.reporter.text();
+      for (const name of [OWN_IPV4, OWN_IPV6, LOGIN]) expect(terminal).not.toContain(name);
+    }
+
+    // A fresh clone (no address on this computer): the records are not printed either.
+    const clone = await setup(dnsOnly, { host: LOGIN, port: 22 });
+    const unknown = await runVerify(clone, {
+      resolver: { resolve4: async () => [OWN_IPV4], resolve6: async () => [] },
+      fetch: fakeSite().fetch,
+      tlsConnect: cert,
+      tcpConnect: noProbes,
+    });
+    expect(byId(unknown.checks, "dns-records").status).toBe("warn");
+    expect(clone.reporter.text()).not.toContain(OWN_IPV4);
+  });
+
   it("names your server, not a provider console, when the site cannot be reached", async () => {
     const deps = await setup(ownPlan({ access: "tunnel" }), { host: LAN_IPV4, port: 22 });
     const result = await runVerify(deps, {

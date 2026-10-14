@@ -12,11 +12,14 @@ import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { readOwnServerRecord } from "../provision";
 import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
+import { withoutOwnServer } from "../secure/own";
 import {
   committableUrl,
   hasDeployment,
   hidesServerAddress,
+  type ServerAddress,
   serverAddress,
   writeRenderedFiles,
 } from "../shared";
@@ -90,12 +93,14 @@ export async function runVerify(
 
 async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<VerifyResult> {
   const { paths, reporter } = deps;
-  const say = (text: string) => deps.redactor.redact(text);
   reporter.step("Verifying the deployment");
 
   const plan = await readArtifact("plan", paths.files.plan);
   // Through a Cloudflare Tunnel only the domain is checked: the server has no address to probe.
   const server = tunnelMode(plan) ? undefined : await serverAddress(deps, plan);
+  // A server the user owns: terminal lines say "your server", never its addresses or login host.
+  const hidden = plan.target.provider === "own" ? await ownServerNames(deps, server) : [];
+  const say = (text: string) => deps.redactor.redact(withoutOwnServer(text, hidden));
   const url = siteUrl(plan, server);
   if (url === undefined) {
     // Deployed, but not from here (a fresh clone): provisioning here would create a second server.
@@ -210,6 +215,21 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   }
   await deps.state.markPhase("verify", passed ? "ok" : "failed", say(summary));
   return { checks, passed, url, runbookPath, plan: current };
+}
+
+/** The addresses and login host name of a server the user owns, from OpsCrew's local state. */
+async function ownServerNames(
+  deps: PhaseDeps,
+  server: ServerAddress | undefined,
+): Promise<string[]> {
+  const connection = await readOwnServerRecord(deps.paths).catch(() => undefined);
+  return [
+    server?.ipv4,
+    server?.ipv6,
+    connection?.host,
+    connection?.publicIpv4,
+    connection?.publicIpv6,
+  ].filter((name): name is string => name !== undefined && name !== "");
 }
 
 async function readOptional(file: string): Promise<string> {

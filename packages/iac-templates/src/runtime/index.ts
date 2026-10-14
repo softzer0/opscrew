@@ -136,7 +136,11 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
 /**
  * `opscrew/runtime/Caddyfile`: TLS (with a domain), compression, security headers, proxy to the app.
  * In tunnel mode Cloudflare terminates TLS and the tunnel connector reaches Caddy over plain HTTP,
- * so the sites are `http://` (no certificates, no redirect) and still send HSTS.
+ * so the sites are `http://` (no certificates) and still send HSTS. Visitors who used plain HTTP
+ * are redirected to HTTPS by the `Cf-Visitor` request header Cloudflare adds to proxied requests
+ * (`{"scheme":"http"}` or `{"scheme":"https"}`), see
+ * https://developers.cloudflare.com/fundamentals/reference/http-headers/ . Only Cloudflare reaches
+ * Caddy in this mode (the connector on loopback), so the header can be trusted.
  */
 export function renderCaddyfile(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   const hosts = siteHosts(plan);
@@ -152,12 +156,15 @@ export function renderCaddyfile(plan: DeployPlan, ctx: RenderContext): RenderedF
     lines.push("{", `\temail ${ctx.acmeEmail}`, "}", "");
   }
   const sites = tunnel ? hosts.map((host) => `http://${host}`) : hosts;
-  lines.push(
-    `${sites.length > 0 ? sites.join(", ") : ":80"} {`,
-    "\tencode zstd gzip",
-    `\treverse_proxy app:${plan.app.port}`,
-    "\theader {",
-  );
+  lines.push(`${sites.length > 0 ? sites.join(", ") : ":80"} {`);
+  if (tunnel) {
+    // Caddy orders `redir` before `reverse_proxy`, so plain-HTTP visitors are redirected first.
+    lines.push(
+      '\t@http_visitor header Cf-Visitor `*"http"*`',
+      "\tredir @http_visitor https://{host}{uri} 308",
+    );
+  }
+  lines.push("\tencode zstd gzip", `\treverse_proxy app:${plan.app.port}`, "\theader {");
   if (hosts.length > 0)
     lines.push('\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"');
   lines.push(

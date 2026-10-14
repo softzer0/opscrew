@@ -375,6 +375,49 @@ describe("runSecure on a server the user owns", () => {
     expect(find(result.probes, "ssh-password-login-disabled").status).toBe("fail");
   });
 
+  it("never names the server's addresses or login host name in the terminal, in any mode", async () => {
+    const OWN_IPV6 = "2001:db8::10";
+    const LOGIN = "home-server.example.net";
+    const plan = ownPlan();
+    const modes: DeployPlan[] = [
+      // DNS only.
+      {
+        ...plan,
+        dns: { ...plan.dns, proxied: false },
+        security: { ...plan.security, httpAllowedFrom: "any" },
+      },
+      // Behind Cloudflare's proxy and OpsCrew's web filter.
+      plan,
+      ownPlan({ access: "tunnel" }),
+    ];
+    for (const mode of modes) {
+      const deps = await setup({
+        plan: mode,
+        own: {
+          host: LOGIN,
+          port: 22,
+          user: "admin",
+          agent: true,
+          reachable: mode.target.provider === "own" && mode.target.access === "public",
+          publicIpv4: OWN_IPV4,
+          publicIpv6: OWN_IPV6,
+        },
+        // A password left on and every port answering: failures that name their targets.
+        server: { passwordsOff: false },
+        deployment: OWN_IPV4,
+      });
+      const result = await runSecure(deps, {
+        scanners: noScanners,
+        ipv6Route: async () => true,
+        tcpConnect: async () => true,
+      });
+      expect(result.passed).toBe(false);
+      const terminal = `${deps.reporter.text()}\n${result.summary}`;
+      for (const name of [OWN_IPV4, OWN_IPV6, LOGIN]) expect(terminal).not.toContain(name);
+      expect(terminal).toContain("your server");
+    }
+  });
+
   it("says where to run it when this computer does not know the server", async () => {
     const root = await mkdtemp(join(tmpdir(), "opscrew-secure-own-"));
     const deps = await createTestPhaseDeps({

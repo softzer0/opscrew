@@ -289,13 +289,22 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
 
   const problems = securityProblems(input);
   const passed = problems.every((problem) => problem.status !== "fail");
-  const summary = say(renderSecuritySummary(input, { reportPath }));
+  // A server the user owns: the terminal says "your server", never its address or host name.
+  const hidden = own?.hidden ?? [];
+  const summary = say(
+    plan.target.provider === "own"
+      ? withoutOwnServer(
+          renderSecuritySummary(privateReportInput(input, hidden), { reportPath }),
+          hidden,
+        )
+      : renderSecuritySummary(input, { reportPath }),
+  );
   const [headline = "", ...details] = summary.trimEnd().split("\n");
   if (passed) reporter.success(headline);
   else reporter.error(headline);
   for (const line of details) reporter.info(line);
   if (hostChecksSkipped !== undefined)
-    reporter.warn(say(`Server checks skipped: ${hostChecksSkipped}`));
+    reporter.warn(say(withoutOwnServer(`Server checks skipped: ${hostChecksSkipped}`, hidden)));
 
   const failures = problems.filter((problem) => problem.status === "fail").length;
   await deps.state.markPhase(

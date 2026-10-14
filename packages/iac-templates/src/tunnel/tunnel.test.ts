@@ -73,6 +73,15 @@ describe("runtime files in tunnel mode", () => {
     expect(caddyfile).toMatchSnapshot();
   });
 
+  it("redirects visitors who used plain HTTP (Cf-Visitor) to HTTPS before proxying", () => {
+    const lines = renderCaddyfile(tunnelPlan({ www: true }), testContext()).content.split("\n");
+    const matcher = lines.indexOf('\t@http_visitor header Cf-Visitor `*"http"*`');
+    const redirect = lines.indexOf("\tredir @http_visitor https://{host}{uri} 308");
+    expect(matcher).toBeGreaterThan(0);
+    expect(redirect).toBeGreaterThan(matcher);
+    expect(redirect).toBeLessThan(lines.findIndex((line) => line.includes("reverse_proxy")));
+  });
+
   it("keeps DNS-only runtime files identical to OpsCrew-created servers", () => {
     const filtered = testPlan({ provider: "own", domain: "shop.example.com" });
     const own = DeployPlanSchema.parse({
