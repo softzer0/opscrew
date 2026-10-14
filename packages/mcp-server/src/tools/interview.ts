@@ -8,6 +8,7 @@ import {
   readOwnServer,
   requestedProvider,
   runInterview,
+  SERVER_FIELDS,
 } from "@opscrew/agents";
 import type { ProjectPaths } from "@opscrew/core";
 import { detectProject, detectProjectDetails } from "@opscrew/detect";
@@ -115,9 +116,13 @@ const answersShape = {
     ]),
   ),
   ...Object.fromEntries(
-    Object.entries(SERVER_ANSWER_HELP).map(([id, help]) => [
+    // Every follow-up the agents ask (SERVER_FIELDS), described where this file knows it.
+    SERVER_FIELDS.map((field) => `server.${field}`).map((id) => [
       id,
-      AnswerValueSchema.optional().describe(help),
+      AnswerValueSchema.optional().describe(
+        SERVER_ANSWER_HELP[id] ??
+          "Own server: the answer to this question from opscrew_interview_questions.",
+      ),
     ]),
   ),
 };

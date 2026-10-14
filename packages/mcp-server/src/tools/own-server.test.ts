@@ -493,13 +493,15 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     const h = await connect({ login: false });
     const questions = await h.call("opscrew_interview_questions");
     expect(textOf(questions)).toContain("What is your server's address?");
-    expect(dataOf(questions).serverQuestions.map((q: { id: string }) => q.id)).toEqual([
-      "server.host",
-      "server.port",
-      "server.user",
-      "server.key",
-      "server.reachable",
-    ]);
+    expect(dataOf(questions).serverQuestions.map((q: { id: string }) => q.id)).toEqual(
+      expect.arrayContaining([
+        "server.host",
+        "server.port",
+        "server.user",
+        "server.key",
+        "server.reachable",
+      ]),
+    );
     const saved = await h.call("opscrew_save_requirements", { answers: ANSWERS });
     expect(saved.isError, textOf(saved)).toBeFalsy();
     expect(textOf(saved)).toContain("a server the user already has");

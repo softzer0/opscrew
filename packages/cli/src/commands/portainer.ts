@@ -7,10 +7,17 @@ import {
   portainerEnable,
   portainerStatus,
 } from "@opscrew/agents";
-import type { Reporter } from "@opscrew/contracts";
+import type {
+  ApprovalDecision,
+  ApprovalHandler,
+  ApprovalRequest,
+  Reporter,
+} from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
+import { readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
 import type { CliContext } from "../context";
-import { createPhaseDeps } from "../deps";
+import { createPhaseDeps, servicesOf } from "../deps";
 import {
   assumeYesHint,
   collect,
@@ -44,6 +51,8 @@ interface EnableFlags extends ChangeFlags {
 
 interface DisableFlags extends ChangeFlags {
   deleteData?: boolean;
+  /** The app's name, to approve deleting Portainer's data without a prompt (scripts). */
+  confirm?: string;
 }
 
 /** Adds the options `enable` and `disable` share: plan only, approvals by hash, host key, engine. */
@@ -96,14 +105,64 @@ async function plannedHashes(deps: PhaseDeps, result: PortainerResult): Promise<
 }
 
 /**
+ * The typed confirmation for deleting Portainer's data (a `host-apply` with `allowDestroy` that asks
+ * for the app's name). With `--confirm <app>` it approves exactly that plan when its hash is also
+ * one of the `--approve` values; without `--confirm`, a run nobody can answer is refused with the
+ * flag to add. Every other request goes to `base`.
+ */
+class DataDeletionConfirmation implements ApprovalHandler {
+  constructor(
+    private readonly base: ApprovalHandler,
+    private readonly app: string,
+    private readonly confirmed: boolean,
+    private readonly hashes: readonly string[],
+    private readonly interactive: boolean,
+    private readonly print: (text: string) => void,
+  ) {}
+
+  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    const deletion =
+      request.kind === "host-apply" &&
+      request.allowDestroy === true &&
+      request.confirmPhrase !== undefined;
+    if (!deletion) return this.base.request(request);
+    const decide = (approved: boolean, extra: Partial<ApprovalDecision>): ApprovalDecision => ({
+      approved,
+      approver: "--confirm flag",
+      decidedAt: new Date().toISOString(),
+      ...extra,
+    });
+    if (this.confirmed) {
+      const listed = this.hashes.some(
+        (hash) => hash.toLowerCase() === request.planHash?.toLowerCase(),
+      );
+      if (request.confirmPhrase === this.app && listed) {
+        this.print(`  ✓ ${request.title} (confirmed with --confirm ${this.app})\n`);
+        return decide(true, { confirmation: this.app });
+      }
+      return decide(false, {
+        reason: `--confirm ${this.app} approves deleting Portainer's data only together with --approve and the hash of that plan, which was not given`,
+      });
+    }
+    if (!this.interactive) {
+      return decide(false, {
+        reason: `deleting Portainer's data needs the app's name: add --confirm ${request.confirmPhrase} (with --approve and the plan's hash), or run the command in a terminal`,
+      });
+    }
+    return this.base.request(request);
+  }
+}
+
+/**
  * Runs `portainer enable` or `disable`: checks the flags, builds the phase deps with the
  * `--approve <hash>` handler (each hash grants exactly its plan; `--yes` grants only the repository
- * steps), runs the change and prints the plans' hashes or the next steps.
+ * steps; `--confirm <app>` the deletion of Portainer's data), runs the change and prints the plans'
+ * hashes or the next steps.
  */
 async function runChange(
   ctx: CliContext,
   sub: "enable" | "disable",
-  flags: ChangeFlags,
+  flags: ChangeFlags & { confirm?: string },
   run: (deps: PhaseDeps, options: PortainerRunOptions) => Promise<PortainerResult>,
 ): Promise<void> {
   const planOnly = flags.planOnly === true;
@@ -112,10 +171,39 @@ async function runChange(
     async () => {
       const hashes = checkApproveFlags(`portainer ${sub}`, flags);
       const hostKey = flags.hostKey?.trim();
+      const confirm = flags.confirm?.trim();
+      let app = "";
+      if (confirm !== undefined) {
+        const paths = createPhaseDeps(ctx, { ai: false }).paths;
+        app = (await readArtifact("plan", paths.files.plan)).app.name;
+        if (confirm !== app) {
+          throw new OpsCrewError(
+            "APPROVAL_REFUSED",
+            `--confirm ${confirm} does not match the app's name, so nothing was changed.`,
+            {
+              hint: `To delete Portainer's data in a script, run \`opscrew portainer disable --approve <hash> … --confirm ${app}\`.`,
+            },
+          );
+        }
+      }
       const deps = createPhaseDeps(ctx, {
         ai: false,
         ...(hashes.length === 0 ? {} : { approvePlanHashes: hashes }),
         ...(flags.yes === true ? { assumeYes: true } : {}),
+        ...(sub === "disable"
+          ? {
+              wrapApprovals: (base: ApprovalHandler) =>
+                new DataDeletionConfirmation(
+                  base,
+                  app,
+                  confirm !== undefined,
+                  hashes,
+                  // A person can answer: a terminal, or (in tests) an attached approval handler.
+                  ctx.isInteractive || servicesOf(ctx).approvalHandler !== undefined,
+                  ctx.stdout,
+                ),
+            }
+          : {}),
       });
       const services = deployServicesOf(ctx).portainer;
       const result = await run(deps, {
@@ -146,7 +234,7 @@ async function runChange(
     );
     if (outcome.result.dataPlanHash !== undefined) {
       ctx.stdout(
-        "Deleting Portainer's data also needs the app's name typed, so run that command in a terminal.\n",
+        "Deleting Portainer's data also needs the app's name: type it when the command asks in a terminal, or add --confirm <app name> to the command in a script.\n",
       );
     }
     return;
@@ -221,6 +309,10 @@ export function register(program: Command, ctx: CliContext): void {
       .option(
         "--delete-data",
         "Also delete Portainer's data (its users and settings); asks you to type the app's name",
+      )
+      .option(
+        "--confirm <name>",
+        "The app's name, to delete Portainer's data without a prompt (for scripts; with --approve and the data plan's hash)",
       ),
   ).action((flags: DisableFlags) =>
     runChange(ctx, "disable", flags, (deps, options) =>

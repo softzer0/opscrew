@@ -125,13 +125,55 @@ describe.skipIf(!GIT)("opscrew portainer", () => {
     expect(ctx.errors).toContain("--subdomain");
   });
 
-  it("disable --delete-data needs the typed app name; a script cannot delete the data", async () => {
-    const s = await setup({ enabled: true });
+  const deletesData = (s: { host: FakeHost }) =>
+    s.host.applies.some((a) => JSON.stringify(a.plan).includes('"deleteData":true'));
+
+  /** The hashes `disable --delete-data --plan-only` printed (removal and data deletion). */
+  async function plannedDeletion(s: Awaited<ReturnType<typeof setup>>): Promise<string[]> {
     const ctx = s.context();
-    expect(await run(ctx, "portainer", "disable", "--delete-data", "--yes")).toBe(1);
-    expect(s.host.applies.every((a) => !JSON.stringify(a.plan).includes('"deleteData":true'))).toBe(
-      true,
+    const args = ["portainer", "disable", "--delete-data", "--plan-only", "--yes"];
+    expect(await run(ctx, ...args), ctx.errors).toBe(0);
+    expect(ctx.output).toContain("add --confirm <app name>");
+    return [...ctx.output.matchAll(/--approve ([0-9a-f]{64})/g)].map((m) => m[1] as string);
+  }
+
+  it("a script without --confirm never deletes Portainer's data and says what to add", async () => {
+    const s = await setup({ enabled: true });
+    const hashes = await plannedDeletion(s);
+    const ctx = s.context();
+    const args = ["portainer", "disable", ...hashes.flatMap((h) => ["--approve", h]), "--yes"];
+    expect(await run(ctx, ...args)).toBe(1);
+    expect(ctx.errors).toContain("--confirm shop");
+    expect(deletesData(s)).toBe(false);
+  });
+
+  it("--confirm <app> with the data plan's hash deletes the data in a script", async () => {
+    const s = await setup({ enabled: true });
+    const hashes = await plannedDeletion(s);
+    const ctx = s.context();
+    const approve = hashes.flatMap((h) => ["--approve", h]);
+    const args = ["portainer", "disable", ...approve, "--confirm", "shop", "--yes"];
+    expect(await run(ctx, ...args), ctx.errors).toBe(0);
+    expect(deletesData(s)).toBe(true);
+    expect(ctx.output).toContain("(confirmed with --confirm shop)");
+  });
+
+  it("--confirm needs the right name and the data plan's hash", async () => {
+    const s = await setup({ enabled: true });
+    const hashes = await plannedDeletion(s);
+    const wrong = s.context();
+    const approve = hashes.flatMap((h) => ["--approve", h]);
+    expect(await run(wrong, "portainer", "disable", ...approve, "--confirm", "shopx")).toBe(1);
+    expect(wrong.errors).toContain("does not match the app's name");
+    expect(s.host.applies).toEqual([]);
+
+    // The data plan's hash left out: the removal may run, the data is never deleted.
+    const partial = s.context();
+    const first = ["--approve", hashes[0] as string];
+    expect(await run(partial, "portainer", "disable", ...first, "--confirm", "shop", "--yes")).toBe(
+      1,
     );
+    expect(deletesData(s)).toBe(false);
   });
 
   it("--approve without --delete-data keeps the choice the --plan-only run saved", async () => {
