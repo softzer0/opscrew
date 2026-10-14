@@ -49,10 +49,26 @@ const SERVER = {
   url: "https://shop.example.com",
 };
 
-const TARGETS: { label: string; plan: () => DeployPlan; own: boolean }[] = [
-  { label: "Hetzner", plan: () => testPlan({ domain: "shop.example.com" }), own: false },
-  { label: "an own server", plan: () => ownPlan(), own: true },
-  { label: "an own server in tunnel mode", plan: () => ownPlan({ access: "tunnel" }), own: true },
+const TARGETS: { label: string; plan: () => DeployPlan; own: boolean; tunnel: boolean }[] = [
+  {
+    label: "Hetzner",
+    plan: () => testPlan({ domain: "shop.example.com" }),
+    own: false,
+    tunnel: false,
+  },
+  {
+    label: "DigitalOcean",
+    plan: () => testPlan({ provider: "digitalocean", domain: "shop.example.com" }),
+    own: false,
+    tunnel: false,
+  },
+  { label: "an own server", plan: () => ownPlan(), own: true, tunnel: false },
+  {
+    label: "an own server in tunnel mode",
+    plan: () => ownPlan({ access: "tunnel" }),
+    own: true,
+    tunnel: true,
+  },
 ];
 
 const PHASES: { phase: Phase; key: "configRules" | "wafRules"; flag: string; rules: string }[] = [
@@ -95,6 +111,30 @@ describe("setupCloudflare: which entrypoint rulesets OpsCrew manages", () => {
   for (const target of TARGETS) {
     for (const phase of PHASES) {
       const label = `${target.label}, ${phase.phase}`;
+      if (target.tunnel && phase.phase === "http_config_settings") {
+        it(`${label}: renders no configuration rule, so the phase is never inspected, warned about or read from the state`, async () => {
+          const rulesets: FakeRuleset[] = ["none", "opscrew", "user", "user-empty"];
+          const states: StateCase[] = [
+            { kind: "none" },
+            { kind: "outputs", outputs: { ...SERVER, cloudflare_rulesets: heldRulesetsOutput() } },
+            { kind: "outputs", outputs: { url: "https://shop.example.com", tunnel_id: "t-1" } },
+            { kind: "unreadable" },
+          ];
+          for (const ruleset of rulesets) {
+            for (const state of states) {
+              const why = `${ruleset}, ${state.kind}`;
+              const { deps, engine, setup } = await run(target, phase, ruleset, state);
+              expect(await managed(setup, phase.flag), why).toBe(false);
+              expect(engine.reads, why).toBe(0);
+              const text = deps.reporter.text();
+              expect(text, why).not.toContain("configuration rule");
+              expect(text, why).not.toContain("TLS");
+              expect(text, why).not.toContain("OpsCrew deployment");
+            }
+          }
+        });
+        continue;
+      }
       const another = `Another OpsCrew deployment (or one whose state is gone) holds the example.com zone's ${phase.rules}`;
 
       it(`${label}: manages the phase when the zone has no ruleset for it`, async () => {
@@ -183,8 +223,23 @@ describe("setupCloudflare: which entrypoint rulesets OpsCrew manages", () => {
     }
   }
 
+  it("treats outputs of a root without a Cloudflare domain as a fresh project", async () => {
+    for (const target of TARGETS) {
+      for (const phase of PHASES) {
+        if (target.tunnel && phase.phase === "http_config_settings") continue;
+        const why = `${target.label}, ${phase.phase}`;
+        const { deps, setup } = await run(target, phase, "opscrew", {
+          kind: "outputs",
+          outputs: { server_ipv4: "203.0.113.10", url: "http://203.0.113.10" },
+        });
+        expect(await managed(setup, phase.flag), why).toBe(false);
+        expect(deps.reporter.text(), why).toContain("Another OpsCrew deployment");
+      }
+    }
+  });
+
   it("tunnel mode: decides on the tunnel's WAF ruleset with the tunnel root's output (no configuration rule)", async () => {
-    const target = TARGETS[2] as (typeof TARGETS)[number];
+    const target = TARGETS[3] as (typeof TARGETS)[number];
     const waf = PHASES[1] as (typeof PHASES)[number];
     // The tunnel root's `cloudflare_rulesets`: the WAF id, and null for the configuration rule.
     const tunnelOutputs = (id: string | null) => ({

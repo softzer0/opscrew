@@ -222,9 +222,11 @@ const RulesetIdsSchema = z.looseObject({
 
 /**
  * Which of the zone's OpsCrew-named entrypoint rulesets this project's state holds:
- * - `fresh`: no state file, an empty one, or a state without outputs (nothing deployed): none;
- * - `before-ids`: a state applied before OpsCrew recorded the ids (no `cloudflare_rulesets`
- *   output); OpsCrew keeps managing them so it never plans to delete its own ruleset;
+ * - `fresh`: no state file, an empty one, a state without outputs (nothing deployed), or outputs of
+ *   a root without a Cloudflare domain (no `https://` URL): none;
+ * - `before-ids`: a Cloudflare root applied before OpsCrew recorded the ids (an `https://` URL, no
+ *   `cloudflare_rulesets` output); OpsCrew keeps managing them so it never plans to delete its
+ *   own ruleset;
  * - `ids`: the ids by phase.
  */
 type HeldRulesets =
@@ -268,7 +270,12 @@ async function heldRulesets(
     );
   if (outputs === undefined) throw unreadable();
   if (Object.keys(outputs).length === 0) return { kind: "fresh" };
-  if (!("cloudflare_rulesets" in outputs)) return { kind: "before-ids" };
+  if (!("cloudflare_rulesets" in outputs)) {
+    // Only a root applied with a Cloudflare domain (an `https://` URL) can hold a ruleset; a root
+    // without one never did, so skipping a phase cannot plan to delete one.
+    const url = typeof outputs.url === "string" ? outputs.url : "";
+    return url.startsWith("https://") ? { kind: "before-ids" } : { kind: "fresh" };
+  }
   const ids = RulesetIdsSchema.safeParse(outputs.cloudflare_rulesets);
   if (!ids.success) throw unreadable();
   return { kind: "ids", ids: ids.data };
@@ -408,8 +415,11 @@ export async function setupCloudflare(
       );
     }
 
+    // Tunnel mode renders no configuration rule (the tunnel carries TLS), so OpsCrew neither
+    // inspects nor decides that phase.
+    const usesConfigRule = !tunnelMode(plan);
     const [configStatus, wafStatus] = await Promise.all([
-      api.inspectEntrypointRuleset(zone.id, "http_config_settings"),
+      usesConfigRule ? api.inspectEntrypointRuleset(zone.id, "http_config_settings") : undefined,
       api.inspectEntrypointRuleset(zone.id, "http_request_firewall_custom"),
     ]);
     const tlsYourself = `set SSL/TLS to "Full (strict)" for ${domain} yourself.`;
@@ -419,20 +429,22 @@ export async function setupCloudflare(
       held ??= heldRulesets(deps, plan, services, zone.name);
       return held;
     };
-    const manageConfigRule = await mayManagePhase(
-      deps,
-      "http_config_settings",
-      configStatus,
-      {
-        theirs: `The ${zone.name} zone already has its own configuration rules, so OpsCrew will not add the TLS (Full strict) rule. Set SSL/TLS to "Full (strict)" for ${domain} yourself.`,
-        empty: `The ${zone.name} zone has an empty configuration ruleset, so OpsCrew cannot add its TLS (Full strict) rule.`,
-        fallback: `otherwise ${tlsYourself}`,
-        domain,
-        skipped: `the ${zone.name} zone's configuration rules, so OpsCrew will not add the TLS (Full strict) rule for ${domain}; ${tlsYourself}`,
-      },
-      zone.id,
-      heldOnce,
-    );
+    const manageConfigRule =
+      configStatus !== undefined &&
+      (await mayManagePhase(
+        deps,
+        "http_config_settings",
+        configStatus,
+        {
+          theirs: `The ${zone.name} zone already has its own configuration rules, so OpsCrew will not add the TLS (Full strict) rule. Set SSL/TLS to "Full (strict)" for ${domain} yourself.`,
+          empty: `The ${zone.name} zone has an empty configuration ruleset, so OpsCrew cannot add its TLS (Full strict) rule.`,
+          fallback: `otherwise ${tlsYourself}`,
+          domain,
+          skipped: `the ${zone.name} zone's configuration rules, so OpsCrew will not add the TLS (Full strict) rule for ${domain}; ${tlsYourself}`,
+        },
+        zone.id,
+        heldOnce,
+      ));
     const manageWafRules =
       plan.security.wafCustomRules &&
       (await mayManagePhase(
