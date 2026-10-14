@@ -113,3 +113,15 @@ likely root; SBOM — Buildpacks yes, Railpack no; pnpm — Buildpacks no, Railp
 both run `next start` (Railpack serves static exports via Caddy); monorepos — Railpack documents
 workspaces and Nx, Buildpacks only a project path; Procfile — Buildpacks yes; image size and CI
 build time — unknown for both.
+
+## To research for this feature: zero-downtime deploys with docker-rollout
+
+Founder decision 2026-10-14: zero-downtime deploys come with this feature, through `docker-rollout`
+(https://github.com/wowu/docker-rollout), a Docker CLI plugin that starts a second copy of a Compose
+service, waits until it is healthy and then removes the old one (the old copy keeps serving if the
+new one never gets healthy). It is chosen over kamal-proxy, which is also zero-downtime but is its own proxy (with TLS) and would replace or sit behind Caddy; kamal-proxy stays the fallback if docker-rollout's handover is not clean enough for long requests, uploads or WebSockets (the old copy needs a graceful-stop period either way). Before
+building, confirm: the license and a version to pin (installed on the server with a checksum); the
+documented requirements (no `container_name` or host ports on the service, a healthcheck or a wait);
+how Caddy must route to both copies (dynamic upstreams, retries while the old copy goes away); a
+health-check tool inside slim and distroless images; and the memory headroom on 1 GB servers while
+two copies run.
