@@ -1,3 +1,4 @@
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { GitClient } from "@opscrew/connector-github";
 import {
@@ -27,6 +28,7 @@ import {
   hostPlanFile,
   type OwnServerRun,
   ownEngineEnv,
+  portainerPasswordFile,
   prepareOwnServer,
 } from "../provision/own";
 import { findSavedPlan, planAndApply, REMOVAL_PLAN_SUFFIX } from "../provision/plan-apply";
@@ -51,11 +53,14 @@ import {
   SshRemoteExec,
   writeRenderedFiles,
 } from "../shared";
+import { cloudflareAccessLoginMethods, oneTimePinIdentityProvider } from "./access";
 import {
-  type AccessLoginMethodsApi,
-  cloudflareAccessLoginMethods,
-  oneTimePinIdentityProvider,
-} from "./access";
+  clearPendingPortainer,
+  optionsDiffer,
+  readPendingPortainer,
+  sameSettings,
+  savePendingPortainer,
+} from "./pending";
 import {
   CLOUD_PORTAINER_DIR,
   CLOUD_TUNNEL_DIR,
@@ -72,8 +77,6 @@ export interface PortainerServices extends ProvisionServices {
   deployRemote?: (host: string) => RemoteExec;
   /** Hetzner/DigitalOcean: the host adapter's apply (default `applyHostPlan`). */
   applyHost?: HostAdapterApi["apply"];
-  /** The account's Access login methods (default: Cloudflare's API). */
-  accessLoginMethods?: AccessLoginMethodsApi;
 }
 
 /** Options shared by `opscrew portainer enable` and `disable`. */
@@ -247,7 +250,11 @@ async function renderChange(
   });
   const files = deploymentFiles(plan, ctx);
   const written: string[] = [];
-  if (input.write) {
+  if (!input.write) {
+    // Applying a saved plan: the files its --plan-only run wrote must be what these options render.
+    const diff = await diffRenderedFiles(root, files);
+    if (diff.created.length + diff.changed.length > 0) throw optionsDiffer();
+  } else {
     const diff = await diffRenderedFiles(root, files);
     const toWrite = [...diff.created, ...diff.changed];
     if (toWrite.length > 0) {
@@ -431,11 +438,13 @@ async function runChange(
       deployKeyFile: deployKey.privateKeyFile,
     });
   }
-  // Hetzner/DigitalOcean: the deploy user's shell; enabling needs Docker 28 (checked read-only).
+  // Hetzner/DigitalOcean: the deploy user's shell; enabling needs Docker 28 and looks for
+  // Portainer's data (both read-only).
   let cloudRemote: RemoteExec | undefined;
+  let cloudFacts: CloudFacts | undefined;
   if (!own) {
     cloudRemote = await deployRemote(deps, services);
-    if (change.command === "enable") await requireDocker28(deps, cloudRemote);
+    if (change.command === "enable") cloudFacts = await cloudPreflight(deps, cloudRemote);
   }
 
   // Render: only a subdomain (added, changed or removed) changes the infrastructure code. The
@@ -454,7 +463,13 @@ async function runChange(
     files = rendered.files;
     written.push(...rendered.written);
   }
-  await writeArtifact("plan", deps.paths.files.plan, plan);
+  // `opscrew/plan.yaml` changes only once the change is on the server (see the end).
+  const planned = async (): Promise<void> =>
+    savePendingPortainer(deps.paths, {
+      command: change.command,
+      settings: plan.portainer ?? null,
+      deleteData: change.deleteData,
+    });
 
   // Infrastructure: the tunnel and Access (or their removal), through the IaC engine.
   let outputs: Record<string, unknown> = {};
@@ -488,6 +503,7 @@ async function runChange(
     if (result.approval) approvals.push({ record: result.approval, kind: "iac-apply" });
     const pending = (result.plan?.changes.length ?? 0) > 0 && !result.applied;
     if (planOnly && pending) {
+      await planned();
       deps.reporter.info(
         `The host plan follows once this infrastructure plan is applied (\`${command} --approve ${planHash}\`), because it needs the Cloudflare Tunnel.`,
       );
@@ -496,7 +512,7 @@ async function runChange(
         applied: false,
         hostApplied: false,
         files: written,
-        status: await portainerStatusOf(deps, plan),
+        status: await portainerStatusOf(deps, change.before),
       };
     }
     outputs =
@@ -509,71 +525,95 @@ async function runChange(
   let hostPlanHashValue: string | undefined;
   let hostApplied = false;
   let dataPlanHash: string | undefined;
-  if (ownRun) {
-    const host = await applyOwnHostPlan(deps, ownRun, {
-      plan,
-      outputs,
-      deployPublicKey: deployKey.publicKeyOpenSsh,
-      planOnly,
-      phase: "provision",
-    });
-    hostPlanHashValue = host.hash;
-    hostApplied = host.applied;
-    if (host.approval) approvals.push({ record: host.approval, kind: "host-apply" });
-    if (change.deleteData) {
-      const data = await applyAddonPlan(deps, {
-        plan: planPortainer({
-          app: plan.app.name,
-          dir: PORTAINER_DIR,
-          runAs: "root",
-          disable: { deleteData: true },
-        }),
-        remote: ownRun.session.remote,
-        apply: ownRun.host.apply,
-        verifyLogin: ownRun.verifyLogin,
-        title: `Delete Portainer's data on your server (its admin account and settings)`,
-        allowDestroy: true,
+  try {
+    if (ownRun) {
+      const host = await applyOwnHostPlan(deps, ownRun, {
+        plan,
+        outputs,
+        deployPublicKey: deployKey.publicKeyOpenSsh,
         planOnly,
-        secrets: async () => ({}),
+        phase: "provision",
+      });
+      hostPlanHashValue = host.hash;
+      hostApplied = host.applied;
+      if (host.approval) approvals.push({ record: host.approval, kind: "host-apply" });
+      if (change.deleteData) {
+        const data = await applyAddonPlan(deps, {
+          plan: planPortainer({
+            app: plan.app.name,
+            dir: PORTAINER_DIR,
+            runAs: "root",
+            disable: { deleteData: true },
+          }),
+          remote: ownRun.session.remote,
+          apply: ownRun.host.apply,
+          verifyLogin: ownRun.verifyLogin,
+          title: `Delete Portainer's data on your server (its admin account and settings)`,
+          allowDestroy: true,
+          planOnly,
+          secrets: async () => ({}),
+          command,
+        });
+        dataPlanHash = data.hash;
+        hostApplied ||= data.applied;
+        if (data.approval) approvals.push({ record: data.approval, kind: "host-apply" });
+      }
+    } else {
+      const result = await cloudHostChange(deps, change, {
+        plan,
+        outputs,
+        services,
+        remote: cloudRemote as RemoteExec,
+        facts: cloudFacts,
+        planOnly,
         command,
       });
-      dataPlanHash = data.hash;
-      hostApplied ||= data.applied;
-      if (data.approval) approvals.push({ record: data.approval, kind: "host-apply" });
+      hostPlanHashValue = result.hash;
+      hostApplied = result.applied;
+      if (result.approval) approvals.push({ record: result.approval, kind: "host-apply" });
     }
-  } else {
-    const result = await cloudHostChange(deps, change, {
-      plan,
-      outputs,
-      services,
-      remote: cloudRemote as RemoteExec,
-      planOnly,
-      command,
-    });
-    hostPlanHashValue = result.hash;
-    hostApplied = result.applied;
-    if (result.approval) approvals.push({ record: result.approval, kind: "host-apply" });
-  }
-
-  if (!planOnly) {
-    plan = recorded(deps, plan, approvals, {
-      ...(iacApplied && planHash !== undefined ? { iacHash: planHash } : {}),
-      any: iacApplied || hostApplied,
-    });
-    await writeArtifact("plan", deps.paths.files.plan, plan);
-  }
-  const status = await portainerStatusOf(deps, plan);
-  if (!planOnly) {
-    if (change.command === "enable") {
-      deps.reporter.success("Portainer is on.");
-      deps.reporter.info(describePortainerStatus(status));
-    } else {
-      deps.reporter.success(
-        change.deleteData
-          ? "Portainer is off and its data is deleted."
-          : "Portainer is off; its data stays on the server (`opscrew portainer disable --delete-data` deletes it).",
+  } catch (error) {
+    // The server did not get the change: plan.yaml keeps the earlier settings, and only an
+    // infrastructure apply that already happened is recorded (so its hash is not applied again).
+    if (iacApplied && planHash !== undefined) {
+      await writeArtifact(
+        "plan",
+        deps.paths.files.plan,
+        recorded(deps, change.before, approvals, { iacHash: planHash, any: true }),
       );
     }
+    throw error;
+  }
+
+  if (planOnly) {
+    await planned();
+    return {
+      ...(planHash !== undefined ? { planHash } : {}),
+      applied: false,
+      ...(hostPlanHashValue !== undefined ? { hostPlanHash: hostPlanHashValue } : {}),
+      hostApplied: false,
+      ...(dataPlanHash !== undefined ? { dataPlanHash } : {}),
+      files: written,
+      status: await portainerStatusOf(deps, change.before),
+    };
+  }
+  // The change is on the server now: plan.yaml describes it, with the approvals and applies.
+  plan = recorded(deps, plan, approvals, {
+    ...(iacApplied && planHash !== undefined ? { iacHash: planHash } : {}),
+    any: iacApplied || hostApplied,
+  });
+  await writeArtifact("plan", deps.paths.files.plan, plan);
+  await clearPendingPortainer(deps.paths);
+  const status = await portainerStatusOf(deps, plan);
+  if (change.command === "enable") {
+    deps.reporter.success("Portainer is on.");
+    deps.reporter.info(describePortainerStatus(status));
+  } else {
+    deps.reporter.success(
+      change.deleteData
+        ? "Portainer is off and its data is deleted."
+        : "Portainer is off; its data stays on the server (`opscrew portainer disable --delete-data` deletes it).",
+    );
   }
   const changedFiles = [...written, "opscrew/plan.yaml"];
   deps.reporter.info(
@@ -623,6 +663,56 @@ const MIN_DOCKER_MAJOR = 28;
  * neighbours (moby/moby#49325), so Portainer's local-only port would not be local. Servers the user
  * owns already get Docker 28 or newer through the host plan.
  */
+async function cloudPreflight(deps: PhaseDeps, remote: RemoteExec): Promise<CloudFacts> {
+  await requireDocker28(deps, remote);
+  return { dataVolume: await portainerDataExists(deps, remote) };
+}
+
+/** What the read-only checks found on a Hetzner or DigitalOcean server. */
+interface CloudFacts {
+  /** Portainer's data volume exists: its admin account was created by an earlier run. */
+  dataVolume: boolean;
+}
+
+/** Portainer's data volume (Compose project `opscrew-portainer`, volume `portainer_data`). */
+const PORTAINER_DATA_VOLUME = "opscrew-portainer_portainer_data";
+
+/**
+ * Read-only: whether Portainer's data volume is on the server (as the deploy user). A failure
+ * other than "no such volume" stops, so OpsCrew never guesses whether an admin account exists.
+ */
+async function portainerDataExists(deps: PhaseDeps, remote: RemoteExec): Promise<boolean> {
+  let result: Awaited<ReturnType<RemoteExec["run"]>> | undefined;
+  try {
+    result = await remote.run(
+      `docker volume inspect --format '{{.Name}}' ${PORTAINER_DATA_VOLUME}`,
+      { timeoutMs: 60_000 },
+    );
+  } catch {
+    result = undefined;
+  }
+  const exists = result?.exitCode === 0;
+  if (!exists && !/no such volume/i.test(result?.stderr ?? "")) {
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      "OpsCrew could not check whether Portainer's data is already on the server, so it did not set up Portainer. Nothing was changed.",
+      {
+        hint: "Check that the server is reachable over SSH and that Docker is running, then run the command again.",
+      },
+    );
+  }
+  await deps.audit.append({
+    kind: "remote-exec",
+    actor: "opscrew",
+    action: "look for Portainer's data volume (read-only)",
+    phase: "provision",
+    target: "server",
+    decision: "allow",
+    detail: exists ? "present" : "absent",
+  });
+  return exists;
+}
+
 async function requireDocker28(deps: PhaseDeps, remote: RemoteExec): Promise<void> {
   let version = "";
   try {
@@ -676,12 +766,28 @@ async function cloudHostChange(
     outputs: Record<string, unknown>;
     services: PortainerServices;
     remote: RemoteExec;
+    /** From {@link cloudPreflight} (enable only). */
+    facts: CloudFacts | undefined;
     planOnly: boolean;
     command: string;
   },
 ): Promise<{ hash: string; applied: boolean; approval?: ApprovalRecord }> {
   const { plan, outputs, remote } = input;
   const enabling = change.command === "enable";
+  // An existing data volume already holds the admin account: no new password then.
+  const needsPassword = enabling && input.facts?.dataVolume !== true;
+  if (enabling && !needsPassword) {
+    const file = portainerPasswordFile(deps.paths);
+    const local = await access(file).then(
+      () => true,
+      () => false,
+    );
+    if (!local) {
+      deps.reporter.warn(
+        `Portainer's data is already on the server, so its admin account keeps the password it was created with, and that password is not on this computer (${file}). Copy the file from the computer that turned Portainer on, or run \`opscrew portainer disable --delete-data\` and then \`opscrew portainer enable\` again for a new admin account.`,
+      );
+    }
+  }
   let connector: Parameters<typeof planPortainer>[0]["connector"];
   let tunnelToken: string | undefined;
   if (enabling && portainerHostname(plan) !== undefined) {
@@ -716,7 +822,7 @@ async function cloudHostChange(
               initial: renderPortainerCompose(plan, { initialAdmin: true }).content,
               final: renderPortainerCompose(plan, { initialAdmin: false }).content,
             },
-            needsPassword: true,
+            needsPassword,
           },
         }
       : { disable: { deleteData: change.deleteData } }),
@@ -737,7 +843,7 @@ async function cloudHostChange(
     planOnly: input.planOnly,
     secrets: async () => ({
       ...(tunnelToken !== undefined ? { tunnelToken } : {}),
-      ...(enabling ? { portainerPassword: await ensurePortainerPassword(deps) } : {}),
+      ...(needsPassword ? { portainerPassword: await ensurePortainerPassword(deps) } : {}),
     }),
     command: input.command,
   });
@@ -759,16 +865,23 @@ export async function portainerEnable(
   const before = await readArtifact("plan", deps.paths.files.plan);
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("enable");
+  const approving = (options.approvePlanHashes ?? []).length > 0;
+  const pending = approving ? await readPendingPortainer(deps.paths) : undefined;
+  if (pending !== undefined && pending.command !== "enable") throw optionsDiffer();
+  const flags = options.subdomain !== undefined || (options.allowEmails ?? []).length > 0;
+  const fromPending = pending?.settings != null && !flags ? pending.settings : undefined;
   let zone = before.dns.zone;
-  if (options.subdomain !== undefined && zone === undefined) {
-    // A bare label (`portainer`) needs the zone; the Cloudflare check learns it.
+  if ((options.subdomain !== undefined || fromPending?.hostname !== undefined) && !zone) {
+    // A subdomain needs the zone (a bare label like `portainer` too); the Cloudflare check learns it.
     zone = (await setupCloudflare(deps, before, options.services ?? {}))?.zoneName;
   }
-  const settings = portainerSettings(before, options, zone);
-  const after = withPortainer(
-    zone === undefined ? before : { ...before, dns: { ...before.dns, zone } },
-    settings,
-  );
+  const base = zone === undefined ? before : { ...before, dns: { ...before.dns, zone } };
+  // `--approve` without options applies exactly the settings the --plan-only run planned; other
+  // options than those are refused.
+  const after = withPortainer(base, fromPending ?? portainerSettings(before, options, zone));
+  if (pending !== undefined && !sameSettings(pending.settings, after.portainer ?? null)) {
+    throw optionsDiffer();
+  }
   return runChange(deps, { command: "enable", before, after, deleteData: false }, options);
 }
 
@@ -784,8 +897,17 @@ export async function portainerDisable(
   const before = await readArtifact("plan", deps.paths.files.plan);
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("disable");
-  const deleteData = options.deleteData === true;
-  if (!before.portainer?.enabled && !deleteData) {
+  const approving = (options.approvePlanHashes ?? []).length > 0;
+  const pending = approving ? await readPendingPortainer(deps.paths) : undefined;
+  if (pending !== undefined) {
+    if (pending.command !== "disable") throw optionsDiffer();
+    if (options.deleteData !== undefined && options.deleteData !== pending.deleteData) {
+      throw optionsDiffer();
+    }
+  }
+  const deleteData = pending?.deleteData ?? options.deleteData === true;
+  // With `--approve` the planned removal runs even then: it changes nothing when Portainer is gone.
+  if (!before.portainer?.enabled && !deleteData && !approving) {
     deps.reporter.info("Portainer is already off for this project; nothing to do.");
     return {
       applied: false,

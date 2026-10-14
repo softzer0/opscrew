@@ -8,11 +8,7 @@ import { portainerHostname, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import {
-  type AccessLoginMethodsApi,
-  cloudflareAccessLoginMethods,
-  oneTimePinIdentityProvider,
-} from "../portainer/access";
+import { cloudflareAccessLoginMethods, oneTimePinIdentityProvider } from "../portainer/access";
 import { planProvider, providerProfile } from "../providers";
 import {
   addressFromOutputs,
@@ -226,8 +222,7 @@ async function savedInfrastructureHashes(
  * existing one). Without them a re-run would plan to delete the organization or to create a
  * second PIN login method. `undefined` when the plan has no tunnel.
  *
- * The lookup of login methods is `services.accessLoginMethods` when given (tests; the Portainer
- * commands' services carry it), else Cloudflare's API.
+ * The lookup of login methods is `services.accessLoginMethods` (default: Cloudflare's API).
  */
 async function accessRenderInput(
   deps: PhaseDeps,
@@ -246,11 +241,10 @@ async function accessRenderInput(
     }),
   };
   if (portainerHostname(plan) !== undefined) {
-    const lookup = (services as { accessLoginMethods?: AccessLoginMethodsApi }).accessLoginMethods;
     const pin = await oneTimePinIdentityProvider({
       previous,
       accountId: cloudflare.accountId,
-      api: lookup ?? cloudflareAccessLoginMethods(deps),
+      api: services.accessLoginMethods ?? cloudflareAccessLoginMethods(deps),
     });
     if (pin !== undefined) input.oneTimePinIdentityProviderId = pin;
   }

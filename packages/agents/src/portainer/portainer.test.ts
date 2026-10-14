@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +40,7 @@ import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
 import { recordOwnServer } from "../shared";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
+import { pendingPortainerFile } from "./pending";
 import { type PortainerServices, portainerDisable, portainerEnable } from "./run";
 import { CLOUD_PORTAINER_DIR, CLOUD_TUNNEL_DIR, PORTAINER_VERSION } from "./settings";
 import { portainerStatus } from "./status";
@@ -64,7 +66,7 @@ class FakeApply {
  * The deploy user's shell: answers only the read-only Docker version query (`docker` is what the
  * server reports, `null` for a failing command); the fake apply does everything else.
  */
-function deployShell(docker: string | null, commands: string[]) {
+function deployShell(docker: string | null, server: { volume: boolean }, commands: string[]) {
   return (host: string): RemoteExec => ({
     host,
     run: async (command: string) => {
@@ -73,6 +75,18 @@ function deployShell(docker: string | null, commands: string[]) {
         return docker === null
           ? { exitCode: 1, stdout: "", stderr: "permission denied" }
           : { exitCode: 0, stdout: `${docker}\n`, stderr: "" };
+      }
+      if (
+        command === "docker volume inspect --format '{{.Name}}' opscrew-portainer_portainer_data"
+      ) {
+        return server.volume
+          ? { exitCode: 0, stdout: "opscrew-portainer_portainer_data\n", stderr: "" }
+          : {
+              exitCode: 1,
+              stdout: "",
+              stderr:
+                "Error response from daemon: get opscrew-portainer_portainer_data: no such volume\n",
+            };
       }
       throw new Error("the fake apply should have handled this");
     },
@@ -89,9 +103,12 @@ async function cloudSetup(
     answer?: (request: ApprovalRequest) => boolean | { approved: boolean; confirmation?: string };
     engine?: FakeEngine;
     docker?: string | null;
+    /** Portainer's data volume is already on the server. */
+    volume?: boolean;
   } = {},
 ) {
   const commands: string[] = [];
+  const server = { volume: o.volume === true };
   const project = await createProject(
     o.plan ?? testPlan({ domain: "shop.example.com", deployed: true }),
   );
@@ -110,7 +127,7 @@ async function cloudSetup(
   const host = new FakeApply();
   const pins: string[] = [];
   const services: PortainerServices = {
-    deployRemote: deployShell(o.docker === undefined ? "28.5.1" : o.docker, commands),
+    deployRemote: deployShell(o.docker === undefined ? "28.5.1" : o.docker, server, commands),
     applyHost: host.apply,
     cloudflare: ownCloudflare(),
     ...(o.engine !== undefined ? { engine: async () => o.engine as FakeEngine } : {}),
@@ -122,7 +139,7 @@ async function cloudSetup(
       },
     },
   };
-  return { ...project, deps, handler, host, services, pins, commands };
+  return { ...project, deps, handler, host, services, pins, commands, server };
 }
 
 const kinds = (handler: ScriptedApprovalHandler) => handler.requests.map((r) => r.kind);
@@ -299,6 +316,152 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     await portainerDisable(s.deps, { deleteData: true, services: s.services });
     expect(s.commands).toHaveLength(1);
     expect(s.host.calls).toHaveLength(1);
+  });
+
+  it("enable --plan-only changes nothing; --approve then applies exactly that plan and records it", async () => {
+    const s = await cloudSetup();
+    const before = await readFile(s.deps.paths.files.plan, "utf8");
+    const planned = await portainerEnable(s.deps, { planOnly: true, services: s.services });
+    expect(planned.hostPlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(s.handler.requests).toHaveLength(0);
+    expect(s.host.calls).toHaveLength(0);
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(before);
+    expect(planned.status.enabled).toBe(false);
+
+    const result = await portainerEnable(s.deps, {
+      approvePlanHashes: [planned.hostPlanHash as string],
+      services: s.services,
+    });
+    expect(result.hostPlanHash).toBe(planned.hostPlanHash);
+    expect(s.host.calls[0]?.options.approvedHash).toBe(planned.hostPlanHash);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer?.enabled).toBe(true);
+    expect(existsSync(pendingPortainerFile(s.deps.paths))).toBe(false);
+  });
+
+  it("disable --plan-only then --approve removes Portainer with the planned options", async () => {
+    const s = await cloudSetup();
+    await portainerEnable(s.deps, { services: s.services });
+    const enabled = await readFile(s.deps.paths.files.plan, "utf8");
+    const planned = await portainerDisable(s.deps, {
+      deleteData: true,
+      planOnly: true,
+      services: s.services,
+    });
+    expect(s.host.calls).toHaveLength(1);
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(enabled);
+
+    // Approving with other options is refused; without options it applies the planned removal.
+    const other = (await portainerDisable(s.deps, {
+      deleteData: false,
+      approvePlanHashes: [planned.hostPlanHash as string],
+      services: s.services,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(other.code).toBe("PLAN_HASH_MISMATCH");
+    expect(other.message).toContain("The options differ from the plan you approved");
+    expect(s.host.calls).toHaveLength(1);
+
+    await portainerDisable(s.deps, {
+      approvePlanHashes: [planned.hostPlanHash as string],
+      services: s.services,
+    });
+    const removal = s.host.calls[1];
+    expect(removal?.options.approvedHash).toBe(planned.hostPlanHash);
+    expect(removal?.plan.steps[0]?.params).toMatchObject({ remove: true, deleteData: true });
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toBeUndefined();
+
+    // Approving again when Portainer is already off still runs the (no-op) removal plan.
+    await portainerDisable(s.deps, {
+      deleteData: true,
+      approvePlanHashes: [planned.hostPlanHash as string],
+      services: s.services,
+    });
+    expect(s.host.calls).toHaveLength(3);
+  });
+
+  it("a refused host-apply leaves plan.yaml as it was, for enable and for disable", async () => {
+    const s = await cloudSetup({ answer: (r) => r.kind !== "host-apply" });
+    const original = await readFile(s.deps.paths.files.plan, "utf8");
+    const refused = (await portainerEnable(s.deps, { services: s.services }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(refused.code).toBe("APPROVAL_REFUSED");
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(original);
+
+    const on = await cloudSetup({
+      answer: (r) => r.kind !== "host-apply" || r.title.startsWith("Run"),
+    });
+    await portainerEnable(on.deps, { services: on.services });
+    const enabled = await readFile(on.deps.paths.files.plan, "utf8");
+    const off = (await portainerDisable(on.deps, { services: on.services }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(off.code).toBe("APPROVAL_REFUSED");
+    expect(await readFile(on.deps.paths.files.plan, "utf8")).toBe(enabled);
+  });
+
+  it("--approve with other emails than planned is refused; without options it applies the plan", async () => {
+    const { token } = tunnelSecrets();
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+          type: "cloudflare_zero_trust_tunnel_cloudflared",
+          name: "this",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "create",
+        },
+      ],
+      outputs: { server_ipv4: SERVER_IPV4, tunnel_id: TUNNEL_ID, tunnel_token: token },
+    });
+    const s = await cloudSetup({ engine });
+    const original = await readFile(s.deps.paths.files.plan, "utf8");
+    const planned = await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+      planOnly: true,
+      services: s.services,
+    });
+    expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(engine.applied).toHaveLength(0);
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(original);
+
+    const mismatch = (await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["someone-else@example.com"],
+      approvePlanHashes: [planned.planHash as string],
+      services: s.services,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(mismatch.code).toBe("PLAN_HASH_MISMATCH");
+    expect(mismatch.hint).toBe("Run with the same options, or make a new plan with --plan-only.");
+    expect(engine.applied).toHaveLength(0);
+    expect(s.host.calls).toHaveLength(0);
+
+    const result = await portainerEnable(s.deps, {
+      approvePlanHashes: [planned.planHash as string],
+      services: s.services,
+    });
+    expect(result.applied).toBe(true);
+    expect(engine.applied[0]?.approval.approvedPlanHash).toBe(planned.planHash);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toMatchObject({
+      access: "subdomain",
+      hostname: "portainer.example.com",
+      allowedEmails: ["owner@example.com"],
+    });
+  });
+
+  it("keeps the admin account when Portainer's data is already on the server", async () => {
+    const s = await cloudSetup({ volume: true });
+    await portainerEnable(s.deps, { services: s.services });
+    const call = s.host.calls[0];
+    expect(call?.plan.steps[0]?.params).toMatchObject({ needsPassword: false });
+    expect(call?.options.secrets).toEqual({});
+    expect(existsSync(portainerPasswordFile(s.deps.paths))).toBe(false);
+    const warning = s.deps.reporter.lines.find((line) => line.level === "warn")?.message;
+    expect(warning).toContain("Copy the file from the computer that turned Portainer on");
+    expect(warning).toContain("opscrew portainer disable --delete-data");
+    expect(s.commands).toContain(
+      "docker volume inspect --format '{{.Name}}' opscrew-portainer_portainer_data",
+    );
   });
 
   it("needs a deployment first", async () => {

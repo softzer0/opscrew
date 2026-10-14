@@ -11,6 +11,7 @@ import type {
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
+import type { AccessLoginMethodsApi } from "../portainer/access";
 import type { EnvAnswer, EnvQuestion, OwnServerConnection } from "../shared";
 import type { ZeroTrustApi } from "./zero-trust";
 
@@ -57,6 +58,11 @@ export interface ProvisionServices {
   askEnv?: (question: EnvQuestion) => Promise<EnvAnswer>;
   /** A server the user owns: its shell, the host adapter and the Zero Trust lookup (fakes in tests). */
   own?: OwnServerServices;
+  /**
+   * The account's Cloudflare Access login methods, read for a Portainer subdomain (default:
+   * Cloudflare's API with `CLOUDFLARE_API_TOKEN`).
+   */
+  accessLoginMethods?: AccessLoginMethodsApi;
 }
 
 /** The host adapter calls provision makes on a server the user owns. */
