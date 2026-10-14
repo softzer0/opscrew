@@ -136,6 +136,13 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
+- [ ] T920 Findings of the fifth live run (T910, 2026-10-14): in tunnel mode `http://<domain>/` answered 200 instead of redirecting to HTTPS (Caddy serves plain HTTP behind the tunnel), and on an own server `opscrew verify` and `opscrew secure` each printed the server's address in the terminal, in `packages/iac-templates/src/runtime/index.ts` and `packages/agents/src/{verify,secure}/`
+  - Owns: `packages/iac-templates/src/runtime/index.ts` (tunnel-mode Caddyfile only, + tests and snapshots), `packages/agents/src/verify/**` and `packages/agents/src/secure/**` (own-server terminal texts only, + tests)
+  - Reads: Cloudflare's documentation of the `Cf-Visitor` request header (official docs only); `renderCaddyfile`; how verify's DNS check and secure's probes word their results; FR-902
+  - Accept: (1) in tunnel mode the Caddyfile redirects a request whose `Cf-Visitor` header says the visitor used `http` to `https://{host}{uri}` with 308 (only Cloudflare reaches Caddy in this mode, through the tunnel connector on loopback, so the header can be trusted); every other mode and Hetzner/DigitalOcean render byte-identically (snapshots); `opscrew verify`'s "HTTP redirects to HTTPS" check passes in tunnel mode. (2) For an own server, no `verify` or `secure` terminal line names the server's IPv4/IPv6 address or its login host name (say "your server" or "your server's address"); Hetzner/DigitalOcean texts unchanged; tests assert both.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew`
+  - Effort: medium
+
 ## Phase 4: Surfaces and live test
 
 - [X] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
