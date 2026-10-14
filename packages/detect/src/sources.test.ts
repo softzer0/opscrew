@@ -134,6 +134,8 @@ describe("health routes registered in code by other frameworks", () => {
       'server.route({ method: "GET", path: "/health", handler: () => ({ status: "ok" }) });',
       "/health",
     ],
+    ["Hapi over lines", 'server.route({\n  method: "GET",\n  path: "/healthz",\n})', "/healthz"],
+    ["Fastify route", "fastify.route({ method: 'GET', url: '/health', handler })", "/health"],
     ["Koa middleware", 'if (ctx.method === "GET" && ctx.path === "/health") {', "/health"],
     ["Elysia chain", 'new Elysia()\n  .get("/health", () => ({ status: "ok" }))', "/health"],
     ["AdonisJS", "router.get('/health', () => ({ status: 'ok' }))", "/health"],

@@ -14,6 +14,7 @@ import {
   type HealthRouteInput,
   manual,
   movedPathNote,
+  PLAN_PATH_FIX,
   protectCheck,
 } from "./types";
 
@@ -90,7 +91,7 @@ function basePathNote(
   if (option.kind === "none" || config === undefined) return undefined;
   const healthPath = ctx.input.healthPath;
   if (option.kind === "unknown") {
-    return `${ctx.at(config)} sets ${key} in a way OpsCrew cannot read: if it sets one, the health route answers at <${key}>${healthPath} and the plan's health check path must be that (run \`opscrew design\` and set it, or edit app.healthPath in \`opscrew/plan.yaml\`), or every deploy fails its health check.`;
+    return `${ctx.at(config)} sets ${key} in a way OpsCrew cannot read: if it sets one, the health route answers at <${key}>${healthPath} and the plan's health check path must be that (${PLAN_PATH_FIX}), or every deploy fails its health check.`;
   }
   const base = option.value.replace(/\/+$/, "");
   if (base === "") return undefined;

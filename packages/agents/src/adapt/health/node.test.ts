@@ -219,6 +219,49 @@ describe("Express", () => {
   });
 });
 
+describe("routes that already use the path", () => {
+  it("finds them split over lines (Hapi, Fastify refuse a second one) and ignores client routes", async () => {
+    const hapi = await healthRouteEdit(
+      healthInput("node-server", node, {
+        "server.js": lines(
+          'const Hapi = require("@hapi/hapi");',
+          "const server = Hapi.server({ port: 3000 });",
+          "server.route({",
+          '  method: "GET",',
+          '  path: "/health",',
+          "  handler: () => 'ok',",
+          "});",
+        ),
+      }),
+    );
+    expect(hapi).toEqual({
+      action: "none",
+      reason: "server.js (line 5) already answers /health; OpsCrew left it as it is.",
+    });
+    const fastify = await healthRouteEdit(
+      healthInput("node-server", node, {
+        "app.js": lines(
+          'import Fastify from "fastify";',
+          "const app = Fastify();",
+          "app.route({ method: 'GET', url: '/health', handler: async () => 'ok' });",
+        ),
+      }),
+    );
+    expect(fastify).toMatchObject({ action: "none" });
+    const { content } = await edited(
+      {
+        "server.js": lines('import express from "express";', "const app = express();"),
+        "client/router.js": lines(
+          "export const routes = [{ path: '/health', component: Health }];",
+          "fetch('/health');",
+        ),
+      },
+      "server.js",
+    );
+    expect(content).toContain('app.get("/health"');
+  });
+});
+
 describe("Fastify", () => {
   it("adds the route right after the instance is created (examples/fastify-api)", async () => {
     const { content } = await edited(

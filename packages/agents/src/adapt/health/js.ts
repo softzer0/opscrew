@@ -173,12 +173,12 @@ export function scanJs(text: string): JsSource {
 }
 
 /** The string literal starting at `offset` (its opening quote), if any. */
-export function stringAt(src: JsSource, offset: number): JsString | undefined {
+function stringAt(src: JsSource, offset: number): JsString | undefined {
   return src.strings.find((s) => s.start === offset);
 }
 
 /** The value of the string literal starting at `offset`. */
-export function stringValue(src: JsSource, offset: number): string | undefined {
+function stringValue(src: JsSource, offset: number): string | undefined {
   const literal = stringAt(src, offset);
   if (literal === undefined || literal.quote === "`") return undefined;
   return src.text.slice(literal.start + 1, literal.end - 1);
@@ -302,7 +302,7 @@ export function jsImports(src: JsSource): JsImport[] {
  * What a callee such as `express`, `Hapi.server` or `require("koa")` refers to: the module name,
  * followed by `.name` for a named import and by the member path (`@hapi/hapi.server`).
  */
-export function resolveCallee(
+function resolveCallee(
   src: JsSource,
   imports: readonly JsImport[],
   callee: string,
@@ -480,23 +480,4 @@ export function usesSemicolons(src: JsSource): boolean {
     else if (/[\w)"'`\]]$/.test(text)) without++;
   }
   return withSemi >= without;
-}
-
-/** Quoted path literals in a file, each with the code just before it on its line. */
-export function pathLiterals(
-  src: JsSource,
-  paths: readonly string[],
-): { offset: number; before: string; after: string }[] {
-  const found: { offset: number; before: string; after: string }[] = [];
-  for (const literal of src.strings) {
-    if (literal.end - literal.start < 2) continue;
-    if (!paths.includes(src.text.slice(literal.start + 1, literal.end - 1))) continue;
-    const lineStart = src.code.lastIndexOf("\n", literal.start) + 1;
-    found.push({
-      offset: literal.start,
-      before: src.code.slice(Math.max(lineStart, literal.start - 200), literal.start),
-      after: src.code.slice(literal.end, literal.end + 60),
-    });
-  }
-  return found;
 }

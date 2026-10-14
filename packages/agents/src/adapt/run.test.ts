@@ -727,6 +727,81 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     );
   });
 
+  describe("the health route of a code-routed app, without a model", () => {
+    const facts: ProjectFacts = {
+      ...nextFacts(),
+      languages: ["javascript"],
+      frameworks: [{ name: "express", version: "5.1.0", path: "." }],
+      appKind: "api",
+      build: { startCommand: "node server.js" },
+    };
+    const changes: CodeChange[] = [
+      {
+        id: "health-endpoint",
+        kind: "health-endpoint",
+        path: "server.js",
+        reason: "The deploy checks /health.",
+        status: "pending",
+      },
+    ];
+
+    it("adds it to the file that creates the app and says so in the commit and pull request", async () => {
+      const server =
+        'const express = require("express");\nconst app = express();\napp.listen(3000);\n';
+      const repo = await setup({
+        agent: null,
+        facts,
+        changes,
+        healthPath: "/health",
+        files: { "server.js": server },
+      });
+      const github = new FakeGitHub();
+
+      const result = await runAdapt(repo.deps, { ai: false, github });
+
+      expect(result.editedFiles).toEqual(["server.js"]);
+      expect(result.manual).toEqual([]);
+      expect(await readFile(join(repo.root, "server.js"), "utf8")).toBe(
+        'const express = require("express");\nconst app = express();\n\napp.get("/health", (_req, res) => {\n  res.json({ status: "ok" });\n});\n\napp.listen(3000);\n',
+      );
+      expect(await statusOf(repo)).toEqual({ "health-endpoint": "applied" });
+      expect(await git(repo.env, repo.root, "log", "-1", "--format=%B")).toContain(
+        "- health-endpoint: server.js",
+      );
+      const body = github.created[0]?.body ?? "";
+      expect(body).toContain("in `server.js` (applied by OpsCrew)");
+      expect(body).toContain(
+        "Added GET /health to server.js by OpsCrew, right after the Express app is created",
+      );
+      expect(body).not.toContain("fails its health check");
+    });
+
+    it("names the reason in the pull request when it cannot tell where the route goes", async () => {
+      const repo = await setup({
+        agent: null,
+        facts,
+        changes,
+        healthPath: "/health",
+        files: {
+          "server.js": 'const express = require("express");\nconst app = express();\n',
+          "admin.js": 'const express = require("express");\nconst admin = express();\n',
+        },
+      });
+      const github = new FakeGitHub();
+
+      const result = await runAdapt(repo.deps, { ai: false, github });
+
+      expect(result.editedFiles).toEqual([]);
+      const reason =
+        "OpsCrew found 2 app objects (Express in admin.js line 2 and Express in server.js line 2), so it cannot tell which one serves the app.";
+      expect(result.manual[0]?.instructions).toContain(reason);
+      const body = github.created[0]?.body ?? "";
+      expect(body).toContain("in `server.js` (to do)");
+      expect(body).toContain(`OpsCrew did not add it: ${reason}`);
+      expect(body).toContain("Until GET /health answers 200, every deploy fails its health check");
+    });
+  });
+
   describe("a branch left on GitHub by an earlier run", () => {
     const OPEN = { number: 3, url: "https://github.com/acme/shop/pull/3" };
     /** Pushes `main` to `branch` on origin, as an earlier run did. */

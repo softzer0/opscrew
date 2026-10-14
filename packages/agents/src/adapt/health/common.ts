@@ -17,7 +17,7 @@ export function under(dir: string, path: string): string {
 const NOT_APP_CODE =
   /(?:^|\/)(?:tests?|__tests__|spec|e2e|cypress|playwright|scripts?|migrations|alembic|fixtures|__fixtures__|__mocks__|examples?|docs?|node_modules|site-packages|\.?venv)\//;
 const NOT_APP_FILE =
-  /(?:\.(?:test|spec|stories|config|d)\.[^./]+$)|(?:^|\/)(?:test_[^/]*|[^/]*_test|conftest)\.py$/;
+  /(?:\.(?:test|spec|stories|config|d|min)\.[^./]+$)|(?:^|\/)(?:test_[^/]*|[^/]*_test|conftest)\.py$/;
 
 /** Files of the app (inside its folder) that may hold server code with one of `extensions`. */
 export async function appCodeFiles(
@@ -49,10 +49,19 @@ export function pathVariants(healthPath: string): string[] {
   return [...new Set([healthPath, bare, `${bare}/`])];
 }
 
-/** Code before a path literal that registers a GET route for it. */
-const GET_ROUTE =
-  /(?:[.@](?:get|route|api_route|all|head|add_get|add_route|add_api_route)|\bRoute|\bpath|\bre_path|@(?:Get|All|Head)|\broute)\s*\(\s*r?$|(?:[[,]\s*\(\s*r?$)|\.add_route\s*\([^()]*,\s*$|\bpath\s*:\s*$|\bctx\.(?:path|url)\s*===?\s*$/;
-/** Code before a path literal that uses the path for something else. */
+/**
+ * Code just before a path literal that registers a GET route for it: `app.get(`, `@app.route(`,
+ * `@get(`, `Route(`, `add_get(`, Tornado's `[(r"`, Pyramid's `add_route("name", `, a
+ * `route({ path: ` / `url: ` object (Hapi, Fastify) and Koa's `ctx.path === `.
+ */
+const GET_ROUTE = [
+  /(?:[.@](?:get|route|api_route|all|head|add_get|add_route|add_api_route)|(?<![\w.])(?:Route|route|url)|@(?:Get|All|Head))\s*\(\s*r?$/,
+  /[[,]\s*\(\s*r?$/,
+  /\.add_route\s*\([^()]*,\s*$/,
+  /\.route\s*\(\s*\{[^{}]*\b(?:path|url)\s*:\s*$/,
+  /\bctx\.(?:path|url)\s*===?\s*$/,
+];
+/** Code just before a path literal that uses the path for something else. */
 const OTHER_ROUTE =
   /(?:[.@](?:post|put|patch|delete|options|use|mount|websocket|websocket_route|ws|register)|\bMount|@(?:Post|Put|Patch|Delete|Controller))\s*\(\s*r?$|\bprefix\s*[=:]\s*$/;
 
@@ -81,10 +90,10 @@ export function routeUses(
       const at = match.index;
       // A string in code (not in a comment): its opening quote survives in the code text.
       if (code[at] !== match[1]) continue;
-      const lineStart = code.lastIndexOf("\n", at) + 1;
-      const before = code.slice(Math.max(lineStart, at - 200), at).trimEnd();
+      // The code before it, across lines (route objects and calls are often split over lines).
+      const before = code.slice(Math.max(0, at - 300), at).trimEnd();
       const line = lineAt(starts, at) + 1;
-      if (GET_ROUTE.test(before)) uses.push({ file, line, get: true });
+      if (GET_ROUTE.some((pattern) => pattern.test(before))) uses.push({ file, line, get: true });
       else if (OTHER_ROUTE.test(before)) uses.push({ file, line, get: false });
     }
   }

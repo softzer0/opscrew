@@ -29,12 +29,16 @@ import {
   type HealthRouteInput,
   manual,
   movedPathNote,
+  PLAN_PATH_FIX,
 } from "./types";
 
 const NEST_CREATE = "@nestjs/core.NestFactory.create";
 const NEST_DECORATORS = /@(?:Controller|Get|All|Head)\(\s*(["'`])\/?([^"'`]*)\1/g;
 
-/** The root module file an import specifier names, if it exists. */
+/**
+ * The file a relative import specifier names (`./app.module`, or `./app.module.js` for the
+ * TypeScript source of an ESM build), if it exists.
+ */
 async function resolveModule(
   input: HealthRouteInput,
   from: string,
@@ -42,19 +46,15 @@ async function resolveModule(
 ): Promise<string | undefined> {
   if (!specifier.startsWith(".")) return undefined;
   const base = posix.normalize(posix.join(posix.dirname(from), specifier));
-  const stem = base.replace(/\.(?:[cm]?js)$/, "");
-  for (const candidate of [
-    base,
-    `${stem}.ts`,
-    `${stem}.mts`,
-    `${stem}.js`,
-    `${stem}.mjs`,
+  const stem = base.replace(/\.[cm]?js$/, "");
+  const candidates = [
+    ...(/\.[cm]?[jt]s$/.test(base) ? [base] : []),
+    ...["ts", "mts", "js", "mjs"].map((ext) => `${stem}.${ext}`),
     `${stem}/index.ts`,
     `${stem}/index.js`,
-  ]) {
-    if (candidate !== base || /\.[cm]?[jt]s$/.test(base)) {
-      if ((await input.repo.read(candidate)) !== undefined) return candidate;
-    }
+  ];
+  for (const candidate of candidates) {
+    if ((await input.repo.read(candidate)) !== undefined) return candidate;
   }
   return undefined;
 }
@@ -198,7 +198,7 @@ export async function nestHealthRoute(input: HealthRouteInput): Promise<HealthEd
       );
     }
   } else if (/\.setGlobalPrefix\(/.test(mainSrc.code)) {
-    pathNote = `${main} sets a global prefix OpsCrew cannot read: the health route answers at /<prefix>${input.healthPath}, and the plan's health check path must be that (run \`opscrew design\` and set it, or edit app.healthPath in \`opscrew/plan.yaml\`), or every deploy fails its health check.`;
+    pathNote = `${main} sets a global prefix OpsCrew cannot read: the health route answers at /<prefix>${input.healthPath}, and the plan's health check path must be that (${PLAN_PATH_FIX}), or every deploy fails its health check.`;
   }
   if (/\.enableVersioning\(/.test(mainSrc.code)) {
     checks.push(

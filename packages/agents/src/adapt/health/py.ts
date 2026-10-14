@@ -130,7 +130,7 @@ export function scanPy(text: string): PySource {
 }
 
 /** The statement that holds an offset. */
-export function statementAt(src: PySource, offset: number): PyStatement | undefined {
+function statementAt(src: PySource, offset: number): PyStatement | undefined {
   let found: PyStatement | undefined;
   for (const statement of src.statements) {
     if (statement.start > offset) break;
@@ -191,7 +191,7 @@ export function pyImports(src: PySource): PyImport[] {
 }
 
 /** What a dotted name refers to through the file's imports (`web.Application` → `aiohttp.web.Application`). */
-export function pyResolve(imports: readonly PyImport[], dotted: string): string | undefined {
+function pyResolve(imports: readonly PyImport[], dotted: string): string | undefined {
   const [head, ...rest] = dotted.split(".");
   if (head === undefined) return undefined;
   for (const entry of imports) {
@@ -303,7 +303,7 @@ export function linesAfter(src: PySource, line: number, block: readonly string[]
 }
 
 /** Lines inserted before line `line`, as an insertion. */
-export function linesBefore(src: PySource, line: number, block: readonly string[]): Insertion {
+function linesBefore(src: PySource, line: number, block: readonly string[]): Insertion {
   return {
     offset: src.starts[line] ?? src.text.length,
     text: block.map((l) => `${l}${src.eol}`).join(""),
@@ -385,7 +385,13 @@ export function pyImportName(
   const local = pyBinds(src, name) ? alias : name;
   const line = `from ${module} import ${name}${local === name ? "" : ` as ${local}`}`;
   const topLevel = imports.filter((entry) => entry.statement.indent === "");
-  const after = anchor?.indent === "" ? anchor : topLevel.at(-1)?.statement;
+  // Next to the framework's import, else the last import of the same package, else the last one.
+  const root = module.split(".")[0] as string;
+  const samePackage = topLevel.filter((entry) =>
+    [...entry.bindings.values()].some((target) => target.split(".")[0] === root),
+  );
+  const after =
+    anchor?.indent === "" ? anchor : (samePackage.at(-1)?.statement ?? topLevel.at(-1)?.statement);
   if (after !== undefined) return { local, insertion: linesAfter(src, after.last, [line]) };
   // No import yet: after the module docstring, when there is one.
   const first = src.statements[0];

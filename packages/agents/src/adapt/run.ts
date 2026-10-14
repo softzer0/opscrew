@@ -444,7 +444,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
         set(change, "skipped", pathNote === undefined ? edit.reason : `${edit.reason} ${pathNote}`);
         if (pathNote !== undefined) warn(pathNote);
       } else {
-        leaveToAgent(change, `OpsCrew did not create it: ${edit.reason}`, edit.reason);
+        leaveToAgent(change, `OpsCrew did not add it: ${edit.reason}`, edit.reason);
       }
       continue;
     }

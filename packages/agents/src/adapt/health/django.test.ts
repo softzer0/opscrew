@@ -63,6 +63,37 @@ describe("Django", () => {
     );
   });
 
+  it("puts the new import next to the other Django imports (examples/django-postgres)", async () => {
+    const urls = lines(
+      "from django.urls import path",
+      "",
+      "from visits import views",
+      "",
+      "urlpatterns = [",
+      '    path("", views.index),',
+      "]",
+    );
+    const edit = await healthRouteEdit(healthInput("django", django, project(urls)));
+    expect(written(edit, "mysite/urls.py")).toBe(
+      lines(
+        "from django.urls import path",
+        "from django.http import JsonResponse",
+        "",
+        "from visits import views",
+        "",
+        "",
+        "def health(request):",
+        '    return JsonResponse({"status": "ok"})',
+        "",
+        "",
+        "urlpatterns = [",
+        '    path("health", health),',
+        '    path("", views.index),',
+        "]",
+      ),
+    );
+  });
+
   it("keeps a trailing slash the plan asks for, and an existing route", async () => {
     const slash = await healthRouteEdit(healthInput("django", django, project(URLS), "/health/"));
     expect(written(slash, "mysite/urls.py")).toContain('    path("health/", health),\n');

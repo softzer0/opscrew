@@ -47,6 +47,7 @@ describe("FastAPI", () => {
       healthInput("fastapi", fastapi, { "main.py": main, "requirements.txt": "fastapi\n" }),
     );
     expect(edit).toMatchObject({ action: "write", framework: "FastAPI", path: "main.py" });
+    expect(indentationError(written(edit, "main.py"))).toBeUndefined();
     expect(written(edit, "main.py")).toBe(
       lines(
         "import os",

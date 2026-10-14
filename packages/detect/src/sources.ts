@@ -82,7 +82,7 @@ const HEALTH_ROUTE = new RegExp(
  * Bottle `@get("/health")` (Bottle's `@route(…)` is matched by {@link ROUTE_CONFIG_HEALTH}),
  * Tornado handler tuples `(r"/health", Handler)` and `url(…)`, Pyramid
  * `config.add_route("name", "/health")`, Hapi `server.route({ method: "GET", path: "/health", … })`
- * and a Koa middleware that checks `ctx.path === "/health"`.
+ * (and Fastify's `url:`) and a Koa middleware that checks `ctx.path === "/health"`.
  */
 const CODE_HEALTH_ROUTES: readonly RegExp[] = [
   new RegExp(`(?<![\\w.])Route\\(\\s*${QUOTED_HEALTH}`, "g"),
@@ -92,7 +92,7 @@ const CODE_HEALTH_ROUTES: readonly RegExp[] = [
     "g",
   ),
   new RegExp(`\\.add_route\\(\\s*["'][^"'\\n]*["']\\s*,\\s*${QUOTED_HEALTH}`, "g"),
-  new RegExp(`\\.route\\(\\s*\\{[^}]*?\\bpath\\s*:\\s*${QUOTED_HEALTH}`, "g"),
+  new RegExp(`\\.route\\(\\s*\\{[^{}]*?\\b(?:path|url)\\s*:\\s*${QUOTED_HEALTH}`, "g"),
   new RegExp(`\\bctx\\.(?:path|url)\\s*===?\\s*${QUOTED_HEALTH}`, "g"),
 ];
 const DJANGO_HEALTH_ROUTE = new RegExp(

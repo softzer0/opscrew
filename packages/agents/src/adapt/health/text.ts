@@ -38,37 +38,9 @@ export function indentOf(line: string): string {
   return /^[ \t]*/.exec(line)?.[0] ?? "";
 }
 
-/**
- * Inserts `block` (lines without endings) after line `after` (zero-based; -1 inserts at the top),
- * keeping the file's line endings. Lines are joined as they are; empty strings become blank lines.
- */
-export function insertAfterLine(text: string, after: number, block: readonly string[]): string {
-  const eol = eolOf(text);
-  const lines = text.split(/\r?\n/);
-  lines.splice(after + 1, 0, ...block);
-  return lines.join(eol);
-}
-
-/** True when a line holds only whitespace. */
+/** True when a line holds only whitespace (or is missing). */
 export function isBlank(line: string | undefined): boolean {
   return line === undefined || line.trim() === "";
-}
-
-/**
- * The block to insert after line `after`, surrounded by `gap` blank lines where the neighbouring
- * lines are not blank already (and none at the end of the file).
- */
-export function spaced(
-  lines: readonly string[],
-  after: number,
-  block: readonly string[],
-  gap: number,
-): string[] {
-  const before = isBlank(lines[after]) ? [] : Array<string>(gap).fill("");
-  const nextIndex = after + 1;
-  const atEnd = lines.slice(nextIndex).every((line) => isBlank(line));
-  const following = atEnd || isBlank(lines[nextIndex]) ? [] : Array<string>(gap).fill("");
-  return [...before, ...block, ...following];
 }
 
 /**
