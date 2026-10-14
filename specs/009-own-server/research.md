@@ -37,6 +37,17 @@ marked **confirm live** are checked by the gated live test or a CI smoke test be
   (https://docs.docker.com/engine/network/packet-filtering-firewalls/).
 - **Alternatives**: editing Docker's rules or `"iptables": false` (Docker: likely to break container
   networking); rules in the `DOCKER-USER` chain (more moving parts than publishing nothing).
+- **Behind Cloudflare's proxy** (founder, 2026-10-14, after T913 found that ufw rules limited to
+  Cloudflare's ranges cannot filter Caddy's Docker-published 80/443): an own server whose site is
+  behind Cloudflare's proxy uses the tunnel (R3) by default, also with a public address. As an
+  explicit option, a server with a public address serves directly behind the proxy with a filter in
+  Docker's `DOCKER-USER` chain (Docker's documented place for rules on published ports): for
+  connections whose original destination port is 80 or 443 (`conntrack --ctorigdstport`), sources
+  in Cloudflare's IPv4/IPv6 ranges pass and everything else is dropped; the rules are installed by a
+  unit that runs before Docker and that Docker requires, so Docker never publishes ports without the
+  filter (fail closed). Without either, public mode is DNS only (not proxied). Rejected: Caddy
+  refusing non-Cloudflare clients (the ports still accept connections); editing ufw's `after.rules`
+  (changes the filtering of every container the user runs).
 
 ## R3. Servers without a public address: Cloudflare Tunnel
 

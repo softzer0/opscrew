@@ -11,7 +11,7 @@ export interface HostFacts { /* see data-model.md "Host facts"; zod-validated. A
 
 /** In apply order; `package-repair` appears first only when an earlier run left dpkg interrupted. */
 export type HostStepId =
-  | "package-repair" | "docker" | "docker-daemon" | "deploy-user" | "sshd" | "ufw" | "fail2ban"
+  | "package-repair" | "docker" | "docker-daemon" | "deploy-user" | "sshd" | "ufw" | "web-filter" | "fail2ban"
   | "unattended-upgrades" | "runtime-dirs" | "app-marker" | "tunnel-connector" | "portainer";
 
 export interface HostStep {
@@ -47,6 +47,11 @@ export interface DesiredHost {
   tunnel?: { compose: string; tunnelId: string };
   /** Compose files for the first start (initial admin secret) and afterwards. */
   portainer?: { version: string; compose: { initial: string; final: string } };
+  /**
+   * Only when the site is served directly behind Cloudflare's proxy (the user's explicit choice):
+   * Cloudflare's current ranges, sorted and de-duplicated, for the `web-filter` step.
+   */
+  webFilter?: { ipv4: readonly string[]; ipv6: readonly string[] };
   /** The user's explicit choice when other logins still use passwords (else the step blocks). */
   disablePasswords?: boolean;
 }
@@ -96,3 +101,8 @@ Rules:
 - Teardown and add-on removal never rely on the login's working directory: an explicit project
   directory and Compose file, or removal by the `com.docker.compose.project` label.
 - A setup apply re-checks the server's claim before its first change and refuses another app's server.
+- `web-filter`: a chain in Docker's `DOCKER-USER` (IPv4 and IPv6) that passes connections whose
+  original destination port is 80 or 443 only from the given ranges and drops the rest, installed
+  by a unit that runs before Docker and that Docker requires (fail closed: no filter, no Docker);
+  other published ports and the user's own rules are untouched; undo removes the chain, its jump
+  and the unit.

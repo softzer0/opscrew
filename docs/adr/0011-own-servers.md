@@ -26,7 +26,10 @@ plans and listed only cloud providers.
 - DNS, the tunnel and Cloudflare Access stay infrastructure as code in the user's repository. A server
   without a public address is served through a remotely managed tunnel; GitHub Actions reaches its SSH
   through an Access-protected hostname with a service token (cloudflared pinned to a version whose
-  service-token support is tested).
+  service-token support is tested). Behind Cloudflare's proxy an own server uses the tunnel by
+  default, also with a public address, because Docker-published ports bypass ufw; as an explicit
+  option it serves directly behind the proxy with a fail-closed filter for Cloudflare's addresses
+  in Docker's `DOCKER-USER` chain. Serving directly without it is DNS only.
 - Docker Engine 28 or newer from Docker's repository; ufw only when no other firewall manages the
   host; only the reverse proxy or the tunnel connector publishes ports.
 - One OpsCrew app per server for now. Portainer CE is an opt-in add-on on every target, local-only

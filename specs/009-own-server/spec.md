@@ -224,6 +224,13 @@ not reachable from the internet but works through the printed tunnel command.
   Tunnel on the user's Cloudflare domain with no inbound web ports, create and remove the tunnel
   and its DNS record through its Cloudflare adapter behind the safety gate, keep the tunnel's
   secret out of committed files, prompts and logs, and still deploy automatically after a merge.
+  By default the same tunnel MUST serve every own server whose site is behind Cloudflare's proxy,
+  also one with a public address. As the user's explicit choice, a server with a public address MAY
+  instead serve directly behind Cloudflare's proxy with a host filter that lets only Cloudflare's
+  addresses reach 80/443; because Docker-published ports bypass the host firewall, that filter MUST
+  sit in Docker's own `DOCKER-USER` chain and MUST fail closed (Docker does not start without it).
+  Serving directly without the filter is DNS only, never proxied, and the server answers on 80/443
+  to everyone (founder, 2026-10-14).
 - **FR-911**: `opscrew drift` on an own server MUST compare the server's state with what OpsCrew set
   up (SSH settings, firewall rules, deploy user, runtime files and containers) and report every
   difference.
