@@ -125,8 +125,8 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
-- [ ] T909 [US1] [US3] [US5] Gated live test for own servers in `packages/cli/test/live/own-server.test.ts`, `docs/e2e.md`
-  - Owns: `packages/cli/test/live/own-server.test.ts`, `docs/e2e.md` (setup section only)
+- [X] T909 [US1] [US3] [US5] Gated live test for own servers in `packages/cli/test/live/own-server.test.ts`, `docs/e2e.md`
+  - Owns: `packages/cli/test/live/own-server.test.ts` and its helpers `packages/cli/test/live/own-*.ts`, `docs/e2e.md` (setup section only)
   - Reads: quickstart.md "Gated live test"; `packages/cli/test/live/live.test.ts` (patterns, cleanup)
   - Depends: T908, T913, T916
   - Accept: quickstart.md steps 1–7 (DNS only, the Cloudflare-only filter with a reboot, the tunnel, Portainer, undo) on `OPSCREW_E2E_DOMAIN`; the throwaway server is always deleted, even when a step fails; nothing about the server's address in committed files or PRs.

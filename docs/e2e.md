@@ -100,6 +100,107 @@ The test sets `CI=1`, so every command runs non-interactively:
 - `--yes` approves writing files, storing deploy secrets, pushing and opening pull requests.
 - `--approve <hash>` applies exactly the plan the first provision run printed.
 
+## Your own server
+
+`packages/cli/test/live/own-server.test.ts` runs the flow for a server the user already has
+(feature 009) on a real server that OpsCrew did not create:
+
+1. It creates a throwaway Hetzner Cloud server directly through the Hetzner API (Ubuntu 24.04, the
+   cheapest x86 type offered near `OPSCREW_E2E_REGION`, labels `managed-by=opscrew-e2e` and
+   `run=<id>`), with an SSH key generated for this run in a temporary folder (never in the
+   repository, never printed). It waits for SSH and cloud-init and checks the host key fingerprint
+   on the server itself. OpsCrew never gets the Hetzner token: to OpsCrew this is the user's own
+   server, reached as `root` with that key.
+2. **DNS only**: `interview --answers` (own server, `root`, the key's path,
+   `server.serve: dns-only`), `design --host-key <fingerprint>`, `adapt --no-ai --yes` (pull request
+   merged), `provision --plan-only` then `provision --approve <infrastructure> --approve <host plan>`,
+   merge of the deploy pull request and its workflow run, then the domain answers from the server
+   itself (not proxied), `verify`, `secure` (no failed check) and `drift` pass and root still logs
+   in with its key.
+3. `provision --plan-only` again: nothing to apply.
+4. `portainer enable` (plan, then `--approve`): ports 9443, 9000 and 8000 do not answer on the
+   server's addresses; through the SSH tunnel command `portainer status` prints, Portainer answers,
+   the admin account exists and logs in with the password from OpsCrew's password file.
+5. **The Cloudflare-only filter** (`server.serve: proxy`, interview and design again, provision,
+   deploy): Portainer stays on, the domain answers through Cloudflare, ports 80 and 443 do not
+   answer on the server's IPv4 address (nor on its IPv6 address, which is probed only when the
+   test computer has an IPv6 route; the test says so when it has none), `ss -ltnuH` on the server
+   shows no IPv6 or every-address listener on 80/443, `verify` passes. The server then reboots:
+   while it starts, the test keeps probing its own addresses (none may answer) until the site
+   answers through Cloudflare again; on the server `opscrew-web-filter.service` is active and
+   became active no later than `docker.service`; then `drift` must be clean.
+6. **The tunnel** (`server.serve: tunnel`): the switch runs as two applies. The first one removes
+   the old DNS records, so it is approved with its hash and the app's name, both taken from the
+   command `--plan-only` prints (`provision --approve <removal hash> --confirm <app>`); the second
+   one, the new setup, with its own `--approve` hashes. Then: ufw is active and lists only SSH
+   rules, the domain answers through the tunnel, 80/443 stay closed, `verify` and `drift` pass, and
+   the SSH hostname (`ssh-<app>.<zone>`) refuses a request without the service token. The deploy
+   workflow on `main` names that hostname and `cloudflared access ssh`; a merged change then
+   deploys, and sshd's journal on the server shows every `deploy` login of that run coming from
+   `127.0.0.1` or `::1` (the tunnel connector), not from GitHub's runners.
+7. `destroy --confirm <app> --undo-host`, then again with `--approve <undo host plan hash>`: no DNS
+   record, tunnel, Access application, policy or service token of the app is left in Cloudflare,
+   no container of the app and no `deploy` user are left on the server, and root still logs in
+   with its key.
+8. Nothing leaked: the server's addresses (IPv4, IPv6 and its `/64` prefix), the private keys,
+   the state passphrase, the tunnel token, the Access service token, the Portainer password and
+   the `OPSCREW_E2E_APP_ENV` values (those of 8 characters or more) are in no commit (any branch,
+   messages and contents) and no pull request of the run; no secret is in any CLI output or
+   OpsCrew's audit log; and the CLI shows the server's address only in the Portainer tunnel command
+   (`deploy@<address>`) and in "your server at <address>" messages (host key and reachability).
+   Those mentions are cut out of a line before the rest of it is searched. When the tunnel or
+   service-token secrets could not be read, the run fails with a finding that says so.
+
+Each step logs what it waits for. The steps stop at the first failure (a timeout too), but the
+cleanup always runs:
+
+- It deletes the throwaway server and its SSH key: everything labelled with the run's id, and
+  nothing else, then reports any server or key still listed under that label.
+- It removes what this run created in Cloudflare for the app, also after a finished `destroy`
+  (which should have left nothing): DNS records on the test hostname, `www.`, `ssh-<app>.` and
+  `portainer.`, the tunnel `opscrew-<app>`, the Access applications and policies and the service
+  token named after the app. Anything that existed before the run is skipped.
+- It resets the throwaway repository: closes every open pull request and deletes every branch
+  except `main`.
+
+Everything the test prints goes through a scrubber that masks the server's addresses and every
+secret it knows.
+
+If a run was interrupted (the process killed, so the cleanup never ran): in the Hetzner project,
+delete the servers and SSH keys labelled `managed-by=opscrew-e2e`; in Cloudflare, delete the DNS
+records on the test hostname (and `www.`, `ssh-<app>.`), the tunnel `opscrew-<app>`, the Access
+applications `OpsCrew SSH (<app>)`, the Access policy and service token `OpsCrew deploy (<app>)`.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_OWN_SERVER` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test to create and delete the throwaway server. Use a separate, empty project. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as above. |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | A Cloudflare token for the zone with Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit, plus the account permissions tunnel mode needs: Cloudflare Tunnel Edit, Access: Apps and Policies Edit, Access: Service Tokens Edit, Access: Organizations, Identity Providers, and Groups Edit. Cloudflare Zero Trust must be turned on for the account. |
+| `OPSCREW_E2E_DOMAIN` | A hostname in that zone, for example `e2e.example.com`. The test owns its records while it runs. |
+| `OPSCREW_E2E_REGION` | Optional, where the server runs: `eu-central` (default; Nuremberg, then Falkenstein, then Helsinki), `us-east`, `us-west` or `ap-southeast`. |
+| `OPSCREW_E2E_OWN_SERVER_TYPE` | Optional, a Hetzner server type to use instead of the cheapest x86 one, for example `cx23`. |
+| `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as above, but only examples under `examples/` (default `nextjs-postgres`). |
+
+Requirements: the built CLI, `git`, OpenTofu or Terraform, `ssh`, `ssh-keygen` and `ssh-keyscan`,
+Node.js 22+, and outgoing SSH (port 22) from the test computer. Run only this file, never together
+with the other live tests (they share the throwaway repository):
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_OWN_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/own-server.test.ts
+```
+
+A full run takes about 60–90 minutes (five deploy workflow runs, Docker's installation on the
+server and a reboot). The server is the smallest x86 type, billed by the hour at Hetzner, so a run
+costs about one or two cents of server time, plus GitHub Actions minutes for the builds (free for
+public repositories). Left behind on purpose: the GitHub Actions secrets and the container image
+in the throwaway repository (as above), the zone's OpsCrew rule sets, and the Zero Trust
+organization if OpsCrew created it (other apps may use them).
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
