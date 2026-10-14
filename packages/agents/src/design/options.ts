@@ -15,6 +15,7 @@ import {
 } from "@opscrew/plan-schema";
 import { requestedProvider, requestedRegion } from "../providers";
 import { convertMoney, costFor, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
+import { buildOwnServerOption, type OwnServerAccess } from "./own";
 import { regionLocations, type Sizing, sizeFor } from "./sizing";
 import { type DesignWording, designWording } from "./wording";
 
@@ -24,6 +25,8 @@ export interface BuildDesignOptionsInput {
   catalog: ComputeCatalog;
   /** Current time; used to say how old a static price table is. Defaults to the catalogue date. */
   now?: Date;
+  /** A server the user owns only: how the internet reaches it (default `public`). */
+  access?: OwnServerAccess;
 }
 
 /** Option tiers, in display order. */
@@ -46,7 +49,8 @@ interface Candidate {
  * type is offered in the first location of the region (from the provider profile) where it is
  * available. Prices stay in the catalogue's currency; the budget is compared at the fixed
  * approximate exchange rate. Exactly one option is recommended. Validated with
- * `DesignOptionListSchema`.
+ * `DesignOptionListSchema`. A server the user owns (`provider: own`) has exactly one option, the
+ * inspected server without a price (see `buildOwnServerOption`).
  * @throws OpsCrewError `INVALID_INPUT` when no server in the region meets the need.
  * @throws Error when the catalogue belongs to another provider (a bug, never user input).
  */
@@ -56,9 +60,19 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
   if (catalog.provider !== provider) {
     throw new Error(`Design needs the ${provider} catalogue but got the ${catalog.provider} one.`);
   }
+  if (provider === "own") {
+    const { option } = await buildOwnServerOption({
+      facts,
+      requirements,
+      catalog,
+      access: input.access ?? "public",
+    });
+    return DesignOptionListSchema.parse([option]);
+  }
   const wording = designWording(provider);
   const { profile } = wording;
   const region = requestedRegion(requirements);
+  if (region === undefined) throw new Error(`${provider} requirements need a region.`);
   const sizing = sizeFor(facts, requirements);
   const locations = regionLocations(region, provider);
   const backups = requirements.dataCriticality !== "none";

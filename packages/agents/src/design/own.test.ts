@@ -1,0 +1,389 @@
+import { readFile } from "node:fs/promises";
+import {
+  type Architecture,
+  type DeployPlan,
+  type Requirements,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
+import { describe, expect, it } from "vitest";
+import { recordOwnServerAnswers } from "../interview";
+import { type OwnServerFacts, ownServerConnector } from "../providers";
+import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
+import {
+  euCatalog,
+  makeRequirements,
+  nextPostgresFacts,
+  staticSpaFacts,
+} from "./__fixtures__/catalog";
+import {
+  buildDesignOptions,
+  OWN_SERVER_BACKUPS_NOTE,
+  OWN_SERVER_LOCATION,
+  OWN_SERVER_TYPE,
+  optionToPlan,
+  previewDesignOptions,
+  runDesign,
+} from "./index";
+import { buildOwnServerOption, distinctAmounts } from "./own";
+
+const IPV4 = "203.0.113.10";
+const NOW = new Date("2026-10-14T12:00:00.000Z");
+const BIG: OwnServerFacts = {
+  arch: "arm64",
+  vcpus: 4,
+  memoryGb: 8,
+  diskFreeGb: 120,
+  os: "Ubuntu 24.04",
+};
+
+const ownRequirements = (overrides: Partial<Requirements> = {}): Requirements => {
+  const { region: _region, ...base } = makeRequirements();
+  return { ...base, provider: "own", ...overrides };
+};
+
+const catalogOf = (facts: OwnServerFacts) =>
+  ownServerConnector({ facts, now: () => NOW, currency: "USD" }).catalog();
+
+describe("buildDesignOptions for a server the user owns", () => {
+  it("offers the inspected server as one recommended option without a price", async () => {
+    const requirements = ownRequirements({ budgetMonthly: { amount: 20, currency: "USD" } });
+    const options = await buildDesignOptions({
+      facts: staticSpaFacts(),
+      requirements,
+      catalog: catalogOf(BIG),
+    });
+    expect(options).toHaveLength(1);
+    const [option] = options;
+    expect(option).toMatchObject({
+      id: "own-server",
+      title: "Your server",
+      target: {
+        provider: "own",
+        vcpus: 4,
+        memoryGb: 8,
+        diskGb: 120,
+        architecture: "arm",
+      },
+      backups: false,
+      fitsBudget: true,
+      recommended: true,
+      cost: {
+        monthly: { amount: 0, currency: "USD" },
+        breakdown: [
+          {
+            item: "Your own server (you already pay for it)",
+            monthly: { amount: 0, currency: "USD" },
+          },
+        ],
+      },
+    });
+    expect(option?.summary).toContain("No server price: you already pay for this server.");
+    expect(option?.summary).toContain(OWN_SERVER_BACKUPS_NOTE);
+    expect(option?.summary).toContain("Ubuntu 24.04");
+    expect(option?.tradeoffs).toContain(OWN_SERVER_BACKUPS_NOTE);
+    expect(option?.tradeoffs.join(" ")).toMatch(/builds the app image for arm64/);
+    expect(option?.tradeoffs.join(" ")).not.toMatch(/memory|free disk/);
+  });
+
+  it("never shows the schema placeholders in what the user reads", async () => {
+    const [option] = await buildDesignOptions({
+      facts: nextPostgresFacts(),
+      requirements: ownRequirements(),
+      catalog: catalogOf(BIG),
+    });
+    if (option === undefined) throw new Error("no option");
+    expect(option.summary).toBe(
+      "Your own server (4 vCPU, 8 GB memory, 120 GB free disk, arm64, Ubuntu 24.04) running the app and Postgres with Docker Compose behind Caddy. No server price: you already pay for this server. OpsCrew cannot turn on backups or snapshots on your own server; backups are your responsibility.",
+    );
+    expect(option.target).toMatchObject({
+      serverType: OWN_SERVER_TYPE,
+      location: OWN_SERVER_LOCATION,
+    });
+    // How the CLI and the MCP server print an option's server line.
+    const t = option.target;
+    const serverLine = `Server: ${t.serverType} in ${t.location}, ${t.vcpus} vCPU (${t.cpuType}), ${t.memoryGb} GB RAM, ${t.diskGb} GB disk`;
+    expect(serverLine).toBe(
+      "Server: your server in its current location, 4 vCPU (shared), 8 GB RAM, 120 GB disk",
+    );
+    // "own" only ever appears as "your own server", never as a bare placeholder.
+    const placeholder = /\bown\b(?! server)/i;
+    for (const text of [option.title, option.summary, serverLine, ...option.tradeoffs]) {
+      expect(text).not.toMatch(placeholder);
+    }
+  });
+
+  it("warns when the server's memory or free disk are below the app's needs", async () => {
+    const options = await buildDesignOptions({
+      facts: nextPostgresFacts(),
+      requirements: ownRequirements(),
+      catalog: catalogOf({ arch: "amd64", vcpus: 1, memoryGb: 1.95, diskFreeGb: 25 }),
+    });
+    const tradeoffs = options[0]?.tradeoffs.join("\n") ?? "";
+    // Next.js with Postgres for fewer than 1,000 users: 4 GB memory and 30 GB of free disk
+    // (10 GB for the app and its images, 20 GB for the database; the OS is already installed).
+    expect(tradeoffs).toMatch(
+      /Your server has 2 GB of memory, but OpsCrew plans at least 4 GB for the app and Postgres/,
+    );
+    expect(tradeoffs).toMatch(
+      /Your server has 25 GB of free disk, but OpsCrew plans at least 30 GB of free disk/,
+    );
+    expect(tradeoffs).toMatch(/Postgres runs in a container on the same server; back up its data/);
+  });
+
+  describe("size boundaries", () => {
+    const warningsFor = async (
+      facts: Parameters<typeof nextPostgresFacts>[0] | "static",
+      server: Partial<OwnServerFacts>,
+    ) => {
+      const { warnings } = await buildOwnServerOption({
+        facts: facts === "static" ? staticSpaFacts() : nextPostgresFacts(facts),
+        requirements: ownRequirements(),
+        catalog: catalogOf({ arch: "amd64", vcpus: 1, memoryGb: 8, diskFreeGb: 100, ...server }),
+        access: "public",
+      });
+      return warnings.join("\n");
+    };
+
+    it("does not warn about a server that is big enough once the OS is installed", async () => {
+      // A 40 GB server with 36 GB free and a static app: the OS is not part of the app's need.
+      expect(await warningsFor("static", { diskFreeGb: 36 })).toBe("");
+      // A "1 GB" server reports about 0.95 GB; a static SPA needs 1 GB.
+      expect(await warningsFor("static", { memoryGb: 0.95 })).toBe("");
+      // Exactly the need is fine too.
+      expect(await warningsFor({}, { memoryGb: 4, diskFreeGb: 30 })).toBe("");
+      expect(await warningsFor({}, { memoryGb: 3.6, diskFreeGb: 30 })).toBe("");
+    });
+
+    it("warns about real shortfalls, with numbers that never read the same", async () => {
+      expect(await warningsFor("static", { memoryGb: 0.89 })).toMatch(
+        /Your server has 0\.9 GB of memory, but OpsCrew plans at least 1 GB/,
+      );
+      expect(await warningsFor({}, { memoryGb: 3.5 })).toMatch(
+        /has 3\.5 GB of memory, but OpsCrew plans at least 4 GB/,
+      );
+      expect(await warningsFor("static", { diskFreeGb: 9.6 })).toMatch(
+        /has 9\.6 GB of free disk, but OpsCrew plans at least 10 GB of free disk/,
+      );
+      expect(await warningsFor({}, { diskFreeGb: 20 })).toMatch(
+        /has 20 GB of free disk, but OpsCrew plans at least 30 GB/,
+      );
+    });
+
+    it("warns about a full disk instead of failing", async () => {
+      const facts = staticSpaFacts();
+      const { option, warnings } = await buildOwnServerOption({
+        facts,
+        requirements: ownRequirements(),
+        catalog: catalogOf({ arch: "amd64", vcpus: 1, memoryGb: 2, diskFreeGb: 0 }),
+        access: "public",
+      });
+      expect(warnings.join("\n")).toMatch(/has 0 GB of free disk, but OpsCrew plans at least 10/);
+      expect(option.summary).toContain("0 GB free disk");
+    });
+
+    it("shows decimals only when rounding would make both amounts the same", () => {
+      expect(distinctAmounts(2, 4)).toEqual(["2", "4"]);
+      expect(distinctAmounts(1.95, 4)).toEqual(["2", "4"]);
+      expect(distinctAmounts(0.89, 1)).toEqual(["0.9", "1"]);
+      expect(distinctAmounts(3.96, 4)).toEqual(["3.96", "4"]);
+      expect(distinctAmounts(9.6, 10)).toEqual(["9.6", "10"]);
+    });
+  });
+
+  it("explains the tunnel and that it needs a domain on Cloudflare", async () => {
+    const build = (requirements: Requirements) =>
+      buildDesignOptions({
+        facts: staticSpaFacts(),
+        requirements,
+        catalog: catalogOf(BIG),
+        access: "tunnel",
+      });
+    const without = (await build(ownRequirements()))[0];
+    expect(without?.tradeoffs.join(" ")).toMatch(
+      /Cloudflare Tunnel, which needs a domain on your Cloudflare account, and you have not given one/,
+    );
+    const withDomain = (
+      await build(ownRequirements({ domain: "app.example.com", dnsProvider: "cloudflare" }))
+    )[0];
+    expect(withDomain?.summary).toMatch(/served through a Cloudflare Tunnel/);
+    expect(withDomain?.tradeoffs.join(" ")).not.toMatch(/have not given one/);
+  });
+
+  it("stops plainly before the server is inspected and refuses another provider's catalogue", async () => {
+    const error = await buildDesignOptions({
+      facts: staticSpaFacts(),
+      requirements: ownRequirements(),
+      catalog: ownServerConnector().catalog(),
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringMatching(/has not inspected your server yet/),
+    });
+    await expect(
+      buildDesignOptions({
+        facts: staticSpaFacts(),
+        requirements: ownRequirements(),
+        catalog: euCatalog(),
+      }),
+    ).rejects.toThrow(/own catalogue but got the hetzner one/);
+  });
+
+  it("turns the option into an own-server target and needs the access mode", async () => {
+    const facts = staticSpaFacts();
+    // A tunnel serves the app on a Cloudflare domain.
+    const requirements = ownRequirements({ domain: "app.example.com", dnsProvider: "cloudflare" });
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: catalogOf(BIG) });
+    if (option === undefined) throw new Error("no option");
+    const plan = optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges: [],
+      access: "tunnel",
+    });
+    expect(plan.target).toEqual({
+      provider: "own",
+      mode: "vps-compose",
+      arch: "arm64",
+      access: "tunnel",
+    });
+    expect(() => optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] })).toThrow(
+      /access mode/,
+    );
+  });
+});
+
+async function setup(requirements: Requirements): Promise<TestPhaseDeps> {
+  const deps = await createTestPhaseDeps({ clock: { now: () => NOW } });
+  const architecture: Architecture = {
+    schemaVersion: 1,
+    generatedAt: "2026-10-11T10:00:00.000Z",
+    generator: { tool: "opscrew", version: "0.0.0-test" },
+    facts: staticSpaFacts(),
+    summary: "A test app.",
+    risks: [],
+    aiEnriched: false,
+  };
+  await writeArtifact("architecture", deps.paths.files.architecture, architecture);
+  await writeArtifact("requirements", deps.paths.files.requirements, requirements);
+  return deps;
+}
+
+const answers = (reachable: boolean) => ({
+  host: IPV4,
+  port: 22,
+  user: "root",
+  agent: true,
+  reachable,
+});
+
+describe("runDesign for a server the user owns", () => {
+  it("writes an own-server plan from the inspected facts and the interview's answers", async () => {
+    const deps = await setup(ownRequirements());
+    await recordOwnServerAnswers(deps.paths, answers(true));
+    const result = await runDesign(deps, { ownServer: { facts: BIG } });
+
+    expect(result.chosen.id).toBe("own-server");
+    expect(result.priceSource).toBe("live");
+    expect(result.plan.target).toEqual({
+      provider: "own",
+      mode: "vps-compose",
+      arch: "arm64",
+      access: "public",
+    });
+    expect(result.plan.cost.monthly.amount).toBe(0);
+    const text = await readFile(deps.paths.files.plan, "utf8");
+    expect(text).not.toContain(IPV4);
+    expect(text).not.toMatch(/location:|serverType:|backups:|image:|own-server\.json/);
+    expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(result.plan);
+    const said = deps.reporter.text();
+    expect(said).toMatch(/Your server \(own-server\): no server price/);
+    expect(said).toContain(OWN_SERVER_BACKUPS_NOTE);
+    expect(said).toMatch(/no server cost \(you already pay for this server\)/);
+    expect(said).not.toMatch(/€|\$0/);
+    // Apart from the option id, "own" only appears as "your own server".
+    expect(said.replace(/own-server/g, "")).not.toMatch(/\bown\b(?! server)/i);
+    expect((await deps.state.read()).phases.design).toMatchObject({
+      status: "ok",
+      summary: "own-server, no server cost",
+    });
+  });
+
+  it("plans the tunnel for a server the internet cannot reach, with a Cloudflare domain", async () => {
+    const deps = await setup(
+      ownRequirements({ domain: "app.example.com", dnsProvider: "cloudflare" }),
+    );
+    await recordOwnServerAnswers(deps.paths, answers(false));
+    const result = await runDesign(deps, { ownServer: { facts: { ...BIG, arch: "amd64" } } });
+    expect(result.plan.target).toEqual({
+      provider: "own",
+      mode: "vps-compose",
+      arch: "amd64",
+      access: "tunnel",
+    });
+    expect(result.plan.dns).toMatchObject({ provider: "cloudflare", domain: "app.example.com" });
+  });
+
+  it("refuses a tunnel without a Cloudflare domain before writing anything", async () => {
+    const deps = await setup(ownRequirements());
+    await recordOwnServerAnswers(deps.paths, answers(false));
+    const error = await runDesign(deps, { ownServer: { facts: BIG } }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringMatching(/needs a domain on your Cloudflare account/),
+    });
+    await expect(readFile(deps.paths.files.plan, "utf8")).rejects.toThrow();
+    // The read-only preview lists the option and says what is missing.
+    const preview = await previewDesignOptions(deps, { ownServer: { facts: BIG } });
+    expect(preview.access).toBe("tunnel");
+    expect(preview.warnings.join(" ")).toMatch(/needs a domain on your Cloudflare account/);
+  });
+
+  it("warns when the server is too small, and takes the access mode from the caller", async () => {
+    const deps = await setup(ownRequirements());
+    const result = await runDesign(deps, {
+      ownServer: { facts: { ...BIG, memoryGb: 0.5, diskFreeGb: 5 }, access: "public" },
+    });
+    expect(result.plan.target).toMatchObject({ provider: "own", access: "public" });
+    expect(result.warnings.join("\n")).toMatch(/0\.5 GB of memory/);
+    expect(result.warnings.join("\n")).toMatch(/has 5 GB of free disk/);
+  });
+
+  it("stops plainly without the interview's answers or the inspected server", async () => {
+    const deps = await setup(ownRequirements());
+    const noAnswers = await runDesign(deps, { ownServer: { facts: BIG } }).catch((e) => e);
+    expect(noAnswers).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      hint: expect.stringMatching(/opscrew interview/),
+    });
+    await recordOwnServerAnswers(deps.paths, answers(true));
+    const noFacts = await runDesign(deps).catch((e: unknown) => e);
+    expect(noFacts).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringMatching(/has not inspected your server yet/),
+    });
+    expect((await deps.state.read()).phases.design?.status).toBe("failed");
+  });
+
+  it("does not offer retarget between a deployed cloud server and the user's own", async () => {
+    const deps = await setup(makeRequirements());
+    const cloud = await runDesign(deps, { catalog: euCatalog() });
+    const deployed: DeployPlan = {
+      ...cloud.plan,
+      deployment: { lastApplyAt: "2026-10-12T10:00:00.000Z" },
+    };
+    await writeArtifact("plan", deps.paths.files.plan, deployed);
+    await writeArtifact("requirements", deps.paths.files.requirements, ownRequirements());
+    await recordOwnServerAnswers(deps.paths, answers(true));
+    const error = await runDesign(deps, { ownServer: { facts: BIG } }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringMatching(
+        /deployed on Hetzner Cloud, but opscrew\/requirements\.yaml now asks for your own server/,
+      ),
+      hint: expect.stringMatching(/cannot move an app to or from a server you already own/),
+    });
+    expect((error as { hint: string }).hint).not.toMatch(/retarget/);
+  });
+});

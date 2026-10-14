@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { IacEngine, VpsProviderId } from "@opscrew/contracts";
 import { ensureStateDir, OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
@@ -54,8 +54,19 @@ const OwnServerSchema = z
     keyPath: KeyPathSchema.optional(),
     /** Use the SSH agent. */
     agent: z.boolean(),
-    /** The pinned host key fingerprint the user confirmed, for example `SHA256:` and 43 characters. */
-    hostKey: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/),
+    /**
+     * The pinned host key fingerprint the user confirmed, for example `SHA256:` and 43 characters.
+     * Absent until the first connection: the interview records the login, provision pins the key.
+     */
+    hostKey: z
+      .string()
+      .regex(/^SHA256:[A-Za-z0-9+/]{43}$/)
+      .optional(),
+    /**
+     * True when the internet reaches the server directly; false means a Cloudflare Tunnel (the
+     * interview's answer, which design turns into the plan's `target.access`).
+     */
+    reachable: z.boolean().optional(),
     /** The addresses DNS points to in public mode. */
     publicIpv4: z.ipv4().optional(),
     publicIpv6: z.ipv6().optional(),
@@ -100,15 +111,45 @@ export function serverAddressesFile(paths: Pick<ProjectPaths, "stateDir">): stri
   return join(paths.stateDir, "server.json");
 }
 
-/** `.opscrew/server.json` exists but cannot be used: OpsCrew never guesses past it. */
+/** Where {@link setAsideServerAddresses} keeps a damaged `.opscrew/server.json`. */
+export function damagedServerAddressesFile(paths: Pick<ProjectPaths, "stateDir">): string {
+  return join(paths.stateDir, "server.json.damaged");
+}
+
+/**
+ * `.opscrew/server.json` exists but cannot be used: OpsCrew never guesses past it. A damaged file
+ * cannot tell which target it held, so the hint covers both: a server the user owns (whose
+ * connection and pinned host key must not simply be deleted) and a cloud server (whose addresses
+ * come back from the infrastructure state).
+ */
 function damaged(reason: string): OpsCrewError {
   return new OpsCrewError(
     "ARTIFACT_INVALID",
-    `OpsCrew's record of the server addresses on this computer (.opscrew/server.json) is damaged (${reason}), so OpsCrew stopped instead of guessing the servers' addresses.`,
+    `OpsCrew's record of the servers on this computer (.opscrew/server.json) is damaged (${reason}), so OpsCrew stopped instead of guessing the servers' addresses.`,
     {
-      hint: "Delete .opscrew/server.json and run the command again: OpsCrew then reads the addresses from the infrastructure state in .opscrew/tfstate. If that state is not on this computer, run OpsCrew on the computer that provisioned the server.",
+      hint: "Fix the JSON in .opscrew/server.json and run the command again. If this project deploys to your own server, do not delete the file: run `opscrew interview` again instead, which keeps the damaged file as .opscrew/server.json.damaged, and confirm the server's host key again when OpsCrew next connects. For Hetzner Cloud or DigitalOcean you can also start over. Delete .opscrew/server.json and run the command again: OpsCrew then reads the addresses from the infrastructure state in .opscrew/tfstate. If that state is not on this computer, run OpsCrew on the computer that provisioned the server.",
     },
   );
+}
+
+/**
+ * Moves a damaged `.opscrew/server.json` to `.opscrew/server.json.damaged` (replacing an older
+ * copy) so a fresh record can be written, and returns the copy's path; `undefined` when the file
+ * is missing or valid (nothing is moved then). Only `opscrew interview` uses it, after the user
+ * gave the connection again: the addresses of a cloud deployment come back from the
+ * infrastructure state, and the server's host key is confirmed again at the next connection.
+ */
+export async function setAsideServerAddresses(paths: ProjectPaths): Promise<string | undefined> {
+  try {
+    await readServerAddresses(paths);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof OpsCrewError && error.code === "ARTIFACT_INVALID")) throw error;
+  }
+  const copy = damagedServerAddressesFile(paths);
+  await rm(copy, { force: true });
+  await rename(serverAddressesFile(paths), copy);
+  return copy;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { ensureStateDir } from "@opscrew/core";
+import { ensureStateDir, toPosixRelative } from "@opscrew/core";
 import { detectProject, detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   type ProjectFacts,
@@ -10,14 +10,35 @@ import {
 import { runAnalyze } from "../analyze";
 import type { PhaseDeps } from "../context";
 import { providerFromTokens } from "../providers";
+import { type OwnServerConnection, readOwnServer, setAsideServerAddresses } from "../shared";
 import { answersToRequirements } from "./answers";
+import {
+  answersToOwnServer,
+  buildServerQuestions,
+  hasServerAnswers,
+  type OwnServerAnswers,
+  recordOwnServerAnswers,
+  type ServerQuestion,
+  splitServerAnswers,
+} from "./own-server";
 import { buildQuestions, describesRoot, type InterviewAnswers } from "./questions";
 
 export interface InterviewOptions {
   /** Asks the questions interactively and returns the answers keyed by question id. */
   ask?: (questions: Question[]) => Promise<InterviewAnswers>;
-  /** Answers given up front (for example from `--answers <file>`); `ask` is then not called. */
+  /**
+   * Asks the follow-up questions for a server the user already has (`provider: own`) and returns
+   * the answers keyed by question id (`server.host`, …). Called after `ask`, only for `own` and
+   * only when `answers` holds no server answers.
+   */
+  askServer?: (questions: ServerQuestion[]) => Promise<InterviewAnswers>;
+  /**
+   * Answers given up front (for example from `--answers <file>`); `ask` is then not called. May
+   * include the server follow-ups as `server.host` keys or a nested `server:` mapping.
+   */
   answers?: InterviewAnswers;
+  /** Whether the internet reaches the server, as inspection suggests (the reachability default). */
+  suggestedReachable?: boolean;
 }
 
 export interface InterviewResult {
@@ -29,6 +50,11 @@ export interface InterviewResult {
    * described, so the deterministic analysis was re-run for it (without the AI review).
    */
   reanalyzed: boolean;
+  /**
+   * For a server the user already has: how OpsCrew reaches it, saved in `.opscrew/server.json`
+   * (never in `opscrew/requirements.yaml`).
+   */
+  ownServer?: OwnServerAnswers;
 }
 
 const errorCode = (error: unknown) =>
@@ -84,11 +110,31 @@ async function loadPrevious(deps: PhaseDeps): Promise<Requirements | undefined> 
 }
 
 /**
+ * How OpsCrew reached the user's own server so far (`.opscrew/server.json` → `own`). A damaged
+ * file gives no previous answers and `damaged: true`; it is set aside (never deleted) only once
+ * the new answers are valid.
+ */
+async function loadPreviousServer(
+  deps: PhaseDeps,
+): Promise<{ previous?: OwnServerConnection; damaged?: true }> {
+  try {
+    const previous = await readOwnServer(deps.paths);
+    return previous === undefined ? {} : { previous };
+  } catch (error) {
+    if (errorCode(error) === "ARTIFACT_INVALID") return { damaged: true };
+    throw error;
+  }
+}
+
+/**
  * The interview phase: builds the questions that cannot be inferred (previous answers pre-filled),
  * takes answers from `options.answers` or `options.ask`, validates them into requirements, writes
  * `opscrew/requirements.yaml` and records the phase. In a repository with several apps it asks
- * which one to deploy (`appDir`) and re-runs the deterministic analysis for the chosen app. Missing or invalid answers throw
- * `OpsCrewError("INVALID_INPUT")` listing them.
+ * which one to deploy (`appDir`) and re-runs the deterministic analysis for the chosen app. For a
+ * server the user already has (`provider: own`) it takes the follow-ups (`server.*`) from the
+ * answers or `options.askServer` and saves them in `.opscrew/server.json`, never in
+ * `opscrew/requirements.yaml`. Missing or invalid answers throw `OpsCrewError("INVALID_INPUT")`
+ * listing them; nothing is written then.
  */
 export async function runInterview(
   deps: PhaseDeps,
@@ -109,14 +155,40 @@ export async function runInterview(
     let answers: InterviewAnswers = {};
     if (options.answers !== undefined) answers = options.answers;
     else if (options.ask !== undefined) answers = await options.ask(questions);
+    let split = splitServerAnswers(answers);
 
-    const requirements = answersToRequirements(answers, {
+    const requirements = answersToRequirements(split.rest, {
       now: deps.clock.now(),
       facts,
       appCandidates,
       ...context,
       ...(previous !== undefined ? { previous } : {}),
     });
+    let ownServer: OwnServerAnswers | undefined;
+    let damagedRecord = false;
+    if (requirements.provider === "own") {
+      const { damaged, ...loaded } = await loadPreviousServer(deps);
+      damagedRecord = damaged === true;
+      if (damagedRecord) {
+        reporter.warn(
+          "OpsCrew's record of your server (.opscrew/server.json) is damaged, so your earlier answers are not pre-filled.",
+        );
+      }
+      const serverContext = {
+        ...loaded,
+        ...(options.suggestedReachable !== undefined
+          ? { suggestedReachable: options.suggestedReachable }
+          : {}),
+      };
+      if (!hasServerAnswers(split) && options.askServer !== undefined) {
+        split = splitServerAnswers(await options.askServer(buildServerQuestions(serverContext)));
+      }
+      ownServer = answersToOwnServer(split, serverContext);
+    } else if (hasServerAnswers(split)) {
+      reporter.warn(
+        "The answers about a server you already have (server.*) were ignored, because the app does not run on your own server.",
+      );
+    }
     // The analysis must describe the chosen app. Re-run it before saving the answers, so an app
     // folder detection rejects is never written to requirements.yaml.
     const reanalyzed =
@@ -129,15 +201,36 @@ export async function runInterview(
         `opscrew/architecture.json now describes ${requirements.appDir}. The Analyst's AI review was not re-run; run \`opscrew analyze\` to add it.`,
       );
     }
+    if (ownServer !== undefined) {
+      if (damagedRecord) {
+        const copy = await setAsideServerAddresses(paths);
+        if (copy !== undefined) {
+          reporter.warn(
+            `Kept the damaged record as ${toPosixRelative(paths.root, copy)} and started a new one. OpsCrew asks you to confirm your server's host key again when it next connects.`,
+          );
+        }
+      }
+      // Connection details stay on this computer: never in requirements.yaml.
+      await recordOwnServerAnswers(paths, ownServer);
+      reporter.info(
+        "Saved how to reach your server in .opscrew/server.json, on this computer only.",
+      );
+    }
     await writeArtifact("requirements", paths.files.requirements, requirements);
     reporter.success("Wrote opscrew/requirements.yaml.");
     const budget = requirements.budgetMonthly;
+    const where =
+      requirements.provider === "own"
+        ? ", your own server"
+        : requirements.region === undefined
+          ? ""
+          : `, ${requirements.region}`;
     await deps.state.markPhase(
       "interview",
       "ok",
-      `${requirements.expectedMonthlyUsers} users, ${budget.amount} ${budget.currency}/month${requirements.region === undefined ? "" : `, ${requirements.region}`}`,
+      `${requirements.expectedMonthlyUsers} users, ${budget.amount} ${budget.currency}/month${where}`,
     );
-    return { requirements, questions, reanalyzed };
+    return { requirements, questions, reanalyzed, ...(ownServer ? { ownServer } : {}) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     try {

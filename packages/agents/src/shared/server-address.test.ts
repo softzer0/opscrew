@@ -10,6 +10,7 @@ import { createTestPhaseDeps } from "../testing";
 import {
   addressFromOutputs,
   committableUrl,
+  damagedServerAddressesFile,
   ensureStatePassphrase,
   formatServerAddress,
   hasDeployment,
@@ -22,6 +23,7 @@ import {
   serverAddress,
   serverAddressesFile,
   serverOfProvider,
+  setAsideServerAddresses,
   updateServerAddresses,
   withoutServerAddress,
 } from "./index";
@@ -132,12 +134,32 @@ describe("the server's address in OpsCrew's local state", () => {
         const { message, hint } = error as { message: string; hint: string };
         expect(message).toContain(".opscrew/server.json");
         expect(message).toContain("is damaged");
-        expect(hint).toContain("Delete .opscrew/server.json");
+        expect(hint).toContain("Fix the JSON in .opscrew/server.json");
+        // An own server's record holds its connection and pinned host key: never just delete it.
+        expect(hint).toMatch(
+          /If this project deploys to your own server, do not delete the file: run `opscrew interview` again instead.*confirm the server's host key again/,
+        );
+        expect(hint).toMatch(/For Hetzner Cloud or DigitalOcean .*Delete \.opscrew\/server\.json/);
         expect(hint).toContain("on the computer that provisioned the server");
       }
       // Nothing guessed, nothing overwritten.
       expect(engine.calls).toEqual([]);
       expect(await readFile(file, "utf8")).toBe(damaged);
+    }
+  });
+
+  it("sets a damaged file aside on request, and never a valid or missing one", async () => {
+    const deps = await createTestPhaseDeps();
+    expect(await setAsideServerAddresses(deps.paths)).toBeUndefined();
+    await recordServerAddress(deps.paths, { ipv4: IPV4 });
+    expect(await setAsideServerAddresses(deps.paths)).toBeUndefined();
+    expect(await readServerAddresses(deps.paths)).toMatchObject({ deployment: { ipv4: IPV4 } });
+    for (const damaged of ["{ not json", "{ still not json"]) {
+      await writeFile(serverAddressesFile(deps.paths), damaged);
+      const copy = await setAsideServerAddresses(deps.paths);
+      expect(copy).toBe(damagedServerAddressesFile(deps.paths));
+      expect(await readFile(copy as string, "utf8")).toBe(damaged);
+      expect(await readServerAddresses(deps.paths)).toEqual({ schemaVersion: 1 });
     }
   });
 
@@ -218,6 +240,23 @@ describe("a server the user owns in OpsCrew's local state", () => {
       expect(String((error as Error).message), label).not.toContain("-----BEGIN");
     }
     expect(await readFile(serverAddressesFile(deps.paths), "utf8")).toBe(before);
+  });
+
+  it("records the login before the host key is pinned, with the reachability answer", async () => {
+    const deps = await createTestPhaseDeps();
+    await recordOwnServer(deps.paths, { ...own, reachable: false });
+    expect(await readOwnServer(deps.paths)).toEqual({ ...own, port: 22, reachable: false });
+    await recordOwnServer(deps.paths, { ...own, reachable: true, hostKey: HOST_KEY });
+    expect(await readOwnServer(deps.paths)).toEqual({
+      ...own,
+      port: 22,
+      reachable: true,
+      hostKey: HOST_KEY,
+    });
+    const error = await recordOwnServer(deps.paths, { ...own, reachable: "yes" } as never).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(Error);
   });
 
   it("accepts absolute key paths on every system, spaces included", async () => {

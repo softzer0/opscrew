@@ -37,7 +37,7 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` (and `OPSCREW_IT=1` with OpenTofu for module validation)
   - Effort: high
 
-- [ ] T904 [P] [US1] Provider profile, own-server connector, interview and design in `packages/agents/src/{providers,design,interview}/`
+- [X] T904 [P] [US1] Provider profile, own-server connector, interview and design in `packages/agents/src/{providers,design,interview}/`
   - Owns: `packages/agents/src/providers/**`, `packages/agents/src/design/**`, `packages/agents/src/interview/**`
   - Reads: plan.md "Provider, interview, design"; contracts/cli.md "Interview"; spec FR-901, FR-913
   - Depends: T901

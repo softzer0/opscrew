@@ -1,0 +1,204 @@
+import type { ComputeCatalog, ComputeOffer } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
+import {
+  type CostEstimate,
+  CostEstimateSchema,
+  type DesignOption,
+  DesignOptionSchema,
+  type OwnDeployTarget,
+  type ProjectFacts,
+  type Requirements,
+} from "@opscrew/plan-schema";
+import { OWN_SERVER_MEMORY_TOLERANCE, ownServerFreeDiskGb, sizeFor } from "./sizing";
+
+/** How the internet reaches a server the user owns: directly, or through a Cloudflare Tunnel. */
+export type OwnServerAccess = OwnDeployTarget["access"];
+
+/** Said wherever OpsCrew designs, documents or removes a deployment on the user's own server. */
+export const OWN_SERVER_BACKUPS_NOTE =
+  "OpsCrew cannot turn on backups or snapshots on your own server; backups are your responsibility.";
+
+/** Why an own-server option has no price. */
+export const OWN_SERVER_PRICE_NOTE = "No server price: you already pay for this server.";
+
+/** Id of the only design option on a server the user owns. */
+export const OWN_SERVER_OPTION_ID = "own-server";
+
+/**
+ * The option's `target.serverType` and `target.location`, which the option schema requires but a
+ * server the user owns does not have. Surfaces that print them (`Server: <type> in <location>`)
+ * then read naturally; they never reach the plan.
+ */
+export const OWN_SERVER_TYPE = "your server";
+export const OWN_SERVER_LOCATION = "its current location";
+
+export interface OwnServerOptionInput {
+  facts: ProjectFacts;
+  requirements: Requirements;
+  /** The own-server catalogue: the inspected server as its single offer. */
+  catalog: ComputeCatalog;
+  access: OwnServerAccess;
+}
+
+export interface OwnServerDesign {
+  option: DesignOption;
+  /** Plain-English problems: too little memory or disk, a tunnel without a Cloudflare domain. */
+  warnings: string[];
+}
+
+/** True when the app is served through a tunnel but the user gave no domain on Cloudflare. */
+export function tunnelNeedsCloudflareDomain(
+  requirements: Pick<Requirements, "dnsProvider" | "domain">,
+  access: OwnServerAccess,
+): boolean {
+  return access === "tunnel" && !(requirements.dnsProvider === "cloudflare" && requirements.domain);
+}
+
+/** The plain error (and next step) when a tunnel has no domain on Cloudflare. */
+export function tunnelDomainMessage(): { message: string; hint: string } {
+  return {
+    message:
+      "The internet cannot reach your server, so OpsCrew serves the app through a Cloudflare Tunnel, which needs a domain on your Cloudflare account, and you have not given one.",
+    hint: "Run `opscrew interview` again and give a domain whose DNS is on Cloudflare, or say that the internet can reach the server.",
+  };
+}
+
+/** `7.8` for 7.75 GB: at most one decimal. */
+function gb(amount: number): string {
+  return String(Math.round(amount * 10) / 10);
+}
+
+/**
+ * Two amounts in GB for one sentence ("has X, needs Y"): whole numbers, or one decimal (then two)
+ * when rounding would show the same number for both and the sentence would contradict itself.
+ */
+export function distinctAmounts(a: number, b: number): [string, string] {
+  for (const decimals of [0, 1, 2]) {
+    const factor = 10 ** decimals;
+    const show = (amount: number) => String(Math.round(amount * factor) / factor);
+    if (show(a) !== show(b)) return [show(a), show(b)];
+  }
+  return [String(a), String(b)];
+}
+
+function joinWords(words: readonly string[]): string {
+  if (words.length <= 1) return words.join("");
+  return `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
+}
+
+/**
+ * The single design option on a server the user already owns: the inspected server (the
+ * catalogue's only offer) with no price ("you already pay for this server"), warnings when its
+ * memory is clearly below what the sizing table plans for the app (below 90%: inspected memory
+ * sits a little under the nominal size) or its free disk below what the app itself needs (the
+ * operating system is already installed; `ownServerFreeDiskGb`), the Cloudflare Tunnel
+ * when the internet cannot reach it (which needs a domain on Cloudflare), and the note that
+ * backups are the user's responsibility. Validated with `DesignOptionSchema`.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when the server has not been inspected (no offer).
+ */
+export async function buildOwnServerOption(input: OwnServerOptionInput): Promise<OwnServerDesign> {
+  const { facts, requirements, catalog, access } = input;
+  if (catalog.provider !== "own") {
+    throw new Error(`Design needs the own-server catalogue but got the ${catalog.provider} one.`);
+  }
+  const server: ComputeOffer | undefined = (await catalog.listOffers())[0];
+  if (server === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "OpsCrew has not inspected your server yet, so it cannot check that the server is big enough for this app.",
+      {
+        hint: "OpsCrew reads the server's memory, disk and architecture over SSH before it designs the deployment. Check the answers about your server with `opscrew interview` and run `opscrew design` again.",
+      },
+    );
+  }
+  const sizing = sizeFor(facts, requirements);
+  const containers = [
+    "the app",
+    ...(sizing.services.postgres ? ["Postgres"] : []),
+    ...(sizing.services.redis ? ["Redis"] : []),
+  ];
+  const arch = server.architecture === "arm" ? "arm64" : "amd64";
+
+  const warnings: string[] = [];
+  if (server.memoryGb < sizing.memoryGb * OWN_SERVER_MEMORY_TOLERANCE) {
+    const [has, needs] = distinctAmounts(server.memoryGb, sizing.memoryGb);
+    warnings.push(
+      `Your server has ${has} GB of memory, but OpsCrew plans at least ${needs} GB for ${joinWords(containers)} at the number of users you expect. The app may slow down or stop when memory runs out: add memory to the server, or expect fewer users.`,
+    );
+  }
+  const freeDiskNeed = ownServerFreeDiskGb(sizing);
+  if (server.diskGb < freeDiskNeed) {
+    const [has, needs] = distinctAmounts(server.diskGb, freeDiskNeed);
+    warnings.push(
+      `Your server has ${has} GB of free disk, but OpsCrew plans at least ${needs} GB of free disk for ${joinWords(containers)}, their images and updates. Free up space or add disk before you deploy.`,
+    );
+  }
+  if (tunnelNeedsCloudflareDomain(requirements, access)) {
+    const { message, hint } = tunnelDomainMessage();
+    warnings.push(`${message} ${hint}`);
+  }
+
+  const currency = requirements.budgetMonthly.currency;
+  const cost: CostEstimate = CostEstimateSchema.parse({
+    monthly: { amount: 0, currency },
+    breakdown: [
+      { item: "Your own server (you already pay for it)", monthly: { amount: 0, currency } },
+    ],
+    pricesIncludeVat: false,
+    source: "live",
+    asOf: server.asOf,
+  });
+
+  const os = server.description === undefined ? "" : `, ${server.description}`;
+  const served =
+    access === "tunnel"
+      ? " The app is served through a Cloudflare Tunnel, so no ports are opened on the server."
+      : "";
+  const summary = [
+    `Your own server (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${joinWords(containers)} with Docker Compose behind Caddy.${served}`,
+    OWN_SERVER_PRICE_NOTE,
+    OWN_SERVER_BACKUPS_NOTE,
+  ].join(" ");
+
+  const tradeoffs = [...warnings];
+  if (access === "tunnel") {
+    tradeoffs.push(
+      "The internet cannot reach your server, so OpsCrew serves the app through a Cloudflare Tunnel on your Cloudflare domain: no inbound ports are opened, and deploys from GitHub go through the tunnel too.",
+    );
+  }
+  if (arch === "arm64") {
+    tradeoffs.push("Your server uses arm64, so OpsCrew builds the app image for arm64.");
+  }
+  tradeoffs.push("A single server: if it fails, the app is down until the server is restored.");
+  if (sizing.services.postgres) {
+    tradeoffs.push(
+      "Postgres runs in a container on the same server; back up its data yourself, because OpsCrew cannot turn on backups on your own server.",
+    );
+  }
+  tradeoffs.push(OWN_SERVER_BACKUPS_NOTE);
+
+  const option = DesignOptionSchema.parse({
+    id: OWN_SERVER_OPTION_ID,
+    title: "Your server",
+    summary,
+    target: {
+      provider: "own",
+      location: OWN_SERVER_LOCATION,
+      serverType: OWN_SERVER_TYPE,
+      vcpus: server.vcpus,
+      // The option schema needs positive sizes; a full disk (0 GB free) already has its warning.
+      memoryGb: Math.max(server.memoryGb, 0.01),
+      diskGb: Math.max(server.diskGb, 0.01),
+      cpuType: server.cpuType,
+      architecture: server.architecture,
+    },
+    services: { ...sizing.services },
+    externalServices: [...sizing.externalServices],
+    backups: false,
+    cost,
+    fitsBudget: true,
+    recommended: true,
+    tradeoffs,
+  });
+  return { option, warnings };
+}

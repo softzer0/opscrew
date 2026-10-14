@@ -76,28 +76,52 @@ describe("provider choice", () => {
     expect(providerFromTokens({ DIGITALOCEAN_TOKEN: "  " })).toBeUndefined();
   });
 
-  it("stops with a plain error for a server the user owns, never using another provider", () => {
-    const own = { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" } as const;
-    for (const attempt of [() => providerProfile("own"), () => cloudTarget(own)]) {
-      expect(attempt).toThrow(
-        expect.objectContaining({
-          code: "PHASE_PRECONDITION",
-          message: expect.stringContaining("server you already own"),
-        }),
-      );
-    }
+  it("describes a server the user owns: no token, regions, delete protection or backups", () => {
+    const own = providerProfile("own");
+    expect(own).toMatchObject({
+      id: "own",
+      displayName: "Your own server",
+      serverNoun: "server",
+      tokenVars: [],
+      deleteProtection: false,
+      providerBackups: false,
+      backupsOutliveServer: false,
+      backupPercent: 0,
+      locationNames: {},
+      regionNotes: {},
+      mirroredAttributes: {},
+    });
+    for (const region of RegionSchema.options) expect(own.regionLocations[region]).toEqual([]);
+    expect(own.unavailable.test("out of stock")).toBe(false);
+    expect(own.serverLimit.test("server limit")).toBe(false);
+    expect(providerProfile("hetzner").providerBackups).toBe(true);
+    expect(providerProfile("digitalocean").providerBackups).toBe(true);
+    // Token-based provider lists never include it.
     expect(VPS_PROVIDERS).not.toContain("own");
+    expect(providerFromTokens({ HCLOUD_TOKEN: "x" })).toBe("hetzner");
+  });
+
+  it("refuses an unknown provider id instead of using another provider", () => {
+    expect(() => providerProfile("aws" as never)).toThrow(
+      expect.objectContaining({ code: "INVALID_INPUT", message: expect.stringContaining('"aws"') }),
+    );
+  });
+
+  it("keeps cloud targets and refuses an own-server target where a cloud one is needed", () => {
+    const own = { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" } as const;
+    expect(() => cloudTarget(own)).toThrow(
+      expect.objectContaining({
+        code: "PHASE_PRECONDITION",
+        message: expect.stringContaining("server you already own"),
+      }),
+    );
   });
 
   it("reads the region for cloud providers only", () => {
     expect(requestedRegion({ region: "us-east" })).toBe("us-east");
     expect(requestedRegion({ provider: "digitalocean", region: "eu-north" })).toBe("eu-north");
-    expect(() => requestedRegion({ provider: "own", region: "eu-central" })).toThrow(
-      expect.objectContaining({ code: "PHASE_PRECONDITION" }),
-    );
-    expect(() => requestedRegion({ provider: "own" })).toThrow(
-      expect.objectContaining({ code: "PHASE_PRECONDITION" }),
-    );
+    expect(requestedRegion({ provider: "own", region: "eu-central" })).toBeUndefined();
+    expect(requestedRegion({ provider: "own" })).toBeUndefined();
     expect(() => requestedRegion({ provider: "hetzner" })).toThrow(
       expect.objectContaining({
         code: "ARTIFACT_INVALID",

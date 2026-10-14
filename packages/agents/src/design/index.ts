@@ -24,14 +24,34 @@ export {
   type DesignTier,
   minimumMonthlyCost,
 } from "./options";
+export {
+  buildOwnServerOption,
+  OWN_SERVER_BACKUPS_NOTE,
+  OWN_SERVER_LOCATION,
+  OWN_SERVER_OPTION_ID,
+  OWN_SERVER_PRICE_NOTE,
+  OWN_SERVER_TYPE,
+  type OwnServerAccess,
+  type OwnServerDesign,
+  type OwnServerOptionInput,
+  tunnelNeedsCloudflareDomain,
+} from "./own";
 export { appNameFor, appPortFor, type OptionToPlanInput, optionToPlan } from "./plan";
 export { type ReleaseCommandNote, releaseCommandNote } from "./release";
 export {
   type DesignPreview,
   type DesignResult,
+  type OwnServerDesignInput,
   type PreviewDesignOptions,
   previewDesignOptions,
   type RunDesignOptions,
   runDesign,
 } from "./run";
-export { LOCATION_NAMES, regionLocations, type Sizing, sizeFor } from "./sizing";
+export {
+  LOCATION_NAMES,
+  OWN_SERVER_MEMORY_TOLERANCE,
+  ownServerFreeDiskGb,
+  regionLocations,
+  type Sizing,
+  sizeFor,
+} from "./sizing";

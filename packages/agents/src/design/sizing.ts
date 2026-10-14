@@ -13,7 +13,10 @@ import { providerProfile } from "../providers";
 export const LOCATION_NAMES: Readonly<Record<string, string>> =
   providerProfile("hetzner").locationNames;
 
-/** A provider's locations for a region, in order of preference (Hetzner by default). */
+/**
+ * A provider's locations for a region, in order of preference (Hetzner by default); none for a
+ * server the user owns.
+ */
 export function regionLocations(region: Region, provider: VpsProviderId = "hetzner"): string[] {
   return [...providerProfile(provider).regionLocations[region]];
 }
@@ -64,6 +67,28 @@ const EXTERNAL_KINDS: ReadonlySet<ServiceKind> = new Set([
 const MIN_DISK_GB = 40;
 const POSTGRES_DISK_GB = 20;
 const REDIS_MEMORY_GB = 0.5;
+
+/**
+ * Free disk a server the user already owns needs for the app, without the operating system (which
+ * is already installed there, unlike `MIN_DISK_GB` on a new cloud server): the app's images, its
+ * updates and logs, plus the database's data with Postgres.
+ */
+const OWN_SERVER_APP_FREE_DISK_GB = 10;
+const OWN_SERVER_POSTGRES_FREE_DISK_GB = 20;
+
+/**
+ * Inspected memory may sit a little below the nominal size (the kernel and firmware reserve some:
+ * a "1 GB" server reports about 0.95 GB), so an own server is only called too small below this
+ * share of the need.
+ */
+export const OWN_SERVER_MEMORY_TOLERANCE = 0.9;
+
+/** Free disk (GB) the app needs on a server the user already owns. */
+export function ownServerFreeDiskGb(sizing: Pick<Sizing, "services">): number {
+  return (
+    OWN_SERVER_APP_FREE_DISK_GB + (sizing.services.postgres ? OWN_SERVER_POSTGRES_FREE_DISK_GB : 0)
+  );
+}
 
 /**
  * Minimum server size and service layout for the app (plan.md sizing table). Postgres is

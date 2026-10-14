@@ -15,6 +15,7 @@ import {
   type CodeChangeSignals,
   healthRouteFor,
 } from "./code-changes";
+import type { OwnServerAccess } from "./own";
 
 export interface OptionToPlanInput {
   facts: ProjectFacts;
@@ -25,6 +26,39 @@ export interface OptionToPlanInput {
   signals?: CodeChangeSignals;
   /** `createdAt` of the plan being replaced, kept so the history stays readable. */
   createdAt?: string;
+  /**
+   * A server the user owns only (required there): how the internet reaches it, `public` or
+   * `tunnel` (a Cloudflare Tunnel).
+   */
+  access?: OwnServerAccess;
+}
+
+/**
+ * The plan's target for the chosen option: a cloud server with the provider's default image and
+ * the option's backups, or the user's own server with its architecture and access mode (never its
+ * address or login, which stay in local state).
+ */
+function targetFor(option: DesignOption, access: OwnServerAccess | undefined) {
+  const { target } = option;
+  if (target.provider === "own") {
+    if (access === undefined) {
+      throw new Error("A design for a server the user owns needs its access mode.");
+    }
+    return {
+      provider: "own",
+      mode: "vps-compose",
+      arch: target.architecture === "arm" ? "arm64" : "amd64",
+      access,
+    } as const;
+  }
+  return {
+    provider: target.provider,
+    mode: "vps-compose",
+    location: target.location,
+    serverType: target.serverType,
+    image: providerProfile(target.provider).defaultImage,
+    backups: option.backups,
+  } as const;
 }
 
 /**
@@ -56,7 +90,8 @@ export function appPortFor(facts: ProjectFacts): number {
 
 /**
  * Turns the chosen option into `opscrew/plan.yaml` content: app (name, port, health path, release command,
- * environment variable names), target (the option's provider and its default image), services, cost, code changes, DNS from the requirements and
+ * environment variable names), target (the option's provider and its default image; for the user's
+ * own server its architecture and `input.access`), services, cost, code changes, DNS from the requirements and
  * GitHub Actions + GHCR for CI/CD. Every documented default is filled by `DeployPlanSchema`.
  * @throws ZodError when the result is not a valid plan (a bug, never user input).
  */
@@ -122,14 +157,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       ...(releaseCommand !== undefined ? { releaseCommand } : {}),
       env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     },
-    target: {
-      provider: option.target.provider,
-      mode: "vps-compose",
-      location: option.target.location,
-      serverType: option.target.serverType,
-      image: providerProfile(option.target.provider).defaultImage,
-      backups: option.backups,
-    },
+    target: targetFor(option, input.access),
     services: { postgres: services.postgres, redis: services.redis },
     externalServices: [...option.externalServices],
     cost: option.cost,

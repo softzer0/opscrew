@@ -82,8 +82,10 @@ const withDefault = <T>(value: T | undefined) => (value === undefined ? {} : { d
  * The interview questions for a project: only those that cannot be inferred from the facts, with
  * previous answers pre-filled as defaults. When the facts describe the repository root and
  * `appCandidates` (from `detectProjectDetails`) lists several apps, the first question asks which
- * one to deploy (`appDir`). The provider question defaults to the previous answer, then
- * `context.inferredProvider`, then `hetzner`. Every question is validated with `QuestionSchema`.
+ * one to deploy (`appDir`). The provider question offers Hetzner Cloud, DigitalOcean and a server
+ * the user already has (`own`, whose follow-ups come from `buildServerQuestions`; the region is
+ * then ignored) and defaults to the previous answer, then `context.inferredProvider`, then
+ * `hetzner`. Every question is validated with `QuestionSchema`.
  */
 export function buildQuestions(
   facts: ProjectFacts,
@@ -146,6 +148,11 @@ export function buildQuestions(
           value: "digitalocean",
           label: "DigitalOcean",
           hint: "use your DigitalOcean account; data centres in Germany, the Netherlands, the US and Singapore; prices in USD",
+        },
+        {
+          value: "own",
+          label: "A server you already have",
+          hint: "an Ubuntu or Debian server you reach over SSH with a key, rented anywhere or at home; you already pay for it",
         },
       ],
       default: defaultProvider(previous, context),

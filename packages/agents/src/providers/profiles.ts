@@ -1,7 +1,6 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudProvider, DeployPlan, Region, Requirements } from "@opscrew/plan-schema";
-import { ownServerNotYet } from "./own";
 
 /** What the phases need to know about a VPS provider, so none of them imports its connector. */
 export interface ProviderProfile {
@@ -32,6 +31,11 @@ export interface ProviderProfile {
   backupPercent: number;
   /** True when automated backups survive the server's deletion for a while. */
   backupsOutliveServer: boolean;
+  /**
+   * True when OpsCrew can turn on the provider's automated backups and snapshots. False for a
+   * server the user owns: its backups are the user's responsibility.
+   */
+  providerBackups: boolean;
   /** Locations per region, in order of preference (first available wins). */
   regionLocations: Readonly<Record<Region, readonly string[]>>;
   /** Display names of the locations OpsCrew offers. */
@@ -68,6 +72,7 @@ const HETZNER: ProviderProfile = {
   currency: "EUR",
   backupPercent: 20,
   backupsOutliveServer: false,
+  providerBackups: true,
   regionLocations: {
     "eu-central": ["nbg1", "fsn1"],
     "eu-north": ["hel1"],
@@ -105,6 +110,7 @@ const DIGITALOCEAN: ProviderProfile = {
   currency: "USD",
   backupPercent: 30,
   backupsOutliveServer: true,
+  providerBackups: true,
   regionLocations: {
     "eu-central": ["fra1", "ams3"],
     "eu-north": ["ams3"],
@@ -135,18 +141,68 @@ const DIGITALOCEAN: ProviderProfile = {
   mirroredAttributes: {},
 };
 
-const PROFILES: Readonly<Record<CloudProvider, ProviderProfile>> = {
-  hetzner: HETZNER,
-  digitalocean: DIGITALOCEAN,
+const NO_REGIONS: Readonly<Record<Region, readonly string[]>> = {
+  "eu-central": [],
+  "eu-north": [],
+  "us-east": [],
+  "us-west": [],
+  "ap-southeast": [],
 };
 
-/** Every VPS provider OpsCrew supports, Hetzner first. */
-export const VPS_PROVIDERS: readonly VpsProviderId[] = ["hetzner", "digitalocean"];
+/** Matches no text: a server the user owns has no provider errors to recognise. */
+const NEVER = /(?!)/;
 
-/** The provider's profile; throws {@link ownServerNotYet} for a server the user owns. */
+/**
+ * A server the user already owns. OpsCrew neither creates nor deletes it, so it has no API token,
+ * console, account page, regions, prices, delete protection or provider backups, and no server or
+ * cloud firewall resource in the infrastructure code. Those fields are empty (or never match)
+ * here; phases check `id === "own"` instead of relying on them.
+ */
+const OWN: ProviderProfile = {
+  id: "own",
+  displayName: "Your own server",
+  serverNoun: "server",
+  tokenVars: [],
+  tokenUrl: "",
+  consoleUrl: "",
+  accountUrl: "",
+  serverResourceType: "",
+  firewallResourceType: "",
+  deleteProtection: false,
+  defaultImage: "",
+  currency: "EUR",
+  backupPercent: 0,
+  backupsOutliveServer: false,
+  providerBackups: false,
+  regionLocations: NO_REGIONS,
+  locationNames: {},
+  regionNotes: {},
+  unavailable: NEVER,
+  serverLimit: NEVER,
+  mirroredAttributes: {},
+};
+
+const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
+  hetzner: HETZNER,
+  digitalocean: DIGITALOCEAN,
+  own: OWN,
+};
+
+/**
+ * Every cloud provider OpsCrew creates servers on (with an API token), Hetzner first. A server the
+ * user already owns (`own`) is not one of them.
+ */
+export const VPS_PROVIDERS: readonly CloudProvider[] = ["hetzner", "digitalocean"];
+
+/** The provider's profile, including `own` ("Your own server"). */
 export function providerProfile(id: VpsProviderId): ProviderProfile {
-  if (id === "own") throw ownServerNotYet();
-  return PROFILES[id];
+  const profile = PROFILES[id];
+  if (profile === undefined) {
+    throw new OpsCrewError("INVALID_INPUT", `OpsCrew does not know the server provider "${id}".`, {
+      hint: "Use hetzner, digitalocean or own as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.",
+    });
+  }
+  return profile;
 }
 
 /** The provider of a plan. */
@@ -163,12 +219,14 @@ export function requestedProvider(
 
 /**
  * The region the user asked for, which picks a cloud provider's location. A server the user owns
- * has no region: throws {@link ownServerNotYet} for it. Throws `ARTIFACT_INVALID` when a cloud
- * provider's requirements have none (the schema requires one there).
+ * stays where it is: `undefined` for it (a region in its requirements is ignored). Throws
+ * `ARTIFACT_INVALID` when a cloud provider's requirements have none (the schema requires one there).
  */
-export function requestedRegion(requirements: Pick<Requirements, "provider" | "region">): Region {
+export function requestedRegion(
+  requirements: Pick<Requirements, "provider" | "region">,
+): Region | undefined {
   const provider = requestedProvider(requirements);
-  if (provider === "own") throw ownServerNotYet();
+  if (provider === "own") return undefined;
   if (requirements.region === undefined) {
     throw new OpsCrewError(
       "ARTIFACT_INVALID",

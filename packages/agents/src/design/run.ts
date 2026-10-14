@@ -16,9 +16,15 @@ import {
 import { z } from "zod";
 import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
-import { providerProfile, requestedProvider, requestedRegion, vpsConnector } from "../providers";
+import {
+  type OwnServerFacts,
+  providerProfile,
+  requestedProvider,
+  requestedRegion,
+  vpsConnector,
+} from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
-import { hasDeployment, serverAddress } from "../shared";
+import { hasDeployment, readOwnServer, serverAddress } from "../shared";
 import { backgroundJobsWarning } from "./background-jobs";
 import {
   type CodeChangeSignals,
@@ -28,6 +34,14 @@ import {
 } from "./code-changes";
 import { convertMoney, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
 import { buildDesignOptions, minimumMonthlyCost } from "./options";
+import {
+  buildOwnServerOption,
+  OWN_SERVER_BACKUPS_NOTE,
+  OWN_SERVER_PRICE_NOTE,
+  type OwnServerAccess,
+  tunnelDomainMessage,
+  tunnelNeedsCloudflareDomain,
+} from "./own";
 import { optionToPlan } from "./plan";
 import { releaseCommandNote } from "./release";
 import { designWording } from "./wording";
@@ -45,6 +59,22 @@ export interface RunDesignOptions {
    * token works, else its dated static price list.
    */
   catalog?: ComputeCatalog;
+  /** A server the user owns: what inspection found and how the internet reaches it. */
+  ownServer?: OwnServerDesignInput;
+}
+
+/**
+ * Design input for a server the user already owns. The caller inspects the server (over SSH,
+ * through the host adapter); design itself never connects to it.
+ */
+export interface OwnServerDesignInput {
+  /** The inspected server, offered as the single option (ignored with a catalogue override). */
+  facts?: OwnServerFacts;
+  /**
+   * How the internet reaches the server; default: the interview's answer (`server.reachable`,
+   * `public` when reachable, else `tunnel`).
+   */
+  access?: OwnServerAccess;
 }
 
 export interface DesignResult {
@@ -97,6 +127,8 @@ export interface PreviewDesignOptions {
   catalog?: ComputeCatalog;
   /** Project facts to use instead of reading `opscrew/architecture.json`. */
   facts?: ProjectFacts;
+  /** A server the user owns: what inspection found and how the internet reaches it. */
+  ownServer?: OwnServerDesignInput;
 }
 
 export interface DesignPreview {
@@ -105,6 +137,8 @@ export interface DesignPreview {
   warnings: string[];
   facts: ProjectFacts;
   requirements: Requirements;
+  /** A server the user owns: how the internet reaches it (the plan's `target.access`). */
+  access?: OwnServerAccess;
 }
 
 interface DesignInputs {
@@ -149,7 +183,72 @@ export async function previewDesignOptions(
     );
     if (block !== undefined) warner(deps, warnings)(`${block.message} ${block.hint}`);
   }
-  return priceOptions(deps, inputs, options.catalog, warnings);
+  return priceOptions(deps, inputs, options.catalog, warnings, options.ownServer);
+}
+
+/**
+ * How the internet reaches the user's own server: `input.access`, else the interview's answer.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when the interview has no answers about the server.
+ */
+async function ownServerAccess(
+  deps: PhaseDeps,
+  input: OwnServerDesignInput | undefined,
+): Promise<OwnServerAccess> {
+  if (input?.access !== undefined) return input.access;
+  const reachable = (await readOwnServer(deps.paths))?.reachable;
+  if (reachable === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "opscrew/requirements.yaml says the app runs on a server you already have, but OpsCrew does not know how to reach it on this computer.",
+      {
+        hint: "Run `opscrew interview` and answer the questions about your server, then run `opscrew design` again.",
+      },
+    );
+  }
+  return reachable ? "public" : "tunnel";
+}
+
+/** Warnings about the app itself: background jobs and what detection noted. */
+function appWarnings(facts: ProjectFacts, warn: (text: string) => void): void {
+  const jobs = backgroundJobsWarning(facts);
+  if (jobs !== undefined) warn(jobs);
+  // What detection noted about the app, such as parts of it OpsCrew does not deploy yet.
+  for (const note of facts.notes ?? []) warn(note);
+}
+
+/**
+ * The single option on the user's own server: no price, warnings when the server is smaller than
+ * the app needs or a tunnel has no Cloudflare domain, and the backups note.
+ */
+async function priceOwnServer(
+  deps: PhaseDeps,
+  { facts, requirements }: DesignInputs,
+  override: ComputeCatalog | undefined,
+  warnings: string[],
+  input: OwnServerDesignInput | undefined,
+): Promise<DesignPreview> {
+  const say = (text: string) => deps.redactor.redact(text);
+  const warn = warner(deps, warnings);
+  const access = await ownServerAccess(deps, input);
+  const catalog =
+    override ??
+    vpsConnector("own", deps, {
+      now: () => deps.clock.now(),
+      ...(input?.facts !== undefined ? { ownServer: input.facts } : {}),
+    }).catalog();
+  const own = await buildOwnServerOption({ facts, requirements, catalog, access });
+  for (const warning of own.warnings) warn(warning);
+  const { option } = own;
+  deps.reporter.info(
+    say(`${option.title} (${option.id}): ${lowerFirst(OWN_SERVER_PRICE_NOTE)} — recommended`),
+  );
+  deps.reporter.info(OWN_SERVER_BACKUPS_NOTE);
+  appWarnings(facts, warn);
+  return { options: [option], priceSource: "live", warnings, facts, requirements, access };
+}
+
+function lowerFirst(text: string): string {
+  return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 }
 
 async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<DesignInputs> {
@@ -164,16 +263,20 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
 
 async function priceOptions(
   deps: PhaseDeps,
-  { facts, requirements }: DesignInputs,
+  inputs: DesignInputs,
   override: ComputeCatalog | undefined,
   warnings: string[],
+  ownServer?: OwnServerDesignInput,
 ): Promise<DesignPreview> {
+  const { facts, requirements } = inputs;
+  const provider = requestedProvider(requirements);
+  if (provider === "own") return priceOwnServer(deps, inputs, override, warnings, ownServer);
   const { reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const warn = warner(deps, warnings);
-  const provider = requestedProvider(requirements);
   const wording = designWording(provider);
   const region = requestedRegion(requirements);
+  if (region === undefined) throw new Error(`${provider} requirements need a region.`);
   const now = deps.clock.now();
 
   let catalog = override;
@@ -231,10 +334,7 @@ async function priceOptions(
       ),
     );
   }
-  const jobs = backgroundJobsWarning(facts);
-  if (jobs !== undefined) warn(jobs);
-  // What detection noted about the app, such as parts of it OpsCrew does not deploy yet.
-  for (const note of facts.notes ?? []) warn(note);
+  appWarnings(facts, warn);
   return { options: designOptions, priceSource, warnings, facts, requirements };
 }
 
@@ -262,7 +362,18 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     );
   }
 
-  const preview = await priceOptions(deps, inputs, options.catalog, warnings);
+  let ownServer = options.ownServer;
+  if (requestedProvider(inputs.requirements) === "own") {
+    // A tunnel without a Cloudflare domain cannot be provisioned: stop before writing anything.
+    const access = await ownServerAccess(deps, ownServer);
+    if (tunnelNeedsCloudflareDomain(inputs.requirements, access)) {
+      const { message, hint } = tunnelDomainMessage();
+      throw new OpsCrewError("PHASE_PRECONDITION", message, { hint });
+    }
+    ownServer = { ...ownServer, access };
+  }
+
+  const preview = await priceOptions(deps, inputs, options.catalog, warnings, ownServer);
   const { facts, requirements, priceSource } = preview;
   const designOptions = preview.options;
   const budget = requirements.budgetMonthly;
@@ -282,20 +393,25 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     codeChanges,
     signals,
     ...(previous ? { createdAt: previous.createdAt } : {}),
+    ...(preview.access !== undefined ? { access: preview.access } : {}),
   });
   const plan = previous ? keepPlanSettings(fresh, previous) : fresh;
   if (previous) for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
   await writeArtifact("plan", paths.files.plan, plan);
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);
+  const ownsServer = chosen.target.provider === "own";
   const cost = formatMoney(chosen.cost.monthly);
   const inBudget =
     chosen.cost.monthly.currency === budget.currency
       ? ""
       : ` (about ${formatMoney(convertMoney(chosen.cost.monthly, budget.currency))})`;
+  const price = ownsServer
+    ? "no server cost (you already pay for this server)"
+    : `${cost}/month${inBudget}`;
   reporter.success(
     say(
-      `Wrote ${planFile}: ${chosen.title}, ${cost}/month${inBudget}, ${codeChanges.length} code change${codeChanges.length === 1 ? "" : "s"} to make.`,
+      `Wrote ${planFile}: ${chosen.title}, ${price}, ${codeChanges.length} code change${codeChanges.length === 1 ? "" : "s"} to make.`,
     ),
   );
   const migrations = releaseCommandNote(plan, facts);
@@ -305,7 +421,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   await deps.state.markPhase(
     "design",
     "ok",
-    say(`${chosen.id}, ${cost}/month (${priceLabel(chosen.cost)})`),
+    say(
+      ownsServer
+        ? `${chosen.id}, no server cost`
+        : `${chosen.id}, ${cost}/month (${priceLabel(chosen.cost)})`,
+    ),
   );
   return { options: designOptions, chosen, plan, priceSource, warnings };
 }
@@ -354,16 +474,22 @@ function providerSwitchBlock(
   const current = liveDeploymentProvider(previous, stateExists);
   const requested = requestedProvider(requirements);
   if (current === undefined || requested === current) return undefined;
-  const from = providerProfile(current).displayName;
-  const to = providerProfile(requested).displayName;
+  const nameOf = (id: VpsProviderId) =>
+    id === "own" ? "your own server" : providerProfile(id).displayName;
+  const from = nameOf(current);
+  const to = nameOf(requested);
   const deployed = hasServer || hasDeployment(previous);
   const where = deployed
     ? `Your app is deployed on ${from}`
-    : `An earlier apply may have created resources at ${from}`;
+    : `An earlier apply may have created resources ${current === "own" ? "for" : "at"} ${from}`;
   const retarget = `\`opscrew retarget --to ${requested}\``;
   const keep = `or keep ${from} by answering \`opscrew interview\` again.`;
   let hint: string;
-  if (hasServer) {
+  if (current === "own" || requested === "own") {
+    // `opscrew retarget` does not move an app to or from a server the user owns.
+    const there = deployed && !hasServer ? " on the computer that provisioned it" : "";
+    hint = `OpsCrew cannot move an app to or from a server you already own. Run \`opscrew destroy\`${there} first and then \`opscrew design\`, ${keep}`;
+  } else if (hasServer) {
     hint = `Run ${retarget} to move the deployment with its data, or \`opscrew destroy\` first and then \`opscrew design\`, ${keep}`;
   } else if (deployed) {
     hint = `OpsCrew does not know the server's address on this computer: on the computer that provisioned it (its .opscrew/ folder holds the address), run ${retarget} to move the deployment with its data, or \`opscrew destroy\` there first and then \`opscrew design\`, ${keep}`;

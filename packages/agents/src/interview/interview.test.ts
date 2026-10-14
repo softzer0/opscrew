@@ -138,7 +138,7 @@ describe("provider question", () => {
   });
   const providerQuestion = (questions: Question[]) => questions.find((q) => q.id === "provider");
 
-  it("asks which provider to use, directly before the region, with both options", () => {
+  it("asks which provider to use, directly before the region, with every option", () => {
     const questions = buildQuestions(facts());
     const index = ids(questions).indexOf("provider");
     expect(ids(questions)[index + 1]).toBe("region");
@@ -157,6 +157,11 @@ describe("provider question", () => {
           value: "digitalocean",
           label: "DigitalOcean",
           hint: "use your DigitalOcean account; data centres in Germany, the Netherlands, the US and Singapore; prices in USD",
+        },
+        {
+          value: "own",
+          label: "A server you already have",
+          hint: "an Ubuntu or Debian server you reach over SSH with a key, rented anywhere or at home; you already pay for it",
         },
       ],
     });

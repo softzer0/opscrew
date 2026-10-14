@@ -6,6 +6,21 @@ export {
   parseMoney,
 } from "./answers";
 export {
+  answersToOwnServer,
+  buildServerQuestions,
+  hasServerAnswers,
+  type OwnServerAnswers,
+  type OwnServerContext,
+  recordOwnServerAnswers,
+  SERVER_FIELDS,
+  type ServerField,
+  type ServerQuestion,
+  type ServerQuestionId,
+  type SplitAnswers,
+  splitServerAnswers,
+  suggestReachable,
+} from "./own-server";
+export {
   buildQuestions,
   type InterviewAnswers,
   type InterviewContext,

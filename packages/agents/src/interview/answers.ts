@@ -150,7 +150,9 @@ function serviceList(value: unknown): unknown {
  * the previous requirements, then to answers inferred from `facts`. The domain is normalised; without
  * a domain the DNS provider is `none`. The app folder (`appDir`) is normalised and, when
  * `appCandidates` is given, must be one of them; without an answer it comes from facts that
- * describe a chosen app folder, then from the previous requirements. Throws
+ * describe a chosen app folder, then from the previous requirements. For a server the user already
+ * has (`provider: own`) no region is needed and none is recorded; the server's connection answers
+ * (`server.*`) are not requirements (see `splitServerAnswers`). Throws
  * `OpsCrewError("INVALID_INPUT")` listing unknown keys, missing required answers or invalid values.
  */
 export function answersToRequirements(
@@ -179,11 +181,17 @@ export function answersToRequirements(
     inferred.appDir = options.facts.appDir;
   }
   const appCandidates = options.appCandidates ?? [];
-  const required: readonly QuestionId[] =
-    appCandidates.length > 1 ? [...REQUIRED, "appDir"] : REQUIRED;
   const previous = options.previous as Partial<Record<QuestionId, unknown>> | undefined;
   const given = (id: QuestionId) => Object.hasOwn(answers, id) && !isBlank(answers[id]);
+  // A server the user already has stays where it is: no region is asked for or recorded.
+  const provider = given("provider") ? answers.provider : (previous?.provider ?? inferred.provider);
+  const ownServer = typeof provider === "string" && provider.trim().toLowerCase() === "own";
+  const required: readonly QuestionId[] = [
+    ...REQUIRED.filter((id) => !(ownServer && id === "region")),
+    ...(appCandidates.length > 1 ? (["appDir"] as const) : []),
+  ];
   const pick = (id: QuestionId): unknown => {
+    if (ownServer && id === "region") return undefined;
     if (given(id)) return answers[id];
     // An explicit empty answer clears an optional field instead of reusing the previous value.
     if (Object.hasOwn(answers, id) && !required.includes(id)) return undefined;
