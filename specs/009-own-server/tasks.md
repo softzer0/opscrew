@@ -129,6 +129,13 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
+- [ ] T919 Findings of the fourth live run (T910, 2026-10-14): provision failed at apply with Cloudflare's raw error because the zone still had OpsCrew's entrypoint rulesets (`http_config_settings`, `http_request_firewall_custom`) from an earlier run whose state is gone — the same happens for a second OpsCrew app in one zone — and the live test's fallback cleanup left those rulesets behind, in `packages/agents/src/provision/credentials.ts` and `packages/cli/test/live/own-server.test.ts`
+  - Owns: `packages/agents/src/provision/credentials.ts` (+ tests, `provision/__fixtures__/fakes.ts`), `packages/cli/test/live/own-server.test.ts` and `own-cloud.ts` (only the Cloudflare fallback cleanup)
+  - Reads: `mayManagePhase` and `inspectEntrypointRuleset` (connector), how the project's state shows its own `cloudflare_ruleset` resources (engine state/outputs), `iac-templates` `manageConfigRules`/`manageCustomRules` (types.ts)
+  - Accept: (1) OpsCrew manages a phase's entrypoint ruleset only when the zone has none or it is in this project's state (OpsCrew's name alone is not enough); an OpsCrew-named ruleset this project does not hold is treated like the user's own: the rules for that phase are skipped with a plain warning that says another OpsCrew deployment (or one whose state is gone) holds the zone's rules, what is skipped for this domain, and that if no other OpsCrew app uses the zone the user can delete it (dashboard, or the API path with the ruleset id) and run again; Hetzner/DigitalOcean and own servers alike; tests for none / this project's / another project's / the user's ruleset. (2) The live test's Cloudflare fallback also deletes zone rulesets this run created: absent from the pre-run snapshot, named `OpsCrew …`, every rule's expression naming only the test hostname; nothing else.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
 ## Phase 4: Surfaces and live test
 
 - [X] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
