@@ -108,7 +108,7 @@ description: "Tasks for 008-first-real-run"
   - Accept: FR-812; no warning for an app without worker libraries; the wording is plain English and says what to do meanwhile (run the worker yourself, e.g. on the same server).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
-- [ ] T827 [P] Static sites start under the production hardening: the static-site image's `caddy` binary carries a file capability (`cap_net_bind_service`), which the kernel refuses under the Compose file's `cap_drop: ALL` and `no-new-privileges` ("exec /usr/bin/caddy: operation not permitted"), so every static app would crash-loop on the server; the final stage runs a copy of the binary without file capabilities (port 8080 needs none), still as a non-root user
+- [X] T827 [P] Static sites start under the production hardening: the static-site image's `caddy` binary carries a file capability (`cap_net_bind_service`), which the kernel refuses under the Compose file's `cap_drop: ALL` and `no-new-privileges` ("exec /usr/bin/caddy: operation not permitted"), so every static app would crash-loop on the server; the final stage runs a copy of the binary without file capabilities (port 8080 needs none), still as a non-root user
   - Owns: `packages/iac-templates/src/docker/**`
   - Accept: found by T823's local Docker pass; `docker run --cap-drop ALL --security-opt no-new-privileges:true` of the generated static image serves `/`; the Dockerfile test pins the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` and `OPSCREW_DOCKER_TESTS=1 OPSCREW_DOCKER_EXAMPLES=static-vite pnpm --filter opscrew exec vitest run test/e2e/docker.test.ts` (after T823 is merged)

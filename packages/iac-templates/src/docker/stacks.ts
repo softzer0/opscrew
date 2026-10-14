@@ -362,9 +362,14 @@ export function staticSpaDockerfile(facts: ProjectFacts): string {
     "FROM caddy:2-alpine",
     copy("COPY --from=build", [`/app/${outputDir}`], "/srv"),
     `RUN printf '%s\\n' ${caddyfile.map((line) => `'${line}'`).join(" ")} > /etc/caddy/Caddyfile \\`,
-    "  && chown -R 65534:65534 /data /config",
+    "  && chown -R 65534:65534 /data /config \\",
+    // The image's /usr/bin/caddy carries the file capability cap_net_bind_service, which the
+    // kernel refuses to exec under `cap_drop: ALL` + `no-new-privileges`. A plain copy drops it;
+    // port 8080 needs no capability.
+    "  && cp /usr/bin/caddy /usr/local/bin/caddy",
     "USER 65534",
     "EXPOSE 8080",
+    'CMD ["/usr/local/bin/caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]',
     "",
   ].join("\n");
 }

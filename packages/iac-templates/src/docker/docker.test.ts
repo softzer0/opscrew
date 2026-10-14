@@ -246,6 +246,23 @@ describe("renderDockerAssets", () => {
     expect(api).toContain("FROM python:3.12-slim");
   });
 
+  it("runs a copy of caddy without file capabilities so it starts under cap_drop ALL", () => {
+    const lines = (
+      renderDockerAssets(viteApp, { appPort: 8080, healthPath: "/" })[0]?.content ?? ""
+    ).split("\n");
+    // /usr/bin/caddy carries cap_net_bind_service, which the kernel refuses to exec under
+    // `cap_drop: ALL` + `no-new-privileges`; a plain copy drops the security.capability xattr.
+    const copyCaddy = lines.findIndex((line) =>
+      line.includes("cp /usr/bin/caddy /usr/local/bin/caddy"),
+    );
+    const user = lines.lastIndexOf("USER 65534");
+    expect(copyCaddy).toBeGreaterThan(lines.indexOf("FROM caddy:2-alpine"));
+    expect(copyCaddy).toBeLessThan(user);
+    expect(lines.slice(user)).toContain(
+      'CMD ["/usr/local/bin/caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]',
+    );
+  });
+
   it("builds a Next.js app in a monorepo folder from the repository root", () => {
     const dockerfile =
       renderDockerAssets(nextMonorepoApp, { appPort: 4000, healthPath: "/api/health" })[0]

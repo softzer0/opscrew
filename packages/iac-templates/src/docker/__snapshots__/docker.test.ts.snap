@@ -200,9 +200,11 @@ RUN pnpm run build
 FROM caddy:2-alpine
 COPY --from=build /app/dist /srv
 RUN printf '%s\\n' '{' '	auto_https off' '	admin off' '}' ':8080 {' '	root * /srv' '	encode zstd gzip' '	try_files {path} /index.html' '	file_server' '}' > /etc/caddy/Caddyfile \\
-  && chown -R 65534:65534 /data /config
+  && chown -R 65534:65534 /data /config \\
+  && cp /usr/bin/caddy /usr/local/bin/caddy
 USER 65534
 EXPOSE 8080
+CMD ["/usr/local/bin/caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
 "
 `;
 
@@ -249,9 +251,11 @@ RUN pnpm --filter ./apps/site run build
 FROM caddy:2-alpine
 COPY --from=build /app/apps/site/dist /srv
 RUN printf '%s\\n' '{' '	auto_https off' '	admin off' '}' ':8080 {' '	root * /srv' '	encode zstd gzip' '	try_files {path} /index.html' '	file_server' '}' > /etc/caddy/Caddyfile \\
-  && chown -R 65534:65534 /data /config
+  && chown -R 65534:65534 /data /config \\
+  && cp /usr/bin/caddy /usr/local/bin/caddy
 USER 65534
 EXPOSE 8080
+CMD ["/usr/local/bin/caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
 "
 `;
 
