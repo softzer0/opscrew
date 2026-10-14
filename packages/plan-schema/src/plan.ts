@@ -345,6 +345,19 @@ const DeployPlanObjectSchema = z
         message: 'is required when dns.provider is "cloudflare"',
       });
     }
+    if (
+      plan.target.provider === "own" &&
+      plan.target.access === "tunnel" &&
+      // The zone is learned from Cloudflare at provision, before rendering (the renderer requires it).
+      (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["target", "access"],
+        message:
+          'can be "tunnel" only with a domain on Cloudflare (dns.provider "cloudflare" with dns.domain): the tunnel serves the app on that domain',
+      });
+    }
     if (plan.retarget !== undefined && plan.target.provider === "own") {
       ctx.addIssue({
         code: "custom",

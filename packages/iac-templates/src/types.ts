@@ -34,7 +34,31 @@ export interface RenderContext {
     manageWafRules: boolean;
     /** Cloudflare edge ranges used to restrict ports 80/443 when proxied. */
     ipRanges?: { ipv4: string[]; ipv6: string[] };
+    /**
+     * Cloudflare account id. Required when the plan uses a Cloudflare Tunnel (an own server in
+     * tunnel mode, or a Portainer subdomain): tunnels and Access belong to the account.
+     */
+    accountId?: string;
+    /**
+     * True when OpsCrew must create the account's Zero Trust organization: the account has none
+     * yet, or this configuration's state already holds the one OpsCrew created
+     * (`module.access.cloudflare_zero_trust_organization.this[0]`). Used whenever the plan has
+     * Cloudflare Access (tunnel mode's SSH hostname or a Portainer subdomain); default false.
+     */
+    createZeroTrustOrganization?: boolean;
+    /**
+     * Id of the account's existing one-time PIN login method. Leave it unset when the account has
+     * none, or when this configuration's state already holds the one OpsCrew created
+     * (`module.access.cloudflare_zero_trust_access_identity_provider.one_time_pin[0]`): the module
+     * then creates (or keeps) its own. Used only with a Portainer subdomain.
+     */
+    oneTimePinIdentityProviderId?: string;
   };
+  /**
+   * The port sshd listens on, on a server the user owns (from inspection, `sshd -T`). The tunnel
+   * routes the SSH hostname to `ssh://localhost:<port>`. Used only in tunnel mode; default 22.
+   */
+  sshPort?: number;
   /**
    * The server's addresses from OpsCrew's local state (they are never in the plan), for the
    * runbook. The runbook leaves them out when the domain is behind Cloudflare's proxy.

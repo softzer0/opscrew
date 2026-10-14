@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, Compose and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { CLOUDFLARED_SHA256, CLOUDFLARED_VERSION, cloudflaredUrl, sshHostname } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 
 /** actions/checkout v7.0.1 (lightweight tag → commit), pinned by SHA. */
@@ -25,6 +26,24 @@ export const DEPLOY_SECRETS = {
   dbEnv: "OPSCREW_DB_ENV",
   buildEnv: "OPSCREW_BUILD_ENV",
 } as const;
+
+/**
+ * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with
+ * (tunnel mode only; terraform outputs `deploy_service_token_client_id` and
+ * `deploy_service_token_client_secret`). `opscrew provision` sets them next to
+ * {@link DEPLOY_SECRETS}.
+ */
+export const TUNNEL_DEPLOY_SECRETS = {
+  serviceTokenId: "OPSCREW_TUNNEL_SERVICE_TOKEN_ID",
+  serviceTokenSecret: "OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET",
+} as const;
+
+/** GitHub-hosted runner that builds the image: arm64 servers get an arm64 runner (no emulation). */
+export function buildRunner(plan: DeployPlan): string {
+  return plan.target.provider === "own" && plan.target.arch === "arm64"
+    ? "ubuntu-24.04-arm"
+    : "ubuntu-latest";
+}
 
 const SSH_OPTS =
   "ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)";
@@ -87,7 +106,34 @@ function switchCommands(plan: DeployPlan): string {
   ].join("; ");
 }
 
-/** `.github/workflows/opscrew-deploy.yml`: build → push to GHCR → deploy over SSH with rollback. */
+/**
+ * Tunnel mode: installs the pinned cloudflared on the runner after checking its SHA-256, so SSH can
+ * go through Cloudflare Access (`ProxyCommand cloudflared access ssh`).
+ */
+function installCloudflaredStep(): string[] {
+  const arch = (machine: string, name: keyof typeof CLOUDFLARED_SHA256) =>
+    `      ${machine}) url='${cloudflaredUrl(name)}'; sum='${CLOUDFLARED_SHA256[name]}' ;;`;
+  return [
+    `- name: Install cloudflared ${CLOUDFLARED_VERSION}`,
+    "  run: |",
+    "    set -euo pipefail",
+    '    case "$(uname -m)" in',
+    arch("x86_64", "amd64"),
+    arch("aarch64", "arm64"),
+    '      *) echo "::error::OpsCrew has no cloudflared build for this runner ($(uname -m))."; exit 1 ;;',
+    "    esac",
+    '    curl -fsSL --retry 3 -o "$RUNNER_TEMP/cloudflared" "$url"',
+    '    echo "$sum  $RUNNER_TEMP/cloudflared" | sha256sum -c -',
+    '    sudo install -m 0755 "$RUNNER_TEMP/cloudflared" /usr/local/bin/cloudflared',
+    "    cloudflared --version",
+  ];
+}
+
+/**
+ * `.github/workflows/opscrew-deploy.yml`: build → push to GHCR → deploy over SSH with rollback. The
+ * image is built on an arm64 runner for arm64 servers; in tunnel mode SSH goes through Cloudflare
+ * Access to the SSH hostname with the service token from {@link TUNNEL_DEPLOY_SECRETS}.
+ */
 export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   const context = plan.app.buildContext || ".";
   const dockerfile = plan.app.dockerfile || "Dockerfile";
@@ -146,8 +192,23 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     );
   }
 
+  // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed
+  // HCL anyway); the service token reaches cloudflared only through the environment.
+  const tunnelHost = sshHostname(plan);
+  const hostEnv = [
+    tunnelHost === undefined
+      ? `    HOST: ${secret(DEPLOY_SECRETS.host)}`
+      : `    HOST: ${tunnelHost}`,
+    ...(tunnelHost === undefined
+      ? []
+      : [
+          `    TUNNEL_SERVICE_TOKEN_ID: ${secret(TUNNEL_DEPLOY_SECRETS.serviceTokenId)}`,
+          `    TUNNEL_SERVICE_TOKEN_SECRET: ${secret(TUNNEL_DEPLOY_SECRETS.serviceTokenSecret)}`,
+        ]),
+  ];
+
   const uploadEnv = [
-    `    HOST: ${secret(DEPLOY_SECRETS.host)}`,
+    ...hostEnv,
     `    APP_ENV: ${secret(DEPLOY_SECRETS.appEnv)}`,
     ...(hasDb ? [`    DB_ENV: ${secret(DEPLOY_SECRETS.dbEnv)}`] : []),
   ];
@@ -165,6 +226,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
 
   const deploySteps = [
     `- uses: ${CHECKOUT_ACTION}`,
+    ...(tunnelHost === undefined ? [] : installCloudflaredStep()),
     "- name: Configure SSH with the pinned host key",
     "  env:",
     `    SSH_KEY: ${secret(DEPLOY_SECRETS.sshKey)}`,
@@ -175,6 +237,15 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "    printf '%s\\n' \"$SSH_KEY\" > ~/.ssh/opscrew",
     "    chmod 600 ~/.ssh/opscrew",
     "    printf '%s\\n' \"$KNOWN_HOSTS\" > ~/.ssh/known_hosts",
+    ...(tunnelHost === undefined
+      ? []
+      : [
+          "    {",
+          `      echo 'Host ${tunnelHost}'`,
+          "      echo '  ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h'",
+          "    } > ~/.ssh/config",
+          "    chmod 600 ~/.ssh/config",
+        ]),
     "- name: Upload runtime files and environment",
     "  env:",
     ...uploadEnv,
@@ -186,7 +257,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "- id: start",
     "  name: Start the new version",
     "  env:",
-    `    HOST: ${secret(DEPLOY_SECRETS.host)}`,
+    ...hostEnv,
     "    IMAGE: ${{ needs.build.outputs.image }}",
     "    TAG: ${{ needs.build.outputs.tag }}",
     "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
@@ -221,7 +292,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "- name: Roll back to the previous version",
     "  if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')",
     "  env:",
-    `    HOST: ${secret(DEPLOY_SECRETS.host)}`,
+    ...hostEnv,
     "    IMAGE: ${{ needs.build.outputs.image }}",
     "  run: |",
     "    set -uo pipefail",
@@ -264,7 +335,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "jobs:",
     "  build:",
     "    name: Build the image",
-    "    runs-on: ubuntu-latest",
+    `    runs-on: ${buildRunner(plan)}`,
     "    permissions:",
     "      contents: read",
     "      packages: write",

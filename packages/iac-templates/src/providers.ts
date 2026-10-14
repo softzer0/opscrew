@@ -10,15 +10,15 @@ import type {
 export type PlanProvider = DeployPlan["target"]["provider"];
 
 /**
- * The plain error for a server the user already owns, where the templates only know servers
- * OpsCrew creates. Own servers arrive with the rest of feature 009, which replaces these calls.
+ * The plain error when code that only knows servers OpsCrew creates (provider wording, server
+ * modules) is reached with a server the user owns. The renderers handle own servers before that.
  */
 export function ownServerNotYet(): OpsCrewError {
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    "This version of OpsCrew cannot yet render the infrastructure for a server you already own; it only creates servers on Hetzner Cloud or DigitalOcean.",
+    "This step only applies to servers OpsCrew creates on Hetzner Cloud or DigitalOcean, not to a server you already own.",
     {
-      hint: "Choose Hetzner Cloud or DigitalOcean with `opscrew interview` and `opscrew design`. Servers you already own arrive with the rest of feature 009.",
+      hint: "This is a bug in OpsCrew: please report it with the command you ran.",
     },
   );
 }

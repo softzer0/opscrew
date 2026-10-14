@@ -472,6 +472,33 @@ describe("DeployPlan target on a server the user owns", () => {
     expect(pathsOf(DeployPlanSchema.safeParse(x86))).toEqual(["target.arch", "target.access"]);
   });
 
+  it("serves a tunnel only on a domain on Cloudflare", async () => {
+    const plan = await validPlan();
+    expect(DeployPlanSchema.safeParse({ ...plan, target: own }).success).toBe(true);
+    const { domain: _domain, ...noDomain } = plan.dns;
+    const { zone: _zone, ...noZone } = plan.dns;
+    const result = DeployPlanSchema.safeParse({
+      ...plan,
+      target: own,
+      dns: { provider: "none", proxied: false },
+    });
+    expect(pathsOf(result)).toEqual(["target.access"]);
+    expect(result.error?.issues[0]?.message).toContain("only with a domain on Cloudflare");
+    // Design does not know the zone yet: provision learns it from Cloudflare before rendering.
+    expect(DeployPlanSchema.safeParse({ ...plan, target: own, dns: noZone }).success).toBe(true);
+    // A missing domain already has its own issue; the tunnel adds the plain reason.
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, target: own, dns: noDomain }))).toEqual([
+      "dns.domain",
+      "target.access",
+    ]);
+    const publicOwn = { ...own, access: "public" };
+    const noDns = { provider: "none", proxied: false };
+    expect(DeployPlanSchema.safeParse({ ...plan, target: publicOwn, dns: noDns }).success).toBe(
+      true,
+    );
+    expect(DeployPlanSchema.safeParse({ ...plan, dns: noDns }).success).toBe(true);
+  });
+
   it("refuses a move to or from a server the user owns", async () => {
     const plan = await validPlan();
     const move = { from: { target: plan.target }, step: "started", startedAt: plan.createdAt };

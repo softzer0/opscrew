@@ -22,6 +22,7 @@ resource "cloudflare_dns_record" "a" {
 }
 
 resource "cloudflare_dns_record" "aaaa" {
+  count   = var.ipv6_record ? 1 : 0
   zone_id = var.zone_id
   name    = var.domain
   type    = "AAAA"
@@ -29,6 +30,12 @@ resource "cloudflare_dns_record" "aaaa" {
   ttl     = 1
   proxied = var.proxied
   comment = "Managed by OpsCrew"
+}
+
+# The AAAA record became optional (servers without IPv6); keeps the record already in the state.
+moved {
+  from = cloudflare_dns_record.aaaa
+  to   = cloudflare_dns_record.aaaa[0]
 }
 
 resource "cloudflare_dns_record" "www" {

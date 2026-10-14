@@ -29,7 +29,7 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host`
   - Effort: xhigh
 
-- [ ] T903 [P] [US1] [US3] [US5] Templates: own-server root module, tunnel and Access modules, workflow tunnel mode and arm64, Portainer compose in `packages/iac-templates/`
+- [X] T903 [P] [US1] [US3] [US5] Templates: own-server root module, tunnel and Access modules, workflow tunnel mode and arm64, Portainer compose in `packages/iac-templates/`
   - Owns: `packages/iac-templates/modules/**`, `packages/iac-templates/src/**`, `packages/iac-templates/scripts/**`, their tests and snapshots
   - Reads: plan.md "Templates"; research.md R3, R4, R5, R7; `packages/iac-templates/src/{infra,workflow,runtime,providers}.ts`
   - Depends: T901

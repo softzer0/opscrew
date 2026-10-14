@@ -73,22 +73,11 @@ const cloudflare = (manage = true) => ({
   manageConfigRule: manage,
   manageWafRules: manage,
   ipRanges: CF,
+  // Only the tunnel and Access use the account id; cloud roots without them ignore it.
+  accountId: "fedcba9876543210fedcba9876543210",
 });
 
 describe("renderInfra", () => {
-  it("stops with a plain error for a server the user owns (not rendered yet)", () => {
-    const own = { provider: "own", mode: "vps-compose", arch: "arm64", access: "tunnel" } as const;
-    const ownPlan: DeployPlan = { ...plan(), target: own };
-    for (const render of [() => renderInfra(ownPlan, ctx()), () => tfvars(ownPlan, ctx())]) {
-      expect(render).toThrow(
-        expect.objectContaining({
-          code: "PHASE_PRECONDITION",
-          message: expect.stringContaining("server you already own"),
-        }),
-      );
-    }
-  });
-
   it("renders a server-only root module without a domain", () => {
     const files = renderInfra(plan(), ctx());
     expect(files.map((f) => f.path)).toEqual([
@@ -231,11 +220,34 @@ if (!runIt) {
 }
 const NETWORK_ERROR =
   /dial tcp|no such host|i\/o timeout|connection (?:refused|reset)|network is unreachable|TLS handshake|context deadline exceeded|could not connect/i;
+const PORTAINER_SUBDOMAIN = {
+  access: "subdomain",
+  hostname: "portainer.example.com",
+  allowedEmails: ["ops@example.com", "dev@example.com"],
+} as const;
 const validatedPlans = {
   hetzner: () => plan({ domain: "shop.example.com", www: true }),
   digitalocean: () =>
     testPlan({ provider: "digitalocean", domain: "shop.example.com", www: true, backups: true }),
+  "hetzner with a Portainer subdomain": () =>
+    testPlan({ domain: "shop.example.com", portainer: PORTAINER_SUBDOMAIN }),
+  "own server (public)": () => testPlan({ provider: "own", domain: "shop.example.com", www: true }),
+  "own server (public, no domain)": () => testPlan({ provider: "own" }),
+  "own server (tunnel, Portainer subdomain)": () =>
+    testPlan({
+      provider: "own",
+      access: "tunnel",
+      arch: "arm64",
+      domain: "shop.example.com",
+      www: true,
+      portainer: PORTAINER_SUBDOMAIN,
+    }),
+  "own server (tunnel)": () =>
+    testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" }),
 };
+/** Context for the validated plans: the organization and one-time PIN are created. */
+const validatedContext = () =>
+  ctx({ cloudflare: { ...cloudflare(), createZeroTrustOrganization: true }, sshPort: 2222 });
 
 /** Writes rendered files under `root`, initialises the root module and validates it. */
 async function initAndValidate(
@@ -263,6 +275,10 @@ async function initAndValidate(
   expect(init.exitCode, init.stdout + init.stderr).toBe(0);
   const validate = await runner.run(bin, ["validate", "-no-color"], { cwd });
   expect(validate.exitCode, validate.stdout + validate.stderr).toBe(0);
+  const fmt = await runner.run(bin, ["fmt", "-check", "-recursive", "-no-color", ".."], { cwd });
+  expect(fmt.exitCode, `not formatted as ${name} fmt writes it:\n${fmt.stdout}${fmt.stderr}`).toBe(
+    0,
+  );
 }
 
 describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
@@ -282,13 +298,7 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
         `validates the ${provider} root with ${name}`,
         async (test) => {
           const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-${provider}-`));
-          await initAndValidate(
-            test,
-            name,
-            bin,
-            root,
-            renderInfra(planFor(), ctx({ cloudflare: cloudflare() })),
-          );
+          await initAndValidate(test, name, bin, root, renderInfra(planFor(), validatedContext()));
         },
         300_000,
       );

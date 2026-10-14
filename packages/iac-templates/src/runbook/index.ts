@@ -2,6 +2,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { cloudTarget, type ProviderText, providerText } from "../providers";
 import { siteHosts } from "../runtime";
 import type { RenderContext, RenderedFile } from "../types";
+import { renderOwnRunbook } from "./own";
 
 const PENDING = "_(set by `opscrew provision`)_";
 
@@ -31,9 +32,11 @@ function addressIsPrivate(plan: DeployPlan): boolean {
  * `opscrew/RUNBOOK.md`: how this deployment works and how to operate it, in plain English, with
  * the real values from the plan. Deterministic; contains no secrets or absolute paths. The
  * server's address (`ctx.serverIpv4`/`serverIpv6`) is shown only when the domain is not behind
- * Cloudflare's proxy: a published origin address would let anyone go around Cloudflare.
+ * Cloudflare's proxy: a published origin address would let anyone go around Cloudflare. A server
+ * the user owns gets its own runbook (see `renderOwnRunbook`).
  */
 export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFile {
+  if (plan.target.provider === "own") return renderOwnRunbook(plan, plan.target, ctx);
   const target = cloudTarget(plan.target);
   const provider = providerText(target);
   const hidden = addressIsPrivate(plan);
