@@ -17,6 +17,7 @@ import {
   toPosixRelative,
   writeFileAtomic,
 } from "@opscrew/core";
+import { listProjectFiles } from "@opscrew/detect";
 import { type RenderedFile, renderDockerAssets } from "@opscrew/iac-templates";
 import {
   type CodeChangeKind,
@@ -29,7 +30,7 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { backgroundJobsWarning, type CodeChange, releaseCommandNote } from "../design";
 import { writeRenderedFiles } from "../shared";
-import { nextHealthRoute } from "./health-route";
+import { healthRouteEdit } from "./health";
 import { isNextConfigPath, type StandaloneEdit, standaloneConfigEdit } from "./next-config";
 import { playbookFor } from "./playbooks";
 import { healthCheckWarning, PULL_REQUEST_TITLE, renderPullRequestBody } from "./pr";
@@ -149,8 +150,8 @@ const PLURAL = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
  * `opscrew/prepare-deploy` branch (the next free `-2`, `-3`, … when this clone or origin already has
  * it; it stops before changing anything while a pull request from an earlier run's branch is still
  * open), writes the Dockerfile, `.dockerignore` and `.env.example` when the plan asks for them and
- * they are missing, makes the deterministic Next.js changes (standalone output, health route),
- * runs the Code-change agent (`edit-repo` profile)
+ * they are missing, adds the health route itself for the frameworks it knows (`./health`), makes
+ * the deterministic Next.js standalone edit, runs the Code-change agent (`edit-repo` profile)
  * for the other pending changes when a model is configured, updates the statuses in
  * `opscrew/plan.yaml`, and then — each step after its own approval (`repo-write`, `git-push`,
  * `pull-request`) — commits, pushes and opens a pull request. A refused approval stops there and
@@ -382,9 +383,9 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   for (const file of toWrite) createdFiles.push(file.path);
   if (createdFiles.length > 0) reporter.success(`Wrote ${createdFiles.join(", ")}.`);
 
-  // 3b. Next.js: the standalone output, edited by OpsCrew when the config is a plain object (or
-  // missing), and the health route, created when it is a new file in a clear router; anything
-  // else stays with the Code-change agent or the user.
+  // 3b. The health route, added by OpsCrew for the frameworks it knows when it can tell where
+  // it goes (`./health`), and the Next.js standalone output, edited when the config is a plain
+  // object (or missing); anything else stays with the Code-change agent or the user.
   const playbook = playbookFor(facts);
   const editedFiles: string[] = [];
   /** The file a change was really made in, when it is not the plan's path. */
@@ -396,34 +397,52 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     manualReasons.set(change.id, reason);
     forAgent.push(change);
   };
+  let projectFiles: Promise<readonly string[]> | undefined;
   for (const change of pending.filter((c) => DETERMINISTIC[c.kind] === undefined)) {
-    if (playbook.id === "nextjs" && change.kind === "health-endpoint") {
-      const edit = await nextHealthRoute({
+    if (change.kind === "health-endpoint") {
+      // The health route for every stack OpsCrew knows (FR-816), before the Code-change agent.
+      const edit = await healthRouteEdit({
+        facts,
+        stack: playbook.id,
         path: change.path,
         healthPath: plan.app.healthPath,
-        exists: (path) => exists(join(paths.root, path)),
-        folders: (path) => subfolders(join(paths.root, path)),
-        read: (path) => readIfExists(join(paths.root, path)),
+        repo: {
+          files: () => {
+            projectFiles ??= listProjectFiles(paths.root).then((list) => list.files);
+            return projectFiles;
+          },
+          read: (path) => readIfExists(join(paths.root, path)),
+          exists: (path) => exists(join(paths.root, path)),
+          folders: (path) => subfolders(join(paths.root, path)),
+        },
       });
-      // A basePath moves the route; the plan's health path is the user's (or design's) to change.
-      const basePath = edit.action === "manual" ? undefined : edit.basePathNote;
+      // A base path or global prefix moves the route; the plan's health path is the user's (or
+      // design's) to change.
+      const pathNote = edit.action === "manual" ? undefined : edit.pathNote;
       if (edit.action === "write") {
-        await writeFileAtomic(join(paths.root, edit.path), edit.content, { mode: 0o644 });
-        createdFiles.push(edit.path);
+        for (const file of edit.files) {
+          const target = join(paths.root, file.path);
+          // Edited files keep their mode (the image must still be able to read them).
+          const mode = file.created ? 0o644 : (await stat(target)).mode & 0o777;
+          await writeFileAtomic(target, file.content, { mode });
+          (file.created ? createdFiles : editedFiles).push(file.path);
+        }
         if (edit.path !== change.path) madeIn[change.id] = edit.path;
-        const check =
-          edit.middleware === undefined
-            ? undefined
-            : `Check that ${edit.middleware} does not redirect or protect ${plan.app.healthPath}: the deploy health check calls it without a session.`;
-        const note = [edit.note, check, basePath].filter((line) => line !== undefined).join(" ");
+        const note = [edit.note, ...edit.checks, pathNote]
+          .filter((line) => line !== undefined)
+          .join(" ");
         set(change, "applied", note);
         byOpsCrew.add(change.id);
-        reporter.success(`Created ${edit.path} for the deploy health check.`);
-        if (check !== undefined) warn(check);
-        if (basePath !== undefined) warn(basePath);
+        reporter.success(
+          edit.files[0]?.created === true && edit.files.length === 1
+            ? `Created ${edit.path} for the deploy health check.`
+            : `Added the ${edit.framework} health route for the deploy health check (${edit.files.map((f) => f.path).join(", ")}).`,
+        );
+        for (const check of edit.checks) warn(check);
+        if (pathNote !== undefined) warn(pathNote);
       } else if (edit.action === "none") {
-        set(change, "skipped", basePath === undefined ? edit.reason : `${edit.reason} ${basePath}`);
-        if (basePath !== undefined) warn(basePath);
+        set(change, "skipped", pathNote === undefined ? edit.reason : `${edit.reason} ${pathNote}`);
+        if (pathNote !== undefined) warn(pathNote);
       } else {
         leaveToAgent(change, `OpsCrew did not create it: ${edit.reason}`, edit.reason);
       }
