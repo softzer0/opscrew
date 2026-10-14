@@ -73,6 +73,30 @@ only the Code-change agent made, so every Next.js app deployed without a model f
   `servers` output) and stop when it cannot tell them apart (T815).
 - **FR-806**: Every live run is recorded in `docs/e2e.md` ("Live results": date, pass, outcome,
   findings).
+- **FR-811**: The live Hetzner pass MUST run for any app in `examples/` or a public GitHub
+  repository at a pinned commit (copied into the throwaway repository; the source is never
+  written to), and an opt-in local Docker pass MUST build and start every example's image and get
+  an answer from its health route before any server is created (founder, 2026-10-14). The matrix:
+  Django + Postgres, FastAPI + Redis, Flask + SQLAlchemy + Celery (the founder's
+  `softzer0/slog_cvrp_app`; its web process now, its Celery worker with feature 010's component
+  model, whose acceptance test it becomes), Express, NestJS, Fastify, Hono, Vite + React, Angular,
+  Next.js, Nuxt, SvelteKit, React Router and Astro. Stacks without a recipe today (Rust, Go,
+  Rails, Laravel, Spring Boot, .NET) wait for feature 009's builders.
+- **FR-813**: Database migrations MUST run on every deploy before the new version takes traffic:
+  the plan records a release command (a Procfile `release:` line, else the framework's own:
+  Django `manage.py migrate`, Flask-Migrate, Flask-DB, Alembic, Prisma `migrate deploy`), the user
+  can change or remove it in `opscrew/plan.yaml`, and a failed release command fails the deploy
+  while the previous version keeps serving (found by the Django pass: tables never created).
+- **FR-814**: Connection settings MUST reach the app under the names it reads: every variable the
+  app reads for the planned Postgres (`DATABASE_URI`, `SQLALCHEMY_DATABASE_URI`, `POSTGRES_URL`,
+  `DB_URL` and similar) or Redis (`*REDIS_URL`/`*REDIS_URI`, Celery's broker and result backend)
+  is derived from the service OpsCrew runs; Redis is planned when the app uses it through a
+  library (`flask-redis`, `django-redis`, Celery with a Redis broker); variables loaded by prefix
+  (Flask's `from_prefixed_env`) are found by name from committed example env files, and secret
+  keys among them are generated (found by the founder's Flask + SQLAlchemy + Celery app).
+- **FR-812**: When a web app also runs background jobs (Celery, RQ, Dramatiq, BullMQ, Sidekiq …),
+  OpsCrew MUST say plainly in `design` and the adapt pull request that only the web
+  process is deployed for now and the jobs will not run until worker support arrives.
 
 ## Success Criteria *(mandatory)*
 
@@ -80,6 +104,9 @@ only the Code-change agent made, so every Next.js app deployed without a model f
 - **SC-802**: The Hetzner + Cloudflare pass serves `https://e2e.poasjet.com` with a valid
   certificate, then tears down.
 - **SC-803**: `npx ./opscrew-0.1.0.tgz --version` prints 0.1.0 in an empty folder.
+- **SC-804**: Every app of the FR-811 matrix deploys to Hetzner with `verify`, `secure` and `drift`
+  clean and nothing left behind; at least one run with a model has `adapt` add a missing health
+  route itself.
 
 ## Assumptions
 
@@ -87,3 +114,5 @@ only the Code-change agent made, so every Next.js app deployed without a model f
   this run (no credentials); their passes stay skipped.
 - poasjet.com is restored to Afternic's nameservers after the test, on the founder's instruction.
 - More tasks are appended as the live runs find problems.
+- SC-804 holds for the examples; the founder's `softzer0/slog_cvrp_app` deploys once feature 009
+  checks a found Dockerfile (its own does not build) and 010 runs its Celery worker.
