@@ -1,8 +1,41 @@
 /**
  * @opscrew/connector-ssh-host: the typed host adapter for servers the user already owns
- * (feature 009). Inspection, host plans and the hash-bound apply arrive with T902; see
- * `specs/009-own-server/contracts/host-adapter.md`.
+ * (feature 009). Read-only inspection, host plans of fixed steps, and an apply bound to the
+ * plan's SHA-256 hash, with SSH and firewall changes under a dead-man switch on the server.
+ * See `specs/009-own-server/contracts/host-adapter.md`.
  */
 
-/** Version of the host plan format (`HostPlan.schemaVersion`). */
-export const HOST_PLAN_SCHEMA_VERSION = 1;
+export { applyHostPlan } from "./apply";
+export {
+  DEFAULT_DEAD_MAN_SECONDS,
+  MIN_DOCKER_MAJOR,
+  PORTAINER_DIR,
+  PORTAINER_PORT,
+  PORTAINER_PROJECT,
+  TUNNEL_APP_PORT,
+  TUNNEL_DIR,
+  TUNNEL_PROJECT,
+} from "./constants";
+export {
+  type HostFacts,
+  HostFactsSchema,
+  type HostRecord,
+  HostRecordSchema,
+  MARKER_PATH,
+  RECORD_PATH,
+} from "./facts";
+export { canonicalJson, hostPlanHash } from "./hash";
+export { inspectHost } from "./inspect";
+export { planHost, planTeardown, planUndo } from "./plan";
+export { planPortainer } from "./steps";
+export {
+  type ApplyOptions,
+  type ApplyResult,
+  type DesiredHost,
+  HOST_PLAN_SCHEMA_VERSION,
+  type HostFinding,
+  type HostPlan,
+  HostPlanSchema,
+  type HostStep,
+  type HostStepId,
+} from "./types";

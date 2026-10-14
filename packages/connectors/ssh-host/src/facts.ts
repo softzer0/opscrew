@@ -1,0 +1,163 @@
+import { z } from "zod";
+import { HostStepIdSchema } from "./types";
+
+/** Where OpsCrew keeps its marker, host record and backups on the server (root only). */
+export const OPSCREW_DIR = "/etc/opscrew";
+export const MARKER_PATH = `${OPSCREW_DIR}/app.json`;
+export const RECORD_PATH = `${OPSCREW_DIR}/host.json`;
+export const SSHD_DROP_IN = "/etc/ssh/sshd_config.d/10-opscrew.conf";
+export const AUTO_UPGRADES_FILE = "/etc/apt/apt.conf.d/21opscrew-auto-upgrades";
+export const RUNTIME_DIRS = ["/srv/app", "/srv/data"] as const;
+
+/** Version written to the host record (`opscrewVersion`). */
+export const HOST_ADAPTER_VERSION = "0.1.0";
+
+export const AppMarkerSchema = z.object({ app: z.string(), projectId: z.string() });
+export type AppMarker = z.infer<typeof AppMarkerSchema>;
+
+const PreviousSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
+
+export const HostRecordEntrySchema = z.object({
+  step: HostStepIdSchema,
+  /** `setup` entries hold the value OpsCrew replaced; teardown/undo entries are a trail. */
+  purpose: z.enum(["setup", "teardown", "undo"]),
+  at: z.string(),
+  previous: PreviousSchema,
+});
+export type HostRecordEntry = z.infer<typeof HostRecordEntrySchema>;
+
+/** `/etc/opscrew/host.json`: what OpsCrew changed and the values it replaced. No secrets. */
+export const HostRecordSchema = z.object({
+  schemaVersion: z.literal(1),
+  app: z.string(),
+  projectId: z.string(),
+  opscrewVersion: z.string(),
+  changes: z.array(HostRecordEntrySchema),
+});
+export type HostRecord = z.infer<typeof HostRecordSchema>;
+
+const ListenerSchema = z.object({
+  proto: z.enum(["tcp", "udp"]),
+  address: z.string(),
+  port: z.number().int(),
+  process: z.string(),
+});
+export type Listener = z.infer<typeof ListenerSchema>;
+
+const DirSchema = z.object({
+  path: z.string(),
+  kind: z.enum(["absent", "dir", "link", "other"]),
+  owner: z.string().optional(),
+  group: z.string().optional(),
+  mode: z.string().optional(),
+  entries: z.number().int().optional(),
+});
+export type DirFact = z.infer<typeof DirSchema>;
+
+const AddonSchema = z.object({
+  /** OpsCrew's compose file for the add-on exists. */
+  installed: z.boolean(),
+  /** SHA-256 of that compose file, null when absent. */
+  composeSha256: z.string().nullable(),
+  /** A container of the add-on's Compose project is running. */
+  running: z.boolean(),
+  /** cloudflared: the token env file; Portainer: the one-time admin password file. */
+  secretFile: z.boolean(),
+  /** A volume of the add-on's Compose project exists (Portainer: an admin may already exist). */
+  dataVolume: z.boolean(),
+});
+export type AddonFact = z.infer<typeof AddonSchema>;
+
+/** Facts about the server found by `inspectHost`; read-only, zod-validated. */
+export const HostFactsSchema = z.object({
+  /** The admin login OpsCrew connected as. */
+  user: z.string(),
+  privilege: z.enum(["root", "sudo", "sudo-password", "none"]),
+  os: z.object({
+    id: z.string(),
+    idLike: z.string(),
+    versionId: z.string(),
+    codename: z.string(),
+    prettyName: z.string(),
+  }),
+  /** `dpkg --print-architecture` (amd64, arm64, ...), empty when unknown. */
+  arch: z.string(),
+  /** `uname -m`. */
+  machine: z.string(),
+  cpus: z.number().int().nonnegative(),
+  memoryBytes: z.number().nonnegative(),
+  memoryAvailableBytes: z.number().nonnegative(),
+  diskFreeBytes: z.number().nonnegative(),
+  diskTotalBytes: z.number().nonnegative(),
+  systemd: z.boolean(),
+  /** Effective sshd settings (`sshd -T`); null when they could not be read. */
+  sshd: z
+    .object({
+      ports: z.array(z.number().int()),
+      passwordAuthentication: z.boolean(),
+      kbdInteractiveAuthentication: z.boolean(),
+      /** Normalised: `without-password` is reported as `prohibit-password`. */
+      permitRootLogin: z.string(),
+      authenticationMethods: z.string(),
+      allowUsers: z.array(z.string()),
+      allowGroups: z.array(z.string()),
+      denyUsers: z.array(z.string()),
+      denyGroups: z.array(z.string()),
+      authorizedKeysCommand: z.boolean(),
+      /** Global `AllowTcpForwarding` (the Portainer tunnel command needs local forwarding). */
+      allowTcpForwarding: z.string(),
+      /** `/etc/ssh/sshd_config` includes `/etc/ssh/sshd_config.d/*.conf`. */
+      dropInIncluded: z.boolean(),
+      /** Content of OpsCrew's drop-in, null when absent. */
+      dropIn: z.string().nullable(),
+    })
+    .nullable(),
+  listeners: z.array(ListenerSchema),
+  /** Active web server units (nginx, apache2, caddy, traefik, haproxy, lighttpd). */
+  webServers: z.array(z.string()),
+  firewall: z.object({
+    ufw: z.enum(["absent", "inactive", "active"]),
+    /** `ufw show added` rules without the `ufw ` prefix, e.g. `allow 22/tcp`. */
+    ufwRules: z.array(z.object({ rule: z.string(), comment: z.string().nullable() })),
+    /** Plain descriptions of other firewalls found (firewalld, nftables, iptables rules). */
+    foreign: z.array(z.string()),
+  }),
+  docker: z.object({
+    kind: z.enum(["absent", "docker-repo", "snap", "podman", "distro", "other"]),
+    /** Docker Engine version (`28.5.1`), null when unknown. */
+    version: z.string().nullable(),
+    running: z.boolean(),
+    composePlugin: z.boolean(),
+    buildxPlugin: z.boolean(),
+    /** Installed packages Docker lists as conflicting with Docker Engine. */
+    conflicting: z.array(z.string()),
+    /** apt source files that point at download.docker.com. */
+    sources: z.array(z.string()),
+  }),
+  containers: z.array(z.object({ name: z.string(), project: z.string(), ports: z.string() })),
+  /** Login users (root and uid >= 1000 with a login shell). */
+  loginUsers: z.array(
+    z.object({
+      name: z.string(),
+      uid: z.number().int(),
+      password: z.boolean(),
+      keys: z.boolean(),
+    }),
+  ),
+  deployUser: z.object({ groups: z.array(z.string()), keys: z.array(z.string()) }).nullable(),
+  packages: z.object({ ufw: z.boolean(), unattendedUpgrades: z.boolean(), curl: z.boolean() }),
+  /** Effective `APT::Periodic::Update-Package-Lists` and `Unattended-Upgrade` are both "1". */
+  autoUpgrades: z.boolean(),
+  dirs: z.array(DirSchema),
+  marker: AppMarkerSchema.nullable(),
+  /** True when `/etc/opscrew/app.json` exists but could not be read as JSON. */
+  markerDamaged: z.boolean(),
+  record: HostRecordSchema.nullable(),
+  recordDamaged: z.boolean(),
+  /** Dead-man switches still waiting on the server (from an interrupted apply). */
+  pendingUndo: z.object({ sshd: z.boolean(), ufw: z.boolean() }),
+  tunnel: AddonSchema,
+  portainer: AddonSchema,
+});
+
+export type HostFacts = z.infer<typeof HostFactsSchema>;

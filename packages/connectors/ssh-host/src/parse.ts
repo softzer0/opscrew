@@ -1,0 +1,304 @@
+/**
+ * Parsers for the output of the fixed, read-only inspection commands. They never throw on odd
+ * output: unknown lines are ignored and missing values fall back to "unknown" defaults, which
+ * the planner treats conservatively.
+ */
+import type { DirFact, Listener } from "./facts";
+
+/** Output of one inspection section: its text and the exit code of its command. */
+export interface Section {
+  text: string;
+  exit: number;
+}
+
+export const SECTION_MARK = "@@opscrew-section ";
+export const EXIT_MARK = "@@opscrew-exit ";
+
+/** Splits the inspection script's output into its sections. */
+export function splitSections(output: string): Map<string, Section> {
+  const sections = new Map<string, Section>();
+  let name: string | undefined;
+  let lines: string[] = [];
+  for (const raw of output.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (line.startsWith(SECTION_MARK)) {
+      name = line.slice(SECTION_MARK.length).trim();
+      lines = [];
+      continue;
+    }
+    if (line.startsWith(EXIT_MARK) && name !== undefined) {
+      while (lines.length > 0 && lines[lines.length - 1]?.trim() === "") lines.pop();
+      const exit = Number.parseInt(line.slice(EXIT_MARK.length).trim(), 10);
+      sections.set(name, { text: lines.join("\n"), exit: Number.isNaN(exit) ? 1 : exit });
+      name = undefined;
+      continue;
+    }
+    if (name !== undefined) lines.push(line);
+  }
+  return sections;
+}
+
+/** Non-empty, trimmed lines. */
+export function linesOf(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+/** `/etc/os-release` key/value pairs (quotes removed). */
+export function parseOsRelease(text: string): {
+  id: string;
+  idLike: string;
+  versionId: string;
+  codename: string;
+  prettyName: string;
+} {
+  const values = new Map<string, string>();
+  for (const line of linesOf(text)) {
+    const match = /^([A-Z_]+)=(.*)$/.exec(line);
+    if (!match?.[1]) continue;
+    let value = match[2] ?? "";
+    if (/^".*"$/.test(value) || /^'.*'$/.test(value)) value = value.slice(1, -1);
+    values.set(match[1], value);
+  }
+  return {
+    id: (values.get("ID") ?? "").toLowerCase(),
+    idLike: (values.get("ID_LIKE") ?? "").toLowerCase(),
+    versionId: values.get("VERSION_ID") ?? "",
+    codename: values.get("UBUNTU_CODENAME") || values.get("VERSION_CODENAME") || "",
+    prettyName: values.get("PRETTY_NAME") ?? "",
+  };
+}
+
+function toNumber(value: string | undefined): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+/** `free -b`: total and available memory in bytes. */
+export function parseFree(text: string): { total: number; available: number } {
+  for (const line of linesOf(text)) {
+    if (!line.startsWith("Mem:")) continue;
+    const cols = line.split(/\s+/);
+    // Mem: total used free shared buff/cache available
+    return { total: toNumber(cols[1]), available: toNumber(cols[6] ?? cols[3]) };
+  }
+  return { total: 0, available: 0 };
+}
+
+/** `df -P -B1 /`: size and available bytes of the root filesystem. */
+export function parseDf(text: string): { size: number; available: number } {
+  const rows = linesOf(text).filter((line) => !line.startsWith("Filesystem"));
+  const cols = rows[rows.length - 1]?.split(/\s+/) ?? [];
+  return { size: toNumber(cols[1]), available: toNumber(cols[3]) };
+}
+
+export interface SshdSettings {
+  ports: number[];
+  passwordAuthentication: boolean;
+  kbdInteractiveAuthentication: boolean;
+  permitRootLogin: string;
+  authenticationMethods: string;
+  allowUsers: string[];
+  allowGroups: string[];
+  denyUsers: string[];
+  denyGroups: string[];
+  authorizedKeysCommand: boolean;
+  /** `yes`, `all`, `local`, `remote` or `no` (global value, without Match blocks). */
+  allowTcpForwarding: string;
+}
+
+/** `sshd -T`: the effective settings OpsCrew cares about; null when the output is unusable. */
+export function parseSshdT(text: string): SshdSettings | null {
+  const values = new Map<string, string[]>();
+  for (const line of linesOf(text)) {
+    const space = line.indexOf(" ");
+    if (space <= 0) continue;
+    const key = line.slice(0, space).toLowerCase();
+    const list = values.get(key) ?? [];
+    list.push(line.slice(space + 1).trim());
+    values.set(key, list);
+  }
+  const ports = (values.get("port") ?? [])
+    .map((value) => Number.parseInt(value, 10))
+    .filter((port) => Number.isInteger(port) && port > 0 && port < 65536);
+  if (ports.length === 0) return null;
+  const first = (key: string, fallback: string) => values.get(key)?.[0]?.toLowerCase() ?? fallback;
+  const words = (key: string) => (values.get(key) ?? []).flatMap((value) => value.split(/\s+/));
+  const rootLogin = first("permitrootlogin", "prohibit-password");
+  return {
+    ports: [...new Set(ports)].sort((a, b) => a - b),
+    passwordAuthentication: first("passwordauthentication", "yes") === "yes",
+    kbdInteractiveAuthentication:
+      first("kbdinteractiveauthentication", first("challengeresponseauthentication", "yes")) ===
+      "yes",
+    permitRootLogin: rootLogin === "without-password" ? "prohibit-password" : rootLogin,
+    authenticationMethods: first("authenticationmethods", "any"),
+    allowUsers: words("allowusers"),
+    allowGroups: words("allowgroups"),
+    denyUsers: words("denyusers"),
+    denyGroups: words("denygroups"),
+    authorizedKeysCommand: !["", "none"].includes(first("authorizedkeyscommand", "none")),
+    allowTcpForwarding: first("allowtcpforwarding", "yes"),
+  };
+}
+
+/** `ss -H -ltnup`: listening TCP and UDP sockets with the first process name. */
+export function parseSs(text: string): Listener[] {
+  const listeners: Listener[] = [];
+  for (const line of linesOf(text)) {
+    const cols = line.split(/\s+/);
+    const proto = cols[0];
+    if (proto !== "tcp" && proto !== "udp") continue;
+    const local = cols[4] ?? "";
+    const colon = local.lastIndexOf(":");
+    if (colon < 0) continue;
+    const port = Number.parseInt(local.slice(colon + 1), 10);
+    if (!Number.isInteger(port)) continue;
+    const process = /users:\(\("([^"]+)"/.exec(line)?.[1] ?? "";
+    listeners.push({ proto, address: local.slice(0, colon), port, process });
+  }
+  return listeners;
+}
+
+/** True when a listening address is only reachable from the server itself. */
+export function isLoopback(address: string): boolean {
+  const bare = address.replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+  return (
+    bare.startsWith("127.") ||
+    bare === "::1" ||
+    bare === "localhost" ||
+    bare.startsWith("::ffff:127.")
+  );
+}
+
+/** Lines of `name state` pairs (from `systemctl is-active` loops). */
+export function parsePairs(text: string): Map<string, string> {
+  const pairs = new Map<string, string>();
+  for (const line of linesOf(text)) {
+    const [name, ...rest] = line.split(/\s+/);
+    if (name) pairs.set(name, rest.join(" "));
+  }
+  return pairs;
+}
+
+/** `ufw show added`: rules without the leading `ufw `, with their comment when present. */
+export function parseUfwAdded(text: string): { rule: string; comment: string | null }[] {
+  const rules: { rule: string; comment: string | null }[] = [];
+  for (const line of linesOf(text)) {
+    if (!line.startsWith("ufw ")) continue;
+    const match = /^ufw (.*?)(?: comment '((?:[^'\\]|\\.)*)')?$/.exec(line);
+    if (!match?.[1]) continue;
+    rules.push({ rule: match[1].trim(), comment: match[2] ?? null });
+  }
+  return rules;
+}
+
+/** `dpkg-query -W -f='${Package}|${Status}|${Version}\n'`: installed packages and versions. */
+export function parseDpkg(text: string): Map<string, string> {
+  const installed = new Map<string, string>();
+  for (const line of linesOf(text)) {
+    const [name, status, version] = line.split("|");
+    if (name && status && / installed$/.test(status)) installed.set(name, version ?? "");
+  }
+  return installed;
+}
+
+/** Docker Engine version from a Debian package version (`5:28.5.1-1~ubuntu.24.04~noble`). */
+export function engineVersion(packageVersion: string): string | null {
+  const match = /^(?:\d+:)?(\d+\.\d+\.\d+)/.exec(packageVersion.trim());
+  return match?.[1] ?? null;
+}
+
+/** Major version number of `28.5.1`, or 0 when unknown. */
+export function majorOf(version: string | null): number {
+  const major = Number.parseInt(version ?? "", 10);
+  return Number.isInteger(major) ? major : 0;
+}
+
+/** `docker ps --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}'`. */
+export function parseContainers(text: string): { name: string; project: string; ports: string }[] {
+  return linesOf(text).flatMap((line) => {
+    const [name, project, ...ports] = line.split("|");
+    return name ? [{ name, project: project ?? "", ports: ports.join("|") }] : [];
+  });
+}
+
+/**
+ * True when a `docker ps` ports column publishes host `port`; on a non-loopback address only,
+ * unless `anyAddress` is set.
+ */
+export function publishesPort(ports: string, port: number, anyAddress = false): boolean {
+  return ports.split(",").some((mapping) => {
+    const match = /^\s*(.*):(\d+)(?:-(\d+))?->/.exec(mapping);
+    if (!match) return false;
+    const low = Number(match[2]);
+    const high = match[3] ? Number(match[3]) : low;
+    return port >= low && port <= high && (anyAddress || !isLoopback(match[1] ?? ""));
+  });
+}
+
+/** Lines `name:uid:pw|nopw:keys|nokeys` from the users snippet. */
+export function parseUsers(
+  text: string,
+): { name: string; uid: number; password: boolean; keys: boolean }[] {
+  return linesOf(text).flatMap((line) => {
+    const [name, uid, pw, keys] = line.split(":");
+    const id = Number.parseInt(uid ?? "", 10);
+    if (!name || !Number.isInteger(id)) return [];
+    return [{ name, uid: id, password: pw === "pw", keys: keys === "keys" }];
+  });
+}
+
+/** Lines `<path> absent|link|other` or `<path> dir <owner> <group> <mode> <entries>`. */
+export function parseDirs(text: string, paths: readonly string[]): DirFact[] {
+  const found = new Map<string, DirFact>();
+  for (const line of linesOf(text)) {
+    const [path, kind, owner, group, mode, entries] = line.split(/\s+/);
+    if (!path || !paths.includes(path)) continue;
+    if (kind === "dir") {
+      found.set(path, {
+        path,
+        kind: "dir",
+        owner: owner ?? "",
+        group: group ?? "",
+        mode: mode ?? "",
+        entries: Number.parseInt(entries ?? "0", 10) || 0,
+      });
+    } else if (kind === "link" || kind === "other" || kind === "absent") {
+      found.set(path, { path, kind });
+    }
+  }
+  return paths.map((path) => found.get(path) ?? { path, kind: "absent" });
+}
+
+/** `apt-config dump` lines: both periodic settings are "1". */
+export function parseAptPeriodic(text: string): boolean {
+  const lines = linesOf(text);
+  const value = (key: string) =>
+    lines
+      .filter((line) => line.startsWith(`${key} `))
+      .map((line) => /"([^"]*)"/.exec(line)?.[1])
+      .pop();
+  return (
+    value("APT::Periodic::Update-Package-Lists") === "1" &&
+    value("APT::Periodic::Unattended-Upgrade") === "1"
+  );
+}
+
+/** Lines `<addon> absent` or `<addon> installed <sha256 of compose.yaml> <secret yes|no>`. */
+export function parseAddons(
+  text: string,
+): Map<string, { composeSha256: string | null; secretFile: boolean }> {
+  const addons = new Map<string, { composeSha256: string | null; secretFile: boolean }>();
+  for (const line of linesOf(text)) {
+    const [name, state, sum, secret] = line.split(/\s+/);
+    if (!name || state !== "installed") continue;
+    addons.set(name, {
+      composeSha256: sum && /^[0-9a-f]{64}$/.test(sum) ? sum : null,
+      secretFile: secret === "yes",
+    });
+  }
+  return addons;
+}
