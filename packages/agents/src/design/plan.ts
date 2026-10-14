@@ -7,7 +7,7 @@ import {
   type Requirements,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
-import { hostListKind } from "../shared";
+import { hostListKind, serviceUrlKind } from "../shared";
 import {
   appDirOf,
   appDockerfile,
@@ -27,9 +27,13 @@ export interface OptionToPlanInput {
   createdAt?: string;
 }
 
-/** Variables whose production value OpsCrew generates as a random secret. */
+/**
+ * Variables whose production value OpsCrew generates as a random secret: only keys the app signs
+ * with itself, including those Flask loads by prefix (`FLASK_SECRET_KEY`, `FLASK_JWT_SECRET_KEY`,
+ * `FLASK_WTF_CSRF_SECRET_KEY`). Another provider's key (`FLASK_STRIPE_SECRET_KEY`) is the user's.
+ */
 const GENERATED_SECRETS =
-  /^(?:DJANGO_)?SECRET_KEY$|^(?:NEXTAUTH|AUTH|BETTER_AUTH|SESSION|JWT|COOKIE)_SECRET$/;
+  /^(?:DJANGO_)?SECRET_KEY$|^(?:NEXTAUTH|AUTH|BETTER_AUTH|SESSION|JWT|COOKIE)_SECRET$|^FLASK_(?:SECRET_KEY|JWT_SECRET_KEY|WTF_CSRF_SECRET_KEY)$/;
 
 /** DNS-label-safe app name (`^[a-z0-9][a-z0-9-]{0,40}$`) from the project name. */
 export function appNameFor(facts: ProjectFacts): string {
@@ -64,6 +68,18 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   const env = new Map<string, DeployPlan["app"]["env"][number]>();
   for (const variable of facts.envVars) {
     if (variable.name === "PORT") continue;
+    // The app's own names for the database and Redis URLs are filled from the services OpsCrew
+    // runs (FR-814), whatever default the code has for development, unless a committed example
+    // gives the variable another kind of URL (`CELERY_BROKER_URL=amqp://…`).
+    const service = serviceUrlKind(variable.name);
+    if (
+      service !== undefined &&
+      services[service] &&
+      (variable.urlScheme === undefined || variable.urlScheme === service)
+    ) {
+      env.set(variable.name, derived(variable.name, service === "postgres"));
+      continue;
+    }
     env.set(variable.name, {
       name: variable.name,
       secret: variable.secretLikely,

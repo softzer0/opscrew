@@ -170,6 +170,10 @@
               },
               "hasDefault": {
                 "type": "boolean"
+              },
+              "urlScheme": {
+                "type": "string",
+                "enum": ["postgres", "mysql", "mongodb", "redis", "amqp", "sqlite", "other"]
               }
             },
             "required": ["name", "files", "clientExposed", "secretLikely"],

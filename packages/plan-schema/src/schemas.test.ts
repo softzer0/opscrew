@@ -157,6 +157,17 @@ describe("ProjectFacts", () => {
     expect(pathsOf(ProjectFactsSchema.safeParse(wrong))).toEqual(["envVars.0.hasDefault"]);
   });
 
+  it("records only the kind of URL scheme an example env file gives a variable", async () => {
+    const f = await facts();
+    const [first, ...rest] = f.envVars;
+    if (!first) throw new Error("fixture has no env vars");
+    const withScheme = { ...f, envVars: [{ ...first, urlScheme: "redis" }, ...rest] };
+    expect(ProjectFactsSchema.parse(withScheme).envVars[0]?.urlScheme).toBe("redis");
+    expect(ProjectFactsSchema.parse(f).envVars[0]?.urlScheme).toBeUndefined();
+    const value = { ...f, envVars: [{ ...first, urlScheme: "redis://cache:6379" }, ...rest] };
+    expect(pathsOf(ProjectFactsSchema.safeParse(value))).toEqual(["envVars.0.urlScheme"]);
+  });
+
   it("records an optional one-line release command", async () => {
     const f = await facts();
     expect(ProjectFactsSchema.parse(f).build.releaseCommand).toBeUndefined();

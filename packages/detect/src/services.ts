@@ -29,6 +29,7 @@ const DEPENDENCY_SERVICES: Record<
     redis: ["redis"],
     ioredis: ["redis"],
     "@upstash/redis": ["redis"],
+    "redis-om": ["redis"],
     bullmq: ["queue", "redis"],
     bull: ["queue", "redis"],
     "bee-queue": ["queue", "redis"],
@@ -62,6 +63,9 @@ const DEPENDENCY_SERVICES: Record<
     pymongo: ["mongodb"],
     motor: ["mongodb"],
     redis: ["redis"],
+    "flask-redis": ["redis"],
+    "django-redis": ["redis"],
+    "redis-om": ["redis"],
     rq: ["queue", "redis"],
     celery: ["queue"],
     dramatiq: ["queue"],
@@ -130,12 +134,18 @@ function dependencyEvidence(dep: Dependency): string {
 /**
  * Adds services implied by a unit's dependencies. ORMs (Prisma, Drizzle, TypeORM, Sequelize) are
  * covered by their database driver or schema; SQLAlchemy counts as Postgres only when a
- * `postgres://` URL appears in Python code, and Celery adds Redis only for a Redis broker.
+ * `postgres://` URL appears in Python code, and Celery adds Redis only for a Redis broker:
+ * `celery[redis]`, a `redis://` URL in Python code or committed env/compose files
+ * (`configUrlSchemes`), or a Redis service in a committed compose file (`composeRedis`).
  */
 export function addDependencyServices(
   collector: ServiceCollector,
   unit: Unit,
-  context: { pythonUrlSchemes: ReadonlySet<string> },
+  context: {
+    pythonUrlSchemes: ReadonlySet<string>;
+    configUrlSchemes?: ReadonlySet<string>;
+    composeRedis?: boolean;
+  },
 ): void {
   for (const dep of unit.dependencies) {
     if (dep.ecosystem === "composer") continue;
@@ -145,7 +155,9 @@ export function addDependencyServices(
     }
     if (dep.ecosystem === "pypi" && dep.name === "celery") {
       if (dep.extras.includes("redis")) collector.add("redis", `${evidence}[redis]`);
-      else if (context.pythonUrlSchemes.has("redis")) collector.add("redis", "config:redis-broker");
+      else if (context.pythonUrlSchemes.has("redis") || context.configUrlSchemes?.has("redis")) {
+        collector.add("redis", "config:redis-broker");
+      } else if (context.composeRedis) collector.add("redis", "compose:redis");
     }
     if (
       dep.ecosystem === "pypi" &&

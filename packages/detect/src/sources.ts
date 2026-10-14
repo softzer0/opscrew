@@ -53,6 +53,11 @@ export interface SourceSignals {
   appObjects: PythonAppObject[];
   /** URL schemes seen in string literals (`postgres`, `mysql`, `mongodb`, `redis`). */
   urlSchemes: string[];
+  /**
+   * Prefixes of Flask's `app.config.from_prefixed_env()` calls (`FLASK` by default), sorted and
+   * unique. A call whose prefix is not a string literal is skipped.
+   */
+  configPrefixes: string[];
 }
 
 const PORT_PATTERNS: RegExp[] = [
@@ -96,6 +101,32 @@ const FILE_ROUTES: readonly RegExp[] = [
 
 const APP_OBJECT =
   /^([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[\w.]+\s*)?=\s*(?:fastapi\.|flask\.)?(FastAPI|Flask)\(/gm;
+const PREFIXED_ENV = /\.from_prefixed_env\(/g;
+const PREFIX_LITERAL = /^["']([A-Za-z_][A-Za-z0-9_]*)["']$/;
+
+/** The argument list of a call whose opening parenthesis ends at `start` (nested ones kept). */
+function callArguments(text: string, start: number): string | undefined {
+  let depth = 1;
+  for (let i = start; i < text.length && i < start + 500; i++) {
+    const char = text[i];
+    if (char === "(") depth++;
+    else if (char === ")" && --depth === 0) return text.slice(start, i);
+  }
+  return undefined;
+}
+
+/**
+ * The prefix of a `from_prefixed_env(…)` call: a `prefix="APP"` keyword anywhere in the
+ * arguments, else a first positional string literal, else `FLASK` when no prefix is passed.
+ * Undefined when the prefix is computed (`from_prefixed_env(PREFIX)`, `prefix=name`).
+ */
+function prefixOf(args: string): string | undefined {
+  const keyword = /(?:^|,)\s*prefix\s*=\s*([^,]*)/.exec(args);
+  if (keyword) return PREFIX_LITERAL.exec((keyword[1] ?? "").trim())?.[1];
+  const first = (args.split(",")[0] ?? "").trim();
+  if (first === "" || /^\*{0,2}\w+\s*=/.test(first)) return "FLASK";
+  return PREFIX_LITERAL.exec(first)?.[1];
+}
 const URL_SCHEME = /["'`](postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?)(?:\+\w+)?:\/\//g;
 
 function toPort(value: string | undefined): number | undefined {
@@ -192,6 +223,12 @@ export function scanSource(text: string): SourceSignals {
             : scheme,
     );
   }
+  const configPrefixes = new Set<string>();
+  for (const match of text.matchAll(PREFIXED_ENV)) {
+    const args = callArguments(text, match.index + match[0].length);
+    const prefix = args === undefined ? undefined : prefixOf(args);
+    if (prefix) configPrefixes.add(prefix);
+  }
   const envReads = extractEnvReads(text);
   return {
     envNames: envReads.map((read) => read.name),
@@ -200,6 +237,7 @@ export function scanSource(text: string): SourceSignals {
     healthPaths,
     appObjects,
     urlSchemes: [...urlSchemes].sort(),
+    configPrefixes: [...configPrefixes].sort(),
   };
 }
 

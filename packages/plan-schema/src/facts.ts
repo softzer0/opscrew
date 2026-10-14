@@ -12,6 +12,18 @@ import {
   UrlPathSchema,
 } from "./enums";
 
+/** Normalised URL scheme of an env var's example value (see `envVars[].urlScheme`). */
+export const EnvUrlSchemeSchema = z.enum([
+  "postgres",
+  "mysql",
+  "mongodb",
+  "redis",
+  "amqp",
+  "sqlite",
+  "other",
+]);
+export type EnvUrlScheme = z.infer<typeof EnvUrlSchemeSchema>;
+
 /**
  * Array refinement: items must be strictly ascending by `key` (sorted and unique), so detection
  * output is deterministic. The issue points at the first offending item.
@@ -85,6 +97,12 @@ export const ProjectFactsSchema = z.strictObject({
          * (`os.environ.get("X", "…")`, `process.env.X ?? "…"`); absent means false.
          */
         hasDefault: z.boolean().optional(),
+        /**
+         * Kind of URL a committed example env file gives the variable (`postgres` for
+         * `postgresql://…`, `redis` for `rediss://…`, `other` for any non-web scheme such as
+         * `rpc://`); absent when no file gives one. Only the scheme is recorded, never the value.
+         */
+        urlScheme: EnvUrlSchemeSchema.optional(),
       }),
     )
     .superRefine(strictlyAscending((v) => v.name, "environment variable")),

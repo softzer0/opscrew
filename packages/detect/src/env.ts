@@ -25,6 +25,7 @@ const SECRET_MARKERS = [
   "API_KEY",
   "DSN",
   "DATABASE_URL",
+  "DATABASE_URI",
   "SERVICE_ROLE",
 ] as const;
 
@@ -220,7 +221,13 @@ function readHasDefault(kind: ReadKind, after: string): boolean {
   if (kind === "raising") return false;
   if (kind === "call") {
     const argument = /^\s*,\s*(?:default\s*=\s*)?/.exec(after);
-    if (argument !== null) return isRealDefault(after.slice(argument[0].length));
+    if (argument !== null) {
+      const value = after.slice(argument[0].length);
+      if (isRealDefault(value)) return true;
+      // `os.environ.get("X", None) == "on"`: the placeholder only feeds a comparison or fallback.
+      const literal = /^(?:None|null|undefined|""|''|``)\s*\)/.exec(value);
+      return literal !== null && defaultAfter(value.slice(literal[0].length));
+    }
     const close = /^\s*\)/.exec(after);
     return close !== null && defaultAfter(after.slice(close[0].length));
   }

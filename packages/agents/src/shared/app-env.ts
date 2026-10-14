@@ -65,6 +65,71 @@ export function hostListKind(name: string): HostListKind | undefined {
   return undefined;
 }
 
+/** A service OpsCrew runs next to the app, whose connection URL a variable can hold. */
+export type ServiceUrlKind = "postgres" | "redis";
+
+const POSTGRES_URL_NAME =
+  /^(?:DATABASE_URL|DATABASE_URI|SQLALCHEMY_DATABASE_URI|POSTGRES_UR[LI]|DB_UR[LI])$/;
+const REDIS_URL_NAME = /^(?:REDIS_UR[LI]|CELERY_BROKER_UR[LI]|BROKER_URL|CELERY_RESULT_BACKEND)$/;
+/** `<prefix>_DATABASE_URL`/`_URI` and `<prefix>_REDIS_URL`/`_URI`; the capture is the prefix. */
+const PREFIXED_URL_NAME = /^(\w+?)_(DATABASE|REDIS)_UR[LI]$/;
+/**
+ * Prefix segments that mark another database engine or a database that is not production's
+ * (tests, Prisma's shadow database, local development): such names are never derived.
+ */
+const OTHER_DATABASE_SEGMENTS = new Set([
+  "MONGO",
+  "MONGODB",
+  "MYSQL",
+  "MARIADB",
+  "SQLITE",
+  "CLICKHOUSE",
+  "MSSQL",
+  "SQLSERVER",
+  "ORACLE",
+  "COCKROACH",
+  "COCKROACHDB",
+  "TIMESCALE",
+  "NEO4J",
+  "CASSANDRA",
+  "LIBSQL",
+  "TURSO",
+  "PLANETSCALE",
+  "REDIS",
+  "ELASTIC",
+  "ELASTICSEARCH",
+  "TEST",
+  "TESTS",
+  "TESTING",
+  "SHADOW",
+  "DEV",
+  "DEVELOPMENT",
+  "LOCAL",
+  "E2E",
+  "CI",
+  "STAGING",
+]);
+
+/**
+ * The service whose connection URL a variable holds, from its name: `DATABASE_URL` and the
+ * names apps use for it (`DATABASE_URI`, `SQLALCHEMY_DATABASE_URI`, `POSTGRES_URL`, `DB_URL`,
+ * `*_DATABASE_URL`/`_URI`) hold Postgres; `REDIS_URL`/`_URI`, `*_REDIS_URL`/`_URI`, Celery's broker
+ * and result backend hold Redis. Undefined for any other name, for names bundlers expose to
+ * browsers (`NEXT_PUBLIC_DATABASE_URL`) and for prefixes naming another engine or a non-production
+ * database (`MONGO_DATABASE_URL`, `TEST_DATABASE_URL`). `design` plans these as `derived` when the
+ * service runs on the server, and {@link assembleAppEnv} fills them in.
+ */
+export function serviceUrlKind(name: string): ServiceUrlKind | undefined {
+  if (isClientExposedEnvName(name)) return undefined;
+  if (POSTGRES_URL_NAME.test(name)) return "postgres";
+  if (REDIS_URL_NAME.test(name)) return "redis";
+  const prefixed = PREFIXED_URL_NAME.exec(name);
+  if (!prefixed) return undefined;
+  const segments = (prefixed[1] ?? "").split("_");
+  if (segments.some((segment) => OTHER_DATABASE_SEGMENTS.has(segment))) return undefined;
+  return prefixed[2] === "DATABASE" ? "postgres" : "redis";
+}
+
 /**
  * The value of a host list: the hosts the plan serves (the domain, and `www.<domain>` when
  * planned), or without a domain the server's address. Comma-separated; origins use `https://` on
@@ -135,8 +200,8 @@ export interface AppEnvironment {
 /**
  * Builds the production environment for the deploy secrets. Values the app needs come from the
  * user (local `.env` only after confirmation, or typed in), are generated (database password) or
- * derived (DATABASE_URL, REDIS_URL pointing at the containers, host lists from the domain or the
- * server's address). An optional variable (the code has a default) without a value is left unset
+ * derived (DATABASE_URL, REDIS_URL and the app's own names for them pointing at the containers,
+ * see {@link serviceUrlKind}; host lists from the domain or the server's address). An optional variable (the code has a default) without a value is left unset
  * instead of stopping the run. Values are never logged.
  * @throws OpsCrewError `INVALID_INPUT` when a required value is missing in a non-interactive run.
  */
@@ -153,6 +218,8 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   const generatedEnv: Record<string, string> = {};
   const generated: GeneratedValues = { env: generatedEnv };
 
+  // Connection URLs of the services OpsCrew runs, by kind.
+  const serviceUrls = new Map<ServiceUrlKind, string>();
   if (plan.services.postgres) {
     const password = options.previous?.dbPassword ?? newPassword();
     generated.dbPassword = password;
@@ -160,15 +227,25 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       "\n",
     );
     app.set("DATABASE_URL", `postgres://app:${password}@db:5432/app`);
+    // Other names get `postgresql://`: SQLAlchemy rejects `postgres://`, libpq accepts both.
+    serviceUrls.set("postgres", `postgresql://app:${password}@db:5432/app`);
   }
-  if (plan.services.redis) app.set("REDIS_URL", "redis://cache:6379");
+  if (plan.services.redis) {
+    app.set("REDIS_URL", "redis://cache:6379");
+    serviceUrls.set("redis", "redis://cache:6379");
+  }
 
   for (const variable of plan.app.env) {
     if (app.has(variable.name) || variable.name === "PORT") continue;
     const optional = variable.optional === true;
-    const hostList = variable.source === "derived" ? hostListKind(variable.name) : undefined;
+    const derived = variable.source === "derived";
+    const hostList = derived ? hostListKind(variable.name) : undefined;
+    const serviceKind = derived ? serviceUrlKind(variable.name) : undefined;
+    const serviceUrl = serviceKind !== undefined ? serviceUrls.get(serviceKind) : undefined;
     let value: string | undefined;
-    if (hostList !== undefined) {
+    if (serviceUrl !== undefined) {
+      value = serviceUrl;
+    } else if (hostList !== undefined) {
       value = hostListValue(hostList, plan, options.serverHost);
       if (value === undefined) {
         unresolved.push(variable.name);

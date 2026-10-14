@@ -2,11 +2,19 @@ import { readFile, stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import {
   type AppKind,
+  type EnvUrlScheme,
   type Language,
   type ProjectFacts,
   ProjectFactsSchema,
 } from "@opscrew/plan-schema";
 import { normalizeAppDir, unknownAppDirError } from "./app-dir";
+import {
+  composeUsesRedis,
+  envFileSchemes,
+  isCommittedEnvFile,
+  isComposeFile,
+  prefixedConfigNames,
+} from "./connections";
 import { isClientExposed, isEnvExampleFile, isSecretLikely, parseEnvExampleKeys } from "./env";
 import { listProjectFiles } from "./files";
 import {
@@ -373,8 +381,27 @@ export async function detectProjectDetails(
       envDefaults.set(read.name, (envDefaults.get(read.name) ?? true) && read.hasDefault);
     }
   }
-  for (const file of scopedFiles.filter(isEnvExampleFile)) {
-    for (const name of parseEnvExampleKeys((await read(file)) ?? "")) addEnv(name, file);
+  // Committed env files: every name of an example file, and the names Flask loads by prefix
+  // (`app.config.from_prefixed_env()`) from the others. Values are only checked for a URL scheme.
+  const configPrefixes = new Set<string>();
+  for (const found of signals.values()) for (const p of found.configPrefixes) configPrefixes.add(p);
+  const configUrlSchemes = new Set<string>();
+  // URL kinds per variable; files that disagree make it `other` (the plan then leaves it alone).
+  const envSchemes = new Map<string, EnvUrlScheme>();
+  for (const file of scopedFiles.filter(isCommittedEnvFile)) {
+    const text = (await read(file)) ?? "";
+    for (const [name, scheme] of envFileSchemes(text)) {
+      configUrlSchemes.add(scheme);
+      const known = envSchemes.get(name);
+      envSchemes.set(name, known === undefined || known === scheme ? scheme : "other");
+    }
+    const names = parseEnvExampleKeys(text);
+    const wanted = isEnvExampleFile(file) ? names : prefixedConfigNames(names, configPrefixes);
+    for (const name of wanted) addEnv(name, file);
+  }
+  let composeRedis = false;
+  for (const file of scopedFiles.filter(isComposeFile)) {
+    if (composeUsesRedis((await read(file)) ?? "")) composeRedis = true;
   }
   const envVars = sortStrings(envFiles.keys()).map((name) => ({
     name,
@@ -382,6 +409,7 @@ export async function detectProjectDetails(
     clientExposed: isClientExposed(name),
     secretLikely: isSecretLikely(name),
     ...(envDefaults.get(name) === true ? { hasDefault: true } : {}),
+    ...(envSchemes.has(name) ? { urlScheme: envSchemes.get(name) } : {}),
   }));
 
   // Services.
@@ -390,7 +418,13 @@ export async function detectProjectDetails(
     if (file.endsWith(".py")) for (const scheme of found.urlSchemes) pythonUrlSchemes.add(scheme);
   }
   const services = new ServiceCollector();
-  for (const info of relevant) addDependencyServices(services, info.unit, { pythonUrlSchemes });
+  for (const info of relevant) {
+    addDependencyServices(services, info.unit, {
+      pythonUrlSchemes,
+      configUrlSchemes,
+      composeRedis,
+    });
+  }
   for (const file of scopedFiles.filter((f) => f.endsWith(".prisma"))) {
     addPrismaServices(
       services,

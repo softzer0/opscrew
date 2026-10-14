@@ -1,6 +1,14 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectProject } from "@opscrew/detect";
-import { DeployPlanSchema, parseArtifact, serializeArtifact } from "@opscrew/plan-schema";
+import {
+  DeployPlanSchema,
+  type ProjectFacts,
+  parseArtifact,
+  serializeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { assembleAppEnv, parseDotenv } from "../shared";
 import {
@@ -176,6 +184,190 @@ describe("optionToPlan", () => {
     expect(plan.app.env).toEqual([{ name: "REDIS_URL", secret: false, source: "derived" }]);
     expect(plan.app.port).toBe(8000);
     expect(plan.app.healthPath).toBe("/health");
+  });
+});
+
+describe("connection settings under the app's own names (FR-814)", () => {
+  type EnvVar = ProjectFacts["envVars"][number];
+  const variable = (name: string, extra: Partial<EnvVar> = {}): EnvVar => ({
+    name,
+    files: ["app/project/config.py"],
+    clientExposed: false,
+    secretLikely: false,
+    ...extra,
+  });
+  const envVars = [
+    variable("BROKER_URL"),
+    variable("CELERY_BROKER_URI"),
+    variable("CELERY_RESULT_BACKEND"),
+    // `getenv("DATABASE_URI", "sqlite://")`: the default is for development only.
+    variable("DATABASE_URI", { secretLikely: true, hasDefault: true }),
+    variable("FLASK_ENV", { hasDefault: true }),
+    variable("FLASK_JWT_SECRET_KEY", { secretLikely: true }),
+    variable("FLASK_MAIL_PASSWORD", { secretLikely: true }),
+    variable("FLASK_REDIS_URL"),
+    variable("FLASK_SECRET_KEY", { secretLikely: true }),
+    variable("MAPBOX_API_KEY", { secretLikely: true }),
+    variable("SQLALCHEMY_DATABASE_URI", { secretLikely: true }),
+    variable("STRIPE_SECRET_KEY", { secretLikely: true }),
+  ];
+
+  const BOTH: ProjectFacts["services"] = [
+    { kind: "postgres", evidence: ["dependency:psycopg2-binary"] },
+    { kind: "queue", evidence: ["dependency:celery"] },
+    { kind: "redis", evidence: ["dependency:flask-redis"] },
+  ];
+
+  async function planFor(services: ProjectFacts["services"], vars: EnvVar[] = envVars) {
+    const facts = makeFacts({
+      languages: ["python"],
+      frameworks: [{ name: "flask", path: "." }],
+      envVars: vars,
+      services,
+    });
+    const requirements = makeRequirements();
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    return optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+  }
+
+  it("derives aliases of the planned Postgres and Redis, and generates Flask secret keys", async () => {
+    const plan = await planFor(BOTH);
+    expect(plan.services).toMatchObject({ postgres: true, redis: true });
+    expect(plan.app.env).toEqual([
+      { name: "BROKER_URL", secret: false, source: "derived" },
+      { name: "CELERY_BROKER_URI", secret: false, source: "derived" },
+      { name: "CELERY_RESULT_BACKEND", secret: false, source: "derived" },
+      { name: "DATABASE_URI", secret: true, source: "derived" },
+      { name: "DATABASE_URL", secret: true, source: "derived" },
+      { name: "FLASK_ENV", secret: false, source: "user", optional: true },
+      { name: "FLASK_JWT_SECRET_KEY", secret: true, source: "generated" },
+      { name: "FLASK_MAIL_PASSWORD", secret: true, source: "user" },
+      { name: "FLASK_REDIS_URL", secret: false, source: "derived" },
+      { name: "FLASK_SECRET_KEY", secret: true, source: "generated" },
+      { name: "MAPBOX_API_KEY", secret: true, source: "user" },
+      { name: "REDIS_URL", secret: false, source: "derived" },
+      { name: "SQLALCHEMY_DATABASE_URI", secret: true, source: "derived" },
+      // Another provider's secret key is a credential the user supplies.
+      { name: "STRIPE_SECRET_KEY", secret: true, source: "user" },
+    ]);
+  });
+
+  it("generates only keys the app signs with itself, never another provider's key", async () => {
+    const plan = await planFor(BOTH, [
+      variable("FLASK_AWS_SECRET_KEY", { secretLikely: true }),
+      variable("FLASK_RECAPTCHA_SECRET_KEY", { secretLikely: true }),
+      variable("FLASK_STRIPE_SECRET_KEY", { secretLikely: true }),
+      variable("FLASK_WTF_CSRF_SECRET_KEY", { secretLikely: true }),
+    ]);
+    const sources = Object.fromEntries(plan.app.env.map((v) => [v.name, v.source]));
+    expect(sources).toMatchObject({
+      FLASK_AWS_SECRET_KEY: "user",
+      FLASK_RECAPTCHA_SECRET_KEY: "user",
+      FLASK_STRIPE_SECRET_KEY: "user",
+      FLASK_WTF_CSRF_SECRET_KEY: "generated",
+    });
+  });
+
+  it("never derives client-exposed names, other engines or non-production databases", async () => {
+    const plan = await planFor(BOTH, [
+      variable("MONGO_DATABASE_URL", { secretLikely: true }),
+      variable("NEXT_PUBLIC_DATABASE_URL", { clientExposed: true }),
+      variable("TEST_DATABASE_URL", { secretLikely: true }),
+      variable("VITE_DATABASE_URL", { clientExposed: true }),
+    ]);
+    const sources = Object.fromEntries(plan.app.env.map((v) => [v.name, v.source]));
+    expect(sources).toEqual({
+      DATABASE_URL: "derived",
+      MONGO_DATABASE_URL: "user",
+      NEXT_PUBLIC_DATABASE_URL: "user",
+      REDIS_URL: "derived",
+      TEST_DATABASE_URL: "user",
+      VITE_DATABASE_URL: "user",
+    });
+  });
+
+  it("keeps a variable whose committed example gives another kind of URL user-supplied", async () => {
+    const plan = await planFor(BOTH, [
+      variable("CELERY_BROKER_URL", { urlScheme: "amqp" }),
+      variable("CELERY_RESULT_BACKEND", { urlScheme: "other" }),
+      variable("DB_URL", { secretLikely: false, urlScheme: "mysql" }),
+      variable("FLASK_REDIS_URL", { urlScheme: "redis" }),
+      variable("SQLALCHEMY_DATABASE_URI", { secretLikely: true, urlScheme: "postgres" }),
+    ]);
+    expect(plan.app.env).toEqual([
+      { name: "CELERY_BROKER_URL", secret: false, source: "user" },
+      { name: "CELERY_RESULT_BACKEND", secret: false, source: "user" },
+      { name: "DATABASE_URL", secret: true, source: "derived" },
+      { name: "DB_URL", secret: false, source: "user" },
+      { name: "FLASK_REDIS_URL", secret: false, source: "derived" },
+      { name: "REDIS_URL", secret: false, source: "derived" },
+      { name: "SQLALCHEMY_DATABASE_URI", secret: true, source: "derived" },
+    ]);
+  });
+
+  it("leaves the aliases to the user when OpsCrew runs neither service", async () => {
+    const plan = await planFor([{ kind: "queue", evidence: ["dependency:celery"] }]);
+    expect(plan.services).toMatchObject({ postgres: false, redis: false });
+    const byName = Object.fromEntries(plan.app.env.map((v) => [v.name, v]));
+    expect(byName.DATABASE_URI).toEqual({ name: "DATABASE_URI", secret: true, source: "user" });
+    expect(byName.CELERY_BROKER_URI).toEqual({
+      name: "CELERY_BROKER_URI",
+      secret: false,
+      source: "user",
+    });
+    expect(byName.FLASK_REDIS_URL).toMatchObject({ source: "user" });
+    expect(byName.DATABASE_URL).toBeUndefined();
+    expect(byName.REDIS_URL).toBeUndefined();
+  });
+
+  it("plans a Flask + SQLAlchemy + Celery app end to end from its files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opscrew-plan-flask-"));
+    try {
+      const files: Record<string, string> = {
+        "requirements.txt":
+          "Flask==2.2.3\nFlask-SQLAlchemy==3.0.3\npsycopg2-binary==2.9.5\ncelery==5.2.7\nflask-redis==0.4.0\n",
+        "app/__init__.py": [
+          "from os import environ",
+          "from flask import Flask",
+          "from celery import Celery",
+          "celery = Celery(__name__, broker=environ.get('CELERY_BROKER_URI'))",
+          "def create_app():",
+          "    app = Flask(__name__)",
+          "    app.config['SQLALCHEMY_DATABASE_URI'] = environ.get('DATABASE_URI', 'sqlite://')",
+          "    app.config.from_prefixed_env()",
+          "    return app",
+        ].join("\n"),
+        "docker/dev/.env": [
+          "POSTGRES_PASSWORD=",
+          "CELERY_BROKER_URI=redis://redis:6379/0",
+          "FLASK_SECRET_KEY=",
+          "FLASK_MAIL_SERVER=",
+          "FLASK_REDIS_URL=redis://redis:6379/0",
+        ].join("\n"),
+      };
+      for (const [path, text] of Object.entries(files)) {
+        await mkdir(dirname(join(root, path)), { recursive: true });
+        await writeFile(join(root, path), text);
+      }
+      const facts = await detectProject(root);
+      const requirements = makeRequirements();
+      const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+      if (!option) throw new Error("no option");
+      const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+      expect(plan.services).toMatchObject({ postgres: true, redis: true });
+      expect(plan.app.env).toEqual([
+        { name: "CELERY_BROKER_URI", secret: false, source: "derived" },
+        { name: "DATABASE_URI", secret: true, source: "derived" },
+        { name: "DATABASE_URL", secret: true, source: "derived" },
+        { name: "FLASK_MAIL_SERVER", secret: false, source: "user" },
+        { name: "FLASK_REDIS_URL", secret: false, source: "derived" },
+        { name: "FLASK_SECRET_KEY", secret: true, source: "generated" },
+        { name: "REDIS_URL", secret: false, source: "derived" },
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 
