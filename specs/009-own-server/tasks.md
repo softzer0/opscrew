@@ -92,6 +92,13 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
 
+- [ ] T914 [US3] [US5] A plain message when Cloudflare Access is not turned on for the account (found by a live read-only check, 2026-10-14: an account that never enabled Zero Trust answers `GET /accounts/{id}/access/organizations` with HTTP 403 and error 9999 `access.api.error.not_enabled`, and OpsCrew blamed the token's permissions) in `packages/agents/src/provision/zero-trust.ts`
+  - Owns: `packages/agents/src/provision/zero-trust.ts`, `packages/agents/src/provision/zero-trust.test.ts`
+  - Reads: research.md "Zero Trust" (this answers its "confirm live"); the current `cloudflareZeroTrust` lookup
+  - Accept: an answer of any status whose errors say `access.api.error.not_enabled` (or "Access is not enabled") throws `PHASE_PRECONDITION` in plain English: Cloudflare Access is not turned on for this Cloudflare account yet, which tunnel mode (the protected SSH hostname) and the Portainer subdomain need, and nothing was changed; the hint says to open the Zero Trust dashboard (https://one.dash.cloudflare.com/), pick a team name and the Free plan, then run the command again; other 401/403 answers keep the missing-permission message; no token in any error; tests for both cases and for the existing paths (404, no organization, an organization with its team domain, unreadable answer, network error).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: medium
+
 ## Phase 4: Surfaces and live test
 
 - [ ] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
