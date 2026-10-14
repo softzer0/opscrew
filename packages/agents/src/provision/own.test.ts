@@ -154,7 +154,10 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(apply?.options.secrets).toEqual({});
     expect(apply?.verified).toBe(true);
     // verifyLogin opened NEW connections as deploy (deploy key) and as the admin login.
-    const logins = s.runner.calls.filter((c) => c.command === "ssh");
+    // The first ssh call is connectOwnServer's test login; then verifyLogin's two new logins.
+    const ssh = s.runner.calls.filter((c) => c.command === "ssh");
+    expect(ssh[0]?.args.at(-1)).toBe("true");
+    const logins = ssh.slice(1);
     expect(logins.map((c) => c.args.at(-2))).toEqual([`deploy@${OWN_IPV4}`, `root@${OWN_IPV4}`]);
     for (const call of logins) {
       expect(call.args).toEqual(expect.arrayContaining(["ControlMaster=no", "ControlPath=none"]));
@@ -196,6 +199,22 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(steps.every((e) => e.target === result.hostPlanHash)).toBe(true);
     expect(JSON.stringify(s.deps.audit.entries)).not.toContain(OWN_IPV4);
     expect((await s.deps.state.read()).phases.provision?.status).toBe("ok");
+  });
+
+  it("public mode on SSH port 2222: the workflow uses the port and known_hosts holds [ip]:2222", async () => {
+    const s = await setup({
+      own: { host: OWN_IPV4, port: 2222, user: "root", agent: true, reachable: true },
+      facts: freshFacts({ sshPorts: [2222] }),
+    });
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+    const workflow = await readFile(join(s.root, ".github/workflows/opscrew-deploy.yml"), "utf8");
+    expect(workflow).toContain("-o Port=2222");
+    expect(s.github.secrets.get("OPSCREW_HOST")).toBe(OWN_IPV4);
+    expect(s.github.secrets.get("OPSCREW_SSH_KNOWN_HOSTS")).toBe(
+      `[${OWN_IPV4}]:2222 ssh-ed25519 ${ED25519}\n`,
+    );
+    const ufw = s.host.applies[0]?.plan.steps.find((step) => step.id === "ufw");
+    expect(ufw?.params.sshPorts).toBe("2222");
   });
 
   it("re-running on a prepared server shows no changes and changes nothing", async () => {
@@ -275,7 +294,10 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(tunnelStep?.params.tunnelId).toBe(TUNNEL_ID);
     expect(apply?.options.secrets).toEqual({ tunnelToken: token });
     expect(apply?.verified).toBe(true);
-    const logins = s.runner.calls.filter((c) => c.command === "ssh");
+    // The first ssh call is connectOwnServer's test login; then verifyLogin's two new logins.
+    const ssh = s.runner.calls.filter((c) => c.command === "ssh");
+    expect(ssh[0]?.args.at(-1)).toBe("true");
+    const logins = ssh.slice(1);
     expect(logins.map((c) => c.args.at(-2))).toEqual([`deploy@${LAN_IPV4}`, `alice@${LAN_IPV4}`]);
     expect(logins[1]?.args).toEqual(expect.arrayContaining(["-i", key, "-p", "2222"]));
 

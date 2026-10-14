@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import type { CommandResult } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
   ED25519,
@@ -131,10 +133,12 @@ interface ConnectSetup {
   interactive?: boolean;
   answer?: boolean;
   keys?: { type: string; key: string }[];
+  /** What the test login (`ssh … true`) answers; default success. */
+  ssh?: CommandResult;
 }
 
 async function connectSetup(o: ConnectSetup = {}) {
-  const runner = ownRunner(o.keys ?? [{ type: "ssh-ed25519", key: ED25519 }]);
+  const runner = ownRunner(o.keys ?? [{ type: "ssh-ed25519", key: ED25519 }], () => o.ssh);
   const handler = new ScriptedApprovalHandler(() => o.answer ?? true);
   const deps = await createTestPhaseDeps({
     runner,
@@ -337,6 +341,109 @@ describe("connectOwnServer", () => {
   it("says the server cannot be reached when it presents no key", async () => {
     const { deps } = await connectSetup({ keys: [] });
     await expect(connectOwnServer(deps)).rejects.toMatchObject({ code: "COMMAND_FAILED" });
+  });
+});
+
+describe("connectOwnServer's test login", () => {
+  const failed = (stderr: string, extra: Partial<CommandResult> = {}): CommandResult => ({
+    exitCode: 255,
+    stdout: "",
+    stderr,
+    ...extra,
+  });
+
+  async function refused(o: ConnectSetup) {
+    const s = await connectSetup(o);
+    const error = (await connectOwnServer(s.deps, { hostKey: ED25519_FINGERPRINT }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(error).toBeInstanceOf(OpsCrewError);
+    // Nothing changed: no key recorded, no known_hosts entry left behind.
+    expect((await readOwnServer(s.deps.paths))?.hostKey).toBeUndefined();
+    await expect(readFile(s.deps.paths.files.knownHosts, "utf8")).rejects.toThrow();
+    return { ...s, error };
+  }
+
+  it("logs in once as the admin login after pinning", async () => {
+    const { deps, runner } = await connectSetup();
+    await connectOwnServer(deps, { hostKey: ED25519_FINGERPRINT });
+    const ssh = runner.calls.filter((c) => c.command === "ssh");
+    expect(ssh).toHaveLength(1);
+    expect(ssh[0]?.args.slice(-2)).toEqual([`root@${OWN_IPV4}`, "true"]);
+    expect(ssh[0]?.options?.timeoutMs).toBe(30_000);
+  });
+
+  it("stops like a changed host key when ssh refuses the key", async () => {
+    const { error } = await refused({
+      ssh: failed(
+        "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\nHost key verification failed.",
+      ),
+    });
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("not the one you confirmed");
+    expect(error.message).toContain("changed nothing");
+    expect(error.hint).toContain("--host-key");
+    expect(error.hint).toContain("Host key verification failed.");
+  });
+
+  it("names the user and key on a refused login, with ssh-add for a passphrase", async () => {
+    const { error } = await refused({
+      own: { host: OWN_IPV4, port: 22, user: "alice", agent: true },
+      ssh: failed(`alice@${OWN_IPV4}: Permission denied (publickey).`),
+    });
+    expect(error.code).toBe("CREDENTIALS_INVALID");
+    expect(error.message).toContain("as alice with the key in your SSH agent");
+    expect(error.hint).toContain("ssh-add");
+    expect(error.hint).toContain("Permission denied (publickey).");
+    expect(error.hint).toContain("opscrew interview");
+  });
+
+  it("names the key file and ssh-add for it", async () => {
+    const s = await connectSetup({
+      own: { host: OWN_IPV4, port: 22, user: "root", agent: false, keyPath: "~/.ssh/id_ed25519" },
+      ssh: failed(`root@${OWN_IPV4}: Permission denied (publickey).`),
+    });
+    await placeholderKey(s.deps.env.HOME as string);
+    const error = (await connectOwnServer(s.deps, { hostKey: ED25519_FINGERPRINT }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(error.message).toContain("with the key ~/.ssh/id_ed25519");
+    expect(error.hint).toContain("ssh-add ~/.ssh/id_ed25519");
+  });
+
+  it("says the server cannot be reached on a refused connection or a timeout", async () => {
+    const closed = await refused({
+      ssh: failed(`ssh: connect to host ${OWN_IPV4} port 22: Connection refused`),
+    });
+    expect(closed.error.code).toBe("COMMAND_FAILED");
+    expect(closed.error.message).toContain("could not reach SSH");
+    expect(closed.error.hint).toContain("Connection refused");
+    const slow = await refused({ ssh: failed("", { exitCode: 1, timedOut: true }) });
+    expect(slow.error.code).toBe("COMMAND_FAILED");
+    expect(slow.error.message).toContain("could not reach SSH");
+  });
+
+  it("redacts what ssh said", async () => {
+    const secret = fakeSecret("generic-password", "ssh-said");
+    const s = await connectSetup({ ssh: failed(`Permission denied ${secret}`) });
+    s.deps.redactor.addLiteral(secret, "test");
+    const error = (await connectOwnServer(s.deps, { hostKey: ED25519_FINGERPRINT }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(`${error.message} ${error.hint}`).not.toContain(secret);
+  });
+
+  it("keeps an earlier known_hosts when the login fails", async () => {
+    const s = await connectSetup({
+      own: { host: OWN_IPV4, port: 22, user: "root", agent: true, hostKey: ED25519_FINGERPRINT },
+      ssh: failed("Connection refused"),
+    });
+    const earlier = `${OWN_IPV4} ssh-rsa ${RSA}\n`;
+    await mkdir(dirname(s.deps.paths.files.knownHosts), { recursive: true });
+    await writeFile(s.deps.paths.files.knownHosts, earlier);
+    await expect(connectOwnServer(s.deps)).rejects.toMatchObject({ code: "COMMAND_FAILED" });
+    expect(await readFile(s.deps.paths.files.knownHosts, "utf8")).toBe(earlier);
+    expect((await readOwnServer(s.deps.paths))?.hostKey).toBe(ED25519_FINGERPRINT);
   });
 });
 

@@ -10,6 +10,7 @@ import {
   hostPlanHash,
 } from "@opscrew/connector-ssh-host";
 import type {
+  CommandResult,
   IacApplyResult,
   IacApproval,
   IacEngine,
@@ -568,11 +569,11 @@ export function fakeZeroTrust(authDomain?: string): ZeroTrustApi & { asked: stri
 
 /**
  * Real git for the project; `ssh-keyscan` answers with the given host keys (named like the real
- * tool: `[host]:port` on other ports than 22); `ssh` succeeds unless `sshFails` says otherwise.
+ * tool: `[host]:port` on other ports than 22); `ssh` succeeds unless `ssh` answers otherwise.
  */
 export function ownRunner(
   keys: readonly { type: string; key: string }[] = [{ type: "ssh-ed25519", key: ED25519 }],
-  sshFails: (args: readonly string[]) => boolean = () => false,
+  ssh: (args: readonly string[]) => CommandResult | undefined = () => undefined,
 ): ScriptedRunner {
   const real = new NodeCommandRunner();
   return new ScriptedRunner(async (command, args, options) => {
@@ -586,11 +587,7 @@ export function ownRunner(
         stderr: "",
       };
     }
-    if (command === "ssh") {
-      return sshFails(args)
-        ? { exitCode: 255, stdout: "", stderr: "Permission denied (publickey)." }
-        : { exitCode: 0, stdout: "", stderr: "" };
-    }
+    if (command === "ssh") return ssh(args) ?? { exitCode: 0, stdout: "", stderr: "" };
     return real.run(command, args, options);
   });
 }

@@ -1,8 +1,8 @@
-import { access } from "node:fs/promises";
+import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type HostFacts, inspectHost } from "@opscrew/connector-ssh-host";
-import type { RemoteExec } from "@opscrew/contracts";
+import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -25,7 +25,7 @@ import {
 /** What {@link connectOwnServer} needs from the phase. */
 export type OwnServerDeps = Pick<
   PhaseDeps,
-  "paths" | "runner" | "approvals" | "interactive" | "reporter" | "env"
+  "paths" | "runner" | "approvals" | "interactive" | "reporter" | "env" | "redactor"
 >;
 
 /** Options of {@link connectOwnServer}. */
@@ -187,7 +187,10 @@ function describeKey(key: ScannedHostKey): string {
  *   with a plain warning and changes nothing. A new key named with `--host-key` (after the user
  *   reinstalled the server) replaces the pinned one.
  *
- * Returns the admin login's shell, which only ever talks to the pinned key.
+ * Then it logs in once (`true`) as the admin login: a host key ssh refuses stops like a changed
+ * key, a refused login names the user and key (and `ssh-add` for a key with a passphrase), and an
+ * unreachable server says so; in each case the earlier known_hosts comes back and nothing is
+ * recorded. Returns the admin login's shell, which only ever talks to the pinned key.
  */
 export async function connectOwnServer(
   deps: OwnServerDeps,
@@ -288,19 +291,104 @@ export async function connectOwnServer(
   }
 
   const knownHostsFile = deps.paths.files.knownHosts;
+  const before = await readFile(knownHostsFile, "utf8").catch(() => undefined);
   // Always (re)write the entry: the known_hosts file may be missing on this computer.
   await writeKnownHost(knownHostsFile, knownHostsName(connection.host, connection.port), [chosen]);
+  const session = { ...connection, hostKey: chosen.fingerprint };
+  const remote =
+    options.remote?.(session) ?? adminRemote(deps, session, knownHostsFile, options.homeDir);
+  try {
+    await testLogin(deps, remote, session, where);
+  } catch (error) {
+    // Nothing changes when the login does not work: the earlier known_hosts comes back.
+    if (before === undefined) await rm(knownHostsFile, { force: true });
+    else await writeFile(knownHostsFile, before, { mode: 0o644 });
+    throw error;
+  }
   const changed = chosen.fingerprint !== pinned;
   if (changed) await recordOwnServer(deps.paths, { ...connection, hostKey: chosen.fingerprint });
-  const session = { ...connection, hostKey: chosen.fingerprint };
-  return {
-    connection: session,
-    remote:
-      options.remote?.(session) ?? adminRemote(deps, session, knownHostsFile, options.homeDir),
-    hostKey: chosen,
-    knownHostsFile,
-    pinned: changed,
-  };
+  return { connection: session, remote, hostKey: chosen, knownHostsFile, pinned: changed };
+}
+
+/** The key a login uses, in words. */
+function keyWords(connection: Pick<OwnServerConnection, "agent" | "keyPath">): string {
+  return connection.agent || connection.keyPath === undefined
+    ? "the key in your SSH agent"
+    : `the key ${connection.keyPath}`;
+}
+
+/** ssh's own words about a failed login: its last lines, redacted, for a hint. */
+function sshSaid(deps: Pick<OwnServerDeps, "redactor">, stderr: string): string {
+  const lines = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("**") && !/^@+$/.test(line));
+  const text = deps.redactor.redact(lines.slice(-3).join(" / ")).slice(0, 400);
+  return text === "" ? "" : ` (ssh said: ${text})`;
+}
+
+const HOST_KEY_FAILED = /host key verification failed|remote host identification has changed/i;
+const LOGIN_REFUSED = /permission denied|too many authentication failures/i;
+const UNREACHABLE =
+  /connection refused|timed out|no route to host|could not resolve|name or service not known|network is unreachable|connection closed|connection reset|kex_exchange_identification/i;
+
+/**
+ * Logs in once as the admin login (`true`, 30 seconds) and turns a failure into plain words: a
+ * host key ssh refuses (the changed-key stop), a refused login (naming the user and key, and
+ * `ssh-add` for a key with a passphrase), or a server that cannot be reached.
+ */
+async function testLogin(
+  deps: Pick<OwnServerDeps, "redactor">,
+  remote: RemoteExec,
+  connection: OwnServerConnection & { hostKey: string },
+  where: string,
+): Promise<void> {
+  const unreachable = (detail: string) =>
+    new OpsCrewError(
+      "COMMAND_FAILED",
+      `OpsCrew could not reach SSH on your server at ${where}. Nothing was changed.`,
+      {
+        hint: `Check that the server is on and that this computer can reach it on that port (a firewall or router may block it). If the address or port is wrong, fix them with \`opscrew interview\`, then try again.${detail}`,
+      },
+    );
+  let result: CommandResult;
+  try {
+    result = await remote.run("true", { timeoutMs: 30_000 });
+  } catch (error) {
+    throw unreachable(sshSaid(deps, error instanceof Error ? error.message : String(error)));
+  }
+  if (result.exitCode === 0) return;
+  const detail = sshSaid(deps, result.stderr);
+  if (HOST_KEY_FAILED.test(result.stderr)) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The SSH host key of your server at ${where} is not the one you confirmed (${connection.hostKey}), so ssh refused to log in. OpsCrew stopped and changed nothing.`,
+      {
+        hint: `If you did not reinstall the server or change its SSH keys, someone may be intercepting the connection: check the server in its provider's console before going on. If you did, ${CHECK_ON_SERVER.charAt(0).toLowerCase()}${CHECK_ON_SERVER.slice(1)} Then run the command again with --host-key and the new fingerprint.${detail}`,
+      },
+    );
+  }
+  if (LOGIN_REFUSED.test(result.stderr)) {
+    const add =
+      connection.agent || connection.keyPath === undefined
+        ? "Make sure your SSH agent holds the key (`ssh-add -l` lists them; `ssh-add <your key file>` adds one, also a key with a passphrase)."
+        : `If the key has a passphrase, add it to your SSH agent first (\`ssh-add ${connection.keyPath}\`): OpsCrew never asks for a passphrase.`;
+    throw new OpsCrewError(
+      "CREDENTIALS_INVALID",
+      `Your server at ${where} refused the login as ${connection.user} with ${keyWords(connection)}. Nothing was changed.`,
+      {
+        hint: `Check that ${connection.user} may log in with this key (its public key must be in that user's ~/.ssh/authorized_keys on the server). ${add} If the user or key is wrong, fix them with \`opscrew interview\`.${detail}`,
+      },
+    );
+  }
+  if (result.timedOut === true || UNREACHABLE.test(result.stderr)) throw unreachable(detail);
+  throw new OpsCrewError(
+    "COMMAND_FAILED",
+    `The test login to your server at ${where} as ${connection.user} failed (exit code ${result.exitCode}). Nothing was changed.`,
+    {
+      hint: `Try \`ssh -p ${connection.port} ${connection.user}@${connection.host} true\` yourself to see what goes wrong, fix it, then run the command again.${detail}`,
+    },
+  );
 }
 
 /**

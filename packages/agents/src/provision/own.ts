@@ -525,7 +525,7 @@ export async function applyOwnHostPlan(
  */
 export function ownDeployTarget(
   deps: Pick<PhaseDeps, "redactor">,
-  run: Pick<OwnServerRun, "session" | "address" | "target">,
+  run: Pick<OwnServerRun, "session" | "address" | "target" | "sshPort">,
   input: { plan: DeployPlan; outputs: Record<string, unknown> },
 ): {
   host: string;
@@ -556,6 +556,8 @@ export function ownDeployTarget(
     };
   }
   const address = run.address as ServerAddress;
-  const name = knownHostsName(address.ipv4, run.session.connection.port);
+  // The deploy workflow connects to sshd's port (`RenderContext.sshPort`, `-o Port=<port>` when it
+  // is not 22), so ssh looks the key up as `[ip]:port` there.
+  const name = knownHostsName(address.ipv4, run.sshPort);
   return { host: address.ipv4, knownHosts: `${name} ${key.type} ${key.key}\n` };
 }
