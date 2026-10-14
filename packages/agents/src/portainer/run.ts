@@ -431,6 +431,12 @@ async function runChange(
       deployKeyFile: deployKey.privateKeyFile,
     });
   }
+  // Hetzner/DigitalOcean: the deploy user's shell; enabling needs Docker 28 (checked read-only).
+  let cloudRemote: RemoteExec | undefined;
+  if (!own) {
+    cloudRemote = await deployRemote(deps, services);
+    if (change.command === "enable") await requireDocker28(deps, cloudRemote);
+  }
 
   // Render: only a subdomain (added, changed or removed) changes the infrastructure code. The
   // runbook's Portainer section follows with the next `opscrew verify`, which writes the runbook.
@@ -540,6 +546,7 @@ async function runChange(
       plan,
       outputs,
       services,
+      remote: cloudRemote as RemoteExec,
       planOnly,
       command,
     });
@@ -584,6 +591,79 @@ async function runChange(
 }
 
 /**
+ * Hetzner and DigitalOcean: the deploy user's shell on the server, over the deploy key and the
+ * pinned host key (the address from this computer's local state).
+ */
+async function deployRemote(deps: PhaseDeps, services: PortainerServices): Promise<RemoteExec> {
+  const address = (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
+  if (address === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "This computer does not know the server's address, so OpsCrew cannot reach it. Nothing was changed.",
+      { hint: "Run `opscrew provision` here first; it records the address." },
+    );
+  }
+  return (
+    services.deployRemote?.(address.ipv4) ??
+    new SshRemoteExec({
+      host: address.ipv4,
+      keyFile: deps.paths.files.deployKey,
+      knownHostsFile: deps.paths.files.knownHosts,
+      runner: deps.runner,
+    })
+  );
+}
+
+/** Docker Engine 28.0.0 keeps ports published on 127.0.0.1 unreachable from the local network. */
+const MIN_DOCKER_MAJOR = 28;
+
+/**
+ * Read-only, before anything changes: Portainer needs Docker Engine 28 or newer on Hetzner and
+ * DigitalOcean servers. Before 28, ports published on 127.0.0.1 are reachable from layer-2
+ * neighbours (moby/moby#49325), so Portainer's local-only port would not be local. Servers the user
+ * owns already get Docker 28 or newer through the host plan.
+ */
+async function requireDocker28(deps: PhaseDeps, remote: RemoteExec): Promise<void> {
+  let version = "";
+  try {
+    const result = await remote.run("docker version --format '{{.Server.Version}}'", {
+      timeoutMs: 60_000,
+    });
+    if (result.exitCode === 0) version = result.stdout.trim().split(/\s+/)[0] ?? "";
+  } catch {
+    version = "";
+  }
+  await deps.audit.append({
+    kind: "remote-exec",
+    actor: "opscrew",
+    action: "read Docker version (read-only)",
+    phase: "provision",
+    target: "server",
+    decision: "allow",
+    ...(version !== "" ? { detail: `Docker ${version}` } : {}),
+  });
+  const match = /^(\d+)\.\d+/.exec(version);
+  if (match === null) {
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      "OpsCrew could not read the Docker version on the server as the deploy user, so it did not set up Portainer. Nothing was changed.",
+      {
+        hint: "Check that the server is reachable over SSH and that Docker is running (`docker version` as the deploy user), then run the command again.",
+      },
+    );
+  }
+  if (Number(match[1]) < MIN_DOCKER_MAJOR) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `This server runs Docker ${deps.redactor.redact(version.slice(0, 40))}; Portainer needs Docker 28 or newer, which keeps its local-only port truly local. Nothing was changed.`,
+      {
+        hint: "Upgrade Docker (OpsCrew-created servers get it from Docker's repository from now on), then run the command again.",
+      },
+    );
+  }
+}
+
+/**
  * Hetzner and DigitalOcean: Portainer (and, for a subdomain, its tunnel connector) runs as the
  * deploy user in its home directory (the deploy user is in the docker group; no root needed),
  * over the deploy key and the pinned host key.
@@ -595,19 +675,12 @@ async function cloudHostChange(
     plan: DeployPlan;
     outputs: Record<string, unknown>;
     services: PortainerServices;
+    remote: RemoteExec;
     planOnly: boolean;
     command: string;
   },
 ): Promise<{ hash: string; applied: boolean; approval?: ApprovalRecord }> {
-  const { plan, outputs } = input;
-  const address = (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
-  if (address === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "This computer does not know the server's address, so OpsCrew cannot reach it.",
-      { hint: "Run `opscrew provision` here first; it records the address." },
-    );
-  }
+  const { plan, outputs, remote } = input;
   const enabling = change.command === "enable";
   let connector: Parameters<typeof planPortainer>[0]["connector"];
   let tunnelToken: string | undefined;
@@ -649,14 +722,6 @@ async function cloudHostChange(
       : { disable: { deleteData: change.deleteData } }),
     ...(connector !== undefined ? { connector } : {}),
   });
-  const remote =
-    input.services.deployRemote?.(address.ipv4) ??
-    new SshRemoteExec({
-      host: address.ipv4,
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-    });
   return applyAddonPlan(deps, {
     plan: hostPlan,
     remote,

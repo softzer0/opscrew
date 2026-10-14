@@ -60,12 +60,24 @@ class FakeApply {
   };
 }
 
-const unused = (host: string): RemoteExec => ({
-  host,
-  run: async () => {
-    throw new Error("the fake apply should have handled this");
-  },
-});
+/**
+ * The deploy user's shell: answers only the read-only Docker version query (`docker` is what the
+ * server reports, `null` for a failing command); the fake apply does everything else.
+ */
+function deployShell(docker: string | null, commands: string[]) {
+  return (host: string): RemoteExec => ({
+    host,
+    run: async (command: string) => {
+      commands.push(command);
+      if (command === "docker version --format '{{.Server.Version}}'") {
+        return docker === null
+          ? { exitCode: 1, stdout: "", stderr: "permission denied" }
+          : { exitCode: 0, stdout: `${docker}\n`, stderr: "" };
+      }
+      throw new Error("the fake apply should have handled this");
+    },
+  });
+}
 
 function tunnelSecrets() {
   return { token: `eyJ${fakeSecret("cloudflare-token", "portainer-tunnel")}` };
@@ -76,8 +88,10 @@ async function cloudSetup(
     plan?: DeployPlan;
     answer?: (request: ApprovalRequest) => boolean | { approved: boolean; confirmation?: string };
     engine?: FakeEngine;
+    docker?: string | null;
   } = {},
 ) {
+  const commands: string[] = [];
   const project = await createProject(
     o.plan ?? testPlan({ domain: "shop.example.com", deployed: true }),
   );
@@ -96,7 +110,7 @@ async function cloudSetup(
   const host = new FakeApply();
   const pins: string[] = [];
   const services: PortainerServices = {
-    deployRemote: unused,
+    deployRemote: deployShell(o.docker === undefined ? "28.5.1" : o.docker, commands),
     applyHost: host.apply,
     cloudflare: ownCloudflare(),
     ...(o.engine !== undefined ? { engine: async () => o.engine as FakeEngine } : {}),
@@ -108,7 +122,7 @@ async function cloudSetup(
       },
     },
   };
-  return { ...project, deps, handler, host, services, pins };
+  return { ...project, deps, handler, host, services, pins, commands };
 }
 
 const kinds = (handler: ScriptedApprovalHandler) => handler.requests.map((r) => r.kind);
@@ -248,6 +262,43 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(before);
     expect(s.handler.requests).toHaveLength(0);
     expect(bare.handler.requests).toHaveLength(0);
+  });
+
+  it("refuses before any change when the server's Docker is older than 28", async () => {
+    const engine = new FakeEngine();
+    const s = await cloudSetup({ docker: "27.5.1", engine });
+    const before = await readFile(s.deps.paths.files.plan, "utf8");
+    const error = (await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+      services: s.services,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain(
+      "This server runs Docker 27.5.1; Portainer needs Docker 28 or newer, which keeps its local-only port truly local.",
+    );
+    expect(error.hint).toBe(
+      "Upgrade Docker (OpsCrew-created servers get it from Docker's repository from now on), then run the command again.",
+    );
+    expect(s.commands).toEqual(["docker version --format '{{.Server.Version}}'"]);
+    expect(s.handler.requests).toHaveLength(0);
+    expect(engine.calls).toEqual([]);
+    expect(s.host.calls).toHaveLength(0);
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(before);
+    expect(s.deps.audit.entries.map((e) => e.action)).toContain("read Docker version (read-only)");
+  });
+
+  it("refuses when the Docker version cannot be read, and disabling needs no check", async () => {
+    const s = await cloudSetup({ docker: null });
+    const error = (await portainerEnable(s.deps, { services: s.services }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(error.code).toBe("COMMAND_FAILED");
+    expect(s.handler.requests).toHaveLength(0);
+
+    await portainerDisable(s.deps, { deleteData: true, services: s.services });
+    expect(s.commands).toHaveLength(1);
+    expect(s.host.calls).toHaveLength(1);
   });
 
   it("needs a deployment first", async () => {
