@@ -2,8 +2,16 @@ import type { VpsProviderId } from "@opscrew/contracts";
 import { providerProfile } from "../providers";
 
 /**
- * Teardown wording that differs per provider. The Hetzner texts are exactly those of feature 003;
- * names, nouns and token variables come from the provider profile.
+ * The providers' price pages. Snapshot texts link to them instead of quoting a rate, so they never
+ * go stale when the price changes.
+ */
+const HETZNER_PRICING_URL = "https://www.hetzner.com/cloud";
+const DIGITALOCEAN_PRICING_URL = "https://www.digitalocean.com/pricing";
+
+/**
+ * Teardown wording that differs per provider. The Hetzner texts are those of feature 003 (the
+ * snapshot texts now link the price page); names, nouns and token variables come from the
+ * provider profile.
  */
 export interface DestroyTexts {
   /** `Hetzner Cloud` or `DigitalOcean`. */
@@ -16,7 +24,10 @@ export interface DestroyTexts {
   console: string;
   /** How a snapshot is referred to, for example `Hetzner image 9001`. */
   snapshotRef(id: string): string;
-  /** Snapshot pricing as a clause, for example `Hetzner bills snapshots per GB per month`. */
+  /**
+   * Snapshot pricing as a clause, for example `Hetzner bills snapshots per GB per month`. Never a
+   * fixed amount: rates change, so name the unit and link to the provider's price page.
+   */
   snapshotBilling: string;
   /** Snapshot pricing for the approval, for example `billed per GB per month`. */
   snapshotBilled: string;
@@ -40,8 +51,8 @@ function hetznerTexts(): DestroyTexts {
     company: "Hetzner",
     console: "the Hetzner Cloud Console",
     snapshotRef: (id) => `Hetzner image ${id}`,
-    snapshotBilling: "Hetzner bills snapshots per GB per month",
-    snapshotBilled: "billed per GB per month",
+    snapshotBilling: `Hetzner bills snapshots per GB per month at the rate listed on ${HETZNER_PRICING_URL}`,
+    snapshotBilled: `billed per GB per month at the rate listed on ${HETZNER_PRICING_URL}`,
     lookup: (app) => `labelled managed-by=opscrew,app=${app}`,
     tokenHint: () =>
       "Create a Read & Write API token in the Hetzner Cloud Console (your project → Security → API tokens).",
@@ -57,8 +68,8 @@ function digitalOceanTexts(): DestroyTexts {
     company: "DigitalOcean",
     console: "the DigitalOcean control panel",
     snapshotRef: (id) => `DigitalOcean snapshot ${id}`,
-    snapshotBilling: "DigitalOcean bills snapshots at $0.06 per GB per month",
-    snapshotBilled: "billed at $0.06 per GB per month",
+    snapshotBilling: `DigitalOcean bills snapshots per GB per month at the rate listed on ${DIGITALOCEAN_PRICING_URL}`,
+    snapshotBilled: `billed per GB per month at the rate listed on ${DIGITALOCEAN_PRICING_URL}`,
     lookup: (app) => `tagged opscrew-app:${app} and managed-by:opscrew`,
     tokenHint: (command) =>
       `Create a custom-scoped token at ${profile.tokenUrl}, then set it as ${profile.tokenVars[0]} and run \`${command}\` again.`,

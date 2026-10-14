@@ -1,4 +1,4 @@
-import { StaticHetznerCatalog } from "@opscrew/connector-hetzner";
+import { STATIC_PRICES_AS_OF, StaticHetznerCatalog } from "@opscrew/connector-hetzner";
 import type { ProviderExtras } from "@opscrew/contracts";
 import { CostEstimateSchema, DesignOptionListSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -12,7 +12,13 @@ import {
   offer,
   staticSpaFacts,
 } from "./__fixtures__/catalog";
-import { buildDesignOptions, convertMoney, costFor, minimumMonthlyCost } from "./index";
+import {
+  buildDesignOptions,
+  convertMoney,
+  costFor,
+  EXCHANGE_RATE_NOTE,
+  minimumMonthlyCost,
+} from "./index";
 
 const extras: ProviderExtras = {
   ipv4Monthly: { amount: 0.5, currency: "EUR" },
@@ -181,7 +187,7 @@ describe("buildDesignOptions", () => {
     expect(statics.length).toBeGreaterThanOrEqual(2);
     for (const option of statics) {
       expect(option.cost.source).toBe("static");
-      expect(option.summary).toContain("estimate as of 2026-06-15");
+      expect(option.summary).toContain(`estimate as of ${STATIC_PRICES_AS_OF.slice(0, 10)}`);
       expect(option.summary).toMatch(/(including|excluding) VAT\)/);
       expect(option.tradeoffs.join(" ")).toContain("HCLOUD_TOKEN");
     }
@@ -332,5 +338,171 @@ describe("buildDesignOptions", () => {
       message: expect.stringContaining("Nuremberg or Falkenstein"),
       hint: expect.stringContaining("opscrew interview"),
     });
+  });
+});
+
+describe("live prices with published rates (DigitalOcean)", () => {
+  const TABLE_AS_OF = "2026-10-12T00:00:00.000Z";
+  const LIVE_AS_OF = "2026-10-14T09:00:00.000Z";
+  /** DigitalOcean's extras: the API has no backup or traffic rates, so they are the dated table's. */
+  const published: ProviderExtras = {
+    backupPercent: 30,
+    trafficPerTb: { amount: 10.24, currency: "USD" },
+    pricesIncludeVat: false,
+    source: "static",
+    asOf: TABLE_AS_OF,
+  };
+  const liveDroplet = (
+    id: string,
+    vcpus: number,
+    memoryGb: number,
+    diskGb: number,
+    price: number,
+  ) =>
+    offer({
+      id,
+      vcpus,
+      memoryGb,
+      diskGb,
+      price,
+      provider: "digitalocean",
+      location: "fra1",
+      monthly: { amount: price, currency: "USD" },
+      source: "live",
+      asOf: LIVE_AS_OF,
+    });
+  const liveCatalog = () =>
+    new MemoryCatalog(
+      [liveDroplet("s-1vcpu-2gb", 1, 2, 50, 12), liveDroplet("s-2vcpu-4gb", 2, 4, 80, 24)],
+      published,
+      "digitalocean",
+    );
+
+  it("names the published rate and its date on the backup line and never labels it live", () => {
+    const cost = costFor(liveDroplet("s-1vcpu-2gb", 1, 2, 50, 12), published, { backups: true });
+    expect(cost.breakdown).toEqual([
+      { item: "Server s-1vcpu-2gb (fra1)", monthly: { amount: 12, currency: "USD" } },
+      {
+        item: "Automated backups (30% of the server price, DigitalOcean's published rate as of 2026-10-12)",
+        monthly: { amount: 3.6, currency: "USD" },
+      },
+    ]);
+    // The total includes a number the API did not return, so it is not live.
+    expect(cost).toMatchObject({ source: "static", asOf: TABLE_AS_OF });
+    expect(CostEstimateSchema.safeParse(cost).success).toBe(true);
+  });
+
+  it("stays live when no published rate is used", () => {
+    const cost = costFor(liveDroplet("s-1vcpu-2gb", 1, 2, 50, 12), published, { backups: false });
+    expect(cost.breakdown.map((line) => line.item)).toEqual(["Server s-1vcpu-2gb (fra1)"]);
+    expect(cost).toMatchObject({ source: "live", asOf: LIVE_AS_OF });
+  });
+
+  it("keeps the Droplet price live in the option and never asks for the token it already has", async () => {
+    const options = await buildDesignOptions({
+      facts: staticSpaFacts(),
+      requirements: makeRequirements({ provider: "digitalocean", dataCriticality: "important" }),
+      catalog: liveCatalog(),
+      now: new Date(LIVE_AS_OF),
+    });
+    expect(options.length).toBeGreaterThan(0);
+    for (const option of options) {
+      expect(option.summary).toContain(
+        "(live Droplet price, backups at DigitalOcean's published rate as of 2026-10-12, excluding tax)",
+      );
+      const tradeoffs = option.tradeoffs.join(" ");
+      expect(tradeoffs).toContain(
+        "The Droplet price is live from DigitalOcean; the backup price uses DigitalOcean's published rate as of 2026-10-12, because the API does not return it.",
+      );
+      expect(tradeoffs).not.toContain("DIGITALOCEAN_TOKEN");
+      expect(tradeoffs).not.toContain("availability was not checked");
+    }
+  });
+
+  it("warns when the published rate is old", async () => {
+    const options = await buildDesignOptions({
+      facts: staticSpaFacts(),
+      requirements: makeRequirements({ provider: "digitalocean", dataCriticality: "important" }),
+      catalog: liveCatalog(),
+      now: new Date("2027-10-12T00:00:00.000Z"),
+    });
+    expect(options[0]?.tradeoffs.join(" ")).toContain(
+      "The published rate is 365 days old; it may have changed.",
+    );
+  });
+
+  it("labels the option live when backups are off", async () => {
+    const options = await buildDesignOptions({
+      facts: staticSpaFacts(),
+      requirements: makeRequirements({ provider: "digitalocean", dataCriticality: "none" }),
+      catalog: liveCatalog(),
+    });
+    expect(options.length).toBeGreaterThan(0);
+    for (const option of options) {
+      expect(option.cost.source).toBe("live");
+      expect(option.summary).toContain("(live price, excluding tax)");
+      expect(option.tradeoffs.join(" ")).not.toMatch(/DIGITALOCEAN_TOKEN|published/);
+    }
+  });
+});
+
+describe("live prices without a backup rate from the API", () => {
+  const LIVE_AS_OF = "2026-10-14T09:00:00.000Z";
+  /** Live extras whose `/pricing` answer had no backup percentage. */
+  const liveExtras: ProviderExtras = {
+    ipv4Monthly: { amount: 0.5, currency: "EUR" },
+    pricesIncludeVat: false,
+    source: "live",
+    asOf: LIVE_AS_OF,
+  };
+  const liveServer = (id: string, vcpus: number, memoryGb: number, diskGb: number, price: number) =>
+    offer({ id, vcpus, memoryGb, diskGb, price, source: "live", asOf: LIVE_AS_OF });
+
+  it("never labels OpsCrew's fallback percentage live", () => {
+    const cost = costFor(liveServer("cx23", 2, 4, 40, 5.49), liveExtras, {
+      backups: true,
+      backupPercent: 20,
+    });
+    expect(cost.breakdown.at(-1)).toEqual({
+      item: "Automated backups (20% of the server price, OpsCrew's default rate, not from Hetzner's API)",
+      monthly: { amount: 1.1, currency: "EUR" },
+    });
+    expect(cost).toMatchObject({ source: "static", asOf: LIVE_AS_OF });
+    // The live IPv4 price keeps its plain line.
+    expect(cost.breakdown[1]?.item).toBe("Primary IPv4 address");
+    expect(CostEstimateSchema.safeParse(cost).success).toBe(true);
+  });
+
+  it("says so in the option without asking for the token it already has", async () => {
+    const options = await buildDesignOptions({
+      facts: staticSpaFacts(),
+      requirements: makeRequirements({ dataCriticality: "important" }),
+      catalog: new MemoryCatalog(
+        [liveServer("cx23", 2, 4, 40, 5.49), liveServer("cx33", 4, 8, 80, 8.49)],
+        liveExtras,
+      ),
+      now: new Date(LIVE_AS_OF),
+    });
+    expect(options.length).toBeGreaterThan(0);
+    for (const option of options) {
+      expect(option.cost.source).toBe("static");
+      expect(option.summary).toContain(
+        "(live server price, backups at OpsCrew's default rate, excluding VAT)",
+      );
+      const tradeoffs = option.tradeoffs.join(" ");
+      expect(tradeoffs).toContain(
+        "The server price is live from Hetzner; the backup price uses OpsCrew's default rate, because Hetzner's API did not return one.",
+      );
+      expect(tradeoffs).not.toContain("HCLOUD_TOKEN");
+      expect(tradeoffs).not.toContain("days old");
+    }
+  });
+});
+
+describe("EXCHANGE_RATE_NOTE", () => {
+  it("keeps the fixed approximate rate and says how to get an exact figure", () => {
+    expect(EXCHANGE_RATE_NOTE).toBe(
+      "Converted at a fixed approximate rate of 1 EUR = 1.10 USD. For an exact figure, look up today's rate, or ask your AI assistant to search the web for it and convert.",
+    );
   });
 });

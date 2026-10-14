@@ -286,7 +286,9 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     });
     const remaining = result.remaining.join("\n");
     expect(remaining).toContain("Hetzner image 9001");
-    expect(remaining).toContain("per GB per month");
+    expect(remaining).toContain(
+      "Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud and OpsCrew never deletes them",
+    );
     expect(remaining).toContain("ghcr.io/acme/shop");
     expect(remaining).toContain(".github/workflows/opscrew-deploy.yml");
     expect(remaining).toContain("opscrew provision");
@@ -1137,7 +1139,10 @@ describe.skipIf(!findExecutable("git"))("runDestroy on DigitalOcean", () => {
       "DigitalOcean has no delete protection for Droplets, so the only safeguard is OpsCrew's own confirmation",
     );
     expect(printedBeforeConfirm).toContain("A snapshot of the Droplet is taken first");
-    expect(printedBeforeConfirm).toContain("$0.06 per GB per month");
+    expect(printedBeforeConfirm).toContain(
+      "DigitalOcean bills snapshots per GB per month at the rate listed on https://www.digitalocean.com/pricing;",
+    );
+    expect(printedBeforeConfirm).not.toContain("$0.06");
 
     // No protection step: no unprotect plan and no delete_protection variable on any plan
     expect(engine.calls).not.toContain("plan:unprotect");
@@ -1174,7 +1179,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on DigitalOcean", () => {
     expect(destroy?.details).toContain(`- delete  ${DROPLET_ADDRESS}`);
     expect(destroy?.details).toContain("the PostgreSQL database");
     expect(destroy?.details).toContain(
-      "Snapshot: DigitalOcean snapshot 6372321 keeps a copy of the Droplet (billed at $0.06 per GB per month; OpsCrew never deletes it).",
+      "Snapshot: DigitalOcean snapshot 6372321 keeps a copy of the Droplet (billed per GB per month at the rate listed on https://www.digitalocean.com/pricing; OpsCrew never deletes it).",
     );
 
     // Result and what remains: the snapshot and its price, the retained backups, images, files
@@ -1186,7 +1191,10 @@ describe.skipIf(!findExecutable("git"))("runDestroy on DigitalOcean", () => {
     });
     const remaining = result.remaining.join("\n");
     expect(remaining).toContain("DigitalOcean snapshot 6372321");
-    expect(remaining).toContain("DigitalOcean bills snapshots at $0.06 per GB per month");
+    expect(remaining).toContain(
+      "DigitalOcean bills snapshots per GB per month at the rate listed on https://www.digitalocean.com/pricing and OpsCrew never deletes them",
+    );
+    expect(remaining).not.toContain("$0.06");
     expect(remaining).toContain("OpsCrew never deletes them");
     expect(remaining).toContain(
       "The Droplet's automatic backups. DigitalOcean keeps them until they expire, four weeks after they were taken",

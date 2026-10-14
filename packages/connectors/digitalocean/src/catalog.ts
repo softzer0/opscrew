@@ -101,15 +101,13 @@ export class DigitalOceanCatalog implements ComputeCatalog {
     return offers;
   }
 
-  /** Daily backups at 30 %, outbound traffic at USD 10.24 per TB, IPv4 included in the price. */
+  /**
+   * Daily backup percentage and outbound traffic rate, IPv4 included in the Droplet price. The API
+   * does not return these rates, so they come from DigitalOcean's published price page in
+   * `static-prices.ts` and are labelled `static` with that table's date, never `live`.
+   */
   async extras(_location: string): Promise<ProviderExtras> {
-    return {
-      backupPercent: BACKUP_PERCENT,
-      trafficPerTb: { amount: TRAFFIC_PER_TB_USD, currency: "USD" },
-      pricesIncludeVat: false,
-      source: "live",
-      asOf: this.now().toISOString(),
-    };
+    return publishedExtras();
   }
 }
 
@@ -164,12 +162,17 @@ export class StaticDigitalOceanCatalog implements ComputeCatalog {
         hint: `Use one of ${STATIC_REGIONS.join(", ")}.`,
       });
     }
-    return {
-      backupPercent: BACKUP_PERCENT,
-      trafficPerTb: { amount: TRAFFIC_PER_TB_USD, currency: "USD" },
-      pricesIncludeVat: false,
-      source: "static",
-      asOf: STATIC_PRICES_AS_OF,
-    };
+    return publishedExtras();
   }
+}
+
+/** Backup percentage and traffic rate from the dated published price table. */
+function publishedExtras(): ProviderExtras {
+  return {
+    backupPercent: BACKUP_PERCENT,
+    trafficPerTb: { amount: TRAFFIC_PER_TB_USD, currency: "USD" },
+    pricesIncludeVat: false,
+    source: "static",
+    asOf: STATIC_PRICES_AS_OF,
+  };
 }

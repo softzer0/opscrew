@@ -11,9 +11,15 @@ export const STATIC_PRICES_AS_OF = "2026-10-12T00:00:00.000Z";
 /** Billing is per second, capped at 672 hours a month; hourly prices derive from that cap. */
 export const HOURS_PER_MONTH = 672;
 
-/** Automated daily backups cost this percentage of the Droplet price (weekly would be 20). */
+/**
+ * Automated daily backups cost this percentage of the Droplet price (weekly would be 20). The API
+ * does not return it, so even live estimates use this published rate and name its date.
+ */
 export const BACKUP_PERCENT = 30;
-/** Outbound transfer beyond the pooled allowance: USD 0.01 per GiB, so 10.24 per TiB. */
+/**
+ * Outbound transfer beyond the pooled allowance: USD 0.01 per GiB, so 10.24 per TiB. Published
+ * rate (not in the API), like {@link BACKUP_PERCENT}.
+ */
 export const TRAFFIC_PER_TB_USD = 10.24;
 
 /** Display names and countries of known Droplet regions; other regions are named by slug. */

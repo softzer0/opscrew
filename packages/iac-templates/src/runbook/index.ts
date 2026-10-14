@@ -132,7 +132,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
       "",
       target.backups
         ? provider.runbook.backupsOn
-        : `Automated server backups are **off**. Turn them on with \`opscrew design\` (${provider.runbook.backupsOffPercent}) or make your own backups:`,
+        : "Automated server backups are **off**. Turn them on with `opscrew design` (they cost extra; it shows the price) or make your own backups:",
       "",
       "```bash",
       "# On the server: dump the database to a file",

@@ -120,7 +120,7 @@ describe("StaticHetznerCatalog", () => {
   const catalog = new StaticHetznerCatalog();
 
   it("is dated and labelled static", async () => {
-    expect(catalog.asOf).toBe("2026-06-15T00:00:00.000Z");
+    expect(catalog.asOf).toBe("2026-10-14T00:00:00.000Z");
     const offers = await catalog.listOffers();
     expect(offers.length).toBeGreaterThan(0);
     for (const offer of offers) {
@@ -151,7 +151,7 @@ describe("StaticHetznerCatalog", () => {
     expect((await find("ash", "ccx13"))?.monthly.amount).toBe(43.49);
     expect(await find("hil", "ccx63")).toMatchObject({
       cpuType: "dedicated",
-      monthly: { amount: 853.49 },
+      monthly: { amount: 859.99 },
       hourly: { amount: 1.3782 },
     });
     expect((await find("fsn1", "cax11"))?.architecture).toBe("arm");
@@ -164,7 +164,7 @@ describe("StaticHetznerCatalog", () => {
     expect(ash.map((o) => o.id)).toContain("cpx11");
     expect((await catalog.listOffers("sin")).some((o) => o.id === "cax11")).toBe(false);
     expect(await catalog.listOffers("nowhere")).toEqual([]);
-    expect(await catalog.listOffers()).toHaveLength(3 * 19 + 2 * 11 + 12);
+    expect(await catalog.listOffers()).toHaveLength(3 * 21 + 2 * 11 + 13);
   });
 
   it("lists six locations and static extras", async () => {

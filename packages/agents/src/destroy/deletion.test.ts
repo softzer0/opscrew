@@ -576,7 +576,7 @@ describe("remainingAfterDeletion", () => {
         backups: true,
       }),
     ).toEqual([
-      "The snapshot of shop (Hetzner image 9001). Hetzner bills snapshots per GB per month and OpsCrew never deletes them; delete it in the Hetzner Cloud Console when you no longer need it.",
+      "The snapshot of shop (Hetzner image 9001). Hetzner bills snapshots per GB per month at the rate listed on https://www.hetzner.com/cloud and OpsCrew never deletes them; delete it in the Hetzner Cloud Console when you no longer need it.",
     ]);
     const droplet = remainingAfterDeletion({
       provider: "digitalocean",

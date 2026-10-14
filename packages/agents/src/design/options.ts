@@ -14,7 +14,15 @@ import {
   type Requirements,
 } from "@opscrew/plan-schema";
 import { requestedProvider, requestedRegion } from "../providers";
-import { convertMoney, costFor, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
+import {
+  convertMoney,
+  costFor,
+  EXCHANGE_RATE_NOTE,
+  formatMoney,
+  nonLiveRates,
+  priceLabel,
+  type RateSource,
+} from "./cost";
 import { buildOwnServerOption, type OwnServerAccess } from "./own";
 import { regionLocations, type Sizing, sizeFor } from "./sizing";
 import { type DesignWording, designWording } from "./wording";
@@ -38,6 +46,8 @@ const STALE_PRICE_DAYS = 180;
 interface Candidate {
   offer: ComputeOffer;
   cost: CostEstimate;
+  /** Rates in the estimate of a live offer that were not read from the API. */
+  rates: { ipv4?: RateSource; backups?: RateSource };
 }
 
 /**
@@ -108,7 +118,7 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
     if (!meets(offer, sizing)) continue;
     const extras = await extrasFor(offer.location);
     const cost = costFor(offer, extras, { backups, backupPercent: profile.backupPercent });
-    candidates.push({ offer, cost });
+    candidates.push({ offer, cost, rates: nonLiveRates(offer, extras, { backups }) });
   }
   candidates.sort(cheapestFirst);
 
@@ -220,7 +230,7 @@ const TIER_TRADEOFFS: Record<DesignTier, string[]> = {
 
 function toOption(
   tier: DesignTier,
-  { offer, cost }: Candidate,
+  { offer, cost, rates }: Candidate,
   context: {
     provider: VpsProviderId;
     wording: DesignWording;
@@ -238,7 +248,16 @@ function toOption(
   const place = wording.profile.locationNames[offer.location] ?? offer.location;
   // EUR prices are quoted with or without VAT; USD prices (DigitalOcean) exclude sales tax.
   const tax = cost.monthly.currency === "EUR" ? "VAT" : "tax";
-  const price = `${formatMoney(cost.monthly)}/month (${priceLabel(cost)}, ${cost.pricesIncludeVat ? "including" : "excluding"} ${tax})`;
+  // A live server price with rates not read from the API (DigitalOcean's published backup rate).
+  const notLive = [
+    ...(rates.ipv4 ? [{ what: "IPv4", the: "the IPv4 price", ...rates.ipv4 }] : []),
+    ...(rates.backups ? [{ what: "backups", the: "the backup price", ...rates.backups }] : []),
+  ];
+  const mixed = offer.source === "live" && notLive.length > 0;
+  const label = mixed
+    ? `live ${wording.profile.serverNoun} price, ${notLive.map((r) => `${r.what} at ${r.rate}`).join(", ")}`
+    : priceLabel(cost);
+  const price = `${formatMoney(cost.monthly)}/month (${label}, ${cost.pricesIncludeVat ? "including" : "excluding"} ${tax})`;
   const containers = [
     "the app",
     ...(sizing.services.postgres ? ["Postgres"] : []),
@@ -274,14 +293,20 @@ function toOption(
   }
   if (cost.source === "static") {
     tradeoffs.push(
-      `Prices are an ${priceLabel(cost)} from ${wording.name}'s published price list and availability was not checked; set ${wording.tokenVar} for live prices.`,
+      mixed
+        ? `The ${wording.profile.serverNoun} price is live from ${wording.name}; ${notLive.map((r) => `${r.the} uses ${r.rate}, because ${r.reason}`).join("; ")}.`
+        : `Prices are an ${priceLabel(cost)} from ${wording.name}'s published price list and availability was not checked; set ${wording.tokenVar} for live prices.`,
     );
     const ageDays =
       context.now === undefined
         ? 0
         : Math.floor((context.now.getTime() - Date.parse(cost.asOf)) / 86_400_000);
     if (ageDays > STALE_PRICE_DAYS) {
-      tradeoffs.push(`The price list is ${ageDays} days old; prices may have changed.`);
+      tradeoffs.push(
+        mixed
+          ? `The published rate is ${ageDays} days old; it may have changed.`
+          : `The price list is ${ageDays} days old; prices may have changed.`,
+      );
     }
   }
 

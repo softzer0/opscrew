@@ -20,7 +20,7 @@ variable "image" {
 }
 
 variable "backups" {
-  description = "Enable Hetzner automated backups (20% of the server price)."
+  description = "Enable Hetzner automated backups (they cost extra; `opscrew design` shows the price)."
   type        = bool
   default     = false
 }

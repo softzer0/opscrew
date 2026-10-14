@@ -115,15 +115,16 @@ describe("DigitalOceanCatalog (live)", () => {
     expect((await catalog.listOffers()).length).toBeGreaterThan(0);
   });
 
-  it("reports daily backups at 30 %, USD traffic and no separate IPv4 cost", async () => {
+  it("labels backups and traffic as the dated published rates, never live", async () => {
     const { catalog, calls } = liveCatalog();
     const extras = await catalog.extras("fra1");
+    // The API has no backup or traffic prices: they come from the dated table, so say so.
     expect(extras).toEqual({
       backupPercent: 30,
       trafficPerTb: { amount: 10.24, currency: "USD" },
       pricesIncludeVat: false,
-      source: "live",
-      asOf: NOW.toISOString(),
+      source: "static",
+      asOf: STATIC_PRICES_AS_OF,
     });
     expect(extras.ipv4Monthly).toBeUndefined();
     expect(calls).toHaveLength(0);

@@ -30,7 +30,10 @@ describe("renderRunbook for DigitalOcean", () => {
     expect(backups).toMatch(/four weeks/);
     const off = renderRunbook(doPlan({ backups: false }), ctx).content;
     expect(off).toContain("Automated server backups are **off**");
-    expect(off).toContain("(30% of the Droplet price)");
+    expect(off).toContain(
+      "Turn them on with `opscrew design` (they cost extra; it shows the price) or make your own backups:",
+    );
+    expect(off).not.toContain("30% of the Droplet price");
   });
 
   it("explains the teardown: no delete protection, snapshot billing and retained backups", () => {
@@ -46,7 +49,9 @@ describe("renderRunbook for DigitalOcean", () => {
     expect(section).toMatch(/immediately/);
     expect(section).toMatch(/`opscrew destroy` is the safe/);
     expect(section).toMatch(/DigitalOcean snapshot of the Droplet/);
-    expect(section).toContain("$0.06 per GB per month");
+    expect(section).toContain("per GB per month");
+    expect(section).toContain("https://www.digitalocean.com/pricing");
+    expect(section).not.toMatch(/\$\d/);
     expect(section).toMatch(/kept for up to four weeks/);
     expect(section).toMatchSnapshot();
 

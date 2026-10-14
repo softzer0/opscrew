@@ -1,6 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { STATIC_PRICES_AS_OF as HETZNER_PRICES_AS_OF } from "@opscrew/connector-hetzner";
 import type { FetchLike } from "@opscrew/contracts";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import {
@@ -236,7 +237,11 @@ describe("runDesign", () => {
     const result = await runDesign(deps);
     expect(result.priceSource).toBe("static");
     expect(result.options.every((o) => o.cost.source === "static")).toBe(true);
-    expect(result.options.every((o) => o.summary.includes("estimate as of 2026-06-15"))).toBe(true);
+    expect(
+      result.options.every((o) =>
+        o.summary.includes(`estimate as of ${HETZNER_PRICES_AS_OF.slice(0, 10)}`),
+      ),
+    ).toBe(true);
     expect(result.warnings.join("\n")).toContain("HCLOUD_TOKEN is not set");
     expect(deps.reporter.lines.some((l) => l.level === "warn")).toBe(true);
     expect(result.plan.cost.source).toBe("static");

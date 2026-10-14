@@ -63,7 +63,6 @@ export interface ProviderText {
   runbook: {
     backupsOnDatabaseCell: string;
     backupsOn: string;
-    backupsOffPercent: string;
     cloudFirewall: string;
     /** What `opscrew destroy` deletes besides DNS, for the app named `app`. */
     deletes: (app: string) => string;
@@ -120,7 +119,6 @@ const PROVIDERS: Record<CloudProvider, ProviderText> = {
       backupsOnDatabaseCell: "Hetzner automated backups are on",
       backupsOn:
         "Hetzner takes a backup of the whole server every day and keeps the last seven (Hetzner Console → your server → Backups).",
-      backupsOffPercent: "20% of the server price",
       cloudFirewall: "the Hetzner firewall",
       deletes: () => "the server, its firewall and SSH key",
       connectNote: [],
@@ -136,9 +134,10 @@ const PROVIDERS: Record<CloudProvider, ProviderText> = {
       ],
       deleteProtectionNote: [],
       whatRemains: (repo, workflowPath) => [
-        "- **What remains:** the snapshot, if one was taken (Hetzner bills it per GB per month until you delete it in Hetzner",
-        `  Console → Snapshots), the container images in GitHub Container Registry (\`ghcr.io/${repo}\`), and the`,
-        `  files in this repository (\`opscrew/\` and \`${workflowPath}\`).`,
+        "- **What remains:** the snapshot, if one was taken (Hetzner bills it per GB per month at the rate listed on",
+        "  https://www.hetzner.com/cloud until you delete it in Hetzner Console → Snapshots), the container images in",
+        `  GitHub Container Registry (\`ghcr.io/${repo}\`), and the files in this repository (\`opscrew/\` and`,
+        `  \`${workflowPath}\`).`,
       ],
       hostKey: "the server's host key",
     },
@@ -178,7 +177,6 @@ const PROVIDERS: Record<CloudProvider, ProviderText> = {
       backupsOnDatabaseCell: "DigitalOcean daily backups are on",
       backupsOn:
         "DigitalOcean takes a backup of the whole Droplet every day (control panel at https://cloud.digitalocean.com/ → your Droplet → Backups). Each backup expires four weeks after it was taken, also after the Droplet is deleted.",
-      backupsOffPercent: "30% of the Droplet price",
       cloudFirewall: "the DigitalOcean cloud firewall",
       deletes: (app) => `the Droplet, its firewall, SSH key and app tag (\`opscrew-app:${app}\`)`,
       connectNote: [
@@ -202,8 +200,8 @@ const PROVIDERS: Record<CloudProvider, ProviderText> = {
         "  offers a snapshot and asks for the typed name first.",
       ],
       whatRemains: (repo, workflowPath, backups) => [
-        "- **What remains:** the snapshot, if one was taken (DigitalOcean bills it at $0.06 per GB per month until you delete",
-        "  it in the control panel at https://cloud.digitalocean.com/),",
+        "- **What remains:** the snapshot, if one was taken (DigitalOcean bills it per GB per month at the rate listed on",
+        "  https://www.digitalocean.com/pricing until you delete it in the control panel at https://cloud.digitalocean.com/),",
         ...(backups
           ? [
               "  the daily backups DigitalOcean already took (each is kept for up to four weeks after it was taken, then expires),",

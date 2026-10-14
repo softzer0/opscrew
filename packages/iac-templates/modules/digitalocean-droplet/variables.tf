@@ -20,7 +20,7 @@ variable "image" {
 }
 
 variable "backups" {
-  description = "Enable DigitalOcean daily backups (30% of the Droplet price; kept up to four weeks after the Droplet is deleted)."
+  description = "Enable DigitalOcean daily backups (they cost extra; `opscrew design` shows the price; kept up to four weeks after the Droplet is deleted)."
   type        = bool
   default     = false
 }

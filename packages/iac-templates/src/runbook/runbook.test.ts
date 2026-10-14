@@ -120,9 +120,11 @@ describe("renderRunbook", () => {
     expect(renderRunbook(plan({ postgres: false }), ctx).content).not.toContain(
       "## Database backups",
     );
-    expect(renderRunbook(plan({ backups: false }), ctx).content).toContain(
-      "Automated server backups are **off**",
+    const off = renderRunbook(plan({ backups: false }), ctx).content;
+    expect(off).toContain(
+      "Automated server backups are **off**. Turn them on with `opscrew design` (they cost extra; it shows the price) or make your own backups:",
     );
+    expect(off).not.toContain("20% of the server price");
   });
 
   it("explains how to check for drift without changing anything", () => {
@@ -207,6 +209,7 @@ describe("renderRunbook", () => {
     expect(section).toMatch(/backups are deleted\s+together\s+with\s+the\s+server/);
     expect(section).toMatch(/snapshot is the only copy/);
     expect(section).toMatch(/per GB per month/);
+    expect(section).toContain("https://www.hetzner.com/cloud");
     expect(section).toContain("ghcr.io/acme/shop");
     expect(section).toContain(".github/workflows/opscrew-deploy.yml");
     expect(section).toMatch(/deploy secrets/);

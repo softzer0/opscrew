@@ -5,10 +5,12 @@ import type { ComputeLocation } from "@opscrew/contracts";
  *
  * Source: Hetzner Docs, "Hetzner Price Adjustment 15 June 2026"
  * (https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/), "Cloud
- * servers" tables, prices valid for orders from 2026-06-15. Monthly and hourly, EUR, net
- * (excluding VAT) and excluding the primary IPv4. Live API prices always win when a token works.
+ * servers" tables, prices valid for orders from 2026-06-15; checked against the live Cloud API on
+ * 2026-10-14 (`static-prices.live.test.ts`), which added cpx02 and cpx12 in the EU and corrected
+ * ccx63 in the USA. Monthly and hourly, EUR, net (excluding VAT) and excluding the primary IPv4.
+ * Live API prices always win when a token works.
  */
-export const STATIC_PRICES_AS_OF = "2026-06-15T00:00:00.000Z";
+export const STATIC_PRICES_AS_OF = "2026-10-14T00:00:00.000Z";
 
 /** Price group a location belongs to in Hetzner's price list. */
 export type StaticPriceGroup = "eu" | "us" | "sin";
@@ -94,7 +96,7 @@ function type(
   return { name, vcpus, memoryGb, diskGb, cpuType, architecture, prices };
 }
 
-/** Server types with their price per group, exactly as in research.md "Hetzner prices". */
+/** Server types with their price per group (research.md "Hetzner prices", refreshed 2026-10-14). */
 export const STATIC_SERVER_TYPES: readonly StaticServerType[] = [
   // Cost-optimized (shared, x86) — EU only.
   type("cx23", 2, 4, 40, { eu: [5.49, 0.0088] }),
@@ -102,7 +104,8 @@ export const STATIC_SERVER_TYPES: readonly StaticServerType[] = [
   type("cx43", 8, 16, 160, { eu: [15.99, 0.0256] }),
   type("cx53", 16, 32, 320, { eu: [29.49, 0.0473] }),
   // Regular performance (shared, x86), current generation — EU and Singapore.
-  type("cpx12", 1, 2, 40, { sin: [15.49, 0.0248] }),
+  type("cpx02", 1, 1, 20, { eu: [5.99, 0.0096], sin: [7.49, 0.012] }),
+  type("cpx12", 1, 2, 40, { eu: [11.49, 0.0184], sin: [15.49, 0.0248] }),
   type("cpx22", 2, 4, 80, { eu: [19.49, 0.0312], sin: [26.49, 0.0425] }),
   type("cpx32", 4, 8, 160, { eu: [35.49, 0.0569], sin: [48.99, 0.0785] }),
   type("cpx42", 8, 16, 320, { eu: [69.49, 0.1114], sin: [93.49, 0.1498] }),
@@ -122,7 +125,7 @@ export const STATIC_SERVER_TYPES: readonly StaticServerType[] = [
   type("ccx53", 32, 128, 600, { eu: [533.49, 0.855], us: [538.49, 0.863], sin: [651.99, 1.0449] }),
   type("ccx63", 48, 192, 960, {
     eu: [853.49, 1.3678],
-    us: [853.49, 1.3782],
+    us: [859.99, 1.3782],
     sin: [1036.49, 1.661],
   }),
   // ARM (shared) — EU only. Listed for completeness; design excludes ARM.

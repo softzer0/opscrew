@@ -59,7 +59,7 @@ describe("hetznerConnector", () => {
     const tool = c.tools().find((t) => t.name === "hetzner_list_offers");
     const result = await tool?.handler({ location: "nbg1" }, ctx);
     expect(result?.isError).toBeUndefined();
-    expect(result?.text).toContain("2026-06-15");
+    expect(result?.text).toContain("2026-10-14");
     expect(result?.text).toContain('"cx23"');
     expect(calls).toHaveLength(0);
   });
