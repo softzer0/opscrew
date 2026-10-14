@@ -78,10 +78,10 @@ only the Code-change agent made, so every Next.js app deployed without a model f
   written to), and an opt-in local Docker pass MUST build and start every example's image and get
   an answer from its health route before any server is created (founder, 2026-10-14). The matrix:
   Django + Postgres, FastAPI + Redis, Flask + SQLAlchemy + Celery (the founder's
-  `softzer0/slog_cvrp_app`; its web process now, its Celery worker with feature 010's component
+  `softzer0/slog_cvrp_app`; its web process now, its Celery worker with feature 011's component
   model, whose acceptance test it becomes), Express, NestJS, Fastify, Hono, Vite + React, Angular,
   Next.js, Nuxt, SvelteKit, React Router and Astro. Stacks without a recipe today (Rust, Go,
-  Rails, Laravel, Spring Boot, .NET) wait for feature 009's builders.
+  Rails, Laravel, Spring Boot, .NET) wait for feature 010's builders.
 - **FR-813**: Database migrations MUST run on every deploy before the new version takes traffic:
   the plan records a release command (a Procfile `release:` line, else the framework's own:
   Django `manage.py migrate`, Flask-Migrate, Flask-DB, Alembic, Prisma `migrate deploy`), the user
@@ -98,7 +98,7 @@ only the Code-change agent made, so every Next.js app deployed without a model f
   2026-10-14: "you just covered too little"): Python (Django, Alembic incl. SQLModel, Flask-Migrate,
   Flask-DB, Tortoise/Aerich, Piccolo, peewee-migrate, Yoyo, Masonite), Node/TS (Prisma, Drizzle,
   TypeORM, Sequelize, Knex/Objection, MikroORM, Kysely, node-pg-migrate, db-migrate, AdonisJS
-  Lucid, Payload, Medusa, KeystoneJS, Redwood), and, detected now for feature 009's builders,
+  Lucid, Payload, Medusa, KeystoneJS, Redwood), and, detected now for feature 010's builders,
   Rails, Hanami, Sequel, Laravel, Symfony/Doctrine, golang-migrate, goose, Atlas, Diesel, sqlx,
   SeaORM, Phoenix/Ecto and EF Core. Apps that migrate at startup (Spring with Flyway/Liquibase,
   GORM AutoMigrate, `sqlx::migrate!`, Strapi) get no command and `design` says why. A command is
@@ -131,5 +131,5 @@ only the Code-change agent made, so every Next.js app deployed without a model f
   this run (no credentials); their passes stay skipped.
 - poasjet.com is restored to Afternic's nameservers after the test, on the founder's instruction.
 - More tasks are appended as the live runs find problems.
-- SC-804 holds for the examples; the founder's `softzer0/slog_cvrp_app` deploys once feature 009
-  checks a found Dockerfile (its own does not build) and 010 runs its Celery worker.
+- SC-804 holds for the examples; the founder's `softzer0/slog_cvrp_app` deploys once feature 010
+  checks a found Dockerfile (its own does not build) and 011 runs its Celery worker.
