@@ -244,6 +244,33 @@ describe("detectProject scenarios", () => {
     ]);
   });
 
+  it("records a default only when every read in the code has one", async () => {
+    const root = await tree({
+      "requirements.txt": "Django==5.1\n",
+      "mysite/settings.py": [
+        'SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]',
+        'DEBUG = os.environ.get("DJANGO_DEBUG") == "1"',
+        'ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost").split(",")',
+        'LEVEL = os.environ.get("LOG_LEVEL", "info")',
+      ].join("\n"),
+      "mysite/logs.py": 'LEVEL = os.environ["LOG_LEVEL"]\n',
+      ".env.example": "DJANGO_DEBUG=\nSENTRY_DSN=\n",
+    });
+    const defaults = Object.fromEntries(
+      (await detectProject(root)).envVars.map((v) => [v.name, v.hasDefault ?? false]),
+    );
+    expect(defaults).toEqual({
+      DJANGO_ALLOWED_HOSTS: true,
+      // Also listed in .env.example; the code's default still counts.
+      DJANGO_DEBUG: true,
+      DJANGO_SECRET_KEY: false,
+      // Read with a default in one file and without one in another.
+      LOG_LEVEL: false,
+      // Only in .env.example: required.
+      SENTRY_DSN: false,
+    });
+  });
+
   it("breaks platform ties in the documented order", async () => {
     const root = await tree({
       ".bolt/prompt": "x",

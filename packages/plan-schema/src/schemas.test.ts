@@ -146,6 +146,17 @@ describe("ProjectFacts", () => {
     );
   });
 
+  it("records whether an env var has a default in the code (absent means it has none)", async () => {
+    const f = await facts();
+    const [first, ...rest] = f.envVars;
+    if (!first) throw new Error("fixture has no env vars");
+    const withDefault = { ...f, envVars: [{ ...first, hasDefault: true }, ...rest] };
+    expect(ProjectFactsSchema.parse(withDefault).envVars[0]?.hasDefault).toBe(true);
+    expect(ProjectFactsSchema.parse(f).envVars[0]?.hasDefault).toBeUndefined();
+    const wrong = { ...f, envVars: [{ ...first, hasDefault: "yes" }, ...rest] };
+    expect(pathsOf(ProjectFactsSchema.safeParse(wrong))).toEqual(["envVars.0.hasDefault"]);
+  });
+
   it("rejects credentials in the git remote URL and env var values as names", async () => {
     const f = await facts();
     const withToken = {
@@ -285,6 +296,19 @@ describe("DeployPlan target provider", () => {
     }
     const aws = { ...plan, target: { ...plan.target, provider: "aws" } };
     expect(pathsOf(DeployPlanSchema.safeParse(aws))).toEqual(["target.provider"]);
+  });
+
+  it("marks app variables the code has a default for as optional", async () => {
+    const plan = await validPlan();
+    const env = [
+      { name: "ALLOWED_HOSTS", secret: false, source: "derived" },
+      { name: "DEBUG", secret: false, source: "user", optional: true },
+      { name: "STRIPE_SECRET_KEY", secret: true, source: "user" },
+    ];
+    const parsed = DeployPlanSchema.parse({ ...plan, app: { ...plan.app, env } });
+    expect(parsed.app.env).toEqual(env);
+    const wrong = { ...plan, app: { ...plan.app, env: [{ ...env[1], optional: "yes" }] } };
+    expect(pathsOf(DeployPlanSchema.safeParse(wrong))).toEqual(["app.env.0.optional"]);
   });
 
   it("fills the provider's own Ubuntu image when the image is omitted", async () => {

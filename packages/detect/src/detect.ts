@@ -363,7 +363,15 @@ export async function detectProjectDetails(
     set.add(file);
     envFiles.set(name, set);
   };
-  for (const [file, found] of signals) for (const name of found.envNames) addEnv(name, file);
+  // A variable has a default only when every read in the code has one; names found only in
+  // example env files stay required.
+  const envDefaults = new Map<string, boolean>();
+  for (const [file, found] of signals) {
+    for (const read of found.envReads) {
+      addEnv(read.name, file);
+      envDefaults.set(read.name, (envDefaults.get(read.name) ?? true) && read.hasDefault);
+    }
+  }
   for (const file of scopedFiles.filter(isEnvExampleFile)) {
     for (const name of parseEnvExampleKeys((await read(file)) ?? "")) addEnv(name, file);
   }
@@ -372,6 +380,7 @@ export async function detectProjectDetails(
     files: sortStrings(envFiles.get(name) ?? []),
     clientExposed: isClientExposed(name),
     secretLikely: isSecretLikely(name),
+    ...(envDefaults.get(name) === true ? { hasDefault: true } : {}),
   }));
 
   // Services.

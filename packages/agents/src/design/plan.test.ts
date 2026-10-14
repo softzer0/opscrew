@@ -1,5 +1,8 @@
+import { fileURLToPath } from "node:url";
+import { detectProject } from "@opscrew/detect";
 import { DeployPlanSchema, parseArtifact, serializeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { assembleAppEnv, parseDotenv } from "../shared";
 import {
   euCatalog,
   makeFacts,
@@ -117,6 +120,48 @@ describe("optionToPlan", () => {
     }
   });
 
+  it("marks variables with a default as optional and derives host lists (Django)", async () => {
+    const variable = (name: string, extra: { secretLikely?: boolean; hasDefault?: boolean }) => ({
+      name,
+      files: ["mysite/settings.py"],
+      clientExposed: false,
+      secretLikely: extra.secretLikely ?? false,
+      ...(extra.hasDefault !== undefined ? { hasDefault: extra.hasDefault } : {}),
+    });
+    const facts = makeFacts({
+      languages: ["python"],
+      frameworks: [{ name: "django", path: "." }],
+      envVars: [
+        variable("API_TOKEN", { secretLikely: true }),
+        variable("CSRF_TRUSTED_ORIGINS", {}),
+        variable("DATABASE_URL", { secretLikely: true }),
+        variable("DJANGO_ALLOWED_HOSTS", { hasDefault: true }),
+        variable("DJANGO_DEBUG", { hasDefault: true }),
+        variable("DJANGO_SECRET_KEY", { secretLikely: true }),
+        variable("LOG_LEVEL", { hasDefault: false }),
+        // `os.environ.get("SIGNING_KEY", "dev-insecure")`: a secret's default is a placeholder.
+        variable("SIGNING_KEY", { secretLikely: true, hasDefault: true }),
+      ],
+      services: [{ kind: "postgres", evidence: ["dependency:psycopg"] }],
+    });
+    const requirements = makeRequirements({ domain: "shop.example.com", dnsProvider: "other" });
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+    expect(plan.app.env).toEqual([
+      { name: "API_TOKEN", secret: true, source: "user" },
+      { name: "CSRF_TRUSTED_ORIGINS", secret: false, source: "derived" },
+      { name: "DATABASE_URL", secret: true, source: "derived" },
+      { name: "DJANGO_ALLOWED_HOSTS", secret: false, source: "derived", optional: true },
+      { name: "DJANGO_DEBUG", secret: false, source: "user", optional: true },
+      { name: "DJANGO_SECRET_KEY", secret: true, source: "generated" },
+      { name: "LOG_LEVEL", secret: false, source: "user" },
+      { name: "SIGNING_KEY", secret: true, source: "user" },
+    ]);
+    // The plan never holds the domain or the server's address as a value, only names.
+    expect(parseArtifact("plan", serializeArtifact("plan", plan), "plan.yaml")).toEqual(plan);
+  });
+
   it("adds REDIS_URL as a derived variable when Redis runs on the server", async () => {
     const facts = makeFacts({
       languages: ["python"],
@@ -149,5 +194,55 @@ describe("app name and port", () => {
     expect(appPortFor(makeFacts({ languages: ["python"] }))).toBe(8000);
     expect(appPortFor(staticSpaFacts())).toBe(8080);
     expect(appPortFor(makeFacts({ languages: ["go"] }))).toBe(3000);
+  });
+});
+
+describe("examples/django-postgres: facts → plan → production environment", () => {
+  const EXAMPLE = fileURLToPath(new URL("../../../../examples/django-postgres/", import.meta.url));
+  const ADDRESS = "203.0.113.7";
+
+  async function djangoPlan(domain?: string) {
+    const facts = await detectProject(EXAMPLE);
+    const requirements = makeRequirements(
+      domain === undefined ? {} : { dnsProvider: "other", domain },
+    );
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    return optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+  }
+
+  it("plans the debug flag as optional, the host list as derived and the secret key as generated", async () => {
+    const plan = await djangoPlan("shop.example.com");
+    const byName = Object.fromEntries(plan.app.env.map((v) => [v.name, v]));
+    expect(byName.DJANGO_DEBUG).toEqual({
+      name: "DJANGO_DEBUG",
+      secret: false,
+      source: "user",
+      optional: true,
+    });
+    expect(byName.DJANGO_ALLOWED_HOSTS).toMatchObject({ source: "derived", optional: true });
+    expect(byName.DJANGO_SECRET_KEY).toMatchObject({ source: "generated", secret: true });
+    expect(byName.DATABASE_URL).toMatchObject({ source: "derived" });
+    expect(plan.services.postgres).toBe(true);
+  });
+
+  it("provisions from an empty env file with a domain, or with only the server's address", async () => {
+    const withDomain = await djangoPlan("shop.example.com");
+    const onDomain = await assembleAppEnv({ plan: withDomain, dotenvText: "" });
+    const domainValues = parseDotenv(onDomain.appEnv);
+    expect(domainValues.get("DJANGO_ALLOWED_HOSTS")).toBe("shop.example.com");
+    expect(domainValues.has("DJANGO_DEBUG")).toBe(false);
+    expect(domainValues.get("DJANGO_SECRET_KEY")).toHaveLength(32);
+    expect(onDomain.defaulted).toEqual(["DJANGO_DEBUG"]);
+
+    const bare = await djangoPlan();
+    const onAddress = await assembleAppEnv({ plan: bare, dotenvText: "", serverHost: ADDRESS });
+    expect(parseDotenv(onAddress.appEnv).get("DJANGO_ALLOWED_HOSTS")).toBe(ADDRESS);
+    // Only names leave the function, and the plan holds no values at all.
+    expect(onAddress.names.join(" ")).not.toContain(ADDRESS);
+    expect(serializeArtifact("plan", bare)).not.toContain(ADDRESS);
+    expect(serializeArtifact("plan", withDomain)).not.toContain(
+      domainValues.get("DJANGO_SECRET_KEY") as string,
+    );
   });
 });

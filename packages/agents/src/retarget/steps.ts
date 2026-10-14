@@ -260,7 +260,8 @@ export async function storeDeploySecrets(
   const pinned = await pinHost(session, host, provider);
   let environment: Awaited<ReturnType<typeof buildAppEnvironment>>;
   try {
-    environment = await buildAppEnvironment(deps, plan, session.services);
+    // Without a domain, host lists (`ALLOWED_HOSTS`) name the server these secrets point to.
+    environment = await buildAppEnvironment(deps, plan, session.services, host);
   } catch (error) {
     if (error instanceof OpsCrewError && error.code === "INVALID_INPUT") {
       throw new OpsCrewError(error.code, error.message, {

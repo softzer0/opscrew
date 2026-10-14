@@ -35,11 +35,16 @@ export function createEnvPrompt(
   return async (question) => {
     if (question.localValueAvailable) {
       const choice = await prompts.select({
-        message: `Production value for ${question.name}`,
+        message: `Production value for ${question.name}${question.optional ? " (optional)" : ""}`,
         options: [
           { value: USE_LOCAL, label: "Use the value from your local .env" },
           { value: TYPE, label: "Type a different value for production" },
-          { value: SKIP, label: "Leave it unset" },
+          {
+            value: SKIP,
+            label: question.optional
+              ? "Leave it unset and keep the app's default"
+              : "Leave it unset",
+          },
         ],
         initialValue: USE_LOCAL,
       });
@@ -47,7 +52,9 @@ export function createEnvPrompt(
       if (choice === USE_LOCAL) return { useLocal: true };
       if (choice === SKIP) return { skip: true };
     }
-    const message = `Production value for ${question.name} (leave empty to skip)`;
+    const message = question.optional
+      ? `Production value for ${question.name} (optional: leave empty to keep the app's default)`
+      : `Production value for ${question.name} (leave empty to skip)`;
     const answer =
       question.secret && secretPrompt !== undefined
         ? await secretPrompt({ message })

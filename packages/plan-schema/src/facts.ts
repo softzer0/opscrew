@@ -74,6 +74,11 @@ export const ProjectFactsSchema = z.strictObject({
         files: z.array(RepoPathSchema),
         clientExposed: z.boolean(),
         secretLikely: z.boolean(),
+        /**
+         * True when every read in the code falls back to a default when the variable is unset
+         * (`os.environ.get("X", "…")`, `process.env.X ?? "…"`); absent means false.
+         */
+        hasDefault: z.boolean().optional(),
       }),
     )
     .superRefine(strictlyAscending((v) => v.name, "environment variable")),

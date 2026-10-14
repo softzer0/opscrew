@@ -30,6 +30,19 @@ describe("createEnvPrompt", () => {
     expect(await ask(question(false, false))).toEqual({ skip: true });
   });
 
+  it("says a variable with a default in the code is optional and keeps the default on empty", async () => {
+    const prompts = new ScriptedPrompts(["", "skip"]);
+    const ask = createEnvPrompt(prompts);
+    const debug = { name: "DJANGO_DEBUG", secret: false, optional: true };
+    expect(await ask({ ...debug, localValueAvailable: false })).toEqual({ skip: true });
+    expect(prompts.calls[0]?.message).toBe(
+      "Production value for DJANGO_DEBUG (optional: leave empty to keep the app's default)",
+    );
+    expect(await ask({ ...debug, localValueAvailable: true })).toEqual({ skip: true });
+    expect(prompts.calls[1]?.message).toBe("Production value for DJANGO_DEBUG (optional)");
+    expect(prompts.calls[1]?.options?.[2]?.label).toBe("Leave it unset and keep the app's default");
+  });
+
   it("stops with a refusal when the user cancels", async () => {
     const ask = createEnvPrompt(new ScriptedPrompts([CANCEL]));
     await expect(ask(question(false))).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });

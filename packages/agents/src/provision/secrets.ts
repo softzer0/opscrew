@@ -5,7 +5,13 @@ import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { type AppEnvironment, assembleAppEnv, type GeneratedValues, parseDotenv } from "../shared";
+import {
+  type AppEnvironment,
+  assembleAppEnv,
+  type GeneratedValues,
+  hostListKind,
+  parseDotenv,
+} from "../shared";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
 
@@ -38,11 +44,14 @@ async function readGenerated(deps: PhaseDeps): Promise<GeneratedValues | undefin
  * `.env` (only after the user confirms it) or let them type it; non-interactive runs read the file
  * named by `OPSCREW_APP_ENV_FILE`. Generated values (database password, app secrets) are kept in
  * a private file so re-running provision never changes the password Postgres was created with.
+ * `serverHost` (the address the deploy secrets point to) fills host lists such as
+ * `ALLOWED_HOSTS` when the plan has no domain; it is never printed.
  */
 export async function buildAppEnvironment(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: ProvisionServices,
+  serverHost?: string,
 ): Promise<AppEnvironment> {
   let dotenvText: string | undefined;
   const ask = deps.interactive ? services.askEnv : undefined;
@@ -65,15 +74,38 @@ export async function buildAppEnvironment(
     plan,
     ...(dotenvText !== undefined ? { dotenvText } : {}),
     ...(ask ? { ask } : {}),
+    ...(serverHost !== undefined ? { serverHost } : {}),
     ...(await readGenerated(deps).then((previous) => (previous ? { previous } : {}))),
   });
   await writeFileAtomic(generatedValuesFile(deps), `${JSON.stringify(environment.generated)}\n`);
   for (const text of [environment.appEnv, environment.dbEnv ?? "", environment.buildEnv]) {
-    for (const value of parseDotenv(text).values()) {
-      if (value.length >= 8) deps.redactor.addLiteral(value, "app-env");
+    for (const [name, value] of parseDotenv(text)) {
+      // Host lists hold the domain (or the address), which OpsCrew's own messages show as usual.
+      if (value.length >= 8 && hostListKind(name) === undefined) {
+        deps.redactor.addLiteral(value, "app-env");
+      }
     }
   }
+  reportUnsetVariables(deps, environment);
   return environment;
+}
+
+/** Says which variables were left unset and why (names only, never values). */
+function reportUnsetVariables(deps: PhaseDeps, environment: AppEnvironment): void {
+  const list = (names: string[]) => names.join(", ");
+  if (environment.defaulted.length > 0) {
+    const [one] = environment.defaulted;
+    deps.reporter.info(
+      environment.defaulted.length === 1
+        ? `${one} has no production value, so the app uses the default in its code.`
+        : `${list(environment.defaulted)} have no production values, so the app uses the defaults in its code.`,
+    );
+  }
+  if (environment.unresolved.length > 0) {
+    deps.reporter.warn(
+      `${list(environment.unresolved)} must list the app's address, but the plan has no domain and the server's address is not known yet, so they are left unset for now. Run \`opscrew provision\` again once the server exists; it fills them in.`,
+    );
+  }
 }
 
 /** The GitHub Actions secrets the deploy workflow reads. */

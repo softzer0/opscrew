@@ -7,6 +7,7 @@ import {
   type Requirements,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
+import { hostListKind } from "../shared";
 import {
   appDirOf,
   appDockerfile,
@@ -66,7 +67,14 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     env.set(variable.name, {
       name: variable.name,
       secret: variable.secretLikely,
-      source: GENERATED_SECRETS.test(variable.name) ? "generated" : "user",
+      // Host lists come from the deployment (its domain or server), never from the user.
+      source: GENERATED_SECRETS.test(variable.name)
+        ? "generated"
+        : hostListKind(variable.name) !== undefined
+          ? "derived"
+          : "user",
+      // A code default for a secret is a development placeholder: production needs a value.
+      ...(variable.hasDefault === true && !variable.secretLikely ? { optional: true } : {}),
     });
   }
   if (services.postgres) env.set("DATABASE_URL", derived("DATABASE_URL", true));

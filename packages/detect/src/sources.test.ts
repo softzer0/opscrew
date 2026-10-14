@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { healthRouteFromPath, scanSource } from "./sources";
 
+describe("environment variables in a source file", () => {
+  it("lists names and whether each read has a default", () => {
+    const signals = scanSource('const a = process.env.API_URL ?? "x";\nprocess.env.TOKEN;\n');
+    expect(signals.envNames).toEqual(["API_URL", "TOKEN"]);
+    expect(signals.envReads).toEqual([
+      { name: "API_URL", hasDefault: true },
+      { name: "TOKEN", hasDefault: false },
+    ]);
+  });
+});
+
 describe("file-system health routes of SSR frameworks", () => {
   it.each([
     ["server/routes/health.ts", "/health"],

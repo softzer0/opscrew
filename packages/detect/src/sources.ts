@@ -2,7 +2,7 @@
  * Per-file signal extraction from source code: environment-variable names, listening ports,
  * health routes, Python ASGI/WSGI app objects and database URL schemes. Pure functions over text.
  */
-import { extractEnvReferences } from "./env";
+import { type EnvRead, extractEnvReads } from "./env";
 import { basenameRel } from "./paths";
 
 const SOURCE_EXTENSIONS = new Set([
@@ -46,6 +46,8 @@ export interface PythonAppObject {
 /** Signals found in one source file. */
 export interface SourceSignals {
   envNames: string[];
+  /** The same variables, each with whether every read in the file has a default. */
+  envReads: EnvRead[];
   ports: number[];
   healthPaths: string[];
   appObjects: PythonAppObject[];
@@ -190,8 +192,10 @@ export function scanSource(text: string): SourceSignals {
             : scheme,
     );
   }
+  const envReads = extractEnvReads(text);
   return {
-    envNames: extractEnvReferences(text),
+    envNames: envReads.map((read) => read.name),
+    envReads,
     ports,
     healthPaths,
     appObjects,

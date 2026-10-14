@@ -405,7 +405,8 @@ async function provisionFlow(
   // 8–9. Production environment and GitHub Actions secrets
   let secretsStored = false;
   if (options.secrets !== false) {
-    const environment = await buildAppEnvironment(deps, plan, services);
+    // Without a domain, host lists (`ALLOWED_HOSTS`) hold the address recorded in local state.
+    const environment = await buildAppEnvironment(deps, plan, services, ipv4);
     await setDeploySecrets(
       deps,
       github,

@@ -198,6 +198,67 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect((await readServerAddresses(deps.paths)).deployment?.ipv4).toBe(SERVER_IPV4);
   });
 
+  it("keeps the app's defaults and fills host lists with the address only in the deploy secrets", async () => {
+    const base = testPlan();
+    const plan = {
+      ...base,
+      app: {
+        ...base.app,
+        env: [
+          { name: "CSRF_TRUSTED_ORIGINS", secret: false, source: "derived" as const },
+          { name: "DATABASE_URL", secret: true, source: "derived" as const },
+          {
+            name: "DJANGO_ALLOWED_HOSTS",
+            secret: false,
+            source: "derived" as const,
+            optional: true,
+          },
+          { name: "DJANGO_DEBUG", secret: false, source: "user" as const, optional: true },
+          { name: "DJANGO_SECRET_KEY", secret: true, source: "generated" as const },
+        ],
+      },
+    };
+    const { deps, github, services, root, git } = await setup({ plan });
+    await writeFile(join(root, "production.env"), "");
+    await runProvision(deps, { services });
+
+    const appEnv = github.secrets.get("OPSCREW_APP_ENV") ?? "";
+    expect(appEnv).toContain(`DJANGO_ALLOWED_HOSTS=${SERVER_IPV4}\n`);
+    expect(appEnv).toContain(`CSRF_TRUSTED_ORIGINS=http://${SERVER_IPV4}\n`);
+    expect(appEnv).not.toContain("DJANGO_DEBUG");
+    expect(deps.reporter.text()).toContain(
+      "DJANGO_DEBUG has no production value, so the app uses the default in its code.",
+    );
+    // The address is in the deploy secrets only: not in the plan, the commit or the pull request.
+    const published = `${await git(root, "show", "HEAD")}\n${github.pulls[0]?.body}`;
+    expect(published).not.toContain(SERVER_IPV4);
+    expect(await readFile(deps.paths.files.plan, "utf8")).not.toContain(SERVER_IPV4);
+    const secretKey = /DJANGO_SECRET_KEY=(\S+)/.exec(appEnv)?.[1] as string;
+    expect(everythingPrinted(deps)).not.toContain(secretKey);
+  });
+
+  it("fills host lists with the domain when the plan has one", async () => {
+    const base = testPlan({ domain: "shop.example.com", www: true });
+    const plan = {
+      ...base,
+      app: {
+        ...base.app,
+        env: [
+          ...base.app.env,
+          { name: "ALLOWED_HOSTS", secret: false, source: "derived" as const },
+        ],
+      },
+    };
+    const { deps, github, services } = await setup({
+      plan,
+      services: { cloudflare: fakeCloudflare() },
+    });
+    await runProvision(deps, { services });
+    const appEnv = github.secrets.get("OPSCREW_APP_ENV") ?? "";
+    expect(appEnv).toContain("ALLOWED_HOSTS=shop.example.com,www.shop.example.com\n");
+    expect(appEnv).not.toContain(SERVER_IPV4);
+  });
+
   it("clears the teardown record before a new apply starts, even when the apply fails", async () => {
     const plan = testPlan();
     const engine = new FakeEngine({ applyOk: false });

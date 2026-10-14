@@ -106,6 +106,7 @@ describe("chosen app directory: two-app monorepo", () => {
           files: ["apps/api/src/server.js"],
           clientExposed: false,
           secretLikely: false,
+          hasDefault: true,
         },
       ],
       services: [{ kind: "postgres", evidence: ["dependency:pg", "env:DATABASE_URL"] }],

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { extractEnvReads } from "./env";
 import {
   extractEnvReferences,
   isClientExposed,
@@ -35,6 +36,126 @@ describe("extractEnvReferences", () => {
   });
 });
 
+describe("extractEnvReads", () => {
+  const defaults = (text: string) =>
+    Object.fromEntries(extractEnvReads(text).map((read) => [read.name, read.hasDefault]));
+
+  it("records Python reads with a default", () => {
+    const text = [
+      'SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]',
+      'DEBUG = os.environ.get("DJANGO_DEBUG") == "1"',
+      'ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")',
+      'PORT = int(os.getenv("PY_PORT", 8000))',
+      "LEVEL = environ.get(\n    'LOG_LEVEL',\n    'info',\n)",
+      'URL = getenv("SERVICE_URL") or "http://localhost"',
+      'MODE = os.environ.get("MODE_FLAG") in ("1", "true")',
+      'TOKEN = os.getenv("API_TOKEN")',
+      'NAME = os.environ.get("APP_NAME")',
+      'X = os.environ["INDEXED"] or "x"',
+      'host = request.environ.get("HTTP_HOST", "")',
+    ].join("\n");
+    expect(defaults(text)).toEqual({
+      API_TOKEN: false,
+      APP_NAME: false,
+      DJANGO_ALLOWED_HOSTS: true,
+      DJANGO_DEBUG: true,
+      DJANGO_SECRET_KEY: false,
+      INDEXED: false,
+      LOG_LEVEL: true,
+      MODE_FLAG: true,
+      PY_PORT: true,
+      SERVICE_URL: true,
+    });
+  });
+
+  it("records JavaScript and TypeScript reads with a default", () => {
+    const text = [
+      'const a = process.env.API_URL ?? "http://localhost";',
+      "const b = process.env.LOG_LEVEL || 'info';",
+      'const c = process.env["FEATURE"] ?? "off";',
+      'const d = process.env.DEBUG_FLAG === "1";',
+      "const e = process.env.STRIPE_KEY;",
+      'const f = import.meta.env.VITE_TITLE ?? "Shop";',
+      'const g = Deno.env.get("DENO_PORT") ?? "8000";',
+      'const { DESTRUCT_A, DESTRUCT_B: b2 = "x", DESTRUCT_C = 1 } = process.env;',
+      "if (process.env.REQUIRED_FLAG === undefined) throw new Error();",
+    ].join("\n");
+    expect(defaults(text)).toEqual({
+      API_URL: true,
+      DEBUG_FLAG: true,
+      DENO_PORT: true,
+      DESTRUCT_A: false,
+      DESTRUCT_B: true,
+      DESTRUCT_C: true,
+      FEATURE: true,
+      LOG_LEVEL: true,
+      REQUIRED_FLAG: false,
+      STRIPE_KEY: false,
+      VITE_TITLE: true,
+    });
+  });
+
+  it.each([
+    'const key = process.env.STRIPE_SECRET_KEY || "";',
+    "const key = process.env.STRIPE_SECRET_KEY || '';",
+    "const key = process.env.STRIPE_SECRET_KEY ?? ``;",
+    'const key = process.env.STRIPE_SECRET_KEY ?? "";',
+    "const key = process.env.STRIPE_SECRET_KEY ?? null;",
+    "const key = process.env.STRIPE_SECRET_KEY ?? undefined;",
+    'const key = process.env.STRIPE_SECRET_KEY ?? missing("STRIPE_SECRET_KEY");',
+    'const key = process.env.STRIPE_SECRET_KEY ?? (() => { throw new Error("x"); })();',
+    'const key = process.env.STRIPE_SECRET_KEY ?? throw new Error("x");',
+    'const key = import.meta.env.STRIPE_SECRET_KEY || "";',
+    'const { STRIPE_SECRET_KEY = "" } = process.env;',
+    "const { STRIPE_SECRET_KEY: key = '' } = process.env;",
+    'key = os.getenv("STRIPE_SECRET_KEY", None)',
+    'key = os.environ.get("STRIPE_SECRET_KEY", "")',
+    'key = os.environ.get("STRIPE_SECRET_KEY", default="")',
+    'key = os.environ.get("STRIPE_SECRET_KEY") or ""',
+    'key = os.environ.get("STRIPE_SECRET_KEY") or None',
+  ])("a placeholder fallback is not a default: %s", (text) => {
+    expect(extractEnvReads(text)).toEqual([{ name: "STRIPE_SECRET_KEY", hasDefault: false }]);
+  });
+
+  it("keeps real literal defaults, including a keyword argument", () => {
+    const text = [
+      'key = os.environ.get("SIGNING_KEY", "dev-insecure")',
+      'level = os.getenv("LOG_LEVEL", default="info")',
+      "const port = process.env.PORT_NUMBER || 3000;",
+    ].join("\n");
+    expect(extractEnvReads(text)).toEqual([
+      { name: "LOG_LEVEL", hasDefault: true },
+      { name: "PORT_NUMBER", hasDefault: true },
+      { name: "SIGNING_KEY", hasDefault: true },
+    ]);
+  });
+
+  it("treats a negated read as a guard that makes the variable required", () => {
+    const text = [
+      'if (!process.env.DATABASE_URL || process.env.DATABASE_URL === "") throw new Error();',
+      'if not os.environ.get("API_TOKEN") or len(os.environ.get("API_TOKEN", "x")) < 8:',
+      "    raise RuntimeError()",
+    ].join("\n");
+    expect(extractEnvReads(text)).toEqual([
+      { name: "API_TOKEN", hasDefault: false },
+      { name: "DATABASE_URL", hasDefault: false },
+    ]);
+  });
+
+  it("treats a variable read once with and once without a default as required", () => {
+    const text = [
+      'const a = process.env.API_URL ?? "http://localhost";',
+      "fetch(process.env.API_URL);",
+      'x = os.environ.get("PY_VAR", "x")',
+      'y = os.environ["PY_VAR"]',
+    ].join("\n");
+    expect(extractEnvReads(text)).toEqual([
+      { name: "API_URL", hasDefault: false },
+      { name: "PY_VAR", hasDefault: false },
+    ]);
+  });
+});
+
 describe("classification", () => {
   it.each([
     ["VITE_SUPABASE_URL", true, false],
@@ -54,6 +175,14 @@ describe("classification", () => {
     ["DB_PASSWD", false, true],
     ["PORT", false, false],
     ["REDIS_URL", false, false],
+    // Server-side keys are secret unless public by design (a dev default must not make them optional).
+    ["SIGNING_KEY", false, true],
+    ["ENCRYPTION_KEY", false, true],
+    ["STRIPE_KEY", false, true],
+    ["MAPBOX_APIKEY", false, true],
+    ["STRIPE_PUBLISHABLE_KEY", false, false],
+    ["TURNSTILE_SITE_KEY", false, false],
+    ["KEYCLOAK_URL", false, false],
   ])("%s → clientExposed %s, secretLikely %s", (name, client, secret) => {
     expect(isClientExposed(name)).toBe(client);
     expect(isSecretLikely(name)).toBe(secret);

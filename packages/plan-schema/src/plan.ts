@@ -94,7 +94,16 @@ const DeployPlanObjectSchema = z
         z.strictObject({
           name: EnvVarNameSchema,
           secret: z.boolean(),
+          /**
+           * `user`: the user provides it; `generated`: a random secret OpsCrew creates;
+           * `derived`: OpsCrew fills it from the deployment (container URLs, the domain).
+           */
           source: z.enum(["user", "generated", "derived"]),
+          /**
+           * True when the code has a default for it: `provision` may leave it unset and the app
+           * keeps that default. Absent means false (a value is required).
+           */
+          optional: z.boolean().optional(),
         }),
       ),
     }),
