@@ -33,14 +33,20 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    user already has (`own`: a rented server elsewhere, a company machine or a home server). Its
    default is the provider whose API token is already set (`HCLOUD_TOKEN` or
    `DIGITALOCEAN_TOKEN`), otherwise Hetzner Cloud; let the user choose. For `own`, also ask the
-   returned server questions and pass them as `server.host`, `server.port`, `server.user`,
-   `server.key` and `server.reachable`:
+   returned server questions and pass them with the `server.` answer ids they return (address,
+   SSH port, user, key, whether the internet reaches the server and how the site is served):
    - the key is a path to the private key file, or `agent` for the SSH agent (which also covers a
      key with a passphrase). Never ask for a password, a passphrase or the key itself.
    - the address stays on the user's computer (`.opscrew/server.json`); tool results say "your
      server" instead. Never write the address into a file, a commit or a pull request.
-   - a server the internet cannot reach (at home, behind a router) is served through a Cloudflare
-     Tunnel, which needs a domain whose DNS is on the user's Cloudflare account.
+   - how visitors reach the server, in plain words: (a) through a Cloudflare Tunnel, the default
+     behind Cloudflare's proxy and the only way for a server the internet cannot reach (no web
+     ports open; needs Cloudflare Zero Trust, free); (b) directly behind Cloudflare's proxy with a
+     filter that lets only Cloudflare reach ports 80/443, for a server with a public address (if
+     the filter cannot load, Docker and the site stay down rather than open); (c) directly with DNS
+     only, open to everyone on 80/443 and without Cloudflare's protection. Recommend (a) unless the
+     user has a reason against it. Both Cloudflare ways need a domain on the user's Cloudflare
+     account.
 4. **Design.** Call `opscrew_design_options`. Present each option with its monthly cost, whether it
    fits the budget and its trade-offs; say which one OpsCrew recommends and why. When prices are
    marked as static estimates, say so. After the user chooses, call `opscrew_select_design`.

@@ -21,7 +21,7 @@ change it would make, and changes nothing until you approve that exact list.
   your app, as for every OpsCrew deployment.
 - For a custom domain: a domain whose DNS is on Cloudflare and a Cloudflare API token
   (`CLOUDFLARE_API_TOKEN`). A server that the internet cannot reach (see
-  [Home servers](#home-servers-and-servers-without-a-public-address)) always needs one.
+  [Home servers](#home-servers-and-the-cloudflare-tunnel)) always needs one.
 
 If your sudo user needs a password, OpsCrew stops and tells you how to allow passwordless sudo for
 that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
@@ -30,7 +30,8 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
 
 1. `npx opscrew interview`: choose **A server you already have**. OpsCrew then asks for the server's
    address (IP address or host name), the SSH port (usually 22), the SSH user, which key to use (a
-   path such as `~/.ssh/id_ed25519`, or `agent`) and whether the internet can reach the server.
+   path such as `~/.ssh/id_ed25519`, or `agent`), whether the internet can reach the server and how
+   your site is served (see [How visitors reach your server](#how-visitors-reach-your-server)).
    In scripts, put the same answers in a file and pass `--answers <file>`:
 
    ```yaml
@@ -96,9 +97,11 @@ The host plan lists these steps, and only the ones that are not in place yet are
     out); otherwise root logins are turned off. The stricter option is a sudo user and no root
     login.
 - **The ufw firewall**: incoming traffic is denied except SSH on the port your server really uses
-  (never port 22 by assumption) and, when the server serves the web itself, HTTP and HTTPS.
-  OpsCrew does not add a second firewall when your server already uses firewalld or its own
-  nftables rules; it stops and explains instead.
+  (never port 22 by assumption) and, when the server serves the web itself instead of through the
+  tunnel, HTTP and HTTPS. OpsCrew does not add a second firewall when your server already uses
+  firewalld or its own nftables rules; it stops and explains instead.
+- **The Cloudflare-only filter**, only when you chose to serve directly behind Cloudflare's proxy
+  (see [How visitors reach your server](#how-visitors-reach-your-server)).
 - **fail2ban** for SSH, and **automatic security updates**.
 - `/srv/app` and `/srv/data` for the app's runtime files and data, and a marker that this server
   runs your OpsCrew app.
@@ -125,22 +128,36 @@ It names what it found and what you can do when:
 - your user needs a password for `sudo`;
 - the server already runs another OpsCrew app.
 
-## Public mode, Cloudflare and the firewall
+## How visitors reach your server
 
-When the internet reaches your server, OpsCrew points your domain at it:
+The interview asks how your site is served. There are three ways:
 
-- **Behind Cloudflare's proxy** (the default for a domain on Cloudflare), only Cloudflare's own
-  address ranges may reach ports 80 and 443; visitors cannot go around Cloudflare to your server.
-  When Cloudflare changes its ranges, the next `npx opscrew provision` shows it as a host plan
-  change and `npx opscrew drift` reports it.
-- **Without Cloudflare's proxy**, or with your DNS somewhere else, ports 80 and 443 are open to
-  everyone, as on any web server. With another DNS provider you add the record yourself.
+1. **Through a Cloudflare Tunnel** (the default whenever your site is behind Cloudflare's proxy,
+   also for a server with a public address, and the only way for a server the internet cannot
+   reach). The server connects out to Cloudflare and opens no web port at all, so nobody can reach
+   the app around Cloudflare. It needs Cloudflare Zero Trust turned on (free); see
+   [Cloudflare Tunnel](#home-servers-and-the-cloudflare-tunnel) below. Pick this unless you have a
+   reason not to.
+2. **Directly behind Cloudflare's proxy, with a Cloudflare-only filter** (an explicit choice for a
+   server with a public address and a domain on Cloudflare). Your domain points at the server
+   through Cloudflare, and a filter lets only Cloudflare's addresses reach ports 80 and 443. The
+   filter sits in Docker's own `DOCKER-USER` chain, because ports that Docker publishes bypass ufw
+   and ufw rules could not limit them. It fails closed: if the filter cannot be installed when the
+   server starts, Docker does not start either, so the site goes down instead of being open to
+   everyone. Pick this when you cannot or do not want to use Cloudflare Zero Trust. When Cloudflare
+   changes its address ranges, the next `npx opscrew provision` shows the update as a host plan
+   change and `npx opscrew drift` reports it.
+3. **Directly, DNS only** (no Cloudflare proxy, or your DNS somewhere else). The server answers
+   everyone on ports 80 and 443, as any web server does, with no Cloudflare protection in front.
+   Pick this only when you do not use Cloudflare. With another DNS provider you add the record
+   yourself.
 
-## Home servers and servers without a public address
+## Home servers and the Cloudflare Tunnel
 
-When you answer that the internet cannot reach your server (at home, behind a router), OpsCrew
-serves the app through a **Cloudflare Tunnel**: the server connects out to Cloudflare, and no
-inbound web port is opened. The firewall then allows only SSH.
+When the internet cannot reach your server (at home, behind a router), or when you choose the
+tunnel for a server with a public address, OpsCrew serves the app through a **Cloudflare Tunnel**:
+the server connects out to Cloudflare, and no inbound web port is opened. The firewall then allows
+only SSH.
 
 - You need a domain whose DNS is on your Cloudflare account.
 - **Cloudflare Zero Trust must be turned on** for your account: open
@@ -154,8 +171,8 @@ inbound web port is opened. The firewall then allows only SSH.
 - While you run `npx opscrew provision`, your computer must reach the server directly (on the same
   network, or through your VPN).
 
-Switching an existing deployment between public and tunnel mode runs as two applies: OpsCrew first
-removes the old DNS records, then adds the new ones.
+Switching an existing deployment between serving directly and the tunnel runs as two applies:
+OpsCrew first removes the old DNS records, then adds the new ones.
 
 ### Cloudflare token permissions
 

@@ -82,7 +82,9 @@ npx opscrew portainer disable
 removes Portainer (and the subdomain's tunnel and Access rules) after you approve the plan. Its data
 (users and settings) stays on the server, so turning it on again keeps your setup.
 `npx opscrew portainer disable --delete-data` also deletes the data; you confirm that by typing the
-app's name, in a terminal.
+app's name. In a script, run `npx opscrew portainer disable --delete-data --plan-only` first, then
+the printed `--approve` command with `--confirm <app name>` added; without `--confirm` a script never
+deletes the data.
 
 ## From Claude Code
 
