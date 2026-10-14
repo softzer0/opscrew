@@ -203,6 +203,29 @@ describe("runDesign", () => {
     expect(result.plan.cost.source).toBe("static");
   });
 
+  it("FR-812: warns once that background jobs will not run, naming the library", async () => {
+    const facts = nextPostgresFacts({
+      appKind: "api",
+      services: [{ kind: "queue", evidence: ["dependency:celery"] }],
+    });
+    const deps = await setup(facts);
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    const notes = result.warnings.filter((w) => w.includes("background jobs"));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("Celery");
+    expect(notes[0]).toContain("only the web process");
+    expect(notes[0]).toContain("run the worker yourself");
+    expect(deps.reporter.lines.some((l) => l.level === "warn" && l.message === notes[0])).toBe(
+      true,
+    );
+  });
+
+  it("FR-812: no background-jobs warning for an app without them", async () => {
+    const deps = await setup(nextPostgresFacts());
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.warnings.join("\n")).not.toContain("background jobs");
+  });
+
   it("previews the options without writing a plan or marking the phase", async () => {
     const deps = await setup();
     const preview = await previewDesignOptions(deps);

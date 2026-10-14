@@ -27,7 +27,7 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import type { CodeChange } from "../design";
+import { backgroundJobsWarning, type CodeChange } from "../design";
 import { writeRenderedFiles } from "../shared";
 import { nextHealthRoute } from "./health-route";
 import { isNextConfigPath, type StandaloneEdit, standaloneConfigEdit } from "./next-config";
@@ -293,6 +293,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
       );
     }
     return pushAndOpen({
+      backgroundJobs: backgroundJobsWarning(facts),
       deps,
       git,
       plan,
@@ -600,6 +601,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     return result;
   }
   return pushAndOpen({
+    backgroundJobs: backgroundJobsWarning(facts),
     deps,
     git,
     plan,
@@ -637,6 +639,8 @@ interface PushContext {
   paths: Readonly<Record<string, string>>;
   /** The result so far: its branch, base, changes, notes and dependencies go into the PR. */
   result: AdaptResult;
+  /** The background-jobs note for the pull request, when the app runs jobs (FR-812). */
+  backgroundJobs: string | undefined;
 }
 
 /**
@@ -729,6 +733,7 @@ async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
         addedDependencies,
         byOpsCrew: [...ctx.byOpsCrew],
         paths: ctx.paths,
+        ...(ctx.backgroundJobs === undefined ? {} : { backgroundJobs: ctx.backgroundJobs }),
       }),
     );
     const prApproval = await deps.approvals.request({

@@ -19,6 +19,7 @@ import type { PhaseDeps } from "../context";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
 import { hasDeployment, serverAddress } from "../shared";
+import { backgroundJobsWarning } from "./background-jobs";
 import {
   type CodeChangeSignals,
   collectCodeChangeSignals,
@@ -228,6 +229,8 @@ async function priceOptions(
       ),
     );
   }
+  const jobs = backgroundJobsWarning(facts);
+  if (jobs !== undefined) warn(jobs);
   return { options: designOptions, priceSource, warnings, facts, requirements };
 }
 

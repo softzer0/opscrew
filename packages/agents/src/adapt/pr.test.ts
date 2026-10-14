@@ -44,6 +44,14 @@ describe("renderPullRequestBody", () => {
     expect(PULL_REQUEST_FOOTER).toBe("Opened by OpsCrew");
   });
 
+  it("says plainly that background jobs do not run yet, and only when there are some", () => {
+    const note = "This app also runs background jobs with Celery. Run the worker yourself.";
+    const body = renderPullRequestBody({ changes, reports: [], backgroundJobs: note });
+    expect(body).toContain(`## Background jobs\n\n${note}`);
+    expect(body.indexOf("## Background jobs")).toBeLessThan(body.indexOf("## Reports"));
+    expect(renderPullRequestBody({ changes, reports: [] })).not.toContain("Background jobs");
+  });
+
   it("says nothing about failing deploys once the health endpoint is done", () => {
     const body = renderPullRequestBody({
       changes: changes.map((change) => ({ ...change, status: "applied" as const })),

@@ -1,4 +1,5 @@
 /** Architect: sizing, provider options and costs, code-change derivation and the design phase. */
+export { backgroundJobLibraries, backgroundJobsWarning } from "./background-jobs";
 export {
   type CodeChange,
   type CodeChangeSignals,

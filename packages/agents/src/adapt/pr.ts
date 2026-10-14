@@ -42,6 +42,8 @@ export interface PullRequestBodyInput {
    * (for example `route.js` where the plan says `route.ts`).
    */
   paths?: Readonly<Record<string, string>>;
+  /** The background-jobs note (FR-812) when the app also runs jobs that are not deployed yet. */
+  backgroundJobs?: string;
 }
 
 /** What a missing health endpoint means for deploys, in one plain sentence. */
@@ -107,6 +109,10 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
   if ((input.addedDependencies ?? []).length > 0) {
     lines.push("", "New dependencies added by the Code-change agent:");
     for (const dependency of input.addedDependencies ?? []) lines.push(`- \`${dependency}\``);
+  }
+
+  if (input.backgroundJobs !== undefined) {
+    lines.push("", "## Background jobs", "", input.backgroundJobs);
   }
 
   lines.push("", "## Reports", "");

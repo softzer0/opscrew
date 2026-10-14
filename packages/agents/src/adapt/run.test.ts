@@ -481,6 +481,29 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(repo.deps.reporter.text()).toContain("Nothing to commit");
   });
 
+  it("tells the pull request that background jobs will not run yet", async () => {
+    const repo = await setup({
+      facts: { ...nextFacts(), services: [{ kind: "queue", evidence: ["dependency:bullmq"] }] },
+    });
+    const github = new FakeGitHub();
+
+    await runAdapt(repo.deps, { github });
+
+    const body = github.created[0]?.body ?? "";
+    expect(body).toContain("## Background jobs");
+    expect(body).toContain("background jobs with BullMQ");
+    expect(body).toContain("run the worker yourself");
+  });
+
+  it("says nothing about background jobs for an app without them", async () => {
+    const repo = await setup();
+    const github = new FakeGitHub();
+
+    await runAdapt(repo.deps, { github });
+
+    expect(github.created[0]?.body).not.toContain("Background jobs");
+  });
+
   it("does not push without an origin remote", async () => {
     const repo = await setup({ remote: null });
 
