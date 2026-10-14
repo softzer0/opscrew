@@ -158,7 +158,7 @@ description: "Tasks for 008-first-real-run"
   - Accept: FR-813, FR-815, FR-816; `expected.json` per app; reports any detection gap for the lead.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew`
   - Effort: medium
-- [ ] T836 Local Docker pass and Hetzner runs for the new examples and `fastapi-redis` without a model; results in `docs/e2e.md` (lead)
+- [X] T836 Local Docker pass and Hetzner runs for the new examples and `fastapi-redis` without a model; results in `docs/e2e.md` (lead)
 
 ## Phase 3: Live runs (lead)
 
