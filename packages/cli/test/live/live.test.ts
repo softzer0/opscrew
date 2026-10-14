@@ -27,6 +27,10 @@ const E2E = {
 };
 const withGitHub = Boolean(E2E.githubRepo && E2E.githubToken);
 const withDns = Boolean(E2E.cloudflareToken && E2E.domain);
+// OPSCREW_E2E_AI=1 runs `analyze` and `adapt` with a model (ANTHROPIC_API_KEY), for apps whose
+// health route or other changes only the Code-change agent makes. It costs model usage.
+const withAi = process.env.OPSCREW_E2E_AI === "1";
+const aiFlags = withAi ? [] : ["--no-ai"];
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const CLI = join(REPO_ROOT, "packages/cli/dist/opscrew.js");
@@ -424,6 +428,9 @@ async function deployAndTearDown(
 ): Promise<void> {
   // An invalid OPSCREW_E2E_APP stops here, before any GitHub or cloud call.
   if (APP instanceof Error) throw APP;
+  if (withAi && !process.env.ANTHROPIC_API_KEY) {
+    throw new Error("OPSCREW_E2E_AI=1 needs ANTHROPIC_API_KEY for the model.");
+  }
   const app = APP;
   expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
   const work = await mkdtemp(join(tmpdir(), "opscrew-e2e-"));
@@ -507,7 +514,7 @@ async function deployAndTearDown(
 
   let appName: string | undefined;
   try {
-    expect((await opscrew("analyze", "--no-ai")).exitCode).toBe(0);
+    expect((await opscrew("analyze", ...aiFlags)).exitCode).toBe(0);
     await writeFile(
       join(work, "answers.json"),
       JSON.stringify({
@@ -528,7 +535,7 @@ async function deployAndTearDown(
     appName = plan.app.name;
     expect(plan.target.provider).toBe(provider.id);
 
-    const adapt = await opscrew("adapt", "--no-ai", "--yes");
+    const adapt = await opscrew("adapt", ...aiFlags, "--yes");
     expect(adapt.exitCode, adapt.output).toBe(0);
     const branches = await git(
       "for-each-ref",
