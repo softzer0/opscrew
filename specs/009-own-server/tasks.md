@@ -85,6 +85,13 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates` (and `OPSCREW_IT=1` engine validation)
   - Effort: medium
 
+- [ ] T913 [US1] Own servers behind Cloudflare's proxy accept web traffic only from Cloudflare (found by T906: on Hetzner/DigitalOcean the cloud firewall limits 80/443 to Cloudflare's ranges when proxied; on an own server ufw opens them to everyone, so the origin can be reached around Cloudflare) in `packages/connectors/ssh-host/src/{plan,steps}.ts` and `packages/agents/src/provision/own.ts`
+  - Owns: `packages/connectors/ssh-host/src/{plan,steps,parse}.ts` (+ tests), `packages/agents/src/provision/own.ts` (+ tests), `packages/agents/src/{drift,verify}/**` (only the own-server origin check and drift of the ranges)
+  - Reads: the Cloudflare connector's `getIpRanges`; how the Hetzner/DigitalOcean modules set `http_allowed_cidrs` when proxied; `packages/connectors/ssh-host/src/steps.ts` (ufw step, `webRules`); research.md R2
+  - Accept: in public mode with a proxied Cloudflare domain, the ufw step allows 80/443 (tcp, and 443/udp if opened today) only from Cloudflare's current IPv4 and IPv6 ranges (passed from provision as a step parameter, so the plan hash covers them), never world-open; unproxied or no-Cloudflare public mode stays world-open; a change in Cloudflare's ranges shows as a host-plan change on the next provision and as drift; undo removes exactly these rules; `verify`'s origin check runs for own servers again (origin reachable only through Cloudflare when proxied); tunnel mode unchanged (no web rules).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
+  - Effort: high
+
 ## Phase 4: Surfaces and live test
 
 - [ ] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
