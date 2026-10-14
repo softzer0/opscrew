@@ -20,9 +20,16 @@ import {
   UFW_WEB_COMMENT,
   WEB_RULES,
 } from "./constants";
-import { type HostFacts, HostFactsSchema, type HostRecordEntry, RUNTIME_DIRS } from "./facts";
+import {
+  type HostFacts,
+  HostFactsSchema,
+  type HostRecordEntry,
+  RUNTIME_DIRS,
+  type WebFilterRules,
+  webFilterFacts,
+} from "./facts";
 import { findings } from "./findings";
-import { isLoopback, majorOf, publishesPort, ufwRuleCovers } from "./parse";
+import { isLoopback, majorOf, publishesPort, ufwRuleCovers, WEB_FILTER_PORTS } from "./parse";
 import {
   type DesiredHost,
   DesiredHostSchema,
@@ -32,6 +39,7 @@ import {
   type HostStep,
   type HostStepId,
 } from "./types";
+import { sortedNetworks, WEB_FILTER_SERVICE, webFilterFileHashes } from "./web-filter";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
@@ -599,6 +607,93 @@ function ufwStep({ facts, desired, found }: SetupContext): HostStep {
   );
 }
 
+/** OpsCrew's web filter is (partly) on the server: a file, its chain or a jump to it. */
+function webFilterPresent(facts: HostFacts): boolean {
+  const { files, rules4 } = webFilterFacts(facts);
+  return (
+    files.script !== null ||
+    files.unit !== null ||
+    files.dropIn !== null ||
+    rules4.chain !== null ||
+    rules4.dockerUser.jumps > 0
+  );
+}
+
+const sameList = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && [...a].sort().join(" ") === [...b].sort().join(" ");
+
+/** The rules of one address family match `networks`, with OpsCrew's jumps first in DOCKER-USER. */
+function webRulesMatch(rules: WebFilterRules, networks: readonly string[]): boolean {
+  const chain = rules.chain;
+  if (chain === null) return false;
+  return (
+    chain.dropsRest &&
+    chain.other === 0 &&
+    sameList(chain.sources, networks) &&
+    WEB_FILTER_PORTS.every((port) => rules.dockerUser.leading.includes(port))
+  );
+}
+
+const TITLE_WEB_FILTER =
+  "Let only Cloudflare reach the web ports (a filter in Docker's DOCKER-USER chain)";
+
+/**
+ * The `web-filter` step: behind Cloudflare's proxy (the user's explicit choice) only Cloudflare's
+ * ranges reach the ports 80 and 443 Docker publishes, fail closed; otherwise a filter left from an
+ * earlier setup is removed. No step when there is no filter and none is wanted.
+ */
+function webFilterStep({ facts, desired, found }: SetupContext): HostStep | undefined {
+  const wf = webFilterFacts(facts);
+  if (desired.webFilter === undefined) {
+    if (!webFilterPresent(facts)) return undefined;
+    return step(
+      "web-filter",
+      "Remove OpsCrew's web filter for Cloudflare's addresses",
+      "change",
+      { remove: true },
+      "The site is no longer served directly behind Cloudflare's proxy. Docker first stops requiring the filter (it keeps running), then OpsCrew's rules in DOCKER-USER, its unit and its script are removed; your own rules stay.",
+    );
+  }
+  const ranges = { ipv4: sortedNetworks(desired.webFilter.ipv4, "ipv4") };
+  const params = { ipv4: ranges.ipv4.join(" ") };
+  const blocker =
+    wf.backend === "nftables"
+      ? findings.dockerNftables()
+      : wf.backend === "off" || (facts.docker.running && !wf.rules4.dockerUser.exists)
+        ? findings.dockerNoIptables()
+        : undefined;
+  if (blocker !== undefined) {
+    found.push(blocker);
+    return step("web-filter", TITLE_WEB_FILTER, "blocked", params, blocker.message);
+  }
+  const hashes = webFilterFileHashes(ranges);
+  const inPlace =
+    wf.files.script === hashes.script &&
+    wf.files.unit === hashes.unit &&
+    wf.files.dropIn === hashes.dropIn &&
+    wf.enabled &&
+    wf.active &&
+    webRulesMatch(wf.rules4, ranges.ipv4);
+  if (inPlace) return step("web-filter", TITLE_WEB_FILTER, "in-place", params, "Already set.");
+  const lines = [
+    `The site is served directly behind Cloudflare's proxy, so only Cloudflare's ${ranges.ipv4.length} IPv4 ranges as Cloudflare lists them today may open connections to the web ports (80 and 443) Docker publishes; everything else is dropped. The filter sits in Docker's DOCKER-USER chain, because Docker's published ports bypass ufw. The site is published on IPv4 only (visitors still reach it over IPv6 through Cloudflare).`,
+    `${WEB_FILTER_SERVICE} installs it at boot before Docker, and Docker requires it: if the filter cannot be installed, Docker does not start (fail closed). Docker is not restarted now; your own DOCKER-USER rules stay.`,
+  ];
+  const current = wf.rules4.chain;
+  if (current !== null) {
+    const known = new Set(current.sources);
+    const wanted = new Set(ranges.ipv4);
+    const added = [...wanted].filter((net) => !known.has(net)).length;
+    const removed = [...known].filter((net) => !wanted.has(net)).length;
+    if (added > 0 || removed > 0) {
+      lines.push(
+        `Cloudflare's list changed since the filter was set up: ${added} new range${added === 1 ? "" : "s"}, ${removed} no longer listed. The chain is replaced in one step, so nothing is unfiltered in between.`,
+      );
+    }
+  }
+  return step("web-filter", TITLE_WEB_FILTER, "change", params, lines.join(" "));
+}
+
 function upgradesStep({ facts }: SetupContext): HostStep {
   const params = { install: !facts.packages.unattendedUpgrades };
   if (facts.packages.unattendedUpgrades && facts.autoUpgrades && facts.autoUpgradesService) {
@@ -818,6 +913,9 @@ function allBlocked(desired: DesiredHost): HostStep[] {
     step("deploy-user", TITLES.deployUser, "blocked", {}, reason),
     step("sshd", TITLES.sshd, "blocked", {}, reason),
     step("ufw", TITLES.ufw, "blocked", {}, reason),
+    ...(desired.webFilter !== undefined
+      ? [step("web-filter", TITLE_WEB_FILTER, "blocked", {}, reason)]
+      : []),
     step("fail2ban", "Brute-force protection (fail2ban)", "blocked", {}, reason),
     step("unattended-upgrades", TITLES.upgrades, "blocked", {}, reason),
     step("runtime-dirs", TITLES.runtime, "blocked", {}, reason),
@@ -901,6 +999,7 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
     deployUserStep(ctx),
     sshdStep(ctx),
     ufwStep(ctx),
+    webFilterStep(ctx),
     fail2banStep(ctx),
     upgradesStep(ctx),
     runtimeStep(ctx),
@@ -1111,6 +1210,17 @@ export function planUndo(facts: HostFacts): HostPlan {
           ? "change"
           : "in-place",
         { removePackage, disableService },
+      ),
+    );
+  }
+  if (entry("web-filter") && webFilterPresent(f)) {
+    steps.push(
+      step(
+        "web-filter",
+        "Remove OpsCrew's web filter for Cloudflare's addresses",
+        "change",
+        { remove: true },
+        "Docker first stops requiring the filter (it keeps running), then OpsCrew's rules in DOCKER-USER, its unit and its script are removed; your own rules stay.",
       ),
     );
   }

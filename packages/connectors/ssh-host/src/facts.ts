@@ -70,6 +70,59 @@ const AddonSchema = z.object({
 });
 export type AddonFact = z.infer<typeof AddonSchema>;
 
+const WebFilterRulesSchema = z.object({
+  /** OpsCrew's chain `OPSCREW-WEB`, null when it does not exist. */
+  chain: z
+    .object({ sources: z.array(z.string()), dropsRest: z.boolean(), other: z.number().int() })
+    .nullable(),
+  /** Docker's `DOCKER-USER` chain and OpsCrew's jumps from it. */
+  dockerUser: z.object({
+    exists: z.boolean(),
+    leading: z.array(z.string()),
+    jumps: z.number().int(),
+  }),
+});
+export type WebFilterRules = z.infer<typeof WebFilterRulesSchema>;
+
+const NO_WEB_FILTER_RULES: WebFilterRules = {
+  chain: null,
+  dockerUser: { exists: false, leading: [], jumps: 0 },
+};
+
+/** What the server says about Docker's firewall and OpsCrew's web filter (the `web-filter` step). */
+export const WebFilterFactsSchema = z.object({
+  /**
+   * How Docker filters its published ports: with iptables (the default; `DOCKER-USER` exists), its
+   * nftables backend (`firewall-backend: nftables`, no `DOCKER-USER`), or not at all (`iptables:
+   * false`).
+   */
+  backend: z.enum(["iptables", "nftables", "off"]),
+  /** Which of `iptables` and `iptables-restore` exist. */
+  commands: z.array(z.string()),
+  /** SHA-256 of OpsCrew's script, unit and Docker drop-in; null when the file is absent. */
+  files: z.object({
+    script: z.string().nullable(),
+    unit: z.string().nullable(),
+    dropIn: z.string().nullable(),
+  }),
+  /** `systemctl is-enabled` / `is-active` of `opscrew-web-filter.service`. */
+  enabled: z.boolean(),
+  active: z.boolean(),
+  /** OpsCrew's IPv4 rules (the filter is IPv4 only: the site is not published on IPv6). */
+  rules4: WebFilterRulesSchema,
+});
+export type WebFilterFacts = z.infer<typeof WebFilterFactsSchema>;
+
+/** A server without OpsCrew's web filter whose Docker (if any) uses iptables. */
+export const NO_WEB_FILTER: WebFilterFacts = {
+  backend: "iptables",
+  commands: [],
+  files: { script: null, unit: null, dropIn: null },
+  enabled: false,
+  active: false,
+  rules4: NO_WEB_FILTER_RULES,
+};
+
 /** Facts about the server found by `inspectHost`; read-only, zod-validated. */
 export const HostFactsSchema = z.object({
   /** The admin login OpsCrew connected as. */
@@ -212,6 +265,16 @@ export const HostFactsSchema = z.object({
   pendingUndo: z.object({ sshd: z.boolean(), ufw: z.boolean() }),
   tunnel: AddonSchema,
   portainer: AddonSchema,
+  /**
+   * Docker's firewall and OpsCrew's web filter. Inspection always reports it; absent (facts from
+   * before the filter existed) reads as {@link NO_WEB_FILTER}.
+   */
+  webFilter: WebFilterFactsSchema.optional(),
 });
 
 export type HostFacts = z.infer<typeof HostFactsSchema>;
+
+/** The web filter facts of `facts`, {@link NO_WEB_FILTER} when they are absent. */
+export function webFilterFacts(facts: Pick<HostFacts, "webFilter">): WebFilterFacts {
+  return facts.webFilter ?? NO_WEB_FILTER;
+}

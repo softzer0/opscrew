@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeHost, type OsPreset } from "./__fixtures__/fake-host";
 import { desiredFor, planFor } from "./__fixtures__/helpers";
-import { inspectHost, inspectScript } from "./inspect";
+import { dockerFirewall, inspectHost, inspectScript } from "./inspect";
 import { planHost } from "./plan";
 
 const SUPPORTED: OsPreset[] = [
@@ -132,6 +132,62 @@ describe("inspectHost", () => {
       running: true,
       composePlugin: true,
       buildxPlugin: false,
+    });
+  });
+});
+
+describe("dockerFirewall", () => {
+  const none = { text: "", exit: 1 };
+  const json = (text: string) => ({ text, exit: 0 });
+  it("is iptables by default", () => {
+    expect(dockerFirewall({ daemonJson: none, execStart: "", info: "" })).toEqual({
+      backend: "iptables",
+    });
+    expect(
+      dockerFirewall({ daemonJson: none, execStart: "", info: '{"Driver":"iptables"}' }),
+    ).toEqual({ backend: "iptables" });
+  });
+
+  it("sees the nftables backend in daemon.json, the flags or docker info", () => {
+    for (const input of [
+      { daemonJson: json('{ "firewall-backend": "nftables" }'), execStart: "", info: "" },
+      { daemonJson: none, execStart: "/usr/bin/dockerd --firewall-backend=nftables", info: "" },
+      { daemonJson: none, execStart: "", info: '{"Driver":"nftables"}' },
+    ]) {
+      expect(dockerFirewall(input).backend).toBe("nftables");
+    }
+  });
+
+  it("sees iptables turned off, and the nftables backend in the unit's environment", () => {
+    expect(
+      dockerFirewall({ daemonJson: json('{ "iptables": false }'), execStart: "", info: "" })
+        .backend,
+    ).toBe("off");
+    expect(
+      dockerFirewall({ daemonJson: none, execStart: "dockerd --iptables=false", info: "" }).backend,
+    ).toBe("off");
+    expect(
+      dockerFirewall({
+        daemonJson: none,
+        execStart:
+          "ExecStart={ argv[]=/usr/bin/dockerd }\nEnvironment=DOCKER_FIREWALL_BACKEND=nftables",
+        info: "",
+      }).backend,
+    ).toBe("nftables");
+    // ip6tables does not matter: the filter mode publishes on IPv4 only.
+    expect(
+      dockerFirewall({ daemonJson: json('{ "ip6tables": false }'), execStart: "", info: "" }),
+    ).toEqual({ backend: "iptables" });
+  });
+
+  it("reads OpsCrew's web filter on a fresh server as absent", async () => {
+    const facts = await inspectHost(new FakeHost());
+    expect(facts.webFilter).toMatchObject({
+      backend: "iptables",
+      files: { script: null, unit: null, dropIn: null },
+      enabled: false,
+      active: false,
+      rules4: { chain: null },
     });
   });
 });

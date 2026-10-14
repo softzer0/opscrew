@@ -23,7 +23,10 @@ export {
   type HostRecord,
   HostRecordSchema,
   MARKER_PATH,
+  NO_WEB_FILTER,
   RECORD_PATH,
+  type WebFilterFacts,
+  webFilterFacts,
 } from "./facts";
 export { canonicalJson, hostPlanHash } from "./hash";
 export { inspectHost } from "./inspect";
@@ -40,3 +43,9 @@ export {
   type HostStep,
   type HostStepId,
 } from "./types";
+export {
+  WEB_FILTER_CHAIN,
+  WEB_FILTER_SERVICE,
+  type WebFilterRanges,
+  webFilterFileHashes,
+} from "./web-filter";

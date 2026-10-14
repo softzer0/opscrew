@@ -474,3 +474,157 @@ export function parseAddons(text: string): Map<string, AddonLine> {
   }
   return addons;
 }
+
+/** The filter table of `iptables-save` (or `ip6tables-save`) output: its chain and rule lines. */
+function filterTable(save: string): string[] {
+  const lines: string[] = [];
+  let inFilter = false;
+  for (const line of linesOf(save)) {
+    if (line.startsWith("*")) inFilter = line === "*filter";
+    else if (line === "COMMIT") inFilter = false;
+    else if (inFilter) lines.push(line);
+  }
+  return lines;
+}
+
+/** OpsCrew's web filter chain (`OPSCREW-WEB`) as `iptables-save` shows it. */
+export interface WebFilterChain {
+  /** Networks that pass (`-s <net> -j RETURN`), in the form `canonicalCidr` gives. */
+  sources: string[];
+  /** The last rule drops everything else. */
+  dropsRest: boolean;
+  /** Rules that are neither (someone edited the chain). */
+  other: number;
+}
+
+/** OpsCrew's chain from `iptables-save` output; null when the chain does not exist. */
+export function parseWebFilterChain(save: string): WebFilterChain | null {
+  const lines = filterTable(save);
+  if (!lines.some((line) => line.startsWith(":OPSCREW-WEB "))) return null;
+  const rules = lines.filter((line) => line.startsWith("-A OPSCREW-WEB "));
+  const sources: string[] = [];
+  let other = 0;
+  rules.forEach((line, index) => {
+    const pass = /^-A OPSCREW-WEB -s (\S+) -j RETURN$/.exec(line);
+    const network = pass?.[1] ? canonicalCidr(pass[1]) : null;
+    if (network !== null) sources.push(network.cidr);
+    else if (!(index === rules.length - 1 && line === "-A OPSCREW-WEB -j DROP")) other += 1;
+  });
+  return { sources, dropsRest: rules.at(-1) === "-A OPSCREW-WEB -j DROP", other };
+}
+
+/** The connections the web filter guards, as `<proto>/<port>`. */
+export const WEB_FILTER_PORTS = ["tcp/80", "tcp/443", "udp/443"] as const;
+
+/** `DOCKER-USER` as `iptables-save` shows it: whether it exists and where OpsCrew's jumps are. */
+export interface DockerUserChain {
+  exists: boolean;
+  /** `<proto>/<port>` of OpsCrew's jumps that come before any other rule of the chain. */
+  leading: string[];
+  /** All of OpsCrew's jumps, wherever they are. */
+  jumps: number;
+}
+
+/** A `DOCKER-USER` rule that sends new connections to a published port to OpsCrew's chain. */
+function webFilterJump(line: string): string | null {
+  if (!line.startsWith("-A DOCKER-USER ") || !/ -j OPSCREW-WEB$/.test(line)) return null;
+  const proto = / -p (tcp|udp)\b/.exec(line)?.[1];
+  const port = / --ctorigdstport (\d{1,5})\b/.exec(line)?.[1];
+  if (!/ --ctstate DNAT\b/.test(line) || !/ --ctdir ORIGINAL\b/.test(line)) return null;
+  return proto && port ? `${proto}/${port}` : null;
+}
+
+/** `DOCKER-USER` from `iptables-save` output. */
+export function parseDockerUserChain(save: string): DockerUserChain {
+  const lines = filterTable(save);
+  if (!lines.some((line) => line.startsWith(":DOCKER-USER "))) {
+    return { exists: false, leading: [], jumps: 0 };
+  }
+  const rules = lines.filter((line) => line.startsWith("-A DOCKER-USER "));
+  const leading: string[] = [];
+  for (const line of rules) {
+    const jump = webFilterJump(line);
+    if (jump === null) break;
+    leading.push(jump);
+  }
+  return {
+    exists: true,
+    leading,
+    jumps: rules.filter((line) => line.endsWith(" -j OPSCREW-WEB")).length,
+  };
+}
+
+function ipv4Value(address: string): number | null {
+  const parts = address.split(".");
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^(0|[1-9]\d{0,2})$/.test(part) || Number(part) > 255) return null;
+    value = value * 256 + Number(part);
+  }
+  return value;
+}
+
+function ipv6Groups(address: string): number[] | null {
+  const lower = address.toLowerCase();
+  if (!/^[0-9a-f:]+$/.test(lower)) return null;
+  const halves = lower.split("::");
+  if (halves.length > 2) return null;
+  const split = (text: string) => (text === "" ? [] : text.split(":"));
+  const front = split(halves[0] ?? "");
+  const back = halves.length === 2 ? split(halves[1] ?? "") : [];
+  const missing = 8 - front.length - back.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const groups = [...front, ...Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...back];
+  if (groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) return null;
+  return groups.map((group) => Number.parseInt(group, 16));
+}
+
+/** RFC 5952 text of eight 16-bit groups: lower case, the longest run of 2+ zero groups as `::`. */
+function ipv6Text(groups: readonly number[]): string {
+  let best = { start: -1, length: 0 };
+  let i = 0;
+  while (i < groups.length) {
+    if (groups[i] !== 0) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < groups.length && groups[j] === 0) j++;
+    if (j - i > best.length) best = { start: i, length: j - i };
+    i = j;
+  }
+  const hex = groups.map((group) => group.toString(16));
+  if (best.length < 2) return hex.join(":");
+  return `${hex.slice(0, best.start).join(":")}::${hex.slice(best.start + best.length).join(":")}`;
+}
+
+/**
+ * A network in the form ufw itself prints it, so OpsCrew finds its rules again: host bits
+ * cleared, IPv6 in lower case and compressed (RFC 5952), and no `/32` (IPv4) or `/128` (IPv6)
+ * suffix. Null when `text` is not an IPv4 or IPv6 address or network.
+ */
+export function canonicalCidr(text: string): { family: "ipv4" | "ipv6"; cidr: string } | null {
+  const [address = "", prefixText, extra] = text.trim().split("/");
+  if (extra !== undefined) return null;
+  if (prefixText !== undefined && !/^\d{1,3}$/.test(prefixText)) return null;
+  const v4 = ipv4Value(address);
+  if (v4 !== null) {
+    const prefix = prefixText === undefined ? 32 : Number(prefixText);
+    if (prefix > 32) return null;
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    const network = (v4 & mask) >>> 0;
+    const dotted = [24, 16, 8, 0].map((shift) => (network >>> shift) & 255).join(".");
+    return { family: "ipv4", cidr: prefix === 32 ? dotted : `${dotted}/${prefix}` };
+  }
+  const groups = ipv6Groups(address);
+  if (groups === null) return null;
+  const prefix = prefixText === undefined ? 128 : Number(prefixText);
+  if (prefix > 128) return null;
+  const network = groups.map((group, index) => {
+    const bits = Math.min(16, Math.max(0, prefix - index * 16));
+    return bits === 0 ? 0 : group & ((0xffff << (16 - bits)) & 0xffff);
+  });
+  const compact = ipv6Text(network);
+  return { family: "ipv6", cidr: prefix === 128 ? compact : `${compact}/${prefix}` };
+}

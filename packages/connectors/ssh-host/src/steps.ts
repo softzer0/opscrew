@@ -35,6 +35,7 @@ import {
   RUNTIME_DIRS,
   SSHD_DROP_IN,
 } from "./facts";
+import { canonicalCidr } from "./parse";
 import { APT_FUNCTIONS, APT_LOG, buildScript, type ScriptParams } from "./shell";
 import {
   ComposeTextSchema,
@@ -43,6 +44,18 @@ import {
   type HostStepId,
   TunnelIdSchema,
 } from "./types";
+import {
+  WEB_FILTER_BACKEND_CHECK,
+  WEB_FILTER_CHAIN,
+  WEB_FILTER_DROP_IN,
+  WEB_FILTER_DROP_IN_TEXT,
+  WEB_FILTER_FUNCTIONS,
+  WEB_FILTER_SCRIPT,
+  WEB_FILTER_SERVICE,
+  WEB_FILTER_UNIT,
+  WEB_FILTER_UNIT_TEXT,
+  webFilterScript,
+} from "./web-filter";
 
 export const DEAD_MAN_DIR = `${OPSCREW_DIR}/deadman`;
 export const BACKUP_DIR = `${OPSCREW_DIR}/backup`;
@@ -682,6 +695,141 @@ ufw_active || fail 'ufw did not turn on.'`;
     deadMan: { step: "ufw", capture, params: sp },
     doing: "setting up the ufw firewall",
     timeoutMs: 5 * MINUTE,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// web-filter: only Cloudflare reaches the web ports Docker publishes (see web-filter.ts)
+
+/** Space-separated IPv4 networks in the form `canonicalCidr` gives, sorted, without duplicates. */
+const Ipv4NetworksSchema = z
+  .string()
+  .regex(/^[0-9./]{7,18}( [0-9./]{7,18})*$/)
+  .refine(
+    (value) => {
+      const list = value.split(" ");
+      return (
+        list.every((net) => {
+          const network = canonicalCidr(net);
+          return network?.family === "ipv4" && network.cidr === net;
+        }) && list.join(" ") === [...new Set(list)].sort().join(" ")
+      );
+    },
+    { message: "must be sorted IPv4 networks without duplicates" },
+  );
+
+const WebFilterParams = z.union([
+  z.strictObject({ remove: z.literal(true) }),
+  z.strictObject({ ipv4: Ipv4NetworksSchema }),
+]);
+
+const WEB_FILTER_HELPERS = `${WEB_FILTER_FUNCTIONS}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+write_file() {
+  install -d -m 0755 "$(dirname "$1")"
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  printf '%s' "$2" | base64 -d > "$tmp"
+  chmod "$3" "$tmp"
+  mv -f "$tmp" "$1"
+}
+# Removes OpsCrew's jumps from DOCKER-USER and its chain.
+remove_rules() {
+  command -v iptables >/dev/null 2>&1 || return 0
+  for spec in 'tcp 80' 'tcp 443' 'udp 443'; do
+    proto=\${spec% *}
+    port=\${spec#* }
+    while iptables -w -C DOCKER-USER -p "$proto" -m conntrack --ctstate DNAT --ctorigdstport "$port" --ctdir ORIGINAL -j "$CHAIN" 2>/dev/null; do
+      iptables -w -D DOCKER-USER -p "$proto" -m conntrack --ctstate DNAT --ctorigdstport "$port" --ctdir ORIGINAL -j "$CHAIN"
+    done
+  done
+  if iptables -w -n -L "$CHAIN" >/dev/null 2>&1; then
+    iptables -w -F "$CHAIN"
+    iptables -w -X "$CHAIN" || fail "Another rule still jumps to OpsCrew's chain $CHAIN; remove that rule, then run the command again."
+  fi
+}`;
+
+function webFilterScripts(step: HostStep): StepScripts {
+  const p = params(step, WebFilterParams);
+  const files = {
+    SCRIPT: WEB_FILTER_SCRIPT,
+    UNIT_FILE: WEB_FILTER_UNIT,
+    DROP_IN: WEB_FILTER_DROP_IN,
+    SERVICE: WEB_FILTER_SERVICE,
+    CHAIN: WEB_FILTER_CHAIN,
+  };
+  if ("remove" in p) {
+    const verify = `  [ ! -e "$SCRIPT" ] && [ ! -e "$UNIT_FILE" ] && [ ! -e "$DROP_IN" ] || return 1
+  if command -v iptables >/dev/null 2>&1 && iptables -w -n -L "$CHAIN" >/dev/null 2>&1; then
+    return 1
+  fi`;
+    // Docker first stops requiring the filter (it keeps running), then the rules and files go.
+    const apply = `rm -f "$DROP_IN"
+systemctl daemon-reload
+systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+remove_rules
+rm -f "$UNIT_FILE" "$SCRIPT"
+systemctl daemon-reload`;
+    return {
+      check: checkScript("web-filter.remove", files, WEB_FILTER_HELPERS, verify, ""),
+      apply: applyScript("web-filter.remove", files, WEB_FILTER_HELPERS, apply),
+      verify: verifyScript(
+        "web-filter.remove",
+        files,
+        WEB_FILTER_HELPERS,
+        verify,
+        "OpsCrew's web filter is still on the server.",
+      ),
+      doing: "removing OpsCrew's web filter",
+      timeoutMs: 2 * MINUTE,
+    };
+  }
+  const script = webFilterScript({ ipv4: p.ipv4.split(" ") });
+  const sp = {
+    ...files,
+    SCRIPT_B64: base64(script),
+    UNIT_B64: base64(WEB_FILTER_UNIT_TEXT),
+    DROPIN_B64: base64(WEB_FILTER_DROP_IN_TEXT),
+    SCRIPT_SHA256: sha256(script),
+    UNIT_SHA256: sha256(WEB_FILTER_UNIT_TEXT),
+    DROPIN_SHA256: sha256(WEB_FILTER_DROP_IN_TEXT),
+    IPV4: p.ipv4,
+  };
+  const verify = `  file_is "$SCRIPT" "$SCRIPT_SHA256" || return 1
+  file_is "$UNIT_FILE" "$UNIT_SHA256" || return 1
+  file_is "$DROP_IN" "$DROPIN_SHA256" || return 1
+  [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" = enabled ] || return 1
+  systemctl is-active --quiet "$SERVICE" || return 1
+  chain_ok "$IPV4" || return 1
+  leading_ok || return 1`;
+  const snapshot = `if [ -e "$SCRIPT" ]; then echo prev.installed=true; else echo prev.installed=false; fi`;
+  // The script installs the rules right away (an atomic change of OpsCrew's chain; Docker keeps
+  // running). Only once it worked does Docker start to require the unit, so a failure here never
+  // leaves a Docker that cannot start.
+  const apply = `${WEB_FILTER_BACKEND_CHECK}
+if systemctl is-active --quiet docker && ! iptables -w -n -L DOCKER-USER >/dev/null 2>&1; then
+  fail "Docker is running but has no DOCKER-USER chain in iptables, so OpsCrew's web filter cannot work. Nothing was changed."
+fi
+write_file "$SCRIPT" "$SCRIPT_B64" 0755
+write_file "$UNIT_FILE" "$UNIT_B64" 0644
+"$SCRIPT" || fail "OpsCrew could not install its web filter (see the message above); Docker was not changed."
+write_file "$DROP_IN" "$DROPIN_B64" 0644
+systemctl daemon-reload
+systemctl enable "$SERVICE" >/dev/null
+# Starting the unit runs the script once more (no change); Docker is not restarted.
+systemctl start "$SERVICE"`;
+  return {
+    check: checkScript("web-filter", sp, WEB_FILTER_HELPERS, verify, snapshot),
+    apply: applyScript("web-filter", sp, WEB_FILTER_HELPERS, apply),
+    verify: verifyScript(
+      "web-filter",
+      sp,
+      WEB_FILTER_HELPERS,
+      verify,
+      "OpsCrew's web filter is not in effect.",
+    ),
+    doing: "setting up the web filter for Cloudflare's addresses",
+    timeoutMs: 2 * MINUTE,
   };
 }
 
@@ -1564,6 +1712,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return sshdScripts(plan.purpose, step);
     case "ufw":
       return ufwScripts(plan.purpose, step);
+    case "web-filter":
+      return webFilterScripts(step);
     case "unattended-upgrades":
       return upgradesScripts(plan.purpose, step);
     case "runtime-dirs":

@@ -20,6 +20,7 @@ import {
   RECORD_PATH,
   RUNTIME_DIRS,
   SSHD_DROP_IN,
+  type WebFilterFacts,
 } from "./facts";
 import { foreignFirewalls } from "./firewall";
 import { canonicalJson } from "./hash";
@@ -34,6 +35,7 @@ import {
   parseContainers,
   parseDf,
   parseDirs,
+  parseDockerUserChain,
   parseDpkg,
   parseFree,
   parseNsswitchPasswd,
@@ -44,11 +46,18 @@ import {
   parseUfwAdded,
   parseUfwDefaults,
   parseUsers,
+  parseWebFilterChain,
   SECTION_MARK,
   type Section,
   splitSections,
 } from "./parse";
 import { asLogin, asRoot, buildScript } from "./shell";
+import {
+  WEB_FILTER_DROP_IN,
+  WEB_FILTER_SCRIPT,
+  WEB_FILTER_SERVICE,
+  WEB_FILTER_UNIT,
+} from "./web-filter";
 
 /** Packages whose state inspection reads (Docker's, the conflicting ones and OpsCrew's tools). */
 export const INSPECTED_PACKAGES = [
@@ -122,6 +131,16 @@ const ADDONS_SNIPPET = `addon() {
 addon tunnel ${TUNNEL_DIR} tunnel.env
 addon portainer ${PORTAINER_DIR} admin_password`;
 
+/** OpsCrew's web filter: its files' SHA-256, its unit's state and the iptables commands. */
+const WEB_FILTER_SNIPPET = `for f in script:${WEB_FILTER_SCRIPT} unit:${WEB_FILTER_UNIT} dropin:${WEB_FILTER_DROP_IN}; do
+  if [ -f "\${f#*:}" ]; then echo "file \${f%%:*} $(sha256sum "\${f#*:}" | cut -d ' ' -f 1)"; else echo "file \${f%%:*} -"; fi
+done
+echo "enabled $(systemctl is-enabled ${WEB_FILTER_SERVICE} 2>/dev/null)"
+echo "active $(systemctl is-active ${WEB_FILTER_SERVICE} 2>/dev/null)"
+for c in iptables iptables-restore; do
+  if command -v "$c" >/dev/null 2>&1; then echo "command $c"; fi
+done`;
+
 /** Directory services that log users in without local passwords or keys OpsCrew can see. */
 const DIRECTORY_PAM = "pam_(sss|ldap|krb5|winbind)";
 const PAM_FILES = [
@@ -184,7 +203,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["docker-server", "docker_up && docker version --format '{{.Server.Version}}'"],
   ["docker-compose", "docker compose version --short"],
   ["docker-buildx", "docker buildx version"],
-  ["docker-exec", "systemctl show -p ExecStart docker"],
+  ["docker-exec", "systemctl show -p ExecStart -p Environment docker"],
   ["docker-swarm", "docker_up && docker info --format '{{.Swarm.LocalNodeState}}'"],
   [
     "docker-sources",
@@ -213,6 +232,8 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
     `for u in sshd ufw; do printf '%s %s\\n' "$u" "$(systemctl is-active "opscrew-undo-$u.timer" 2>/dev/null)"; done`,
   ],
   ["addons", ADDONS_SNIPPET],
+  ["web-filter", WEB_FILTER_SNIPPET],
+  ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
 ];
 
 /** The single read-only inspection script (tolerant: a failing probe never stops the others). */
@@ -293,6 +314,58 @@ function parseJson<T>(text: string, parse: (value: unknown) => T | undefined): T
   } catch {
     return undefined;
   }
+}
+
+/**
+ * How Docker filters its published ports, from `/etc/docker/daemon.json`, its unit's command line
+ * and environment (`systemctl show -p ExecStart -p Environment docker`) and `docker info`
+ * (`FirewallBackend`, Docker 28.2+): iptables (the default), its nftables backend, or not at all
+ * (`iptables: false`).
+ */
+export function dockerFirewall(input: { daemonJson: Section; execStart: string; info: string }): {
+  backend: "iptables" | "nftables" | "off";
+} {
+  const settings =
+    input.daemonJson.exit === 0
+      ? (parseJson(input.daemonJson.text, (value) =>
+          typeof value === "object" && value !== null
+            ? (value as Record<string, unknown>)
+            : undefined,
+        ) ?? {})
+      : {};
+  const flags = input.execStart;
+  const driver = /"Driver"\s*:\s*"([a-z+]+)"/.exec(input.info)?.[1] ?? "";
+  const nftables =
+    settings["firewall-backend"] === "nftables" ||
+    /--firewall-backend[= ]nftables\b/.test(flags) ||
+    /\bDOCKER_FIREWALL_BACKEND=nftables\b/.test(flags) ||
+    driver.startsWith("nftables");
+  const off = settings.iptables === false || /--iptables[= ]false\b/.test(flags);
+  return { backend: nftables ? "nftables" : off ? "off" : "iptables" };
+}
+
+/** OpsCrew's web filter files, unit state and the iptables commands, from its section. */
+function webFilterFiles(
+  text: string,
+): Pick<WebFilterFacts, "files" | "enabled" | "active" | "commands"> {
+  const values = new Map<string, string>();
+  const commands: string[] = [];
+  for (const line of linesOf(text)) {
+    const [kind, name, value] = line.split(/\s+/);
+    if (kind === "file" && name && value) values.set(name, value);
+    else if (kind === "command" && name) commands.push(name);
+    else if ((kind === "enabled" || kind === "active") && name) values.set(kind, name);
+  }
+  const hash = (name: string) => {
+    const value = values.get(name);
+    return value !== undefined && /^[0-9a-f]{64}$/.test(value) ? value : null;
+  };
+  return {
+    files: { script: hash("script"), unit: hash("unit"), dropIn: hash("dropin") },
+    enabled: values.get("enabled") === "enabled",
+    active: values.get("active") === "active",
+    commands,
+  };
 }
 
 /** Builds `HostFacts` from the inspection output. Exported for tests. */
@@ -457,6 +530,18 @@ export function factsFromOutput(
     },
     tunnel: addon("tunnel", TUNNEL_PROJECT),
     portainer: addon("portainer", PORTAINER_PROJECT),
+    webFilter: {
+      ...dockerFirewall({
+        daemonJson: section(sections, "docker-daemon"),
+        execStart: ok(sections, "docker-exec"),
+        info: ok(sections, "docker-firewall"),
+      }),
+      ...webFilterFiles(text("web-filter")),
+      rules4: {
+        chain: parseWebFilterChain(ok(sections, "iptables")),
+        dockerUser: parseDockerUserChain(ok(sections, "iptables")),
+      },
+    },
   };
   const parsed = HostFactsSchema.safeParse(facts);
   if (!parsed.success) {

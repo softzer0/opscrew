@@ -26,6 +26,7 @@ import {
   writeRecordScript,
 } from "./steps";
 import type { HostPlan } from "./types";
+import { WEB_FILTER_DROP_IN_TEXT, WEB_FILTER_UNIT_TEXT, webFilterScript } from "./web-filter";
 
 /** Every script of every step of `plan`, including the dead-man scripts. */
 function allScripts(plan: HostPlan): Map<string, string> {
@@ -69,6 +70,16 @@ async function everyPlan(): Promise<HostPlan[]> {
   plans.push(planTeardown(await inspectHost(used), { deleteData: true }));
   await applyApproved(used, planTeardown(await inspectHost(used), { deleteData: false }));
   plans.push(planUndo(await inspectHost(used)));
+
+  // Behind Cloudflare's proxy: the web filter, its removal and its undo.
+  const filtered = new FakeHost();
+  const webFilter = { ipv4: ["173.245.48.0/20", "103.21.244.0/22"] };
+  const withFilter = planHost(await inspectHost(filtered), desiredFor(filtered, { webFilter }));
+  plans.push(withFilter);
+  await applyApproved(filtered, withFilter);
+  plans.push(planHost(await inspectHost(filtered), desiredFor(filtered)));
+  filtered.files.delete("/etc/opscrew/app.json");
+  plans.push(planUndo(await inspectHost(filtered)));
   plans.push(
     planPortainer({
       app: "shop",
@@ -97,6 +108,7 @@ describe("generated scripts", () => {
         "setup/deploy-user",
         "setup/sshd",
         "setup/ufw",
+        "setup/web-filter",
         "setup/fail2ban",
         "setup/unattended-upgrades",
         "setup/runtime-dirs",
@@ -111,6 +123,7 @@ describe("generated scripts", () => {
         "undo/unattended-upgrades",
         "undo/fail2ban",
         "undo/ufw",
+        "undo/web-filter",
         "undo/sshd",
         "undo/deploy-user",
         "undo/docker-daemon",
@@ -425,5 +438,34 @@ describe("secret handling in scripts", () => {
           /^\s*(printf '[^']*' "\$(token|pw)" > "\$tmp"|case "\$token" in|if \[ -n "\$(token|pw)" \]; then)$/,
         );
     }
+  });
+});
+
+describe("the web filter's script on the server", () => {
+  const script = webFilterScript({ ipv4: ["103.21.244.0/22", "173.245.48.0/20"] });
+
+  it.skipIf(!SH_AVAILABLE)("passes sh -n and uses no bash-only syntax", () => {
+    expect(shSyntax(script)?.ok).toBe(true);
+    expect(script).not.toMatch(/(^|\s)\[\[\s|<<<|\bfunction\s+\w+|\s\$'|\bdeclare\s/m);
+  });
+
+  it("filters only new IPv4 connections to published ports 80 and 443, and drops the rest", () => {
+    expect(script).toContain("IPV4='103.21.244.0/22 173.245.48.0/20'");
+    expect(script).toContain(
+      'iptables -w -I DOCKER-USER 1 -p "$1" -m conntrack --ctstate DNAT --ctorigdstport "$2" --ctdir ORIGINAL -j OPSCREW-WEB',
+    );
+    expect(script).toContain("echo '-A OPSCREW-WEB -j DROP'");
+    expect(script).toContain("iptables-restore -w --noflush");
+    // IPv4 only: a kernel without IPv6 never stops Docker at boot.
+    expect(script).not.toMatch(/ip6tables|IPV6/);
+  });
+
+  it("runs after every other firewall loader and before Docker", () => {
+    expect(WEB_FILTER_UNIT_TEXT).toContain(
+      "After=local-fs.target ufw.service firewalld.service nftables.service netfilter-persistent.service iptables.service ip6tables.service\nBefore=docker.service\n",
+    );
+    expect(WEB_FILTER_DROP_IN_TEXT).toContain(
+      "Requires=opscrew-web-filter.service\nAfter=opscrew-web-filter.service\n",
+    );
   });
 });

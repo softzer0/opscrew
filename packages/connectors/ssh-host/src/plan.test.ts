@@ -761,3 +761,156 @@ describe("planTeardown and planUndo", () => {
     );
   });
 });
+
+describe("planHost: the web filter behind Cloudflare's proxy", () => {
+  // A few of Cloudflare's published IPv4 ranges (public, not secret).
+  const CF = { ipv4: ["173.245.48.0/20", "103.21.244.0/22", "104.16.0.0/13"] };
+  const V4 = "103.21.244.0/22 104.16.0.0/13 173.245.48.0/20";
+  const filtered = (fake: FakeHost, webFilter = CF) => desiredFor(fake, { webFilter });
+
+  it("keeps every plan without the filter exactly as before (same steps, same hash)", async () => {
+    const fake = new FakeHost();
+    const facts = await inspectHost(fake);
+    // The hashes these fake servers gave before the web filter existed.
+    expect(hostPlanHash(planHost(facts, desiredFor(fake)))).toBe(
+      "8bd89c637763c4e9cfd08f879e2aba4b8ef78d1ecfba19e51017cad421fa0094",
+    );
+    expect(hostPlanHash(planHost(facts, tunnelDesired(fake)))).toBe(
+      "677da9f02b897841fa98068ab9e9ec79293fac911438502a34aae7e75d9c09b0",
+    );
+    const used = new FakeHost();
+    await provision(used);
+    expect(hostPlanHash(await planFor(used))).toBe(
+      "2d87883293aac5e108b8999375ccb6fab320ca4a5a122f4b3cb09ce2d90ae65f",
+    );
+    used.files.delete("/etc/opscrew/app.json");
+    expect(hostPlanHash(planUndo(await inspectHost(used)))).toBe(
+      "f78e9cb81ccf608aa453e7d7cd2a4edd3bd23ec3d4fa9f76974e6e4ff899a7e8",
+    );
+  });
+
+  it("plans the IPv4 filter after ufw, with the ranges sorted, and leaves ufw as it is", async () => {
+    const fake = new FakeHost();
+    const facts = await inspectHost(fake);
+    const plain = planHost(facts, desiredFor(fake));
+    const plan = planHost(facts, filtered(fake));
+    expect(plan.steps.map((s) => s.id)).toEqual(
+      plain.steps.flatMap((s) => (s.id === "ufw" ? ["ufw", "web-filter"] : [s.id])),
+    );
+    expect(plan.steps.find((s) => s.id === "ufw")).toEqual(plain.steps.find((s) => s.id === "ufw"));
+    const filter = plan.steps.find((s) => s.id === "web-filter");
+    expect(filter).toMatchObject({ state: "change", params: { ipv4: V4 } });
+    expect(filter?.reason).toMatch(/Cloudflare's 3 IPv4 ranges/);
+    expect(filter?.reason).toMatch(/published on IPv4 only/);
+    expect(filter?.reason).toMatch(/Docker does not start \(fail closed\)/);
+    expect(codes(plan)).toEqual([]);
+    // The filter plan of this fake server, pinned.
+    expect(hostPlanHash(plan)).toBe(
+      "022628c6aca9d3acc5f1ee30ef6ee62bd39b1e39b3f96b1d88c70641c21ee0e9",
+    );
+  });
+
+  it("gives the same hash for the same ranges in any order or with duplicates", async () => {
+    const fake = new FakeHost();
+    const facts = await inspectHost(fake);
+    const a = planHost(facts, filtered(fake));
+    const b = planHost(
+      facts,
+      filtered(fake, {
+        ipv4: ["104.16.0.0/13", "173.245.48.0/20", "103.21.244.0/22", "104.16.0.9/13"],
+      }),
+    );
+    expect(hostPlanHash(b)).toBe(hostPlanHash(a));
+    const c = planHost(facts, filtered(fake, { ipv4: [...CF.ipv4, "131.0.72.0/22"] }));
+    expect(hostPlanHash(c)).not.toBe(hostPlanHash(a));
+  });
+
+  it("refuses ranges that are not IPv4 networks, no range, or a filter in tunnel mode", async () => {
+    const fake = new FakeHost();
+    const facts = await inspectHost(fake);
+    for (const webFilter of [
+      { ipv4: [] },
+      { ipv4: ["0.0.0.0/33"] },
+      { ipv4: ["2400:cb00::/32"] },
+      { ipv4: ["1.2.3.0/24; reboot"] },
+      { ipv4: CF.ipv4, ipv6: ["2400:cb00::/32"] },
+    ]) {
+      expect(() => planHost(facts, filtered(fake, webFilter as never))).toThrowError(/webFilter/);
+    }
+    expect(() => planHost(facts, tunnelDesired(fake, { webFilter: CF }))).toThrowError(
+      /only for a site served directly/,
+    );
+  });
+
+  it("refuses Docker's nftables backend and Docker without iptables, in plain words", async () => {
+    const nft = new FakeHost();
+    nft.files.set("/etc/docker/daemon.json", '{ "firewall-backend": "nftables" }\n');
+    const nftPlan = planHost(await inspectHost(nft), filtered(nft));
+    expect(codes(nftPlan)).toEqual(["docker-nftables"]);
+    expect(stateOf(nftPlan, "web-filter")).toBe("blocked");
+
+    const env = new FakeHost();
+    env.dockerdFlags = ["}\nEnvironment=DOCKER_FIREWALL_BACKEND=nftables"];
+    expect(codes(planHost(await inspectHost(env), filtered(env)))).toEqual(["docker-nftables"]);
+
+    const off = new FakeHost();
+    off.files.set("/etc/docker/daemon.json", '{ "iptables": false }\n');
+    expect(codes(planHost(await inspectHost(off), filtered(off)))).toEqual(["docker-no-iptables"]);
+
+    // IPv6 settings do not matter: the site is not published on IPv6.
+    const v6 = new FakeHost();
+    v6.files.set("/etc/docker/daemon.json", '{ "ip6tables": false }\n');
+    v6.addresses.push(
+      "2: eth0    inet6 2001:db8::20/64 scope global dynamic mngtmpaddr\\       valid_lft 86000sec preferred_lft 14000sec",
+    );
+    expect(codes(planHost(await inspectHost(v6), filtered(v6)))).toEqual([]);
+  });
+
+  it("is in place on a re-run, re-applies changed ranges, and keeps the user's DOCKER-USER rules", async () => {
+    const fake = new FakeHost();
+    fake.web4.dockerUserRules = ["-A DOCKER-USER -s 10.0.0.0/8 -j ACCEPT"];
+    await provision(fake, filtered(fake));
+    expect(stateOf(await planFor(fake, filtered(fake)), "web-filter")).toBe("in-place");
+
+    const changed = { ipv4: ["104.16.0.0/13", "173.245.48.0/20", "131.0.72.0/22"] };
+    const plan = await planFor(fake, filtered(fake, changed));
+    const step = plan.steps.find((s) => s.id === "web-filter");
+    expect(step?.state).toBe("change");
+    expect(step?.reason).toMatch(/1 new range, 1 no longer listed/);
+    expect(plan.steps.filter((s) => s.state === "change").map((s) => s.id)).toEqual(["web-filter"]);
+    await applyApproved(fake, plan);
+    expect(fake.web4.chain).toContain("-A OPSCREW-WEB -s 131.0.72.0/22 -j RETURN");
+    expect(fake.web4.dockerUserRules.at(-1)).toBe("-A DOCKER-USER -s 10.0.0.0/8 -j ACCEPT");
+    expect(stateOf(await planFor(fake, filtered(fake, changed)), "web-filter")).toBe("in-place");
+    // Someone edited OpsCrew's chain: a change again.
+    fake.web4.chain = ["-A OPSCREW-WEB -j ACCEPT"];
+    expect(stateOf(await planFor(fake, filtered(fake, changed)), "web-filter")).toBe("change");
+  });
+
+  it("removes the filter when the site is no longer served behind the proxy, and on undo", async () => {
+    const fake = new FakeHost();
+    await provision(fake, filtered(fake));
+    const dnsOnly = await planFor(fake, desiredFor(fake));
+    expect(dnsOnly.steps.find((s) => s.id === "web-filter")).toMatchObject({
+      state: "change",
+      params: { remove: true },
+    });
+    await applyApproved(fake, dnsOnly);
+    expect(fake.web4.chain).toBeNull();
+    expect(fake.files.has("/etc/systemd/system/docker.service.d/opscrew-web-filter.conf")).toBe(
+      false,
+    );
+    expect((await planFor(fake, desiredFor(fake))).steps.some((s) => s.id === "web-filter")).toBe(
+      false,
+    );
+
+    const undone = new FakeHost();
+    await provision(undone, filtered(undone));
+    undone.files.delete("/etc/opscrew/app.json");
+    const undo = planUndo(await inspectHost(undone));
+    expect(undo.steps.map((s) => s.id)).toContain("web-filter");
+    await applyApproved(undone, undo);
+    expect(undone.web4.chain).toBeNull();
+    expect(undone.files.has("/usr/local/sbin/opscrew-web-filter")).toBe(false);
+  });
+});

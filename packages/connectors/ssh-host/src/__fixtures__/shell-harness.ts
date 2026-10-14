@@ -31,6 +31,8 @@ const MOVED = [
   "/var/lib/opscrew-ready",
   "/var/lib/dpkg",
   "/var/log/opscrew",
+  "/usr/local/sbin/opscrew-web-filter",
+  "/etc/systemd/system",
 ];
 
 const SCRIPT_PATH = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";

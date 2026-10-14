@@ -93,6 +93,18 @@ export const findings = {
     message: `This server already uses another firewall: ${list(what)}. OpsCrew does not add a second one.`,
     hint: `Either turn that firewall off and let OpsCrew manage ufw (it allows only SSH and web traffic), or keep yours and do not use OpsCrew on this server for now. ${RERUN.charAt(0).toUpperCase()}${RERUN.slice(1)} after the change.`,
   }),
+  dockerNftables: (): HostFinding => ({
+    code: "docker-nftables",
+    message:
+      "Docker on this server uses its nftables firewall backend, which has no DOCKER-USER chain, so OpsCrew cannot limit the web ports to Cloudflare's addresses there.",
+    hint: `Serve the site through a Cloudflare Tunnel (recommended) or with DNS only (opscrew interview), or switch Docker back to iptables (remove "firewall-backend" from /etc/docker/daemon.json and restart Docker), ${RERUN}.`,
+  }),
+  dockerNoIptables: (): HostFinding => ({
+    code: "docker-no-iptables",
+    message:
+      'Docker on this server does not manage iptables ("iptables": false), so there is no DOCKER-USER chain and its published ports cannot be limited to Cloudflare\'s addresses.',
+    hint: `Serve the site through a Cloudflare Tunnel (recommended) or with DNS only (opscrew interview), or let Docker manage iptables again (remove "iptables": false from /etc/docker/daemon.json and restart Docker), ${RERUN}.`,
+  }),
   ufwWouldBlock: (what: readonly string[]): HostFinding => ({
     code: "firewall-would-block",
     message: `The firewall OpsCrew turns on allows only SSH and web traffic, so other machines could no longer reach ${list(what)}.`,

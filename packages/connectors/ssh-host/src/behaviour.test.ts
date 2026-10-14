@@ -2,7 +2,7 @@
  * The host scripts' behaviour in a real POSIX shell: real files under a temporary root, stubbed
  * commands for everything that would change the machine (see `__fixtures__/shell-harness.ts`).
  */
-import { readdirSync } from "node:fs";
+import { readdirSync, rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { portainerDesired, portainerPassword } from "./__fixtures__/helpers";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
@@ -282,6 +282,259 @@ describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", { timeout: 60_0
         "ufw default allow outgoing",
         "ufw --force disable",
       ]);
+    });
+  });
+
+  describe("web filter (DOCKER-USER)", () => {
+    /**
+     * iptables over files: `$S/iptables/<chain>` holds the chain's rules. With `$S/insert-at`, the
+     * n-th listing of DOCKER-USER first inserts another program's rule at its top.
+     */
+    const IPTABLES = `fam=$(basename "$0")
+d="$S/$fam"
+mkdir -p "$d"
+if [ "$1" = -w ]; then shift; fi
+if [ "$1" = -n ]; then shift; fi
+op=$1
+chain=$2
+shift 2
+f="$d/$chain"
+case "$op" in
+  -L) [ -e "$f" ] ;;
+  -N) [ ! -e "$f" ] || exit 1; : > "$f" ;;
+  -S)
+    [ -e "$f" ] || exit 1
+    if [ "$chain" = DOCKER-USER ] && [ -e "$S/insert-at" ]; then
+      n=$(( $(cat "$S/list-count" 2>/dev/null || echo 0) + 1 ))
+      echo "$n" > "$S/list-count"
+      if [ "$n" = "$(cat "$S/insert-at")" ]; then
+        { echo "-A DOCKER-USER -s 192.0.2.0/24 -j ACCEPT"; cat "$f"; } > "$f.new"; mv "$f.new" "$f"
+      fi
+    fi
+    echo "-N $chain"; cat "$f" ;;
+  -C) [ -e "$f" ] && grep -qxF -- "-A $chain $*" "$f" ;;
+  -I) shift; [ -e "$f" ] || exit 1; { echo "-A $chain $*"; cat "$f"; } > "$f.new"; mv "$f.new" "$f" ;;
+  -D)
+    [ -e "$f" ] || exit 1
+    case "$1" in
+      [0-9]*) awk -v n="$1" 'NR != n' "$f" > "$f.new" ;;
+      *) awk -v r="-A $chain $*" 'done || $0 != r { print; next } { done = 1 }' "$f" > "$f.new" ;;
+    esac
+    mv "$f.new" "$f" ;;
+  -F) : > "$f" ;;
+  -X) if [ -s "$f" ] || grep -rqs -- "-j $chain\\$" "$d"; then exit 1; fi; rm -f "$f" ;;
+  *) exit 2 ;;
+esac`;
+    const RESTORE = `fam=$(basename "$0" | sed 's/-restore$//')
+d="$S/$fam"
+mkdir -p "$d"
+[ ! -e "$S/fail-restore" ] || exit 1
+while IFS= read -r line; do
+  case "$line" in
+    :*) chain=\${line#:}; chain=\${chain%% *}; : > "$d/$chain" ;;
+    "-A "*) chain=$(printf '%s\\n' "$line" | cut -d ' ' -f 2); printf '%s\\n' "$line" >> "$d/$chain" ;;
+  esac
+done`;
+    /** systemctl over files; `show docker` prints `$S/docker-unit` (ExecStart and Environment). */
+    const SYSTEMCTL_UNITS = `case "$1" in
+  is-enabled) if [ -e "$S/enabled.$2" ]; then echo enabled; else echo disabled; exit 1; fi ;;
+  is-active) unit=$2; if [ "$unit" = --quiet ]; then unit=$3; fi; [ -e "$S/active.$unit" ] ;;
+  enable) touch "$S/enabled.$2" ;;
+  disable) rm -f "$S/enabled.$2" ;;
+  start) touch "$S/active.$2" ;;
+  stop) rm -f "$S/active.$2" ;;
+  show) cat "$S/docker-unit" 2>/dev/null || echo 'ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd -H fd:// }' ;;
+  *) exit 0 ;;
+esac`;
+    const PARAMS = { ipv4: "103.21.244.0/22 173.245.48.0/20" };
+    const USER_RULE = "-A DOCKER-USER -s 10.0.0.0/8 -j ACCEPT";
+    const JUMPS = [
+      "-A DOCKER-USER -p tcp -m conntrack --ctstate DNAT --ctorigdstport 80 --ctdir ORIGINAL -j OPSCREW-WEB",
+      "-A DOCKER-USER -p tcp -m conntrack --ctstate DNAT --ctorigdstport 443 --ctdir ORIGINAL -j OPSCREW-WEB",
+      "-A DOCKER-USER -p udp -m conntrack --ctstate DNAT --ctorigdstport 443 --ctdir ORIGINAL -j OPSCREW-WEB",
+    ];
+    /** Runs the script on the server as systemd does at boot (the stubs first on PATH). */
+    const BOOT =
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nexport PATH\nsh /usr/local/sbin/opscrew-web-filter";
+    const lines = (h: ShellHarness, path: string) =>
+      (h.read(path) ?? "").split("\n").filter((line) => line !== "");
+    /** A server whose Docker runs (DOCKER-USER exists, with one rule of the user's). */
+    const filterHarness = () => {
+      const h = harness();
+      h.stub("systemctl", SYSTEMCTL_UNITS);
+      h.stub("iptables", IPTABLES);
+      h.stub("iptables-restore", RESTORE);
+      h.write("/state/active.docker", "");
+      h.write("/state/iptables/DOCKER-USER", `${USER_RULE}\n`);
+      return h;
+    };
+    const iptablesCalls = (h: ShellHarness) =>
+      h.calls().filter((call) => /^ip6?tables(-restore)? /.test(call) && !/ -(L|S|C) /.test(call));
+
+    it("installs the chain and the jumps first in DOCKER-USER (IPv4 only), then makes Docker require the unit", () => {
+      const h = filterHarness();
+      const { check, apply, verify } = scriptsFor("setup", "web-filter", PARAMS);
+      expect(h.run(check).stdout).toContain("state=change");
+      h.clearCalls();
+      const run = h.run(apply);
+      expect(run.status, run.stderr).toBe(0);
+      expect(iptablesCalls(h)).toEqual([
+        "iptables-restore -w --noflush",
+        "iptables -w -I DOCKER-USER 1 -p udp -m conntrack --ctstate DNAT --ctorigdstport 443 --ctdir ORIGINAL -j OPSCREW-WEB",
+        "iptables -w -I DOCKER-USER 1 -p tcp -m conntrack --ctstate DNAT --ctorigdstport 443 --ctdir ORIGINAL -j OPSCREW-WEB",
+        "iptables -w -I DOCKER-USER 1 -p tcp -m conntrack --ctstate DNAT --ctorigdstport 80 --ctdir ORIGINAL -j OPSCREW-WEB",
+      ]);
+      expect(lines(h, "/state/iptables/OPSCREW-WEB")).toEqual([
+        "-A OPSCREW-WEB -s 103.21.244.0/22 -j RETURN",
+        "-A OPSCREW-WEB -s 173.245.48.0/20 -j RETURN",
+        "-A OPSCREW-WEB -j DROP",
+      ]);
+      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([...JUMPS, USER_RULE]);
+      // The unit runs the script before Docker; Docker requires it (fail closed).
+      expect(h.read("/etc/systemd/system/docker.service.d/opscrew-web-filter.conf")).toContain(
+        "Requires=opscrew-web-filter.service\nAfter=opscrew-web-filter.service",
+      );
+      expect(h.read("/etc/systemd/system/opscrew-web-filter.service")).toContain(
+        "Before=docker.service",
+      );
+      const systemctl = h.calls().filter((call) => call.startsWith("systemctl "));
+      expect(systemctl).toEqual(
+        expect.arrayContaining([
+          "systemctl daemon-reload",
+          "systemctl enable opscrew-web-filter.service",
+          "systemctl start opscrew-web-filter.service",
+        ]),
+      );
+      expect(systemctl.some((call) => /restart|stop/.test(call))).toBe(false);
+      expect(h.run(verify).status).toBe(0);
+      expect(h.run(check).stdout).toContain("state=in-place");
+
+      // A second run changes nothing but the chain (in one restore): no new jumps.
+      h.clearCalls();
+      expect(h.run(apply).status).toBe(0);
+      expect(iptablesCalls(h)).toEqual(["iptables-restore -w --noflush"]);
+      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([...JUMPS, USER_RULE]);
+    });
+
+    it("new ranges replace the chain; jumps a rule of the user's pushed down move back to the top", () => {
+      const h = filterHarness();
+      const first = scriptsFor("setup", "web-filter", PARAMS);
+      expect(h.run(first.apply).status).toBe(0);
+      h.write(
+        "/state/iptables/DOCKER-USER",
+        `-A DOCKER-USER -i eth1 -j ACCEPT\n${[...JUMPS, USER_RULE].join("\n")}\n`,
+      );
+      const next = scriptsFor("setup", "web-filter", { ipv4: "131.0.72.0/22 173.245.48.0/20" });
+      expect(h.run(next.check).stdout).toContain("state=change");
+      const run = h.run(next.apply);
+      expect(run.status, run.stderr).toBe(0);
+      expect(lines(h, "/state/iptables/OPSCREW-WEB")).toEqual([
+        "-A OPSCREW-WEB -s 131.0.72.0/22 -j RETURN",
+        "-A OPSCREW-WEB -s 173.245.48.0/20 -j RETURN",
+        "-A OPSCREW-WEB -j DROP",
+      ]);
+      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
+        ...JUMPS,
+        "-A DOCKER-USER -i eth1 -j ACCEPT",
+        USER_RULE,
+      ]);
+      expect(h.run(next.verify).status).toBe(0);
+    });
+
+    it("deletes an old jump only while the rule at its number still is one (the chain may change)", () => {
+      const h = filterHarness();
+      expect(h.run(scriptsFor("setup", "web-filter", PARAMS).apply).status).toBe(0);
+      const other = "-A DOCKER-USER -i eth1 -j ACCEPT";
+      h.write("/state/iptables/DOCKER-USER", `${[other, ...JUMPS, USER_RULE].join("\n")}\n`);
+      // Another program inserts a rule at the top between the listing and the first delete
+      // (the boot script lists DOCKER-USER twice before it deletes anything).
+      h.write("/state/insert-at", "3");
+      h.clearCalls();
+      const boot = h.run(BOOT);
+      expect(boot.status, boot.stderr).toBe(0);
+      const inserted = "-A DOCKER-USER -s 192.0.2.0/24 -j ACCEPT";
+      // Rules 7 and 6 were still OpsCrew's jumps and went; rule 5 had become the user's rule and
+      // stayed. Nothing but OpsCrew's jumps was deleted.
+      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
+        inserted,
+        ...JUMPS,
+        other,
+        JUMPS[2],
+        USER_RULE,
+      ]);
+      expect(h.calls().filter((call) => call.includes(" -D "))).toEqual([
+        "iptables -w -D DOCKER-USER 7",
+        "iptables -w -D DOCKER-USER 6",
+      ]);
+    });
+
+    it("at boot, before Docker, the script creates DOCKER-USER itself", () => {
+      const h = filterHarness();
+      const { apply } = scriptsFor("setup", "web-filter", PARAMS);
+      expect(h.run(apply).status).toBe(0);
+      // A reboot: no rules at all, Docker not started yet.
+      rmSync(h.native("/state/iptables"), { recursive: true, force: true });
+      const boot = h.run(BOOT);
+      expect(boot.status, boot.stderr).toBe(0);
+      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual(JUMPS);
+      expect(lines(h, "/state/iptables/OPSCREW-WEB")).toHaveLength(3);
+    });
+
+    it("at boot, fails (so Docker does not start) when Docker's unit picks nftables or turns iptables off", () => {
+      for (const unit of [
+        "ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd --firewall-backend=nftables }",
+        "ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd -H fd:// }\nEnvironment=DOCKER_FIREWALL_BACKEND=nftables",
+        "ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd --iptables=false }",
+      ]) {
+        const h = filterHarness();
+        expect(h.run(scriptsFor("setup", "web-filter", PARAMS).apply).status).toBe(0);
+        h.write("/state/docker-unit", `${unit}\n`);
+        h.clearCalls();
+        const boot = h.run(BOOT);
+        expect(boot.status, unit).not.toBe(0);
+        expect(boot.stderr).toMatch(/opscrew-web-filter: Docker's service/);
+        expect(iptablesCalls(h), unit).toEqual([]);
+        h.dispose();
+      }
+    });
+
+    it("refuses Docker's nftables backend before changing anything", () => {
+      const h = filterHarness();
+      h.write("/etc/docker/daemon.json", '{ "firewall-backend": "nftables" }\n');
+      const run = h.run(scriptsFor("setup", "web-filter", PARAMS).apply);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain("nftables firewall backend");
+      expect(iptablesCalls(h)).toEqual([]);
+      expect(h.exists("/usr/local/sbin/opscrew-web-filter")).toBe(false);
+    });
+
+    it("when the rules cannot be installed, Docker is not made to require the filter", () => {
+      const h = filterHarness();
+      h.write("/state/fail-restore", "");
+      const run = h.run(scriptsFor("setup", "web-filter", PARAMS).apply);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain("could not install its web filter");
+      expect(h.exists("/etc/systemd/system/docker.service.d/opscrew-web-filter.conf")).toBe(false);
+      expect(h.calls()).not.toContain("systemctl enable opscrew-web-filter.service");
+    });
+
+    it("removal: Docker stops requiring the filter first, then OpsCrew's rules and files go", () => {
+      const h = filterHarness();
+      expect(h.run(scriptsFor("setup", "web-filter", PARAMS).apply).status).toBe(0);
+      h.clearCalls();
+      const remove = scriptsFor("undo", "web-filter", { remove: true });
+      const run = h.run(remove.apply);
+      expect(run.status, run.stderr).toBe(0);
+      const calls = h.calls().filter((call) => !/ -(L|S|C) /.test(call));
+      expect(calls.indexOf("systemctl daemon-reload")).toBeLessThan(
+        calls.indexOf("systemctl stop opscrew-web-filter.service"),
+      );
+      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([USER_RULE]);
+      expect(h.exists("/state/iptables/OPSCREW-WEB")).toBe(false);
+      expect(h.exists("/etc/systemd/system/docker.service.d/opscrew-web-filter.conf")).toBe(false);
+      expect(h.exists("/etc/systemd/system/opscrew-web-filter.service")).toBe(false);
+      expect(h.exists("/usr/local/sbin/opscrew-web-filter")).toBe(false);
+      expect(h.run(remove.verify).status).toBe(0);
     });
   });
 

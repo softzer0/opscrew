@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_COMPOSE_BYTES } from "./constants";
+import { canonicalCidr } from "./parse";
 
 /** Version of the host plan format (`HostPlan.schemaVersion`). */
 export const HOST_PLAN_SCHEMA_VERSION = 1;
@@ -12,6 +13,7 @@ export const HOST_STEP_IDS = [
   "deploy-user",
   "sshd",
   "ufw",
+  "web-filter",
   "fail2ban",
   "unattended-upgrades",
   "runtime-dirs",
@@ -93,6 +95,14 @@ export interface DesiredHost {
    */
   portainer?: { version: string; compose: { initial: string; final: string } };
   /**
+   * Only when the site is served directly behind Cloudflare's proxy (the user's explicit choice):
+   * Cloudflare's current IPv4 ranges for the `web-filter` step, which lets only them reach the web
+   * ports (80 and 443) Docker publishes. The site is published on IPv4 only in this mode (nothing
+   * listens on IPv6 80/443). The plan stores them sorted and without duplicates, so the same ranges
+   * in any order give the same plan hash.
+   */
+  webFilter?: { ipv4: readonly string[] };
+  /**
    * Explicit choice for password logins, needed only when some login user has a password and no
    * SSH key (turning passwords off would lock them out). `true` turns them off anyway, `false`
    * leaves the server's password setting alone. Ignored when every password user has a key.
@@ -114,6 +124,14 @@ export const ComposeTextSchema = z
 /** A Cloudflare Tunnel id (a UUID; not secret). */
 export const TunnelIdSchema = z.string().regex(/^[0-9A-Fa-f-]{8,64}$/, {
   message: "must be a Cloudflare Tunnel id",
+});
+
+/** More IPv4 ranges than Cloudflare has ever published. */
+export const MAX_WEB_FILTER_RANGES = 100;
+
+/** An IPv4 network (Cloudflare's ranges). */
+const Ipv4NetworkSchema = z.string().refine((text) => canonicalCidr(text)?.family === "ipv4", {
+  message: "must be an IPv4 network such as 173.245.48.0/20",
 });
 
 export const DesiredHostSchema = z
@@ -155,11 +173,20 @@ export const DesiredHostSchema = z
         }),
       })
       .optional(),
+    webFilter: z
+      .strictObject({
+        ipv4: z.array(Ipv4NetworkSchema).min(1).max(MAX_WEB_FILTER_RANGES),
+      })
+      .optional(),
     disablePasswords: z.boolean().optional(),
   })
   .refine((desired) => desired.access !== "tunnel" || desired.tunnel !== undefined, {
     message: "the tunnel connector's Compose file is required in tunnel mode",
     path: ["tunnel"],
+  })
+  .refine((desired) => desired.access === "public" || desired.webFilter === undefined, {
+    message: "the web filter is only for a site served directly (public mode)",
+    path: ["webFilter"],
   });
 
 export interface ApplyOptions {

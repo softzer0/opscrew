@@ -21,6 +21,23 @@ import {
 import { AUTO_UPGRADES_FILE, MARKER_PATH, RECORD_PATH, SSHD_DROP_IN } from "../facts";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
 import { BACKUP_DIR, SSHD_BACKUP } from "../steps";
+import { WEB_FILTER_DROP_IN, WEB_FILTER_SCRIPT, WEB_FILTER_UNIT } from "../web-filter";
+
+/** One address family's filter state: OpsCrew's chain (null when absent) and DOCKER-USER. */
+export interface FakeWebRules {
+  chain: string[] | null;
+  /** DOCKER-USER exists. */
+  dockerUser: boolean;
+  /** Rules of DOCKER-USER, in order, as iptables-save prints them. */
+  dockerUserRules: string[];
+}
+
+/** OpsCrew's jump for one published port, as iptables-save prints it. */
+export function fakeJump(proto: string, port: string | number): string {
+  return `-A DOCKER-USER -p ${proto} -m conntrack --ctstate DNAT --ctorigdstport ${port} --ctdir ORIGINAL -j OPSCREW-WEB`;
+}
+
+const JUMPS = [fakeJump("tcp", 80), fakeJump("tcp", 443), fakeJump("udp", 443)];
 
 export const OS_PRESETS = {
   "ubuntu-22.04": {
@@ -191,6 +208,12 @@ export class FakeHost implements RemoteExec {
   /** Major version Docker's repository offers. */
   dockerRepoMajor = 29;
   ufwActive = false;
+  /** Docker's firewall backend (`docker info` FirewallBackend.Driver) and its IPv6 filtering. */
+  dockerFirewall: "iptables" | "nftables" = "iptables";
+  /** OpsCrew's web filter unit. */
+  webFilterUnit = { enabled: false, active: false };
+  web4: FakeWebRules = { chain: null, dockerUser: false, dockerUserRules: [] };
+  webFilterLog: string[] = [];
   ufwRules: UfwRule[] = [];
   ufwLog: string[] = [];
   webUnits: string[] = [];
@@ -525,8 +548,10 @@ export class FakeHost implements RemoteExec {
       add("ufw-added", "", 127);
       add("ufw-defaults", "", 2);
     }
-    add("iptables", this.iptables, this.iptables ? 0 : 127);
-    add("ip6tables", this.ip6tables, this.ip6tables ? 0 : 127);
+    const save4 = this.iptablesSave(this.iptables, this.web4);
+    const save6 = this.ip6tables;
+    add("iptables", save4, save4 ? 0 : 127);
+    add("ip6tables", save6, save6 ? 0 : 127);
     add("nft", this.nft, this.nft ? 0 : 127);
     add("snap-docker", this.snapDocker ? "Name Version Rev Tracking Publisher Notes\ndocker 27.2.0 2963 latest/stable canonical** -" : "", this.snapDocker ? 0 : 1);
     add(
@@ -606,9 +631,90 @@ export class FakeHost implements RemoteExec {
       "addons",
       [addon("tunnel", TUNNEL_DIR, "tunnel.env"), addon("portainer", PORTAINER_DIR, "admin_password")].join("\n"),
     );
+    const fileLine = (name: string, path: string) => {
+      const content = this.files.get(path);
+      return `file ${name} ${content === undefined ? "-" : sha256(content)}`;
+    };
+    add(
+      "web-filter",
+      [
+        fileLine("script", WEB_FILTER_SCRIPT),
+        fileLine("unit", WEB_FILTER_UNIT),
+        fileLine("dropin", WEB_FILTER_DROP_IN),
+        `enabled ${this.webFilterUnit.enabled ? "enabled" : "disabled"}`,
+        `active ${this.webFilterUnit.active ? "active" : "inactive"}`,
+        ...(this.installed("docker-ce")
+          ? ["iptables", "iptables-restore"].map((c) => `command ${c}`)
+          : []),
+      ].join("\n"),
+    );
+    add(
+      "docker-firewall",
+      this.dockerRunning ? `{"Driver":"${this.dockerFirewall}"}` : "",
+      this.dockerRunning ? 0 : 1,
+    );
     return sections
       .map(([name, text, exit]) => `\n${SECTION_MARK}${name}\n${text}\n${EXIT_MARK}${exit}`)
       .join("\n");
+  }
+
+  /** `iptables-save`: the given text plus Docker's DOCKER-USER and OpsCrew's chain. */
+  private iptablesSave(base: string, rules: FakeWebRules): string {
+    const dockerUser = (this.dockerRunning && this.dockerFirewall === "iptables") || rules.dockerUser;
+    if (!dockerUser && rules.chain === null) return base;
+    const filter = [
+      "*filter",
+      ...(dockerUser ? [":DOCKER-USER - [0:0]"] : []),
+      ...(rules.chain !== null ? [":OPSCREW-WEB - [0:0]"] : []),
+      ...(dockerUser ? rules.dockerUserRules : []),
+      ...(rules.chain ?? []),
+      "COMMIT",
+    ];
+    return [base, ...filter].filter((line) => line !== "").join("\n");
+  }
+
+  private webRulesOk(rules: FakeWebRules, nets: string): boolean {
+    const list = nets.split(" ").filter(Boolean);
+    const expected = [...list.map((net) => `-A OPSCREW-WEB -s ${net} -j RETURN`), "-A OPSCREW-WEB -j DROP"];
+    return (
+      rules.chain !== null &&
+      rules.chain.join("\n") === expected.join("\n") &&
+      JUMPS.every((jump) => rules.dockerUserRules.slice(0, 3).includes(jump))
+    );
+  }
+
+  private webFilterOk(p: Record<string, string>): boolean {
+    const is = (path: string, sum: string | undefined) => {
+      const content = this.files.get(path);
+      return content !== undefined && sha256(content) === sum;
+    };
+    return (
+      is(WEB_FILTER_SCRIPT, p.SCRIPT_SHA256) &&
+      is(WEB_FILTER_UNIT, p.UNIT_SHA256) &&
+      is(WEB_FILTER_DROP_IN, p.DROPIN_SHA256) &&
+      this.webFilterUnit.enabled &&
+      this.webFilterUnit.active &&
+      this.webRulesOk(this.web4, p.IPV4 ?? "")
+    );
+  }
+
+  private installWebRules(rules: FakeWebRules, nets: string): void {
+    rules.chain = [
+      ...nets
+        .split(" ")
+        .filter(Boolean)
+        .map((net) => `-A OPSCREW-WEB -s ${net} -j RETURN`),
+      "-A OPSCREW-WEB -j DROP",
+    ];
+    rules.dockerUser = true;
+    if (!JUMPS.every((jump) => rules.dockerUserRules.slice(0, 3).includes(jump))) {
+      rules.dockerUserRules = [...JUMPS, ...rules.dockerUserRules.filter((line) => !JUMPS.includes(line))];
+    }
+  }
+
+  private removeWebRules(rules: FakeWebRules): void {
+    rules.dockerUserRules = rules.dockerUserRules.filter((line) => !JUMPS.includes(line));
+    rules.chain = null;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -806,6 +912,43 @@ export class FakeHost implements RemoteExec {
       }
 
       // ufw
+      // web-filter
+      case "web-filter.check":
+        return this.check(this.webFilterOk(p), { installed: this.files.has(WEB_FILTER_SCRIPT) });
+      case "web-filter.verify":
+        return this.verify(this.webFilterOk(p), p);
+      case "web-filter.apply": {
+        const daemon = this.files.get(DOCKER_DAEMON_JSON_PATH) ?? "";
+        if (this.dockerFirewall === "nftables" || /"firewall-backend"\s*:\s*"nftables"/.test(daemon)) {
+          return fail("Docker is set to its nftables firewall backend.");
+        }
+        const decode = (value: string | undefined) => Buffer.from(value ?? "", "base64").toString("utf8");
+        this.files.set(WEB_FILTER_SCRIPT, decode(p.SCRIPT_B64));
+        this.files.set(WEB_FILTER_UNIT, decode(p.UNIT_B64));
+        this.installWebRules(this.web4, p.IPV4 ?? "");
+        this.files.set(WEB_FILTER_DROP_IN, decode(p.DROPIN_B64));
+        this.webFilterUnit = { enabled: true, active: true };
+        this.webFilterLog.push(`install ${p.IPV4}`);
+        return result();
+      }
+      case "web-filter.remove.check":
+      case "web-filter.remove.verify": {
+        const ok =
+          !this.files.has(WEB_FILTER_SCRIPT) &&
+          !this.files.has(WEB_FILTER_UNIT) &&
+          !this.files.has(WEB_FILTER_DROP_IN) &&
+          this.web4.chain === null;
+        return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
+      }
+      case "web-filter.remove.apply":
+        this.files.delete(WEB_FILTER_DROP_IN);
+        this.webFilterUnit = { enabled: false, active: false };
+        this.removeWebRules(this.web4);
+        this.files.delete(WEB_FILTER_UNIT);
+        this.files.delete(WEB_FILTER_SCRIPT);
+        this.webFilterLog.push("remove");
+        return result();
+
       case "ufw.install.apply":
         if (!this.installed("ufw")) {
           this.packages.set("ufw", "0.36.2");
