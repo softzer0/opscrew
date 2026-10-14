@@ -487,22 +487,29 @@ async function runChange(
         infrastructureOutputs(deps, plan, { engine: async () => engine, engineEnv: env }),
       );
     }
-    const result = await planAndApply(deps, {
-      engine,
-      dir: join(deps.paths.root, plan.infra.dir),
-      env,
-      deployPlan: plan,
-      files,
-      command,
-      phase: "provision",
-      costDelta: null,
-      approvalTitle:
-        change.command === "enable" && portainerHostname(plan) !== undefined
-          ? `Serve Portainer on ${portainerHostname(plan)} behind Cloudflare Access (Cloudflare Tunnel and Access)`
-          : "Apply the Cloudflare Tunnel and Access changes for Portainer",
-      ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
-      ...(planOnly ? { planOnly: true } : {}),
-    });
+    let result: Awaited<ReturnType<typeof planAndApply>>;
+    try {
+      result = await planAndApply(deps, {
+        engine,
+        dir: join(deps.paths.root, plan.infra.dir),
+        env,
+        deployPlan: plan,
+        files,
+        command,
+        phase: "provision",
+        costDelta: null,
+        approvalTitle:
+          change.command === "enable" && portainerHostname(plan) !== undefined
+            ? `Serve Portainer on ${portainerHostname(plan)} behind Cloudflare Access (Cloudflare Tunnel and Access)`
+            : "Apply the Cloudflare Tunnel and Access changes for Portainer",
+        ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
+        ...(planOnly ? { planOnly: true } : {}),
+      });
+    } catch (error) {
+      // `--approve <infrastructure plan hash>` without options then applies exactly this change.
+      await planned();
+      throw infrastructureStopped(deps, error, written);
+    }
     planHash = result.planHash;
     iacApplied = result.applied;
     if (result.approval) approvals.push({ record: result.approval, kind: "iac-apply" });
@@ -667,6 +674,28 @@ async function runChange(
     files: written,
     status,
   };
+}
+
+/**
+ * The error of an infrastructure plan that was refused or failed after this run wrote repository
+ * files: it lists them. A refusal changed nothing in Cloudflare or on the server; a failed apply
+ * keeps the engine's own words about what happened.
+ */
+function infrastructureStopped(
+  deps: Pick<PhaseDeps, "redactor">,
+  error: unknown,
+  written: readonly string[],
+): unknown {
+  if (!(error instanceof OpsCrewError) || written.length === 0) return error;
+  const files = `The repository files were written (${written.join(", ")})`;
+  const message =
+    error.code === "APPROVAL_REFUSED"
+      ? `${error.message.replace(/ Nothing was changed\.$/, "")} ${files}; nothing in Cloudflare or on the server changed.`
+      : `${error.message}\n${files}.`;
+  return new OpsCrewError(error.code, deps.redactor.redact(message), {
+    ...(error.hint !== undefined ? { hint: error.hint } : {}),
+    cause: error,
+  });
 }
 
 /**

@@ -63,7 +63,7 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T907 [P] [US5] Portainer on every target in `packages/agents/src/portainer/`
+- [X] T907 [P] [US5] Portainer on every target in `packages/agents/src/portainer/`
   - Owns: `packages/agents/src/portainer/**`, `packages/connectors/ssh-host/src/plan.ts` and `steps.ts` (the tunnel connector in public mode only, + tests)
   - Reads: plan.md "Portainer on every target"; contracts/cli.md "Portainer"; research.md R5; spec FR-914–FR-916
   - Depends: T902, T903

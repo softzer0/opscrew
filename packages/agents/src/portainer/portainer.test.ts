@@ -522,6 +522,58 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     expect(existsSync(pendingPortainerFile(s.deps.paths))).toBe(false);
   });
 
+  it("a refused iac-apply after the files were written: the error lists them, and --approve <plan hash> applies that plan", async () => {
+    const { token } = tunnelSecrets();
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+          type: "cloudflare_zero_trust_tunnel_cloudflared",
+          name: "this",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "create",
+        },
+      ],
+      outputs: { server_ipv4: SERVER_IPV4, tunnel_id: TUNNEL_ID, tunnel_token: token },
+    });
+    let refuseIac = true;
+    const s = await cloudSetup({ engine, answer: (r) => !(refuseIac && r.kind === "iac-apply") });
+    const original = await readFile(s.deps.paths.files.plan, "utf8");
+    const error = (await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+      services: s.services,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toContain("The repository files were written (");
+    expect(error.message).toContain("opscrew/infra/prod/terraform.tfvars.json");
+    expect(error.message).toContain("nothing in Cloudflare or on the server changed.");
+    expect(error.message).not.toContain("Nothing was changed.");
+    const iacHash = /--approve ([0-9a-f]{64})/.exec(error.hint ?? "")?.[1];
+    expect(iacHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(error.hint).toContain("opscrew portainer enable --approve");
+    expect(existsSync(pendingPortainerFile(s.deps.paths))).toBe(true);
+    expect(engine.applied).toHaveLength(0);
+    expect(await readFile(s.deps.paths.files.plan, "utf8")).toBe(original);
+
+    refuseIac = false;
+    const result = await portainerEnable(s.deps, {
+      approvePlanHashes: [iacHash as string],
+      services: s.services,
+    });
+    expect(engine.applied[0]?.approval.approvedPlanHash).toBe(iacHash);
+    expect(result.applied).toBe(true);
+    expect(s.host.calls).toHaveLength(1);
+    expect(s.host.calls[0]?.plan.steps.map((step) => step.id)).toEqual([
+      "tunnel-connector",
+      "portainer",
+    ]);
+    expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toMatchObject({
+      hostname: "portainer.example.com",
+      allowedEmails: ["owner@example.com"],
+    });
+  });
+
   it("keeps the admin account when Portainer's data is already on the server", async () => {
     const s = await cloudSetup({ volume: true });
     await portainerEnable(s.deps, { services: s.services });
