@@ -145,6 +145,11 @@ export class FakeHost implements RemoteExec {
   os: { id: string; versionId: string; codename: string; pretty: string; idLike: string };
   arch: string;
   systemd = true;
+  /** `ip -o addr show scope global` lines (a home server behind NAT by default). */
+  addresses = [
+    "2: eth0    inet 192.168.1.20/24 brd 192.168.1.255 scope global dynamic eth0\\       valid_lft 86000sec preferred_lft 86000sec",
+    "3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever preferred_lft forever",
+  ];
   memoryBytes = 4 * 1024 ** 3;
   diskFreeBytes = 60 * 1024 ** 3;
 
@@ -409,6 +414,7 @@ export class FakeHost implements RemoteExec {
       `Filesystem     1-blocks       Used   Available Capacity Mounted on\n/dev/sda1   80000000000 20000000000 ${this.diskFreeBytes} 25% /`,
     );
     add("systemd", "", this.systemd ? 0 : 1);
+    add("addresses", this.addresses.join("\n"));
     add("sshd", root ? this.sshdT() : "", root ? 0 : 1);
     add("sshd-include", this.sshdIncludesDropIns ? "Include /etc/ssh/sshd_config.d/*.conf" : "", this.sshdIncludesDropIns ? 0 : 1);
     const dropIn = this.files.get(SSHD_DROP_IN);

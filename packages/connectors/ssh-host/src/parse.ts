@@ -287,6 +287,51 @@ export function parseAptPeriodic(text: string): boolean {
   );
 }
 
+/** Interfaces whose addresses never reach the server from outside (container bridges, VPNs). */
+const VIRTUAL_INTERFACE =
+  /^(docker\d*|br-|veth|cni|flannel|cali|virbr|lxcbr|lxdbr|tailscale|wg|zt)/;
+
+/** True for an address other machines on the internet can reach (not private or link-local). */
+export function isPublicAddress(address: string): boolean {
+  if (address.includes(":")) {
+    const lower = address.toLowerCase();
+    return !(
+      lower === "::1" ||
+      /^f[cd][0-9a-f]{2}:/.test(lower) ||
+      /^fe[89ab][0-9a-f]:/.test(lower)
+    );
+  }
+  const [a = 0, b = 0] = address.split(".").map(Number);
+  return !(
+    a === 10 ||
+    a === 127 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254)
+  );
+}
+
+/** `ip -o addr show scope global`: global addresses of real interfaces. */
+export function parseAddresses(
+  text: string,
+): { interface: string; family: "ipv4" | "ipv6"; address: string; public: boolean }[] {
+  const found: { interface: string; family: "ipv4" | "ipv6"; address: string; public: boolean }[] =
+    [];
+  for (const line of linesOf(text)) {
+    const match = /^\d+:\s+(\S+?)(?:@\S+)?\s+(inet6?)\s+([0-9a-fA-F.:]+)\//.exec(line);
+    if (!match?.[1] || !match[2] || !match[3]) continue;
+    if (VIRTUAL_INTERFACE.test(match[1])) continue;
+    found.push({
+      interface: match[1],
+      family: match[2] === "inet" ? "ipv4" : "ipv6",
+      address: match[3],
+      public: isPublicAddress(match[3]),
+    });
+  }
+  return found;
+}
+
 /** Lines `<addon> absent` or `<addon> installed <sha256 of compose.yaml> <secret yes|no>`. */
 export function parseAddons(
   text: string,

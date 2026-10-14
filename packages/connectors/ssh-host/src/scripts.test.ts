@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost } from "./__fixtures__/fake-host";
 import {
@@ -226,6 +227,122 @@ describe("ufw scripts", () => {
       apply.indexOf("ufw --force enable"),
     );
     expect(apply).not.toMatch(/ufw\s+allow\s+22\b/);
+  });
+});
+
+/**
+ * Runs `script` in bash with `stubs` (shell functions shadowing commands) defined first. bash,
+ * not sh, because POSIX sh refuses function names such as `dpkg-query`.
+ */
+function runWithStubs(
+  stubs: string,
+  script: string,
+): { status: number | null; stdout: string; stderr: string } {
+  const run = spawnSync("bash", ["-s"], { input: `${stubs}\n${script}`, encoding: "utf8" });
+  return { status: run.status, stdout: run.stdout, stderr: run.stderr };
+}
+
+const BASH_AVAILABLE = spawnSync("bash", ["-c", "true"]).error === undefined;
+
+async function stepOf(
+  desired: (fake: FakeHost) => ReturnType<typeof desiredFor>,
+  id: string,
+  arrange?: (fake: FakeHost) => void,
+) {
+  const fake = new FakeHost();
+  arrange?.(fake);
+  const plan = planHost(await inspectHost(fake), desired(fake));
+  const step = plan.steps.find((item) => item.id === id);
+  if (!step) throw new Error(`no ${id} step`);
+  return stepScripts(plan, step);
+}
+
+describe.skipIf(!BASH_AVAILABLE)("script behaviour in a real shell (commands stubbed)", () => {
+  const UFW_STUB = `ufw_on=no
+ufw() {
+  case "$1" in
+    status) if [ "$ufw_on" = yes ]; then echo 'Status: active'; else echo 'Status: inactive'; fi ;;
+    show) printf '%s\\n' "Added user rules (see 'ufw status' for running firewall):" "ufw allow 80/tcp" "ufw allow 443/udp comment 'opscrew-web'" ;;
+    *) echo "ufw $*" >&2; if [ "$1 $2" = "--force enable" ]; then ufw_on=yes; fi ;;
+  esac
+}`;
+
+  it("ufw: the SSH rules come first, existing rules are kept, then ufw turns on", async () => {
+    const fake = new FakeHost();
+    fake.sshdBase.port = [22, 2222];
+    const { apply } = await stepOf(
+      (f) => desiredFor(f),
+      "ufw",
+      (f) => {
+        f.sshdBase.port = [22, 2222];
+        f.listeners = [{ proto: "tcp", address: "0.0.0.0", port: 2222, process: "sshd" }];
+      },
+    );
+    const run = runWithStubs(UFW_STUB, apply);
+    expect(run.status).toBe(0);
+    expect(run.stderr.trim().split("\n")).toEqual([
+      "ufw allow 22/tcp comment opscrew-ssh",
+      "ufw allow 2222/tcp comment opscrew-ssh",
+      "ufw allow 443/tcp comment opscrew-web",
+      "ufw default deny incoming",
+      "ufw default allow outgoing",
+      "ufw --force enable",
+    ]);
+  });
+
+  it("ufw in tunnel mode: removes only OpsCrew's own web rules and opens no web port", async () => {
+    const { apply } = await stepOf((f) => tunnelDesired(f), "ufw");
+    const run = runWithStubs(UFW_STUB, apply);
+    expect(run.status).toBe(0);
+    expect(run.stderr.trim().split("\n")).toEqual([
+      "ufw allow 22/tcp comment opscrew-ssh",
+      "ufw --force delete allow 443/udp",
+      "ufw default deny incoming",
+      "ufw default allow outgoing",
+      "ufw --force enable",
+    ]);
+  });
+
+  it("sshd: the check accepts without-password for prohibit-password and sees a password login left on", async () => {
+    const { check } = await stepOf((f) => desiredFor(f), "sshd");
+    const stubs = (
+      password: string,
+    ) => `sshd() { printf '%s\\n' 'port 22' 'permitrootlogin without-password' 'passwordauthentication ${password}' 'kbdinteractiveauthentication no'; }
+systemctl() { return 3; }`;
+    expect(runWithStubs(stubs("no"), check).stdout).toContain("state=in-place");
+    const changed = runWithStubs(stubs("yes"), check).stdout;
+    expect(changed).toContain("state=change");
+    expect(changed).toContain("prev.permitRootLogin=without-password");
+    expect(changed).toContain("prev.passwordAuthentication=yes");
+  });
+
+  it("docker: the check reads the engine's major version from the package version", async () => {
+    const { check } = await stepOf((f) => desiredFor(f), "docker");
+    const stubs = (
+      version: string,
+    ) => `dpkg-query() { case "$2" in *Version*) printf '%s' '${version}' ;; *Status*) printf 'install ok installed' ;; esac; }
+systemctl() { return 0; }
+docker() { echo 28.5.1; }`;
+    expect(runWithStubs(stubs("5:28.5.1-1~ubuntu.24.04~noble"), check).stdout).toContain(
+      "state=in-place",
+    );
+    const old = runWithStubs(stubs("5:27.3.1-1~ubuntu.24.04~noble"), check).stdout;
+    expect(old).toContain("state=change");
+    expect(old).toContain("prev.engine=5:27.3.1-1~ubuntu.24.04~noble");
+  });
+
+  it("the privilege probe tells passwordless sudo, sudo and sudo-rs password prompts apart", () => {
+    const probe = (sudo: string) =>
+      runWithStubs(
+        `id() { echo 1000; }\nsudo() { ${sudo}; }`,
+        privilegeProbeScript(),
+      ).stdout.trim();
+    expect(probe("echo 0")).toBe("sudo");
+    expect(probe("echo 'sudo: a password is required' >&2; return 1")).toBe("sudo-password");
+    expect(probe("echo 'sudo-rs: interactive authentication is required' >&2; return 1")).toBe(
+      "sudo-password",
+    );
+    expect(probe("echo 'alice is not in the sudoers file.' >&2; return 1")).toBe("none");
   });
 });
 

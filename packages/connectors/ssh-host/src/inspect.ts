@@ -18,6 +18,7 @@ import {
   engineVersion,
   linesOf,
   parseAddons,
+  parseAddresses,
   parseAptPeriodic,
   parseContainers,
   parseDf,
@@ -121,6 +122,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["free", "free -b"],
   ["df", "df -P -B1 /"],
   ["systemd", "test -d /run/systemd/system"],
+  ["addresses", "ip -o addr show scope global"],
   ["sshd", "sshd -T"],
   [
     "sshd-include",
@@ -192,9 +194,10 @@ export function privilegeProbeScript(): string {
     `if [ "$(id -u)" = 0 ]; then echo root
 elif command -v sudo >/dev/null 2>&1; then
   out=$(sudo -n sh -c 'id -u' 2>&1 < /dev/null) || true
+  # sudo says "a password is required"; sudo-rs (Ubuntu 25.10+) "interactive authentication is required".
   case "$out" in
     0) echo sudo ;;
-    *password*) echo sudo-password ;;
+    *password*|*authentication*) echo sudo-password ;;
     *) echo none ;;
   esac
 else echo none; fi`,
@@ -323,6 +326,7 @@ export function factsFromOutput(
     diskFreeBytes: disk.available,
     diskTotalBytes: disk.size,
     systemd: section(sections, "systemd").exit === 0,
+    addresses: parseAddresses(ok(sections, "addresses")),
     sshd,
     listeners: parseSs(text("listeners")),
     webServers: ["nginx", "apache2", "caddy", "traefik", "haproxy", "lighttpd"].filter(

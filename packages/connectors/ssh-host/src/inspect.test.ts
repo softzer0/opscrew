@@ -66,6 +66,14 @@ describe("inspectHost", () => {
     );
   });
 
+  it("reports the server's own addresses, without container bridges", async () => {
+    const fake = new FakeHost();
+    const facts = await inspectHost(fake);
+    expect(facts.addresses).toEqual([
+      { interface: "eth0", family: "ipv4", address: "192.168.1.20", public: false },
+    ]);
+  });
+
   it("reports the sudo login's own name, not root", async () => {
     const fake = new FakeHost({ login: "alice", sudo: "nopasswd" });
     const facts = await inspectHost(fake);

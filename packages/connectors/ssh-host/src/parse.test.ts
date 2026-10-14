@@ -3,6 +3,8 @@ import { foreignFirewalls, foreignIptables, foreignNft } from "./firewall";
 import {
   engineVersion,
   isLoopback,
+  isPublicAddress,
+  parseAddresses,
   parseAptPeriodic,
   parseContainers,
   parseDf,
@@ -122,6 +124,28 @@ describe("parsers", () => {
     expect(publishesPort("127.0.0.1:18080->80/tcp", 18080)).toBe(false);
     expect(publishesPort("127.0.0.1:18080->80/tcp", 18080, true)).toBe(true);
     expect(publishesPort("0.0.0.0:8000-8100->8000-8100/tcp", 8080)).toBe(true);
+  });
+
+  it("reads global addresses of real interfaces and tells public from private", () => {
+    const addresses = parseAddresses(
+      [
+        "2: eth0    inet 192.168.1.20/24 brd 192.168.1.255 scope global dynamic eth0\\       valid_lft 86000sec",
+        "2: eth0    inet6 2a01:4f8:c0c:1::1/64 scope global \\       valid_lft forever preferred_lft forever",
+        "2: eth0    inet6 fd00::5/64 scope global dynamic mngtmpaddr \\       valid_lft 1sec",
+        "3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever",
+        "4: tailscale0    inet 100.101.102.103/32 scope global tailscale0\\       valid_lft forever",
+        "5: ens3@if7    inet 8.8.4.4/32 scope global ens3\\       valid_lft forever",
+      ].join("\n"),
+    );
+    expect(addresses).toEqual([
+      { interface: "eth0", family: "ipv4", address: "192.168.1.20", public: false },
+      { interface: "eth0", family: "ipv6", address: "2a01:4f8:c0c:1::1", public: true },
+      { interface: "eth0", family: "ipv6", address: "fd00::5", public: false },
+      { interface: "ens3", family: "ipv4", address: "8.8.4.4", public: true },
+    ]);
+    expect(isPublicAddress("100.64.0.1")).toBe(false);
+    expect(isPublicAddress("172.32.0.1")).toBe(true);
+    expect(isPublicAddress("fe80::1")).toBe(false);
   });
 
   it("reads users, dirs and apt settings", () => {

@@ -90,6 +90,18 @@ export const HostFactsSchema = z.object({
   diskFreeBytes: z.number().nonnegative(),
   diskTotalBytes: z.number().nonnegative(),
   systemd: z.boolean(),
+  /**
+   * Global addresses of the server's real interfaces (not container bridges or VPNs), and whether
+   * the internet could reach each one. Local state only: never write them to committed files.
+   */
+  addresses: z.array(
+    z.object({
+      interface: z.string(),
+      family: z.enum(["ipv4", "ipv6"]),
+      address: z.string(),
+      public: z.boolean(),
+    }),
+  ),
   /** Effective sshd settings (`sshd -T`); null when they could not be read. */
   sshd: z
     .object({
