@@ -333,9 +333,12 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
       const kinds = plan.codeChanges.map((change) => change.kind);
       for (const kind of expected.codeChanges ?? []) expect(kinds, kind).toContain(kind);
       expect(plan.codeChanges.every((change) => change.status === "pending")).toBe(true);
-      // Names only: the plan never carries an environment value.
-      for (const variable of plan.app.env)
-        expect(Object.keys(variable).sort()).toEqual(["name", "secret", "source"]);
+      // Names only: the plan never carries an environment value (`optional` is a flag).
+      for (const variable of plan.app.env) {
+        const { optional, ...rest } = variable;
+        expect(Object.keys(rest).sort()).toEqual(["name", "secret", "source"]);
+        expect(optional === undefined || optional === true).toBe(true);
+      }
     },
     STEP_TIMEOUT,
   );
