@@ -262,6 +262,53 @@ export interface CloudflareAppResources {
   apps: Named[];
   policies: Named[];
   serviceTokens: Named[];
+  /**
+   * Every ruleset of the zone (any name), so the snapshot before the run holds them all;
+   * `undefined` when the token could not list them (then none is ever deleted).
+   */
+  rulesets?: ZoneRuleset[];
+}
+
+/** A zone ruleset as Cloudflare lists it (the list has no rules; the single read has them). */
+export interface ZoneRuleset {
+  id: string;
+  name: string;
+  kind?: string;
+  phase?: string;
+  rules?: { expression?: string }[];
+}
+
+/** The entrypoint phases of the `cloudflare-dns` module's rulesets. */
+const OPSCREW_RULESET_PHASES = new Set(["http_config_settings", "http_request_firewall_custom"]);
+
+/** The hostnames a rule expression matches on: `http.host in {"a" "b"}` and `http.host eq "a"`. */
+function expressionHosts(expression: string): string[] {
+  const hosts: string[] = [];
+  for (const set of expression.matchAll(/http\.host\s+in\s+\{([^}]*)\}/g)) {
+    for (const host of (set[1] ?? "").matchAll(/"([^"]*)"/g)) hosts.push(host[1] ?? "");
+  }
+  for (const one of expression.matchAll(/http\.host\s+(?:eq|==)\s+"([^"]*)"/g)) {
+    hosts.push(one[1] ?? "");
+  }
+  return hosts.map((host) => host.toLowerCase());
+}
+
+/**
+ * Whether a zone ruleset is one the `cloudflare-dns` module renders for this run: a zone
+ * entrypoint of its phases, named `OpsCrew …`, with at least one rule, and every rule's expression
+ * matching on hostnames that are all the run's. Anything else (the user's rulesets, another app's,
+ * a rule for the whole zone) is never this run's.
+ */
+export function rulesetOfRun(ruleset: Omit<ZoneRuleset, "id">, hostnames: readonly string[]) {
+  if (ruleset.kind !== "zone" || !OPSCREW_RULESET_PHASES.has(ruleset.phase ?? "")) return false;
+  if (!ruleset.name.startsWith("OpsCrew ")) return false;
+  const rules = ruleset.rules ?? [];
+  if (rules.length === 0) return false;
+  const ours = new Set(hostnames.map((host) => host.toLowerCase()));
+  return rules.every((rule) => {
+    const hosts = expressionHosts(rule.expression ?? "");
+    return hosts.length > 0 && hosts.every((host) => ours.has(host));
+  });
 }
 
 /** A Cloudflare API client for one token. */
@@ -310,8 +357,9 @@ export class Cloudflare {
   /**
    * What OpsCrew creates for `app` (modules/cloudflare-dns, -tunnel and -access): DNS records on
    * `hostnames`, the tunnel `opscrew-<app>`, the Access applications and policies
-   * `OpsCrew SSH|Portainer|deploy (<app>)` and the service token `OpsCrew deploy (<app>)`. Never
-   * the Zero Trust organization or the zone's rule sets, which other apps share.
+   * `OpsCrew SSH|Portainer|deploy (<app>)`, the service token `OpsCrew deploy (<app>)` and the
+   * zone's rulesets (all of them, for the snapshot; `removeCreated` deletes only the run's). Never
+   * the Zero Trust organization.
    */
   async appResources(
     zone: CloudflareZone,
@@ -336,24 +384,30 @@ export class Cloudflare {
     const serviceTokens = (await this.list<Named>(`${account}/access/service_tokens`)).filter(
       (t) => t.name === `OpsCrew deploy (${app})`,
     );
+    const listed = await this.call("GET", `/zones/${zone.id}/rulesets`);
+    const rulesets = (listed.json as { success?: boolean; result?: ZoneRuleset[] } | undefined)
+      ?.result;
     return {
       records,
       tunnels: tunnels.filter((t) => t.name === `opscrew-${app}`),
       apps,
       policies,
       serviceTokens,
+      ...(listed.status === 200 && Array.isArray(rulesets) ? { rulesets } : {}),
     };
   }
 
   /**
    * Deletes the resources in `now` whose ids are not in `before` (so only what this run created):
-   * Access applications, then policies and service tokens, then DNS records, then tunnels (their
-   * connections first). Returns what could not be deleted.
+   * Access applications, then policies and service tokens, then DNS records, then the zone's
+   * OpsCrew rulesets whose rules name only the run's `hostnames` (`rulesetOfRun`; each deleted one
+   * is logged by name), then tunnels (their connections first). Returns what could not be deleted.
    */
   async removeCreated(
     zone: CloudflareZone,
     now: CloudflareAppResources,
     before: CloudflareAppResources,
+    run: { hostnames: readonly string[]; log: (message: string) => void },
   ): Promise<string[]> {
     const fresh = <T extends Named>(items: T[], old: T[]) =>
       items.filter((item) => !old.some((o) => o.id === item.id));
@@ -377,9 +431,43 @@ export class Cloudflare {
         `/zones/${zone.id}/dns_records/${record.id}`,
       );
     }
+    problems.push(...(await this.removeRulesetsOfRun(zone, now, before, run)));
     for (const tunnel of fresh(now.tunnels, before.tunnels)) {
       await this.call("DELETE", `${account}/cfd_tunnel/${tunnel.id}/connections`);
       await remove(`tunnel "${tunnel.name}"`, `${account}/cfd_tunnel/${tunnel.id}`);
+    }
+    return problems;
+  }
+
+  /**
+   * The zone rulesets this run created (absent from `before`, `rulesetOfRun` on their rules),
+   * deleted and logged by name. Without a listing before the run nothing is deleted.
+   */
+  private async removeRulesetsOfRun(
+    zone: CloudflareZone,
+    now: CloudflareAppResources,
+    before: CloudflareAppResources,
+    run: { hostnames: readonly string[]; log: (message: string) => void },
+  ): Promise<string[]> {
+    if (before.rulesets === undefined) return [];
+    if (now.rulesets === undefined) return ["the zone's rulesets (Cloudflare did not list them)"];
+    const old = new Set(before.rulesets.map((ruleset) => ruleset.id));
+    const problems: string[] = [];
+    for (const listed of now.rulesets) {
+      if (old.has(listed.id) || !listed.name.startsWith("OpsCrew ")) continue;
+      const path = `/zones/${zone.id}/rulesets/${listed.id}`;
+      const read = await this.call("GET", path);
+      const ruleset = (read.json as { result?: ZoneRuleset } | undefined)?.result;
+      if (read.status !== 200 || ruleset === undefined) {
+        problems.push(`ruleset "${listed.name}" (Cloudflare did not show its rules)`);
+        continue;
+      }
+      if (!rulesetOfRun(ruleset, run.hostnames)) continue;
+      if (await retryDelete(() => this.call("DELETE", path))) {
+        run.log(`deleted the zone ruleset "${listed.name}" this run created`);
+      } else {
+        problems.push(`ruleset "${listed.name}"`);
+      }
     }
     return problems;
   }

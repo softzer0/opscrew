@@ -35,6 +35,7 @@ import {
   minutes,
   RootShell,
   resolveIpv4,
+  rulesetOfRun,
   sleep,
   type ThrowawayServer,
   waitFor,
@@ -300,6 +301,69 @@ describe("own-server live test helpers", () => {
         "This plan deletes or replaces resources, so applying it also needs the app's name: type it.",
       ),
     ).toThrow(/no printed command with --confirm/);
+  });
+
+  it("treats a zone ruleset as this run's only when it is OpsCrew's and names only the run's hostnames", () => {
+    const hostnames = ["e2e.example.com", "www.e2e.example.com", "ssh-shop.example.com"];
+    const config = {
+      name: "OpsCrew configuration rules",
+      kind: "zone",
+      phase: "http_config_settings",
+      rules: [{ expression: '(http.host in {"e2e.example.com" "www.e2e.example.com"})' }],
+    };
+    const waf = {
+      name: "OpsCrew custom rules",
+      kind: "zone",
+      phase: "http_request_firewall_custom",
+      rules: [
+        {
+          expression:
+            '(http.host in {"e2e.example.com"}) and (http.request.uri.path contains "/.env" or starts_with(http.request.uri.path, "/.git") or http.request.uri.path contains "/wp-login.php")',
+        },
+      ],
+    };
+    expect(rulesetOfRun(config, hostnames)).toBe(true);
+    expect(rulesetOfRun(waf, hostnames)).toBe(true);
+    expect(
+      rulesetOfRun(
+        { ...config, rules: [{ expression: 'http.host eq "E2E.example.com"' }] },
+        hostnames,
+      ),
+    ).toBe(true);
+    // Another app's hostname, alone or next to the run's, is never this run's.
+    expect(
+      rulesetOfRun(
+        {
+          ...config,
+          rules: [{ expression: '(http.host in {"e2e.example.com" "shop.example.com"})' }],
+        },
+        hostnames,
+      ),
+    ).toBe(false);
+    expect(
+      rulesetOfRun(
+        {
+          ...waf,
+          rules: [...waf.rules, { expression: '(http.host in {"shop.example.com"})' }],
+        },
+        hostnames,
+      ),
+    ).toBe(false);
+    // A rule that names no hostname (it applies to the whole zone), no rules, the user's name.
+    expect(
+      rulesetOfRun(
+        { ...waf, rules: [{ expression: 'http.request.uri.path contains "/.env"' }] },
+        hostnames,
+      ),
+    ).toBe(false);
+    expect(rulesetOfRun({ ...config, rules: [] }, hostnames)).toBe(false);
+    expect(rulesetOfRun({ ...config, rules: undefined }, hostnames)).toBe(false);
+    expect(rulesetOfRun({ ...config, name: "My configuration rules" }, hostnames)).toBe(false);
+    // Only zone entrypoints of the phases OpsCrew uses.
+    expect(rulesetOfRun({ ...config, kind: "managed" }, hostnames)).toBe(false);
+    expect(rulesetOfRun({ ...config, phase: "http_request_cache_settings" }, hostnames)).toBe(
+      false,
+    );
   });
 });
 
@@ -1338,7 +1402,10 @@ describe.skipIf(MISSING.length > 0)(
         const app = appName;
         const before = cloudflareBefore;
         await attempt("remove the Cloudflare resources", async () =>
-          cloudflare.removeCreated(z, await cloudflare.appResources(z, app, hostnames), before),
+          cloudflare.removeCreated(z, await cloudflare.appResources(z, app, hostnames), before, {
+            hostnames,
+            log,
+          }),
         );
       }
       if (repoReady) await attempt("reset the throwaway repository", () => github.reset());
