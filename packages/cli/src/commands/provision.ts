@@ -137,12 +137,28 @@ export async function hostPlanChanges(
   deps: Pick<PhaseDeps, "paths">,
   hash: string,
 ): Promise<boolean> {
+  const file = hostPlanFile(deps.paths, hash);
+  let text: string;
   try {
-    const text = await readFile(hostPlanFile(deps.paths, hash), "utf8");
-    return SavedHostPlanSchema.parse(JSON.parse(text)).steps.some((s) => s.state === "change");
-  } catch {
-    return false;
+    text = await readFile(file, "utf8");
+  } catch (error) {
+    // No saved host plan: nothing to approve. Any other problem must not hide a plan.
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return false;
+    throw error;
   }
+  let parsed: z.infer<typeof SavedHostPlanSchema>;
+  try {
+    parsed = SavedHostPlanSchema.parse(JSON.parse(text));
+  } catch {
+    throw new OpsCrewError(
+      "ARTIFACT_INVALID",
+      `The saved host plan ${hash} (.opscrew/plans/host-${hash}.json) is damaged, so OpsCrew cannot tell what it changes.`,
+      {
+        hint: "Run the command with --plan-only again to save a new host plan, then approve its hash.",
+      },
+    );
+  }
+  return parsed.steps.some((step) => step.state === "change");
 }
 
 /**

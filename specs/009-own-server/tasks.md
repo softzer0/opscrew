@@ -109,7 +109,7 @@ network or model.
 
 ## Phase 4: Surfaces and live test
 
-- [ ] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
+- [X] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
   - Owns: `packages/cli/src/**`, `packages/cli/test/e2e/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/own-server.md`, `docs/guide/portainer.md`, `README.md` (one link line only)
   - Reads: contracts/cli.md; spec FR-917
   - Depends: T905, T906, T907
