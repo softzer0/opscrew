@@ -10,6 +10,7 @@ import * as drift from "./drift";
 import * as init from "./init";
 import * as interview from "./interview";
 import * as mcp from "./mcp";
+import * as portainer from "./portainer";
 import * as provision from "./provision";
 import * as retarget from "./retarget";
 import * as scan from "./scan";
@@ -36,6 +37,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   secure,
   verify,
   drift,
+  portainer,
   retarget,
   destroy,
   status,

@@ -1,5 +1,5 @@
-import { providerProfile, renderDriftReport, runDrift } from "@opscrew/agents";
-import type { Reporter, VpsProviderId } from "@opscrew/contracts";
+import { driftNextSteps, renderDriftReport, runDrift } from "@opscrew/agents";
+import type { Reporter } from "@opscrew/contracts";
 import { type Command, Option } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps } from "../deps";
@@ -7,10 +7,13 @@ import { CliExit, ERROR_EXIT_CODE, REFUSED_EXIT_CODE } from "../exit";
 import { runPhaseCommand, usageErrorsExit2 } from "../ui/deploy";
 import { deployServicesOf } from "../ui/deploy-services";
 import { printNextSteps } from "../ui/output";
+import { addHostKeyOption, checkApproveFlags } from "./provision";
 
 interface DriftFlags {
   json?: boolean;
   engine?: "tofu" | "terraform";
+  /** Your own server: the host key fingerprint to trust on the first connection (scripts). */
+  hostKey?: string;
 }
 
 /** Progress is dropped for `--json` so stdout holds only the report; problems go to stderr. */
@@ -24,19 +27,15 @@ function quietReporter(ctx: CliContext): Reporter {
   };
 }
 
-/** The deployment's cloud provider by name; reports made before DigitalOcean support are Hetzner's. */
-function providerName(provider: VpsProviderId | undefined): string {
-  return providerProfile(provider ?? "hetzner").displayName;
-}
-
 /**
  * `opscrew drift`: compares the live infrastructure with the state (changes made outside OpsCrew),
  * the state with the infrastructure code (changes not applied yet) and the repository files with
- * what OpsCrew renders (FR-304). Never changes anything. Exit codes: 0 everything matches,
- * 1 something differs, 2 the check could not run (missing state or passphrase, credentials, …).
+ * what OpsCrew renders (FR-304); on a server the user owns also the server with what OpsCrew set
+ * up (FR-911). Never changes anything. Exit codes: 0 everything matches, 1 something differs,
+ * 2 the check could not run (missing state or passphrase, credentials, …).
  */
 export function register(program: Command, ctx: CliContext): void {
-  program
+  const command = program
     .command("drift")
     .description("Check whether the live infrastructure still matches the plan (changes nothing)")
     .option("--json", "Print the report as JSON")
@@ -45,7 +44,8 @@ export function register(program: Command, ctx: CliContext): void {
         "tofu",
         "terraform",
       ]),
-    )
+    );
+  addHostKeyOption(command)
     .exitOverride(usageErrorsExit2)
     .action(async (flags: DriftFlags) => {
       const json = flags.json === true;
@@ -54,14 +54,17 @@ export function register(program: Command, ctx: CliContext): void {
         ...(json ? { reporter: quietReporter(ctx) } : {}),
       });
       const services = deployServicesOf(ctx).provision;
+      const hostKey = flags.hostKey?.trim();
       // Exit 1 means "something differs"; anything that stopped the check is an error (exit 2),
       // so scripts never mistake missing state or a missing passphrase for drift.
-      const report = await runPhaseCommand(ctx, () =>
-        runDrift(deps, {
+      const report = await runPhaseCommand(ctx, () => {
+        checkApproveFlags("drift", flags);
+        return runDrift(deps, {
           ...(flags.engine === undefined ? {} : { engine: flags.engine }),
+          ...(hostKey === undefined ? {} : { hostKey }),
           ...(services === undefined ? {} : { services }),
-        }),
-      ).catch((error: unknown) => {
+        });
+      }).catch((error: unknown) => {
         throw error instanceof CliExit && error.exitCode !== 0
           ? new CliExit(ERROR_EXIT_CODE)
           : error;
@@ -72,16 +75,7 @@ export function register(program: Command, ctx: CliContext): void {
         return;
       }
       ctx.stdout(`${renderDriftReport(report)}\n`);
-      if (report.clean) {
-        printNextSteps(ctx, [
-          `nothing to do; run \`opscrew drift\` again after changes in the ${providerName(report.provider)} or Cloudflare console.`,
-        ]);
-        return;
-      }
-      printNextSteps(ctx, [
-        "to undo changes made outside OpsCrew and apply pending code, run `opscrew provision` (it shows the plan first).",
-        "to keep a change made in the console, update opscrew/plan.yaml to match before you provision again.",
-      ]);
-      throw new CliExit(REFUSED_EXIT_CODE);
+      printNextSteps(ctx, driftNextSteps(report));
+      if (!report.clean) throw new CliExit(REFUSED_EXIT_CODE);
     });
 }

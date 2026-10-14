@@ -74,6 +74,70 @@ describe("NonInteractiveApprovalHandler", () => {
   });
 });
 
+describe("NonInteractiveApprovalHandler with several --approve hashes (own servers)", () => {
+  const THIRD = "ef".repeat(32);
+  const handler = (hashes: string[], assumeYes = false) =>
+    new NonInteractiveApprovalHandler({
+      approvePlanHashes: hashes,
+      ...(assumeYes ? { assumeYes: true } : {}),
+      approver: "--approve flag",
+      clock,
+    });
+  const hostApply = (overrides: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
+    kind: "host-apply",
+    title: "Apply the host plan to your server (5 changes)",
+    details: `Host plan hash: ${OTHER}`,
+    planHash: OTHER,
+    ...overrides,
+  });
+
+  it("grants an infrastructure plan and a host plan when each hash is listed", async () => {
+    const both = handler([HASH, OTHER.toUpperCase()]);
+    expect((await both.request(apply())).approved).toBe(true);
+    expect((await both.request(hostApply())).approved).toBe(true);
+  });
+
+  it("grants only the listed hashes", async () => {
+    const onlyInfra = handler([HASH]);
+    const refused = await onlyInfra.request(hostApply());
+    expect(refused.approved).toBe(false);
+    expect(refused.reason).toMatch(/does not match/);
+    expect((await handler([OTHER]).request(apply())).approved).toBe(false);
+    expect((await handler([THIRD]).request(hostApply())).approved).toBe(false);
+  });
+
+  it("refuses a host plan without a hash, or with an invalid --approve value", async () => {
+    expect((await handler([OTHER]).request(hostApply({ planHash: undefined }))).approved).toBe(
+      false,
+    );
+    const invalid = await handler([OTHER, "not-a-hash"]).request(hostApply());
+    expect(invalid.approved).toBe(false);
+    expect(invalid.reason).toMatch(/64-character/);
+  });
+
+  it("never grants a host plan through --yes", async () => {
+    const yes = new NonInteractiveApprovalHandler({
+      assumeYes: true,
+      approver: "--yes flag",
+      clock,
+    });
+    expect((await yes.request(hostApply())).approved).toBe(false);
+    expect((await yes.request(apply())).approved).toBe(false);
+    // --yes next to --approve still grants only the listed hash.
+    expect((await handler([HASH], true).request(hostApply())).approved).toBe(false);
+  });
+
+  it("refuses a teardown host plan (typed app name) even when its hash is listed", async () => {
+    const decision = await handler([OTHER]).request(
+      hostApply({ allowDestroy: true, confirmPhrase: "shop" }),
+    );
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toMatch(/typed confirmation/);
+    const phraseOnly = await handler([OTHER]).request(hostApply({ confirmPhrase: "shop" }));
+    expect(phraseOnly.approved).toBe(false);
+  });
+});
+
 describe("NonInteractiveApprovalHandler with --yes", () => {
   const handler = new NonInteractiveApprovalHandler({
     assumeYes: true,
@@ -88,8 +152,9 @@ describe("NonInteractiveApprovalHandler with --yes", () => {
     }
   });
 
-  it("never approves an infrastructure apply, a changed host key or a tool call", async () => {
+  it("never approves an infrastructure apply, a host plan, a changed host key or a tool call", async () => {
     expect((await handler.request(apply())).approved).toBe(false);
+    expect((await handler.request(apply({ kind: "host-apply" }))).approved).toBe(false);
     for (const kind of ["remote-exec", "tool-call"] as const) {
       expect((await handler.request({ kind, title: kind, details: "" })).approved).toBe(false);
     }

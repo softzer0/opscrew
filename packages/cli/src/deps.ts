@@ -73,6 +73,11 @@ export interface PhaseDepsOptions {
   model?: string;
   /** Plan hash from `--approve <hash>`, used by the non-interactive approval handler. */
   approvePlanHash?: string;
+  /**
+   * Every hash from a repeated `--approve <hash>` (an own server's infrastructure and host plans);
+   * the non-interactive handler grants exactly these.
+   */
+  approvePlanHashes?: readonly string[];
   /** `--yes`: approve the repository and GitHub steps of a non-interactive run (never applies). */
   assumeYes?: boolean;
   /** Wraps the run's approval handler (for example `destroy`'s typed-confirmation handler). */
@@ -122,6 +127,9 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
       ...(options.approvePlanHash === undefined
         ? {}
         : { approvePlanHash: options.approvePlanHash }),
+      ...(options.approvePlanHashes === undefined
+        ? {}
+        : { approvePlanHashes: options.approvePlanHashes }),
       ...(options.assumeYes === true ? { assumeYes: true } : {}),
     });
   const handler = options.wrapApprovals ? options.wrapApprovals(baseHandler) : baseHandler;

@@ -49,6 +49,9 @@ export async function readAnswersFile(file: string): Promise<InterviewAnswers> {
 function describe(requirements: Requirements): string[] {
   const budget = requirements.budgetMonthly;
   return [
+    ...(requirements.provider === "own"
+      ? ["Server: a server you already have (how to reach it is saved on this computer only)"]
+      : []),
     `Monthly users: ${requirements.expectedMonthlyUsers}`,
     `Budget: ${budget.amount} ${budget.currency} per month`,
     ...(requirements.region === undefined ? [] : [`Region: ${requirements.region}`]),
@@ -87,9 +90,11 @@ export function register(program: Command, ctx: CliContext): void {
           "This terminal cannot ask questions, so OpsCrew uses your previous answers, if there are any. Pass --answers <file> to give new ones.",
         );
       }
+      // The follow-ups for a server the user already has (address, SSH port, user, key, reachable)
+      // are asked in the terminal too; they are saved on this computer only, never in the repo.
       const { requirements } = await runInterview(deps, {
         ...(answers === undefined ? {} : { answers }),
-        ...(ask === undefined ? {} : { ask }),
+        ...(ask === undefined ? {} : { ask, askServer: ask }),
       });
       ctx.stdout(
         `\n${describe(requirements)
@@ -97,7 +102,9 @@ export function register(program: Command, ctx: CliContext): void {
           .join("\n")}\n`,
       );
       printNextSteps(ctx, [
-        "run `opscrew design` to compare server options and their monthly cost.",
+        requirements.provider === "own"
+          ? "run `opscrew design` to check that your server fits the app (it connects to the server and asks you to confirm its host key the first time)."
+          : "run `opscrew design` to compare server options and their monthly cost.",
       ]);
     });
 }

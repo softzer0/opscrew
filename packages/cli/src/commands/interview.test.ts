@@ -85,6 +85,61 @@ describe("opscrew interview", () => {
     expect(requirements.domain).toBeUndefined();
   });
 
+  it("asks the questions about a server the user already has in a terminal and keeps them local", async () => {
+    project = await tempProject("nextjs-postgres");
+    const asked: string[] = [];
+    // Answers by question: the own-server follow-ups come after the provider question.
+    const answer = (message: string, initial: unknown): unknown => {
+      asked.push(message.split("\n")[0] ?? "");
+      if (message.includes("Where should OpsCrew run your app?")) return "own";
+      if (message.includes("server's address")) return "203.0.113.20";
+      if (message.includes("Which port does SSH listen on?")) return "2222";
+      if (message.includes("Which user should OpsCrew log in as?")) return "admin";
+      if (message.includes("Which SSH key")) return "agent";
+      if (message.includes("Can the internet reach this server directly?")) return true;
+      if (message.toLowerCase().includes("budget")) return "10 EUR";
+      if (message.toLowerCase().includes("domain")) return "";
+      return initial ?? "";
+    };
+    const prompts = new ScriptedPrompts([]);
+    const fake = {
+      ...prompts,
+      isCancel: prompts.isCancel.bind(prompts),
+      select: async (o: { message: string; options: { value: string }[]; initialValue?: string }) =>
+        answer(o.message, o.initialValue ?? o.options[0]?.value) as string,
+      multiselect: async (o: { message: string; initialValues?: string[] }) =>
+        answer(o.message, o.initialValues ?? []) as string[],
+      text: async (o: { message: string; initialValue?: string }) =>
+        answer(o.message, o.initialValue) as string,
+      confirm: async (o: { message: string; initialValue?: boolean }) =>
+        answer(o.message, o.initialValue) as boolean,
+    };
+    const ctx = projectContext(project, { interactive: true, services: { prompts: fake } });
+    expect(await run(ctx, "interview"), ctx.errors).toBe(0);
+
+    expect(asked).toEqual(
+      expect.arrayContaining([
+        "What is your server's address?",
+        "Which port does SSH listen on?",
+        "Which user should OpsCrew log in as?",
+        "Which SSH key should OpsCrew use?",
+        "Can the internet reach this server directly?",
+      ]),
+    );
+    const requirements = await requirementsOf(project.root, project.env);
+    expect(requirements.provider).toBe("own");
+    const paths = resolveProjectPaths(project.root, { env: project.env });
+    expect(await readFile(paths.files.requirements, "utf8")).not.toContain("203.0.113.20");
+    const local = await readFile(path.join(paths.stateDir, "server.json"), "utf8");
+    expect(JSON.parse(local).own).toMatchObject({
+      host: "203.0.113.20",
+      port: 2222,
+      user: "admin",
+    });
+    expect(ctx.output).toContain("a server you already have");
+    expect(ctx.output).not.toContain("203.0.113.20");
+  });
+
   it("pre-fills the previous answers on a re-run and reuses them without a terminal", async () => {
     project = await tempProject("nextjs-postgres");
     await writeFile(path.join(project.dir, "answers.yaml"), ANSWERS);

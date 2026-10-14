@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { usageErrorsExit2 } from "../ui/deploy";
 import {
+  addHostKeyOption,
   addPlanApproveOptions,
   type InfraFlags,
   runInfraCommand,
@@ -26,7 +27,8 @@ export function register(program: Command, ctx: CliContext): void {
       "--domain <fqdn>",
       "Hostname the app should use, for example app.example.com (default: the plan's domain)",
     );
-  addPlanApproveOptions(command)
+  addPlanApproveOptions(command);
+  addHostKeyOption(command)
     .option("--yes", YES_DESCRIPTION)
     .exitOverride(usageErrorsExit2)
     .action(({ domain, ...flags }: DnsFlags) => {

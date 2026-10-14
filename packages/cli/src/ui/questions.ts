@@ -9,7 +9,13 @@ export interface AskQuestionsOptions {
 
 const moneyText = (money: Money) => `${money.amount} ${money.currency}`;
 
-function message(question: Question): string {
+/**
+ * A question the terminal can ask: an interview {@link Question}, or a follow-up with its own id
+ * (the questions about a server the user already has, `server.host` and so on).
+ */
+export type AskableQuestion = Omit<Question, "id"> & { id: string };
+
+function message(question: AskableQuestion): string {
   return question.help === undefined ? question.prompt : `${question.prompt}\n${question.help}`;
 }
 
@@ -19,7 +25,7 @@ function message(question: Question): string {
  * provider question is skipped (answered `none`). Cancelling throws a user-facing error.
  */
 export async function askQuestions(
-  questions: readonly Question[],
+  questions: readonly AskableQuestion[],
   options: AskQuestionsOptions = {},
 ): Promise<InterviewAnswers> {
   const prompts = options.prompts ?? clackPrompts;

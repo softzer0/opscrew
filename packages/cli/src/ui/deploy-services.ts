@@ -3,6 +3,7 @@ import type {
   DestroyServices,
   DomainServices,
   InitServices,
+  PortainerServices,
   ProvisionServices,
   RetargetServices,
   RunSecureOptions,
@@ -11,7 +12,9 @@ import type {
 import type { CliContext } from "../context";
 
 /**
- * Network, engine and stream overrides for `provision`, `dns`, `secure`, `verify`, `destroy`, `retarget`, `domain` and `mcp`. The
+ * Network, engine and stream overrides for `provision`, `dns`, `design` (an own server's
+ * inspection, from `provision.own`), `secure`, `verify`, `destroy`, `retarget`, `domain`,
+ * `portainer` and `mcp`. The
  * real CLI uses none of these (each phase builds its defaults from the environment); tests attach
  * fakes with {@link withDeployServices} so commands never reach a cloud, a server or the network.
  */
@@ -32,6 +35,8 @@ export interface DeployServices {
   retarget?: RetargetServices;
   /** Cloudflare accounts, registrar, extension and zone fakes for `domain`. */
   domain?: DomainServices;
+  /** Engine, Cloudflare, own-server and deploy-user shell fakes for `portainer`. */
+  portainer?: PortainerServices;
 }
 
 const attached = new WeakMap<CliContext, DeployServices>();

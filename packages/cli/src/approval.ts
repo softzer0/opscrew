@@ -145,6 +145,11 @@ export interface NonInteractiveApprovalHandlerOptions {
   /** Plan hash passed with `--approve <hash>`. */
   approvePlanHash?: string;
   /**
+   * Every hash passed with a repeated `--approve <hash>` (each names one plan): on a server the
+   * user owns, the infrastructure plan and the host plan. Only these exact hashes are granted.
+   */
+  approvePlanHashes?: readonly string[];
+  /**
    * `--yes`: also approve the non-infrastructure steps of a run (writing generated files, storing
    * GitHub secrets, pushing, opening a pull request). Never infrastructure applies (those need
    * `--approve <hash>`), destroys, changed host keys or agent tool calls.
@@ -163,13 +168,21 @@ export const ASSUME_YES_KINDS: readonly ApprovalRequest["kind"][] = [
   "pull-request",
 ];
 
+/** Request kinds `--approve <hash>` may grant, each only for its exact plan hash. */
+export const APPROVE_BY_HASH_KINDS: readonly ApprovalRequest["kind"][] = [
+  "iac-apply",
+  "host-apply",
+];
+
 const RUN_INTERACTIVELY =
   "Run the command in an interactive terminal to review and approve it, or pass --approve <hash> with the hash of the plan you reviewed.";
 
 /**
- * Approves without a human only when the user named the exact plan: an `iac-apply` whose
- * `planHash` equals `--approve <hash>` (case-insensitive) and that destroys nothing. Everything
- * else is refused with a reason that says how to approve it.
+ * Approves without a human only when the user named the exact plan: an `iac-apply`
+ * (infrastructure) or `host-apply` (the host plan of the user's own server) whose `planHash`
+ * equals one of the `--approve <hash>` values (case-insensitive) and that destroys nothing and
+ * needs no typed confirmation. `--yes` never grants either kind. Everything else is refused with a
+ * reason that says how to approve it.
  */
 export class NonInteractiveApprovalHandler implements ApprovalHandler {
   private readonly clock: Clock;
@@ -198,36 +211,55 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
     ) {
       return undefined;
     }
-    if (request.kind !== "iac-apply") {
+    if (!APPROVE_BY_HASH_KINDS.includes(request.kind)) {
       return `"${request.title}" needs a human approval and this run is not interactive. ${RUN_INTERACTIVELY}`;
     }
-    if (request.allowDestroy === true) {
+    if (request.allowDestroy === true || request.confirmPhrase !== undefined) {
       return "This plan deletes or replaces resources, which needs a typed confirmation. Run the command in an interactive terminal to approve it.";
     }
-    const approve = this.options.approvePlanHash;
-    if (approve === undefined || approve === "") {
+    const hashes = this.hashes();
+    if (hashes.length === 0) {
       return `No plan hash was approved for this non-interactive run. ${RUN_INTERACTIVELY}`;
     }
-    if (!isPlanHash(approve)) {
+    if (!hashes.every((hash) => isPlanHash(hash))) {
       return `--approve expects the 64-character SHA-256 hash of the plan. ${RUN_INTERACTIVELY}`;
     }
-    if (!isPlanHash(request.planHash) || request.planHash.toLowerCase() !== approve.toLowerCase()) {
-      return `The plan hash does not match --approve ${approve}; the plan changed since you reviewed it. ${RUN_INTERACTIVELY}`;
+    const wanted = request.planHash?.toLowerCase();
+    if (!isPlanHash(request.planHash) || !hashes.some((hash) => hash.toLowerCase() === wanted)) {
+      const what = request.kind === "host-apply" ? "The host plan's hash" : "The plan hash";
+      return `${what} does not match --approve ${hashes.join(" / ")}; the plan changed since you reviewed it, or it was not approved. ${RUN_INTERACTIVELY}`;
     }
     return undefined;
   }
+
+  /** Every non-empty `--approve` value, trimmed. */
+  private hashes(): string[] {
+    return [this.options.approvePlanHash, ...(this.options.approvePlanHashes ?? [])]
+      .map((hash) => (hash ?? "").trim())
+      .filter((hash) => hash !== "");
+  }
 }
 
-/** Picks the interactive handler on a TTY, otherwise the `--approve <hash>` handler. */
+/**
+ * Picks the interactive handler on a TTY (it shows each plan with its hash and asks; a plan that
+ * deletes something needs the name typed), otherwise the `--approve <hash>` handler.
+ */
 export function createApprovalHandler(
   ctx: CliContext,
-  options: { approvePlanHash?: string; assumeYes?: boolean } = {},
+  options: {
+    approvePlanHash?: string;
+    approvePlanHashes?: readonly string[];
+    assumeYes?: boolean;
+  } = {},
 ): ApprovalHandler {
   if (ctx.isInteractive) {
     return new InteractiveApprovalHandler({ stdout: ctx.stdout, cwd: ctx.cwd });
   }
   return new NonInteractiveApprovalHandler({
     ...(options.approvePlanHash === undefined ? {} : { approvePlanHash: options.approvePlanHash }),
+    ...(options.approvePlanHashes === undefined || options.approvePlanHashes.length === 0
+      ? {}
+      : { approvePlanHashes: options.approvePlanHashes }),
     ...(options.assumeYes === true ? { assumeYes: true } : {}),
     approver: options.assumeYes === true ? "--yes flag" : "--approve flag",
   });

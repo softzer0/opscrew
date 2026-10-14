@@ -32,42 +32,53 @@ function pad(cells: string[][]): string[] {
  * where the prices come from. Deterministic, so it can be tested and printed anywhere.
  */
 export function renderOptionsTable(options: readonly DesignOption[], budget?: Money): string {
+  const priced = options.filter((option) => !isOwnServer(option));
   const rows = [
     ["", "Option", "Server", "Size", "Location", "Per month", "Budget", ""],
     ...options.map((option, index) => {
       const { target } = option;
-      let monthly = formatMoney(option.cost.monthly);
-      if (budget !== undefined && budget.currency !== option.cost.monthly.currency) {
+      const own = isOwnServer(option);
+      let monthly = own ? "no server price" : formatMoney(option.cost.monthly);
+      if (!own && budget !== undefined && budget.currency !== option.cost.monthly.currency) {
         monthly += ` (≈ ${formatMoney(convertMoney(option.cost.monthly, budget.currency))})`;
       }
       return [
         `${index + 1}.`,
         option.id,
         `${target.serverType} (${target.cpuType})`,
-        `${target.vcpus} vCPU, ${gb(target.memoryGb)} RAM, ${gb(target.diskGb)} disk`,
+        `${target.vcpus} vCPU, ${gb(target.memoryGb)} RAM, ${gb(target.diskGb)} ${own ? "free disk" : "disk"}`,
         target.location,
         monthly,
-        option.fitsBudget ? "fits" : "over budget",
+        own ? "-" : option.fitsBudget ? "fits" : "over budget",
         option.recommended ? RECOMMENDED_MARKER : "",
       ];
     }),
   ];
   const lines = [""];
-  if (budget !== undefined) lines.push(`Your budget: ${formatMoney(budget)} per month`, "");
+  if (budget !== undefined && priced.length > 0) {
+    lines.push(`Your budget: ${formatMoney(budget)} per month`, "");
+  }
   lines.push(...pad(rows), "");
   for (const option of options) {
     lines.push(`${option.title} (${option.id}): ${option.summary}`);
     for (const tradeoff of option.tradeoffs) lines.push(`  - ${tradeoff}`);
   }
-  const labels = [...new Set(options.map((option) => priceLabel(option.cost)))];
+  // A server the user owns has no price: no price source and no exchange rate to name (FR-913).
+  if (priced.length === 0) return `${lines.join("\n")}\n`;
+  const labels = [...new Set(priced.map((option) => priceLabel(option.cost)))];
   lines.push("", `Prices: ${labels.join("; ")}.`);
   if (
     budget !== undefined &&
-    options.some((option) => option.cost.monthly.currency !== budget.currency)
+    priced.some((option) => option.cost.monthly.currency !== budget.currency)
   ) {
     lines.push(EXCHANGE_RATE_NOTE);
   }
   return `${lines.join("\n")}\n`;
+}
+
+/** True for the option on a server the user already owns, which has no price. */
+export function isOwnServer(option: DesignOption): boolean {
+  return option.target.provider === "own";
 }
 
 /**
@@ -83,14 +94,22 @@ export async function chooseOption(
   const recommended = options.find((option) => option.recommended);
   const answer = await prompts.select({
     message: "Which option should OpsCrew plan?",
-    options: options.map((option) => ({
-      value: option.id,
-      label: `${option.title}: ${formatMoney(option.cost.monthly)}/month`,
-      hint: [
-        option.fitsBudget ? "fits the budget" : "over budget",
-        ...(option.recommended ? [RECOMMENDED_MARKER] : []),
-      ].join(", "),
-    })),
+    options: options.map((option) =>
+      isOwnServer(option)
+        ? {
+            value: option.id,
+            label: `${option.title}: no server price (you already pay for it)`,
+            hint: option.recommended ? RECOMMENDED_MARKER : "",
+          }
+        : {
+            value: option.id,
+            label: `${option.title}: ${formatMoney(option.cost.monthly)}/month`,
+            hint: [
+              option.fitsBudget ? "fits the budget" : "over budget",
+              ...(option.recommended ? [RECOMMENDED_MARKER] : []),
+            ].join(", "),
+          },
+    ),
     ...(recommended === undefined ? {} : { initialValue: recommended.id }),
   });
   if (prompts.isCancel(answer)) throw cancelled("the choice", "opscrew design");
