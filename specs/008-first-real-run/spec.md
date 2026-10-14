@@ -94,6 +94,23 @@ only the Code-change agent made, so every Next.js app deployed without a model f
   library (`flask-redis`, `django-redis`, Celery with a Redis broker); variables loaded by prefix
   (Flask's `from_prefixed_env`) are found by name from committed example env files, and secret
   keys among them are generated (found by the founder's Flask + SQLAlchemy + Celery app).
+- **FR-815**: The release command MUST cover the migration tools apps commonly use (founder,
+  2026-10-14: "you just covered too little"): Python (Django, Alembic incl. SQLModel, Flask-Migrate,
+  Flask-DB, Tortoise/Aerich, Piccolo, peewee-migrate, Yoyo, Masonite), Node/TS (Prisma, Drizzle,
+  TypeORM, Sequelize, Knex/Objection, MikroORM, Kysely, node-pg-migrate, db-migrate, AdonisJS
+  Lucid, Payload, Medusa, KeystoneJS, Redwood), and, detected now for feature 009's builders,
+  Rails, Hanami, Sequel, Laravel, Symfony/Doctrine, golang-migrate, goose, Atlas, Diesel, sqlx,
+  SeaORM, Phoenix/Ecto and EF Core. Apps that migrate at startup (Spring with Flyway/Liquibase,
+  GORM AutoMigrate, `sqlx::migrate!`, Strapi) get no command and `design` says why. A command is
+  planned only when the image can run it; otherwise OpsCrew says what to change.
+- **FR-816**: Without a model, OpsCrew MUST add a health route itself for the common frameworks
+  (founder, 2026-10-14: "a fuckton of variety"): file-routed (Next.js app and pages router, Nuxt,
+  SvelteKit, Astro, Remix, React Router, SolidStart) by adding a file; Python (FastAPI, Flask incl.
+  app factories, Django, Starlette, Litestar, Sanic, Quart, Falcon, aiohttp, Bottle, Tornado,
+  Pyramid) and Node (Express, Fastify, Hono, Koa, NestJS, Elysia, Hapi, Restify, AdonisJS,
+  Feathers) by a small edit next to the app object, only when it finds that object unambiguously;
+  built-in endpoints (Rails `/up`, Laravel `/up`, Spring Boot Actuator) are used as they are. Any
+  other case stays with the Code-change agent and is named in the pull request.
 - **FR-812**: When a web app also runs background jobs (Celery, RQ, Dramatiq, BullMQ, Sidekiq …),
   OpsCrew MUST say plainly in `design` and the adapt pull request that only the web
   process is deployed for now and the jobs will not run until worker support arrives.
