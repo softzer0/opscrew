@@ -145,7 +145,13 @@ function placeholder(name: string): string {
  * Paths that write to the database, so they answer HTTP 200 only once the release command has
  * created the tables (checked in addition to the health path).
  */
-const DATABASE_ROUTES: Readonly<Record<string, string>> = { "django-postgres": "/" };
+const DATABASE_ROUTES: Readonly<Record<string, string>> = {
+  "django-postgres": "/",
+  "express-drizzle": "/",
+  "fastapi-sqlmodel": "/",
+  "koa-knex": "/",
+  "nestjs-typeorm": "/",
+};
 
 /**
  * The Compose file OpsCrew deploys (`renderCompose`), adapted to this computer: the data
