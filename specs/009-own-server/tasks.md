@@ -108,6 +108,13 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-hetzner --filter=@opscrew/connector-digitalocean --filter=@opscrew/iac-templates`, plus the two gated tests once with the tokens from `.env.e2e`
   - Effort: high
 
+- [ ] T916 [US1] [US5] Findings of the live test's preparation (T909): `opscrew provision --confirm <app>` approves a plan that removes something (the switch between serving directly and the tunnel deletes the old DNS records) in a script, and re-running `design` keeps the Portainer settings, in `packages/cli/src/commands/provision.ts` and `packages/agents/src/design/run.ts`
+  - Owns: `packages/cli/src/commands/provision.ts` (+ tests), `packages/cli/src/approval.ts` only if the shared typed-confirmation handler needs it, `packages/agents/src/design/run.ts` (`keepPlanSettings`, + tests), `packages/mcp-server/src/tools/deploy.ts` only if the MCP apply needs the same choice (its dialog already asks the user)
+  - Reads: how `destroy --confirm` and `portainer disable --confirm` approve a typed-name plan in a script (`packages/cli/src/commands/{destroy,portainer}.ts`, `approval.ts`); `keepPlanSettings` and `plan.portainer` in `@opscrew/plan-schema`
+  - Accept: (1) `opscrew provision --approve <hash> --confirm <app>` approves a plan that needs the typed app name only when its hash is listed and `--confirm` equals the app's name; a wrong name stops before any change with a plain message; without `--confirm` a script is refused with a message naming `--confirm <app>`; `--yes` never approves it; in a terminal it still asks for the name; `--plan-only` says the removal needs the name; tests. (2) Re-running `design` (also after a new interview) keeps `plan.portainer` exactly as it was (enabled, version, access, hostname, allowed emails) like the other kept settings; test.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/agents --filter=@opscrew/mcp-server`
+  - Effort: medium
+
 ## Phase 4: Surfaces and live test
 
 - [X] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
@@ -121,7 +128,7 @@ network or model.
 - [ ] T909 [US1] [US3] [US5] Gated live test for own servers in `packages/cli/test/live/own-server.test.ts`, `docs/e2e.md`
   - Owns: `packages/cli/test/live/own-server.test.ts`, `docs/e2e.md` (setup section only)
   - Reads: quickstart.md "Gated live test"; `packages/cli/test/live/live.test.ts` (patterns, cleanup)
-  - Depends: T908, T913
+  - Depends: T908, T913, T916
   - Accept: quickstart.md steps 1–7 (DNS only, the Cloudflare-only filter with a reboot, the tunnel, Portainer, undo) on `OPSCREW_E2E_DOMAIN`; the throwaway server is always deleted, even when a step fails; nothing about the server's address in committed files or PRs.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (skips without credentials)
   - Effort: high
