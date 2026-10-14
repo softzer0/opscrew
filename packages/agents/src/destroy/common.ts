@@ -82,7 +82,7 @@ export async function checkCloudflare(
       {
         hint:
           plan.target.provider === "own"
-            ? `The app's DNS records${plan.target.access === "tunnel" ? ", its Cloudflare Tunnel and Access" : ""} for ${plan.dns.domain ?? "the app"} are on Cloudflare, and OpsCrew removes them first. ${help}`
+            ? `The app's DNS records${plan.target.access === "tunnel" ? ", its Cloudflare Tunnel and Access" : ""} for ${plan.dns.domain ?? "the app"} are on Cloudflare, and OpsCrew removes them as part of the teardown. ${help}`
             : `The deployment's DNS records for ${plan.dns.domain ?? "the app"} are on Cloudflare; deleting the server without them would leave them pointing at a dead address. ${help}`,
       },
     );

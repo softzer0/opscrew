@@ -10,7 +10,7 @@ import {
   planTeardown,
   planUndo,
 } from "@opscrew/connector-ssh-host";
-import type { ApprovalRecord, RemoteExec, ResourceChange } from "@opscrew/contracts";
+import type { ApprovalRecord, PlanSummary, RemoteExec, ResourceChange } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
 import { DEPLOY_SECRETS, TUNNEL_DEPLOY_SECRETS, usesTunnel } from "@opscrew/iac-templates";
@@ -29,6 +29,12 @@ import {
 } from "../provision";
 import { withoutOwnServer } from "../secure/own";
 import { hasDeployment, recordServerAddress } from "../shared";
+import {
+  deletesTunnel,
+  requireTunnelClosed,
+  tunnelBusyError,
+  tunnelSafeEngine,
+} from "../shared/tunnel-connections";
 import { deletionPlanProblems, describeChanges } from "./checks";
 import {
   COMMAND,
@@ -148,16 +154,34 @@ function cloudflareWhat(plan: DeployPlan): string {
     : "DNS records on Cloudflare";
 }
 
+/** The Cloudflare part of the teardown, planned and approved but not applied yet. */
+interface CloudflareRemoval {
+  summary: PlanSummary;
+  approval: ApprovalRecord;
+  /** The plan deletes the app's Cloudflare Tunnel: it is applied after the app is off the server. */
+  tunnel: boolean;
+}
+
+/** Why the tunnel goes last, said in the approval and the summary. */
+const TUNNEL_AFTER_SERVER =
+  "Cloudflare deletes a tunnel only after its connector on your server has stopped,";
+
+/** Said when the app is off the server and its Cloudflare resources are not deleted yet. */
+const SERVER_DONE_CLOUDFLARE_LEFT =
+  "The app is removed from your server; its Cloudflare resources are still there.";
+
 /**
- * The Cloudflare part of the teardown: a destroy plan that may only delete Cloudflare resources the
- * user confirmed, approved with `allowDestroy` and the typed app name, then applied. Its plan file
- * is always deleted afterwards.
+ * The Cloudflare part of the teardown, up to its approval: a destroy plan that may only delete
+ * Cloudflare resources the user confirmed, approved with `allowDestroy` and the typed app name.
+ * `undefined` (its plan file deleted) when nothing is left to delete; on any stop the plan file is
+ * deleted too. {@link applyCloudflareRemoval} applies it and always deletes the plan file.
  */
-async function destroyCloudflare(
+async function approveCloudflareRemoval(
   session: DeletionSession,
   plan: DeployPlan,
   confirmed: ReadonlySet<string>,
-): Promise<{ destroyed: ResourceChange[]; approval?: ApprovalRecord }> {
+  hostChanges: boolean,
+): Promise<CloudflareRemoval | undefined> {
   const { deps } = session;
   const name = plan.app.name;
   deps.reporter.step(`Planning the removal of the app's ${cloudflareWhat(plan)}`);
@@ -165,7 +189,8 @@ async function destroyCloudflare(
   try {
     if (summary.changes.length === 0) {
       deps.reporter.info("Nothing is left to delete on Cloudflare.");
-      return { destroyed: [] };
+      await discardPlan(summary);
+      return undefined;
     }
     const problems = deletionPlanProblems(summary.changes, { confirmed });
     if (problems.notDeletes.length > 0) {
@@ -189,6 +214,7 @@ async function destroyCloudflare(
       );
     }
     cloudflareOnly(summary.changes, "Nothing was deleted.");
+    const tunnel = deletesTunnel(summary.changes);
     const count = summary.changes.length;
     const approval = await deps.approvals.request({
       kind: "iac-apply",
@@ -196,7 +222,11 @@ async function destroyCloudflare(
       details: [
         `${engineLabel(summary.engine.name)} ${summary.engine.version} destroy plan:`,
         ...describeChanges(summary.changes),
-        "Your server is not part of this plan; the app is removed from it in the next step.",
+        !tunnel
+          ? "Your server is not part of this plan; the app is removed from it in the next step."
+          : hostChanges
+            ? `Your server is not part of this plan. ${TUNNEL_AFTER_SERVER} so OpsCrew removes the app from your server first (the next approval) and applies this plan after that.`
+            : `Your server is not part of this plan. ${TUNNEL_AFTER_SERVER} so OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel.`,
         SERVER_STAYS,
         `Plan hash: ${summary.planHash}`,
       ].join("\n"),
@@ -212,14 +242,56 @@ async function destroyCloudflare(
       );
     }
     await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
+    return { summary, approval: approval as ApprovalRecord, tunnel };
+  } catch (error) {
+    await discardPlan(summary);
+    throw error;
+  }
+}
+
+/**
+ * Applies the approved Cloudflare part of the teardown and deletes its plan file. A plan that
+ * deletes the tunnel runs after the app is off the server, and only once Cloudflare reports no
+ * active connections for the tunnel (read-only polls, up to 3 minutes); if they stay open it stops
+ * before the apply, and Cloudflare's error 1022 during the apply becomes the same plain message.
+ */
+async function applyCloudflareRemoval(
+  session: DeletionSession,
+  plan: DeployPlan,
+  removal: CloudflareRemoval,
+  sleep: ((ms: number) => Promise<void>) | undefined,
+): Promise<ResourceChange[]> {
+  const { deps } = session;
+  const { summary } = removal;
+  try {
+    const engine = tunnelSafeEngine(session.engine);
+    if (removal.tunnel) {
+      await requireTunnelClosed(deps, summary, {
+        command: COMMAND,
+        already: SERVER_DONE_CLOUDFLARE_LEFT,
+        ...(sleep !== undefined ? { options: { sleep } } : {}),
+      });
+    }
     deps.reporter.step(`Deleting the ${cloudflareWhat(plan)}`);
-    await applyApprovedPlan(session, summary, {
-      allowDestroy: true,
-      what: "deleting the Cloudflare resources",
-      hint: "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
-    });
-    deps.reporter.success(`Deleted ${plural(count, "Cloudflare resource")}.`);
-    return { destroyed: summary.changes, approval };
+    try {
+      await applyApprovedPlan(removal.tunnel ? { ...session, engine } : session, summary, {
+        allowDestroy: true,
+        what: "deleting the Cloudflare resources",
+        hint: removal.tunnel
+          ? `${SERVER_DONE_CLOUDFLARE_LEFT} Fix the cause shown above, then run \`opscrew destroy\` again to finish; it continues with what is left.`
+          : "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
+      });
+    } catch (error) {
+      if (!engine.refusedBusyTunnel) throw error;
+      throw tunnelBusyError({
+        command: COMMAND,
+        reason: "refused",
+        already: SERVER_DONE_CLOUDFLARE_LEFT,
+        cause: error,
+      });
+    }
+    deps.reporter.success(`Deleted ${plural(summary.changes.length, "Cloudflare resource")}.`);
+    return summary.changes;
   } finally {
     await discardPlan(summary);
   }
@@ -433,7 +505,10 @@ function remainingOnOwnServer(input: {
  * before anything changes, shown, and confirmed once with the typed app name → the Cloudflare
  * destroy plan (`iac-apply`, `allowDestroy` + typed app name) → the teardown host plan
  * (`host-apply`, `allowDestroy` + typed app name: the app's containers, runtime files, the tunnel
- * connector, Portainer and the marker; the app's data only with `deleteData`) → the deploy secrets
+ * connector, Portainer and the marker; the app's data only with `deleteData`). When the Cloudflare
+ * plan deletes the tunnel, both are approved first, then the teardown is applied, then OpsCrew
+ * waits until Cloudflare reports no active connections for the tunnel (it refuses to delete one
+ * that has them) and only then applies the Cloudflare plan → the deploy secrets
  * (tunnel ones included) and OpsCrew's local record of the deployment. With `undoHost`, the undo
  * host plan follows as a separate `host-apply` approval; it also runs alone after an earlier
  * destroy. A refusal or failure leaves everything after it untouched; running it again continues.
@@ -562,14 +637,29 @@ export async function destroyOwnServer(
   const hostSteps = (teardown?.steps ?? []).filter((step) => step.state === "change");
   const dataWarning = deleteData && hasAppData(facts, name) ? dataLoss(plan, facts) : undefined;
   if (removeApp) {
+    // Cloudflare deletes a tunnel only once its connector is gone: then the server goes first.
+    const serverFirst = deletesTunnel(resources) && hostSteps.length > 0;
+    const cloudflareLines =
+      resources.length > 0
+        ? [
+            serverFirst
+              ? `and then deletes these Cloudflare resources (${TUNNEL_AFTER_SERVER} so they go last):`
+              : "The teardown deletes these Cloudflare resources:",
+            ...describeChanges(resources),
+          ]
+        : [];
+    const hostLines =
+      hostSteps.length > 0
+        ? [
+            serverFirst
+              ? "The teardown removes from your server:"
+              : "and removes from your server:",
+            ...hostSteps.map((step) => `  - ${step.title}`),
+          ]
+        : [];
     deps.reporter.info(
       [
-        ...(resources.length > 0
-          ? [`The teardown deletes these Cloudflare resources:`, ...describeChanges(resources)]
-          : []),
-        ...(hostSteps.length > 0
-          ? ["and removes from your server:", ...hostSteps.map((step) => `  - ${step.title}`)]
-          : []),
+        ...(serverFirst ? [...hostLines, ...cloudflareLines] : [...cloudflareLines, ...hostLines]),
         ...(resources.length === 0 && hostSteps.length === 0
           ? [
               "Nothing of the app is left on Cloudflare or your server; OpsCrew finishes the cleanup.",
@@ -622,43 +712,65 @@ export async function destroyOwnServer(
     }
   }
 
-  // 5. The Cloudflare resources (DNS records, tunnel, Access)
+  // 5–6. The Cloudflare resources (DNS records, tunnel, Access) and the app on the server (teardown
+  // host plan). Both are approved before anything changes. Cloudflare first, unless its plan
+  // deletes the tunnel: Cloudflare refuses that while the connector on the server still runs, so
+  // then the server goes first and the Cloudflare plan follows once the tunnel has no connections.
   let destroyed: ResourceChange[] = [];
-  let iacApproval: ApprovalRecord | undefined;
+  let removal: CloudflareRemoval | undefined;
   if (iac !== undefined && resources.length > 0) {
-    ({ destroyed, approval: iacApproval } = await destroyCloudflare(iac, plan, confirmed));
+    removal = await approveCloudflareRemoval(iac, plan, confirmed, hostSteps.length > 0);
   }
-
-  // 6. The app on the server (teardown host plan)
+  const iacApproval = removal?.approval;
   const hostPlans: { teardown?: string; undo?: string } = {};
   let teardownApproval: ApprovalRecord | undefined;
-  if (teardown !== undefined && hostSteps.length > 0) {
-    const already =
-      destroyed.length > 0 ? " The app's Cloudflare resources are deleted already." : "";
-    const result = await applyHostPlanApproved(deps, host, teardown, {
-      title: `Remove ${name} from your server (${plural(hostSteps.length, "change")})`,
-      intro: [
-        deleteData
-          ? `This removes ${name} from your server, including its data.`
-          : `This removes ${name} from your server; its data in /srv/data and its Docker volumes stay.`,
-        ...(dataWarning !== undefined ? [dataWarning] : []),
-        SERVER_STAYS,
-      ],
-      allowDestroy: true,
-      confirmPhrase: name,
-      refused: `The removal of ${name} from your server was not approved, so nothing on your server was changed.${already}`,
-      ...(destroyed.length > 0
-        ? {
-            afterFailure:
-              "The app's Cloudflare resources are deleted already; the app is still on your server. Run `opscrew destroy` again to finish.",
-          }
-        : {}),
-    });
-    hostPlans.teardown = result.hash;
-    teardownApproval = result.approval;
-    deps.reporter.success(
-      `Removed ${name} from your server (${plural(result.applied.length, "change")}).`,
-    );
+  try {
+    if (iac !== undefined && removal !== undefined && !removal.tunnel) {
+      destroyed = await applyCloudflareRemoval(iac, plan, removal, services.sleep);
+    }
+    if (teardown !== undefined && hostSteps.length > 0) {
+      const serverFirst = removal?.tunnel === true;
+      const already = serverFirst
+        ? " and nothing in Cloudflare was deleted"
+        : destroyed.length > 0
+          ? ". The app's Cloudflare resources are deleted already"
+          : "";
+      const afterFailure = serverFirst
+        ? "Nothing in Cloudflare was deleted yet (the tunnel goes only after the app is off your server). Run `opscrew destroy` again to finish."
+        : destroyed.length > 0
+          ? "The app's Cloudflare resources are deleted already; the app is still on your server. Run `opscrew destroy` again to finish."
+          : undefined;
+      const result = await applyHostPlanApproved(deps, host, teardown, {
+        title: `Remove ${name} from your server (${plural(hostSteps.length, "change")})`,
+        intro: [
+          deleteData
+            ? `This removes ${name} from your server, including its data.`
+            : `This removes ${name} from your server; its data in /srv/data and its Docker volumes stay.`,
+          ...(dataWarning !== undefined ? [dataWarning] : []),
+          ...(serverFirst
+            ? [
+                `${TUNNEL_AFTER_SERVER} so this goes first; the approved Cloudflare plan follows once Cloudflare reports no active connections for the tunnel.`,
+              ]
+            : []),
+          SERVER_STAYS,
+        ],
+        allowDestroy: true,
+        confirmPhrase: name,
+        refused: `The removal of ${name} from your server was not approved, so nothing on your server was changed${already}.`,
+        ...(afterFailure !== undefined ? { afterFailure } : {}),
+      });
+      hostPlans.teardown = result.hash;
+      teardownApproval = result.approval;
+      deps.reporter.success(
+        `Removed ${name} from your server (${plural(result.applied.length, "change")}).`,
+      );
+    }
+    if (iac !== undefined && removal?.tunnel === true) {
+      destroyed = await applyCloudflareRemoval(iac, plan, removal, services.sleep);
+    }
+  } finally {
+    // Never left behind for a later apply (applyCloudflareRemoval deletes it, too).
+    if (removal !== undefined) await discardPlan(removal.summary);
   }
 
   // 7. Deploy secrets (tunnel ones included) and OpsCrew's record of the deployment

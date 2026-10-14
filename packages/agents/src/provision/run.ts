@@ -370,6 +370,8 @@ async function provisionFlow(
   // on blocking findings before anything changes; its address reaches the engine only as TF_VAR_*.
   let ownRun: OwnServerRun | undefined;
   let ownRender: OwnRenderInput | undefined;
+  /** The host plan applied before a mode switch's removal deleted the tunnel. */
+  let earlyHost: OwnHostResult | undefined;
   if (ownServer) {
     ownRun = await prepareOwnServer(deps, {
       plan,
@@ -383,7 +385,8 @@ async function provisionFlow(
     );
     ownRender = { sshPort: ownRun.sshPort };
     // Switching between public and tunnel mode: the old records go first, in an apply of their own.
-    // Only a saved removal plan is applied as the removal (never the new setup's plan).
+    // Only a saved removal plan is applied as the removal (never the new setup's plan). When it
+    // deletes the tunnel, the server's change (without the connector) goes before it.
     const removal = await removeOldAccessMode(deps, {
       engine,
       dir,
@@ -392,7 +395,14 @@ async function provisionFlow(
       ...(saved.removal !== undefined ? { approvePlanHash: saved.removal } : {}),
       ...(options.planOnly ? { planOnly: true } : {}),
       phase,
+      host: {
+        run: ownRun,
+        deployPublicKey: deployKey.publicKeyOpenSsh,
+        ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
+        ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
+      },
     });
+    earlyHost = removal?.host;
     if (removal === undefined && saved.removal !== undefined) {
       throw new OpsCrewError(
         "PLAN_HASH_MISMATCH",
@@ -405,16 +415,21 @@ async function provisionFlow(
     if (removal !== undefined) {
       const pending = (removal.plan?.changes.length ?? 0) > 0 && !removal.applied;
       if (options.planOnly && pending) {
+        const first = removal.host;
         deps.reporter.info(
-          `After this removal is applied (\`opscrew ${phase} --approve ${removal.planHash}\`, typing the app name to confirm), run \`opscrew ${phase}\` again for the plan of the new setup.`,
+          first !== undefined
+            ? `After this removal and the host plan are applied (\`opscrew ${phase} --approve ${removal.planHash} --approve ${first.hash}\`, typing the app name to confirm; the host plan goes first, because Cloudflare deletes the tunnel only after its connector on your server has stopped), run \`opscrew ${phase}\` again for the plan of the new setup.`
+            : `After this removal is applied (\`opscrew ${phase} --approve ${removal.planHash}\`, typing the app name to confirm), run \`opscrew ${phase}\` again for the plan of the new setup.`,
         );
         return {
           ...(removal.planHash ? { planHash: removal.planHash } : {}),
+          ...(first !== undefined ? { hostPlanHash: first.hash } : {}),
           applied: false,
           outputs: {},
         };
       }
       if (removal.approval) approvals.push(planApproval(removal.approval, "iac-apply"));
+      if (removal.host?.approval) approvals.push(planApproval(removal.host.approval, "host-apply"));
     }
   }
 
@@ -589,6 +604,8 @@ async function provisionFlow(
       phase,
     });
     if (host.approval) approvals.push(planApproval(host.approval, "host-apply"));
+    // The server changed before the removal already when that deleted the tunnel.
+    if (earlyHost?.applied === true && !host.applied) host = { ...host, applied: true };
     plan = record(host.applied);
     await writeArtifact("plan", deps.paths.files.plan, plan);
     secretsTarget = ownDeployTarget(deps, ownRun, { plan, outputs });

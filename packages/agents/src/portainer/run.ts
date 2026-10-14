@@ -55,6 +55,12 @@ import {
   SshRemoteExec,
   writeRenderedFiles,
 } from "../shared";
+import {
+  deletesTunnel,
+  requireTunnelClosed,
+  tunnelBusyError,
+  tunnelSafeEngine,
+} from "../shared/tunnel-connections";
 import { cloudflareAccessLoginMethods, oneTimePinIdentityProvider } from "./access";
 import {
   clearPendingPortainer,
@@ -408,7 +414,10 @@ async function applyAddonPlan(
  * The shared enable/disable flow: render (own servers always, others when a subdomain is
  * involved) → infrastructure plan, policies, `iac-apply` approval and apply when a tunnel is
  * involved → host plan, `host-apply` approval and apply → (disable with `deleteData`) the data
- * deletion's own approval with the typed app name → `opscrew/plan.yaml` updated.
+ * deletion's own approval with the typed app name → `opscrew/plan.yaml` updated. When the
+ * infrastructure plan deletes the tunnel, both plans are approved first, then the host plan (which
+ * removes the connector) is applied, then OpsCrew waits until Cloudflare reports no active
+ * connections for the tunnel, and only then applies the infrastructure plan.
  */
 async function runChange(
   deps: PhaseDeps,
@@ -476,15 +485,75 @@ async function runChange(
       deleteData: change.deleteData,
     });
 
+  // The change on the server: a host plan on the user's own server, or the deploy user's add-on
+  // steps. It normally follows the infrastructure apply (it may need the tunnel's id); when the
+  // infrastructure plan deletes the tunnel it goes first, because Cloudflare refuses to delete a
+  // tunnel whose connector still runs.
+  const shown: { hostHash?: string } = {};
+  const hostChange = async (
+    outputs: Record<string, unknown>,
+    hostPlanOnly: boolean,
+  ): Promise<{ hash: string; applied: boolean; approval?: ApprovalRecord }> => {
+    if (ownRun) {
+      // The same host plan applyOwnHostPlan makes, so its hash can be named if it stops.
+      const tunnelId = usesTunnel(plan) ? stringOutput(outputs, "tunnel_id") : undefined;
+      if (!usesTunnel(plan) || tunnelId !== undefined) {
+        shown.hostHash = hostPlanHash(
+          planHost(
+            ownRun.facts,
+            desiredHost(deps, ownRun, {
+              plan,
+              deployPublicKey: deployKey.publicKeyOpenSsh,
+              ...(tunnelId !== undefined ? { tunnelId } : {}),
+            }),
+          ),
+        );
+      }
+      return applyOwnHostPlan(deps, ownRun, {
+        plan,
+        outputs,
+        deployPublicKey: deployKey.publicKeyOpenSsh,
+        planOnly: hostPlanOnly,
+        phase: "provision",
+      });
+    }
+    return cloudHostChange(deps, change, {
+      plan,
+      outputs,
+      services,
+      remote: cloudRemote as RemoteExec,
+      facts: cloudFacts,
+      planOnly: hostPlanOnly,
+      command,
+      shown,
+    });
+  };
+  /** The host change applied before the tunnel's deletion (see {@link hostChange}). */
+  let early: { hash: string; applied: boolean; approval?: ApprovalRecord } | undefined;
+  const connectorGone = () => (early?.applied === true ? CONNECTOR_GONE : undefined);
+
   // Infrastructure: the tunnel and Access (or their removal), through the IaC engine.
   let outputs: Record<string, unknown> = {};
   let planHash: string | undefined;
   let iacApplied = false;
   if (tunnelInvolved) {
-    const { engine, env } = await engineFor(deps, plan, options);
+    const { engine: inner, env } = await engineFor(deps, plan, options);
+    // Applying a plan that deletes the tunnel: the server first, then the wait, then the deletion.
+    const engine = tunnelSafeEngine(inner, async (saved) => {
+      try {
+        early = await hostChange({}, false);
+      } catch (error) {
+        throw forThisCommand(error, command, { nothingInCloudflare: true });
+      }
+      await requireTunnelClosed(deps, saved, {
+        command,
+        ...(connectorGone() !== undefined ? { already: connectorGone() } : {}),
+        ...(services.sleep !== undefined ? { options: { sleep: services.sleep } } : {}),
+      });
+    });
     if (ownRun) {
       await ownEngineEnv(deps, ownRun, env, () =>
-        infrastructureOutputs(deps, plan, { engine: async () => engine, engineEnv: env }),
+        infrastructureOutputs(deps, plan, { engine: async () => inner, engineEnv: env }),
       );
     }
     let result: Awaited<ReturnType<typeof planAndApply>>;
@@ -508,7 +577,24 @@ async function runChange(
     } catch (error) {
       // `--approve <infrastructure plan hash>` without options then applies exactly this change.
       await planned();
-      throw infrastructureStopped(deps, error, written);
+      const already = connectorGone();
+      const stopped =
+        engine.refusedBusyTunnel && error instanceof OpsCrewError && error.code === "ENGINE_FAILED"
+          ? tunnelBusyError({
+              command,
+              reason: "refused",
+              ...(already !== undefined ? { already } : {}),
+              cause: error,
+            })
+          : already !== undefined &&
+              error instanceof OpsCrewError &&
+              !error.message.includes(CONNECTOR_GONE)
+            ? new OpsCrewError(error.code, `${error.message}\n${already}`, {
+                ...(error.hint !== undefined ? { hint: error.hint } : {}),
+                cause: error,
+              })
+            : error;
+      throw infrastructureStopped(deps, stopped, written);
     }
     planHash = result.planHash;
     iacApplied = result.applied;
@@ -516,12 +602,19 @@ async function runChange(
     const pending = (result.plan?.changes.length ?? 0) > 0 && !result.applied;
     if (planOnly && pending) {
       await planned();
+      // A plan that deletes the tunnel is applied after the host plan: both are shown now.
+      const first = deletesTunnel(result.plan?.changes ?? [])
+        ? await hostChange({}, true)
+        : undefined;
       deps.reporter.info(
-        `The host plan follows once this infrastructure plan is applied (\`${command} --approve ${planHash}\`), because it needs the Cloudflare Tunnel.`,
+        first !== undefined
+          ? `Approve both plans to apply them (\`${command} --approve ${planHash} --approve ${first.hash}\`): the host plan goes first, because Cloudflare deletes the tunnel only after its connector on the server has stopped.`
+          : `The host plan follows once this infrastructure plan is applied (\`${command} --approve ${planHash}\`), because it needs the Cloudflare Tunnel.`,
       );
       return {
         ...(planHash !== undefined ? { planHash } : {}),
         applied: false,
+        ...(first !== undefined ? { hostPlanHash: first.hash } : {}),
         hostApplied: false,
         files: written,
         status: await portainerStatusOf(deps, change.before),
@@ -530,75 +623,38 @@ async function runChange(
     outputs =
       Object.keys(result.outputs).length > 0
         ? result.outputs
-        : await engine.output(join(deps.paths.root, plan.infra.dir), { env }).catch(() => ({}));
+        : await inner.output(join(deps.paths.root, plan.infra.dir), { env }).catch(() => ({}));
   }
 
-  // The server: a host plan on the user's own server, or the deploy user's add-on steps.
+  // The server (unless its change went first, before the tunnel's deletion).
   let hostPlanHashValue: string | undefined;
   let hostApplied = false;
   let dataPlanHash: string | undefined;
-  const shown: { hostHash?: string } = {};
   try {
-    if (ownRun) {
-      // The same host plan applyOwnHostPlan makes, so its hash can be named if it stops.
-      const tunnelId = usesTunnel(plan) ? stringOutput(outputs, "tunnel_id") : undefined;
-      if (!usesTunnel(plan) || tunnelId !== undefined) {
-        shown.hostHash = hostPlanHash(
-          planHost(
-            ownRun.facts,
-            desiredHost(deps, ownRun, {
-              plan,
-              deployPublicKey: deployKey.publicKeyOpenSsh,
-              ...(tunnelId !== undefined ? { tunnelId } : {}),
-            }),
-          ),
-        );
-      }
-      const host = await applyOwnHostPlan(deps, ownRun, {
-        plan,
-        outputs,
-        deployPublicKey: deployKey.publicKeyOpenSsh,
+    const host = early ?? (await hostChange(outputs, planOnly));
+    hostPlanHashValue = host.hash;
+    hostApplied = host.applied;
+    if (host.approval) approvals.push({ record: host.approval, kind: "host-apply" });
+    if (ownRun && change.deleteData) {
+      const data = await applyAddonPlan(deps, {
+        plan: planPortainer({
+          app: plan.app.name,
+          dir: PORTAINER_DIR,
+          runAs: "root",
+          disable: { deleteData: true },
+        }),
+        remote: ownRun.session.remote,
+        apply: ownRun.host.apply,
+        verifyLogin: ownRun.verifyLogin,
+        title: `Delete Portainer's data on your server (its admin account and settings)`,
+        allowDestroy: true,
         planOnly,
-        phase: "provision",
-      });
-      hostPlanHashValue = host.hash;
-      hostApplied = host.applied;
-      if (host.approval) approvals.push({ record: host.approval, kind: "host-apply" });
-      if (change.deleteData) {
-        const data = await applyAddonPlan(deps, {
-          plan: planPortainer({
-            app: plan.app.name,
-            dir: PORTAINER_DIR,
-            runAs: "root",
-            disable: { deleteData: true },
-          }),
-          remote: ownRun.session.remote,
-          apply: ownRun.host.apply,
-          verifyLogin: ownRun.verifyLogin,
-          title: `Delete Portainer's data on your server (its admin account and settings)`,
-          allowDestroy: true,
-          planOnly,
-          secrets: async () => ({}),
-          command,
-        });
-        dataPlanHash = data.hash;
-        hostApplied ||= data.applied;
-        if (data.approval) approvals.push({ record: data.approval, kind: "host-apply" });
-      }
-    } else {
-      const result = await cloudHostChange(deps, change, {
-        plan,
-        outputs,
-        services,
-        remote: cloudRemote as RemoteExec,
-        facts: cloudFacts,
-        planOnly,
+        secrets: async () => ({}),
         command,
-        shown,
       });
-      hostPlanHashValue = result.hash;
-      hostApplied = result.applied;
-      if (result.approval) approvals.push({ record: result.approval, kind: "host-apply" });
+      dataPlanHash = data.hash;
+      hostApplied ||= data.applied;
+      if (data.approval) approvals.push({ record: data.approval, kind: "host-apply" });
     }
   } catch (error) {
     // The server did not get the change: plan.yaml keeps the earlier settings, and only an
@@ -621,14 +677,7 @@ async function runChange(
     }
     // A host plan was shown: `--approve <its hash>` without options applies exactly this change.
     if (shown.hostHash !== undefined) await planned();
-    // applyOwnHostPlan names `opscrew provision` in its hint; this change is finished by this command.
-    if (error instanceof OpsCrewError && error.hint?.includes("opscrew provision --approve")) {
-      throw new OpsCrewError(error.code, error.message, {
-        hint: error.hint.replace("opscrew provision --approve", `${command} --approve`),
-        cause: error,
-      });
-    }
-    throw error;
+    throw forThisCommand(error, command);
   }
 
   if (planOnly) {
@@ -674,6 +723,36 @@ async function runChange(
     files: written,
     status,
   };
+}
+
+/** Said when the server's change went first and the tunnel's deletion did not follow (yet). */
+const CONNECTOR_GONE =
+  "The change on the server is applied (its Cloudflare Tunnel connector is removed); the Cloudflare Tunnel and Access for Portainer are still there.";
+
+/**
+ * A host step's error for this command: `applyOwnHostPlan` names `opscrew provision` in its hint,
+ * but this change is finished by this command. With `nothingInCloudflare` (the host change that
+ * goes before the tunnel's deletion), a refusal says that nothing was changed at all.
+ */
+function forThisCommand(
+  error: unknown,
+  command: string,
+  options: { nothingInCloudflare?: boolean } = {},
+): unknown {
+  if (!(error instanceof OpsCrewError)) return error;
+  const hint = error.hint?.replace("opscrew provision --approve", `${command} --approve`);
+  const message =
+    options.nothingInCloudflare === true && error.code === "APPROVAL_REFUSED"
+      ? error.message.replace(
+          / Nothing on (?:your|the) server was changed\.$/,
+          " Nothing was changed.",
+        )
+      : error.message;
+  if (hint === error.hint && message === error.message) return error;
+  return new OpsCrewError(error.code, message, {
+    ...(hint !== undefined ? { hint } : {}),
+    cause: error,
+  });
 }
 
 /**

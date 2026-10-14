@@ -1,0 +1,359 @@
+import { readFile } from "node:fs/promises";
+import { CLOUDFLARE_API } from "@opscrew/connector-cloudflare";
+import type { IacEngine, PlanSummary, ResourceChange } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
+import { z } from "zod";
+import type { PhaseDeps } from "../context";
+
+/**
+ * Cloudflare refuses to delete a tunnel while its connector (`cloudflared`) is still connected
+ * (error 1022). Wherever an approved plan deletes the app's tunnel, OpsCrew therefore removes the
+ * connector on the server first (its own host approval, asked before anything changes), then waits
+ * here with read-only calls until Cloudflare reports no active connections, and only then applies
+ * the deletion.
+ */
+
+/** The resource type of a Cloudflare Tunnel in the infrastructure code. */
+export const TUNNEL_RESOURCE_TYPE = "cloudflare_zero_trust_tunnel_cloudflared";
+
+/** How long OpsCrew waits for the tunnel's connections to close (3 minutes). */
+export const TUNNEL_CLOSE_TIMEOUT_MS = 180_000;
+const POLL_INTERVAL_MS = 5_000;
+const PROGRESS_EVERY_MS = 20_000;
+const REQUEST_TIMEOUT_MS = 15_000;
+
+type Sleep = (ms: number) => Promise<void>;
+const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** True when the plan deletes the Cloudflare Tunnel itself (not only its routes or records). */
+export function deletesTunnel(
+  changes: readonly Pick<ResourceChange, "type" | "action">[],
+): boolean {
+  return changes.some(
+    (change) => change.type === TUNNEL_RESOURCE_TYPE && change.action === "delete",
+  );
+}
+
+/** A tunnel as Cloudflare's API names it. */
+export interface TunnelRef {
+  accountId: string;
+  tunnelId: string;
+}
+
+const ResourceChangeJson = z.looseObject({
+  type: z.string(),
+  mode: z.string().optional(),
+  change: z.looseObject({
+    actions: z.array(z.string()),
+    before: z.looseObject({ id: z.string().min(1), account_id: z.string().min(1) }).nullish(),
+  }),
+});
+
+/**
+ * The tunnel the plan deletes, from the plan JSON (`resource_changes[].change.before`: the
+ * tunnel's `id` and `account_id`, neither of them sensitive). `undefined` when it deletes none or
+ * the plan JSON does not say.
+ */
+export function deletedTunnel(planJson: unknown): TunnelRef | undefined {
+  const list = (planJson as { resource_changes?: unknown } | null)?.resource_changes;
+  if (!Array.isArray(list)) return undefined;
+  for (const entry of list) {
+    const parsed = ResourceChangeJson.safeParse(entry);
+    if (!parsed.success) continue;
+    const { type, mode, change } = parsed.data;
+    if (type !== TUNNEL_RESOURCE_TYPE || (mode !== undefined && mode !== "managed")) continue;
+    if (!change.actions.includes("delete") || change.actions.includes("create")) continue;
+    if (change.before == null) continue;
+    return { accountId: change.before.account_id, tunnelId: change.before.id };
+  }
+  return undefined;
+}
+
+const TunnelResponse = z.looseObject({
+  result: z
+    .looseObject({
+      status: z.string().nullish(),
+      connections: z.array(z.unknown()).nullish(),
+      conns_active_at: z.string().nullish(),
+      conns_inactive_at: z.string().nullish(),
+      deleted_at: z.string().nullish(),
+    })
+    .nullish(),
+});
+
+const ErrorResponse = z.looseObject({
+  errors: z.array(z.looseObject({ code: z.number().optional(), message: z.string() })).optional(),
+});
+
+/** What Cloudflare reports about a tunnel's connections right now. */
+export type TunnelConnections =
+  | { state: "active" | "closed" | "gone" }
+  | { state: "unknown"; problem: string };
+
+/**
+ * Reads the tunnel's connections with one read-only call
+ * (`GET /accounts/{account}/cfd_tunnel/{id}`). Active while Cloudflare lists a connection or the
+ * status is `healthy` or `degraded`; closed once the status is `down` or `inactive` (or, without a
+ * status, once the tunnel has no connection since it was last active); gone when the tunnel is
+ * deleted already. Only the state is kept: the response also holds the server's address.
+ */
+export async function readTunnelConnections(
+  deps: Pick<PhaseDeps, "fetch" | "redactor" | "version">,
+  tunnel: TunnelRef,
+  token: string,
+  baseUrl = CLOUDFLARE_API,
+): Promise<TunnelConnections> {
+  const url = `${baseUrl.replace(/\/$/, "")}/accounts/${encodeURIComponent(tunnel.accountId)}/cfd_tunnel/${encodeURIComponent(tunnel.tunnelId)}`;
+  let response: Response;
+  try {
+    response = await deps.fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "User-Agent": `opscrew/${deps.version}`,
+      },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { state: "unknown", problem: deps.redactor.redact(`the request failed: ${reason}`) };
+  }
+  if (response.status === 404) return { state: "gone" };
+  const body: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    const errors = ErrorResponse.safeParse(body);
+    const message = errors.success ? errors.data.errors?.[0]?.message : undefined;
+    return {
+      state: "unknown",
+      problem: deps.redactor.redact(
+        `HTTP ${response.status}${message !== undefined ? `: ${message.slice(0, 200)}` : ""}`,
+      ),
+    };
+  }
+  const parsed = TunnelResponse.safeParse(body);
+  if (!parsed.success || parsed.data.result == null) {
+    return { state: "unknown", problem: "Cloudflare's answer did not describe the tunnel" };
+  }
+  const result = parsed.data.result;
+  if (result.deleted_at != null) return { state: "gone" };
+  const status = result.status ?? undefined;
+  if (status === "healthy" || status === "degraded" || (result.connections ?? []).length > 0) {
+    return { state: "active" };
+  }
+  if (status === "down" || status === "inactive") return { state: "closed" };
+  if (result.conns_active_at == null || result.conns_inactive_at != null) {
+    return { state: "closed" };
+  }
+  return { state: "active" };
+}
+
+/** Options of {@link waitForTunnelToClose}; the defaults are the real ones. */
+export interface TunnelWaitOptions {
+  sleep?: Sleep;
+  timeoutMs?: number;
+  intervalMs?: number;
+  progressEveryMs?: number;
+  baseUrl?: string;
+}
+
+/** Outcome of {@link waitForTunnelToClose}. */
+export interface TunnelWaitResult {
+  closed: boolean;
+  /** Why the last read told nothing (when every read until the timeout failed). */
+  problem?: string;
+}
+
+/**
+ * Polls the tunnel's connections (read-only, with `CLOUDFLARE_API_TOKEN`, which is registered
+ * with the redactor) until Cloudflare reports none, for at most {@link TUNNEL_CLOSE_TIMEOUT_MS},
+ * with a progress line about every 20 seconds. Without a token there is nothing to ask, so it
+ * returns at once (the engine needs the token as well and says so).
+ */
+export async function waitForTunnelToClose(
+  deps: Pick<PhaseDeps, "fetch" | "redactor" | "version" | "env" | "clock" | "reporter">,
+  tunnel: TunnelRef,
+  options: TunnelWaitOptions = {},
+): Promise<TunnelWaitResult> {
+  const token = deps.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!token) return { closed: true };
+  deps.redactor.addLiteral(token, "cloudflare-token");
+  const sleep = options.sleep ?? realSleep;
+  const timeoutMs = options.timeoutMs ?? TUNNEL_CLOSE_TIMEOUT_MS;
+  const intervalMs = options.intervalMs ?? POLL_INTERVAL_MS;
+  const progressEveryMs = options.progressEveryMs ?? PROGRESS_EVERY_MS;
+  const start = deps.clock.now().getTime();
+  let slept = 0;
+  // Slept time counts even when the clock stands still (a fixed clock in tests).
+  const elapsed = () => Math.max(slept, deps.clock.now().getTime() - start);
+  let lastProgress = 0;
+  deps.reporter.step(
+    `Waiting until Cloudflare reports no active connections for the app's Cloudflare Tunnel (up to ${minutes(timeoutMs)})`,
+  );
+  for (;;) {
+    const read = await readTunnelConnections(deps, tunnel, token, options.baseUrl);
+    if (read.state === "closed" || read.state === "gone") {
+      deps.reporter.success("Cloudflare reports no active connections for the tunnel.");
+      return { closed: true };
+    }
+    const problem = read.state === "unknown" ? read.problem : undefined;
+    if (elapsed() >= timeoutMs)
+      return problem !== undefined ? { closed: false, problem } : { closed: false };
+    if (elapsed() - lastProgress >= progressEveryMs) {
+      lastProgress = elapsed();
+      deps.reporter.info(
+        `Still waiting for Cloudflare to close the tunnel's connections (${Math.round(elapsed() / 1000)} s so far, up to ${minutes(timeoutMs)}).`,
+      );
+    }
+    const wait = Math.max(1, Math.min(intervalMs, timeoutMs - elapsed()));
+    await sleep(wait);
+    slept += wait;
+  }
+}
+
+function minutes(ms: number): string {
+  const count = Math.max(1, Math.round(ms / 60_000));
+  return `${count} minute${count === 1 ? "" : "s"}`;
+}
+
+/** Engine log text of Cloudflare refusing to delete a tunnel that still has connections. */
+const ACTIVE_CONNECTIONS =
+  /"code"\s*:\s*1022\b|\b1022\b[^\n]*active connections|tunnel has active connections/i;
+
+/** True when an engine log (or error text) holds Cloudflare's error 1022. */
+export function isTunnelBusyText(text: string): boolean {
+  return ACTIVE_CONNECTIONS.test(text);
+}
+
+/**
+ * The plain error when the tunnel still has active connections: after the wait timed out
+ * (`reason: "timeout"`, nothing in Cloudflare was deleted), when OpsCrew could not read the
+ * connections (`problem`), or when Cloudflare refused the deletion during the apply
+ * (`reason: "refused"`, error 1022). `already` says what this run changed before (for example
+ * "The app is removed from your server; its Cloudflare resources are still there.").
+ */
+export function tunnelBusyError(input: {
+  command: string;
+  reason: "timeout" | "refused";
+  already?: string;
+  problem?: string;
+  timeoutMs?: number;
+  cause?: unknown;
+}): OpsCrewError {
+  const wait = minutes(input.timeoutMs ?? TUNNEL_CLOSE_TIMEOUT_MS);
+  const first =
+    input.reason === "refused"
+      ? "Cloudflare refused to delete the app's Cloudflare Tunnel because it still has active connections, so the tunnel is still there."
+      : input.problem !== undefined
+        ? `OpsCrew could not read from Cloudflare whether the app's Cloudflare Tunnel still has active connections (${input.problem}), so it stopped before deleting it. Nothing in Cloudflare was deleted.`
+        : `Cloudflare still reports active connections for the app's Cloudflare Tunnel after ${wait}, so OpsCrew stopped before deleting it. Nothing in Cloudflare was deleted.`;
+  return new OpsCrewError(
+    "PROVIDER_ERROR",
+    [first, input.already].filter((part) => part !== undefined && part !== "").join(" "),
+    {
+      hint: `Run \`${input.command}\` again in a few minutes (the connections close on their own once the connector is gone); it continues with what is left.`,
+      ...(input.cause !== undefined ? { cause: input.cause } : {}),
+    },
+  );
+}
+
+/** What the engine wrapper knows about a saved plan before applying it. */
+export interface PlanToApply {
+  planFile: string;
+  changes: readonly ResourceChange[];
+  planJson: unknown;
+}
+
+/** An engine that runs a step before applying a plan that deletes the tunnel (see below). */
+export interface TunnelSafeEngine extends IacEngine {
+  /** True once an apply failed with Cloudflare's error 1022 (the tunnel still had connections). */
+  readonly refusedBusyTunnel: boolean;
+}
+
+/** The plan a saved plan file holds: from this run's `plan`, or its `--plan-only` sidecar. */
+async function savedPlanOf(
+  planFile: string,
+  planned: ReadonlyMap<string, PlanSummary>,
+): Promise<PlanToApply | undefined> {
+  const summary = planned.get(planFile);
+  if (summary !== undefined) {
+    return { planFile, changes: summary.changes, planJson: summary.planJson };
+  }
+  const raw = await readFile(`${planFile}.json`, "utf8").catch(() => undefined);
+  if (raw === undefined) return undefined;
+  const parsed = z
+    .looseObject({
+      changes: z.array(z.looseObject({ type: z.string(), action: z.string() })),
+      planJson: z.unknown(),
+    })
+    .safeParse(JSON.parse(raw));
+  if (!parsed.success) return undefined;
+  return {
+    planFile,
+    changes: parsed.data.changes as unknown as ResourceChange[],
+    planJson: parsed.data.planJson,
+  };
+}
+
+/**
+ * Wraps an engine so that applying an (already approved) plan that deletes the Cloudflare Tunnel
+ * first runs `beforeTunnelDeletion` (remove the connector on the server, then wait for the
+ * connections to close); it may throw to stop before the apply. Every other call, and every plan
+ * that deletes no tunnel, goes to `engine` unchanged. It also notes an apply that failed with
+ * Cloudflare's error 1022, so the caller can say so in plain words.
+ */
+export function tunnelSafeEngine(
+  engine: IacEngine,
+  beforeTunnelDeletion?: (plan: PlanToApply) => Promise<void>,
+): TunnelSafeEngine {
+  const planned = new Map<string, PlanSummary>();
+  let refused = false;
+  return {
+    get info() {
+      return engine.info;
+    },
+    get refusedBusyTunnel() {
+      return refused;
+    },
+    init: (dir, options) => engine.init(dir, options),
+    validate: (dir, options) => engine.validate(dir, options),
+    output: (dir, options) => engine.output(dir, options),
+    plan: async (dir, planFile, options) => {
+      const summary = await engine.plan(dir, planFile, options);
+      planned.set(planFile, summary);
+      return summary;
+    },
+    apply: async (dir, planFile, approval, options) => {
+      if (beforeTunnelDeletion !== undefined) {
+        const plan = await savedPlanOf(planFile, planned);
+        if (plan !== undefined && deletesTunnel(plan.changes)) await beforeTunnelDeletion(plan);
+      }
+      const result = await engine.apply(dir, planFile, approval, options);
+      if (!result.ok && isTunnelBusyText(result.log)) refused = true;
+      return result;
+    },
+  };
+}
+
+/**
+ * Waits until the tunnel the plan deletes has no active connections; throws
+ * {@link tunnelBusyError} when they do not close in time. Returns at once when the plan JSON does
+ * not name the tunnel (then the apply itself tells, and a 1022 is translated by the caller).
+ */
+export async function requireTunnelClosed(
+  deps: Pick<PhaseDeps, "fetch" | "redactor" | "version" | "env" | "clock" | "reporter">,
+  plan: Pick<PlanToApply, "planJson">,
+  input: { command: string; already?: string; options?: TunnelWaitOptions },
+): Promise<void> {
+  const tunnel = deletedTunnel(plan.planJson);
+  if (tunnel === undefined) return;
+  const result = await waitForTunnelToClose(deps, tunnel, input.options);
+  if (result.closed) return;
+  throw tunnelBusyError({
+    command: input.command,
+    reason: "timeout",
+    ...(input.already !== undefined ? { already: input.already } : {}),
+    ...(result.problem !== undefined ? { problem: result.problem } : {}),
+    ...(input.options?.timeoutMs !== undefined ? { timeoutMs: input.options.timeoutMs } : {}),
+  });
+}
