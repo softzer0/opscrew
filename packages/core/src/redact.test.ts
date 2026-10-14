@@ -197,6 +197,90 @@ describe("Redactor", () => {
     expect(r.redact("token=config.github.tokenValue")).toBe("token=config.github.tokenValue");
   });
 
+  describe("labelled keys that name where a secret is (T918)", () => {
+    // A temp OpsCrew home has no dots, so the password file's path is long, random-looking and
+    // free of code characters: exactly what the labelled-secret rule masks under a secret key.
+    const posixPath = "/tmp/opscrew-e2e-Xq9Lm2/projects/3f9c2a7b1e04/portainer_password";
+    // As `--json` prints it on Windows: backslashes escaped.
+    const windowsPath = String.raw`C:\\Users\\someone\\AppData\\Local\\Temp\\opscrew-e2e-Xq9Lm2\\projects\\3f9c2a7b1e04\\portainer_password`;
+
+    it("would mask these paths under a plain secret key (control)", () => {
+      const r = new Redactor();
+      expect(r.redact(`password=${posixPath}`)).toBe("password=[REDACTED:labelled-secret]");
+      expect(r.redact(`"password": "${windowsPath}"`)).toBe(
+        '"password": "[REDACTED:labelled-secret]"',
+      );
+    });
+
+    it.each([
+      `"passwordFile": "${windowsPath}"`,
+      `"passwordFile": "${posixPath}"`,
+      `password_file=${posixPath}`,
+      `token_path: ${posixPath}`,
+      `SECRET_KEY_FILE=${posixPath}`,
+      `"passwordFileExists": "${posixPath}"`,
+      `api_key_dir=${posixPath}`,
+      `HCLOUD_TOKEN_DIR=${posixPath}`,
+      `cloudflare_api_token_Path => "${posixPath}"`,
+      `secretsDir := ${posixPath}`,
+      `PASSWORD-FILE: '${posixPath}'`,
+      `{"passwordFile": "${windowsPath}", "status": "running"}`,
+    ])("leaves %s alone", (text) => {
+      expect(new Redactor().redact(text)).toBe(text);
+    });
+
+    it("still masks registered literals inside such paths", () => {
+      const r = new Redactor();
+      const literal = fakeSecret("generic-password");
+      r.addLiteral(literal, "portainer-password");
+      expect(r.redact(`"passwordFile": "/tmp/${literal}/portainer_password"`)).toBe(
+        '"passwordFile": "/tmp/[REDACTED:portainer-password]/portainer_password"',
+      );
+    });
+
+    it("still masks every other labelled key, also base64 values with / + =", () => {
+      const r = new Redactor();
+      const random = fakeSecret("hcloud-token");
+      const base64 = `${random.slice(0, 12)}/${random.slice(12, 20)}+${random.slice(20, 28)}==`;
+      const cases: Array<[string, string]> = [
+        [`password=${random}`, "password=[REDACTED:labelled-secret]"],
+        [`token: "${base64}"`, 'token: "[REDACTED:labelled-secret]"'],
+        [`"token": "${base64}"`, '"token": "[REDACTED:labelled-secret]"'],
+        [`api_key=${base64}`, "api_key=[REDACTED:labelled-secret]"],
+        [`secret: ${random}`, "secret: [REDACTED:labelled-secret]"],
+        [`hcloud_token = "${random}"`, 'hcloud_token = "[REDACTED:labelled-secret]"'],
+        [`cloudflare_api_token=${random}`, "cloudflare_api_token=[REDACTED:labelled-secret]"],
+        [`SECRET_KEY=${random}`, "SECRET_KEY=[REDACTED:labelled-secret]"],
+        // The key names a file only when it ends in the word, not when it merely contains it.
+        [`token_file_secret=${random}`, "token_file_secret=[REDACTED:labelled-secret]"],
+        [`passwordFileContents: ${random}`, "passwordFileContents: [REDACTED:labelled-secret]"],
+        [`path_token=${random}`, "path_token=[REDACTED:labelled-secret]"],
+      ];
+      for (const [input, expected] of cases) expect(r.redact(input)).toBe(expected);
+    });
+
+    it("judges long keys by their ending and stays bounded", () => {
+      const r = new Redactor();
+      const random = fakeSecret("hcloud-token");
+      const middle = "a".repeat(55);
+      expect(r.redact(`password${middle}_file=${posixPath}`)).toBe(
+        `password${middle}_file=${posixPath}`,
+      );
+      expect(r.redact(`password${middle}=${random}`)).toBe(
+        `password${middle}=[REDACTED:labelled-secret]`,
+      );
+      const inputs = [
+        `password${"a".repeat(1_000_000)}File=${posixPath}`,
+        "passwordFile".repeat(100_000),
+        "token_path-".repeat(100_000),
+        `${"passwordFileExists".repeat(50_000)}: ${random}`,
+      ];
+      const started = Date.now();
+      for (const input of inputs) expect(r.redact(input)).toBe(input);
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
+  });
+
   it("never re-redacts its own placeholders", () => {
     const r = new Redactor();
     const once = r.redact(`token: ${GITHUB}`);

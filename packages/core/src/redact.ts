@@ -80,8 +80,10 @@ export const DEFAULT_REDACTION_RULES: readonly RedactionRule[] = [
     id: "labelled-secret",
     pattern:
       // `(?=(x{0,64}))\1` consumes the rest of the key atomically and with a bound, so long
-      // identifier runs cannot cause backtracking or quadratic rescans.
-      /(?:token|secret|password|passwd|api_key|apikey|hcloud_token|cloudflare_api_token)(?=([A-Za-z0-9_.-]{0,64}))\1["']?\s*(?::=|=>|[=:])\s*["']?([^\s"'`,;]+)/gi,
+      // identifier runs cannot cause backtracking or quadratic rescans. A key that ends in `file`,
+      // `path`, `dir` or `exists` (`passwordFile`, `token_path`, `SECRET_KEY_FILE`) names where a
+      // secret is, not the secret: the short lookbehind after the whole key skips it.
+      /(?:token|secret|password|passwd|api_key|apikey|hcloud_token|cloudflare_api_token)(?=([A-Za-z0-9_.-]{0,64}))\1(?<!file|path|dir|exists)["']?\s*(?::=|=>|[=:])\s*["']?([^\s"'`,;]+)/gi,
     group: 2,
     validate: (secret) =>
       secret.length >= 12 && !LABELLED_FORBIDDEN.test(secret) && shannonEntropy(secret) >= 3.0,

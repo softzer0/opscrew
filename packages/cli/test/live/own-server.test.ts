@@ -1292,6 +1292,10 @@ describe.skipIf(MISSING.length > 0)(
             if (found.length > 0) problems.push(`audit log ${file} contains: ${found.join(", ")}`);
           }
         }
+        // Problems and findings are built from labels, command lines, file names and counts, never
+        // from the leaked text, so logging them (scrubbed) says what leaked without showing it.
+        for (const problem of problems) log(`leak: ${problem}`);
+        for (const finding of findings) log(`finding: ${finding}`);
         expect(problems, "nothing leaked").toEqual([]);
         expect(findings, "findings of the run").toEqual([]);
       },
