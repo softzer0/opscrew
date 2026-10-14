@@ -1,5 +1,7 @@
 import type { VpsProviderId } from "@opscrew/contracts";
-import type { DeployPlan, Region, Requirements } from "@opscrew/plan-schema";
+import { OpsCrewError } from "@opscrew/core";
+import type { CloudProvider, DeployPlan, Region, Requirements } from "@opscrew/plan-schema";
+import { ownServerNotYet } from "./own";
 
 /** What the phases need to know about a VPS provider, so none of them imports its connector. */
 export interface ProviderProfile {
@@ -133,7 +135,7 @@ const DIGITALOCEAN: ProviderProfile = {
   mirroredAttributes: {},
 };
 
-const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
+const PROFILES: Readonly<Record<CloudProvider, ProviderProfile>> = {
   hetzner: HETZNER,
   digitalocean: DIGITALOCEAN,
 };
@@ -141,7 +143,9 @@ const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
 /** Every VPS provider OpsCrew supports, Hetzner first. */
 export const VPS_PROVIDERS: readonly VpsProviderId[] = ["hetzner", "digitalocean"];
 
+/** The provider's profile; throws {@link ownServerNotYet} for a server the user owns. */
 export function providerProfile(id: VpsProviderId): ProviderProfile {
+  if (id === "own") throw ownServerNotYet();
   return PROFILES[id];
 }
 
@@ -157,12 +161,30 @@ export function requestedProvider(
   return requirements?.provider ?? "hetzner";
 }
 
+/**
+ * The region the user asked for, which picks a cloud provider's location. A server the user owns
+ * has no region: throws {@link ownServerNotYet} for it. Throws `ARTIFACT_INVALID` when a cloud
+ * provider's requirements have none (the schema requires one there).
+ */
+export function requestedRegion(requirements: Pick<Requirements, "provider" | "region">): Region {
+  const provider = requestedProvider(requirements);
+  if (provider === "own") throw ownServerNotYet();
+  if (requirements.region === undefined) {
+    throw new OpsCrewError(
+      "ARTIFACT_INVALID",
+      `opscrew/requirements.yaml names no region, which ${providerProfile(provider).displayName} needs to pick a location.`,
+      { hint: "Run `opscrew interview` again and answer where most of your users are." },
+    );
+  }
+  return requirements.region;
+}
+
 /** The provider whose token is set, when exactly one provider has a token. */
 export function providerFromTokens(
   env: Readonly<Record<string, string | undefined>>,
 ): VpsProviderId | undefined {
   const withToken = VPS_PROVIDERS.filter((id) =>
-    PROFILES[id].tokenVars.some((name) => (env[name] ?? "").trim() !== ""),
+    providerProfile(id).tokenVars.some((name) => (env[name] ?? "").trim() !== ""),
   );
   return withToken.length === 1 ? withToken[0] : undefined;
 }

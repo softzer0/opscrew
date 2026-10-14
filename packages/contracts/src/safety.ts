@@ -40,7 +40,9 @@ export type ApprovalKind =
   /** Buying a domain: costs money, cannot be refunded; always typed, never granted by `--yes`. */
   | "domain-purchase"
   /** Changing a registered domain's settings (auto-renew). */
-  | "domain-settings";
+  | "domain-settings"
+  /** Applying a host plan to a server the user owns; bound to the host plan's SHA-256 hash. */
+  | "host-apply";
 
 export interface PolicyResult {
   policyId: string;
@@ -59,7 +61,7 @@ export interface ApprovalRequest {
   title: string;
   /** Multi-line summary shown before asking (diff summary, resources, cost). Redacted. */
   details: string;
-  /** SHA-256 hex of the plan file. Required for `iac-apply`. */
+  /** SHA-256 hex of the plan file. Required for `iac-apply` and `host-apply`. */
   planHash?: string;
   /** True when the change deletes or replaces anything. Requires `confirmPhrase`. */
   allowDestroy?: boolean;

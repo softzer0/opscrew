@@ -13,7 +13,7 @@ import {
   type ProjectFacts,
   type Requirements,
 } from "@opscrew/plan-schema";
-import { requestedProvider } from "../providers";
+import { requestedProvider, requestedRegion } from "../providers";
 import { convertMoney, costFor, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
 import { regionLocations, type Sizing, sizeFor } from "./sizing";
 import { type DesignWording, designWording } from "./wording";
@@ -58,8 +58,9 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
   }
   const wording = designWording(provider);
   const { profile } = wording;
+  const region = requestedRegion(requirements);
   const sizing = sizeFor(facts, requirements);
-  const locations = regionLocations(requirements.region, provider);
+  const locations = regionLocations(region, provider);
   const backups = requirements.dataCriticality !== "none";
 
   const offers = (await Promise.all(locations.map((location) => catalog.listOffers(location))))
@@ -136,7 +137,7 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
     toOption(tier, candidate, {
       provider,
       wording,
-      regionNote: profile.regionNotes[requirements.region],
+      regionNote: profile.regionNotes[region],
       sizing,
       backups,
       budget,

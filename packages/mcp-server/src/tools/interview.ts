@@ -186,7 +186,7 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
           `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
           `- Expected monthly users: ${requirements.expectedMonthlyUsers}`,
           `- Budget: ${budget.amount} ${budget.currency} per month`,
-          `- Region: ${requirements.region}`,
+          ...(requirements.region === undefined ? [] : [`- Region: ${requirements.region}`]),
           `- Acceptable downtime: ${requirements.uptime}`,
           `- Data criticality: ${requirements.dataCriticality}`,
           ...(requirements.domain !== undefined

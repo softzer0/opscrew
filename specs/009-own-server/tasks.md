@@ -14,7 +14,7 @@ network or model.
 
 ## Phase 1: Foundation (serial)
 
-- [ ] T901 Contracts, schemas, approvals, local state, package skeleton, constitution 1.3.0 and ADR 0011 in `packages/contracts/src/{connector,safety}.ts`, `packages/plan-schema/src/**` (+ regenerated JSON Schemas), `packages/core/src/approvals.ts`, `packages/agents/src/shared/server-address.ts`, `packages/connectors/ssh-host/{package.json,tsconfig.json,src/index.ts}`, `packages/agents/package.json`, `pnpm-lock.yaml`, `.specify/memory/constitution.md`, `docs/adr/0011-own-servers.md`
+- [X] T901 Contracts, schemas, approvals, local state, package skeleton, constitution 1.3.0 and ADR 0011 in `packages/contracts/src/{connector,safety}.ts`, `packages/plan-schema/src/**` (+ regenerated JSON Schemas), `packages/core/src/approvals.ts`, `packages/agents/src/shared/server-address.ts`, `packages/connectors/ssh-host/{package.json,tsconfig.json,src/index.ts}`, `packages/agents/package.json`, `pnpm-lock.yaml`, `.specify/memory/constitution.md`, `docs/adr/0011-own-servers.md`
   - Accept: plan.md "Contracts, schemas, constitution"; data-model.md; `ProviderId`/`VpsProviderId` include `own`; `ApprovalKind` includes `host-apply` with `assertApprovedHostPlan`; the plan `target` is a union on `provider` with `arch` and `access` for `own`; optional `plan.portainer`; `server.json` gains `own`; every existing artefact, fixture and test still parses and passes (Hetzner and DigitalOcean plans unchanged); `vpsConnector` refuses unknown ids instead of falling through to Hetzner; `pnpm check` passes.
   - Verify: `pnpm check`
   - Effort: xhigh (contracts, schemas, approvals by an agent; constitution, ADR and lockfile by the lead)

@@ -290,7 +290,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     expect(await run(ctx, "retarget"), ctx.errors).toBe(0);
     let plan = await readArtifact("plan", m.paths.files.plan);
     expect(plan.retarget?.step).toBe("switched");
-    expect(plan.target.serverType).toBe("s-2vcpu-4gb");
+    expect(plan.target).toMatchObject({ serverType: "s-2vcpu-4gb" });
     expect((await readServerAddresses(m.paths)).deployment?.ipv4).toBe(
       NEW_SERVERS.digitalocean.ipv4,
     );

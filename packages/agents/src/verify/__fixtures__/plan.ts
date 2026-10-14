@@ -1,5 +1,4 @@
-import type { VpsProviderId } from "@opscrew/contracts";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { type CloudProvider, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 
 export const SERVER_IPV4 = "203.0.113.10";
 export const SERVER_IPV6 = "2001:db8::10";
@@ -22,7 +21,7 @@ export interface TestPlanOptions {
   httpAllowedFrom?: "any" | "cloudflare";
   sshAllowedCidrs?: string[];
   /** Cloud provider (default Hetzner). */
-  provider?: VpsProviderId;
+  provider?: CloudProvider;
 }
 
 const TARGETS = {

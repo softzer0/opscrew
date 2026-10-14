@@ -1,6 +1,6 @@
-import type { DeployPlan, DeployTarget } from "@opscrew/plan-schema";
+import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { MODULE_FILES } from "../generated/modules";
-import { type ProviderText, providerText, type VariablePrefix } from "../providers";
+import { cloudTarget, type ProviderText, providerText, type VariablePrefix } from "../providers";
 import type { InfraLayout, RenderContext, RenderedFile, ServerModule } from "../types";
 
 const OPEN_TO_ALL = ["0.0.0.0/0", "::/0"];
@@ -45,7 +45,7 @@ export function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[]
 /** A server module call of the root module. */
 interface ServerCall {
   module: ServerModule;
-  target: DeployTarget;
+  target: CloudDeployTarget;
   /** Prefix of the server's own root variables (`location`, `server_type`, …). */
   prefix: VariablePrefix;
   provider: ProviderText;
@@ -78,7 +78,7 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   if (layout.server) {
     servers.push({
       module: "server",
-      target: layout.server,
+      target: cloudTarget(layout.server),
       prefix: "",
       provider: providerText(layout.server),
     });
@@ -86,7 +86,7 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   if (layout.previous) {
     servers.push({
       module: "server_previous",
-      target: layout.previous,
+      target: cloudTarget(layout.previous),
       prefix: "previous_",
       provider: providerText(layout.previous),
     });

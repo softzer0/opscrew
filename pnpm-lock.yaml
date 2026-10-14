@@ -53,6 +53,9 @@ importers:
       '@opscrew/connector-porkbun':
         specifier: workspace:*
         version: link:../connectors/porkbun
+      '@opscrew/connector-ssh-host':
+        specifier: workspace:*
+        version: link:../connectors/ssh-host
       '@opscrew/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -261,6 +264,18 @@ importers:
         version: 4.6.5
 
   packages/connectors/porkbun:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
+  packages/connectors/ssh-host:
     dependencies:
       '@opscrew/contracts':
         specifier: workspace:*

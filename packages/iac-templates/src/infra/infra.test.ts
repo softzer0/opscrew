@@ -76,6 +76,19 @@ const cloudflare = (manage = true) => ({
 });
 
 describe("renderInfra", () => {
+  it("stops with a plain error for a server the user owns (not rendered yet)", () => {
+    const own = { provider: "own", mode: "vps-compose", arch: "arm64", access: "tunnel" } as const;
+    const ownPlan: DeployPlan = { ...plan(), target: own };
+    for (const render of [() => renderInfra(ownPlan, ctx()), () => tfvars(ownPlan, ctx())]) {
+      expect(render).toThrow(
+        expect.objectContaining({
+          code: "PHASE_PRECONDITION",
+          message: expect.stringContaining("server you already own"),
+        }),
+      );
+    }
+  });
+
   it("renders a server-only root module without a domain", () => {
     const files = renderInfra(plan(), ctx());
     expect(files.map((f) => f.path)).toEqual([

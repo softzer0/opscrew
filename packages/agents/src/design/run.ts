@@ -16,7 +16,7 @@ import {
 import { z } from "zod";
 import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
-import { providerProfile, requestedProvider, vpsConnector } from "../providers";
+import { providerProfile, requestedProvider, requestedRegion, vpsConnector } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
 import { hasDeployment, serverAddress } from "../shared";
 import { backgroundJobsWarning } from "./background-jobs";
@@ -173,12 +173,13 @@ async function priceOptions(
   const warn = warner(deps, warnings);
   const provider = requestedProvider(requirements);
   const wording = designWording(provider);
+  const region = requestedRegion(requirements);
   const now = deps.clock.now();
 
   let catalog = override;
   let isStatic = false;
   if (catalog === undefined) {
-    const resolved = await resolveCatalog(deps, provider, requirements.region);
+    const resolved = await resolveCatalog(deps, provider, region);
     catalog = resolved.catalog;
     isStatic = resolved.isStatic;
     if (resolved.warning !== undefined) warn(resolved.warning);
@@ -191,7 +192,7 @@ async function priceOptions(
     if (override !== undefined || isStatic) throw error;
     if (isUserFacingError(error) && error.code === "INVALID_INPUT") throw error;
     const reason = isUserFacingError(error) ? error.message : "an unexpected error";
-    const fallback = await staticCatalog(deps, provider, requirements.region);
+    const fallback = await staticCatalog(deps, provider, region);
     catalog = fallback.catalog;
     warn(
       `Could not read live prices from ${wording.name} (${reason}). Using the price list dated ${fallback.date} instead; prices are estimates.`,
@@ -202,7 +203,7 @@ async function priceOptions(
     ? "live"
     : "static";
 
-  const regionNote = wording.profile.regionNotes[requirements.region];
+  const regionNote = wording.profile.regionNotes[region];
   if (regionNote !== undefined) reporter.info(say(regionNote));
   const budget = requirements.budgetMonthly;
   for (const option of designOptions) {
@@ -478,6 +479,8 @@ function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] 
   const before = previous.target;
   const after = plan.target;
   if (before.provider !== after.provider) return [];
+  // A server the user owns is never moved or resized by OpsCrew.
+  if (before.provider === "own" || after.provider === "own") return [];
   const server = providerProfile(after.provider).serverNoun;
   if (before.location !== after.location) {
     return [

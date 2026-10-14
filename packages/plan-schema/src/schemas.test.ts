@@ -6,15 +6,19 @@ import {
   ArchitectureSchema,
   type ArtifactError,
   type ArtifactKind,
+  type CloudDeployTarget,
+  CloudProviderSchema,
   CostEstimateSchema,
   type CurrencySchema,
   DEFAULT_IMAGES,
   DeployPlanSchema,
+  type DeployTarget,
   type DesignOption,
   DesignOptionListSchema,
   DesignOptionSchema,
   type Money as MoneyExport,
   type MoneySchema,
+  type OwnDeployTarget,
   type PhaseNameSchema,
   type ProjectFacts,
   ProjectFactsSchema,
@@ -23,6 +27,7 @@ import {
   RepoPathSchema,
   RequirementsSchema,
   ServiceKindSchema,
+  VpsProviderSchema,
 } from "./index";
 
 const FIXTURES = new URL("./__fixtures__/", import.meta.url);
@@ -35,6 +40,12 @@ function issuesOf(kind: ArtifactKind, text: string) {
     return (error as ArtifactError).issues;
   }
   throw new Error("expected the fixture to be rejected");
+}
+
+/** The target as a Hetzner/DigitalOcean target; fails the test for a server the user owns. */
+function cloud(target: DeployTarget): CloudDeployTarget {
+  if (target.provider === "own") throw new Error("expected a Hetzner or DigitalOcean target");
+  return target;
 }
 
 function pathsOf(result: { success: boolean; error?: z.ZodError }) {
@@ -349,6 +360,26 @@ describe("DeployPlan target provider", () => {
     expect(pathsOf(DeployPlanSchema.safeParse(aws))).toEqual(["target.provider"]);
   });
 
+  it("keeps the exact shape of Hetzner and DigitalOcean targets", async () => {
+    const plan = await validPlan();
+    expect(plan.target).toEqual({
+      provider: "hetzner",
+      mode: "vps-compose",
+      location: "nbg1",
+      serverType: "cpx22",
+      image: "ubuntu-24.04",
+      backups: true,
+    });
+    for (const extra of [{ arch: "amd64" }, { access: "public" }]) {
+      const target = { ...plan.target, ...extra };
+      expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, target }))).toEqual(["target"]);
+    }
+    const { backups: _backups, ...noBackups } = cloud(plan.target);
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, target: noBackups }))).toEqual([
+      "target.backups",
+    ]);
+  });
+
   it("marks app variables the code has a default for as optional", async () => {
     const plan = await validPlan();
     const env = [
@@ -376,27 +407,250 @@ describe("DeployPlan target provider", () => {
   });
 
   it("fills the provider's own Ubuntu image when the image is omitted", async () => {
-    const { image: _image, ...target } = (await validPlan()).target;
+    const { image: _image, ...target } = cloud((await validPlan()).target);
     const plan = await validPlan();
     const hetzner = DeployPlanSchema.parse({ ...plan, target: { ...target, provider: "hetzner" } });
-    expect(hetzner.target.image).toBe(DEFAULT_IMAGES.hetzner);
+    expect(cloud(hetzner.target).image).toBe(DEFAULT_IMAGES.hetzner);
     const digitalocean = DeployPlanSchema.parse({
       ...plan,
       target: { ...target, provider: "digitalocean" },
     });
-    expect(digitalocean.target.image).toBe("ubuntu-24-04-x64");
+    expect(cloud(digitalocean.target).image).toBe("ubuntu-24-04-x64");
     const explicit = DeployPlanSchema.parse({
       ...plan,
       target: { ...target, provider: "digitalocean", image: "ubuntu-22-04-x64" },
     });
-    expect(explicit.target.image).toBe("ubuntu-22-04-x64");
+    expect(cloud(explicit.target).image).toBe("ubuntu-22-04-x64");
+  });
+});
+
+describe("DeployPlan target on a server the user owns", () => {
+  async function validPlan() {
+    return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+  }
+  const own = { provider: "own", mode: "vps-compose", arch: "arm64", access: "tunnel" } as const;
+
+  it("records the architecture and access mode, and nothing about the server itself", async () => {
+    const plan = await validPlan();
+    const parsed = DeployPlanSchema.parse({ ...plan, target: own });
+    expect(parsed.target).toEqual(own);
+    expect(parsed.target.provider === "own" && parsed.target.access).toBe("tunnel");
+    expectTypeOf<OwnDeployTarget>().toEqualTypeOf<{
+      provider: "own";
+      mode: "vps-compose";
+      arch: "amd64" | "arm64";
+      access: "public" | "tunnel";
+    }>();
+    expectTypeOf<CloudDeployTarget["image"]>().toEqualTypeOf<string>();
+    expect(
+      DeployPlanSchema.parse({ ...plan, target: { ...own, arch: "amd64", access: "public" } })
+        .target,
+    ).toEqual({ ...own, arch: "amd64", access: "public" });
+  });
+
+  it("rejects cloud-only fields, a missing or unknown architecture or access mode", async () => {
+    const plan = await validPlan();
+    for (const extra of [
+      { location: "nbg1" },
+      { serverType: "cpx22" },
+      { image: "ubuntu-24.04" },
+      { backups: true },
+      { host: "203.0.113.10" },
+    ]) {
+      const target = { ...own, ...extra };
+      expect(
+        pathsOf(DeployPlanSchema.safeParse({ ...plan, target })),
+        Object.keys(extra)[0],
+      ).toEqual(["target"]);
+    }
+    const { arch: _arch, access: _access, ...bare } = own;
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, target: bare }))).toEqual([
+      "target.arch",
+      "target.access",
+    ]);
+    const x86 = { ...plan, target: { ...own, arch: "x86", access: "private" } };
+    expect(pathsOf(DeployPlanSchema.safeParse(x86))).toEqual(["target.arch", "target.access"]);
+  });
+
+  it("refuses a move to or from a server the user owns", async () => {
+    const plan = await validPlan();
+    const move = { from: { target: plan.target }, step: "started", startedAt: plan.createdAt };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, target: own, retarget: move }))).toEqual([
+      "retarget",
+    ]);
+    const fromOwn = { ...move, from: { target: own } };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, retarget: fromOwn }))).toContain(
+      "retarget.from.target.provider",
+    );
+  });
+
+  it("accepts provider own in the requirements and design options", async () => {
+    const requirements = parseArtifact(
+      "requirements",
+      await fixture("requirements.yaml"),
+      "fixture",
+    );
+    expect(RequirementsSchema.parse({ ...requirements, provider: "own" }).provider).toBe("own");
+    expect(VpsProviderSchema.options).toEqual(["hetzner", "digitalocean", "own"]);
+    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean"]);
+    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean"]);
+  });
+
+  it("needs a region for Hetzner and DigitalOcean only, and allows one for an own server", async () => {
+    const requirements = parseArtifact(
+      "requirements",
+      await fixture("requirements.yaml"),
+      "fixture",
+    );
+    const { region: _region, ...noRegion } = requirements;
+    expect(RequirementsSchema.parse({ ...noRegion, provider: "own" }).region).toBeUndefined();
+    expect(RequirementsSchema.parse({ ...requirements, provider: "own" }).region).toBe(
+      "eu-central",
+    );
+    for (const provider of [undefined, "hetzner", "digitalocean"]) {
+      const result = RequirementsSchema.safeParse({ ...noRegion, provider });
+      expect(pathsOf(result), String(provider)).toEqual(["region"]);
+      expect(result.error?.issues[0]?.message).toContain(`"${provider ?? "hetzner"}"`);
+    }
+    const bad = { ...requirements, provider: "own", region: "mars" };
+    expect(pathsOf(RequirementsSchema.safeParse(bad))).toEqual(["region"]);
+  });
+});
+
+describe("DeployPlan portainer", () => {
+  async function validPlan() {
+    return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+  }
+
+  it("is absent (off) unless the plan sets it, and fills its defaults", async () => {
+    const plan = await validPlan();
+    expect(plan.portainer).toBeUndefined();
+    const parsed = DeployPlanSchema.parse({ ...plan, portainer: { version: "2.33.1" } });
+    expect(parsed.portainer).toEqual({ enabled: false, version: "2.33.1", access: "local" });
+  });
+
+  it("needs a hostname and at least one email for a subdomain", async () => {
+    const plan = await validPlan();
+    const subdomain = { enabled: true, version: "2.33.1", access: "subdomain" };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, portainer: subdomain }))).toEqual([
+      "portainer.hostname",
+      "portainer.allowedEmails",
+    ]);
+    const noEmails = { ...subdomain, hostname: "portainer.example.com", allowedEmails: [] };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, portainer: noEmails }))).toEqual([
+      "portainer.allowedEmails",
+    ]);
+    const ok = { ...noEmails, allowedEmails: ["ops@example.com"] };
+    expect(DeployPlanSchema.parse({ ...plan, portainer: ok }).portainer).toEqual(ok);
+  });
+
+  it("needs a pinned version, never a floating tag", async () => {
+    const plan = await validPlan();
+    for (const version of ["2.33.1", "2.21.0-alpine", "10.0.12-rc.1"]) {
+      const parsed = DeployPlanSchema.parse({ ...plan, portainer: { version } });
+      expect(parsed.portainer?.version, version).toBe(version);
+    }
+    for (const version of [
+      "latest",
+      "lts",
+      "sts",
+      "2.33",
+      "v2.33.1",
+      "2.33.1-",
+      "latest; rm -rf /",
+    ]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, portainer: { version } });
+      expect(pathsOf(result), version).toEqual(["portainer.version"]);
+      expect(result.error?.issues[0]?.message).toContain("pinned version");
+    }
+  });
+
+  it("allows a hostname and emails only for a subdomain", async () => {
+    const plan = await validPlan();
+    const local = { enabled: true, version: "2.33.1" };
+    const withBoth = {
+      ...local,
+      hostname: "portainer.example.com",
+      allowedEmails: ["ops@example.com"],
+    };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, portainer: withBoth }))).toEqual([
+      "portainer.hostname",
+      "portainer.allowedEmails",
+    ]);
+    const explicitLocal = { ...withBoth, access: "local", allowedEmails: undefined };
+    const result = DeployPlanSchema.safeParse({ ...plan, portainer: explicitLocal });
+    expect(pathsOf(result)).toEqual(["portainer.hostname"]);
+    expect(result.error?.issues[0]?.message).toContain('only allowed when access is "subdomain"');
+  });
+
+  it("puts a subdomain inside the app's Cloudflare zone, apart from the app's own names", async () => {
+    const plan = await validPlan();
+    expect(plan.dns).toMatchObject({ domain: "app.example.com", zone: "example.com" });
+    const subdomain = (hostname: string) => ({
+      enabled: true,
+      version: "2.33.1",
+      access: "subdomain",
+      hostname,
+      allowedEmails: ["ops@example.com"],
+    });
+    for (const ok of ["portainer.example.com", "admin.app.example.com"]) {
+      expect(DeployPlanSchema.safeParse({ ...plan, portainer: subdomain(ok) }).success, ok).toBe(
+        true,
+      );
+    }
+    for (const outside of ["portainer.other.com", "example.com", "portainer.notexample.com"]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, portainer: subdomain(outside) });
+      expect(pathsOf(result), outside).toEqual(["portainer.hostname"]);
+      expect(result.error?.issues[0]?.message).toContain("subdomain of example.com");
+    }
+    for (const appName of ["app.example.com", "www.app.example.com"]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, portainer: subdomain(appName) });
+      expect(pathsOf(result), appName).toEqual(["portainer.hostname"]);
+      expect(result.error?.issues[0]?.message).toContain("must differ from the app's domain");
+    }
+  });
+
+  it("needs the app's DNS on Cloudflare, with its zone, for a subdomain", async () => {
+    const plan = await validPlan();
+    const portainer = {
+      version: "2.33.1",
+      access: "subdomain",
+      hostname: "portainer.example.com",
+      allowedEmails: ["ops@example.com"],
+    };
+    const noDns = { ...plan, dns: { provider: "none", proxied: false, www: false }, portainer };
+    expect(pathsOf(DeployPlanSchema.safeParse(noDns))).toEqual(["portainer.access"]);
+    const { zone: _zone, ...dnsWithoutZone } = plan.dns;
+    const noZone = { ...plan, dns: dnsWithoutZone, portainer };
+    expect(pathsOf(DeployPlanSchema.safeParse(noZone))).toEqual(["dns.zone"]);
+  });
+
+  it("rejects a bad hostname or email, an unknown access mode and unknown fields", async () => {
+    const plan = await validPlan();
+    const base = { enabled: true, version: "2.33.1" };
+    const subdomain = {
+      ...base,
+      access: "subdomain",
+      hostname: "portainer.example.com",
+      allowedEmails: ["ops@example.com"],
+    };
+    const cases: [object, string][] = [
+      [{ enabled: true }, "portainer.version"],
+      [{ ...base, access: "public" }, "portainer.access"],
+      [{ ...subdomain, hostname: "Not A Host" }, "portainer.hostname"],
+      [{ ...subdomain, allowedEmails: ["not-an-email"] }, "portainer.allowedEmails.0"],
+      [{ ...base, password: "x" }, "portainer"],
+    ];
+    for (const [portainer, path] of cases) {
+      expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, portainer })), path).toEqual([path]);
+    }
   });
 });
 
 describe("DeployPlan retarget", () => {
   it("records a move in progress and fills the previous target's image", async () => {
     const plan = parseArtifact("plan", await fixture("plan.yaml"), "fixture");
-    const { image: _image, ...previous } = plan.target;
+    const { image: _image, ...previous } = cloud(plan.target);
     const moving = DeployPlanSchema.parse({
       ...plan,
       target: { ...plan.target, provider: "digitalocean", image: undefined },
@@ -406,7 +660,7 @@ describe("DeployPlan retarget", () => {
         startedAt: "2026-10-13T09:00:00.000Z",
       },
     });
-    expect(moving.target.image).toBe("ubuntu-24-04-x64");
+    expect(cloud(moving.target).image).toBe("ubuntu-24-04-x64");
     expect(moving.retarget?.from.target.image).toBe("ubuntu-24.04");
     expect(moving.retarget?.step).toBe("renamed");
     const bad = { ...moving, retarget: { ...moving.retarget, step: "halfway" } };

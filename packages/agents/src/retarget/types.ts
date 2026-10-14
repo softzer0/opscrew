@@ -7,7 +7,7 @@ import type {
   VpsProviderId,
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
-import type { DeployTarget, DesignOption, Retarget } from "@opscrew/plan-schema";
+import type { CloudDeployTarget, DesignOption, Retarget } from "@opscrew/plan-schema";
 import type { DestroyPreview } from "../destroy";
 import type { GitHubApi, ProvisionServices } from "../provision";
 
@@ -69,8 +69,8 @@ export interface RetargetServices
 
 /** What the move will do, shown before anything changes. */
 export interface RetargetSummary {
-  from: DeployTarget;
-  to: DeployTarget;
+  from: CloudDeployTarget;
+  to: CloudDeployTarget;
   /** Plain-English steps in order. */
   steps: string[];
   /** Monthly price of the new server, paid on top while both servers run. */

@@ -51,7 +51,7 @@ function describe(requirements: Requirements): string[] {
   return [
     `Monthly users: ${requirements.expectedMonthlyUsers}`,
     `Budget: ${budget.amount} ${budget.currency} per month`,
-    `Region: ${requirements.region}`,
+    ...(requirements.region === undefined ? [] : [`Region: ${requirements.region}`]),
     `Uptime: ${requirements.uptime}`,
     `Data criticality: ${requirements.dataCriticality}`,
     `Domain: ${requirements.domain ?? "none yet"}${requirements.domain === undefined ? "" : ` (DNS: ${requirements.dnsProvider})`}`,

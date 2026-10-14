@@ -11,6 +11,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { cloudTarget } from "../providers";
 import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
 import {
@@ -191,7 +192,7 @@ describe("runDesign", () => {
       catalog: euCatalog(),
       optionId: "hetzner-single-cx33-nbg1",
     });
-    expect(result.plan.target.serverType).toBe("cx33");
+    expect(result.plan.target).toMatchObject({ serverType: "cx33" });
 
     const err = await runDesign(deps, { catalog: euCatalog(), optionId: "nope" }).catch(
       (e: unknown) => e,
@@ -360,7 +361,7 @@ describe("runDesign", () => {
       ["secret-removal", "src/pay.ts"],
     ]);
     expect(result.plan.services.postgres).toBe(true);
-    expect(result.plan.target.backups).toBe(true);
+    expect(result.plan.target).toMatchObject({ backups: true });
   });
 
   it("keeps createdAt of an earlier plan", async () => {
@@ -445,7 +446,7 @@ describe("runDesign", () => {
     await materializeFixture(MONOREPO_FIXTURE, deps.paths.root);
     await rm(join(deps.paths.root, "apps", "api"), { recursive: true, force: true });
     const result = await runDesign(deps, { catalog: euCatalog() });
-    expect(result.plan.target.serverType).toBeDefined();
+    expect(cloudTarget(result.plan.target).serverType).toBeDefined();
   });
 
   describe("re-running design on an existing plan", () => {
@@ -523,7 +524,7 @@ describe("runDesign", () => {
 
     it("warns that a deployed server will be resized when only the server type changes", async () => {
       const deps = await existingPlan("hetzner-single-cx33-nbg1", (plan) =>
-        deployed({ ...plan, target: { ...plan.target, serverType: "cx23" } }),
+        deployed({ ...plan, target: { ...cloudTarget(plan.target), serverType: "cx23" } }),
       );
       const result = await runDesign(deps, {
         catalog: euCatalog(),
@@ -908,7 +909,7 @@ describe("runDesign", () => {
           },
           deployment: { lastApplyAt: "2026-10-11T12:30:00.000Z" },
           retarget: {
-            from: { target: plan.target },
+            from: { target: cloudTarget(plan.target) },
             step: "renamed",
             startedAt: "2026-10-12T09:00:00.000Z",
           },

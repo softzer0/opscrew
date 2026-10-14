@@ -9,7 +9,13 @@ import type {
   Clock,
 } from "@opscrew/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ApprovalGate, isPlanHash, JsonlApprovalStore, MemoryApprovalStore } from "./approvals";
+import {
+  ApprovalGate,
+  assertApprovedHostPlan,
+  isPlanHash,
+  JsonlApprovalStore,
+  MemoryApprovalStore,
+} from "./approvals";
 import { MemoryAuditLog } from "./audit";
 import { OpsCrewError } from "./errors";
 
@@ -353,5 +359,123 @@ describe("ApprovalGate.assertApprovedPlan (US3 scenario 2)", () => {
     await expect(gate.assertApprovedPlan(HASH_A)).rejects.toMatchObject({
       code: "PLAN_NOT_APPROVED",
     });
+  });
+});
+
+// Feature 009: a host plan's approval is its own kind, bound to the host plan's SHA-256 hash.
+describe("host-apply approvals", () => {
+  const hostRequest: ApprovalRequest = {
+    kind: "host-apply",
+    title: "Prepare the server for acme-web",
+    details: "change docker, sshd, ufw",
+    planHash: HASH_C_UPPER,
+  };
+
+  it("records an approved host plan, lower-casing the hash", async () => {
+    const { gate, store, audit } = makeGate();
+    const result = await gate.request(hostRequest);
+    expect(result).toMatchObject({
+      kind: "host-apply",
+      approved: true,
+      planHash: HASH_C_UPPER.toLowerCase(),
+    });
+    expect(await store.list()).toHaveLength(1);
+    expect(audit.entries[0]).toMatchObject({ action: "host-apply", decision: "approved" });
+  });
+
+  it("rejects a host-apply request without a valid plan hash", async () => {
+    const { gate, handler } = makeGate();
+    for (const planHash of [undefined, "", "abc", `${"a".repeat(63)}z`]) {
+      await expect(gate.request({ ...hostRequest, planHash })).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+    }
+    expect(handler.requests).toHaveLength(0);
+  });
+
+  it("reads host-apply records back from the JSONL store", async () => {
+    const store = new JsonlApprovalStore(join(root, "host", "approvals.jsonl"));
+    await store.append(record({ id: "h", kind: "host-apply" }));
+    expect((await store.list()).map((r) => r.kind)).toEqual(["host-apply"]);
+    expect(store.warnings).toEqual([]);
+  });
+
+  describe.each([
+    ["MemoryApprovalStore", () => new MemoryApprovalStore()],
+    ["JsonlApprovalStore", () => new JsonlApprovalStore(join(root, "approvals.jsonl"))],
+  ])("assertApprovedHostPlan with %s", (_name, makeStore) => {
+    it("returns the latest approved host-apply record, matching the hash in any case", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "1", kind: "host-apply", planHash: HASH_A }));
+      await store.append(record({ id: "2", kind: "host-apply", planHash: HASH_A }));
+      await store.append(record({ id: "3", kind: "host-apply", planHash: HASH_B }));
+      expect((await assertApprovedHostPlan(store, HASH_A.toUpperCase())).id).toBe("2");
+    });
+
+    it("refuses another hash and tells the user about --approve", async () => {
+      const store = makeStore();
+      await store.append(record({ kind: "host-apply", planHash: HASH_A }));
+      const error = await assertApprovedHostPlan(store, HASH_B).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error).toMatchObject({ code: "PLAN_NOT_APPROVED" });
+      expect((error as OpsCrewError).message).toContain("host plan");
+      expect((error as OpsCrewError).hint).toContain(`--approve ${HASH_B}`);
+    });
+
+    it("refuses a refused approval, an iac-apply approval and an invalid hash", async () => {
+      const store = makeStore();
+      await store.append(
+        record({ id: "r", kind: "host-apply", planHash: HASH_A, approved: false }),
+      );
+      await store.append(record({ id: "i", kind: "iac-apply", planHash: HASH_B }));
+      for (const hash of [HASH_A, HASH_B, "not-a-hash"]) {
+        await expect(assertApprovedHostPlan(store, hash)).rejects.toMatchObject({
+          code: "PLAN_NOT_APPROVED",
+        });
+      }
+    });
+  });
+
+  it("never lets a host-apply approval authorise an infrastructure apply", async () => {
+    const { gate } = makeGate();
+    await gate.request({ ...hostRequest, planHash: HASH_A });
+    await expect(gate.assertApprovedPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+  });
+
+  it("ApprovalGate.assertApprovedHostPlan returns the record or audits the refusal", async () => {
+    const { gate, audit } = makeGate();
+    await gate.request({ ...hostRequest, planHash: HASH_A });
+    expect((await gate.assertApprovedHostPlan(HASH_A.toUpperCase())).planHash).toBe(HASH_A);
+
+    await gate.request({ kind: "iac-apply", title: "Apply B", details: "", planHash: HASH_B });
+    await expect(gate.assertApprovedHostPlan(HASH_B)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    expect(audit.entries.at(-1)).toMatchObject({
+      kind: "approval",
+      action: "host-apply",
+      target: HASH_B,
+      decision: "refused",
+    });
+  });
+
+  it("deletes app data only after a confirmed destroy approval of the host plan", async () => {
+    const { gate, audit } = makeGate({ confirmation: "shop" });
+    await gate.request({ ...hostRequest, planHash: HASH_A });
+    await expect(gate.assertApprovedHostPlan(HASH_A, { allowDestroy: true })).rejects.toMatchObject(
+      { code: "DESTROY_NOT_APPROVED" },
+    );
+    expect(audit.entries.at(-1)).toMatchObject({ action: "host-apply", decision: "refused" });
+
+    await gate.request({
+      ...hostRequest,
+      planHash: HASH_B,
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    const approved = await gate.assertApprovedHostPlan(HASH_B, { allowDestroy: true });
+    expect(approved.allowDestroy).toBe(true);
   });
 });

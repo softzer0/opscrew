@@ -29,6 +29,7 @@ const APPROVAL_KINDS = [
   "tool-call",
   "domain-purchase",
   "domain-settings",
+  "host-apply",
 ] as const satisfies readonly ApprovalKind[];
 
 const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({
@@ -43,15 +44,61 @@ const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({
   reason: z.string().optional(),
 });
 
+/** Latest approved record of `kind` whose plan hash equals `planHash` (case-insensitive). */
+function latestApproved(
+  records: readonly ApprovalRecord[],
+  kind: "iac-apply" | "host-apply",
+  planHash: string,
+): ApprovalRecord | undefined {
+  const wanted = planHash.toLowerCase();
+  return records.findLast(
+    (r) => r.approved && r.kind === kind && r.planHash?.toLowerCase() === wanted,
+  );
+}
+
 /** Latest approved `iac-apply` record whose plan hash equals `planHash` (case-insensitive). */
 function latestApprovedPlan(
   records: readonly ApprovalRecord[],
   planHash: string,
 ): ApprovalRecord | undefined {
-  const wanted = planHash.toLowerCase();
-  return records.findLast(
-    (r) => r.approved && r.kind === "iac-apply" && r.planHash?.toLowerCase() === wanted,
-  );
+  return latestApproved(records, "iac-apply", planHash);
+}
+
+/**
+ * Returns the latest approved `host-apply` record for `planHash` (the SHA-256 of a host plan,
+ * matched case-insensitively), or throws: `PLAN_NOT_APPROVED` when no approval exists for this
+ * exact hash (an `iac-apply` approval with the same hash does not count), `DESTROY_NOT_APPROVED`
+ * when `allowDestroy` is required (a teardown that deletes app data) but the approval did not grant
+ * it. Call before every host apply; the {@link ApprovalGate} method of the same name also audits
+ * the refusal.
+ */
+export async function assertApprovedHostPlan(
+  store: ApprovalStore,
+  planHash: string,
+  options: { allowDestroy?: boolean } = {},
+): Promise<ApprovalRecord> {
+  const record = isPlanHash(planHash)
+    ? latestApproved(await store.list(), "host-apply", planHash)
+    : undefined;
+  if (record === undefined) {
+    throw new OpsCrewError(
+      "PLAN_NOT_APPROVED",
+      "This host plan has not been approved, so OpsCrew will not change the server.",
+      {
+        hint: `Review the host plan, then approve it when asked or re-run with --approve ${planHash}.`,
+      },
+    );
+  }
+  if (options.allowDestroy === true && record.allowDestroy !== true) {
+    throw new OpsCrewError(
+      "DESTROY_NOT_APPROVED",
+      "This host plan deletes the app's data on the server, but the approval did not allow deleting it.",
+      {
+        hint: "Run the command interactively and type the confirmation phrase to approve deleting the data.",
+      },
+    );
+  }
+  return record;
 }
 
 /** Approval store backed by a JSONL file (normally `.opscrew/approvals.jsonl`). */
@@ -108,8 +155,9 @@ const PHRASE_MISMATCH = "confirmation phrase did not match";
 
 /**
  * The single place where humans approve mutations (constitution I). Every decision, approved or
- * not, is written to the approval store and the audit log; `iac-apply` approvals are bound to the
- * plan's SHA-256 hash and destroys need `allowDestroy` plus the exact typed confirmation phrase.
+ * not, is written to the approval store and the audit log; `iac-apply` and `host-apply` approvals
+ * are bound to the plan's SHA-256 hash and destroys need `allowDestroy` plus the exact typed
+ * confirmation phrase.
  */
 export class ApprovalGate {
   private readonly handler: ApprovalHandler;
@@ -128,7 +176,7 @@ export class ApprovalGate {
 
   /**
    * Validates the request, asks the handler and records the decision. Throws
-   * `OpsCrewError("INVALID_INPUT")` for an `iac-apply` without a valid plan hash or an
+   * `OpsCrewError("INVALID_INPUT")` for an `iac-apply` or `host-apply` without a valid plan hash, an
    * `allowDestroy`, `domain-purchase` or `domain-settings` request without a confirmation phrase.
    * A refusal is returned, not thrown.
    */
@@ -181,7 +229,7 @@ export class ApprovalGate {
   ): Promise<ApprovalRecord> {
     const record = isPlanHash(planHash) ? await this.store.findApprovedPlan(planHash) : undefined;
     if (record === undefined) {
-      await this.auditRefusal(planHash, "no approval recorded for this plan hash");
+      await this.auditRefusal("iac-apply", planHash, "no approval recorded for this plan hash");
       throw new OpsCrewError(
         "PLAN_NOT_APPROVED",
         "This plan has not been approved, so OpsCrew will not apply it.",
@@ -191,7 +239,11 @@ export class ApprovalGate {
       );
     }
     if (options.allowDestroy === true && record.allowDestroy !== true) {
-      await this.auditRefusal(planHash, "plan deletes or replaces resources; destroy not approved");
+      await this.auditRefusal(
+        "iac-apply",
+        planHash,
+        "plan deletes or replaces resources; destroy not approved",
+      );
       throw new OpsCrewError(
         "DESTROY_NOT_APPROVED",
         "This plan deletes or replaces resources, but the approval did not allow destructive changes.",
@@ -203,12 +255,41 @@ export class ApprovalGate {
     return record;
   }
 
-  private async auditRefusal(planHash: string, detail: string): Promise<void> {
+  /**
+   * Returns the approved `host-apply` record for the host plan hash `planHash`, or audits the
+   * refusal and throws `PLAN_NOT_APPROVED` or `DESTROY_NOT_APPROVED` (see
+   * {@link assertApprovedHostPlan}). Call before every host apply.
+   */
+  async assertApprovedHostPlan(
+    planHash: string,
+    options: { allowDestroy?: boolean } = {},
+  ): Promise<ApprovalRecord> {
+    try {
+      return await assertApprovedHostPlan(this.store, planHash, options);
+    } catch (error) {
+      if (error instanceof OpsCrewError && error.code === "PLAN_NOT_APPROVED") {
+        await this.auditRefusal("host-apply", planHash, "no approval recorded for this host plan");
+      } else if (error instanceof OpsCrewError && error.code === "DESTROY_NOT_APPROVED") {
+        await this.auditRefusal(
+          "host-apply",
+          planHash,
+          "host plan deletes app data; deleting it was not approved",
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async auditRefusal(
+    action: "iac-apply" | "host-apply",
+    planHash: string,
+    detail: string,
+  ): Promise<void> {
     await this.audit.append({
       at: this.clock.now().toISOString(),
       kind: "approval",
       actor: "opscrew",
-      action: "iac-apply",
+      action,
       target: isPlanHash(planHash) ? planHash.toLowerCase() : planHash,
       decision: "refused",
       detail,
@@ -222,6 +303,13 @@ function validateRequest(request: ApprovalRequest): void {
       "INVALID_INPUT",
       "An infrastructure apply can only be approved for a specific plan, but no valid plan hash was given.",
       { hint: "Pass the plan's SHA-256 hash (64 hexadecimal characters) with the request." },
+    );
+  }
+  if (request.kind === "host-apply" && !isPlanHash(request.planHash)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "A change to a server can only be approved for a specific host plan, but no valid plan hash was given.",
+      { hint: "Pass the host plan's SHA-256 hash (64 hexadecimal characters) with the request." },
     );
   }
   if (request.planHash !== undefined && !isPlanHash(request.planHash)) {

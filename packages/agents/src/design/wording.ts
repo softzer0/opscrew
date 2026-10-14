@@ -1,5 +1,6 @@
 import type { VpsProviderId } from "@opscrew/contracts";
-import { type ProviderProfile, providerProfile } from "../providers";
+import type { CloudProvider } from "@opscrew/plan-schema";
+import { ownServerNotYet, type ProviderProfile, providerProfile } from "../providers";
 
 /** How the design phase names a provider, its servers and its token in user-facing text. */
 export interface DesignWording {
@@ -15,7 +16,7 @@ export interface DesignWording {
 }
 
 const TEXT: Readonly<
-  Record<VpsProviderId, Pick<DesignWording, "name" | "summaryNoun" | "titleSuffix">>
+  Record<CloudProvider, Pick<DesignWording, "name" | "summaryNoun" | "titleSuffix">>
 > = {
   hetzner: { name: "Hetzner", summaryNoun: "server", titleSuffix: "" },
   digitalocean: {
@@ -25,8 +26,9 @@ const TEXT: Readonly<
   },
 };
 
-/** Design wording for a provider. */
+/** Design wording for a provider; throws for a server the user owns. */
 export function designWording(provider: VpsProviderId): DesignWording {
+  if (provider === "own") throw ownServerNotYet();
   const profile = providerProfile(provider);
   return { profile, ...TEXT[provider], tokenVar: profile.tokenVars[0] ?? "the API token" };
 }

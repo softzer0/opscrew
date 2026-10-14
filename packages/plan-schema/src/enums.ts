@@ -69,9 +69,17 @@ export const RegionSchema = z.enum([
 ]);
 export type Region = z.infer<typeof RegionSchema>;
 
-/** Cloud providers OpsCrew deploys a single server to (`vps-compose` mode). */
-export const VpsProviderSchema = z.enum(["hetzner", "digitalocean"]);
+/**
+ * Where OpsCrew deploys a single server (`vps-compose` mode): a server it creates on Hetzner Cloud
+ * or DigitalOcean, or a server the user already owns (`own`), which OpsCrew prepares over SSH but
+ * never creates or deletes.
+ */
+export const VpsProviderSchema = z.enum(["hetzner", "digitalocean", "own"]);
 export type VpsProvider = z.infer<typeof VpsProviderSchema>;
+
+/** Cloud providers on which OpsCrew creates the server itself. */
+export const CloudProviderSchema = VpsProviderSchema.exclude(["own"]);
+export type CloudProvider = z.infer<typeof CloudProviderSchema>;
 
 /** Registrars OpsCrew can buy domains with. */
 export const RegistrarSchema = z.enum(["cloudflare", "namecheap", "porkbun", "godaddy"]);

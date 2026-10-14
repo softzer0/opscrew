@@ -36,4 +36,17 @@ describe("vpsConnector", () => {
     expect(vpsConnector("digitalocean", deps({})).catalog().provider).toBe("digitalocean");
     expect(vpsConnector("hetzner", deps({})).catalog().provider).toBe("hetzner");
   });
+
+  it("never falls back to Hetzner for an own server or an unknown provider", () => {
+    const d = deps({ HCLOUD_TOKEN: fakeSecret("hcloud-token") });
+    expect(() => vpsConnector("own", d)).toThrow(
+      expect.objectContaining({
+        code: "PHASE_PRECONDITION",
+        message: expect.stringContaining("server you already own"),
+      }),
+    );
+    expect(() => vpsConnector("aws" as never, d)).toThrow(
+      expect.objectContaining({ code: "INVALID_INPUT", message: expect.stringContaining('"aws"') }),
+    );
+  });
 });

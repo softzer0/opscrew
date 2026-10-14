@@ -1,9 +1,9 @@
 import type { ComputeCatalog } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
+  type CloudDeployTarget,
   type CostEstimate,
   type DeployPlan,
-  type DeployTarget,
   readArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -70,7 +70,7 @@ const NEW = "module.server.";
  */
 async function previousCost(
   session: MoveSession,
-  target: DeployTarget,
+  target: CloudDeployTarget,
 ): Promise<CostEstimate | undefined> {
   const { deps, services } = session;
   const injected = services.catalogs?.[target.provider];

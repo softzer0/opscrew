@@ -31,11 +31,15 @@ import type {
   ResourceChange,
   ResourceMove,
   ServerSnapshotApi,
-  VpsProviderId,
 } from "@opscrew/contracts";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type CloudProvider,
+  type DeployPlan,
+  DeployPlanSchema,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import type { CliServices } from "../../deps";
 import { withDeployServices } from "../deploy-services";
 import {
@@ -55,7 +59,7 @@ export const APP = "shop";
 export { SERVER_IPV4 as OLD_IPV4 };
 
 /** What the fake engine creates for a new server, per provider. */
-export const NEW_SERVERS: Record<VpsProviderId, { id: string; ipv4: string; ipv6: string }> = {
+export const NEW_SERVERS: Record<CloudProvider, { id: string; ipv4: string; ipv6: string }> = {
   hetzner: { id: "4712", ipv4: "198.51.100.20", ipv6: "2001:db8:20::1" },
   digitalocean: { id: "3164445", ipv4: "198.51.100.30", ipv6: "2001:db8:30::1" },
 };
@@ -83,18 +87,18 @@ type ModuleName = "server" | "server_previous";
 
 interface FakeServer {
   id: string;
-  provider: VpsProviderId;
+  provider: CloudProvider;
   ipv4: string;
   ipv6: string;
   protected: boolean;
 }
 
-const MODULE_PROVIDER: Record<string, VpsProviderId> = {
+const MODULE_PROVIDER: Record<string, CloudProvider> = {
   "hetzner-vps": "hetzner",
   "digitalocean-droplet": "digitalocean",
 };
 
-const RESOURCES: Record<VpsProviderId, readonly (readonly [string, string])[]> = {
+const RESOURCES: Record<CloudProvider, readonly (readonly [string, string])[]> = {
   hetzner: [
     ["hcloud_ssh_key", "deploy"],
     ["hcloud_firewall", "this"],
@@ -107,17 +111,17 @@ const RESOURCES: Record<VpsProviderId, readonly (readonly [string, string])[]> =
     ["digitalocean_droplet", "this"],
   ],
 };
-const SERVER_TYPE: Record<VpsProviderId, string> = {
+const SERVER_TYPE: Record<CloudProvider, string> = {
   hetzner: "hcloud_server",
   digitalocean: "digitalocean_droplet",
 };
-const REGISTRY: Record<VpsProviderId, string> = {
+const REGISTRY: Record<CloudProvider, string> = {
   hetzner: "registry.opentofu.org/hetznercloud/hcloud",
   digitalocean: "registry.opentofu.org/digitalocean/digitalocean",
 };
 
 interface FakeConfig {
-  modules: Map<ModuleName, VpsProviderId>;
+  modules: Map<ModuleName, CloudProvider>;
   moved?: [ModuleName, ModuleName];
   dns?: ModuleName;
   live?: ModuleName;
@@ -129,7 +133,7 @@ async function readConfig(dir: string): Promise<FakeConfig> {
   const main = await readFile(path.join(dir, "main.tf"), "utf8");
   const outputs = await readFile(path.join(dir, "outputs.tf"), "utf8");
   const variables = await readFile(path.join(dir, "variables.tf"), "utf8");
-  const modules = new Map<ModuleName, VpsProviderId>();
+  const modules = new Map<ModuleName, CloudProvider>();
   for (const m of main.matchAll(
     /module "(server|server_previous)" \{\s*source\s*=\s*"\.\.\/modules\/([a-z-]+)"/g,
   )) {
@@ -155,7 +159,7 @@ const sha256 = (data: string | Buffer) => createHash("sha256").update(data).dige
 interface Effect {
   serial: number;
   moves: [ModuleName, ModuleName][];
-  creates: [ModuleName, VpsProviderId][];
+  creates: [ModuleName, CloudProvider][];
   destroys: ModuleName[];
   unprotects: ModuleName[];
   dnsTo?: string;
@@ -166,7 +170,7 @@ interface Effect {
 
 function change(
   module: ModuleName,
-  provider: VpsProviderId,
+  provider: CloudProvider,
   [type, name]: readonly [string, string],
   action: ResourceChange["action"],
 ): ResourceChange {
@@ -197,7 +201,7 @@ export class FakeMoveEngine implements IacEngine {
 
   constructor(
     readonly events: MoveEvent[],
-    options: { from: VpsProviderId; dns: boolean },
+    options: { from: CloudProvider; dns: boolean },
   ) {
     const old: FakeServer = {
       id: options.from === "hetzner" ? "4711" : "3164444",
@@ -700,7 +704,7 @@ export async function moveProject() {
     const ok = h?.app === true && h.caddy;
     return new Response(ok ? "ok" : "bad gateway", { status: ok ? 200 : 502 });
   };
-  const fakeServers = (provider: VpsProviderId): ServerSnapshotApi => ({
+  const fakeServers = (provider: CloudProvider): ServerSnapshotApi => ({
     findAppServers: async (): Promise<AppServer[]> =>
       Object.values(engine.state.servers)
         .filter((s): s is FakeServer => s?.provider === provider)

@@ -16,7 +16,15 @@ describe("JSON Schema export", () => {
       });
     }
     expect(schemas.plan).toMatchObject({
-      properties: { target: { properties: { serverType: { type: "string" } } } },
+      properties: {
+        target: {
+          oneOf: [
+            { properties: { serverType: { type: "string" } } },
+            { properties: { provider: { const: "own" }, arch: { enum: ["amd64", "arm64"] } } },
+          ],
+        },
+        portainer: { properties: { access: { enum: ["local", "subdomain"] } } },
+      },
     });
   });
 

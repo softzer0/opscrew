@@ -1,8 +1,8 @@
 import type { ResourceAction, ResourceChange, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan, DeployTarget } from "@opscrew/plan-schema";
+import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
-import { providerProfile } from "../providers";
+import { cloudTarget, providerProfile } from "../providers";
 import { destroyTexts } from "./texts";
 
 /**
@@ -337,7 +337,7 @@ function joinList(items: readonly string[]): string {
 export function dataWarning(
   plan: Pick<DeployPlan, "services" | "target">,
   serverDeleted: boolean,
-  target: Pick<DeployTarget, "provider" | "backups"> = plan.target,
+  target: Pick<CloudDeployTarget, "provider" | "backups"> = cloudTarget(plan.target),
 ): string | undefined {
   if (!serverDeleted) return undefined;
   const texts = destroyTexts(target.provider);

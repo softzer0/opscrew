@@ -15,6 +15,61 @@ export interface ServerAddress {
 
 const AddressSchema = z.strictObject({ ipv4: z.ipv4(), ipv6: z.ipv6().optional() });
 
+/** A DNS name or a single host label; never starts with `-`, so `ssh` cannot read it as an option. */
+const HostNameSchema = z
+  .string()
+  .regex(
+    /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/,
+  );
+
+/**
+ * Absolute path to a private key file: `/…`, `~/…`, `C:\…` or `C:/…` (spaces allowed). Never the
+ * key itself, and never something `ssh` could read as an option: a leading `-` or a PEM marker
+ * (`-----BEGIN`, `PRIVATE KEY`) is refused.
+ */
+const KeyPathSchema = z
+  .string()
+  .refine((path) => !path.startsWith("-"), { message: "must not start with -" })
+  .refine((path) => !path.includes("-----BEGIN") && !path.includes("PRIVATE KEY"), {
+    message: "must be the path to the key file, never the key itself",
+  })
+  .regex(/^(?:\/|~\/|[A-Za-z]:[\\/])[^\0\r\n]*$/, {
+    message: "must be an absolute path such as ~/.ssh/id_ed25519",
+  });
+
+/**
+ * How OpsCrew reaches a server the user owns over SSH. Local only: the address and the login never
+ * reach `opscrew/plan.yaml`, pull requests or commit messages. No passwords or passphrases: the key
+ * is referenced by path (or the SSH agent holds it).
+ */
+const OwnServerSchema = z
+  .strictObject({
+    /** IP address or host name the CLI connects to. */
+    host: z.union([z.ipv4(), z.ipv6(), HostNameSchema]),
+    /** SSH port. */
+    port: z.int().min(1).max(65535).default(22),
+    /** The admin login: root or a user with passwordless sudo. */
+    user: z.string().regex(/^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/),
+    /** Path to the private key; absent when the SSH agent holds the key. */
+    keyPath: KeyPathSchema.optional(),
+    /** Use the SSH agent. */
+    agent: z.boolean(),
+    /** The pinned host key fingerprint the user confirmed, for example `SHA256:` and 43 characters. */
+    hostKey: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/),
+    /** The addresses DNS points to in public mode. */
+    publicIpv4: z.ipv4().optional(),
+    publicIpv6: z.ipv6().optional(),
+  })
+  .refine((own) => own.agent || own.keyPath !== undefined, {
+    path: ["keyPath"],
+    message: "is required unless the SSH agent is used",
+  });
+
+/** How OpsCrew connects to a server the user owns (`.opscrew/server.json` → `own`). */
+export type OwnServerConnection = z.output<typeof OwnServerSchema>;
+/** {@link OwnServerConnection} as written by callers (`port` defaults to 22). */
+export type OwnServerConnectionInput = z.input<typeof OwnServerSchema>;
+
 const ServerAddressesSchema = z.strictObject({
   schemaVersion: z.literal(1),
   /** The server that receives the app's traffic (the one `plan.deployment` describes). */
@@ -23,12 +78,15 @@ const ServerAddressesSchema = z.strictObject({
   retarget: z
     .strictObject({ from: AddressSchema.optional(), next: AddressSchema.optional() })
     .optional(),
+  /** A server the user owns (`target.provider: own`): how OpsCrew connects to it. */
+  own: OwnServerSchema.optional(),
 });
 
 /**
- * `.opscrew/server.json`: the servers' IP addresses. They are kept in OpsCrew's local state
- * (gitignored), never in `opscrew/plan.yaml` or another committed file, so a public repository
- * does not reveal the origin behind Cloudflare's proxy.
+ * `.opscrew/server.json`: the servers' IP addresses and, for a server the user owns, how OpsCrew
+ * connects to it. They are kept in OpsCrew's local state (gitignored), never in
+ * `opscrew/plan.yaml` or another committed file, so a public repository does not reveal the origin
+ * behind Cloudflare's proxy.
  */
 export type ServerAddresses = z.infer<typeof ServerAddressesSchema>;
 
@@ -86,7 +144,7 @@ export async function readServerAddresses(
 /** Rewrites `.opscrew/server.json` (atomically, inside the gitignored `.opscrew/`). */
 export async function updateServerAddresses(
   paths: ProjectPaths,
-  update: (current: ServerAddresses) => ServerAddresses,
+  update: (current: ServerAddresses) => z.input<typeof ServerAddressesSchema>,
 ): Promise<ServerAddresses> {
   const next = ServerAddressesSchema.parse(update(await readServerAddresses(paths)));
   await ensureStateDir(paths);
@@ -101,6 +159,26 @@ export async function recordServerAddress(
 ): Promise<void> {
   await updateServerAddresses(paths, ({ deployment: _old, ...rest }) =>
     address === undefined ? rest : { ...rest, deployment: address },
+  );
+}
+
+/**
+ * How OpsCrew connects to the server the user owns, from `.opscrew/server.json`; `undefined` when
+ * none is recorded. A damaged file stops with `ARTIFACT_INVALID` (see {@link readServerAddresses}).
+ */
+export async function readOwnServer(
+  paths: Pick<ProjectPaths, "stateDir">,
+): Promise<OwnServerConnection | undefined> {
+  return (await readServerAddresses(paths)).own;
+}
+
+/** Records how OpsCrew connects to the server the user owns; `undefined` forgets it. */
+export async function recordOwnServer(
+  paths: ProjectPaths,
+  own: OwnServerConnectionInput | undefined,
+): Promise<void> {
+  await updateServerAddresses(paths, ({ own: _old, ...rest }) =>
+    own === undefined ? rest : { ...rest, own },
   );
 }
 

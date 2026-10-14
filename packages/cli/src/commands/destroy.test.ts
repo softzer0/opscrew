@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { readServerAddresses } from "@opscrew/agents";
+import { cloudTarget, readServerAddresses } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
@@ -105,7 +105,7 @@ describe.skipIf(!GIT)("opscrew destroy", () => {
     await writeArtifact("plan", paths.files.plan, {
       ...plan,
       services: { ...plan.services, postgres: false },
-      target: { ...plan.target, backups: false },
+      target: { ...cloudTarget(plan.target), backups: false },
     });
     expect(await run(ctx, "destroy", "--confirm", "shop", "--snapshot")).toBe(0);
     expect(fakes.snapshots).toEqual([4711]);
@@ -117,7 +117,7 @@ describe.skipIf(!GIT)("opscrew destroy", () => {
     await writeArtifact("plan", paths.files.plan, {
       ...plan,
       services: { ...plan.services, postgres: false },
-      target: { ...plan.target, backups: false },
+      target: { ...cloudTarget(plan.target), backups: false },
     });
     expect(await run(ctx, "destroy", "--confirm", "shop")).toBe(0);
     expect(fakes.snapshots).toEqual([]);

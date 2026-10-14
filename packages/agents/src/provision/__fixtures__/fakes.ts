@@ -11,11 +11,15 @@ import type {
   RemoteExec,
   ResourceChange,
   ResourceMove,
-  VpsProviderId,
 } from "@opscrew/contracts";
 import { type CloudflareDnsRecord, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
-import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type CloudProvider,
+  type DeployPlan,
+  DeployPlanSchema,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { hasDeployment, updateServerAddresses } from "../../shared";
 import { ScriptedRunner } from "../../testing";
 import type { CloudflareApi, GitHubApi } from "../types";
@@ -36,7 +40,7 @@ export interface PlanInputOptions {
   /** Also serve `www.<domain>` (with `domain`). */
   www?: boolean;
   /** Cloud provider of the plan (default Hetzner). */
-  provider?: VpsProviderId;
+  provider?: CloudProvider;
 }
 
 /** Plan targets per provider: location, size and image as design would choose them. */
@@ -133,7 +137,7 @@ export async function recordTestServer(root: string, plan: DeployPlan): Promise<
 export interface PlanJsonOptions {
   proxied?: boolean;
   openDatabasePort?: boolean;
-  provider?: VpsProviderId;
+  provider?: CloudProvider;
 }
 
 /** `show -json` shaped like the rendered root module, passing every policy unless told otherwise. */

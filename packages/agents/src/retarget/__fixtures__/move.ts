@@ -19,7 +19,6 @@ import type {
   ResourceChange,
   ResourceMove,
   ServerSnapshotApi,
-  VpsProviderId,
 } from "@opscrew/contracts";
 import {
   ApprovalGate,
@@ -31,7 +30,12 @@ import {
   resolveProjectPaths,
 } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type CloudProvider,
+  type DeployPlan,
+  DeployPlanSchema,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../../context";
 import { euCatalog, makeFacts, makeRequirements } from "../../design/__fixtures__/catalog";
 import { doEuCatalog } from "../../design/__fixtures__/digitalocean-catalog";
@@ -64,11 +68,11 @@ export const TOKENS = {
 };
 
 /** What the fake engine creates for a new server, per provider. */
-export const NEW_SERVERS: Record<VpsProviderId, { id: string; ipv4: string; ipv6: string }> = {
+export const NEW_SERVERS: Record<CloudProvider, { id: string; ipv4: string; ipv6: string }> = {
   hetzner: { id: "4712", ipv4: "198.51.100.20", ipv6: "2001:db8:20::1" },
   digitalocean: { id: "3164445", ipv4: "198.51.100.30", ipv6: "2001:db8:30::1" },
 };
-export const OLD_IDS: Record<VpsProviderId, string> = { hetzner: "4711", digitalocean: "3164444" };
+export const OLD_IDS: Record<CloudProvider, string> = { hetzner: "4711", digitalocean: "3164444" };
 
 /** Everything the fakes saw, in order: the trail SC-502 is checked on. */
 export type MoveEvent =
@@ -97,18 +101,18 @@ type ModuleName = "server" | "server_previous";
 
 interface FakeServer {
   id: string;
-  provider: VpsProviderId;
+  provider: CloudProvider;
   ipv4: string;
   ipv6: string;
   protected: boolean;
 }
 
-const MODULE_PROVIDER: Record<string, VpsProviderId> = {
+const MODULE_PROVIDER: Record<string, CloudProvider> = {
   "hetzner-vps": "hetzner",
   "digitalocean-droplet": "digitalocean",
 };
 
-const RESOURCES: Record<VpsProviderId, readonly (readonly [string, string])[]> = {
+const RESOURCES: Record<CloudProvider, readonly (readonly [string, string])[]> = {
   hetzner: [
     ["hcloud_ssh_key", "deploy"],
     ["hcloud_firewall", "this"],
@@ -121,17 +125,17 @@ const RESOURCES: Record<VpsProviderId, readonly (readonly [string, string])[]> =
     ["digitalocean_droplet", "this"],
   ],
 };
-const SERVER_TYPE: Record<VpsProviderId, string> = {
+const SERVER_TYPE: Record<CloudProvider, string> = {
   hetzner: "hcloud_server",
   digitalocean: "digitalocean_droplet",
 };
-const REGISTRY: Record<VpsProviderId, string> = {
+const REGISTRY: Record<CloudProvider, string> = {
   hetzner: "registry.opentofu.org/hetznercloud/hcloud",
   digitalocean: "registry.opentofu.org/digitalocean/digitalocean",
 };
 
 interface FakeConfig {
-  modules: Map<ModuleName, VpsProviderId>;
+  modules: Map<ModuleName, CloudProvider>;
   moved?: [ModuleName, ModuleName];
   dns?: ModuleName;
   live?: ModuleName;
@@ -143,7 +147,7 @@ async function readConfig(dir: string): Promise<FakeConfig> {
   const main = await readFile(join(dir, "main.tf"), "utf8");
   const outputs = await readFile(join(dir, "outputs.tf"), "utf8");
   const variables = await readFile(join(dir, "variables.tf"), "utf8");
-  const modules = new Map<ModuleName, VpsProviderId>();
+  const modules = new Map<ModuleName, CloudProvider>();
   for (const m of main.matchAll(
     /module "(server|server_previous)" \{\s*source\s*=\s*"\.\.\/modules\/([a-z-]+)"/g,
   )) {
@@ -169,7 +173,7 @@ const sha256 = (data: string | Buffer) => createHash("sha256").update(data).dige
 interface Effect {
   serial: number;
   moves: [ModuleName, ModuleName][];
-  creates: [ModuleName, VpsProviderId][];
+  creates: [ModuleName, CloudProvider][];
   destroys: ModuleName[];
   unprotects: ModuleName[];
   dnsTo?: string;
@@ -180,7 +184,7 @@ interface Effect {
 
 function change(
   module: ModuleName,
-  provider: VpsProviderId,
+  provider: CloudProvider,
   [type, name]: readonly [string, string],
   action: ResourceChange["action"],
 ): ResourceChange {
@@ -219,7 +223,7 @@ export class FakeMoveEngine implements IacEngine {
 
   constructor(
     readonly events: MoveEvent[],
-    options: { from: VpsProviderId; dns: boolean },
+    options: { from: CloudProvider; dns: boolean },
   ) {
     const old: FakeServer = {
       id: OLD_IDS[options.from],
@@ -235,7 +239,7 @@ export class FakeMoveEngine implements IacEngine {
       // What `opscrew provision` applied: the root module without a move layout.
       outputs: outputsOf(
         {
-          modules: new Map<ModuleName, VpsProviderId>([["server", options.from]]),
+          modules: new Map<ModuleName, CloudProvider>([["server", options.from]]),
           live: "server",
           variables: new Set(),
         },
@@ -700,7 +704,7 @@ export function cliAnswer(flags: () => CliFlags) {
 }
 
 export interface MoveHarnessOptions {
-  from?: VpsProviderId;
+  from?: CloudProvider;
   /** `cloudflare` (default), `other` (a domain without managed DNS) or `none` (no domain). */
   dns?: "cloudflare" | "other" | "none";
   postgres?: boolean;
@@ -712,7 +716,7 @@ export interface MoveHarnessOptions {
 /** A provisioned project (git repo, plan, state, keys) with every fake a move talks to. */
 export async function moveHarness(options: MoveHarnessOptions = {}) {
   const from = options.from ?? "hetzner";
-  const to: VpsProviderId = from === "hetzner" ? "digitalocean" : "hetzner";
+  const to: CloudProvider = from === "hetzner" ? "digitalocean" : "hetzner";
   const dns = options.dns ?? "cloudflare";
   const postgres = options.postgres ?? true;
   const base = testPlan({
@@ -826,7 +830,7 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
     interactive: options.interactive ?? true,
     version: "0.0.0-test",
   };
-  const fakeServers = (provider: VpsProviderId): ServerSnapshotApi => ({
+  const fakeServers = (provider: CloudProvider): ServerSnapshotApi => ({
     findAppServers: async (): Promise<AppServer[]> =>
       Object.values(engine.state.servers)
         .filter((s): s is FakeServer => s?.provider === provider)

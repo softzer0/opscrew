@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { IacEngine, IacInitOptions, IacRunOptions } from "@opscrew/contracts";
+import { fakeSecret } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testPlan } from "../provision/__fixtures__/fakes";
@@ -13,7 +15,9 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
+  readOwnServer,
   readServerAddresses,
+  recordOwnServer,
   recordServerAddress,
   serverAddress,
   serverAddressesFile,
@@ -143,6 +147,101 @@ describe("the server's address in OpsCrew's local state", () => {
     await expect(readServerAddresses(deps.paths)).rejects.toMatchObject({
       code: "ARTIFACT_INVALID",
     });
+  });
+});
+
+describe("a server the user owns in OpsCrew's local state", () => {
+  // A fingerprint-shaped value generated at runtime (`SHA256:` and 43 base64 characters).
+  const HOST_KEY = `SHA256:${createHash("sha256").update("test host key").digest("base64").replace(/=+$/, "")}`;
+  const own = { host: IPV4, user: "root", keyPath: "/home/me/.ssh/id_ed25519", agent: false };
+
+  it("records how OpsCrew connects, fills the SSH port and keeps the other entries", async () => {
+    const deps = await createTestPhaseDeps();
+    expect(await readOwnServer(deps.paths)).toBeUndefined();
+    await recordServerAddress(deps.paths, { ipv4: IPV4 });
+    await recordOwnServer(deps.paths, { ...own, hostKey: HOST_KEY, publicIpv6: IPV6 });
+    expect(await readOwnServer(deps.paths)).toEqual({
+      ...own,
+      port: 22,
+      hostKey: HOST_KEY,
+      publicIpv6: IPV6,
+    });
+    expect(JSON.parse(await readFile(serverAddressesFile(deps.paths), "utf8"))).toEqual({
+      schemaVersion: 1,
+      deployment: { ipv4: IPV4 },
+      own: { ...own, port: 22, hostKey: HOST_KEY, publicIpv6: IPV6 },
+    });
+
+    const viaAgent = { host: "pi.home.example.com", port: 2222, user: "admin", agent: true };
+    await recordOwnServer(deps.paths, { ...viaAgent, hostKey: HOST_KEY, publicIpv4: IPV4 });
+    expect(await readOwnServer(deps.paths)).toEqual({
+      ...viaAgent,
+      hostKey: HOST_KEY,
+      publicIpv4: IPV4,
+    });
+
+    await recordOwnServer(deps.paths, undefined);
+    expect(await readServerAddresses(deps.paths)).toEqual({
+      schemaVersion: 1,
+      deployment: { ipv4: IPV4 },
+    });
+  });
+
+  it("refuses entries that could not connect safely and leaves the file as it was", async () => {
+    const deps = await createTestPhaseDeps();
+    await recordOwnServer(deps.paths, { ...own, hostKey: HOST_KEY });
+    const before = await readFile(serverAddressesFile(deps.paths), "utf8");
+    // Key-shaped values are generated at runtime, never committed.
+    const pem = fakeSecret("private-key-pem");
+    const pemFirstLine = pem.split("\n")[0] ?? "";
+    for (const [label, bad] of [
+      ["fingerprint", { ...own, hostKey: "MD5:aa:bb" }],
+      ["host option", { ...own, host: "-oProxyCommand=evil" }],
+      ["user option", { ...own, user: "-l root" }],
+      ["port", { ...own, port: 0 }],
+      ["no key and no agent", { ...own, keyPath: undefined }],
+      ["password", { ...own, password: "x" }],
+      ["key path option", { ...own, keyPath: "-oProxyCommand=evil" }],
+      ["key path dash", { ...own, keyPath: "-/home/me/.ssh/id_ed25519" }],
+      ["key itself", { ...own, keyPath: pem }],
+      ["key marker", { ...own, keyPath: `/home/me/${pemFirstLine}` }],
+      ["private key words", { ...own, keyPath: "/home/me/PRIVATE KEY" }],
+      ["relative key path", { ...own, keyPath: ".ssh/id_ed25519" }],
+      ["bare key name", { ...own, keyPath: "id_ed25519" }],
+      ["drive without slash", { ...own, keyPath: "C:id_ed25519" }],
+    ] as const) {
+      const error = await recordOwnServer(deps.paths, { hostKey: HOST_KEY, ...bad } as never).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(error, label).toBeInstanceOf(Error);
+      expect(String((error as Error).message), label).not.toContain("-----BEGIN");
+    }
+    expect(await readFile(serverAddressesFile(deps.paths), "utf8")).toBe(before);
+  });
+
+  it("accepts absolute key paths on every system, spaces included", async () => {
+    const deps = await createTestPhaseDeps();
+    for (const keyPath of [
+      "/home/me/.ssh/id_ed25519",
+      "~/.ssh/id_ed25519",
+      "/home/me/my keys/id ed25519",
+      "C:\\Users\\Me\\.ssh\\id_ed25519",
+      "D:/keys/my key",
+    ]) {
+      await recordOwnServer(deps.paths, { ...own, keyPath, hostKey: HOST_KEY });
+      expect((await readOwnServer(deps.paths))?.keyPath, keyPath).toBe(keyPath);
+    }
+  });
+
+  it("stops with a plain error when the recorded entry is damaged", async () => {
+    const deps = await createTestPhaseDeps();
+    await mkdir(deps.paths.stateDir, { recursive: true });
+    const damaged = JSON.stringify({ schemaVersion: 1, own: { ...own, hostKey: "nope" } });
+    await writeFile(serverAddressesFile(deps.paths), damaged);
+    const error = await readOwnServer(deps.paths).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "ARTIFACT_INVALID" });
+    expect((error as Error).message).toContain("own.hostKey is not valid");
   });
 });
 

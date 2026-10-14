@@ -1,5 +1,5 @@
 import type { VpsProviderId } from "@opscrew/contracts";
-import { providerProfile } from "../providers";
+import { ownServerNotYet, providerProfile } from "../providers";
 
 /**
  * Teardown wording that differs per provider. The Hetzner texts are exactly those of feature 003;
@@ -69,7 +69,8 @@ function digitalOceanTexts(): DestroyTexts {
   };
 }
 
-/** The teardown wording for `provider`. */
+/** The teardown wording for `provider`; throws for a server the user owns. */
 export function destroyTexts(provider: VpsProviderId): DestroyTexts {
+  if (provider === "own") throw ownServerNotYet();
   return provider === "digitalocean" ? digitalOceanTexts() : hetznerTexts();
 }

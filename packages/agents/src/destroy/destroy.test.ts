@@ -7,6 +7,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { cloudTarget } from "../providers";
 import {
   createProject,
   fakeCloudflare,
@@ -93,7 +94,7 @@ function digitalOceanPlan(options: Parameters<typeof testPlan>[0] = {}): DeployP
   return {
     ...plan,
     target: {
-      ...plan.target,
+      ...cloudTarget(plan.target),
       provider: "digitalocean",
       location: "fra1",
       serverType: "s-1vcpu-2gb",
@@ -129,7 +130,7 @@ async function setup(options: SetupOptions = {}) {
   const project = await createProject(plan);
   const events: string[] = [];
   const engine = new ScriptedDestroyEngine(options.script, events);
-  const servers = new FakeServers(events, plan.target.provider);
+  const servers = new FakeServers(events, cloudTarget(plan.target).provider);
   const github = new FakeDestroyGitHub(events);
   for (const name of SECRET_NAMES) github.secrets.set(name, "stored");
   const handler = new RecordingHandler(options.answer ?? (() => true), events);
@@ -599,7 +600,9 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
 
   it("auto takes no snapshot when no data lives only on the server", async () => {
     const base = deployedPlan({ postgres: false });
-    const s = await setup({ plan: { ...base, target: { ...base.target, backups: false } } });
+    const s = await setup({
+      plan: { ...base, target: { ...cloudTarget(base.target), backups: false } },
+    });
     const result = await runDestroy(s.deps, { services: s.services });
     expect(result.snapshotId).toBeUndefined();
     expect(s.servers.lookups).toEqual([]);
@@ -885,7 +888,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     const plan: DeployPlan = {
       ...digitalOceanPlan(),
       retarget: {
-        from: { target: from.target },
+        from: { target: cloudTarget(from.target) },
         step: "deployed",
         startedAt: NOW,
       },

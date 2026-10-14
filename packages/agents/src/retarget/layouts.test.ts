@@ -1,15 +1,16 @@
-import type { VpsProviderId } from "@opscrew/contracts";
 import { renderDeployment } from "@opscrew/iac-templates";
+import type { CloudProvider } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { cloudTarget } from "../providers";
 import { testPlan } from "../provision/__fixtures__/fakes";
 import { MOVE_LAYOUTS, moveLayout, previousTarget, protectionVariable } from "./layouts";
 
-const DIRECTIONS: [VpsProviderId, VpsProviderId][] = [
+const DIRECTIONS: [CloudProvider, CloudProvider][] = [
   ["hetzner", "digitalocean"],
   ["digitalocean", "hetzner"],
 ];
 
-function rendered(from: VpsProviderId, to: VpsProviderId, name: (typeof MOVE_LAYOUTS)[number]) {
+function rendered(from: CloudProvider, to: CloudProvider, name: (typeof MOVE_LAYOUTS)[number]) {
   const plan = testPlan({ provider: to });
   const files = renderDeployment(plan, {
     opscrewVersion: "0.0.0-test",
@@ -68,7 +69,7 @@ describe("move layouts", () => {
   });
 
   it("fills the old server's image when the plan omits it", () => {
-    const { image: _image, ...target } = testPlan({ provider: "digitalocean" }).target;
+    const { image: _image, ...target } = cloudTarget(testPlan({ provider: "digitalocean" }).target);
     expect(previousTarget({ from: { target } }).image).toBe("ubuntu-24-04-x64");
   });
 });

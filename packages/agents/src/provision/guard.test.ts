@@ -1,6 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan, Retarget } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { cloudTarget } from "../providers";
 import { testPlan } from "./__fixtures__/fakes";
 import { moveInProgress, requireNoMoveInProgress } from "./guard";
 
@@ -10,7 +11,7 @@ function moving(abort?: NonNullable<Retarget["abort"]>["step"]): DeployPlan {
   return {
     ...testPlan({ provider: "digitalocean", deployed: true }),
     retarget: {
-      from: { target: from.target },
+      from: { target: cloudTarget(from.target) },
       step: "deployed",
       startedAt: "2026-10-12T09:00:00.000Z",
       ...(abort !== undefined ? { abort: { step: abort } } : {}),

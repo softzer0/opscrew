@@ -1,5 +1,6 @@
 import type { ResourceChange } from "@opscrew/contracts";
 import { describe, expect, it } from "vitest";
+import { cloudTarget } from "../providers";
 import { HOST_KEY, testPlan } from "../provision/__fixtures__/fakes";
 import {
   DROPLET_ADDRESS,
@@ -263,7 +264,10 @@ describe("dataWarning", () => {
 
   it("on DigitalOcean, says the database goes with the Droplet and the backups stay a while", () => {
     const base = testPlan();
-    const plan = { ...base, target: { ...base.target, provider: "digitalocean" as const } };
+    const plan = {
+      ...base,
+      target: { ...cloudTarget(base.target), provider: "digitalocean" as const },
+    };
     expect(dataWarning(plan, true)).toBe(
       "Deleting the Droplet also deletes the PostgreSQL database and any files the app stored on the Droplet. DigitalOcean keeps the Droplet's automatic backups until they expire, four weeks after they were taken; only a snapshot keeps a copy for longer.",
     );
@@ -276,7 +280,10 @@ describe("dataWarning", () => {
 
   it("words the warning for an explicit target (the old server during a move), not plan.target", () => {
     const base = testPlan();
-    const plan = { ...base, target: { ...base.target, provider: "digitalocean" as const } };
+    const plan = {
+      ...base,
+      target: { ...cloudTarget(base.target), provider: "digitalocean" as const },
+    };
     const old = { provider: "hetzner" as const, backups: false };
     expect(dataWarning(plan, true, old)).toBe(
       "Deleting the server also deletes the PostgreSQL database and any files the app stored on the server. Only a snapshot keeps a copy.",

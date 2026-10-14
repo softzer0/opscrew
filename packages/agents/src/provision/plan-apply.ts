@@ -19,7 +19,7 @@ import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-sche
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { planProvider, providerProfile, vpsConnector } from "../providers";
+import { cloudTarget, planProvider, providerProfile, vpsConnector } from "../providers";
 import type { SavedPlan } from "./types";
 
 export interface PlanAndApplyOptions {
@@ -56,6 +56,8 @@ const FORBIDDEN =
 const PROVIDER_API: Readonly<Record<VpsProviderId, RegExp>> = {
   hetzner: /api\.hetzner\.cloud|hcloud_|token_readonly/i,
   digitalocean: /api\.digitalocean\.com|digitalocean_/i,
+  // A server the user owns has no provider API: no engine error is blamed on a provider token.
+  own: /(?!)/,
 };
 
 const CLOUDFLARE_API = /api\.cloudflare\.com|cloudflare_/i;
@@ -129,7 +131,8 @@ function applyFailureHint(
   }
   if (profile.unavailable.test(errors) && !SERVICE_DOWN.test(errors)) {
     const size = provider === "hetzner" ? "server type" : "size";
-    return `${displayName} cannot create a ${deployPlan.target.serverType} ${serverNoun} in ${deployPlan.target.location} right now (the ${size} is unavailable or out of stock there). Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;
+    const { serverType, location } = cloudTarget(deployPlan.target);
+    return `${displayName} cannot create a ${serverType} ${serverNoun} in ${location} right now (the ${size} is unavailable or out of stock there). Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;
   }
   return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
 }

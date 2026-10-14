@@ -1,7 +1,33 @@
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { OpsCrewError } from "@opscrew/core";
+import type {
+  CloudDeployTarget,
+  CloudProvider,
+  DeployPlan,
+  DeployTarget,
+} from "@opscrew/plan-schema";
 
 /** VPS provider a plan deploys to. */
 export type PlanProvider = DeployPlan["target"]["provider"];
+
+/**
+ * The plain error for a server the user already owns, where the templates only know servers
+ * OpsCrew creates. Own servers arrive with the rest of feature 009, which replaces these calls.
+ */
+export function ownServerNotYet(): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "This version of OpsCrew cannot yet render the infrastructure for a server you already own; it only creates servers on Hetzner Cloud or DigitalOcean.",
+    {
+      hint: "Choose Hetzner Cloud or DigitalOcean with `opscrew interview` and `opscrew design`. Servers you already own arrive with the rest of feature 009.",
+    },
+  );
+}
+
+/** `target` when OpsCrew creates the server (Hetzner, DigitalOcean); throws for an own server. */
+export function cloudTarget(target: DeployTarget): CloudDeployTarget {
+  if (target.provider === "own") throw ownServerNotYet();
+  return target;
+}
 
 /**
  * Provider-specific wording and HCL pieces for the rendered root module and the runbook. Hetzner
@@ -63,7 +89,7 @@ const COMMON_ARGUMENTS = {
   httpCidrs: ["http_allowed_cidrs", "var.http_allowed_cidrs"],
 } as const;
 
-const PROVIDERS: Record<PlanProvider, ProviderText> = {
+const PROVIDERS: Record<CloudProvider, ProviderText> = {
   hetzner: {
     name: "Hetzner",
     serverNoun: "server",
@@ -193,8 +219,9 @@ const PROVIDERS: Record<PlanProvider, ProviderText> = {
 
 /**
  * Wording and HCL pieces for a target's provider: a plan's `target`, a server of a move layout,
- * or just `{ provider }`.
+ * or just `{ provider }`. Throws for a server the user owns ({@link ownServerNotYet}).
  */
 export function providerText(target: { provider: PlanProvider }): ProviderText {
+  if (target.provider === "own") throw ownServerNotYet();
   return PROVIDERS[target.provider];
 }

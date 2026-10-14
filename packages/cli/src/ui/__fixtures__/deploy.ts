@@ -21,6 +21,7 @@ import type {
 } from "@opscrew/contracts";
 import {
   type CloudflareApi,
+  cloudTarget,
   type GitHubApi,
   hasDeployment,
   type ProvisionServices,
@@ -189,6 +190,7 @@ export function digitalOceanPlanJsonFor(plan: DeployPlan) {
   const proxied = plan.dns.proxied && plan.security.httpAllowedFrom === "cloudflare";
   const web = proxied ? [...CF_V4, ...CF_V6] : world;
   const name = plan.app.name;
+  const target = cloudTarget(plan.target);
   const resource = (type: string, local: string, values: Record<string, unknown>) => ({
     address: `module.server.${type}.${local}`,
     mode: "managed",
@@ -222,10 +224,10 @@ export function digitalOceanPlanJsonFor(plan: DeployPlan) {
             resources: [
               resource("digitalocean_droplet", "this", {
                 name,
-                region: plan.target.location,
-                size: plan.target.serverType,
-                image: plan.target.image,
-                backups: plan.target.backups,
+                region: target.location,
+                size: target.serverType,
+                image: target.image,
+                backups: target.backups,
                 ipv6: true,
                 monitoring: true,
               }),

@@ -34,7 +34,7 @@
     },
     "provider": {
       "type": "string",
-      "enum": ["hetzner", "digitalocean"]
+      "enum": ["hetzner", "digitalocean", "own"]
     },
     "region": {
       "type": "string",
@@ -95,7 +95,6 @@
     "answeredAt",
     "expectedMonthlyUsers",
     "budgetMonthly",
-    "region",
     "uptime",
     "dataCriticality",
     "dnsProvider",

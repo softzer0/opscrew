@@ -1,0 +1,20 @@
+{
+  "name": "@opscrew/connector-ssh-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Host adapter for servers the user owns: inspection, host plans and hash-bound apply over SSH.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

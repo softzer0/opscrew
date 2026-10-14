@@ -8,6 +8,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { cloudTarget } from "@opscrew/agents";
 import type { ScanReport } from "@opscrew/contracts";
 import { FakeAgentRuntime } from "@opscrew/core/testing";
 import {
@@ -345,7 +346,8 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
       const second = await opscrew("design", "--option", chosenOption);
       expect(second.code).toBe(0);
       const plan = await readPlan(project.root);
-      expect(`hetzner-single-${plan.target.serverType}-${plan.target.location}`).toBe(chosenOption);
+      const { serverType, location } = cloudTarget(plan.target);
+      expect(`hetzner-single-${serverType}-${location}`).toBe(chosenOption);
       expect(plan.target.provider).toBe("hetzner");
       const port = expected.chosenApp?.port ?? expected.facts.port;
       if (port !== undefined) expect(plan.app.port).toBe(port);

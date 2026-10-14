@@ -135,7 +135,7 @@ export async function runInterview(
     await deps.state.markPhase(
       "interview",
       "ok",
-      `${requirements.expectedMonthlyUsers} users, ${budget.amount} ${budget.currency}/month, ${requirements.region}`,
+      `${requirements.expectedMonthlyUsers} users, ${budget.amount} ${budget.currency}/month${requirements.region === undefined ? "" : `, ${requirements.region}`}`,
     );
     return { requirements, questions, reanalyzed };
   } catch (error) {

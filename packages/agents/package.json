@@ -21,6 +21,7 @@
     "@opscrew/connector-hetzner": "workspace:*",
     "@opscrew/connector-namecheap": "workspace:*",
     "@opscrew/connector-porkbun": "workspace:*",
+    "@opscrew/connector-ssh-host": "workspace:*",
     "@opscrew/contracts": "workspace:*",
     "@opscrew/core": "workspace:*",
     "@opscrew/detect": "workspace:*",

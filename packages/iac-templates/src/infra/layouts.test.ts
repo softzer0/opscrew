@@ -1,5 +1,5 @@
 import { checkDialect } from "@opscrew/iac-engine";
-import type { VpsProvider } from "@opscrew/plan-schema";
+import type { CloudProvider } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   DIRECTIONS,
@@ -13,29 +13,29 @@ import { renderDeployment } from "../render";
 import type { InfraLayout, RenderedFile, ServerModule } from "../types";
 import { renderInfra, tfvars } from "./index";
 
-const MODULE_DIRS: Record<VpsProvider, string> = {
+const MODULE_DIRS: Record<CloudProvider, string> = {
   hetzner: "hetzner-vps",
   digitalocean: "digitalocean-droplet",
 };
-const TOKEN_VARS: Record<VpsProvider, string> = {
+const TOKEN_VARS: Record<CloudProvider, string> = {
   hetzner: "HCLOUD_TOKEN",
   digitalocean: "DIGITALOCEAN_TOKEN",
 };
 const MOVES_ONLY: readonly LayoutName[] = ["rename", "abort-rename"];
 
 /** The plan during a move: `plan.target` is already the new target. */
-function movePlan(to: VpsProvider, domain = true) {
+function movePlan(to: CloudProvider, domain = true) {
   return testPlan({
     provider: to,
     ...(domain ? { domain: "shop.example.com", www: true } : {}),
   });
 }
 
-function layoutFor(name: LayoutName, from: VpsProvider, to: VpsProvider): InfraLayout {
+function layoutFor(name: LayoutName, from: CloudProvider, to: CloudProvider): InfraLayout {
   return moveLayout(name, testTarget(from), testTarget(to));
 }
 
-function render(name: LayoutName, from: VpsProvider, to: VpsProvider, domain = true) {
+function render(name: LayoutName, from: CloudProvider, to: CloudProvider, domain = true) {
   return renderInfra(
     movePlan(to, domain),
     testContext({

@@ -278,7 +278,7 @@ function digitalOceanPolicies(
         droplet.address,
       ),
     );
-    if (deployPlan.target.backups) {
+    if (deployPlan.target.provider !== "own" && deployPlan.target.backups) {
       results.push(
         result(
           "backups-for-critical-data",
@@ -357,7 +357,7 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
         server.address,
       ),
     );
-    if (deployPlan.target.backups) {
+    if (deployPlan.target.provider !== "own" && deployPlan.target.backups) {
       results.push(
         result(
           "backups-for-critical-data",

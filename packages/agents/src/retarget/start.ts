@@ -1,14 +1,20 @@
 import { OpsCrewError } from "@opscrew/core";
 import {
+  type CloudDeployTarget,
   type DeployPlan,
-  type DeployTarget,
   type DesignOption,
   type Retarget,
   readArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { buildDesignOptions, formatMoney, priceLabel } from "../design";
-import { providerProfile, requestedProvider, vpsConnector } from "../providers";
+import {
+  cloudTarget,
+  ownServerNotYet,
+  providerProfile,
+  requestedProvider,
+  vpsConnector,
+} from "../providers";
 import { readRequirements } from "../provision";
 import { serverAddress } from "../shared";
 import { databaseSize } from "./server-ops";
@@ -74,9 +80,11 @@ async function pickOption(
 }
 
 /** The new target from the chosen option, with the provider's default image. */
-function targetOf(option: DesignOption): DeployTarget {
+function targetOf(option: DesignOption): CloudDeployTarget {
+  const { provider } = option.target;
+  if (provider === "own") throw ownServerNotYet();
   return {
-    provider: option.target.provider,
+    provider,
     mode: "vps-compose",
     location: option.target.location,
     serverType: option.target.serverType,
@@ -100,11 +108,11 @@ function switchSentence(plan: DeployPlan, noun: string): string {
 /** The summary shown before the first change. */
 export function moveSummary(
   plan: DeployPlan,
-  to: DeployTarget,
+  to: CloudDeployTarget,
   option: DesignOption,
   databaseBytes: number | undefined,
 ): RetargetSummary {
-  const from = plan.target;
+  const from = cloudTarget(plan.target);
   const old = providerWords(from.provider);
   const fresh = providerWords(to.provider);
   const minutes = databaseBytes === undefined ? undefined : downtimeMinutes(databaseBytes);
@@ -181,8 +189,9 @@ export async function startMove(
       },
     );
   }
-  const from = plan.target;
+  const from = cloudTarget(plan.target);
   const to = options.to ?? requestedProvider(requirements);
+  if (to === "own") throw ownServerNotYet();
   if (to === from.provider) {
     const name = providerProfile(to).displayName;
     throw new OpsCrewError(

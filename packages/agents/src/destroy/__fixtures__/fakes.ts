@@ -11,8 +11,8 @@ import type {
   ResourceChange,
   ServerSnapshotApi,
   SnapshotRequest,
-  VpsProviderId,
 } from "@opscrew/contracts";
+import type { CloudProvider } from "@opscrew/plan-schema";
 import { FakeGitHub, SERVER_IPV4 } from "../../provision/__fixtures__/fakes";
 import type { DestroyGitHubApi } from "../types";
 
@@ -34,7 +34,7 @@ function change(
 }
 
 /** The server-module resources of a deployment on `provider` (the server last). */
-function serverResources(provider: VpsProviderId, server: boolean): ResourceChange[] {
+function serverResources(provider: CloudProvider, server: boolean): ResourceChange[] {
   if (provider === "digitalocean") {
     const d = (address: string, type: string) => change(address, type, "delete", DIGITALOCEAN);
     return [
@@ -53,7 +53,7 @@ function serverResources(provider: VpsProviderId, server: boolean): ResourceChan
 
 /** What the destroy plans delete when the whole deployment still exists (server last). */
 export function deployedResources(
-  options: { dns?: boolean; server?: boolean; provider?: VpsProviderId } = {},
+  options: { dns?: boolean; server?: boolean; provider?: CloudProvider } = {},
 ) {
   const resources = serverResources(options.provider ?? "hetzner", options.server !== false);
   if (options.dns) {
@@ -257,7 +257,7 @@ export class ScriptedDestroyEngine implements IacEngine {
 }
 
 /** The app's server as each provider's fake reports it, and the id its snapshot gets. */
-const FAKE_SERVERS: Record<VpsProviderId, { server: AppServer; snapshotId: string }> = {
+const FAKE_SERVERS: Record<CloudProvider, { server: AppServer; snapshotId: string }> = {
   hetzner: { server: { id: "4711", name: "shop", status: "running" }, snapshotId: "9001" },
   digitalocean: {
     server: { id: "3164444", name: "shop", status: "active" },
@@ -283,7 +283,7 @@ export class FakeServers implements ServerSnapshotApi {
 
   constructor(
     readonly events: string[] = [],
-    provider: VpsProviderId = "hetzner",
+    provider: CloudProvider = "hetzner",
   ) {
     this.servers = [{ ...FAKE_SERVERS[provider].server }];
     this.snapshotId = FAKE_SERVERS[provider].snapshotId;

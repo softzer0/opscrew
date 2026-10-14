@@ -1,5 +1,5 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { type ProviderText, providerText } from "../providers";
+import { cloudTarget, type ProviderText, providerText } from "../providers";
 import { siteHosts } from "../runtime";
 import type { RenderContext, RenderedFile } from "../types";
 
@@ -34,7 +34,8 @@ function addressIsPrivate(plan: DeployPlan): boolean {
  * Cloudflare's proxy: a published origin address would let anyone go around Cloudflare.
  */
 export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFile {
-  const provider = providerText(plan.target);
+  const target = cloudTarget(plan.target);
+  const provider = providerText(target);
   const hidden = addressIsPrivate(plan);
   const ip = hidden ? undefined : ctx.serverIpv4;
   const ipv6 = hidden ? undefined : ctx.serverIpv6;
@@ -48,7 +49,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
   const branch = plan.cicd.branch;
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
   const db = plan.services.postgres
-    ? `PostgreSQL 17 in a container on the server, data in \`/srv/data/postgres\`${plan.target.backups ? `; ${provider.runbook.backupsOnDatabaseCell}` : "; automated backups are off"}`
+    ? `PostgreSQL 17 in a container on the server, data in \`/srv/data/postgres\`${target.backups ? `; ${provider.runbook.backupsOnDatabaseCell}` : "; automated backups are off"}`
     : plan.externalServices.length > 0
       ? `External: ${plan.externalServices.join(", ")} (not managed by OpsCrew)`
       : "None";
@@ -68,7 +69,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     "|---|---|",
     `| App | ${cell(url)} |`,
     `| Health check | \`${plan.app.healthPath}\` |`,
-    `| Server | ${cell(`${plan.app.name} — ${provider.serverLabel(plan.target.serverType, plan.target.location)}`)} |`,
+    `| Server | ${cell(`${plan.app.name} — ${provider.serverLabel(target.serverType, target.location)}`)} |`,
     `| IPv4 / IPv6 | ${cell(addresses)} |`,
     `| Deploys | every push to \`${branch}\` runs \`${plan.cicd.workflowPath}\` |`,
     `| Image | \`ghcr.io/${repo.toLowerCase()}\` (GitHub Container Registry) |`,
@@ -126,7 +127,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
     lines.push(
       "## Database backups",
       "",
-      plan.target.backups
+      target.backups
         ? provider.runbook.backupsOn
         : `Automated server backups are **off**. Turn them on with \`opscrew design\` (${provider.runbook.backupsOffPercent}) or make your own backups:`,
       "",
@@ -290,13 +291,14 @@ function wrap(text: string, indent = "", width = 118): string[] {
 /** "Tear it down": what `opscrew destroy` deletes, the snapshot offer and what remains. */
 function teardown(plan: DeployPlan, repo: string, provider: ProviderText): string[] {
   const name = plan.app.name;
+  const { backups } = cloudTarget(plan.target);
   const text = provider.runbook;
   const noun = provider.serverNoun;
   const cloudflare = plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
   const deletes = cloudflare
     ? `${text.deletes(name)}, and the Cloudflare DNS records and rules OpsCrew created`
     : text.deletes(name);
-  const keepsData = plan.services.postgres || plan.target.backups;
+  const keepsData = plan.services.postgres || backups;
   const reason = plan.services.postgres ? `the database lives on the ${noun}` : text.snapshotReason;
   const [snapshotLead = "", ...snapshotRest] = text.snapshotFirst;
   return [
@@ -311,7 +313,7 @@ function teardown(plan: DeployPlan, repo: string, provider: ProviderText): strin
     ...(keepsData
       ? [`- **Snapshot first:** because ${reason}, ${snapshotLead}`, ...snapshotRest]
       : text.noSnapshot),
-    ...text.whatRemains(repo.toLowerCase(), plan.cicd.workflowPath, plan.target.backups),
+    ...text.whatRemains(repo.toLowerCase(), plan.cicd.workflowPath, backups),
     "- **What is removed besides the infrastructure:** the GitHub deploy secrets, so the workflow can no longer deploy,",
     `  and ${text.hostKey} on this machine. \`opscrew/plan.yaml\` records that the deployment was destroyed.`,
     "",

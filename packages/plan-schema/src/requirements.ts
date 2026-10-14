@@ -24,7 +24,11 @@ export const RequirementsSchema = z
     }),
     /** Where to run the app; absent in files written before feature 004, which means Hetzner. */
     provider: VpsProviderSchema.optional(),
-    region: RegionSchema,
+    /**
+     * Where most users are; picks the provider's location. Required unless `provider` is `own`
+     * (a server the user owns stays where it is, so a region given for it is ignored).
+     */
+    region: RegionSchema.optional(),
     uptime: UptimeSchema,
     dataCriticality: DataCriticalitySchema,
     /** Lower-case FQDN, for example `app.example.com`. */
@@ -41,6 +45,13 @@ export const RequirementsSchema = z
     notes: z.string().optional(),
   })
   .superRefine((value, ctx) => {
+    if (value.provider !== "own" && value.region === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["region"],
+        message: `is required when provider is "${value.provider ?? "hetzner"}"`,
+      });
+    }
     if (value.dnsProvider !== "none" && value.domain === undefined) {
       ctx.addIssue({
         code: "custom",

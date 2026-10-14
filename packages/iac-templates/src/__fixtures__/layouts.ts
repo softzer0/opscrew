@@ -1,4 +1,5 @@
-import type { DeployTarget, VpsProvider } from "@opscrew/plan-schema";
+import type { CloudDeployTarget, CloudProvider, DeployTarget } from "@opscrew/plan-schema";
+import { cloudTarget } from "../providers";
 import type { InfraLayout } from "../types";
 import { testPlan } from "./plans";
 
@@ -17,11 +18,11 @@ export type LayoutName = (typeof LAYOUT_NAMES)[number];
 export const DIRECTIONS = [
   ["hetzner", "digitalocean"],
   ["digitalocean", "hetzner"],
-] as const satisfies readonly (readonly [VpsProvider, VpsProvider])[];
+] as const satisfies readonly (readonly [CloudProvider, CloudProvider])[];
 
 /** The fixture target of a provider (the same values `testPlan` uses). */
-export function testTarget(provider: VpsProvider): DeployTarget {
-  return testPlan({ provider }).target;
+export function testTarget(provider: CloudProvider): CloudDeployTarget {
+  return cloudTarget(testPlan({ provider }).target);
 }
 
 /** A move layout from `from` (the server being replaced) to `to` (the new server). */

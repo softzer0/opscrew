@@ -1009,7 +1009,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const result = await run(h, { option: "digitalocean-single-s-2vcpu-4gb-fra1" });
     expect(result.step).toBe("switched");
     const plan = await readArtifact("plan", h.paths.files.plan);
-    expect(plan.target.serverType).toBe("s-2vcpu-4gb");
+    expect(plan.target).toMatchObject({ serverType: "s-2vcpu-4gb" });
     const error = await caught(run(await moveHarness(), { choose: async () => "no-such-option" }));
     expect(error.code).toBe("INVALID_INPUT");
   });

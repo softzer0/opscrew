@@ -136,9 +136,9 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
 
       const plan = await readPlan(project.root);
       expect(plan.target.provider).toBe("digitalocean");
-      expect(plan.target.image).toBe("ubuntu-24-04-x64");
-      expect(plan.target.location).toBe("fra1");
-      expect(plan.target.backups).toBe(true);
+      expect(plan.target).toMatchObject({ image: "ubuntu-24-04-x64" });
+      expect(plan.target).toMatchObject({ location: "fra1" });
+      expect(plan.target).toMatchObject({ backups: true });
       expect(plan.cost.monthly.currency).toBe("USD");
       expect(plan.dns).toMatchObject({ provider: "cloudflare", domain: ANSWERS.domain });
     },

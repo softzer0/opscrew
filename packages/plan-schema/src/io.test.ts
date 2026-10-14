@@ -117,7 +117,7 @@ describe("input tolerance", () => {
       buildContext: ".",
       dockerfile: "Dockerfile",
     });
-    expect(plan.target.image).toBe("ubuntu-24.04");
+    expect(plan.target).toMatchObject({ image: "ubuntu-24.04" });
     expect(plan.infra).toEqual({
       engine: "auto",
       dir: "opscrew/infra/prod",

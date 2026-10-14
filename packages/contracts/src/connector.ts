@@ -10,7 +10,9 @@ export type ProviderId =
   | "gcp"
   | "azure"
   | "contabo"
-  | "namecheap";
+  | "namecheap"
+  /** A server the user already owns, reached over SSH (no provider API). */
+  | "own";
 
 /** What credentials a connector needs and how to create them with the least privilege. */
 export interface CredentialRequirement {
@@ -99,8 +101,11 @@ export interface ComputeCatalog {
   extras(location: string): Promise<ProviderExtras>;
 }
 
-/** Providers OpsCrew deploys a single server to (`vps-compose` mode). */
-export type VpsProviderId = Extract<ProviderId, "hetzner" | "digitalocean">;
+/**
+ * Targets OpsCrew deploys a single server to (`vps-compose` mode): Hetzner Cloud, DigitalOcean, or
+ * a server the user already owns (`own`, which OpsCrew never creates or deletes).
+ */
+export type VpsProviderId = Extract<ProviderId, "hetzner" | "digitalocean" | "own">;
 
 /** A server OpsCrew created for an app, as the provider reports it. */
 export interface AppServer {

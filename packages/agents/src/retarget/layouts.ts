@@ -1,9 +1,9 @@
 import type { InfraLayout, ServerModule } from "@opscrew/iac-templates";
-import type { DeployTarget, Retarget } from "@opscrew/plan-schema";
+import type { CloudDeployTarget, DeployTarget, Retarget } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 
 /** The old server's target (`plan.retarget.from.target`) with its image filled in. */
-export function previousTarget(move: Pick<Retarget, "from">): DeployTarget {
+export function previousTarget(move: Pick<Retarget, "from">): CloudDeployTarget {
   const target = move.from.target;
   return { ...target, image: target.image ?? providerProfile(target.provider).defaultImage };
 }

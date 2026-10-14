@@ -78,34 +78,61 @@
       "additionalProperties": false
     },
     "target": {
-      "type": "object",
-      "properties": {
-        "provider": {
-          "type": "string",
-          "enum": ["hetzner", "digitalocean"]
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": ["hetzner", "digitalocean"]
+            },
+            "mode": {
+              "type": "string",
+              "const": "vps-compose"
+            },
+            "location": {
+              "type": "string",
+              "minLength": 1
+            },
+            "serverType": {
+              "type": "string",
+              "minLength": 1
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            },
+            "backups": {
+              "type": "boolean"
+            }
+          },
+          "required": ["provider", "mode", "location", "serverType", "backups"],
+          "additionalProperties": false
         },
-        "mode": {
-          "type": "string",
-          "const": "vps-compose"
-        },
-        "location": {
-          "type": "string",
-          "minLength": 1
-        },
-        "serverType": {
-          "type": "string",
-          "minLength": 1
-        },
-        "image": {
-          "type": "string",
-          "minLength": 1
-        },
-        "backups": {
-          "type": "boolean"
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "own"
+            },
+            "mode": {
+              "type": "string",
+              "const": "vps-compose"
+            },
+            "arch": {
+              "type": "string",
+              "enum": ["amd64", "arm64"]
+            },
+            "access": {
+              "type": "string",
+              "enum": ["public", "tunnel"]
+            }
+          },
+          "required": ["provider", "mode", "arch", "access"],
+          "additionalProperties": false
         }
-      },
-      "required": ["provider", "mode", "location", "serverType", "backups"],
-      "additionalProperties": false
+      ]
     },
     "services": {
       "type": "object",
@@ -381,6 +408,38 @@
           "type": "boolean"
         }
       },
+      "additionalProperties": false
+    },
+    "portainer": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.]+)?$"
+        },
+        "access": {
+          "default": "local",
+          "type": "string",
+          "enum": ["local", "subdomain"]
+        },
+        "hostname": {
+          "type": "string",
+          "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
+        },
+        "allowedEmails": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "email",
+            "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          }
+        }
+      },
+      "required": ["version"],
       "additionalProperties": false
     },
     "approvals": {

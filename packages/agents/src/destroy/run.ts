@@ -13,7 +13,7 @@ import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engin
 import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { type ProviderProfile, planProvider, providerProfile } from "../providers";
+import { cloudTarget, type ProviderProfile, planProvider, providerProfile } from "../providers";
 import { checkProvider, githubCoordinates } from "../provision";
 import { hasDeployment, recordServerAddress, serverAddress } from "../shared";
 import {
@@ -352,7 +352,7 @@ async function destroyInfrastructure(
     }
     const warning = dataWarning(plan, serverDeleted);
     const unrecoverable =
-      plan.target.backups && texts.keptBackups
+      cloudTarget(plan.target).backups && texts.keptBackups
         ? `What is stored on the ${texts.noun} can only be recovered from the automatic backups ${texts.company} keeps for a while after this.`
         : `What is stored on the ${texts.noun} cannot be recovered after this.`;
     const snapshotLine =
@@ -498,7 +498,7 @@ function remainingAfterDestroy(input: {
     provider: plan.target.provider,
     app: plan.app.name,
     snapshotId: input.snapshotId,
-    backups: plan.target.backups,
+    backups: cloudTarget(plan.target).backups,
   });
   if (input.secretsRemoved.length === 0 && github.skipReason) {
     items.push(
@@ -607,7 +607,7 @@ export async function runDestroy(
   }
   const warning = dataWarning(plan, serverInState);
   if (warning) deps.reporter.warn(warning);
-  const data = { postgres: plan.services.postgres, backups: plan.target.backups };
+  const data = { postgres: plan.services.postgres, backups: cloudTarget(plan.target).backups };
   const snapshotFirst = serverInState && snapshotWanted(options.snapshot, data);
   if (snapshotFirst) {
     deps.reporter.info(
