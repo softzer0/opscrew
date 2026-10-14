@@ -1,6 +1,6 @@
 ---
 name: opscrew-deploy
-description: Take the user's app from this repository to a hardened production deployment on their own cloud with OpsCrew (scan, analyze, interview, design, prepare the code, then provision). Use when the user wants to deploy, host, launch or "put online" their app, or move it off Lovable, Bolt, Replit or v0 hosting.
+description: Take the user's app from this repository to a hardened production deployment on their own cloud or a server they already have with OpsCrew (scan, analyze, interview, design, prepare the code, then provision), and turn Portainer on or off. Use when the user wants to deploy, host, launch or "put online" their app, deploy to their own server or home server, or move it off Lovable, Bolt, Replit or v0 hosting.
 ---
 
 # Deploy this app with OpsCrew
@@ -29,12 +29,33 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    asking the user.
 3. **Interview.** Call `opscrew_interview_questions`. Ask the user every returned question (use the
    question's options when it has them), then call `opscrew_save_requirements` with the answers.
-   One question is where to run the app: Hetzner Cloud or DigitalOcean (Droplets). Its default is
-   the provider whose API token is already set (`HCLOUD_TOKEN` or `DIGITALOCEAN_TOKEN`), otherwise
-   Hetzner Cloud; let the user choose.
+   One question is where to run the app: Hetzner Cloud, DigitalOcean (Droplets) or a server the
+   user already has (`own`: a rented server elsewhere, a company machine or a home server). Its
+   default is the provider whose API token is already set (`HCLOUD_TOKEN` or
+   `DIGITALOCEAN_TOKEN`), otherwise Hetzner Cloud; let the user choose. For `own`, also ask the
+   returned server questions and pass them as `server.host`, `server.port`, `server.user`,
+   `server.key` and `server.reachable`:
+   - the key is a path to the private key file, or `agent` for the SSH agent (which also covers a
+     key with a passphrase). Never ask for a password, a passphrase or the key itself.
+   - the address stays on the user's computer (`.opscrew/server.json`); tool results say "your
+     server" instead. Never write the address into a file, a commit or a pull request.
+   - a server the internet cannot reach (at home, behind a router) is served through a Cloudflare
+     Tunnel, which needs a domain whose DNS is on the user's Cloudflare account.
 4. **Design.** Call `opscrew_design_options`. Present each option with its monthly cost, whether it
    fits the budget and its trade-offs; say which one OpsCrew recommends and why. When prices are
    marked as static estimates, say so. After the user chooses, call `opscrew_select_design`.
+   - **Currencies.** When the user's budget is in another currency than the provider's prices,
+     OpsCrew converts with a fixed approximate rate. If the user wants exact numbers, search the
+     web for today's exchange rate, recalculate the monthly costs with it and say which rate and
+     date you used.
+   - **Own server.** OpsCrew connects over SSH and inspects the server read-only first. The first
+     time, the user confirms the server's SSH host key in a dialog: tell them to compare the
+     fingerprint with the one on the server itself (`ssh-keygen -lf
+     /etc/ssh/ssh_host_ed25519_key.pub` in their provider's web console), never approve it for
+     them. If the client cannot show the dialog, ask them to run `npx opscrew design` in a
+     terminal once. There is one option and no price (they already pay for the server); pass on
+     every warning (too little memory or disk, a tunnel without a Cloudflare domain) and say that
+     OpsCrew cannot turn on backups there, so backups are their responsibility.
 5. **Prepare the code.** Read `opscrew/plan.yaml` (`codeChanges`). Apply the pending changes by
    following the `opscrew-adapt` skill. Show the user the diff and let them commit it (or commit it
    for them only after they say so). The changes must be merged into the deploy branch before the
@@ -59,6 +80,20 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    dialog (a destroying plan needs them to type the server name); never claim approval yourself.
    Unless `OPSCREW_APP_ENV_FILE` is set, the deploy secrets still have to be stored by running
    `npx opscrew provision` in their terminal afterwards (it resumes without changing the server).
+
+   **On the user's own server** there are two plans, each approved on its own: the Cloudflare
+   infrastructure (DNS records, or the tunnel and Cloudflare Access in tunnel mode) and the host
+   plan, which lists every change OpsCrew would make on the server (Docker 28 or newer from
+   Docker's repository, a `deploy` user, SSH hardening, the ufw firewall, fail2ban, automatic
+   security updates, `/srv/app` and `/srv/data`) and marks what is already in place. Show both to
+   the user. `opscrew_plan` returns `planHash` and `hostPlanHash`; pass both to `opscrew_apply`
+   (only `planHash` when it returned only a host plan). In a terminal the user runs
+   `npx opscrew provision`, or in scripts `npx opscrew provision --plan-only` and then
+   `--approve <infrastructure hash> --approve <host plan hash>`; `--yes` never approves either.
+   OpsCrew stops and changes nothing when the server already runs a web server on ports 80/443,
+   uses another firewall, has Docker from Snap, Podman or the distribution's package, or runs
+   another OpsCrew app; pass on its explanation. Tunnel mode and Portainer's subdomain need
+   Cloudflare Zero Trust turned on for the account (free plan, https://one.dash.cloudflare.com/).
 8. **Check.** After the first deploy finishes, call `opscrew_verify` and `opscrew_secure` and walk
    the user through anything that failed. Point them to `opscrew/RUNBOOK.md` for day-to-day
    operations.
@@ -69,8 +104,10 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   every item marked ✗ (tools to install, tokens to create). `npx opscrew init --fix` also adds
   `.opscrew/` to `.gitignore`.
 - **Drift.** When the user asks whether anything changed, or after they worked in the Hetzner Cloud,
-  DigitalOcean or Cloudflare console, call `opscrew_drift`. It reports changes made outside OpsCrew (attribute
-  names only), changes not applied yet and edited generated files, and changes nothing. To undo
+  DigitalOcean or Cloudflare console (or on their own server over SSH), call `opscrew_drift`. It
+  reports changes made outside OpsCrew (attribute names only; on their own server also its SSH,
+  firewall, deploy user and runtime files), changes not applied yet and edited generated files,
+  and changes nothing. To undo
   drift the user runs `npx opscrew provision`; to keep a console change, `opscrew/plan.yaml` must
   be updated to match first.
 - **Getting a domain.** When the user has no domain yet, call `opscrew_domain_check` with a name
@@ -110,7 +147,20 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   to deploy (`appDir`); ask the user, never guess.
 - **Tearing down.** There is no tool for it on purpose. Tell the user to run `npx opscrew destroy`
   in their own terminal: it offers a snapshot first (the database is deleted with the server), asks
-  them to type the server name and removes the deploy secrets from GitHub.
+  them to type the server name and removes the deploy secrets from GitHub. On their own server it
+  never deletes or reinstalls the server: it removes the app and its Cloudflare records after they
+  type the app's name, keeps the app's data unless they add `--delete-data`, and reverses
+  OpsCrew's own changes to the server only with `--undo-host` (a separate plan they approve).
+  There are no snapshots there: backups are their responsibility.
+- **Portainer.** A web UI for the containers, off by default, on any server OpsCrew deploys to.
+  `opscrew_portainer_enable` installs it (listening only on the server itself, reached through an
+  SSH tunnel; an admin password generated on the user's computer) after the user approves the plan
+  in a dialog; `subdomain` and `allowEmails` opt in to a subdomain behind Cloudflare Access.
+  `opscrew_portainer_status` tells where the password file is; never read that file or print the
+  password. To open Portainer the user runs `npx opscrew portainer status` in a terminal and
+  starts the SSH tunnel it prints. Warn them that Portainer controls Docker, which is the same as
+  root on the server, so they should keep it local unless they need the subdomain.
+  `opscrew_portainer_disable` removes it; deleting its data needs the app's name typed.
 - **Moving to another provider.** Moving a live app between Hetzner Cloud and DigitalOcean is
   terminal-only on purpose; there is no tool for it, and you must not try to perform its steps
   yourself. Tell the user to run `npx opscrew retarget --to <provider>` (`hetzner` or

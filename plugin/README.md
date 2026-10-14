@@ -36,6 +36,11 @@ Infrastructure changes always go through an OpsCrew plan that you approve. Produ
 entered in your own terminal (`npx opscrew provision`) and go straight to GitHub's encrypted secret
 store; they never pass through the chat.
 
+On a server you already have, the changes OpsCrew makes on the server are a plan of their own that
+you approve in a dialog, and you confirm the server's SSH host key the first time. OpsCrew never asks
+for a password or passphrase, and your server's address stays on your computer: the tools show
+"your server" instead.
+
 ## Local development
 
 Build the CLI (`pnpm --filter opscrew build`) and point the MCP config at it:
