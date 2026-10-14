@@ -45,8 +45,29 @@ export function buildRunner(plan: DeployPlan): string {
     : "ubuntu-latest";
 }
 
-const SSH_OPTS =
-  "ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)";
+const SSH_OPTS_BASE =
+  "-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20";
+
+/**
+ * The bash `ssh_opts` array shared by every `ssh` and `scp` call. A server whose sshd listens on a
+ * port other than 22 (public mode) gets `-o Port=<port>`, which both `ssh` and `scp` honour (and
+ * which makes ssh look up `[host]:port` in known_hosts, as provision writes it). Tunnel mode never
+ * gets it: cloudflared's ProxyCommand ignores the client-side port, the tunnel itself routes to the
+ * server's sshd port, and known_hosts holds the bare SSH hostname.
+ */
+function sshOptsLine(port: number | undefined, tunnel: boolean): string {
+  const portOpt = port === undefined || port === 22 || tunnel ? "" : ` -o Port=${port}`;
+  return `ssh_opts=(${SSH_OPTS_BASE}${portOpt})`;
+}
+
+function checkSshPort(port: number | undefined): void {
+  if (port === undefined) return;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      `The server's SSH port "${port}" is not a whole number between 1 and 65535. Check the port sshd listens on (sshd -T) and run the command again.`,
+    );
+  }
+}
 
 function secret(name: string): string {
   return `\${{ secrets.${name} }}`;
@@ -144,6 +165,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     );
   }
   const hasDb = plan.services.postgres;
+  checkSshPort(ctx.sshPort);
 
   const buildSteps = [
     `- uses: ${CHECKOUT_ACTION}`,
@@ -195,6 +217,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
   // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed
   // HCL anyway); the service token reaches cloudflared only through the environment.
   const tunnelHost = sshHostname(plan);
+  const sshOpts = sshOptsLine(ctx.sshPort, tunnelHost !== undefined);
   const hostEnv = [
     tunnelHost === undefined
       ? `    HOST: ${secret(DEPLOY_SECRETS.host)}`
@@ -214,7 +237,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
   ];
   const uploadRun = [
     "    set -euo pipefail",
-    `    ${SSH_OPTS}`,
+    `    ${sshOpts}`,
     '    scp "${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@${HOST}:/srv/app/"',
     '    printf \'%s\\n\' "${APP_ENV:-}" | ssh "${ssh_opts[@]}" "deploy@${HOST}" \'umask 077 && cat > /srv/app/app.env\'',
     ...(hasDb
@@ -268,7 +291,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "      exit 1",
     "    fi",
     '    echo "Deploying ${TAG:-the new image} as $IMAGE"',
-    `    ${SSH_OPTS}`,
+    `    ${sshOpts}`,
     '    ssh "${ssh_opts[@]}" "deploy@${HOST}" \'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous; fi\'',
     '    printf \'%s\\n\' "$REGISTRY_TOKEN" | ssh "${ssh_opts[@]}" "deploy@${HOST}" "docker login ghcr.io -u \'${GITHUB_ACTOR}\' --password-stdin"',
     `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "set -e; trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT; cd /srv/app; ${switchCommands(plan)}"`,
@@ -296,7 +319,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "    IMAGE: ${{ needs.build.outputs.image }}",
     "  run: |",
     "    set -uo pipefail",
-    `    ${SSH_OPTS}`,
+    `    ${sshOpts}`,
     "    outcome=unchanged",
     `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
     '      outcome="$(ssh "${ssh_opts[@]}" "deploy@${HOST}" "cd /srv/app || exit 1; if ! grep -qxF \'APP_IMAGE=${IMAGE}\' .env 2>/dev/null; then echo unchanged; elif [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; else mv .env.previous .env && docker compose up -d --remove-orphans >&2 && echo restored; fi")"',

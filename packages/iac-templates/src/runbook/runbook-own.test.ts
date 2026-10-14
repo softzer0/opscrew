@@ -103,6 +103,30 @@ describe("renderRunbook for a server the user owns", () => {
     expect(runbook({ domain: "shop.example.com" })).not.toContain("Portainer");
   });
 
+  it("uses the server's SSH port in every direct SSH command when it is not 22", () => {
+    const key = "~/.opscrew/projects/shop-0123456789ab/deploy_key";
+    for (const access of ["public", "tunnel"] as const) {
+      const text = runbook(
+        access === "public"
+          ? { portainer: { access: "local" } }
+          : { access, domain: "shop.example.com", portainer: { access: "local" } },
+        { ...ctx, sshPort: 2222 },
+      );
+      const server = access === "public" ? IPV4 : "<server>";
+      expect(text).toContain(`ssh -p 2222 -i ${key} deploy@${server}`);
+      expect(text).toContain(`ssh -p 2222 -i ${key} -N -L 9443:127.0.0.1:9443 deploy@${server}`);
+      expect(text).not.toMatch(/ssh -i /);
+    }
+    const plain = runbook({ domain: "shop.example.com", portainer: { access: "local" } });
+    expect(
+      runbook(
+        { domain: "shop.example.com", portainer: { access: "local" } },
+        { ...ctx, sshPort: 22 },
+      ),
+    ).toBe(plain);
+    expect(plain).not.toContain("-p ");
+  });
+
   it("matches the snapshots", () => {
     expect(runbook({ domain: "shop.example.com", www: true })).toMatchSnapshot("public");
     expect(

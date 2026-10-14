@@ -71,7 +71,7 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T911 [P] [US1] The deploy workflow honours the server's SSH port (found by T905: a public-mode own server listening on a port other than 22 cannot be deployed to) in `packages/iac-templates/src/workflow/**`
+- [X] T911 [P] [US1] The deploy workflow honours the server's SSH port (found by T905: a public-mode own server listening on a port other than 22 cannot be deployed to) in `packages/iac-templates/src/workflow/**`
   - Owns: `packages/iac-templates/src/workflow/**` (+ tests and snapshots)
   - Reads: `packages/iac-templates/src/workflow/index.ts` (`SSH_OPTS`, the `scp` and `ssh` calls); `RenderContext.sshPort` (T903); `packages/agents/src/provision/secrets.ts` (known_hosts uses `[ip]:port` for such ports)
   - Accept: every `ssh` and `scp` call in the deploy and rollback jobs uses the plan's SSH port (`-p` / `-P`) when it is not 22; output for port 22 and for Hetzner/DigitalOcean is byte-identical (snapshots); tunnel mode unchanged (its ProxyCommand uses the server's sshd port).

@@ -31,7 +31,10 @@ export function renderOwnRunbook(
   const projectDir = `~/.opscrew/projects/${ctx.projectId ?? "<project-id>"}`;
   const keyPath = `${projectDir}/deploy_key`;
   const server = ip ?? "<server>";
-  const sshCommand = `ssh -i ${keyPath} deploy@${server}`;
+  // Both commands connect to the server directly (in tunnel mode over the user's own network), so
+  // sshd's port applies whenever it is not 22.
+  const port = ctx.sshPort !== undefined && ctx.sshPort !== 22 ? `-p ${ctx.sshPort} ` : "";
+  const sshCommand = `ssh ${port}-i ${keyPath} deploy@${server}`;
   const sshHost = sshHostname(plan);
   const portainer = plan.portainer?.enabled ? plan.portainer : undefined;
   const portainerHost = portainerHostname(plan);
@@ -168,7 +171,7 @@ export function renderOwnRunbook(
       "(`opscrew portainer status` prints this command for you):",
       "",
       "```bash",
-      `ssh -i ${keyPath} -N -L ${PORTAINER_PORT}:127.0.0.1:${PORTAINER_PORT} deploy@${server}`,
+      `ssh ${port}-i ${keyPath} -N -L ${PORTAINER_PORT}:127.0.0.1:${PORTAINER_PORT} deploy@${server}`,
       "```",
       "",
       `Then open https://localhost:${PORTAINER_PORT} (Portainer uses a self-signed certificate) and log in as \`admin\`.`,
