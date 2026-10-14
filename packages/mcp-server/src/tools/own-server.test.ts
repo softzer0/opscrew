@@ -279,7 +279,7 @@ const adminShell: RemoteExec = {
   run: async (command) => ({ exitCode: command === "true" ? 0 : 1, stdout: "", stderr: "" }),
 };
 
-function ownPlan(o: { deployed?: boolean; portainer?: boolean } = {}) {
+function ownPlan(o: { deployed?: boolean; portainer?: boolean; cloudflare?: boolean } = {}) {
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-14T10:00:00.000Z",
@@ -302,7 +302,15 @@ function ownPlan(o: { deployed?: boolean; portainer?: boolean } = {}) {
     },
     codeChanges: [],
     infra: { engine: "tofu" },
-    dns: { provider: "none", proxied: false },
+    dns: o.cloudflare
+      ? {
+          provider: "cloudflare",
+          domain: "shop.example.com",
+          zone: "example.com",
+          proxied: false,
+          www: false,
+        }
+      : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: {},
     ...(o.portainer ? { portainer: { enabled: true, version: "2.45.2", access: "local" } } : {}),
@@ -344,7 +352,33 @@ interface Options {
   /** Record the login (with this pinned key, or none). */
   login?: Partial<OwnServerConnectionInput> | false;
   facts?: (projectId: string) => HostFacts;
+  /** Resource changes the fake engine plans (Cloudflare's DNS record for a domain). */
+  changes?: ResourceChange[];
 }
+
+/** The DNS record a public-mode own plan with a Cloudflare domain creates. */
+const DNS_RECORD: ResourceChange = {
+  address: "module.dns.cloudflare_dns_record.a",
+  type: "cloudflare_dns_record",
+  name: "a",
+  provider: "registry.opentofu.org/cloudflare/cloudflare",
+  action: "create",
+};
+
+/** Cloudflare fake: the token works and `example.com` is visible with no records of its own. */
+const fakeCloudflare: NonNullable<ProvisionServices["cloudflare"]> = {
+  verifyToken: async () => ({ ok: true, message: "The Cloudflare token is active." }),
+  findZone: async () => ({
+    id: "zone-123",
+    name: "example.com",
+    status: "active",
+    nameServers: [],
+    accountId: "acct-0001",
+  }),
+  listDnsRecords: async () => [],
+  inspectEntrypointRuleset: async () => ({ exists: false, ownedByOpsCrew: false, ruleCount: 0 }),
+  getIpRanges: async () => ({ ipv4: ["173.245.48.0/20"], ipv6: ["2400:cb00::/32"] }),
+};
 
 async function connect(options: Options = {}) {
   const root = await tempDir("opscrew-mcp-own-");
@@ -403,11 +437,12 @@ async function connect(options: Options = {}) {
     verifyLogin: async () => true,
     homeDir: keyHome,
   };
-  const engine = new FakeEngine();
+  const engine = new FakeEngine(options.changes ?? []);
   const github = new FakeGitHub();
   const services: ProvisionServices = {
     engine: async () => engine,
     github,
+    cloudflare: fakeCloudflare,
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own,
@@ -529,6 +564,9 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     const selected = await h.call("opscrew_select_design", { optionId: "own-server" });
     expect(selected.isError, textOf(selected)).toBeFalsy();
     expect(textOf(selected)).toContain("no server price");
+    expect(dataOf(selected).plan).not.toHaveProperty("cost");
+    expect(dataOf(selected).chosen).not.toHaveProperty("cost");
+    expect(JSON.stringify(dataOf(selected))).not.toMatch(/"amount"/);
     expect(h.host.inspections).toBe(2);
     expectNoAddress(h);
   });
@@ -571,6 +609,98 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     expect(kinds.some((m) => m.includes("Apply the host plan to your server"))).toBe(true);
     expect(textOf(applied)).toContain("backups are the user's responsibility");
     expectNoAddress(h);
+  });
+
+  it("with a Cloudflare domain: two plans, two dialogs (infrastructure, then host), no price", async () => {
+    const h = await connect({
+      elicit: approveAll,
+      plan: ownPlan({ cloudflare: true }),
+      login: { hostKey: FINGERPRINT },
+      changes: [DNS_RECORD],
+    });
+    const planned = await h.call("opscrew_plan");
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    const { planHash, hostPlanHash } = dataOf(planned) as {
+      planHash: string;
+      hostPlanHash: string;
+    };
+    expect(planHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(hostPlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(planHash).not.toBe(hostPlanHash);
+    const text = textOf(planned);
+    expect(text).toContain(`planHash ${planHash} and hostPlanHash ${hostPlanHash}`);
+    expect(text).not.toMatch(/€|live prices/i);
+    expect(dataOf(planned)).not.toHaveProperty("cost");
+
+    const applied = await h.call("opscrew_apply", { planHash, hostPlanHash });
+    expect(applied.isError, textOf(applied)).toBeFalsy();
+    const kinds = (dataOf(applied).approvals as { kind: string }[])
+      .map((d) => d.kind)
+      .filter((kind) => kind === "iac-apply" || kind === "host-apply");
+    expect(kinds).toEqual(["iac-apply", "host-apply"]);
+    expect(h.engine.applied.map((a) => a.approvedPlanHash)).toEqual([planHash]);
+    expect(h.host.applies.map((a) => a.options.approvedHash)).toEqual([hostPlanHash]);
+    expectNoAddress(h);
+  });
+
+  it("declining the host dialog after Cloudflare was applied leaves the server untouched and says so", async () => {
+    const decline: Answer = (params) =>
+      params.message.includes("host plan") ? { action: "decline" } : approveAll(params);
+    const h = await connect({
+      elicit: decline,
+      plan: ownPlan({ cloudflare: true }),
+      login: { hostKey: FINGERPRINT },
+      changes: [DNS_RECORD],
+    });
+    const planned = await h.call("opscrew_plan");
+    const { planHash, hostPlanHash } = dataOf(planned) as {
+      planHash: string;
+      hostPlanHash: string;
+    };
+    const applied = await h.call("opscrew_apply", { planHash, hostPlanHash });
+    expect(applied.isError).toBe(true);
+    expect(h.engine.applied).toHaveLength(1);
+    expect(h.host.applies).toEqual([]);
+    expect(textOf(applied)).toContain(
+      "The Cloudflare changes are applied; nothing on the user's server was changed.",
+    );
+  });
+
+  it("passwordLogins is the user's choice for a server with password-only users, as in the CLI", async () => {
+    const withPasswords = () => {
+      const facts = freshFacts();
+      facts.loginUsers = [
+        { name: "root", uid: 0, password: false, keys: true },
+        { name: "alice", uid: 1000, password: true, keys: false },
+      ];
+      return facts;
+    };
+    const h = await connect({
+      elicit: approveAll,
+      plan: ownPlan(),
+      login: { hostKey: FINGERPRINT },
+      facts: withPasswords,
+    });
+    const blocked = await h.call("opscrew_plan");
+    expect(blocked.isError).toBe(true);
+    expect(textOf(blocked)).toContain("password");
+
+    const planned = await h.call("opscrew_plan", { passwordLogins: "keep" });
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    const hostPlanHash = dataOf(planned).hostPlanHash as string;
+    expect(textOf(planned)).toContain(`--password-logins keep`);
+
+    const applied = await h.call("opscrew_apply", {
+      planHash: hostPlanHash,
+      passwordLogins: "keep",
+    });
+    expect(applied.isError, textOf(applied)).toBeFalsy();
+    const sshd = h.host.applies[0]?.plan.steps.find((step) => step.id === "sshd");
+    expect(sshd?.params.disablePasswords).toBe(false);
+    // The dialog the user approved showed the choice.
+    expect(h.elicited.some((e) => e.message.includes("password logins left as they are"))).toBe(
+      true,
+    );
   });
 
   it("a declined host plan changes nothing on the server", async () => {

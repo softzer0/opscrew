@@ -96,6 +96,11 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    (only `planHash` when it returned only a host plan). In a terminal the user runs
    `npx opscrew provision`, or in scripts `npx opscrew provision --plan-only` and then
    `--approve <infrastructure hash> --approve <host plan hash>`; `--yes` never approves either.
+   When other users on the server log in with a password and have no SSH key, OpsCrew stops until
+   the user chooses: ask them whether to turn password logins off anyway (`off`) or keep them
+   (`keep`), never choose for them, and pass their answer as `passwordLogins` to both `opscrew_plan`
+   and `opscrew_apply` (in a terminal: `--password-logins off|keep`). The host plan then shows the
+   choice in the dialog they approve.
    OpsCrew stops and changes nothing when the server already runs a web server on ports 80/443,
    uses another firewall, has Docker from Snap, Podman or the distribution's package, or runs
    another OpsCrew app; pass on its explanation. Tunnel mode and Portainer's subdomain need

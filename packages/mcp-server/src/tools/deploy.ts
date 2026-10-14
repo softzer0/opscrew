@@ -234,6 +234,9 @@ function checkLines(checks: readonly CheckResult[]): string[] {
   );
 }
 
+/** The CLI's `--password-logins off|keep` for a server the user owns. */
+const PASSWORD_LOGINS_INPUT = z.enum(["off", "keep"]).optional();
+
 const SavedHostPlanSchema = z.looseObject({
   steps: z.array(z.looseObject({ state: z.string() })),
 });
@@ -246,13 +249,31 @@ async function savedHostPlan(
   phase: Pick<PhaseDeps, "paths">,
   hash: string,
 ): Promise<{ changes: boolean } | undefined> {
+  let text: string;
   try {
-    const text = await readFile(hostPlanFile(phase.paths, hash), "utf8");
-    const plan = SavedHostPlanSchema.parse(JSON.parse(text));
-    return { changes: plan.steps.some((step) => step.state === "change") };
-  } catch {
-    return undefined;
+    text = await readFile(hostPlanFile(phase.paths, hash), "utf8");
+  } catch (error) {
+    // Only a missing file means "no such host plan"; any other problem must not hide one.
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return undefined;
+    throw error;
   }
+  const parsed = SavedHostPlanSchema.safeParse(
+    (() => {
+      try {
+        return JSON.parse(text) as unknown;
+      } catch {
+        return undefined;
+      }
+    })(),
+  );
+  if (!parsed.success) {
+    throw new OpsCrewError(
+      "ARTIFACT_INVALID",
+      `The saved host plan ${hash} (.opscrew/plans/host-${hash}.json) is damaged, so OpsCrew cannot tell what it changes.`,
+      { hint: "Call opscrew_plan again and show the user the new plans." },
+    );
+  }
+  return { changes: parsed.data.steps.some((step) => step.state === "change") };
 }
 
 /** The host plan as OpsCrew described it while planning (from the collected messages). */
@@ -331,13 +352,16 @@ export function registerDeployTools(
     {
       title: "Plan the infrastructure",
       description:
-        "Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (Hetzner Cloud or DigitalOcean) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. On a server the user already has, it also inspects the server read-only and returns the host plan (every change OpsCrew would make on the server) with its own hash. Never applies anything: show the plans to the user, then call opscrew_apply with the hashes. Needs the provider's API token (HCLOUD_TOKEN for Hetzner Cloud, DIGITALOCEAN_TOKEN for DigitalOcean; none for the user's own server, whose SSH host key must have been confirmed once) and GitHub access in the MCP server's environment.",
+        "Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (Hetzner Cloud or DigitalOcean) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. On a server the user already has, it also inspects the server read-only and returns the host plan (every change OpsCrew would make on the server) with its own hash. When other users on that server log in with a password and no SSH key, OpsCrew stops until the user chooses: pass passwordLogins 'off' (turn password logins off anyway) or 'keep' (leave them on), the CLI's --password-logins, and pass the same value to opscrew_apply. Never applies anything: show the plans to the user, then call opscrew_apply with the hashes. Needs the provider's API token (HCLOUD_TOKEN for Hetzner Cloud, DIGITALOCEAN_TOKEN for DigitalOcean; none for the user's own server, whose SSH host key must have been confirmed once) and GitHub access in the MCP server's environment.",
       inputSchema: {
         ...projectDirInput,
         engine: z
           .enum(["auto", "tofu", "terraform"])
           .optional()
           .describe("IaC engine to use; defaults to the plan's choice (OpenTofu when installed)."),
+        passwordLogins: PASSWORD_LOGINS_INPUT.describe(
+          'The user\'s own server, only when OpsCrew stopped because other users log in with a password and no SSH key: the user\'s explicit choice, "off" (turn password logins off anyway) or "keep" (leave them on). Ask the user; never choose for them. The host plan shows the choice and the user approves it.',
+        ),
       },
       annotations: {
         readOnlyHint: false,
@@ -347,7 +371,7 @@ export function registerDeployTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, engine }) =>
+    ({ projectDir, engine, passwordLogins }) =>
       runTool(deps, "opscrew_plan", projectDir, async (call) => {
         const phase = await call.phaseDeps({
           approvalHandler: new PlanToolApprovalHandler(deps.clock),
@@ -355,6 +379,7 @@ export function registerDeployTools(
         const result = await runProvision(phase, {
           planOnly: true,
           ...(engine !== undefined ? { engine } : {}),
+          ...(passwordLogins === undefined ? {} : { passwordLogins }),
           ...servicesOption(options),
         });
         const plan = await readArtifact("plan", phase.paths.files.plan);
@@ -375,7 +400,11 @@ export function registerDeployTools(
           ...(saved !== undefined ? [saved.planHash] : []),
           ...(hostHash !== undefined ? [hostHash] : []),
         ];
-        const applyCommand = `opscrew provision ${hashes.map((h) => `--approve ${h}`).join(" ")}`;
+        const applyCommand = [
+          "opscrew provision",
+          ...hashes.map((h) => `--approve ${h}`),
+          ...(passwordLogins === undefined ? [] : [`--password-logins ${passwordLogins}`]),
+        ].join(" ");
         if (saved === undefined && hostHash === undefined) {
           return {
             text: own
@@ -388,12 +417,16 @@ export function registerDeployTools(
             },
           };
         }
-        const applyArgs =
+        const applyArgs = `${
           saved !== undefined && hostHash !== undefined
             ? `planHash ${saved.planHash} and hostPlanHash ${hostHash}`
-            : `planHash ${hashes[0]}`;
+            : `planHash ${hashes[0]}`
+        }${passwordLogins === undefined ? "" : ` and passwordLogins "${passwordLogins}"`}`;
         const text = [
-          ...(saved !== undefined ? [describePlan(saved, plan)] : []),
+          // A server the user owns costs nothing more: no price in the plan (as in the CLI).
+          ...(saved !== undefined
+            ? [describePlan(saved, plan, own ? { costUnchanged: true } : {})]
+            : []),
           ...(hostText !== undefined ? ["", hostText] : []),
           "",
           `Nothing was created${own ? " and nothing on the user's server was changed" : ""}. Show ${hashes.length > 1 ? "both plans" : "this plan"} to the user. To apply exactly ${hashes.length > 1 ? "these plans" : "this plan"}, call opscrew_apply with ${applyArgs}: OpsCrew then asks the user to approve each in a dialog. Without that dialog, the user can run this in a terminal:`,
@@ -421,7 +454,7 @@ export function registerDeployTools(
     {
       title: "Apply an approved plan",
       description:
-        "Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (Hetzner Cloud or DigitalOcean, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). On a server the user already has, also pass hostPlanHash: the host plan is shown and approved in its own dialog before OpsCrew changes the server (when only a host plan was returned, pass it as planHash). Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with `opscrew provision` in a terminal. Refuses when the client cannot show dialogs.",
+        "Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (Hetzner Cloud or DigitalOcean, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). On a server the user already has, also pass hostPlanHash: the host plan is shown and approved in its own dialog before OpsCrew changes the server (when only a host plan was returned, pass it as planHash), with the same passwordLogins choice given to opscrew_plan, if any. Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with `opscrew provision` in a terminal. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
         planHash: z
@@ -433,6 +466,9 @@ export function registerDeployTools(
           .describe(
             "The user's own server: SHA-256 hash of the host plan, exactly as returned by opscrew_plan.",
           ),
+        passwordLogins: PASSWORD_LOGINS_INPUT.describe(
+          "The user's own server: the same password-logins choice that was passed to opscrew_plan (the host plan's hash depends on it).",
+        ),
       },
       annotations: {
         readOnlyHint: false,
@@ -442,7 +478,7 @@ export function registerDeployTools(
       },
       _meta: REQUIRES_USER,
     },
-    ({ projectDir, planHash, hostPlanHash }, extra: CallExtra) =>
+    ({ projectDir, planHash, hostPlanHash, passwordLogins }, extra: CallExtra) =>
       runTool(deps, "opscrew_apply", projectDir, async (call) => {
         if (!isPlanHash(planHash) || (hostPlanHash !== undefined && !isPlanHash(hostPlanHash))) {
           throw new OpsCrewError(
@@ -453,7 +489,11 @@ export function registerDeployTools(
         }
         const hash = planHash.toLowerCase();
         const hostHash = hostPlanHash?.toLowerCase();
-        const terminal = `opscrew provision --approve ${hash}${hostHash === undefined ? "" : ` --approve ${hostHash}`}`;
+        const terminal = [
+          `opscrew provision --approve ${hash}`,
+          ...(hostHash === undefined ? [] : [`--approve ${hostHash}`]),
+          ...(passwordLogins === undefined ? [] : [`--password-logins ${passwordLogins}`]),
+        ].join(" ");
         if (!clientSupportsElicitation(server)) {
           throw new OpsCrewError(
             "APPROVAL_REFUSED",
@@ -497,9 +537,10 @@ export function registerDeployTools(
         try {
           // The hashes only pick the saved plans: every approval still comes from the user's dialog.
           result = await runProvision(phase, {
-            ...(hostOnly ? { approvePlanHashes: [hash] } : { approvePlanHash: hash }),
-            ...(hostHash === undefined ? {} : { approvePlanHashes: [hostHash] }),
+            ...(hostOnly ? {} : { approvePlanHash: hash }),
+            approvePlanHashes: [...new Set([hash, ...(hostHash === undefined ? [] : [hostHash])])],
             ...(saved === undefined ? {} : { engine: saved.engine.name }),
+            ...(passwordLogins === undefined ? {} : { passwordLogins }),
             secrets,
             ...servicesOption(options),
           });
@@ -664,6 +705,17 @@ function refusalWithNextStep(
 ): unknown {
   if (!isUserFacingError(error) || error.code !== "APPROVAL_REFUSED") return error;
   const applyApproved = handler.decisions.some((d) => d.kind === "iac-apply" && d.approved);
+  const hostRefused = handler.decisions.some((d) => d.kind === "host-apply" && !d.approved);
+  if (hostRefused) {
+    // The user's own server: Cloudflare may already be changed; the server itself is not.
+    const message = applyApproved
+      ? "The user declined the host plan. The Cloudflare changes are applied; nothing on the user's server was changed."
+      : "The user declined the host plan; nothing on the user's server was changed.";
+    return new OpsCrewError("APPROVAL_REFUSED", message, {
+      hint: "When the user is ready, call opscrew_plan again (it shows what is still missing) and opscrew_apply with its hashes, or ask them to run `opscrew provision` in a terminal in the project directory.",
+      cause: error,
+    });
+  }
   const next = applyApproved
     ? "Ask the user to run `opscrew provision` in a terminal in the project directory when ready; it continues where this stopped."
     : `Nothing was applied. When the user is ready, call opscrew_apply again, or ask them to run \`${terminal}\` in a terminal.`;

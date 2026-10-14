@@ -214,6 +214,12 @@ function priceSourceText(
     : "prices from a dated price list; estimates";
 }
 
+/** A plan for the result data without its `cost` (the user's own server has no price). */
+function withoutCost(plan: DesignResult["plan"]): Record<string, unknown> {
+  const { cost: _cost, ...rest } = plan;
+  return rest;
+}
+
 /** An option for the result data: the user's own server carries no cost and no budget check. */
 function optionData(option: DesignOption): Record<string, unknown> {
   if (!isOwnServer(option)) return option;
@@ -366,7 +372,8 @@ export function registerDesignTools(
           data: {
             chosen: optionData(chosen),
             planFile,
-            plan,
+            // A server the user owns has no price: its plan is returned without `cost`.
+            plan: ownServer === undefined ? plan : withoutCost(plan),
             codeChanges: plan.codeChanges,
             ...(ownServer === undefined ? { priceSource: result.priceSource } : {}),
             warnings: result.warnings,
