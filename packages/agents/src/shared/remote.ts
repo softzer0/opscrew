@@ -45,10 +45,14 @@ export class SshRemoteExec implements RemoteExec {
     this.#options = options;
   }
 
-  run(command: string, options: { timeoutMs?: number } = {}): Promise<CommandResult> {
+  run(
+    command: string,
+    options: { timeoutMs?: number; input?: string } = {},
+  ): Promise<CommandResult> {
     const { runner, ...rest } = this.#options;
     return runner.run("ssh", [...sshArgs(rest), command], {
       timeoutMs: options.timeoutMs ?? 60_000,
+      ...(options.input === undefined ? {} : { input: options.input }),
     });
   }
 }

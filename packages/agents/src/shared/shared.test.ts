@@ -98,6 +98,22 @@ describe("SshRemoteExec", () => {
     expect(call?.args).toContain("BatchMode=yes");
     expect(call?.args).toContain("deploy@203.0.113.10");
   });
+
+  it("sends secrets through stdin, never on the command line", async () => {
+    const runner = new ScriptedRunner(() => ({ exitCode: 0, stdout: "", stderr: "" }));
+    const remote = new SshRemoteExec({
+      host: "203.0.113.10",
+      keyFile: "k",
+      knownHostsFile: "kh",
+      runner,
+    });
+    const secret = fakeSecret("generic-password");
+    await remote.run("cat > /tmp/x", { input: secret });
+    await remote.run("uptime");
+    expect(runner.calls[0]?.options?.input).toBe(secret);
+    expect(runner.calls[0]?.args.join(" ")).not.toContain(secret);
+    expect(runner.calls[1]?.options).not.toHaveProperty("input");
+  });
 });
 
 describe("waiting for the server", () => {

@@ -30,7 +30,11 @@ export interface CommandRunner {
 /** Runs commands on a remote host (SSH in production, a fake in tests). */
 export interface RemoteExec {
   readonly host: string;
-  run(command: string, options?: { timeoutMs?: number }): Promise<CommandResult>;
+  /**
+   * `input` is written to the remote command's stdin: the only way a secret may reach the server
+   * (never on the command line, which other users can see in the process list).
+   */
+  run(command: string, options?: { timeoutMs?: number; input?: string }): Promise<CommandResult>;
 }
 
 /** The subset of the WHATWG `fetch` signature OpsCrew uses. Injected into every HTTP client. */
