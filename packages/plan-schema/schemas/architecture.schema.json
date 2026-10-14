@@ -163,6 +163,9 @@
               },
               "secretLikely": {
                 "type": "boolean"
+              },
+              "hasDefault": {
+                "type": "boolean"
               }
             },
             "required": ["name", "files", "clientExposed", "secretLikely"],

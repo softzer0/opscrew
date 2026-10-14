@@ -60,6 +60,9 @@
               "source": {
                 "type": "string",
                 "enum": ["user", "generated", "derived"]
+              },
+              "optional": {
+                "type": "boolean"
               }
             },
             "required": ["name", "secret", "source"],
