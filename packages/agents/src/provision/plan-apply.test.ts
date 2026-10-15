@@ -5,6 +5,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { FakeEngine, type FakeEngineScenario, testPlan } from "./__fixtures__/fakes";
+import { portainerPlan } from "./__fixtures__/portainer";
 import { describePlan, findSavedPlan, isMovesOnly, planAndApply } from "./plan-apply";
 import type { SavedPlan } from "./types";
 
@@ -399,5 +400,77 @@ describe("planAndApply hooks", () => {
     const s = await hooked({ changes: DNS_UPDATE });
     await planAndApply(s.deps, { ...s.options, approvalNotes: ["Warning: fixed."] });
     expect(s.handler.requests[0]?.details).toMatch(/\n\nWarning: fixed\.$/);
+  });
+});
+
+describe("planAndApply for the user's Portainer", () => {
+  const TUNNEL_CREATE: ResourceChange[] = [
+    ["cloudflare_zero_trust_tunnel_cloudflared", "this"],
+    ["cloudflare_zero_trust_tunnel_cloudflared_config", "this"],
+    ["cloudflare_dns_record", "route"],
+  ].map(([type, name]) => ({
+    address: `module.tunnel.${type}.${name}`,
+    type: type as string,
+    name: name as string,
+    provider: "registry.opentofu.org/cloudflare/cloudflare",
+    action: "create" as const,
+  }));
+
+  async function portainerSetup(scenario: FakeEngineScenario, approve = true) {
+    const base = await setup(scenario, approve);
+    return { ...base, options: { ...base.options, deployPlan: portainerPlan() } };
+  }
+
+  it("asks for the Cloudflare plan in Cloudflare's words, with no cost, and applies it", async () => {
+    const { deps, engine, handler, options } = await portainerSetup({
+      changes: TUNNEL_CREATE,
+      outputs: { url: "https://shop.example.com", tunnel_id: "t-1" },
+    });
+    const result = await planAndApply(deps, options);
+    expect(result.applied).toBe(true);
+    expect(engine.calls).toEqual(["init", "validate", "plan", "apply"]);
+    const request = handler.requests[0];
+    expect(request?.title).toBe(
+      "Apply the infrastructure plan on Cloudflare (3 to create, 0 to update, 0 to delete, 0 to replace)",
+    );
+    expect(request?.costDelta).toBeUndefined();
+    expect(request?.details).toContain("Cost: unchanged");
+    expect(request?.details).not.toContain("Estimated cost");
+  });
+
+  it("uses the caller's title", async () => {
+    const { deps, handler, options } = await portainerSetup({ changes: TUNNEL_CREATE });
+    await planAndApply(deps, { ...options, approvalTitle: "Apply the Cloudflare plan" });
+    expect(handler.requests[0]?.title).toBe("Apply the Cloudflare plan");
+  });
+
+  it("blames a refused Cloudflare request on the Cloudflare token (also the Portainer tunnel's)", async () => {
+    const { deps, options } = await portainerSetup({
+      changes: TUNNEL_CREATE,
+      applyOk: false,
+      applyLog: [
+        "Error: failed to create tunnel",
+        "  with module.portainer_tunnel.cloudflare_zero_trust_tunnel_cloudflared.this,",
+        "  403 Forbidden",
+      ].join("\n"),
+    });
+    const error = (await planAndApply(deps, options).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.hint).toContain("Cloudflare refused the request");
+    expect(error.hint).toContain("CLOUDFLARE_API_TOKEN");
+    expect(error.hint).toContain("Cloudflare Tunnel");
+  });
+
+  it("gives the plain next step for any other failed apply", async () => {
+    const { deps, options } = await portainerSetup({
+      changes: TUNNEL_CREATE,
+      applyOk: false,
+      applyLog: "Error: something else went wrong",
+    });
+    const error = (await planAndApply(deps, options).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.hint).toBe(
+      "Fix the cause shown above, then run `opscrew provision` again; it plans the remaining changes.",
+    );
   });
 });

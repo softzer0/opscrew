@@ -109,7 +109,7 @@ function errorBlocks(log: string): string[] {
  * (`with module.dns.…` or `with module.server.…`), else the only API or resource type it names.
  */
 function blockOwner(block: string, provider: VpsProviderId): "cloudflare" | "provider" | undefined {
-  if (/\bwith module\.(?:dns|tunnel|access)\./.test(block)) return "cloudflare";
+  if (/\bwith module\.(?:dns|tunnel|portainer_tunnel|access)\./.test(block)) return "cloudflare";
   if (/\bwith module\.server\./.test(block)) return "provider";
   const cloudflare = CLOUDFLARE_API.test(block);
   const named = PROVIDER_API[provider].test(block);
@@ -129,6 +129,7 @@ function applyFailureHint(
   deployPlan: DeployPlan,
   command: string,
 ): string {
+  if (deployPlan.target.provider === "portainer") return portainerFailureHint(log, command);
   const provider = planProvider(deployPlan);
   const profile = providerProfile(provider);
   const { displayName, serverNoun } = profile;
@@ -156,16 +157,24 @@ function applyFailureHint(
     return `${displayName} refused the request, so the API token is probably missing a permission OpsCrew needs. Create a token at ${requirement.createUrl} with ${needed}, set ${profile.tokenVars[0]} to it, then run \`${command}\` again. ${kept}`;
   }
   const target = deployPlan.target;
-  // A server the user owns (or a Portainer) is never created, so no size can be unavailable.
-  if (
-    target.provider !== "own" &&
-    target.provider !== "portainer" &&
-    profile.unavailable.test(errors) &&
-    !SERVICE_DOWN.test(errors)
-  ) {
+  // A server the user owns is never created, so no size can be unavailable (a Portainer target
+  // returned above).
+  if (target.provider !== "own" && profile.unavailable.test(errors) && !SERVICE_DOWN.test(errors)) {
     const size = provider === "hetzner" ? "server type" : "size";
     const { serverType, location } = target;
     return `${displayName} cannot create a ${serverType} ${serverNoun} in ${location} right now (the ${size} is unavailable or out of stock there). Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;
+  }
+  return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
+}
+
+/**
+ * Next step after a failed apply for the user's Portainer, whose infrastructure is only Cloudflare
+ * (tunnels, their routes and Access): a refused request is the Cloudflare token's, anything else
+ * is "fix and re-run". OpsCrew creates no server there, so no provider limit or size applies.
+ */
+function portainerFailureHint(log: string, command: string): string {
+  if (errorBlocks(log).some((block) => FORBIDDEN.test(block))) {
+    return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at https://dash.cloudflare.com/profile/api-tokens with ${tunnelTokenPermissions()} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. Nothing that was already created is removed.`;
   }
   return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
 }
@@ -534,9 +543,12 @@ export async function planAndApply(
     saved = await freshPlan(deps, options);
   }
 
-  // A server the user owns costs nothing more: only Cloudflare records, the tunnel and Access.
+  // A server the user owns, or the user's Portainer, costs nothing more: only Cloudflare records,
+  // tunnels and Access.
   const ownServer = deployPlan.target.provider === "own";
-  const costDeltaOption = options.costDelta === undefined && ownServer ? null : options.costDelta;
+  const portainer = deployPlan.target.provider === "portainer";
+  const costDeltaOption =
+    options.costDelta === undefined && (ownServer || portainer) ? null : options.costDelta;
   const details = describePlan(saved, deployPlan, { costUnchanged: costDeltaOption === null });
   deps.reporter.info(details);
   const blocking = blockingPolicyFailures(saved.policy);
@@ -563,16 +575,19 @@ export async function planAndApply(
   }
 
   const { create, update, delete: del, replace } = saved.counts;
-  const cloud = providerProfile(planProvider(deployPlan)).displayName;
   const cloudflare = deployPlan.dns.provider === "cloudflare";
-  // A server the user owns has no provider API: only Cloudflare resources are planned.
-  const providers = ownServer
-    ? cloudflare
-      ? "Cloudflare"
-      : "your server's configuration"
-    : cloudflare
-      ? `${cloud} and Cloudflare`
-      : cloud;
+  // A server the user owns has no provider API: only Cloudflare resources are planned. The user's
+  // Portainer has only Cloudflare resources (tunnels, their routes and Access).
+  const cloud = () => providerProfile(planProvider(deployPlan)).displayName;
+  const providers = portainer
+    ? "Cloudflare"
+    : ownServer
+      ? cloudflare
+        ? "Cloudflare"
+        : "your server's configuration"
+      : cloudflare
+        ? `${cloud()} and Cloudflare`
+        : cloud();
   const notes =
     typeof options.approvalNotes === "function"
       ? options.approvalNotes(saved)

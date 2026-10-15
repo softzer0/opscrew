@@ -268,23 +268,75 @@ describe("evaluatePlanPolicies", () => {
 });
 
 describe("evaluatePlanPolicies on a Portainer target", () => {
-  it("stops with a plain refusal until the Portainer policies exist", () => {
-    const portainer = DeployPlanSchema.parse({
+  const portainer = (redeploy: "updater" | "cloudflare") =>
+    DeployPlanSchema.parse({
       ...deployPlan(),
       target: {
         provider: "portainer",
         mode: "portainer-stack",
         environmentId: 3,
         arch: "amd64",
-        redeploy: "updater",
+        redeploy,
         web: { mode: "tunnel" },
       },
     });
-    expect(() => evaluatePlanPolicies(planJson(), portainer)).toThrow(
-      expect.objectContaining({
-        code: "PHASE_PRECONDITION",
-        message: "A Portainer target is not supported by this command yet.",
-      }),
+
+  /** `show -json` of a Portainer root: only Cloudflare Tunnels, their routes and Access. */
+  function tunnelPlanJson() {
+    const resource = (module: string, type: string, name: string, values = {}) => ({
+      address: `module.${module}.${type}.${name}`,
+      mode: "managed",
+      type,
+      name,
+      values,
+    });
+    return {
+      planned_values: {
+        root_module: {
+          child_modules: [
+            {
+              address: "module.tunnel",
+              resources: [
+                resource("tunnel", "cloudflare_zero_trust_tunnel_cloudflared", "this", {
+                  name: "opscrew-shop",
+                }),
+                resource("tunnel", "cloudflare_dns_record", "route", {
+                  name: "shop.example.com",
+                  type: "CNAME",
+                  proxied: true,
+                }),
+              ],
+            },
+            {
+              address: "module.access",
+              resources: [
+                resource("access", "cloudflare_zero_trust_access_application", "ssh", {
+                  domain: "portainer-shop.example.com",
+                }),
+              ],
+            },
+          ],
+        },
+      },
+      resource_changes: [],
+    };
+  }
+
+  it("evaluates a Portainer root like any tunnel and Access root, without refusing it", () => {
+    for (const mode of ["updater", "cloudflare"] as const) {
+      const results = evaluatePlanPolicies(tunnelPlanJson(), portainer(mode));
+      expect(blockingPolicyFailures(results)).toEqual([]);
+      // No server, firewall or backups policy applies: there is no server.
+      expect(results.map((r) => r.policyId)).not.toContain("firewall-attached");
+      expect(results.map((r) => r.policyId)).not.toContain("backups-for-critical-data");
+    }
+  });
+
+  it("still fails a plan that would create an unprotected server, whatever the target says", () => {
+    const results = evaluatePlanPolicies(
+      planJson({ withFirewall: false, firewallIds: "none" }),
+      portainer("updater"),
     );
+    expect(failed(results)).toContain("firewall-attached");
   });
 });

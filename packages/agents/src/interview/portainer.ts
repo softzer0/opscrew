@@ -1,3 +1,4 @@
+import { normalizeCertFingerprint, sameCertFingerprint } from "@opscrew/connector-portainer";
 import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
 import type { PortainerWeb, Question } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -421,35 +422,15 @@ export function portainerUrlAnswer(
 }
 
 /**
- * A SHA-256 certificate fingerprint in one spelling, `SHA256:` and colon-separated upper-case hex
- * pairs (as browsers and `openssl x509 -fingerprint -sha256` show it), from any accepted form:
- * `SHA256:`/`sha256:` with 64 hex characters (with or without colons) or base64 (with or without
- * padding). `undefined` for anything else.
- * TODO(T1002): use `normalizeCertFingerprint` from `@opscrew/connector-portainer` once merged.
+ * A SHA-256 certificate fingerprint in the connector's one spelling, `SHA256:` and colon-separated
+ * upper-case hex pairs (as browsers and `openssl x509 -fingerprint -sha256` show it), from any form
+ * it accepts; `undefined` for anything else.
  */
-export function normalizeCertFingerprint(text: string): string | undefined {
-  const match = /^sha256:(.+)$/i.exec(text.trim());
-  const body = match?.[1];
-  if (body === undefined) return undefined;
-  let hex: string;
-  if (/^[0-9A-Fa-f]{64}$/.test(body)) {
-    hex = body;
-  } else if (/^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){31}$/.test(body)) {
-    hex = body.replaceAll(":", "");
-  } else if (/^[A-Za-z0-9+/]{43}=?$/.test(body)) {
-    const bytes = Buffer.from(body, "base64");
-    if (bytes.length !== 32) return undefined;
-    hex = bytes.toString("hex");
-  } else {
-    return undefined;
-  }
-  return `SHA256:${(hex.toUpperCase().match(/../g) ?? []).join(":")}`;
-}
+export { normalizeCertFingerprint };
 
 /** True when both name the same certificate, whatever the spelling (hex, colons or base64). */
 export function sameCertificate(a: string, b: string): boolean {
-  const left = normalizeCertFingerprint(a);
-  return left !== undefined && left === normalizeCertFingerprint(b);
+  return sameCertFingerprint(a, b);
 }
 
 /** What {@link reachPortainer} found: the pinned certificate and the environments. */

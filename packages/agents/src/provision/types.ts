@@ -1,5 +1,12 @@
 import type { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { GitHubClient } from "@opscrew/connector-github";
+import type {
+  ApplyStackOptions,
+  CertificateDetails,
+  PortainerClient,
+  PortainerClientDeps,
+  PortainerEndpoint,
+} from "@opscrew/connector-portainer";
 import type { ApplyOptions, ApplyResult, HostFacts, HostPlan } from "@opscrew/connector-ssh-host";
 import type {
   CredentialCheck,
@@ -25,7 +32,10 @@ export type CloudflareApi = Pick<
 > &
   Partial<Pick<CloudflareClient, "listAccounts">>;
 
-/** The GitHub calls provisioning needs (a `GitHubClient` or a test fake). */
+/**
+ * The GitHub calls provisioning needs (a `GitHubClient` or a test fake). `createOrphanBranch` is
+ * needed only for the user's Portainer (its `opscrew-deploy` branch).
+ */
 export type GitHubApi = Pick<
   GitHubClient,
   | "getRepo"
@@ -33,7 +43,8 @@ export type GitHubApi = Pick<
   | "setActionsSecret"
   | "findOpenPullRequest"
   | "createPullRequest"
->;
+> &
+  Partial<Pick<GitHubClient, "createOrphanBranch">>;
 
 /**
  * Collaborators that talk to the outside world. Each defaults to the real implementation built
@@ -63,6 +74,32 @@ export interface ProvisionServices {
    * Cloudflare's API with `CLOUDFLARE_API_TOKEN`).
    */
   accessLoginMethods?: AccessLoginMethodsApi;
+  /** The user's Portainer (`target.provider: portainer`): its client and local randomness (fakes in tests). */
+  portainer?: PortainerServices;
+}
+
+/**
+ * Collaborators for the user's Portainer. Each defaults to the real implementation: the pinned
+ * client of `@opscrew/connector-portainer`, a TLS handshake for the certificate's public key, and
+ * Node's random bytes and UUIDs.
+ */
+export interface PortainerServices {
+  /** The Portainer client (default: `portainerClient`, pinned to the confirmed certificate). */
+  client?: (
+    endpoint: PortainerEndpoint,
+    token: string,
+    deps: PortainerClientDeps,
+  ) => PortainerClient;
+  /** The certificate Portainer presents (default: `inspectCertificate`). */
+  inspectCertificate?: (url: string) => Promise<CertificateDetails>;
+  /** Random bytes for the value key (default: `crypto.randomBytes`). */
+  randomBytes?: (size: number) => Uint8Array;
+  /** A new webhook id (default: `crypto.randomUUID`). */
+  randomUUID?: () => string;
+  /** The stack apply's bounded wait (clock and sleep). */
+  wait?: ApplyStackOptions["wait"];
+  /** The Cloudflare account's Zero Trust organization (default: Cloudflare's API). */
+  zeroTrust?: ZeroTrustApi;
 }
 
 /** The host adapter calls provision makes on a server the user owns. */
@@ -121,6 +158,18 @@ export interface ProvisionOptions {
   push?: boolean;
   /** Set the GitHub Actions deploy secrets (default true). */
   secrets?: boolean;
+  /**
+   * The user's Portainer: the app's image on GitHub Container Registry is public, so Portainer
+   * pulls it without a registry entry. OpsCrew cannot see a package's visibility before the first
+   * build, so it treats the image as private (a registry entry with a read-only token) unless told.
+   */
+  publicImage?: boolean;
+  /**
+   * The user's Portainer: send the repository token (`OPSCREW_REPO_READ_TOKEN`) or the registry
+   * token (`OPSCREW_GHCR_READ_TOKEN`) again, after rotating it. Portainer never shows them back,
+   * so OpsCrew replaces them only when asked; set it only on the run that should replace them.
+   */
+  replaceTokens?: { repository?: boolean; registry?: boolean };
   services?: ProvisionServices;
 }
 
@@ -135,6 +184,13 @@ export interface ProvisionResult {
   hostPlanHash?: string;
   /** A server the user owns: true when this run applied host changes. */
   hostApplied?: boolean;
+  /**
+   * The user's Portainer: the stack plan's SHA-256 hash (its file is
+   * `.opscrew/plans/stack-<hash>.json`). With `--plan-only` it is the hash to approve.
+   */
+  stackPlanHash?: string;
+  /** The user's Portainer: true when this run changed something in Portainer. */
+  stackApplied?: boolean;
   /** Root-module outputs after the run (server IPs, id, name, url). */
   outputs: Record<string, unknown>;
   /** Pull request with the generated files, when one was opened or already open. */

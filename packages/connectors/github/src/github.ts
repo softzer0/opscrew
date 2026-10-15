@@ -61,6 +61,28 @@ const RunSchema = z.looseObject({
   created_at: z.string(),
 });
 const RunsSchema = z.looseObject({ workflow_runs: z.array(RunSchema) });
+const ShaSchema = z.looseObject({ sha: z.string().regex(/^[0-9a-f]{40,64}$/) });
+
+/** An owner or repository name as GitHub allows it (no `/`, never `.` or `..`). */
+const REPO_PART = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
+/** A branch name git accepts that cannot be read as an option or a path trick. */
+const BRANCH_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)[A-Za-z0-9._/-]{1,200}(?<!\/)$/;
+/** One file at the root of the tree. */
+const ROOT_FILE = /^(?!\.\.?$)[A-Za-z0-9._-]{1,200}$/;
+
+/** Input of {@link GitHubClient.createOrphanBranch}. */
+export interface OrphanBranchInput {
+  owner: string;
+  repo: string;
+  /** The new branch, for example `opscrew-deploy`. */
+  branch: string;
+  /** The one file's name at the root, for example `compose.yaml`. */
+  path: string;
+  /** The file's text (UTF-8). */
+  content: string;
+  /** The commit message. */
+  message: string;
+}
 const DispatchSchema = z.looseObject({ workflow_run_id: z.number().optional() }).optional();
 
 function toWorkflowRun(run: z.infer<typeof RunSchema>): WorkflowRun {
@@ -199,6 +221,72 @@ export class GitHubClient {
       private: data.private,
       canPush: data.permissions?.push ?? false,
     };
+  }
+
+  /**
+   * Creates `branch` holding only one file and no history (an orphan branch) through GitHub's Git
+   * Data API: a blob, a tree with only that file, a commit without parents, then the branch's ref.
+   * Refuses with `PHASE_PRECONDITION` when the branch exists (checked first, and again by GitHub
+   * when the ref is created), so it never moves or overwrites a branch. Needs Contents: Read and
+   * write on the repository.
+   */
+  async createOrphanBranch(input: OrphanBranchInput): Promise<{ commit: string }> {
+    const { owner, repo, branch, path } = input;
+    if (
+      !REPO_PART.test(owner) ||
+      !REPO_PART.test(repo) ||
+      !BRANCH_NAME.test(branch) ||
+      !ROOT_FILE.test(path) ||
+      typeof input.content !== "string" ||
+      typeof input.message !== "string" ||
+      input.message.trim() === ""
+    ) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "A new branch needs a repository, a branch name, one file name at the root and a commit message.",
+      );
+    }
+    const base = `/repos/${owner}/${repo}/git`;
+    const exists = () =>
+      new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `The branch ${branch} already exists in ${owner}/${repo}, so OpsCrew did not create it again.`,
+        { hint: `OpsCrew creates ${branch} only when it is missing; it never overwrites it.` },
+      );
+    const ref = await this.#request(
+      "GET",
+      `${base}/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,
+      `check whether the branch ${branch} exists`,
+      undefined,
+      [404],
+    );
+    if (ref.status !== 404) throw exists();
+
+    const what = `create the branch ${branch}`;
+    const blob = await this.#request("POST", `${base}/blobs`, what, {
+      content: input.content,
+      encoding: "utf-8",
+    });
+    const blobSha = this.#parse(ShaSchema, blob.json, what).sha;
+    const tree = await this.#request("POST", `${base}/trees`, what, {
+      tree: [{ path, mode: "100644", type: "blob", sha: blobSha }],
+    });
+    const treeSha = this.#parse(ShaSchema, tree.json, what).sha;
+    const commit = await this.#request("POST", `${base}/commits`, what, {
+      message: input.message,
+      tree: treeSha,
+      parents: [],
+    });
+    const commitSha = this.#parse(ShaSchema, commit.json, what).sha;
+    const created = await this.#request(
+      "POST",
+      `${base}/refs`,
+      what,
+      { ref: `refs/heads/${branch}`, sha: commitSha },
+      [422],
+    );
+    if (created.status === 422) throw exists();
+    return { commit: commitSha };
   }
 
   async findOpenPullRequest(

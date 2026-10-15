@@ -1,6 +1,5 @@
 import type { PolicyResult, Severity } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, PORTAINER_TARGET_NOT_YET } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 
 /** One managed resource from an engine plan, with known values and unknown-at-plan-time markers. */
 export interface PlannedResource {
@@ -15,13 +14,6 @@ export interface PlannedResource {
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 const PUBLIC_TCP_PORTS = new Set(["22", "80", "443"]);
 const PUBLIC_UDP_PORTS = new Set(["443"]);
-
-/** The plain error while the plan policies do not cover a Portainer target yet (feature 010). */
-function portainerTargetNotYet(): OpsCrewError {
-  return new OpsCrewError("PHASE_PRECONDITION", PORTAINER_TARGET_NOT_YET.message, {
-    hint: PORTAINER_TARGET_NOT_YET.hint,
-  });
-}
 
 /**
  * True when the plan asks for the provider's automated backups of the server it creates; never
@@ -333,11 +325,11 @@ function digitalOceanPolicies(
 
 /**
  * Policy checks on an engine plan (`show -json`) before the user is asked to approve it. Returns
- * passing and failing results; callers stop on any failed `critical` or `high` result. Throws a
- * plain `PHASE_PRECONDITION` for a Portainer target, which these policies do not cover yet.
+ * passing and failing results; callers stop on any failed `critical` or `high` result. A Portainer
+ * target's root (Cloudflare Tunnels, their routes and Access, no server) is evaluated like any
+ * other: the server and firewall policies find nothing to check there.
  */
 export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan): PolicyResult[] {
-  if (deployPlan.target.provider === "portainer") throw portainerTargetNotYet();
   const resources = plannedResources(planJson);
   const results: PolicyResult[] = [];
   const servers = resources.filter((r) => r.type === "hcloud_server");

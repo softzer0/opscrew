@@ -15,7 +15,12 @@ import {
 } from "@opscrew/connector-github";
 import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { portainerHostname, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
+import {
+  portainerHostname,
+  portainerWebhookHostname,
+  tunnelMode,
+  usesTunnel,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -333,6 +338,44 @@ function tunnelHosts(plan: DeployPlan, zone: string): string[] {
 }
 
 /**
+ * The plain stop when `CLOUDFLARE_API_TOKEN` is needed and not set, with the token's permissions
+ * (the user's Portainer: removing an earlier setup's tunnels and Access).
+ */
+export function cloudflareTokenMissing(
+  deps: Pick<PhaseDeps, "env" | "fetch" | "redactor" | "version">,
+): OpsCrewError {
+  const requirement = cloudflareConnector({
+    env: deps.env,
+    fetch: deps.fetch,
+    redactor: deps.redactor,
+    version: deps.version,
+  }).credentials;
+  const error = missing("Cloudflare", requirement);
+  return new OpsCrewError(error.code, `${error.message} Nothing was changed.`, {
+    hint: `The token needs: ${tunnelTokenPermissions()}. Create one at ${requirement.createUrl}`,
+  });
+}
+
+/**
+ * What the Cloudflare root of the user's Portainer holds: the app's tunnel (web mode `tunnel`)
+ * and the tunnel and Access in front of Portainer's webhook (redeploy mode `cloudflare`), each
+ * only with a domain on Cloudflare. `undefined` for any other target. Without either, a Portainer
+ * plan has no Cloudflare resources: OpsCrew creates no DNS record for web modes `proxy` and
+ * `caddy` (the user does).
+ */
+export function portainerCloudflare(
+  plan: Pick<DeployPlan, "target" | "dns">,
+): { appTunnel: boolean; webhook: boolean } | undefined {
+  const { target, dns } = plan;
+  if (target.provider !== "portainer") return undefined;
+  const cloudflare = dns.provider === "cloudflare" && dns.domain !== undefined;
+  return {
+    appTunnel: cloudflare && target.web.mode === "tunnel",
+    webhook: cloudflare && target.redeploy === "cloudflare",
+  };
+}
+
+/**
  * The account that holds the zone, which owns the tunnel and Access: the one Cloudflare names
  * with the zone, else the token's only account.
  */
@@ -359,6 +402,12 @@ async function tunnelAccount(
  * not create are there), which rule phases OpsCrew may manage (never a phase the user or another
  * OpsCrew deployment holds; always the rulesets this project's state holds, by id), the edge IP
  * ranges when proxied, and the zone's account when the plan has a Cloudflare Tunnel.
+ *
+ * The user's Portainer ({@link portainerCloudflare}) needs Cloudflare only for its tunnels:
+ * `undefined` without them. The app's hostnames are checked only in web mode `tunnel` (in `proxy`
+ * and `caddy` mode the user's own record there is expected), the webhook's hostname
+ * (`portainer-<app>.<zone>`) in redeploy mode `cloudflare`; the account is always read; the
+ * configuration-rule phase is never used, and the WAF phase only with the app's tunnel.
  */
 export async function setupCloudflare(
   deps: PhaseDeps,
@@ -367,6 +416,10 @@ export async function setupCloudflare(
   options: { foreignRecords?: "stop" | "report" } = {},
 ): Promise<CloudflareSetup | undefined> {
   if (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined) return undefined;
+  const portainer = portainerCloudflare(plan);
+  if (portainer !== undefined && !portainer.appTunnel && !portainer.webhook) return undefined;
+  /** A Cloudflare Tunnel is part of the plan, so the token needs the tunnel permissions. */
+  const tunnels = usesTunnel(plan) || portainer !== undefined;
   const connector = cloudflareConnector({
     env: deps.env,
     fetch: deps.fetch,
@@ -392,11 +445,19 @@ export async function setupCloudflare(
         },
       );
     }
-    const hosts = [
-      ...(plan.dns.www ? [domain, `www.${domain}`] : [domain]),
-      ...tunnelHosts(plan, zone.name),
-    ];
-    const foreign = await foreignDnsRecords(api, zone.id, await knownServers(deps, plan), hosts);
+    const appHosts = plan.dns.www ? [domain, `www.${domain}`] : [domain];
+    const hosts =
+      portainer === undefined
+        ? [...appHosts, ...tunnelHosts(plan, zone.name)]
+        : [
+            ...(portainer.appTunnel ? appHosts : []),
+            ...(portainer.webhook
+              ? [portainerWebhookHostname({ ...plan, dns: { ...plan.dns, zone: zone.name } })]
+              : []),
+          ].filter((host): host is string => host !== undefined);
+    // The user's Portainer has no server whose records OpsCrew could have made.
+    const servers = portainer === undefined ? await knownServers(deps, plan) : [];
+    const foreign = await foreignDnsRecords(api, zone.id, servers, hosts);
     const reportForeign = options.foreignRecords === "report";
     if (foreign.length > 0 && !reportForeign) {
       const lines = foreign.map((r) => `  ${r.type} ${r.name} ${r.content}`);
@@ -406,7 +467,9 @@ export async function setupCloudflare(
           [
             `Cloudflare already has DNS records for ${hosts.join(" and ")} that OpsCrew did not create:`,
             ...lines,
-            "Adding the app's records next to them would fail after the server is created, or split visitors between the old host and the new one. Nothing was created.",
+            portainer === undefined
+              ? "Adding the app's records next to them would fail after the server is created, or split visitors between the old host and the new one. Nothing was created."
+              : "The Cloudflare Tunnel's records there would fail next to them, or split visitors between the old host and the new one. Nothing was created.",
           ].join("\n"),
         ),
         {
@@ -416,11 +479,15 @@ export async function setupCloudflare(
     }
 
     // Tunnel mode renders no configuration rule (the tunnel carries TLS), so OpsCrew neither
-    // inspects nor decides that phase.
-    const usesConfigRule = !tunnelMode(plan);
+    // inspects nor decides that phase; nor does the user's Portainer, whose WAF rules come only
+    // with the app's tunnel.
+    const usesConfigRule = !tunnelMode(plan) && portainer === undefined;
+    const usesWafRules = portainer === undefined || portainer.appTunnel;
     const [configStatus, wafStatus] = await Promise.all([
       usesConfigRule ? api.inspectEntrypointRuleset(zone.id, "http_config_settings") : undefined,
-      api.inspectEntrypointRuleset(zone.id, "http_request_firewall_custom"),
+      usesWafRules
+        ? api.inspectEntrypointRuleset(zone.id, "http_request_firewall_custom")
+        : undefined,
     ]);
     const tlsYourself = `set SSL/TLS to "Full (strict)" for ${domain} yourself.`;
     // Read once, and only when the zone has an OpsCrew-named ruleset.
@@ -447,6 +514,7 @@ export async function setupCloudflare(
       ));
     const manageWafRules =
       plan.security.wafCustomRules &&
+      wafStatus !== undefined &&
       (await mayManagePhase(
         deps,
         "http_request_firewall_custom",
@@ -461,7 +529,7 @@ export async function setupCloudflare(
         zone.id,
         heldOnce,
       ));
-    const accountId = usesTunnel(plan) ? await tunnelAccount(api, zone) : zone.accountId;
+    const accountId = tunnels ? await tunnelAccount(api, zone) : zone.accountId;
     const setup: CloudflareSetup = {
       zoneId: zone.id,
       zoneName: zone.name,
@@ -478,13 +546,18 @@ export async function setupCloudflare(
           }
         : {}),
     };
-    if (plan.dns.proxied && plan.security.httpAllowedFrom === "cloudflare") {
+    // The user's Portainer has no firewall to fill with Cloudflare's ranges.
+    if (
+      portainer === undefined &&
+      plan.dns.proxied &&
+      plan.security.httpAllowedFrom === "cloudflare"
+    ) {
       setup.ipRanges = await api.getIpRanges();
     }
     return setup;
   } catch (error) {
     if (error instanceof OpsCrewError && error.code === "CREDENTIALS_INVALID") {
-      const needs = usesTunnel(plan) ? tunnelTokenPermissions() : requirement.scopes.join(", ");
+      const needs = tunnels ? tunnelTokenPermissions() : requirement.scopes.join(", ");
       throw new OpsCrewError("CREDENTIALS_INVALID", error.message, {
         hint: `The Cloudflare token needs: ${needs}. Create one at ${requirement.createUrl}`,
       });

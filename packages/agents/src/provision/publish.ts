@@ -3,6 +3,7 @@ import type { PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { planProvider, providerProfile } from "../providers";
 import type { GitHubSetup } from "./credentials";
 
@@ -27,6 +28,7 @@ export function deploySetupPullRequestBody(
   version: string,
   options: { secretsStored?: boolean } = {},
 ): string {
+  if (plan.target.provider === "portainer") return portainerPullRequestBody(plan, version, options);
   const profile = providerProfile(planProvider(plan));
   const own = plan.target.provider === "own";
   const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";
@@ -69,6 +71,100 @@ export function deploySetupPullRequestBody(
     own
       ? "- [ ] The host changes OpsCrew showed before applying them (Docker, the deploy user, SSH settings, the ufw firewall) match what you expect."
       : "- [ ] The firewall rules in the infrastructure code match what you expect.",
+    "",
+    `Opened by OpsCrew ${version}.`,
+  ].join("\n");
+}
+
+/**
+ * What the user does so visitors reach an app in their Portainer in web mode `proxy` or `caddy`,
+ * where OpsCrew creates no DNS record (a home address changes, and OpsCrew never knows it): the
+ * record to create, and for `proxy` the port the user's reverse proxy forwards to. `undefined` in
+ * web mode `tunnel` (the tunnel's records are OpsCrew's). Never Portainer's address.
+ */
+export function portainerDnsRecordNote(plan: DeployPlan): string | undefined {
+  const target = plan.target;
+  if (target.provider !== "portainer" || target.web.mode === "tunnel") return undefined;
+  const domain = plan.dns.domain;
+  const web = target.web;
+  if (domain === undefined) {
+    return web.mode === "proxy"
+      ? `Route your reverse proxy to port ${web.port} of your Portainer host; it manages the address and the certificate.`
+      : undefined;
+  }
+  const hosts = plan.dns.www ? [domain, `www.${domain}`] : [domain];
+  const where =
+    "(an A record, and AAAA for IPv6, to its public address, or a CNAME to its dynamic-DNS name)";
+  const records =
+    hosts.length === 1
+      ? `OpsCrew creates no DNS record for ${domain}: create one yourself that points it at your Portainer host ${where}`
+      : `OpsCrew creates no DNS record for ${hosts.join(" and ")}: create them yourself so they point at your Portainer host ${where}`;
+  return web.mode === "proxy"
+    ? `${records}, and let your reverse proxy forward ${hosts.join(" and ")} to port ${web.port} of that host; your proxy manages the certificate.`
+    : `${records}. Caddy gets their certificates once ports 80 and 443 of the host are reachable from the internet.`;
+}
+
+/**
+ * The pull request body for the user's Portainer: the Cloudflare root only when the plan has one
+ * (the app's tunnel, or the tunnel and Access in front of Portainer's webhook), the app's stack
+ * template and the `opscrew-deploy` branch it is written to, how new versions reach Portainer, the
+ * DNS record the user creates for `proxy` and `caddy`, and that OpsCrew does not change the host and
+ * backups are the user's. Never Portainer's address.
+ */
+function portainerPullRequestBody(
+  plan: DeployPlan,
+  version: string,
+  options: { secretsStored?: boolean },
+): string {
+  const target = plan.target;
+  if (target.provider !== "portainer") throw new Error("Expected a plan for the user's Portainer.");
+  const cloudflare = plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
+  const appTunnel = cloudflare && target.web.mode === "tunnel";
+  const webhook = cloudflare && target.redeploy === "cloudflare";
+  const where = plan.dns.domain ?? "your Portainer";
+  const roots = [
+    ...(appTunnel ? ["the Cloudflare Tunnel that serves the app and its DNS records"] : []),
+    ...(webhook
+      ? [
+          "the Cloudflare Tunnel and Cloudflare Access application through which GitHub Actions reaches Portainer's webhook (and nothing else of Portainer)",
+        ]
+      : []),
+  ];
+  const redeploy =
+    target.redeploy === "updater"
+      ? "the updater stack in your Portainer asks Portainer to redeploy it within about a minute"
+      : "it asks Portainer to redeploy at once, through Cloudflare Access";
+  const nextStep =
+    options.secretsStored === false
+      ? [
+          "The app's stacks are set up in your Portainer, but OpsCrew has no record of storing the deploy secrets in GitHub Actions, so a deploy would fail.",
+          `**Before merging, run \`opscrew provision\` in a terminal in the project directory.** It finds nothing to change, asks for the production environment values and stores the secrets. After that, merging this pull request deploys the app to ${where}. When the first deploy finishes, run \`opscrew verify\`.`,
+        ]
+      : [
+          `The app's stacks are set up in your Portainer and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${where}.** After the first deploy finishes, run \`opscrew verify\`.`,
+        ];
+  const dns = portainerDnsRecordNote(plan);
+  return [
+    `This pull request adds the deployment setup that OpsCrew generated from \`opscrew/plan.yaml\` for **${plan.app.name}**, which runs as stacks in your Portainer:`,
+    "",
+    ...(roots.length > 0
+      ? [
+          `- \`${plan.infra.dir}/\` and \`opscrew/infra/modules/\`: ${roots.join(", and ")} (works with OpenTofu and Terraform).`,
+        ]
+      : []),
+    `- \`opscrew/runtime/compose.yaml\`: the app's stack in your Portainer (the app, its release command and the services it needs). The deploy workflow fills in each new image and writes the file to the \`opscrew-deploy\` branch, which Portainer deploys. The values of its variables live only in the stack's environment in Portainer.`,
+    `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and writes it to the \`opscrew-deploy\` branch on every push to \`${plan.cicd.branch}\`; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`,
+    "- `opscrew/plan.yaml`: the deployment plan. Portainer's address is not in the repository; it stays on the computer that ran `opscrew provision`.",
+    "",
+    ...nextStep,
+    ...(dns !== undefined ? ["", dns] : []),
+    "",
+    PORTAINER_HOST_NOTE,
+    PORTAINER_BACKUPS_NOTE,
+    "",
+    "Review checklist:",
+    "- [ ] The workflow only uses pinned, first-party actions.",
+    "- [ ] The stacks and the registry entry OpsCrew showed before creating them in Portainer match what you expect.",
     "",
     `Opened by OpsCrew ${version}.`,
   ].join("\n");

@@ -380,6 +380,21 @@ describe("an existing Portainer in OpsCrew's local state", () => {
     expect((await readPortainerConnection(deps.paths))?.certFingerprint).toBeUndefined();
   });
 
+  it("accepts every stack name the Portainer adapter gives, also for an app name ending with a dash", async () => {
+    const deps = await createTestPhaseDeps();
+    const created: PortainerConnection["created"] = {
+      stacks: [
+        { id: 4, name: "opscrew-shop-", role: "app" },
+        { id: 5, name: "opscrew-shop--updater", role: "updater" },
+        { id: 6, name: "opscrew-shop--portainer-tunnel", role: "tunnel-connector" },
+      ],
+      registryId: 2,
+      volumes: ["opscrew-shop-_postgres_data"],
+    };
+    await recordPortainerConnection(deps.paths, { ...portainer, created });
+    expect((await readPortainerConnection(deps.paths))?.created).toEqual(created);
+  });
+
   it("refuses entries that could not connect safely or would hold a secret, and leaves the file as it was", async () => {
     const deps = await createTestPhaseDeps();
     await recordPortainerConnection(deps.paths, portainer);
@@ -413,6 +428,12 @@ describe("an existing Portainer in OpsCrew's local state", () => {
       ["someone else's stack", created({ stacks: [{ ...stack, name: "nextcloud" }] })],
       ["stack role", created({ stacks: [{ ...stack, role: "database" }] })],
       ["duplicate stack", created({ stacks: [stack, { ...stack, role: "updater" }] })],
+      [
+        "two stacks in one role",
+        created({ stacks: [stack, { id: 13, name: "opscrew-acme-web-2", role: "app" }] }),
+      ],
+      ["a name that is not OpsCrew's", created({ stacks: [{ ...stack, name: "opscrew-" }] })],
+      ["an upper-case name", created({ stacks: [{ ...stack, name: "opscrew-Acme" }] })],
       ["registry id", created({ registryId: 0 })],
       ["architecture", { ...portainer, arch: "x86" }],
       ["redeploy mode", { ...portainer, redeploy: "polling" }],

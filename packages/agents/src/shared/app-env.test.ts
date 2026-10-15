@@ -3,6 +3,7 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   assembleAppEnv,
+  dotenvLine,
   type EnvQuestion,
   hostListKind,
   parseDotenv,
@@ -261,5 +262,52 @@ describe("connection settings under the app's own names (FR-814)", () => {
       dotenvText: "CELERY_BROKER_URL=amqp://rabbit\n",
     });
     expect(parseDotenv(result.appEnv).get("CELERY_BROKER_URL")).toBe("amqp://rabbit");
+  });
+});
+
+describe("assembleAppEnv: exact values", () => {
+  it("returns every value exactly as set, next to the unchanged env-file texts", async () => {
+    const tricky = `it's "quoted" $HOME \n and\na newline`;
+    const secret = fakeSecret("stripe-live-key");
+    const env: Env = [
+      { name: "DATABASE_URL", secret: true, source: "derived" },
+      { name: "TRICKY", secret: true, source: "user" },
+      { name: "STRIPE_SECRET_KEY", secret: true, source: "user" },
+      { name: "NEXT_PUBLIC_SITE", secret: false, source: "user" },
+      { name: "SESSION_SECRET", secret: true, source: "generated" },
+      { name: "DJANGO_DEBUG", secret: false, source: "user", optional: true },
+    ];
+    const answers: Record<string, string> = {
+      TRICKY: tricky,
+      STRIPE_SECRET_KEY: secret,
+      NEXT_PUBLIC_SITE: "https://shop.example.com",
+    };
+    const result = await assembleAppEnv({
+      plan: plan(env),
+      ask: async (question) =>
+        question.name in answers ? { value: answers[question.name] as string } : { skip: true },
+      password: () => "generated-value-0123456789",
+    });
+    expect(result.values).toEqual({
+      app: {
+        DATABASE_URL: "postgresql://app:generated-value-0123456789@db:5432/app",
+        SESSION_SECRET: "generated-value-0123456789",
+        STRIPE_SECRET_KEY: secret,
+        TRICKY: tricky,
+      },
+      build: { NEXT_PUBLIC_SITE: "https://shop.example.com" },
+    });
+    // The env-file texts are what they always were (the value with a quote is escaped for Compose).
+    expect(result.appEnv).toBe(
+      [
+        "DATABASE_URL=postgresql://app:generated-value-0123456789@db:5432/app",
+        "SESSION_SECRET=generated-value-0123456789",
+        `STRIPE_SECRET_KEY=${secret}`,
+        dotenvLine("TRICKY", tricky),
+        "",
+      ].join("\n"),
+    );
+    expect(result.buildEnv).toBe("NEXT_PUBLIC_SITE=https://shop.example.com\n");
+    expect(result.defaulted).toEqual(["DJANGO_DEBUG"]);
   });
 });

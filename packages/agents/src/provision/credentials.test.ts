@@ -11,6 +11,7 @@ import {
   writeFakeState,
 } from "./__fixtures__/fakes";
 import { ownCloudflare, ownPlan } from "./__fixtures__/own";
+import { portainerPlan } from "./__fixtures__/portainer";
 import { setupCloudflare } from "./credentials";
 
 type Phase = "http_config_settings" | "http_request_firewall_custom";
@@ -288,5 +289,114 @@ describe("setupCloudflare: which entrypoint rulesets OpsCrew manages", () => {
     });
     expect(setup).toMatchObject({ manageConfigRule: true, manageWafRules: true });
     expect(engine.reads).toBe(1);
+  });
+});
+
+describe("setupCloudflare for the user's Portainer", () => {
+  const userRecord = (name: string) => ({
+    id: `user-${name}`,
+    type: "A",
+    name,
+    content: "198.51.100.20",
+    ttl: 1,
+    proxied: false,
+  });
+
+  async function setup(
+    plan: DeployPlan,
+    options: {
+      records?: ReturnType<typeof userRecord>[];
+      accounts?: string[];
+      zoneAccount?: string;
+    } = {},
+  ) {
+    const deps = await createTestPhaseDeps();
+    const base = fakeCloudflare({
+      records: options.records ?? [],
+      configRules: "user",
+      wafRules: "none",
+    });
+    const inspected: string[] = [];
+    const cloudflare = {
+      ...base,
+      findZone: async () => ({
+        id: "zone-123",
+        name: "example.com",
+        status: "active",
+        nameServers: [],
+        ...(options.zoneAccount !== undefined ? { accountId: options.zoneAccount } : {}),
+      }),
+      listAccounts: async () => (options.accounts ?? ["acc-1"]).map((id) => ({ id, name: id })),
+      inspectEntrypointRuleset: async (zone: string, phase: Phase) => {
+        inspected.push(phase);
+        return base.inspectEntrypointRuleset(zone, phase);
+      },
+    };
+    const setupResult = setupCloudflare(deps, plan, { cloudflare });
+    return { deps, cloudflare, inspected, result: setupResult };
+  }
+
+  it("needs no Cloudflare at all without a tunnel (proxy or Caddy with the updater)", async () => {
+    for (const web of [{ mode: "proxy", port: 8080 }, { mode: "caddy" }] as const) {
+      const { result, cloudflare } = await setup(portainerPlan({ web }));
+      expect(await result).toBeUndefined();
+      expect(cloudflare.listed).toEqual([]);
+    }
+  });
+
+  it("tunnel mode: checks the app's hostnames, reads the account, decides only the WAF phase", async () => {
+    const { result, cloudflare, inspected } = await setup(portainerPlan({ www: true }));
+    expect(await result).toEqual({
+      zoneId: "zone-123",
+      zoneName: "example.com",
+      manageConfigRule: false,
+      manageWafRules: true,
+      accountId: "acc-1",
+    });
+    expect(cloudflare.listed).toEqual(["shop.example.com", "www.shop.example.com"]);
+    expect(inspected).toEqual(["http_request_firewall_custom"]);
+  });
+
+  it("tunnel mode: stops on a record at the app's hostname OpsCrew did not create", async () => {
+    const { result } = await setup(portainerPlan(), { records: [userRecord("shop.example.com")] });
+    await expect(result).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("A shop.example.com"),
+    });
+  });
+
+  it("proxy or Caddy with the Cloudflare redeploy: the user's own record at the domain is expected", async () => {
+    for (const web of [{ mode: "proxy", port: 8080 }, { mode: "caddy" }] as const) {
+      const { result, cloudflare, inspected } = await setup(
+        portainerPlan({ web, redeploy: "cloudflare" }),
+        { records: [userRecord("shop.example.com")] },
+      );
+      expect(await result).toMatchObject({ zoneId: "zone-123", accountId: "acc-1" });
+      // Only the webhook's hostname is OpsCrew's; no rule phase is used without the app's tunnel.
+      expect(cloudflare.listed).toEqual(["portainer-shop.example.com"]);
+      expect(inspected).toEqual([]);
+    }
+  });
+
+  it("stops on a record at the webhook's hostname OpsCrew did not create", async () => {
+    const { result } = await setup(portainerPlan({ redeploy: "cloudflare" }), {
+      records: [userRecord("portainer-shop.example.com")],
+    });
+    await expect(result).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("portainer-shop.example.com"),
+    });
+  });
+
+  it("uses the zone's account when Cloudflare names it, and names the tunnel permissions otherwise", async () => {
+    const named = await setup(portainerPlan(), { zoneAccount: "acc-zone", accounts: [] });
+    expect(await named.result).toMatchObject({ accountId: "acc-zone" });
+    const unknown = await setup(portainerPlan(), { accounts: ["a", "b"] });
+    const error = await unknown.result.then(
+      () => undefined,
+      (e: unknown) => e as { code: string; hint: string },
+    );
+    expect(error).toMatchObject({ code: "CREDENTIALS_INVALID" });
+    expect(error?.hint).toContain("Cloudflare Tunnel");
   });
 });

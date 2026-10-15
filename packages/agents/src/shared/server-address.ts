@@ -125,11 +125,15 @@ const CertFingerprintSchema = z
     message: "must be a SHA-256 certificate fingerprint such as SHA256:AB:CD:…",
   });
 
-/** A stack OpsCrew created in Portainer: always named `opscrew-…`, never one of the user's own. */
+/**
+ * A stack OpsCrew created in Portainer: always named `opscrew-…`, never one of the user's own. The
+ * same rules as the Portainer adapter's record (`CreatedRecordSchema`): an app name may end with a
+ * dash, as plan-schema allows, so `opscrew-shop-` and `opscrew-shop--updater` are OpsCrew's names.
+ */
 const CreatedStackSchema = z.strictObject({
   /** Portainer's stack id. */
   id: z.int().positive(),
-  name: z.string().regex(/^opscrew-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, {
+  name: z.string().regex(/^opscrew-[a-z0-9][a-z0-9-]{0,60}$/, {
     message: "must be a stack OpsCrew names opscrew-<app>…",
   }),
   role: z.enum(["app", "updater", "tunnel-connector"]),
@@ -157,17 +161,31 @@ const PortainerConnectionSchema = z
     redeploy: z.enum(["updater", "cloudflare"]).optional(),
     /** How visitors reach the app, as answered: tunnel, proxy with its port, or caddy (design: target.web). */
     web: PortainerWebSchema.optional(),
+    /**
+     * The app's image is public on GitHub Container Registry, as the user said (`--public-image`),
+     * so Portainer pulls it without a registry entry; recorded after a successful stack step and
+     * used until the user says otherwise.
+     */
+    publicImage: z.boolean().optional(),
     /** Everything OpsCrew created in Portainer, so destroy removes exactly that. */
     created: z
       .strictObject({
-        stacks: z.array(CreatedStackSchema).default(() => []),
+        /** At most one stack per role: the app, the updater and the Cloudflare connector. */
+        stacks: z
+          .array(CreatedStackSchema)
+          .max(3)
+          .default(() => []),
         /** The registry entry OpsCrew added (admin token only). */
         registryId: z.int().positive().optional(),
         /** The app stack's named volumes, recorded at apply (deleted only with `--delete-data`). */
         volumes: z
           .array(
-            z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/, { message: "must be a volume name" }),
+            z
+              .string()
+              .max(255)
+              .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/, { message: "must be a volume name" }),
           )
+          .max(64)
           .default(() => []),
       })
       .prefault({}),
@@ -182,8 +200,9 @@ const PortainerConnectionSchema = z
     }
     const ids = new Set<number>();
     const names = new Set<string>();
+    const roles = new Set<string>();
     portainer.created.stacks.forEach((stack, i) => {
-      if (ids.has(stack.id) || names.has(stack.name)) {
+      if (ids.has(stack.id) || names.has(stack.name) || roles.has(stack.role)) {
         ctx.addIssue({
           code: "custom",
           path: ["created", "stacks", i],
@@ -192,6 +211,7 @@ const PortainerConnectionSchema = z
       }
       ids.add(stack.id);
       names.add(stack.name);
+      roles.add(stack.role);
     });
   });
 

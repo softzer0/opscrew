@@ -195,6 +195,12 @@ export interface AppEnvironment {
   unresolved: string[];
   /** Everything this run generated or reused, to pass as `previous` next time. */
   generated: GeneratedValues;
+  /**
+   * The same values by name, exactly as set (no env-file quoting), for a target that takes them one
+   * by one, such as a Portainer stack's environment: `app` holds what {@link appEnv} holds, `build`
+   * what {@link buildEnv} holds. Never logged.
+   */
+  values: { app: Record<string, string>; build: Record<string, string> };
 }
 
 /**
@@ -302,5 +308,9 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     defaulted,
     unresolved,
     generated,
+    values: {
+      app: Object.fromEntries([...app.entries()].sort(([a], [b]) => a.localeCompare(b))),
+      build: Object.fromEntries([...build.entries()].sort(([a], [b]) => a.localeCompare(b))),
+    },
   };
 }

@@ -10,6 +10,7 @@ export {
   GITHUB_TOKEN_PERMISSIONS,
   GitHubClient,
   type GitHubClientOptions,
+  type OrphanBranchInput,
   type PullRequest,
   type RepoInfo,
   type WorkflowRun,

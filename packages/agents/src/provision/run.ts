@@ -51,6 +51,7 @@ import {
   removeOldAccessMode,
 } from "./own";
 import { findSavedPlan, planAndApply, REMOVAL_PLAN_SUFFIX } from "./plan-apply";
+import { provisionPortainer } from "./portainer";
 import { chooseDeployBranch, localDeployBranch, publishDeploySetup } from "./publish";
 import {
   committedTfvars,
@@ -208,7 +209,10 @@ async function savedInfrastructureHashes(
     ...(options.approvePlanHash !== undefined ? [options.approvePlanHash] : []),
     ...(options.approvePlanHashes ?? []),
   ];
-  if (plan.target.provider !== "own") return hashes[0] === undefined ? {} : { apply: hashes[0] };
+  // A server the user owns and the user's Portainer have more than one plan to approve.
+  if (plan.target.provider !== "own" && plan.target.provider !== "portainer") {
+    return hashes[0] === undefined ? {} : { apply: hashes[0] };
+  }
   const applied = plan.deployment.lastPlanHash?.toLowerCase();
   const found: SavedInfrastructureHashes = {};
   for (const hash of hashes) {
@@ -287,6 +291,10 @@ function planApproval(record: ApprovalRecord, kind: "iac-apply" | "host-apply") 
  * removes the old records (an apply of its own); after the infrastructure apply the host plan is
  * saved, shown, approved by its hash and applied; then the address is recorded and the deploy
  * secrets (with the tunnel's service token) are stored.
+ *
+ * The user's Portainer (`target.provider: portainer`) leaves this flow after the repository checks
+ * for {@link provisionPortainer}: no server, SSH or deploy key, and its changes in Portainer as a
+ * stack plan approved by its hash (`stack-apply`).
  */
 async function provisionFlow(
   deps: PhaseDeps,
@@ -313,6 +321,22 @@ async function provisionFlow(
     });
   }
   await requireDockerfile(deps, git, plan);
+  if (plan.target.provider === "portainer") {
+    // The user's Portainer: no server, SSH or deploy key; stacks through Portainer's API.
+    const saved = await savedInfrastructureHashes(deps, options, plan);
+    return provisionPortainer(deps, options, {
+      plan,
+      requirements,
+      git,
+      phase,
+      ...(saved.apply !== undefined ? { approveHash: saved.apply } : {}),
+      ...(saved.removal !== undefined ? { approveRemovalHash: saved.removal } : {}),
+      extras: {
+        ...(extras.approvalNotes !== undefined ? { approvalNotes: extras.approvalNotes } : {}),
+        ...(extras.ready !== undefined ? { ready: extras.ready } : {}),
+      },
+    });
+  }
   const profile = providerProfile(planProvider(plan));
   deps.reporter.step(
     ownServer
@@ -830,6 +854,13 @@ export async function runPhaseFlow(
  * Cloudflare's records (or tunnel and Access) as infrastructure and the server's preparation as a
  * host plan, applies each only after an approval bound to its hash (two `--approve` hashes in
  * scripts), then stores the deploy secrets and opens the pull request.
+ *
+ * In a Portainer the user already runs (`target.provider: portainer`) it changes nothing on the
+ * host: it inspects Portainer through its API with the pinned certificate, plans Cloudflare's
+ * tunnels and Access (when the plan has them) as infrastructure and the stacks as a stack plan,
+ * applies each only after an approval bound to its hash (`--yes` never grants a `stack-apply`),
+ * records what it created in `.opscrew/server.json`, then stores the deploy secrets and opens the
+ * pull request (see `provisionPortainer`).
  */
 export async function runProvision(
   deps: PhaseDeps,

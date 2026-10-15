@@ -2,7 +2,11 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
-import { DEPLOY_SECRETS, TUNNEL_DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import {
+  DEPLOY_SECRETS,
+  PORTAINER_DEPLOY_SECRETS,
+  TUNNEL_DEPLOY_SECRETS,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
@@ -45,13 +49,16 @@ async function readGenerated(deps: PhaseDeps): Promise<GeneratedValues | undefin
  * named by `OPSCREW_APP_ENV_FILE`. Generated values (database password, app secrets) are kept in
  * a private file so re-running provision never changes the password Postgres was created with.
  * `serverHost` (the address the deploy secrets point to) fills host lists such as
- * `ALLOWED_HOSTS` when the plan has no domain; it is never printed.
+ * `ALLOWED_HOSTS` when the plan has no domain; it is never printed. For the user's Portainer
+ * (`options.portainer`) the notes about unset variables say what a stack does with them: they are
+ * sent empty, because a stack's variable cannot be left unset.
  */
 export async function buildAppEnvironment(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: ProvisionServices,
   serverHost?: string,
+  options: { portainer?: boolean } = {},
 ): Promise<AppEnvironment> {
   let dotenvText: string | undefined;
   const ask = deps.interactive ? services.askEnv : undefined;
@@ -86,8 +93,28 @@ export async function buildAppEnvironment(
       }
     }
   }
-  reportUnsetVariables(deps, environment);
+  if (options.portainer === true) reportUnsetStackVariables(deps, environment);
+  else reportUnsetVariables(deps, environment);
   return environment;
+}
+
+/**
+ * The user's Portainer: which variables are sent empty and why (names only, never values). A
+ * stack's variable is never left unset, so the app sees an empty value instead of its default.
+ */
+function reportUnsetStackVariables(deps: PhaseDeps, environment: AppEnvironment): void {
+  const list = (names: string[]) => names.join(", ");
+  if (environment.defaulted.length > 0) {
+    const one = environment.defaulted.length === 1;
+    deps.reporter.info(
+      `${list(environment.defaulted)} ${one ? "has" : "have"} no production value, so the app's stack gets ${one ? "it" : "them"} as an empty value (a Portainer stack cannot leave a variable unset); give ${one ? "it a value" : "them values"} if the app's default needs ${one ? "it" : "them"} to be missing.`,
+    );
+  }
+  if (environment.unresolved.length > 0) {
+    deps.reporter.warn(
+      `${list(environment.unresolved)} must list the app's address, but opscrew/plan.yaml has no domain, so the app's stack gets them empty. Give the app a domain with \`opscrew dns --domain <hostname>\`, then run \`opscrew provision\` again.`,
+    );
+  }
 }
 
 /** Says which variables were left unset and why (names only, never values). */
@@ -139,6 +166,34 @@ export function deploySecrets(input: {
   };
 }
 
+/**
+ * The GitHub Actions secrets of the deploy workflow for the user's Portainer: the build's
+ * client-side values (`OPSCREW_BUILD_ENV`) and, in redeploy mode `cloudflare`, Portainer's webhook
+ * URL behind Cloudflare Access with the Access service token. The app's own values are not among
+ * them: they live only in the stack's environment in Portainer.
+ */
+export function portainerDeploySecrets(input: {
+  environment: AppEnvironment;
+  webhook?: { url: string; accessClientId: string; accessClientSecret: string };
+}): Record<string, string> {
+  return {
+    [DEPLOY_SECRETS.buildEnv]: input.environment.buildEnv,
+    ...(input.webhook !== undefined
+      ? {
+          [PORTAINER_DEPLOY_SECRETS.webhookUrl]: input.webhook.url,
+          [PORTAINER_DEPLOY_SECRETS.accessClientId]: input.webhook.accessClientId,
+          [PORTAINER_DEPLOY_SECRETS.accessClientSecret]: input.webhook.accessClientSecret,
+        }
+      : {}),
+  };
+}
+
+/**
+ * What the deploy secrets' record names instead of a server's address for the user's Portainer
+ * (whose address is never written outside `.opscrew/server.json`).
+ */
+export const PORTAINER_SECRETS_RECORD = "portainer";
+
 /** Private file recording the server and repository the deploy secrets were last stored for. */
 function deploySecretsRecordFile(deps: PhaseDeps): string {
   return join(deps.paths.projectHomeDir, "deploy_secrets.json");
@@ -172,6 +227,15 @@ export async function setDeploySecrets(
   secrets: Record<string, string>,
   variableNames: readonly string[],
   phase: Extract<PhaseName, "provision" | "dns" | "retarget"> = "provision",
+  options: {
+    /**
+     * What the record names as the deploy target when the secrets hold no `OPSCREW_HOST` (the
+     * user's Portainer: {@link PORTAINER_SECRETS_RECORD}).
+     */
+    record?: string;
+    /** The text after "the app is not deployed yet" when the user refuses (default: the server's). */
+    refusedState?: string;
+  } = {},
 ): Promise<void> {
   const names = Object.keys(secrets).sort();
   const repo = `${github.owner}/${github.repo}`;
@@ -187,7 +251,7 @@ export async function setDeploySecrets(
   if (!approval.approved) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
-      "The deploy secrets were not stored, so GitHub Actions cannot deploy yet. The server is running.",
+      `The deploy secrets were not stored, so GitHub Actions cannot deploy yet. ${options.refusedState ?? "The server is running."}`,
       { hint: "Run `opscrew provision` again when you are ready; it continues from here." },
     );
   }
@@ -212,7 +276,7 @@ export async function setDeploySecrets(
   await writeFileAtomic(
     deploySecretsRecordFile(deps),
     `${JSON.stringify({
-      host: secrets[DEPLOY_SECRETS.host],
+      host: secrets[DEPLOY_SECRETS.host] ?? options.record,
       repo,
       names,
       storedAt: deps.clock.now().toISOString(),
