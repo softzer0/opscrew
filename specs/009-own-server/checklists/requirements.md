@@ -33,4 +33,4 @@
 
 - Products the user chooses or sees (SSH, Docker, Cloudflare Tunnel and Access, Portainer) are named
   as in earlier OpsCrew specs; how OpsCrew drives them is left to the plan.
-- Clarified 2026-10-14: one OpsCrew app per server in this feature; sharing comes with feature 012.
+- Clarified 2026-10-14: one OpsCrew app per server in this feature; sharing comes with feature 013.
