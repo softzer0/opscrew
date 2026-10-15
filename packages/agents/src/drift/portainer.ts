@@ -34,6 +34,7 @@ import {
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { hidePortainerAddress } from "../interview/portainer-access";
 import { portainerCloudflare, setupCloudflare, setupGitHub } from "../provision/credentials";
 import {
   ensurePortainerValueKey,
@@ -551,7 +552,7 @@ export async function portainerDrift(
     if (root.webhook) {
       // Portainer's address reaches the engine only as a sensitive variable, never in a file.
       const origin = portainerContainerUrl(connection.url);
-      deps.redactor.addLiteral(origin, "portainer-address");
+      hidePortainerAddress(deps.redactor, origin);
       engineEnv.TF_VAR_portainer_origin = origin;
     }
     const compared = await compareInfrastructure(deps, {

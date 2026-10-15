@@ -55,6 +55,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { hidePortainerAddress } from "../interview/portainer-access";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import {
   type AppEnvironment,
@@ -236,19 +237,9 @@ export async function requirePortainerConnection(
       },
     );
   }
-  hidePortainerAddress(deps, connection.url);
+  // Portainer's address (and its host name) is never printed.
+  hidePortainerAddress(deps.redactor, connection.url);
   return connection;
-}
-
-/** Registers Portainer's address (and its host name) with the redactor: it is never printed. */
-function hidePortainerAddress(deps: Pick<PhaseDeps, "redactor">, url: string): void {
-  const parsed = new URL(url);
-  deps.redactor.addLiteral(url, "portainer-address");
-  deps.redactor.addLiteral(parsed.origin, "portainer-address");
-  if (!LOOPBACK.has(parsed.hostname)) {
-    deps.redactor.addLiteral(parsed.host, "portainer-address");
-    deps.redactor.addLiteral(parsed.hostname, "portainer-address");
-  }
 }
 
 /** `PORTAINER_API_KEY`, registered with the redactor; stops plainly when it is not set. */
@@ -895,7 +886,7 @@ export async function provisionPortainer(
     if (cloudflareRoot.webhook || removal) {
       // Portainer's address reaches the engine only as a sensitive variable, never in a file.
       const origin = portainerContainerUrl(connection.url);
-      deps.redactor.addLiteral(origin, "portainer-address");
+      hidePortainerAddress(deps.redactor, origin);
       engineEnv.TF_VAR_portainer_origin = origin;
     }
     const iacEngine = engine;

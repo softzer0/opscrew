@@ -42,6 +42,12 @@ export {
   splitPortainerAnswers,
 } from "./portainer";
 export {
+  createPortainerAccess,
+  hidePortainerAddress,
+  type PortainerAccessOptions,
+  portainerAddressNames,
+} from "./portainer-access";
+export {
   buildQuestions,
   type InterviewAnswers,
   type InterviewContext,

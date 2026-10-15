@@ -1,11 +1,12 @@
-import type {
-  ConfirmPortainerCertificate,
-  PortainerAccess,
-  PortainerInterviewOptions,
+import {
+  type ConfirmPortainerCertificate,
+  createPortainerAccess,
+  hidePortainerAddress,
+  type PortainerAccess,
+  type PortainerInterviewOptions,
 } from "@opscrew/agents";
 import { normalizeCertFingerprint } from "@opscrew/connector-portainer";
 import { OpsCrewError } from "@opscrew/core";
-import { createPortainerAccess, hidePortainerAddress } from "@opscrew/mcp-server";
 import type { CliContext } from "../context";
 import { deployServicesOf } from "./deploy-services";
 import type { UiPrompts } from "./prompts";

@@ -20,6 +20,7 @@ import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { stateHoldsNothing } from "../drift/infra";
+import { hidePortainerAddress } from "../interview/portainer-access";
 import { portainerCloudflare } from "../provision/credentials";
 import {
   portainerContainerUrl,
@@ -627,7 +628,7 @@ export async function destroyPortainer(
     const { engine, env } = await setupEngine(deps, plan, options, statePath);
     // Portainer's address reaches the engine only as a sensitive variable, never in a file.
     const origin = portainerContainerUrl(connection.url);
-    deps.redactor.addLiteral(origin, "portainer-address");
+    hidePortainerAddress(deps.redactor, origin);
     env.TF_VAR_portainer_origin = origin;
     session = {
       deps,

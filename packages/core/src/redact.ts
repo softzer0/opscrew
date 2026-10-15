@@ -125,19 +125,63 @@ function applyRule(text: string, { rule, pattern }: CompiledRule): string {
   return out + text.slice(cursor);
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// A name stands alone: right after a percent-escape (`%2F%2Fnas`, `user%40nas`), or not right after
+// a letter, digit, `_`, `.` or `-` (never inside a longer name) and not right after the start of a
+// placeholder (`[REDACTED:nas]`); and not right before a letter, digit, `_` or `-`, nor before `.`
+// and a letter, digit or `_` (`portainer.url`) or `:` and a letter or `_` (a port may follow:
+// `nas:9443`).
+const NAME_BEFORE = `(?:(?<=%[0-9A-Fa-f]{2})|(?<![0-9A-Za-z_.-])(?<!${escapeRegExp(PLACEHOLDER_PREFIX)}))`;
+const NAME_AFTER = "(?![0-9A-Za-z_-]|\\.[0-9A-Za-z_]|:[A-Za-z_])";
+
+/**
+ * One case-insensitive pattern for `names` and their URL-encoded forms (longest first), or
+ * `undefined` for none.
+ */
+function namesPattern(names: Iterable<string>): RegExp | undefined {
+  const all = new Set<string>();
+  for (const raw of names) {
+    const name = raw.trim();
+    if (name === "") continue;
+    all.add(name);
+    all.add(encodeURIComponent(name));
+  }
+  const sorted = [...all].sort((a, b) => b.length - a.length).map(escapeRegExp);
+  if (sorted.length === 0) return undefined;
+  return new RegExp(`${NAME_BEFORE}(?:${sorted.join("|")})${NAME_AFTER}`, "gi");
+}
+
+/**
+ * `text` with every one of `names` (and their URL-encoded forms) replaced by `replacement`, longest
+ * first, ignoring case and only where a name stands alone (as {@link Redactor.addName} matches
+ * it): a host name such as `nas` is replaced in `https://NAS:9443/api`, `host:nas`, `admin@nas` or
+ * `%2F%2Fnas`, but never inside `nas.url`, `nas-agent`, `opscrew-shop-nas-tunnel` or `nas.lan`.
+ */
+export function replaceNames(text: string, names: readonly string[], replacement: string): string {
+  const pattern = namesPattern(names);
+  return pattern === undefined ? text : text.replace(pattern, () => replacement);
+}
+
 export interface RedactorOptions {
   /** Rules to apply. Defaults to `DEFAULT_REDACTION_RULES`. */
   rules?: readonly RedactionRule[];
 }
 
 /**
- * Masks secrets in text: registered literal values first (longest first), then pattern rules.
- * `redact` and `redactDeep` are bound and can be passed around as plain functions.
+ * Masks secrets in text: registered literal values first (longest first), then pattern rules,
+ * then registered names (whole names only). `redact` and `redactDeep` are bound and can be passed
+ * around as plain functions.
  */
 export class Redactor {
   private readonly rules: CompiledRule[];
   private readonly literals = new Map<string, string>();
   private sortedLiterals: Array<[string, string]> | undefined;
+  /** Registered names, lower-cased, with their placeholder. */
+  private readonly names = new Map<string, string>();
+  private namePattern: RegExp | null | undefined;
 
   constructor(options: RedactorOptions = {}) {
     this.rules = (options.rules ?? DEFAULT_REDACTION_RULES).map(compile);
@@ -156,13 +200,44 @@ export class Redactor {
     this.sortedLiterals = undefined;
   }
 
-  /** Returns `text` with every registered literal and rule match replaced by a placeholder. */
+  /**
+   * Registers a name that is not a secret but must not be shown, such as a host name, masked
+   * ignoring case and only where it stands alone (also in URL-encoded form): `nas` is masked in
+   * `https://NAS:9443/api`, `host:nas`, `admin@nas` or `user%40nas`, but never inside a longer
+   * name or word (`nas.url`,
+   * `opscrew-shop-nas-tunnel`, `nas.lan`, a placeholder). Short names count too. Register secrets
+   * with {@link addLiteral}: they are masked wherever they appear.
+   */
+  addName(value: string, label?: string): void {
+    const name = value.trim();
+    if (name === "") return;
+    const replacement = `${PLACEHOLDER_PREFIX}${label ?? "name"}]`;
+    this.names.set(name.toLowerCase(), replacement);
+    this.namePattern = undefined;
+  }
+
+  /** The placeholder of a matched name, also when it matched in URL-encoded form. */
+  private nameReplacement(match: string): string {
+    const direct = this.names.get(match.toLowerCase());
+    if (direct !== undefined) return direct;
+    try {
+      return (
+        this.names.get(decodeURIComponent(match).toLowerCase()) ?? `${PLACEHOLDER_PREFIX}name]`
+      );
+    } catch {
+      return `${PLACEHOLDER_PREFIX}name]`;
+    }
+  }
+
+  /** Returns `text` with every registered literal, rule match and name replaced by a placeholder. */
   readonly redact = (text: string): string => {
     let out = text;
     for (const [literal, replacement] of this.literalsByLength()) {
       if (out.includes(literal)) out = out.split(literal).join(replacement);
     }
     for (const rule of this.rules) out = applyRule(out, rule);
+    const names = this.namesPattern();
+    if (names !== undefined) out = out.replace(names, (name) => this.nameReplacement(name));
     return out;
   };
 
@@ -189,6 +264,11 @@ export class Redactor {
     seen.set(value, copy);
     for (const [key, item] of Object.entries(value)) copy[key] = this.deep(item, seen);
     return copy;
+  }
+
+  private namesPattern(): RegExp | undefined {
+    if (this.namePattern === undefined) this.namePattern = namesPattern(this.names.keys()) ?? null;
+    return this.namePattern ?? undefined;
   }
 
   private literalsByLength(): Array<[string, string]> {

@@ -25,7 +25,11 @@ import {
 } from "../shared";
 import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
 import { type DnsResolver, defaultDnsResolver, defaultTlsConnect, type TlsConnect } from "./net";
-import { hidePortainerAddress, portainerVerifyUrl, renderPortainerRunbook } from "./portainer";
+import {
+  hideRecordedPortainerAddress,
+  portainerVerifyUrl,
+  renderPortainerRunbook,
+} from "./portainer";
 
 /** Network functions for `opscrew verify`; each defaults to a Node built-in adapter. */
 export interface RunVerifyOptions {
@@ -116,7 +120,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   }
   // The user's Portainer: no server address (OpsCrew never knows the host's), and its own address
   // is never printed, not even inside the route the user gave.
-  if (portainer) await hidePortainerAddress(deps);
+  if (portainer) await hideRecordedPortainerAddress(deps);
   // Through a Cloudflare Tunnel only the domain is checked: the server has no address to probe.
   const server = tunnelMode(plan) || portainer ? undefined : await serverAddress(deps, plan);
   // A server the user owns: terminal lines say "your server", never its addresses or login host.

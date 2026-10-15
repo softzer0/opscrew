@@ -5,6 +5,7 @@ import {
   maskSecret,
   Redactor,
   registerEnvSecrets,
+  replaceNames,
   SECRET_ENV_NAMES,
   shannonEntropy,
 } from "./redact";
@@ -353,6 +354,144 @@ describe("Redactor", () => {
   it("redact can be passed around as a plain function", () => {
     const { redact } = new Redactor();
     expect(redact(GITHUB)).toBe("[REDACTED:github-token]");
+  });
+});
+
+describe("names with word boundaries (T1011)", () => {
+  it("masks a short host name only as a whole name, ignoring case", () => {
+    const r = new Redactor();
+    r.addName("nas", "portainer-address");
+    expect(
+      r.redact(
+        [
+          "Connected to nas, NAS:9443 and https://Nas/api; ssh admin@nas.",
+          "Kept: nas.url, nas-agent, opscrew-nas-tunnel, my_nas, nas.lan, shop.nas, nasa, 10.nas.",
+        ].join("\n"),
+      ),
+    ).toBe(
+      [
+        "Connected to [REDACTED:portainer-address], [REDACTED:portainer-address]:9443 and https://[REDACTED:portainer-address]/api; ssh admin@[REDACTED:portainer-address].",
+        "Kept: nas.url, nas-agent, opscrew-nas-tunnel, my_nas, nas.lan, shop.nas, nasa, 10.nas.",
+      ].join("\n"),
+    );
+  });
+
+  it("never garbles stack names, question ids or placeholders that contain the name", () => {
+    const r = new Redactor();
+    r.addName("portainer:9443", "portainer-address");
+    r.addName("https://portainer:9443", "portainer-address");
+    r.addLiteral(fakeSecret("generic-password", "portainer-token"), "PORTAINER_API_KEY");
+    const text =
+      "Removed opscrew-shop-portainer-tunnel; answer portainer.url; [REDACTED:portainer-address]; PORTAINER:9443 and https://portainer:9443/api.";
+    expect(r.redact(text)).toBe(
+      "Removed opscrew-shop-portainer-tunnel; answer portainer.url; [REDACTED:portainer-address]; [REDACTED:portainer-address] and [REDACTED:portainer-address]/api.",
+    );
+    expect(r.redact(r.redact(text))).toBe(r.redact(text));
+  });
+
+  it("still masks secrets wherever they appear, also when they contain a name", () => {
+    const r = new Redactor();
+    const secret = `portainer${fakeSecret("generic-password", "inner")}nas`;
+    r.addName("portainer");
+    r.addName("nas");
+    r.addLiteral(secret, "PORTAINER_API_KEY");
+    expect(r.redact(`key=${secret}; in-a-word-${secret}-x`)).toBe(
+      "key=[REDACTED:PORTAINER_API_KEY]; in-a-word-[REDACTED:PORTAINER_API_KEY]-x",
+    );
+    expect(r.redact(`token ${GITHUB} on nas`)).toBe(
+      "token [REDACTED:github-token] on [REDACTED:name]",
+    );
+  });
+
+  it("prefers the longest name, masks the URL-encoded form and ignores blank names", () => {
+    const r = new Redactor();
+    r.addName("nas", "SHORT");
+    r.addName("nas:9443", "LONG");
+    r.addName("https://nas:9443", "URL");
+    r.addName("   ");
+    r.addName("");
+    expect(r.redact("at nas:9443 and https://nas:9443 and nas")).toBe(
+      "at [REDACTED:LONG] and [REDACTED:URL] and [REDACTED:SHORT]",
+    );
+    expect(r.redact("u=https%3A%2F%2Fnas%3A9443")).toBe("u=[REDACTED:URL]");
+    expect(r.redact("nothing here")).toBe("nothing here");
+  });
+
+  it("escapes names, so a dotted address matches only itself", () => {
+    const r = new Redactor();
+    r.addName("10.0.0.5");
+    expect(r.redact("at 10.0.0.5:9443, not 10.0.0.50, 110.0.0.5 or 10a0b0c5")).toBe(
+      "at [REDACTED:name]:9443, not 10.0.0.50, 110.0.0.5 or 10a0b0c5",
+    );
+  });
+
+  it("masks a name after a colon, but never at the start of a placeholder", () => {
+    const r = new Redactor();
+    r.addName("nas", "host");
+    r.addName("10.0.0.5", "ip");
+    r.addLiteral(fakeSecret("generic-password", "colon"), "nas");
+    expect(
+      r.redact(
+        `DNS:nas, host:NAS, ip:10.0.0.5, key ${fakeSecret("generic-password", "colon")}, [REDACTED:nas] and [redacted:Nas]`,
+      ),
+    ).toBe(
+      "DNS:[REDACTED:host], host:[REDACTED:host], ip:[REDACTED:ip], key [REDACTED:nas], [REDACTED:nas] and [redacted:Nas]",
+    );
+  });
+
+  it("masks a name right after a percent-escape", () => {
+    const r = new Redactor();
+    r.addName("nas", "host");
+    expect(r.redact("u=http%3A%2F%2Fnas%3A9443; p=%2F%2FNAS; e=user%40nas; kept %2Fnas.lan")).toBe(
+      "u=http%3A%2F%2F[REDACTED:host]%3A9443; p=%2F%2F[REDACTED:host]; e=user%40[REDACTED:host]; kept %2Fnas.lan",
+    );
+    const url = new Redactor();
+    url.addName("https://nas:9443", "URL");
+    expect(url.redact("x=HTTPS%3a%2f%2fNAS%3a9443&y")).toBe("x=[REDACTED:URL]&y");
+  });
+
+  it("redactDeep masks names in nested values", () => {
+    const r = new Redactor();
+    r.addName("nas");
+    expect(r.redactDeep({ list: ["on NAS", "nas-agent"] })).toEqual({
+      list: ["on [REDACTED:name]", "nas-agent"],
+    });
+  });
+
+  it("stays linear on long runs of name characters", () => {
+    const r = new Redactor();
+    r.addName("nas");
+    r.addName("portainer:9443");
+    const input = `${"nas-".repeat(200_000)}${"portainer:".repeat(100_000)}`;
+    const started = Date.now();
+    expect(r.redact(input)).toBe(input);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});
+
+describe("replaceNames", () => {
+  it("replaces whole names with a readable text, longest first, ignoring case", () => {
+    expect(
+      replaceNames(
+        "Connected to https://NAS:9443/api, nas:9443 and nas; kept nas.url and opscrew-nas-x.",
+        ["nas", "nas:9443", "https://nas:9443"],
+        "your Portainer",
+      ),
+    ).toBe(
+      "Connected to your Portainer/api, your Portainer and your Portainer; kept nas.url and opscrew-nas-x.",
+    );
+    expect(replaceNames("unchanged", [], "x")).toBe("unchanged");
+    expect(replaceNames("unchanged", ["", " "], "x")).toBe("unchanged");
+  });
+
+  it("replaces the URL-encoded forms, names after a colon or an escape, never placeholders", () => {
+    expect(
+      replaceNames(
+        "u=https%3A%2F%2Fnas%3A9443&h=host:nas&e=user%40NAS; [REDACTED:nas] stays",
+        ["https://nas:9443", "nas"],
+        "your Portainer",
+      ),
+    ).toBe("u=your Portainer&h=host:your Portainer&e=user%40your Portainer; [REDACTED:nas] stays");
   });
 });
 

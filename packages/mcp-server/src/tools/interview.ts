@@ -4,6 +4,7 @@ import {
   buildQuestions,
   buildServerQuestions,
   type ConfirmPortainerCertificate,
+  createPortainerAccess,
   inferredAnswers,
   PORTAINER_FIELDS,
   type PortainerAccess,
@@ -27,7 +28,6 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
-import { createPortainerAccess } from "../portainer-access";
 import { clientSupportsElicitation } from "./deploy";
 import { isMissingArtifact, projectDirInput, relativeTo, runTool, withHint } from "./shared";
 

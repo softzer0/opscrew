@@ -9,28 +9,20 @@ import {
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { hidePortainerAddress } from "../interview/portainer-access";
 import { portainerDnsRecordNote } from "../provision/publish";
 import { readPortainerConnection } from "../shared";
 
-/** Hosts that mean "this computer"; they are not Portainer's address to anyone else. */
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
 /**
  * Registers the address of the user's Portainer (as `.opscrew/server.json` records it) with the
- * redactor, so no output names it, not even inside an address the user gave for their route.
+ * redactor through {@link hidePortainerAddress}, so no output names it, not even inside an
+ * address the user gave for their route.
  */
-export async function hidePortainerAddress(
+export async function hideRecordedPortainerAddress(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
 ): Promise<void> {
   const connection = await readPortainerConnection(deps.paths).catch(() => undefined);
-  if (connection === undefined) return;
-  const parsed = new URL(connection.url);
-  deps.redactor.addLiteral(connection.url, "portainer-address");
-  deps.redactor.addLiteral(parsed.origin, "portainer-address");
-  if (!LOOPBACK.has(parsed.hostname)) {
-    deps.redactor.addLiteral(parsed.host, "portainer-address");
-    deps.redactor.addLiteral(parsed.hostname, "portainer-address");
-  }
+  if (connection !== undefined) hidePortainerAddress(deps.redactor, connection.url);
 }
 
 /**

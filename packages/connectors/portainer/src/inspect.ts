@@ -223,7 +223,12 @@ function environmentFacts(env: PortainerEnvironment): PortainerEnvironmentFacts 
   };
 }
 
-function environmentKind(type: number): EnvironmentKind {
+/**
+ * What kind of environment Portainer's raw environment type is (1 Docker, 2 an agent on Docker,
+ * 3 ACI, 4 and 7 Edge, 5 and 6 Kubernetes; anything else `unknown`). Swarm is not a type: see the
+ * environment's `swarm` snapshot flag and Docker's `info`.
+ */
+export function environmentKind(type: number): EnvironmentKind {
   switch (type) {
     case 1:
       return "docker";

@@ -45,7 +45,7 @@ export {
   type PortainerStackFacts,
 } from "./facts";
 export { normalizeCertFingerprint, sameCertFingerprint } from "./fingerprint";
-export { inspectPortainer } from "./inspect";
+export { environmentKind, inspectPortainer } from "./inspect";
 export {
   COMPOSE_PROJECT_LABEL,
   DEPLOY_BRANCH,

@@ -3,15 +3,15 @@ import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   type PhaseDeps,
+  portainerAddressNames,
   readOwnServer,
   readPortainerConnection,
   withoutOwnServer,
 } from "@opscrew/agents";
 import type { ApprovalHandler, UserFacingError } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, resolveProjectPaths } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError, replaceNames, resolveProjectPaths } from "@opscrew/core";
 import { z } from "zod";
 import { CollectingReporter, type ReportedMessage, type ResolvedMcpDeps } from "../deps";
-import { portainerAddressNames } from "../portainer-access";
 
 /** The `projectDir` input every OpsCrew tool accepts. */
 export const projectDirInput = {
@@ -155,29 +155,14 @@ export async function portainerNames(deps: ResolvedMcpDeps, projectDir: string):
   }
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /**
- * `text` with every Portainer name replaced by "your Portainer" (longest names first), matched
- * case-insensitively and only as a whole name: a host name such as `portainer` stays intact inside
- * question ids (`portainer.url`), stack names (`opscrew-shop-portainer-tunnel`) or other words.
+ * `text` with every Portainer name ({@link portainerAddressNames}) replaced by "your Portainer"
+ * in one pass (longest names first), matched case-insensitively and only as a whole name, as the
+ * redactor matches them: a host name such as `nas` stays intact inside question ids (`nas.url`),
+ * stack names (`opscrew-shop-nas-tunnel`) or other words.
  */
 export function withoutPortainer(text: string, names: readonly string[]): string {
-  let out = text;
-  for (const name of [...names].sort((a, b) => b.length - a.length)) {
-    if (name.trim() === "") continue;
-    out = out.replace(
-      new RegExp(
-        // Never inside "your Portainer" itself (a host named `portainer` would double it).
-        `(?<![0-9A-Za-z_.:-])(?<!your )${escapeRegExp(name)}(?![0-9A-Za-z_:-]|\\.[0-9A-Za-z_])`,
-        "gi",
-      ),
-      "your Portainer",
-    );
-  }
-  return out;
+  return replaceNames(text, names, "your Portainer");
 }
 
 /**

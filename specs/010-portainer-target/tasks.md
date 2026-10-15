@@ -84,7 +84,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
-- [ ] T1011 [US1] [US5] One home for Portainer access and address hiding in `packages/agents/src/**`, `packages/core/src/redact*`
+- [X] T1011 [US1] [US5] One home for Portainer access and address hiding in `packages/agents/src/**`, `packages/core/src/redact*`
   - Owns: `packages/agents/src/interview/**`, `packages/agents/src/provision/portainer.ts`, `packages/agents/src/verify/portainer.ts`, `packages/agents/src/{drift,destroy}/portainer.ts` (the address hiding only), `packages/agents/src/index.ts` and `provision/index.ts` (export lines), `packages/core/src/redact*` (+ tests), `packages/mcp-server/src/portainer-access.ts` (removed), `packages/mcp-server/src/{index.ts,tools/shared.ts,tools/interview.ts}`, `packages/agents/src/verify/run.ts` (a rename), `packages/connectors/portainer/src/{inspect,index}.ts` (exporting the environment-type mapping only), `packages/cli/src/ui/portainer.ts` (+ tests)
   - Reads: the T1007 review (deviation and finding 3); `agents/src/secure/own.ts` `withoutOwnServer`
   - Depends: T1007
