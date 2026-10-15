@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
+  APP_DIR,
+  type HASHED_RUNTIME_FILES,
   type HostFacts,
   type HostPlan,
   HostPlanSchema,
@@ -8,9 +10,19 @@ import {
   type HostStepId,
   inspectHost,
   planHost,
+  type RuntimeFileName,
+  SECRET_RUNTIME_FILES,
+  UFW_SSH_COMMENT,
+  UFW_WEB_COMMENT,
   webFilterFacts,
 } from "@opscrew/connector-ssh-host";
 import { OpsCrewError } from "@opscrew/core";
+import {
+  DEPLOY_SECRETS,
+  type RenderContext,
+  renderCaddyfile,
+  renderCompose,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
@@ -21,11 +33,12 @@ import {
   ownTarget,
 } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
+import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
 export interface HostDifference {
-  /** The host step it belongs to; `record` for OpsCrew's host record, `app` for the app's containers, `server` for other findings. */
+  /** The host step it belongs to; `record` for OpsCrew's host record, `app` for the app's containers and runtime files, `server` for other findings. */
   area: HostStepId | "record" | "app" | "server";
   /** What OpsCrew set up, in plain English. */
   title: string;
@@ -103,6 +116,8 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "tunnel-connector": "Cloudflare Tunnel connector",
   portainer: "Portainer",
 };
+
+const RUNTIME_FILES_TITLE = "OpsCrew's runtime files in /srv/app";
 
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 
@@ -272,6 +287,191 @@ function webFilterDetails(facts: HostFacts, step: HostStep, applied?: HostPlan):
   return out;
 }
 
+/** The first setup entry of `step` in OpsCrew's host record: the value before OpsCrew's change. */
+function firstSetupEntry(facts: HostFacts, step: HostStepId) {
+  return facts.record?.changes.find((entry) => entry.step === step && entry.purpose === "setup");
+}
+
+/** ufw words that start a rule in `ufw show added`; a comma elsewhere is part of a port list. */
+const UFW_RULE_START = /^(allow|deny|reject|limit|route|insert|prepend)\b/;
+
+/** The record's `rules` (`ufw show added` without `ufw ` and comments, comma-joined). */
+function recordedRules(value: string | number | boolean | undefined): Set<string> {
+  const rules: string[] = [];
+  for (const part of String(value ?? "").split(",")) {
+    const text = part.trim();
+    if (text === "") continue;
+    const last = rules.length - 1;
+    // `allow 80,443/tcp` was split at its port list: put it back together.
+    if (!UFW_RULE_START.test(text) && last >= 0) rules[last] = `${rules[last]},${text}`;
+    else rules.push(text);
+  }
+  return new Set(rules);
+}
+
+/** A ufw rule as shown in drift: addresses in it are replaced, so none is ever printed. */
+function shownRule(rule: string): string {
+  return rule
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?:\/\d{1,2})?\b/g, "<address>")
+    .replace(
+      /(?<![\w:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\/\d{1,3})?(?![\w:])/g,
+      "<address>",
+    );
+}
+
+const UFW_POLICY_WORDS = /^(allow|deny|reject)$/;
+
+/**
+ * What changed in ufw since OpsCrew set the server up, from the first setup entry of OpsCrew's host
+ * record (FR-911): rules added afterwards (the current rules minus the rules that were there before
+ * OpsCrew minus OpsCrew's own commented rules), and default policies other than the ones OpsCrew
+ * left (deny incoming and allow outgoing when it turned ufw on, else the ones it found). Each comes
+ * with what to do; `opscrew provision` neither removes the user's rules nor resets the policies.
+ */
+function ufwSinceSetup(facts: HostFacts): string[] {
+  const entry = firstSetupEntry(facts, "ufw");
+  if (entry === undefined || facts.firewall.ufw === "absent") return [];
+  const out: string[] = [];
+  const before = recordedRules(entry.previous.rules);
+  const ours = new Set<string | null>([UFW_SSH_COMMENT, UFW_WEB_COMMENT]);
+  const added = [
+    ...new Set(
+      facts.firewall.ufwRules
+        .filter((rule) => !ours.has(rule.comment) && !before.has(rule.rule))
+        .map((rule) => rule.rule),
+    ),
+  ];
+  for (const rule of added) {
+    out.push(
+      `ufw has a rule that was added after OpsCrew set the server up: ${shownRule(rule)}. If you added it on purpose, nothing needs to change; otherwise find it with \`sudo ufw status numbered\` on the server and remove it with \`sudo ufw delete <number>\`.`,
+    );
+  }
+  const current = facts.firewall.ufwDefaults;
+  if (current === null) return out;
+  const turnedOn = entry.previous.active === false;
+  const previous = (key: string) => {
+    const value = entry.previous[key];
+    return typeof value === "string" && UFW_POLICY_WORDS.test(value) ? value : undefined;
+  };
+  const expected = {
+    incoming: turnedOn ? "deny" : previous("defaultIncoming"),
+    outgoing: turnedOn ? "allow" : previous("defaultOutgoing"),
+    routed: previous("defaultRouted"),
+  };
+  const traffic = { incoming: "incoming", outgoing: "outgoing", routed: "routed (forwarded)" };
+  for (const key of ["incoming", "outgoing", "routed"] as const) {
+    const wanted = expected[key];
+    if (wanted === undefined || current[key] === wanted) continue;
+    const source =
+      turnedOn && key !== "routed"
+        ? `OpsCrew set ${wanted}`
+        : `it was ${wanted} when OpsCrew set the server up`;
+    out.push(
+      `ufw's default policy for ${traffic[key]} traffic is ${current[key]}; ${source}. If you changed it on purpose, nothing needs to change; otherwise put it back with \`sudo ufw default ${wanted} ${key}\` on the server.`,
+    );
+  }
+  return out;
+}
+
+/** What OpsCrew renders now for the runtime files the deploy workflow copies to /srv/app. */
+export interface ExpectedRuntimeFiles {
+  /** SHA-256 of each rendered file (`compose.yaml`, `Caddyfile`) as OpsCrew renders it now. */
+  rendered: Readonly<Partial<Record<(typeof HASHED_RUNTIME_FILES)[number], string>>>;
+  /** The deploy workflow writes `db.env` (the plan has PostgreSQL). */
+  dbEnv: boolean;
+}
+
+/**
+ * The SHA-256 of `opscrew/runtime/compose.yaml` and `opscrew/runtime/Caddyfile` as OpsCrew renders
+ * them from `plan` now (the deploy workflow copies exactly these to /srv/app). Both read only the
+ * plan and the contact email for certificates, so no secret and no connection is needed.
+ */
+export function expectedRuntimeFiles(
+  plan: DeployPlan,
+  ctx: Pick<RenderContext, "opscrewVersion" | "acmeEmail">,
+): ExpectedRuntimeFiles {
+  // Neither renderer reads the repository or the deploy key (a test checks they match the full
+  // render), so these stay empty here.
+  const full: RenderContext = {
+    opscrewVersion: ctx.opscrewVersion,
+    github: { owner: "", repo: "" },
+    deploySshPublicKey: "",
+    ...(ctx.acmeEmail !== undefined ? { acmeEmail: ctx.acmeEmail } : {}),
+  };
+  return {
+    rendered: {
+      "compose.yaml": sha256(renderCompose(plan, full).content),
+      Caddyfile: sha256(renderCaddyfile(plan, full).content),
+    },
+    dbEnv: plan.services.postgres,
+  };
+}
+
+const REDEPLOY =
+  "Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.";
+
+/** Why each file in /srv/app matters, said when it is missing. */
+const RUNTIME_FILE_ROLE: Readonly<Record<RuntimeFileName, string>> = {
+  "compose.yaml": "which defines the app's containers",
+  Caddyfile: "the web server's settings",
+  ".env": "which names the image the app runs",
+  "app.env": `the app's settings from the GitHub secret ${DEPLOY_SECRETS.appEnv}`,
+  "db.env": `the database's settings from the GitHub secret ${DEPLOY_SECRETS.dbEnv}`,
+};
+
+/**
+ * How OpsCrew's runtime files in /srv/app differ from what OpsCrew renders now (FR-911, US4/AC1):
+ * a rendered file edited, replaced or missing, and a file with secrets missing, owned by someone
+ * else than deploy, or readable by other users. Files that hold secrets are compared by presence,
+ * owner and mode only; no file content is ever read. Missing files count only once the app was
+ * deployed (the deploy workflow writes them on its first run).
+ */
+function runtimeFileDetails(
+  facts: HostFacts,
+  expected: ExpectedRuntimeFiles,
+  deployed: boolean,
+): string[] {
+  const files = facts.runtimeFiles;
+  const appDir = facts.dirs.find((dir) => dir.path === APP_DIR);
+  // No /srv/app at all is reported with the runtime directories already.
+  if (files === undefined || appDir?.kind !== "dir") return [];
+  const out: string[] = [];
+  for (const file of files) {
+    const path = `${APP_DIR}/${file.name}`;
+    const wanted = (expected.rendered as Record<string, string | undefined>)[file.name];
+    const secret = (SECRET_RUNTIME_FILES as readonly string[]).includes(file.name);
+    if (file.name === "db.env" && !expected.dbEnv) continue;
+    if (file.kind === "absent") {
+      if (deployed) out.push(`${path} (${RUNTIME_FILE_ROLE[file.name]}) is missing. ${REDEPLOY}`);
+      continue;
+    }
+    if (file.kind !== "file") {
+      out.push(
+        `${path} is no longer a regular file (it is a symbolic link or something else), so OpsCrew does not look into it. Remove it on the server, then ${REDEPLOY.charAt(0).toLowerCase()}${REDEPLOY.slice(1)}`,
+      );
+      continue;
+    }
+    if (wanted !== undefined && file.sha256 !== wanted) {
+      out.push(
+        `${path} differs from what OpsCrew renders from opscrew/plan.yaml now: it was edited on the server, or the deploy workflow has not copied the current version yet. ${REDEPLOY}`,
+      );
+    }
+    if (secret && file.name !== ".env") {
+      if (file.owner !== "deploy") {
+        out.push(
+          `${path} is owned by ${file.owner ?? "?"}:${file.group ?? "?"}, so the deploy workflow (which logs in as deploy) may not be able to replace it. Run \`chown deploy:deploy ${path}\` as root on the server.`,
+        );
+      }
+      if (!/^0?[0-7]00$/.test(file.mode ?? "")) {
+        out.push(
+          `${path} holds secrets but other users on the server can read it (mode ${file.mode ?? "?"}). Run \`chmod 600 ${path}\` on the server.`,
+        );
+      }
+    }
+  }
+  return out;
+}
+
 function fail2banDetails(facts: HostFacts): string[] {
   if (!facts.packages.fail2ban) return ["fail2ban is no longer installed."];
   if (!facts.fail2ban.active) return ["fail2ban is not running."];
@@ -380,14 +580,22 @@ function stepDetails(facts: HostFacts, step: HostStep, applied?: HostPlan): stri
 /**
  * Every difference between the inspected server and what OpsCrew set up: OpsCrew's host record,
  * each step of the setup plan `setup` (planned from the same facts and the desired state) that is
- * not in place, the plan's findings (a blocked step always has one), and the app's containers.
+ * not in place, ufw rules and default policies changed since OpsCrew's setup (from its record),
+ * OpsCrew's runtime files in /srv/app (with `app.runtimeFiles`), the plan's findings (a blocked
+ * step always has one), and the app's containers.
  * `applied` (the last setup plan the user approved) tells a change of Cloudflare's IP ranges from
  * a filter someone changed on the server. Pure; holds no secret and no address.
  */
 export function hostDifferences(
   facts: HostFacts,
   setup: HostPlan,
-  app: { name: string; projectId: string; deployed: boolean },
+  app: {
+    name: string;
+    projectId: string;
+    deployed: boolean;
+    /** What OpsCrew renders now for /srv/app ({@link expectedRuntimeFiles}); unset skips the files. */
+    runtimeFiles?: ExpectedRuntimeFiles;
+  },
   applied?: HostPlan,
 ): HostDifference[] {
   const out: HostDifference[] = [];
@@ -409,10 +617,22 @@ export function hostDifferences(
     out.push({ ...record, detail: `belongs to the OpsCrew app "${facts.record.app}".` });
   }
   for (const step of setup.steps) {
-    if (step.state !== "change") continue;
-    const details = stepDetails(facts, step, applied);
-    const shown = details.length > 0 ? details : [step.reason ?? "differs from OpsCrew's setup."];
-    for (const detail of shown) out.push({ area: step.id, title: AREA_TITLES[step.id], detail });
+    if (step.state === "change") {
+      const details = stepDetails(facts, step, applied);
+      const shown = details.length > 0 ? details : [step.reason ?? "differs from OpsCrew's setup."];
+      for (const detail of shown) out.push({ area: step.id, title: AREA_TITLES[step.id], detail });
+    }
+    // Changes the setup plan does not put back, so they show whatever the step's state.
+    if (step.id === "ufw") {
+      for (const detail of ufwSinceSetup(facts)) {
+        out.push({ area: "ufw", title: AREA_TITLES.ufw, detail });
+      }
+    }
+    if (step.id === "runtime-dirs" && app.runtimeFiles !== undefined) {
+      for (const detail of runtimeFileDetails(facts, app.runtimeFiles, app.deployed)) {
+        out.push({ area: "app", title: RUNTIME_FILES_TITLE, detail });
+      }
+    }
   }
   for (const finding of setup.findings) {
     out.push({ area: "server", title: "What OpsCrew found", detail: finding.message });
@@ -504,6 +724,11 @@ export async function ownHostDrift(
       ...(passwordLogins !== undefined ? { passwordLogins } : {}),
     },
   );
+  const contactEmail = (await readRequirements(deps))?.contactEmail;
+  const runtimeFiles = expectedRuntimeFiles(plan, {
+    opscrewVersion: deps.version,
+    ...(contactEmail ? { acmeEmail: contactEmail } : {}),
+  });
   return {
     differences: hostDifferences(
       facts,
@@ -512,6 +737,7 @@ export async function ownHostDrift(
         name: plan.app.name,
         projectId: deps.paths.projectId,
         deployed: plan.deployment.lastDeployAt !== undefined,
+        runtimeFiles,
       },
       setup,
     ),

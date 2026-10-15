@@ -1,4 +1,6 @@
 export {
+  type ExpectedRuntimeFiles,
+  expectedRuntimeFiles,
   type HostDifference,
   type HostDrift,
   hostDifferences,

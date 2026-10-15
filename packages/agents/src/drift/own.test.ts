@@ -1,4 +1,5 @@
-import { rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
@@ -14,7 +15,7 @@ import {
   ownProject,
   provisionOwn,
 } from "./__fixtures__/own-project";
-import { lastHostSetup, passwordLoginChoice } from "./host";
+import { expectedRuntimeFiles, lastHostSetup, passwordLoginChoice } from "./host";
 import { driftNextSteps, renderDriftReport } from "./render";
 import { runDrift } from "./run";
 
@@ -309,6 +310,196 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         },
       }),
     ).toBe("keep");
+  });
+
+  describe("OpsCrew's runtime files in /srv/app", () => {
+    const sum = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+    /** The files the deploy workflow copies, as OpsCrew rendered them into the repository. */
+    async function repoSums(s: OwnProject) {
+      const read = (name: string) => readFile(join(s.root, "opscrew", "runtime", name), "utf8");
+      return { compose: sum(await read("compose.yaml")), caddy: sum(await read("Caddyfile")) };
+    }
+    /** The server after a deploy: OpsCrew's files as the workflow wrote them. */
+    async function deployed(s: OwnProject) {
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      await writeArtifact("plan", s.deps.paths.files.plan, {
+        ...plan,
+        deployment: { ...plan.deployment, lastDeployAt: "2026-10-15T09:00:00.000Z" },
+      });
+      const sums = await repoSums(s);
+      const file = (mode: string, sha256: string | null = null) => ({
+        kind: "file" as const,
+        owner: "deploy",
+        group: "deploy",
+        mode,
+        sha256,
+      });
+      edit(s, (f) => {
+        f.runtimeFiles = [
+          { name: "compose.yaml", ...file("644", sums.compose) },
+          { name: "Caddyfile", ...file("644", sums.caddy) },
+          { name: ".env", ...file("644") },
+          { name: "app.env", ...file("600") },
+          plan.services.postgres
+            ? { name: "db.env", ...file("600") }
+            : { name: "db.env", kind: "absent", sha256: null },
+        ];
+        f.containers.push({ name: "shop-app-1", project: plan.app.name, ports: "", running: true });
+      });
+    }
+
+    it("matches what OpsCrew renders from the plan (the repository's files): clean", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      const sums = await repoSums(s);
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      const requirements = await readArtifact(
+        "requirements",
+        s.deps.paths.files.requirements,
+      ).catch(() => undefined);
+      const expected = expectedRuntimeFiles(plan, {
+        opscrewVersion: s.deps.version,
+        ...(requirements?.contactEmail ? { acmeEmail: requirements.contactEmail } : {}),
+      });
+      expect(expected.rendered).toEqual({ "compose.yaml": sums.compose, Caddyfile: sums.caddy });
+      await deployed(s);
+      const report = await runDrift(s.deps, { services: s.services });
+      expect(report.host).toEqual({ differences: [] });
+    });
+
+    it("reports each edited, replaced or missing file and unsafe secret files, never contents", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      await deployed(s);
+      edit(s, (f) => {
+        const files = f.runtimeFiles ?? [];
+        const named = (name: string) => files.find((file) => file.name === name);
+        Object.assign(named("Caddyfile") ?? {}, { sha256: "0".repeat(64) });
+        Object.assign(named("compose.yaml") ?? {}, { kind: "link", sha256: null });
+        Object.assign(named(".env") ?? {}, { kind: "absent" });
+        Object.assign(named("app.env") ?? {}, { owner: "root", group: "root", mode: "644" });
+      });
+      const report = await runDrift(s.deps, { services: s.services });
+      const redeploy =
+        "Re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.";
+      expect(details(report)).toEqual([
+        "app: /srv/app/compose.yaml is no longer a regular file (it is a symbolic link or something else), so OpsCrew does not look into it. Remove it on the server, then re-run the latest run of the deploy workflow in GitHub Actions (or push a commit): it copies OpsCrew's version to the server.",
+        `app: /srv/app/Caddyfile differs from what OpsCrew renders from opscrew/plan.yaml now: it was edited on the server, or the deploy workflow has not copied the current version yet. ${redeploy}`,
+        `app: /srv/app/.env (which names the image the app runs) is missing. ${redeploy}`,
+        "app: /srv/app/app.env is owned by root:root, so the deploy workflow (which logs in as deploy) may not be able to replace it. Run `chown deploy:deploy /srv/app/app.env` as root on the server.",
+        "app: /srv/app/app.env holds secrets but other users on the server can read it (mode 644). Run `chmod 600 /srv/app/app.env` on the server.",
+      ]);
+      expect(renderDriftReport(report)).toContain(
+        "~ OpsCrew's runtime files in /srv/app: /srv/app/Caddyfile differs",
+      );
+      expect(s.host.applies).toHaveLength(1);
+    });
+
+    it("a missing file counts only after the first deploy; db.env only with PostgreSQL", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      edit(s, (f) => {
+        f.runtimeFiles = ["compose.yaml", "Caddyfile", ".env", "app.env", "db.env"].map((name) => ({
+          name: name as "app.env",
+          kind: "absent" as const,
+          sha256: null,
+        }));
+      });
+      expect((await runDrift(s.deps, { services: s.services })).host).toEqual({
+        differences: [],
+      });
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      const expected = expectedRuntimeFiles(
+        { ...plan, services: { ...plan.services, postgres: true } },
+        { opscrewVersion: "0.0.0" },
+      );
+      expect(expected.dbEnv).toBe(true);
+    });
+  });
+
+  describe("ufw since OpsCrew's setup", () => {
+    /** OpsCrew's record of the ufw step: what ufw looked like before OpsCrew changed it. */
+    function recordUfw(s: OwnProject, previous: Record<string, string | boolean>) {
+      edit(s, (f) => {
+        f.record?.changes.push({
+          step: "ufw",
+          purpose: "setup",
+          at: "2026-10-14T12:00:00.000Z",
+          previous,
+        });
+      });
+    }
+
+    it("reports rules added after setup, without addresses, and leaves earlier rules alone", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      recordUfw(s, {
+        installed: true,
+        active: false,
+        rules: "allow 8080/tcp,allow 60000,61000/udp",
+        defaultIncoming: "deny",
+        defaultOutgoing: "allow",
+        defaultRouted: "disabled",
+      });
+      edit(s, (f) => {
+        f.firewall.ufwRules.push(
+          { rule: "allow 8080/tcp", comment: null },
+          { rule: "allow 60000,61000/udp", comment: null },
+          { rule: "allow from 203.0.113.7 to any port 5432", comment: null },
+          { rule: "allow 3000/tcp", comment: "mine" },
+        );
+      });
+      const report = await runDrift(s.deps, { services: s.services });
+      const next =
+        "If you added it on purpose, nothing needs to change; otherwise find it with `sudo ufw status numbered` on the server and remove it with `sudo ufw delete <number>`.";
+      expect(details(report)).toEqual([
+        `ufw: ufw has a rule that was added after OpsCrew set the server up: allow from <address> to any port 5432. ${next}`,
+        `ufw: ufw has a rule that was added after OpsCrew set the server up: allow 3000/tcp. ${next}`,
+      ]);
+      expect(JSON.stringify(report)).not.toContain("203.0.113.7");
+      expect(renderDriftReport(report)).toContain("~ Firewall (ufw): ufw has a rule");
+    });
+
+    it("reports changed default policies against what OpsCrew left", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      // OpsCrew turned ufw on, so it set deny incoming and allow outgoing.
+      recordUfw(s, {
+        installed: true,
+        active: false,
+        rules: "",
+        defaultIncoming: "allow",
+        defaultOutgoing: "allow",
+        defaultRouted: "deny",
+      });
+      edit(s, (f) => {
+        f.firewall.ufwDefaults = { incoming: "allow", outgoing: "deny", routed: "allow" };
+      });
+      expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
+        "ufw: ufw's default policy for incoming traffic is allow; OpsCrew set deny. If you changed it on purpose, nothing needs to change; otherwise put it back with `sudo ufw default deny incoming` on the server.",
+        "ufw: ufw's default policy for outgoing traffic is deny; OpsCrew set allow. If you changed it on purpose, nothing needs to change; otherwise put it back with `sudo ufw default allow outgoing` on the server.",
+        "ufw: ufw's default policy for routed (forwarded) traffic is allow; it was deny when OpsCrew set the server up. If you changed it on purpose, nothing needs to change; otherwise put it back with `sudo ufw default deny routed` on the server.",
+      ]);
+    });
+
+    it("ufw that was on already keeps its own policies as the reference", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      recordUfw(s, {
+        installed: true,
+        active: true,
+        rules: "",
+        defaultIncoming: "reject",
+        defaultOutgoing: "allow",
+        defaultRouted: "deny",
+      });
+      edit(s, (f) => {
+        f.firewall.ufwDefaults = { incoming: "reject", outgoing: "allow", routed: "deny" };
+      });
+      expect((await runDrift(s.deps, { services: s.services })).host).toEqual({
+        differences: [],
+      });
+    });
   });
 
   it("an own server without DNS or a tunnel has no cloud resources: only the server is checked", async () => {
