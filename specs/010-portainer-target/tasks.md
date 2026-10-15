@@ -24,7 +24,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
 
 ## Phase 2: Packages (parallel)
 
-- [ ] T1002 [P] [US1] [US2] [US5] Portainer adapter: pinned client, inspect, stack plan, apply, record and teardown in `packages/connectors/portainer/src/`
+- [X] T1002 [P] [US1] [US2] [US5] Portainer adapter: pinned client, inspect, stack plan, apply, record and teardown in `packages/connectors/portainer/src/`
   - Owns: `packages/connectors/portainer/src/**`
   - Reads: contracts/portainer-adapter.md; data-model.md "Portainer facts", "Stack plan", "Portainer connection"; research.md R1–R7, R9, R11; `packages/connectors/hetzner/src/client.ts` and `__fixtures__/fake-fetch.ts` (client, zod and error patterns); `@opscrew/core` redactor and errors
   - Depends: T1001
