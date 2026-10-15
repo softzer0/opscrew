@@ -158,3 +158,17 @@ observed there). Founder decisions are dated.
   and two web modes, checks the decoys are unchanged, destroys and deletes the server.
 - **Rationale**: every API fact above was observed on such a server (CONFIRMED); the admin
   initialisation response includes the admin's password hash, so the test never logs it.
+
+## R11. The first deploy (found while writing the tasks, 2026-10-15)
+
+- **Decision**: provision pushes the `opscrew-deploy` branch (a `git-push` approval, as for other
+  pushes) with a placeholder `compose.yaml` (one tiny service from the pinned curl image that only
+  sleeps, no ports, no secrets used), creates the app's Git stack from it (Portainer clones and
+  deploys immediately), and the first run of the deploy workflow after the deploy pull request is
+  merged writes the real `compose.yaml`; the updater (or, in `cloudflare` mode, the workflow's
+  webhook call) then redeploys the stack with the real app.
+- **Rationale**: creating a Git stack clones and deploys at once, so the branch must exist; the real
+  image exists only after the workflow's first build. A placeholder avoids a second manual run.
+- **Alternatives**: creating the app stack in a second `opscrew provision` after the first build
+  (rejected: an extra step the user would forget); letting the workflow create the stack through
+  the API (rejected: it would need the Portainer token in GitHub).

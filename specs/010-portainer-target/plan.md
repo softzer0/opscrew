@@ -140,8 +140,8 @@ See `contracts/portainer-adapter.md`.
 
 Order: preconditions (tokens, GitHub, Cloudflare when needed) → connect with the pinned certificate
 → inspect → refuse on blocking findings (including the limited-token registry guidance, FR-1018) →
-render → IaC plan, policy, `iac-apply` approval, apply (DNS, tunnel, Access) → write the deploy
-branch's first `compose.yaml` (pull request flow, as today) → stack plan (registry, app stack,
+render → IaC plan, policy, `iac-apply` approval, apply (DNS, tunnel, Access) → push the deploy
+branch with a placeholder `compose.yaml` (R11, `git-push` approval) → stack plan (registry, app stack,
 updater or connector stack) → policy → `stack-apply` approval → apply with secrets (`Env`, the
 webhook UUID, the tunnel token) → record → deploy secrets (the webhook URL and Access service token
 in `cloudflare` mode) → publish the deploy pull request. `--plan-only` and `--approve <hash>` cover
