@@ -58,6 +58,13 @@ describe("questions for a server the user already has", () => {
       expect(QuestionSchema.safeParse({ ...question, id: "notes" }).success).toBe(true);
     }
     expect(questions.find((q) => q.id === "server.port")?.default).toBe("22");
+    // The login port: the forwarded one when a router forwards it, not necessarily sshd's.
+    expect(questions.find((q) => q.id === "server.port")?.prompt).toBe(
+      "Which port do you connect to for SSH?",
+    );
+    expect(questions.find((q) => q.id === "server.port")?.help).toBe(
+      "The port this computer and GitHub Actions connect to, usually 22. When a router forwards another port to your server (for example 2222 to the server's 22), give the forwarded port (2222).",
+    );
     expect(questions.find((q) => q.id === "server.key")?.default).toBe("agent");
     expect(questions.find((q) => q.id === "server.reachable")).toMatchObject({
       kind: "confirm",

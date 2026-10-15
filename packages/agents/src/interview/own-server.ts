@@ -240,8 +240,8 @@ export function buildServerQuestions(context: OwnServerContext = {}): ServerQues
     },
     {
       id: "server.port",
-      prompt: "Which port does SSH listen on?",
-      help: "Usually 22.",
+      prompt: "Which port do you connect to for SSH?",
+      help: "The port this computer and GitHub Actions connect to, usually 22. When a router forwards another port to your server (for example 2222 to the server's 22), give the forwarded port (2222).",
       kind: "text",
       default: String(previous?.port ?? 22),
       required: true,

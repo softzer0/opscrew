@@ -7,7 +7,9 @@ import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { CF_V4, CF_V6 } from "../provision/__fixtures__/fakes";
 import { ownCloudflare, ownPlan } from "../provision/__fixtures__/own";
+import { recordOwnServer } from "../shared";
 import {
+  ED25519_FINGERPRINT,
   everythingPrinted,
   LAN_IPV4,
   OWN_IPV4,
@@ -15,9 +17,15 @@ import {
   ownProject,
   provisionOwn,
 } from "./__fixtures__/own-project";
-import { expectedRuntimeFiles, lastHostSetup, passwordLoginChoice } from "./host";
+import {
+  expectedRuntimeFiles,
+  type HostDifference,
+  lastHostSetup,
+  passwordLoginChoice,
+} from "./host";
 import { driftNextSteps, renderDriftReport } from "./render";
 import { runDrift } from "./run";
+import type { DriftReport } from "./types";
 
 /** Changes the fake server's facts as someone working on the server would. */
 function edit(s: OwnProject, change: (facts: OwnProject["host"]["facts"]) => void): void {
@@ -64,6 +72,44 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
     expect(
       `${text}\n${JSON.stringify(report)}\n${JSON.stringify(s.deps.audit.entries)}`,
     ).not.toContain(OWN_IPV4);
+  });
+
+  it("public mode with a forwarded login port: the deploy workflow matches (port 2222, sshd on 22)", async () => {
+    const s = await ownProject();
+    // A router forwards 2222 to the server's 22: OpsCrew logs in (and deploys) on 2222.
+    await recordOwnServer(s.deps.paths, {
+      host: OWN_IPV4,
+      port: 2222,
+      user: "root",
+      agent: true,
+      reachable: true,
+    });
+    await provisionOwn(s);
+    const workflow = await readFile(
+      join(s.root, ".github", "workflows", "opscrew-deploy.yml"),
+      "utf8",
+    );
+    expect(workflow).toContain("2222");
+
+    const report = await runDrift(s.deps, { services: s.services });
+    expect(report.files).toEqual({ changed: [], created: [] });
+    expect(report.clean).toBe(true);
+  });
+
+  it("tunnel mode keeps sshd's committed port, whatever port this computer logs in on", async () => {
+    const s = await ownProject({ access: "tunnel" });
+    await provisionOwn(s);
+    // This computer now reaches the server through a forward on 2200; sshd still listens on 2222.
+    await recordOwnServer(s.deps.paths, {
+      host: LAN_IPV4,
+      port: 2200,
+      user: "alice",
+      agent: false,
+      keyPath: "~/.ssh/id_ed25519",
+      reachable: false,
+    });
+    const report = await runDrift(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+    expect(report.files).toEqual({ changed: [], created: [] });
   });
 
   it("reports SSH, firewall, deploy user, runtime and service changes plainly, and changes nothing", async () => {
@@ -294,6 +340,68 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
     ]);
   });
 
+  describe("the host summary", () => {
+    const report = (differences: HostDifference[]): DriftReport => ({
+      drift: [],
+      pending: [],
+      files: { changed: [], created: [] },
+      foreignDnsRecords: [],
+      host: { differences },
+      clean: false,
+      engine: { name: "tofu", version: "1.10.0", binary: "/usr/bin/tofu" },
+      checkedAt: "2026-10-15T09:00:00.000Z",
+      provider: "own",
+    });
+    const sshd: HostDifference = {
+      area: "sshd",
+      title: "SSH settings",
+      detail: "Password logins are on again.",
+      restoredByProvision: true,
+    };
+    const runtime: HostDifference = {
+      area: "app",
+      title: "OpsCrew's runtime files in /srv/app",
+      detail: "/srv/app/Caddyfile differs. Re-run the deploy workflow.",
+      restoredByProvision: false,
+    };
+    const blocker: HostDifference = {
+      area: "server",
+      title: "What OpsCrew found",
+      detail: "Another firewall manages this server. Turn it off.",
+      restoredByProvision: false,
+    };
+
+    it("only differences provision puts back: one promise, no 'left alone' group", () => {
+      const text = renderDriftReport(report([sshd]));
+      expect(text).toContain(
+        "Put back by `opscrew provision` (1):\n  ~ SSH settings: Password logins are on again.\n`opscrew provision` shows a host plan for these first",
+      );
+      expect(text).not.toContain("Left alone");
+      expect(driftNextSteps(report([sshd]))[0]).toBe(
+        "to undo changes made outside OpsCrew and apply pending code, run `opscrew provision` (it shows the plans first and changes nothing without your approval).",
+      );
+    });
+
+    it("runtime files only: no promise that provision puts them back", () => {
+      const text = renderDriftReport(report([runtime]));
+      expect(text).not.toContain("Put back by");
+      expect(text).not.toContain("shows a host plan");
+      expect(text).toContain(
+        "Left alone by `opscrew provision` (1):\n  ~ OpsCrew's runtime files in /srv/app: /srv/app/Caddyfile differs. Re-run the deploy workflow.\n`opscrew provision` does not change these; where something needs doing, it is said with each.",
+      );
+    });
+
+    it("with something that stops provision, says it changes nothing until that is fixed", () => {
+      const text = renderDriftReport(report([sshd, blocker]));
+      expect(text).toContain(
+        "`opscrew provision` changes nothing on the server until what OpsCrew found (below) is fixed; then it shows a host plan for these, and nothing changes until you approve it.",
+      );
+      expect(text).toContain(
+        "Left alone by `opscrew provision` (1):\n  ~ What OpsCrew found: Another firewall manages this server. Turn it off.",
+      );
+    });
+  });
+
   it("keeps the password-login choice of the applied host plan", async () => {
     const s = await ownProject();
     await provisionOwn(s);
@@ -476,7 +584,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         f.firewall.ufwDefaults = { incoming: "allow", outgoing: "deny", routed: "allow" };
       });
       expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
-        "ufw: ufw's default policy for incoming traffic is allow; OpsCrew set deny. If you changed it on purpose, nothing needs to change; otherwise put it back with `sudo ufw default deny incoming` on the server.",
+        "ufw: ufw's default policy for incoming traffic is allow; OpsCrew set deny. `opscrew provision` sets it to deny again.",
         "ufw: ufw's default policy for outgoing traffic is deny; OpsCrew set allow. If you changed it on purpose, nothing needs to change; otherwise put it back with `sudo ufw default allow outgoing` on the server.",
         "ufw: ufw's default policy for routed (forwarded) traffic is allow; it was deny when OpsCrew set the server up. If you changed it on purpose, nothing needs to change; otherwise put it back with `sudo ufw default deny routed` on the server.",
       ]);
@@ -505,7 +613,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         f.firewall.ufwDefaults = { incoming: "allow", outgoing: "allow", routed: "deny" };
       });
       expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
-        "ufw: ufw's default policy for incoming traffic is allow; OpsCrew set deny. If you changed it on purpose, nothing needs to change; otherwise put it back with `sudo ufw default deny incoming` on the server.",
+        "ufw: ufw's default policy for incoming traffic is allow; OpsCrew set deny. `opscrew provision` sets it to deny again.",
       ]);
     });
 
@@ -517,6 +625,55 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       });
       expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
         'ufw: ufw lets every incoming connection in: its default policy for incoming traffic is "allow". `opscrew provision` sets it to deny.',
+      ]);
+    });
+
+    it("the summary promises `opscrew provision` only for what it puts back", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      // OpsCrew turned ufw on: deny incoming and allow outgoing are its own.
+      recordUfw(s, {
+        installed: true,
+        active: false,
+        rules: "",
+        defaultIncoming: "allow",
+        defaultOutgoing: "allow",
+        defaultRouted: "deny",
+      });
+      edit(s, (f) => {
+        if (f.sshd) f.sshd.passwordAuthentication = true;
+        f.firewall.ufwRules.push({ rule: "allow 3000/tcp", comment: null });
+        f.firewall.ufwDefaults = { incoming: "allow", outgoing: "deny", routed: "deny" };
+      });
+      const report = await runDrift(s.deps, { services: s.services });
+      const restored = (report.host?.differences ?? []).map(
+        (d) =>
+          `${d.restoredByProvision ? "provision" : "left"} ${d.area}: ${d.detail.slice(0, 40)}`,
+      );
+      expect(restored).toEqual([
+        "provision sshd: Password logins are on again.",
+        "left ufw: ufw has a rule that was added after OpsC",
+        "provision ufw: ufw's default policy for incoming traffi",
+        "left ufw: ufw's default policy for outgoing traffi",
+      ]);
+      const text = renderDriftReport(report);
+      expect(text).toContain(
+        [
+          "Your server differs from what OpsCrew set up (4).",
+          "Put back by `opscrew provision` (2):",
+          "  ~ SSH settings: Password logins are on again.",
+          "  ~ Firewall (ufw): ufw's default policy for incoming traffic is allow; OpsCrew set deny. `opscrew provision` sets it to deny again.",
+          "`opscrew provision` shows a host plan for these first, and nothing on the server changes until you approve it. If you changed one of them on purpose, keep in mind that the next provision undoes it.",
+          "Left alone by `opscrew provision` (2):",
+          "  ~ Firewall (ufw): ufw has a rule that was added after OpsCrew set the server up: allow 3000/tcp. If you added it on purpose, nothing needs to change; otherwise find it with `sudo ufw status numbered` on the server and remove it with `sudo ufw delete <number>`.",
+          "  ~ Firewall (ufw): ufw's default policy for outgoing traffic is deny; OpsCrew set allow. If you changed it on purpose, nothing needs to change; otherwise put it back with `sudo ufw default allow outgoing` on the server.",
+          "`opscrew provision` does not change these; where something needs doing, it is said with each.",
+        ].join("\n"),
+      );
+      expect(driftNextSteps(report)).toEqual([
+        "to undo what the report lists as put back by `opscrew provision` and apply pending code, run `opscrew provision` (it shows the plans first and changes nothing without your approval).",
+        "for the differences on your server that `opscrew provision` leaves alone, follow the step the report gives with each.",
+        "to keep a change made on the server (ssh) or in the Cloudflare dashboard, update opscrew/plan.yaml to match before you provision again.",
       ]);
     });
 

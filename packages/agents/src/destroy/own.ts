@@ -480,6 +480,28 @@ function keptData(facts: HostFacts, app: string): string | undefined {
   return `The app's data stays on your server: ${parts.join(", ")}. OpsCrew took no snapshot. To remove it yourself when you no longer need it, run as root on the server: ${commands.join(" and ")}.`;
 }
 
+/**
+ * Refuses `deleteData` when the app's data is on the server but no teardown would delete it: the
+ * app was removed before (`removedBefore`), or nothing of it is left for the teardown to remove
+ * (OpsCrew deletes an app's data only together with the app). Says which data stays and how to
+ * remove it by hand (`kept`, see {@link keptData}). Nothing has changed when it is thrown.
+ */
+function dataNotDeletable(name: string, kept: string, removedBefore: boolean): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    removedBefore
+      ? `OpsCrew cannot delete the app's data: ${name} was removed from your server before (opscrew/plan.yaml records when), and OpsCrew deletes an app's data only in the teardown that removes the app, so a new \`opscrew destroy\` cannot delete it. Nothing was changed.`
+      : `OpsCrew cannot delete the app's data: nothing of ${name} is left on your server for the teardown to remove (no containers, no runtime files), and OpsCrew deletes an app's data only together with the app. Nothing was changed.`,
+    {
+      hint: `${kept} ${
+        removedBefore
+          ? "Then run `opscrew destroy --undo-host` without `--delete-data` to undo OpsCrew's host changes."
+          : "Then run `opscrew destroy` again without `--delete-data`."
+      }`,
+    },
+  );
+}
+
 /** What still exists after the teardown of a server the user owns, in plain English. */
 function remainingOnOwnServer(input: {
   plan: DeployPlan;
@@ -659,6 +681,20 @@ export async function destroyOwnServer(
   const teardown = removeApp ? planTeardown(facts, { deleteData, app: name }) : undefined;
   if (teardown !== undefined) requireNoHostBlockers(teardown, `remove ${name} from your server`);
   const hostSteps = (teardown?.steps ?? []).filter((step) => step.state === "change");
+  // The teardown deletes the app's data (with `deleteData`) in its step that removes the app.
+  const deletesData =
+    deleteData &&
+    (teardown?.steps ?? []).some((step) => step.id === "runtime-dirs" && step.state === "change");
+  const kept = keptData(facts, name);
+  if (deleteData && kept !== undefined) {
+    // Never a `--delete-data` that silently keeps the data (Constitution IX).
+    if (!removeApp) throw dataNotDeletable(name, kept, true);
+    if (hasAppData(facts, name) && !deletesData) throw dataNotDeletable(name, kept, false);
+  } else if (deleteData && !removeApp) {
+    deps.reporter.info(
+      "None of the app's data is left on your server, so `--delete-data` has nothing to delete.",
+    );
+  }
   const dataWarning = deleteData && hasAppData(facts, name) ? dataLoss(plan, facts) : undefined;
   if (removeApp) {
     // Cloudflare deletes a tunnel only once its connector is gone: then the server goes first.
@@ -899,8 +935,8 @@ export async function destroyOwnServer(
     github,
     secretsRemoved,
     secretNames,
-    // Read before the teardown, which deletes none of it without `deleteData`.
-    keptData: deleteData ? undefined : keptData(facts, name),
+    // Read before the teardown, which deletes it only with `deleteData` and only when it ran.
+    keptData: deletesData && hostPlans.teardown !== undefined ? undefined : kept,
     undone,
     removedApp: removeApp,
   });

@@ -8,6 +8,7 @@ import {
   type RenderedFileKind,
   renderDeployment,
   renderTunnelConnectorCompose,
+  tunnelMode,
   usesTunnel,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-schema";
@@ -19,6 +20,7 @@ import {
   readServerAddresses,
   type ServerAddress,
 } from "../shared";
+import { readOwnServerRecord } from "../shared/own-server";
 import { type CloudflareSetup, githubCoordinates, setupCloudflare } from "./credentials";
 import type { ProvisionServices } from "./types";
 
@@ -148,6 +150,20 @@ export function ownRenderFromTfvars(values: Record<string, unknown> | undefined)
   };
 }
 
+/**
+ * The render inputs of a server the user owns for a preview that does not connect to it: those of
+ * the committed `terraform.tfvars.json` ({@link ownRenderFromTfvars}), with the SSH port provision
+ * used. In public mode that is the recorded login port (`.opscrew/server.json`, which differs from
+ * sshd's when a router forwards it); the committed `ssh_port` (written only in tunnel mode) stands
+ * in when no login is recorded on this computer.
+ */
+async function ownPreviewRender(deps: PhaseDeps, plan: DeployPlan): Promise<OwnRenderInput> {
+  const committed = ownRenderFromTfvars(await committedTfvars(deps.paths.root, plan));
+  if (tunnelMode(plan)) return committed;
+  const login = await readOwnServerRecord(deps.paths).catch(() => undefined);
+  return login?.port !== undefined ? { ...committed, sshPort: login.port } : committed;
+}
+
 /** The deploy key's public half: created once when allowed, otherwise read (never invented). */
 async function deployPublicKeyFor(deps: PhaseDeps, create: boolean): Promise<string> {
   if (create) {
@@ -183,8 +199,9 @@ export interface DeploymentPreview {
  * anything to it or recording a phase. Needs the Cloudflare token when the plan uses Cloudflare
  * (the zone id is part of the rendered code). Creates the project's deploy key in the user's
  * OpsCrew home when it does not exist yet, so the preview matches the later provision exactly.
- * A server the user owns is not contacted: its SSH port and Zero Trust choices come from the
- * committed `terraform.tfvars.json` of the last run.
+ * A server the user owns is not contacted: its Zero Trust choices come from the committed
+ * `terraform.tfvars.json` of the last run, and its SSH port is the one provision used (the
+ * recorded login port in public mode, sshd's committed port in tunnel mode).
  */
 export async function previewDeploymentFiles(
   deps: PhaseDeps,
@@ -221,10 +238,7 @@ export async function previewDeploymentFiles(
         (record) => record.deployment,
         () => undefined,
       );
-  const own =
-    plan.target.provider === "own"
-      ? ownRenderFromTfvars(await committedTfvars(deps.paths.root, plan))
-      : undefined;
+  const own = plan.target.provider === "own" ? await ownPreviewRender(deps, plan) : undefined;
   const files = deploymentFiles(
     plan,
     deploymentRenderContext(deps, {

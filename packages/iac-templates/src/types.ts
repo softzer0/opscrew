@@ -55,10 +55,12 @@ export interface RenderContext {
     oneTimePinIdentityProviderId?: string;
   };
   /**
-   * The port sshd listens on, on a server the user owns (from inspection, `sshd -T`); default 22,
-   * must be an integer 1-65535. In tunnel mode the tunnel routes the SSH hostname to
-   * `ssh://localhost:<port>`; in public mode the deploy workflow's `ssh`/`scp` calls use it. The
-   * runbook's direct SSH commands use it in both modes.
+   * The SSH port on a server the user owns: the login port in public mode (the port this computer
+   * and GitHub Actions connect to, which differs from sshd's when a router forwards it), sshd's
+   * port in tunnel mode (from inspection, `sshd -T`). Default 22, must be an integer 1-65535. In
+   * tunnel mode the tunnel routes the SSH hostname to `ssh://localhost:<port>`; in public mode the
+   * deploy workflow's `ssh`/`scp` calls use it. The runbook's direct SSH commands use it in both
+   * modes.
    */
   sshPort?: number;
   /**

@@ -93,7 +93,7 @@ describe("opscrew interview", () => {
       asked.push(message.split("\n")[0] ?? "");
       if (message.includes("Where should OpsCrew run your app?")) return "own";
       if (message.includes("server's address")) return "203.0.113.20";
-      if (message.includes("Which port does SSH listen on?")) return "2222";
+      if (message.includes("Which port do you connect to for SSH?")) return "2222";
       if (message.includes("Which user should OpsCrew log in as?")) return "admin";
       if (message.includes("Which SSH key")) return "agent";
       if (message.includes("Can the internet reach this server directly?")) return true;
@@ -120,7 +120,7 @@ describe("opscrew interview", () => {
     expect(asked).toEqual(
       expect.arrayContaining([
         "What is your server's address?",
-        "Which port does SSH listen on?",
+        "Which port do you connect to for SSH?",
         "Which user should OpsCrew log in as?",
         "Which SSH key should OpsCrew use?",
         "Can the internet reach this server directly?",

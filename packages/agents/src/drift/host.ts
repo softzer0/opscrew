@@ -44,6 +44,14 @@ export interface HostDifference {
   title: string;
   /** What differs now, in plain English. */
   detail: string;
+  /**
+   * True when `opscrew provision` puts it back (a step of its host plan: SSH settings, OpsCrew's
+   * ufw rules and an incoming "allow", the deploy user, the web filter, the connector, Portainer…).
+   * False for what provision leaves alone (ufw rules added later, other default policies, the
+   * runtime files and containers the deploy workflow writes, OpsCrew's record, what blocks
+   * provision): those say their own next step where there is one.
+   */
+  restoredByProvision: boolean;
 }
 
 /** Host drift of a server the user owns (FR-911): every difference found, in host-step order. */
@@ -327,18 +335,25 @@ function shownRule(rule: string): string {
 
 const UFW_POLICY_WORDS = /^(allow|deny|reject)$/;
 
+/** A ufw change since OpsCrew's setup, and whether `opscrew provision` puts it back. */
+interface UfwChange {
+  detail: string;
+  restoredByProvision: boolean;
+}
+
 /**
  * What changed in ufw since OpsCrew set the server up, from the first setup entry of OpsCrew's host
  * record (FR-911): rules added afterwards (the current rules minus the rules that were there before
  * OpsCrew minus OpsCrew's own commented rules), and default policies other than the ones OpsCrew
  * left (deny incoming and allow outgoing when it turned ufw on, deny incoming when ufw was on but
- * let everything in, else the ones it found). Each comes with what to do; `opscrew provision`
- * removes none of the user's rules and resets no policy other than an incoming "allow".
+ * let everything in, else the ones it found). `opscrew provision` removes none of the user's rules
+ * and resets no policy other than an incoming "allow" (its ufw `step` sets `denyIncoming` then):
+ * that one says provision sets it back; every other change comes with what to do.
  */
-function ufwSinceSetup(facts: HostFacts): string[] {
+function ufwSinceSetup(facts: HostFacts, step: HostStep): UfwChange[] {
   const entry = firstSetupEntry(facts, "ufw");
   if (entry === undefined || facts.firewall.ufw === "absent") return [];
-  const out: string[] = [];
+  const out: UfwChange[] = [];
   const before = recordedRules(entry.previous.rules);
   const ours = new Set<string | null>([UFW_SSH_COMMENT, UFW_WEB_COMMENT]);
   const added = [
@@ -349,9 +364,10 @@ function ufwSinceSetup(facts: HostFacts): string[] {
     ),
   ];
   for (const rule of added) {
-    out.push(
-      `ufw has a rule that was added after OpsCrew set the server up: ${shownRule(rule)}. If you added it on purpose, nothing needs to change; otherwise find it with \`sudo ufw status numbered\` on the server and remove it with \`sudo ufw delete <number>\`.`,
-    );
+    out.push({
+      detail: `ufw has a rule that was added after OpsCrew set the server up: ${shownRule(rule)}. If you added it on purpose, nothing needs to change; otherwise find it with \`sudo ufw status numbered\` on the server and remove it with \`sudo ufw delete <number>\`.`,
+      restoredByProvision: false,
+    });
   }
   const current = facts.firewall.ufwDefaults;
   if (current === null) return out;
@@ -369,15 +385,26 @@ function ufwSinceSetup(facts: HostFacts): string[] {
   };
   const setByOpsCrew = { incoming: setDeny, outgoing: turnedOn, routed: false };
   const traffic = { incoming: "incoming", outgoing: "outgoing", routed: "routed (forwarded)" };
+  // Provision's host plan sets an incoming "allow" back to deny, and no other policy.
+  const deniesIncoming =
+    step.state === "change" && step.params.denyIncoming === true && current.incoming === "allow";
   for (const key of ["incoming", "outgoing", "routed"] as const) {
     const wanted = expected[key];
     if (wanted === undefined || current[key] === wanted) continue;
     const source = setByOpsCrew[key]
       ? `OpsCrew set ${wanted}`
       : `it was ${wanted} when OpsCrew set the server up`;
-    out.push(
-      `ufw's default policy for ${traffic[key]} traffic is ${current[key]}; ${source}. If you changed it on purpose, nothing needs to change; otherwise put it back with \`sudo ufw default ${wanted} ${key}\` on the server.`,
-    );
+    if (key === "incoming" && deniesIncoming && wanted === "deny") {
+      out.push({
+        detail: `ufw's default policy for incoming traffic is allow; ${source}. \`opscrew provision\` sets it to deny again.`,
+        restoredByProvision: true,
+      });
+      continue;
+    }
+    out.push({
+      detail: `ufw's default policy for ${traffic[key]} traffic is ${current[key]}; ${source}. If you changed it on purpose, nothing needs to change; otherwise put it back with \`sudo ufw default ${wanted} ${key}\` on the server.`,
+      restoredByProvision: false,
+    });
   }
   return out;
 }
@@ -611,6 +638,7 @@ export function hostDifferences(
   const record = {
     area: "record" as const,
     title: "OpsCrew's record of its changes (/etc/opscrew/host.json)",
+    restoredByProvision: false,
   };
   if (facts.recordDamaged) {
     out.push({
@@ -626,7 +654,7 @@ export function hostDifferences(
     out.push({ ...record, detail: `belongs to the OpsCrew app "${facts.record.app}".` });
   }
   for (const step of setup.steps) {
-    const ufwSince = step.id === "ufw" ? ufwSinceSetup(facts) : [];
+    const ufwSince = step.id === "ufw" ? ufwSinceSetup(facts, step) : [];
     if (step.state === "change") {
       const details = stepDetails(facts, step, applied);
       // A default policy OpsCrew set (and the setup plan sets again) is told by ufwSince.
@@ -634,22 +662,27 @@ export function hostDifferences(
         details.length > 0 || ufwSince.length > 0
           ? details
           : [step.reason ?? "differs from OpsCrew's setup."];
-      for (const detail of shown) out.push({ area: step.id, title: AREA_TITLES[step.id], detail });
-    }
-    // Changes since OpsCrew's setup, from its record, whatever the step's state.
-    if (step.id === "ufw") {
-      for (const detail of ufwSince) {
-        out.push({ area: "ufw", title: AREA_TITLES.ufw, detail });
+      // A step of provision's host plan: provision puts these back.
+      for (const detail of shown) {
+        out.push({ area: step.id, title: AREA_TITLES[step.id], detail, restoredByProvision: true });
       }
     }
+    // Changes since OpsCrew's setup, from its record, whatever the step's state.
+    for (const change of ufwSince) out.push({ area: "ufw", title: AREA_TITLES.ufw, ...change });
     if (step.id === "runtime-dirs" && app.runtimeFiles !== undefined) {
       for (const detail of runtimeFileDetails(facts, app.runtimeFiles, app.deployed)) {
-        out.push({ area: "app", title: RUNTIME_FILES_TITLE, detail });
+        out.push({ area: "app", title: RUNTIME_FILES_TITLE, detail, restoredByProvision: false });
       }
     }
   }
+  // What stops provision: it changes nothing on the server until these are fixed.
   for (const finding of setup.findings) {
-    out.push({ area: "server", title: "What OpsCrew found", detail: finding.message });
+    out.push({
+      area: "server",
+      title: "What OpsCrew found",
+      detail: `${finding.message} ${finding.hint}`,
+      restoredByProvision: false,
+    });
   }
   const containers = facts.containers.filter((container) => container.project === app.name);
   const stopped = containers.filter((container) => !container.running).map((c) => c.name);
@@ -658,6 +691,7 @@ export function hostDifferences(
       area: "app",
       title: "The app's containers",
       detail: `${words(stopped)} ${stopped.length === 1 ? "is" : "are"} stopped.`,
+      restoredByProvision: false,
     });
   } else if (containers.length === 0 && app.deployed) {
     out.push({
@@ -665,6 +699,7 @@ export function hostDifferences(
       title: "The app's containers",
       detail:
         "No container of the app exists on the server; the deploy workflow starts them on its next run.",
+      restoredByProvision: false,
     });
   }
   return out;

@@ -198,10 +198,86 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     // Typed correctly, the data goes too; a re-run continues where it stopped.
     s.answer(() => true);
     s.handler.requests.length = 0;
-    await runDestroy(s.deps, { services: services(s), deleteData: true });
+    const result = await runDestroy(s.deps, { services: services(s), deleteData: true });
     expect(kinds(s)).toEqual(["host-apply", "github-secrets"]);
     expect(s.host.applies.at(-1)?.plan.deleteData).toBe(true);
     expect(s.host.facts.volumeProjects).toEqual(["nextcloud"]);
+    // The data really went, so "What remains" no longer lists it.
+    expect(result.remaining.join("\n")).not.toContain("The app's data stays on your server");
+  });
+
+  it("--undo-host --delete-data after an earlier destroy refuses before any change and names the data", async () => {
+    const s = await deployed();
+    await runDestroy(s.deps, { services: services(s) });
+    const before = { host: s.host.applies.length, audit: s.deps.audit.entries.length };
+    s.handler.requests.length = 0;
+
+    const error = await expectError(
+      runDestroy(s.deps, { services: services(s), undoHost: true, deleteData: true }),
+      "PHASE_PRECONDITION",
+    );
+    expect(error.message).toBe(
+      "OpsCrew cannot delete the app's data: shop was removed from your server before (opscrew/plan.yaml records when), and OpsCrew deletes an app's data only in the teardown that removes the app, so a new `opscrew destroy` cannot delete it. Nothing was changed.",
+    );
+    expect(error.hint).toBe(
+      "The app's data stays on your server: the directory /srv/data, the Docker volumes of the Compose project \"shop\". OpsCrew took no snapshot. To remove it yourself when you no longer need it, run as root on the server: `rm -rf /srv/data` and `docker volume rm $(docker volume ls -q --filter label=com.docker.compose.project=shop)`. Then run `opscrew destroy --undo-host` without `--delete-data` to undo OpsCrew's host changes.",
+    );
+    // Nothing was approved, applied or changed on the server.
+    expect(s.handler.requests).toEqual([]);
+    expect(s.host.applies).toHaveLength(before.host);
+    expect(s.host.facts.deployUser).not.toBeNull();
+    expect(s.host.facts.volumeProjects).toContain("shop");
+    expect(s.deps.audit.entries.slice(before.audit).map((e) => e.action)).toEqual([
+      "inspect host (read-only)",
+    ]);
+    expect(`${error.message} ${error.hint}`).not.toContain(OWN_IPV4);
+
+    // Without --delete-data the undo runs, and "What remains" still names the kept data.
+    const undo = await runDestroy(s.deps, { services: services(s), undoHost: true });
+    expect(undo.hostPlans?.undo).toMatch(/^[0-9a-f]{64}$/);
+    expect(undo.remaining.join("\n")).toContain("The app's data stays on your server");
+  });
+
+  it("--delete-data with nothing of the app left to remove refuses instead of keeping the data silently", async () => {
+    const s = await deployed();
+    // Only the app's Compose volumes are left: no containers, no runtime files, no files in /srv/data.
+    const facts = structuredClone(s.host.facts);
+    facts.containers = facts.containers.filter((c) => c.project !== "shop");
+    facts.dirs = facts.dirs.map((dir) => ({ ...dir, entries: 0 }));
+    s.host.facts = HostFactsSchema.parse(facts);
+    const before = s.host.applies.length;
+    const error = await expectError(
+      runDestroy(s.deps, { services: services(s), deleteData: true }),
+      "PHASE_PRECONDITION",
+    );
+    expect(error.message).toBe(
+      "OpsCrew cannot delete the app's data: nothing of shop is left on your server for the teardown to remove (no containers, no runtime files), and OpsCrew deletes an app's data only together with the app. Nothing was changed.",
+    );
+    expect(error.hint).toContain('the Docker volumes of the Compose project "shop"');
+    expect(error.hint).toContain("Then run `opscrew destroy` again without `--delete-data`.");
+    expect(s.handler.requests).toEqual([]);
+    expect(s.host.applies).toHaveLength(before);
+    expect(s.engine.applies.filter((a) => a.destroy === true)).toEqual([]);
+  });
+
+  it("--undo-host --delete-data with no data left on the server says so and undoes the host changes", async () => {
+    const s = await deployed();
+    await runDestroy(s.deps, { services: services(s), deleteData: true });
+    const start = s.deps.reporter.lines.length;
+    const result = await runDestroy(s.deps, {
+      services: services(s),
+      undoHost: true,
+      deleteData: true,
+    });
+    expect(result.hostPlans?.undo).toMatch(/^[0-9a-f]{64}$/);
+    const said = s.deps.reporter.lines
+      .slice(start)
+      .map((line) => line.message)
+      .join("\n");
+    expect(said).toContain(
+      "None of the app's data is left on your server, so `--delete-data` has nothing to delete.",
+    );
+    expect(result.remaining.join("\n")).not.toContain("The app's data stays on your server");
   });
 
   it("--undo-host adds the undo plan as a separate host-apply approval after the teardown", async () => {
