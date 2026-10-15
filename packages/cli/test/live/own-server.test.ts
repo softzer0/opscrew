@@ -45,9 +45,12 @@ import {
   approveHashes,
   ed25519FromKeyscan,
   envFileValues,
+  failedInitChecks,
   fingerprintFromKeygen,
   hetznerIpv6Address,
   hostPlanHash,
+  INIT_TO_DEPLOY_TARGET_MS,
+  initToDeploy,
   ipv6PrefixForms,
   leakedLabels,
   missingVariables,
@@ -293,6 +296,38 @@ describe("own-server live test helpers", () => {
         addresses,
       ),
     ).toBe(1);
+  });
+
+  it("lists the checks an init checklist marks as failed, by title", () => {
+    const checklist = [
+      "OpsCrew preflight",
+      "",
+      "  ✓ Node.js — 22.12.0.",
+      "  ✗ Cloud provider token — No cloud provider token is set (HCLOUD_TOKEN for Hetzner Cloud).",
+      "      OpsCrew needs one. To deploy to a server you already have instead, no token is needed.",
+      "  ! Model credentials — not set.",
+      "  ✗ GitHub token — GITHUB_TOKEN is not set.",
+      "  - Optional scanners — skipped.",
+    ].join("\n");
+    expect(failedInitChecks(checklist)).toEqual(["Cloud provider token", "GitHub token"]);
+    expect(failedInitChecks("  ✓ Node.js — 22.12.0.\n  ! Model credentials — not set.")).toEqual(
+      [],
+    );
+  });
+
+  it("measures init to a verified deploy against SC-901's 20 minutes", () => {
+    expect(INIT_TO_DEPLOY_TARGET_MS).toBe(20 * 60_000);
+    const start = 1_000_000;
+    expect(initToDeploy(start, start + 17 * 60_000 + 5_400)).toEqual({
+      text: "17 min 5 s",
+      withinTarget: true,
+    });
+    expect(initToDeploy(start, start + 20 * 60_000).withinTarget).toBe(false);
+    expect(initToDeploy(start, start + 25 * 60_000 + 59_000)).toEqual({
+      text: "25 min 59 s",
+      withinTarget: false,
+    });
+    expect(initToDeploy(start, start - 5).text).toBe("0 min 0 s");
   });
 
   it("reads the removal plan's approval from T916's --plan-only text", () => {
@@ -911,11 +946,34 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     step(
-      "2. DNS only: interview, design, adapt, provision, deploy, verify, secure and drift",
+      "2. DNS only: init, interview, design, adapt, provision, deploy, verify, secure and drift",
       minutes(75),
       async () => {
+        // SC-901 measures from `opscrew init`, which a user runs first.
+        const initStarted = Date.now();
+        const first = await opscrew("init", "--fix");
+        // Before the interview only the provider check may fail: no cloud token is set, and its
+        // hint says that a server the user already has needs none.
+        const failed = failedInitChecks(first.output);
+        if (
+          ![0, 1].includes(first.exitCode) ||
+          failed.some((title) => title !== "Cloud provider token") ||
+          (failed.length > 0 && !first.output.includes("a server you already have"))
+        ) {
+          throw new Error(
+            `opscrew init failed before the interview (exit ${first.exitCode}):\n${tail(first.output)}`,
+          );
+        }
+        // As a user would: commit the .gitignore lines init added.
+        if ((await git("status", "--porcelain", "--", ".gitignore")) !== "") {
+          await git("add", ".gitignore");
+          await git("commit", "-q", "-m", "chore: ignore OpsCrew's local files");
+          await git("push", "-q", "origin", "main");
+        }
         await opscrewOk("analyze", "--no-ai");
         await answerAndDesign("dns-only", fingerprint);
+        // Now the provider check looks at the recorded SSH login, and everything passes.
+        await opscrewOk("init");
         const plan = await readPlan();
         appName = plan.app.name;
         expect(plan.dns.provider, "DNS on Cloudflare").toBe("cloudflare");
@@ -963,6 +1021,15 @@ describe.skipIf(MISSING.length > 0)(
         await waitForDns(true);
         await waitForApp(false);
         await opscrewOk("verify");
+        const duration = initToDeploy(initStarted, Date.now());
+        const target = `under ${INIT_TO_DEPLOY_TARGET_MS / 60_000} minutes`;
+        log(`init to a verified DNS-only deploy took ${duration.text} (SC-901: ${target})`);
+        if (!duration.withinTarget) {
+          // A finding fails the run at the end (step 8), so the later steps still run.
+          findings.push(
+            `init to a verified DNS-only deploy took ${duration.text}, not ${target} (SC-901)`,
+          );
+        }
         const secure = await opscrewOk("secure");
         expect(
           secure.output.includes("SECURITY_REPORT.md"),

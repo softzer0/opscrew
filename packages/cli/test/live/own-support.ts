@@ -333,3 +333,34 @@ export function leakedLabels(
   const labels = known.filter(({ value }) => occurs(value)).map(({ label }) => label);
   return [...new Set(labels)];
 }
+
+/** SC-901: a deploy on the user's own server takes under 20 minutes from `opscrew init`. */
+export const INIT_TO_DEPLOY_TARGET_MS = 20 * 60_000;
+
+/**
+ * The titles of the checks an `opscrew init` checklist marks as failed (`  ✗ <title> — <message>`),
+ * in order. Warnings (`!`), passes and skips are not listed.
+ */
+export function failedInitChecks(output: string): string[] {
+  const titles: string[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const title = /^\s*✗ (.+?) — /.exec(line)?.[1]?.trim();
+    if (title !== undefined && title !== "") titles.push(title);
+  }
+  return titles;
+}
+
+/**
+ * The time from `opscrew init` to a verified deploy, measured against SC-901's target: the
+ * duration in words (`17 min 5 s`) and whether it is under {@link INIT_TO_DEPLOY_TARGET_MS}.
+ */
+export function initToDeploy(
+  startedMs: number,
+  verifiedMs: number,
+  targetMs = INIT_TO_DEPLOY_TARGET_MS,
+): { text: string; withinTarget: boolean } {
+  const elapsed = Math.max(0, verifiedMs - startedMs);
+  const seconds = Math.round(elapsed / 1000);
+  const text = `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
+  return { text, withinTarget: elapsed < targetMs };
+}
