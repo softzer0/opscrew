@@ -4,8 +4,8 @@
 **Created**: 2026-10-14
 **Status**: Draft
 **Input**: Founder decisions 2026-10-14: deploying to a server the user already owns comes next,
-before the image builders (now feature 012, after an existing Portainer as a deploy target in 010
-and Proxmox as a provider in 011); optional Portainer CE on any server OpsCrew deploys to, off by
+before the image builders (now feature 011, after an existing Portainer as a deploy target in 010);
+optional Portainer CE on any server OpsCrew deploys to, off by
 default, reached through an SSH tunnel, with a Cloudflare Access subdomain only as an explicit
 opt-in.
 

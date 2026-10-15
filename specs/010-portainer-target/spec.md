@@ -6,7 +6,7 @@
 **Input**: Founder decisions 2026-10-15: many people already run Portainer CE, often on a NAS
 (Synology, Unraid, TrueNAS) or any Docker host, and manage everything through it; OpsCrew deploys
 their app as a Portainer stack through Portainer's API, with no SSH and no changes to the host. This
-is the next feature, before Proxmox (now 011). Redeploys are offered two ways (Portainer polling a
+is the next feature, before the image builders (011). Redeploys are offered two ways (Portainer polling a
 deploy branch by default; GitHub Actions calling Portainer through Cloudflare Access as an option),
 and visitors reach the app three ways (a Cloudflare Tunnel by default; the user's own reverse proxy;
 Caddy on ports 80/443). After a live test of Portainer CE 2.45.2 showed that its scheduled Git
