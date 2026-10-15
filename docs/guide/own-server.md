@@ -106,6 +106,9 @@ The host plan lists these steps, and only the ones that are not in place yet are
   Docker from that repository is upgraded). Docker 28 keeps ports that are published only on the
   server itself really local.
 - **Docker settings** in `/etc/docker/daemon.json`: log rotation, no-new-privileges, live-restore.
+  When the server already runs containers OpsCrew did not create, OpsCrew leaves Docker's daemon
+  settings alone, so your containers keep behaving as before; OpsCrew's own services set their log
+  rotation and no-new-privileges themselves.
 - **A `deploy` user** with the project's deploy key and access to Docker. GitHub Actions deploys
   as this user. It has no password.
 - **SSH hardening** in `/etc/ssh/sshd_config.d/10-opscrew.conf`, checked with `sshd -t` before
@@ -118,7 +121,9 @@ The host plan lists these steps, and only the ones that are not in place yet are
     login.
 - **The ufw firewall**: incoming traffic is denied except SSH on the port your server really uses
   (never port 22 by assumption) and, when the server serves the web itself instead of through the
-  tunnel, HTTP and HTTPS. OpsCrew does not add a second firewall when your server already uses
+  tunnel, HTTP and HTTPS. When ufw is already on but lets everything in, OpsCrew sets it to deny
+  incoming traffic except SSH and, as above, web traffic, and undoing OpsCrew's host changes puts the old
+  default back. OpsCrew does not add a second firewall when your server already uses
   firewalld or its own nftables rules; it stops and explains instead.
 - **The Cloudflare-only filter**, only when you chose to serve directly behind Cloudflare's proxy
   (see [How visitors reach your server](#how-visitors-reach-your-server)).

@@ -53,6 +53,17 @@ describe("renderPortainerCompose", () => {
     expect(service.privileged).toBeUndefined();
   });
 
+  it("rotates its own logs, so Docker's daemon settings on the server can stay as they are", () => {
+    for (const initialAdmin of [true, false]) {
+      const doc = parse(renderPortainerCompose(plan, { initialAdmin }).content);
+      expect(doc.services.portainer.logging).toEqual({
+        driver: "json-file",
+        options: { "max-size": "10m", "max-file": "3" },
+      });
+      expect(doc.services.portainer.security_opt).toEqual(["no-new-privileges:true"]);
+    }
+  });
+
   it("pins the plan's version on every target", () => {
     const hetzner = testPlan({ portainer: { access: "local" } });
     expect(
