@@ -257,8 +257,8 @@ not reachable from the internet but works through the printed tunnel command.
   print the SSH tunnel command to reach it.
 - **FR-915**: Serving Portainer on a subdomain MUST be an explicit opt-in that puts it behind
   Cloudflare Access allowing only the email addresses the user lists (Portainer's own login stays
-  in place); OpsCrew MUST set up and remove the Access application through its Cloudflare adapter
-  behind the safety gate.
+  in place); OpsCrew MUST set up and remove the subdomain's tunnel and Access application as
+  infrastructure code through the IaC engine behind the safety gate.
 - **FR-916**: Turning Portainer off MUST remove it and delete its data only after a typed
   confirmation; the Portainer password MUST never appear in the repository, the plan, prompts,
   logs, audit entries or reports.

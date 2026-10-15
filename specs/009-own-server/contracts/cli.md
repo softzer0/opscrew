@@ -54,8 +54,9 @@ The answers go to local state, never to `opscrew/requirements.yaml` beyond `prov
 | `opscrew portainer disable [--delete-data] [--confirm <app>]` | plan + approval; data deleted only with `--delete-data` and the typed name (`--confirm <app>` with `--approve` in scripts) |
 | `opscrew portainer status [--json]` | read-only: version, access mode, tunnel command, password file path (never the password) |
 
-All Portainer commands accept `--plan-only`, `--approve <hash>` (repeatable), `--host-key`,
-`--engine` and `--yes` (which never approves an infrastructure or host plan).
+`portainer enable` and `portainer disable` accept `--plan-only`, `--approve <hash>` (repeatable),
+`--host-key`, `--engine` and `--yes` (which never approves an infrastructure or host plan);
+`portainer status` takes only `--json`.
 
 ## MCP
 
