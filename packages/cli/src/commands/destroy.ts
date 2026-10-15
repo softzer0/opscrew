@@ -24,7 +24,7 @@ interface DestroyFlags {
 }
 
 /** Where the undo host plan's own approval comes from (`--undo-host`). */
-interface UndoApproval {
+export interface UndoApproval {
   /** The purpose of the saved host plan with this hash (the undo plan is told apart by it). */
   purposeOf: (hash: string | undefined) => Promise<string | undefined>;
   /** `--confirm <app>` was given: a script, where only `--approve <hash>` can add the undo plan. */
@@ -43,9 +43,11 @@ interface UndoApproval {
  * it asks for the app's name as well (`allowDestroy`), but always as its own approval: the name
  * typed for the teardown never covers it. In a terminal the base handler asks for the name again;
  * in a script it is approved only with `--confirm <app>` together with `--approve <its hash>`.
- * Everything else goes to `base`.
+ * A `host-apply` whose saved plan is not known to be the teardown (any other purpose, or the
+ * lookup failed) is never covered by the typed name and goes to `base`, like everything else.
+ * Exported for tests.
  */
-class TypedConfirmationHandler implements ApprovalHandler {
+export class TypedConfirmationHandler implements ApprovalHandler {
   constructor(
     private readonly base: ApprovalHandler,
     private readonly name: string,
@@ -56,12 +58,17 @@ class TypedConfirmationHandler implements ApprovalHandler {
     private readonly undo: UndoApproval,
   ) {}
 
-  private covers(request: ApprovalRequest): boolean {
+  /**
+   * `purpose`: of the saved host plan a `host-apply` names. Only the teardown host plan is covered
+   * by the typed name; any other or unknown purpose goes to the base handler (fail closed).
+   */
+  private covers(request: ApprovalRequest, purpose: string | undefined): boolean {
     if (request.kind === "iac-apply") {
       return request.confirmPhrase === undefined || request.confirmPhrase === this.name;
     }
-    // The teardown host plan names the app as its phrase (the undo plan is handled before this).
-    if (request.kind === "host-apply") return request.confirmPhrase === this.name;
+    if (request.kind === "host-apply") {
+      return purpose === "teardown" && request.confirmPhrase === this.name;
+    }
     return this.approveSecrets && request.kind === "github-secrets";
   }
 
@@ -87,10 +94,12 @@ class TypedConfirmationHandler implements ApprovalHandler {
   }
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
-    if (request.kind === "host-apply" && (await this.undo.purposeOf(request.planHash)) === "undo") {
-      return this.undoDecision(request);
+    let purpose: string | undefined;
+    if (request.kind === "host-apply") {
+      purpose = await this.undo.purposeOf(request.planHash).catch(() => undefined);
+      if (purpose === "undo") return this.undoDecision(request);
     }
-    if (this.covers(request) && this.typed() === this.name) {
+    if (this.covers(request, purpose) && this.typed() === this.name) {
       this.print(`  ✓ ${request.title} (confirmed with ${this.what})\n`);
       return {
         approved: true,

@@ -246,9 +246,11 @@ the app's name first, and never deletes, rebuilds or reinstalls your server.
   name typed as well.
 - `npx opscrew destroy --undo-host` also reverses OpsCrew's own changes to the server (the deploy
   user, its SSH and firewall settings, automatic updates, the runtime directories), from
-  the record in `/etc/opscrew/host.json`, as a separate plan you approve. Docker stays installed,
-  because other software may use it. It also works after an earlier `destroy`.
+  the record in `/etc/opscrew/host.json`, as a separate plan you approve. It deletes the deploy
+  user OpsCrew created and its home directory, so it asks you to type the app's name again (the
+  name you typed for removing the app does not count for it). Docker stays installed, because
+  other software may use it. It also works after an earlier `destroy`.
 - In scripts: `npx opscrew destroy --confirm <app name>`; the undo plan then needs
-  `--approve <its hash>`, which the run prints.
+  `--confirm <app name>` together with `--approve <its hash>`, which the run prints.
 
 Moving an app between your own server and Hetzner Cloud or DigitalOcean is not supported yet.

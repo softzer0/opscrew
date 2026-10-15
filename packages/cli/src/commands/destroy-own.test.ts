@@ -17,6 +17,7 @@ import {
   recordOwnLogin,
 } from "../ui/__fixtures__/own";
 import { withDeployServices } from "../ui/deploy-services";
+import { TypedConfirmationHandler } from "./destroy";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -186,6 +187,61 @@ describe.skipIf(!GIT)("opscrew destroy on a server the user owns", () => {
       await project?.cleanup();
       project = undefined;
     }
+  });
+
+  it("fails closed: a host plan not known to be the teardown never takes the typed name", async () => {
+    const hash = "a".repeat(64);
+    const request: ApprovalRequest = {
+      kind: "host-apply",
+      title: "Undo OpsCrew's changes to your server (5 changes)",
+      details: "",
+      planHash: hash,
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    };
+    const lookups: Array<() => Promise<string | undefined>> = [
+      async () => undefined,
+      async () => "setup",
+      async () => {
+        throw new Error("plans directory unreadable");
+      },
+    ];
+    for (const lookup of lookups) {
+      const base = new BaseApprovals();
+      const handler = new TypedConfirmationHandler(
+        base,
+        "shop",
+        () => "shop",
+        true,
+        () => {},
+        "the app's name",
+        {
+          purposeOf: lookup,
+          scripted: true,
+          hashes: [hash],
+        },
+      );
+      const decision = await handler.request(request);
+      expect(decision.approved).toBe(false);
+      expect(base.requests).toEqual([request]);
+    }
+    // The teardown itself (by its saved purpose) is approved with the typed name.
+    const base = new BaseApprovals();
+    const teardown = new TypedConfirmationHandler(
+      base,
+      "shop",
+      () => "shop",
+      true,
+      () => {},
+      "the app's name",
+      {
+        purposeOf: async () => "teardown",
+        scripted: true,
+        hashes: [],
+      },
+    );
+    expect(await teardown.request(request)).toMatchObject({ approved: true, confirmation: "shop" });
+    expect(base.requests).toEqual([]);
   });
 
   it("--delete-data passes the choice on, and the teardown still needs the typed name", async () => {

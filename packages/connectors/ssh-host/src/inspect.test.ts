@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { rmSync, symlinkSync } from "node:fs";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost, type OsPreset } from "./__fixtures__/fake-host";
 import { desiredFor, planFor, provision } from "./__fixtures__/helpers";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
+import { RUNTIME_FILE_NAMES } from "./constants";
 import { dockerFirewall, inspectHost, inspectScript, RUNTIME_FILES_SNIPPET } from "./inspect";
 import { parseRuntimeFiles } from "./parse";
 import { planHost } from "./plan";
@@ -210,6 +212,35 @@ describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
         expect(result.stdout).not.toContain(sum(`SECRET_KEY=${secret}\n`));
         expect(result.stdout).not.toContain(sum(`POSTGRES_PASSWORD=${secret}\n`));
         expect(result.stdout.match(/\b[0-9a-f]{64}\b/g)).toHaveLength(2);
+      } finally {
+        sh.dispose();
+      }
+    },
+  );
+
+  it.skipIf(!BASH_AVAILABLE)(
+    "reads nothing when /srv/app is a symbolic link or not a directory (real shell)",
+    () => {
+      const absent = RUNTIME_FILE_NAMES.map((name) => `${name} absent`);
+      const sh = new ShellHarness();
+      try {
+        sh.write("/srv/app", "not a directory\n");
+        const result = sh.run(RUNTIME_FILES_SNIPPET);
+        expect(result.status).toBe(0);
+        expect(result.stdout.trim().split("\n")).toEqual(absent);
+
+        rmSync(sh.native("/srv/app"));
+        sh.write("/srv/elsewhere/compose.yaml", "services: {}\n");
+        let linked = true;
+        try {
+          symlinkSync(sh.native("/srv/elsewhere"), sh.native("/srv/app"), "junction");
+        } catch {
+          linked = false; // this machine cannot create links
+        }
+        if (linked && sh.run('[ -L "/srv/app" ]').status === 0) {
+          const viaLink = sh.run(RUNTIME_FILES_SNIPPET);
+          expect(viaLink.stdout.trim().split("\n")).toEqual(absent);
+        }
       } finally {
         sh.dispose();
       }

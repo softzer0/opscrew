@@ -124,9 +124,10 @@ done`;
 /**
  * OpsCrew's runtime files in /srv/app: kind, owner, group and mode of each, and the SHA-256 of the
  * rendered ones only. Never prints a file's content, never hashes a file that holds secrets, and
- * never follows a symbolic link.
+ * never follows a symbolic link (not even /srv/app itself: then every file reads as absent).
  */
 export const RUNTIME_FILES_SNIPPET = `for f in ${RUNTIME_FILE_NAMES.join(" ")}; do
+  if [ -L "${APP_DIR}" ] || [ ! -d "${APP_DIR}" ]; then echo "$f absent"; continue; fi
   p="${APP_DIR}/$f"
   if [ -L "$p" ]; then echo "$f link"
   elif [ -f "$p" ]; then

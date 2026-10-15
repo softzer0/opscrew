@@ -14,7 +14,6 @@ export {
   PORTAINER_DIR,
   PORTAINER_PORT,
   PORTAINER_PROJECT,
-  RUNTIME_FILE_NAMES,
   type RuntimeFileName,
   SECRET_RUNTIME_FILES,
   TUNNEL_APP_PORT,
@@ -32,7 +31,6 @@ export {
   MARKER_PATH,
   NO_WEB_FILTER,
   RECORD_PATH,
-  type RuntimeFileFact,
   type WebFilterFacts,
   webFilterFacts,
 } from "./facts";
