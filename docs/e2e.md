@@ -222,7 +222,19 @@ Zero Trust organization if OpsCrew created it (other apps may use them).
 ## Your existing Portainer
 
 `packages/cli/test/live/portainer-target.test.ts` runs the flow for a Portainer the user already
-runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install:
+runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install. It has two passes,
+chosen with `OPSCREW_E2E_PORTAINER_STEPS`:
+
+- `core` (the default, about 1 hour): steps 1 (with the optional pause 1b), 2, 3 without the
+  deliberately failing change and its rollback (that alone waits about ten minutes), 8, 9 and 12.
+  Step 8 then removes an updater + tunnel setup (one tunnel, no Access application), and step 12
+  searches what this pass produced; the bare short host name is searched only in the full pass,
+  where step 11 gives it to OpsCrew.
+- `full` (about 2 hours): every step and check below.
+
+The test prints the selected pass and its expected duration at the start. Steps outside the
+selected pass are reported as skipped, "not in the core pass; set OPSCREW_E2E_PORTAINER_STEPS=full";
+any other value skips the whole test and names the variable.
 
 1. **The user's Portainer.** It creates a throwaway Hetzner Cloud server through the Hetzner API
    (Ubuntu 24.04, the cheapest x86 type near `OPSCREW_E2E_REGION`, labels `managed-by=opscrew-e2e`
@@ -285,7 +297,8 @@ runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install:
    404 outside `/api/stacks/webhooks/` with it, `verify`, `secure`, `drift`, a re-run with nothing
    to apply, and `provision --replace-token registry` (plus `repository` for a private repository)
    after which the registry entry must still be granted to the environment.
-8. `destroy --confirm <app>` in tunnel + Cloudflare mode (two tunnels): no stack of the app, no
+8. `destroy --confirm <app>` in tunnel + Cloudflare mode (two tunnels; in the core pass updater +
+   tunnel, one tunnel), with the full `OPSCREW_E2E_CLOUDFLARE_TOKEN`: no stack of the app, no
    registry entry of OpsCrew, no DNS record, tunnel, Access application, policy or service token of
    the app; the data volumes kept; the deploy secrets, the webhook and value-key files and the
    saved stack plans removed; the `opscrew-deploy` branch deleted on GitHub (destroy says
@@ -344,6 +357,7 @@ server's `run=<id>` label).
 | Variable | What it is |
 |---|---|
 | `OPSCREW_E2E_PORTAINER` | `1` runs this test. |
+| `OPSCREW_E2E_PORTAINER_STEPS` | Optional, `core` (the default) or `full`: which steps run (see above). |
 | `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test for the server, its key and firewall. Use a separate, empty project. |
 | `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its fine-grained token, as above (Contents, Pull requests, Secrets, Actions and Workflows read and write, Metadata read). |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for [your own server](#your-own-server) (the zone permissions and the account's Tunnel and Access permissions). Cloudflare Zero Trust must be turned on. |
@@ -370,9 +384,12 @@ OPSCREW_E2E_PORTAINER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you
   OPSCREW_E2E_GHCR_READ_TOKEN=… npx vitest run test/live/portainer-target.test.ts
 ```
 
-A full run is expected to take about two hours (an estimate until the first passing run: about ten
-deploy workflow runs, one of which waits ten minutes for its failing health check before it rolls
-back, plus Docker's installation). The server is the smallest x86 type, billed by the hour, so a run
+That runs the core pass. For the full one, add `OPSCREW_E2E_PORTAINER_STEPS=full` to the same
+command.
+
+The full pass takes about two hours (the run on 2026-10-15: about ten deploy workflow runs, one of
+which waits ten minutes for its failing health check before it rolls back, plus Docker's
+installation); the core pass about one hour (an estimate until its first run). The server is the smallest x86 type, billed by the hour, so a run
 costs a few cents of server time, plus GitHub Actions minutes for the builds (free for public
 repositories). Left behind on purpose, as for your own server: the GitHub Actions secrets of other
 targets and the container image in the throwaway repository, the zone's rulesets that existed

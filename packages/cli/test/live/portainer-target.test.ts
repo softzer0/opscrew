@@ -15,6 +15,9 @@
  * not finish. Nothing the test prints contains a token, a secret, the server's address or
  * Portainer's: every line goes through a scrubber. Runs only with OPSCREW_E2E_PORTAINER=1 and the
  * variables in docs/e2e.md ("Your existing Portainer"); costs a few cents of server time.
+ *
+ * `OPSCREW_E2E_PORTAINER_STEPS` selects the steps: `core` (the default, about 1 hour) runs steps 1,
+ * 2, 3 without its rollback, 8, 9 and 12; `full` (about 2 hours) runs every step and check above.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -86,6 +89,7 @@ import {
 import {
   appliedStackPlan,
   BUSYBOX_IMAGE,
+  CORE_STEPS,
   changedKeys,
   DECOY_PROJECT,
   DECOY_STACK,
@@ -97,12 +101,15 @@ import {
   envNames,
   failingDockerfile,
   firewallRules,
+  inPass,
   ipv4FromTrace,
   logLineShape,
   missingPortainerVariables,
   multipartForm,
+  NOT_IN_CORE,
   namesDnsRecord,
   opensslFingerprint,
+  PASS_ESTIMATE,
   PORTAINER_IMAGE,
   PORTAINER_PORT,
   PORTAINER_VERSION,
@@ -110,12 +117,14 @@ import {
   PROBE_STACK,
   PROXY_PORT,
   portainerAnswers,
+  portainerPass,
   preloadNodeOptions,
   SELF_DEPLOY_TARGET_MS,
   setupTokenFromLogs,
   shortHostMentions,
   shortHostName,
   stackPlanHashOf,
+  stepNumber,
   THREE_RUNS_SENTENCE,
   updaterFailures,
   valueShape,
@@ -310,6 +319,26 @@ describe("Portainer live test helpers", () => {
     expect(changedKeys({ a: { x: 1 } }, { a: { x: 1 } })).toEqual([]);
   });
 
+  it("selects the core pass by default and every step only in the full pass", () => {
+    expect(portainerPass(undefined)).toBe("core");
+    expect(portainerPass(" ")).toBe("core");
+    expect(portainerPass("core")).toBe("core");
+    expect(portainerPass("FULL")).toBe("full");
+    expect(portainerPass("all")).toBeUndefined();
+    expect(stepNumber("1b. (optional) pauses")).toBe("1b");
+    expect(stepNumber("12. no token")).toBe("12");
+    expect(stepNumber("no number")).toBe("");
+    const core = ["1", "1b", "2", "3", "8", "9", "12"];
+    const others = ["4", "5", "6", "7", "10", "11"];
+    for (const step of core) expect(inPass("core", `${step}. a step`), step).toBe(true);
+    for (const step of others) expect(inPass("core", `${step}. a step`), step).toBe(false);
+    for (const step of [...core, ...others]) expect(inPass("full", step), step).toBe(true);
+    expect(inPass("core", "3-rollback")).toBe(false);
+    expect(inPass("full", "3-rollback")).toBe(true);
+    expect(NOT_IN_CORE).toContain("OPSCREW_E2E_PORTAINER_STEPS=full");
+    expect(Object.keys(PASS_ESTIMATE).sort()).toEqual(["core", "full"]);
+  });
+
   it("counts the updater's failed calls and makes a Dockerfile that fails on purpose", () => {
     const line =
       "OpsCrew updater: asking Portainer to redeploy the app failed; trying again in 60 seconds.";
@@ -393,7 +422,14 @@ describe("Portainer live test helpers", () => {
 // The live run.
 
 const ENV = process.env;
-const MISSING = missingPortainerVariables(ENV);
+/** The steps this run takes (`OPSCREW_E2E_PORTAINER_STEPS`, `core` by default). */
+const PASS = portainerPass(ENV.OPSCREW_E2E_PORTAINER_STEPS) ?? "core";
+const MISSING = [
+  ...missingPortainerVariables(ENV),
+  ...(portainerPass(ENV.OPSCREW_E2E_PORTAINER_STEPS) === undefined
+    ? ["OPSCREW_E2E_PORTAINER_STEPS=core or full (unset means core)"]
+    : []),
+];
 const E2E = {
   hcloudToken: ENV.OPSCREW_E2E_HCLOUD_TOKEN ?? "",
   githubRepo: ENV.OPSCREW_E2E_GITHUB_REPO ?? "",
@@ -522,8 +558,21 @@ describe.skipIf(MISSING.length > 0)(
       return clean;
     }
 
-    /** An ordered step: skipped after an earlier step failed (unless `always`), errors scrubbed. */
+    if (MISSING.length === 0) {
+      log(
+        `the ${PASS} pass (OPSCREW_E2E_PORTAINER_STEPS=${PASS}): ${PASS === "full" ? "every step" : `steps ${CORE_STEPS.join(", ")}, step 3 without its rollback`}; expected to take ${PASS_ESTIMATE[PASS]}`,
+      );
+    }
+
+    /**
+     * An ordered step: skipped when it is not in the selected pass, or after an earlier step failed
+     * (unless `always`); errors scrubbed.
+     */
     function step(title: string, timeoutMs: number, body: () => Promise<void>, always = false) {
+      if (!inPass(PASS, title)) {
+        it.skip(`${title} (skipped: ${NOT_IN_CORE})`, () => undefined);
+        return;
+      }
       it(title, { timeout: timeoutMs }, async (context) => {
         if (stopped && !always) context.skip();
         context.onTestFailed(() => {
@@ -2102,7 +2151,9 @@ describe.skipIf(MISSING.length > 0)(
     }
 
     step(
-      "3. a merged change deploys by itself within 5 minutes; a failing change rolls back",
+      PASS === "full"
+        ? "3. a merged change deploys by itself within 5 minutes; a failing change rolls back"
+        : `3. a merged change deploys by itself within 5 minutes (the failing change's rollback: ${NOT_IN_CORE})`,
       minutes(90),
       async () => {
         // Research R5: a webhook call for an unchanged branch does not redeploy.
@@ -2134,6 +2185,12 @@ describe.skipIf(MISSING.length > 0)(
         );
         const goodImage = good.image as DeployedImage;
 
+        if (!inPass(PASS, "3-rollback")) {
+          // The failing change waits about 10 minutes for its health check before it rolls back.
+          log(`the deliberately failing change and its rollback are skipped: ${NOT_IN_CORE}`);
+          await expectDecoysUnchanged("the self-deploy");
+          return;
+        }
         const plan = await readPlan();
         const dockerfile = plan.app.dockerfile;
         const original = await readFile(join(repo, dockerfile), "utf8");
@@ -2449,6 +2506,14 @@ describe.skipIf(MISSING.length > 0)(
       "8. destroy keeps the data volumes; Portainer, its settings and the decoys stay",
       minutes(30),
       async () => {
+        // In the core pass step 5 did not switch OpsCrew to the full Cloudflare token, and removing
+        // the tunnel needs it; in the full pass this is already so.
+        if (env.CLOUDFLARE_API_TOKEN !== E2E.cloudflareToken) {
+          env.CLOUDFLARE_API_TOKEN = E2E.cloudflareToken;
+          observe(
+            "the updater + tunnel setup (steps 2 and 3) worked with OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN",
+          );
+        }
         recordedVolumes = (await createdRecord()).volumes;
         await keepDeployBranch("destroy");
         const removed = await opscrewOk("destroy", "--confirm", app());
@@ -2482,7 +2547,10 @@ describe.skipIf(MISSING.length > 0)(
           resources.records.map((r) => `${r.type} ${r.name}`),
           "no DNS record of the app is left",
         ).toEqual([]);
-        expect(fresh(resources.tunnels, before.tunnels), "both tunnels are gone").toEqual([]);
+        expect(
+          fresh(resources.tunnels, before.tunnels),
+          PASS === "full" ? "both tunnels are gone" : "the app's tunnel is gone",
+        ).toEqual([]);
         expect(fresh(resources.apps, before.apps), "the Access application is gone").toEqual([]);
         expect(fresh(resources.policies, before.policies), "the Access policy is gone").toEqual([]);
         expect(
@@ -2734,8 +2802,10 @@ describe.skipIf(MISSING.length > 0)(
         );
         const problems: string[] = [];
         // Every known value anywhere; the bare short host name (a common word) only in what OpsCrew
-        // itself printed or saved (the app's own files and history may use it as a word).
-        const search = (where: string, text: string, list = known, shortHostToo = true) => {
+        // itself printed or saved (the app's own files and history may use it as a word), and only
+        // when step 11 gave OpsCrew that name (the core pass never does).
+        const shortHostRan = inPass(PASS, "11");
+        const search = (where: string, text: string, list = known, shortHostToo = shortHostRan) => {
           const found = leakedLabels(text, list);
           if (found.length > 0) problems.push(`${where} contains: ${found.join(", ")}`);
           const mentions = shortHostToo ? shortHostMentions(text, shortHost) : 0;
@@ -2745,7 +2815,7 @@ describe.skipIf(MISSING.length > 0)(
         };
         await git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*");
         // `--all` also walks refs/e2e/deploy-*: the deploy branches kept before each destroy
-        // deleted them on GitHub (steps 8, 10 and 11).
+        // deleted them on GitHub (step 8, and steps 10 and 11 in the full pass).
         search(
           "the commits (every branch)",
           await git("log", "--all", "-p", "--format=%B"),
@@ -2783,6 +2853,7 @@ describe.skipIf(MISSING.length > 0)(
           if (!known.some((entry) => entry.label === label))
             findings.push(`the leak search had no value for ${label}`);
         }
+        log(`the leak search covered the ${PASS} pass's commits, outputs, files and audit log`);
         for (const observation of observations) log(`run log: ${observation}`);
         for (const problem of problems) log(`leak: ${problem}`);
         for (const finding of findings) log(`finding: ${finding}`);

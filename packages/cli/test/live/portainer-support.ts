@@ -370,3 +370,38 @@ export function duration(ms: number): string {
 
 /** A merged change must be live within this time of the deploy workflow writing it (quickstart 3). */
 export const SELF_DEPLOY_TARGET_MS = 5 * 60_000;
+
+/**
+ * Which steps a live run takes (`OPSCREW_E2E_PORTAINER_STEPS`): `core` (the default) takes the
+ * setup, updater + tunnel, one change deploying by itself with the unchanged-branch check, both
+ * destroys and the leak check; `full` takes every step.
+ */
+export type PortainerPass = "core" | "full";
+
+/** The steps of the core pass, by the number their title starts with (1b is the optional pause). */
+export const CORE_STEPS: readonly string[] = ["1", "1b", "2", "3", "8", "9", "12"];
+
+/** Why a step, or a part of one, does not run in the core pass. */
+export const NOT_IN_CORE = "not in the core pass; set OPSCREW_E2E_PORTAINER_STEPS=full";
+
+/** How long each pass takes, roughly (the full matrix took about 2 hours on 2026-10-15). */
+export const PASS_ESTIMATE: Readonly<Record<PortainerPass, string>> = {
+  core: "about 1 hour",
+  full: "about 2 hours",
+};
+
+/** The pass `OPSCREW_E2E_PORTAINER_STEPS` selects (`core` when unset); undefined for anything else. */
+export function portainerPass(value: string | undefined): PortainerPass | undefined {
+  const pass = (value ?? "").trim().toLowerCase() || "core";
+  return pass === "core" || pass === "full" ? pass : undefined;
+}
+
+/** The step number a step title starts with (`"8. destroy …"` → `"8"`, `"1b. …"` → `"1b"`). */
+export function stepNumber(title: string): string {
+  return /^(\d+[a-z]?)\./.exec(title)?.[1] ?? "";
+}
+
+/** Whether a step, by its title or its number, runs in `pass`. */
+export function inPass(pass: PortainerPass, step: string): boolean {
+  return pass === "full" || CORE_STEPS.includes(stepNumber(step) || step);
+}
