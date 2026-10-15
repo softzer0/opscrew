@@ -390,6 +390,16 @@ function dockerDaemonStep({ facts, desired }: SetupContext): HostStep {
         : `Docker is started with its own settings (${facts.docker.daemonFlags.join(", ")}), so OpsCrew kept your Docker settings and writes no daemon.json.`,
     );
   }
+  // A stopped dockerd hides its containers (inspection never starts it): the user's are unknown.
+  if (facts.docker.kind !== "absent" && !facts.docker.running) {
+    return step(
+      "docker-daemon",
+      title,
+      "in-place",
+      params,
+      "Docker is installed but not running, so OpsCrew cannot see whether containers it did not create are on this server, and leaves Docker's daemon settings alone. Start Docker (sudo systemctl start docker) and run opscrew provision again to let OpsCrew decide.",
+    );
+  }
   // Daemon-wide defaults would change how the user's own containers log and run once they are
   // created again; OpsCrew's services set log rotation and no-new-privileges in their Compose files.
   const others = usersContainers(facts, desired.app);

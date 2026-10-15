@@ -122,9 +122,10 @@ The host plan lists these steps, and only the ones that are not in place yet are
 - **The ufw firewall**: incoming traffic is denied except SSH on the port your server really uses
   (never port 22 by assumption) and, when the server serves the web itself instead of through the
   tunnel, HTTP and HTTPS. When ufw is already on but lets everything in, OpsCrew sets it to deny
-  incoming traffic except SSH and, as above, web traffic, and undoing OpsCrew's host changes puts the old
-  default back. OpsCrew does not add a second firewall when your server already uses
-  firewalld or its own nftables rules; it stops and explains instead.
+  incoming traffic except SSH, web traffic (when the server serves the web) and what your own ufw
+  rules already allow; if a service other machines use has no rule, OpsCrew stops and names it.
+  Undoing OpsCrew's host changes puts the old default back. OpsCrew does not add a second firewall
+  when your server already uses firewalld or its own nftables rules; it stops and explains instead.
 - **The Cloudflare-only filter**, only when you chose to serve directly behind Cloudflare's proxy
   (see [How visitors reach your server](#how-visitors-reach-your-server)).
 - **fail2ban** for SSH, and **automatic security updates**.

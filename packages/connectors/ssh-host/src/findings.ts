@@ -110,7 +110,7 @@ export const findings = {
     lettingAllIn
       ? {
           code: "firewall-would-block",
-          message: `ufw is on but lets every incoming connection in. Once OpsCrew sets it to deny incoming traffic except SSH and web traffic, other machines could no longer reach ${list(what)}.`,
+          message: `ufw is on but lets every incoming connection in. Once OpsCrew sets it to deny incoming traffic except SSH (and web traffic when the server serves the web), other machines could no longer reach ${list(what)}.`,
           hint: `Stop those services or make them listen on 127.0.0.1 only, or add ufw rules that allow them (for example "sudo ufw allow 8080/tcp"; OpsCrew keeps them), ${RERUN}.`,
         }
       : {

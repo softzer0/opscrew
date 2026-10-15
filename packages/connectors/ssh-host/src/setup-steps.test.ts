@@ -205,6 +205,23 @@ describe("Docker's daemon settings next to the user's containers (T929)", () => 
     expect(fake.files.has("/etc/docker/daemon.json")).toBe(false);
   });
 
+  it("leaves daemon.json alone while Docker is stopped (its containers cannot be seen)", async () => {
+    // A server OpsCrew prepared (so a stopped Docker does not block the plan) whose file is gone.
+    const fake = withDocker();
+    await provision(fake);
+    fake.files.delete("/etc/docker/daemon.json");
+    fake.dockerRunning = false;
+    const plan = await planFor(fake);
+    expect(plan.findings).toEqual([]);
+    expect(stepOf(plan, "docker-daemon")).toMatchObject({
+      state: "in-place",
+      reason:
+        "Docker is installed but not running, so OpsCrew cannot see whether containers it did not create are on this server, and leaves Docker's daemon settings alone. Start Docker (sudo systemctl start docker) and run opscrew provision again to let OpsCrew decide.",
+    });
+    fake.dockerRunning = true;
+    expect(stepOf(await planFor(fake), "docker-daemon")?.state).toBe("change");
+  });
+
   it("counts a Compose project of the user's that has only volumes, and shortens long lists", async () => {
     const fake = withDocker();
     fake.volumes.set("nextcloud", 2);

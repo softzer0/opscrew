@@ -348,12 +348,34 @@ describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", { timeout: 60_0
         defaultRouted: "",
       });
       expect(h.run(apply).status).toBe(0);
+      // Policies first, then the rules (SSH is never closed in between), ufw off last.
       expect(h.calls()).toEqual([
-        "ufw --force delete allow 22/tcp",
-        "ufw --force delete allow 80/tcp",
         "ufw default allow incoming",
         "ufw default allow outgoing",
+        "ufw --force delete allow 22/tcp",
+        "ufw --force delete allow 80/tcp",
         "ufw --force disable",
+      ]);
+    });
+
+    it("the undo on a ufw that stays on lets everything in again before removing the SSH rule", () => {
+      const h = harness();
+      h.stub("ufw", UFW);
+      const { apply } = scriptsFor("undo", "ufw", {
+        removeRules: "22/tcp 80/tcp 443/tcp 443/udp",
+        disable: false,
+        removePackage: false,
+        defaultIncoming: "allow",
+        defaultOutgoing: "",
+        defaultRouted: "",
+      });
+      expect(h.run(apply).status).toBe(0);
+      expect(h.calls()).toEqual([
+        "ufw default allow incoming",
+        "ufw --force delete allow 22/tcp",
+        "ufw --force delete allow 80/tcp",
+        "ufw --force delete allow 443/tcp",
+        "ufw --force delete allow 443/udp",
       ]);
     });
   });

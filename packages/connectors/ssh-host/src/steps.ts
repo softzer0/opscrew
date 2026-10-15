@@ -578,11 +578,12 @@ if ufw_active; then was_active=yes; fi
   if [ "$was_active" = yes ]; then echo 'ufw --force enable >/dev/null 2>&1 || true'; fi
 } > ${DEAD_MAN_DIR}/ufw.undo.sh`;
     const apply = `command -v ufw >/dev/null 2>&1 || exit 0
-for r in $REMOVE_RULES; do ufw --force delete allow "$r" >/dev/null 2>&1 || true; done
-# The default policies OpsCrew set when it turned ufw on go back to what they were.
+# The default policies OpsCrew set go back to what they were first, so a default of "allow" is
+# back before OpsCrew's SSH rule goes (SSH is never closed in between); ufw goes off last.
 if [ -n "$DEFAULT_INCOMING" ]; then ufw default "$DEFAULT_INCOMING" incoming >/dev/null; fi
 if [ -n "$DEFAULT_OUTGOING" ]; then ufw default "$DEFAULT_OUTGOING" outgoing >/dev/null; fi
 if [ -n "$DEFAULT_ROUTED" ]; then ufw default "$DEFAULT_ROUTED" routed >/dev/null; fi
+for r in $REMOVE_RULES; do ufw --force delete allow "$r" >/dev/null 2>&1 || true; done
 if [ "$DISABLE" = true ]; then ufw --force disable >/dev/null; fi`;
     return {
       check: checkScript(

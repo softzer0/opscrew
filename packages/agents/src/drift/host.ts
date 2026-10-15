@@ -222,6 +222,12 @@ function ufwDetails(facts: HostFacts, step: HostStep): string[] {
       "An automatic undo of a firewall change from an interrupted run is still waiting on the server.",
     );
   }
+  // Without OpsCrew's record of ufw, the default policy is told here (else by ufwSinceSetup).
+  if (step.params.denyIncoming === true && firstSetupEntry(facts, "ufw") === undefined) {
+    out.push(
+      'ufw lets every incoming connection in: its default policy for incoming traffic is "allow". `opscrew provision` sets it to deny.',
+    );
+  }
   return out;
 }
 
@@ -325,8 +331,9 @@ const UFW_POLICY_WORDS = /^(allow|deny|reject)$/;
  * What changed in ufw since OpsCrew set the server up, from the first setup entry of OpsCrew's host
  * record (FR-911): rules added afterwards (the current rules minus the rules that were there before
  * OpsCrew minus OpsCrew's own commented rules), and default policies other than the ones OpsCrew
- * left (deny incoming and allow outgoing when it turned ufw on, else the ones it found). Each comes
- * with what to do; `opscrew provision` neither removes the user's rules nor resets the policies.
+ * left (deny incoming and allow outgoing when it turned ufw on, deny incoming when ufw was on but
+ * let everything in, else the ones it found). Each comes with what to do; `opscrew provision`
+ * removes none of the user's rules and resets no policy other than an incoming "allow".
  */
 function ufwSinceSetup(facts: HostFacts): string[] {
   const entry = firstSetupEntry(facts, "ufw");
@@ -353,19 +360,21 @@ function ufwSinceSetup(facts: HostFacts): string[] {
     const value = entry.previous[key];
     return typeof value === "string" && UFW_POLICY_WORDS.test(value) ? value : undefined;
   };
+  // OpsCrew also set deny incoming when ufw was on but let everything in.
+  const setDeny = turnedOn || previous("defaultIncoming") === "allow";
   const expected = {
-    incoming: turnedOn ? "deny" : previous("defaultIncoming"),
+    incoming: setDeny ? "deny" : previous("defaultIncoming"),
     outgoing: turnedOn ? "allow" : previous("defaultOutgoing"),
     routed: previous("defaultRouted"),
   };
+  const setByOpsCrew = { incoming: setDeny, outgoing: turnedOn, routed: false };
   const traffic = { incoming: "incoming", outgoing: "outgoing", routed: "routed (forwarded)" };
   for (const key of ["incoming", "outgoing", "routed"] as const) {
     const wanted = expected[key];
     if (wanted === undefined || current[key] === wanted) continue;
-    const source =
-      turnedOn && key !== "routed"
-        ? `OpsCrew set ${wanted}`
-        : `it was ${wanted} when OpsCrew set the server up`;
+    const source = setByOpsCrew[key]
+      ? `OpsCrew set ${wanted}`
+      : `it was ${wanted} when OpsCrew set the server up`;
     out.push(
       `ufw's default policy for ${traffic[key]} traffic is ${current[key]}; ${source}. If you changed it on purpose, nothing needs to change; otherwise put it back with \`sudo ufw default ${wanted} ${key}\` on the server.`,
     );
@@ -617,14 +626,19 @@ export function hostDifferences(
     out.push({ ...record, detail: `belongs to the OpsCrew app "${facts.record.app}".` });
   }
   for (const step of setup.steps) {
+    const ufwSince = step.id === "ufw" ? ufwSinceSetup(facts) : [];
     if (step.state === "change") {
       const details = stepDetails(facts, step, applied);
-      const shown = details.length > 0 ? details : [step.reason ?? "differs from OpsCrew's setup."];
+      // A default policy OpsCrew set (and the setup plan sets again) is told by ufwSince.
+      const shown =
+        details.length > 0 || ufwSince.length > 0
+          ? details
+          : [step.reason ?? "differs from OpsCrew's setup."];
       for (const detail of shown) out.push({ area: step.id, title: AREA_TITLES[step.id], detail });
     }
-    // Changes the setup plan does not put back, so they show whatever the step's state.
+    // Changes since OpsCrew's setup, from its record, whatever the step's state.
     if (step.id === "ufw") {
-      for (const detail of ufwSinceSetup(facts)) {
+      for (const detail of ufwSince) {
         out.push({ area: "ufw", title: AREA_TITLES.ufw, detail });
       }
     }

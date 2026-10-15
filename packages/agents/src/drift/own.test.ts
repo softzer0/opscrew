@@ -482,6 +482,44 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       ]);
     });
 
+    it("ufw that was on but let everything in: OpsCrew set deny incoming, and that is the reference", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      // What the host adapter leaves: the record of the active ufw with "allow", and deny now.
+      recordUfw(s, {
+        installed: true,
+        active: true,
+        rules: "",
+        defaultIncoming: "allow",
+        defaultOutgoing: "allow",
+        defaultRouted: "deny",
+      });
+      edit(s, (f) => {
+        f.firewall.ufwDefaults = { incoming: "deny", outgoing: "allow", routed: "deny" };
+      });
+      expect((await runDrift(s.deps, { services: s.services })).host).toEqual({
+        differences: [],
+      });
+      // Later someone runs `ufw default allow incoming` on the server.
+      edit(s, (f) => {
+        f.firewall.ufwDefaults = { incoming: "allow", outgoing: "allow", routed: "deny" };
+      });
+      expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
+        "ufw: ufw's default policy for incoming traffic is allow; OpsCrew set deny. If you changed it on purpose, nothing needs to change; otherwise put it back with `sudo ufw default deny incoming` on the server.",
+      ]);
+    });
+
+    it("without OpsCrew's record of ufw, an incoming allow is still told plainly", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      edit(s, (f) => {
+        f.firewall.ufwDefaults = { incoming: "allow", outgoing: "allow", routed: "disabled" };
+      });
+      expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
+        'ufw: ufw lets every incoming connection in: its default policy for incoming traffic is "allow". `opscrew provision` sets it to deny.',
+      ]);
+    });
+
     it("ufw that was on already keeps its own policies as the reference", async () => {
       const s = await ownProject();
       await provisionOwn(s);
