@@ -35,6 +35,7 @@ export {
   snapshotWanted,
   takeSnapshotBeforeDelete,
 } from "./deletion";
+export { savedHostPlanPurpose } from "./own";
 export { runDestroy } from "./run";
 export { type DestroyTexts, destroyConfirmPrompt, destroyTexts } from "./texts";
 export type {

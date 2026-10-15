@@ -17,6 +17,7 @@ import {
 import { ED25519 } from "../provision/__fixtures__/own";
 import { hostPlanFile } from "../provision/own";
 import { readOwnServer, readServerAddresses } from "../shared";
+import { savedHostPlanPurpose } from "./own";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
 
@@ -210,9 +211,21 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(kinds(s)).toEqual(["iac-apply", "host-apply", "github-secrets", "host-apply"]);
     const [teardown, undo] = s.handler.requests.filter((r) => r.kind === "host-apply");
     expect(undo?.planHash).not.toBe(teardown?.planHash);
-    expect(undo?.allowDestroy).toBeUndefined();
+    // It deletes the deploy user OpsCrew created and its home: a destroy (Constitution I).
+    expect(undo).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
     expect(undo?.title).toContain("Undo OpsCrew's changes to your server");
     expect(undo?.details).toContain("Docker stays installed");
+    expect(undo?.details).toContain(
+      "It deletes the deploy user OpsCrew created and its home directory with everything in it; this cannot be undone.",
+    );
+    expect(
+      await s.deps.approvals.assertApprovedHostPlan(undo?.planHash as string, {
+        allowDestroy: true,
+      }),
+    ).toBeTruthy();
+    expect(await savedHostPlanPurpose(s.deps.paths, undo?.planHash)).toBe("undo");
+    expect(await savedHostPlanPurpose(s.deps.paths, teardown?.planHash)).toBe("teardown");
+    expect(await savedHostPlanPurpose(s.deps.paths, "0".repeat(64))).toBeUndefined();
     const applied = s.host.applies.at(-1);
     expect(applied?.plan.purpose).toBe("undo");
     expect(applied?.options.approvedHash).toBe(undo?.planHash);
@@ -224,6 +237,39 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     // The user's own containers survive both plans.
     expect(s.host.facts.containers.map((c) => c.name)).toEqual(["nextcloud-app-1"]);
     expect(result.remaining.join("\n")).toContain("Docker stays installed");
+  });
+
+  it("--undo-host needs the typed app name: a wrong name changes nothing on the server", async () => {
+    const s = await deployed();
+    await runDestroy(s.deps, { services: services(s) });
+    const before = s.host.applies.length;
+    s.answer((request) =>
+      request.kind === "host-apply" ? { approved: true, confirmation: "shopx" } : true,
+    );
+    const refused = await expectError(
+      runDestroy(s.deps, { services: services(s), undoHost: true }),
+      "APPROVAL_REFUSED",
+    );
+    expect(refused.message).toContain("nothing on your server was changed");
+    expect(s.host.applies).toHaveLength(before);
+    expect(s.host.facts.deployUser).not.toBeNull();
+  });
+
+  it("removes the app's containers and /srv/app when the marker was deleted on the server", async () => {
+    const s = await deployed();
+    const facts = structuredClone(s.host.facts);
+    facts.marker = null;
+    s.host.facts = HostFactsSchema.parse(facts);
+    await runDestroy(s.deps, { services: services(s) });
+    const teardown = s.host.applies.at(-1)?.plan;
+    expect(teardown?.purpose).toBe("teardown");
+    expect(teardown?.app).toBe("shop");
+    expect(teardown?.steps.map((step) => [step.id, step.params])).toEqual([
+      ["runtime-dirs", { app: "shop", deleteData: false }],
+    ]);
+    // Only the app's Compose project went; the user's Nextcloud stays.
+    expect(s.host.facts.containers.map((c) => c.project)).toEqual(["nextcloud"]);
+    expect(s.host.facts.dirs.find((dir) => dir.path === "/srv/app")?.entries).toBe(0);
   });
 
   it("--undo-host also works after an earlier destroy, and refusing it changes nothing", async () => {

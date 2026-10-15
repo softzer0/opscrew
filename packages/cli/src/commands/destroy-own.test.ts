@@ -128,11 +128,64 @@ describe.skipIf(!GIT)("opscrew destroy on a server the user owns", () => {
     ).toBe(1);
     expect(purposes(s.host)).toEqual(["teardown"]);
 
+    // The undo plan deletes the deploy user: the hash alone (without --confirm) grants nothing,
+    // and there is no --yes.
+    const hashOnly = s.context();
+    expect(await run(hashOnly, "destroy", "--undo-host", "--approve", undo)).toBe(1);
+    const yes = s.context();
+    expect(await run(yes, "destroy", "--confirm", "shop", "--undo-host", "--yes")).toBe(2);
+    expect(purposes(s.host)).toEqual(["teardown"]);
+
     const second = s.context();
     const args = ["destroy", "--confirm", "shop", "--undo-host", "--approve", undo];
     expect(await run(second, ...args), second.errors).toBe(0);
     expect(purposes(s.host)).toEqual(["teardown", "undo"]);
     expect(s.host.applies.at(-1)?.options.approvedHash).toBe(undo);
+    expect(second.output).toContain("(confirmed with --confirm shop and --approve)");
+  });
+
+  it("says how a script approves the undo plan when --approve is missing", async () => {
+    const s = await setup();
+    const ctx = s.context();
+    expect(await run(ctx, "destroy", "--confirm", "shop", "--undo-host")).toBe(1);
+    expect(ctx.errors).toContain(
+      "it deletes the deploy user OpsCrew created and its home directory, so a script approves it only with --confirm shop together with --approve",
+    );
+  });
+
+  it("in a terminal the undo plan asks for the app's name again; the teardown's name never covers it", async () => {
+    for (const typedForUndo of ["shop", "shopx"]) {
+      const asked: ApprovalRequest[] = [];
+      const approvals: ApprovalHandler = {
+        request: async (request) => {
+          asked.push(request);
+          const undo = request.kind === "host-apply";
+          return {
+            approved: request.kind === "github-secrets" || undo,
+            approver: "test",
+            decidedAt: "2026-10-14T12:00:00.000Z",
+            ...(undo ? { confirmation: typedForUndo } : {}),
+          };
+        },
+      };
+      const s = await setup({ interactive: true, typed: ["shop"], approvals });
+      const ctx = s.context();
+      const code = await run(ctx, "destroy", "--undo-host");
+      // Only the undo plan reached the person (the typed name approved the teardown).
+      const hostAsks = asked.filter((request) => request.kind === "host-apply");
+      expect(hostAsks).toHaveLength(1);
+      expect(hostAsks[0]).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
+      expect(hostAsks[0]?.title).toContain("Undo OpsCrew's changes to your server");
+      if (typedForUndo === "shop") {
+        expect(code, ctx.errors).toBe(0);
+        expect(purposes(s.host)).toEqual(["teardown", "undo"]);
+      } else {
+        expect(code).toBe(1);
+        expect(purposes(s.host)).toEqual(["teardown"]);
+      }
+      await project?.cleanup();
+      project = undefined;
+    }
   });
 
   it("--delete-data passes the choice on, and the teardown still needs the typed name", async () => {

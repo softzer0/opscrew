@@ -1,9 +1,10 @@
-import { readdir, rm, stat } from "node:fs/promises";
+import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   applyHostPlan,
   type HostFacts,
   type HostPlan,
+  HostPlanSchema,
   hostPlanHash,
   inspectHost,
   PORTAINER_PROJECT,
@@ -400,6 +401,28 @@ async function applyHostPlanApproved(
   return { hash, approval: approval as ApprovalRecord, applied };
 }
 
+/**
+ * The purpose (`setup`, `teardown` or `undo`) of the host plan saved as
+ * `.opscrew/plans/host-<hash>.json`, or `undefined` when no valid plan with exactly that hash is
+ * there. Lets an approval handler tell the undo host plan from the teardown, which ask for the same
+ * typed app name but are approved separately.
+ */
+export async function savedHostPlanPurpose(
+  paths: Pick<PhaseDeps["paths"], "files">,
+  hash: string | undefined,
+): Promise<HostPlan["purpose"] | undefined> {
+  if (hash === undefined || !/^[0-9a-f]{64}$/.test(hash)) return undefined;
+  try {
+    const parsed = HostPlanSchema.safeParse(
+      JSON.parse(await readFile(hostPlanFile(paths, hash), "utf8")),
+    );
+    if (!parsed.success || hostPlanHash(parsed.data) !== hash) return undefined;
+    return parsed.data.purpose;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The server's address and host names as OpsCrew knows them (kept out of errors). */
 function ownServerNames(session: Pick<OwnServerSession, "connection">): string[] {
   const { host, publicIpv4, publicIpv6 } = session.connection;
@@ -632,7 +655,8 @@ export async function destroyOwnServer(
     resources = preview.changes;
     confirmed = preview.addresses;
   }
-  const teardown = removeApp ? planTeardown(facts, { deleteData }) : undefined;
+  // Without the marker (deleted on the server) the record or the plan names the app (T931).
+  const teardown = removeApp ? planTeardown(facts, { deleteData, app: name }) : undefined;
   if (teardown !== undefined) requireNoHostBlockers(teardown, `remove ${name} from your server`);
   const hostSteps = (teardown?.steps ?? []).filter((step) => step.state === "change");
   const dataWarning = deleteData && hasAppData(facts, name) ? dataLoss(plan, facts) : undefined;
@@ -827,14 +851,23 @@ export async function destroyOwnServer(
       );
       undone = true;
     } else {
+      // The undo deletes what OpsCrew created (the deploy user and its home directory, packages
+      // it installed): a destroy, so it needs allowDestroy and the typed app name (Constitution I).
+      const deletesDeployUser = undoSteps.some((step) => step.id === "deploy-user");
       const result = await applyHostPlanApproved(deps, host, undo, {
         title: `Undo OpsCrew's changes to your server (${plural(undoSteps.length, "change")})`,
         intro: [
           "This reverses what OpsCrew changed on your server, from its record in /etc/opscrew/host.json, and leaves alone anything OpsCrew did not install. Docker stays installed (other software may use it).",
+          ...(deletesDeployUser
+            ? [
+                "It deletes the deploy user OpsCrew created and its home directory with everything in it; this cannot be undone.",
+              ]
+            : []),
           `SSH and firewall changes are undone under a safety switch: the server puts them back on its own unless new logins as deploy and as ${session.connection.user} still work afterwards.`,
           SERVER_STAYS,
         ],
-        allowDestroy: false,
+        allowDestroy: true,
+        confirmPhrase: name,
         refused: removeApp
           ? `Undoing OpsCrew's changes to your server was not approved. ${name} is removed; OpsCrew's host setup stays.`
           : "Undoing OpsCrew's changes to your server was not approved, so nothing on your server was changed.",

@@ -1,4 +1,4 @@
-import { destroyConfirmPrompt, runDestroy } from "@opscrew/agents";
+import { destroyConfirmPrompt, runDestroy, savedHostPlanPurpose } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
@@ -23,12 +23,27 @@ interface DestroyFlags {
   approve?: string[];
 }
 
+/** Where the undo host plan's own approval comes from (`--undo-host`). */
+interface UndoApproval {
+  /** The purpose of the saved host plan with this hash (the undo plan is told apart by it). */
+  purposeOf: (hash: string | undefined) => Promise<string | undefined>;
+  /** `--confirm <app>` was given: a script, where only `--approve <hash>` can add the undo plan. */
+  scripted: boolean;
+  /** The `--approve` values. */
+  hashes: readonly string[];
+}
+
 /**
  * Approves this teardown's plans once the name was typed (or given with `--confirm`): the
  * infrastructure plans (lifting delete protection where the provider has it, then deleting) and,
- * on a server the user owns, the teardown host plan that asks for exactly that name. Everything
- * else goes to `base` (the undo host plan of `--undo-host` is a separate approval), except that a
- * `--confirm` run also approves removing the GitHub deploy secrets (no prompts at all).
+ * on a server the user owns, the teardown host plan that asks for exactly that name. A `--confirm`
+ * run also approves removing the GitHub deploy secrets (no prompts at all).
+ *
+ * The undo host plan of `--undo-host` deletes the deploy user OpsCrew created (and its home), so
+ * it asks for the app's name as well (`allowDestroy`), but always as its own approval: the name
+ * typed for the teardown never covers it. In a terminal the base handler asks for the name again;
+ * in a script it is approved only with `--confirm <app>` together with `--approve <its hash>`.
+ * Everything else goes to `base`.
  */
 class TypedConfirmationHandler implements ApprovalHandler {
   constructor(
@@ -38,18 +53,43 @@ class TypedConfirmationHandler implements ApprovalHandler {
     private readonly approveSecrets: boolean,
     private readonly print: (text: string) => void,
     private readonly what: string,
+    private readonly undo: UndoApproval,
   ) {}
 
   private covers(request: ApprovalRequest): boolean {
     if (request.kind === "iac-apply") {
       return request.confirmPhrase === undefined || request.confirmPhrase === this.name;
     }
-    // The teardown host plan names the app as its phrase; the undo plan has none and is asked apart.
+    // The teardown host plan names the app as its phrase (the undo plan is handled before this).
     if (request.kind === "host-apply") return request.confirmPhrase === this.name;
     return this.approveSecrets && request.kind === "github-secrets";
   }
 
+  /** The undo host plan's approval: `--confirm <app>` with `--approve <hash>`, or the base handler. */
+  private async undoDecision(request: ApprovalRequest): Promise<ApprovalDecision> {
+    if (!this.undo.scripted) return this.base.request(request);
+    const decide = (approved: boolean, extra: Partial<ApprovalDecision>): ApprovalDecision => ({
+      approved,
+      approver: "--confirm and --approve flags",
+      decidedAt: new Date().toISOString(),
+      ...extra,
+    });
+    const listed = this.undo.hashes.some(
+      (hash) => hash.toLowerCase() === request.planHash?.toLowerCase(),
+    );
+    if (request.confirmPhrase === this.name && this.typed() === this.name && listed) {
+      this.print(`  ✓ ${request.title} (confirmed with --confirm ${this.name} and --approve)\n`);
+      return decide(true, { confirmation: this.name });
+    }
+    return decide(false, {
+      reason: `it deletes the deploy user OpsCrew created and its home directory, so a script approves it only with --confirm ${this.name} together with --approve ${request.planHash ?? "<hash>"} (the hash of this undo plan)`,
+    });
+  }
+
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    if (request.kind === "host-apply" && (await this.undo.purposeOf(request.planHash)) === "undo") {
+      return this.undoDecision(request);
+    }
     if (this.covers(request) && this.typed() === this.name) {
       this.print(`  ✓ ${request.title} (confirmed with ${this.what})\n`);
       return {
@@ -70,7 +110,8 @@ class TypedConfirmationHandler implements ApprovalHandler {
  * secrets after its own approval (FR-301). Non-interactive runs need `--confirm <server name>`.
  * On a server the user owns (FR-912) it removes only the app (Cloudflare resources and a teardown
  * host plan; the app's data only with `--delete-data`) after the app's name is typed, never the
- * server, and `--undo-host` adds the undo host plan as its own approval (`--approve <hash>` in
+ * server, and `--undo-host` adds the undo host plan as its own approval: it deletes the deploy user
+ * OpsCrew created, so the app's name is typed again (`--confirm <app>` with `--approve <hash>` in
  * scripts). Exit codes: 0 torn down, 1 refused or not confirmed, 2 error.
  */
 export function register(program: Command, ctx: CliContext): void {
@@ -101,7 +142,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--approve <hash>",
-      "With --undo-host in a script: apply the undo host plan with this hash (printed by an earlier run)",
+      "With --undo-host and --confirm <app> in a script: apply the undo host plan with this hash (printed by an earlier run)",
       collect,
     );
   addHostKeyOption(command)
@@ -148,9 +189,13 @@ export function register(program: Command, ctx: CliContext): void {
           ai: false,
           ...(hashes.length === 0 ? {} : { approvePlanHashes: hashes }),
           wrapApprovals: (base) =>
-            new TypedConfirmationHandler(base, name, () => typed, scripted, ctx.stdout, what),
+            new TypedConfirmationHandler(base, name, () => typed, scripted, ctx.stdout, what, {
+              purposeOf: (hash) => savedHostPlanPurpose(deps0.paths, hash),
+              scripted,
+              hashes,
+            }),
         });
-        // `--approve` can grant only the undo host plan here: every deletion needs the typed name.
+        // `--approve` can grant only the undo host plan here (with `--confirm`), never the rest.
         const services = deployServicesOf(ctx).destroy;
         return runDestroy(deps, {
           // default: a snapshot when data lives only on the server (database, backups on)
