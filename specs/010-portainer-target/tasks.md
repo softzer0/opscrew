@@ -108,11 +108,19 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-github`
   - Effort: high
 
+- [ ] T1013 [US1] `opscrew init` for a Portainer target, in `packages/agents/src/init/`; the live test's branch check
+  - Owns: `packages/agents/src/init/**` (+ tests), `packages/cli/test/live/portainer-target.test.ts` (`expectDeployBranchDeleted` only)
+  - Reads: the first live core run (2026-10-15): `opscrew init` after the Portainer interview failed its "Cloud provider token" check, because `providerChoice` cannot read a Portainer plan or answers; `init/checks.ts` `checkOwnServerLogin` as the pattern; `@opscrew/agents` `readPortainerConnection`, `createPortainerAccess`, `PORTAINER_TOKEN_VAR`
+  - Depends: T1004, T1011
+  - Accept: for a plan or answers with `portainer`, init checks "Your Portainer": the recorded connection in `.opscrew/server.json` (address and pinned certificate; missing → run `opscrew interview`), `PORTAINER_API_KEY` set, and a read-only call through the pinned client (a changed certificate or a rejected token fails plainly), never printing Portainer's address or the token; it notes `OPSCREW_GHCR_READ_TOKEN` (private image) and `OPSCREW_REPO_READ_TOKEN` (private repository) when they are missing; no Hetzner/DigitalOcean token check for this target; other targets unchanged. The live test's `expectDeployBranchDeleted` looks for the branch's own "What remains" item ("The opscrew-deploy branch of …"), not any line containing `opscrew-deploy` (the workflow file `.github/workflows/opscrew-deploy.yml` is listed among the files that remain).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
 - [ ] T1009 Live run, core pass (founder, 2026-10-15: the full matrix took about 2 hours): setup, updater + tunnel, one merged change deploying by itself with the unchanged-branch webhook check, destroy keeping data, `--delete-data`, the leak check; results in `docs/e2e.md` (lead). The other steps (caddy, proxy, cloudflare redeploy, rollback wait, loopback, short host, MCP) stay in the test behind `OPSCREW_E2E_PORTAINER_STEPS=full`
 
 ## Dependencies
 
-T1001 → {T1002, T1003, T1004} (parallel) → T1010 → T1005 → T1006 → T1007 → {T1008, T1011} (parallel) → T1012 → T1009.
+T1001 → {T1002, T1003, T1004} (parallel) → T1010 → T1005 → T1006 → T1007 → {T1008, T1011} (parallel) → T1012 → T1009 (core run 1) → T1013 → T1009 (core run 2).
 
 ## Parallel execution
 
