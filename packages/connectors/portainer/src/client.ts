@@ -177,6 +177,14 @@ export interface PortainerClient {
     username: string;
     password: string;
   }): Promise<{ id: number }>;
+  /**
+   * `PUT /api/registries/{id}`: sends the entry's name, URL and login (a replaced token).
+   * `RegistryAccesses` is left out; apply grants the entry again afterwards all the same.
+   */
+  updateRegistry(
+    registryId: number,
+    input: { name: string; url: string; username: string; password: string },
+  ): Promise<void>;
   /** `PUT /api/endpoints/{id}/registries/{registryId}`: lets `userId` use the entry there. */
   grantRegistry(environmentId: number, registryId: number, userId: number): Promise<void>;
   /** `DELETE /api/registries/{id}`. */
@@ -515,6 +523,21 @@ export function portainerClient(
         access: "manage registries (administrators only)",
       })) as { Id: number };
       return { id: body.Id };
+    },
+    async updateRegistry(registryId, input) {
+      await call({
+        method: "PUT",
+        path: `/api/registries/${id(registryId)}`,
+        body: {
+          Name: input.name,
+          URL: input.url,
+          Authentication: true,
+          Username: input.username,
+          Password: input.password,
+        },
+        action: `replace the token of the registry entry ${input.name}`,
+        access: "manage registries (administrators only)",
+      });
     },
     async grantRegistry(environmentId, registryId, userId) {
       await call({

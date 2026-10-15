@@ -144,6 +144,11 @@ export interface FakeState {
    * whether it saw Status 3.
    */
   untimedDeploymentStatus?: boolean;
+  /**
+   * `PUT /api/registries/{id}` without `RegistryAccesses` clears the entry's grants. By default
+   * they stay, an assumption checked live in T1008; apply grants again either way.
+   */
+  registryUpdateClearsGrants?: boolean;
 }
 
 export interface RecordedCall {
@@ -210,6 +215,9 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
     ...(options.startPolls !== undefined && { startPolls: options.startPolls }),
     ...(options.untimedDeploymentStatus !== undefined && {
       untimedDeploymentStatus: options.untimedDeploymentStatus,
+    }),
+    ...(options.registryUpdateClearsGrants !== undefined && {
+      registryUpdateClearsGrants: options.registryUpdateClearsGrants,
     }),
   };
   const calls: RecordedCall[] = [];
@@ -563,6 +571,45 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
       accesses: {},
     };
     state.registries.push(registry);
+    return reply(200, registryJson(registry));
+  });
+  route("PUT", /^\/api\/registries\/(\d+)$/, ({ match, user, body }) => {
+    if (!isAdmin(user)) return denied();
+    const registry = state.registries.find((item) => item.Id === Number(match[1]));
+    if (registry === undefined) return notFound("a registry with the specified identifier");
+    if (
+      typeof body.Name !== "string" ||
+      typeof body.URL !== "string" ||
+      typeof body.Authentication !== "boolean"
+    ) {
+      return reply(400, { message: "Invalid request payload" });
+    }
+    if (state.registries.some((item) => item.Name === body.Name && item !== registry)) {
+      return reply(409, { message: "Another registry with the same name already exists" });
+    }
+    registry.Name = body.Name;
+    registry.URL = body.URL;
+    if (typeof body.Username === "string") registry.Username = body.Username;
+    // An empty password keeps the saved one.
+    if (typeof body.Password === "string" && body.Password !== "") {
+      registry.Password = body.Password;
+    }
+    // Assumption checked live in T1008: leaving RegistryAccesses out keeps the entry's grants
+    // (`registryUpdateClearsGrants` plays the opposite).
+    if (body.RegistryAccesses === undefined || body.RegistryAccesses === null) {
+      if (state.registryUpdateClearsGrants === true) registry.accesses = {};
+    } else {
+      const accesses = body.RegistryAccesses as Record<
+        string,
+        { UserAccessPolicies?: Record<string, unknown> } | null
+      >;
+      registry.accesses = Object.fromEntries(
+        Object.entries(accesses).map(([envId, access]) => [
+          Number(envId),
+          Object.keys(access?.UserAccessPolicies ?? {}).map(Number),
+        ]),
+      );
+    }
     return reply(200, registryJson(registry));
   });
   route("DELETE", /^\/api\/registries\/(\d+)$/, ({ match, user }) => {

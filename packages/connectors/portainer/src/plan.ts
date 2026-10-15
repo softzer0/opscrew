@@ -79,6 +79,16 @@ export interface DesiredValueFingerprints {
   connector?: Record<string, string>;
   /** `valueFingerprints(key, { webhook: webhookId }).webhook`. */
   webhook?: string;
+  /**
+   * `valueFingerprints(key, { repositoryToken }).repositoryToken`: needed when a change sends the
+   * repository token (the app stack created, updated or redeployed from a private repository).
+   */
+  repositoryToken?: string;
+  /**
+   * `valueFingerprints(key, { registryToken }).registryToken`: needed when a change sends the
+   * registry token (the registry entry added, or its token replaced).
+   */
+  registryToken?: string;
 }
 
 /** What OpsCrew wants in Portainer for one app (see contracts/portainer-adapter.md). */
@@ -122,6 +132,13 @@ export interface DesiredStacks {
    * (cloudflare mode). Compare them with a client made with the same `valueKey`.
    */
   valueFingerprints?: DesiredValueFingerprints;
+  /**
+   * Tokens to send again (rotation; Portainer never shows them back, so this is explicit):
+   * `repository` plans a Git update of the app stack (private repository only), `registry` a
+   * token update of the registry entry OpsCrew added (private image, administrator token). Each
+   * needs the token's fingerprint in `valueFingerprints`.
+   */
+  replaceTokens?: { repository?: boolean; registry?: boolean };
 }
 
 // --- Schemas --------------------------------------------------------------------------------------
@@ -272,7 +289,12 @@ const DesiredStacksSchema = z
         updater: FingerprintsSchema.optional(),
         connector: FingerprintsSchema.optional(),
         webhook: FingerprintSchema.optional(),
+        repositoryToken: FingerprintSchema.optional(),
+        registryToken: FingerprintSchema.optional(),
       })
+      .optional(),
+    replaceTokens: z
+      .strictObject({ repository: z.boolean().optional(), registry: z.boolean().optional() })
       .optional(),
   })
   .refine(
@@ -322,6 +344,36 @@ const DesiredStacksSchema = z
       message: "is required with valueFingerprints in cloudflare mode (the connector's token)",
       path: ["valueFingerprints", "connector"],
     },
+  )
+  // A replaced token is always sent bound to the approved one.
+  .refine((desired) => desired.replaceTokens?.repository !== true || desired.repository.private, {
+    message: "needs a private repository (a public one has no token to replace)",
+    path: ["replaceTokens", "repository"],
+  })
+  .refine(
+    (desired) =>
+      desired.replaceTokens?.repository !== true ||
+      desired.valueFingerprints?.repositoryToken !== undefined,
+    {
+      message: "is required to replace the repository token (the plan is bound to the new token)",
+      path: ["valueFingerprints", "repositoryToken"],
+    },
+  )
+  .refine(
+    (desired) => desired.replaceTokens?.registry !== true || desired.registry?.private === true,
+    {
+      message: "needs a private image (a public one has no registry entry to update)",
+      path: ["replaceTokens", "registry"],
+    },
+  )
+  .refine(
+    (desired) =>
+      desired.replaceTokens?.registry !== true ||
+      desired.valueFingerprints?.registryToken !== undefined,
+    {
+      message: "is required to replace the registry token (the plan is bound to the new token)",
+      path: ["valueFingerprints", "registryToken"],
+    },
   );
 
 type ValidDesired = z.output<typeof DesiredStacksSchema>;
@@ -365,30 +417,42 @@ function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-/** The values a plan's changes send to Portainer: env keys per stack, and the webhook id. */
+/**
+ * The values a plan's changes send to Portainer: env keys per stack, the webhook id, and the
+ * repository and registry tokens.
+ */
 export interface SentValues {
   app?: string[];
   updater?: string[];
   connector?: string[];
   webhook: boolean;
+  repositoryToken: boolean;
+  registryToken: boolean;
 }
 
-/** Actions that send a stack's full `Env`. */
+/** Actions that send a stack's full `Env` (and, for a private Git stack, the repository token). */
 const SENDS_ENV = new Set(["create", "update", "redeploy"]);
 
 /** Which values the `change`d entries of a plan send (shared by the planner and the apply). */
 export function sentValues(changes: readonly StackChange[]): SentValues {
-  const sent: SentValues = { webhook: false };
+  const sent: SentValues = { webhook: false, repositoryToken: false, registryToken: false };
   for (const change of changes) {
     if (change.state !== "change") continue;
     const action = change.params.action;
-    if (typeof action !== "string" || !SENDS_ENV.has(action)) continue;
+    if (typeof action !== "string") continue;
+    if (change.id === "registry") {
+      // Adding the entry or replacing its token sends the registry token.
+      if (action === "create" || action === "update") sent.registryToken = true;
+      continue;
+    }
+    if (!SENDS_ENV.has(action)) continue;
     const keys = change.params.envKeys;
     const list = Array.isArray(keys) ? [...keys].sort() : [];
     if (change.id === "app-stack") {
       sent.app = list;
       // Creating the stack or saving its Git settings sends AutoUpdate.Webhook; a redeploy does not.
       if (action !== "redeploy") sent.webhook = true;
+      if (change.params.repositoryAuthentication === true) sent.repositoryToken = true;
     } else if (change.id === "updater-stack") {
       sent.updater = list;
     } else if (change.id === "tunnel-connector-stack") {
@@ -409,7 +473,9 @@ export function sendsNothing(sent: SentValues): boolean {
     sent.app === undefined &&
     sent.updater === undefined &&
     sent.connector === undefined &&
-    !sent.webhook
+    !sent.webhook &&
+    !sent.repositoryToken &&
+    !sent.registryToken
   );
 }
 
@@ -444,16 +510,33 @@ function plannedDigest(
   if (sent.connector !== undefined) {
     parts.connector = pick(fingerprints.connector, sent.connector, "connector");
   }
-  if (sent.webhook) {
-    if (fingerprints.webhook === undefined) {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        "valueFingerprints.webhook is missing, so the plan cannot be bound to the webhook it sets.",
-      );
-    }
-    parts.webhook = fingerprints.webhook;
+  if (sent.webhook) parts.webhook = need(fingerprints.webhook, "webhook", "the webhook it sets");
+  if (sent.repositoryToken) {
+    parts.repositoryToken = need(
+      fingerprints.repositoryToken,
+      "repositoryToken",
+      "the repository token it sends",
+    );
+  }
+  if (sent.registryToken) {
+    parts.registryToken = need(
+      fingerprints.registryToken,
+      "registryToken",
+      "the registry token it sends",
+    );
   }
   return valuesDigestOf(parts);
+}
+
+/** One fingerprint the plan's changes need, or INVALID_INPUT naming it. */
+function need(value: string | undefined, name: string, what: string): string {
+  if (value === undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `valueFingerprints.${name} is missing, so the plan cannot be bound to ${what}.`,
+    );
+  }
+  return value;
 }
 
 // --- Setup ---------------------------------------------------------------------------------------
@@ -486,6 +569,16 @@ export function planStacks(facts: PortainerFacts, desired: DesiredStacks): Stack
     if (admin) {
       changes.push(registryChange(facts, d, names, record, found));
     } else {
+      if (d.replaceTokens?.registry === true) {
+        changes.push({
+          id: "registry",
+          title: "Replace the token of the ghcr.io registry entry",
+          state: "blocked",
+          reason:
+            "Only a Portainer administrator's token can change registry entries: replace the token of the ghcr.io entry in Portainer (Registries) yourself, or run the command with an administrator's token.",
+          params: { name: names.registry, url: "ghcr.io", replacesToken: "registry" },
+        });
+      }
       const usable = (facts.registries ?? []).find((entry) => isGhcr(entry.url));
       if (usable === undefined) found.push(registryMissing(facts));
       else
@@ -700,7 +793,36 @@ function registryChange(
         params: { ...base, registryId: recorded.id },
       };
     }
-    if (recorded.environments.includes(d.environmentId)) {
+    const granted = recorded.environments.includes(d.environmentId);
+    if (d.replaceTokens?.registry === true) {
+      if (recorded.name !== names.registry) {
+        // Nothing read from Portainer is sent back: the update carries OpsCrew's own name.
+        return {
+          id: "registry",
+          title: `Replace the token of the registry entry ${names.registry} (ghcr.io)`,
+          state: "blocked",
+          reason: `The registry entry OpsCrew added (id ${recorded.id}) is now named "${recorded.name}", not ${names.registry}, so OpsCrew does not send its token there. Rename it back to ${names.registry} in Portainer (Registries), then run the command again.`,
+          params: { ...base, registryId: recorded.id, replacesToken: "registry" },
+        };
+      }
+      // The grant is sent again too: harmless when it is there, and it holds whatever the
+      // update does to the entry's grants.
+      return {
+        id: "registry",
+        title: `Replace the token of the registry entry ${names.registry} (ghcr.io) and let ${user.username} use it on environment ${envName}`,
+        state: "change",
+        reason: `The registry token is sent again, as asked: Portainer never shows it back.${granted ? "" : " The entry is no longer usable on the environment, so it is granted again."}`,
+        params: {
+          action: "update",
+          ...base,
+          registryId: recorded.id,
+          username: d.registry?.username ?? "opscrew",
+          replacesToken: "registry",
+          ...grant,
+        },
+      };
+    }
+    if (granted) {
       return {
         id: "registry",
         title: `Registry entry ${recorded.name} for ghcr.io, usable on environment ${envName}`,
@@ -820,6 +942,9 @@ function appChange(
     differences.push("the webhook");
   }
   if (stack.autoUpdate?.interval !== undefined) differences.push("scheduled Git polling");
+  // Portainer never shows the repository token back: replacing it is asked for explicitly.
+  const replaces = d.replaceTokens?.repository === true;
+  if (replaces) differences.push("the repository token (replaced)");
   if (stack.status === 4) reasons.unshift(ERROR_STATE_NOTE);
   const changed = changedParam(values.keys);
   if (differences.length > 0) {
@@ -828,7 +953,14 @@ function appChange(
       title: `Update the Git stack ${names.app}: ${differences.join(", ")} (the full environment is sent again and the stack is redeployed from ${DEPLOY_BRANCH})`,
       state: "change",
       ...reason(reasons),
-      params: { action: "update", ...params, stackId: stack.id, differences, ...changed },
+      params: {
+        action: "update",
+        ...params,
+        stackId: stack.id,
+        differences,
+        ...changed,
+        ...(replaces && { replacesToken: "repository" }),
+      },
     };
   }
   const recovery = recover(stack, `the Git stack ${names.app}`, `from the branch ${DEPLOY_BRANCH}`);

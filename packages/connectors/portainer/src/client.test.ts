@@ -298,4 +298,48 @@ describe("portainerClient", () => {
     expect(await client.removeRegistry(55)).toBe("absent");
     expect(await client.removeVolume(3, "missing")).toBe("absent");
   });
+
+  it("sends a registry entry's login again, keeping its grants, never echoing the token", async () => {
+    const { client, fake } = setup();
+    const first = fakeSecret("github-token", "packages-first");
+    const next = fakeSecret("github-token", "packages-next");
+    const { id } = await client.createRegistry({
+      name: "opscrew-shop",
+      url: "ghcr.io",
+      username: "acme",
+      password: first,
+    });
+    await client.grantRegistry(3, id, 1);
+    await client.updateRegistry(id, {
+      name: "opscrew-shop",
+      url: "ghcr.io",
+      username: "acme",
+      password: next,
+    });
+    const call = fake.calls.at(-1);
+    expect(`${call?.method} ${call?.path}`).toBe(`PUT /api/registries/${id}`);
+    expect(call?.body).toEqual({
+      Name: "opscrew-shop",
+      URL: "ghcr.io",
+      Authentication: true,
+      Username: "acme",
+      Password: next,
+    });
+    const entry = fake.state.registries.find((registry) => registry.Id === id);
+    expect(entry?.Password).toBe(next);
+    expect(entry?.accesses).toEqual({ 3: [1] });
+
+    const limited = setup({ registries: fake.state.registries }, "limited").client;
+    const refused = (await limited
+      .updateRegistry(id, {
+        name: "opscrew-shop",
+        url: "ghcr.io",
+        username: "acme",
+        password: next,
+      })
+      .catch((caught: unknown) => caught)) as PortainerApiError;
+    expect(refused.status).toBe(403);
+    expect(refused.message).toMatch(/replace the token of the registry entry opscrew-shop/);
+    expect(`${refused.message}${refused.hint}`).not.toContain(next);
+  });
 });

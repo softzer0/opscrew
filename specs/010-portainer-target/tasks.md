@@ -66,7 +66,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T1010 [US4] Replacing the repository and registry tokens in `packages/connectors/portainer/src/`
+- [X] T1010 [US4] Replacing the repository and registry tokens in `packages/connectors/portainer/src/`
   - Owns: `packages/connectors/portainer/src/**`
   - Reads: contracts/portainer-adapter.md (`replaceTokens`, value fingerprints); the T1005 report (item 6)
   - Depends: T1002

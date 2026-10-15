@@ -992,3 +992,198 @@ describe("applyStackPlan: value fingerprints", () => {
     expect(w.fake.calls.length).toBe(start);
   });
 });
+
+describe("applyStackPlan: replacing the repository and registry tokens", () => {
+  /** A set-up app, then the plan that replaces `tokens` with new values. */
+  async function replacing(tokens: { repository?: boolean; registry?: boolean }) {
+    const w = world();
+    const { s, result } = await setupApplied(w);
+    const next = {
+      ...s,
+      repositoryToken: fakeSecret("github-pat", "repo-next"),
+      registryToken: fakeSecret("github-token", "packages-next"),
+    };
+    const plan = planStacks(
+      await w.inspect(),
+      bound(next, { record: result.record, replaceTokens: tokens }),
+    );
+    return { w, s, next, plan, result };
+  }
+
+  it("saves the new repository token with the Git settings and redeploys with it", async () => {
+    const { w, s, next, plan } = await replacing({ repository: true });
+    // GitHub accepts only the new token from now on.
+    const branch = w.fake.state.git[BRANCH_KEY];
+    if (branch) branch.password = next.repositoryToken;
+    const start = w.fake.calls.length;
+    const clock = fakeClock();
+    const done = await apply(w.client(), plan, {
+      approvedHash: stackPlanHash(plan),
+      secrets: next,
+      wait: { now: clock.now, sleep: clock.sleep },
+    });
+    expect(done.applied).toEqual(["app-stack"]);
+    const calls = mutating(w, start);
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "POST /api/stacks/101/git",
+      "PUT /api/stacks/101/git/redeploy",
+    ]);
+    expect(calls[0]?.body).toMatchObject({
+      RepositoryAuthentication: true,
+      RepositoryUsername: "x-access-token",
+      RepositoryPassword: next.repositoryToken,
+      AutoUpdate: { Webhook: s.webhookId, ForcePullImage: false },
+    });
+    const app = w.fake.state.stacks.find((stack) => stack.Id === 101);
+    expect(app?.GitConfig?.Authentication?.Password).toBe(next.repositoryToken);
+    expect(app?.Status).toBe(1);
+  });
+
+  it("sends the new registry token to the entry OpsCrew added, then grants it again", async () => {
+    const { w, next, plan } = await replacing({ registry: true });
+    const start = w.fake.calls.length;
+    const done = await apply(w.client(), plan, {
+      approvedHash: stackPlanHash(plan),
+      secrets: next,
+    });
+    expect(done.applied).toEqual(["registry"]);
+    const calls = mutating(w, start);
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "PUT /api/registries/100",
+      "PUT /api/endpoints/3/registries/100",
+    ]);
+    expect(calls[0]?.body).toEqual({
+      Name: "opscrew-shop",
+      URL: "ghcr.io",
+      Authentication: true,
+      Username: "opscrew",
+      Password: next.registryToken,
+    });
+    const entry = w.fake.state.registries.find((registry) => registry.Id === 100);
+    expect(entry?.Password).toBe(next.registryToken);
+    expect(entry?.accesses).toEqual({ 3: [1] });
+    expect(JSON.stringify(done)).not.toContain(next.registryToken);
+  });
+
+  it("keeps the entry usable even if Portainer clears its grants on the update", async () => {
+    const { w, next, plan } = await replacing({ registry: true });
+    w.fake.state.registryUpdateClearsGrants = true;
+    await apply(w.client(), plan, { approvedHash: stackPlanHash(plan), secrets: next });
+    const entry = w.fake.state.registries.find((registry) => registry.Id === 100);
+    expect(entry?.accesses).toEqual({ 3: [1] });
+    expect(
+      planStacks(await w.inspect(), bound(next, { record: plan.record })).changes[0],
+    ).toMatchObject({
+      id: "registry",
+      state: "in-place",
+    });
+  });
+
+  it("refuses an update aimed at another entry name or URL, or without the grant", async () => {
+    const { w, next, plan } = await replacing({ registry: true });
+    const start = w.fake.calls.length;
+    const tamper = (params: Record<string, unknown>): StackPlan => ({
+      ...plan,
+      changes: plan.changes.map((change) =>
+        change.id === "registry"
+          ? ({ ...change, params: { ...change.params, ...params } } as StackPlan["changes"][number])
+          : change,
+      ),
+    });
+    const { grantUserId: _grant, ...withoutGrant } = plan.changes[0]?.params ?? {};
+    const tampered = [
+      tamper({ name: "team-ghcr" }),
+      tamper({ url: "registry.example" }),
+      {
+        ...plan,
+        changes: plan.changes.map((change) =>
+          change.id === "registry" ? { ...change, params: withoutGrant } : change,
+        ),
+      },
+    ];
+    for (const bad of tampered) {
+      const error = await failure(
+        apply(w.client(), bad, { approvedHash: stackPlanHash(bad), secrets: next }),
+      );
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.message).toMatch(/record does not list \(registry\)/);
+    }
+    expect(w.fake.calls.length).toBe(start);
+  });
+
+  it("replaces both in one plan, the registry entry first", async () => {
+    const { w, next, plan } = await replacing({ repository: true, registry: true });
+    const branch = w.fake.state.git[BRANCH_KEY];
+    if (branch) branch.password = next.repositoryToken;
+    const start = w.fake.calls.length;
+    const clock = fakeClock();
+    await apply(w.client(), plan, {
+      approvedHash: stackPlanHash(plan),
+      secrets: next,
+      wait: { now: clock.now, sleep: clock.sleep },
+    });
+    expect(mutating(w, start).map((call) => `${call.method} ${call.path}`)).toEqual([
+      "PUT /api/registries/100",
+      "PUT /api/endpoints/3/registries/100",
+      "POST /api/stacks/101/git",
+      "PUT /api/stacks/101/git/redeploy",
+    ]);
+  });
+
+  it("refuses a token other than the approved one, before any request", async () => {
+    const { w, next, plan } = await replacing({ repository: true, registry: true });
+    const start = w.fake.calls.length;
+    for (const swapped of [
+      { ...next, repositoryToken: fakeSecret("github-pat", "repo-swapped") },
+      { ...next, registryToken: fakeSecret("github-token", "packages-swapped") },
+    ]) {
+      const error = await failure(
+        apply(w.client(), plan, { approvedHash: stackPlanHash(plan), secrets: swapped }),
+      );
+      expect(error.code).toBe("PLAN_HASH_MISMATCH");
+      expect(error.message).toMatch(/values supplied are not the ones/);
+      const text = `${error.message} ${error.hint ?? ""}`;
+      for (const secret of [swapped.repositoryToken, swapped.registryToken]) {
+        expect(text).not.toContain(secret);
+      }
+    }
+    expect(w.fake.calls.length).toBe(start);
+  });
+
+  it("binds the tokens a first setup sends, too", async () => {
+    const w = world();
+    const s = secrets();
+    const plan = planStacks(await w.inspect(), bound(s));
+    const start = w.fake.calls.length;
+    for (const swapped of [
+      { ...s, repositoryToken: fakeSecret("github-pat", "repo-swapped") },
+      { ...s, registryToken: fakeSecret("github-token", "packages-swapped") },
+    ]) {
+      const error = await failure(
+        apply(w.client(), plan, { approvedHash: stackPlanHash(plan), secrets: swapped }),
+      );
+      expect(error.code).toBe("PLAN_HASH_MISMATCH");
+    }
+    expect(w.fake.calls.length).toBe(start);
+  });
+
+  it("refuses a replace without the token, before any request", async () => {
+    const { w, next, plan } = await replacing({ repository: true, registry: true });
+    const start = w.fake.calls.length;
+    const cases: Array<[Record<string, undefined>, RegExp]> = [
+      [{ repositoryToken: undefined }, /The repository token is missing/],
+      [{ registryToken: undefined }, /The registry token \(OPSCREW_GHCR_READ_TOKEN\) is missing/],
+    ];
+    for (const [without, pattern] of cases) {
+      const error = await failure(
+        apply(w.client(), plan, {
+          approvedHash: stackPlanHash(plan),
+          secrets: { ...next, ...without } as never,
+        }),
+      );
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.message).toMatch(pattern);
+    }
+    expect(w.fake.calls.length).toBe(start);
+  });
+});

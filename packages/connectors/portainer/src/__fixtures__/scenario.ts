@@ -79,13 +79,21 @@ export function fingerprintsFor(
     updaterEnv: Record<string, string>;
     tunnelToken: string;
     webhookId: string;
+    repositoryToken: string;
+    registryToken: string;
   },
 ): DesiredValueFingerprints {
+  const tokens = valueFingerprints(key, {
+    repositoryToken: s.repositoryToken,
+    registryToken: s.registryToken,
+  });
   return {
     app: valueFingerprints(key, s.env),
     updater: valueFingerprints(key, s.updaterEnv),
     connector: valueFingerprints(key, { TUNNEL_TOKEN: s.tunnelToken }),
     webhook: valueFingerprints(key, { webhook: s.webhookId }).webhook as string,
+    repositoryToken: tokens.repositoryToken as string,
+    registryToken: tokens.registryToken as string,
   };
 }
 

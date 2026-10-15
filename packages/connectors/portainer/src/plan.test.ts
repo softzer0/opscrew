@@ -15,6 +15,7 @@ import type { PortainerFacts } from "./facts";
 import {
   type CreatedRecord,
   CreatedRecordSchema,
+  type DesiredStacks,
   planStacks,
   planStackTeardown,
   type StackPlan,
@@ -731,6 +732,233 @@ describe("planStacks: recovery, ownership and values", () => {
     expect(() => planStacks(facts, desired({ valueFingerprints: partial }))).toThrow(
       /valueFingerprints.app lacks STRIPE_KEY/,
     );
+  });
+});
+
+describe("planStacks: replacing the repository and registry tokens", () => {
+  it("replaces the repository token by a Git update that names it, never the token", () => {
+    const key = randomBytes(32);
+    const s = secrets();
+    const next = { ...s, repositoryToken: fakeSecret("github-pat", "repo-next") };
+    const plan = planStacks(
+      withFingerprints(key, s),
+      desired({
+        record,
+        valueFingerprints: fingerprintsFor(key, next),
+        replaceTokens: { repository: true },
+      }),
+    );
+    expect(ids(plan)).toEqual(["registry:in-place", "app-stack:change", "updater-stack:in-place"]);
+    expect(plan.changes[1]?.params).toMatchObject({
+      action: "update",
+      stackId: 101,
+      differences: ["the repository token (replaced)"],
+      replacesToken: "repository",
+      repositoryAuthentication: true,
+    });
+    expect(plan.changes[1]?.title).toMatch(
+      /Update the Git stack opscrew-shop: the repository token/,
+    );
+    expect(plan.valuesDigest).toMatch(/^[0-9a-f]{64}$/);
+    const text = JSON.stringify(plan);
+    for (const secret of [s.repositoryToken, next.repositoryToken]) {
+      expect(text).not.toContain(secret);
+    }
+
+    // Another token, another digest (so another plan hash).
+    const other = planStacks(
+      withFingerprints(key, s),
+      desired({
+        record,
+        valueFingerprints: fingerprintsFor(key, {
+          ...s,
+          repositoryToken: fakeSecret("github-pat", "repo-other"),
+        }),
+        replaceTokens: { repository: true },
+      }),
+    );
+    expect(other.valuesDigest).not.toBe(plan.valuesDigest);
+    expect(stackPlanHash(other)).not.toBe(stackPlanHash(plan));
+  });
+
+  it("replaces the registry token of the entry OpsCrew added, and always grants it again", () => {
+    const key = randomBytes(32);
+    const s = secrets();
+    const fingerprints = fingerprintsFor(key, s);
+    const facts = withFingerprints(key, s);
+    const plan = planStacks(
+      facts,
+      desired({ record, valueFingerprints: fingerprints, replaceTokens: { registry: true } }),
+    );
+    expect(ids(plan)).toEqual(["registry:change", "app-stack:in-place", "updater-stack:in-place"]);
+    expect(plan.changes[0]?.title).toBe(
+      "Replace the token of the registry entry opscrew-shop (ghcr.io) and let admin use it on environment nas",
+    );
+    expect(plan.changes[0]?.params).toEqual({
+      action: "update",
+      name: "opscrew-shop",
+      url: "ghcr.io",
+      registryId: 100,
+      username: "opscrew",
+      replacesToken: "registry",
+      grantUserId: 1,
+    });
+    expect(plan.valuesDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(plan)).not.toContain(s.registryToken);
+
+    facts.registryEntries = [{ id: 100, name: "opscrew-shop", url: "ghcr.io", environments: [] }];
+    const ungranted = planStacks(
+      facts,
+      desired({ record, valueFingerprints: fingerprints, replaceTokens: { registry: true } }),
+    );
+    expect(ungranted.changes[0]?.params).toEqual(plan.changes[0]?.params);
+    expect(ungranted.changes[0]?.reason).toMatch(/no longer usable on the environment/);
+  });
+
+  it("sends only OpsCrew's own entry name and ghcr.io, never what Portainer shows", () => {
+    const key = randomBytes(32);
+    const s = secrets();
+    const fingerprints = fingerprintsFor(key, s);
+    const replace = desired({
+      record,
+      valueFingerprints: fingerprints,
+      replaceTokens: { registry: true },
+    });
+    // Another spelling of ghcr.io: the update sends the constant.
+    const spelled = withFingerprints(key, s);
+    spelled.registryEntries = [
+      { id: 100, name: "opscrew-shop", url: "https://GHCR.io/", environments: [3] },
+    ];
+    expect(planStacks(spelled, replace).changes[0]?.params).toMatchObject({
+      action: "update",
+      name: "opscrew-shop",
+      url: "ghcr.io",
+    });
+    // A renamed entry: blocked, naming it.
+    const renamed = withFingerprints(key, s);
+    renamed.registryEntries = [{ id: 100, name: "team-ghcr", url: "ghcr.io", environments: [3] }];
+    const plan = planStacks(renamed, replace);
+    expect(plan.changes[0]).toMatchObject({
+      id: "registry",
+      state: "blocked",
+      params: { name: "opscrew-shop", url: "ghcr.io", registryId: 100 },
+    });
+    expect(plan.changes[0]?.reason).toMatch(
+      /OpsCrew added \(id 100\) is now named "team-ghcr", not opscrew-shop.*Rename it back/,
+    );
+    expect(JSON.stringify(plan.changes[0]?.params)).not.toContain("team-ghcr");
+  });
+
+  it("adds a missing entry as usual: creating it sends the token anyway", async () => {
+    const key = randomBytes(32);
+    const s = secrets();
+    const fingerprints = fingerprintsFor(key, s);
+    const facts = await world().inspect();
+    const replaced = planStacks(
+      facts,
+      desired({ valueFingerprints: fingerprints, replaceTokens: { registry: true } }),
+    );
+    const usual = planStacks(facts, desired({ valueFingerprints: fingerprints }));
+    expect(replaced.changes[0]?.params.action).toBe("create");
+    expect(replaced.changes).toEqual(usual.changes);
+    expect(replaced.valuesDigest).toBe(usual.valuesDigest);
+  });
+
+  it("binds every token a change sends, and needs its fingerprint", async () => {
+    const key = randomBytes(32);
+    const s = secrets();
+    const facts = await world().inspect();
+    const all = fingerprintsFor(key, s);
+    const { repositoryToken: _repository, ...noRepositoryToken } = all;
+    const { registryToken: _registry, ...noRegistryToken } = all;
+    const { repositoryToken: _r, registryToken: _g, ...noTokens } = all;
+    // A first setup creates the registry entry and the private Git stack: both tokens go out.
+    expect(() => planStacks(facts, desired({ valueFingerprints: noRepositoryToken }))).toThrow(
+      /valueFingerprints\.repositoryToken is missing/,
+    );
+    expect(() => planStacks(facts, desired({ valueFingerprints: noRegistryToken }))).toThrow(
+      /valueFingerprints\.registryToken is missing/,
+    );
+    // Without a private repository or image, no token goes out and none is needed.
+    const open = planStacks(
+      facts,
+      desired({
+        repository: {
+          url: REPO,
+          branch: "opscrew-deploy",
+          composeFile: "compose.yaml",
+          private: false,
+        },
+        registry: { url: "ghcr.io", private: false },
+        valueFingerprints: noTokens,
+      }),
+    );
+    expect(open.valuesDigest).toMatch(/^[0-9a-f]{64}$/);
+    // A different registry token gives another digest, even on a first setup.
+    const rotated = planStacks(
+      facts,
+      desired({
+        valueFingerprints: fingerprintsFor(key, {
+          ...s,
+          registryToken: fakeSecret("github-token", "next"),
+        }),
+      }),
+    );
+    const usual = planStacks(facts, desired({ valueFingerprints: all }));
+    expect(rotated.valuesDigest).not.toBe(usual.valuesDigest);
+  });
+
+  it("refuses a replace it cannot do, and blocks one a limited token cannot do", async () => {
+    const key = randomBytes(32);
+    const s = secrets();
+    const facts = await world().inspect();
+    const all = fingerprintsFor(key, s);
+    const { repositoryToken: _repository, ...noRepositoryToken } = all;
+    const { registryToken: _registry, ...noRegistryToken } = all;
+    const cases: Array<[Partial<DesiredStacks>, RegExp]> = [
+      [
+        {
+          repository: {
+            url: REPO,
+            branch: "opscrew-deploy",
+            composeFile: "compose.yaml",
+            private: false,
+          },
+          replaceTokens: { repository: true },
+        },
+        /replaceTokens\.repository: needs a private repository/,
+      ],
+      [
+        { registry: { url: "ghcr.io", private: false }, replaceTokens: { registry: true } },
+        /replaceTokens\.registry: needs a private image/,
+      ],
+      [
+        { valueFingerprints: noRepositoryToken, replaceTokens: { repository: true } },
+        /valueFingerprints\.repositoryToken: is required to replace the repository token/,
+      ],
+      [
+        { valueFingerprints: noRegistryToken, replaceTokens: { registry: true } },
+        /valueFingerprints\.registryToken: is required to replace the registry token/,
+      ],
+    ];
+    for (const [overrides, pattern] of cases) {
+      expect(() => planStacks(facts, desired({ valueFingerprints: all, ...overrides }))).toThrow(
+        pattern,
+      );
+    }
+    expect(() =>
+      planStacks(
+        facts,
+        desired({ valueFingerprints: undefined, replaceTokens: { repository: true } }),
+      ),
+    ).toThrow(/valueFingerprints\.repositoryToken: is required/);
+
+    const limited = planStacks(
+      await world().inspect("limited"),
+      desired({ valueFingerprints: all, replaceTokens: { registry: true } }),
+    );
+    expect(limited.changes[0]).toMatchObject({ id: "registry", state: "blocked" });
+    expect(limited.changes[0]?.reason).toMatch(/Only a Portainer administrator's token/);
   });
 });
 
