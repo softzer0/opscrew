@@ -40,7 +40,10 @@ export interface DesiredStacks {
   volumes?: readonly string[];       // the app stack's volumes, each `opscrew-<app>_<name>`
   /** valueFingerprints() of the local values, so a changed value shows by key name only. */
   valueFingerprints?: { app?: Record<string, string>; updater?: Record<string, string>;
-                        connector?: Record<string, string>; webhook?: string };
+                        connector?: Record<string, string>; webhook?: string;
+                        repositoryToken?: string; registryToken?: string };
+  /** Send a token again (rotation): an app-stack Git update and/or a registry update. */
+  replaceTokens?: { repository?: boolean; registry?: boolean };
 }
 
 export interface StackPlan { /* see data-model.md "Stack plan"; also `record` (the record after
@@ -84,7 +87,8 @@ Rules:
 - Updates always send the full `Env` list (leaving it out clears it).
 - Values are compared only as keyed fingerprints (the key is local, 0600): a changed value, or a
   changed webhook, plans an update naming the keys, never the values. Repository and registry
-  tokens cannot be read back, so replacing them is an explicit input.
+  tokens cannot be read back, so replacing them is the explicit `replaceTokens` input; every token a
+  change sends (on create or replace) is covered by `valuesDigest` like the other values.
 - A stack in error (Status 4) plans a redeploy; a stopped stack (Status 2) plans a start.
 - Volumes are deleted only in a teardown with `deleteData`, and only names `opscrew-<app>_…`
   whose Compose project label is the app's stack.
