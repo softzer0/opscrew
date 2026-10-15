@@ -9,7 +9,11 @@ their app as a Portainer stack through Portainer's API, with no SSH and no chang
 is the next feature, before Proxmox (now 011). Redeploys are offered two ways (Portainer polling a
 deploy branch by default; GitHub Actions calling Portainer through Cloudflare Access as an option),
 and visitors reach the app three ways (a Cloudflare Tunnel by default; the user's own reverse proxy;
-Caddy on ports 80/443).
+Caddy on ports 80/443). After a live test of Portainer CE 2.45.2 showed that its scheduled Git
+polling never runs, the founder chose (2026-10-15): the default redeploy stays on the Portainer side
+(a tiny updater stack next to the app triggers Portainer's own stack webhook over the local network),
+with Cloudflare as the alternative; tokens of an admin or of a limited user both work, with guided
+steps when a limited token cannot add the registry entry.
 
 ## Why
 
@@ -182,6 +186,10 @@ what is removed; the live test destroys and checks Portainer, the decoy stack an
 - The deploy branch is changed by hand: drift reports it; the next deploy writes it again.
 - Portainer is restarted or updated during a deploy: the workflow's health check fails or times out,
   and the previous version is restored on the next run; the user is told plainly.
+- An update fails because a port is already taken: Portainer leaves the app stopped; the workflow's
+  health check fails, the previous image is recorded again, and the user is told which port.
+- A stack already in an error state: Portainer stops all of its containers before the next deploy;
+  OpsCrew says so before applying, and a failed redeploy leaves nothing running until it is fixed.
 - The environment is a Portainer Edge agent: stack updates on schedule may behave differently;
   OpsCrew refuses Edge environments plainly for now.
 
@@ -201,13 +209,22 @@ what is removed; the live test destroys and checks Portainer, the decoy stack an
 - **FR-1004**: Before planning, OpsCrew MUST check, read-only, Portainer's version against the
   supported minimum, the environment's type (a single Docker host; Swarm, Kubernetes and Edge
   refused for now) and architecture, the token's access to manage stacks there, existing stacks and
-  registry entries with the names it would use, and (for Caddy) whether ports 80 and 443 are free.
+  registry entries with the names it would use, whether a registry entry for the image's registry is
+  usable by the token's user on that environment, and (for Caddy) whether ports 80 and 443 are free.
+- **FR-1018**: Both an admin's token and a limited user's token MUST work. With an admin token
+  OpsCrew adds the registry entry and grants it to the environment itself; with a limited token that
+  has no usable registry entry, OpsCrew stops before any change and shows the exact one-time steps
+  (add the registry entry as admin, or make the image public), then continues on the next run.
 - **FR-1005**: OpsCrew MUST show the exact Portainer changes it would make (the stack and its
   settings, the registry entry, the repository access, the redeploy setting) as a plan bound to its
   SHA-256 hash, change nothing until that plan is approved by its hash (a new approval kind for
   Portainer changes; `--yes` never grants it), and apply it only through a typed Portainer adapter.
 - **FR-1006**: OpsCrew MUST never change, stop, redeploy or delete a stack, volume, registry entry or
   setting it did not create, and MUST stop with a plain message when the name it needs is taken.
+  Because Portainer lets a new stack take over containers of a Compose project with the same name
+  that it did not create (and a limited token cannot see them), every stack OpsCrew creates MUST
+  have an unmistakable OpsCrew name (e.g. `opscrew-<app>`), and with an admin token OpsCrew MUST
+  also check that no container uses that project name.
 - **FR-1007**: The app's secrets MUST reach Portainer only as the stack's environment through
   Portainer's API from the user's computer; OpsCrew MUST never print, plan, audit or commit their
   values.
@@ -216,9 +233,12 @@ what is removed; the live test destroys and checks Portainer, the decoy stack an
   named volumes for their data), using the image the deploy workflow built, pulled with read-only
   registry access OpsCrew registers in Portainer.
 - **FR-1009**: By default, merged changes MUST reach Portainer without Portainer being reachable from
-  the internet: the deploy workflow records the new image in a dedicated deploy branch and Portainer
-  checks that branch on a schedule and redeploys; the workflow checks the site's health and, on
-  failure, records the previous image again so the previous version returns.
+  the internet and without Cloudflare: the deploy workflow records the new image in a dedicated
+  deploy branch; a small updater stack OpsCrew adds next to the app (its own stack, so a failed app
+  update cannot stop it) asks Portainer once a minute, over the local network with Portainer's
+  certificate pinned, to fetch that branch and redeploy when it changed; the workflow checks the
+  site's health and, on failure, records the previous image again so the previous version returns.
+  Portainer's own scheduled Git polling is not relied on (it did not run in the tested 2.45.2).
 - **FR-1010**: As the user's explicit choice, the deploy workflow MAY instead update the stack
   through Portainer's API reached only through a hostname protected by Cloudflare Access with a
   service token, wait for the new version, check its health and roll back on failure; Portainer MUST
@@ -258,6 +278,8 @@ what is removed; the live test destroys and checks Portainer, the decoy stack an
   place or as a change, hashed and approved before it is applied.
 - **Deploy branch**: a branch of the app's repository that holds only the stack file with the
   current image; written by the deploy workflow, read by Portainer.
+- **Updater stack**: a tiny stack OpsCrew adds next to the app in the default redeploy mode; it only
+  asks Portainer, once a minute, to redeploy the app's stack from the deploy branch when it changed.
 - **Local record**: what OpsCrew created in Portainer (ids, names), kept on the user's computer so
   destroy removes exactly that.
 
@@ -283,8 +305,10 @@ what is removed; the live test destroys and checks Portainer, the decoy stack an
 
 - The user already runs Portainer CE (current LTS 2.45.2; the supported minimum is set in research)
   with a Docker environment, and can create an access token for a user that may manage stacks there.
-- Portainer's free edition is enough: stack webhooks and relative-path volumes, which are documented
-  as Business Edition features, are not used.
+- Portainer's free edition is enough. Its stack webhook, documented as a Business Edition feature,
+  worked on CE 2.45.2 in a live test and is used by the updater stack; relative-path volumes
+  (Business Edition) are not used; Portainer's scheduled Git polling is not used because it did not
+  run in that test.
 - The app's image is built and pushed to GHCR by GitHub Actions, as for other targets; Portainer can
   reach GHCR and GitHub.
 - A domain on Cloudflare is needed for the tunnel and the Cloudflare option; the user's own proxy and
