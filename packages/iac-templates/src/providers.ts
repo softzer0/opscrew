@@ -7,6 +7,7 @@ import {
   isVpsTarget,
   PORTAINER_TARGET_NO_MOVE,
   PORTAINER_TARGET_NOT_YET,
+  type PortainerDeployTarget,
   type VpsDeployTarget,
   type VpsProvider,
 } from "@opscrew/plan-schema";
@@ -43,6 +44,33 @@ export function portainerTargetNoMove(): OpsCrewError {
   return new OpsCrewError("PHASE_PRECONDITION", PORTAINER_TARGET_NO_MOVE.message, {
     hint: PORTAINER_TARGET_NO_MOVE.hint,
   });
+}
+
+/**
+ * `target` when the app runs in the user's existing Portainer; the Portainer renderers call it
+ * first, so reaching them with another target is a bug in OpsCrew.
+ */
+export function portainerTarget(target: DeployTarget): PortainerDeployTarget {
+  if (target.provider !== "portainer") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "This step only applies to an app OpsCrew deploys into your existing Portainer.",
+      { hint: "This is a bug in OpsCrew: please report it with the command you ran." },
+    );
+  }
+  return target;
+}
+
+/**
+ * The plain error when a server's runtime files (Compose file, Caddyfile) are asked for a Portainer
+ * target: its stack file holds both, so reaching here is a bug in OpsCrew.
+ */
+export function serverRuntimeNotForPortainer(): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "An app in your existing Portainer has no server Compose file or Caddyfile: OpsCrew writes its Portainer stack (opscrew/runtime/compose.yaml) instead.",
+    { hint: "This is a bug in OpsCrew: please report it with the command you ran." },
+  );
 }
 
 /** `target` when the app runs on one server; throws {@link portainerTargetNotYet} for Portainer. */

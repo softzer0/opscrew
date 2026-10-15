@@ -28,9 +28,16 @@ describe("cloudflare-tunnel module security", () => {
     const config = resource(main, "cloudflare_zero_trust_tunnel_cloudflared_config", "this");
     // The catch-all is the last element of the concatenated ingress list.
     expect(config).toMatch(
-      /\[\s*\{\s*hostname\s*= null\s*service\s*= "http_status:404"\s*origin_request = null\s*\},\s*\],\s*\)\s*\}$/,
+      /\[\s*\{\s*hostname\s*= null\s*path\s*= null\s*service\s*= "http_status:404"\s*origin_request = null\s*\},\s*\],\s*\)\s*\}$/,
     );
     expect(config.match(/http_status:404/g)).toHaveLength(1);
+  });
+
+  it("lets a route serve only the paths it matches, other paths falling through to the 404", () => {
+    const config = resource(main, "cloudflare_zero_trust_tunnel_cloudflared_config", "this");
+    expect(config).toMatch(/^ {10}path {11}= route\.path$/m);
+    const variables = MODULE_FILES["cloudflare-tunnel/variables.tf"] ?? "";
+    expect(variables).toMatch(/^ {4}path {10}= optional\(string\)$/m);
   });
 
   it("publishes every hostname only as a proxied CNAME to the tunnel", () => {
@@ -64,6 +71,15 @@ describe("cloudflare-access module security", () => {
       "{ id = cloudflare_zero_trust_access_policy.ssh[0].id, precedence = 1 },",
     );
     expect(app).toMatch(/domain\s+= var\.ssh_hostname/);
+  });
+
+  it("names the service-token application by its label, SSH unless the root says otherwise", () => {
+    const app = resource(main, "cloudflare_zero_trust_access_application", "ssh");
+    expect(app).toMatch(
+      /^ {2}name {22}= "OpsCrew \$\{var\.ssh_hostname_label\} \(\$\{var\.app_name\}\)"$/m,
+    );
+    const variables = MODULE_FILES["cloudflare-access/variables.tf"] ?? "";
+    expect(variables).toMatch(/variable "ssh_hostname_label" \{[^}]*default {5}= "SSH"\n\}/);
   });
 
   it("lets only the listed emails through to Portainer, with the one-time PIN login", () => {

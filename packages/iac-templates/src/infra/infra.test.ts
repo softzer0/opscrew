@@ -13,7 +13,7 @@ import type { RenderContext, RenderedFile } from "../types";
 import { httpAllowedCidrs, renderInfra, tfvars } from "./index";
 
 describe("renderInfra on a Portainer target", () => {
-  it("stops with a plain refusal until the Portainer root module exists", () => {
+  it("renders the Portainer root (portainer.test.ts), never a server root: none here", () => {
     const portainer = DeployPlanSchema.parse({
       ...testPlan(),
       target: {
@@ -25,12 +25,8 @@ describe("renderInfra on a Portainer target", () => {
         web: { mode: "proxy", port: 8080 },
       },
     });
-    expect(() => renderInfra(portainer, testContext())).toThrow(
-      expect.objectContaining({
-        code: "PHASE_PRECONDITION",
-        message: "A Portainer target is not supported by this command yet.",
-      }),
-    );
+    // Proxy mode with the updater needs no Cloudflare Tunnel, so there is nothing to render.
+    expect(renderInfra(portainer, testContext())).toEqual([]);
   });
 });
 

@@ -1,5 +1,6 @@
 # Cloudflare Access in front of the hostnames the tunnel serves:
-# - SSH for the deploy workflow: a Service Auth policy that lets exactly one service token through.
+# - SSH for the deploy workflow (or Portainer's webhook): a Service Auth policy that lets exactly
+#   one service token through.
 # - Portainer (opt-in): the listed email addresses, after a one-time PIN sent to that address.
 locals {
   ssh       = var.ssh_hostname != null
@@ -43,7 +44,7 @@ resource "cloudflare_zero_trust_access_policy" "ssh" {
 resource "cloudflare_zero_trust_access_application" "ssh" {
   count                     = local.ssh ? 1 : 0
   account_id                = var.account_id
-  name                      = "OpsCrew SSH (${var.app_name})"
+  name                      = "OpsCrew ${var.ssh_hostname_label} (${var.app_name})"
   type                      = "self_hosted"
   domain                    = var.ssh_hostname
   destinations              = [{ type = "public", uri = var.ssh_hostname }]

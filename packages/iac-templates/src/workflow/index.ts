@@ -2,30 +2,19 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CLOUDFLARED_SHA256, CLOUDFLARED_VERSION, cloudflaredUrl, sshHostname } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
+import { renderPortainerWorkflow } from "./portainer";
+import {
+  block,
+  buildJob,
+  CHECKOUT_ACTION,
+  DEPLOY_SECRETS,
+  DIGEST_REF_PATTERN,
+  secret,
+  workflowStart,
+} from "./shared";
 
-/** actions/checkout v7.0.1 (lightweight tag → commit), pinned by SHA. */
-export const CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
-/**
- * Default image for the optional, report-only image scan, pinned by digest because it runs with the
- * Docker socket. Digest of the multi-arch OCI index for tag 0.75.0, resolved on 2026-10-11 from the
- * Docker Hub registry API (`registry-1.docker.io/v2/aquasec/trivy/manifests/0.75.0`) and identical
- * on `ghcr.io/aquasecurity/trivy:0.75.0`.
- */
-export const DEFAULT_TRIVY_IMAGE =
-  "aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa";
-
-/** Shell pattern for a GHCR image pinned by digest, `ghcr.io/<owner>/<repo>@sha256:<hex>`. */
-const DIGEST_REF_PATTERN = "^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$";
-
-/** Names of the GitHub Actions secrets the workflow reads. `opscrew provision` sets them. */
-export const DEPLOY_SECRETS = {
-  host: "OPSCREW_HOST",
-  sshKey: "OPSCREW_SSH_PRIVATE_KEY",
-  knownHosts: "OPSCREW_SSH_KNOWN_HOSTS",
-  appEnv: "OPSCREW_APP_ENV",
-  dbEnv: "OPSCREW_DB_ENV",
-  buildEnv: "OPSCREW_BUILD_ENV",
-} as const;
+export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
+export { buildRunner, CHECKOUT_ACTION, DEFAULT_TRIVY_IMAGE, DEPLOY_SECRETS } from "./shared";
 
 /**
  * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with
@@ -37,13 +26,6 @@ export const TUNNEL_DEPLOY_SECRETS = {
   serviceTokenId: "OPSCREW_TUNNEL_SERVICE_TOKEN_ID",
   serviceTokenSecret: "OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET",
 } as const;
-
-/** GitHub-hosted runner that builds the image: arm64 servers get an arm64 runner (no emulation). */
-export function buildRunner(plan: DeployPlan): string {
-  return plan.target.provider === "own" && plan.target.arch === "arm64"
-    ? "ubuntu-24.04-arm"
-    : "ubuntu-latest";
-}
 
 const SSH_OPTS_BASE =
   "-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20";
@@ -67,10 +49,6 @@ function checkSshPort(port: number | undefined): void {
       `The server's SSH port "${port}" is not a whole number between 1 and 65535. Check the port sshd listens on (sshd -T) and run the command again.`,
     );
   }
-}
-
-function secret(name: string): string {
-  return `\${{ secrets.${name} }}`;
 }
 
 /** URL the deploy job polls after starting the new version. */
@@ -140,11 +118,6 @@ function healthScript(tlsHint: boolean): string[] {
   ];
 }
 
-function block(lines: string[], indent: number): string[] {
-  const pad = " ".repeat(indent);
-  return lines.map((line) => (line.length > 0 ? `${pad}${line}` : ""));
-}
-
 /**
  * Where the release command's output stays: on the server, readable only by the deploy user. It is
  * never printed in the workflow log, which is public for public repositories, because a failed
@@ -211,65 +184,17 @@ function installCloudflaredStep(): string[] {
  * `.github/workflows/opscrew-deploy.yml`: build → push to GHCR → deploy over SSH with rollback. The
  * image is built on an arm64 runner for arm64 servers; in tunnel mode SSH goes through Cloudflare
  * Access to the SSH hostname with the service token from {@link TUNNEL_DEPLOY_SECRETS}.
+ *
+ * For a Portainer target the deploy job instead writes the stack file with the new image to the
+ * `opscrew-deploy` branch (its only `contents: write`), lets Portainer redeploy (the updater stack,
+ * or a webhook call through Cloudflare Access with {@link PORTAINER_DEPLOY_SECRETS}), waits for
+ * the new version on the site and, when it does not come up, writes the previous version back.
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFile {
-  const context = plan.app.buildContext || ".";
-  const dockerfile = plan.app.dockerfile || "Dockerfile";
-  const scanImage = ctx.trivyImage ?? DEFAULT_TRIVY_IMAGE;
-  if (!/@sha256:[0-9a-f]{64}$/.test(scanImage)) {
-    throw new Error(
-      `The Trivy image "${scanImage}" must be pinned by digest (name:tag@sha256:...) because the scan runs with the Docker socket. Use a digest-pinned reference or leave trivyImage unset.`,
-    );
-  }
+  if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan, ctx);
+  const build = buildJob(plan, ctx);
   const hasDb = plan.services.postgres;
   checkSshPort(ctx.sshPort);
-
-  const buildSteps = [
-    `- uses: ${CHECKOUT_ACTION}`,
-    "- id: image",
-    "  name: Choose the image name",
-    "  run: |",
-    "    set -euo pipefail",
-    '    repo="${GITHUB_REPOSITORY,,}"',
-    '    echo "image=ghcr.io/${repo}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"',
-    "- name: Log in to GitHub Container Registry",
-    "  env:",
-    "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
-    '  run: printf \'%s\\n\' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin',
-    // The deploy pulls `ref` (the digest that was pushed), so it runs exactly this build; the SHA
-    // tag stays for humans. Logging out here keeps the `packages: write` token away from the scan.
-    "- id: push",
-    "  name: Build and push the image",
-    "  env:",
-    "    IMAGE: ${{ steps.image.outputs.image }}",
-    `    BUILD_ENV: ${secret(DEPLOY_SECRETS.buildEnv)}`,
-    "  run: |",
-    "    set -euo pipefail",
-    "    build_args=()",
-    "    while IFS= read -r line; do",
-    '      [[ -z "$line" || "$line" == \\#* ]] && continue',
-    '      build_args+=(--build-arg "$line")',
-    '    done <<< "${BUILD_ENV:-}"',
-    `    docker build "\${build_args[@]}" -t "$IMAGE" -f ${JSON.stringify(dockerfile)} ${JSON.stringify(context)}`,
-    '    docker push "$IMAGE"',
-    "    docker logout ghcr.io",
-    '    ref="$(docker image inspect --format \'{{range .RepoDigests}}{{println .}}{{end}}\' "$IMAGE" | grep -m1 -F "${IMAGE%:*}@sha256:" || true)"',
-    `    if [[ ! "$ref" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-    '      echo "::error::Could not read the digest of the pushed image $IMAGE; re-run the workflow."',
-    "      exit 1",
-    "    fi",
-    '    echo "ref=$ref" >> "$GITHUB_OUTPUT"',
-    '    echo "Pushed \\`$IMAGE\\` as \\`$ref\\`." >> "$GITHUB_STEP_SUMMARY"',
-  ];
-  if (plan.security.imageScan) {
-    // Scans the local image the digest above was read from (same image id), without registry login.
-    buildSteps.push(
-      "- name: Scan the image (report only)",
-      "  env:",
-      "    IMAGE: ${{ steps.image.outputs.image }}",
-      `  run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${scanImage} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"`,
-    );
-  }
 
   // Tunnel mode: SSH goes through Cloudflare Access to the SSH hostname (it is in the committed
   // HCL anyway); the service token reaches cloudflared only through the environment.
@@ -386,35 +311,11 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
   ];
 
   const lines = [
-    "# Generated by OpsCrew from opscrew/plan.yaml; `opscrew provision` regenerates it.",
-    "# Builds the app image, pushes it to GitHub Container Registry and deploys it to your server",
-    "# over SSH. Secrets are set by `opscrew provision`; their values never appear in this file.",
-    "name: OpsCrew deploy",
-    "",
-    "on:",
-    "  push:",
-    `    branches: [${JSON.stringify(plan.cicd.branch)}]`,
-    "  workflow_dispatch: {}",
-    "",
-    "permissions:",
-    "  contents: read",
-    "",
-    "concurrency:",
-    "  group: opscrew-deploy",
-    "  cancel-in-progress: false",
-    "",
-    "jobs:",
-    "  build:",
-    "    name: Build the image",
-    `    runs-on: ${buildRunner(plan)}`,
-    "    permissions:",
-    "      contents: read",
-    "      packages: write",
-    "    outputs:",
-    "      image: ${{ steps.push.outputs.ref }}",
-    "      tag: ${{ steps.image.outputs.image }}",
-    "    steps:",
-    ...block(buildSteps, 6),
+    ...workflowStart(plan, [
+      "# Builds the app image, pushes it to GitHub Container Registry and deploys it to your server",
+      "# over SSH. Secrets are set by `opscrew provision`; their values never appear in this file.",
+    ]),
+    ...build,
     "",
     "  deploy:",
     "    name: Deploy to the server",

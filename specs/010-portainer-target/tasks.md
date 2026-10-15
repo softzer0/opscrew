@@ -32,7 +32,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-portainer`
   - Effort: xhigh
 
-- [ ] T1003 [P] [US1] [US3] [US4] Templates: the app stack, the updater stack, the workflow's Portainer mode and the Cloudflare root in `packages/iac-templates/src/{portainer-target,workflow,infra}/`
+- [X] T1003 [P] [US1] [US3] [US4] Templates: the app stack, the updater stack, the workflow's Portainer mode and the Cloudflare root in `packages/iac-templates/src/{portainer-target,workflow,infra}/`
   - Owns: `packages/iac-templates/src/portainer-target/**` (new), `packages/iac-templates/src/workflow/**` (the Portainer mode only), `packages/iac-templates/src/infra/portainer.ts` (new) and the export lines in `src/index.ts`, `src/infra/index.ts` (+ tests and snapshots)
   - Reads: plan.md "3. Templates"; research.md R5, R7, R8, R11; `src/runtime/index.ts` (compose, Caddyfile, `Cf-Visitor` redirect, `serviceLogging()`), `src/tunnel/**` and `src/infra/{own,tunnel}.ts` (009's Cloudflare root and modules), `src/workflow/index.ts`
   - Depends: T1001

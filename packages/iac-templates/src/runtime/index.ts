@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, Compose and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
+import { serverRuntimeNotForPortainer } from "../providers";
 import { serviceLogging, TUNNEL_ORIGIN_PORT, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 
@@ -43,8 +44,12 @@ export function siteHosts(plan: DeployPlan): string[] {
   return plan.dns.www ? [domain, `www.${domain}`] : [domain];
 }
 
-/** `opscrew/runtime/compose.yaml`: app, optional Postgres and Valkey, and Caddy in front. */
+/**
+ * `opscrew/runtime/compose.yaml`: app, optional Postgres and Valkey, and Caddy in front. Throws for
+ * a Portainer target, whose stack `renderPortainerStack` renders.
+ */
 export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFile {
+  if (plan.target.provider === "portainer") throw serverRuntimeNotForPortainer();
   const hardening = { security_opt: ["no-new-privileges:true"] };
   const app: Record<string, unknown> = {
     image: "${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}",
@@ -145,9 +150,11 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
  * are redirected to HTTPS by the `Cf-Visitor` request header Cloudflare adds to proxied requests
  * (`{"scheme":"http"}` or `{"scheme":"https"}`), see
  * https://developers.cloudflare.com/fundamentals/reference/http-headers/ . Only Cloudflare reaches
- * Caddy in this mode (the connector on loopback), so the header can be trusted.
+ * Caddy in this mode (the connector on loopback), so the header can be trusted. Throws for a
+ * Portainer target, whose stack holds Caddy's configuration inline.
  */
 export function renderCaddyfile(plan: DeployPlan, ctx: RenderContext): RenderedFile {
+  if (plan.target.provider === "portainer") throw serverRuntimeNotForPortainer();
   const hosts = siteHosts(plan);
   const tunnel = tunnelMode(plan);
   const lines = [

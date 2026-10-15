@@ -1,6 +1,7 @@
 export * from "./docker";
 export * from "./infra";
 export * from "./portainer";
+export * from "./portainer-target";
 export * from "./render";
 export * from "./runbook";
 export * from "./runtime";

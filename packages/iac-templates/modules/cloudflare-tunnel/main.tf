@@ -23,11 +23,13 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.this.id
 
   config = {
-    # Every route in order, then a final rule that answers 404 for any other hostname.
+    # Every route in order, then a final rule that answers 404 for any other hostname (and for
+    # the paths a route with a path does not match).
     ingress = concat(
       [
         for route in var.routes : {
           hostname       = route.hostname
+          path           = route.path
           service        = route.service
           origin_request = route.no_tls_verify ? { no_tls_verify = true } : null
         }
@@ -35,6 +37,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
       [
         {
           hostname       = null
+          path           = null
           service        = "http_status:404"
           origin_request = null
         },

@@ -21,8 +21,10 @@ import {
   versionsTf,
 } from "./hcl";
 import { ownRoot, RULESETS_OUTPUT } from "./own";
+import { portainerRoot } from "./portainer";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
+export { PORTAINER_WEBHOOK_PATH, portainerWebhookHostname } from "./portainer";
 export { zeroTrustAuthDomain } from "./tunnel";
 
 const OPEN_TO_ALL = ["0.0.0.0/0", "::/0"];
@@ -341,6 +343,13 @@ function isOwnRoot(plan: DeployPlan, ctx: RenderContext): boolean {
   return plan.target.provider === "own" && ctx.layout === undefined;
 }
 
+/** A Portainer target: its own root module. It never moves, so a move layout is refused. */
+function isPortainerRoot(plan: DeployPlan, ctx: RenderContext): boolean {
+  if (plan.target.provider !== "portainer") return false;
+  if (ctx.layout !== undefined) throw portainerTargetNoMove();
+  return true;
+}
+
 /**
  * Non-secret variable values, written as `terraform.tfvars.json`. `delete_protection` and
  * `previous_delete_protection` are left out on purpose: they keep their default (on), and
@@ -348,9 +357,11 @@ function isOwnRoot(plan: DeployPlan, ctx: RenderContext): boolean {
  * committed files. DigitalOcean has no delete protection, so its servers have no such variable.
  * With `ctx.layout`, each server module's target is written under its own variables (`previous_*`
  * for `module "server_previous"`). For a server the user owns, the server's addresses are never
- * written: the CLI supplies `server_ipv4`/`server_ipv6` as `TF_VAR_*`.
+ * written: the CLI supplies `server_ipv4`/`server_ipv6` as `TF_VAR_*`. A Portainer target never
+ * writes Portainer's address (`TF_VAR_portainer_origin`) and has `{}` when it has no root module.
  */
 export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unknown> {
+  if (isPortainerRoot(plan, ctx)) return portainerRoot(plan, ctx)?.tfvars ?? {};
   if (isOwnRoot(plan, ctx)) return ownRoot(plan, ctx).tfvars;
   const values: Record<string, unknown> = { app_name: plan.app.name };
   for (const { prefix, target } of rootShape(plan, ctx).servers) {
@@ -432,8 +443,18 @@ function rootFiles(
  *   SSH; outputs `url`, `tunnel_id`, `tunnel_token` (sensitive), `ssh_hostname`,
  *   `deploy_service_token_client_id` and `deploy_service_token_client_secret` (sensitive), plus
  *   `portainer_url` with a Portainer subdomain.
+ *
+ * For a Portainer target (`target.provider === "portainer"`) the root module has only Cloudflare
+ * Tunnels: the app's for web mode `tunnel`, and in redeploy mode `cloudflare` one and Access for
+ * Portainer's webhook hostname (Portainer's address from `TF_VAR_portainer_origin`). OpsCrew
+ * creates no DNS record for web modes `proxy` and `caddy`, so a plan that needs neither tunnel
+ * renders no files at all. A move layout is refused: a Portainer target never moves.
  */
 export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
+  if (isPortainerRoot(plan, ctx)) {
+    const root = portainerRoot(plan, ctx);
+    return root === undefined ? [] : rootFiles(plan, root, root.tfvars, root.modules);
+  }
   if (usesCloudflare(plan) && !ctx.cloudflare?.zoneId) {
     throw new Error("A Cloudflare zone id is required to render DNS for this plan.");
   }
