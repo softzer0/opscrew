@@ -24,6 +24,23 @@ export function missingVariables(env: Record<string, string | undefined>): strin
   ).map((name) => (name === "OPSCREW_E2E_OWN_SERVER" ? `${name}=1` : name));
 }
 
+/**
+ * The run's own hostname, one level below the zone: `e2e-<runId>.<zone>`. The zone is
+ * `OPSCREW_E2E_DOMAIN` without its first label when it has more than two labels
+ * (`e2e.example.com` → `example.com`), else `OPSCREW_E2E_DOMAIN` itself (already the apex). Each
+ * run asks Let's Encrypt for a certificate on new names (it issues only 5 per week for the same
+ * names), and one level below the zone stays under Cloudflare's free edge certificate (`*.<zone>`).
+ */
+export function runHostname(domain: string, runId: string): string {
+  const labels = domain.trim().toLowerCase().replace(/\.$/, "").split(".");
+  const zone = labels.length > 2 ? labels.slice(1) : labels;
+  const id = runId.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (id === "" || zone.some((label) => label === "")) {
+    throw new Error(`Cannot derive a hostname for this run from "${domain}" and "${runId}".`);
+  }
+  return [`e2e-${id}`, ...zone].join(".");
+}
+
 /** Every distinct plan hash a run names with `--approve <hash>` (in order of appearance). */
 export function approveHashes(output: string): string[] {
   const hashes: string[] = [];

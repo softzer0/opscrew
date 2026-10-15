@@ -83,6 +83,63 @@ export function healthUrl(plan: DeployPlan): string {
     : `http://${secret(DEPLOY_SECRETS.host)}${path}`;
 }
 
+/**
+ * Let's Encrypt's limit on new certificates for the exact same set of names: 5 per 7 days, one
+ * more about every 34 hours (https://letsencrypt.org/docs/rate-limits/, checked 2026-10-15).
+ */
+const LETS_ENCRYPT_SAME_NAMES_PER_WEEK = 5;
+
+/**
+ * Whether the health check reaches Caddy's own certificate: the plan has a domain that Cloudflare
+ * does not proxy and no tunnel. Only then does a TLS handshake failure mean that Caddy has no
+ * certificate yet (Let's Encrypt's limit is the usual cause on a server rebuilt many times).
+ */
+function caddyServesTls(plan: DeployPlan, tunnelHost: string | undefined): boolean {
+  return plan.dns.domain !== undefined && !plan.dns.proxied && tunnelHost === undefined;
+}
+
+/**
+ * The health check's script. With `tlsHint`, curl's exit codes are recorded and, when every
+ * attempt failed the TLS handshake (35 or 60), the error says that the server has no certificate
+ * yet; otherwise, and without `tlsHint`, it says only that the new version did not answer.
+ */
+function healthScript(tlsHint: boolean): string[] {
+  if (!tlsHint) {
+    return [
+      "    set -euo pipefail",
+      "    for attempt in $(seq 1 30); do",
+      '      if curl -fsS --max-time 10 -o /dev/null "$URL"; then',
+      '        echo "Healthy after $attempt attempt(s)."',
+      "        exit 0",
+      "      fi",
+      "      sleep 6",
+      "    done",
+      '    echo "::error::The new version did not answer at $URL."',
+      "    exit 1",
+    ];
+  }
+  return [
+    "    set -euo pipefail",
+    "    tls_only=1",
+    "    for attempt in $(seq 1 30); do",
+    "      code=0",
+    '      curl -fsS --max-time 10 -o /dev/null "$URL" || code=$?',
+    '      if [ "$code" -eq 0 ]; then',
+    '        echo "Healthy after $attempt attempt(s)."',
+    "        exit 0",
+    "      fi",
+    '      if [ "$code" -ne 35 ] && [ "$code" -ne 60 ]; then tls_only=0; fi',
+    "      sleep 6",
+    "    done",
+    '    if [ "$tls_only" -eq 1 ]; then',
+    `      echo "::error::The new version did not answer at $URL: every attempt failed the TLS handshake, so the server has no certificate for this domain yet. Let's Encrypt issues at most ${LETS_ENCRYPT_SAME_NAMES_PER_WEEK} certificates per week for the same set of names, so a server rebuilt many times can reach that limit. Wait (one more becomes available about every 34 hours) or use another hostname, then deploy again."`,
+    "    else",
+    '      echo "::error::The new version did not answer at $URL."',
+    "    fi",
+    "    exit 1",
+  ];
+}
+
 function block(lines: string[], indent: number): string[] {
   const pad = " ".repeat(indent);
   return lines.map((line) => (line.length > 0 ? `${pad}${line}` : ""));
@@ -300,16 +357,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "  env:",
     `    URL: ${healthUrl(plan)}`,
     "  run: |",
-    "    set -euo pipefail",
-    "    for attempt in $(seq 1 30); do",
-    '      if curl -fsS --max-time 10 -o /dev/null "$URL"; then',
-    '        echo "Healthy after $attempt attempt(s)."',
-    "        exit 0",
-    "      fi",
-    "      sleep 6",
-    "    done",
-    '    echo "::error::The new version did not answer at $URL."',
-    "    exit 1",
+    ...healthScript(caddyServesTls(plan, tunnelHost)),
     // Runs only when starting or checking the new version failed (not for upload or setup errors),
     // and always fails the job.
     "- name: Roll back to the previous version",

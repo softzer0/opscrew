@@ -111,6 +111,14 @@ The test sets `CI=1`, so every command runs non-interactively:
    repository, never printed). It waits for SSH and cloud-init and checks the host key fingerprint
    on the server itself. OpsCrew never gets the Hetzner token: to OpsCrew this is the user's own
    server, reached as `root` with that key.
+   Each run serves the app on its own hostname, `e2e-<run id>.<zone>`, where the zone is
+   `OPSCREW_E2E_DOMAIN` without its first label when it has more than two labels
+   (`e2e.example.com` gives `e2e-<run id>.example.com`), or `OPSCREW_E2E_DOMAIN` itself when it is
+   already the zone apex. Every run's fresh server asks Let's Encrypt for a certificate, and
+   Let's Encrypt issues at most 5 certificates per 7 days for the same set of names, so a fixed
+   hostname stops working after a few runs a week. The name stays one level below the zone because
+   Cloudflare's free edge certificate covers only `<zone>` and `*.<zone>`; the run stops with an
+   error when the hostname is not directly below the zone Cloudflare reports.
 2. **DNS only**: `interview --answers` (own server, `root`, the key's path,
    `server.serve: dns-only`), `design --host-key <fingerprint>`, `adapt --no-ai --yes` (pull request
    merged), `provision --plan-only` then `provision --approve <infrastructure> --approve <host plan>`,
@@ -157,7 +165,7 @@ cleanup always runs:
 - It deletes the throwaway server and its SSH key: everything labelled with the run's id, and
   nothing else, then reports any server or key still listed under that label.
 - It removes what this run created in Cloudflare for the app, also after a finished `destroy`
-  (which should have left nothing): DNS records on the test hostname, `www.`, `ssh-<app>.` and
+  (which should have left nothing): DNS records on the run's hostname, `www.`, `ssh-<app>.` and
   `portainer.`, the tunnel `opscrew-<app>`, the Access applications and policies and the service
   token named after the app. Anything that existed before the run is skipped.
 - It resets the throwaway repository: closes every open pull request and deletes every branch
@@ -168,8 +176,8 @@ secret it knows.
 
 If a run was interrupted (the process killed, so the cleanup never ran): in the Hetzner project,
 delete the servers and SSH keys labelled `managed-by=opscrew-e2e`; in Cloudflare, delete the DNS
-records on the test hostname (and `www.`, `ssh-<app>.`), the tunnel `opscrew-<app>`, the Access
-applications `OpsCrew SSH (<app>)`, the Access policy and service token `OpsCrew deploy (<app>)`.
+records on the run's hostname `e2e-<run id>.<zone>` (the id is the server's `run=<id>` label) and
+on `www.`, `portainer.` and `ssh-<app>.`, the tunnel `opscrew-<app>`, the Access applications `OpsCrew SSH (<app>)`, the Access policy and service token `OpsCrew deploy (<app>)`.
 
 | Variable | What it is |
 |---|---|
@@ -177,7 +185,7 @@ applications `OpsCrew SSH (<app>)`, the Access policy and service token `OpsCrew
 | `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test to create and delete the throwaway server. Use a separate, empty project. |
 | `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as above. |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | A Cloudflare token for the zone with Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit, plus the account permissions tunnel mode needs: Cloudflare Tunnel Edit, Access: Apps and Policies Edit, Access: Service Tokens Edit, Access: Organizations, Identity Providers, and Groups Edit. Cloudflare Zero Trust must be turned on for the account. |
-| `OPSCREW_E2E_DOMAIN` | A hostname in that zone, for example `e2e.example.com`. The test owns its records while it runs. |
+| `OPSCREW_E2E_DOMAIN` | A hostname one level below that zone, for example `e2e.example.com`, or the zone itself. It names the zone only: each run uses its own hostname `e2e-<run id>.<zone>` (see step 1) and owns its records while it runs. |
 | `OPSCREW_E2E_REGION` | Optional, where the server runs: `eu-central` (default; Nuremberg, then Falkenstein, then Helsinki), `us-east`, `us-west` or `ap-southeast`. |
 | `OPSCREW_E2E_OWN_SERVER_TYPE` | Optional, a Hetzner server type to use instead of the cheapest x86 one, for example `cx23`. |
 | `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as above, but only examples under `examples/` (default `nextjs-postgres`). |

@@ -53,6 +53,7 @@ import {
   missingVariables,
   REGION_LOCATIONS,
   removalApproval,
+  runHostname,
   Scrubber,
   serverCandidates,
   splitCommand,
@@ -86,6 +87,19 @@ describe("own-server live test helpers", () => {
     expect(missingVariables({ ...all, OPSCREW_E2E_OWN_SERVER: "true" })).toEqual([
       "OPSCREW_E2E_OWN_SERVER=1",
     ]);
+  });
+
+  it("gives each run its own hostname one level below the zone", () => {
+    expect(runHostname("e2e.example.com", "mgr4k2x1ab12")).toBe("e2e-mgr4k2x1ab12.example.com");
+    expect(runHostname(" E2E.Example.com. ", "mgr4k2x1ab12")).toBe("e2e-mgr4k2x1ab12.example.com");
+    // Already the zone apex: the run's name goes directly below it.
+    expect(runHostname("example.com", "mgr4k2x1ab12")).toBe("e2e-mgr4k2x1ab12.example.com");
+    // Only the first label is dropped.
+    expect(runHostname("e2e.shop.example.com", "abc")).toBe("e2e-abc.shop.example.com");
+    // Two runs never share a name.
+    expect(runHostname("e2e.example.com", "a1")).not.toBe(runHostname("e2e.example.com", "a2"));
+    expect(() => runHostname("", "abc")).toThrow(/Cannot derive/);
+    expect(() => runHostname("e2e.example.com", "--")).toThrow(/Cannot derive/);
   });
 
   it("reads the plan hashes a run names, once each, and the host plan hash", () => {
@@ -412,6 +426,11 @@ describe.skipIf(MISSING.length > 0)(
     : `live end-to-end on your own server: examples/${E2E.app} on a throwaway Hetzner server`,
   () => {
     const runId = `${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
+    /**
+     * The app's hostname for this run only (`runHostname`): a fresh name per run, so Caddy never
+     * asks Let's Encrypt again for a name it already got certificates for this week.
+     */
+    const appHost = E2E.domain === "" ? "" : runHostname(E2E.domain, runId);
     const startedAt = new Date();
     const runner = new NodeCommandRunner();
     const scrubber = new Scrubber();
@@ -537,7 +556,7 @@ describe.skipIf(MISSING.length > 0)(
           uptime: "best-effort",
           dataCriticality: "important",
           dnsProvider: "cloudflare",
-          domain: E2E.domain,
+          domain: appHost,
           keepExternalServices: [],
           "server.host": ipv4(),
           "server.port": 22,
@@ -658,19 +677,19 @@ describe.skipIf(MISSING.length > 0)(
 
     /** The app's health URL on the test hostname. */
     async function healthUrl(): Promise<string> {
-      return `https://${E2E.domain}${(await readPlan()).app.healthPath}`;
+      return `https://${appHost}${(await readPlan()).app.healthPath}`;
     }
 
     /** Waits until the domain resolves (through 1.1.1.1) to the server itself or to Cloudflare. */
     async function waitForDns(direct: boolean): Promise<void> {
       log(
-        `waiting for ${E2E.domain} to point ${direct ? "at the server" : "at Cloudflare"} (up to 10 minutes)`,
+        `waiting for ${appHost} to point ${direct ? "at the server" : "at Cloudflare"} (up to 10 minutes)`,
       );
       await waitFor(
-        `${E2E.domain} pointing ${direct ? "at the server" : "at Cloudflare"}`,
+        `${appHost} pointing ${direct ? "at the server" : "at Cloudflare"}`,
         minutes(10),
         async () => {
-          const addresses = await resolveIpv4(E2E.domain);
+          const addresses = await resolveIpv4(appHost);
           if (addresses.length === 0) return undefined;
           return addresses.includes(ipv4()) === direct ? true : undefined;
         },
@@ -902,12 +921,18 @@ describe.skipIf(MISSING.length > 0)(
         expect(plan.dns.provider, "DNS on Cloudflare").toBe("cloudflare");
         expect(plan.dns.proxied, "DNS only: the record is not proxied").toBe(false);
 
-        zone = await cloudflare.zoneOf(E2E.domain);
+        zone = await cloudflare.zoneOf(appHost);
+        if (appHost !== `${appHost.split(".")[0]}.${zone.name}`) {
+          throw new Error(
+            `${appHost} is not directly below the Cloudflare zone ${zone.name}, so Cloudflare's free edge certificate does not cover it. Set OPSCREW_E2E_DOMAIN to a hostname one level below the zone (or the zone itself).`,
+          );
+        }
+        log(`this run serves the app on its own hostname ${appHost}`);
         hostnames = [
-          E2E.domain,
-          `www.${E2E.domain}`,
+          appHost,
+          `www.${appHost}`,
           `ssh-${appName}.${zone.name}`,
-          `portainer.${E2E.domain}`,
+          `portainer.${appHost}`,
         ];
         // What was there before this run is never deleted by the cleanup.
         cloudflareBefore = await cloudflare.appResources(zone, appName, hostnames);
