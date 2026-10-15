@@ -187,11 +187,10 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     server !== undefined && current.target.provider !== "own" && !hidesServerAddress(current)
       ? server
       : undefined;
-  // A server the user owns: sshd's port as the last provision rendered it (committed tfvars).
-  const sshPort =
-    current.target.provider === "own"
-      ? ownRenderFromTfvars(await committedTfvars(paths.root, current)).sshPort
-      : undefined;
+  // A server the user owns: the SSH port provision used. Public mode logs in on the recorded
+  // login port, which differs from sshd's when a router forwards it (2222 to 22); tunnel mode
+  // uses sshd's own port, as the last provision committed it (`ssh_port`, written only there).
+  const sshPort = current.target.provider === "own" ? await ownSshPort(deps, current) : undefined;
   const runbook = renderRunbook(current, {
     opscrewVersion: deps.version,
     github: github.repo ?? { owner: "<owner>", repo: "<repo>" },
@@ -215,6 +214,15 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   }
   await deps.state.markPhase("verify", passed ? "ok" : "failed", say(summary));
   return { checks, passed, url, runbookPath, plan: current };
+}
+
+/** The SSH port the runbook names for a server the user owns (never its address, FR-902). */
+async function ownSshPort(deps: PhaseDeps, plan: DeployPlan): Promise<number | undefined> {
+  const committed = async () =>
+    ownRenderFromTfvars(await committedTfvars(deps.paths.root, plan)).sshPort;
+  if (tunnelMode(plan)) return committed();
+  const connection = await readOwnServerRecord(deps.paths).catch(() => undefined);
+  return connection?.port ?? (await committed());
 }
 
 /** The addresses and login host name of a server the user owns, from OpsCrew's local state. */

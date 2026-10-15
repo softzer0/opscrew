@@ -32,12 +32,16 @@ export async function readRequirements(deps: PhaseDeps): Promise<Requirements | 
 }
 
 /**
- * What the render of a server the user owns needs besides the plan: the port sshd listens on
- * (inspection, `sshd -T`; the tunnel routes the SSH hostname there) and, when the plan has
+ * What the render of a server the user owns needs besides the plan: the SSH port (`sshPort`) and,
+ * when the plan has
  * Cloudflare Access, whether this configuration creates the account's Zero Trust organization and
  * the id of an existing one-time PIN login method.
  */
 export interface OwnRenderInput {
+  /**
+   * The login port in public mode (which differs from sshd's when a router forwards it), sshd's
+   * own port in tunnel mode (inspection, `sshd -T`; the tunnel routes the SSH hostname there).
+   */
   sshPort?: number;
   createZeroTrustOrganization?: boolean;
   oneTimePinIdentityProviderId?: string;

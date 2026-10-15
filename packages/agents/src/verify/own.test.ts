@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
+import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
@@ -103,12 +104,13 @@ async function setup(plan: DeployPlan, own: { host: string; port: number; sshPor
     agent: true,
     reachable: plan.target.provider === "own" && plan.target.access === "public",
   });
-  // What the last provision committed: sshd's port on the server, never the address.
+  // What the last provision committed, never the address: tunnel mode writes sshd's port on the
+  // server (the tunnel's SSH route); public mode writes no `ssh_port`.
   const infra = join(root, "opscrew", "infra", "prod");
   await mkdir(infra, { recursive: true });
   await writeFile(
     join(infra, "terraform.tfvars.json"),
-    JSON.stringify({ ssh_port: own.sshPort ?? own.port }),
+    JSON.stringify(tunnelMode(plan) ? { ssh_port: own.sshPort ?? own.port } : {}),
   );
   return deps;
 }
@@ -156,6 +158,58 @@ describe("runVerify on a server the user owns", () => {
     expect(runbook).not.toContain("198.51.100.7");
     expect(runbook).toContain("-p 2222");
     expect(runbook).toContain("Backups are your responsibility");
+  });
+
+  it("public mode keeps the login port in the runbook when a router forwards it to sshd", async () => {
+    // A router forwards 2222 to sshd's 22: provision used the login port, so the runbook must too.
+    const deps = await setup(ownPlan(), { host: OWN_IPV4, port: 2222, sshPort: 22 });
+    await runVerify(deps, {
+      resolver,
+      fetch: fakeSite().fetch,
+      tlsConnect: cert,
+      tcpConnect: async () => false,
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    const runbook = await readFile(deps.paths.files.runbook, "utf8");
+    expect(runbook).toContain("-p 2222");
+    expect(runbook).not.toContain(OWN_IPV4);
+  });
+
+  it("tunnel mode keeps sshd's own port from the committed configuration, not the login port", async () => {
+    const deps = await setup(ownPlan({ access: "tunnel" }), {
+      host: LAN_IPV4,
+      port: 2200,
+      sshPort: 2222,
+    });
+    await runVerify(deps, {
+      resolver,
+      fetch: fakeSite().fetch,
+      tlsConnect: cert,
+      tcpConnect: noProbes,
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    const runbook = await readFile(deps.paths.files.runbook, "utf8");
+    expect(runbook).toContain("-p 2222");
+    expect(runbook).not.toContain("-p 2200");
+  });
+
+  it("public mode on the same port renders the runbook byte-identically to a render without a port", async () => {
+    const deps = await setup(ownPlan(), { host: OWN_IPV4, port: 22 });
+    const result = await runVerify(deps, {
+      resolver,
+      fetch: fakeSite().fetch,
+      tlsConnect: cert,
+      tcpConnect: async () => false,
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    const expected = renderRunbook(result.plan, {
+      opscrewVersion: deps.version,
+      github: { owner: "acme", repo: "shop" },
+      deploySshPublicKey: "",
+      projectId: deps.paths.projectId,
+    });
+    expect(await readFile(deps.paths.files.runbook, "utf8")).toBe(expected.content);
+    expect(expected.content).not.toContain("-p 22");
   });
 
   it("tunnel mode expects Cloudflare's addresses even when the plan's records are not proxied", async () => {

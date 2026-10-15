@@ -220,4 +220,4 @@ network or model.
 - [X] T949 Mark research R2's rejected `DOCKER-USER` alternative as superseded by its "Behind Cloudflare's proxy" amendment per research R2 (partial)
 - [X] T950 Record in spec US4/AC3 (or ADR 0011) that `--undo-host` keeps Docker installed even when OpsCrew installed it per US4/AC3 (partial)
 - [X] T951 Align spec US5/AC3 with OpsCrew showing only the Portainer password file's path, never the password per US5/AC3 (partial)
-- [ ] T952 Keep the login port in the runbook `opscrew verify` writes for a public-mode own server behind port forwarding (verify rebuilds the port from the committed `ssh_port` tfvar, which public mode never writes), and say "the login port in public mode, sshd's port in tunnel mode" in `OwnRenderInput.sshPort`'s TSDoc per US1/AC5 (partial)
+- [X] T952 Keep the login port in the runbook `opscrew verify` writes for a public-mode own server behind port forwarding (verify rebuilds the port from the committed `ssh_port` tfvar, which public mode never writes), and say "the login port in public mode, sshd's port in tunnel mode" in `OwnRenderInput.sshPort`'s TSDoc per US1/AC5 (partial)
