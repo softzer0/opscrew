@@ -275,6 +275,33 @@ export function failingDockerfile(dockerfile: string): string {
 }
 
 /**
+ * The rollback's outcome, read from the annotation messages of a failed deploy job. The rollback
+ * step always fails the job and says in its error annotation what it did: it succeeded only when
+ * it wrote the previous version back (and Portainer did not refuse the redeploy). Otherwise the
+ * message names what the job reported instead (could not write it back, no earlier version).
+ */
+export function rollbackOutcome(messages: readonly string[]): { ok: boolean; message: string } {
+  const reports = messages.filter((message) => message.startsWith("The deploy failed"));
+  const wrote = reports.find(
+    (message) =>
+      message.includes("wrote the previous version back") &&
+      !message.includes("did not confirm") &&
+      !message.includes("could not"),
+  );
+  if (wrote !== undefined) return { ok: true, message: wrote };
+  if (reports.length > 0) {
+    return { ok: false, message: `the rollback did not succeed: ${reports.join(" | ")}` };
+  }
+  return {
+    ok: false,
+    message:
+      messages.length === 0
+        ? "the failed deploy job has no annotations, so the rollback reported nothing"
+        : `the rollback reported no outcome; the job's annotations: ${messages.join(" | ")}`,
+  };
+}
+
+/**
  * The source of an ES module for `node --import` that makes `dns.lookup` (which `net`, `tls`,
  * `https` and `fetch` use) answer `hosts` (name → address) and pass every other name on. It lets
  * the CLI reach Portainer by a short host name that no DNS server knows.

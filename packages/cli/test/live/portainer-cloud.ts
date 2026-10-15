@@ -507,6 +507,43 @@ export async function runSteps(
   );
 }
 
+/**
+ * The annotations of every job of a workflow run (a job's id is its check run's id), with the job
+ * name and level. GitHub masks the run's secrets in them; the test still scrubs what it shows.
+ */
+export async function runAnnotations(
+  github: GitHubRepo,
+  runId: number,
+): Promise<{ job: string; level: string; message: string }[]> {
+  const got = await github.call(
+    "GET",
+    `/repos/${github.name}/actions/runs/${runId}/jobs?per_page=100`,
+  );
+  const jobs = (got.json as { jobs?: { id: number; name: string }[] } | undefined)?.jobs;
+  if (got.status !== 200 || jobs === undefined) {
+    throw new Error(`Could not list the jobs of workflow run ${runId} (HTTP ${got.status}).`);
+  }
+  const annotations: { job: string; level: string; message: string }[] = [];
+  for (const job of jobs) {
+    const listed = await github.call(
+      "GET",
+      `/repos/${github.name}/check-runs/${job.id}/annotations?per_page=100`,
+    );
+    const items = listed.json as { annotation_level?: string; message?: string }[] | undefined;
+    if (listed.status !== 200 || !Array.isArray(items)) {
+      throw new Error(`Could not read the annotations of job ${job.name} (HTTP ${listed.status}).`);
+    }
+    for (const item of items) {
+      annotations.push({
+        job: job.name,
+        level: item.annotation_level ?? "",
+        message: item.message ?? "",
+      });
+    }
+  }
+  return annotations;
+}
+
 /** The names of the repository's GitHub Actions secrets. */
 export async function secretNames(github: GitHubRepo): Promise<string[]> {
   const got = await github.call("GET", `/repos/${github.name}/actions/secrets?per_page=100`);

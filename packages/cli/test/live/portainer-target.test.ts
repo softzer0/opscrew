@@ -82,6 +82,7 @@ import {
   portainerAppResources,
   repoInfo,
   rulesetRules,
+  runAnnotations,
   runSteps,
   secretNames,
   traceText,
@@ -119,6 +120,7 @@ import {
   portainerAnswers,
   portainerPass,
   preloadNodeOptions,
+  rollbackOutcome,
   SELF_DEPLOY_TARGET_MS,
   setupTokenFromLogs,
   shortHostMentions,
@@ -347,6 +349,28 @@ describe("Portainer live test helpers", () => {
     const failing = failingDockerfile('FROM node:22-alpine\nCMD ["node", "server.js"]\n');
     expect(failing.startsWith('FROM node:22-alpine\nCMD ["node", "server.js"]\n')).toBe(true);
     expect(failing.trimEnd().split("\n").at(-1)).toMatch(/^CMD \["\/bin\/sh", "-c", ".*exit 1"\]$/);
+  });
+
+  it("reads the rollback's outcome from the failed job's annotations", () => {
+    const branch = "opscrew-deploy";
+    const exit = "Process completed with exit code 1.";
+    const wrote = `The deploy failed; OpsCrew wrote the previous version back to the ${branch} branch, and Portainer's updater deploys it within about a minute.`;
+    expect(rollbackOutcome([exit, wrote])).toEqual({ ok: true, message: wrote });
+    const asked = `The deploy failed; OpsCrew wrote the previous version back to the ${branch} branch and asked Portainer to deploy it.`;
+    expect(rollbackOutcome([asked])).toEqual({ ok: true, message: asked });
+    for (const message of [
+      `The deploy failed and OpsCrew could not write the previous version back to the ${branch} branch. Write it back by hand.`,
+      `The deploy failed and the ${branch} branch had no earlier version to restore. Fix the problem and push again.`,
+      `The deploy failed; OpsCrew wrote the previous version back to the ${branch} branch, but Portainer did not confirm the redeploy (HTTP 500). Redeploy the stack in Portainer.`,
+    ]) {
+      const outcome = rollbackOutcome([exit, message]);
+      expect(outcome.ok, message).toBe(false);
+      expect(outcome.message).toContain(message);
+    }
+    const none = rollbackOutcome([exit]);
+    expect(none.ok).toBe(false);
+    expect(none.message).toContain(exit);
+    expect(rollbackOutcome([]).message).toContain("no annotations");
   });
 
   it("lists a container's variables by name and emptiness, never by value", () => {
@@ -2204,8 +2228,20 @@ describe.skipIf(MISSING.length > 0)(
           "failure",
         );
         const steps = await runSteps(github, failing.runId);
+        const waited = steps.find((item) => item.step === "Wait until the new version answers");
+        expect(waited?.conclusion, "the failing version did not answer").toBe("failure");
         const rollback = steps.find((item) => item.step === "Roll back to the previous version");
-        expect(rollback?.conclusion, "the failed run rolled back").toBe("success");
+        // The rollback step always fails the job by design; its error annotation says what it did.
+        expect(
+          rollback?.conclusion === "success" || rollback?.conclusion === "failure",
+          `the rollback step ran (conclusion ${String(rollback?.conclusion)})`,
+        ).toBe(true);
+        const annotations = (await runAnnotations(github, failing.runId))
+          .filter((item) => item.job === rollback?.job)
+          .map((item) => item.message);
+        const outcome = rollbackOutcome(annotations);
+        if (!outcome.ok) throw new Error(scrub(outcome.message));
+        observe(`the rollback reported: ${outcome.message}`);
         const head = await branchHead(github, DEPLOY_BRANCH);
         const restored = await commitDetails(github, head as string);
         expect(
