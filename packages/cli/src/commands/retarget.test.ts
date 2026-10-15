@@ -1,6 +1,11 @@
 import { readServerAddresses } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
-import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { NonInteractiveApprovalHandler } from "../approval";
 import { testPlan } from "../ui/__fixtures__/deploy";
@@ -258,6 +263,30 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     expect(await run(ctx, "retarget", "--finish", "--confirm", "shpo")).toBe(1);
     expect(ctx.errors).toContain("--confirm shpo does not match the app name");
     expect(move.events).toEqual([]);
+  });
+
+  it("refuses a Portainer target plainly: it never moves", async () => {
+    move = await moveProject();
+    const current = await readArtifact("plan", move.paths.files.plan);
+    const portainer = DeployPlanSchema.parse({
+      ...current,
+      target: {
+        provider: "portainer",
+        mode: "portainer-stack",
+        environmentId: 3,
+        arch: "amd64",
+        redeploy: "updater",
+        web: { mode: "proxy", port: 8080 },
+      },
+    });
+    await writeArtifact("plan", move.paths.files.plan, portainer);
+    const ctx = move.context();
+    expect(await run(ctx, "retarget", "--to", "digitalocean")).toBe(1);
+    expect(ctx.errors).toContain(
+      "Moving an app to or from a Portainer target is not supported; destroy it and provision again.",
+    );
+    expect(move.events).toEqual([]);
+    expect((await readArtifact("plan", move.paths.files.plan)).target).toEqual(portainer.target);
   });
 
   it("changes nothing when the summary is declined in a terminal", async () => {

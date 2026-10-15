@@ -12,6 +12,28 @@ import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
 import { httpAllowedCidrs, renderInfra, tfvars } from "./index";
 
+describe("renderInfra on a Portainer target", () => {
+  it("stops with a plain refusal until the Portainer root module exists", () => {
+    const portainer = DeployPlanSchema.parse({
+      ...testPlan(),
+      target: {
+        provider: "portainer",
+        mode: "portainer-stack",
+        environmentId: 3,
+        arch: "amd64",
+        redeploy: "updater",
+        web: { mode: "proxy", port: 8080 },
+      },
+    });
+    expect(() => renderInfra(portainer, testContext())).toThrow(
+      expect.objectContaining({
+        code: "PHASE_PRECONDITION",
+        message: "A Portainer target is not supported by this command yet.",
+      }),
+    );
+  });
+});
+
 const CF = { ipv4: ["173.245.48.0/20", "103.21.244.0/22"], ipv6: ["2400:cb00::/32"] };
 const PUBLIC_KEY =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE opscrew-deploy";

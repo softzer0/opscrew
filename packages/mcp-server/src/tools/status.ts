@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { moveInProgress, providerProfile } from "@opscrew/agents";
+import { moveInProgress, moveProvider, providerProfile } from "@opscrew/agents";
 import { PHASES, type PhaseName } from "@opscrew/contracts";
 import type { PhaseRecord } from "@opscrew/core";
 import { type Retarget, readArtifact } from "@opscrew/plan-schema";
@@ -93,7 +93,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
             ? undefined
             : {
                 from: plan.retarget.from.target.provider,
-                to: plan.target.provider,
+                to: moveProvider(plan.target),
                 step: plan.retarget.step,
                 ...(plan.retarget.abort !== undefined
                   ? { abortStep: plan.retarget.abort.step }

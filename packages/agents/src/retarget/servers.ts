@@ -7,6 +7,7 @@ import {
   serverOfProvider,
   updateServerAddresses,
 } from "../shared";
+import { moveProvider } from "../shared/vps-target";
 
 /**
  * The two servers of a move, from OpsCrew's local state (`.opscrew/server.json`): the server being
@@ -105,7 +106,7 @@ export async function loadMoveServers(
     const read = await outputs().catch(() => undefined);
     if (read !== undefined) {
       from ??= serverOfProvider(read, move.from.target.provider);
-      next ??= serverOfProvider(read, plan.target.provider);
+      next ??= serverOfProvider(read, moveProvider(plan.target));
     }
   }
   if (from === undefined && options.oldServerOptional !== true) throw unknownOldServer(command);

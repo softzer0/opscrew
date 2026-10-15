@@ -20,6 +20,7 @@ import {
 } from "../destroy";
 import { providerProfile, vpsConnector } from "../providers";
 import { infrastructureOutputs } from "../shared";
+import { moveProvider } from "../shared/vps-target";
 import { moveLayout, previousTarget, protectionVariable } from "./layouts";
 import { clearPending } from "./pending";
 import {
@@ -29,7 +30,6 @@ import {
   planHeading,
   prepareInfraPlan,
 } from "./plans";
-
 import { isAppHealthy } from "./server-ops";
 import { endMoveServers, loadMoveServers, oldServer } from "./servers";
 import {
@@ -112,12 +112,12 @@ async function removeNewServer(
   const from = previousTarget(move);
   const to = session.plan.target;
   const app = session.plan.app.name;
-  const words = providerWords(to.provider);
-  const texts = destroyTexts(to.provider);
-  const profile = providerProfile(to.provider);
+  const words = providerWords(moveProvider(to));
+  const texts = destroyTexts(moveProvider(to));
+  const profile = providerProfile(moveProvider(to));
   const del: DeletionSession = {
     deps,
-    provider: to.provider,
+    provider: moveProvider(to),
     app,
     command: ABORT_COMMAND,
     what: "removal of the new server",
@@ -145,7 +145,7 @@ async function removeNewServer(
     del,
     {
       name: app,
-      provider: to.provider,
+      provider: moveProvider(to),
       deleteProtection: profile.deleteProtection,
       resources: preview.changes,
       snapshot: false,
@@ -412,7 +412,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   await deps.state.markPhase(
     "retarget",
     "skipped",
-    `move to ${providerWords(to.provider).name} aborted`,
+    `move to ${providerWords(moveProvider(to)).name} aborted`,
   );
   await auditStep(session, "aborted", `the deployment stays on ${from.provider} at ${oldHost}`);
 
@@ -460,7 +460,7 @@ export async function abortRetarget(
     );
   }
   if (move.step === "switched") {
-    const to = providerWords(plan.target.provider);
+    const to = providerWords(moveProvider(plan.target));
     const from = move.from.target.provider;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -494,7 +494,7 @@ export async function abortRetarget(
     }
     const session = await openSession(deps, plan, {
       command: ABORT_COMMAND,
-      providers: [move.from.target.provider, plan.target.provider],
+      providers: [move.from.target.provider, moveProvider(plan.target)],
       services,
       ...(options.engine !== undefined ? { engine: options.engine } : {}),
       ...(options.approvePlanHash !== undefined

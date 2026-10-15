@@ -17,6 +17,7 @@ import {
 } from "../providers";
 import { readRequirements } from "../provision";
 import { serverAddress } from "../shared";
+import { portainerTargetNoMove } from "../shared/vps-target";
 import { databaseSize } from "./server-ops";
 import { recordMoveServers } from "./servers";
 import {
@@ -83,12 +84,13 @@ async function pickOption(
 function targetOf(option: DesignOption): CloudDeployTarget {
   const { provider } = option.target;
   if (provider === "own") throw ownServerNotYet();
+  if (provider === "portainer") throw portainerTargetNoMove();
   return {
     provider,
     mode: "vps-compose",
     location: option.target.location,
     serverType: option.target.serverType,
-    image: providerProfile(option.target.provider).defaultImage,
+    image: providerProfile(provider).defaultImage,
     backups: option.backups,
   };
 }
@@ -171,6 +173,8 @@ export async function startMove(
   plan: DeployPlan,
   options: RetargetOptions,
 ): Promise<MoveSession> {
+  // A Portainer target never moves (feature 010): it is destroyed and provisioned again instead.
+  if (plan.target.provider === "portainer") throw portainerTargetNoMove();
   const address =
     plan.deployment.destroyedAt === undefined && (await stateExists(deps))
       ? await serverAddress(deps, plan, {
@@ -190,6 +194,9 @@ export async function startMove(
     );
   }
   const from = cloudTarget(plan.target);
+  if (options.to === undefined && requirements.provider === "portainer") {
+    throw portainerTargetNoMove();
+  }
   const to = options.to ?? requestedProvider(requirements);
   if (to === "own") throw ownServerNotYet();
   if (to === from.provider) {

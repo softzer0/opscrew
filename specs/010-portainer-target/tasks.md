@@ -14,7 +14,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
 
 ## Phase 1: Foundation (serial)
 
-- [ ] T1001 Contracts, schemas, approvals, local state and the adapter package's skeleton in `packages/contracts/src/{connector,safety}.ts`, `packages/plan-schema/src/**` (+ regenerated `schemas/*.json`), `packages/core/src/approvals.ts`, `packages/agents/src/shared/server-address.ts`, `packages/connectors/portainer/{package.json,tsconfig.json,vitest.config.ts,src/index.ts}`
+- [X] T1001 Contracts, schemas, approvals, local state and the adapter package's skeleton in `packages/contracts/src/{connector,safety}.ts`, `packages/plan-schema/src/**` (+ regenerated `schemas/*.json`), `packages/core/src/approvals.ts`, `packages/agents/src/shared/server-address.ts`, `packages/connectors/portainer/{package.json,tsconfig.json,vitest.config.ts,src/index.ts}`
   - Owns: those paths (+ their tests); `packages/agents/package.json` (only the new dependency line)
   - Reads: plan.md "1. Contracts, schemas, constitution"; data-model.md "Plan target" and "Portainer connection"; research.md R3, R8; how 009's T901 added `own` and `host-apply` (git log of `packages/contracts`, `packages/core/src/approvals.ts`)
   - Depends: —

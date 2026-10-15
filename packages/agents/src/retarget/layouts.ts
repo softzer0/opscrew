@@ -1,6 +1,7 @@
 import type { InfraLayout, ServerModule } from "@opscrew/iac-templates";
 import type { CloudDeployTarget, DeployTarget, Retarget } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
+import { moveProvider } from "../shared/vps-target";
 
 /** The old server's target (`plan.retarget.from.target`) with its image filled in. */
 export function previousTarget(move: Pick<Retarget, "from">): CloudDeployTarget {
@@ -35,7 +36,7 @@ export function moveLayout(
   from: DeployTarget,
   to: DeployTarget,
 ): InfraLayout {
-  const providers = [from.provider, to.provider];
+  const providers = [moveProvider(from), moveProvider(to)];
   switch (name) {
     case "rename":
       return {
@@ -70,6 +71,7 @@ export function moveLayout(
  */
 export function protectionVariable(layout: InfraLayout, module: ServerModule): string | undefined {
   const target = module === "server" ? layout.server : layout.previous;
-  if (target === undefined || !providerProfile(target.provider).deleteProtection) return undefined;
+  if (target === undefined || !providerProfile(moveProvider(target)).deleteProtection)
+    return undefined;
   return module === "server" ? "delete_protection" : "previous_delete_protection";
 }

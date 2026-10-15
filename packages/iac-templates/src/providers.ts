@@ -1,9 +1,14 @@
 import { OpsCrewError } from "@opscrew/core";
-import type {
-  CloudDeployTarget,
-  CloudProvider,
-  DeployPlan,
-  DeployTarget,
+import {
+  type CloudDeployTarget,
+  type CloudProvider,
+  type DeployPlan,
+  type DeployTarget,
+  isVpsTarget,
+  PORTAINER_TARGET_NO_MOVE,
+  PORTAINER_TARGET_NOT_YET,
+  type VpsDeployTarget,
+  type VpsProvider,
 } from "@opscrew/plan-schema";
 
 /** VPS provider a plan deploys to. */
@@ -23,9 +28,42 @@ export function ownServerNotYet(): OpsCrewError {
   );
 }
 
-/** `target` when OpsCrew creates the server (Hetzner, DigitalOcean); throws for an own server. */
+/**
+ * The plain error when code that only knows single servers is reached with a Portainer target.
+ * The Portainer templates of feature 010 handle that target before.
+ */
+export function portainerTargetNotYet(): OpsCrewError {
+  return new OpsCrewError("PHASE_PRECONDITION", PORTAINER_TARGET_NOT_YET.message, {
+    hint: PORTAINER_TARGET_NOT_YET.hint,
+  });
+}
+
+/** The plain error for a move layout that involves a Portainer target, which never moves. */
+export function portainerTargetNoMove(): OpsCrewError {
+  return new OpsCrewError("PHASE_PRECONDITION", PORTAINER_TARGET_NO_MOVE.message, {
+    hint: PORTAINER_TARGET_NO_MOVE.hint,
+  });
+}
+
+/** `target` when the app runs on one server; throws {@link portainerTargetNotYet} for Portainer. */
+export function vpsTarget(target: DeployTarget): VpsDeployTarget {
+  if (!isVpsTarget(target)) throw portainerTargetNotYet();
+  return target;
+}
+
+/** The provider of a server in a move layout; throws {@link portainerTargetNoMove} for Portainer. */
+export function moveProvider(target: Pick<DeployTarget, "provider">): VpsProvider {
+  if (target.provider === "portainer") throw portainerTargetNoMove();
+  return target.provider;
+}
+
+/**
+ * `target` when OpsCrew creates the server (Hetzner, DigitalOcean); throws for an own server and
+ * a Portainer target.
+ */
 export function cloudTarget(target: DeployTarget): CloudDeployTarget {
   if (target.provider === "own") throw ownServerNotYet();
+  if (target.provider === "portainer") throw portainerTargetNotYet();
   return target;
 }
 
@@ -217,9 +255,11 @@ const PROVIDERS: Record<CloudProvider, ProviderText> = {
 
 /**
  * Wording and HCL pieces for a target's provider: a plan's `target`, a server of a move layout,
- * or just `{ provider }`. Throws for a server the user owns ({@link ownServerNotYet}).
+ * or just `{ provider }`. Throws for a server the user owns ({@link ownServerNotYet}) and a
+ * Portainer target ({@link portainerTargetNotYet}).
  */
 export function providerText(target: { provider: PlanProvider }): ProviderText {
   if (target.provider === "own") throw ownServerNotYet();
+  if (target.provider === "portainer") throw portainerTargetNotYet();
   return PROVIDERS[target.provider];
 }

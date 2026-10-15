@@ -1,5 +1,6 @@
 import type { PolicyResult, Severity } from "@opscrew/contracts";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { OpsCrewError } from "@opscrew/core";
+import { type DeployPlan, PORTAINER_TARGET_NOT_YET } from "@opscrew/plan-schema";
 
 /** One managed resource from an engine plan, with known values and unknown-at-plan-time markers. */
 export interface PlannedResource {
@@ -14,6 +15,22 @@ export interface PlannedResource {
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 const PUBLIC_TCP_PORTS = new Set(["22", "80", "443"]);
 const PUBLIC_UDP_PORTS = new Set(["443"]);
+
+/** The plain error while the plan policies do not cover a Portainer target yet (feature 010). */
+function portainerTargetNotYet(): OpsCrewError {
+  return new OpsCrewError("PHASE_PRECONDITION", PORTAINER_TARGET_NOT_YET.message, {
+    hint: PORTAINER_TARGET_NOT_YET.hint,
+  });
+}
+
+/**
+ * True when the plan asks for the provider's automated backups of the server it creates; never
+ * for a server the user owns (or a Portainer target, which has no server).
+ */
+function planWantsBackups(deployPlan: Pick<DeployPlan, "target">): boolean {
+  const { target } = deployPlan;
+  return (target.provider === "hetzner" || target.provider === "digitalocean") && target.backups;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -278,7 +295,7 @@ function digitalOceanPolicies(
         droplet.address,
       ),
     );
-    if (deployPlan.target.provider !== "own" && deployPlan.target.backups) {
+    if (planWantsBackups(deployPlan)) {
       results.push(
         result(
           "backups-for-critical-data",
@@ -316,9 +333,11 @@ function digitalOceanPolicies(
 
 /**
  * Policy checks on an engine plan (`show -json`) before the user is asked to approve it. Returns
- * passing and failing results; callers stop on any failed `critical` or `high` result.
+ * passing and failing results; callers stop on any failed `critical` or `high` result. Throws a
+ * plain `PHASE_PRECONDITION` for a Portainer target, which these policies do not cover yet.
  */
 export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan): PolicyResult[] {
+  if (deployPlan.target.provider === "portainer") throw portainerTargetNotYet();
   const resources = plannedResources(planJson);
   const results: PolicyResult[] = [];
   const servers = resources.filter((r) => r.type === "hcloud_server");
@@ -357,7 +376,7 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
         server.address,
       ),
     );
-    if (deployPlan.target.provider !== "own" && deployPlan.target.backups) {
+    if (planWantsBackups(deployPlan)) {
       results.push(
         result(
           "backups-for-critical-data",

@@ -19,11 +19,11 @@ import {
 } from "../destroy";
 import { providerProfile } from "../providers";
 import { publishDeploySetup } from "../provision";
+import { moveProvider } from "../shared/vps-target";
 import { moveLayout, previousTarget, protectionVariable } from "./layouts";
 import { clearPending } from "./pending";
 import { deletionStep, planHeading } from "./plans";
 import { endMoveServers, unknownOldServer } from "./servers";
-
 import {
   auditStep,
   type MoveSession,
@@ -287,7 +287,7 @@ async function finish(
   await removeSnapshotRecord(deps, "retarget");
   await clearPending(deps);
   await endMoveServers(deps, session.servers.next);
-  const freshWords = providerWords(fresh.provider);
+  const freshWords = providerWords(moveProvider(fresh));
   await deps.state.markPhase("retarget", "ok", `moved to ${freshWords.name}`);
   await auditStep(
     session,
@@ -388,7 +388,7 @@ export async function finishRetarget(
   try {
     const session = await openSession(deps, plan, {
       command: FINISH_COMMAND,
-      providers: [move.from.target.provider, plan.target.provider],
+      providers: [move.from.target.provider, moveProvider(plan.target)],
       services: options.services ?? {},
       oldServerOptional: true,
       ...(options.engine !== undefined ? { engine: options.engine } : {}),

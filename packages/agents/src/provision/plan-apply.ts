@@ -156,8 +156,13 @@ function applyFailureHint(
     return `${displayName} refused the request, so the API token is probably missing a permission OpsCrew needs. Create a token at ${requirement.createUrl} with ${needed}, set ${profile.tokenVars[0]} to it, then run \`${command}\` again. ${kept}`;
   }
   const target = deployPlan.target;
-  // A server the user owns is never created, so no size can be unavailable.
-  if (target.provider !== "own" && profile.unavailable.test(errors) && !SERVICE_DOWN.test(errors)) {
+  // A server the user owns (or a Portainer) is never created, so no size can be unavailable.
+  if (
+    target.provider !== "own" &&
+    target.provider !== "portainer" &&
+    profile.unavailable.test(errors) &&
+    !SERVICE_DOWN.test(errors)
+  ) {
     const size = provider === "hetzner" ? "server type" : "size";
     const { serverType, location } = target;
     return `${displayName} cannot create a ${serverType} ${serverNoun} in ${location} right now (the ${size} is unavailable or out of stock there). Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;

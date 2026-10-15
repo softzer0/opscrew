@@ -3,6 +3,7 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
 import { infrastructureOutputs } from "../shared";
+import { moveProvider } from "../shared/vps-target";
 import { loadMoveServers } from "./servers";
 import {
   type MoveSession,
@@ -31,7 +32,7 @@ async function continueMove(
       hint: "This is a bug in OpsCrew; please report it.",
     });
   }
-  const to = providerProfile(plan.target.provider).displayName;
+  const to = providerProfile(moveProvider(plan.target)).displayName;
   if (move.abort !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -39,7 +40,7 @@ async function continueMove(
       { hint: `Run \`${ABORT_COMMAND}\` to complete the abort.` },
     );
   }
-  if (options.to !== undefined && options.to !== plan.target.provider) {
+  if (options.to !== undefined && options.to !== moveProvider(plan.target)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `A move to ${to} is already in progress, so OpsCrew will not start another one.`,
@@ -77,7 +78,7 @@ async function continueMove(
   }
   return openSession(deps, current, {
     command: RUN_COMMAND,
-    providers: [move.from.target.provider, plan.target.provider],
+    providers: [move.from.target.provider, moveProvider(plan.target)],
     services,
     ...(options.engine !== undefined ? { engine: options.engine } : {}),
     ...(options.approvePlanHash !== undefined ? { approvePlanHash: options.approvePlanHash } : {}),

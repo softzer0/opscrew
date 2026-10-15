@@ -1,6 +1,7 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudProvider, DeployPlan, Region, Requirements } from "@opscrew/plan-schema";
+import { vpsProvider } from "../shared/vps-target";
 
 /** What the phases need to know about a VPS provider, so none of them imports its connector. */
 export interface ProviderProfile {
@@ -205,16 +206,19 @@ export function providerProfile(id: VpsProviderId): ProviderProfile {
   return profile;
 }
 
-/** The provider of a plan. */
+/** The provider of a plan; throws a plain `PHASE_PRECONDITION` for a Portainer target. */
 export function planProvider(plan: Pick<DeployPlan, "target">): VpsProviderId {
-  return plan.target.provider;
+  return vpsProvider(plan.target.provider);
 }
 
-/** The provider the user asked for; requirements written before feature 004 mean Hetzner. */
+/**
+ * The provider the user asked for; requirements written before feature 004 mean Hetzner. Throws a
+ * plain `PHASE_PRECONDITION` for a Portainer target.
+ */
 export function requestedProvider(
   requirements: Pick<Requirements, "provider"> | undefined,
 ): VpsProviderId {
-  return requirements?.provider ?? "hetzner";
+  return vpsProvider(requirements?.provider ?? "hetzner");
 }
 
 /**

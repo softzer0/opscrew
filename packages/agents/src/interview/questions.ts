@@ -8,6 +8,7 @@ import {
   type ServiceKind,
 } from "@opscrew/plan-schema";
 import { frameworkName, listText } from "../analyze/summary";
+import { vpsProvider } from "../shared/vps-target";
 
 /** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
 export type InterviewAnswers = Record<string, unknown>;
@@ -39,12 +40,17 @@ export interface InterviewContext {
   inferredProvider?: VpsProviderId;
 }
 
-/** The provider default: the previous answer, else the one inferred from tokens, else Hetzner. */
+/**
+ * The provider default: the previous answer, else the one inferred from tokens, else Hetzner.
+ * Throws a plain `PHASE_PRECONDITION` when the previous answer is a Portainer target.
+ */
 export function defaultProvider(
   previous: Pick<Requirements, "provider"> | undefined,
   context: InterviewContext = {},
 ): VpsProviderId {
-  return previous?.provider ?? context.inferredProvider ?? "hetzner";
+  return previous?.provider === undefined
+    ? (context.inferredProvider ?? "hetzner")
+    : vpsProvider(previous.provider);
 }
 
 /**

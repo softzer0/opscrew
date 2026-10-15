@@ -266,3 +266,25 @@ describe("evaluatePlanPolicies", () => {
     ]);
   });
 });
+
+describe("evaluatePlanPolicies on a Portainer target", () => {
+  it("stops with a plain refusal until the Portainer policies exist", () => {
+    const portainer = DeployPlanSchema.parse({
+      ...deployPlan(),
+      target: {
+        provider: "portainer",
+        mode: "portainer-stack",
+        environmentId: 3,
+        arch: "amd64",
+        redeploy: "updater",
+        web: { mode: "tunnel" },
+      },
+    });
+    expect(() => evaluatePlanPolicies(planJson(), portainer)).toThrow(
+      expect.objectContaining({
+        code: "PHASE_PRECONDITION",
+        message: "A Portainer target is not supported by this command yet.",
+      }),
+    );
+  });
+});

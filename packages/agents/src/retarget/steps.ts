@@ -11,6 +11,7 @@ import {
   setDeploySecrets,
 } from "../provision";
 import { providerConsole, serverOfProvider, waitForCloudInit, waitForPort } from "../shared";
+import { moveProvider } from "../shared/vps-target";
 import { moveLayout, previousTarget } from "./layouts";
 import { planThenApply } from "./plans";
 import { stopService, waitAppHealthy } from "./server-ops";
@@ -150,7 +151,7 @@ function assertCreateOnly(saved: Pick<SavedPlan, "changes">): void {
 /** Waits for SSH on the new server, pins its host key and waits for its first-boot setup. */
 async function waitForNewServer(session: MoveSession, host: string): Promise<void> {
   const { deps, services } = session;
-  const provider = session.plan.target.provider;
+  const provider = moveProvider(session.plan.target);
   const profile = providerProfile(provider);
   const waits = waitsOf(services);
   const again = `run \`${RUN_COMMAND}\` again; it continues where it stopped. To remove the new ${profile.serverNoun} instead, run \`${ABORT_COMMAND}\`.`;
@@ -197,7 +198,7 @@ async function waitForNewServer(session: MoveSession, host: string): Promise<voi
 export async function createStep(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps } = session;
   const move = moveOf(session);
-  const fresh = providerWords(session.plan.target.provider);
+  const fresh = providerWords(moveProvider(session.plan.target));
   const old = providerWords(move.from.target.provider);
   deps.reporter.step(`Creating the new ${fresh.noun} on ${fresh.name}`);
   const files = await useLayout(
@@ -218,14 +219,14 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
     // `opscrew design` refuses during a move: another size means aborting and starting again.
     if (error instanceof OpsCrewError && error.hint?.includes("opscrew design")) {
       throw new OpsCrewError(error.code, error.message, {
-        hint: `Run \`${ABORT_COMMAND}\` (your app keeps running on the old ${old.noun}), then start the move again and pick another option: \`${RUN_COMMAND} --to ${session.plan.target.provider} --option <id>\`. Nothing that was already created is removed until you abort.`,
+        hint: `Run \`${ABORT_COMMAND}\` (your app keeps running on the old ${old.noun}), then start the move again and pick another option: \`${RUN_COMMAND} --to ${moveProvider(session.plan.target)} --option <id>\`. Nothing that was already created is removed until you abort.`,
       });
     }
     throw error;
   });
   if (outcome.kind === "pending") return pendingStop(session, outcome.planHash);
   // The new server is the one on the new provider (a move always changes the provider).
-  const next = serverOfProvider(outcome.outputs, session.plan.target.provider);
+  const next = serverOfProvider(outcome.outputs, moveProvider(session.plan.target));
   if (next === undefined) {
     throw new OpsCrewError(
       "ENGINE_FAILED",
@@ -256,7 +257,7 @@ export async function storeDeploySecrets(
 ): Promise<void> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  const provider = which === "new" ? plan.target.provider : move.from.target.provider;
+  const provider = which === "new" ? moveProvider(plan.target) : move.from.target.provider;
   const pinned = await pinHost(session, host, provider);
   let environment: Awaited<ReturnType<typeof buildAppEnvironment>>;
   try {
@@ -308,7 +309,7 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
   const { owner, repo } = session.github;
   const workflowFile = posix.basename(plan.cicd.workflowPath);
   const branch = plan.cicd.branch;
-  const fresh = providerWords(plan.target.provider);
+  const fresh = providerWords(moveProvider(plan.target));
   const oldStill = "The old server still serves your users.";
   deps.reporter.step(
     `Running the deploy workflow (${workflowFile} on ${branch}) for the new ${fresh.noun}`,
@@ -372,7 +373,7 @@ export async function deployStep(session: MoveSession): Promise<RetargetResult |
     await saveMove(session, { ...move, step: "renamed" });
     return { step: "renamed", done: false, next: [`Run \`${RUN_COMMAND}\` again.`] };
   }
-  const fresh = providerWords(plan.target.provider);
+  const fresh = providerWords(moveProvider(plan.target));
   const ops = redactWith(deps);
   const where = { host: next.ipv4, owner: session.github.owner, repo: session.github.repo };
   if (await deploySecretsStoredFor(deps, where)) {

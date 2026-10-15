@@ -2,6 +2,7 @@ import {
   ABORT_COMMAND,
   FINISH_COMMAND,
   formatMoney,
+  moveProvider,
   providerProfile,
   type RetargetSummary,
   RUN_COMMAND,
@@ -26,7 +27,7 @@ export function retargetStatusLine(plan: DeployPlan): string | undefined {
   const move = plan.retarget;
   if (move === undefined) return undefined;
   const from = providerProfile(move.from.target.provider).displayName;
-  const to = providerProfile(plan.target.provider).displayName;
+  const to = providerProfile(moveProvider(plan.target)).displayName;
   let state: string;
   let next: string;
   if (move.abort !== undefined) {

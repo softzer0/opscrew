@@ -1,7 +1,13 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudDeployTarget, DeployPlan, DeployTarget } from "@opscrew/plan-schema";
 import { MODULE_FILES } from "../generated/modules";
-import { type ProviderText, providerText, type VariablePrefix } from "../providers";
+import {
+  type ProviderText,
+  portainerTargetNoMove,
+  providerText,
+  type VariablePrefix,
+  vpsTarget,
+} from "../providers";
 import type { InfraLayout, RenderContext, RenderedFile, ServerModule } from "../types";
 import {
   alignedArguments,
@@ -85,6 +91,7 @@ function noOwnServerMove(): OpsCrewError {
 /** A server module's target: OpsCrew creates it (a server of a cloud root module). */
 function serverTarget(target: DeployTarget): CloudDeployTarget {
   if (target.provider === "own") throw noOwnServerMove();
+  if (target.provider === "portainer") throw portainerTargetNoMove();
   return target;
 }
 
@@ -96,7 +103,7 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   const layout: InfraLayout = ctx.layout ?? {
     server: plan.target,
     live: "server",
-    providers: [plan.target.provider],
+    providers: [vpsTarget(plan.target).provider],
   };
   if (layout.providers.includes("own")) throw noOwnServerMove();
   const servers: ServerCall[] = [];

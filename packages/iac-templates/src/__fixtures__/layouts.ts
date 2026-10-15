@@ -1,5 +1,5 @@
 import type { CloudDeployTarget, CloudProvider, DeployTarget } from "@opscrew/plan-schema";
-import { cloudTarget } from "../providers";
+import { cloudTarget, moveProvider } from "../providers";
 import type { InfraLayout } from "../types";
 import { testPlan } from "./plans";
 
@@ -27,7 +27,7 @@ export function testTarget(provider: CloudProvider): CloudDeployTarget {
 
 /** A move layout from `from` (the server being replaced) to `to` (the new server). */
 export function moveLayout(name: LayoutName, from: DeployTarget, to: DeployTarget): InfraLayout {
-  const providers = [from.provider, to.provider];
+  const providers = [moveProvider(from), moveProvider(to)];
   switch (name) {
     case "rename":
       return {

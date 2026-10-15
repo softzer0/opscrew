@@ -10,6 +10,7 @@ import type {
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudDeployTarget, DeployTarget } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { portainerTargetNotYet } from "../shared/vps-target";
 
 /**
  * The plain error for a server the user already owns (`target.provider: own`) where a phase only
@@ -28,10 +29,12 @@ export function ownServerNotYet(): OpsCrewError {
 
 /**
  * `target` when OpsCrew creates the server (Hetzner Cloud, DigitalOcean); throws
- * {@link ownServerNotYet} for a server the user owns.
+ * {@link ownServerNotYet} for a server the user owns and {@link portainerTargetNotYet} for a
+ * Portainer target.
  */
 export function cloudTarget(target: DeployTarget): CloudDeployTarget {
   if (target.provider === "own") throw ownServerNotYet();
+  if (target.provider === "portainer") throw portainerTargetNotYet();
   return target;
 }
 

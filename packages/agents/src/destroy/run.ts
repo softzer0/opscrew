@@ -455,7 +455,7 @@ function remainingAfterDestroy(input: {
 }): string[] {
   const { plan, texts, github } = input;
   const items = remainingAfterDeletion({
-    provider: plan.target.provider,
+    provider: planProvider(plan),
     app: plan.app.name,
     snapshotId: input.snapshotId,
     backups: cloudTarget(plan.target).backups,

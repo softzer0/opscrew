@@ -9,7 +9,7 @@ import {
 } from "@opscrew/plan-schema";
 import { deepDomainProblem } from "../interview/answers";
 import { providerProfile } from "../providers";
-import { hostListKind, serviceUrlKind } from "../shared";
+import { hostListKind, portainerTargetNotYet, serviceUrlKind } from "../shared";
 import {
   appDirOf,
   appDockerfile,
@@ -59,6 +59,7 @@ function targetFor(option: DesignOption, access: OwnServerAccess | undefined) {
       access,
     } as const;
   }
+  if (target.provider === "portainer") throw portainerTargetNotYet();
   return {
     provider: target.provider,
     mode: "vps-compose",

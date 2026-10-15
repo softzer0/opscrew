@@ -672,6 +672,32 @@ export type CloudDeployTarget = Extract<DeployTarget, { provider: CloudProvider 
 export type OwnDeployTarget = Extract<DeployTarget, { provider: "own" }>;
 /** A Portainer the user already runs. */
 export type PortainerDeployTarget = Extract<DeployTarget, { provider: "portainer" }>;
+/** A target on one server: Hetzner Cloud, DigitalOcean or a server the user owns. */
+export type VpsDeployTarget = Exclude<DeployTarget, { provider: "portainer" }>;
+
+/** True when the app runs on one server (Hetzner Cloud, DigitalOcean, own), not in a Portainer. */
+export function isVpsTarget(target: DeployTarget): target is VpsDeployTarget {
+  return target.provider !== "portainer";
+}
+
+/**
+ * The plain refusal (code `PHASE_PRECONDITION`) of a command that does not handle a Portainer
+ * target yet, while feature 010 is built. Callers throw it as an `OpsCrewError`.
+ */
+export const PORTAINER_TARGET_NOT_YET = {
+  message: "A Portainer target is not supported by this command yet.",
+  hint: "Deploy to Hetzner Cloud, DigitalOcean or a server you own for now: run `opscrew interview` and `opscrew design` again and choose one of them.",
+} as const;
+
+/**
+ * The plain refusal (code `PHASE_PRECONDITION`) of `opscrew retarget` for a Portainer target,
+ * which never moves to or from another target. Callers throw it as an `OpsCrewError`.
+ */
+export const PORTAINER_TARGET_NO_MOVE = {
+  message:
+    "Moving an app to or from a Portainer target is not supported; destroy it and provision again.",
+  hint: "Run `opscrew destroy`, then `opscrew interview`, `opscrew design` and `opscrew provision` for the new target.",
+} as const;
 /** How visitors reach an app on a Portainer target. */
 export type PortainerWeb = PortainerDeployTarget["web"];
 /** A move to another provider in progress. */

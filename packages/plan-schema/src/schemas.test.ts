@@ -19,11 +19,14 @@ import {
   type DesignOption,
   DesignOptionListSchema,
   DesignOptionSchema,
+  isVpsTarget,
   likelyCloudflareZone,
   type Money as MoneyExport,
   type MoneySchema,
   type OwnDeployTarget,
   type PhaseNameSchema,
+  PORTAINER_TARGET_NO_MOVE,
+  PORTAINER_TARGET_NOT_YET,
   type PortainerDeployTarget,
   type ProjectFacts,
   ProjectFactsSchema,
@@ -1037,6 +1040,21 @@ describe("DeployPlan target on an existing Portainer", () => {
         true,
       );
     }
+  });
+
+  it("tells single-server targets from Portainer, with the plain refusals for the rest", async () => {
+    const plan = await validPlan();
+    const portainer = DeployPlanSchema.parse({ ...plan, target: target() });
+    expect(isVpsTarget(portainer.target)).toBe(false);
+    expect(isVpsTarget(plan.target)).toBe(true);
+    const own = { provider: "own", mode: "vps-compose", arch: "arm64", access: "tunnel" } as const;
+    expect(isVpsTarget(DeployPlanSchema.parse({ ...plan, target: own }).target)).toBe(true);
+    expect(PORTAINER_TARGET_NOT_YET.message).toBe(
+      "A Portainer target is not supported by this command yet.",
+    );
+    expect(PORTAINER_TARGET_NO_MOVE.message).toBe(
+      "Moving an app to or from a Portainer target is not supported; destroy it and provision again.",
+    );
   });
 
   it("refuses a move to or from Portainer, and installing another Portainer", async () => {

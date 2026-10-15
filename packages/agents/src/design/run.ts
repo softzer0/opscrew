@@ -18,6 +18,7 @@ import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
 import {
   type OwnServerFacts,
+  planProvider,
   providerProfile,
   requestedProvider,
   requestedRegion,
@@ -474,7 +475,7 @@ async function stateExists(deps: PhaseDeps): Promise<boolean> {
  * The provider of a deployment that may still have resources: not destroyed, and either an apply
  * recorded or a non-empty state file (`stateExists`: a first apply that fails half-way records
  * nothing in the plan but keeps what it created in the state). `undefined` when nothing can be
- * live.
+ * live. Throws a plain `PHASE_PRECONDITION` for a Portainer target.
  */
 export function liveDeploymentProvider(
   plan: Pick<DeployPlan, "target" | "deployment">,
@@ -483,7 +484,7 @@ export function liveDeploymentProvider(
   const { deployment } = plan;
   if (deployment.destroyedAt !== undefined) return undefined;
   const applied = deployment.lastApplyAt !== undefined || stateExists;
-  return applied ? plan.target.provider : undefined;
+  return applied ? planProvider(plan) : undefined;
 }
 
 /**
@@ -669,8 +670,9 @@ function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] 
   const before = previous.target;
   const after = plan.target;
   if (before.provider !== after.provider) return [];
-  // A server the user owns is never moved or resized by OpsCrew.
+  // A server the user owns (or a Portainer) is never moved or resized by OpsCrew.
   if (before.provider === "own" || after.provider === "own") return [];
+  if (before.provider === "portainer" || after.provider === "portainer") return [];
   const server = providerProfile(after.provider).serverNoun;
   if (before.location !== after.location) {
     return [

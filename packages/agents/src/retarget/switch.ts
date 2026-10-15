@@ -5,6 +5,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { SavedPlan } from "../provision";
 import { committableUrl, recordServerAddress, type ServerAddress } from "../shared";
+import { moveProvider } from "../shared/vps-target";
 import { moveLayout, previousTarget } from "./layouts";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { startService, stopService } from "./server-ops";
@@ -195,7 +196,7 @@ async function switchManagedDns(
 ): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  const fresh = providerWords(plan.target.provider);
+  const fresh = providerWords(moveProvider(plan.target));
   const old = providerWords(move.from.target.provider);
   deps.reporter.step(`Planning the switch of ${plan.dns.domain} to the new ${fresh.noun}`);
   const files = await useLayout(
@@ -283,7 +284,7 @@ async function switchByHand(
     const window = await maintenanceWindow(session, options);
     if (window !== "done") return window;
   }
-  const fresh = providerWords(plan.target.provider);
+  const fresh = providerWords(moveProvider(plan.target));
   const old = providerWords(move.from.target.provider);
   const records = manualRecords(plan, next);
   const url = publicUrl(plan, next.ipv4);
@@ -448,7 +449,7 @@ async function settleSwitch(
   const { deps, plan } = session;
   const move = moveOf(session);
   const next = newServer(session);
-  const fresh = providerWords(plan.target.provider);
+  const fresh = providerWords(moveProvider(plan.target));
   const old = providerWords(move.from.target.provider);
   const ops = redactWith(deps);
   const remote = newRemote(session);
@@ -526,7 +527,7 @@ async function settleSwitch(
  */
 export async function completeSwitch(session: MoveSession): Promise<RetargetResult> {
   const { deps, plan } = session;
-  const fresh = providerWords(plan.target.provider);
+  const fresh = providerWords(moveProvider(plan.target));
   const old = providerWords(moveOf(session).from.target.provider);
   const site = await settleSwitch(
     session,
@@ -555,7 +556,7 @@ export async function completeSwitch(session: MoveSession): Promise<RetargetResu
  * deleted while the new one does not serve the app (or DNS still leads to the old one).
  */
 export async function requireSwitchSettled(session: MoveSession): Promise<void> {
-  const fresh = providerWords(session.plan.target.provider);
+  const fresh = providerWords(moveProvider(session.plan.target));
   const old = providerWords(moveOf(session).from.target.provider);
   await settleSwitch(
     session,

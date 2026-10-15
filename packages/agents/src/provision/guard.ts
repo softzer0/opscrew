@@ -1,6 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
+import { moveProvider } from "../shared/vps-target";
 
 /** What to say while `opscrew retarget` is moving the deployment. */
 export interface MoveInProgress {
@@ -17,7 +18,7 @@ export function moveInProgress(
   plan: Pick<DeployPlan, "target" | "retarget">,
 ): MoveInProgress | undefined {
   if (plan.retarget === undefined) return undefined;
-  const to = providerProfile(plan.target.provider).displayName;
+  const to = providerProfile(moveProvider(plan.target)).displayName;
   if (plan.retarget.abort !== undefined) {
     return {
       message: `A move to ${to} is being aborted.`,

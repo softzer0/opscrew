@@ -5,6 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOpscrewMcpServer } from "../server";
 
@@ -13,10 +14,14 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
 
+/** The repository folder of the most recent {@link connect}. */
+let lastRoot = "";
+
 async function connect() {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-design-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, "repo");
+  lastRoot = root;
   await mkdir(root, { recursive: true });
   await writeFile(
     path.join(root, "package.json"),
@@ -70,6 +75,20 @@ describe("opscrew_design_options tax wording", () => {
     expect(heading).toContain("DigitalOcean");
     expect(heading).toContain("excl. tax");
     expect(heading).not.toContain("VAT");
+  });
+
+  it("refuses a Portainer target plainly until its design exists", async () => {
+    const call = await connect();
+    const saved = await call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, budgetMonthly: "10 EUR", provider: "hetzner" },
+    });
+    expect(saved.isError).toBeFalsy();
+    const file = path.join(lastRoot, "opscrew", "requirements.yaml");
+    const requirements = await readArtifact("requirements", file);
+    await writeArtifact("requirements", file, { ...requirements, provider: "portainer" });
+    const result = await call("opscrew_design_options");
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("A Portainer target is not supported by this command yet.");
   });
 
   it("keeps VAT for Hetzner's EUR prices", async () => {
