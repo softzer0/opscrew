@@ -426,14 +426,18 @@ export async function repoInfo(
   return { private: repo.private, owner: repo.owner.login, ownerType: repo.owner.type ?? "User" };
 }
 
-/** The head commit of `branch`, or `undefined` when the branch does not exist. */
+/**
+ * The head commit of `branch`, or `undefined` when the branch does not exist. Reads the Git ref
+ * (`GET /git/ref/heads/{branch}`), not `GET /branches/{branch}`: the branches endpoint can answer
+ * 404 for a moment after a ref was created through the Git Data API, as OpsCrew creates it.
+ */
 export async function branchHead(github: GitHubRepo, branch: string): Promise<string | undefined> {
   const got = await github.call(
     "GET",
-    `/repos/${github.name}/branches/${encodeURIComponent(branch)}`,
+    `/repos/${github.name}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,
   );
   if (got.status === 404) return undefined;
-  const sha = (got.json as { commit?: { sha?: string } } | undefined)?.commit?.sha;
+  const sha = (got.json as { object?: { sha?: string } } | undefined)?.object?.sha;
   if (got.status !== 200 || sha === undefined) {
     throw new Error(`Could not read the branch ${branch} (HTTP ${got.status}).`);
   }

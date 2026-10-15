@@ -758,7 +758,9 @@ describe.skipIf(MISSING.length > 0)(
       }
       // The deploy branch as the second run left it (a first setup: just created with the
       // placeholder); the later runs must not write it again (T1012: no replace of a placeholder).
-      const deployHead = await branchHead(github, DEPLOY_BRANCH);
+      const deployHead = firstSetup
+        ? await createdBranchHead(DEPLOY_BRANCH)
+        : await branchHead(github, DEPLOY_BRANCH);
       const yesOnly = await opscrew("provision", "--yes");
       expect(yesOnly.exitCode, "--yes alone never approves the stack plan").not.toBe(0);
       if (stackPlanHashOf(yesOnly.output) !== stackHash) {
@@ -916,11 +918,27 @@ describe.skipIf(MISSING.length > 0)(
     }
 
     /**
+     * The head of a branch a product run just created: GitHub's reads can lag a fresh ref for a
+     * moment, so this asks again for up to 30 seconds while the branch is absent. Returns
+     * `undefined` only when it is still absent then (the caller's assertion reports that). Only for
+     * a branch expected to exist: where absence is expected, read once with `branchHead`, since a
+     * retry there would only hide a failed deletion.
+     */
+    async function createdBranchHead(branch: string): Promise<string | undefined> {
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+        const head = await branchHead(github, branch);
+        if (head !== undefined || Date.now() >= deadline) return head;
+        await sleep(2_000);
+      }
+    }
+
+    /**
      * The deploy branch holds exactly the placeholder: an orphan commit with only `compose.yaml`,
      * which runs no app image. Returns its head.
      */
     async function expectPlaceholderBranch(what: string): Promise<string> {
-      const head = await branchHead(github, DEPLOY_BRANCH);
+      const head = await createdBranchHead(DEPLOY_BRANCH);
       expect(head, `${what}: the ${DEPLOY_BRANCH} branch exists`).toBeDefined();
       const commit = await commitDetails(github, head as string);
       expect(
@@ -2752,8 +2770,10 @@ describe.skipIf(MISSING.length > 0)(
         await waitFor(
           `the deploy workflow writing the app to ${DEPLOY_BRANCH}`,
           minutes(15),
-          async () =>
-            (await branchHead(github, DEPLOY_BRANCH)) !== placeholderHead ? true : undefined,
+          async () => {
+            const head = await branchHead(github, DEPLOY_BRANCH);
+            return head !== undefined && head !== placeholderHead ? true : undefined;
+          },
           10_000,
         );
         await waitForSite((await deployBranchImage()).version, minutes(10));
