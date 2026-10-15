@@ -30,6 +30,7 @@ import {
   registrarLinks,
 } from "../domain/registrars";
 import {
+  PORTAINER_TOKEN_VAR,
   type ProviderProfile,
   planProvider,
   providerFromTokens,
@@ -38,6 +39,7 @@ import {
   VPS_PROVIDERS,
   vpsConnector,
 } from "../providers";
+import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer";
 import { CLOUDFLARE_TUNNEL_PERMISSIONS, tunnelTokenPermissions } from "../provision/zero-trust";
 import { ownServerLogin, readOwnServerRecord, requireOwnServerKey } from "../shared/own-server";
 import {
@@ -46,6 +48,13 @@ import {
   missingGitignoreEntries,
   readGitignore,
 } from "./gitignore";
+import {
+  checkPortainer,
+  checkPortainerTokens,
+  type InitPortainerClient,
+  type PortainerRecord,
+  readPortainerRecord,
+} from "./portainer";
 
 /** Outcome of one check. Only required checks fail; optional ones warn. */
 export type InitCheckStatus = "pass" | "warn" | "fail" | "skip";
@@ -57,8 +66,13 @@ export type InitCheckId =
   | "repository"
   | "engine"
   | "ssh"
-  /** The cloud provider token (Hetzner Cloud or DigitalOcean); was `hetzner` before 004. */
+  /**
+   * The cloud provider token (Hetzner Cloud or DigitalOcean), the SSH login of the user's own
+   * server, or the user's Portainer; was `hetzner` before 004.
+   */
   | "provider"
+  /** Optional, listed only for a Portainer target: the read-only GitHub tokens Portainer pulls with. */
+  | "portainer-tokens"
   | "cloudflare"
   /** Optional: whether the Cloudflare token can buy domains through Cloudflare Registrar. */
   | "registrar"
@@ -92,6 +106,8 @@ export interface InitServices {
   timeoutMs?: number;
   /** Account check of a registrar other than Cloudflare (default: the adapter's `accountCheck`). */
   registrarCheck?: (id: OtherRegistrarId) => Promise<RegistrarAccountCheck>;
+  /** The Portainer client of the Portainer check (default: the adapter's pinned `portainerClient`). */
+  portainerClient?: InitPortainerClient;
 }
 
 export interface InitCheckOptions {
@@ -198,6 +214,9 @@ export async function runInitChecks(
     "CLOUDFLARE_API_TOKEN",
     "GITHUB_TOKEN",
     "GH_TOKEN",
+    PORTAINER_TOKEN_VAR,
+    REGISTRY_TOKEN_VAR,
+    REPOSITORY_TOKEN_VAR,
     ...registrarSecrets,
   ]) {
     const value = env[name]?.trim();
@@ -205,7 +224,11 @@ export async function runInitChecks(
   }
 
   const repoInfo = inspectRepository(deps, which);
+  const github = githubLookup(deps, offline, repoInfo);
   const choice = await providerChoice(deps);
+  // Read before any check runs, so Portainer's address is registered with the redactor first.
+  const portainer: PortainerRecord | undefined =
+    choice.provider === "portainer" ? await readPortainerRecord(deps) : undefined;
 
   const cloudflare = cloudflareAccess(deps, offline);
 
@@ -214,15 +237,37 @@ export async function runInitChecks(
     guard("git", "git", true, async () => checkGit((await repoInfo).git)),
     guard("repository", "GitHub repository", true, async () => checkRepository(await repoInfo)),
     guard("engine", "OpenTofu or Terraform", true, () => checkEngine(deps, which)),
-    guard("ssh", "ssh and ssh-keyscan", true, async () => checkSsh(which)),
+    guard("ssh", "ssh and ssh-keyscan", true, async () =>
+      portainer !== undefined
+        ? {
+            status: "skip",
+            message:
+              "Not needed: OpsCrew deploys to your Portainer through its API and never connects over SSH.",
+          }
+        : checkSsh(which),
+    ),
     guard("provider", providerTitle(choice), true, () =>
       withBudget(
-        checkProviderToken(deps, offline, choice),
+        checkProviderToken(deps, offline, choice, portainer, services.portainerClient),
         budget,
-        choice.provider ? providerProfile(choice.provider).displayName : "The cloud provider",
+        providerService(choice),
         true,
       ),
     ),
+    ...(portainer !== undefined
+      ? [
+          guard("portainer-tokens", "Read-only GitHub tokens for Portainer", false, () =>
+            withBudget(
+              github().then((lookup) =>
+                checkPortainerTokens(deps, portainer, lookup.repo?.private),
+              ),
+              budget,
+              "GitHub",
+              false,
+            ),
+          ),
+        ]
+      : []),
     guard("cloudflare", "Cloudflare token", false, async () => {
       const usage = await cloudflareUsage(deps);
       return withBudget(
@@ -245,10 +290,9 @@ export async function runInitChecks(
         ),
       ),
     ),
-    guard("github", "GitHub token", true, async () => {
-      const info = await repoInfo;
-      return withBudget(checkGitHub(deps, offline, info), budget, "GitHub", true);
-    }),
+    guard("github", "GitHub token", true, () =>
+      withBudget(checkGitHub(offline, github), budget, "GitHub", true),
+    ),
     guard("model", "Model credentials", false, () => checkModel(deps)),
     guard("scanners", "Optional scanners", false, async () => checkScanners(which)),
     guard("gitignore", ".opscrew/ and .terraform/ in .gitignore", false, () =>
@@ -413,22 +457,32 @@ function checkSsh(which: (name: string) => string | undefined): CheckResult {
 /** Which provider's token the provider check looks at, and why. */
 interface ProviderChoice {
   /** Undefined before a provider is chosen when zero or both tokens are set. */
-  provider?: VpsProviderId;
+  provider?: VpsProviderId | "portainer";
   /** The plan, the interview answers, or the only token that is set. */
   source: "plan" | "requirements" | "token" | "none";
 }
 
-/** The planned provider, else the requested one, else the provider whose token alone is set. */
+/**
+ * The planned target, else the requested one, else the provider whose token alone is set. A
+ * Portainer target (`portainer`) is recognised in the plan and in the answers.
+ */
 async function providerChoice(deps: PhaseDeps): Promise<ProviderChoice> {
   try {
     const plan = await readArtifact("plan", deps.paths.files.plan);
-    return { provider: planProvider(plan), source: "plan" };
+    return {
+      provider: plan.target.provider === "portainer" ? "portainer" : planProvider(plan),
+      source: "plan",
+    };
   } catch {
     // No usable plan yet: fall back to the interview answers.
   }
   try {
     const requirements = await readArtifact("requirements", deps.paths.files.requirements);
-    return { provider: requestedProvider(requirements), source: "requirements" };
+    return {
+      provider:
+        requirements.provider === "portainer" ? "portainer" : requestedProvider(requirements),
+      source: "requirements",
+    };
   } catch {
     // No answers yet: fall back to the tokens.
   }
@@ -438,13 +492,20 @@ async function providerChoice(deps: PhaseDeps): Promise<ProviderChoice> {
 
 /**
  * Title of the provider check: `Hetzner Cloud token`, `DigitalOcean token`, the SSH login of the
- * user's own server (it has no token), or a neutral one.
+ * user's own server (it has no token), the user's Portainer, or a neutral one.
  */
 function providerTitle(choice: ProviderChoice): string {
   if (choice.provider === "own") return "Your own server (SSH login)";
+  if (choice.provider === "portainer") return "Your Portainer";
   return choice.provider
     ? `${providerProfile(choice.provider).displayName} token`
     : "Cloud provider token";
+}
+
+/** What the provider check's timeout message calls the service. */
+function providerService(choice: ProviderChoice): string {
+  if (choice.provider === "portainer") return "Your Portainer";
+  return choice.provider ? providerProfile(choice.provider).displayName : "The cloud provider";
 }
 
 /**
@@ -512,12 +573,15 @@ const ONLY_ONE =
 
 /**
  * The cloud provider token check: the chosen provider's token (verified online unless `offline`;
- * the other provider's token is never checked), or before a choice either token.
+ * the other provider's token is never checked), or before a choice either token. A server the
+ * user owns and the user's Portainer have their own checks and no cloud provider token.
  */
 async function checkProviderToken(
   deps: PhaseDeps,
   offline: boolean,
   choice: ProviderChoice,
+  portainer: PortainerRecord | undefined,
+  portainerClient: InitPortainerClient | undefined,
 ): Promise<CheckResult> {
   const env = deps.env;
   const { provider } = choice;
@@ -540,6 +604,15 @@ async function checkProviderToken(
     };
   }
   if (provider === "own") return checkOwnServerLogin(deps, choice);
+  if (provider === "portainer") {
+    return checkPortainer(
+      deps,
+      offline,
+      choice.source === "plan" ? "plan" : "requirements",
+      portainer ?? (await readPortainerRecord(deps)),
+      portainerClient,
+    );
+  }
 
   const profile = providerProfile(provider);
   const connector = vpsConnector(provider, deps);
@@ -890,12 +963,59 @@ function githubFix(coordinates?: { owner: string; repo: string }): string {
   return `Set GITHUB_TOKEN (or GH_TOKEN) to a fine-grained token${repo} with ${GITHUB_TOKEN_PERMISSIONS.join(", ")} (create one at https://github.com/settings/personal-access-tokens/new), or run \`gh auth login\`.`;
 }
 
-async function checkGitHub(
+/** The GitHub token and, online with a GitHub origin, what GitHub says about the repository. */
+interface GitHubLookup {
+  info: RepoInfo;
+  token?: string;
+  /** Where the token came from: `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI login. */
+  source?: string;
+  /** The repository as GitHub reports it (read once, online only). */
+  repo?: { canPush: boolean; private: boolean };
+  /** Why the repository could not be read. */
+  error?: unknown;
+}
+
+/**
+ * Resolves the GitHub token and reads the repository once, however many checks ask (the GitHub
+ * check and, for a Portainer target, whether the repository is private).
+ */
+function githubLookup(
   deps: PhaseDeps,
   offline: boolean,
-  info: RepoInfo,
+  repoInfo: Promise<RepoInfo>,
+): () => Promise<GitHubLookup> {
+  let lookup: Promise<GitHubLookup> | undefined;
+  const run = async (): Promise<GitHubLookup> => {
+    const info = await repoInfo;
+    const token = await resolveGitHubToken(deps.env, deps.runner);
+    if (!token) return { info };
+    deps.redactor.addLiteral(token, "github-token");
+    const source = set(deps.env, "GITHUB_TOKEN")
+      ? "GITHUB_TOKEN"
+      : set(deps.env, "GH_TOKEN")
+        ? "GH_TOKEN"
+        : "the GitHub CLI login";
+    const coordinates = info.coordinates;
+    if (offline || !coordinates) return { info, token, source };
+    const client = new GitHubClient({ token, fetch: deps.fetch, version: deps.version });
+    try {
+      const repo = await client.getRepo(coordinates.owner, coordinates.repo);
+      return { info, token, source, repo: { canPush: repo.canPush, private: repo.private } };
+    } catch (error) {
+      return { info, token, source, error };
+    }
+  };
+  return () => {
+    lookup ??= run();
+    return lookup;
+  };
+}
+
+async function checkGitHub(
+  offline: boolean,
+  github: () => Promise<GitHubLookup>,
 ): Promise<CheckResult> {
-  const token = await resolveGitHubToken(deps.env, deps.runner);
+  const { info, token, source, repo, error } = await github();
   if (!token) {
     return {
       status: "fail",
@@ -904,12 +1024,6 @@ async function checkGitHub(
       fix: githubFix(info.coordinates),
     };
   }
-  deps.redactor.addLiteral(token, "github-token");
-  const source = set(deps.env, "GITHUB_TOKEN")
-    ? "GITHUB_TOKEN"
-    : set(deps.env, "GH_TOKEN")
-      ? "GH_TOKEN"
-      : "the GitHub CLI login";
   if (offline) {
     return {
       status: "pass",
@@ -925,18 +1039,14 @@ async function checkGitHub(
     };
   }
   const name = `${coordinates.owner}/${coordinates.repo}`;
-  const client = new GitHubClient({ token, fetch: deps.fetch, version: deps.version });
-  let canPush: boolean;
-  try {
-    canPush = (await client.getRepo(coordinates.owner, coordinates.repo)).canPush;
-  } catch (error) {
+  if (repo === undefined) {
     return {
       status: "fail",
       message: `The GitHub token from ${source} cannot read ${name}: ${errorText(error)}`,
       fix: githubFix(coordinates),
     };
   }
-  if (!canPush) {
+  if (!repo.canPush) {
     return {
       status: "fail",
       message: `The GitHub token from ${source} cannot push to ${name}.`,

@@ -16,7 +16,7 @@
  * Portainer's: every line goes through a scrubber. Runs only with OPSCREW_E2E_PORTAINER=1 and the
  * variables in docs/e2e.md ("Your existing Portainer"); costs a few cents of server time.
  *
- * `OPSCREW_E2E_PORTAINER_STEPS` selects the steps: `core` (the default, about 1 hour) runs steps 1,
+ * `OPSCREW_E2E_PORTAINER_STEPS` selects the steps: `core` (the default, about 15 minutes) runs steps 1,
  * 2, 3 without its rollback, 8, 9 and 12; `full` (about 2 hours) runs every step and check above.
  */
 import { type ChildProcess, spawn } from "node:child_process";
@@ -926,7 +926,9 @@ describe.skipIf(MISSING.length > 0)(
 
     /**
      * T1012: destroy deleted the deploy branch once the app's stack was gone, said so, and does not
-     * list it under what remains.
+     * list it under what remains. Only the branch's own item ("The opscrew-deploy branch of …")
+     * counts: the workflow file `.github/workflows/opscrew-deploy.yml` stays listed among the
+     * files that remain.
      */
     async function expectDeployBranchDeleted(output: string, what: string): Promise<void> {
       expect(
@@ -938,7 +940,9 @@ describe.skipIf(MISSING.length > 0)(
         `${what}: destroy says it deleted the ${DEPLOY_BRANCH} branch`,
       ).toBe(true);
       expect(
-        whatRemains(output).filter((item) => item.includes(DEPLOY_BRANCH)),
+        whatRemains(output).filter((item) =>
+          item.replace(/^- /, "").startsWith(`The ${DEPLOY_BRANCH} branch of `),
+        ),
         `${what}: "What remains" does not list the ${DEPLOY_BRANCH} branch`,
       ).toEqual([]);
     }

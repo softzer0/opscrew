@@ -108,7 +108,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-github`
   - Effort: high
 
-- [ ] T1013 [US1] `opscrew init` for a Portainer target, in `packages/agents/src/init/`; the live test's branch check
+- [X] T1013 [US1] `opscrew init` for a Portainer target, in `packages/agents/src/init/`; the live test's branch check
   - Owns: `packages/agents/src/init/**` (+ tests), `packages/cli/test/live/portainer-target.test.ts` (`expectDeployBranchDeleted` only)
   - Reads: the first live core run (2026-10-15): `opscrew init` after the Portainer interview failed its "Cloud provider token" check, because `providerChoice` cannot read a Portainer plan or answers; `init/checks.ts` `checkOwnServerLogin` as the pattern; `@opscrew/agents` `readPortainerConnection`, `createPortainerAccess`, `PORTAINER_TOKEN_VAR`
   - Depends: T1004, T1011

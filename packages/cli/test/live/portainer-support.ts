@@ -384,9 +384,12 @@ export const CORE_STEPS: readonly string[] = ["1", "1b", "2", "3", "8", "9", "12
 /** Why a step, or a part of one, does not run in the core pass. */
 export const NOT_IN_CORE = "not in the core pass; set OPSCREW_E2E_PORTAINER_STEPS=full";
 
-/** How long each pass takes, roughly (the full matrix took about 2 hours on 2026-10-15). */
+/**
+ * How long each pass takes, roughly (on 2026-10-15 the full matrix took about 2 hours and the
+ * first core pass 14½ minutes).
+ */
 export const PASS_ESTIMATE: Readonly<Record<PortainerPass, string>> = {
-  core: "about 1 hour",
+  core: "about 15 minutes",
   full: "about 2 hours",
 };
 
