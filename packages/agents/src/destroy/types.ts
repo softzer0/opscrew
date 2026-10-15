@@ -3,6 +3,7 @@ import type { GitHubClient } from "@opscrew/connector-github";
 import type { ResourceChange, ServerSnapshotApi, VpsProviderId } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { OwnServerServices, ProvisionServices } from "../provision";
+import type { PortainerServices } from "../provision/types";
 
 /** The GitHub call the secret cleanup needs (a `GitHubClient` or a test fake). */
 export type DestroyGitHubApi = Pick<GitHubClient, "deleteActionsSecret">;
@@ -30,6 +31,8 @@ export interface DestroyServices extends Pick<ProvisionServices, "engine" | "pro
   now?: () => number;
   /** A server the user owns: its shell, the host adapter and the login check (fakes in tests). */
   own?: OwnServerServices;
+  /** The user's Portainer: its client and the teardown's bounded wait (fakes in tests). */
+  portainer?: Pick<PortainerServices, "client" | "wait">;
 }
 
 export interface DestroyOptions {
@@ -52,7 +55,9 @@ export interface DestroyOptions {
    * A server the user owns: also delete the app's data (`/srv/data`, its Docker volumes and
    * Portainer's data). Off by default: OpsCrew takes no snapshot of the user's own server, so the
    * data is kept unless asked for; deleting it needs the teardown approval with `allowDestroy` and
-   * the typed app name.
+   * the typed app name. The user's Portainer: also delete the app stack's recorded volumes (the
+   * stack teardown plan's approval with `allowDestroy` and the typed app name); a later run with
+   * it deletes the volumes an earlier teardown kept.
    */
   deleteData?: boolean;
   /**
@@ -77,8 +82,8 @@ export interface DestroyPreview {
    * `opscrew destroy`. On a server the user owns it asks for the app's name and says the server stays.
    */
   confirmPrompt?: string;
-  /** The planned provider. */
-  provider: VpsProviderId;
+  /** The planned provider (`portainer` for the user's Portainer). */
+  provider: VpsProviderId | "portainer";
   /**
    * False when the provider has no delete protection (DigitalOcean): the server is deleted as soon
    * as the approved destroy plan is applied, with no protection-lifting step before it.
@@ -94,6 +99,11 @@ export interface DestroyPreview {
    * server itself always stays.
    */
   hostSteps?: string[];
+  /**
+   * The user's Portainer: what the stack teardown plan removes there (change titles). Portainer
+   * itself and everything OpsCrew did not create always stay.
+   */
+  stackChanges?: string[];
 }
 
 export interface DestroyResult {
@@ -113,4 +123,9 @@ export interface DestroyResult {
    * `.opscrew/plans/host-<hash>.json`): the teardown and, with `undoHost`, the undo.
    */
   hostPlans?: { teardown?: string; undo?: string };
+  /**
+   * The user's Portainer: the SHA-256 hash of the stack teardown plan this run applied (its file,
+   * `.opscrew/plans/stack-<hash>.json`, is deleted once the stacks are gone).
+   */
+  stackPlan?: string;
 }

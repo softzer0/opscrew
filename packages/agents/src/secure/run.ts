@@ -21,8 +21,14 @@ import {
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
 import { findSavedPlan } from "../provision/plan-apply";
+import type { PortainerServices } from "../provision/types";
 import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
 import { type OwnSecureTarget, ownSecureTarget, withoutOwnServer } from "./own";
+import {
+  PORTAINER_PROBES_SKIPPED,
+  PORTAINER_SECURE_NOTES,
+  portainerSecurityChecks,
+} from "./portainer";
 import { probeExpectedPorts, probeOwnServerPorts } from "./probes";
 import {
   renderSecurityReport,
@@ -48,6 +54,8 @@ export interface RunSecureOptions {
   probeTimeoutMs?: number;
   /** Whether this computer can reach IPv6 addresses (default: it has a global IPv6 address). */
   ipv6Route?: () => Promise<boolean>;
+  /** The user's Portainer: its client (default: the pinned `portainerClient`; a fake in tests). */
+  portainer?: Pick<PortainerServices, "client">;
 }
 
 /** Outcome of {@link runSecure}. */
@@ -188,8 +196,11 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   const { paths, reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const plan = await readArtifact("plan", paths.files.plan);
-  // A server the user owns is reached by its recorded login instead (see `ownSecureTarget`).
-  const address = plan.target.provider === "own" ? undefined : await serverAddress(deps, plan);
+  // A server the user owns is reached by its recorded login instead (see `ownSecureTarget`); the
+  // user's Portainer through its API (see `portainerSecurityChecks`), never its host.
+  const portainer = plan.target.provider === "portainer";
+  const address =
+    plan.target.provider === "own" || portainer ? undefined : await serverAddress(deps, plan);
   const host = address?.ipv4;
 
   reporter.step("Scanning the repository");
@@ -218,6 +229,10 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     const checked = await checkOwnServer(deps, plan, own, options);
     hostChecks = checked.hostChecks;
     probes = checked.probes;
+    hostChecksSkipped = checked.skipped;
+  } else if (portainer) {
+    const checked = await portainerSecurityChecks(deps, plan, options.portainer);
+    hostChecks = checked.checks;
     hostChecksSkipped = checked.skipped;
   } else if (host === undefined) {
     hostChecksSkipped =
@@ -268,6 +283,9 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     ...(shownHost !== undefined ? { host: shownHost } : {}),
     ...(policies !== undefined ? { policies } : {}),
     ...(hostChecksSkipped !== undefined ? { hostChecksSkipped } : {}),
+    ...(portainer
+      ? { portainer: { notes: PORTAINER_SECURE_NOTES, probesSkipped: PORTAINER_PROBES_SKIPPED } }
+      : {}),
   };
   // The report is committed: behind Cloudflare's proxy it never names the server's address, and
   // for a server the user owns it never names its address or host name at all (FR-902).
@@ -303,8 +321,16 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   if (passed) reporter.success(headline);
   else reporter.error(headline);
   for (const line of details) reporter.info(line);
+  if (portainer) reporter.info(PORTAINER_SECURE_NOTES.join(" "));
   if (hostChecksSkipped !== undefined)
-    reporter.warn(say(withoutOwnServer(`Server checks skipped: ${hostChecksSkipped}`, hidden)));
+    reporter.warn(
+      say(
+        withoutOwnServer(
+          `${portainer ? "Portainer checks" : "Server checks"} skipped: ${hostChecksSkipped}`,
+          hidden,
+        ),
+      ),
+    );
 
   const failures = problems.filter((problem) => problem.status === "fail").length;
   await deps.state.markPhase(

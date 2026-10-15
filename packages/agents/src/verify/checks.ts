@@ -41,6 +41,11 @@ export interface VerifyCheckContext {
   /** Per-request timeout. Default 10 s (3 s for TCP). */
   timeoutMs?: number;
   /**
+   * The address to check instead of the plan's: the user's own route to the app (the user's
+   * Portainer in web mode `proxy` without a domain in the plan).
+   */
+  url?: string;
+  /**
    * Whether this computer can reach IPv6 addresses (default: it has a global IPv6 address);
    * without it the IPv6 probe of a server the user owns is skipped with a note.
    */
@@ -89,8 +94,27 @@ function profileOf(plan: DeployPlan): ProviderProfile {
   return providerProfile(planProvider(plan));
 }
 
+/** The user's Portainer, and how visitors reach the app there (`undefined` for other targets). */
+function portainerWeb(plan: DeployPlan): "tunnel" | "proxy" | "caddy" | undefined {
+  return plan.target.provider === "portainer" ? plan.target.web.mode : undefined;
+}
+
+/** Where the app's logs are in the user's Portainer (never its address). */
+function portainerLogs(plan: DeployPlan): string {
+  return `the app's logs in your Portainer (Stacks → opscrew-${plan.app.name} → the app container → Logs)`;
+}
+
 /** Where to look when the server seems down: the provider's console, or the user's own server. */
 function serverRunningHint(plan: DeployPlan): string {
+  if (plan.target.provider === "portainer") {
+    const stack = `the stack opscrew-${plan.app.name} runs in your Portainer`;
+    const web = plan.target.web;
+    return web.mode === "tunnel"
+      ? `that ${stack}, with its cloudflared container connected`
+      : web.mode === "proxy"
+        ? `that ${stack} and your reverse proxy forwards to port ${web.port} of the host`
+        : `that ${stack} and ports 80 and 443 of the host are reachable from the internet`;
+  }
   if (plan.target.provider !== "own") {
     const profile = profileOf(plan);
     return `that the ${profile.serverNoun} is running (${providerConsole(profile)})`;
@@ -122,9 +146,16 @@ async function discard(response: Response): Promise<void> {
   }
 }
 
-/** The site's public hosts: the domain (and `www.` when configured); empty without a domain. */
+/**
+ * The site's public hosts: the domain (and `www.` when configured); empty without a domain. In the
+ * user's Portainer the domain may be on any DNS (the user creates its record for `proxy` and
+ * `caddy`).
+ */
 export function verifyHosts(plan: DeployPlan): string[] {
-  const domain = plan.dns.provider === "cloudflare" ? plan.dns.domain : undefined;
+  const domain =
+    plan.dns.provider === "cloudflare" || plan.target.provider === "portainer"
+      ? plan.dns.domain
+      : undefined;
   if (!domain) return [];
   return plan.dns.www ? [domain, `www.${domain}`] : [domain];
 }
@@ -194,9 +225,11 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
   const title = `DNS for ${host} points to the right place`;
   const { plan } = ctx;
   // Through a Cloudflare Tunnel the records are always proxied CNAMEs: they resolve to Cloudflare.
-  const tunnel = tunnelMode(plan);
+  const tunnel = tunnelMode(plan) || portainerWeb(plan) === "tunnel";
   // A server the user owns: the messages say "your server" and never list its addresses.
   const own = plan.target.provider === "own";
+  // The user's Portainer: OpsCrew never knows the host's public address, nor shows what it resolves to.
+  const portainer = plan.target.provider === "portainer";
   const ipv4 = tunnel ? undefined : ctx.server?.ipv4;
   const ipv6 = tunnel ? undefined : ctx.server?.ipv6;
   let a: string[];
@@ -213,11 +246,24 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
   if (a.length === 0 && aaaa.length === 0) {
     return result(id, title, "high", "fail", `${host} has no A or AAAA record.`, {
       remediation:
-        "Run `opscrew dns` to create the records, and check that the domain's nameservers point to Cloudflare.",
+        portainer && !tunnel
+          ? `OpsCrew creates no DNS record for ${host} in this setup: create one that points it at your Portainer host (an A record, and AAAA for IPv6, to its public address, or a CNAME to its dynamic-DNS name).`
+          : "Run `opscrew dns` to create the records, and check that the domain's nameservers point to Cloudflare.",
       target: host,
     });
   }
   const addresses = [...a, ...aaaa];
+  if (portainer && !tunnel && !plan.dns.proxied) {
+    // The host's public address is the user's (often a home connection): never printed.
+    return result(
+      id,
+      title,
+      "high",
+      "pass",
+      `${host} has DNS records; OpsCrew does not know your Portainer host's public address, so the checks below show whether they reach the app.`,
+      { target: host },
+    );
+  }
   if (plan.dns.proxied || tunnel) {
     const exposed = addresses.filter(
       (address) =>
@@ -269,9 +315,11 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
       "pass",
       tunnel
         ? `${host} resolves to Cloudflare (${addresses.join(", ")}); the app is served through the Cloudflare Tunnel.`
-        : own
-          ? `${host} resolves to Cloudflare (${addresses.join(", ")}); your server's address stays hidden.`
-          : `${host} resolves to Cloudflare (${addresses.join(", ")}); the server's IP stays hidden.`,
+        : portainer
+          ? `${host} resolves to Cloudflare (${addresses.join(", ")}); your Portainer host's address stays hidden.`
+          : own
+            ? `${host} resolves to Cloudflare (${addresses.join(", ")}); your server's address stays hidden.`
+            : `${host} resolves to Cloudflare (${addresses.join(", ")}); the server's IP stays hidden.`,
       { target: host },
     );
   }
@@ -350,7 +398,9 @@ export async function checkSiteReachable(
           `${target} answered with HTTP ${response.status}.`,
           {
             remediation:
-              "Look at the app's logs on the server (`docker compose logs --tail 200 app`) and the latest deploy run.",
+              portainerWeb(ctx.plan) !== undefined
+                ? `Look at ${portainerLogs(ctx.plan)} and the latest deploy run.`
+                : "Look at the app's logs on the server (`docker compose logs --tail 200 app`) and the latest deploy run.",
             target,
           },
         ),
@@ -386,12 +436,16 @@ export async function checkSiteReachable(
 }
 
 /** The certificate covers the host, is valid for at least {@link MIN_CERT_DAYS} days, and names its issuer. */
-export async function checkTls(host: string, ctx: VerifyCheckContext): Promise<CheckResult> {
+export async function checkTls(
+  host: string,
+  ctx: VerifyCheckContext,
+  port = 443,
+): Promise<CheckResult> {
   const id = "tls-certificate";
   const title = `HTTPS certificate for ${host} is valid`;
   let cert: TlsCertificateInfo;
   try {
-    cert = await ctx.tlsConnect(host, { port: 443, timeoutMs: ctx.timeoutMs ?? 10_000 });
+    cert = await ctx.tlsConnect(host, { port, timeoutMs: ctx.timeoutMs ?? 10_000 });
   } catch (error) {
     return result(
       id,
@@ -400,9 +454,14 @@ export async function checkTls(host: string, ctx: VerifyCheckContext): Promise<C
       "fail",
       `Could not open an HTTPS connection to ${host}: ${errorText(error)}.`,
       {
-        remediation: tunnelMode(ctx.plan)
-          ? "Cloudflare answers HTTPS for the tunnel: check that the domain uses Cloudflare's nameservers and that the record is proxied, then run `opscrew provision` to see what is missing."
-          : "Check that ports 80 and 443 are open and that Caddy is running (`docker compose logs caddy`).",
+        remediation:
+          tunnelMode(ctx.plan) || portainerWeb(ctx.plan) === "tunnel"
+            ? "Cloudflare answers HTTPS for the tunnel: check that the domain uses Cloudflare's nameservers and that the record is proxied, then run `opscrew provision` to see what is missing."
+            : portainerWeb(ctx.plan) === "proxy"
+              ? "Your reverse proxy answers HTTPS for the app and manages its certificate: check that it serves this name."
+              : portainerWeb(ctx.plan) === "caddy"
+                ? `Check that ports 80 and 443 of your Portainer host are reachable from the internet and that Caddy runs (its logs in your Portainer: Stacks → opscrew-${ctx.plan.app.name} → the caddy container).`
+                : "Check that ports 80 and 443 are open and that Caddy is running (`docker compose logs caddy`).",
         target: host,
       },
     );
@@ -507,7 +566,9 @@ export async function checkHttpRedirect(
       `${target} answered with HTTP ${response.status}${location ? ` → ${location}` : ""} instead of redirecting to HTTPS.`,
       {
         remediation:
-          'Caddy redirects automatically when the site address is the domain; check the Caddyfile (and Cloudflare\'s SSL/TLS mode "Full (strict)").',
+          portainerWeb(ctx.plan) === "proxy"
+            ? "Your reverse proxy serves the app: make it redirect HTTP to HTTPS for this name."
+            : 'Caddy redirects automatically when the site address is the domain; check the Caddyfile (and Cloudflare\'s SSL/TLS mode "Full (strict)").',
         target,
       },
     );
@@ -524,7 +585,10 @@ export async function checkHealth(url: string, ctx: VerifyCheckContext): Promise
   const id = "health-endpoint";
   const title = "Health endpoint answers 200";
   const target = `${url}${ctx.plan.app.healthPath}`;
-  const remediation = `Make sure the app serves ${ctx.plan.app.healthPath} with status 200, then look at \`docker compose logs --tail 200 app\` on the server.`;
+  const remediation =
+    portainerWeb(ctx.plan) !== undefined
+      ? `Make sure the app serves ${ctx.plan.app.healthPath} with status 200, then look at ${portainerLogs(ctx.plan)}.`
+      : `Make sure the app serves ${ctx.plan.app.healthPath} with status 200, then look at \`docker compose logs --tail 200 app\` on the server.`;
   try {
     const response = await ctx.fetch(target, {
       method: "GET",
@@ -702,6 +766,18 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
   const title = "The server is not reachable around Cloudflare";
   const { plan } = ctx;
   const ip = ctx.server?.ipv4;
+  const web = portainerWeb(plan);
+  if (web !== undefined) {
+    return result(
+      id,
+      title,
+      "medium",
+      "skip",
+      web === "tunnel"
+        ? "Skipped: the app is served through a Cloudflare Tunnel, and its stack in your Portainer publishes no port on the host."
+        : "Skipped: OpsCrew does not change your Portainer host (its firewall stays yours) and does not know its public address, so it cannot check whether the app can be reached around Cloudflare.",
+    );
+  }
   if (tunnelMode(plan)) {
     return result(
       id,
@@ -844,11 +920,24 @@ export interface VerifyChecksOutcome {
 export async function runVerifyChecks(ctx: VerifyCheckContext): Promise<VerifyChecksOutcome> {
   const { plan } = ctx;
   const hosts = verifyHosts(plan);
-  const url = siteUrl(plan, ctx.server);
+  const url = ctx.url ?? siteUrl(plan, ctx.server);
   const checks: CheckResult[] = [];
   const [domain] = hosts;
+  // The user's Portainer behind their own reverse proxy, without a domain: their route is checked,
+  // and its DNS and certificate are the proxy's.
+  const userRoute = domain === undefined && plan.target.provider === "portainer";
 
-  if (domain === undefined) {
+  if (userRoute) {
+    checks.push(
+      result(
+        "dns-records",
+        "DNS points to the right place",
+        "medium",
+        "skip",
+        `Skipped: opscrew/plan.yaml has no domain; OpsCrew checks your reverse proxy's route to the app (${url ?? "not given"}), whose DNS your proxy setup manages.`,
+      ),
+    );
+  } else if (domain === undefined) {
     const addDomain =
       "Add a domain with `opscrew dns --domain <your-domain>` to get HTTPS, a certificate and a stable address.";
     checks.push(
@@ -871,7 +960,44 @@ export async function runVerifyChecks(ctx: VerifyCheckContext): Promise<VerifyCh
   const site = await checkSiteReachable(url, ctx);
   checks.push(site.check);
 
-  if (domain === undefined) {
+  if (userRoute) {
+    const route = new URL(url);
+    if (route.protocol === "https:") {
+      checks.push(await checkTls(route.hostname, ctx, Number(route.port || 443)));
+      checks.push(
+        route.port === ""
+          ? await checkHttpRedirect(route.hostname, ctx)
+          : result(
+              "http-redirect",
+              "HTTP redirects to HTTPS",
+              "medium",
+              "skip",
+              "Skipped: the route uses a port of its own, so there is no plain-HTTP address to try.",
+            ),
+      );
+    } else {
+      checks.push(
+        result(
+          "tls-certificate",
+          "HTTPS certificate is valid",
+          "medium",
+          "warn",
+          "Your reverse proxy's route to the app is plain HTTP: traffic to the app is not encrypted.",
+          {
+            remediation:
+              "Serve the app over HTTPS in your reverse proxy (it manages the certificate), then run `opscrew verify` again with the https:// address.",
+          },
+        ),
+        result(
+          "http-redirect",
+          "HTTP redirects to HTTPS",
+          "medium",
+          "skip",
+          "Skipped: the route is not HTTPS.",
+        ),
+      );
+    }
+  } else if (domain === undefined) {
     checks.push(
       result(
         "tls-certificate",

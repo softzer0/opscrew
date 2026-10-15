@@ -265,7 +265,7 @@ export async function confirmDeletion(
   if (!confirmed) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
-      `The ${destroyTexts(preview.provider).noun} name was not confirmed, so nothing was deleted and nothing was changed.`,
+      `The ${preview.provider === "portainer" ? "app" : destroyTexts(preview.provider).noun} name was not confirmed, so nothing was deleted and nothing was changed.`,
       { hint: `Run \`${scope.command}\` again and type ${preview.name} when asked.` },
     );
   }

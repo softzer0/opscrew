@@ -105,7 +105,10 @@ function ownTexts(): DestroyTexts {
  * The question before a teardown, asking for the name to type. OpsCrew's servers are named after
  * the app; on a server the user owns the app's name is typed, and the server itself stays.
  */
-export function destroyConfirmPrompt(name: string, provider: VpsProviderId): string {
+export function destroyConfirmPrompt(name: string, provider: VpsProviderId | "portainer"): string {
+  if (provider === "portainer") {
+    return `Type ${name} (the app's name) to remove the app as listed above; your Portainer and its other stacks stay (anything else cancels)`;
+  }
   return provider === "own"
     ? `Type ${name} (the app's name) to remove the app as listed above; your server itself stays (anything else cancels)`
     : `Type ${name} to delete everything listed above (anything else cancels)`;

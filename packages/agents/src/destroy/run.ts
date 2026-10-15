@@ -54,6 +54,7 @@ import {
   takeSnapshotBeforeDelete,
 } from "./deletion";
 import { destroyOwnServer } from "./own";
+import { destroyPortainer } from "./portainer";
 import { type DestroyTexts, destroyConfirmPrompt, destroyTexts } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
@@ -505,6 +506,7 @@ export async function runDestroy(
   // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
   if (plan.target.provider === "own") return destroyOwnServer(deps, plan, options);
+  if (plan.target.provider === "portainer") return destroyPortainer(deps, plan, options);
   const name = plan.app.name;
   const provider = planProvider(plan);
   const profile = providerProfile(provider);

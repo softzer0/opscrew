@@ -28,13 +28,19 @@ export interface SecurityReportInput {
   probes: readonly CheckResult[];
   /** Why server checks were skipped, when they were. */
   hostChecksSkipped?: string;
+  /**
+   * The app runs in the user's Portainer: `hostChecks` are the read-only checks of its stacks
+   * through Portainer's API, there are no outside probes, and `notes` say what stays the user's
+   * (the host, backups).
+   */
+  portainer?: { notes: readonly string[]; probesSkipped: string };
 }
 
 /** One item that needs attention, from any section of the report. */
 export interface SecurityProblem {
   severity: Severity;
   status: "fail" | "warn";
-  area: "Code scan" | "Infrastructure policy" | "Server" | "Outside probe";
+  area: "Code scan" | "Infrastructure policy" | "Server" | "Portainer stacks" | "Outside probe";
   /** What is wrong, in one line. */
   title: string;
   /** More detail: the finding's description, the policy message or what the check expects. */
@@ -118,7 +124,10 @@ export function securityProblems(input: SecurityReportInput): SecurityProblem[] 
           ...(policy.resource !== undefined ? { where: policy.resource } : {}),
         }),
       ),
-    ...checkProblems(input.hostChecks, "Server"),
+    ...checkProblems(
+      input.hostChecks,
+      input.portainer !== undefined ? "Portainer stacks" : "Server",
+    ),
     ...checkProblems(input.probes, "Outside probe"),
   ];
   return all
@@ -189,7 +198,7 @@ export function renderSecurityReport(input: SecurityReportInput): string {
         ? "not evaluated (no infrastructure plan available)"
         : `${input.policies.filter((p) => p.passed).length} passed, ${input.policies.filter((p) => !p.passed).length} failed`
     } |`,
-    `| Server hardening | ${input.hostChecksSkipped !== undefined ? "skipped" : tally(input.hostChecks)} |`,
+    `| ${input.portainer !== undefined ? "Stacks in your Portainer" : "Server hardening"} | ${input.hostChecksSkipped !== undefined ? "skipped" : tally(input.hostChecks)} |`,
     `| Outside probes | ${input.probes.length === 0 ? "skipped" : tally(input.probes)} |`,
     "",
     "## What to fix",
@@ -257,20 +266,38 @@ export function renderSecurityReport(input: SecurityReportInput): string {
     out.push("");
   }
 
-  out.push("## Server hardening", "");
-  if (input.hostChecksSkipped !== undefined) {
-    out.push(`Skipped: ${prose(input.hostChecksSkipped)}`, "");
+  if (input.portainer !== undefined) {
+    out.push("## The app's stacks in your Portainer", "");
+    if (input.hostChecksSkipped !== undefined) {
+      out.push(`Skipped: ${prose(input.hostChecksSkipped)}`, "");
+    } else {
+      out.push(
+        "Checked read-only through Portainer's API, with the certificate you confirmed.",
+        "",
+        ...checkTable(input.hostChecks),
+        "",
+      );
+    }
+    out.push(...input.portainer.notes.map((note) => prose(note)), "");
+    out.push("## Outside probes", "", `Skipped: ${prose(input.portainer.probesSkipped)}`, "");
   } else {
-    out.push(
-      "Checked over SSH as the unprivileged `deploy` user (no sudo).",
-      "",
-      ...checkTable(input.hostChecks),
-      "",
-    );
+    out.push("## Server hardening", "");
+    if (input.hostChecksSkipped !== undefined) {
+      out.push(`Skipped: ${prose(input.hostChecksSkipped)}`, "");
+    } else {
+      out.push(
+        "Checked over SSH as the unprivileged `deploy` user (no sudo).",
+        "",
+        ...checkTable(input.hostChecks),
+        "",
+      );
+    }
+    out.push("## Outside probes", "");
   }
 
-  out.push("## Outside probes", "");
-  if (input.probes.length === 0) {
+  if (input.portainer !== undefined) {
+    // The user's Portainer host is never probed (said above).
+  } else if (input.probes.length === 0) {
     out.push(
       "Skipped: OpsCrew does not know the server's address on this computer. If the app is deployed, run `opscrew secure` on the computer that provisioned the server (its `.opscrew/` folder holds the address); otherwise deploy it first.",
       "",

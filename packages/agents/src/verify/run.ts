@@ -25,6 +25,7 @@ import {
 } from "../shared";
 import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
 import { type DnsResolver, defaultDnsResolver, defaultTlsConnect, type TlsConnect } from "./net";
+import { hidePortainerAddress, portainerVerifyUrl, renderPortainerRunbook } from "./portainer";
 
 /** Network functions for `opscrew verify`; each defaults to a Node built-in adapter. */
 export interface RunVerifyOptions {
@@ -42,6 +43,12 @@ export interface RunVerifyOptions {
   cloudflareRanges?: CloudflareRanges;
   /** Request timeout in milliseconds (default 10 s). */
   timeoutMs?: number;
+  /**
+   * The user's Portainer in web mode `proxy` only (refused otherwise): the address their reverse
+   * proxy serves the app on, checked instead of the domain (needed when the plan has none). Never
+   * committed: `deployment.url` is only ever `https://<domain>`.
+   */
+  url?: string;
 }
 
 /** Outcome of {@link runVerify}. */
@@ -96,12 +103,26 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   reporter.step("Verifying the deployment");
 
   const plan = await readArtifact("plan", paths.files.plan);
+  const portainer = plan.target.provider === "portainer";
+  const ownProxy = plan.target.provider === "portainer" && plan.target.web.mode === "proxy";
+  if (!ownProxy && options.url !== undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      portainer
+        ? "An address to check is only for an app in your Portainer behind your own reverse proxy; this app is served through its domain, which OpsCrew checks. Nothing was checked."
+        : "An address to check is only for an app in your Portainer behind your own reverse proxy; OpsCrew checks this deployment through its domain or its server. Nothing was checked.",
+      { hint: "Run `opscrew verify` without it." },
+    );
+  }
+  // The user's Portainer: no server address (OpsCrew never knows the host's), and its own address
+  // is never printed, not even inside the route the user gave.
+  if (portainer) await hidePortainerAddress(deps);
   // Through a Cloudflare Tunnel only the domain is checked: the server has no address to probe.
-  const server = tunnelMode(plan) ? undefined : await serverAddress(deps, plan);
+  const server = tunnelMode(plan) || portainer ? undefined : await serverAddress(deps, plan);
   // A server the user owns: terminal lines say "your server", never its addresses or login host.
   const hidden = plan.target.provider === "own" ? await ownServerNames(deps, server) : [];
   const say = (text: string) => deps.redactor.redact(withoutOwnServer(text, hidden));
-  const url = siteUrl(plan, server);
+  const url = portainer ? portainerVerifyUrl(plan, options.url) : siteUrl(plan, server);
   if (url === undefined) {
     // Deployed, but not from here (a fresh clone): provisioning here would create a second server.
     throw hasDeployment(plan)
@@ -133,6 +154,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
     now: deps.clock.now(),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(portainer && url !== undefined ? { url } : {}),
     ...(await cloudflareRanges(deps, plan, fetch, options)),
     deployRuns: async () => {
       if (!github.client || !github.repo) return undefined;
@@ -164,9 +186,14 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   let current = plan;
   if (passed) {
     const now = deps.clock.now().toISOString();
-    // Only a domain URL is committed; without a domain the URL is the server's IP address.
+    // Only a domain URL is committed; without a domain the URL is the server's IP address (or, in
+    // the user's Portainer, their own route, which is never committed).
     const { url: _url, ...deployment } = plan.deployment;
-    const committed = committableUrl(url);
+    const committed = portainer
+      ? plan.dns.domain !== undefined
+        ? `https://${plan.dns.domain}`
+        : undefined
+      : committableUrl(url);
     current = {
       ...plan,
       updatedAt: now,
@@ -191,15 +218,18 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   // login port, which differs from sshd's when a router forwards it (2222 to 22); tunnel mode
   // uses sshd's own port, as the last provision committed it (`ssh_port`, written only there).
   const sshPort = current.target.provider === "own" ? await ownSshPort(deps, current) : undefined;
-  const runbook = renderRunbook(current, {
-    opscrewVersion: deps.version,
-    github: github.repo ?? { owner: "<owner>", repo: "<repo>" },
-    deploySshPublicKey: await readOptional(paths.files.deployKeyPub),
-    projectId: paths.projectId,
-    ...(shown !== undefined ? { serverIpv4: shown.ipv4 } : {}),
-    ...(shown?.ipv6 !== undefined ? { serverIpv6: shown.ipv6 } : {}),
-    ...(sshPort !== undefined ? { sshPort } : {}),
-  });
+  const repo = github.repo ?? { owner: "<owner>", repo: "<repo>" };
+  const runbook = portainer
+    ? renderPortainerRunbook(current, { opscrewVersion: deps.version, github: repo })
+    : renderRunbook(current, {
+        opscrewVersion: deps.version,
+        github: repo,
+        deploySshPublicKey: await readOptional(paths.files.deployKeyPub),
+        projectId: paths.projectId,
+        ...(shown !== undefined ? { serverIpv4: shown.ipv4 } : {}),
+        ...(shown?.ipv6 !== undefined ? { serverIpv6: shown.ipv6 } : {}),
+        ...(sshPort !== undefined ? { sshPort } : {}),
+      });
   await writeRenderedFiles(paths.root, [runbook]);
   const runbookPath = toPosixRelative(paths.root, paths.files.runbook);
 

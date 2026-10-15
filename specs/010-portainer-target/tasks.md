@@ -58,7 +58,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops --filter=@opscrew/connector-github`
   - Effort: xhigh
 
-- [ ] T1006 [US5] Drift, destroy, verify and secure for a Portainer target in `packages/agents/src/{drift,destroy,verify,secure}/`
+- [X] T1006 [US5] Drift, destroy, verify and secure for a Portainer target in `packages/agents/src/{drift,destroy,verify,secure}/`
   - Owns: `packages/agents/src/{drift,destroy,verify,secure}/**` (the Portainer parts, + tests)
   - Reads: plan.md "6. Day 2"; research.md R7, R9; 009's own-server drift/destroy/verify/secure; T921/T922 (connector first, the tunnel wait)
   - Depends: T1005

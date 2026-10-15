@@ -259,7 +259,7 @@ export function destroyedPlan(
   plan: DeployPlan,
   at: string,
   approvals: readonly (
-    | { record: ApprovalRecord | undefined; kind: "iac-apply" | "host-apply" }
+    | { record: ApprovalRecord | undefined; kind: "iac-apply" | "host-apply" | "stack-apply" }
     | undefined
   )[],
 ): DeployPlan {

@@ -26,6 +26,16 @@ const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 export function driftNextSteps(
   report: Pick<DriftReport, "clean" | "provider"> & Partial<Pick<DriftReport, "host">>,
 ): string[] {
+  if (report.provider === "portainer") {
+    return report.clean
+      ? [
+          "nothing to do; run `opscrew drift` again after changes in Portainer, on the opscrew-deploy branch or in the Cloudflare dashboard.",
+        ]
+      : [
+          "to put back what OpsCrew set up in your Portainer and apply pending code, run `opscrew provision` (it shows the plans first and changes nothing without your approval).",
+          "to keep a change made in Portainer or in the Cloudflare dashboard, update opscrew/plan.yaml to match before you provision again.",
+        ];
+  }
   if (report.provider === "own") {
     if (report.clean) {
       return [
@@ -97,11 +107,15 @@ export function renderDriftReport(report: DriftReport): string {
     "",
   ];
   const drift = [...report.drift].sort(byAddress);
-  const ownServer = report.provider === "own";
-  const cloud = report.provider
-    ? `the ${providerProfile(report.provider).displayName}`
-    : "your cloud provider's";
+  const portainer = report.provider === "portainer";
+  // The user's Portainer, like their own server, has only Cloudflare's dashboard as a console.
+  const ownServer = report.provider === "own" || portainer;
+  const cloud =
+    report.provider !== undefined && report.provider !== "portainer"
+      ? `the ${providerProfile(report.provider).displayName}`
+      : "your cloud provider's";
   const host = report.host?.differences ?? [];
+  const stacks = report.portainer?.differences ?? [];
   const pending = [...report.pending].sort(byAddress);
   const files = [
     ...report.files.changed.map((path) => ({ path, label: "changed" })),
@@ -117,18 +131,35 @@ export function renderDriftReport(report: DriftReport): string {
     pending.length === 0 &&
     files.length === 0 &&
     foreign.length === 0 &&
-    host.length === 0
+    host.length === 0 &&
+    stacks.length === 0
   ) {
     lines.push(
-      ownServer
-        ? "The deployment matches the plan: your server is set up as OpsCrew left it, and the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
-        : "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
+      portainer
+        ? "The deployment matches the plan: OpsCrew's stacks in your Portainer, the deploy branch, the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
+        : ownServer
+          ? "The deployment matches the plan: your server is set up as OpsCrew left it, and the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
+          : "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
       ...notes,
     );
     return lines.join("\n");
   }
 
   if (host.length > 0) lines.push(...hostSection(host), "");
+  if (stacks.length > 0) {
+    const environment = report.portainer?.environment;
+    lines.push(
+      `Your Portainer${environment ? ` (environment "${environment}")` : ""} or the deploy branch differs from what OpsCrew sets up (${stacks.length}):`,
+    );
+    for (const item of stacks) {
+      lines.push(`  ~ ${item.title}`);
+      if (item.detail !== undefined) lines.push(`      ${item.detail}`);
+    }
+    lines.push(
+      "`opscrew provision` shows a stack plan for what it puts back in Portainer, and nothing changes until you approve it; what it does not put back says what to do with it. Values are compared only as keyed fingerprints and never shown.",
+      "",
+    );
+  }
 
   if (drift.length > 0) {
     lines.push(

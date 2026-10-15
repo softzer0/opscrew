@@ -8,4 +8,4 @@ export {
 } from "./host";
 export { driftNextSteps, renderDriftReport } from "./render";
 export { runDrift } from "./run";
-export type { DriftOptions, DriftReport } from "./types";
+export type { DriftOptions, DriftReport, PortainerDifference, PortainerDrift } from "./types";

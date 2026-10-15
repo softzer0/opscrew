@@ -1,0 +1,124 @@
+import { readFile } from "node:fs/promises";
+import { findExecutable } from "@opscrew/core";
+import { describe, expect, it } from "vitest";
+import {
+  deployImage,
+  everythingShown,
+  forbiddenIn,
+  type PortainerProject,
+  portainerProject,
+  provisionPortainerProject,
+} from "../drift/__fixtures__/portainer-project";
+import { recordPortainerConnection } from "../shared";
+import { runSecure } from "./run";
+
+async function deployed() {
+  const s = await portainerProject();
+  await provisionPortainerProject(s);
+  await deployImage(s);
+  return s;
+}
+
+const secure = (s: PortainerProject) =>
+  runSecure(s.deps, {
+    scanners: [],
+    offline: true,
+    tcpConnect: async () => {
+      throw new Error("secure probes no port of a Portainer host");
+    },
+    ...(s.services.portainer?.client !== undefined
+      ? { portainer: { client: s.services.portainer.client } }
+      : {}),
+  });
+
+describe.skipIf(!findExecutable("git"))("opscrew secure for the user's Portainer", () => {
+  it("without the token or the connection skips the Portainer checks plainly and still writes the report", async () => {
+    const s = await portainerProject();
+    delete s.deps.env.PORTAINER_API_KEY;
+    let result = await secure(s);
+    expect(result.hostChecks).toEqual([]);
+    let report = await readFile(s.deps.paths.files.securityReport, "utf8");
+    expect(report).toContain("## The app's stacks in your Portainer");
+    expect(report).toContain("Skipped: PORTAINER_API_KEY is not set");
+    expect(report).toContain("## Code scan");
+    expect(report).toContain("## Infrastructure policies");
+    expect(s.deps.reporter.text()).toContain(
+      "Portainer checks skipped: PORTAINER_API_KEY is not set",
+    );
+    expect(s.fake.calls).toEqual([]);
+
+    s.deps.env.PORTAINER_API_KEY = s.secrets.portainerToken;
+    await recordPortainerConnection(s.deps.paths, undefined);
+    result = await secure(s);
+    expect(result.hostChecks).toEqual([]);
+    report = await readFile(s.deps.paths.files.securityReport, "utf8");
+    expect(report).toContain("Skipped: OpsCrew does not know how to reach your Portainer");
+    expect(s.fake.calls).toEqual([]);
+  });
+
+  it("checks the app and its stacks read-only and says the host and backups stay the user's", async () => {
+    const s = await deployed();
+    const mutations = s.fake.mutations().length;
+    const result = await secure(s);
+
+    expect(result.hostChecks.map((check) => [check.id, check.status])).toEqual([
+      ["portainer-connection", "pass"],
+      ["stack-app", "pass"],
+      ["stack-app-file", "pass"],
+      ["stack-updater", "pass"],
+      ["stack-updater-file", "pass"],
+      ["stack-app-redeploy", "pass"],
+      ["registry-entry", "pass"],
+    ]);
+    expect(result.probes).toEqual([]);
+    expect(result.passed).toBe(true);
+    expect(s.fake.mutations()).toHaveLength(mutations);
+
+    const report = await readFile(s.deps.paths.files.securityReport, "utf8");
+    expect(report).toContain("## The app's stacks in your Portainer");
+    expect(report).toContain("OpsCrew does not change the host");
+    expect(report).toContain("Backups, including the app's data volumes, are your responsibility");
+    expect(report).toContain("OpsCrew does not probe your Portainer host");
+    expect(report).not.toContain("## Server hardening");
+    expect(s.deps.reporter.text()).toContain("OpsCrew does not change the host");
+    const text = `${await everythingShown(s)}\n${report}`;
+    for (const secret of forbiddenIn(s)) expect(text).not.toContain(secret);
+  });
+
+  it("fails on a hand-hardened-down stack, a failed deploy, a missing updater and a lost grant", async () => {
+    const s = await deployed();
+    const app = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop");
+    if (app === undefined) throw new Error("no app stack");
+    app.file = [
+      "services:",
+      "  app:",
+      `    image: ghcr.io/acme/shop@sha256:${"ab".repeat(32)}`,
+      "    privileged: true",
+      "    ports: ['9999:3000']",
+      "    volumes: ['/var/run/docker.sock:/var/run/docker.sock']",
+      "",
+    ].join("\n");
+    app.Status = 4;
+    app.DeploymentStatus.push({ Status: 4, Message: "port is already allocated", Time: 1 });
+    const updater = s.fake.stacks.findIndex((stack) => stack.Name === "opscrew-shop-updater");
+    s.fake.stacks.splice(updater, 1);
+    const entry = s.fake.registries[0];
+    if (entry !== undefined) entry.RegistryAccesses = {};
+
+    const result = await secure(s);
+    const byId = Object.fromEntries(result.hostChecks.map((check) => [check.id, check]));
+    expect(byId["stack-app"]?.status).toBe("fail");
+    expect(byId["stack-app"]?.message).toContain("port is already allocated");
+    expect(byId["stack-app-file"]).toMatchObject({ status: "fail", severity: "critical" });
+    expect(byId["stack-app-file"]?.message).toContain("app runs privileged");
+    expect(byId["stack-app-file"]?.message).toContain("app mounts the Docker socket");
+    expect(byId["stack-app-file"]?.message).toContain(
+      "app publishes host port 9999, which this setup does not use",
+    );
+    expect(byId["stack-updater"]?.status).toBe("fail");
+    expect(byId["registry-entry"]?.status).toBe("fail");
+    expect(result.passed).toBe(false);
+    const report = await readFile(s.deps.paths.files.securityReport, "utf8");
+    expect(report).toContain("Portainer stacks: ");
+  });
+});
