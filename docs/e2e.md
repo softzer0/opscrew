@@ -227,7 +227,7 @@ Zero Trust organization if OpsCrew created it (other apps may use them).
 runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install. It has two passes,
 chosen with `OPSCREW_E2E_PORTAINER_STEPS`:
 
-- `core` (the default, about 1 hour): steps 1 (with the optional pause 1b), 2, 3 without the
+- `core` (the default, about 15 minutes): steps 1 (with the optional pause 1b), 2, 3 without the
   deliberately failing change and its rollback (that alone waits about ten minutes), 8, 9 and 12.
   Step 8 then removes an updater + tunnel setup (one tunnel, no Access application), and step 12
   searches what this pass produced; the bare short host name is searched only in the full pass,
@@ -391,7 +391,7 @@ command.
 
 The full pass takes about two hours (the run on 2026-10-15: about ten deploy workflow runs, one of
 which waits ten minutes for its failing health check before it rolls back, plus Docker's
-installation); the core pass about one hour (an estimate until its first run). The server is the smallest x86 type, billed by the hour, so a run
+installation); the core pass about 15 minutes (its first run on 2026-10-15 took 14½ minutes). The server is the smallest x86 type, billed by the hour, so a run
 costs a few cents of server time, plus GitHub Actions minutes for the builds (free for public
 repositories). Left behind on purpose, as for your own server: the GitHub Actions secrets of other
 targets and the container image in the throwaway repository, the zone's rulesets that existed
@@ -537,3 +537,4 @@ GoDaddy has no public test system for its v3 API, so its adapter is only tested 
 | 2026-10-15 | Own server, run 9 (after T922) | Stopped at the first deploy | Provision passed; the deploy's health check got only TLS handshake errors because Let's Encrypt allows 5 certificates per week for the same names and every earlier run's fresh server had asked for one for `e2e.opscrew.dev`. Fixed (T923): each run serves the app on its own hostname (`e2e-<run id>.<zone>`), and the deploy workflow now says when the server has no certificate yet and why. |
 | 2026-10-15 | Own server, run 10 (final code: T922–T923) | **Passed** (8 live steps, 23 tests) | Same coverage as runs 7–8, on a per-run hostname; everything the run created at Hetzner and Cloudflare was removed. |
 | 2026-10-15 | Own server, run 11 (the converged code: everything through T965) | **Passed** (8 live steps, 25 tests, about 26 minutes) | Now starting with `opscrew init` as a user would; the time from `init` to a verified DNS-only deploy was within SC-901's 20 minutes (a longer run records a finding that fails the test; the exact figure appears in the run log only when a step fails, and every step passed). `destroy --undo-host` was approved with its own typed name, separately from the teardown. Everything the run created at Hetzner and Cloudflare was removed. |
+| 2026-10-15 | Your existing Portainer, core pass, run 1 (a throwaway Hetzner server with Portainer CE 2.45.2, Compose v2.40.3, Docker 29.9.1; `e2e.opscrew.dev`) | Steps 1–3 and the leak search **passed**; step 8 failed on a test check; step 9 not reached | 14½ minutes. Setup, the limited token's registry steps (FR-1018), the three script runs (same stack plan hash on runs 2 and 3), the first deploy, `verify`, `secure`, `drift`; a merged change was live 32 s after the workflow wrote it; R5 confirmed (neither a webhook call nor the updater redeploys an unchanged branch). Findings: `opscrew init` failed its "Cloud provider token" check for a Portainer target (fixed, T1013); step 8's check matched the workflow file `opscrew-deploy.yml` in "What remains" although destroy had deleted the branch (test fixed, T1013). A bare `NAME:` with no value reaches the container as an empty value, as the guide says. Everything the run created at Hetzner, Cloudflare and GitHub was removed. |
