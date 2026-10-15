@@ -49,6 +49,8 @@ Requirements:
 - `ssh` and `ssh-keyscan`
 - Node.js 22.9+
 
+Every test run keeps its temporary files in one `opscrew-test-run-*` folder that it removes at the end; set `OPSCREW_TEST_TMP` to a folder on a drive with space (outside any Git checkout) to put that folder there instead of the system temp folder.
+
 Run it:
 
 ```bash
