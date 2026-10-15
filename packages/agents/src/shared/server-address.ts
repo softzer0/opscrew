@@ -89,6 +89,111 @@ export type OwnServerConnection = z.output<typeof OwnServerSchema>;
 /** {@link OwnServerConnection} as written by callers (`port` defaults to 22). */
 export type OwnServerConnectionInput = z.input<typeof OwnServerSchema>;
 
+/** Host names Portainer may be reached on over plain HTTP: this computer only. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Portainer's address as the user gave it: `https://…` (for example `https://nas.lan:9443`), or
+ * `http://` only to this computer (`localhost`, `127.0.0.1`, `[::1]`). Never a login or a query
+ * string, so no secret can ride along.
+ */
+const PortainerUrlSchema = z
+  .url({ protocol: /^https?$/ })
+  .refine(
+    (url) => {
+      const parsed = new URL(url);
+      return parsed.username === "" && parsed.password === "" && parsed.search === "";
+    },
+    { message: "must be Portainer's address without a login or query string" },
+  )
+  .refine(
+    (url) => {
+      const parsed = new URL(url);
+      return parsed.protocol === "https:" || LOOPBACK_HOSTS.has(parsed.hostname);
+    },
+    { message: "must use https:// unless Portainer runs on this computer (http://localhost)" },
+  );
+
+/**
+ * The SHA-256 fingerprint of Portainer's certificate the user confirmed: `SHA256:` and 64 hex
+ * characters (optionally in colon-separated pairs, as `openssl x509 -fingerprint -sha256` prints
+ * them) or 43 unpadded base64 characters.
+ */
+const CertFingerprintSchema = z
+  .string()
+  .regex(/^SHA256:(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){31}|[A-Za-z0-9+/]{43})$/, {
+    message: "must be a SHA-256 certificate fingerprint such as SHA256:AB:CD:…",
+  });
+
+/** A stack OpsCrew created in Portainer: always named `opscrew-…`, never one of the user's own. */
+const CreatedStackSchema = z.strictObject({
+  /** Portainer's stack id. */
+  id: z.int().positive(),
+  name: z.string().regex(/^opscrew-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/, {
+    message: "must be a stack OpsCrew names opscrew-<app>…",
+  }),
+  role: z.enum(["app", "updater", "tunnel-connector"]),
+});
+
+/**
+ * How OpsCrew reaches the Portainer the user runs, and what it created there. Local only: the
+ * address never reaches `opscrew/plan.yaml`, pull requests or commit messages. The access token is
+ * never stored (it comes from `PORTAINER_API_KEY`), nor the stack webhook (a secret kept in the
+ * user's OpsCrew folder).
+ */
+const PortainerConnectionSchema = z
+  .strictObject({
+    url: PortainerUrlSchema,
+    /** Absent for plain HTTP to this computer, and until the user confirms the certificate. */
+    certFingerprint: CertFingerprintSchema.optional(),
+    /** The environment (a single Docker host) the user picked. */
+    environmentId: z.int().positive(),
+    environmentName: z.string().regex(/^[^\0\r\n]*\S[^\0\r\n]*$/, {
+      message: "must be the environment's name on one line",
+    }),
+    /** Everything OpsCrew created in Portainer, so destroy removes exactly that. */
+    created: z
+      .strictObject({
+        stacks: z.array(CreatedStackSchema).default(() => []),
+        /** The registry entry OpsCrew added (admin token only). */
+        registryId: z.int().positive().optional(),
+        /** The app stack's named volumes, recorded at apply (deleted only with `--delete-data`). */
+        volumes: z
+          .array(
+            z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/, { message: "must be a volume name" }),
+          )
+          .default(() => []),
+      })
+      .prefault({}),
+  })
+  .superRefine((portainer, ctx) => {
+    if (portainer.certFingerprint !== undefined && new URL(portainer.url).protocol === "http:") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["certFingerprint"],
+        message: "is only for https:// (plain HTTP has no certificate)",
+      });
+    }
+    const ids = new Set<number>();
+    const names = new Set<string>();
+    portainer.created.stacks.forEach((stack, i) => {
+      if (ids.has(stack.id) || names.has(stack.name)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["created", "stacks", i],
+          message: "lists a stack twice",
+        });
+      }
+      ids.add(stack.id);
+      names.add(stack.name);
+    });
+  });
+
+/** How OpsCrew reaches the user's Portainer and what it created there (`server.json` → `portainer`). */
+export type PortainerConnection = z.output<typeof PortainerConnectionSchema>;
+/** {@link PortainerConnection} as written by callers (`created` defaults to empty lists). */
+export type PortainerConnectionInput = z.input<typeof PortainerConnectionSchema>;
+
 const ServerAddressesSchema = z.strictObject({
   schemaVersion: z.literal(1),
   /** The server that receives the app's traffic (the one `plan.deployment` describes). */
@@ -99,6 +204,8 @@ const ServerAddressesSchema = z.strictObject({
     .optional(),
   /** A server the user owns (`target.provider: own`): how OpsCrew connects to it. */
   own: OwnServerSchema.optional(),
+  /** A Portainer the user runs (`target.provider: portainer`): how OpsCrew reaches it. */
+  portainer: PortainerConnectionSchema.optional(),
 });
 
 /**
@@ -126,8 +233,9 @@ export function damagedServerAddressesFile(paths: Pick<ProjectPaths, "stateDir">
 
 /**
  * `.opscrew/server.json` exists but cannot be used: OpsCrew never guesses past it. A damaged file
- * cannot tell which target it held, so the hint covers both: a server the user owns (whose
- * connection and pinned host key must not simply be deleted) and a cloud server (whose addresses
+ * cannot tell which target it held, so the hint covers all three: a server the user owns (whose
+ * connection and pinned host key must not simply be deleted), the user's Portainer (whose record
+ * of the stacks OpsCrew created must not be deleted either) and a cloud server (whose addresses
  * come back from the infrastructure state).
  */
 function damaged(reason: string): OpsCrewError {
@@ -135,7 +243,7 @@ function damaged(reason: string): OpsCrewError {
     "ARTIFACT_INVALID",
     `OpsCrew's record of the servers on this computer (.opscrew/server.json) is damaged (${reason}), so OpsCrew stopped instead of guessing the servers' addresses.`,
     {
-      hint: "Fix the JSON in .opscrew/server.json and run the command again. If this project deploys to your own server, do not delete the file: run `opscrew interview` again instead, which keeps the damaged file as .opscrew/server.json.damaged, and confirm the server's host key again when OpsCrew next connects. For Hetzner Cloud or DigitalOcean you can also start over. Delete .opscrew/server.json and run the command again: OpsCrew then reads the addresses from the infrastructure state in .opscrew/tfstate. If that state is not on this computer, run OpsCrew on the computer that provisioned the server.",
+      hint: "Fix the JSON in .opscrew/server.json and run the command again. If this project deploys to your own server, do not delete the file: run `opscrew interview` again instead, which keeps the damaged file as .opscrew/server.json.damaged, and confirm the server's host key again when OpsCrew next connects. If this project deploys to your Portainer, do not delete the file: it lists the stacks OpsCrew created there, which only OpsCrew's record lets it update or remove. For Hetzner Cloud or DigitalOcean you can also start over. Delete .opscrew/server.json and run the command again: OpsCrew then reads the addresses from the infrastructure state in .opscrew/tfstate. If that state is not on this computer, run OpsCrew on the computer that provisioned the server.",
     },
   );
 }
@@ -228,6 +336,27 @@ export async function recordOwnServer(
 ): Promise<void> {
   await updateServerAddresses(paths, ({ own: _old, ...rest }) =>
     own === undefined ? rest : { ...rest, own },
+  );
+}
+
+/**
+ * How OpsCrew reaches the user's Portainer and what it created there, from `.opscrew/server.json`;
+ * `undefined` when none is recorded. A damaged file stops with `ARTIFACT_INVALID` (see
+ * {@link readServerAddresses}).
+ */
+export async function readPortainerConnection(
+  paths: Pick<ProjectPaths, "stateDir">,
+): Promise<PortainerConnection | undefined> {
+  return (await readServerAddresses(paths)).portainer;
+}
+
+/** Records how OpsCrew reaches the user's Portainer and what it created; `undefined` forgets it. */
+export async function recordPortainerConnection(
+  paths: ProjectPaths,
+  portainer: PortainerConnectionInput | undefined,
+): Promise<void> {
+  await updateServerAddresses(paths, ({ portainer: _old, ...rest }) =>
+    portainer === undefined ? rest : { ...rest, portainer },
   );
 }
 

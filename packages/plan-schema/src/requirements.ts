@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   CurrencySchema,
   DataCriticalitySchema,
+  DeployProviderSchema,
   FqdnSchema,
   IsoDateTimeSchema,
   RegionSchema,
@@ -9,7 +10,6 @@ import {
   ServiceKindSchema,
   UptimeSchema,
   UserScaleSchema,
-  VpsProviderSchema,
 } from "./enums";
 
 /** `opscrew/requirements.yaml`: the user's answers from the interview. */
@@ -23,10 +23,11 @@ export const RequirementsSchema = z
       currency: CurrencySchema,
     }),
     /** Where to run the app; absent in files written before feature 004, which means Hetzner. */
-    provider: VpsProviderSchema.optional(),
+    provider: DeployProviderSchema.optional(),
     /**
-     * Where most users are; picks the provider's location. Required unless `provider` is `own`
-     * (a server the user owns stays where it is, so a region given for it is ignored).
+     * Where most users are; picks the provider's location. Required unless `provider` is `own` or
+     * `portainer` (a server the user owns or runs Portainer on stays where it is, so a region given
+     * for it is ignored).
      */
     region: RegionSchema.optional(),
     uptime: UptimeSchema,
@@ -45,7 +46,7 @@ export const RequirementsSchema = z
     notes: z.string().optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.provider !== "own" && value.region === undefined) {
+    if (value.provider !== "own" && value.provider !== "portainer" && value.region === undefined) {
       ctx.addIssue({
         code: "custom",
         path: ["region"],

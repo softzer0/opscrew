@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ApprovalGate,
   assertApprovedHostPlan,
+  assertApprovedStackPlan,
   isPlanHash,
   JsonlApprovalStore,
   MemoryApprovalStore,
@@ -476,6 +477,143 @@ describe("host-apply approvals", () => {
       confirmPhrase: "shop",
     });
     const approved = await gate.assertApprovedHostPlan(HASH_B, { allowDestroy: true });
+    expect(approved.allowDestroy).toBe(true);
+  });
+});
+
+// Feature 010: a Portainer stack plan's approval is its own kind, bound to the stack plan's hash.
+describe("stack-apply approvals", () => {
+  const stackRequest: ApprovalRequest = {
+    kind: "stack-apply",
+    title: "Create the stacks for acme-web in Portainer",
+    details: "app-stack, updater-stack",
+    planHash: HASH_C_UPPER,
+  };
+
+  it("records an approved stack plan, lower-casing the hash", async () => {
+    const { gate, store, audit } = makeGate();
+    const result = await gate.request(stackRequest);
+    expect(result).toMatchObject({
+      kind: "stack-apply",
+      approved: true,
+      planHash: HASH_C_UPPER.toLowerCase(),
+    });
+    expect(await store.list()).toHaveLength(1);
+    expect(audit.entries[0]).toMatchObject({ action: "stack-apply", decision: "approved" });
+  });
+
+  it("rejects a stack-apply request without a valid plan hash", async () => {
+    const { gate, handler } = makeGate();
+    for (const planHash of [undefined, "", "abc", `${"a".repeat(63)}z`]) {
+      const error = await gate.request({ ...stackRequest, planHash }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "INVALID_INPUT" });
+    }
+    const missing = await gate
+      .request({ ...stackRequest, planHash: undefined })
+      .catch((e: unknown) => e);
+    expect((missing as OpsCrewError).message).toContain("stack plan");
+    expect(handler.requests).toHaveLength(0);
+  });
+
+  it("reads stack-apply records back from the JSONL store", async () => {
+    const store = new JsonlApprovalStore(join(root, "stack", "approvals.jsonl"));
+    await store.append(record({ id: "s", kind: "stack-apply" }));
+    expect((await store.list()).map((r) => r.kind)).toEqual(["stack-apply"]);
+    expect(store.warnings).toEqual([]);
+  });
+
+  describe.each([
+    ["MemoryApprovalStore", () => new MemoryApprovalStore()],
+    ["JsonlApprovalStore", () => new JsonlApprovalStore(join(root, "approvals.jsonl"))],
+  ])("assertApprovedStackPlan with %s", (_name, makeStore) => {
+    it("returns the latest approved stack-apply record, matching the hash in any case", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "1", kind: "stack-apply", planHash: HASH_A }));
+      await store.append(record({ id: "2", kind: "stack-apply", planHash: HASH_A }));
+      await store.append(record({ id: "3", kind: "stack-apply", planHash: HASH_B }));
+      expect((await assertApprovedStackPlan(store, HASH_A.toUpperCase())).id).toBe("2");
+    });
+
+    it("refuses another hash and tells the user about --approve", async () => {
+      const store = makeStore();
+      await store.append(record({ kind: "stack-apply", planHash: HASH_A }));
+      const error = await assertApprovedStackPlan(store, HASH_B).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error).toMatchObject({ code: "PLAN_NOT_APPROVED" });
+      expect((error as OpsCrewError).message).toContain("stack plan");
+      expect((error as OpsCrewError).hint).toContain(`--approve ${HASH_B}`);
+    });
+
+    it("refuses a refused approval, an iac-apply or host-apply approval and an invalid hash", async () => {
+      const store = makeStore();
+      await store.append(
+        record({ id: "r", kind: "stack-apply", planHash: HASH_A, approved: false }),
+      );
+      await store.append(record({ id: "i", kind: "iac-apply", planHash: HASH_B }));
+      await store.append(record({ id: "h", kind: "host-apply", planHash: HASH_C_UPPER }));
+      for (const hash of [HASH_A, HASH_B, HASH_C_UPPER, "not-a-hash"]) {
+        await expect(assertApprovedStackPlan(store, hash)).rejects.toMatchObject({
+          code: "PLAN_NOT_APPROVED",
+        });
+      }
+    });
+
+    it("refuses deleting data unless the approval allowed it", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "k", kind: "stack-apply", planHash: HASH_A }));
+      await store.append(
+        record({ id: "d", kind: "stack-apply", planHash: HASH_B, allowDestroy: true }),
+      );
+      await expect(
+        assertApprovedStackPlan(store, HASH_A, { allowDestroy: true }),
+      ).rejects.toMatchObject({ code: "DESTROY_NOT_APPROVED" });
+      expect((await assertApprovedStackPlan(store, HASH_B, { allowDestroy: true })).id).toBe("d");
+    });
+  });
+
+  it("never lets a stack-apply approval authorise an infrastructure apply or a host plan", async () => {
+    const { gate } = makeGate();
+    await gate.request({ ...stackRequest, planHash: HASH_A });
+    await expect(gate.assertApprovedPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    await expect(gate.assertApprovedHostPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+  });
+
+  it("ApprovalGate.assertApprovedStackPlan returns the record or audits the refusal", async () => {
+    const { gate, audit } = makeGate();
+    await gate.request({ ...stackRequest, planHash: HASH_A });
+    expect((await gate.assertApprovedStackPlan(HASH_A.toUpperCase())).planHash).toBe(HASH_A);
+
+    await gate.request({ ...stackRequest, kind: "host-apply", planHash: HASH_B });
+    await expect(gate.assertApprovedStackPlan(HASH_B)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    expect(audit.entries.at(-1)).toMatchObject({
+      kind: "approval",
+      action: "stack-apply",
+      target: HASH_B,
+      decision: "refused",
+    });
+  });
+
+  it("deletes app data only after a confirmed destroy approval of the stack plan", async () => {
+    const { gate, audit } = makeGate({ confirmation: "shop" });
+    await gate.request({ ...stackRequest, planHash: HASH_A });
+    await expect(
+      gate.assertApprovedStackPlan(HASH_A, { allowDestroy: true }),
+    ).rejects.toMatchObject({ code: "DESTROY_NOT_APPROVED" });
+    expect(audit.entries.at(-1)).toMatchObject({ action: "stack-apply", decision: "refused" });
+
+    await gate.request({
+      ...stackRequest,
+      planHash: HASH_B,
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    const approved = await gate.assertApprovedStackPlan(HASH_B, { allowDestroy: true });
     expect(approved.allowDestroy).toBe(true);
   });
 });

@@ -30,6 +30,7 @@ const APPROVAL_KINDS = [
   "domain-purchase",
   "domain-settings",
   "host-apply",
+  "stack-apply",
 ] as const satisfies readonly ApprovalKind[];
 
 const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({
@@ -47,7 +48,7 @@ const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({
 /** Latest approved record of `kind` whose plan hash equals `planHash` (case-insensitive). */
 function latestApproved(
   records: readonly ApprovalRecord[],
-  kind: "iac-apply" | "host-apply",
+  kind: "iac-apply" | "host-apply" | "stack-apply",
   planHash: string,
 ): ApprovalRecord | undefined {
   const wanted = planHash.toLowerCase();
@@ -93,6 +94,43 @@ export async function assertApprovedHostPlan(
     throw new OpsCrewError(
       "DESTROY_NOT_APPROVED",
       "This host plan deletes the app's data on the server, but the approval did not allow deleting it.",
+      {
+        hint: "Run the command interactively and type the confirmation phrase to approve deleting the data.",
+      },
+    );
+  }
+  return record;
+}
+
+/**
+ * Returns the latest approved `stack-apply` record for `planHash` (the SHA-256 of a Portainer stack
+ * plan, matched case-insensitively), or throws: `PLAN_NOT_APPROVED` when no approval exists for
+ * this exact hash (an `iac-apply` or `host-apply` approval with the same hash does not count),
+ * `DESTROY_NOT_APPROVED` when `allowDestroy` is required (a teardown that deletes app data) but the
+ * approval did not grant it. Call before every stack apply; the {@link ApprovalGate} method of the
+ * same name also audits the refusal.
+ */
+export async function assertApprovedStackPlan(
+  store: ApprovalStore,
+  planHash: string,
+  options: { allowDestroy?: boolean } = {},
+): Promise<ApprovalRecord> {
+  const record = isPlanHash(planHash)
+    ? latestApproved(await store.list(), "stack-apply", planHash)
+    : undefined;
+  if (record === undefined) {
+    throw new OpsCrewError(
+      "PLAN_NOT_APPROVED",
+      "This stack plan has not been approved, so OpsCrew will not change anything in Portainer.",
+      {
+        hint: `Review the stack plan, then approve it when asked or re-run with --approve ${planHash}.`,
+      },
+    );
+  }
+  if (options.allowDestroy === true && record.allowDestroy !== true) {
+    throw new OpsCrewError(
+      "DESTROY_NOT_APPROVED",
+      "This stack plan deletes the app's data in Portainer, but the approval did not allow deleting it.",
       {
         hint: "Run the command interactively and type the confirmation phrase to approve deleting the data.",
       },
@@ -155,8 +193,8 @@ const PHRASE_MISMATCH = "confirmation phrase did not match";
 
 /**
  * The single place where humans approve mutations (constitution I). Every decision, approved or
- * not, is written to the approval store and the audit log; `iac-apply` and `host-apply` approvals
- * are bound to the plan's SHA-256 hash and destroys need `allowDestroy` plus the exact typed
+ * not, is written to the approval store and the audit log; `iac-apply`, `host-apply` and
+ * `stack-apply` approvals are bound to the plan's SHA-256 hash and destroys need `allowDestroy` plus the exact typed
  * confirmation phrase.
  */
 export class ApprovalGate {
@@ -176,7 +214,8 @@ export class ApprovalGate {
 
   /**
    * Validates the request, asks the handler and records the decision. Throws
-   * `OpsCrewError("INVALID_INPUT")` for an `iac-apply` or `host-apply` without a valid plan hash, an
+   * `OpsCrewError("INVALID_INPUT")` for an `iac-apply`, `host-apply` or `stack-apply` without a valid
+   * plan hash, an
    * `allowDestroy`, `domain-purchase` or `domain-settings` request without a confirmation phrase.
    * A refusal is returned, not thrown.
    */
@@ -280,8 +319,37 @@ export class ApprovalGate {
     }
   }
 
+  /**
+   * Returns the approved `stack-apply` record for the stack plan hash `planHash`, or audits the
+   * refusal and throws `PLAN_NOT_APPROVED` or `DESTROY_NOT_APPROVED` (see
+   * {@link assertApprovedStackPlan}). Call before every stack apply.
+   */
+  async assertApprovedStackPlan(
+    planHash: string,
+    options: { allowDestroy?: boolean } = {},
+  ): Promise<ApprovalRecord> {
+    try {
+      return await assertApprovedStackPlan(this.store, planHash, options);
+    } catch (error) {
+      if (error instanceof OpsCrewError && error.code === "PLAN_NOT_APPROVED") {
+        await this.auditRefusal(
+          "stack-apply",
+          planHash,
+          "no approval recorded for this stack plan",
+        );
+      } else if (error instanceof OpsCrewError && error.code === "DESTROY_NOT_APPROVED") {
+        await this.auditRefusal(
+          "stack-apply",
+          planHash,
+          "stack plan deletes app data; deleting it was not approved",
+        );
+      }
+      throw error;
+    }
+  }
+
   private async auditRefusal(
-    action: "iac-apply" | "host-apply",
+    action: "iac-apply" | "host-apply" | "stack-apply",
     planHash: string,
     detail: string,
   ): Promise<void> {
@@ -310,6 +378,13 @@ function validateRequest(request: ApprovalRequest): void {
       "INVALID_INPUT",
       "A change to a server can only be approved for a specific host plan, but no valid plan hash was given.",
       { hint: "Pass the host plan's SHA-256 hash (64 hexadecimal characters) with the request." },
+    );
+  }
+  if (request.kind === "stack-apply" && !isPlanHash(request.planHash)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "A change in Portainer can only be approved for a specific stack plan, but no valid plan hash was given.",
+      { hint: "Pass the stack plan's SHA-256 hash (64 hexadecimal characters) with the request." },
     );
   }
   if (request.planHash !== undefined && !isPlanHash(request.planHash)) {

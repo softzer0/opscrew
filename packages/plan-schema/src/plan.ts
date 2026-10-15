@@ -55,10 +55,52 @@ export const OwnTargetSchema = z.strictObject({
   access: z.enum(["public", "tunnel"]),
 });
 
-/** Where the app runs: a server OpsCrew creates (Hetzner, DigitalOcean) or the user's own. */
+/**
+ * How visitors reach an app on a Portainer target. `tunnel`: a Cloudflare Tunnel connector in the
+ * app's stack (needs a domain on Cloudflare). `proxy`: the app is published on a host port the
+ * user routes to (no TLS from OpsCrew). `caddy`: Caddy publishes ports 80 and 443 with automatic
+ * certificates (needs a domain).
+ */
+export const PortainerWebSchema = z.discriminatedUnion("mode", [
+  z.strictObject({ mode: z.literal("tunnel") }),
+  z.strictObject({
+    mode: z.literal("proxy"),
+    /** The host port the app is published on. */
+    port: PortSchema,
+  }),
+  z.strictObject({ mode: z.literal("caddy") }),
+]);
+
+/**
+ * A Portainer the user already runs: OpsCrew deploys the app as Portainer stacks in one Docker
+ * environment and never changes the host. Portainer's address and certificate are never committed:
+ * they live in OpsCrew's local state (`.opscrew/server.json`), the access token only in the
+ * environment (`PORTAINER_API_KEY`).
+ */
+export const PortainerTargetSchema = z.strictObject({
+  provider: z.literal("portainer"),
+  mode: z.literal("portainer-stack"),
+  /** Portainer's id of the environment (a single Docker host) the stacks run in. */
+  environmentId: z.int().positive(),
+  /** The environment's CPU architecture, from its Docker info; the app image is built for it. */
+  arch: z.enum(["amd64", "arm64"]),
+  /**
+   * How a new image reaches Portainer. `updater`: a small stack calls the app stack's webhook
+   * inside the host. `cloudflare`: the deploy workflow calls the webhook through Cloudflare Access
+   * (needs a domain on Cloudflare).
+   */
+  redeploy: z.enum(["updater", "cloudflare"]),
+  web: PortainerWebSchema,
+});
+
+/**
+ * Where the app runs: a server OpsCrew creates (Hetzner, DigitalOcean), the user's own server, or
+ * the user's existing Portainer.
+ */
 export const DeployTargetSchema = z.discriminatedUnion("provider", [
   CloudTargetSchema,
   OwnTargetSchema,
+  PortainerTargetSchema,
 ]);
 
 /**
@@ -226,7 +268,7 @@ export function likelyCloudflareZone(domain: string): string {
  */
 function checkCloudflareEdgeNames(
   plan: {
-    target: { provider: string; access?: string | undefined };
+    target: { provider: string; access?: string | undefined; web?: { mode: string } | undefined };
     dns: {
       provider: string;
       domain?: string | undefined;
@@ -241,8 +283,14 @@ function checkCloudflareEdgeNames(
   const { dns, target, portainer } = plan;
   const zone = dns.zone;
   if (dns.provider !== "cloudflare" || zone === undefined) return;
-  const tunnel = target.provider === "own" && target.access === "tunnel";
-  const served = dns.proxied || tunnel;
+  const ownTunnel = target.provider === "own" && target.access === "tunnel";
+  const portainerTunnel = target.provider === "portainer" && target.web?.mode === "tunnel";
+  const served = dns.proxied || ownTunnel || portainerTunnel;
+  const instead = ownTunnel
+    ? 'if the internet can reach your server, serve it directly with DNS only instead of the tunnel (target.access "public", dns.proxied false)'
+    : portainerTunnel
+      ? 'if the internet can reach your Portainer host, serve it with Caddy and DNS only instead of the tunnel (target.web.mode "caddy", dns.proxied false)'
+      : undefined;
   const domain = dns.domain;
   if (served && domain !== undefined) {
     const deep = cloudflareEdgeCoverage(domain, zone);
@@ -251,9 +299,7 @@ function checkCloudflareEdgeNames(
         code: "custom",
         path: ["dns", "domain"],
         message: `must be ${zone} or one level below it: ${deep.reason}; use a name one level below ${zone}, such as ${deep.suggestion}, or ${
-          tunnel
-            ? 'if the internet can reach your server, serve it directly with DNS only instead of the tunnel (target.access "public", dns.proxied false)'
-            : "serve it without Cloudflare's proxy (dns.proxied false)"
+          instead ?? "serve it without Cloudflare's proxy (dns.proxied false)"
         }`,
       });
     } else if (dns.www) {
@@ -263,9 +309,7 @@ function checkCloudflareEdgeNames(
           code: "custom",
           path: ["dns", "www"],
           message: `can be true only when the domain is ${zone} itself while Cloudflare serves it: ${www.reason}; turn off the www. alias (dns.www false), or ${
-            tunnel
-              ? 'if the internet can reach your server, serve it directly with DNS only instead of the tunnel (target.access "public", dns.proxied false)'
-              : "serve the domain without Cloudflare's proxy (dns.proxied false)"
+            instead ?? "serve the domain without Cloudflare's proxy (dns.proxied false)"
           }`,
         });
       }
@@ -282,6 +326,64 @@ function checkCloudflareEdgeNames(
         message: `must be one level below ${zone}: ${deep.reason}; use a name one level below ${zone}, such as ${deep.suggestion}`,
       });
     }
+  }
+}
+
+/**
+ * The rules of a Portainer target: what Cloudflare serves (the tunnel, the webhook behind Access)
+ * needs a domain on Cloudflare, Caddy's certificates need a domain, a move to or from Portainer is
+ * not available, and OpsCrew never installs Portainer CE next to an existing Portainer.
+ */
+function checkPortainerTarget(
+  plan: {
+    target: z.output<typeof PortainerTargetSchema>;
+    dns: { provider: string; domain?: string | undefined };
+    portainer?: unknown;
+    retarget?: unknown;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const { target, dns } = plan;
+  // The zone is learned from Cloudflare at provision, before rendering (as for an own tunnel).
+  const onCloudflare = dns.provider === "cloudflare" && dns.domain !== undefined;
+  if (target.web.mode === "tunnel" && !onCloudflare) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["target", "web", "mode"],
+      message:
+        'can be "tunnel" only with a domain on Cloudflare (dns.provider "cloudflare" with dns.domain): the tunnel serves the app on that domain; without one, use "proxy" (a port you route to) or "caddy" (with a domain)',
+    });
+  }
+  if (target.redeploy === "cloudflare" && !onCloudflare) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["target", "redeploy"],
+      message:
+        'can be "cloudflare" only with a domain on Cloudflare (dns.provider "cloudflare" with dns.domain): the deploy workflow reaches Portainer through Cloudflare Access in that zone; without one, use "updater"',
+    });
+  }
+  if (target.web.mode === "caddy" && dns.domain === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["target", "web", "mode"],
+      message:
+        'can be "caddy" only with a domain (dns.domain): Caddy gets the certificates for that name; without one, use "proxy"',
+    });
+  }
+  if (plan.retarget !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["retarget"],
+      message: "moving an app to or from an existing Portainer is not available",
+    });
+  }
+  if (plan.portainer !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["portainer"],
+      message:
+        "is not available with a Portainer target: OpsCrew deploys into your existing Portainer and does not install another one",
+    });
   }
 }
 
@@ -500,6 +602,8 @@ const DeployPlanObjectSchema = z
         message: "moving an app to or from a server you already own is not available",
       });
     }
+    if (plan.target.provider === "portainer")
+      checkPortainerTarget({ ...plan, target: plan.target }, ctx);
     checkPortainerSubdomain(plan, ctx);
     checkCloudflareEdgeNames(plan, ctx);
     if (plan.services.postgres) {
@@ -529,9 +633,9 @@ function withImage(target: z.output<typeof CloudTargetSchema>) {
   return { ...target, image: target.image ?? DEFAULT_IMAGES[target.provider] };
 }
 
-/** The target with a cloud target's image filled in; an own-server target as it is. */
+/** The target with a cloud target's image filled in; an own-server or Portainer target as it is. */
 function withTargetDefaults(target: z.output<typeof DeployTargetSchema>) {
-  return target.provider === "own" ? target : withImage(target);
+  return target.provider === "own" || target.provider === "portainer" ? target : withImage(target);
 }
 
 /**
@@ -566,6 +670,10 @@ export type DeployTarget = DeployPlan["target"];
 export type CloudDeployTarget = Extract<DeployTarget, { provider: CloudProvider }>;
 /** A server the user already owns. */
 export type OwnDeployTarget = Extract<DeployTarget, { provider: "own" }>;
+/** A Portainer the user already runs. */
+export type PortainerDeployTarget = Extract<DeployTarget, { provider: "portainer" }>;
+/** How visitors reach an app on a Portainer target. */
+export type PortainerWeb = PortainerDeployTarget["web"];
 /** A move to another provider in progress. */
 export type Retarget = NonNullable<DeployPlan["retarget"]>;
 /** Portainer CE settings with their defaults filled in. */

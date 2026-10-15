@@ -81,6 +81,14 @@ export type VpsProvider = z.infer<typeof VpsProviderSchema>;
 export const CloudProviderSchema = VpsProviderSchema.exclude(["own"]);
 export type CloudProvider = z.infer<typeof CloudProviderSchema>;
 
+/**
+ * Every place OpsCrew can deploy to, as `opscrew/requirements.yaml` and design options name it: a
+ * single server ({@link VpsProviderSchema}) or a Portainer the user already runs (`portainer`,
+ * which has no server for OpsCrew to create, size or price).
+ */
+export const DeployProviderSchema = z.enum([...VpsProviderSchema.options, "portainer"]);
+export type DeployProvider = z.infer<typeof DeployProviderSchema>;
+
 /** Registrars OpsCrew can buy domains with. */
 export const RegistrarSchema = z.enum(["cloudflare", "namecheap", "porkbun", "godaddy"]);
 export type Registrar = z.infer<typeof RegistrarSchema>;

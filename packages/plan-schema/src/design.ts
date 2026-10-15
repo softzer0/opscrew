@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IsoDateTimeSchema, MoneySchema, ServiceKindSchema, VpsProviderSchema } from "./enums";
+import { DeployProviderSchema, IsoDateTimeSchema, MoneySchema, ServiceKindSchema } from "./enums";
 
 /** Allowed difference between the breakdown sum and the monthly total (rounding to cents). */
 const SUM_TOLERANCE = 0.01 + 1e-9;
@@ -46,7 +46,7 @@ export const DesignOptionSchema = z.strictObject({
   title: z.string().min(1),
   summary: z.string().min(1),
   target: z.strictObject({
-    provider: VpsProviderSchema,
+    provider: DeployProviderSchema,
     location: z.string().min(1),
     serverType: z.string().min(1),
     vcpus: z.int().positive(),

@@ -1,0 +1,20 @@
+{
+  "name": "@opscrew/connector-portainer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Portainer adapter: certificate-pinned client, inspection, stack plans and hash-bound apply.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

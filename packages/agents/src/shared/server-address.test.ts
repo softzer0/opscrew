@@ -16,9 +16,12 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
+  type PortainerConnection,
   readOwnServer,
+  readPortainerConnection,
   readServerAddresses,
   recordOwnServer,
+  recordPortainerConnection,
   recordServerAddress,
   serverAddress,
   serverAddressesFile,
@@ -293,6 +296,136 @@ describe("a server the user owns in OpsCrew's local state", () => {
     const error = await readOwnServer(deps.paths).catch((e: unknown) => e);
     expect(error).toMatchObject({ code: "ARTIFACT_INVALID" });
     expect((error as Error).message).toContain("own.hostKey is not valid");
+  });
+});
+
+describe("an existing Portainer in OpsCrew's local state", () => {
+  // Fingerprint-shaped values generated at runtime, never committed.
+  const digest = createHash("sha256").update("test certificate").digest();
+  const HEX = `SHA256:${digest.toString("hex")}`;
+  const COLONS = `SHA256:${(digest.toString("hex").toUpperCase().match(/../g) ?? []).join(":")}`;
+  const BASE64 = `SHA256:${digest.toString("base64").replace(/=+$/, "")}`;
+  const portainer = {
+    url: "https://portainer.home.example.com:9443",
+    certFingerprint: HEX,
+    environmentId: 3,
+    environmentName: "local",
+  };
+
+  it("records the connection with an empty record of what OpsCrew created, and keeps the other entries", async () => {
+    const deps = await createTestPhaseDeps();
+    expect(await readPortainerConnection(deps.paths)).toBeUndefined();
+    await recordServerAddress(deps.paths, { ipv4: IPV4 });
+    await recordPortainerConnection(deps.paths, portainer);
+    const expected = { ...portainer, created: { stacks: [], volumes: [] } };
+    expect(await readPortainerConnection(deps.paths)).toEqual(expected);
+    expect(JSON.parse(await readFile(serverAddressesFile(deps.paths), "utf8"))).toEqual({
+      schemaVersion: 1,
+      deployment: { ipv4: IPV4 },
+      portainer: expected,
+    });
+
+    await recordPortainerConnection(deps.paths, undefined);
+    expect(await readServerAddresses(deps.paths)).toEqual({
+      schemaVersion: 1,
+      deployment: { ipv4: IPV4 },
+    });
+  });
+
+  it("records the stacks, registry entry and volumes OpsCrew created", async () => {
+    const deps = await createTestPhaseDeps();
+    const created: PortainerConnection["created"] = {
+      stacks: [
+        { id: 12, name: "opscrew-acme-web", role: "app" },
+        { id: 13, name: "opscrew-acme-web-updater", role: "updater" },
+        { id: 14, name: "opscrew-acme-web-tunnel", role: "tunnel-connector" },
+      ],
+      registryId: 2,
+      volumes: ["opscrew-acme-web_pgdata", "opscrew-acme-web_caddy_data"],
+    };
+    await recordPortainerConnection(deps.paths, { ...portainer, created });
+    expect((await readPortainerConnection(deps.paths))?.created).toEqual(created);
+  });
+
+  it("pins the certificate in the usual spellings, and connects to localhost over plain HTTP", async () => {
+    const deps = await createTestPhaseDeps();
+    for (const certFingerprint of [HEX, COLONS, BASE64]) {
+      await recordPortainerConnection(deps.paths, { ...portainer, certFingerprint });
+      expect((await readPortainerConnection(deps.paths))?.certFingerprint).toBe(certFingerprint);
+    }
+    for (const url of ["http://localhost:9000", "http://127.0.0.1:9000", "http://[::1]:9000"]) {
+      const { certFingerprint: _pin, ...plain } = portainer;
+      await recordPortainerConnection(deps.paths, { ...plain, url });
+      expect((await readPortainerConnection(deps.paths))?.url, url).toBe(url);
+    }
+    // The interview may record the address before the certificate is confirmed.
+    const { certFingerprint: _pin, ...unpinned } = portainer;
+    await recordPortainerConnection(deps.paths, unpinned);
+    expect((await readPortainerConnection(deps.paths))?.certFingerprint).toBeUndefined();
+  });
+
+  it("refuses entries that could not connect safely or would hold a secret, and leaves the file as it was", async () => {
+    const deps = await createTestPhaseDeps();
+    await recordPortainerConnection(deps.paths, portainer);
+    const before = await readFile(serverAddressesFile(deps.paths), "utf8");
+    const token = fakeSecret("generic-password");
+    const stack = { id: 12, name: "opscrew-acme-web", role: "app" };
+    const created = (extra: Record<string, unknown>) => ({
+      ...portainer,
+      created: { stacks: [stack], volumes: [], ...extra },
+    });
+    for (const [label, bad] of [
+      ["token", { ...portainer, token }],
+      ["api key", { ...portainer, apiKey: token }],
+      ["webhook", { ...portainer, webhook: "1b4e28ba-2fa1-11d2-883f-0016d3cca427" }],
+      ["password in the URL", { ...portainer, url: "https://admin:pw@portainer.example.com:9443" }],
+      ["query in the URL", { ...portainer, url: "https://portainer.example.com:9443/?token=x" }],
+      [
+        "plain HTTP elsewhere",
+        { ...portainer, certFingerprint: undefined, url: "http://nas.lan:9000" },
+      ],
+      ["pinned plain HTTP", { ...portainer, url: "http://localhost:9000" }],
+      ["another scheme", { ...portainer, url: "ftp://portainer.example.com" }],
+      ["not a URL", { ...portainer, url: "portainer.example.com:9443" }],
+      ["fingerprint", { ...portainer, certFingerprint: "MD5:aa:bb" }],
+      ["short fingerprint", { ...portainer, certFingerprint: "SHA256:abcd" }],
+      ["environment id", { ...portainer, environmentId: 0 }],
+      ["environment id text", { ...portainer, environmentId: "3" }],
+      ["environment name", { ...portainer, environmentName: "" }],
+      ["no environment", { url: portainer.url, certFingerprint: HEX }],
+      ["stack id", created({ stacks: [{ ...stack, id: -1 }] })],
+      ["someone else's stack", created({ stacks: [{ ...stack, name: "nextcloud" }] })],
+      ["stack role", created({ stacks: [{ ...stack, role: "database" }] })],
+      ["duplicate stack", created({ stacks: [stack, { ...stack, role: "updater" }] })],
+      ["registry id", created({ registryId: 0 })],
+      ["volume name", created({ volumes: ["../etc"] })],
+      ["stack env", created({ stacks: [{ ...stack, env: [{ name: "X", value: token }] }] })],
+    ] as const) {
+      const error = await recordPortainerConnection(deps.paths, bad as never).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(error, label).toBeInstanceOf(Error);
+      expect(String((error as Error).message), label).not.toContain(token);
+    }
+    expect(await readFile(serverAddressesFile(deps.paths), "utf8")).toBe(before);
+  });
+
+  it("stops with a plain error when the recorded entry is damaged", async () => {
+    const deps = await createTestPhaseDeps();
+    await mkdir(deps.paths.stateDir, { recursive: true });
+    const damaged = JSON.stringify({
+      schemaVersion: 1,
+      portainer: { ...portainer, certFingerprint: "nope" },
+    });
+    await writeFile(serverAddressesFile(deps.paths), damaged);
+    const error = await readPortainerConnection(deps.paths).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "ARTIFACT_INVALID" });
+    expect((error as Error).message).toContain("portainer.certFingerprint is not valid");
+    // The record lists what OpsCrew created in Portainer: never just delete it.
+    expect((error as { hint: string }).hint).toMatch(
+      /If this project deploys to your Portainer, do not delete the file/,
+    );
   });
 });
 

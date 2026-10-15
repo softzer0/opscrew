@@ -12,7 +12,12 @@ export type ProviderId =
   | "contabo"
   | "namecheap"
   /** A server the user already owns, reached over SSH (no provider API). */
-  | "own";
+  | "own"
+  /**
+   * A Portainer the user already runs: OpsCrew deploys the app as Portainer stacks and never
+   * creates, sizes or prices a server, so it is not a {@link VpsProviderId}.
+   */
+  | "portainer";
 
 /** What credentials a connector needs and how to create them with the least privilege. */
 export interface CredentialRequirement {
@@ -103,7 +108,8 @@ export interface ComputeCatalog {
 
 /**
  * Targets OpsCrew deploys a single server to (`vps-compose` mode): Hetzner Cloud, DigitalOcean, or
- * a server the user already owns (`own`, which OpsCrew never creates or deletes).
+ * a server the user already owns (`own`, which OpsCrew never creates or deletes). An existing
+ * Portainer (`portainer`) is not one: there is no server to create, size or price.
  */
 export type VpsProviderId = Extract<ProviderId, "hetzner" | "digitalocean" | "own">;
 

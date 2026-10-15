@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { Currency, Money, PhaseName } from "@opscrew/contracts";
 import { describe, expect, expectTypeOf, it } from "vitest";
@@ -13,6 +14,7 @@ import {
   cloudflareEdgeCoverage,
   DEFAULT_IMAGES,
   DeployPlanSchema,
+  DeployProviderSchema,
   type DeployTarget,
   type DesignOption,
   DesignOptionListSchema,
@@ -22,6 +24,7 @@ import {
   type MoneySchema,
   type OwnDeployTarget,
   type PhaseNameSchema,
+  type PortainerDeployTarget,
   type ProjectFacts,
   ProjectFactsSchema,
   parseArtifact,
@@ -29,6 +32,7 @@ import {
   RepoPathSchema,
   RequirementsSchema,
   ServiceKindSchema,
+  serializeArtifact,
   VpsProviderSchema,
 } from "./index";
 
@@ -44,9 +48,11 @@ function issuesOf(kind: ArtifactKind, text: string) {
   throw new Error("expected the fixture to be rejected");
 }
 
-/** The target as a Hetzner/DigitalOcean target; fails the test for a server the user owns. */
+/** The target as a Hetzner/DigitalOcean target; fails the test for an own server or Portainer. */
 function cloud(target: DeployTarget): CloudDeployTarget {
-  if (target.provider === "own") throw new Error("expected a Hetzner or DigitalOcean target");
+  if (target.provider === "own" || target.provider === "portainer") {
+    throw new Error("expected a Hetzner or DigitalOcean target");
+  }
   return target;
 }
 
@@ -865,6 +871,235 @@ describe("DeployPlan names behind Cloudflare's proxy", () => {
       DeployPlanSchema.safeParse({ ...plan, portainer: portainer("portainer-shop.example.com") })
         .success,
     ).toBe(true);
+  });
+});
+
+describe("DeployPlan target on an existing Portainer", () => {
+  async function validPlan() {
+    return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+  }
+  const target = (overrides: Record<string, unknown> = {}) => ({
+    provider: "portainer",
+    mode: "portainer-stack",
+    environmentId: 3,
+    arch: "amd64",
+    redeploy: "updater",
+    web: { mode: "tunnel" },
+    ...overrides,
+  });
+  const noDns = { provider: "none", proxied: false } as const;
+
+  it("records the environment, architecture, redeploy and web modes, nothing about Portainer itself", async () => {
+    const plan = await validPlan();
+    const parsed = DeployPlanSchema.parse({ ...plan, target: target() });
+    expect(parsed.target).toEqual(target());
+    expectTypeOf<PortainerDeployTarget>().toEqualTypeOf<{
+      provider: "portainer";
+      mode: "portainer-stack";
+      environmentId: number;
+      arch: "amd64" | "arm64";
+      redeploy: "updater" | "cloudflare";
+      web: { mode: "tunnel" } | { mode: "proxy"; port: number } | { mode: "caddy" };
+    }>();
+    for (const variant of [
+      target({ arch: "arm64", redeploy: "cloudflare" }),
+      target({ web: { mode: "proxy", port: 8080 } }),
+      target({ web: { mode: "caddy" } }),
+    ]) {
+      expect(DeployPlanSchema.parse({ ...plan, target: variant }).target).toEqual(variant);
+    }
+  });
+
+  it("rejects server fields, Portainer's address, unknown modes and bad values", async () => {
+    const plan = await validPlan();
+    for (const extra of [
+      { location: "nbg1" },
+      { serverType: "cpx22" },
+      { image: "ubuntu-24.04" },
+      { backups: true },
+      { access: "tunnel" },
+      { url: "https://portainer.example.com:9443" },
+      { token: "never" },
+    ]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, target: target(extra) });
+      expect(pathsOf(result), Object.keys(extra)[0]).toEqual(["target"]);
+    }
+    const cases: [Record<string, unknown>, string][] = [
+      [{ mode: "vps-compose" }, "target.mode"],
+      [{ environmentId: 0 }, "target.environmentId"],
+      [{ environmentId: 1.5 }, "target.environmentId"],
+      [{ environmentId: "3" }, "target.environmentId"],
+      [{ arch: "x86" }, "target.arch"],
+      [{ redeploy: "polling" }, "target.redeploy"],
+      [{ web: { mode: "public" } }, "target.web.mode"],
+      [{ web: { mode: "proxy" } }, "target.web.port"],
+      [{ web: { mode: "proxy", port: 0 } }, "target.web.port"],
+      [{ web: { mode: "proxy", port: 65536 } }, "target.web.port"],
+      [{ web: { mode: "proxy", port: 80.5 } }, "target.web.port"],
+      [{ web: { mode: "tunnel", port: 8080 } }, "target.web"],
+      [{ web: { mode: "caddy", port: 443 } }, "target.web"],
+    ];
+    for (const [overrides, path] of cases) {
+      const result = DeployPlanSchema.safeParse({ ...plan, target: target(overrides) });
+      expect(pathsOf(result), JSON.stringify(overrides)).toEqual([path]);
+    }
+    for (const port of [1, 65535]) {
+      const web = { mode: "proxy", port };
+      const result = DeployPlanSchema.safeParse({ ...plan, target: target({ web }), dns: noDns });
+      expect(result.success, String(port)).toBe(true);
+    }
+    const { web: _web, redeploy: _redeploy, environmentId: _id, ...bare } = target();
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, target: bare }))).toEqual([
+      "target.environmentId",
+      "target.redeploy",
+      "target.web",
+    ]);
+  });
+
+  it("serves through the tunnel only on a domain on Cloudflare", async () => {
+    const plan = await validPlan();
+    const result = DeployPlanSchema.safeParse({ ...plan, target: target(), dns: noDns });
+    expect(pathsOf(result)).toEqual(["target.web.mode"]);
+    expect(result.error?.issues[0]?.message).toContain("only with a domain on Cloudflare");
+    const { domain: _domain, ...noDomain } = plan.dns;
+    expect(
+      pathsOf(DeployPlanSchema.safeParse({ ...plan, target: target(), dns: noDomain })),
+    ).toEqual(["dns.domain", "target.web.mode"]);
+    // A domain whose DNS is elsewhere is not enough either.
+    const elsewhere = { provider: "none", domain: "shop.example.com", proxied: false };
+    expect(
+      pathsOf(DeployPlanSchema.safeParse({ ...plan, target: target(), dns: elsewhere })),
+    ).toEqual(["target.web.mode"]);
+    // Design does not know the zone yet: provision learns it from Cloudflare before rendering.
+    const { zone: _zone, ...noZone } = plan.dns;
+    expect(DeployPlanSchema.safeParse({ ...plan, target: target(), dns: noZone }).success).toBe(
+      true,
+    );
+  });
+
+  it("redeploys through Cloudflare only on a domain on Cloudflare", async () => {
+    const plan = await validPlan();
+    const proxy = { mode: "proxy", port: 8080 };
+    const cloudflare = target({ redeploy: "cloudflare", web: proxy });
+    expect(DeployPlanSchema.safeParse({ ...plan, target: cloudflare }).success).toBe(true);
+    const result = DeployPlanSchema.safeParse({ ...plan, target: cloudflare, dns: noDns });
+    expect(pathsOf(result)).toEqual(["target.redeploy"]);
+    expect(result.error?.issues[0]?.message).toContain("only with a domain on Cloudflare");
+    expect(
+      DeployPlanSchema.safeParse({ ...plan, target: target({ web: proxy }), dns: noDns }).success,
+    ).toBe(true);
+  });
+
+  it("serves with Caddy only on a domain, wherever its DNS is", async () => {
+    const plan = await validPlan();
+    const caddy = target({ web: { mode: "caddy" } });
+    const result = DeployPlanSchema.safeParse({ ...plan, target: caddy, dns: noDns });
+    expect(pathsOf(result)).toEqual(["target.web.mode"]);
+    expect(result.error?.issues[0]?.message).toContain("only with a domain");
+    const elsewhere = { provider: "none", domain: "shop.example.com", proxied: false };
+    expect(DeployPlanSchema.safeParse({ ...plan, target: caddy, dns: elsewhere }).success).toBe(
+      true,
+    );
+    expect(DeployPlanSchema.safeParse({ ...plan, target: caddy }).success).toBe(true);
+  });
+
+  it("keeps names Cloudflare serves one level below the zone, the tunnel even without the proxy flag", async () => {
+    const plan = await validPlan();
+    for (const proxied of [true, false]) {
+      const result = DeployPlanSchema.safeParse({
+        ...plan,
+        target: target(),
+        dns: { ...plan.dns, domain: "api.shop.example.com", proxied },
+      });
+      expect(pathsOf(result), String(proxied)).toEqual(["dns.domain"]);
+      expect(result.error?.issues[0]?.message).toContain('target.web.mode "caddy"');
+    }
+    const www = DeployPlanSchema.safeParse({
+      ...plan,
+      target: target(),
+      dns: { ...plan.dns, domain: "shop.example.com", www: true, proxied: false },
+    });
+    expect(pathsOf(www)).toEqual(["dns.www"]);
+    // Caddy or a routed port with DNS only: Cloudflare's edge does not serve the name.
+    for (const web of [{ mode: "caddy" }, { mode: "proxy", port: 8080 }]) {
+      const dns = { ...plan.dns, domain: "api.shop.example.com", proxied: false };
+      expect(DeployPlanSchema.safeParse({ ...plan, target: target({ web }), dns }).success).toBe(
+        true,
+      );
+      const proxiedDns = { ...dns, proxied: true };
+      expect(
+        pathsOf(DeployPlanSchema.safeParse({ ...plan, target: target({ web }), dns: proxiedDns })),
+      ).toEqual(["dns.domain"]);
+    }
+    for (const domain of ["example.com", "shop.example.com"]) {
+      const dns = { ...plan.dns, domain };
+      expect(DeployPlanSchema.safeParse({ ...plan, target: target(), dns }).success, domain).toBe(
+        true,
+      );
+    }
+  });
+
+  it("refuses a move to or from Portainer, and installing another Portainer", async () => {
+    const plan = await validPlan();
+    const move = { from: { target: plan.target }, step: "started", startedAt: plan.createdAt };
+    const to = DeployPlanSchema.safeParse({ ...plan, target: target(), retarget: move });
+    expect(pathsOf(to)).toEqual(["retarget"]);
+    expect(to.error?.issues[0]?.message).toContain("existing Portainer");
+    const fromPortainer = { ...move, from: { target: target() } };
+    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, retarget: fromPortainer }))).toContain(
+      "retarget.from.target.provider",
+    );
+    const ce = { enabled: true, version: "2.33.1" };
+    expect(
+      pathsOf(DeployPlanSchema.safeParse({ ...plan, target: target(), portainer: ce })),
+    ).toEqual(["portainer"]);
+  });
+
+  it("accepts provider portainer in the requirements without a region, and in design options", async () => {
+    const requirements = parseArtifact(
+      "requirements",
+      await fixture("requirements.yaml"),
+      "fixture",
+    );
+    const { region: _region, ...noRegion } = requirements;
+    expect(RequirementsSchema.parse({ ...noRegion, provider: "portainer" }).provider).toBe(
+      "portainer",
+    );
+    expect(DeployProviderSchema.options).toEqual(["hetzner", "digitalocean", "own", "portainer"]);
+    expect(DesignOptionSchema.shape.target.shape.provider.options).toEqual(
+      DeployProviderSchema.options,
+    );
+    // A Portainer target has no server to create or price.
+    expect(VpsProviderSchema.options).not.toContain("portainer");
+    expect(CloudProviderSchema.options).toEqual(["hetzner", "digitalocean"]);
+    expect(Object.keys(DEFAULT_IMAGES)).toEqual(["hetzner", "digitalocean"]);
+  });
+});
+
+describe("DeployPlan serialisation of existing targets", () => {
+  // SHA-256 of `serializeArtifact("plan", …)` before feature 010: adding the Portainer target must
+  // not change one byte of a Hetzner, DigitalOcean or own-server plan.
+  const BEFORE_010 = {
+    hetzner: "2cf00ad2bf7ce780830a5530ab0ee0fb1f9bc5daf6edf1280cf0e555629fb01e",
+    digitalocean: "008cbd2eef00a3e4a10bb86475f801cebf343aef3de416aaf18b09e68fb3286b",
+    own: "97dafd7659eb4ac40e11a13f800c49d056037ebcd01bb65d604aeec675e2869a",
+  };
+
+  it("keeps Hetzner, DigitalOcean and own-server plans byte-identical", async () => {
+    const plan = parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+    const own = { provider: "own", mode: "vps-compose", arch: "arm64", access: "tunnel" } as const;
+    const plans = {
+      hetzner: plan,
+      digitalocean: DeployPlanSchema.parse({
+        ...plan,
+        target: { ...cloud(plan.target), provider: "digitalocean", image: undefined },
+      }),
+      own: DeployPlanSchema.parse({ ...plan, target: own }),
+    };
+    for (const [name, value] of Object.entries(plans)) {
+      const digest = createHash("sha256").update(serializeArtifact("plan", value)).digest("hex");
+      expect(digest, name).toBe(BEFORE_010[name as keyof typeof BEFORE_010]);
+    }
   });
 });
 

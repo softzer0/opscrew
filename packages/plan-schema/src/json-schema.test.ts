@@ -21,6 +21,20 @@ describe("JSON Schema export", () => {
           oneOf: [
             { properties: { serverType: { type: "string" } } },
             { properties: { provider: { const: "own" }, arch: { enum: ["amd64", "arm64"] } } },
+            {
+              properties: {
+                provider: { const: "portainer" },
+                mode: { const: "portainer-stack" },
+                redeploy: { enum: ["updater", "cloudflare"] },
+                web: {
+                  oneOf: [
+                    { properties: { mode: { const: "tunnel" } } },
+                    { properties: { mode: { const: "proxy" }, port: { maximum: 65535 } } },
+                    { properties: { mode: { const: "caddy" } } },
+                  ],
+                },
+              },
+            },
           ],
         },
         portainer: { properties: { access: { enum: ["local", "subdomain"] } } },

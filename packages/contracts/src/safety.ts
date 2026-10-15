@@ -42,7 +42,12 @@ export type ApprovalKind =
   /** Changing a registered domain's settings (auto-renew). */
   | "domain-settings"
   /** Applying a host plan to a server the user owns; bound to the host plan's SHA-256 hash. */
-  | "host-apply";
+  | "host-apply"
+  /**
+   * Applying a stack plan to a Portainer the user runs (stacks, registry entry, volumes); bound to
+   * the stack plan's SHA-256 hash, never granted by `--yes`.
+   */
+  | "stack-apply";
 
 export interface PolicyResult {
   policyId: string;
@@ -61,7 +66,7 @@ export interface ApprovalRequest {
   title: string;
   /** Multi-line summary shown before asking (diff summary, resources, cost). Redacted. */
   details: string;
-  /** SHA-256 hex of the plan file. Required for `iac-apply` and `host-apply`. */
+  /** SHA-256 hex of the plan file. Required for `iac-apply`, `host-apply` and `stack-apply`. */
   planHash?: string;
   /** True when the change deletes or replaces anything. Requires `confirmPhrase`. */
   allowDestroy?: boolean;
