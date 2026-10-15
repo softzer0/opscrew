@@ -189,4 +189,4 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (skips without credentials)
   - Effort: high
 
-- [ ] T910 Live runs (public, tunnel, Portainer, destroy --undo-host) and results in `docs/e2e.md` (lead)
+- [X] T910 Live runs (public, tunnel, Portainer, destroy --undo-host) and results in `docs/e2e.md` (lead)
