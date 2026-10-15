@@ -48,6 +48,9 @@ need them read `OPSCREW_TOFU_BIN` / `OPSCREW_TERRAFORM_BIN` or find them on `PAT
 clear message when absent: `PATH="$PWD/.tools/bin:$PATH" pnpm test`.
 Tests that build real container images (they need Docker and the network) run only with
 `OPSCREW_DOCKER_TESTS=1`.
+Each `vitest run` writes temporary files into one folder under `OPSCREW_TEST_TMP` (or the system
+temp folder) and removes it afterwards; point `OPSCREW_TEST_TMP` at a drive with space for the
+engine tests, never at a folder inside a Git checkout.
 
 ## Code conventions
 
