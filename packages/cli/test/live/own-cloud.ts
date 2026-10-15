@@ -487,6 +487,38 @@ export class GitHubRepo {
     return api(GITHUB_API, this.token, method, path, body);
   }
 
+  /**
+   * GETs `path` and reads the plain text it redirects to (a job's log answers with a redirect to
+   * a signed URL on another host). The token goes only to the API, never to the redirected host.
+   * `text` is empty unless `status` is 200; callers must not print it (it may hold masked values).
+   */
+  async redirectedText(
+    path: string,
+    fetchImpl: typeof fetch = fetch,
+  ): Promise<{ status: number; text: string }> {
+    const first = await fetchImpl(`${GITHUB_API}${path}`, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "opscrew-e2e",
+      },
+    });
+    const location = first.headers.get("location");
+    if (first.status < 300 || first.status >= 400 || location === null) {
+      const text = await first.text();
+      return { status: first.status, text: first.status === 200 ? text : "" };
+    }
+    await first.body?.cancel();
+    const second = await fetchImpl(new URL(location, GITHUB_API).toString(), {
+      method: "GET",
+      headers: { "User-Agent": "opscrew-e2e" },
+    });
+    const text = await second.text();
+    return { status: second.status, text: second.status === 200 ? text : "" };
+  }
+
   /** Closes every open pull request and deletes every branch but `main` (as live.test.ts does). */
   async reset(): Promise<void> {
     const pulls = await this.call("GET", `/repos/${this.name}/pulls?state=open&per_page=100`);

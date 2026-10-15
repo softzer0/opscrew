@@ -275,8 +275,21 @@ export function failingDockerfile(dockerfile: string): string {
 }
 
 /**
- * The rollback's outcome, read from the annotation messages of a failed deploy job. The rollback
- * step always fails the job and says in its error annotation what it did: it succeeded only when
+ * The messages of the `##[error]` lines of a GitHub Actions job log (each line may start with a
+ * timestamp), in order. The rest of the log is never returned: it may hold masked values.
+ */
+export function logErrors(log: string): string[] {
+  const errors: string[] = [];
+  for (const line of log.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+    const match = /^(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?##\[error\](.*)$/.exec(line);
+    if (match?.[1] !== undefined) errors.push(match[1].trim());
+  }
+  return errors;
+}
+
+/**
+ * The rollback's outcome, read from the error lines of a failed deploy job's log. The rollback
+ * step always fails the job and says in its error line what it did: it succeeded only when
  * it wrote the previous version back (and Portainer did not refuse the redeploy). Otherwise the
  * message names what the job reported instead (could not write it back, no earlier version).
  */
@@ -296,8 +309,8 @@ export function rollbackOutcome(messages: readonly string[]): { ok: boolean; mes
     ok: false,
     message:
       messages.length === 0
-        ? "the failed deploy job has no annotations, so the rollback reported nothing"
-        : `the rollback reported no outcome; the job's annotations: ${messages.join(" | ")}`,
+        ? "the failed deploy job's log has no error lines, so the rollback reported nothing"
+        : `the rollback reported no outcome; the job's errors: ${messages.join(" | ")}`,
   };
 }
 

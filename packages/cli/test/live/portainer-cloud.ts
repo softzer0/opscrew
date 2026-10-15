@@ -29,7 +29,7 @@ import {
   type ZoneRuleset,
 } from "./own-cloud";
 import { type HetznerServerType, hetznerIpv6Address, serverCandidates } from "./own-support";
-import { firewallRules } from "./portainer-support";
+import { firewallRules, logErrors } from "./portainer-support";
 
 // ---------------------------------------------------------------------------------------------
 // Hetzner: the throwaway server with its firewall, created outside OpsCrew.
@@ -512,13 +512,16 @@ export async function runSteps(
 }
 
 /**
- * The annotations of every job of a workflow run (a job's id is its check run's id), with the job
- * name and level. GitHub masks the run's secrets in them; the test still scrubs what it shows.
+ * The `##[error]` messages in the log of the job named `jobName` of a workflow run, in order.
+ * Reads only that job's log (Actions: read is enough; check-run annotations need Checks: read).
+ * GitHub masks the run's secrets in the log; the log itself is never returned or printed, and the
+ * test still scrubs the messages it shows.
  */
-export async function runAnnotations(
+export async function jobErrors(
   github: GitHubRepo,
   runId: number,
-): Promise<{ job: string; level: string; message: string }[]> {
+  jobName: string,
+): Promise<string[]> {
   const got = await github.call(
     "GET",
     `/repos/${github.name}/actions/runs/${runId}/jobs?per_page=100`,
@@ -527,25 +530,13 @@ export async function runAnnotations(
   if (got.status !== 200 || jobs === undefined) {
     throw new Error(`Could not list the jobs of workflow run ${runId} (HTTP ${got.status}).`);
   }
-  const annotations: { job: string; level: string; message: string }[] = [];
-  for (const job of jobs) {
-    const listed = await github.call(
-      "GET",
-      `/repos/${github.name}/check-runs/${job.id}/annotations?per_page=100`,
-    );
-    const items = listed.json as { annotation_level?: string; message?: string }[] | undefined;
-    if (listed.status !== 200 || !Array.isArray(items)) {
-      throw new Error(`Could not read the annotations of job ${job.name} (HTTP ${listed.status}).`);
-    }
-    for (const item of items) {
-      annotations.push({
-        job: job.name,
-        level: item.annotation_level ?? "",
-        message: item.message ?? "",
-      });
-    }
+  const job = jobs.find((item) => item.name === jobName);
+  if (job === undefined) throw new Error(`Workflow run ${runId} has no job named ${jobName}.`);
+  const log = await github.redirectedText(`/repos/${github.name}/actions/jobs/${job.id}/logs`);
+  if (log.status !== 200) {
+    throw new Error(`Could not read the log of job ${job.name} (HTTP ${log.status}).`);
   }
-  return annotations;
+  return logErrors(log.text);
 }
 
 /** The names of the repository's GitHub Actions secrets. */

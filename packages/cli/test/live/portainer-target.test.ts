@@ -76,13 +76,13 @@ import {
   fileAt,
   ghcrPullStatus,
   httpGet,
+  jobErrors,
   McpSession,
   PortainerApi,
   packageVisibility,
   portainerAppResources,
   repoInfo,
   rulesetRules,
-  runAnnotations,
   runSteps,
   secretNames,
   traceText,
@@ -104,6 +104,7 @@ import {
   firewallRules,
   inPass,
   ipv4FromTrace,
+  logErrors,
   logLineShape,
   missingPortainerVariables,
   multipartForm,
@@ -351,10 +352,23 @@ describe("Portainer live test helpers", () => {
     expect(failing.trimEnd().split("\n").at(-1)).toMatch(/^CMD \["\/bin\/sh", "-c", ".*exit 1"\]$/);
   });
 
-  it("reads the rollback's outcome from the failed job's annotations", () => {
+  it("reads the rollback's outcome from the error lines of the failed job's log", () => {
     const branch = "opscrew-deploy";
     const exit = "Process completed with exit code 1.";
     const wrote = `The deploy failed; OpsCrew wrote the previous version back to the ${branch} branch, and Portainer's updater deploys it within about a minute.`;
+    const log = [
+      '\uFEFF2026-10-16T09:12:01.1234567Z ##[group]Run echo "::error::The deploy failed; ..."',
+      `2026-10-16T09:12:01.1234568Z echo "::error::${wrote}"`,
+      "2026-10-16T09:12:01.1234569Z ##[endgroup]",
+      `2026-10-16T09:12:02.0000001Z ##[error]${wrote}\r`,
+      "2026-10-16T09:12:02.0000002Z PORTAINER_TOKEN: ***",
+      `2026-10-16T09:12:03.0000003Z ##[error]${exit}`,
+      "##[error]An error line without a timestamp",
+      "",
+    ].join("\n");
+    expect(logErrors(log)).toEqual([wrote, exit, "An error line without a timestamp"]);
+    expect(logErrors("")).toEqual([]);
+    expect(rollbackOutcome(logErrors(log))).toEqual({ ok: true, message: wrote });
     expect(rollbackOutcome([exit, wrote])).toEqual({ ok: true, message: wrote });
     const asked = `The deploy failed; OpsCrew wrote the previous version back to the ${branch} branch and asked Portainer to deploy it.`;
     expect(rollbackOutcome([asked])).toEqual({ ok: true, message: asked });
@@ -370,7 +384,37 @@ describe("Portainer live test helpers", () => {
     const none = rollbackOutcome([exit]);
     expect(none.ok).toBe(false);
     expect(none.message).toContain(exit);
-    expect(rollbackOutcome([]).message).toContain("no annotations");
+    expect(rollbackOutcome([]).message).toContain("no error lines");
+  });
+
+  it("reads a job log through its redirect without sending the token to the log's host", async () => {
+    const token = "e2e-test-token";
+    const calls: { url: string; auth: string | null }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({ url: String(url), auth: headers.get("authorization") });
+      if (String(url).startsWith("https://api.github.com/")) {
+        expect(init?.redirect).toBe("manual");
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://logs.example.net/job/7?sig=abc" },
+        });
+      }
+      return new Response("2026-10-16T09:12:02.0000001Z ##[error]boom\n", { status: 200 });
+    }) as typeof fetch;
+    const github = new GitHubRepo(token, "owner/repo");
+    const read = await github.redirectedText("/repos/owner/repo/actions/jobs/7/logs", fetchImpl);
+    expect(read.status).toBe(200);
+    expect(logErrors(read.text)).toEqual(["boom"]);
+    expect(calls).toEqual([
+      {
+        url: "https://api.github.com/repos/owner/repo/actions/jobs/7/logs",
+        auth: `Bearer ${token}`,
+      },
+      { url: "https://logs.example.net/job/7?sig=abc", auth: null },
+    ]);
+    const denied = (async () => new Response("{}", { status: 403 })) as typeof fetch;
+    expect(await github.redirectedText("/x", denied)).toEqual({ status: 403, text: "" });
   });
 
   it("lists a container's variables by name and emptiness, never by value", () => {
@@ -2249,15 +2293,15 @@ describe.skipIf(MISSING.length > 0)(
         const waited = steps.find((item) => item.step === "Wait until the new version answers");
         expect(waited?.conclusion, "the failing version did not answer").toBe("failure");
         const rollback = steps.find((item) => item.step === "Roll back to the previous version");
-        // The rollback step always fails the job by design; its error annotation says what it did.
+        // The rollback step always fails the job by design; its error line says what it did.
         expect(
           rollback?.conclusion === "success" || rollback?.conclusion === "failure",
           `the rollback step ran (conclusion ${String(rollback?.conclusion)})`,
         ).toBe(true);
-        const annotations = (await runAnnotations(github, failing.runId))
-          .filter((item) => item.job === rollback?.job)
-          .map((item) => item.message);
-        const outcome = rollbackOutcome(annotations);
+        // Only the job log's `##[error]` messages are read; the log itself is never printed.
+        const outcome = rollbackOutcome(
+          await jobErrors(github, failing.runId, "Deploy to Portainer"),
+        );
         if (!outcome.ok) throw new Error(scrub(outcome.message));
         observe(`the rollback reported: ${outcome.message}`);
         const head = await branchHead(github, DEPLOY_BRANCH);
