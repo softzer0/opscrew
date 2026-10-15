@@ -35,6 +35,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
 import { registerDeployTools } from "./deploy";
 import { registerDesignTools } from "./design";
+import { registerDriftTool } from "./drift";
 import { registerInterviewTools } from "./interview";
 import { registerPortainerTools } from "./portainer";
 
@@ -464,6 +465,7 @@ async function connect(options: Options = {}) {
   registerDesignTools(server, deps, { own });
   registerDeployTools(server, deps, { provisionServices: services });
   registerPortainerTools(server, deps, { services });
+  registerDriftTool(server, deps, { services });
 
   const client = new Client(
     { name: "opscrew-test-client", version: "0.0.0" },
@@ -741,5 +743,93 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     expect(textOf(status)).toContain("https://localhost:9443");
     expect(JSON.stringify(ok.outputs)).not.toContain(password);
     expectNoAddress(ok);
+  });
+
+  describe("opscrew_drift", () => {
+    /** A project deployed through the MCP tools (plan, then apply after the user's dialog). */
+    async function deployed(elicit: Answer = approveAll) {
+      const h = await connect({
+        elicit,
+        plan: ownPlan(),
+        login: { hostKey: FINGERPRINT },
+        facts: preparedFacts,
+      });
+      const planned = await h.call("opscrew_plan");
+      expect(planned.isError, textOf(planned)).toBeFalsy();
+      const applied = await h.call("opscrew_apply", { planHash: dataOf(planned).hostPlanHash });
+      expect(applied.isError, textOf(applied)).toBeFalsy();
+      return h;
+    }
+
+    /** Forgets the confirmed host key, as on a computer that never connected to the server. */
+    async function unpin(h: Awaited<ReturnType<typeof connect>>) {
+      const own = await readOwnServer(h.paths);
+      if (own === undefined) throw new Error("no recorded login");
+      const { hostKey: _pinned, ...login } = own;
+      await recordOwnServer(h.paths, login as OwnServerConnectionInput);
+    }
+
+    it("reports how the server differs from OpsCrew's setup, without its address, and changes nothing", async () => {
+      const h = await deployed();
+      const applies = h.host.applies.length;
+      const inspections = h.host.inspections;
+      const sshd = h.host.facts.sshd as NonNullable<HostFacts["sshd"]>;
+      h.host.facts = { ...h.host.facts, sshd: { ...sshd, permitRootLogin: "yes" } };
+
+      const result = await h.call("opscrew_drift");
+      expect(result.isError, textOf(result)).toBeFalsy();
+      const text = textOf(result);
+      expect(text).toContain("Your server differs from what OpsCrew set up");
+      expect(text).toContain("PermitRootLogin is yes");
+      const data = dataOf(result);
+      expect(data.clean).toBe(false);
+      expect(data.host.differences.some((d: { area: string }) => d.area === "sshd")).toBe(true);
+      expect(h.host.inspections).toBe(inspections + 1);
+      expect(h.host.applies).toHaveLength(applies);
+      expectNoAddress(h);
+      expect(JSON.stringify(result)).not.toMatch(/root@|ssh -p/);
+    });
+
+    it("an unconfirmed host key the user declines in the dialog is refused; the model cannot supply one", async () => {
+      const declineKey: Answer = (params) =>
+        params.message.includes("host key") ? { action: "decline" } : approveAll(params);
+      const h = await deployed(declineKey);
+      const inspections = h.host.inspections;
+      await unpin(h);
+
+      const refused = await h.call("opscrew_drift");
+      expect(refused.isError).toBe(true);
+      expect(textOf(refused)).toContain("did not confirm the server's host key");
+      expect(h.elicited.at(-1)?.message).toContain(FINGERPRINT);
+      // A host key named by the model is not an input: the dialog still decides.
+      const supplied = await h.call("opscrew_drift", { hostKey: FINGERPRINT });
+      expect(supplied.isError).toBe(true);
+      expect(h.host.inspections).toBe(inspections);
+      expect((await readOwnServer(h.paths))?.hostKey).toBeUndefined();
+      expectNoAddress(h);
+    });
+
+    it("an unconfirmed host key the user confirms in the dialog is pinned and the server checked", async () => {
+      const ok = await deployed();
+      await unpin(ok);
+      const before = ok.elicited.length;
+      const confirmed = await ok.call("opscrew_drift");
+      expect(confirmed.isError, textOf(confirmed)).toBeFalsy();
+      expect(ok.elicited.slice(before).map((e) => e.message)).toEqual([
+        expect.stringContaining(FINGERPRINT),
+      ]);
+      expect((await readOwnServer(ok.paths))?.hostKey).toBe(FINGERPRINT);
+      expectNoAddress(ok);
+    });
+
+    it("refuses an unconfirmed host key when the client cannot show a dialog", async () => {
+      const h = await connect({ plan: ownPlan({ deployed: true }), facts: preparedFacts });
+      const result = await h.call("opscrew_drift");
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain("npx opscrew drift");
+      expect(h.host.inspections).toBe(0);
+      expect((await readOwnServer(h.paths))?.hostKey).toBeUndefined();
+      expectNoAddress(h);
+    });
   });
 });
