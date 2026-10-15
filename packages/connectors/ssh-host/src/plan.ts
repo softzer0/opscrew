@@ -43,6 +43,9 @@ import { sortedNetworks, WEB_FILTER_SERVICE, webFilterFileHashes } from "./web-f
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
+/** An OpsCrew app name (as in `DesiredHost.app`). */
+const APP_NAME_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
+
 function parseFacts(facts: HostFacts): HostFacts {
   const parsed = HostFactsSchema.safeParse(facts);
   if (!parsed.success) {
@@ -1016,18 +1019,45 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
  * The host plan that removes the app from the server: its containers and runtime files, the
  * tunnel connector and Portainer, and the app marker. App data (/srv/data, Compose volumes,
  * Portainer's data) is deleted only with `deleteData`. The server itself is never touched.
+ *
+ * The app is the one the marker (`/etc/opscrew/app.json`) names; when the marker is missing, the
+ * one OpsCrew's host record names, else `opts.app` (the deploy plan's app name), so the app's
+ * containers (by their Compose project label) and /srv/app still go. When the marker or the record
+ * names another app than `opts.app`, the plan removes nothing and says why.
  */
-export function planTeardown(facts: HostFacts, opts: { deleteData: boolean }): HostPlan {
+export function planTeardown(
+  facts: HostFacts,
+  opts: { deleteData: boolean; app?: string },
+): HostPlan {
   const f = parseFacts(facts);
   if (typeof opts?.deleteData !== "boolean") {
     throw new OpsCrewError("INVALID_INPUT", "deleteData must be true or false.");
+  }
+  if (opts.app !== undefined && !APP_NAME_RE.test(opts.app)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "The app name must be lower-case letters, digits and dashes.",
+    );
   }
   const deleteData = opts.deleteData;
   const found: HostFinding[] = [];
   if (f.privilege === "sudo-password") found.push(findings.sudoNeedsPassword(f.user));
   else if (f.privilege === "none") found.push(findings.noRoot(f.user));
   if (f.markerDamaged) found.push(findings.markerDamaged());
-  const app = f.marker?.app ?? "";
+  // Who the server belongs to: the marker, else the host record (both empty when unknown).
+  const owner = f.marker?.app || (f.marker === null ? (f.record?.app ?? "") : "");
+  if (opts.app !== undefined && owner !== "" && owner !== opts.app) {
+    found.push(findings.teardownOtherApp(owner, opts.app));
+    return {
+      schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+      purpose: "teardown",
+      app: opts.app,
+      steps: [],
+      findings: found,
+      deleteData,
+    };
+  }
+  const app = owner || (f.markerDamaged ? "" : (opts.app ?? ""));
   const steps: HostStep[] = [];
   if (app !== "") {
     const appDir = f.dirs.find((dir) => dir.path === "/srv/app");

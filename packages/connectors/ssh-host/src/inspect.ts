@@ -2,12 +2,15 @@
 import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
+  APP_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   FAIL2BAN_JAIL_PATH,
+  HASHED_RUNTIME_FILES,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
   READY_FLAG,
+  RUNTIME_FILE_NAMES,
   TUNNEL_DIR,
   TUNNEL_PROJECT,
 } from "./constants";
@@ -41,6 +44,7 @@ import {
   parseNsswitchPasswd,
   parseOsRelease,
   parsePairs,
+  parseRuntimeFiles,
   parseSs,
   parseSshdT,
   parseUfwAdded,
@@ -115,6 +119,22 @@ const DIRS_SNIPPET = `for d in ${RUNTIME_DIRS.join(" ")}; do
   elif [ -d "$d" ]; then echo "$d dir $(stat -c '%U %G %a' "$d") $(ls -A "$d" | wc -l)"
   elif [ -e "$d" ]; then echo "$d other"
   else echo "$d absent"; fi
+done`;
+
+/**
+ * OpsCrew's runtime files in /srv/app: kind, owner, group and mode of each, and the SHA-256 of the
+ * rendered ones only. Never prints a file's content, never hashes a file that holds secrets, and
+ * never follows a symbolic link.
+ */
+export const RUNTIME_FILES_SNIPPET = `for f in ${RUNTIME_FILE_NAMES.join(" ")}; do
+  p="${APP_DIR}/$f"
+  if [ -L "$p" ]; then echo "$f link"
+  elif [ -f "$p" ]; then
+    sum=-
+    case "$f" in ${HASHED_RUNTIME_FILES.join("|")}) sum=$(sha256sum "$p" | cut -d ' ' -f 1) ;; esac
+    echo "$f file $(stat -c '%U %G %a' "$p") \${sum:--}"
+  elif [ -e "$p" ]; then echo "$f other"
+  else echo "$f absent"; fi
 done`;
 
 const ADDONS_SNIPPET = `addon() {
@@ -221,6 +241,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
     `h=$(getent passwd deploy | cut -d: -f6) && [ -n "$h" ] && cat "$h/.ssh/authorized_keys"`,
   ],
   ["dirs", DIRS_SNIPPET],
+  ["runtime-files", RUNTIME_FILES_SNIPPET],
   [
     "apt-periodic",
     "apt-config dump | grep -E '^APT::Periodic::(Update-Package-Lists|Unattended-Upgrade) '",
@@ -520,6 +541,7 @@ export function factsFromOutput(
     },
     ready: section(sections, "ready").exit === 0,
     dirs: parseDirs(text("dirs"), RUNTIME_DIRS),
+    runtimeFiles: parseRuntimeFiles(text("runtime-files")),
     marker: markerValue ?? null,
     markerDamaged: marker.exit === 0 && markerValue === undefined,
     record: recordValue ?? null,

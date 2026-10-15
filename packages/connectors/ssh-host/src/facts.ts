@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RUNTIME_FILE_NAMES } from "./constants";
 import { HostStepIdSchema } from "./types";
 
 /** Where OpsCrew keeps its marker, host record and backups on the server (root only). */
@@ -53,6 +54,22 @@ const DirSchema = z.object({
   entries: z.number().int().optional(),
 });
 export type DirFact = z.infer<typeof DirSchema>;
+
+const RuntimeFileSchema = z.object({
+  name: z.enum(RUNTIME_FILE_NAMES),
+  /** `link` is a symbolic link (never followed), `other` neither a regular file nor a link. */
+  kind: z.enum(["absent", "file", "link", "other"]),
+  owner: z.string().optional(),
+  group: z.string().optional(),
+  /** Octal permission bits as `stat -c %a` prints them (`600`, `644`). */
+  mode: z.string().optional(),
+  /** SHA-256 of the file; only for {@link HASHED_RUNTIME_FILES}, otherwise null. */
+  sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable(),
+});
+export type RuntimeFileFact = z.infer<typeof RuntimeFileSchema>;
 
 const AddonSchema = z.object({
   /** OpsCrew's compose file for the add-on exists. */
@@ -256,6 +273,12 @@ export const HostFactsSchema = z.object({
   /** `/var/lib/opscrew-ready` exists (the setup finished). */
   ready: z.boolean(),
   dirs: z.array(DirSchema),
+  /**
+   * OpsCrew's runtime files in /srv/app (see {@link RUNTIME_FILE_NAMES}): checksums of the
+   * rendered ones, only presence, owner and mode of the ones that hold secrets. Inspection always
+   * reports them; absent means facts from before they were read (nothing to compare).
+   */
+  runtimeFiles: z.array(RuntimeFileSchema).optional(),
   marker: AppMarkerSchema.nullable(),
   /** True when `/etc/opscrew/app.json` exists but could not be read as JSON. */
   markerDamaged: z.boolean(),

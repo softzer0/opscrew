@@ -3,7 +3,8 @@
  * output: unknown lines are ignored and missing values fall back to "unknown" defaults, which
  * the planner treats conservatively.
  */
-import type { DirFact, Listener } from "./facts";
+import { HASHED_RUNTIME_FILES, RUNTIME_FILE_NAMES, type RuntimeFileName } from "./constants";
+import type { DirFact, Listener, RuntimeFileFact } from "./facts";
 
 /** Output of one inspection section: its text and the exit code of its command. */
 export interface Section {
@@ -390,6 +391,39 @@ export function parseDirs(text: string, paths: readonly string[]): DirFact[] {
     }
   }
   return paths.map((path) => found.get(path) ?? { path, kind: "absent" });
+}
+
+/**
+ * The runtime files section: `<name> file <owner> <group> <mode> <sha256|->`, `<name> link`,
+ * `<name> other` or `<name> absent`, one line per file of {@link RUNTIME_FILE_NAMES}. A checksum
+ * is kept only for the rendered files, never for a file that holds secrets.
+ */
+export function parseRuntimeFiles(text: string): RuntimeFileFact[] {
+  const found = new Map<RuntimeFileName, RuntimeFileFact>();
+  const names: readonly string[] = RUNTIME_FILE_NAMES;
+  const hashed: readonly string[] = HASHED_RUNTIME_FILES;
+  for (const line of linesOf(text)) {
+    const [name, kind, owner, group, mode, sum] = line.split(/\s+/);
+    if (!name || !names.includes(name)) continue;
+    const key = name as RuntimeFileName;
+    if (kind === "file") {
+      const sha256 =
+        hashed.includes(name) && sum !== undefined && /^[0-9a-f]{64}$/.test(sum) ? sum : null;
+      found.set(key, {
+        name: key,
+        kind: "file",
+        owner: owner ?? "",
+        group: group ?? "",
+        mode: mode ?? "",
+        sha256,
+      });
+    } else if (kind === "link" || kind === "other" || kind === "absent") {
+      found.set(key, { name: key, kind, sha256: null });
+    }
+  }
+  return RUNTIME_FILE_NAMES.map(
+    (name) => found.get(name) ?? { name, kind: "absent" as const, sha256: null },
+  );
 }
 
 /** `apt-config dump` lines: both periodic settings are "1". */

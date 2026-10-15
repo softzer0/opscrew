@@ -10,9 +10,11 @@ import {
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   FAIL2BAN_JAIL_PATH,
+  HASHED_RUNTIME_FILES,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
   READY_FLAG,
+  RUNTIME_FILE_NAMES,
   SSHD_HEADER,
   sshdDropIn,
   TUNNEL_DIR,
@@ -242,6 +244,11 @@ export class FakeHost implements RemoteExec {
   ufwDefaults = { incoming: "deny", outgoing: "allow", routed: "deny" };
   users = new Map<string, { uid: number; password: boolean; keys: string[]; groups: string[] }>();
   dirs = new Map<string, { owner: string; group: string; mode: string; entries: number }>();
+  /** Files in /srv/app by name (the deploy workflow's copies), with owner, group and mode. */
+  appFiles = new Map<
+    string,
+    { content: string; owner: string; group: string; mode: string; kind?: "link" | "other" }
+  >();
   portainerAdmin = false;
   /** `systemctl is-enabled unattended-upgrades`. */
   upgradesServiceEnabled = true;
@@ -607,6 +614,16 @@ export class FakeHost implements RemoteExec {
           return dir ? `${path} dir ${dir.owner} ${dir.group} ${dir.mode} ${dir.entries}` : `${path} absent`;
         })
         .join("\n"),
+    );
+    add(
+      "runtime-files",
+      RUNTIME_FILE_NAMES.map((name) => {
+        const file = this.appFiles.get(name);
+        if (file === undefined) return `${name} absent`;
+        if (file.kind !== undefined) return `${name} ${file.kind}`;
+        const hashed = (HASHED_RUNTIME_FILES as readonly string[]).includes(name);
+        return `${name} file ${file.owner} ${file.group} ${file.mode} ${hashed ? sha256(file.content) : "-"}`;
+      }).join("\n"),
     );
     const periodic = this.autoUpgradesOn() ? "1" : "0";
     add(
@@ -1144,6 +1161,7 @@ export class FakeHost implements RemoteExec {
         this.removeProject(p.APP ?? "", p.DELETE_DATA === "true");
         const app = this.dirs.get("/srv/app");
         if (app) app.entries = 0;
+        this.appFiles.clear();
         const data = this.dirs.get("/srv/data");
         if (data && p.DELETE_DATA === "true") data.entries = 0;
         return result();
@@ -1334,7 +1352,14 @@ export function deployApp(fake: FakeHost, app: string, access: "public" | "tunne
     fake.listeners.push({ proto: "tcp", address: "127.0.0.1", port: 18080, process: "docker-proxy" });
   }
   const appDir = fake.dirs.get("/srv/app");
-  if (appDir) appDir.entries = 4;
+  if (appDir) {
+    appDir.entries = 4;
+    const file = (content: string, mode: string) => ({ content, owner: "deploy", group: "deploy", mode });
+    fake.appFiles.set("compose.yaml", file(`name: ${app}\nservices: {}\n`, "644"));
+    fake.appFiles.set("Caddyfile", file(":80 {\n}\n", "644"));
+    fake.appFiles.set(".env", file("APP_IMAGE=ghcr.io/acme/shop@sha256:0\n", "644"));
+    fake.appFiles.set("app.env", file("NODE_ENV=production\n", "600"));
+  }
   const dataDir = fake.dirs.get("/srv/data");
   if (dataDir) dataDir.entries = 1;
 }

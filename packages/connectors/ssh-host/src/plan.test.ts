@@ -715,6 +715,65 @@ describe("planTeardown and planUndo", () => {
     expect(JSON.stringify(keep)).not.toMatch(/docker|deploy-user|sshd|ufw/);
   });
 
+  it("still removes the app by its Compose label and /srv/app when the marker is missing", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    deployApp(fake, "shop");
+    fake.containers.push({ name: "grafana", project: "monitoring", ports: "" });
+    fake.files.delete("/etc/opscrew/app.json");
+    const facts = await inspectHost(fake);
+    expect(facts.marker).toBeNull();
+
+    // The host record names the app; without the plan's name the teardown still finds it.
+    for (const plan of [
+      planTeardown(facts, { deleteData: false }),
+      planTeardown(facts, { deleteData: false, app: "shop" }),
+    ]) {
+      expect(plan.app).toBe("shop");
+      expect(codes(plan)).toEqual([]);
+      expect(plan.steps.map((step) => [step.id, step.state])).toEqual([["runtime-dirs", "change"]]);
+      expect(paramsOf(plan, "runtime-dirs")).toEqual({ app: "shop", deleteData: false });
+    }
+    await applyApproved(fake, planTeardown(facts, { deleteData: false, app: "shop" }));
+    expect(fake.containers.map((container) => container.name)).toEqual(["grafana"]);
+    expect(fake.dirs.get("/srv/app")?.entries).toBe(0);
+    expect(fake.appFiles.size).toBe(0);
+  });
+
+  it("takes the plan's app name when neither the marker nor the host record is there", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    deployApp(fake, "shop");
+    fake.files.delete("/etc/opscrew/app.json");
+    fake.files.delete("/etc/opscrew/host.json");
+    const facts = await inspectHost(fake);
+    expect(planTeardown(facts, { deleteData: false }).steps).toEqual([]);
+    const plan = planTeardown(facts, { deleteData: true, app: "shop" });
+    expect(plan.steps.map((step) => [step.id, step.state])).toEqual([["runtime-dirs", "change"]]);
+    expect(plan.steps[0]?.title).toMatch(/Remove the app "shop".*its data/);
+  });
+
+  it("never removes another app's containers: the marker or the record names the owner", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    deployApp(fake, "shop");
+    const facts = await inspectHost(fake);
+    const other = planTeardown(facts, { deleteData: true, app: "blog" });
+    expect(codes(other)).toEqual(["teardown-other-app"]);
+    expect(other.findings[0]?.message).toBe(
+      'This server belongs to the OpsCrew app "shop", not "blog", so OpsCrew removes nothing from it.',
+    );
+    expect(other.steps).toEqual([]);
+
+    fake.files.delete("/etc/opscrew/app.json");
+    const byRecord = planTeardown(await inspectHost(fake), { deleteData: false, app: "blog" });
+    expect(codes(byRecord)).toEqual(["teardown-other-app"]);
+    expect(byRecord.steps).toEqual([]);
+    expect(() => planTeardown(facts, { deleteData: false, app: "Not An App" })).toThrow(
+      /lower-case letters/,
+    );
+  });
+
   it("refuses to undo the host while the app is still there", async () => {
     const fake = new FakeHost();
     await provision(fake);

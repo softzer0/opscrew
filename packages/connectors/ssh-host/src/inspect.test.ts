@@ -1,7 +1,11 @@
+import { createHash } from "node:crypto";
+import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { FakeHost, type OsPreset } from "./__fixtures__/fake-host";
-import { desiredFor, planFor } from "./__fixtures__/helpers";
-import { dockerFirewall, inspectHost, inspectScript } from "./inspect";
+import { deployApp, FakeHost, type OsPreset } from "./__fixtures__/fake-host";
+import { desiredFor, planFor, provision } from "./__fixtures__/helpers";
+import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
+import { dockerFirewall, inspectHost, inspectScript, RUNTIME_FILES_SNIPPET } from "./inspect";
+import { parseRuntimeFiles } from "./parse";
 import { planHost } from "./plan";
 
 const SUPPORTED: OsPreset[] = [
@@ -133,6 +137,111 @@ describe("inspectHost", () => {
       composePlugin: true,
       buildxPlugin: false,
     });
+  });
+});
+
+describe("inspectHost: OpsCrew's runtime files in /srv/app", () => {
+  it("reads checksums of the rendered files and only presence and mode of the others", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    deployApp(fake, "shop");
+    const facts = await inspectHost(fake);
+    const sum = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+    expect(facts.runtimeFiles).toEqual([
+      {
+        name: "compose.yaml",
+        kind: "file",
+        owner: "deploy",
+        group: "deploy",
+        mode: "644",
+        sha256: sum(fake.appFiles.get("compose.yaml")?.content ?? ""),
+      },
+      {
+        name: "Caddyfile",
+        kind: "file",
+        owner: "deploy",
+        group: "deploy",
+        mode: "644",
+        sha256: sum(fake.appFiles.get("Caddyfile")?.content ?? ""),
+      },
+      { name: ".env", kind: "file", owner: "deploy", group: "deploy", mode: "644", sha256: null },
+      {
+        name: "app.env",
+        kind: "file",
+        owner: "deploy",
+        group: "deploy",
+        mode: "600",
+        sha256: null,
+      },
+      { name: "db.env", kind: "absent", sha256: null },
+    ]);
+  });
+
+  it("reports every file as absent on a fresh server", async () => {
+    const facts = await inspectHost(new FakeHost());
+    expect(facts.runtimeFiles?.every((file) => file.kind === "absent")).toBe(true);
+  });
+
+  it.skipIf(!BASH_AVAILABLE)(
+    "prints no file content and no checksum of a file that holds secrets (real shell)",
+    () => {
+      const sh = new ShellHarness();
+      try {
+        const secret = fakeSecret("generic-password", "app-env");
+        sh.write("/srv/app/compose.yaml", "services: {}\n");
+        sh.write("/srv/app/Caddyfile", ":80 {\n}\n");
+        sh.write("/srv/app/app.env", `SECRET_KEY=${secret}\n`);
+        sh.write("/srv/app/db.env", `POSTGRES_PASSWORD=${secret}\n`);
+        const result = sh.run(RUNTIME_FILES_SNIPPET);
+        expect(result.status).toBe(0);
+        const files = parseRuntimeFiles(result.stdout);
+        const byName = new Map(files.map((file) => [file.name, file]));
+        const sum = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+        expect(byName.get("compose.yaml")).toMatchObject({
+          kind: "file",
+          sha256: sum("services: {}\n"),
+        });
+        expect(byName.get("Caddyfile")?.sha256).toBe(sum(":80 {\n}\n"));
+        expect(byName.get("app.env")).toMatchObject({ kind: "file", sha256: null });
+        expect(byName.get("db.env")).toMatchObject({ kind: "file", sha256: null });
+        expect(byName.get(".env")).toEqual({ name: ".env", kind: "absent", sha256: null });
+        // Nothing about the secret files beyond their owner and mode reaches OpsCrew.
+        expect(result.stdout).not.toContain(secret);
+        expect(result.stdout).not.toContain(sum(`SECRET_KEY=${secret}\n`));
+        expect(result.stdout).not.toContain(sum(`POSTGRES_PASSWORD=${secret}\n`));
+        expect(result.stdout.match(/\b[0-9a-f]{64}\b/g)).toHaveLength(2);
+      } finally {
+        sh.dispose();
+      }
+    },
+  );
+
+  it("keeps no checksum for a secret file and never follows links", () => {
+    const hash = "a".repeat(64);
+    expect(
+      parseRuntimeFiles(
+        [
+          `app.env file deploy deploy 600 ${hash}`,
+          "compose.yaml link",
+          `Caddyfile file root root 644 ${hash}`,
+          "unknown.txt file root root 644 -",
+        ].join("\n"),
+      ),
+    ).toEqual([
+      { name: "compose.yaml", kind: "link", sha256: null },
+      { name: "Caddyfile", kind: "file", owner: "root", group: "root", mode: "644", sha256: hash },
+      { name: ".env", kind: "absent", sha256: null },
+      {
+        name: "app.env",
+        kind: "file",
+        owner: "deploy",
+        group: "deploy",
+        mode: "600",
+        sha256: null,
+      },
+      { name: "db.env", kind: "absent", sha256: null },
+    ]);
+    expect(RUNTIME_FILES_SNIPPET).toMatch(/if \[ -L "\$p" \]; then echo "\$f link"/);
   });
 });
 

@@ -7,14 +7,21 @@
 
 export { applyHostPlan } from "./apply";
 export {
+  APP_DIR,
   DEFAULT_DEAD_MAN_SECONDS,
+  HASHED_RUNTIME_FILES,
   MIN_DOCKER_MAJOR,
   PORTAINER_DIR,
   PORTAINER_PORT,
   PORTAINER_PROJECT,
+  RUNTIME_FILE_NAMES,
+  type RuntimeFileName,
+  SECRET_RUNTIME_FILES,
   TUNNEL_APP_PORT,
   TUNNEL_DIR,
   TUNNEL_PROJECT,
+  UFW_SSH_COMMENT,
+  UFW_WEB_COMMENT,
 } from "./constants";
 export {
   HOST_ADAPTER_VERSION,
@@ -25,6 +32,7 @@ export {
   MARKER_PATH,
   NO_WEB_FILTER,
   RECORD_PATH,
+  type RuntimeFileFact,
   type WebFilterFacts,
   webFilterFacts,
 } from "./facts";

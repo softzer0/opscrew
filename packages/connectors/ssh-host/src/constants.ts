@@ -1,3 +1,24 @@
+/** The app's directory, where the deploy workflow keeps OpsCrew's runtime files. */
+export const APP_DIR = "/srv/app";
+
+/**
+ * Runtime files OpsCrew renders into the repository and the deploy workflow copies to
+ * {@link APP_DIR} unchanged: inspection reads their SHA-256 (never their content).
+ */
+export const HASHED_RUNTIME_FILES = ["compose.yaml", "Caddyfile"] as const;
+
+/**
+ * Files the deploy workflow writes in {@link APP_DIR} from secrets or from the deploy itself
+ * (`app.env`, `db.env`: the app's and the database's secrets; `.env`: the running image).
+ * Inspection reads only whether they exist, their owner and their mode: never their content and
+ * never a checksum, since OpsCrew cannot render the same bytes without the secrets.
+ */
+export const SECRET_RUNTIME_FILES = [".env", "app.env", "db.env"] as const;
+
+/** Every runtime file inspection looks at in {@link APP_DIR}. */
+export const RUNTIME_FILE_NAMES = [...HASHED_RUNTIME_FILES, ...SECRET_RUNTIME_FILES] as const;
+export type RuntimeFileName = (typeof RUNTIME_FILE_NAMES)[number];
+
 /** Docker Engine 28.0.0 keeps ports published on 127.0.0.1 unreachable from the local network. */
 export const MIN_DOCKER_MAJOR = 28;
 

@@ -191,6 +191,11 @@ export const findings = {
     message: `SSH port forwarding is turned off on this server (AllowTcpForwarding ${setting}), and the command that opens Portainer through SSH needs it.`,
     hint: `Allow local forwarding for the deploy user (a "Match User deploy" block with "AllowTcpForwarding local" at the end of /etc/ssh/sshd_config), or leave Portainer off, ${RERUN}.`,
   }),
+  teardownOtherApp: (owner: string, app: string): HostFinding => ({
+    code: "teardown-other-app",
+    message: `This server belongs to the OpsCrew app "${owner}", not "${app}", so OpsCrew removes nothing from it.`,
+    hint: `Run opscrew destroy in the project of "${owner}", or check that this project points at the right server.`,
+  }),
   appStillDeployed: (app: string): HostFinding => ({
     code: "app-still-deployed",
     message: `The OpsCrew app "${app}" is still on this server, and undoing OpsCrew's host changes would break it.`,
