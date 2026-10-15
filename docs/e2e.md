@@ -47,7 +47,7 @@ Requirements:
 - `git`
 - OpenTofu or Terraform (version 1.6 or newer)
 - `ssh` and `ssh-keyscan`
-- Node.js 22+
+- Node.js 22.9+
 
 Run it:
 
@@ -199,7 +199,7 @@ OpsCrew rulesets whose rules name only that run's hostnames.
 | `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as above, but only examples under `examples/` (default `nextjs-postgres`). |
 
 Requirements: the built CLI, `git`, OpenTofu or Terraform, `ssh`, `ssh-keygen` and `ssh-keyscan`,
-Node.js 22+, and outgoing SSH (port 22) from the test computer. Run only this file, never together
+Node.js 22.9+, and outgoing SSH (port 22) from the test computer. Run only this file, never together
 with the other live tests (they share the throwaway repository):
 
 ```bash

@@ -17,7 +17,7 @@ change it would make, and changes nothing until you approve that exact list.
   never asks for a password or a passphrase: give it the path to your key file, or let it use your
   SSH agent (which also covers a key with a passphrase).
 - One OpsCrew app per server. Sharing a server between several OpsCrew apps comes later.
-- On your computer: Node.js 22 or newer, git, OpenTofu or Terraform, and a GitHub repository with
+- On your computer: Node.js 22.9 or newer, git, OpenTofu or Terraform, and a GitHub repository with
   your app, as for every OpsCrew deployment.
 - A domain for your site. Its DNS can be anywhere when your server serves the site directly with
   DNS only (see [How visitors reach your server](#how-visitors-reach-your-server)). A domain on

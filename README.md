@@ -8,7 +8,7 @@ From a GitHub repo to a hardened production deployment on your own cloud. Any cl
 
 ## Quickstart
 
-You need Node.js 22+, git, OpenTofu or Terraform, a GitHub repository with your app, and an API token for Hetzner Cloud (`HCLOUD_TOKEN`) or DigitalOcean (`DIGITALOCEAN_TOKEN`). For a custom domain, add a Cloudflare token (`CLOUDFLARE_API_TOKEN`) and a domain whose DNS is on Cloudflare. A GitHub token (`GITHUB_TOKEN`, or a logged-in `gh`) lets OpsCrew open pull requests and set the deploy secrets. A model (`ANTHROPIC_API_KEY`) is optional: pass `--no-ai` to `analyze` and `adapt` to run without one.
+You need Node.js 22.9+, git, OpenTofu or Terraform, a GitHub repository with your app, and an API token for Hetzner Cloud (`HCLOUD_TOKEN`) or DigitalOcean (`DIGITALOCEAN_TOKEN`). For a custom domain, add a Cloudflare token (`CLOUDFLARE_API_TOKEN`) and a domain whose DNS is on Cloudflare. A GitHub token (`GITHUB_TOKEN`, or a logged-in `gh`) lets OpsCrew open pull requests and set the deploy secrets. A model (`ANTHROPIC_API_KEY`) is optional: pass `--no-ai` to `analyze` and `adapt` to run without one.
 
 Run these in your app's repository, in order:
 
@@ -60,7 +60,7 @@ Before you buy:
 
 ## Development
 
-Requirements: Node.js 22+, pnpm 10+, and OpenTofu or Terraform for infrastructure tests.
+Requirements: Node.js 22.9+, pnpm 10+, and OpenTofu or Terraform for infrastructure tests.
 
 ```bash
 pnpm install

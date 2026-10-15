@@ -38,7 +38,7 @@
     "NOTICE"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
