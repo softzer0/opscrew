@@ -210,8 +210,8 @@ OPSCREW_E2E_OWN_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=yo
   npx vitest run test/live/own-server.test.ts
 ```
 
-A full run takes about 60–90 minutes (five deploy workflow runs, Docker's installation on the
-server and a reboot). The server is the smallest x86 type, billed by the hour at Hetzner, so a run
+A full run takes about 26 minutes (measured on the passing runs; it includes five deploy workflow
+runs, Docker's installation on the server and a reboot). The server is the smallest x86 type, billed by the hour at Hetzner, so a run
 costs about one or two cents of server time, plus GitHub Actions minutes for the builds (free for
 public repositories). Left behind on purpose: the GitHub Actions secrets and the container image
 in the throwaway repository (as above), the zone's rulesets that existed before the run, and the

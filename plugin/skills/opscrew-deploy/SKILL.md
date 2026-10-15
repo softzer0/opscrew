@@ -171,7 +171,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   password. To open Portainer the user runs `npx opscrew portainer status` in a terminal and
   starts the SSH tunnel it prints. Warn them that Portainer controls Docker, which is the same as
   root on the server, so they should keep it local unless they need the subdomain.
-  `opscrew_portainer_disable` removes it; deleting its data needs the app's name typed.
+  `opscrew_portainer_disable` removes it and always keeps its data (users and settings). Deleting
+  that data stays in the terminal: the user runs `npx opscrew portainer disable --delete-data`
+  and types the app's name; the tool refuses to do it.
 - **Moving to another provider.** Moving a live app between Hetzner Cloud and DigitalOcean is
   terminal-only on purpose; there is no tool for it, and you must not try to perform its steps
   yourself. Tell the user to run `npx opscrew retarget --to <provider>` (`hetzner` or

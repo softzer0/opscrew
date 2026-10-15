@@ -77,8 +77,9 @@ function requireDialogs(server: McpServer, terminal: string): void {
  * The Portainer tools (FR-914–FR-917): `opscrew_portainer_status` (read-only: whether it is on,
  * the local address, the tunnel command and where the password file is; never the password) and
  * `opscrew_portainer_enable` / `opscrew_portainer_disable`, whose every plan is approved by the
- * user in a dialog (the model never approves; deleting Portainer's data needs the app's name
- * typed). The server's address is never part of a result. `options` is for tests only.
+ * user in a dialog (the model never approves; deleting Portainer's data stays in the terminal,
+ * where the user types the app's name, so `opscrew_portainer_disable` refuses `deleteData`). The
+ * server's address is never part of a result. `options` is for tests only.
  */
 export function registerPortainerTools(
   server: McpServer,
@@ -184,14 +185,14 @@ export function registerPortainerTools(
     {
       title: "Turn Portainer off",
       description:
-        "Remove Portainer from the deployment's server (and the tunnel and Access application of its subdomain). Its data (users and settings) stays unless deleteData is true; deleting it is a separate plan the USER approves by typing the app's name in a dialog. Every plan is approved by the user in a dialog; the coding agent cannot approve. Refuses when the client cannot show dialogs.",
+        "Remove Portainer from the deployment's server (and the tunnel and Access application of its subdomain). Its data (users and settings) always stays: deleting it is not possible through this tool and stays in the terminal, where the user runs `npx opscrew portainer disable --delete-data` and types the app's name. Every plan is approved by the user in a dialog; the coding agent cannot approve. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
         deleteData: z
           .boolean()
           .optional()
           .describe(
-            "Also delete Portainer's data; the user must type the app's name to approve it.",
+            "Not accepted: true is refused. Deleting Portainer's data stays in the terminal (`npx opscrew portainer disable --delete-data`).",
           ),
       },
       annotations: {
@@ -204,20 +205,23 @@ export function registerPortainerTools(
     },
     ({ projectDir, deleteData }, extra: CallExtra) =>
       runTool(deps, "opscrew_portainer_disable", projectDir, async (call) => {
-        requireDialogs(
-          server,
-          `npx opscrew portainer disable${deleteData === true ? " --delete-data" : ""}`,
-        );
+        if (deleteData === true) {
+          throw new OpsCrewError(
+            "INVALID_INPUT",
+            "Deleting Portainer's data (its users and settings) is not possible through this tool. Nothing was changed.",
+            {
+              hint: "Ask the user to run `npx opscrew portainer disable --delete-data` in a terminal in the project directory; it asks them to type the app's name.",
+            },
+          );
+        }
+        requireDialogs(server, "npx opscrew portainer disable");
         const handler = new ElicitationApprovalHandler(server, {
           clock: deps.clock,
           redact: deps.redactor.redact,
           extra,
         });
         const phase = await call.phaseDeps({ approvalHandler: handler });
-        const result = await portainerDisable(phase, {
-          deleteData: deleteData === true ? true : undefined,
-          ...services,
-        });
+        const result = await portainerDisable(phase, { ...services });
         return {
           text: changeText("disable", result),
           data: {

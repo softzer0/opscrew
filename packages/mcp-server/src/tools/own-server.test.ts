@@ -745,6 +745,21 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     expectNoAddress(ok);
   });
 
+  it("Portainer: disable refuses deleteData and points to the terminal, deleting nothing", async () => {
+    const h = await connect({
+      elicit: approveAll,
+      plan: ownPlan({ deployed: true, portainer: true }),
+      login: { hostKey: FINGERPRINT },
+      facts: preparedFacts,
+    });
+    const refused = await h.call("opscrew_portainer_disable", { deleteData: true });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain("npx opscrew portainer disable --delete-data");
+    expect(h.elicited).toEqual([]);
+    expect(h.host.applies).toEqual([]);
+    expect(h.engine.applied).toEqual([]);
+  });
+
   describe("opscrew_drift", () => {
     /** A project deployed through the MCP tools (plan, then apply after the user's dialog). */
     async function deployed(elicit: Answer = approveAll) {

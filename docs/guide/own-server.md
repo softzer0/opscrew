@@ -84,6 +84,17 @@ npx opscrew provision --approve <infrastructure hash> --approve <host plan hash>
 Each `--approve` names exactly one plan you reviewed. `--yes` only approves writing the files,
 storing the GitHub secrets, pushing and opening the pull request; it never approves a plan.
 
+With the Cloudflare Tunnel, the host plan needs the tunnel's id, so its hash appears only after the
+infrastructure plan is applied. The first `--plan-only` prints only the infrastructure hash. Apply
+that first, then plan again and approve the host plan in a second run:
+
+```bash
+npx opscrew provision --plan-only --yes                   # prints the infrastructure hash
+npx opscrew provision --approve <infrastructure hash> --yes
+npx opscrew provision --plan-only --yes                   # now prints the host plan's hash
+npx opscrew provision --approve <host plan hash> --yes
+```
+
 A switch between serving directly and the tunnel (after you change `server.serve` and run
 `design` again) first removes the old DNS records, so `--plan-only` prints a command that also
 needs the app's name. Run it, then plan and apply the new setup:
@@ -192,8 +203,11 @@ only SSH.
 - The server must be allowed to connect out to Cloudflare on port 7844.
 - GitHub Actions still deploys after every merge: it reaches your server's SSH through a separate
   hostname (for the app `shop` on `example.com`: `ssh-shop.example.com`) that Cloudflare Access
-  protects with a service token only your repository's deploy secrets hold. The tunnel's token
-  stays on your server and in those secrets.
+  protects with a service token only your repository's deploy secrets hold. GitHub Actions gets
+  only that hostname, never your server's address.
+- The tunnel's own token (the one its connector on your server uses) stays only on your server
+  and in OpsCrew's local state on your computer. Only the Access service token is in your
+  repository's deploy secrets.
 - While you run `npx opscrew provision`, your computer must reach the server directly (on the same
   network, or through your VPN).
 
@@ -225,8 +239,10 @@ on the server and run the command again with `--host-key` and that fingerprint.
 The address, SSH port, user, key path and the pinned host key are kept on your computer only, in
 `.opscrew/server.json` (which `opscrew init --fix` adds to `.gitignore`). They never go into
 `opscrew/plan.yaml`, other files in your repository, pull requests or commit messages. GitHub
-Actions gets the address it deploys to as an encrypted deploy secret. If `.opscrew/server.json` is
-damaged, fix it rather than deleting it: it holds the host key you confirmed.
+Actions gets the address it deploys to as an encrypted deploy secret; with the Cloudflare Tunnel
+it gets only the SSH hostname behind Cloudflare Access instead, never the server's address. If
+`.opscrew/server.json` is damaged, fix it rather than deleting it: it holds the host key you
+confirmed.
 
 ## Day to day
 
