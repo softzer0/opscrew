@@ -7,7 +7,9 @@ import type { RemoteExec } from "@opscrew/contracts";
 
 export interface HostFacts { /* see data-model.md "Host facts"; zod-validated. Also: directory logins
   (nsswitch/PAM/AuthorizedKeysCommand), Compose projects of containers (running or stopped) and volumes,
-  an interrupted dpkg, ufw default policies, dockerd flags and Swarm state */ }
+  an interrupted dpkg, ufw default policies, dockerd flags and Swarm state, and `runtimeFiles`: for
+  OpsCrew's files in /srv/app the SHA-256 of compose.yaml and the Caddyfile, and for the files holding
+  secrets (.env, app.env, db.env) only presence, owner and mode (never their contents) */ }
 
 /** In apply order; `package-repair` appears first only when an earlier run left dpkg interrupted. */
 export type HostStepId =
@@ -62,7 +64,8 @@ export function inspectHost(remote: RemoteExec): Promise<HostFacts>;
 export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan;
 /** The Portainer step alone, for Hetzner/DigitalOcean (run as `deploy` in its home) or own servers. */
 export function planPortainer(/* facts, desired portainer, directory, run-as user */): HostPlan;
-export function planTeardown(facts: HostFacts, opts: { deleteData: boolean }): HostPlan;
+/** `app`: the plan's app name, used when the server's app marker is missing (after the host record). */
+export function planTeardown(facts: HostFacts, opts: { deleteData: boolean; app?: string }): HostPlan;
 export function planUndo(facts: HostFacts): HostPlan;
 /** SHA-256 of the canonical JSON of the plan. */
 export function hostPlanHash(plan: HostPlan): string;
@@ -102,6 +105,8 @@ Rules:
 - Teardown and add-on removal never rely on the login's working directory: an explicit project
   directory and Compose file, or removal by the `com.docker.compose.project` label.
 - A setup apply re-checks the server's claim before its first change and refuses another app's server.
+- The undo plan deletes the OpsCrew-created `deploy` user and its home, so it is approved with
+  `allowDestroy` and the typed app name (Constitution I), separately from the teardown.
 - `web-filter`: a chain in Docker's IPv4 `DOCKER-USER` that passes connections whose
   original destination port is 80 or 443 only from the given ranges and drops the rest, installed
   by a unit that runs before Docker and that Docker requires (fail closed: no filter, no Docker);
