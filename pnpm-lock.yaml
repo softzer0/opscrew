@@ -377,9 +377,6 @@ importers:
       '@opscrew/agents':
         specifier: workspace:*
         version: link:../agents
-      '@opscrew/connector-portainer':
-        specifier: workspace:*
-        version: link:../connectors/portainer
       '@opscrew/contracts':
         specifier: workspace:*
         version: link:../contracts
