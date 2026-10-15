@@ -153,6 +153,9 @@ importers:
       '@opscrew/connector-porkbun':
         specifier: workspace:*
         version: link:../connectors/porkbun
+      '@opscrew/connector-portainer':
+        specifier: workspace:*
+        version: link:../connectors/portainer
       '@opscrew/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -374,6 +377,9 @@ importers:
       '@opscrew/agents':
         specifier: workspace:*
         version: link:../agents
+      '@opscrew/connector-portainer':
+        specifier: workspace:*
+        version: link:../connectors/portainer
       '@opscrew/contracts':
         specifier: workspace:*
         version: link:../contracts

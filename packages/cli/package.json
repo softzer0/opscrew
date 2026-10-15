@@ -72,6 +72,7 @@
     "@opscrew/connector-hetzner": "workspace:*",
     "@opscrew/connector-namecheap": "workspace:*",
     "@opscrew/connector-porkbun": "workspace:*",
+    "@opscrew/connector-portainer": "workspace:*",
     "@opscrew/contracts": "workspace:*",
     "@opscrew/core": "workspace:*",
     "@opscrew/detect": "workspace:*",
