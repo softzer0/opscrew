@@ -683,16 +683,27 @@ describe.skipIf(MISSING.length > 0)(
           "nothing of the app is in Portainer before the stack plan is approved",
         ).toEqual([]);
       }
+      // The deploy branch as the second run left it (a first setup: just created with the
+      // placeholder); the later runs must not write it again (T1012: no replace of a placeholder).
+      const deployHead = await branchHead(github, DEPLOY_BRANCH);
       const yesOnly = await opscrew("provision", "--yes");
       expect(yesOnly.exitCode, "--yes alone never approves the stack plan").not.toBe(0);
       if (stackPlanHashOf(yesOnly.output) !== stackHash) {
         findings.push(`${label}: a run with --yes alone showed another stack plan hash`);
       }
+      expect(
+        await branchHead(github, DEPLOY_BRANCH),
+        `${label}: the run with --yes alone left the ${DEPLOY_BRANCH} branch as it was`,
+      ).toBe(deployHead);
       const third = await opscrewOk("provision", "--approve", stackHash, "--yes");
       expect(
         appliedStackPlan(third.output),
         `${label}: the third run applies the stack plan the second printed`,
       ).toBe(stackHash);
+      expect(
+        await branchHead(github, DEPLOY_BRANCH),
+        `${label}: the third run left the ${DEPLOY_BRANCH} branch as it was`,
+      ).toBe(deployHead);
       observe(
         `${label}: the three script runs worked, with the same stack plan hash on the second and third run`,
       );
@@ -829,6 +840,72 @@ describe.skipIf(MISSING.length > 0)(
         throw new Error(`The ${DEPLOY_BRANCH} branch does not run an app image yet.`);
       }
       return image;
+    }
+
+    /**
+     * The deploy branch holds exactly the placeholder: an orphan commit with only `compose.yaml`,
+     * which runs no app image. Returns its head.
+     */
+    async function expectPlaceholderBranch(what: string): Promise<string> {
+      const head = await branchHead(github, DEPLOY_BRANCH);
+      expect(head, `${what}: the ${DEPLOY_BRANCH} branch exists`).toBeDefined();
+      const commit = await commitDetails(github, head as string);
+      expect(
+        { parents: commit.parents, paths: commit.paths },
+        `${what}: the ${DEPLOY_BRANCH} branch is an orphan holding only compose.yaml`,
+      ).toEqual({ parents: 0, paths: ["compose.yaml"] });
+      const compose = await fileAt(github, "compose.yaml", DEPLOY_BRANCH);
+      expect(
+        compose === undefined ? "missing" : deployedImage(compose),
+        `${what}: the ${DEPLOY_BRANCH} branch holds the placeholder, not an app image`,
+      ).toBeUndefined();
+      return head as string;
+    }
+
+    /** The items under "What remains:" in a destroy output. */
+    function whatRemains(output: string): string[] {
+      const lines = output.split(/\r?\n/);
+      const start = lines.findIndex((line) => line.trim() === "What remains:");
+      if (start === -1) return [];
+      const items: string[] = [];
+      for (const line of lines.slice(start + 1)) {
+        if (!/^\s+- /.test(line)) break;
+        items.push(line.trim());
+      }
+      return items;
+    }
+
+    /**
+     * T1012: destroy deleted the deploy branch once the app's stack was gone, said so, and does not
+     * list it under what remains.
+     */
+    async function expectDeployBranchDeleted(output: string, what: string): Promise<void> {
+      expect(
+        await branchHead(github, DEPLOY_BRANCH),
+        `${what}: the ${DEPLOY_BRANCH} branch is deleted`,
+      ).toBeUndefined();
+      expect(
+        output.includes(`Deleted the branch ${DEPLOY_BRANCH}`),
+        `${what}: destroy says it deleted the ${DEPLOY_BRANCH} branch`,
+      ).toBe(true);
+      expect(
+        whatRemains(output).filter((item) => item.includes(DEPLOY_BRANCH)),
+        `${what}: "What remains" does not list the ${DEPLOY_BRANCH} branch`,
+      ).toEqual([]);
+    }
+
+    /**
+     * Keeps the deploy branch's history in a local ref (`refs/e2e/deploy-<label>`) before destroy
+     * deletes it on GitHub, so the leak search still covers every commit the workflow wrote.
+     */
+    async function keepDeployBranch(label: string): Promise<void> {
+      if ((await branchHead(github, DEPLOY_BRANCH)) === undefined) {
+        findings.push(
+          `there was no ${DEPLOY_BRANCH} branch to keep before ${label}, so its history is not searched`,
+        );
+        return;
+      }
+      await git("fetch", "-q", "origin", `+refs/heads/${DEPLOY_BRANCH}:refs/e2e/deploy-${label}`);
     }
 
     /** The names of every stack in Portainer (admin view). */
@@ -1836,16 +1913,7 @@ describe.skipIf(MISSING.length > 0)(
         const runs = await threeRuns("updater + tunnel, first setup", true);
 
         // The deploy branch OpsCrew created with the real fine-grained token (createOrphanBranch).
-        const deployHead = await branchHead(github, DEPLOY_BRANCH);
-        expect(deployHead, `provision created the ${DEPLOY_BRANCH} branch`).toBeDefined();
-        const placeholder = await commitDetails(github, deployHead as string);
-        expect(
-          placeholder,
-          "the deploy branch is an orphan branch holding only compose.yaml",
-        ).toMatchObject({
-          parents: 0,
-          paths: ["compose.yaml"],
-        });
+        await expectPlaceholderBranch("the first setup");
         observe(
           "createOrphanBranch with the fine-grained token (Contents: write) made a root commit holding only compose.yaml",
         );
@@ -2382,8 +2450,13 @@ describe.skipIf(MISSING.length > 0)(
       minutes(30),
       async () => {
         recordedVolumes = (await createdRecord()).volumes;
-        await opscrewOk("destroy", "--confirm", app());
+        await keepDeployBranch("destroy");
+        const removed = await opscrewOk("destroy", "--confirm", app());
         destroyed = true;
+        await expectDeployBranchDeleted(removed.output, "destroy");
+        observe(
+          `destroy deleted the ${DEPLOY_BRANCH} branch once the app's stack was gone (T1012)`,
+        );
         const left = (await stackNames()).filter((name) => name.startsWith(names().app));
         expect(left, "no stack of the app is left").toEqual([]);
         if (registryId !== undefined) {
@@ -2461,7 +2534,21 @@ describe.skipIf(MISSING.length > 0)(
       "9. destroy --delete-data removes the data volumes, and nothing else",
       minutes(20),
       async () => {
-        await opscrewOk("destroy", "--confirm", app(), "--delete-data");
+        const secretsBefore = (await secretNames(github)).sort();
+        const removed = await opscrewOk("destroy", "--confirm", app(), "--delete-data");
+        // Data only: GitHub is left alone (the branch stays absent, the secrets as they were).
+        expect(
+          await branchHead(github, DEPLOY_BRANCH),
+          `destroy --delete-data leaves the ${DEPLOY_BRANCH} branch absent`,
+        ).toBeUndefined();
+        expect(
+          removed.output.includes(`Deleted the branch ${DEPLOY_BRANCH}`),
+          "destroy --delete-data deletes no branch",
+        ).toBe(false);
+        expect(
+          (await secretNames(github)).sort(),
+          "destroy --delete-data leaves GitHub's secrets",
+        ).toEqual(secretsBefore);
         const volumes = (
           await shell().ok(
             `docker volume ls -q --filter label=${COMPOSE_PROJECT_LABEL}=${names().app}`,
@@ -2480,14 +2567,24 @@ describe.skipIf(MISSING.length > 0)(
 
     /**
      * Removes a fresh setup of steps 10 and 11 with its data (`destroy --confirm <app>
-     * --delete-data`): no stack and no volume of the app are left, Portainer and the decoys are as
-     * before the run.
+     * --delete-data`): no stack and no volume of the app are left, the deploy branch is deleted (its
+     * history kept locally as `refs/e2e/deploy-<label>` for the leak search), Portainer and the
+     * decoys are as before the run.
      */
     async function removeFreshSetup(
       what: string,
+      label: string,
       overrides: Record<string, string | undefined> = {},
     ): Promise<void> {
-      await opscrewOkWith(overrides, "destroy", "--confirm", app(), "--delete-data");
+      await keepDeployBranch(label);
+      const removed = await opscrewOkWith(
+        overrides,
+        "destroy",
+        "--confirm",
+        app(),
+        "--delete-data",
+      );
+      await expectDeployBranchDeleted(removed.output, `removing ${what}`);
       expect(
         (await stackNames()).filter((name) => name.startsWith(names().app)),
         `no stack of the app is left after removing ${what}`,
@@ -2515,21 +2612,48 @@ describe.skipIf(MISSING.length > 0)(
           web: "proxy",
           port: PROXY_PORT,
         });
-        await provisionUntilDone("the loopback address");
+        const provisioned = await provisionUntilDone("the loopback address");
         await rememberSecrets([]);
-        await deploy("the loopback address");
+        // destroy deleted the branch (T1012), so the new app stack starts from a new placeholder.
+        expect(
+          provisioned.output.includes(`Created the branch ${DEPLOY_BRANCH}`),
+          `the fresh setup created the ${DEPLOY_BRANCH} branch anew`,
+        ).toBe(true);
+        expect(
+          provisioned.output.includes(`Replaced the branch ${DEPLOY_BRANCH}`),
+          `the fresh setup did not replace an earlier ${DEPLOY_BRANCH} branch`,
+        ).toBe(false);
+        const placeholderHead = await expectPlaceholderBranch("the loopback setup");
+        if ((await deploy("the loopback address")) === undefined) {
+          // provision opened no pull request: run the deploy workflow on main, as a user would.
+          const since = new Date();
+          await github.dispatchDeploy();
+          const run = await github.waitForDeploy({
+            headSha: await git("rev-parse", "HEAD"),
+            event: "workflow_dispatch",
+            since,
+          });
+          expect(run.conclusion, `the deploy run ${run.id} on main`).toBe("success");
+        }
         web = "proxy";
         const line = await updaterWebhookLine();
         expect(
           line.includes(`://host.docker.internal:${PORTAINER_PORT}/api/stacks/webhooks/`),
           "with a loopback address the updater calls Portainer through host.docker.internal",
         ).toBe(true);
+        await waitFor(
+          `the deploy workflow writing the app to ${DEPLOY_BRANCH}`,
+          minutes(15),
+          async () =>
+            (await branchHead(github, DEPLOY_BRANCH)) !== placeholderHead ? true : undefined,
+          10_000,
+        );
         await waitForSite((await deployBranchImage()).version, minutes(10));
         observe(
           "with a loopback Portainer address the updater called Portainer through host.docker.internal",
         );
         await watchUpdater("the loopback address");
-        await removeFreshSetup("the loopback setup");
+        await removeFreshSetup("the loopback setup", "loopback");
       },
     );
 
@@ -2572,13 +2696,13 @@ describe.skipIf(MISSING.length > 0)(
           );
           await provisionUntilDone("the short host name", short);
           await rememberSecrets([]);
+          // Never deployed: the app's stack runs the placeholder, so no app answers. secure and
+          // drift run against that stack; their exits are recorded, not judged.
+          await expectPlaceholderBranch("the short-host setup");
+          const exits: string[] = [];
           for (const command of ["secure", "drift"]) {
             const result = await opscrewWith(short, command);
-            if (result.exitCode !== 0) {
-              findings.push(
-                `opscrew ${command} with Portainer at a short host name exited with ${result.exitCode}`,
-              );
-            }
+            exits.push(`${command} exited with ${result.exitCode}`);
           }
           const verified = await opscrewWith(
             short,
@@ -2587,9 +2711,9 @@ describe.skipIf(MISSING.length > 0)(
             `http://${ipv4()}:${PROXY_PORT}`,
           );
           observe(
-            `with Portainer at "${shortHost}": provision, secure and drift ran; verify --url exited with ${verified.exitCode}`,
+            `with Portainer at "${shortHost}" and the placeholder deployed: provision passed, ${exits.join(", ")}; verify --url exited with ${verified.exitCode} (no app is expected to answer)`,
           );
-          await removeFreshSetup("the short-host setup", short);
+          await removeFreshSetup("the short-host setup", "short-host", short);
         } finally {
           closeTunnel();
         }
@@ -2620,6 +2744,8 @@ describe.skipIf(MISSING.length > 0)(
           }
         };
         await git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*");
+        // `--all` also walks refs/e2e/deploy-*: the deploy branches kept before each destroy
+        // deleted them on GitHub (steps 8, 10 and 11).
         search(
           "the commits (every branch)",
           await git("log", "--all", "-p", "--format=%B"),

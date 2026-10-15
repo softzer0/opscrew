@@ -251,7 +251,8 @@ runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install:
    `provision --approve <infrastructure hash> --yes` applies it, creates the `opscrew-deploy`
    branch (a root commit holding only `compose.yaml`, made with the fine-grained token) and stops at
    the stack plan printing its hash, `provision --yes` alone must not apply the stack plan, and
-   `provision --approve <stack plan hash> --yes` applies exactly that hash. Then: the record in
+   `provision --approve <stack plan hash> --yes` applies exactly that hash; neither of the last
+   two runs writes the branch again (it already holds exactly the placeholder). Then: the record in
    `.opscrew/server.json`, the app stack's `GitConfig`, `AutoUpdate` and `DeploymentStatus` (their
    shapes are logged, never their values), the deploy pull request merged and its run, the site
    through the tunnel with the new version in `X-OpsCrew-Image`, `GET /api/stacks/{id}/file`
@@ -287,29 +288,39 @@ runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install:
 8. `destroy --confirm <app>` in tunnel + Cloudflare mode (two tunnels): no stack of the app, no
    registry entry of OpsCrew, no DNS record, tunnel, Access application, policy or service token of
    the app; the data volumes kept; the deploy secrets, the webhook and value-key files and the
-   saved stack plans removed; Portainer's users, environments, registries, other stacks and
-   settings as before the run; the decoys unchanged; the zone's rulesets that existed before the
-   run have the same rules (a difference is reported, never restored).
-9. `destroy --confirm <app> --delete-data`: the recorded volumes are gone, nothing else changed.
-   OpsCrew's record is now empty, which steps 10 and 11 need: while the record lists anything,
-   OpsCrew refuses another Portainer address.
+   saved stack plans removed; the `opscrew-deploy` branch deleted on GitHub (destroy says
+   "Deleted the branch opscrew-deploy" and does not list it under "What remains"); Portainer's
+   users, environments, registries, other stacks and settings as before the run; the decoys
+   unchanged; the zone's rulesets that existed before the run have the same rules (a difference
+   is reported, never restored).
+9. `destroy --confirm <app> --delete-data`: the recorded volumes are gone, nothing else changed;
+   it deletes data only, so GitHub is left alone (the branch stays absent, the Actions secrets as
+   they were). OpsCrew's record is now empty, which steps 10 and 11 need: while the record lists
+   anything, OpsCrew refuses another Portainer address.
 10. **A loopback Portainer address**, as a setup of its own: through an SSH tunnel on the test
     computer's port 9443 the interview uses `https://localhost:9443` (web mode `proxy`, the
-    updater, no Cloudflare). After provision and the deploy, the updater must call Portainer
-    through `host.docker.internal`, the site on port 8080 must serve the new version, and none of
-    the updater's calls may fail nor redeploy an unchanged branch. Then
-    `destroy --confirm <app> --delete-data`, with Portainer and the decoys as before.
+    updater, no Cloudflare). Provision must create `opscrew-deploy` anew ("Created the branch",
+    not "Replaced"): an orphan commit holding only the placeholder `compose.yaml`. The test then
+    merges the deploy pull request (or, when provision opened none, runs the deploy workflow on
+    `main`), waits until the workflow moved the branch off the placeholder, and checks that the
+    updater calls Portainer through `host.docker.internal`, the site on port 8080 serves the new
+    version, and none of the updater's calls fail or redeploy an unchanged branch. Then
+    `destroy --confirm <app> --delete-data` (the branch is deleted again), with Portainer and the
+    decoys as before.
 11. **A short Portainer host name**, as a setup of its own: with a DNS preload in the CLI's Node
     process (`NODE_OPTIONS=--import=…`, which resolves only that name to the tunnel) the CLI runs
     interview, design, provision, `secure`, `drift` and `verify --url` with Portainer at a short
     host name (`nas`, or `OPSCREW_E2E_PORTAINER_SHORT_HOST`). Containers on the server cannot
-    resolve that name, so this setup is not deployed, and a failing `verify` is only recorded.
-    Then `destroy --confirm <app> --delete-data`, with Portainer and the decoys as before.
+    resolve that name, so this setup is not deployed: the branch holds only the placeholder, no
+    app answers, and the exits of `secure`, `drift` and `verify` are only recorded. Then
+    `destroy --confirm <app> --delete-data` (the branch is deleted), with Portainer and the
+    decoys as before.
 12. Nothing leaked: no token (`PORTAINER_API_KEY` of both users, `OPSCREW_GHCR_READ_TOKEN`,
     `OPSCREW_REPO_READ_TOKEN`, GitHub, Cloudflare, Hetzner), password, session, setup token,
     webhook id, value key, tunnel token, service token, state passphrase, app secret, server
-    address or Portainer address in any commit of any branch, pull request, file in the
-    repository, CLI output (stdout and stderr), MCP result or dialog, saved plan
+    address or Portainer address in any commit of any branch (including `opscrew-deploy`, whose
+    history the test fetches into `refs/e2e/deploy-*` before each destroy deletes it on GitHub),
+    pull request, file in the repository, CLI output (stdout and stderr), MCP result or dialog, saved plan
     (`.opscrew/plans/`, also the stack plans destroy removes), the audit log or (secrets only)
     `.opscrew/server.json`. The bare short host name counts in what OpsCrew printed or saved
     (the app's own files and history may use it as a word); its URL forms count everywhere.
