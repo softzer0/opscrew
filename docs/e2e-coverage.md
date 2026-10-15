@@ -23,7 +23,7 @@ tests that need real accounts, Docker or the infrastructure engines.
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
 | Your own server (`own-server.test.ts`) | `OPSCREW_E2E_OWN_SERVER=1` | Passed | 2026-10-15 (run 11) | — |
 | Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | **Partly passed** (run 1, 2026-10-15: steps 1–3 and the leak search; step 8 failed on a test check, step 9 not reached) | — | A rerun after T1013 |
-| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Not run yet** | — | About two hours |
+| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Partly passed** (run 1, 2026-10-16: stopped at step 3's rollback check, a test error) | — | A rerun (about 45–60 minutes) |
 
 Run in development, not tracked by date:
 
@@ -39,9 +39,9 @@ Tick a step once it has passed live.
 | Step | Pass | Passed live |
 |---|---|---|
 | 1. A throwaway server with Portainer CE, an admin, a limited user and the decoys | core | [x] 2026-10-15 |
-| 2. Updater + tunnel: init, interview, design, adapt, the limited token's registry steps, three provision runs, deploy, verify, secure, drift | core | [x] 2026-10-15 (except `init`: T1013) |
+| 2. Updater + tunnel: init, interview, design, adapt, the limited token's registry steps, three provision runs, deploy, verify, secure, drift | core | [x] 2026-10-15; `init` 2026-10-16 |
 | 3. A merged change deploys by itself; a webhook call on an unchanged branch does not redeploy | core | [x] 2026-10-15 |
-| 3. A failing change rolls back | full | [ ] |
+| 3. A failing change rolls back | full | [ ] (2026-10-16: the previous version was written back; the app's return not yet checked) |
 | 4. An apply through MCP that replaces the registry token | full | [ ] |
 | 5. Caddy: the app stack updated in place, the DNS record OpsCrew prints, certificates on 80/443 | full | [ ] |
 | 6. Your own proxy: the app on a host port, `verify --url` | full | [ ] |
