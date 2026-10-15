@@ -41,6 +41,8 @@ export interface ApplyStackOptions {
   approvedHash: string;
   secrets: { env: Readonly<Record<string, string>>; webhookId?: string; repositoryToken?: string;
              registryToken?: string; tunnelToken?: string };
+  // tunnelToken: the Portainer connector stack's (cloudflare redeploy mode); the app stack's own
+  // tunnel token (tunnel web mode) is one of its `env` values, listed in `envKeys`.
   /** Bounded wait for asynchronous deploys (default 10 minutes); clock and sleep injectable. */
   wait?: { timeoutMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> };
 }
