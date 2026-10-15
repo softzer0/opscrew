@@ -101,6 +101,19 @@ describe("renderCompose", () => {
     expect(doc.services.app.depends_on).toBeUndefined();
   });
 
+  it("rotates every service's logs itself and keeps no-new-privileges (Docker's daemon settings stay as they are)", () => {
+    const release = "python manage.py migrate --noinput";
+    const doc = parse(renderCompose(plan({ release }), ctx).content);
+    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache", "caddy"]);
+    for (const service of Object.values<Record<string, unknown>>(doc.services)) {
+      expect(service.logging).toEqual({
+        driver: "json-file",
+        options: { "max-size": "10m", "max-file": "3" },
+      });
+      expect(service.security_opt).toEqual(["no-new-privileges:true"]);
+    }
+  });
+
   it("adds no release service without a release command", () => {
     const content = renderCompose(plan(), ctx).content;
     expect(content).not.toContain("release");

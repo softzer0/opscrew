@@ -263,6 +263,79 @@ describe.skipIf(!BASH_AVAILABLE)("host scripts in a real shell", { timeout: 60_0
       expect(h.calls()).toContain("ufw --force enable");
     });
 
+    describe("on a ufw that is on but lets everything in", () => {
+      const DEADMAN = "/etc/opscrew/deadman";
+      const ACCEPT_ALL =
+        'IPV6=yes\nDEFAULT_INPUT_POLICY="ACCEPT"\nDEFAULT_OUTPUT_POLICY="ACCEPT"\nDEFAULT_FORWARD_POLICY="DROP"\n';
+      const deny = {
+        sshPorts: "22",
+        sshRulePorts: "22",
+        webRules: "",
+        web: false,
+        enable: false,
+        install: false,
+        denyIncoming: true,
+      };
+      const activeUfw = (policies: string) => {
+        const h = harness();
+        h.stub("ufw", UFW);
+        h.write("/state/ufw-active", "");
+        h.write("/etc/default/ufw", policies);
+        return h;
+      };
+      const changes = (h: ShellHarness) =>
+        h.calls().filter((call) => /^ufw (allow|default|--force)/.test(call));
+
+      it("adds the SSH rule first, then sets deny incoming, and never turns ufw off or on", () => {
+        const h = activeUfw(ACCEPT_ALL);
+        const { apply } = scriptsFor("setup", "ufw", deny);
+        const run = h.run(apply);
+        expect(run.status, run.stderr).toBe(0);
+        expect(changes(h)).toEqual([
+          "ufw allow 22/tcp comment opscrew-ssh",
+          "ufw default deny incoming",
+        ]);
+      });
+
+      it("keeps a default of reject (it already turns connections away)", () => {
+        const h = activeUfw(ACCEPT_ALL.replace('INPUT_POLICY="ACCEPT"', 'INPUT_POLICY="REJECT"'));
+        const run = h.run(scriptsFor("setup", "ufw", deny).apply);
+        expect(run.status, run.stderr).toBe(0);
+        expect(changes(h)).toEqual(["ufw allow 22/tcp comment opscrew-ssh"]);
+      });
+
+      it("counts as a change until the default denies", () => {
+        const h = activeUfw(ACCEPT_ALL);
+        h.write(
+          "/state/ufw-added",
+          "Added user rules (see 'ufw status' for running firewall):\nufw allow 22/tcp comment 'opscrew-ssh'\n",
+        );
+        const { check } = scriptsFor("setup", "ufw", deny);
+        expect(h.run(check).stdout).toContain("state=change");
+        h.write(
+          "/etc/default/ufw",
+          ACCEPT_ALL.replace('INPUT_POLICY="ACCEPT"', 'INPUT_POLICY="DROP"'),
+        );
+        expect(h.run(check).stdout).toContain("state=in-place");
+      });
+
+      it("the dead-man undo puts allow back and leaves ufw on", () => {
+        const h = activeUfw(ACCEPT_ALL);
+        const { deadMan } = scriptsFor("setup", "ufw", deny);
+        if (!deadMan) throw new Error("no dead-man");
+        const arm = h.run(armScript(deadMan, 180));
+        expect(arm.status, arm.stderr).toBe(0);
+        h.clearCalls();
+        h.runFile(`${DEADMAN}/ufw.undo.sh`);
+        expect(h.calls()).toEqual([
+          "ufw default allow incoming",
+          "ufw default allow outgoing",
+          "ufw default deny routed",
+          "ufw --force delete allow 22/tcp",
+        ]);
+      });
+    });
+
     it("the undo puts the previous default policies back before turning ufw off", () => {
       const h = harness();
       h.stub("ufw", UFW);

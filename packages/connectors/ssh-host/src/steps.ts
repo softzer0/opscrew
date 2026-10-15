@@ -512,6 +512,8 @@ const UfwParams = z.object({
   web: z.boolean(),
   enable: z.boolean(),
   install: z.boolean(),
+  /** ufw is on with default incoming "allow": set it to deny (after the SSH rule). */
+  denyIncoming: z.literal(true).optional(),
 });
 
 const UfwUndoParams = z.object({
@@ -617,6 +619,7 @@ if [ "$DISABLE" = true ]; then ufw --force disable >/dev/null; fi`;
     WEB_ADD: p.webRules,
     WEB: p.web,
     ENABLE: p.enable,
+    DENY_INCOMING: p.denyIncoming === true,
     WEB_RULES: WEB_RULES.join(" "),
     SSH_COMMENT: UFW_SSH_COMMENT,
     WEB_COMMENT: UFW_WEB_COMMENT,
@@ -630,6 +633,9 @@ if [ "$DISABLE" = true ]; then ufw --force disable >/dev/null; fi`;
   for r in $WEB_ADD; do has_rule "$r" || return 1; done
   if [ "$WEB" != true ]; then
     for r in $WEB_RULES; do if has_own_rule "$r" "$WEB_COMMENT"; then return 1; fi; done
+  fi
+  if [ "$DENY_INCOMING" = true ]; then
+    case "$(ufw_policy INPUT)" in deny|reject) ;; *) return 1 ;; esac
   fi
   ${timer}`;
   const snapshot = `if command -v ufw >/dev/null 2>&1; then echo prev.installed=true; else echo prev.installed=false; fi
@@ -673,6 +679,10 @@ if [ "$WEB" != true ]; then
   for r in $WEB_RULES; do
     if has_own_rule "$r" "$WEB_COMMENT"; then ufw --force delete allow "$r" >/dev/null; fi
   done
+fi
+# ufw was on but let everything in: deny incoming by default, now that the SSH rule is there.
+if [ "$DENY_INCOMING" = true ]; then
+  case "$(ufw_policy INPUT)" in deny|reject) ;; *) ufw default deny incoming >/dev/null ;; esac
 fi
 if [ "$ENABLE" = true ] && ! ufw_active; then
   ufw default deny incoming >/dev/null

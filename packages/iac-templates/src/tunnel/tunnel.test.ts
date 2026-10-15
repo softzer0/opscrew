@@ -161,4 +161,11 @@ describe("renderTunnelConnectorCompose", () => {
     expect(service.security_opt).toEqual(["no-new-privileges:true"]);
     expect(file.content).not.toMatch(/TUNNEL_TOKEN=|--token/);
   });
+
+  it("rotates its own logs, so Docker's daemon settings on the server can stay as they are", () => {
+    expect(compose.services.cloudflared.logging).toEqual({
+      driver: "json-file",
+      options: { "max-size": "10m", "max-file": "3" },
+    });
+  });
 });

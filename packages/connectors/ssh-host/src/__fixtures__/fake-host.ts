@@ -765,6 +765,7 @@ export class FakeHost implements RemoteExec {
         if (this.ufwRules.some((r) => r.rule === `allow ${rule}` && r.comment === params.WEB_COMMENT)) return false;
       }
     }
+    if (params.DENY_INCOMING === "true" && this.ufwDefaults.incoming === "allow") return false;
     return true;
   }
 
@@ -1002,6 +1003,10 @@ export class FakeHost implements RemoteExec {
             this.ufwRules = this.ufwRules.filter((r) => !(r.rule === `allow ${rule}` && r.comment === p.WEB_COMMENT));
             if (this.ufwRules.length !== before) this.ufwLog.push(`delete allow ${rule}`);
           }
+        }
+        if (p.DENY_INCOMING === "true" && this.ufwDefaults.incoming === "allow") {
+          this.ufwDefaults = { ...this.ufwDefaults, incoming: "deny" };
+          this.ufwLog.push("default deny incoming");
         }
         if (p.ENABLE === "true" && !this.ufwActive) {
           this.ufwDefaults = { ...this.ufwDefaults, incoming: "deny", outgoing: "allow" };

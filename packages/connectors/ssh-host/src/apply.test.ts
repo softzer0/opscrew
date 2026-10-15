@@ -285,16 +285,31 @@ describe("tunnel replaced", () => {
 
 describe("docker daemon settings", () => {
   it("reload Docker instead of restarting it while containers run", async () => {
+    // OpsCrew's own app runs (the file went missing since the first setup).
+    const fake = new FakeHost();
+    await provision(fake);
+    fake.files.delete("/etc/docker/daemon.json");
+    fake.containers.push({ name: "shop-app-1", project: "shop", ports: "" });
+    const restarts = fake.dockerRestarts;
+    const reloads = fake.dockerReloads;
+    await provision(fake);
+    expect(fake.files.get("/etc/docker/daemon.json")).toBe(DOCKER_DAEMON_JSON);
+    expect(fake.dockerRestarts).toBe(restarts);
+    expect(fake.dockerReloads).toBe(reloads + 1);
+  });
+
+  it("are left alone while containers OpsCrew did not create are on the server", async () => {
     const fake = new FakeHost();
     fake.packages.set("docker-ce", "5:28.5.1-1");
     fake.packages.set("docker-compose-plugin", "2.39.4");
     fake.packages.set("docker-buildx-plugin", "0.29.1");
     fake.dockerRunning = true;
     fake.containers.push({ name: "grafana", project: "monitoring", ports: "" });
-    await provision(fake);
-    expect(fake.files.get("/etc/docker/daemon.json")).toBe(DOCKER_DAEMON_JSON);
+    const { result } = await provision(fake);
+    expect(result.skipped).toContain("docker-daemon");
+    expect(fake.files.has("/etc/docker/daemon.json")).toBe(false);
     expect(fake.dockerRestarts).toBe(0);
-    expect(fake.dockerReloads).toBe(1);
+    expect(fake.dockerReloads).toBe(0);
   });
 
   it("are never overwritten, even when the user writes them between plan and apply", async () => {

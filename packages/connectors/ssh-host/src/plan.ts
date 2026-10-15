@@ -16,6 +16,7 @@ import {
   SUPPORTED_OS,
   sshdDropIn,
   TUNNEL_APP_PORT,
+  TUNNEL_PROJECT,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
   WEB_RULES,
@@ -169,14 +170,23 @@ function sha256(text: string): string {
 /** UDP client sockets that a firewall with stateful rules does not break. */
 const HARMLESS_UDP = new Set([68, 123, 323, 546, 5353]);
 
-/** Services reachable from other machines today that ufw's default deny would cut off. */
-function wouldBlock(facts: HostFacts, sshPorts: readonly number[], web: boolean): string[] {
+/**
+ * Services reachable from other machines today that ufw's default deny would cut off. A service
+ * an existing ufw rule lets in from every address (`open`) stays reachable.
+ */
+function wouldBlock(
+  facts: HostFacts,
+  sshPorts: readonly number[],
+  web: boolean,
+  open: (port: number, proto: "tcp" | "udp") => boolean,
+): string[] {
   const found = new Set<string>();
   for (const listener of facts.listeners) {
     if (isLoopback(listener.address) || listener.process === "docker-proxy") continue;
     if (listener.proto === "tcp" && sshPorts.includes(listener.port)) continue;
     if (web && isWebPort(listener.proto, listener.port)) continue;
     if (listener.proto === "udp" && HARMLESS_UDP.has(listener.port)) continue;
+    if (open(listener.port, listener.proto)) continue;
     found.add(`${listener.port}/${listener.proto} (${listener.process || "unknown program"})`);
   }
   return [...found];
@@ -333,7 +343,26 @@ function packageRepairStep(facts: HostFacts): HostStep | undefined {
   );
 }
 
-function dockerDaemonStep({ facts }: SetupContext): HostStep {
+/**
+ * Containers (running or stopped) and volume-only Compose projects OpsCrew did not create: not the
+ * app's Compose project and not its add-ons (tunnel connector, Portainer). Sorted, at most `max`.
+ */
+function usersContainers(facts: HostFacts, app: string, max = 5): string[] {
+  const ours = new Set([app, TUNNEL_PROJECT, PORTAINER_PROJECT]);
+  const names = new Set<string>();
+  for (const container of facts.containers) {
+    if (!ours.has(container.project)) names.add(container.name);
+  }
+  for (const project of facts.volumeProjects) {
+    if (!ours.has(project) && !facts.containers.some((c) => c.project === project)) {
+      names.add(`the volumes of the Compose project ${project}`);
+    }
+  }
+  const sorted = [...names].sort();
+  return sorted.length > max ? [...sorted.slice(0, max), `${sorted.length - max} more`] : sorted;
+}
+
+function dockerDaemonStep({ facts, desired }: SetupContext): HostStep {
   const title = "Docker daemon settings: log rotation, no-new-privileges, live-restore";
   const params = { path: "/etc/docker/daemon.json" };
   if (facts.dockerDaemonJson === "opscrew") {
@@ -359,6 +388,18 @@ function dockerDaemonStep({ facts }: SetupContext): HostStep {
       facts.docker.swarm
         ? "This server is part of a Docker Swarm, which does not allow live-restore, so OpsCrew kept your Docker settings and writes no daemon.json."
         : `Docker is started with its own settings (${facts.docker.daemonFlags.join(", ")}), so OpsCrew kept your Docker settings and writes no daemon.json.`,
+    );
+  }
+  // Daemon-wide defaults would change how the user's own containers log and run once they are
+  // created again; OpsCrew's services set log rotation and no-new-privileges in their Compose files.
+  const others = usersContainers(facts, desired.app);
+  if (others.length > 0) {
+    return step(
+      "docker-daemon",
+      title,
+      "in-place",
+      params,
+      `This server runs containers OpsCrew did not create (${others.join(", ")}), so OpsCrew leaves Docker's daemon settings alone and writes no daemon.json: your containers keep their behaviour. OpsCrew's own services set log rotation and no-new-privileges in their Compose files instead.`,
     );
   }
   const busy = facts.containers.some((container) => container.running);
@@ -567,13 +608,18 @@ function ufwStep({ facts, desired, found }: SetupContext): HostStep {
         return !covering(Number(port), proto).some((coverage) => !coverage.limitedSource);
       })
     : [];
+  const enable = facts.firewall.ufw !== "active";
+  // ufw is on but lets everything in: OpsCrew makes it deny incoming traffic by default. The key
+  // is in the plan only then, so plans for servers whose ufw already denies keep their hash.
+  const denyIncoming = !enable && facts.firewall.ufwDefaults?.incoming === "allow";
   const params = {
     sshPorts: sshPorts.join(" "),
     sshRulePorts: sshRulePorts.join(" "),
     webRules: webRules.join(" "),
     web,
-    enable: facts.firewall.ufw !== "active",
+    enable,
     install: facts.firewall.ufw === "absent",
+    ...(denyIncoming ? { denyIncoming } : {}),
   };
   if (facts.firewall.foreign.length > 0) {
     found.push(findings.otherFirewall(facts.firewall.foreign));
@@ -583,30 +629,38 @@ function ufwStep({ facts, desired, found }: SetupContext): HostStep {
     ? []
     : facts.firewall.ufwRules.filter((rule) => rule.comment === UFW_WEB_COMMENT);
   const missing = [...sshRulePorts, ...webRules];
-  if (facts.firewall.ufw === "active" && missing.length === 0 && staleWeb.length === 0) {
+  if (!enable && !denyIncoming && missing.length === 0 && staleWeb.length === 0) {
     if (!facts.pendingUndo.ufw) {
       return step("ufw", `Firewall (ufw) allows ${allowed}`, "in-place", params, "Already set.");
     }
   }
-  if (params.enable) {
-    const blocked = wouldBlock(facts, sshPorts, web);
+  if (enable || denyIncoming) {
+    // A service an existing rule lets in from every address is not cut off.
+    const open = (port: number, proto: "tcp" | "udp") =>
+      covering(port, proto).some((coverage) => !coverage.limitedSource);
+    const blocked = wouldBlock(facts, sshPorts, web, open);
     if (blocked.length > 0) {
-      found.push(findings.ufwWouldBlock(blocked));
+      found.push(findings.ufwWouldBlock(blocked, denyIncoming));
       return step("ufw", TITLES.ufw, "blocked", params, "Other services would be cut off.");
     }
   }
-  const what = params.enable
+  const what = enable
     ? `Turn on the ufw firewall: deny incoming traffic except ${allowed}`
-    : `Add ufw rules for ${allowed}`;
+    : denyIncoming
+      ? `Make the ufw firewall deny incoming traffic except ${allowed}`
+      : `Add ufw rules for ${allowed}`;
   const extra = web
     ? ""
     : " No web ports are opened: the app is served through the Cloudflare Tunnel.";
+  const lead = denyIncoming
+    ? `ufw is on, but it lets everything in: its default policy for incoming traffic is "allow", so only connections a rule denies are stopped. OpsCrew makes sure the SSH rule for the port sshd really uses is there first (existing rules for it are kept and count), then sets the default to deny incoming; the server puts "allow" back on its own unless new logins work afterwards. The old default is recorded, so undoing OpsCrew's host changes (opscrew destroy --undo-host) puts it back too.`
+    : `${params.install ? "ufw is installed first. " : ""}The SSH rule for the port sshd really uses is added before anything else (existing rules for it are kept and count); the server turns the firewall back off on its own unless new logins work afterwards.`;
   return step(
     "ufw",
     what,
     "change",
     params,
-    `${params.install ? "ufw is installed first. " : ""}The SSH rule for the port sshd really uses is added before anything else (existing rules for it are kept and count); the server turns the firewall back off on its own unless new logins work afterwards. Rules are marked "${UFW_SSH_COMMENT}"/"${UFW_WEB_COMMENT}" so only OpsCrew's own rules are ever removed.${extra}${notes.length > 0 ? ` ${notes.join(" ")}` : ""}`,
+    `${lead} Rules are marked "${UFW_SSH_COMMENT}"/"${UFW_WEB_COMMENT}" so only OpsCrew's own rules are ever removed.${extra}${notes.length > 0 ? ` ${notes.join(" ")}` : ""}`,
   );
 }
 
@@ -1259,12 +1313,13 @@ export function planUndo(facts: HostFacts): HostPlan {
     const removeRules = rulesToRemove(f, ufw.previous);
     const disable = ufw.previous.active === false && f.firewall.ufw === "active";
     const removePackage = ufw.previous.installed === false && f.packages.ufw;
-    // OpsCrew set the default policies when it turned ufw on; put the old ones back.
+    // OpsCrew set the default policies when it turned ufw on, and the default incoming policy
+    // when ufw was on but allowed everything in; put the old ones back.
     const policy = (key: string) => {
       const value = ufw.previous[key];
-      return ufw.previous.active === false &&
-        typeof value === "string" &&
-        /^(allow|deny|reject)$/.test(value)
+      const changed =
+        ufw.previous.active === false || (key === "defaultIncoming" && value === "allow");
+      return changed && typeof value === "string" && /^(allow|deny|reject)$/.test(value)
         ? value
         : "";
     };
@@ -1285,7 +1340,9 @@ export function planUndo(facts: HostFacts): HostPlan {
         "ufw",
         disable
           ? "Turn the ufw firewall off again, remove OpsCrew's rules and put the previous default policies back"
-          : "Remove the firewall rules OpsCrew added",
+          : defaults.defaultIncoming === "allow"
+            ? 'Remove the firewall rules OpsCrew added and put the previous default policy for incoming traffic ("allow") back'
+            : "Remove the firewall rules OpsCrew added",
         nothing ? "in-place" : "change",
         { removeRules: removeRules.join(" "), disable, removePackage, ...defaults },
         removeRules.length > 0 ? `Rules: ${removeRules.join(", ")}.` : undefined,

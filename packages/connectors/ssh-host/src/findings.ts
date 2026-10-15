@@ -105,11 +105,19 @@ export const findings = {
       'Docker on this server does not manage iptables ("iptables": false), so there is no DOCKER-USER chain and its published ports cannot be limited to Cloudflare\'s addresses.',
     hint: `Serve the site through a Cloudflare Tunnel (recommended) or with DNS only (opscrew interview), or let Docker manage iptables again (remove "iptables": false from /etc/docker/daemon.json and restart Docker), ${RERUN}.`,
   }),
-  ufwWouldBlock: (what: readonly string[]): HostFinding => ({
-    code: "firewall-would-block",
-    message: `The firewall OpsCrew turns on allows only SSH and web traffic, so other machines could no longer reach ${list(what)}.`,
-    hint: `Stop those services or make them listen on 127.0.0.1 only, or turn on ufw yourself with rules for them (OpsCrew then only adds its own rules), ${RERUN}.`,
-  }),
+  /** `lettingAllIn`: ufw is on but its default incoming policy is "allow" (OpsCrew sets deny). */
+  ufwWouldBlock: (what: readonly string[], lettingAllIn = false): HostFinding =>
+    lettingAllIn
+      ? {
+          code: "firewall-would-block",
+          message: `ufw is on but lets every incoming connection in. Once OpsCrew sets it to deny incoming traffic except SSH and web traffic, other machines could no longer reach ${list(what)}.`,
+          hint: `Stop those services or make them listen on 127.0.0.1 only, or add ufw rules that allow them (for example "sudo ufw allow 8080/tcp"; OpsCrew keeps them), ${RERUN}.`,
+        }
+      : {
+          code: "firewall-would-block",
+          message: `The firewall OpsCrew turns on allows only SSH and web traffic, so other machines could no longer reach ${list(what)}.`,
+          hint: `Stop those services or make them listen on 127.0.0.1 only, or turn on ufw yourself with rules for them (OpsCrew then only adds its own rules), ${RERUN}.`,
+        },
   dockerSnap: (): HostFinding => ({
     code: "docker-snap",
     message:

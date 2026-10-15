@@ -146,7 +146,8 @@ describe("planHost: steps", () => {
     busy.packages.set("docker-compose-plugin", "2.39.4");
     busy.packages.set("docker-buildx-plugin", "0.29.1");
     busy.dockerRunning = true;
-    busy.containers.push({ name: "grafana", project: "monitoring", ports: "" });
+    // Only OpsCrew's own containers run (see setup-steps.test.ts for the user's own).
+    busy.containers.push({ name: "cloudflared", project: "opscrew-tunnel", ports: "" });
     expect((await planFor(busy)).steps.find((step) => step.id === "docker-daemon")?.reason).toMatch(
       /without restarting your running containers/,
     );

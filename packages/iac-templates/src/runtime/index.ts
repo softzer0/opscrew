@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, Compose and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
-import { TUNNEL_ORIGIN_PORT, tunnelMode } from "../tunnel";
+import { serviceLogging, TUNNEL_ORIGIN_PORT, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 
 export const POSTGRES_IMAGE = "postgres:17-alpine";
@@ -52,6 +52,7 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
     env_file: ["app.env"],
     environment: { PORT: String(plan.app.port) },
     ...hardening,
+    logging: serviceLogging(),
     cap_drop: ["ALL"],
     networks: ["internal"],
   };
@@ -69,6 +70,7 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
       // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
       command: ["sh", "-c", release.replaceAll("$", () => "$$")],
       ...hardening,
+      logging: serviceLogging(),
       cap_drop: ["ALL"],
       networks: ["internal"],
     };
@@ -87,6 +89,7 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
         retries: 6,
       },
       ...hardening,
+      logging: serviceLogging(),
       networks: ["internal"],
     };
     dependsOn.db = { condition: "service_healthy" };
@@ -98,6 +101,7 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
       command: ["valkey-server", "--appendonly", "yes"],
       volumes: ["/srv/data/valkey:/data"],
       ...hardening,
+      logging: serviceLogging(),
       networks: ["internal"],
     };
     dependsOn.cache = { condition: "service_started" };
@@ -113,6 +117,7 @@ export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFi
     volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data", "caddy_config:/config"],
     depends_on: ["app"],
     ...hardening,
+    logging: serviceLogging(),
     networks: ["internal"],
   };
 
