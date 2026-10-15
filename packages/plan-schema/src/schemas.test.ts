@@ -10,12 +10,14 @@ import {
   CloudProviderSchema,
   CostEstimateSchema,
   type CurrencySchema,
+  cloudflareEdgeCoverage,
   DEFAULT_IMAGES,
   DeployPlanSchema,
   type DeployTarget,
   type DesignOption,
   DesignOptionListSchema,
   DesignOptionSchema,
+  likelyCloudflareZone,
   type Money as MoneyExport,
   type MoneySchema,
   type OwnDeployTarget,
@@ -654,7 +656,7 @@ describe("DeployPlan portainer", () => {
       hostname,
       allowedEmails: ["ops@example.com"],
     });
-    for (const ok of ["portainer.example.com", "admin.app.example.com"]) {
+    for (const ok of ["portainer.example.com", "admin-app.example.com"]) {
       expect(DeployPlanSchema.safeParse({ ...plan, portainer: subdomain(ok) }).success, ok).toBe(
         true,
       );
@@ -705,6 +707,164 @@ describe("DeployPlan portainer", () => {
     for (const [portainer, path] of cases) {
       expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, portainer })), path).toEqual([path]);
     }
+  });
+});
+
+describe("DeployPlan names behind Cloudflare's proxy", () => {
+  async function validPlan() {
+    return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+  }
+  const own = (access: "public" | "tunnel") =>
+    ({ provider: "own", mode: "vps-compose", arch: "amd64", access }) as const;
+  const portainer = (hostname: string) => ({
+    enabled: true,
+    version: "2.33.1",
+    access: "subdomain",
+    hostname,
+    allowedEmails: ["ops@example.com"],
+  });
+
+  it("explains the edge certificate and suggests a one-level name", () => {
+    expect(cloudflareEdgeCoverage("portainer.shop.example.com", "example.com")).toEqual({
+      reason:
+        "Cloudflare's free certificate covers only example.com and *.example.com, so portainer.shop.example.com would fail HTTPS at Cloudflare's edge",
+      suggestion: "portainer-shop.example.com",
+    });
+    expect(cloudflareEdgeCoverage("a.b.c.example.com", "example.com")?.suggestion).toBe(
+      "a-b-c.example.com",
+    );
+    for (const name of [
+      "example.com",
+      "shop.example.com",
+      "ssh-acme-web.example.com",
+      "x.other.com",
+    ]) {
+      expect(cloudflareEdgeCoverage(name, "example.com"), name).toBeUndefined();
+    }
+  });
+
+  it("guesses the zone as the registrable domain", () => {
+    const cases: [string, string][] = [
+      ["example.com", "example.com"],
+      ["api.shop.example.com", "example.com"],
+      ["shop.example.co.uk", "example.co.uk"],
+      ["example.co.uk", "example.co.uk"],
+      ["shop.example.com.au", "example.com.au"],
+      ["shop.example.de", "example.de"],
+      ["shop.co.com", "co.com"],
+    ];
+    for (const [domain, zone] of cases) expect(likelyCloudflareZone(domain), domain).toBe(zone);
+  });
+
+  it("refuses a proxied app domain two levels below the zone", async () => {
+    const plan = await validPlan();
+    const deep = { ...plan, dns: { ...plan.dns, domain: "api.shop.example.com" } };
+    const result = DeployPlanSchema.safeParse(deep);
+    expect(pathsOf(result)).toEqual(["dns.domain"]);
+    expect(result.error?.issues[0]?.message).toBe(
+      "must be example.com or one level below it: Cloudflare's free certificate covers only example.com and *.example.com, so api.shop.example.com would fail HTTPS at Cloudflare's edge; use a name one level below example.com, such as api-shop.example.com, or serve it without Cloudflare's proxy (dns.proxied false)",
+    );
+  });
+
+  it("refuses a deep domain behind the tunnel even without the proxy flag", async () => {
+    const plan = await validPlan();
+    for (const proxied of [true, false]) {
+      const result = DeployPlanSchema.safeParse({
+        ...plan,
+        target: own("tunnel"),
+        dns: { ...plan.dns, domain: "api.shop.example.com", proxied },
+      });
+      expect(pathsOf(result), String(proxied)).toEqual(["dns.domain"]);
+      expect(result.error?.issues[0]?.message).toContain("instead of the tunnel");
+    }
+  });
+
+  it("leaves DNS-only names, unproxied cloud plans and one-level names alone", async () => {
+    const plan = await validPlan();
+    const deep = { ...plan.dns, domain: "api.shop.example.com", www: true };
+    // Hetzner, DNS only.
+    expect(DeployPlanSchema.safeParse({ ...plan, dns: { ...deep, proxied: false } }).success).toBe(
+      true,
+    );
+    // Own server served directly with DNS only.
+    expect(
+      DeployPlanSchema.safeParse({
+        ...plan,
+        target: own("public"),
+        dns: { ...deep, proxied: false },
+        security: { ...plan.security, httpAllowedFrom: "any" },
+      }).success,
+    ).toBe(true);
+    // No Cloudflare DNS at all.
+    expect(
+      DeployPlanSchema.safeParse({
+        ...plan,
+        dns: { provider: "none", domain: "api.shop.example.com", proxied: false, www: false },
+      }).success,
+    ).toBe(true);
+    for (const domain of ["example.com", "shop.example.com"]) {
+      const dns = { ...plan.dns, domain };
+      expect(DeployPlanSchema.safeParse({ ...plan, dns }).success, domain).toBe(true);
+      expect(
+        DeployPlanSchema.safeParse({ ...plan, target: own("tunnel"), dns }).success,
+        domain,
+      ).toBe(true);
+    }
+    // Before provision learns the zone nothing can be checked.
+    const { zone: _zone, ...noZone } = plan.dns;
+    expect(
+      DeployPlanSchema.safeParse({ ...plan, dns: { ...noZone, domain: "api.shop.example.com" } })
+        .success,
+    ).toBe(true);
+  });
+
+  it("allows www. only on the zone itself while Cloudflare serves the domain", async () => {
+    const plan = await validPlan();
+    expect(
+      DeployPlanSchema.safeParse({
+        ...plan,
+        dns: { ...plan.dns, domain: "example.com", www: true },
+      }).success,
+    ).toBe(true);
+    const result = DeployPlanSchema.safeParse({
+      ...plan,
+      dns: { ...plan.dns, domain: "shop.example.com", www: true },
+    });
+    expect(pathsOf(result)).toEqual(["dns.www"]);
+    expect(result.error?.issues[0]?.message).toBe(
+      "can be true only when the domain is example.com itself while Cloudflare serves it: Cloudflare's free certificate covers only example.com and *.example.com, so www.shop.example.com would fail HTTPS at Cloudflare's edge; turn off the www. alias (dns.www false), or serve the domain without Cloudflare's proxy (dns.proxied false)",
+    );
+    const tunnel = DeployPlanSchema.safeParse({
+      ...plan,
+      target: own("tunnel"),
+      dns: { ...plan.dns, domain: "shop.example.com", www: true },
+    });
+    expect(pathsOf(tunnel)).toEqual(["dns.www"]);
+    expect(
+      DeployPlanSchema.safeParse({
+        ...plan,
+        dns: { ...plan.dns, domain: "shop.example.com", www: true, proxied: false },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("refuses a Portainer subdomain two levels below the zone, even with the app DNS only", async () => {
+    const plan = await validPlan();
+    for (const proxied of [true, false]) {
+      const result = DeployPlanSchema.safeParse({
+        ...plan,
+        dns: { ...plan.dns, proxied },
+        portainer: portainer("portainer.shop.example.com"),
+      });
+      expect(pathsOf(result), String(proxied)).toEqual(["portainer.hostname"]);
+      expect(result.error?.issues[0]?.message).toBe(
+        "must be one level below example.com: Cloudflare's free certificate covers only example.com and *.example.com, so portainer.shop.example.com would fail HTTPS at Cloudflare's edge; use a name one level below example.com, such as portainer-shop.example.com",
+      );
+    }
+    expect(
+      DeployPlanSchema.safeParse({ ...plan, portainer: portainer("portainer-shop.example.com") })
+        .success,
+    ).toBe(true);
   });
 });
 

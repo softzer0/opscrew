@@ -61,6 +61,37 @@ describe("portainerSettings", () => {
     ).toBe("INVALID_INPUT");
   });
 
+  it("refuses a subdomain two levels below the zone, and suggests a one-level name", () => {
+    let caught: unknown;
+    try {
+      portainerSettings(
+        cloudflare(),
+        { subdomain: "portainer.shop.example.com", allowEmails: ["a@example.com"] },
+        "example.com",
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(OpsCrewError);
+    const error = caught as OpsCrewError;
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      "Cloudflare's free certificate covers only example.com and *.example.com, so portainer.shop.example.com would fail HTTPS at Cloudflare's edge. Nothing was changed.",
+    );
+    expect(error.hint).toBe(
+      "Use a name one level below example.com, for example `--subdomain portainer-shop.example.com`.",
+    );
+    for (const subdomain of ["portainer-shop", "portainer-shop.example.com"]) {
+      expect(
+        portainerSettings(
+          cloudflare(),
+          { subdomain, allowEmails: ["a@example.com"] },
+          "example.com",
+        ).hostname,
+      ).toBe("portainer-shop.example.com");
+    }
+  });
+
   it("needs a Cloudflare domain for a subdomain", () => {
     expect(
       code(() =>
@@ -87,6 +118,19 @@ describe("withPortainer", () => {
       };
       expect(code(() => withPortainer(plan, settings))).toBe("INVALID_INPUT");
     }
+  });
+
+  it("refuses a hostname two levels below the zone with the same reason", () => {
+    const settings = {
+      enabled: true,
+      version: PORTAINER_VERSION,
+      access: "subdomain" as const,
+      hostname: "portainer.shop.example.com",
+      allowedEmails: ["a@example.com"],
+    };
+    expect(() => withPortainer(cloudflare(), settings)).toThrow(
+      "so portainer.shop.example.com would fail HTTPS at Cloudflare's edge",
+    );
   });
 
   it("sets and removes the settings", () => {

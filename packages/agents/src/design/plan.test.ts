@@ -28,6 +28,28 @@ import {
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
 
+describe("optionToPlan names behind Cloudflare's proxy", () => {
+  it("refuses a proxied domain two levels below its zone, and allows it off Cloudflare", async () => {
+    const facts = staticSpaFacts();
+    const deep = makeRequirements({ dnsProvider: "cloudflare", domain: "api.shop.example.com" });
+    const [option] = await buildDesignOptions({ facts, requirements: deep, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    expect(() =>
+      optionToPlan(option, { facts, requirements: deep, now: NOW, codeChanges: [] }),
+    ).toThrow(
+      expect.objectContaining({
+        code: "INVALID_INPUT",
+        message:
+          "Cloudflare's free certificate covers only example.com and *.example.com, so api.shop.example.com would fail HTTPS at Cloudflare's edge. plan.yaml was not changed.",
+        hint: "In `opscrew interview`, use a name one level below example.com, such as api-shop.example.com, or answer other for dnsProvider to manage its DNS yourself, without Cloudflare's proxy.",
+      }),
+    );
+    const other = { ...deep, dnsProvider: "other" as const };
+    const plan = optionToPlan(option, { facts, requirements: other, now: NOW, codeChanges: [] });
+    expect(plan.dns).toMatchObject({ provider: "none", domain: "api.shop.example.com" });
+  });
+});
+
 describe("optionToPlan", () => {
   it("writes a valid plan for a Next.js + Postgres app behind Cloudflare", async () => {
     const facts = nextPostgresFacts();

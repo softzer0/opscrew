@@ -1,6 +1,11 @@
 import { OpsCrewError } from "@opscrew/core";
 import { PORTAINER_PORT } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema, type PortainerSettings } from "@opscrew/plan-schema";
+import {
+  cloudflareEdgeCoverage,
+  type DeployPlan,
+  DeployPlanSchema,
+  type PortainerSettings,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 
 /**
@@ -66,6 +71,9 @@ export function portainerSettings(
       },
     );
   }
+  const hostname =
+    subdomain.includes(".") || zone === undefined ? subdomain : `${subdomain}.${zone}`;
+  if (zone !== undefined) refuseDeepHostname(hostname, zone);
   if (emails.length === 0) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -81,8 +89,6 @@ export function portainerSettings(
       { hint: "Give each address as name@example.com with `--allow-email`." },
     );
   }
-  const hostname =
-    subdomain.includes(".") || zone === undefined ? subdomain : `${subdomain}.${zone}`;
   return {
     enabled: true,
     version: PORTAINER_VERSION,
@@ -90,6 +96,18 @@ export function portainerSettings(
     hostname,
     allowedEmails: emails,
   };
+}
+
+/**
+ * Refuses a Portainer hostname more than one level below the zone: Cloudflare's free edge
+ * certificate covers only `<zone>` and `*.<zone>`, so HTTPS would fail there.
+ */
+function refuseDeepHostname(hostname: string, zone: string): void {
+  const deep = cloudflareEdgeCoverage(hostname, zone);
+  if (deep === undefined) return;
+  throw new OpsCrewError("INVALID_INPUT", `${deep.reason}. Nothing was changed.`, {
+    hint: `Use a name one level below ${zone}, for example \`--subdomain ${deep.suggestion}\`.`,
+  });
 }
 
 /**
@@ -102,6 +120,9 @@ export function withPortainer(
   portainer: PortainerSettings | undefined,
 ): DeployPlan {
   const { portainer: _old, ...rest } = plan;
+  if (portainer?.hostname !== undefined && plan.dns.zone !== undefined) {
+    refuseDeepHostname(portainer.hostname, plan.dns.zone);
+  }
   const parsed = DeployPlanSchema.safeParse(
     portainer === undefined ? rest : { ...rest, portainer },
   );

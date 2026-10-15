@@ -254,6 +254,49 @@ describe("answersToOwnServer", () => {
   });
 });
 
+describe("a domain Cloudflare serves for a server the user already has", () => {
+  const base = { host: IPV4, user: "root", key: "agent" };
+  const deep = { cloudflareDomain: true, domain: "api.shop.example.com" };
+  const reason =
+    "domain: Cloudflare's free certificate covers only example.com and *.example.com, so api.shop.example.com would fail HTTPS at Cloudflare's edge; use a name one level below example.com, such as api-shop.example.com, or ";
+
+  it("refuses it two levels below the zone through the tunnel or behind the proxy", () => {
+    expect(() => answersToOwnServer(split({ ...base, serve: "tunnel" }), deep)).toThrow(
+      `${reason}if the internet can reach your server, serve it with DNS only (server.reachable yes, server.serve dns-only).`,
+    );
+    expect(() =>
+      answersToOwnServer(split({ ...base, reachable: "no", serve: "proxy" }), deep),
+    ).toThrow(`${reason}if the internet can reach your server`);
+    expect(() =>
+      answersToOwnServer(split({ ...base, reachable: "yes", serve: "proxy" }), deep),
+    ).toThrow(`${reason}serve it with DNS only (server.serve dns-only).`);
+  });
+
+  it("allows it with DNS only, one level below the zone, or off Cloudflare", () => {
+    expect(
+      answersToOwnServer(split({ ...base, reachable: "yes", serve: "dns-only" }), deep).serve,
+    ).toBe("dns-only");
+    for (const domain of ["shop.example.com", "example.com"]) {
+      expect(
+        answersToOwnServer(split({ ...base, serve: "tunnel" }), { cloudflareDomain: true, domain })
+          .serve,
+      ).toBe("tunnel");
+    }
+    expect(
+      answersToOwnServer(split(base), { cloudflareDomain: false, domain: deep.domain }).serve,
+    ).toBe("dns-only");
+  });
+
+  it("is not refused in the requirements, where the serving answer is not known", () => {
+    expect(
+      answersToRequirements(
+        { ...BASE, provider: "own", dataCriticality: "none", domain: deep.domain },
+        { now },
+      ).domain,
+    ).toBe(deep.domain);
+  });
+});
+
 describe("requirements for a server the user already has", () => {
   it("records only provider: own, with no region needed", () => {
     const requirements = answersToRequirements(

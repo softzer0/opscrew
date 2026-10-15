@@ -2,6 +2,7 @@ import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
 import type { Question } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { type OwnServerConnection, readOwnServer, recordOwnServer } from "../shared";
+import { deepDomainProblem } from "./answers";
 import type { InterviewAnswers } from "./questions";
 
 /** The follow-up answers for a server the user already has (`server.<field>` in answers files). */
@@ -177,6 +178,11 @@ export interface OwnServerContext {
    * only as the way to serve the site; `undefined` offers every choice and design decides.
    */
   cloudflareDomain?: boolean;
+  /**
+   * The app's domain (from the requirements answers). Served through the tunnel or Cloudflare's
+   * proxy it must be at most one level below its zone (Cloudflare's free certificate).
+   */
+  domain?: string;
 }
 
 /** The serving answer when none is given: the earlier one, else the tunnel (DNS only without Cloudflare). */
@@ -407,6 +413,22 @@ export function answersToOwnServer(
     problems.push(
       "server.serve: proxy needs your server's public IPv4 address (behind Cloudflare's proxy OpsCrew publishes the site on IPv4 only); give the IPv4 address as server.host, or answer tunnel",
     );
+  }
+
+  // Through the tunnel or behind the proxy Cloudflare serves the domain with its own certificate.
+  const unreachable =
+    host !== undefined && (reachable ?? reachableDefault(context, host)) === false;
+  if (context.domain !== undefined && context.cloudflareDomain !== false) {
+    const deep =
+      unreachable || serve === "tunnel"
+        ? deepDomainProblem(
+            context.domain,
+            "if the internet can reach your server, serve it with DNS only (server.reachable yes, server.serve dns-only)",
+          )
+        : serve === "proxy"
+          ? deepDomainProblem(context.domain, "serve it with DNS only (server.serve dns-only)")
+          : undefined;
+    if (deep !== undefined) problems.push(`domain: ${deep.reason}; ${deep.next}`);
   }
 
   if (problems.length > 0 || host === undefined || user === undefined) {

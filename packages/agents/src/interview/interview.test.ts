@@ -339,6 +339,35 @@ describe("answersToRequirements", () => {
     expect(dropped.keepExternalServices).toEqual([]);
   });
 
+  it("refuses a Cloudflare domain two levels below its zone for a cloud server", () => {
+    const answers = { ...BASE_ANSWERS, dataCriticality: "none" };
+    expect(() =>
+      answersToRequirements(
+        { ...answers, domain: "api.shop.example.com", dnsProvider: "cloudflare" },
+        { now, facts: facts() },
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "INVALID_INPUT",
+        message:
+          "Some answers are not valid: domain: Cloudflare's free certificate covers only example.com and *.example.com, so api.shop.example.com would fail HTTPS at Cloudflare's edge; use a name one level below example.com, such as api-shop.example.com, or answer other for dnsProvider to manage its DNS yourself, without Cloudflare's proxy.",
+      }),
+    );
+    // One level below, the zone itself, a two-part suffix and DNS outside Cloudflare are fine.
+    for (const domain of ["shop.example.com", "example.com", "shop.example.co.uk"]) {
+      expect(
+        answersToRequirements({ ...answers, domain }, { now, facts: facts() }).domain,
+        domain,
+      ).toBe(domain);
+    }
+    expect(
+      answersToRequirements(
+        { ...answers, domain: "api.shop.example.com", dnsProvider: "other" },
+        { now, facts: facts() },
+      ).dnsProvider,
+    ).toBe("other");
+  });
+
   it("lists missing required answers", () => {
     expect(() =>
       answersToRequirements(

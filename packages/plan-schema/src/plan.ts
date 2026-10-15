@@ -166,6 +166,125 @@ function checkPortainerSubdomain(
   }
 }
 
+/**
+ * Why a name Cloudflare's proxy serves would fail HTTPS at Cloudflare's edge, with a name that
+ * would work. Cloudflare's free (Universal SSL) certificate covers only the zone and its
+ * first-level subdomains (`<zone>` and `*.<zone>`), not deeper names such as
+ * `portainer.shop.example.com`:
+ * https://developers.cloudflare.com/ssl/edge-certificates/universal-ssl/limitations/
+ * Returns `undefined` for the zone itself, a name exactly one label below it, or a name outside
+ * the zone (checked elsewhere).
+ */
+export function cloudflareEdgeCoverage(
+  name: string,
+  zone: string,
+): { reason: string; suggestion: string } | undefined {
+  if (!name.endsWith(`.${zone}`)) return undefined;
+  const labels = name.slice(0, -(zone.length + 1)).split(".");
+  if (labels.length < 2) return undefined;
+  return {
+    reason: `Cloudflare's free certificate covers only ${zone} and *.${zone}, so ${name} would fail HTTPS at Cloudflare's edge`,
+    suggestion: `${labels.join("-")}.${zone}`,
+  };
+}
+
+/** Second-level labels under a country code that are registries, not names (`co.uk`, `com.au`). */
+const COUNTRY_SECOND_LEVELS = new Set([
+  "ac",
+  "co",
+  "com",
+  "edu",
+  "gob",
+  "gov",
+  "ltd",
+  "ne",
+  "net",
+  "nom",
+  "or",
+  "org",
+  "plc",
+]);
+
+/**
+ * The Cloudflare zone a domain most likely belongs to, for checks made before Cloudflare is asked
+ * (the interview, design): the registrable domain, `example.com` for `api.shop.example.com` and
+ * `example.co.uk` for `shop.example.co.uk`. A guess without the public suffix list; once
+ * provision learns the real zone (`dns.zone`) the plan schema checks against that.
+ */
+export function likelyCloudflareZone(domain: string): string {
+  const labels = domain.split(".");
+  const tld = labels.at(-1) ?? "";
+  const second = labels.at(-2) ?? "";
+  const size = tld.length === 2 && COUNTRY_SECOND_LEVELS.has(second) ? 3 : 2;
+  return labels.slice(-size).join(".");
+}
+
+/**
+ * Every name Cloudflare's proxy serves for the app must be the zone or one label below it (see
+ * {@link cloudflareEdgeCoverage}): the domain when proxied or behind the tunnel, its `www.` alias
+ * then, and a Portainer subdomain. DNS-only names get Caddy's own certificates and are unaffected.
+ */
+function checkCloudflareEdgeNames(
+  plan: {
+    target: { provider: string; access?: string | undefined };
+    dns: {
+      provider: string;
+      domain?: string | undefined;
+      zone?: string | undefined;
+      proxied: boolean;
+      www: boolean;
+    };
+    portainer?: { access: string; hostname?: string | undefined } | undefined;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const { dns, target, portainer } = plan;
+  const zone = dns.zone;
+  if (dns.provider !== "cloudflare" || zone === undefined) return;
+  const tunnel = target.provider === "own" && target.access === "tunnel";
+  const served = dns.proxied || tunnel;
+  const domain = dns.domain;
+  if (served && domain !== undefined) {
+    const deep = cloudflareEdgeCoverage(domain, zone);
+    if (deep !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["dns", "domain"],
+        message: `must be ${zone} or one level below it: ${deep.reason}; use a name one level below ${zone}, such as ${deep.suggestion}, or ${
+          tunnel
+            ? 'if the internet can reach your server, serve it directly with DNS only instead of the tunnel (target.access "public", dns.proxied false)'
+            : "serve it without Cloudflare's proxy (dns.proxied false)"
+        }`,
+      });
+    } else if (dns.www) {
+      const www = cloudflareEdgeCoverage(`www.${domain}`, zone);
+      if (www !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["dns", "www"],
+          message: `can be true only when the domain is ${zone} itself while Cloudflare serves it: ${www.reason}; turn off the www. alias (dns.www false), or ${
+            tunnel
+              ? 'if the internet can reach your server, serve it directly with DNS only instead of the tunnel (target.access "public", dns.proxied false)'
+              : "serve the domain without Cloudflare's proxy (dns.proxied false)"
+          }`,
+        });
+      }
+    }
+  }
+  const hostname = portainer?.access === "subdomain" ? portainer.hostname : undefined;
+  // The app's own names as Portainer's hostname already have their own issue.
+  if (hostname !== undefined && hostname !== domain && hostname !== `www.${domain}`) {
+    const deep = cloudflareEdgeCoverage(hostname, zone);
+    if (deep !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["portainer", "hostname"],
+        message: `must be one level below ${zone}: ${deep.reason}; use a name one level below ${zone}, such as ${deep.suggestion}`,
+      });
+    }
+  }
+}
+
 /** True when `host` (a URL's hostname) is an IPv4 or bracketed IPv6 address, not a name. */
 function isIpHost(host: string): boolean {
   return (
@@ -382,6 +501,7 @@ const DeployPlanObjectSchema = z
       });
     }
     checkPortainerSubdomain(plan, ctx);
+    checkCloudflareEdgeNames(plan, ctx);
     if (plan.services.postgres) {
       plan.externalServices.forEach((service, i) => {
         if (POSTGRES_PROVIDERS.has(service)) {

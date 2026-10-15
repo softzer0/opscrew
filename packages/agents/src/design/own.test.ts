@@ -253,6 +253,34 @@ describe("buildDesignOptions for a server the user owns", () => {
       /access mode/,
     );
   });
+
+  it("refuses a domain Cloudflare serves two levels below its zone, unless DNS only", async () => {
+    const facts = staticSpaFacts();
+    const requirements = ownRequirements({
+      domain: "api.shop.example.com",
+      dnsProvider: "cloudflare",
+    });
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: catalogOf(BIG) });
+    if (option === undefined) throw new Error("no option");
+    const input = { facts, requirements, now: NOW, codeChanges: [] };
+    const reason =
+      "Cloudflare's free certificate covers only example.com and *.example.com, so api.shop.example.com would fail HTTPS at Cloudflare's edge. plan.yaml was not changed.";
+    expect(() => optionToPlan(option, { ...input, access: "tunnel" })).toThrow(
+      expect.objectContaining({
+        code: "INVALID_INPUT",
+        message: reason,
+        hint: "In `opscrew interview`, use a name one level below example.com, such as api-shop.example.com, or if the internet can reach your server, serve it with DNS only (server.reachable yes, server.serve dns-only).",
+      }),
+    );
+    expect(() => optionToPlan(option, { ...input, access: "public", serving: "proxy" })).toThrow(
+      expect.objectContaining({
+        message: reason,
+        hint: "In `opscrew interview`, use a name one level below example.com, such as api-shop.example.com, or serve it with DNS only (server.serve dns-only).",
+      }),
+    );
+    const direct = optionToPlan(option, { ...input, access: "public", serving: "dns-only" });
+    expect(direct.dns).toMatchObject({ domain: "api.shop.example.com", proxied: false });
+  });
 });
 
 async function setup(requirements: Requirements): Promise<TestPhaseDeps> {

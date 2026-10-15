@@ -1,3 +1,4 @@
+import { OpsCrewError } from "@opscrew/core";
 import { containerPort, detectStack, releaseCommandInImage } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -6,6 +7,7 @@ import {
   type ProjectFacts,
   type Requirements,
 } from "@opscrew/plan-schema";
+import { deepDomainProblem } from "../interview/answers";
 import { providerProfile } from "../providers";
 import { hostListKind, serviceUrlKind } from "../shared";
 import {
@@ -140,6 +142,13 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   // A server the user owns serves directly behind Cloudflare's proxy only with OpsCrew's web
   // filter (the explicit `proxy` choice); otherwise a public server is DNS only.
   const ownDirect = option.target.provider === "own" && input.access === "public";
+  if (
+    requirements.dnsProvider === "cloudflare" &&
+    requirements.domain !== undefined &&
+    (!ownDirect || input.serving === "proxy")
+  ) {
+    refuseDeepDomain(requirements.domain, option.target.provider === "own", input.access);
+  }
   const dns: Record<string, unknown> =
     requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined
       ? {
@@ -184,6 +193,24 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       registry: "ghcr",
       branch: facts.git.defaultBranch ?? facts.git.currentBranch ?? "main",
     },
+  });
+}
+
+/**
+ * Stops design, before plan.yaml is written, when Cloudflare would serve the domain (proxied or
+ * through the tunnel) more than one level below its likely zone, where Cloudflare's free
+ * certificate does not reach. Provision checks the real zone again through the plan schema.
+ */
+function refuseDeepDomain(domain: string, own: boolean, access: OwnServerAccess | undefined): void {
+  const otherwise = !own
+    ? "answer other for dnsProvider to manage its DNS yourself, without Cloudflare's proxy"
+    : access === "tunnel"
+      ? "if the internet can reach your server, serve it with DNS only (server.reachable yes, server.serve dns-only)"
+      : "serve it with DNS only (server.serve dns-only)";
+  const problem = deepDomainProblem(domain, otherwise);
+  if (problem === undefined) return;
+  throw new OpsCrewError("INVALID_INPUT", `${problem.reason}. plan.yaml was not changed.`, {
+    hint: `In \`opscrew interview\`, ${problem.next}.`,
   });
 }
 
