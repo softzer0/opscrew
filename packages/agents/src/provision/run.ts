@@ -392,6 +392,7 @@ async function provisionFlow(
     await ownEngineEnv(deps, ownRun, engineEnv, () =>
       infrastructureOutputs(deps, plan, { engine: async () => engine, engineEnv }),
     );
+    // The port the deploy reaches: the login's in public mode, sshd's own in tunnel mode.
     ownRender = { sshPort: ownRun.sshPort };
     // Switching between public and tunnel mode: the old records go first, in an apply of their own.
     // Only a saved removal plan is applied as the removal (never the new setup's plan). When it

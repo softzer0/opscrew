@@ -59,7 +59,11 @@ export interface OwnServerRun {
    * ranges as read at the start of this run, for the host plan's web filter.
    */
   webSources?: OwnWebSources;
-  /** The port sshd listens on, on the server: the tunnel's SSH route (`ssh://localhost:<port>`). */
+  /**
+   * The SSH port the deploy reaches: in public mode the login's port (GitHub Actions connects to
+   * the public address as the user does, through any router forwarding it); in tunnel mode the
+   * port sshd listens on, on the server (the tunnel's SSH route, `ssh://localhost:<port>`).
+   */
   sshPort: number;
   host: HostAdapterApi;
   /** Opens new SSH connections as the deploy user and the admin login (see `ownServerLoginCheck`). */
@@ -372,7 +376,12 @@ export async function prepareOwnServer(
     session,
     facts,
     target,
-    sshPort: serverSshPort(facts, session.connection.port),
+    // Public mode: the login's port, which differs from sshd's when a router forwards it (2222 to
+    // 22). Only the tunnel's SSH route, on the server itself, needs sshd's own port.
+    sshPort:
+      target.access === "tunnel"
+        ? serverSshPort(facts, session.connection.port)
+        : session.connection.port,
     ...(webSources !== undefined ? { webSources } : {}),
     host,
     verifyLogin:
@@ -843,8 +852,8 @@ export function ownDeployTarget(
     };
   }
   const address = run.address as ServerAddress;
-  // The deploy workflow connects to sshd's port (`RenderContext.sshPort`, `-o Port=<port>` when it
-  // is not 22), so ssh looks the key up as `[ip]:port` there.
+  // The deploy workflow connects to the login's port (`run.sshPort`, `-o Port=<port>` when it is
+  // not 22), so ssh looks the key up as `[ip]:port` there.
   const name = knownHostsName(address.ipv4, run.sshPort);
   return { host: address.ipv4, knownHosts: `${name} ${key.type} ${key.key}\n` };
 }

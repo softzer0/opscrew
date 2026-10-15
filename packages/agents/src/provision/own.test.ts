@@ -220,6 +220,21 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(ufw?.params.sshPorts).toBe("2222");
   });
 
+  it("public mode behind a router forwarding 2222 to sshd's 22: the deploy uses the login port", async () => {
+    const s = await setup({
+      own: { host: OWN_IPV4, port: 2222, user: "root", agent: true, reachable: true },
+      facts: freshFacts({ sshPorts: [22] }),
+    });
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+    // GitHub Actions reaches the public address as the user does: on the forwarded port.
+    const workflow = await readFile(join(s.root, ".github/workflows/opscrew-deploy.yml"), "utf8");
+    expect(workflow).toContain("-o Port=2222");
+    expect(s.github.secrets.get("OPSCREW_HOST")).toBe(OWN_IPV4);
+    expect(s.github.secrets.get("OPSCREW_SSH_KNOWN_HOSTS")).toBe(
+      `[${OWN_IPV4}]:2222 ssh-ed25519 ${ED25519}\n`,
+    );
+  });
+
   it("re-running on a prepared server shows no changes and changes nothing", async () => {
     const s = await setup();
     await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
