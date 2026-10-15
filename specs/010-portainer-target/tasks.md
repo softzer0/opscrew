@@ -50,7 +50,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
 
 ## Phase 3: Flows
 
-- [ ] T1005 [US1] [US2] [US3] [US4] Provision for a Portainer target in `packages/agents/src/provision/`
+- [X] T1005 [US1] [US2] [US3] [US4] Provision for a Portainer target in `packages/agents/src/provision/`
   - Owns: `packages/agents/src/provision/portainer.ts` (new), `packages/agents/src/provision/{run,types}.ts` (the Portainer branch), `packages/agents/src/provision/secrets.ts` (Portainer deploy secrets), `packages/agents/src/shared/server-address.ts` (the Portainer record schema only), `packages/agents/src/interview/portainer.ts` (the fingerprint normaliser switch only), the Portainer branches of `packages/agents/src/provision/{plan-apply,publish,credentials}.ts`, `packages/agents/src/shared/app-env.ts` (exact values for a stack's Env; existing output byte-identical), `packages/secops/src/policies/plan.ts` (a Portainer root is evaluated like any tunnel/Access root, no refusal) and `packages/connectors/github/src/**` (one typed call that creates an orphan branch holding one file through GitHub's Git Data API, only when the branch is absent) (+ tests, fixtures)
   - Reads: plan.md "5. Provision"; research.md R4, R5, R8, R11; 009's own-server provision (`provision/own.ts`, `run.ts` steps, `connectorFirst`, `planAndApply` hooks); contracts/portainer-adapter.md; the T1003 renderers
   - Depends: T1002, T1003, T1004 (T1010 for the token-replacement wiring only)

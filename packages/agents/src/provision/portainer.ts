@@ -49,6 +49,7 @@ import {
   type DeployPlan,
   DeployPlanSchema,
   type PortainerDeployTarget,
+  type PortainerWeb,
   type Requirements,
   writeArtifact,
 } from "@opscrew/plan-schema";
@@ -781,7 +782,12 @@ export async function provisionPortainer(
     const work = stackPlan.changes.filter((change) => change.state === "change");
     if (work.length === 0) {
       deps.reporter.success("Your Portainer is already set up as planned; nothing in it changes.");
-      if (!planOnly) connection = await recordConnection(deps, connection, { publicImage });
+      if (!planOnly) {
+        connection = await recordConnection(deps, connection, {
+          publicImage,
+          ...(hasAppStack(connection.created) ? { appliedWeb: target.web } : {}),
+        });
+      }
       return { plan: stackPlan, hash, applied: false };
     }
     if (planOnly) {
@@ -854,6 +860,7 @@ export async function provisionPortainer(
     connection = await recordConnection(deps, connection, {
       created: result.record,
       publicImage,
+      ...(hasAppStack(result.record) ? { appliedWeb: target.web } : {}),
     });
     for (const id of result.applied) {
       const change = stackPlan.changes.find((item) => item.id === id);
@@ -1119,20 +1126,22 @@ export const ROUTE_CHANGE_NOTE =
   "Visitors cannot reach the site on its new route until you merge the deploy pull request (the deploy workflow then writes the new stack file to the opscrew-deploy branch, which Portainer deploys) and your DNS or reverse proxy points at the new route.";
 
 /**
- * True when the app already runs in Portainer (its recorded stack is there) and this plan serves
- * it another way: the stack has the app tunnel's token and the plan no tunnel, or the other way
- * round, or (administrators see the published ports) the stack does not publish Caddy's ports 80
- * and 443 or the proxy's port the plan names.
+ * True when the app's stack already exists (OpsCrew's record lists it) and this plan serves it
+ * another way than it was last set up: by the recorded route (`appliedWeb`: the web mode, and the
+ * port for `proxy`), else, for a record from before it was kept, by what Portainer shows (the
+ * stack has the app tunnel's token and the plan no tunnel, or the other way round; for
+ * administrators, who see the published ports, Caddy's 80 and 443 or the proxy's port missing).
  */
-function switchesWebRoute(
+export function switchesWebRoute(
   facts: PortainerFacts,
   target: PortainerDeployTarget,
   app: string,
   connection: PortainerConnection,
 ): boolean {
   const recorded = connection.created.stacks.find((stack) => stack.role === "app");
-  const stack =
-    recorded === undefined ? undefined : facts.stacks.find((item) => item.id === recorded.id);
+  if (recorded === undefined) return false;
+  if (connection.appliedWeb !== undefined) return !sameWeb(connection.appliedWeb, target.web);
+  const stack = facts.stacks.find((item) => item.id === recorded.id);
   if (stack === undefined) return false;
   const wasTunnel = stack.envKeys.includes(PORTAINER_STACK_VARIABLES.tunnelToken);
   const isTunnel = target.web.mode === "tunnel";
@@ -1148,6 +1157,17 @@ function switchesWebRoute(
   return target.web.mode === "caddy"
     ? !(ports.has(80) && ports.has(443))
     : !ports.has(target.web.port);
+}
+
+/** The same web route: the same mode, and for `proxy` the same port. */
+function sameWeb(a: PortainerWeb, b: PortainerWeb): boolean {
+  if (a.mode !== b.mode) return false;
+  return a.mode !== "proxy" || (b.mode === "proxy" && a.port === b.port);
+}
+
+/** True when the record lists the app's stack. */
+function hasAppStack(created: Pick<CreatedRecord, "stacks">): boolean {
+  return created.stacks.some((stack) => stack.role === "app");
 }
 
 /** What is done when the deploy secrets cannot be stored: the stacks are already set up. */
@@ -1215,15 +1235,16 @@ function requireReplaceable(
 }
 
 /**
- * Records in `server.json` → `portainer` what OpsCrew created in Portainer (`created`) and the
- * image's visibility the stacks were set up with (`publicImage`); unchanged fields stay.
+ * Records in `server.json` → `portainer` what OpsCrew created in Portainer (`created`), the
+ * image's visibility the stacks were set up with (`publicImage`) and the web route of the app's
+ * stack (`appliedWeb`); unchanged fields stay.
  */
 async function recordConnection(
   deps: Pick<PhaseDeps, "paths">,
   connection: PortainerConnection,
-  update: { created?: CreatedRecord; publicImage?: boolean },
+  update: { created?: CreatedRecord; publicImage?: boolean; appliedWeb?: PortainerWeb },
 ): Promise<PortainerConnection> {
-  const { created, publicImage } = update;
+  const { created, publicImage, appliedWeb } = update;
   const next: PortainerConnection = {
     ...connection,
     ...(created !== undefined
@@ -1236,9 +1257,13 @@ async function recordConnection(
         }
       : {}),
     ...(publicImage !== undefined ? { publicImage } : {}),
+    ...(appliedWeb !== undefined ? { appliedWeb: { ...appliedWeb } } : {}),
   };
   const same =
-    created === undefined && (publicImage === undefined || connection.publicImage === publicImage);
+    created === undefined &&
+    (publicImage === undefined || connection.publicImage === publicImage) &&
+    (appliedWeb === undefined ||
+      (connection.appliedWeb !== undefined && sameWeb(connection.appliedWeb, appliedWeb)));
   if (!same) await recordPortainerConnection(deps.paths, next);
   return next;
 }

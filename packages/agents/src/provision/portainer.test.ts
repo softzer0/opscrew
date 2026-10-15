@@ -4,15 +4,23 @@ import {
   PortainerCertificateError,
   type PortainerClientDeps,
   type PortainerEndpoint,
+  type PortainerFacts,
   portainerClient,
 } from "@opscrew/connector-portainer";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  type PortainerDeployTarget,
+  type PortainerWeb,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
 import {
+  type PortainerConnection,
   type PortainerConnectionInput,
   readPortainerConnection,
   recordPortainerConnection,
@@ -47,6 +55,7 @@ import {
   REPOSITORY_TOKEN_VAR,
   ROUTE_CHANGE_NOTE,
   stackPlanFile,
+  switchesWebRoute,
 } from "./portainer";
 import { runProvision } from "./run";
 import type { ProvisionOptions, ProvisionServices } from "./types";
@@ -939,5 +948,111 @@ describe.skipIf(!findExecutable("git"))(
       );
       expect(s.deps.reporter.text()).not.toContain(ROUTE_CHANGE_NOTE);
     });
+
+    it("records the web route the app's stack was set up with", async () => {
+      const s = await setup({ plan: proxyPlan() });
+      await s.run();
+      expect((await readPortainerConnection(s.deps.paths))?.appliedWeb).toEqual({
+        mode: "proxy",
+        port: 8080,
+      });
+    });
+
+    it("a switch that must create the app's stack again creates the deploy branch before the stack change that goes first", async () => {
+      const s = await switched();
+      // The user removed the app's stack in Portainer and the deploy branch on GitHub meanwhile.
+      const index = s.fake.stacks.findIndex((stack) => stack.Name === "opscrew-shop");
+      s.fake.stacks.splice(index, 1);
+      await s.git(s.bare, "update-ref", "-d", "refs/heads/opscrew-deploy");
+
+      await s.run();
+      const order = s.handler.requests.map((request) =>
+        request.kind === "git-push" && request.title.includes("opscrew-deploy")
+          ? "deploy-branch"
+          : request.kind,
+      );
+      expect(order.indexOf("iac-apply")).toBeLessThan(order.indexOf("deploy-branch"));
+      expect(order.indexOf("deploy-branch")).toBeLessThan(order.indexOf("stack-apply"));
+      expect(order.filter((kind) => kind === "deploy-branch")).toHaveLength(1);
+      expect(s.github.branches).toHaveLength(2);
+      expect(s.fake.stacks.map((stack) => stack.Name).sort()).toEqual([
+        "opscrew-shop",
+        "opscrew-shop-updater",
+      ]);
+    });
   },
 );
+
+describe("switchesWebRoute", () => {
+  const app = "shop";
+  const target = (web: PortainerWeb): PortainerDeployTarget => ({
+    provider: "portainer",
+    mode: "portainer-stack",
+    environmentId: 3,
+    arch: "amd64",
+    redeploy: "updater",
+    web,
+  });
+  const facts = (
+    envKeys: string[],
+    publishedPorts?: { port: number; project?: string }[],
+  ): PortainerFacts => ({
+    version: "2.45.2",
+    environments: [],
+    stacks: [{ id: 12, name: "opscrew-shop", deploymentStatus: [], envKeys }],
+    findings: [],
+    ...(publishedPorts !== undefined ? { publishedPorts } : {}),
+  });
+  const connection = (appliedWeb?: PortainerWeb): PortainerConnection => ({
+    url: "https://nas.example:9443",
+    environmentId: 3,
+    environmentName: "local",
+    ...(appliedWeb !== undefined ? { appliedWeb } : {}),
+    created: { stacks: [{ id: 12, name: "opscrew-shop", role: "app" }], volumes: [] },
+  });
+  const proxy = (port: number): PortainerWeb => ({ mode: "proxy", port });
+
+  it("compares the recorded route with the plan's: proxy:8080 → caddy is a switch", () => {
+    expect(
+      switchesWebRoute(facts([]), target({ mode: "caddy" }), app, connection(proxy(8080))),
+    ).toBe(true);
+  });
+
+  it("the same proxy port is no switch, another port is", () => {
+    expect(switchesWebRoute(facts([]), target(proxy(8080)), app, connection(proxy(8080)))).toBe(
+      false,
+    );
+    expect(switchesWebRoute(facts([]), target(proxy(9090)), app, connection(proxy(8080)))).toBe(
+      true,
+    );
+  });
+
+  it("notices a proxy ↔ caddy switch with a limited token (no published ports) through the record", () => {
+    // A limited token sees no published ports: only the record tells the route changed.
+    const limited = facts([]);
+    expect(switchesWebRoute(limited, target({ mode: "caddy" }), app, connection())).toBe(false);
+    expect(switchesWebRoute(limited, target({ mode: "caddy" }), app, connection(proxy(8080)))).toBe(
+      true,
+    );
+    expect(switchesWebRoute(limited, target(proxy(8080)), app, connection({ mode: "caddy" }))).toBe(
+      true,
+    );
+  });
+
+  it("falls back to what Portainer shows when nothing is recorded", () => {
+    const tunnel = facts(["DATABASE_URL", "OPSCREW_TUNNEL_TOKEN"]);
+    expect(switchesWebRoute(tunnel, target(proxy(8080)), app, connection())).toBe(true);
+    expect(switchesWebRoute(tunnel, target({ mode: "tunnel" }), app, connection())).toBe(false);
+    const ports = facts([], [{ port: 8080, project: "opscrew-shop" }]);
+    expect(switchesWebRoute(ports, target({ mode: "caddy" }), app, connection())).toBe(true);
+    expect(switchesWebRoute(ports, target(proxy(8080)), app, connection())).toBe(false);
+  });
+
+  it("no stack recorded: a first setup, never a switch", () => {
+    const none: PortainerConnection = {
+      ...connection(proxy(8080)),
+      created: { stacks: [], volumes: [] },
+    };
+    expect(switchesWebRoute(facts([]), target({ mode: "caddy" }), app, none)).toBe(false);
+  });
+});

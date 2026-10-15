@@ -167,6 +167,12 @@ const PortainerConnectionSchema = z
      * used until the user says otherwise.
      */
     publicImage: z.boolean().optional(),
+    /**
+     * How visitors reached the app (web mode, and the port for `proxy`) when OpsCrew last set up
+     * its stacks, recorded after a successful stack step; the next run compares it with the plan's
+     * to say when the route changes.
+     */
+    appliedWeb: PortainerWebSchema.optional(),
     /** Everything OpsCrew created in Portainer, so destroy removes exactly that. */
     created: z
       .strictObject({
