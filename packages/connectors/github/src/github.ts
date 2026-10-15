@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
@@ -62,6 +63,46 @@ const RunSchema = z.looseObject({
 });
 const RunsSchema = z.looseObject({ workflow_runs: z.array(RunSchema) });
 const ShaSchema = z.looseObject({ sha: z.string().regex(/^[0-9a-f]{40,64}$/) });
+const RefSchema = z.looseObject({ object: ShaSchema });
+const CommitSchema = z.looseObject({ tree: ShaSchema, parents: z.array(ShaSchema) });
+const TreeSchema = z.looseObject({
+  tree: z.array(
+    z.looseObject({ path: z.string(), mode: z.string(), type: z.string(), sha: z.string() }),
+  ),
+  truncated: z.boolean().optional(),
+});
+
+/** The git blob SHA-1 of a file's text, as GitHub names it in a tree. */
+function gitBlobSha(content: string): string {
+  const body = Buffer.from(content, "utf8");
+  return createHash("sha1")
+    .update(Buffer.concat([Buffer.from(`blob ${body.length}\0`, "utf8"), body]))
+    .digest("hex");
+}
+
+/**
+ * GitHub refused a change to a branch that still exists (HTTP 422): its own words, and what to do.
+ * A branch protection rule or a ruleset on the branch is the usual cause.
+ */
+function refusedRef(
+  json: unknown,
+  what: string,
+  branch: string,
+  owner: string,
+  repo: string,
+): OpsCrewError {
+  const said =
+    typeof json === "object" && json !== null && "message" in json
+      ? String((json as { message: unknown }).message)
+      : "HTTP 422";
+  return new OpsCrewError(
+    "PROVIDER_ERROR",
+    `GitHub refused to ${what} in ${owner}/${repo}: ${said}.`,
+    {
+      hint: `A branch protection rule or a ruleset may cover ${branch}: allow OpsCrew to force-update and delete ${branch} (Settings → Branches or Rules of ${owner}/${repo}), or delete ${branch} yourself, then run the command again.`,
+    },
+  );
+}
 
 /** An owner or repository name as GitHub allows it (no `/`, never `.` or `..`). */
 const REPO_PART = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
@@ -70,7 +111,7 @@ const BRANCH_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)[A-Za-z0-9._/-]{1,20
 /** One file at the root of the tree. */
 const ROOT_FILE = /^(?!\.\.?$)[A-Za-z0-9._-]{1,200}$/;
 
-/** Input of {@link GitHubClient.createOrphanBranch}. */
+/** Input of {@link GitHubClient.createOrphanBranch} and {@link GitHubClient.replaceOrphanBranch}. */
 export interface OrphanBranchInput {
   owner: string;
   repo: string;
@@ -223,6 +264,63 @@ export class GitHubClient {
     };
   }
 
+  /** Refuses input that is not a repository, a branch, one root file and a message. */
+  #checkOrphanInput(input: OrphanBranchInput): void {
+    if (
+      !REPO_PART.test(input.owner) ||
+      !REPO_PART.test(input.repo) ||
+      !BRANCH_NAME.test(input.branch) ||
+      !ROOT_FILE.test(input.path) ||
+      typeof input.content !== "string" ||
+      typeof input.message !== "string" ||
+      input.message.trim() === ""
+    ) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "A branch with one file needs a repository, a branch name, one file name at the root and a commit message.",
+      );
+    }
+  }
+
+  /** The branch's ref path below `/repos/{owner}/{repo}/git/` (each segment encoded). */
+  static #refPath(prefix: "ref" | "refs", branch: string): string {
+    return `${prefix}/heads/${branch.split("/").map(encodeURIComponent).join("/")}`;
+  }
+
+  /** The commit the branch points to, or `undefined` when GitHub has no such branch. */
+  async #branchHead(owner: string, repo: string, branch: string): Promise<string | undefined> {
+    const what = `check whether the branch ${branch} exists`;
+    const ref = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/git/${GitHubClient.#refPath("ref", branch)}`,
+      what,
+      undefined,
+      [404],
+    );
+    if (ref.status === 404) return undefined;
+    return this.#parse(RefSchema, ref.json, what).object.sha;
+  }
+
+  /** A new commit without parents whose tree holds only the input's one file. */
+  async #orphanCommit(input: OrphanBranchInput, what: string): Promise<string> {
+    const base = `/repos/${input.owner}/${input.repo}/git`;
+    const blob = await this.#request("POST", `${base}/blobs`, what, {
+      content: input.content,
+      encoding: "utf-8",
+    });
+    const blobSha = this.#parse(ShaSchema, blob.json, what).sha;
+    const tree = await this.#request("POST", `${base}/trees`, what, {
+      tree: [{ path: input.path, mode: "100644", type: "blob", sha: blobSha }],
+    });
+    const treeSha = this.#parse(ShaSchema, tree.json, what).sha;
+    const commit = await this.#request("POST", `${base}/commits`, what, {
+      message: input.message,
+      tree: treeSha,
+      parents: [],
+    });
+    return this.#parse(ShaSchema, commit.json, what).sha;
+  }
+
   /**
    * Creates `branch` holding only one file and no history (an orphan branch) through GitHub's Git
    * Data API: a blob, a tree with only that file, a commit without parents, then the branch's ref.
@@ -231,62 +329,143 @@ export class GitHubClient {
    * write on the repository.
    */
   async createOrphanBranch(input: OrphanBranchInput): Promise<{ commit: string }> {
-    const { owner, repo, branch, path } = input;
-    if (
-      !REPO_PART.test(owner) ||
-      !REPO_PART.test(repo) ||
-      !BRANCH_NAME.test(branch) ||
-      !ROOT_FILE.test(path) ||
-      typeof input.content !== "string" ||
-      typeof input.message !== "string" ||
-      input.message.trim() === ""
-    ) {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        "A new branch needs a repository, a branch name, one file name at the root and a commit message.",
-      );
-    }
-    const base = `/repos/${owner}/${repo}/git`;
+    this.#checkOrphanInput(input);
+    const { owner, repo, branch } = input;
     const exists = () =>
       new OpsCrewError(
         "PHASE_PRECONDITION",
         `The branch ${branch} already exists in ${owner}/${repo}, so OpsCrew did not create it again.`,
         { hint: `OpsCrew creates ${branch} only when it is missing; it never overwrites it.` },
       );
-    const ref = await this.#request(
-      "GET",
-      `${base}/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,
-      `check whether the branch ${branch} exists`,
-      undefined,
-      [404],
-    );
-    if (ref.status !== 404) throw exists();
-
+    if ((await this.#branchHead(owner, repo, branch)) !== undefined) throw exists();
     const what = `create the branch ${branch}`;
-    const blob = await this.#request("POST", `${base}/blobs`, what, {
-      content: input.content,
-      encoding: "utf-8",
-    });
-    const blobSha = this.#parse(ShaSchema, blob.json, what).sha;
-    const tree = await this.#request("POST", `${base}/trees`, what, {
-      tree: [{ path, mode: "100644", type: "blob", sha: blobSha }],
-    });
-    const treeSha = this.#parse(ShaSchema, tree.json, what).sha;
-    const commit = await this.#request("POST", `${base}/commits`, what, {
-      message: input.message,
-      tree: treeSha,
-      parents: [],
-    });
-    const commitSha = this.#parse(ShaSchema, commit.json, what).sha;
+    const commit = await this.#orphanCommit(input, what);
     const created = await this.#request(
       "POST",
-      `${base}/refs`,
+      `/repos/${owner}/${repo}/git/refs`,
       what,
-      { ref: `refs/heads/${branch}`, sha: commitSha },
+      { ref: `refs/heads/${branch}`, sha: commit },
       [422],
     );
-    if (created.status === 422) throw exists();
-    return { commit: commitSha };
+    if (created.status === 422) {
+      // Someone created it meanwhile, or GitHub refused to (a ruleset may forbid it).
+      if ((await this.#branchHead(owner, repo, branch)) !== undefined) throw exists();
+      throw refusedRef(created.json, `create the branch ${branch}`, branch, owner, repo);
+    }
+    return { commit };
+  }
+
+  /**
+   * Points the existing `branch` at a new commit without parents that holds only one file (its
+   * earlier history is no longer on the branch), through GitHub's Git Data API: a blob, a tree, a
+   * commit, then a forced update of the branch's ref. Refuses with `PHASE_PRECONDITION` when the
+   * branch does not exist (use {@link createOrphanBranch}). Returns the new commit and the one the
+   * branch pointed to before. Needs Contents: Read and write on the repository.
+   */
+  async replaceOrphanBranch(
+    input: OrphanBranchInput,
+  ): Promise<{ commit: string; previous: string }> {
+    this.#checkOrphanInput(input);
+    const { owner, repo, branch } = input;
+    const missing = () =>
+      new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `The branch ${branch} does not exist in ${owner}/${repo}, so OpsCrew has nothing to replace.`,
+        { hint: `Create ${branch} instead; OpsCrew replaces only a branch that exists.` },
+      );
+    const previous = await this.#branchHead(owner, repo, branch);
+    if (previous === undefined) throw missing();
+    const what = `replace the branch ${branch}`;
+    const commit = await this.#orphanCommit(input, what);
+    const updated = await this.#request(
+      "PATCH",
+      `/repos/${owner}/${repo}/git/${GitHubClient.#refPath("refs", branch)}`,
+      what,
+      { sha: commit, force: true },
+      [422],
+    );
+    if (updated.status === 422) {
+      // Gone meanwhile, or still there and GitHub refused the forced update.
+      if ((await this.#branchHead(owner, repo, branch)) === undefined) throw missing();
+      throw refusedRef(updated.json, `force-update the branch ${branch}`, branch, owner, repo);
+    }
+    return { commit, previous };
+  }
+
+  /**
+   * Deletes `branch` (its ref) from the repository. `"absent"` when GitHub has no such branch, also
+   * when it goes between the check and the delete. Needs Contents: Read and write.
+   */
+  async deleteBranch(owner: string, repo: string, branch: string): Promise<"deleted" | "absent"> {
+    if (!REPO_PART.test(owner) || !REPO_PART.test(repo) || !BRANCH_NAME.test(branch)) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "Deleting a branch needs a repository and a branch name.",
+      );
+    }
+    if ((await this.#branchHead(owner, repo, branch)) === undefined) return "absent";
+    const deleted = await this.#request(
+      "DELETE",
+      `/repos/${owner}/${repo}/git/${GitHubClient.#refPath("refs", branch)}`,
+      `delete the branch ${branch}`,
+      undefined,
+      [422],
+    );
+    if (deleted.status !== 422) return "deleted";
+    // Gone meanwhile, or still there and GitHub refused to delete it.
+    if ((await this.#branchHead(owner, repo, branch)) === undefined) return "absent";
+    throw refusedRef(deleted.json, `delete the branch ${branch}`, branch, owner, repo);
+  }
+
+  /**
+   * True when `branch` holds exactly one commit without parents whose tree is only the file `path`
+   * with `content` (a regular file, compared by its git blob SHA): the branch already is what
+   * {@link createOrphanBranch} or {@link replaceOrphanBranch} would make of it. `false` when it
+   * holds anything else or does not exist. Read-only.
+   */
+  async branchHoldsOnly(
+    owner: string,
+    repo: string,
+    branch: string,
+    file: { path: string; content: string },
+  ): Promise<boolean> {
+    if (
+      !REPO_PART.test(owner) ||
+      !REPO_PART.test(repo) ||
+      !BRANCH_NAME.test(branch) ||
+      !ROOT_FILE.test(file.path) ||
+      typeof file.content !== "string"
+    ) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "Reading a branch needs a repository, a branch name and one file name at the root.",
+      );
+    }
+    const head = await this.#branchHead(owner, repo, branch);
+    if (head === undefined) return false;
+    const base = `/repos/${owner}/${repo}/git`;
+    const what = `read the branch ${branch}`;
+    const commit = this.#parse(
+      CommitSchema,
+      (await this.#request("GET", `${base}/commits/${head}`, what)).json,
+      what,
+    );
+    if (commit.parents.length > 0) return false;
+    const tree = this.#parse(
+      TreeSchema,
+      (await this.#request("GET", `${base}/trees/${commit.tree.sha}`, what)).json,
+      what,
+    );
+    const [only, ...more] = tree.tree;
+    return (
+      tree.truncated !== true &&
+      more.length === 0 &&
+      only !== undefined &&
+      only.path === file.path &&
+      only.type === "blob" &&
+      only.mode === "100644" &&
+      only.sha === gitBlobSha(file.content)
+    );
   }
 
   async findOpenPullRequest(

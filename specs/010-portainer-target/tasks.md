@@ -100,7 +100,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (skips without credentials)
   - Effort: high
 
-- [ ] T1012 [US1] [US5] A new app stack starts from the placeholder; destroy removes the deploy branch, in `packages/agents/src/{provision,destroy}/portainer.ts`, `packages/connectors/github/src/`
+- [X] T1012 [US1] [US5] A new app stack starts from the placeholder; destroy removes the deploy branch, in `packages/agents/src/{provision,destroy}/portainer.ts`, `packages/connectors/github/src/`
   - Owns: `packages/connectors/github/src/**` (two typed calls), `packages/agents/src/provision/portainer.ts`, `packages/agents/src/destroy/portainer.ts`, `packages/agents/src/{provision,destroy}/types.ts` (the GitHub API interfaces only) (+ tests); follow-up in `packages/cli/test/live/portainer-*.ts`: the live test expects destroy to delete `opscrew-deploy` and steps 10–11 to start from the placeholder
   - Reads: the T1008 review note (a fresh provision after destroy started the new stack from the stale `opscrew-deploy` file of another web mode); research R11; spec FR-1016
   - Depends: T1005, T1006

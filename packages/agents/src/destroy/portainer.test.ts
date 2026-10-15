@@ -357,4 +357,136 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(s.fake.mutations()).toHaveLength(mutations);
     await writeFakeState(s.deps.paths);
   });
+
+  /** The project's GitHub fake learns to delete branches (in the bare repository pushes go to). */
+  function withBranchDeletion(
+    s: Awaited<ReturnType<typeof deployed>>,
+    result?: () => Promise<"deleted" | "absent">,
+  ) {
+    const asked: string[] = [];
+    Object.assign(s.github, {
+      deleteBranch: async (owner: string, repo: string, branch: string) => {
+        asked.push(`${owner}/${repo}:${branch}`);
+        s.events.push("github:delete-branch");
+        if (result !== undefined) return result();
+        await s.git(s.bare, "update-ref", "-d", `refs/heads/${branch}`);
+        return "deleted" as const;
+      },
+    });
+    return asked;
+  }
+
+  it("deletes opscrew-deploy once the app's stack is gone, within the same confirmation", async () => {
+    const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    expect(await s.git(s.bare, "branch", "--list", "opscrew-deploy")).toContain("opscrew-deploy");
+    const asked = withBranchDeletion(s);
+    const result = await destroy(s);
+
+    expect(asked).toEqual(["acme/shop:opscrew-deploy"]);
+    const appId = s.events.findIndex((event) => /^portainer:DELETE \/api\/stacks\//.test(event));
+    expect(s.events.indexOf("github:delete-branch")).toBeGreaterThan(appId);
+    // No approval of its own: the destroy's covers it.
+    expect(s.events.filter((event) => event.startsWith("approve:"))).toEqual([
+      "approve:stack-apply",
+      "approve:github-secrets",
+    ]);
+    expect(await s.git(s.bare, "branch", "--list", "opscrew-deploy")).toBe("");
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        kind: "git",
+        action: "delete branch",
+        target: "acme/shop:opscrew-deploy",
+        detail: "deleted",
+      }),
+    );
+    expect(s.deps.reporter.text()).toContain(
+      "Once the app's stack is gone, OpsCrew also deletes the branch opscrew-deploy of acme/shop",
+    );
+    // The approval that covers it names it.
+    const teardown = s.handler.requests.find((request) => request.kind === "stack-apply");
+    expect(teardown?.details).toContain(
+      "OpsCrew also deletes the branch opscrew-deploy of acme/shop, which holds the stack's file.",
+    );
+    expect(result.remaining.join("\n")).not.toContain("The opscrew-deploy branch");
+  });
+
+  it("the app's stacks removed by hand: nothing to approve, so the branch stays and what remains says why", async () => {
+    const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    const asked = withBranchDeletion(s);
+    // Someone removed OpsCrew's stacks and registry entry in Portainer: the teardown only forgets them.
+    for (const name of ["opscrew-shop", "opscrew-shop-updater"]) {
+      const index = s.fake.stacks.findIndex((stack) => stack.Name === name);
+      s.fake.stacks.splice(index, 1);
+    }
+    s.fake.registries.splice(0);
+    const result = await destroy(s);
+    expect(asked).toEqual([]);
+    expect(s.events.filter((event) => event.startsWith("approve:"))).toEqual([
+      "approve:github-secrets",
+    ]);
+    expect(await s.git(s.bare, "branch", "--list", "opscrew-deploy")).toContain("opscrew-deploy");
+    const remains = result.remaining.join("\n");
+    expect(remains).toContain("OpsCrew deletes it only together with a teardown you approve");
+    expect(remains).toContain("git push origin --delete opscrew-deploy");
+  });
+
+  it("only Cloudflare left to remove: its approval names the branch, which goes after it", async () => {
+    const s = await deployed();
+    const asked = withBranchDeletion(s);
+    for (const name of ["opscrew-shop", "opscrew-shop-updater"]) {
+      const index = s.fake.stacks.findIndex((stack) => stack.Name === name);
+      s.fake.stacks.splice(index, 1);
+    }
+    s.fake.registries.splice(0);
+    await destroy(s);
+    const cloudflare = s.handler.requests.find((request) => request.kind === "iac-apply");
+    expect(cloudflare?.details).toContain(
+      "OpsCrew also deletes the branch opscrew-deploy of acme/shop, which holds the stack's file.",
+    );
+    expect(s.handler.requests.some((request) => request.kind === "stack-apply")).toBe(false);
+    expect(asked).toEqual(["acme/shop:opscrew-deploy"]);
+    expect(s.events.indexOf("github:delete-branch")).toBeGreaterThan(s.events.indexOf("iac-apply"));
+  });
+
+  it("a branch already gone is fine", async () => {
+    const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    withBranchDeletion(s, async () => "absent");
+    const result = await destroy(s);
+    expect(s.deps.reporter.text()).toContain(
+      "The branch opscrew-deploy of acme/shop is already gone.",
+    );
+    expect(result.remaining.join("\n")).not.toContain("The opscrew-deploy branch");
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBeDefined();
+  });
+
+  it("a GitHub error deleting the branch says how to finish, and the teardown still completes", async () => {
+    const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    withBranchDeletion(s, async () => {
+      throw new OpsCrewError(
+        "CREDENTIALS_INVALID",
+        "GitHub refused to delete the branch opscrew-deploy (Forbidden).",
+      );
+    });
+    const result = await destroy(s);
+    const warning = s.deps.reporter.lines.find(
+      (line) =>
+        line.level === "warn" && line.message.includes("deleting the branch opscrew-deploy"),
+    );
+    expect(warning?.message).toContain("git push origin --delete opscrew-deploy");
+    expect(warning?.message).toContain("replaces its file with a placeholder");
+    expect(result.remaining.join("\n")).toContain("The opscrew-deploy branch of acme/shop");
+    expect(s.github.deleted).toContain("OPSCREW_BUILD_ENV");
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBeDefined();
+  });
+
+  it("keeps the branch when the app's stack could not be removed", async () => {
+    const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    const asked = withBranchDeletion(s);
+    s.answer((request) => request.kind !== "stack-apply");
+    await expectError(destroy(s), "APPROVAL_REFUSED");
+    expect(asked).toEqual([]);
+    expect(await s.git(s.bare, "branch", "--list", "opscrew-deploy")).toContain("opscrew-deploy");
+  });
 });

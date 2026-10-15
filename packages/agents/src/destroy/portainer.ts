@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   applyStackPlan,
   type CreatedRecord,
+  DEPLOY_BRANCH,
   inspectPortainer,
   opscrewStackNames,
   type PortainerClient,
@@ -26,6 +27,7 @@ import {
   portainerContainerUrl,
   portainerValueKeyFile,
   portainerWebhookFile,
+  requireDeployBranch,
   requirePortainerConnection,
   requirePortainerToken,
   stackPlanFile,
@@ -149,6 +151,7 @@ async function approveCloudflareRemoval(
   plan: DeployPlan,
   confirmed: ReadonlySet<string>,
   stackChanges: boolean,
+  notes: readonly string[] = [],
 ): Promise<CloudflareRemoval | undefined> {
   const { deps } = session;
   const name = plan.app.name;
@@ -187,6 +190,7 @@ async function approveCloudflareRemoval(
           : stackChanges
             ? `Your Portainer is not part of this plan. ${TUNNEL_AFTER_STACKS} so OpsCrew removes the app's stacks first (the next approval) and applies this plan once Cloudflare reports no active connections for the tunnel.`
             : `Your Portainer is not part of this plan. ${TUNNEL_AFTER_STACKS} so OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel.`,
+        ...notes,
         PORTAINER_STAYS,
         `Plan hash: ${summary.planHash}`,
       ].join("\n"),
@@ -469,6 +473,51 @@ async function applyTeardown(
   return { applied: result.applied, connection };
 }
 
+/** True when OpsCrew can delete the deploy branch: a GitHub client with `deleteBranch` and the repository. */
+function canDeleteBranch(github: GitHubTarget): boolean {
+  return github.api?.deleteBranch !== undefined && Boolean(github.owner && github.repo);
+}
+
+/**
+ * Once the app's stack is gone: deletes the deploy branch, which holds the stack's file, so a later
+ * setup never starts from it (covered by the destroy approval; a branch already gone is fine).
+ * `true` when the branch is gone afterwards. A GitHub that cannot be reached or refuses is no reason
+ * to stop the teardown: the warning says how to finish (and a later `opscrew provision` replaces
+ * the branch's file before it creates the app's stack anyway).
+ */
+async function deleteDeployBranch(deps: PhaseDeps, github: GitHubTarget): Promise<boolean> {
+  const { api, owner, repo } = github;
+  // Without the call (or the repository) the branch stays and is listed under what remains.
+  if (api?.deleteBranch === undefined || !owner || !repo) return false;
+  const where = `${owner}/${repo}`;
+  try {
+    const result = await api.deleteBranch(owner, repo, requireDeployBranch(DEPLOY_BRANCH));
+    await deps.audit.append({
+      kind: "git",
+      actor: "opscrew",
+      action: "delete branch",
+      phase: "provision",
+      target: `${where}:${DEPLOY_BRANCH}`,
+      decision: "approved",
+      detail: result === "deleted" ? "deleted" : "already gone",
+    });
+    if (result === "deleted") {
+      deps.reporter.success(`Deleted the branch ${DEPLOY_BRANCH} of ${where}.`);
+    } else {
+      deps.reporter.info(`The branch ${DEPLOY_BRANCH} of ${where} is already gone.`);
+    }
+    return true;
+  } catch (error) {
+    const reason = isUserFacingError(error) ? error.message : "unexpected error";
+    deps.reporter.warn(
+      deps.redactor.redact(
+        `The app is removed from your Portainer, but deleting the branch ${DEPLOY_BRANCH} of ${where} failed: ${reason} To finish, delete it on GitHub (or with \`git push origin --delete ${DEPLOY_BRANCH}\`); a later \`opscrew provision\` replaces its file with a placeholder before it creates the app's stack anyway.`,
+      ),
+    );
+    return false;
+  }
+}
+
 /** What still exists after the teardown in the user's Portainer, in plain English. */
 function remainingInPortainer(input: {
   plan: DeployPlan;
@@ -476,6 +525,9 @@ function remainingInPortainer(input: {
   secretsRemoved: readonly string[];
   keptVolumes: readonly string[];
   removedApp: boolean;
+  branchDeleted: boolean;
+  /** This run approved nothing, so OpsCrew did not delete the branch (it never does unapproved). */
+  branchUnapproved: boolean;
 }): string[] {
   const { plan, github } = input;
   const items = [
@@ -494,8 +546,14 @@ function remainingInPortainer(input: {
     );
   }
   const repo = github.owner && github.repo ? `${github.owner}/${github.repo}` : "<owner>/<repo>";
+  if (!input.branchDeleted) {
+    items.push(
+      input.branchUnapproved
+        ? `The opscrew-deploy branch of ${repo}, which holds the app's stack file: OpsCrew deletes it only together with a teardown you approve, and this run had nothing to approve (the app's stacks were already gone). Delete it on GitHub (or with \`git push origin --delete opscrew-deploy\`); a later \`opscrew provision\` replaces its file with a placeholder before it creates the app's stack anyway.`
+        : `The opscrew-deploy branch of ${repo}, which holds the app's stack file. Delete it on GitHub (or with \`git push origin --delete opscrew-deploy\`) if you no longer need it.`,
+    );
+  }
   items.push(
-    `The opscrew-deploy branch of ${repo}, which holds the app's stack file. Delete it on GitHub (or with \`git push origin --delete opscrew-deploy\`) if you no longer need it.`,
     `The app's container images in GitHub's container registry (ghcr.io/${repo.toLowerCase()}). Delete them in the package settings on GitHub if you no longer need them.`,
     `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy fails until \`opscrew provision\` sets up the app's stacks again from these files.`,
     "How OpsCrew reaches your Portainer (.opscrew/server.json) with its confirmed certificate, kept so a new deployment can reuse it.",
@@ -665,6 +723,12 @@ export async function destroyPortainer(
     );
   }
   const stacksFirst = deletesTunnel(resources) && stackWork.length > 0;
+  // Said where the user confirms and in the approval that covers it (the teardown's, or the
+  // Cloudflare removal's when nothing changes in Portainer).
+  const branchNote =
+    removeApp && canDeleteBranch(github)
+      ? `Once the app's stack is gone, OpsCrew also deletes the branch ${DEPLOY_BRANCH} of ${github.owner}/${github.repo}, which holds the stack's file.`
+      : undefined;
   const cloudflareLines =
     resources.length > 0
       ? [
@@ -693,6 +757,7 @@ export async function destroyPortainer(
             "Nothing of the app is left in your Portainer or on Cloudflare; OpsCrew finishes the cleanup.",
           ]
         : []),
+      ...(branchNote !== undefined ? [branchNote] : []),
       PORTAINER_STAYS,
     ]
       .join("\n")
@@ -740,7 +805,13 @@ export async function destroyPortainer(
   let destroyed: ResourceChange[] = [];
   let removal: CloudflareRemoval | undefined;
   if (session !== undefined && resources.length > 0) {
-    removal = await approveCloudflareRemoval(session, plan, confirmed, stackWork.length > 0);
+    removal = await approveCloudflareRemoval(
+      session,
+      plan,
+      confirmed,
+      stackWork.length > 0,
+      stackWork.length === 0 && branchNote !== undefined ? [branchNote] : [],
+    );
   }
   let stackApproval: ApprovalRecord | undefined;
   let stackHash: string | undefined;
@@ -763,6 +834,7 @@ export async function destroyPortainer(
                     `${TUNNEL_AFTER_STACKS} so this goes first; the approved Cloudflare plan follows once Cloudflare reports no active connections for the tunnel.`,
                   ]
                 : []),
+              ...(branchNote !== undefined ? [branchNote] : []),
               PORTAINER_STAYS,
             ],
             refused: `The removal of ${name} from your Portainer was not approved, so nothing in your Portainer was changed and nothing in Cloudflare was deleted.`,
@@ -806,6 +878,14 @@ export async function destroyPortainer(
     if (removal !== undefined) await discardPlan(removal.summary);
   }
 
+  // The deploy branch holds the app stack's file: once the stack is gone, the branch goes too, but
+  // only under an approval of this run (the teardown's or the Cloudflare removal's), never without.
+  const approvedNow = stackApproval !== undefined || removal !== undefined;
+  const stackGone = !connection.created.stacks.some((stack) => stack.role === "app");
+  const branchDeleted =
+    removeApp && stackGone && approvedNow ? await deleteDeployBranch(deps, github) : false;
+  const branchUnapproved = removeApp && stackGone && !approvedNow && canDeleteBranch(github);
+
   // 7. Deploy secrets and OpsCrew's record of the deployment
   let secretsRemoved: string[] = [];
   if (removeApp) {
@@ -847,6 +927,8 @@ export async function destroyPortainer(
     secretsRemoved,
     keptVolumes: connection.created.volumes,
     removedApp: removeApp,
+    branchDeleted,
+    branchUnapproved,
   });
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
   return {

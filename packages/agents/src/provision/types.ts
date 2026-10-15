@@ -33,8 +33,9 @@ export type CloudflareApi = Pick<
   Partial<Pick<CloudflareClient, "listAccounts">>;
 
 /**
- * The GitHub calls provisioning needs (a `GitHubClient` or a test fake). `createOrphanBranch` is
- * needed only for the user's Portainer (its `opscrew-deploy` branch).
+ * The GitHub calls provisioning needs (a `GitHubClient` or a test fake). `createOrphanBranch`,
+ * `replaceOrphanBranch` and `branchHoldsOnly` are needed only for the user's Portainer (its
+ * `opscrew-deploy` branch; without `branchHoldsOnly` an existing branch is always replaced).
  */
 export type GitHubApi = Pick<
   GitHubClient,
@@ -44,7 +45,7 @@ export type GitHubApi = Pick<
   | "findOpenPullRequest"
   | "createPullRequest"
 > &
-  Partial<Pick<GitHubClient, "createOrphanBranch">>;
+  Partial<Pick<GitHubClient, "createOrphanBranch" | "replaceOrphanBranch" | "branchHoldsOnly">>;
 
 /**
  * Collaborators that talk to the outside world. Each defaults to the real implementation built

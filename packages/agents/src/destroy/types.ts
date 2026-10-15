@@ -5,8 +5,13 @@ import type { EnginePreference } from "@opscrew/iac-engine";
 import type { OwnServerServices, ProvisionServices } from "../provision";
 import type { PortainerServices } from "../provision/types";
 
-/** The GitHub call the secret cleanup needs (a `GitHubClient` or a test fake). */
-export type DestroyGitHubApi = Pick<GitHubClient, "deleteActionsSecret">;
+/**
+ * The GitHub calls the cleanup needs (a `GitHubClient` or a test fake): the deploy secrets, and for
+ * the user's Portainer its `opscrew-deploy` branch (without `deleteBranch` the branch stays and is
+ * listed under what remains).
+ */
+export type DestroyGitHubApi = Pick<GitHubClient, "deleteActionsSecret"> &
+  Partial<Pick<GitHubClient, "deleteBranch">>;
 
 /** The Cloudflare call the credential check needs (a `CloudflareClient` or a test fake). */
 export type DestroyCloudflareApi = Pick<CloudflareClient, "verifyToken">;

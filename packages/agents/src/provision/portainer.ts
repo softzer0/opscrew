@@ -621,6 +621,15 @@ export async function provisionPortainer(
     (change) =>
       change.id === "app-stack" && change.state === "change" && change.params.action === "create",
   );
+  /** The deploy branch with the placeholder, started at most once in this run. */
+  const placeholderBranch = {
+    started: false,
+    async start(cloudflareApplied: boolean): Promise<void> {
+      if (this.started) return;
+      await startDeployBranch(deps, { git, github, plan, phase, cloudflareApplied });
+      this.started = true;
+    },
+  };
 
   // 3. Render and write the files (skipped when applying a saved plan: --plan-only wrote them).
   const access = cloudflareRoot.webhook
@@ -896,10 +905,8 @@ export async function provisionPortainer(
       app: plan.app.name,
       where: "your Portainer",
       hostChange: async () => {
-        // The stack change that goes first may create the app stack: its branch must exist.
-        if (createsAppStack) {
-          await createDeployBranch(deps, { git, github, plan, phase, cloudflareApplied: false });
-        }
+        // The stack change that goes first may create the app stack: its branch must start first.
+        if (createsAppStack) await placeholderBranch.start(false);
         const early = await stackStep(await currentOutputs(), false);
         firstChange.result = early;
         return {
@@ -960,10 +967,15 @@ export async function provisionPortainer(
     const tokensKnown =
       (target.web.mode !== "tunnel" || stringOutput(outputs, "tunnel_token") !== undefined) &&
       (updater || stringOutput(outputs, "portainer_tunnel_token") !== undefined);
-    if (createsAppStack && !(await deployBranchExists(git))) {
-      deps.reporter.info(
-        `Applying creates the branch ${DEPLOY_BRANCH} in ${github.owner}/${github.repo} with a placeholder ${DEPLOY_COMPOSE_FILE} that only sleeps (after its own approval): Portainer deploys it until the first run of the deploy workflow writes the app.`,
-      );
+    if (createsAppStack) {
+      const state = await deployBranchState(git, github, plan);
+      if (state !== "placeholder") {
+        deps.reporter.info(
+          state === "other"
+            ? `Applying replaces the branch ${DEPLOY_BRANCH} in ${github.owner}/${github.repo}, which holds the stack file of an earlier deployment, with a placeholder ${DEPLOY_COMPOSE_FILE} that only sleeps (after its own approval): Portainer deploys it until the deploy workflow's next run writes the app.`
+            : `Applying creates the branch ${DEPLOY_BRANCH} in ${github.owner}/${github.repo} with a placeholder ${DEPLOY_COMPOSE_FILE} that only sleeps (after its own approval): Portainer deploys it until the first run of the deploy workflow writes the app.`,
+        );
+      }
     }
     if (tokensKnown && !makesTunnel(changes)) {
       stackHash = (await stackStep(outputs, true)).hash;
@@ -1016,9 +1028,7 @@ export async function provisionPortainer(
   await writeArtifact("plan", deps.paths.files.plan, plan);
 
   // 6. The deploy branch Portainer builds the app stack from, with a placeholder (research R11).
-  if (createsAppStack) {
-    await createDeployBranch(deps, { git, github, plan, phase, cloudflareApplied: iac.applied });
-  }
+  if (createsAppStack) await placeholderBranch.start(iac.applied);
 
   // 7. The stack plan → stack-apply approval → apply → record.
   const stack = await stackStep(outputs, false);
@@ -1276,11 +1286,52 @@ async function deployBranchExists(git: GitClient): Promise<boolean> {
 }
 
 /**
- * Creates the deploy branch with the placeholder stack file when GitHub does not have it (research
- * R11): Portainer deploys a Git stack as soon as it is created, before the first image exists.
- * Behind its own `git-push` approval; never overwrites the branch.
+ * The only branch the Portainer flows create, replace or delete: `opscrew-deploy`
+ * (`refs/heads/opscrew-deploy`). Any other name is refused before GitHub is called.
  */
-async function createDeployBranch(
+export function requireDeployBranch(branch: string): typeof DEPLOY_BRANCH {
+  if (branch !== DEPLOY_BRANCH) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      `OpsCrew changes only the branch ${DEPLOY_BRANCH} of the app's repository here, never ${JSON.stringify(branch)}.`,
+      { hint: "This is a bug in OpsCrew: please report it with the command you ran." },
+    );
+  }
+  return DEPLOY_BRANCH;
+}
+
+/**
+ * Where the deploy branch stands: `absent`, holding exactly the placeholder (`placeholder`: one
+ * commit without parents and only its file, read through the GitHub client; without that read an
+ * existing branch counts as `other`), or holding anything else (`other`).
+ */
+async function deployBranchState(
+  git: GitClient,
+  github: GitHubSetup,
+  plan: DeployPlan,
+): Promise<"absent" | "placeholder" | "other"> {
+  if (!(await deployBranchExists(git))) return "absent";
+  const { api } = github;
+  if (api.branchHoldsOnly === undefined) return "other";
+  const placeholder = renderPlaceholderStack(plan);
+  const only = await api.branchHoldsOnly(
+    github.owner,
+    github.repo,
+    requireDeployBranch(DEPLOY_BRANCH),
+    { path: placeholder.path, content: placeholder.content },
+  );
+  return only ? "placeholder" : "other";
+}
+
+/**
+ * Starts the deploy branch with the placeholder stack file before the app's stack is created
+ * (research R11): Portainer deploys a Git stack as soon as it is created, before the first image
+ * exists. A missing branch is created; one that exists already (left by an earlier deployment,
+ * perhaps of another setup, whose stack file Portainer would otherwise deploy as it is) is pointed
+ * at a new commit holding only the placeholder (the ref is force-updated; its earlier commits leave
+ * the branch). Either way behind its own `git-push` approval, and only for `refs/heads/opscrew-deploy`.
+ */
+async function startDeployBranch(
   deps: PhaseDeps,
   input: {
     git: GitClient;
@@ -1292,14 +1343,30 @@ async function createDeployBranch(
   },
 ): Promise<void> {
   const { github, plan } = input;
-  if (await deployBranchExists(input.git)) return;
+  const { api } = github;
+  const state = await deployBranchState(input.git, github, plan);
+  if (state === "placeholder") {
+    // An earlier run of this setup already started it (for example its stack-apply was refused).
+    deps.reporter.info(
+      `The branch ${DEPLOY_BRANCH} already holds only the placeholder ${DEPLOY_COMPOSE_FILE}; it stays as it is.`,
+    );
+    return;
+  }
+  const replace = state === "other";
   const placeholder = renderPlaceholderStack(plan);
   const repo = `${github.owner}/${github.repo}`;
+  const nothingYet = input.cloudflareApplied
+    ? "The Cloudflare changes are applied; nothing in Portainer was changed."
+    : "Nothing in Portainer was changed.";
   const approval = await deps.approvals.request({
     kind: "git-push",
-    title: `Create the branch ${DEPLOY_BRANCH} in ${repo} with a placeholder ${DEPLOY_COMPOSE_FILE}`,
+    title: replace
+      ? `Replace the branch ${DEPLOY_BRANCH} in ${repo} with a placeholder ${DEPLOY_COMPOSE_FILE}`
+      : `Create the branch ${DEPLOY_BRANCH} in ${repo} with a placeholder ${DEPLOY_COMPOSE_FILE}`,
     details: [
-      `Portainer builds the app's stack from the ${DEPLOY_BRANCH} branch. Until the deploy workflow's first run writes the app there, the branch holds only this placeholder, which runs one small container that only sleeps (no ports, no secrets):`,
+      replace
+        ? `Portainer builds the app's stack from the ${DEPLOY_BRANCH} branch, which still holds the stack file of an earlier deployment (perhaps of another setup), and the stack is created anew. So that Portainer does not start that file, OpsCrew points the branch at a new commit holding only this placeholder (its earlier commits leave the branch), which runs one small container that only sleeps (no ports, no secrets) until the deploy workflow's next run writes the app:`
+        : `Portainer builds the app's stack from the ${DEPLOY_BRANCH} branch. Until the deploy workflow's first run writes the app there, the branch holds only this placeholder, which runs one small container that only sleeps (no ports, no secrets):`,
       "",
       placeholder.content,
     ].join("\n"),
@@ -1307,21 +1374,33 @@ async function createDeployBranch(
   if (!approval.approved) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
-      `The ${DEPLOY_BRANCH} branch was not created, so OpsCrew cannot create the app's stack in Portainer. ${input.cloudflareApplied ? "The Cloudflare changes are applied; nothing in Portainer was changed." : "Nothing in Portainer was changed."}`,
+      replace
+        ? `The ${DEPLOY_BRANCH} branch was not replaced, so OpsCrew does not create the app's stack in Portainer from its earlier file. ${nothingYet}`
+        : `The ${DEPLOY_BRANCH} branch was not created, so OpsCrew cannot create the app's stack in Portainer. ${nothingYet}`,
       { hint: `Run \`opscrew ${input.phase}\` again when you are ready; it continues from here.` },
     );
   }
-  if (github.api.createOrphanBranch === undefined) {
-    throw new OpsCrewError("INTERNAL", "The GitHub client cannot create a branch.");
-  }
-  const created = await github.api.createOrphanBranch({
+  const change = {
     owner: github.owner,
     repo: github.repo,
-    branch: DEPLOY_BRANCH,
+    branch: requireDeployBranch(DEPLOY_BRANCH),
     path: placeholder.path,
     content: placeholder.content,
     message: "OpsCrew: placeholder until the first deploy",
-  });
+  };
+  let detail: string;
+  if (replace) {
+    if (api.replaceOrphanBranch === undefined) {
+      throw new OpsCrewError("INTERNAL", "The GitHub client cannot replace a branch.");
+    }
+    const replaced = await api.replaceOrphanBranch(change);
+    detail = `placeholder ${replaced.commit}, replacing ${replaced.previous}`;
+  } else {
+    if (api.createOrphanBranch === undefined) {
+      throw new OpsCrewError("INTERNAL", "The GitHub client cannot create a branch.");
+    }
+    detail = `placeholder ${(await api.createOrphanBranch(change)).commit}`;
+  }
   await deps.audit.append({
     kind: "git",
     actor: "opscrew",
@@ -1329,10 +1408,12 @@ async function createDeployBranch(
     phase: input.phase,
     target: `${repo}:${DEPLOY_BRANCH}`,
     decision: "approved",
-    detail: `placeholder ${created.commit}`,
+    detail,
   });
   deps.reporter.success(
-    `Created the branch ${DEPLOY_BRANCH} with a placeholder ${DEPLOY_COMPOSE_FILE}.`,
+    replace
+      ? `Replaced the branch ${DEPLOY_BRANCH} with a placeholder ${DEPLOY_COMPOSE_FILE}; the deploy workflow's next run writes the app there.`
+      : `Created the branch ${DEPLOY_BRANCH} with a placeholder ${DEPLOY_COMPOSE_FILE}.`,
   );
 }
 

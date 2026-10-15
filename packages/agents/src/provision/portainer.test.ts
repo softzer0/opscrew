@@ -54,6 +54,7 @@ import {
   REGISTRY_TOKEN_VAR,
   REPOSITORY_TOKEN_VAR,
   ROUTE_CHANGE_NOTE,
+  requireDeployBranch,
   stackPlanFile,
   switchesWebRoute,
 } from "./portainer";
@@ -111,10 +112,29 @@ class PortainerGitHub extends FakeGitHub {
   constructor(private readonly createRef: (branch: string) => Promise<void>) {
     super();
   }
+  /** What OpsCrew wrote as a branch's only file (the branch holds nothing else then). */
+  readonly holds = new Map<string, { path: string; content: string }>();
   async createOrphanBranch(input: { branch: string; path: string; content: string }) {
     this.branches.push({ branch: input.branch, path: input.path, content: input.content });
+    this.holds.set(input.branch, { path: input.path, content: input.content });
     await this.createRef(input.branch);
     return { commit: "c".repeat(40) };
+  }
+  /** Branches pointed at a new placeholder commit (`replaceOrphanBranch`). */
+  readonly replaced: { branch: string; path: string; content: string }[] = [];
+  async replaceOrphanBranch(input: { branch: string; path: string; content: string }) {
+    this.replaced.push({ branch: input.branch, path: input.path, content: input.content });
+    this.holds.set(input.branch, { path: input.path, content: input.content });
+    return { commit: "d".repeat(40), previous: "e".repeat(40) };
+  }
+  async branchHoldsOnly(
+    _owner: string,
+    _repo: string,
+    branch: string,
+    file: { path: string; content: string },
+  ) {
+    const only = this.holds.get(branch);
+    return only?.path === file.path && only.content === file.content;
   }
 }
 
@@ -980,6 +1000,110 @@ describe.skipIf(!findExecutable("git"))(
         "opscrew-shop-updater",
       ]);
     });
+
+    it("a new app stack starts from the placeholder although opscrew-deploy exists (a fresh provision after destroy)", async () => {
+      const s = await setup({ plan: proxyPlan() });
+      // An earlier deployment (perhaps of another web mode) left the deploy branch behind.
+      const head = await s.git(s.root, "rev-parse", "HEAD");
+      await s.git(s.root, "push", "-q", "origin", `${head}:refs/heads/opscrew-deploy`);
+
+      const planned = await s.run({ planOnly: true });
+      expect(planned.stackPlanHash).toBeDefined();
+      expect(s.deps.reporter.text()).toContain("Applying replaces the branch opscrew-deploy");
+      expect(s.github.replaced).toEqual([]);
+
+      s.handler.requests.length = 0;
+      await s.run();
+      const order = s.handler.requests.map((request) =>
+        request.kind === "git-push" && request.title.includes("opscrew-deploy")
+          ? request.title.split(" ")[0]
+          : request.kind,
+      );
+      expect(order.indexOf("Replace")).toBeGreaterThan(-1);
+      expect(order.indexOf("Replace")).toBeLessThan(order.indexOf("stack-apply"));
+      expect(order.filter((kind) => kind === "Replace" || kind === "Create")).toHaveLength(1);
+      expect(s.github.branches).toEqual([]);
+      expect(s.github.replaced).toEqual([
+        expect.objectContaining({ branch: "opscrew-deploy", path: "compose.yaml" }),
+      ]);
+      expect(s.github.replaced[0]?.content).toContain("sleep");
+      expect(s.deps.audit.entries).toContainEqual(
+        expect.objectContaining({
+          kind: "git",
+          target: "acme/shop:opscrew-deploy",
+          detail: expect.stringContaining("replacing"),
+        }),
+      );
+      expect(s.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop");
+
+      // Once the stack exists the branch is the deploy workflow's again: never replaced.
+      s.github.openPull = OPEN_PULL;
+      await s.run();
+      expect(s.github.replaced).toHaveLength(1);
+    });
+
+    it("a refused replacement of opscrew-deploy creates no app stack from the earlier file", async () => {
+      const s = await setup({
+        plan: proxyPlan(),
+        answer: (request) => !request.title.startsWith("Replace the branch opscrew-deploy"),
+      });
+      const head = await s.git(s.root, "rev-parse", "HEAD");
+      await s.git(s.root, "push", "-q", "origin", `${head}:refs/heads/opscrew-deploy`);
+      const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+      expect(error.code).toBe("APPROVAL_REFUSED");
+      expect(error.message).toContain(
+        "The opscrew-deploy branch was not replaced, so OpsCrew does not create the app's stack in Portainer from its earlier file.",
+      );
+      expect(s.github.replaced).toEqual([]);
+      expect(s.fake.mutations()).toEqual([]);
+    });
+
+    it("a switch that creates the app's stack again while opscrew-deploy exists replaces the branch once, before the stack change that goes first", async () => {
+      const s = await switched();
+      const index = s.fake.stacks.findIndex((stack) => stack.Name === "opscrew-shop");
+      s.fake.stacks.splice(index, 1);
+      // The deploy workflow wrote the app's stack file there since the placeholder.
+      s.github.holds.set("opscrew-deploy", { path: "compose.yaml", content: "services: {}" });
+
+      await s.run();
+      const order = s.handler.requests.map((request) =>
+        request.kind === "git-push" && request.title.includes("opscrew-deploy")
+          ? "deploy-branch"
+          : request.kind,
+      );
+      expect(order.filter((kind) => kind === "deploy-branch")).toHaveLength(1);
+      expect(order.indexOf("iac-apply")).toBeLessThan(order.indexOf("deploy-branch"));
+      expect(order.indexOf("deploy-branch")).toBeLessThan(order.indexOf("stack-apply"));
+      expect(s.github.replaced).toHaveLength(1);
+    });
+
+    it("a refused stack-apply, then a rerun: the branch already holds only the placeholder, so nothing is asked or pushed for it", async () => {
+      let refuse = true;
+      const s = await setup({
+        plan: proxyPlan(),
+        answer: (request) => !(refuse && request.kind === "stack-apply"),
+      });
+      // A branch an earlier deployment left: replaced on the first run.
+      const head = await s.git(s.root, "rev-parse", "HEAD");
+      await s.git(s.root, "push", "-q", "origin", `${head}:refs/heads/opscrew-deploy`);
+      const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+      expect(error.code).toBe("APPROVAL_REFUSED");
+      expect(s.github.replaced).toHaveLength(1);
+
+      refuse = false;
+      s.handler.requests.length = 0;
+      await s.run();
+      const branchRequests = s.handler.requests.filter(
+        (request) => request.kind === "git-push" && request.title.includes("opscrew-deploy"),
+      );
+      expect(branchRequests).toEqual([]);
+      expect(s.github.replaced).toHaveLength(1);
+      expect(s.github.branches).toEqual([]);
+      expect(s.deps.reporter.text()).toContain(
+        "The branch opscrew-deploy already holds only the placeholder compose.yaml; it stays as it is.",
+      );
+      expect(s.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop");
+    });
   },
 );
 
@@ -1054,5 +1178,22 @@ describe("switchesWebRoute", () => {
       created: { stacks: [], volumes: [] },
     };
     expect(switchesWebRoute(facts([]), target({ mode: "caddy" }), app, none)).toBe(false);
+  });
+});
+
+describe("requireDeployBranch", () => {
+  it("lets the flows change only opscrew-deploy (refs/heads/opscrew-deploy)", () => {
+    expect(requireDeployBranch("opscrew-deploy")).toBe("opscrew-deploy");
+    for (const other of [
+      "main",
+      "refs/heads/opscrew-deploy",
+      "opscrew-deploy-2",
+      "opscrew/deploy-setup",
+      "",
+    ]) {
+      expect(() => requireDeployBranch(other), other).toThrow(
+        expect.objectContaining({ code: "INTERNAL" }),
+      );
+    }
   });
 });
