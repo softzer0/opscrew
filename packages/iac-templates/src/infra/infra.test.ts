@@ -110,14 +110,14 @@ describe("renderInfra", () => {
 
   it("adds Cloudflare DNS and restricts web ports to Cloudflare when proxied", () => {
     const files = renderInfra(
-      plan({ domain: "shop.example.com", www: true }),
+      plan({ domain: "example.com", www: true }),
       ctx({ cloudflare: cloudflare() }),
     );
     expect(files.some((f) => f.path === "opscrew/infra/modules/cloudflare-dns/main.tf")).toBe(true);
     expect(files.find((f) => f.path.endsWith("prod/main.tf"))?.content).toMatchSnapshot();
     const values = JSON.parse(files.find((f) => f.path.endsWith("tfvars.json"))?.content ?? "{}");
     expect(values).toMatchObject({
-      domain: "shop.example.com",
+      domain: "example.com",
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
       proxied: true,
       www: true,
@@ -259,19 +259,19 @@ const PORTAINER_SUBDOMAIN = {
   allowedEmails: ["ops@example.com", "dev@example.com"],
 } as const;
 const validatedPlans = {
-  hetzner: () => plan({ domain: "shop.example.com", www: true }),
+  hetzner: () => plan({ domain: "example.com", www: true }),
   digitalocean: () =>
-    testPlan({ provider: "digitalocean", domain: "shop.example.com", www: true, backups: true }),
+    testPlan({ provider: "digitalocean", domain: "example.com", www: true, backups: true }),
   "hetzner with a Portainer subdomain": () =>
     testPlan({ domain: "shop.example.com", portainer: PORTAINER_SUBDOMAIN }),
-  "own server (public)": () => testPlan({ provider: "own", domain: "shop.example.com", www: true }),
+  "own server (public)": () => testPlan({ provider: "own", domain: "example.com", www: true }),
   "own server (public, no domain)": () => testPlan({ provider: "own" }),
   "own server (tunnel, Portainer subdomain)": () =>
     testPlan({
       provider: "own",
       access: "tunnel",
       arch: "arm64",
-      domain: "shop.example.com",
+      domain: "example.com",
       www: true,
       portainer: PORTAINER_SUBDOMAIN,
     }),
@@ -347,7 +347,7 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
           async (test) => {
             layoutRoot ??= mkdtemp(join(tmpdir(), `opscrew-infra-${name}-layouts-`));
             const files = renderInfra(
-              testPlan({ provider: to, domain: "shop.example.com", www: true }),
+              testPlan({ provider: to, domain: "example.com", www: true }),
               ctx({
                 cloudflare: cloudflare(),
                 layout: moveLayout(layout, testTarget(from), testTarget(to)),

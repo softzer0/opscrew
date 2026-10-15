@@ -136,8 +136,8 @@ describe("renderCompose", () => {
 
 describe("renderCaddyfile", () => {
   it("serves the domain (and www) with HSTS and the ACME email", () => {
-    const content = renderCaddyfile(plan({ domain: "shop.example.com", www: true }), ctx).content;
-    expect(content).toContain("shop.example.com, www.shop.example.com {");
+    const content = renderCaddyfile(plan({ domain: "example.com", www: true }), ctx).content;
+    expect(content).toContain("example.com, www.example.com {");
     expect(content).toContain("email ops@example.com");
     expect(content).toContain("reverse_proxy app:3000");
     expect(content).toContain("Strict-Transport-Security");

@@ -52,7 +52,7 @@ function expectNoAddress(files: readonly RenderedFile[]): void {
 }
 
 describe("renderInfra for a server the user owns (public)", () => {
-  const plan = testPlan({ provider: "own", domain: "shop.example.com", www: true });
+  const plan = testPlan({ provider: "own", domain: "example.com", www: true });
   const files = renderInfra(plan, ownContext({ cloudflare: testCloudflare() }));
 
   it("renders no server resources and vendors only the DNS module", () => {
@@ -105,7 +105,7 @@ describe("renderInfra for a server the user owns (public)", () => {
     const values = JSON.parse(file(files, "terraform.tfvars.json"));
     expect(values).toEqual({
       app_name: "shop",
-      domain: "shop.example.com",
+      domain: "example.com",
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
       proxied: true,
       www: true,
@@ -232,7 +232,7 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
 
   it("routes www through the tunnel and protects the app's hostnames with the WAF rule", () => {
     const www = renderInfra(
-      testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com", www: true }),
+      testPlan({ provider: "own", access: "tunnel", domain: "example.com", www: true }),
       context,
     );
     const main = file(www, "prod/main.tf");

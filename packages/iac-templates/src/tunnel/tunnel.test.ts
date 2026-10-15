@@ -24,16 +24,16 @@ const tunnelPlan = (o: Parameters<typeof testPlan>[0] = {}) =>
 describe("tunnel hostnames", () => {
   it("puts the SSH hostname directly under the zone, also for a subdomain app", () => {
     expect(sshHostname(tunnelPlan())).toBe("ssh-shop.example.com");
-    expect(sshHostname(tunnelPlan({ domain: "app.shop.example.com" }))).toBe(
-      "ssh-shop.example.com",
-    );
+    expect(sshHostname(tunnelPlan({ domain: "app.example.com" }))).toBe("ssh-shop.example.com");
     expect(sshHostname(testPlan({ provider: "own", domain: "shop.example.com" }))).toBeUndefined();
     expect(sshHostname(testPlan({ domain: "shop.example.com" }))).toBeUndefined();
   });
 
   it("lists the app, SSH and Portainer hostnames the tunnel serves", () => {
-    expect(tunnelHostnames(tunnelPlan({ www: true, portainer: PORTAINER }))).toEqual({
-      app: ["shop.example.com", "www.shop.example.com"],
+    expect(
+      tunnelHostnames(tunnelPlan({ domain: "example.com", www: true, portainer: PORTAINER })),
+    ).toEqual({
+      app: ["example.com", "www.example.com"],
       ssh: "ssh-shop.example.com",
       portainer: "portainer.example.com",
     });
@@ -64,17 +64,20 @@ describe("runtime files in tunnel mode", () => {
 
   it("serves plain HTTP for the domain (Cloudflare terminates TLS) and keeps HSTS", () => {
     const caddyfile = renderCaddyfile(
-      tunnelPlan({ www: true }),
+      tunnelPlan({ domain: "example.com", www: true }),
       testContext({ acmeEmail: "ops@example.com" }),
     ).content;
-    expect(caddyfile).toContain("http://shop.example.com, http://www.shop.example.com {");
+    expect(caddyfile).toContain("http://example.com, http://www.example.com {");
     expect(caddyfile).not.toContain("email ops@example.com");
     expect(caddyfile).toContain("Strict-Transport-Security");
     expect(caddyfile).toMatchSnapshot();
   });
 
   it("redirects visitors who used plain HTTP (Cf-Visitor) to HTTPS before proxying", () => {
-    const lines = renderCaddyfile(tunnelPlan({ www: true }), testContext()).content.split("\n");
+    const lines = renderCaddyfile(
+      tunnelPlan({ domain: "example.com", www: true }),
+      testContext(),
+    ).content.split("\n");
     const matcher = lines.indexOf('\t@http_visitor header Cf-Visitor `*"http"*`');
     const redirect = lines.indexOf("\tredir @http_visitor https://{host}{uri} 308");
     expect(matcher).toBeGreaterThan(0);

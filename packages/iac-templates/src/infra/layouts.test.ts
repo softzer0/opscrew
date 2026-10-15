@@ -27,7 +27,7 @@ const MOVES_ONLY: readonly LayoutName[] = ["rename", "abort-rename"];
 function movePlan(to: CloudProvider, domain = true) {
   return testPlan({
     provider: to,
-    ...(domain ? { domain: "shop.example.com", www: true } : {}),
+    ...(domain ? { domain: "example.com", www: true } : {}),
   });
 }
 

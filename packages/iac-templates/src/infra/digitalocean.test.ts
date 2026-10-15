@@ -64,7 +64,7 @@ describe("renderInfra for DigitalOcean", () => {
 
   it("adds Cloudflare DNS next to the Droplet and restricts web ports to Cloudflare", () => {
     const files = renderInfra(
-      doPlan({ domain: "shop.example.com", www: true }),
+      doPlan({ domain: "example.com", www: true }),
       testContext({ cloudflare: testCloudflare() }),
     );
     const vendored = files.filter((f) => f.path.startsWith("opscrew/infra/modules/"));
@@ -75,7 +75,7 @@ describe("renderInfra for DigitalOcean", () => {
     expect(content(files, "prod/versions.tf")).toMatchSnapshot("versions.tf");
     expect(content(files, "prod/variables.tf")).toMatchSnapshot("variables.tf");
     expect(JSON.parse(content(files, "tfvars.json"))).toMatchObject({
-      domain: "shop.example.com",
+      domain: "example.com",
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
       proxied: true,
       www: true,

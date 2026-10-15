@@ -132,7 +132,7 @@ describe("renderRunbook for a server the user owns", () => {
   });
 
   it("matches the snapshots", () => {
-    expect(runbook({ domain: "shop.example.com", www: true })).toMatchSnapshot("public");
+    expect(runbook({ domain: "example.com", www: true })).toMatchSnapshot("public");
     expect(
       runbook({
         access: "tunnel",

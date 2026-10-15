@@ -6,7 +6,7 @@ exports[`renderCaddyfile > serves the domain (and www) with HSTS and the ACME em
 	email ops@example.com
 }
 
-shop.example.com, www.shop.example.com {
+example.com, www.example.com {
 	encode zstd gzip
 	reverse_proxy app:3000
 	header {
