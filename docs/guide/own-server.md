@@ -19,9 +19,13 @@ change it would make, and changes nothing until you approve that exact list.
 - One OpsCrew app per server. Sharing a server between several OpsCrew apps comes later.
 - On your computer: Node.js 22 or newer, git, OpenTofu or Terraform, and a GitHub repository with
   your app, as for every OpsCrew deployment.
-- For a custom domain: a domain whose DNS is on Cloudflare and a Cloudflare API token
-  (`CLOUDFLARE_API_TOKEN`). A server that the internet cannot reach (see
-  [Home servers](#home-servers-and-the-cloudflare-tunnel)) always needs one.
+- A domain for your site. Its DNS can be anywhere when your server serves the site directly with
+  DNS only (see [How visitors reach your server](#how-visitors-reach-your-server)). A domain on
+  Cloudflare and a Cloudflare API token (`CLOUDFLARE_API_TOKEN`) are needed only for the Cloudflare
+  Tunnel, for serving behind Cloudflare's proxy and for a [Portainer](portainer.md) subdomain. A
+  server that the internet cannot reach (see
+  [Home servers](#home-servers-and-the-cloudflare-tunnel)) always uses the tunnel, so it always
+  needs them.
 
 If your sudo user needs a password, OpsCrew stops and tells you how to allow passwordless sudo for
 that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
@@ -41,6 +45,7 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
    server.user: root
    server.key: ~/.ssh/id_ed25519
    server.reachable: true
+   server.serve: tunnel   # tunnel, proxy (behind Cloudflare's proxy) or dns-only (directly)
    ```
 
 2. `npx opscrew design`: OpsCrew connects to the server for the first time and shows its SSH host
@@ -52,8 +57,9 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
 3. `npx opscrew adapt` prepares the app for a container, as for any other deployment. Merge its
    pull request.
 4. `npx opscrew provision` shows two plans and asks for each separately:
-   - the **infrastructure plan**: the DNS records on Cloudflare (or, for a home server, the
-     Cloudflare Tunnel and its access rules), with its hash;
+   - the **infrastructure plan**: the DNS records on Cloudflare, and the Cloudflare Tunnel with its
+     access rules, when your site uses it, with its hash (with DNS somewhere else and DNS-only
+     serving, you add the record yourself);
    - the **host plan**: every change OpsCrew would make on your server, each marked as already in
      place or to be changed, with its hash.
 
@@ -77,6 +83,20 @@ npx opscrew provision --approve <infrastructure hash> --approve <host plan hash>
 
 Each `--approve` names exactly one plan you reviewed. `--yes` only approves writing the files,
 storing the GitHub secrets, pushing and opening the pull request; it never approves a plan.
+
+A switch between serving directly and the tunnel (after you change `server.serve` and run
+`design` again) first removes the old DNS records, so `--plan-only` prints a command that also
+needs the app's name. Run it, then plan and apply the new setup:
+
+```bash
+npx opscrew provision --plan-only --yes                   # prints the removal command
+npx opscrew provision --approve <removal hash> --confirm <app> --yes
+npx opscrew provision --plan-only --yes                   # prints the new setup's hashes
+npx opscrew provision --approve <infrastructure hash> --approve <host plan hash> --yes
+```
+
+When the server changes too, the printed removal command also has `--approve <host plan hash>`;
+keep it as printed. Without `--confirm` a script never removes anything.
 
 ## What OpsCrew changes on your server
 
@@ -172,7 +192,8 @@ only SSH.
   network, or through your VPN).
 
 Switching an existing deployment between serving directly and the tunnel runs as two applies:
-OpsCrew first removes the old DNS records, then adds the new ones.
+OpsCrew first removes the old DNS records (you confirm with the app's name), then adds the new
+ones. For the commands in a script, see [In scripts](#in-scripts).
 
 ### Cloudflare token permissions
 

@@ -119,12 +119,17 @@ The test sets `CI=1`, so every command runs non-interactively:
    hostname stops working after a few runs a week. The name stays one level below the zone because
    Cloudflare's free edge certificate covers only `<zone>` and `*.<zone>`; the run stops with an
    error when the hostname is not directly below the zone Cloudflare reports.
-2. **DNS only**: `interview --answers` (own server, `root`, the key's path,
-   `server.serve: dns-only`), `design --host-key <fingerprint>`, `adapt --no-ai --yes` (pull request
+2. **DNS only**: `init --fix` first, as a user would (before the interview only the cloud provider
+   token check may fail, with its hint that a server you already have needs no token; the
+   `.gitignore` lines it adds are committed to `main`), `analyze --no-ai`, `interview --answers`
+   (own server, `root`, the key's path, `server.serve: dns-only`), `init` again (now everything
+   passes), `design --host-key <fingerprint>`, `adapt --no-ai --yes` (pull request
    merged), `provision --plan-only` then `provision --approve <infrastructure> --approve <host plan>`,
    merge of the deploy pull request and its workflow run, then the domain answers from the server
    itself (not proxied), `verify`, `secure` (no failed check) and `drift` pass and root still logs
-   in with its key.
+   in with its key. The step measures the time from the start of `init` to the passing `verify`
+   (SC-901) and logs it; when that takes 20 minutes or more, the run fails at the end (step 8), after
+   the later steps.
 3. `provision --plan-only` again: nothing to apply.
 4. `portainer enable` (plan, then `--approve`): ports 9443, 9000 and 8000 do not answer on the
    server's addresses; through the SSH tunnel command `portainer status` prints, Portainer answers,
@@ -167,7 +172,9 @@ cleanup always runs:
 - It removes what this run created in Cloudflare for the app, also after a finished `destroy`
   (which should have left nothing): DNS records on the run's hostname, `www.`, `ssh-<app>.` and
   `portainer.`, the tunnel `opscrew-<app>`, the Access applications and policies and the service
-  token named after the app. Anything that existed before the run is skipped.
+  token named after the app, and the zone's OpsCrew rulesets (configuration and WAF rules) that
+  this run created, those whose rules name only the run's hostnames. Anything that existed before
+  the run is skipped, including rulesets of other apps or earlier runs.
 - It resets the throwaway repository: closes every open pull request and deletes every branch
   except `main`.
 
@@ -177,7 +184,8 @@ secret it knows.
 If a run was interrupted (the process killed, so the cleanup never ran): in the Hetzner project,
 delete the servers and SSH keys labelled `managed-by=opscrew-e2e`; in Cloudflare, delete the DNS
 records on the run's hostname `e2e-<run id>.<zone>` (the id is the server's `run=<id>` label) and
-on `www.`, `portainer.` and `ssh-<app>.`, the tunnel `opscrew-<app>`, the Access applications `OpsCrew SSH (<app>)`, the Access policy and service token `OpsCrew deploy (<app>)`.
+on `www.`, `portainer.` and `ssh-<app>.`, the tunnel `opscrew-<app>`, the Access applications `OpsCrew SSH (<app>)`, the Access policy and service token `OpsCrew deploy (<app>)`, and the zone's
+OpsCrew rulesets whose rules name only that run's hostnames.
 
 | Variable | What it is |
 |---|---|
@@ -206,8 +214,8 @@ A full run takes about 60–90 minutes (five deploy workflow runs, Docker's inst
 server and a reboot). The server is the smallest x86 type, billed by the hour at Hetzner, so a run
 costs about one or two cents of server time, plus GitHub Actions minutes for the builds (free for
 public repositories). Left behind on purpose: the GitHub Actions secrets and the container image
-in the throwaway repository (as above), the zone's OpsCrew rule sets, and the Zero Trust
-organization if OpsCrew created it (other apps may use them).
+in the throwaway repository (as above), the zone's rulesets that existed before the run, and the
+Zero Trust organization if OpsCrew created it (other apps may use them).
 
 ## Price tables
 

@@ -38,8 +38,10 @@ store; they never pass through the chat.
 
 On a server you already have, the changes OpsCrew makes on the server are a plan of their own that
 you approve in a dialog, and you confirm the server's SSH host key the first time. OpsCrew never asks
-for a password or passphrase, and your server's address stays on your computer: the tools show
-"your server" instead.
+for a password or passphrase. Your server's address is kept on your computer and never appears in
+the tools' results, in files or in pull requests: the tools show "your server" instead. An address
+you type into the chat during the interview does reach Claude, though; to keep it out of the chat,
+answer the interview in a terminal with `npx opscrew interview`, then continue in Claude Code.
 
 ## Local development
 

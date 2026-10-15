@@ -89,5 +89,8 @@ deletes the data.
 ## From Claude Code
 
 The OpsCrew plugin offers the same: Claude can show Portainer's status and turn it on or off, and
-you approve each plan in a dialog. Claude never sees the password or your own server's address; to
-open Portainer, run `npx opscrew portainer status` in your terminal.
+you approve each plan in a dialog. Claude never sees the password. Your own server's address never
+appears in the tools' results, in files or in pull requests (the tools say "your server"), but an
+address you type into the chat during the plugin's interview does reach Claude. To keep it out of
+the chat, answer the interview in your terminal with `npx opscrew interview`. To open Portainer, run
+`npx opscrew portainer status` in your terminal: it prints the SSH tunnel command with the address.
