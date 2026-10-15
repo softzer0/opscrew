@@ -100,7 +100,8 @@ const ANSWER_HELP: Record<string, string> = {
 const SERVER_ANSWER_HELP: Record<string, string> = {
   "server.host":
     "Own server: its IP address or host name. Kept on the user's computer only; leave it out to keep the saved one.",
-  "server.port": "Own server: the SSH port, usually 22.",
+  "server.port":
+    "Own server: the SSH port this computer and GitHub Actions connect to, usually 22 (the forwarded port when a router forwards one to the server).",
   "server.user": "Own server: the SSH user, root or a user with passwordless sudo.",
   "server.key":
     'Own server: the path to the private key file (for example ~/.ssh/id_ed25519), or "agent" for the SSH agent. Never the key itself, a password or a passphrase.',

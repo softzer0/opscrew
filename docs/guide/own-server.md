@@ -33,9 +33,11 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
 ## Step by step
 
 1. `npx opscrew interview`: choose **A server you already have**. OpsCrew then asks for the server's
-   address (IP address or host name), the SSH port (usually 22), the SSH user, which key to use (a
-   path such as `~/.ssh/id_ed25519`, or `agent`), whether the internet can reach the server and how
-   your site is served (see [How visitors reach your server](#how-visitors-reach-your-server)).
+   address (IP address or host name), the SSH port this computer and GitHub Actions connect to
+   (usually 22; when a router forwards another port to the server, the forwarded one), the SSH
+   user, which key to use (a path such as `~/.ssh/id_ed25519`, or `agent`), whether the internet
+   can reach the server and how your site is served
+   (see [How visitors reach your server](#how-visitors-reach-your-server)).
    In scripts, put the same answers in a file and pass `--answers <file>`:
 
    ```yaml
@@ -86,11 +88,13 @@ storing the GitHub secrets, pushing and opening the pull request; it never appro
 
 With the Cloudflare Tunnel, the host plan needs the tunnel's id, so its hash appears only after the
 infrastructure plan is applied. The first `--plan-only` prints only the infrastructure hash. Apply
-that first, then plan again and approve the host plan in a second run:
+that first, then plan again and approve the host plan in a second run. The infrastructure-only run
+ends with an error that asks for the host plan's approval (and prints its hash), so a script that
+stops on errors lets that one through:
 
 ```bash
 npx opscrew provision --plan-only --yes                   # prints the infrastructure hash
-npx opscrew provision --approve <infrastructure hash> --yes
+npx opscrew provision --approve <infrastructure hash> --yes || true   # applies it, then asks for the host plan
 npx opscrew provision --plan-only --yes                   # now prints the host plan's hash
 npx opscrew provision --approve <host plan hash> --yes
 ```

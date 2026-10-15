@@ -237,3 +237,10 @@ network or model.
 - [X] T963 Say in `docs/guide/own-server.md` that in tunnel mode GitHub Actions gets only the SSH hostname behind Cloudflare Access, never the server's address per FR-902 (partial)
 - [X] T964 Limit drift's "`opscrew provision` puts it back" line to the differences provision restores, leaving added ufw rules, other policies and runtime files to their own next steps per FR-911, Constitution IX (contradicts)
 - [X] T965 Reword FR-915: the Portainer subdomain's tunnel and Access application are set up and removed as infrastructure code through the IaC engine behind the safety gate per FR-915 (contradicts)
+
+## Phase 7: Convergence
+
+- [X] T966 Make the run-11 row of `docs/e2e.md` state exactly what was measured: the init-to-verified-deploy time was within SC-901's 20 minutes (a longer run fails the test), and the exact figure appears in the run log only when a step fails per SC-901 (partial)
+- [X] T967 Say in `docs/guide/portainer.md` ("From Claude Code") that deleting Portainer's data stays in the terminal (`npx opscrew portainer disable --delete-data`) per FR-917 (partial)
+- [X] T968 Describe `server.port` in the MCP interview answers and the guide as the port this computer and GitHub Actions connect to (the forwarded port when a router forwards one) per US1/AC5, FR-917 (partial)
+- [X] T969 Say in the guide's "In scripts" tunnel steps that the infrastructure-only run ends with an error asking for the host plan's approval (and prints its hash), so a script tolerates that exit code before the second run per contracts/cli: Provision (partial)
