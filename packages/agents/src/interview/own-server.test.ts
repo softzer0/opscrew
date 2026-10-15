@@ -353,6 +353,39 @@ describe("runInterview with a server the user already has", () => {
     expect((await d.state.read()).phases.interview?.summary).not.toContain(IPV4);
   });
 
+  it("refuses a domain too deep for the tunnel before anything is written", async () => {
+    const d = await deps();
+    await expect(
+      runInterview(d, {
+        answers: {
+          ...BASE,
+          provider: "own",
+          domain: "api.shop.example.com",
+          dnsProvider: "cloudflare",
+          server: { host: IPV4, user: "root", key: "agent", serve: "tunnel" },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining(
+        "so api.shop.example.com would fail HTTPS at Cloudflare's edge; use a name one level below example.com, such as api-shop.example.com",
+      ),
+    });
+    await expect(readFile(d.paths.files.requirements, "utf8")).rejects.toThrow();
+    expect(await readOwnServer(d.paths)).toBeUndefined();
+    // DNS only is served with Caddy's own certificate.
+    const direct = await runInterview(d, {
+      answers: {
+        ...BASE,
+        provider: "own",
+        domain: "api.shop.example.com",
+        dnsProvider: "cloudflare",
+        server: { host: IPV4, user: "root", key: "agent", reachable: true, serve: "dns-only" },
+      },
+    });
+    expect(direct.requirements.domain).toBe("api.shop.example.com");
+  });
+
   it("asks the server questions after the others, pre-filled from the last answers", async () => {
     const d = await deps();
     await runInterview(d, {

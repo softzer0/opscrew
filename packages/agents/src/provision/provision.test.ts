@@ -240,7 +240,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
   });
 
   it("fills host lists with the domain when the plan has one", async () => {
-    const base = testPlan({ domain: "shop.example.com", www: true });
+    const base = testPlan({ domain: "example.com", www: true });
     const plan = {
       ...base,
       app: {
@@ -257,8 +257,30 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     });
     await runProvision(deps, { services });
     const appEnv = github.secrets.get("OPSCREW_APP_ENV") ?? "";
-    expect(appEnv).toContain("ALLOWED_HOSTS=shop.example.com,www.shop.example.com\n");
+    expect(appEnv).toContain("ALLOWED_HOSTS=example.com,www.example.com\n");
     expect(appEnv).not.toContain(SERVER_IPV4);
+  });
+
+  it("stops before planning when a name is too deep for the zone Cloudflare names", async () => {
+    // Hand-edited: www. on a domain one level below the zone, which is not known until now.
+    const plan = testPlan({ domain: "shop.example.com", www: true });
+    const engine = new FakeEngine();
+    const { deps, github, services } = await setup({
+      plan,
+      engine,
+      services: { cloudflare: fakeCloudflare() },
+    });
+    const before = await readFile(deps.paths.files.plan, "utf8");
+    await expect(runProvision(deps, { services })).rejects.toMatchObject({
+      code: "ARTIFACT_INVALID",
+      message: expect.stringContaining(
+        "opscrew/plan.yaml cannot be provisioned in the Cloudflare zone example.com: dns.www can be true only when the domain is example.com itself while Cloudflare serves it: Cloudflare's free certificate covers only example.com and *.example.com, so www.shop.example.com would fail HTTPS at Cloudflare's edge",
+      ),
+    });
+    expect(engine.calls).toEqual([]);
+    expect(engine.applied).toEqual([]);
+    expect(github.secrets.size).toBe(0);
+    expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
   });
 
   it("clears the teardown record before a new apply starts, even when the apply fails", async () => {

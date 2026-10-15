@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { STATIC_PRICES_AS_OF as HETZNER_PRICES_AS_OF } from "@opscrew/connector-hetzner";
 import type { FetchLike } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import {
   type Architecture,
@@ -638,6 +639,28 @@ describe("runDesign", () => {
         await expect(
           runDesign(deps, { catalog: euCatalog(), optionId: "hetzner-single-cx13-fsn1" }),
         ).rejects.toThrow(/Portainer is served on portainer\.example\.com through Cloudflare/);
+        expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+      });
+
+      it("names the actual problem when the kept settings no longer fit, in plain words", async () => {
+        const deps = await withPortainer();
+        const before = await readFile(deps.paths.files.plan, "utf8");
+        // Still on Cloudflare in the same zone, but now on Portainer's own hostname.
+        await writeArtifact(
+          "requirements",
+          deps.paths.files.requirements,
+          makeRequirements({ dnsProvider: "cloudflare", domain: "portainer.example.com" }),
+        );
+        const error = await runDesign(deps, {
+          catalog: euCatalog(),
+          optionId: "hetzner-single-cx13-fsn1",
+        }).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(OpsCrewError);
+        expect(error).toMatchObject({
+          code: "INVALID_INPUT",
+          message:
+            "OpsCrew cannot keep the settings of the current plan with the new design: portainer.hostname must differ from the app's domain (portainer.example.com) and its www. alias. plan.yaml was not changed.",
+        });
         expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
       });
     });

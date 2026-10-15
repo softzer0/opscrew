@@ -635,7 +635,11 @@ function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
   });
   if (kept.success) return kept.data;
   const portainer = previous.portainer;
-  if (portainer?.access === "subdomain") {
+  const issue = kept.error.issues[0];
+  const field = issue?.path.join(".") || "plan";
+  // Portainer's subdomain needs the app's domain on Cloudflare, in the zone it was learned for.
+  const offCloudflare = field === "portainer.access" || field === "dns.zone";
+  if (portainer?.access === "subdomain" && offCloudflare) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `Portainer is served on ${portainer.hostname ?? "a subdomain"} through Cloudflare, but the new requirements no longer put the app's domain on Cloudflare${zone === undefined ? "" : ` in the zone ${zone}`}, so OpsCrew cannot keep it. plan.yaml was not changed.`,
@@ -644,7 +648,13 @@ function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
       },
     );
   }
-  throw kept.error;
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `OpsCrew cannot keep the settings of the current plan with the new design: ${field} ${issue?.message ?? "is not valid"}. plan.yaml was not changed.`,
+    {
+      hint: "Change your answers with `opscrew interview`, or fix the field shown above in opscrew/plan.yaml, then run `opscrew design` again.",
+    },
+  );
 }
 
 /**

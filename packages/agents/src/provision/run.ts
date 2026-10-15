@@ -5,7 +5,12 @@ import type { ApprovalRecord, IacEngine, PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { portainerHostname, usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { cloudflareAccessLoginMethods, oneTimePinIdentityProvider } from "../portainer/access";
@@ -338,6 +343,7 @@ async function provisionFlow(
   const zoneLearned = cloudflare !== undefined && plan.dns.zone !== cloudflare.zoneName;
   if (cloudflare && zoneLearned) {
     plan = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };
+    requireValidWithZone(deps, plan);
   }
 
   // 3. Engine, deploy key, state encryption
@@ -832,4 +838,23 @@ export async function runProvision(
   const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
   if (plan !== undefined) requireNoMoveInProgress(plan);
   return runPhaseFlow(deps, "provision", options);
+}
+
+/**
+ * Checks the plan again once Cloudflare named its zone: names the schema can only check against
+ * the zone (a `www.` alias or a Portainer subdomain beyond Cloudflare's free certificate) stop
+ * provision before anything is rendered, planned or changed.
+ */
+function requireValidWithZone(deps: PhaseDeps, plan: DeployPlan): void {
+  const parsed = DeployPlanSchema.safeParse(plan);
+  if (parsed.success) return;
+  const issue = parsed.error.issues[0];
+  const field = issue?.path.join(".") || "plan";
+  throw new OpsCrewError(
+    "ARTIFACT_INVALID",
+    deps.redactor.redact(
+      `opscrew/plan.yaml cannot be provisioned in the Cloudflare zone ${plan.dns.zone}: ${field} ${issue?.message ?? "is not valid"}. Nothing was changed.`,
+    ),
+    { hint: "Fix the field shown above in opscrew/plan.yaml, then run `opscrew provision` again." },
+  );
 }

@@ -182,6 +182,8 @@ export async function runInterview(
         // Without a domain on Cloudflare the site can only be served with DNS only.
         cloudflareDomain:
           requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined,
+        // Served through the tunnel or the proxy it must fit Cloudflare's free certificate.
+        ...(requirements.domain !== undefined ? { domain: requirements.domain } : {}),
       };
       if (!hasServerAnswers(split) && options.askServer !== undefined) {
         split = splitServerAnswers(await options.askServer(buildServerQuestions(serverContext)));
