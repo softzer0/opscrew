@@ -36,6 +36,7 @@ Never in the plan: the address, the SSH user, the key path, the host key, tokens
 | `hostKey` | pinned `SHA256:` fingerprint (also in the project's `known_hosts`); absent until the first connection, and dropped when the host or port changes, so the next connection asks again |
 | `reachable` | the user's answer: whether the internet can reach the server directly (`public` mode) or not (`tunnel` mode) |
 | `publicIpv4`, `publicIpv6` | the addresses DNS points to in public mode |
+| `serve` | how the site is served when the server is reachable and the domain is on Cloudflare: `tunnel` (the default), `proxy` (directly behind Cloudflare's proxy with the Cloudflare-only web filter) or `dns-only`; without a Cloudflare domain only `dns-only` |
 
 ## Host facts (in memory, from `inspectHost`)
 

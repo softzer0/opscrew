@@ -36,7 +36,9 @@ marked **confirm live** are checked by the gated live test or a CI smoke test be
   before ufw's chains, so ufw cannot protect them
   (https://docs.docker.com/engine/network/packet-filtering-firewalls/).
 - **Alternatives**: editing Docker's rules or `"iptables": false` (Docker: likely to break container
-  networking); rules in the `DOCKER-USER` chain (more moving parts than publishing nothing).
+  networking); rules in the `DOCKER-USER` chain (more moving parts than publishing nothing;
+  superseded for servers behind Cloudflare's proxy by the amendment below, which adopts them as an
+  explicit, fail-closed option).
 - **Behind Cloudflare's proxy** (founder, 2026-10-14, after T913 found that ufw rules limited to
   Cloudflare's ranges cannot filter Caddy's Docker-published 80/443): an own server whose site is
   behind Cloudflare's proxy uses the tunnel (R3) by default, also with a public address. As an

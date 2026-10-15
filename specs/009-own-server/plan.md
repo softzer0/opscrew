@@ -102,8 +102,10 @@ admin login (`sudo -n` when not root). See `contracts/host-adapter.md`.
   `systemctl is-active` for nginx/apache2/caddy/traefik/haproxy/firewalld, `nft list ruleset`,
   `ufw status`, `snap list docker`, `dpkg-query` for Docker and conflicting packages,
   `docker version`, `getent passwd` with shells and authorized keys, the OpsCrew marker and record).
-- `planHost(facts, desired)` → `HostPlan`: ordered steps (`docker`, `deploy-user`, `sshd`, `ufw`,
-  `unattended-upgrades`, `runtime-dirs`, `app-marker`, `tunnel-connector`, `portainer`), each
+- `planHost(facts, desired)` → `HostPlan`: ordered steps (`package-repair` after an interrupted
+  dpkg run, `docker`, `docker-daemon`, `deploy-user`, `sshd`, `ufw`, `web-filter` (the
+  Cloudflare-only filter, by choice), `fail2ban`, `unattended-upgrades`, `runtime-dirs`,
+  `app-marker`, `tunnel-connector`, `portainer`; the 13 steps of the host-adapter contract), each
   `in-place`, `change` or `blocked` (with the plain reason), plus blocking findings (unsupported OS,
   sudo needs a password, ports taken, another firewall, Snap/Podman/distro Docker, another OpsCrew
   app). Canonical JSON → SHA-256. Secrets are referenced, never included.
@@ -150,7 +152,11 @@ Order: preconditions → connect and confirm the host key (FR-903) → inspect �
 findings → render → IaC plan, policy, `iac-apply` approval, apply (DNS, tunnel, Access) → host plan
 (with the tunnel token and Portainer password supplied as secrets at apply) → policy → `host-apply`
 approval → apply → record the address → deploy secrets (plus the service-token secrets in tunnel
-mode) → publish the deploy pull request. `--plan-only` and `--approve <hash>` cover both plans.
+mode) → publish the deploy pull request. `--plan-only` and `--approve <hash>` cover both plans; in
+tunnel mode the host plan's hash includes the tunnel id, so on a first provision it can be shown
+and approved only in a second run, after the tunnel exists (the CLI says so). When an approved plan
+deletes the tunnel, the host change that removes its connector is applied first, then the tunnel is
+deleted once Cloudflare reports no connections (T921/T922).
 
 ### 6. Day 2 (T906)
 
@@ -179,9 +185,11 @@ approvals, plugin skill text, README.
 ### 9. Live test (T909)
 
 The test creates a throwaway Hetzner server through Hetzner's API (not through OpsCrew), passes it to
-OpsCrew as the user's own server (root with a test key), and runs: public mode with a domain;
-tunnel mode with ufw blocking web traffic; Portainer local-only (port scan from outside, tunnel
-command works); destroy with `--undo-host`; it then deletes the server itself.
+OpsCrew as the user's own server (root with a test key), and runs on a hostname of its own: DNS-only
+public mode; a re-run without changes; Portainer local-only (port scan from outside, tunnel command
+works); the Cloudflare-only filter (both addresses closed on 80/443, nothing on IPv6, the filter
+back before Docker after a reboot); tunnel mode with ufw blocking web traffic and a deploy through
+Access; destroy with `--undo-host`; it then deletes the server itself.
 
 ## Order
 

@@ -43,9 +43,11 @@ an example app and tears it down.
    user runs `opscrew provision`, **Then** OpsCrew lists every host change it would make, marks
    what is already in place, and changes nothing until the user approves the plan by its hash.
 2. **Given** an approved host plan, **When** OpsCrew applies it, **Then** the server has the
-   container runtime, the non-root deploy user with the deploy key, hardened SSH, a firewall that
-   allows only SSH and web traffic, automatic security updates and OpsCrew's app runtime; every
-   change is in the audit log.
+   container runtime (with Docker's daemon settings and, after an interrupted earlier run, a
+   repaired package database), the non-root deploy user with the deploy key, hardened SSH, a
+   firewall that allows only SSH and web traffic (and, behind Cloudflare's proxy by choice, the
+   Cloudflare-only web filter), fail2ban, automatic security updates and OpsCrew's app runtime;
+   every change is in the audit log.
 3. **Given** a server OpsCrew has already prepared, **When** the user runs `opscrew provision`
    again, **Then** the plan shows no changes and nothing on the server changes.
 4. **Given** the first connection to a server, **When** OpsCrew shows the host key fingerprint,
@@ -97,8 +99,9 @@ deploys from GitHub still happen automatically after a merge.
 **Why this priority**: home labs are a large part of the "server I already have" audience, but the
 feature is useful without them.
 
-**Independent Test**: fakes for the Cloudflare tunnel API; the gated live test runs a server whose
-firewall blocks web traffic from the internet and serves the app through the tunnel.
+**Independent Test**: the tunnel, its DNS route and Access rendered as infrastructure code and
+planned with fake engines; the gated live test runs a server whose firewall blocks web traffic
+from the internet and serves the app through the tunnel.
 
 **Acceptance Scenarios**:
 
@@ -106,8 +109,9 @@ firewall blocks web traffic from the internet and serves the app through the tun
    internet), **When** design runs, **Then** OpsCrew plans the tunnel and requires a domain on the
    user's Cloudflare account.
 2. **Given** the tunnel plan is approved, **When** it is applied, **Then** the app answers over
-   HTTPS on the domain, the server's firewall allows no inbound web traffic, and the tunnel's
-   secret exists only on the server and in the deploy secrets.
+   HTTPS on the domain, the server's firewall allows no inbound web traffic, the tunnel's
+   connector token exists only on the server (and in OpsCrew's local infrastructure state), and
+   the Access service token for deploys exists only in the deploy secrets.
 3. **Given** a merged change, **When** the deploy runs, **Then** it reaches the server without any
    inbound port being opened, and a failed deploy rolls back as on other servers.
 
@@ -127,12 +131,14 @@ what is removed.
    server, **When** the user runs `opscrew drift`, **Then** OpsCrew reports exactly those
    differences (there are no cloud resources to compare).
 2. **Given** a deployed app, **When** the user runs `opscrew destroy`, **Then** OpsCrew removes only
-   what it set up for the app (its containers, runtime files, deploy workflow and secrets, and the
-   DNS records or tunnel it created), never deletes or reinstalls the server, and deletes the app's
+   what it set up for the app (its containers, runtime files, deploy secrets, and the DNS records
+   or tunnel it created; the deploy workflow stays in the repository and is listed under what
+   remains, as for OpsCrew-created servers), never deletes or reinstalls the server, and deletes the app's
    data only after an explicit approval for data loss and a typed confirmation of the app's name.
 3. **Given** the user also wants OpsCrew's host changes undone, **When** they ask for it, **Then**
    OpsCrew shows and, after approval, reverses its host changes (deploy user, its SSH and firewall
-   settings, its runtime) and leaves anything it did not install alone.
+   settings, its runtime) and leaves anything it did not install alone; Docker stays installed
+   even when OpsCrew installed it, because other software on the server may use it.
 4. **Given** an own server, **When** design, the runbook or destroy run, **Then** they say plainly
    that OpsCrew cannot turn on backups or snapshots there and that backups are the user's
    responsibility.
@@ -158,7 +164,8 @@ not reachable from the internet but works through the printed tunnel command.
    internet.
 3. **Given** Portainer is enabled, **When** it starts for the first time, **Then** its admin account
    already has a password OpsCrew generated (so nobody else can claim the instance), and that
-   password is kept only in OpsCrew's local state and shown only when the user asks for it.
+   password is kept only in OpsCrew's local state (a file only the user can read); OpsCrew shows
+   that file's path, never the password itself.
 4. **Given** the user explicitly opts in to a subdomain, **When** it is applied, **Then** Portainer
    is served on that subdomain of their Cloudflare domain behind Cloudflare Access, which lets in
    only the email addresses the user listed, in addition to Portainer's own login.
@@ -181,7 +188,9 @@ not reachable from the internet but works through the printed tunnel command.
   showing only what is still missing.
 - A second OpsCrew app is pointed at a server that already runs one: OpsCrew refuses and says that
   sharing a server between apps comes with a later feature.
-- The server reboots during setup (kernel update): OpsCrew waits for it and continues.
+- The server reboots or the connection drops during setup (kernel update): OpsCrew stops with a
+  plain message; the next run inspects the server again and continues where it stopped (every
+  step is idempotent and the setup record says what is already done).
 - The address is a hostname, not an IP: it is kept in local state like an IP, never in committed
   files.
 
@@ -217,12 +226,13 @@ not reachable from the internet but works through the printed tunnel command.
   server serves the web directly, HTTP and HTTPS, adding the SSH rule before enabling it; only the
   reverse proxy (or the tunnel connector) may publish ports, every other container port MUST be
   bound to the server itself; servers that use another firewall MUST NOT get a second one.
-- **FR-909**: OpsCrew MUST turn on automatic security updates and set up the same app runtime it
+- **FR-909**: OpsCrew MUST turn on automatic security updates and fail2ban and set up the same app runtime it
   uses on its own servers (Compose, the reverse proxy with automatic TLS), so deploys, the release
   command, health checks, rollback, `verify` and `secure` behave the same.
 - **FR-910**: For a server without a public address OpsCrew MUST serve the app through a Cloudflare
-  Tunnel on the user's Cloudflare domain with no inbound web ports, create and remove the tunnel
-  and its DNS record through its Cloudflare adapter behind the safety gate, keep the tunnel's
+  Tunnel on the user's Cloudflare domain with no inbound web ports, create and remove the tunnel,
+  its DNS route and Access as infrastructure code through the IaC engine behind the safety gate
+  (the connector on the server is removed before the tunnel is deleted), keep the tunnel's
   secret out of committed files, prompts and logs, and still deploy automatically after a merge.
   By default the same tunnel MUST serve every own server whose site is behind Cloudflare's proxy,
   also one with a public address. As the user's explicit choice, a server with a public address MAY
@@ -253,7 +263,9 @@ not reachable from the internet but works through the printed tunnel command.
   confirmation; the Portainer password MUST never appear in the repository, the plan, prompts,
   logs, audit entries or reports.
 - **FR-917**: The MCP server and the Claude Code plugin MUST offer the same choices and enforce the
-  same approvals as the CLI.
+  same approvals as the CLI, except that destroy, `--undo-host` and deleting data stay in the
+  terminal (as for OpsCrew-created servers), and a server's host key is confirmed by the user in a
+  dialog, never passed by the model.
 
 ### Key Entities
 
