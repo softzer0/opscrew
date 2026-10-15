@@ -122,9 +122,10 @@ See `contracts/portainer-adapter.md`.
   `opscrew-deploy` branch (the job has `contents: write` only for that); in `cloudflare` mode call
   the webhook through Access (service-token secrets); wait for the health URL; on failure write the
   previous digest back (and call the webhook again in `cloudflare` mode) and fail the run.
-- The Cloudflare root for a Portainer target: DNS or the app tunnel (web `tunnel`), and in
-  `cloudflare` redeploy mode a tunnel route plus Access for the Portainer hostname; reuses 009's
-  modules.
+- The Cloudflare root for a Portainer target: the app tunnel (web `tunnel`; for `proxy` and `caddy`
+  OpsCrew creates no DNS record and prints the one the user creates), and in `cloudflare` redeploy
+  mode a tunnel route for the webhook path only plus Access for the Portainer hostname; reuses
+  009's modules.
 
 ### 4. Provider, interview, design (T1004)
 

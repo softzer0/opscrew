@@ -134,10 +134,19 @@ observed there). Founder decisions are dated.
 
 - **Decision**: `tunnel` (default): a cloudflared service in the app stack with the tunnel token in
   `Env`, Caddy serving plain HTTP behind it (as in 009's tunnel mode, with the HTTPS redirect on
-  `Cf-Visitor`); `proxy`: the app published on a host port the user chooses (OpsCrew prints what to
-  route; no TLS); `caddy`: Caddy publishes 80/443 with automatic certificates after OpsCrew checks
+  `Cf-Visitor`); `proxy`: Caddy in the stack published on a host port the user chooses, forwarding to
+  the app and adding `X-OpsCrew-Image` (the digest's first 12 hex digits) so the deploy workflow can
+  tell the new version is live (OpsCrew prints what to route; no TLS; Caddy trusts `X-Forwarded-*`
+  from private addresses only); `caddy`: Caddy publishes 80/443 with automatic certificates after OpsCrew checks
   (admin token: containers' published ports; limited token: the user confirms) that the ports are
-  free. The tunnel, DNS and Access are infrastructure code through the IaC engine, as in 009.
+  free. The tunnel, DNS and Access are infrastructure code through the IaC engine, as in 009. In
+  `proxy` and `caddy` mode OpsCrew creates no DNS record (a home address changes and OpsCrew never
+  stores it); it prints the record the user creates (an A/AAAA record to their public address or a
+  CNAME to their dynamic-DNS name). One stack environment serves every service, so OpsCrew's own
+  variables are named `OPSCREW_*` (`OPSCREW_DB_PASSWORD`, `OPSCREW_TUNNEL_TOKEN`, …) and app
+  variables named `OPSCREW_*` or `COMPOSE_*` are refused. An optional app variable left unset
+  reaches the app as an empty value (the template stays independent of local values); the live test
+  checks whether Compose in Portainer leaves a bare `NAME:` entry unset instead.
 
 ## R9. Data on destroy
 

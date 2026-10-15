@@ -246,7 +246,8 @@ what is removed; the live test destroys and checks Portainer, the decoy stack an
 - **FR-1011**: Visitors MUST reach the app the way the user chose: a Cloudflare Tunnel in the app's
   stack (default; no host ports opened), the user's own reverse proxy on a port the user chooses
   (OpsCrew says what to route and does not manage TLS), or Caddy on ports 80/443 with automatic
-  certificates (only when those ports are free); the tunnel and Access are infrastructure code
+  certificates (only when those ports are free); for the own proxy and Caddy OpsCrew prints the DNS
+  record to create and creates none; the tunnel and Access are infrastructure code
   through the IaC engine behind the safety gate.
 - **FR-1012**: Re-running provision MUST be idempotent: an unchanged setup shows no changes and
   changes nothing.
