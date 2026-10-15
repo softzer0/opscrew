@@ -1,5 +1,7 @@
 # Live end-to-end test
 
+What has run live so far, and what has not, is tracked in [e2e-coverage.md](e2e-coverage.md).
+
 `packages/cli/test/live/live.test.ts` runs the whole OpsCrew flow against real services, once for
 each cloud provider whose token is set (Hetzner Cloud, DigitalOcean, or both, one after the other):
 
