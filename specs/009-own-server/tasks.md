@@ -164,6 +164,13 @@ network or model.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/iac-templates`
   - Effort: medium
 
+- [ ] T924 [US3] [US5] Hostnames served through Cloudflare's proxy are at most one level below the zone (found while fixing T923: Cloudflare's free edge certificate covers only `<zone>` and `*.<zone>`, so `portainer.shop.example.com`, `www.shop.example.com` or an app on `api.shop.example.com` behind the proxy or the tunnel would fail TLS at Cloudflare's edge), in `packages/plan-schema/src/plan.ts`, `packages/agents/src/{portainer,design,interview}/`
+  - Owns: `packages/plan-schema/src/plan.ts` (+ tests), `packages/agents/src/portainer/settings.ts`, `packages/agents/src/design/plan.ts`, `packages/agents/src/interview/{answers,own-server}.ts` (+ tests)
+  - Reads: Cloudflare's documentation of Universal SSL's coverage (official); `checkPortainerSubdomain`; how `dns.proxied`, `www` and the tunnel decide which names Cloudflare serves
+  - Accept: every name Cloudflare's proxy serves for the app — the domain when proxied or in tunnel mode, its `www.` alias when proxied, a Portainer subdomain — must be the zone itself or exactly one label below it; otherwise the plan is refused (schema) and the CLI/MCP inputs are refused early with a plain message that says why (Cloudflare's free certificate covers only <zone> and *.<zone>) and suggests a one-level name (e.g. `portainer-shop.example.com`, or turning the proxy off for that name); DNS-only names (Caddy's own certificates) and Hetzner/DigitalOcean unproxied plans are unaffected; `ssh-<app>.<zone>` already fits; tests for each case.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: medium
+
 ## Phase 4: Surfaces and live test
 
 - [X] T908 [US1] [US4] [US5] CLI commands and flags, MCP tools, plugin skill, user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`, `README.md`
