@@ -3,6 +3,7 @@ import type {
   DestroyServices,
   DomainServices,
   InitServices,
+  PortainerAccess,
   PortainerServices,
   ProvisionServices,
   RetargetServices,
@@ -37,6 +38,11 @@ export interface DeployServices {
   domain?: DomainServices;
   /** Engine, Cloudflare, own-server and deploy-user shell fakes for `portainer`. */
   portainer?: PortainerServices;
+  /**
+   * The user's Portainer as a deploy target: how `interview` reads its certificate and lists its
+   * environments (default: `@opscrew/connector-portainer`, pinned to the confirmed certificate).
+   */
+  portainerAccess?: PortainerAccess;
 }
 
 const attached = new WeakMap<CliContext, DeployServices>();

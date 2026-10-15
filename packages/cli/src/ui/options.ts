@@ -32,24 +32,28 @@ function pad(cells: string[][]): string[] {
  * where the prices come from. Deterministic, so it can be tested and printed anywhere.
  */
 export function renderOptionsTable(options: readonly DesignOption[], budget?: Money): string {
-  const priced = options.filter((option) => !isOwnServer(option));
+  const priced = options.filter((option) => !isUnpriced(option));
   const rows = [
     ["", "Option", "Server", "Size", "Location", "Per month", "Budget", ""],
     ...options.map((option, index) => {
       const { target } = option;
-      const own = isOwnServer(option);
-      let monthly = own ? "no server price" : formatMoney(option.cost.monthly);
-      if (!own && budget !== undefined && budget.currency !== option.cost.monthly.currency) {
+      const unpriced = isUnpriced(option);
+      // The user's Portainer: OpsCrew does not size the host, so its sizes are placeholders.
+      const portainer = isPortainer(option);
+      let monthly = unpriced ? "no server price" : formatMoney(option.cost.monthly);
+      if (!unpriced && budget !== undefined && budget.currency !== option.cost.monthly.currency) {
         monthly += ` (≈ ${formatMoney(convertMoney(option.cost.monthly, budget.currency))})`;
       }
       return [
         `${index + 1}.`,
         option.id,
-        `${target.serverType} (${target.cpuType})`,
-        `${target.vcpus} vCPU, ${gb(target.memoryGb)} RAM, ${gb(target.diskGb)} ${own ? "free disk" : "disk"}`,
+        portainer ? target.serverType : `${target.serverType} (${target.cpuType})`,
+        portainer
+          ? "-"
+          : `${target.vcpus} vCPU, ${gb(target.memoryGb)} RAM, ${gb(target.diskGb)} ${unpriced ? "free disk" : "disk"}`,
         target.location,
         monthly,
-        own ? "-" : option.fitsBudget ? "fits" : "over budget",
+        unpriced ? "-" : option.fitsBudget ? "fits" : "over budget",
         option.recommended ? RECOMMENDED_MARKER : "",
       ];
     }),
@@ -63,7 +67,8 @@ export function renderOptionsTable(options: readonly DesignOption[], budget?: Mo
     lines.push(`${option.title} (${option.id}): ${option.summary}`);
     for (const tradeoff of option.tradeoffs) lines.push(`  - ${tradeoff}`);
   }
-  // A server the user owns has no price: no price source and no exchange rate to name (FR-913).
+  // A server the user owns or their Portainer has no price: no price source and no exchange rate
+  // to name (FR-913, FR-1015).
   if (priced.length === 0) return `${lines.join("\n")}\n`;
   const labels = [...new Set(priced.map((option) => priceLabel(option.cost)))];
   lines.push("", `Prices: ${labels.join("; ")}.`);
@@ -81,6 +86,16 @@ export function isOwnServer(option: DesignOption): boolean {
   return option.target.provider === "own";
 }
 
+/** True for the option in the user's existing Portainer, which has no price and no sizes. */
+export function isPortainer(option: DesignOption): boolean {
+  return option.target.provider === "portainer";
+}
+
+/** True for an option without a server price: the user's own server or their Portainer. */
+export function isUnpriced(option: DesignOption): boolean {
+  return isOwnServer(option) || isPortainer(option);
+}
+
 /**
  * Prints the cost table and asks which option to use, starting on the recommended one. Returns the
  * chosen option id. Cancelling throws a user-facing error.
@@ -95,10 +110,10 @@ export async function chooseOption(
   const answer = await prompts.select({
     message: "Which option should OpsCrew plan?",
     options: options.map((option) =>
-      isOwnServer(option)
+      isUnpriced(option)
         ? {
             value: option.id,
-            label: `${option.title}: no server price (you already pay for it)`,
+            label: `${option.title}: no server price (${isPortainer(option) ? "you already run it" : "you already pay for it"})`,
             hint: option.recommended ? RECOMMENDED_MARKER : "",
           }
         : {

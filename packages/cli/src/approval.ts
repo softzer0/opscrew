@@ -168,10 +168,14 @@ export const ASSUME_YES_KINDS: readonly ApprovalRequest["kind"][] = [
   "pull-request",
 ];
 
-/** Request kinds `--approve <hash>` may grant, each only for its exact plan hash. */
+/**
+ * Request kinds `--approve <hash>` may grant, each only for its exact plan hash: infrastructure,
+ * the host plan of the user's own server and the stack plan of the user's Portainer.
+ */
 export const APPROVE_BY_HASH_KINDS: readonly ApprovalRequest["kind"][] = [
   "iac-apply",
   "host-apply",
+  "stack-apply",
 ];
 
 const RUN_INTERACTIVELY =
@@ -179,10 +183,10 @@ const RUN_INTERACTIVELY =
 
 /**
  * Approves without a human only when the user named the exact plan: an `iac-apply`
- * (infrastructure) or `host-apply` (the host plan of the user's own server) whose `planHash`
- * equals one of the `--approve <hash>` values (case-insensitive) and that destroys nothing and
- * needs no typed confirmation. `--yes` never grants either kind. Everything else is refused with a
- * reason that says how to approve it.
+ * (infrastructure), `host-apply` (the host plan of the user's own server) or `stack-apply` (the
+ * stack plan of the user's Portainer) whose `planHash` equals one of the `--approve <hash>` values
+ * (case-insensitive) and that destroys nothing and needs no typed confirmation. `--yes` never
+ * grants any of these kinds. Everything else is refused with a reason that says how to approve it.
  */
 export class NonInteractiveApprovalHandler implements ApprovalHandler {
   private readonly clock: Clock;
@@ -226,7 +230,12 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
     }
     const wanted = request.planHash?.toLowerCase();
     if (!isPlanHash(request.planHash) || !hashes.some((hash) => hash.toLowerCase() === wanted)) {
-      const what = request.kind === "host-apply" ? "The host plan's hash" : "The plan hash";
+      const what =
+        request.kind === "host-apply"
+          ? "The host plan's hash"
+          : request.kind === "stack-apply"
+            ? "The stack plan's hash"
+            : "The plan hash";
       return `${what} does not match --approve ${hashes.join(" / ")}; the plan changed since you reviewed it, or it was not approved. ${RUN_INTERACTIVELY}`;
     }
     return undefined;

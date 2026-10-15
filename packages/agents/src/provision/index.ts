@@ -54,6 +54,13 @@ export {
 } from "./plan-apply";
 export { maskBySensitivity, maskSensitivePlanJson, SENSITIVE_VALUE } from "./plan-json";
 export {
+  describeStackPlan,
+  REGISTRY_TOKEN_VAR,
+  REPOSITORY_TOKEN_VAR,
+  ROUTE_CHANGE_NOTE,
+  stackPlanFile,
+} from "./portainer";
+export {
   chooseDeployBranch,
   DEPLOY_SETUP_BRANCH,
   type DeployBranch,

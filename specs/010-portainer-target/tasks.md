@@ -76,7 +76,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
 
 ## Phase 4: Surfaces and live test
 
-- [ ] T1007 [US1] [US2] [US5] CLI, MCP tools, plugin and user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/portainer-target.md`, `README.md`
+- [X] T1007 [US1] [US2] [US5] CLI, MCP tools, plugin and user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/portainer-target.md`, `README.md`
   - Owns: `packages/cli/src/**`, `packages/cli/test/e2e/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/portainer-target.md`, `README.md` (one link line only), `packages/agents/src/provision/index.ts` (export lines only)
   - Reads: contracts/cli.md; spec FR-1017; 009's T908 (how `--host-key`, `--approve`, `--confirm` and the MCP dialogs work)
   - Depends: T1005, T1006

@@ -16,5 +16,11 @@ export {
   type ResolvedMcpDeps,
   resolveMcpDeps,
 } from "./deps";
+export {
+  createPortainerAccess,
+  hidePortainerAddress,
+  type PortainerAccessOptions,
+  portainerAddressNames,
+} from "./portainer-access";
 export { createOpscrewMcpServer, PLANNING_TOOLS } from "./server";
 export { type RunningStdioServer, type StdioServerOptions, startStdioServer } from "./stdio";

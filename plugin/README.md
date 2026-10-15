@@ -43,6 +43,13 @@ the tools' results, in files or in pull requests: the tools show "your server" i
 you type into the chat during the interview does reach Claude, though; to keep it out of the chat,
 answer the interview in a terminal with `npx opscrew interview`, then continue in Claude Code.
 
+In a Portainer you already run, the changes OpsCrew makes there are a stack plan of their own that
+you approve in a dialog, and you confirm Portainer's certificate fingerprint in a dialog the first
+time (Claude never confirms it for you). The access token comes only from `PORTAINER_API_KEY` in your
+shell, and the tools show "your Portainer" instead of its address. Removing the app and deleting its
+data stay in your terminal (`npx opscrew destroy`). See
+[An existing Portainer as a deploy target](../docs/guide/portainer-target.md).
+
 ## Local development
 
 Build the CLI (`pnpm --filter opscrew build`) and point the MCP config at it:

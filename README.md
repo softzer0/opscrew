@@ -45,6 +45,7 @@ Everything OpsCrew produces is a plain file in your repo: infrastructure code, w
 Supported clouds: Hetzner Cloud and DigitalOcean (Droplets), with optional Cloudflare DNS. The interview asks which one to use. AWS, Google Cloud, Azure and Contabo follow.
 
 Already have a server, or want a web UI for your containers? See [Deploy to a server you already have](docs/guide/own-server.md) and [Portainer](docs/guide/portainer.md).
+Already run Portainer, for example on a NAS? See [Deploy to a Portainer you already run](docs/guide/portainer-target.md).
 
 Changed your mind about the provider later? `npx opscrew retarget --to <provider>` moves a live app between Hetzner Cloud and DigitalOcean with its data: it builds the new server next to the old one, copies the database in a short maintenance window, switches DNS, and deletes the old server only when you run `opscrew retarget --finish`.
 

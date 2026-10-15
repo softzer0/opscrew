@@ -64,8 +64,9 @@ async function driftPhaseDeps(
 /**
  * `opscrew_drift`: the `opscrew drift` report: resources changed outside OpsCrew, changes not
  * applied yet and generated files that differ; on a server the user owns, also how the server
- * differs from what OpsCrew set up (never its address). Never changes infrastructure, the server
- * or repository files (temporary plan files under `.opscrew/plans` are deleted). `options` is for
+ * differs from what OpsCrew set up (never its address); in the user's Portainer, how its stacks,
+ * registry entry and deploy branch differ (never Portainer's address or a value). Never changes
+ * infrastructure, the server, Portainer or repository files (temporary plan files under `.opscrew/plans` are deleted). `options` is for
  * tests only.
  */
 export function registerDriftTool(
@@ -79,7 +80,7 @@ export function registerDriftTool(
     {
       title: "Infrastructure drift",
       description:
-        "Check whether the deployment still matches opscrew/plan.yaml: resources someone changed in the cloud provider (Hetzner Cloud or DigitalOcean) or Cloudflare console (with the changed attribute names, never values), infrastructure changes not applied yet, and generated files that were edited or are missing. On a server the user already owns it also connects over SSH, inspects the server read-only and compares it with what OpsCrew set up (SSH settings, firewall, deploy user, runtime directories, containers); the first time from this computer the user confirms its SSH host key in a dialog. Needs a provisioned deployment and its state on this computer. Never changes anything; to undo drift the user runs `npx opscrew provision` in a terminal.",
+        "Check whether the deployment still matches opscrew/plan.yaml: resources someone changed in the cloud provider (Hetzner Cloud or DigitalOcean) or Cloudflare console (with the changed attribute names, never values), infrastructure changes not applied yet, and generated files that were edited or are missing. On a server the user already owns it also connects over SSH, inspects the server read-only and compares it with what OpsCrew set up (SSH settings, firewall, deploy user, runtime directories, containers); the first time from this computer the user confirms its SSH host key in a dialog. In a Portainer the user already runs it compares the app's stacks with what OpsCrew would set up now: the stack file, the environment keys (never values; changed values by key name only), the redeploy setting, the registry entry and the opscrew-deploy branch, plus the Cloudflare resources (Portainer's address never appears). Needs a provisioned deployment and its state on this computer. Never changes anything; to undo drift the user runs `npx opscrew provision` in a terminal.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

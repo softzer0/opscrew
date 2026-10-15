@@ -1,3 +1,4 @@
+import { PORTAINER_LOCATION, PORTAINER_SERVER_TYPE } from "@opscrew/agents";
 import type { DesignOption, Question } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { CANCEL, ScriptedPrompts } from "./__fixtures__/harness";
@@ -149,6 +150,46 @@ describe("renderOptionsTable", () => {
     const table = renderOptionsTable(options, { amount: 10, currency: "EUR" });
     expect(table).not.toContain("≈");
     expect(table).not.toContain("1 EUR = 1.10 USD");
+  });
+});
+
+describe("renderOptionsTable for the user's Portainer", () => {
+  const portainer = (): DesignOption =>
+    option("portainer", 0, {
+      title: "Your Portainer",
+      recommended: true,
+      target: {
+        provider: "portainer",
+        location: PORTAINER_LOCATION,
+        serverType: PORTAINER_SERVER_TYPE,
+        vcpus: 1,
+        memoryGb: 0.01,
+        diskGb: 0.01,
+        cpuType: "shared",
+        architecture: "arm",
+      },
+    });
+
+  it("shows no price, no budget fit, no price source and never the placeholder sizes", () => {
+    const table = renderOptionsTable([portainer()], { amount: 10, currency: "USD" });
+    const row = table.split("\n").find((line) => line.includes("portainer")) ?? "";
+    expect(row).toContain("no server price");
+    expect(row).toContain(RECOMMENDED_MARKER);
+    for (const text of ["€0.00", "fits", "over budget", "0.01", "1 vCPU", "shared"]) {
+      expect(row).not.toContain(text);
+    }
+    expect(table).not.toContain("Your budget");
+    expect(table).not.toContain("Prices:");
+    expect(table).not.toContain("prices live from");
+    expect(table).not.toContain("1 EUR = 1.10 USD");
+  });
+
+  it("offers the Portainer option without a price in the prompt", async () => {
+    const prompts = new ScriptedPrompts(["portainer"]);
+    await chooseOption([portainer()], { prompts, write: () => {} });
+    const choice = prompts.calls[0]?.options?.[0];
+    expect(choice?.label).toBe("Your Portainer: no server price (you already run it)");
+    expect(choice?.hint).toBe(RECOMMENDED_MARKER);
   });
 });
 

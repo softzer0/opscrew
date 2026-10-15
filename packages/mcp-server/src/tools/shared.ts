@@ -1,11 +1,17 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { type PhaseDeps, readOwnServer, withoutOwnServer } from "@opscrew/agents";
+import {
+  type PhaseDeps,
+  readOwnServer,
+  readPortainerConnection,
+  withoutOwnServer,
+} from "@opscrew/agents";
 import type { ApprovalHandler, UserFacingError } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, resolveProjectPaths } from "@opscrew/core";
 import { z } from "zod";
 import { CollectingReporter, type ReportedMessage, type ResolvedMcpDeps } from "../deps";
+import { portainerAddressNames } from "../portainer-access";
 
 /** The `projectDir` input every OpsCrew tool accepts. */
 export const projectDirInput = {
@@ -134,11 +140,54 @@ export async function ownServerNames(deps: ResolvedMcpDeps, projectDir: string):
   }
 }
 
-/** `value` with every own-server name replaced by "your server" in every string, deeply. */
-function hideNames<T>(value: T, names: readonly string[]): T {
-  if (names.length === 0) return value;
+/**
+ * The names of the user's Portainer that must not reach the model: its address (the URL, its
+ * origin and host name), from `.opscrew/server.json` (local state only).
+ */
+export async function portainerNames(deps: ResolvedMcpDeps, projectDir: string): Promise<string[]> {
+  try {
+    const connection = await readPortainerConnection(
+      resolveProjectPaths(projectDir, { env: deps.env }),
+    );
+    return connection === undefined ? [] : portainerAddressNames(connection.url);
+  } catch {
+    return [];
+  }
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * `text` with every Portainer name replaced by "your Portainer" (longest names first), matched
+ * case-insensitively and only as a whole name: a host name such as `portainer` stays intact inside
+ * question ids (`portainer.url`), stack names (`opscrew-shop-portainer-tunnel`) or other words.
+ */
+export function withoutPortainer(text: string, names: readonly string[]): string {
+  let out = text;
+  for (const name of [...names].sort((a, b) => b.length - a.length)) {
+    if (name.trim() === "") continue;
+    out = out.replace(
+      new RegExp(
+        // Never inside "your Portainer" itself (a host named `portainer` would double it).
+        `(?<![0-9A-Za-z_.:-])(?<!your )${escapeRegExp(name)}(?![0-9A-Za-z_:-]|\\.[0-9A-Za-z_])`,
+        "gi",
+      ),
+      "your Portainer",
+    );
+  }
+  return out;
+}
+
+/**
+ * `value` with every own-server name replaced by "your server" and every Portainer name by
+ * "your Portainer" in every string, deeply.
+ */
+function hideNames<T>(value: T, names: readonly string[], portainer: readonly string[] = []): T {
+  if (names.length === 0 && portainer.length === 0) return value;
   const walk = (item: unknown): unknown => {
-    if (typeof item === "string") return withoutOwnServer(item, names);
+    if (typeof item === "string") return withoutPortainer(withoutOwnServer(item, names), portainer);
     if (Array.isArray(item)) return item.map(walk);
     if (item !== null && typeof item === "object") {
       return Object.fromEntries(Object.entries(item).map(([key, inner]) => [key, walk(inner)]));
@@ -151,8 +200,9 @@ function hideNames<T>(value: T, names: readonly string[]): T {
 /**
  * Runs one tool call: resolves `projectDir`, gives the body a collecting reporter and lazy
  * `PhaseDeps`, and maps the outcome to a redacted result (errors → `isError: true`). The address
- * of a server the user owns never leaves in a result (FR-902): it reads "your server" instead.
- * Unexpected errors are logged (stderr in production) with their stack.
+ * of a server the user owns never leaves in a result (FR-902): it reads "your server" instead; the
+ * address of the user's Portainer reads "your Portainer" (FR-1002). Unexpected errors are logged
+ * (stderr in production) with their stack.
  */
 export async function runTool(
   deps: ResolvedMcpDeps,
@@ -165,7 +215,11 @@ export async function runTool(
     projectDir = dir;
   });
   if (projectDir === undefined) return result;
-  return hideNames(result, await ownServerNames(deps, projectDir));
+  return hideNames(
+    result,
+    await ownServerNames(deps, projectDir),
+    await portainerNames(deps, projectDir),
+  );
 }
 
 async function runToolBody(

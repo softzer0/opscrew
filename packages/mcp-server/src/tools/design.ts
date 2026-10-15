@@ -158,8 +158,19 @@ function isOwnServer(option: DesignOption): boolean {
   return option.target.provider === "own";
 }
 
-/** The option's cost in words: never a price for the user's own server. */
+/** True for the option in the user's existing Portainer: no price and no sizes (FR-1015). */
+function isPortainer(option: DesignOption): boolean {
+  return option.target.provider === "portainer";
+}
+
+/** True for an option without a server price: the user's own server or their Portainer. */
+function isUnpriced(option: DesignOption): boolean {
+  return isOwnServer(option) || isPortainer(option);
+}
+
+/** The option's cost in words: never a price for the user's own server or their Portainer. */
 function costText(option: DesignOption): string {
+  if (isPortainer(option)) return "no server price (the user already runs this Portainer)";
   return isOwnServer(option)
     ? "no server price (the user already pays for this server)"
     : `${formatMoney(option.cost.monthly)}/month, ${priceLabel(option.cost)}`;
@@ -177,16 +188,22 @@ function taxLabel(cost: Pick<DesignOption["cost"], "monthly" | "pricesIncludeVat
 /** Plain-text block for one option. */
 function renderOption(option: DesignOption): string {
   const own = isOwnServer(option);
+  const unpriced = isUnpriced(option);
   const marks = [
-    ...(own ? [] : [option.fitsBudget ? "fits the budget" : "over budget"]),
+    ...(unpriced ? [] : [option.fitsBudget ? "fits the budget" : "over budget"]),
     ...(option.recommended ? ["RECOMMENDED"] : []),
   ];
   const t = option.target;
   return [
     `${option.title} (id: ${option.id}) — ${costText(option)}${marks.length > 0 ? `; ${marks.join(", ")}` : ""}`,
     `  ${option.summary}`,
-    `  Server: ${t.serverType} in ${t.location}, ${t.vcpus} vCPU (${t.cpuType}), ${t.memoryGb} GB RAM, ${t.diskGb} GB ${own ? "free disk" : "disk"}`,
-    ...(own
+    // The user's Portainer: OpsCrew does not size the host, so it shows no sizes at all.
+    ...(isPortainer(option)
+      ? []
+      : [
+          `  Server: ${t.serverType} in ${t.location}, ${t.vcpus} vCPU (${t.cpuType}), ${t.memoryGb} GB RAM, ${t.diskGb} GB ${own ? "free disk" : "disk"}`,
+        ]),
+    ...(unpriced
       ? []
       : [
           `  Cost: ${option.cost.breakdown.map((b) => `${b.item} ${formatMoney(b.monthly)}`).join("; ")}`,
@@ -220,10 +237,23 @@ function withoutCost(plan: DesignResult["plan"]): Record<string, unknown> {
   return rest;
 }
 
-/** An option for the result data: the user's own server carries no cost and no budget check. */
+/**
+ * An option for the result data: the user's own server carries no cost and no budget check; the
+ * user's Portainer carries neither, nor the placeholder sizes of its target.
+ */
 function optionData(option: DesignOption): Record<string, unknown> {
-  if (!isOwnServer(option)) return option;
+  if (!isUnpriced(option)) return option;
   const { cost: _cost, fitsBudget: _fits, ...rest } = option;
+  if (isPortainer(option)) {
+    const {
+      vcpus: _vcpus,
+      memoryGb: _memory,
+      diskGb: _disk,
+      cpuType: _cpu,
+      ...target
+    } = option.target;
+    return { ...rest, target, price: "none: the user already runs this Portainer" };
+  }
   return { ...rest, price: "none: the user already pays for this server" };
 }
 
@@ -244,7 +274,7 @@ export function registerDesignTools(
     {
       title: "Deployment options",
       description:
-        "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with HCLOUD_TOKEN or DIGITALOCEAN_TOKEN set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
+        "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with HCLOUD_TOKEN or DIGITALOCEAN_TOKEN set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -272,6 +302,24 @@ export function registerDesignTools(
               options: result.options.map(optionData),
               recommendedId: recommended?.id,
               ownServer: true,
+              warnings: result.warnings,
+            },
+          };
+        }
+        if (requirements.provider === "portainer") {
+          const text = [
+            "Deployment in the user's existing Portainer (no server price: they already run it; OpsCrew does not change the host, and backups of the app's data are the user's responsibility):",
+            "",
+            ...result.options.map(renderOption),
+            "",
+            `After the user agrees, call opscrew_select_design with the option id (${recommended?.id ?? result.options[0]?.id}).`,
+          ].join("\n");
+          return {
+            text,
+            data: {
+              options: result.options.map(optionData),
+              recommendedId: recommended?.id,
+              portainer: true,
               warnings: result.warnings,
             },
           };
@@ -367,15 +415,16 @@ export function registerDesignTools(
           "",
           "Next: apply the pending code changes (opscrew-adapt skill) and let the user review and commit them. Nothing has been created in the cloud.",
         ].join("\n");
+        // A server the user owns or their Portainer has no price: its plan is returned without `cost`.
+        const unpriced = isUnpriced(chosen);
         return {
           text,
           data: {
             chosen: optionData(chosen),
             planFile,
-            // A server the user owns has no price: its plan is returned without `cost`.
-            plan: ownServer === undefined ? plan : withoutCost(plan),
+            plan: unpriced ? withoutCost(plan) : plan,
             codeChanges: plan.codeChanges,
-            ...(ownServer === undefined ? { priceSource: result.priceSource } : {}),
+            ...(unpriced ? {} : { priceSource: result.priceSource }),
             warnings: result.warnings,
           },
         };

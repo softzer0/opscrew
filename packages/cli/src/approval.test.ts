@@ -138,6 +138,48 @@ describe("NonInteractiveApprovalHandler with several --approve hashes (own serve
   });
 });
 
+describe("NonInteractiveApprovalHandler with a stack plan (the user's Portainer)", () => {
+  const STACK = "12".repeat(32);
+  const handler = (hashes: string[], assumeYes = false) =>
+    new NonInteractiveApprovalHandler({
+      approvePlanHashes: hashes,
+      ...(assumeYes ? { assumeYes: true } : {}),
+      approver: assumeYes ? "--yes flag" : "--approve flag",
+      clock,
+    });
+  const stackApply = (overrides: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
+    kind: "stack-apply",
+    title: "Apply the stack plan to your Portainer (3 changes)",
+    details: `Stack plan hash: ${STACK}`,
+    planHash: STACK,
+    ...overrides,
+  });
+
+  it("grants a stack plan only when its hash is listed with --approve", async () => {
+    expect((await handler([HASH, STACK.toUpperCase()]).request(stackApply())).approved).toBe(true);
+    const unlisted = await handler([HASH]).request(stackApply());
+    expect(unlisted.approved).toBe(false);
+    expect(unlisted.reason).toMatch(/stack plan's hash does not match/);
+    expect((await handler([STACK]).request(stackApply({ planHash: undefined }))).approved).toBe(
+      false,
+    );
+  });
+
+  it("never grants a stack plan through --yes, with or without other hashes", async () => {
+    const yes = new NonInteractiveApprovalHandler({ assumeYes: true, approver: "--yes", clock });
+    expect((await yes.request(stackApply())).approved).toBe(false);
+    expect((await handler([HASH], true).request(stackApply())).approved).toBe(false);
+  });
+
+  it("refuses a stack teardown (typed app name) even when its hash is listed", async () => {
+    const decision = await handler([STACK]).request(
+      stackApply({ allowDestroy: true, confirmPhrase: "shop" }),
+    );
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toMatch(/typed confirmation/);
+  });
+});
+
 describe("NonInteractiveApprovalHandler with --yes", () => {
   const handler = new NonInteractiveApprovalHandler({
     assumeYes: true,

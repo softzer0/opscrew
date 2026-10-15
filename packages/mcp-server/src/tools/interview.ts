@@ -1,16 +1,22 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
+  buildPortainerQuestions,
   buildQuestions,
   buildServerQuestions,
+  type ConfirmPortainerCertificate,
   inferredAnswers,
+  PORTAINER_FIELDS,
+  type PortainerAccess,
+  type PortainerInterviewOptions,
   providerFromTokens,
   providerProfile,
   readOwnServer,
+  readPortainerConnection,
   requestedProvider,
   runInterview,
   SERVER_FIELDS,
 } from "@opscrew/agents";
-import type { ProjectPaths } from "@opscrew/core";
+import { isUserFacingError, type ProjectPaths } from "@opscrew/core";
 import { detectProject, detectProjectDetails } from "@opscrew/detect";
 import {
   type ProjectFacts,
@@ -21,6 +27,8 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
+import { createPortainerAccess } from "../portainer-access";
+import { clientSupportsElicitation } from "./deploy";
 import { isMissingArtifact, projectDirInput, relativeTo, runTool, withHint } from "./shared";
 
 /** Facts from `opscrew/architecture.json` when it is valid, otherwise fresh detection. */
@@ -82,7 +90,7 @@ const AnswerValueSchema = z.union([
 
 const ANSWER_HELP: Record<string, string> = {
   provider:
-    'Where the app runs: "hetzner" (Hetzner Cloud), "digitalocean" (DigitalOcean) or "own" (a server the user already has; then also answer the server.* questions).',
+    'Where the app runs: "hetzner" (Hetzner Cloud), "digitalocean" (DigitalOcean), "own" (a server the user already has; then also answer the server.* questions) or "portainer" (a Portainer the user already runs; then also answer the portainer.* questions).',
   expectedMonthlyUsers: "One of <1k, 1k-10k, 10k-100k, >100k.",
   budgetMonthly:
     'Monthly hosting budget, for example "10 EUR", "$20" or { amount: 10, currency: "EUR" }.',
@@ -109,6 +117,19 @@ const SERVER_ANSWER_HELP: Record<string, string> = {
     "Own server: true when the internet reaches it directly; false for a home server behind a router (then a Cloudflare Tunnel on the user's Cloudflare domain).",
 };
 
+/** The follow-ups for an existing Portainer (`provider: portainer`); never a token or password. */
+const PORTAINER_ANSWER_HELP: Record<string, string> = {
+  "portainer.url":
+    "Existing Portainer: its HTTPS address, for example https://nas.local:9443 (plain http:// only for a Portainer on this computer). Kept on the user's computer only; leave it out to keep the saved one.",
+  "portainer.environment":
+    "Existing Portainer: the Docker environment to deploy to, by its name or id as Portainer lists it (OpsCrew names the environments it found when this is missing or wrong).",
+  "portainer.redeploy":
+    'Existing Portainer: how new versions reach it, "updater" (default: a small updater stack asks Portainer once a minute) or "cloudflare" (GitHub Actions calls Portainer through Cloudflare Access).',
+  "portainer.web":
+    'Existing Portainer: how visitors reach the app, "tunnel" (a Cloudflare Tunnel), "proxy" (the user\'s own reverse proxy on a host port) or "caddy" (Caddy on ports 80 and 443).',
+  "portainer.port": "Existing Portainer with web 'proxy': the host port the app listens on.",
+};
+
 const answersShape = {
   ...Object.fromEntries(
     QuestionIdSchema.options.map((id) => [
@@ -126,7 +147,95 @@ const answersShape = {
       ),
     ]),
   ),
+  ...Object.fromEntries(
+    PORTAINER_FIELDS.map((field) => `portainer.${field}`).map((id) => [
+      id,
+      AnswerValueSchema.optional().describe(
+        PORTAINER_ANSWER_HELP[id] ??
+          "Existing Portainer: the answer to this question from opscrew_interview_questions.",
+      ),
+    ]),
+  ),
 };
+
+/** Test-only collaborators for the interview tools (production uses the Portainer adapter). */
+export interface InterviewToolOptions {
+  /** How the interview reads Portainer's certificate and lists its environments. */
+  portainerAccess?: PortainerAccess;
+}
+
+/** Per-call context the SDK passes to a tool callback (only what the interview tools use). */
+interface CallExtra {
+  requestId?: string | number;
+  signal?: AbortSignal;
+}
+
+/** How long OpsCrew waits for the user to answer the certificate dialog. */
+const CERTIFICATE_TIMEOUT_MS = 30 * 60_000;
+
+const CertificateAnswer = z.object({ trust: z.boolean().optional() });
+
+/**
+ * Asks the user (never the model) in a dialog (MCP elicitation) to trust Portainer's certificate:
+ * shows its fingerprint (and the one pinned before, when it changed) and how to check it. Only an
+ * explicit "trust" in the dialog trusts it; declines, cancels and client errors trust nothing.
+ */
+export function certificateDialog(
+  server: McpServer,
+  deps: Pick<ResolvedMcpDeps, "redactor">,
+  extra: CallExtra = {},
+): ConfirmPortainerCertificate {
+  return async ({ fingerprint, previous }) => {
+    const message = [
+      previous === undefined
+        ? "OpsCrew connects to the user's Portainer for the first time. Before it sends the access token, the user must trust Portainer's certificate. Its SHA-256 fingerprint is:"
+        : `The user's Portainer now presents a different certificate. OpsCrew pinned ${previous} before; it now presents:`,
+      "",
+      `    ${fingerprint}`,
+      "",
+      "Check it before you trust it: in your browser open Portainer, click the padlock and view the certificate's SHA-256 fingerprint, or run `openssl s_client -connect <host>:<port> </dev/null | openssl x509 -noout -fingerprint -sha256` on the Portainer host itself.",
+      ...(previous === undefined
+        ? []
+        : [
+            "Trust the new one only if you changed Portainer's certificate yourself; otherwise someone may be intercepting the connection.",
+          ]),
+      "Your coding agent cannot confirm this for you.",
+    ].join("\n");
+    try {
+      const result = await server.server.elicitInput(
+        {
+          mode: "form",
+          message: deps.redactor.redact(message),
+          requestedSchema: {
+            type: "object",
+            properties: {
+              trust: {
+                type: "boolean",
+                title: "Trust this certificate",
+                description: `Portainer's certificate ${fingerprint}`,
+                default: false,
+              },
+            },
+            required: ["trust"],
+          },
+        },
+        {
+          timeout: CERTIFICATE_TIMEOUT_MS,
+          ...(extra.requestId !== undefined ? { relatedRequestId: extra.requestId } : {}),
+          ...(extra.signal !== undefined ? { signal: extra.signal } : {}),
+        },
+      );
+      if (result.action !== "accept") return false;
+      const answer = CertificateAnswer.safeParse(result.content ?? {});
+      return answer.success && answer.data.trust === true;
+    } catch {
+      return false;
+    }
+  };
+}
+
+const CERTIFICATE_IN_TERMINAL =
+  "Ask the user to run `npx opscrew interview` in a terminal in the project directory: it shows Portainer's certificate fingerprint to check and pins it. Then call this tool again (the saved answers are pre-filled). Never pass a fingerprint yourself.";
 
 /** How OpsCrew reached the user's own server before (pre-filled defaults), if recorded. */
 async function previousServer(paths: ProjectPaths) {
@@ -137,18 +246,31 @@ async function previousServer(paths: ProjectPaths) {
   }
 }
 
+/** How OpsCrew reached the user's Portainer before (pre-filled defaults), if recorded. */
+async function previousPortainer(paths: ProjectPaths) {
+  try {
+    return await readPortainerConnection(paths);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * `opscrew_interview_questions` (read-only) and `opscrew_save_requirements` (writes
  * `opscrew/requirements.yaml`): the deterministic interview in two steps, so the user's own agent
  * asks the questions.
  */
-export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps): void {
+export function registerInterviewTools(
+  server: McpServer,
+  deps: ResolvedMcpDeps,
+  options: InterviewToolOptions = {},
+): void {
   server.registerTool(
     "opscrew_interview_questions",
     {
       title: "Interview questions",
       description:
-        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean or a server the user already has, with its SSH follow-up questions), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, external services). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
+        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean, a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, external services). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -169,6 +291,23 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
         const serverQuestions = buildServerQuestions(
           server === undefined ? {} : { previous: server },
         );
+        // The follow-ups for an existing Portainer (asked only when provider is "portainer"). The
+        // saved address is never shown: leaving portainer.url out keeps it.
+        const portainer = await previousPortainer(paths);
+        const portainerQuestions = buildPortainerQuestions({
+          ...(portainer === undefined ? {} : { previous: portainer }),
+          ...(previous === undefined
+            ? {}
+            : {
+                cloudflareDomain:
+                  previous.dnsProvider === "cloudflare" && previous.domain !== undefined,
+                ...(previous.domain === undefined ? {} : { domain: previous.domain }),
+              }),
+        }).map((question) => {
+          if (question.id !== "portainer.url") return question;
+          const { default: _saved, ...rest } = question;
+          return rest;
+        });
         const text = [
           `Ask the user these ${questions.length} question${questions.length === 1 ? "" : "s"}, then call opscrew_save_requirements with the answers keyed by answer id.`,
           ...(previous !== undefined
@@ -183,12 +322,22 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
             : []),
           "",
           ...serverQuestions.map(renderQuestion),
+          "",
+          `Only when the user chooses "portainer" (a Portainer they already run), also ask these and pass them as portainer.* answers. The access token comes only from the PORTAINER_API_KEY environment variable of the MCP server: never ask for it or a password. The address stays on the user's computer only; do not write it into any file. When OpsCrew connects, the user confirms Portainer's certificate in a dialog; never confirm it or pass a fingerprint yourself. The choices for web and redeploy follow the domain answered above: a Cloudflare Tunnel and Cloudflare redeploys need a domain on Cloudflare, Caddy needs a domain.`,
+          ...(portainer !== undefined
+            ? [
+                "How OpsCrew reached the user's Portainer before is saved; leave portainer.url out to keep it.",
+              ]
+            : []),
+          "",
+          ...portainerQuestions.map(renderQuestion),
         ].join("\n");
         return {
           text,
           data: {
             questions,
             serverQuestions,
+            portainerQuestions,
             inferred,
             prefilled: previous !== undefined,
             factsSource: source,
@@ -202,7 +351,7 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
     {
       title: "Save the deployment requirements",
       description:
-        "Validate the user's interview answers and write opscrew/requirements.yaml. Pass the answers keyed by the answer ids returned by opscrew_interview_questions. Answers that are not given fall back to the previous requirements, then to values inferred from the code. Returns the saved requirements, or which answers are missing or invalid.",
+        "Validate the user's interview answers and write opscrew/requirements.yaml. Pass the answers keyed by the answer ids returned by opscrew_interview_questions. Answers that are not given fall back to the previous requirements, then to values inferred from the code. For a Portainer the user already runs it connects to Portainer with PORTAINER_API_KEY to list its environments; the first time (or when the certificate changed) the USER confirms Portainer's certificate in a dialog, which the coding agent cannot answer. Returns the saved requirements, or which answers are missing or invalid.",
       inputSchema: {
         ...projectDirInput,
         answers: z
@@ -218,14 +367,36 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
         openWorldHint: false,
       },
     },
-    ({ projectDir, answers }) =>
+    ({ projectDir, answers }, extra: CallExtra) =>
       runTool(deps, "opscrew_save_requirements", projectDir, async (call) => {
         const phase = await call.phaseDeps();
+        const dialogs = clientSupportsElicitation(server);
+        // The certificate is confirmed only by the user in a dialog: never from the tool's input.
+        const portainer: PortainerInterviewOptions = {
+          access: options.portainerAccess ?? createPortainerAccess({ redactor: deps.redactor }),
+          ...(dialogs ? { confirmCertificate: certificateDialog(server, deps, extra) } : {}),
+        };
         let result: Awaited<ReturnType<typeof runInterview>>;
         try {
-          result = await runInterview(phase, { answers: answers as Record<string, unknown> });
+          result = await runInterview(phase, {
+            answers: answers as Record<string, unknown>,
+            portainer,
+          });
         } catch (error) {
           if (isMissingArtifact(error)) throw error;
+          const message = isUserFacingError(error) ? error.message : "";
+          if (/did not confirm Portainer's certificate/.test(message)) {
+            withHint(
+              error,
+              `The user did not trust the certificate in the dialog. If they checked it and want to continue: ${CERTIFICATE_IN_TERMINAL}`,
+            );
+          }
+          if (/must confirm Portainer's certificate|certificate changed/.test(message)) {
+            withHint(
+              error,
+              `This MCP client cannot show the confirmation dialog. ${CERTIFICATE_IN_TERMINAL}`,
+            );
+          }
           withHint(
             error,
             "Ask the user for the missing or invalid answers and call opscrew_save_requirements again.",
@@ -235,11 +406,14 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
         const file = relativeTo(phase.paths.root, phase.paths.files.requirements);
         const budget = requirements.budgetMonthly;
         const own = requirements.provider === "own";
+        const inPortainer = requirements.provider === "portainer";
         const text = [
           `Saved ${file}.`,
           own
             ? "- Where it runs: a server the user already has (how to reach it is saved in .opscrew/server.json on this computer only, never in the repository)"
-            : `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
+            : inPortainer
+              ? `- Where it runs: the user's existing Portainer, environment "${result.portainer?.environmentName ?? "?"}" (its address is saved in .opscrew/server.json on this computer only; the token stays in PORTAINER_API_KEY and is never saved)`
+              : `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
           `- Expected monthly users: ${requirements.expectedMonthlyUsers}`,
           `- Budget: ${budget.amount} ${budget.currency} per month`,
           ...(requirements.region === undefined ? [] : [`- Region: ${requirements.region}`]),
@@ -254,7 +428,9 @@ export function registerInterviewTools(server: McpServer, deps: ResolvedMcpDeps)
           "",
           own
             ? "Next: call opscrew_design_options; it connects to the server (read-only) to check that it fits the app. The first connection asks the user to confirm the server's SSH host key."
-            : "Next: call opscrew_design_options to see deployment options with monthly costs.",
+            : inPortainer
+              ? "Next: call opscrew_design_options to see the deployment in the user's Portainer (no server price: they already run it)."
+              : "Next: call opscrew_design_options to see deployment options with monthly costs.",
         ].join("\n");
         return { text, data: { requirements, file } };
       }),
