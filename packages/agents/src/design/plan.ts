@@ -9,7 +9,7 @@ import {
 } from "@opscrew/plan-schema";
 import { deepDomainProblem } from "../interview/answers";
 import { providerProfile } from "../providers";
-import { hostListKind, portainerTargetNotYet, serviceUrlKind } from "../shared";
+import { hostListKind, serviceUrlKind } from "../shared";
 import {
   appDirOf,
   appDockerfile,
@@ -18,6 +18,7 @@ import {
   healthRouteFor,
 } from "./code-changes";
 import type { OwnServerAccess, OwnServerServing } from "./own";
+import type { PortainerDesignChoice } from "./portainer";
 
 export interface OptionToPlanInput {
   facts: ProjectFacts;
@@ -39,14 +40,24 @@ export interface OptionToPlanInput {
    * turns the proxy off (DNS only).
    */
   serving?: OwnServerServing;
+  /**
+   * An existing Portainer only (required there): the environment, its architecture and the
+   * redeploy and web modes from the interview's answers.
+   */
+  portainer?: PortainerDesignChoice;
 }
 
 /**
  * The plan's target for the chosen option: a cloud server with the provider's default image and
- * the option's backups, or the user's own server with its architecture and access mode (never its
- * address or login, which stay in local state).
+ * the option's backups, the user's own server with its architecture and access mode (never its
+ * address or login, which stay in local state), or the user's Portainer with the environment and
+ * the chosen modes (never its address).
  */
-function targetFor(option: DesignOption, access: OwnServerAccess | undefined) {
+function targetFor(
+  option: DesignOption,
+  access: OwnServerAccess | undefined,
+  portainer: PortainerDesignChoice | undefined,
+) {
   const { target } = option;
   if (target.provider === "own") {
     if (access === undefined) {
@@ -59,7 +70,19 @@ function targetFor(option: DesignOption, access: OwnServerAccess | undefined) {
       access,
     } as const;
   }
-  if (target.provider === "portainer") throw portainerTargetNotYet();
+  if (target.provider === "portainer") {
+    if (portainer === undefined) {
+      throw new Error("A design for an existing Portainer needs the interview's answers.");
+    }
+    return {
+      provider: "portainer",
+      mode: "portainer-stack",
+      environmentId: portainer.environmentId,
+      arch: portainer.arch,
+      redeploy: portainer.redeploy,
+      web: portainer.web,
+    } as const;
+  }
   return {
     provider: target.provider,
     mode: "vps-compose",
@@ -143,19 +166,26 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   // A server the user owns serves directly behind Cloudflare's proxy only with OpsCrew's web
   // filter (the explicit `proxy` choice); otherwise a public server is DNS only.
   const ownDirect = option.target.provider === "own" && input.access === "public";
+  // In a Portainer only the tunnel goes through Cloudflare: OpsCrew cannot keep visitors from
+  // going around Cloudflare's proxy on a host it does not manage, so the other modes are DNS only.
+  const portainerDirect =
+    option.target.provider === "portainer" && input.portainer?.web.mode !== "tunnel";
   if (
     requirements.dnsProvider === "cloudflare" &&
     requirements.domain !== undefined &&
-    (!ownDirect || input.serving === "proxy")
+    (!ownDirect || input.serving === "proxy") &&
+    !portainerDirect
   ) {
-    refuseDeepDomain(requirements.domain, option.target.provider === "own", input.access);
+    refuseDeepDomain(requirements.domain, option.target.provider, input.access);
   }
   const dns: Record<string, unknown> =
     requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined
       ? {
           provider: "cloudflare",
           domain: requirements.domain,
-          ...(ownDirect && input.serving !== "proxy" ? { proxied: false } : {}),
+          ...((ownDirect && input.serving !== "proxy") || portainerDirect
+            ? { proxied: false }
+            : {}),
         }
       : {
           // Without Cloudflare nothing proxies the traffic, so HTTP must stay open to everyone.
@@ -180,7 +210,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       ...(releaseCommand !== undefined ? { releaseCommand } : {}),
       env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     },
-    target: targetFor(option, input.access),
+    target: targetFor(option, input.access, input.portainer),
     services: { postgres: services.postgres, redis: services.redis },
     externalServices: [...option.externalServices],
     cost: option.cost,
@@ -202,12 +232,19 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
  * through the tunnel) more than one level below its likely zone, where Cloudflare's free
  * certificate does not reach. Provision checks the real zone again through the plan schema.
  */
-function refuseDeepDomain(domain: string, own: boolean, access: OwnServerAccess | undefined): void {
-  const otherwise = !own
-    ? "answer other for dnsProvider to manage its DNS yourself, without Cloudflare's proxy"
-    : access === "tunnel"
-      ? "if the internet can reach your server, serve it with DNS only (server.reachable yes, server.serve dns-only)"
-      : "serve it with DNS only (server.serve dns-only)";
+function refuseDeepDomain(
+  domain: string,
+  provider: DesignOption["target"]["provider"],
+  access: OwnServerAccess | undefined,
+): void {
+  const otherwise =
+    provider === "portainer"
+      ? "serve it with Caddy or your own reverse proxy and DNS only (portainer.web caddy or proxy)"
+      : provider !== "own"
+        ? "answer other for dnsProvider to manage its DNS yourself, without Cloudflare's proxy"
+        : access === "tunnel"
+          ? "if the internet can reach your server, serve it with DNS only (server.reachable yes, server.serve dns-only)"
+          : "serve it with DNS only (server.serve dns-only)";
   const problem = deepDomainProblem(domain, otherwise);
   if (problem === undefined) return;
   throw new OpsCrewError("INVALID_INPUT", `${problem.reason}. plan.yaml was not changed.`, {

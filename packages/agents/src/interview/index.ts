@@ -21,6 +21,27 @@ export {
   suggestReachable,
 } from "./own-server";
 export {
+  answersToPortainer,
+  buildPortainerQuestions,
+  type ConfirmPortainerCertificate,
+  hasPortainerAnswers,
+  PORTAINER_FIELDS,
+  type PortainerAccess,
+  type PortainerAnswers,
+  type PortainerCertificate,
+  type PortainerContext,
+  type PortainerEnvironment,
+  PortainerEnvironmentSchema,
+  type PortainerField,
+  type PortainerInterviewOptions,
+  type PortainerQuestion,
+  type PortainerQuestionId,
+  type PortainerRedeploy,
+  recordPortainerAnswers,
+  type SplitPortainerAnswers,
+  splitPortainerAnswers,
+} from "./portainer";
+export {
   buildQuestions,
   type InterviewAnswers,
   type InterviewContext,

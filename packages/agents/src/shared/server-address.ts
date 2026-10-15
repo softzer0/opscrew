@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { IacEngine, VpsProviderId } from "@opscrew/contracts";
 import { ensureStateDir, OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
 import { type EnginePreference, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, PortainerWebSchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 
@@ -151,6 +151,12 @@ const PortainerConnectionSchema = z
     environmentName: z.string().regex(/^[^\0\r\n]*\S[^\0\r\n]*$/, {
       message: "must be the environment's name on one line",
     }),
+    /** The environment's CPU architecture, read when the user picked it (design: target.arch). */
+    arch: z.enum(["amd64", "arm64"]).optional(),
+    /** How a new image reaches Portainer, as answered (design: target.redeploy). */
+    redeploy: z.enum(["updater", "cloudflare"]).optional(),
+    /** How visitors reach the app, as answered: tunnel, proxy with its port, or caddy (design: target.web). */
+    web: PortainerWebSchema.optional(),
     /** Everything OpsCrew created in Portainer, so destroy removes exactly that. */
     created: z
       .strictObject({

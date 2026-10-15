@@ -1,5 +1,6 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import {
+  type DeployProvider,
   type ProjectFacts,
   type Question,
   type QuestionId,
@@ -8,7 +9,6 @@ import {
   type ServiceKind,
 } from "@opscrew/plan-schema";
 import { frameworkName, listText } from "../analyze/summary";
-import { vpsProvider } from "../shared/vps-target";
 
 /** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
 export type InterviewAnswers = Record<string, unknown>;
@@ -40,17 +40,12 @@ export interface InterviewContext {
   inferredProvider?: VpsProviderId;
 }
 
-/**
- * The provider default: the previous answer, else the one inferred from tokens, else Hetzner.
- * Throws a plain `PHASE_PRECONDITION` when the previous answer is a Portainer target.
- */
+/** The provider default: the previous answer, else the one inferred from tokens, else Hetzner. */
 export function defaultProvider(
   previous: Pick<Requirements, "provider"> | undefined,
   context: InterviewContext = {},
-): VpsProviderId {
-  return previous?.provider === undefined
-    ? (context.inferredProvider ?? "hetzner")
-    : vpsProvider(previous.provider);
+): DeployProvider {
+  return previous?.provider ?? context.inferredProvider ?? "hetzner";
 }
 
 /**
@@ -89,8 +84,9 @@ const withDefault = <T>(value: T | undefined) => (value === undefined ? {} : { d
  * previous answers pre-filled as defaults. When the facts describe the repository root and
  * `appCandidates` (from `detectProjectDetails`) lists several apps, the first question asks which
  * one to deploy (`appDir`). The provider question offers Hetzner Cloud, DigitalOcean and a server
- * the user already has (`own`, whose follow-ups come from `buildServerQuestions`; the region is
- * then ignored) and defaults to the previous answer, then `context.inferredProvider`, then
+ * the user already has (`own`, whose follow-ups come from `buildServerQuestions`) and an existing
+ * Portainer (`portainer`, whose follow-ups come from `buildPortainerQuestions`); for both the
+ * region is ignored. It defaults to the previous answer, then `context.inferredProvider`, then
  * `hetzner`. Every question is validated with `QuestionSchema`.
  */
 export function buildQuestions(
@@ -159,6 +155,11 @@ export function buildQuestions(
           value: "own",
           label: "A server you already have",
           hint: "an Ubuntu or Debian server you reach over SSH with a key, rented anywhere or at home; you already pay for it",
+        },
+        {
+          value: "portainer",
+          label: "My existing Portainer",
+          hint: "a Portainer you already run, for example on a NAS or a home server; OpsCrew deploys the app as a stack through Portainer's API and changes nothing else on the host",
         },
       ],
       default: defaultProvider(previous, context),

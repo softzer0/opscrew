@@ -6,6 +6,7 @@ import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   type DeployPlan,
   DeployPlanSchema,
+  type DeployProvider,
   type DesignOption,
   type ProjectFacts,
   type Region,
@@ -25,7 +26,7 @@ import {
   vpsConnector,
 } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
-import { hasDeployment, readOwnServer, serverAddress } from "../shared";
+import { hasDeployment, readOwnServer, readPortainerConnection, serverAddress } from "../shared";
 import { backgroundJobsWarning } from "./background-jobs";
 import {
   type CodeChangeSignals,
@@ -49,6 +50,15 @@ import {
   tunnelNeedsCloudflareDomain,
 } from "./own";
 import { optionToPlan } from "./plan";
+import {
+  buildPortainerOption,
+  PORTAINER_BACKUPS_NOTE,
+  PORTAINER_HOST_NOTE,
+  PORTAINER_PRICE_NOTE,
+  type PortainerDesignChoice,
+  portainerChoiceProblem,
+  portainerDesignChoice,
+} from "./portainer";
 import { releaseCommandNote } from "./release";
 import { designWording } from "./wording";
 
@@ -149,6 +159,8 @@ export interface DesignPreview {
   access?: OwnServerAccess;
   /** A server the user owns: how the site is served (tunnel, proxy with the filter, DNS only). */
   serving?: OwnServerServing;
+  /** An existing Portainer: the environment, its architecture and the chosen modes. */
+  portainer?: PortainerDesignChoice;
 }
 
 interface DesignInputs {
@@ -187,9 +199,9 @@ export async function previewDesignOptions(
     const block = providerSwitchBlock(
       previous,
       inputs.requirements,
-      await stateExists(deps),
+      await mayHaveResources(deps, previous),
       "`opscrew design` will stop without changing opscrew/plan.yaml",
-      (await serverAddress(deps, previous)) !== undefined,
+      await knowsDeployment(deps, previous),
     );
     if (block !== undefined) warner(deps, warnings)(`${block.message} ${block.hint}`);
   }
@@ -277,6 +289,42 @@ async function priceOwnServer(
   };
 }
 
+/**
+ * The single option in the user's existing Portainer, from the interview's answers in
+ * `.opscrew/server.json`: no price, the environment's architecture, and the notes that OpsCrew
+ * does not change the host and that backups are the user's.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when the answers are missing or the requirements no
+ * longer allow them.
+ */
+async function pricePortainer(
+  deps: PhaseDeps,
+  { facts, requirements }: DesignInputs,
+  warnings: string[],
+): Promise<DesignPreview> {
+  const choice = portainerDesignChoice(await readPortainerConnection(deps.paths));
+  const problem = portainerChoiceProblem(requirements, choice);
+  if (problem !== undefined) {
+    throw new OpsCrewError("PHASE_PRECONDITION", problem.message, { hint: problem.hint });
+  }
+  const option = buildPortainerOption({ facts, requirements, choice, now: deps.clock.now() });
+  deps.reporter.info(
+    deps.redactor.redact(
+      `${option.title} (${option.id}): ${lowerFirst(PORTAINER_PRICE_NOTE)} — recommended`,
+    ),
+  );
+  deps.reporter.info(PORTAINER_HOST_NOTE);
+  deps.reporter.info(PORTAINER_BACKUPS_NOTE);
+  appWarnings(facts, warner(deps, warnings));
+  return {
+    options: [option],
+    priceSource: "live",
+    warnings,
+    facts,
+    requirements,
+    portainer: choice,
+  };
+}
+
 function lowerFirst(text: string): string {
   return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
 }
@@ -299,6 +347,7 @@ async function priceOptions(
   ownServer?: OwnServerDesignInput,
 ): Promise<DesignPreview> {
   const { facts, requirements } = inputs;
+  if (requirements.provider === "portainer") return pricePortainer(deps, inputs, warnings);
   const provider = requestedProvider(requirements);
   if (provider === "own") return priceOwnServer(deps, inputs, override, warnings, ownServer);
   const { reporter } = deps;
@@ -387,13 +436,13 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     requireSameProvider(
       previous,
       inputs.requirements,
-      await stateExists(deps),
-      (await serverAddress(deps, previous)) !== undefined,
+      await mayHaveResources(deps, previous),
+      await knowsDeployment(deps, previous),
     );
   }
 
   let ownServer = options.ownServer;
-  if (requestedProvider(inputs.requirements) === "own") {
+  if (inputs.requirements.provider === "own") {
     // A tunnel without a Cloudflare domain cannot be provisioned: stop before writing anything.
     const serving = await ownServerAccess(deps, ownServer, inputs.requirements);
     const access = servingAccess(serving);
@@ -426,21 +475,25 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     ...(previous ? { createdAt: previous.createdAt } : {}),
     ...(preview.access !== undefined ? { access: preview.access } : {}),
     ...(preview.serving !== undefined ? { serving: preview.serving } : {}),
+    ...(preview.portainer !== undefined ? { portainer: preview.portainer } : {}),
   });
   const plan = previous ? keepPlanSettings(fresh, previous) : fresh;
   if (previous) for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
   await writeArtifact("plan", paths.files.plan, plan);
 
   const planFile = toPosixRelative(paths.root, paths.files.plan);
-  const ownsServer = chosen.target.provider === "own";
+  const inPortainer = chosen.target.provider === "portainer";
+  const ownsServer = chosen.target.provider === "own" || inPortainer;
   const cost = formatMoney(chosen.cost.monthly);
   const inBudget =
     chosen.cost.monthly.currency === budget.currency
       ? ""
       : ` (about ${formatMoney(convertMoney(chosen.cost.monthly, budget.currency))})`;
-  const price = ownsServer
-    ? "no server cost (you already pay for this server)"
-    : `${cost}/month${inBudget}`;
+  const price = inPortainer
+    ? "no server cost (you already run this Portainer)"
+    : ownsServer
+      ? "no server cost (you already pay for this server)"
+      : `${cost}/month${inBudget}`;
   reporter.success(
     say(
       `Wrote ${planFile}: ${chosen.title}, ${price}, ${codeChanges.length} code change${codeChanges.length === 1 ? "" : "s"} to make.`,
@@ -488,6 +541,52 @@ export function liveDeploymentProvider(
 }
 
 /**
+ * True when an earlier provision may have left resources behind: a non-empty infrastructure state,
+ * or for a Portainer target anything OpsCrew's record lists as created there (a stack apply that
+ * failed half-way records what it made without an apply time in the plan).
+ */
+async function mayHaveResources(deps: PhaseDeps, previous: DeployPlan): Promise<boolean> {
+  if (await stateExists(deps)) return true;
+  if (previous.target.provider !== "portainer") return false;
+  const created = (await readPortainerConnection(deps.paths).catch(() => undefined))?.created;
+  return (
+    created !== undefined &&
+    (created.stacks.length > 0 || created.registryId !== undefined || created.volumes.length > 0)
+  );
+}
+
+/** Like {@link liveDeploymentProvider}, with a Portainer target as `portainer`. */
+function liveProvider(
+  plan: Pick<DeployPlan, "target" | "deployment">,
+  stateExists: boolean,
+): DeployProvider | undefined {
+  const { deployment } = plan;
+  if (deployment.destroyedAt !== undefined) return undefined;
+  const applied = deployment.lastApplyAt !== undefined || stateExists;
+  return applied ? plan.target.provider : undefined;
+}
+
+/**
+ * True when this computer knows where the previous plan's app runs: the server's address, or for
+ * a Portainer target with a recorded apply OpsCrew's record of it (`.opscrew/server.json` →
+ * `portainer`; without an apply the record alone does not mean the app is deployed).
+ */
+async function knowsDeployment(deps: PhaseDeps, previous: DeployPlan): Promise<boolean> {
+  if (previous.target.provider === "portainer") {
+    if (!hasDeployment(previous)) return false;
+    return (await readPortainerConnection(deps.paths).catch(() => undefined)) !== undefined;
+  }
+  return (await serverAddress(deps, previous)) !== undefined;
+}
+
+/** A provider's name in a sentence. */
+function providerName(id: DeployProvider): string {
+  if (id === "own") return "your own server";
+  if (id === "portainer") return "your Portainer";
+  return providerProfile(id).displayName;
+}
+
+/**
  * Why the requested provider cannot replace the plan's (a live deployment moves only through
  * `opscrew retarget`), or `undefined` when the switch is allowed. `outcome` is the message's last
  * sentence: what happened (or will happen) to `opscrew/plan.yaml`. `hasServer` says whether
@@ -503,21 +602,24 @@ function providerSwitchBlock(
   outcome: string,
   hasServer: boolean,
 ): { message: string; hint: string } | undefined {
-  const current = liveDeploymentProvider(previous, stateExists);
-  const requested = requestedProvider(requirements);
+  const current = liveProvider(previous, stateExists);
+  const requested: DeployProvider = requirements.provider ?? "hetzner";
   if (current === undefined || requested === current) return undefined;
-  const nameOf = (id: VpsProviderId) =>
-    id === "own" ? "your own server" : providerProfile(id).displayName;
-  const from = nameOf(current);
-  const to = nameOf(requested);
+  const from = providerName(current);
+  const to = providerName(requested);
   const deployed = hasServer || hasDeployment(previous);
+  const owned = current === "own" || current === "portainer";
   const where = deployed
-    ? `Your app is deployed on ${from}`
-    : `An earlier apply may have created resources ${current === "own" ? "for" : "at"} ${from}`;
+    ? `Your app is deployed ${current === "portainer" ? "in" : "on"} ${from}`
+    : `An earlier apply may have created resources ${owned ? "for" : "at"} ${from}`;
   const retarget = `\`opscrew retarget --to ${requested}\``;
   const keep = `or keep ${from} by answering \`opscrew interview\` again.`;
   let hint: string;
-  if (current === "own" || requested === "own") {
+  if (current === "portainer" || requested === "portainer") {
+    // `opscrew retarget` does not move an app to or from a Portainer target.
+    const there = deployed && !hasServer ? " on the computer that provisioned it" : "";
+    hint = `OpsCrew cannot move an app to or from your Portainer. Run \`opscrew destroy\`${there} first and then \`opscrew design\`, ${keep}`;
+  } else if (current === "own" || requested === "own") {
     // `opscrew retarget` does not move an app to or from a server the user owns.
     const there = deployed && !hasServer ? " on the computer that provisioned it" : "";
     hint = `OpsCrew cannot move an app to or from a server you already own. Run \`opscrew destroy\`${there} first and then \`opscrew design\`, ${keep}`;

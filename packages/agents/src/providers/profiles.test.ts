@@ -2,6 +2,7 @@ import { RegionSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { cloudTarget } from "./own";
 import {
+  PORTAINER_TOKEN_VAR,
   planProvider,
   providerFromTokens,
   providerProfile,
@@ -99,6 +100,24 @@ describe("provider choice", () => {
     // Token-based provider lists never include it.
     expect(VPS_PROVIDERS).not.toContain("own");
     expect(providerFromTokens({ HCLOUD_TOKEN: "x" })).toBe("hetzner");
+  });
+
+  it("describes an existing Portainer: its token, no catalogue, no price, no host changes", () => {
+    const portainer = providerProfile("portainer");
+    expect(portainer).toEqual({
+      id: "portainer",
+      displayName: "My existing Portainer",
+      tokenVars: [PORTAINER_TOKEN_VAR],
+      catalogue: false,
+      priced: false,
+      providerBackups: false,
+      changesHost: false,
+    });
+    expect(PORTAINER_TOKEN_VAR).toBe("PORTAINER_API_KEY");
+    // Not a server provider: never inferred from tokens, never in the cloud provider list.
+    expect(VPS_PROVIDERS).not.toContain("portainer");
+    expect(providerFromTokens({ PORTAINER_API_KEY: "x" })).toBeUndefined();
+    expect(providerFromTokens({ PORTAINER_API_KEY: "x", HCLOUD_TOKEN: "y" })).toBe("hetzner");
   });
 
   it("refuses an unknown provider id instead of using another provider", () => {

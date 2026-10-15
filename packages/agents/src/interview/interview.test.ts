@@ -163,8 +163,36 @@ describe("provider question", () => {
           label: "A server you already have",
           hint: "an Ubuntu or Debian server you reach over SSH with a key, rented anywhere or at home; you already pay for it",
         },
+        {
+          value: "portainer",
+          label: "My existing Portainer",
+          hint: "a Portainer you already run, for example on a NAS or a home server; OpsCrew deploys the app as a stack through Portainer's API and changes nothing else on the host",
+        },
       ],
     });
+  });
+
+  it("defaults to an existing Portainer chosen before, and records no region for it", () => {
+    const previous: Requirements = { ...previousWith(), provider: "portainer" };
+    expect(providerQuestion(buildQuestions(facts(), previous))?.default).toBe("portainer");
+    const requirements = answersToRequirements(
+      { ...BASE_ANSWERS, provider: "Portainer", region: "eu-central" },
+      { now, facts: facts() },
+    );
+    expect(requirements.provider).toBe("portainer");
+    expect(requirements.region).toBeUndefined();
+    // The tunnel's name check waits for the Portainer answers (proxy and Caddy are DNS only).
+    expect(
+      answersToRequirements(
+        {
+          ...BASE_ANSWERS,
+          provider: "portainer",
+          domain: "api.shop.example.com",
+          dnsProvider: "cloudflare",
+        },
+        { now, facts: facts() },
+      ).domain,
+    ).toBe("api.shop.example.com");
   });
 
   it("labels regions without naming one provider's locations", () => {

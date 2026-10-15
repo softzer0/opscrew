@@ -9,8 +9,13 @@ import {
 } from "@opscrew/plan-schema";
 import { runAnalyze } from "../analyze";
 import type { PhaseDeps } from "../context";
-import { providerFromTokens } from "../providers";
-import { type OwnServerConnection, readOwnServer, setAsideServerAddresses } from "../shared";
+import { PORTAINER_TOKEN_VAR, providerFromTokens } from "../providers";
+import {
+  type OwnServerConnection,
+  readOwnServer,
+  readPortainerConnection,
+  setAsideServerAddresses,
+} from "../shared";
 import { answersToRequirements } from "./answers";
 import {
   answersToOwnServer,
@@ -21,6 +26,20 @@ import {
   type ServerQuestion,
   splitServerAnswers,
 } from "./own-server";
+import {
+  answersToPortainer,
+  buildPortainerQuestions,
+  hasPortainerAnswers,
+  type PortainerAnswers,
+  type PortainerContext,
+  type PortainerInterviewOptions,
+  type PortainerQuestion,
+  portainerUrlAnswer,
+  reachPortainer,
+  recordPortainerAnswers,
+  type SplitPortainerAnswers,
+  splitPortainerAnswers,
+} from "./portainer";
 import { buildQuestions, describesRoot, type InterviewAnswers } from "./questions";
 
 export interface InterviewOptions {
@@ -39,6 +58,19 @@ export interface InterviewOptions {
   answers?: InterviewAnswers;
   /** Whether the internet reaches the server, as inspection suggests (the reachability default). */
   suggestedReachable?: boolean;
+  /**
+   * Asks the follow-up questions for an existing Portainer (`provider: portainer`) and returns the
+   * answers keyed by question id (`portainer.url`, …). Called twice, only when `answers` holds no
+   * Portainer answers: first for the address, then (once the certificate is confirmed and
+   * Portainer listed its environments) for the rest.
+   */
+  askPortainer?: (questions: PortainerQuestion[]) => Promise<InterviewAnswers>;
+  /**
+   * How the interview reaches an existing Portainer: the adapter, the certificate confirmation
+   * (the user's, never a model's) or a fingerprint given up front. The token comes only from
+   * `PORTAINER_API_KEY`.
+   */
+  portainer?: PortainerInterviewOptions;
 }
 
 export interface InterviewResult {
@@ -55,6 +87,12 @@ export interface InterviewResult {
    * (never in `opscrew/requirements.yaml`).
    */
   ownServer?: OwnServerAnswers;
+  /**
+   * For an existing Portainer: its address, pinned certificate, environment and the redeploy and
+   * web modes, saved in `.opscrew/server.json` (never in `opscrew/requirements.yaml`; never the
+   * token).
+   */
+  portainer?: PortainerAnswers;
 }
 
 const errorCode = (error: unknown) =>
@@ -127,13 +165,55 @@ async function loadPreviousServer(
 }
 
 /**
+ * The follow-ups for an existing Portainer: the address (asked first when interactive), the
+ * certificate confirmed and the environments listed through `options.portainer`, then the rest.
+ * Nothing is written here.
+ */
+async function portainerAnswers(
+  deps: PhaseDeps,
+  options: InterviewOptions,
+  given: SplitPortainerAnswers,
+  context: PortainerContext,
+): Promise<PortainerAnswers> {
+  let split = given;
+  const ask = hasPortainerAnswers(split) ? undefined : options.askPortainer;
+  const merge = (answers: InterviewAnswers) => {
+    const more = splitPortainerAnswers(answers);
+    split = {
+      portainer: { ...split.portainer, ...more.portainer },
+      unknown: [...split.unknown, ...more.unknown],
+      rest: split.rest,
+    };
+  };
+  if (ask !== undefined) {
+    merge(await ask(buildPortainerQuestions(context).filter((q) => q.id === "portainer.url")));
+  }
+  const url = portainerUrlAnswer(split, context);
+  const token = deps.env[PORTAINER_TOKEN_VAR]?.trim();
+  if (token !== undefined && token !== "") deps.redactor.addLiteral(token, PORTAINER_TOKEN_VAR);
+  const reached = await reachPortainer(url, token, context, options.portainer);
+  const listed = { ...context, url, environments: reached.environments };
+  if (ask !== undefined) {
+    merge(await ask(buildPortainerQuestions(listed).filter((q) => q.id !== "portainer.url")));
+  }
+  return answersToPortainer(split, {
+    ...listed,
+    url,
+    ...(reached.certFingerprint !== undefined ? { certFingerprint: reached.certFingerprint } : {}),
+  });
+}
+
+/**
  * The interview phase: builds the questions that cannot be inferred (previous answers pre-filled),
  * takes answers from `options.answers` or `options.ask`, validates them into requirements, writes
  * `opscrew/requirements.yaml` and records the phase. In a repository with several apps it asks
  * which one to deploy (`appDir`) and re-runs the deterministic analysis for the chosen app. For a
  * server the user already has (`provider: own`) it takes the follow-ups (`server.*`) from the
  * answers or `options.askServer` and saves them in `.opscrew/server.json`, never in
- * `opscrew/requirements.yaml`. Missing or invalid answers throw `OpsCrewError("INVALID_INPUT")`
+ * `opscrew/requirements.yaml`. For an existing Portainer (`provider: portainer`) it takes the
+ * follow-ups (`portainer.*`) from the answers or `options.askPortainer`, confirms Portainer's
+ * certificate and lists its environments through `options.portainer`, and saves them in
+ * `.opscrew/server.json` (never the token). Missing or invalid answers throw `OpsCrewError("INVALID_INPUT")`
  * listing them; nothing is written then.
  */
 export async function runInterview(
@@ -156,8 +236,9 @@ export async function runInterview(
     if (options.answers !== undefined) answers = options.answers;
     else if (options.ask !== undefined) answers = await options.ask(questions);
     let split = splitServerAnswers(answers);
+    const portainerSplit = splitPortainerAnswers(split.rest);
 
-    const requirements = answersToRequirements(split.rest, {
+    const requirements = answersToRequirements(portainerSplit.rest, {
       now: deps.clock.now(),
       facts,
       appCandidates,
@@ -194,6 +275,21 @@ export async function runInterview(
         "The answers about a server you already have (server.*) were ignored, because the app does not run on your own server.",
       );
     }
+    let portainer: PortainerAnswers | undefined;
+    if (requirements.provider === "portainer") {
+      // A damaged record stops here: it lists what OpsCrew created in Portainer, never set aside.
+      const previous = await readPortainerConnection(paths);
+      portainer = await portainerAnswers(deps, options, portainerSplit, {
+        ...(previous !== undefined ? { previous } : {}),
+        cloudflareDomain:
+          requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined,
+        ...(requirements.domain !== undefined ? { domain: requirements.domain } : {}),
+      });
+    } else if (hasPortainerAnswers(portainerSplit)) {
+      reporter.warn(
+        "The answers about an existing Portainer (portainer.*) were ignored, because the app does not run in your Portainer.",
+      );
+    }
     // The analysis must describe the chosen app. Re-run it before saving the answers, so an app
     // folder detection rejects is never written to requirements.yaml.
     const reanalyzed =
@@ -221,21 +317,36 @@ export async function runInterview(
         "Saved how to reach your server in .opscrew/server.json, on this computer only.",
       );
     }
+    if (portainer !== undefined) {
+      // The address and environment stay on this computer; the token is never saved.
+      await recordPortainerAnswers(paths, portainer);
+      reporter.info(
+        `Saved how to reach your Portainer in .opscrew/server.json, on this computer only. The access token stays in ${PORTAINER_TOKEN_VAR} and is never saved.`,
+      );
+    }
     await writeArtifact("requirements", paths.files.requirements, requirements);
     reporter.success("Wrote opscrew/requirements.yaml.");
     const budget = requirements.budgetMonthly;
     const where =
       requirements.provider === "own"
         ? ", your own server"
-        : requirements.region === undefined
-          ? ""
-          : `, ${requirements.region}`;
+        : requirements.provider === "portainer"
+          ? ", your Portainer"
+          : requirements.region === undefined
+            ? ""
+            : `, ${requirements.region}`;
     await deps.state.markPhase(
       "interview",
       "ok",
       `${requirements.expectedMonthlyUsers} users, ${budget.amount} ${budget.currency}/month${where}`,
     );
-    return { requirements, questions, reanalyzed, ...(ownServer ? { ownServer } : {}) };
+    return {
+      requirements,
+      questions,
+      reanalyzed,
+      ...(ownServer ? { ownServer } : {}),
+      ...(portainer ? { portainer } : {}),
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     try {

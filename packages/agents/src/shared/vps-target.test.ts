@@ -46,7 +46,6 @@ describe("a Portainer target in phases that only know single servers", () => {
     for (const attempt of [
       () => planProvider(plan),
       () => requestedProvider({ provider: "portainer" }),
-      () => defaultProvider({ provider: "portainer" }),
       () => cloudTarget(plan.target),
       () => vpsTarget(plan.target),
       () => vpsProvider("portainer"),
@@ -54,6 +53,8 @@ describe("a Portainer target in phases that only know single servers", () => {
       expect(refusal(attempt)).toMatchObject(NOT_YET);
     }
     expect(refusal(() => moveProvider(plan.target))).toMatchObject(NO_MOVE);
+    // The interview handles a Portainer target (T1004): its previous answer is the default.
+    expect(defaultProvider({ provider: "portainer" })).toBe("portainer");
   });
 
   it("leaves Hetzner, DigitalOcean and own servers as they were", () => {

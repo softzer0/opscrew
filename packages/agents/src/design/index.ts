@@ -37,6 +37,19 @@ export {
   tunnelNeedsCloudflareDomain,
 } from "./own";
 export { appNameFor, appPortFor, type OptionToPlanInput, optionToPlan } from "./plan";
+export {
+  buildPortainerOption,
+  PORTAINER_BACKUPS_NOTE,
+  PORTAINER_HOST_NOTE,
+  PORTAINER_LOCATION,
+  PORTAINER_OPTION_ID,
+  PORTAINER_PRICE_NOTE,
+  PORTAINER_SERVER_TYPE,
+  type PortainerDesignChoice,
+  type PortainerOptionInput,
+  portainerChoiceProblem,
+  portainerDesignChoice,
+} from "./portainer";
 export { type ReleaseCommandNote, releaseCommandNote } from "./release";
 export {
   type DesignPreview,

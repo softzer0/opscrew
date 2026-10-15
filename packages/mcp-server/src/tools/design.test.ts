@@ -77,7 +77,7 @@ describe("opscrew_design_options tax wording", () => {
     expect(heading).not.toContain("VAT");
   });
 
-  it("refuses a Portainer target plainly until its design exists", async () => {
+  it("refuses a Portainer target plainly until the interview recorded which Portainer", async () => {
     const call = await connect();
     const saved = await call("opscrew_save_requirements", {
       answers: { ...ANSWERS, budgetMonthly: "10 EUR", provider: "hetzner" },
@@ -88,7 +88,12 @@ describe("opscrew_design_options tax wording", () => {
     await writeArtifact("requirements", file, { ...requirements, provider: "portainer" });
     const result = await call("opscrew_design_options");
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain("A Portainer target is not supported by this command yet.");
+    expect(textOf(result)).toContain(
+      "opscrew/requirements.yaml says the app runs in your existing Portainer, but OpsCrew does not know which Portainer and environment on this computer.",
+    );
+    expect(textOf(result)).toContain(
+      "Run `opscrew interview` and answer the questions about your Portainer, then run `opscrew design` again.",
+    );
   });
 
   it("keeps VAT for Hetzner's EUR prices", async () => {

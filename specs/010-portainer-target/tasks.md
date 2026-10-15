@@ -40,7 +40,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T1004 [P] [US1] Provider profile, interview and design for a Portainer target in `packages/agents/src/{providers,interview,design}/`
+- [X] T1004 [P] [US1] Provider profile, interview and design for a Portainer target in `packages/agents/src/{providers,interview,design}/`
   - Owns: `packages/agents/src/providers/**`, `packages/agents/src/interview/**`, `packages/agents/src/design/**` (the Portainer parts, + tests)
   - Reads: contracts/cli.md "Interview"; data-model.md "Plan target", "Portainer connection"; 009's own-server interview and design (`interview/own-server.ts`, `design/own.ts`); `@opscrew/connector-portainer` root exports (from T1002 when merged; until then the contract)
   - Depends: T1001

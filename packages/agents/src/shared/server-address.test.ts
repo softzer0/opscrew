@@ -347,6 +347,22 @@ describe("an existing Portainer in OpsCrew's local state", () => {
     expect((await readPortainerConnection(deps.paths))?.created).toEqual(created);
   });
 
+  it("keeps the interview's answers for design: the architecture, the redeploy and web modes", async () => {
+    const deps = await createTestPhaseDeps();
+    for (const web of [
+      { mode: "tunnel" },
+      { mode: "proxy", port: 8080 },
+      { mode: "caddy" },
+    ] as const) {
+      const answers = { arch: "arm64", redeploy: "cloudflare", web } as const;
+      await recordPortainerConnection(deps.paths, { ...portainer, ...answers });
+      expect(await readPortainerConnection(deps.paths)).toMatchObject(answers);
+    }
+    await recordPortainerConnection(deps.paths, portainer);
+    const plain = await readPortainerConnection(deps.paths);
+    expect(plain?.arch ?? plain?.redeploy ?? plain?.web).toBeUndefined();
+  });
+
   it("pins the certificate in the usual spellings, and connects to localhost over plain HTTP", async () => {
     const deps = await createTestPhaseDeps();
     for (const certFingerprint of [HEX, COLONS, BASE64]) {
@@ -398,6 +414,12 @@ describe("an existing Portainer in OpsCrew's local state", () => {
       ["stack role", created({ stacks: [{ ...stack, role: "database" }] })],
       ["duplicate stack", created({ stacks: [stack, { ...stack, role: "updater" }] })],
       ["registry id", created({ registryId: 0 })],
+      ["architecture", { ...portainer, arch: "x86" }],
+      ["redeploy mode", { ...portainer, redeploy: "polling" }],
+      ["web mode", { ...portainer, web: { mode: "nginx" } }],
+      ["proxy without a port", { ...portainer, web: { mode: "proxy" } }],
+      ["proxy port", { ...portainer, web: { mode: "proxy", port: 70000 } }],
+      ["port on the tunnel", { ...portainer, web: { mode: "tunnel", port: 8080 } }],
       ["volume name", created({ volumes: ["../etc"] })],
       ["stack env", created({ stacks: [{ ...stack, env: [{ name: "X", value: token }] }] })],
     ] as const) {

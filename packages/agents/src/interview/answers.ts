@@ -172,8 +172,9 @@ function serviceList(value: unknown): unknown {
  * a domain the DNS provider is `none`. The app folder (`appDir`) is normalised and, when
  * `appCandidates` is given, must be one of them; without an answer it comes from facts that
  * describe a chosen app folder, then from the previous requirements. For a server the user already
- * has (`provider: own`) no region is needed and none is recorded; the server's connection answers
- * (`server.*`) are not requirements (see `splitServerAnswers`). Throws
+ * has (`provider: own`) or an existing Portainer (`provider: portainer`) no region is needed and
+ * none is recorded; their follow-up answers (`server.*`, `portainer.*`) are not requirements (see
+ * `splitServerAnswers` and `splitPortainerAnswers`). Throws
  * `OpsCrewError("INVALID_INPUT")` listing unknown keys, missing required answers or invalid values.
  */
 export function answersToRequirements(
@@ -204,9 +205,11 @@ export function answersToRequirements(
   const appCandidates = options.appCandidates ?? [];
   const previous = options.previous as Partial<Record<QuestionId, unknown>> | undefined;
   const given = (id: QuestionId) => Object.hasOwn(answers, id) && !isBlank(answers[id]);
-  // A server the user already has stays where it is: no region is asked for or recorded.
+  // A server the user already has (or runs Portainer on) stays where it is: no region is asked
+  // for or recorded.
   const provider = given("provider") ? answers.provider : (previous?.provider ?? inferred.provider);
-  const ownServer = typeof provider === "string" && provider.trim().toLowerCase() === "own";
+  const chosenProvider = typeof provider === "string" ? provider.trim().toLowerCase() : undefined;
+  const ownServer = chosenProvider === "own" || chosenProvider === "portainer";
   const required: readonly QuestionId[] = [
     ...REQUIRED.filter((id) => !(ownServer && id === "region")),
     ...(appCandidates.length > 1 ? (["appDir"] as const) : []),
@@ -283,10 +286,14 @@ export function answersToRequirements(
     }
   } else {
     // A Hetzner or DigitalOcean server is always served behind Cloudflare's proxy when its
-    // domain is on Cloudflare; a server the user owns is checked with its serving answer.
+    // domain is on Cloudflare; a server the user owns or a Portainer is checked with its serving
+    // answer.
     const { provider: chosen, dnsProvider, domain } = parsed.data;
     const deep =
-      chosen !== "own" && dnsProvider === "cloudflare" && domain !== undefined
+      chosen !== "own" &&
+      chosen !== "portainer" &&
+      dnsProvider === "cloudflare" &&
+      domain !== undefined
         ? deepDomainProblem(
             domain,
             "answer other for dnsProvider to manage its DNS yourself, without Cloudflare's proxy",

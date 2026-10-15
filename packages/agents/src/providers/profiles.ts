@@ -183,6 +183,40 @@ const OWN: ProviderProfile = {
   mirroredAttributes: {},
 };
 
+/** The environment variable holding the Portainer access token (never stored by OpsCrew). */
+export const PORTAINER_TOKEN_VAR = "PORTAINER_API_KEY";
+
+/**
+ * What the phases need to know about a Portainer the user already runs (`portainer`). OpsCrew
+ * creates no server there: there is no catalogue to choose from, no price, no provider backups,
+ * and OpsCrew never changes the host; it deploys the app as stacks through Portainer's API.
+ */
+export interface PortainerProfile {
+  id: "portainer";
+  /** `My existing Portainer`. */
+  displayName: string;
+  /** Environment variables holding the Portainer access token: only `PORTAINER_API_KEY`. */
+  tokenVars: readonly string[];
+  /** Always false: there are no server sizes or locations to choose from. */
+  catalogue: false;
+  /** Always false: the user already runs the host, so OpsCrew shows no server price. */
+  priced: false;
+  /** Always false: backups (including the app's volumes) are the user's responsibility. */
+  providerBackups: false;
+  /** Always false: OpsCrew never changes the host, its firewall, SSH or Portainer's settings. */
+  changesHost: false;
+}
+
+const PORTAINER: PortainerProfile = {
+  id: "portainer",
+  displayName: "My existing Portainer",
+  tokenVars: [PORTAINER_TOKEN_VAR],
+  catalogue: false,
+  priced: false,
+  providerBackups: false,
+  changesHost: false,
+};
+
 const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
   hetzner: HETZNER,
   digitalocean: DIGITALOCEAN,
@@ -195,12 +229,20 @@ const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
  */
 export const VPS_PROVIDERS: readonly CloudProvider[] = ["hetzner", "digitalocean"];
 
-/** The provider's profile, including `own` ("Your own server"). */
-export function providerProfile(id: VpsProviderId): ProviderProfile {
+/**
+ * The provider's profile, including `own` ("Your own server") and `portainer` ("My existing
+ * Portainer", see {@link PortainerProfile}).
+ */
+export function providerProfile(id: "portainer"): PortainerProfile;
+export function providerProfile(id: VpsProviderId): ProviderProfile;
+export function providerProfile(
+  id: VpsProviderId | "portainer",
+): ProviderProfile | PortainerProfile {
+  if (id === "portainer") return PORTAINER;
   const profile = PROFILES[id];
   if (profile === undefined) {
     throw new OpsCrewError("INVALID_INPUT", `OpsCrew does not know the server provider "${id}".`, {
-      hint: "Use hetzner, digitalocean or own as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.",
+      hint: "Use hetzner, digitalocean, own or portainer as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.",
     });
   }
   return profile;
