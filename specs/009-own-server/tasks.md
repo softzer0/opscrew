@@ -190,3 +190,33 @@ network or model.
   - Effort: high
 
 - [X] T910 Live runs (public, tunnel, Portainer, destroy --undo-host) and results in `docs/e2e.md` (lead)
+
+## Phase 5: Convergence
+
+- [ ] T925 CRITICAL: Request the `--undo-host` host plan with `allowDestroy` and the typed app name, since it deletes the OpsCrew-created `deploy` user and its home (`destroy/own.ts`, `ssh-host` `steps.ts` `userdel -r deploy`) per Constitution I (contradicts)
+- [ ] T926 Read checksums of OpsCrew's runtime files in `/srv/app` (`compose.yaml`, `Caddyfile` and the other rendered files) during inspection and report every difference from what OpsCrew renders from the plan as host drift per FR-911, US4/AC1 (partial)
+- [ ] T927 Plan a `ufw` change (`default deny incoming` under the dead-man switch, the old policy recorded so undo restores it) when ufw is already active with default incoming `allow`, instead of reporting it in place per FR-908, US1/AC2 (partial)
+- [ ] T928 In public mode use the login port (not sshd's own port) for the deploy workflow and the known_hosts deploy secret when they differ (a router forwarding 2222 to 22), keeping sshd's port only for the tunnel's SSH route, with a test per US1/AC5 (partial)
+- [ ] T929 Leave `/etc/docker/daemon.json` unchanged (with a plain note) when the server runs containers OpsCrew did not create, and set log rotation per service in OpsCrew's Compose files, so the user's own containers keep their behaviour per US2/AC5 (partial)
+- [ ] T930 Report ufw rules added after setup (current rules minus the record's previous rules minus OpsCrew's commented rules) and changed default policies as host drift per FR-911 (partial)
+- [ ] T931 Plan the teardown from the host record (or the plan's app name) when `/etc/opscrew/app.json` is missing, so destroy still removes the app's containers and `/srv/app`, with a test per FR-912, US4/AC2 (partial)
+- [ ] T932 Run `opscrew init` first in the own-server live test and measure the time from `init` to a verified DNS-only deploy against the 20-minute target, recorded in `docs/e2e.md` per SC-901 (partial)
+- [ ] T933 Reword `docs/guide/portainer.md` and `plugin/README.md`: a server address typed into the chat reaches Claude during the plugin interview but never appears in tool results, files or pull requests; to keep it out of the chat run `npx opscrew interview` in a terminal per Constitution IX, FR-902 (contradicts)
+- [ ] T934 Align spec US4/AC2 with destroy keeping the deploy workflow in the repository (as on Hetzner/DigitalOcean) and listing it under "What remains" per US4/AC2 (partial)
+- [ ] T935 Add the `opscrew provision --approve <removal hash> --confirm <app>` step for a switch between serving directly and the tunnel to the "In scripts" section of `docs/guide/own-server.md` per FR-917 (partial)
+- [ ] T936 Say in `docs/guide/own-server.md` that Cloudflare is needed only for the proxy, the tunnel and a Portainer subdomain (any DNS works for DNS-only serving), and describe the infrastructure plan as "the tunnel, when your site uses it" per spec Assumptions, FR-910 (contradicts)
+- [ ] T937 Add `server.serve: tunnel | proxy | dns-only` with a one-line explanation to the answers-file sample in `docs/guide/own-server.md` per contracts/cli: Interview, FR-910 (partial)
+- [ ] T938 Correct `docs/e2e.md`: the live test deletes the zone rulesets the run created and keeps those that existed before it (the "left behind on purpose" sentence and the cleanup list) per T919 (contradicts)
+- [ ] T939 Give `opscrew_drift` own-server services for tests, a test (host drift reported, no address in the result, an unconfirmed host key refused) and own-server host drift in its description per FR-917 (missing)
+- [ ] T940 Bring `contracts/cli.md` up to date with `server.serve` and the shipped flags (`provision --password-logins`, `--confirm`; `destroy --delete-data`, `--approve` for the undo plan, `--confirm`; `portainer disable --delete-data/--confirm`; `portainer status --json`; `design`/`drift --host-key`) per contracts/cli (partial)
+- [ ] T941 Amend FR-917 and the MCP contract to record that destroy, `--undo-host` and `--delete-data` stay terminal-only and that the host key is confirmed in a dialog, never passed by the model per FR-917 (partial)
+- [ ] T942 Add the Cloudflare-only filter mode with its reboot and IPv6 checks to the live-test summary in `plan.md` §9 per plan §9 (partial)
+- [ ] T943 Decide the "server reboots during setup" edge case: wait for SSH and continue the apply (bounded, re-checking the interrupted step) or reword the spec to "the next run continues", and align code or spec per spec Edge Cases (partial)
+- [ ] T944 Record in `plan.md` §5 (and `contracts/cli.md`) that in tunnel mode the host plan is approved in a second run, after the tunnel exists per plan §5 (partial)
+- [ ] T945 Reword FR-910 and User Story 3's independent test: the tunnel, its DNS route and Access are infrastructure code through the IaC engine behind the safety gate per FR-910 (partial)
+- [ ] T946 Reword US3/AC2: the connector token is only on the server (and in OpsCrew's local IaC state); the Access service token is only in the deploy secrets per US3/AC2 (partial)
+- [ ] T947 Align `plan.md` §2 and the FR-909 / US1/AC2 wording with the host adapter's 13 steps (`package-repair`, `docker-daemon`, `web-filter`, `fail2ban` included) per FR-909, plan §2 (partial)
+- [ ] T948 Add `serve` (tunnel, proxy, dns-only) to the `server.json` table in `data-model.md` per data-model (partial)
+- [ ] T949 Mark research R2's rejected `DOCKER-USER` alternative as superseded by its "Behind Cloudflare's proxy" amendment per research R2 (partial)
+- [ ] T950 Record in spec US4/AC3 (or ADR 0011) that `--undo-host` keeps Docker installed even when OpsCrew installed it per US4/AC3 (partial)
+- [ ] T951 Align spec US5/AC3 with OpsCrew showing only the Portainer password file's path, never the password per US5/AC3 (partial)
