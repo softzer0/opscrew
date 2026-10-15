@@ -22,6 +22,9 @@ here.
 | `url` | Portainer's address as the user gave it (`https://…:9443`, or `http://localhost…`) |
 | `certFingerprint` | pinned SHA-256 fingerprint of Portainer's certificate (absent for `http://localhost`) |
 | `environmentId`, `environmentName` | the environment the user picked |
+| `arch` | the environment's CPU architecture (`amd64`/`arm64`), read when the user picked it |
+| `redeploy` | the answer: `updater` or `cloudflare` (design copies it into `target.redeploy`) |
+| `web` | the answer: `{ mode: "tunnel" }`, `{ mode: "proxy", port }` or `{ mode: "caddy" }` (design copies it into `target.web`) |
 | `created.stacks` | `[{ id, name, role: "app" | "updater" | "tunnel-connector" }]` OpsCrew created |
 | `created.registryId` | the registry entry OpsCrew added (admin token only) |
 | `created.volumes` | the app stack's named volumes, recorded at apply (for data deletion) |
