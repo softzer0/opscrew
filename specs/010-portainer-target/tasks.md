@@ -92,7 +92,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
-- [ ] T1008 [US1] [US2] [US3] [US4] [US5] Gated live test against a throwaway Portainer CE in `packages/cli/test/live/portainer-target.test.ts`, `docs/e2e.md`
+- [X] T1008 [US1] [US2] [US3] [US4] [US5] Gated live test against a throwaway Portainer CE in `packages/cli/test/live/portainer-target.test.ts`, `docs/e2e.md`
   - Owns: `packages/cli/test/live/portainer-target.test.ts` and helpers `packages/cli/test/live/portainer-*.ts`, `docs/e2e.md` (the setup section only)
   - Reads: quickstart.md "Gated live test"; research.md R10, R5 (the unchanged-branch webhook check); `packages/cli/test/live/own-server.test.ts` and its helpers (patterns, cleanup, leak check, per-run hostname)
   - Depends: T1007

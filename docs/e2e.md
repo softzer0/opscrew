@@ -219,6 +219,154 @@ public repositories). Left behind on purpose: the GitHub Actions secrets and the
 in the throwaway repository (as above), the zone's rulesets that existed before the run, and the
 Zero Trust organization if OpsCrew created it (other apps may use them).
 
+## Your existing Portainer
+
+`packages/cli/test/live/portainer-target.test.ts` runs the flow for a Portainer the user already
+runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install:
+
+1. **The user's Portainer.** It creates a throwaway Hetzner Cloud server through the Hetzner API
+   (Ubuntu 24.04, the cheapest x86 type near `OPSCREW_E2E_REGION`, labels `managed-by=opscrew-e2e`
+   and `run=<id>`) with an SSH key generated for this run and its own firewall: SSH, 80 and 443
+   from anywhere, Portainer's port 9443 and the `proxy` port 8080 only from the test computer's
+   public IPv4 address (read from `https://1.1.1.1/cdn-cgi/trace`). It installs Docker
+   (get.docker.com) and starts `portainer/portainer-ce:2.45.2` publishing only 9443. Then, as the
+   user would: it reads the fingerprint with the user guide's `openssl` command on the server and
+   checks that it is the one OpsCrew reads from the test computer, creates the administrator with
+   the one-time setup token from `docker logs portainer`, adds the local Docker environment
+   (`POST /api/endpoints`; a fresh install has none), creates an administrator's access token, a
+   standard user (role 2) with access to the environment and that user's token, a decoy Compose
+   project started outside Portainer (`e2e-decoy-compose`) and a decoy Portainer stack
+   (`e2e-decoy-stack`). With a short-lived stack of its own it records whether a bare `NAME:`
+   entry stays unset when the stack has no value for it, whether a bare entry takes a value from
+   the stack's environment, and whether stopping a stack removes its containers. OpsCrew never gets
+   the Hetzner token, an SSH login or a Portainer password: only `PORTAINER_API_KEY`.
+2. **updater + tunnel** (the defaults): `init --fix`, `analyze --no-ai`,
+   `interview --answers <file> --portainer-cert SHA256:…`, `init` again, `design`,
+   `adapt --no-ai --yes` (pull request merged). With the standard user's token and a private image
+   `provision --plan-only` must stop before any change with the registry steps (FR-1018); the
+   test then does the guide's step 1 through the API (a Custom `ghcr.io` registry entry granted to
+   that user on the environment), the same token must get past that check, and the entry is
+   removed again. With the administrator's token the three script runs follow: `--plan-only`
+   prints only the infrastructure hash and says that three runs are needed,
+   `provision --approve <infrastructure hash> --yes` applies it, creates the `opscrew-deploy`
+   branch (a root commit holding only `compose.yaml`, made with the fine-grained token) and stops at
+   the stack plan printing its hash, `provision --yes` alone must not apply the stack plan, and
+   `provision --approve <stack plan hash> --yes` applies exactly that hash. Then: the record in
+   `.opscrew/server.json`, the app stack's `GitConfig`, `AutoUpdate` and `DeploymentStatus` (their
+   shapes are logged, never their values), the deploy pull request merged and its run, the site
+   through the tunnel with the new version in `X-OpsCrew-Image`, `GET /api/stacks/{id}/file`
+   returning the deployed file, the volumes' `com.docker.compose.project` label, GHCR's answers for
+   the registry login (the owner as user name, another user name, a wrong token), `verify`,
+   `secure`, `drift`, and a re-run of `provision --plan-only` with nothing to apply.
+3. **Redeploys** (research R5): a direct webhook call and two minutes of the updater's calls on an
+   unchanged branch must not redeploy the app's stack (the same containers, and the same
+   `UpdateDate`, `UpdatedBy`, number of `DeploymentStatus` entries and `GitConfig.ConfigHash`,
+   compared but never printed); a merged change must be live within 5
+   minutes of the deploy workflow writing it to `opscrew-deploy`; a deliberately failing change
+   (a Dockerfile whose last `CMD` exits) must fail its run, roll back (the branch's newest commit is
+   "Roll back to the previous version" with the previous image) and the site must serve the
+   previous version again; a revert then deploys normally.
+4. **An apply through MCP**: `opscrew mcp` with `opscrew_plan` and then `opscrew_apply` (against
+   the real provision), both with `replaceTokens: ["registry"]` and the stack plan's hash as
+   `planHash`. The test's MCP client approves the stack plan's dialog as the user would and never
+   types a name. Afterwards the registry entry must still be granted to the environment.
+5. **caddy**: the switch (the tunnel is removed with `--confirm <app>`; the app's stack keeps its
+   `Id` and `CreationDate` and its `UpdateDate` or variables change, so it was updated in place,
+   not created again), the DNS record OpsCrew prints is created by the test (DNS only, to the server), the
+   deploy, the site with a Let's Encrypt certificate and without Cloudflare, `verify`, `drift`.
+6. **proxy** on port 8080: the test removes its DNS record first (the user points the domain at
+   their own proxy), then the switch, the deploy (GitHub cannot reach the app, so the run only
+   notes it), the site on `http://<server>:8080`, `verify --url http://<server>:8080`, `drift`.
+7. **Cloudflare redeploys** with the tunnel: the three runs again (same stack hash on the second
+   and third run), the deploy through Access (the workflow's "Ask Portainer to deploy the new
+   version" step succeeds), the updater stack gone and the connector stack running, Portainer's
+   hostname `portainer-<app>.<zone>` refusing a request without the service token and answering
+   404 outside `/api/stacks/webhooks/` with it, `verify`, `secure`, `drift`, a re-run with nothing
+   to apply, and `provision --replace-token registry` (plus `repository` for a private repository)
+   after which the registry entry must still be granted to the environment.
+8. `destroy --confirm <app>` in tunnel + Cloudflare mode (two tunnels): no stack of the app, no
+   registry entry of OpsCrew, no DNS record, tunnel, Access application, policy or service token of
+   the app; the data volumes kept; the deploy secrets, the webhook and value-key files and the
+   saved stack plans removed; Portainer's users, environments, registries, other stacks and
+   settings as before the run; the decoys unchanged; the zone's rulesets that existed before the
+   run have the same rules (a difference is reported, never restored).
+9. `destroy --confirm <app> --delete-data`: the recorded volumes are gone, nothing else changed.
+   OpsCrew's record is now empty, which steps 10 and 11 need: while the record lists anything,
+   OpsCrew refuses another Portainer address.
+10. **A loopback Portainer address**, as a setup of its own: through an SSH tunnel on the test
+    computer's port 9443 the interview uses `https://localhost:9443` (web mode `proxy`, the
+    updater, no Cloudflare). After provision and the deploy, the updater must call Portainer
+    through `host.docker.internal`, the site on port 8080 must serve the new version, and none of
+    the updater's calls may fail nor redeploy an unchanged branch. Then
+    `destroy --confirm <app> --delete-data`, with Portainer and the decoys as before.
+11. **A short Portainer host name**, as a setup of its own: with a DNS preload in the CLI's Node
+    process (`NODE_OPTIONS=--import=…`, which resolves only that name to the tunnel) the CLI runs
+    interview, design, provision, `secure`, `drift` and `verify --url` with Portainer at a short
+    host name (`nas`, or `OPSCREW_E2E_PORTAINER_SHORT_HOST`). Containers on the server cannot
+    resolve that name, so this setup is not deployed, and a failing `verify` is only recorded.
+    Then `destroy --confirm <app> --delete-data`, with Portainer and the decoys as before.
+12. Nothing leaked: no token (`PORTAINER_API_KEY` of both users, `OPSCREW_GHCR_READ_TOKEN`,
+    `OPSCREW_REPO_READ_TOKEN`, GitHub, Cloudflare, Hetzner), password, session, setup token,
+    webhook id, value key, tunnel token, service token, state passphrase, app secret, server
+    address or Portainer address in any commit of any branch, pull request, file in the
+    repository, CLI output (stdout and stderr), MCP result or dialog, saved plan
+    (`.opscrew/plans/`, also the stack plans destroy removes), the audit log or (secrets only)
+    `.opscrew/server.json`. The bare short host name counts in what OpsCrew printed or saved
+    (the app's own files and history may use it as a word); its URL forms count everywhere.
+
+After every step from 2 on, the decoy Compose project's and the decoy stack's containers, volumes,
+stack file and environment must be exactly as they were. Facts the run observes (versions, shapes,
+the R5 result, the bare-variable and stop results, GHCR's answers, timings) are logged as
+`observed:` lines and repeated as `run log:` lines in step 12; copy them into
+[Live results](#live-results). Problems that should not stop the run (for example a timing over
+target or a missing secret) are `finding:` lines and fail step 12.
+
+The cleanup always runs: it deletes the server, its SSH key and its firewall (everything labelled
+with the run's id, and nothing else), removes what the run created in Cloudflare (DNS records on
+`e2e-<run id>.<zone>`, `www.` and `portainer-<app>.<zone>`, the tunnels `opscrew-<app>` and
+`opscrew-<app>-portainer`, the Access application `OpsCrew Portainer webhook (<app>)`, the policy
+and service token `OpsCrew deploy (<app>)`, and the zone rulesets this run created), reports any
+zone ruleset that existed before the run and has other rules now (it never restores one), and
+resets the throwaway repository. If a run was interrupted, delete those by hand (the run id is the
+server's `run=<id>` label).
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_PORTAINER` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test for the server, its key and firewall. Use a separate, empty project. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its fine-grained token, as above (Contents, Pull requests, Secrets, Actions and Workflows read and write, Metadata read). |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for [your own server](#your-own-server) (the zone permissions and the account's Tunnel and Access permissions). Cloudflare Zero Trust must be turned on. |
+| `OPSCREW_E2E_DOMAIN` | As for your own server: names the zone; each run uses `e2e-<run id>.<zone>`. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | A GitHub **classic** token with only `read:packages` (<https://github.com/settings/tokens/new?scopes=read:packages>), for the user that owns the throwaway repository. OpsCrew gets it as `OPSCREW_GHCR_READ_TOKEN` and puts it into Portainer's registry entry. |
+| `OPSCREW_E2E_REPO_READ_TOKEN` | Only when the throwaway repository is private: a fine-grained token for that repository with Contents read-only. OpsCrew gets it as `OPSCREW_REPO_READ_TOKEN`; Portainer reads the deploy branch with it. |
+| `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | Optional, to narrow the guide's Cloudflare list for the tunnel-only `updater` setup: a token with fewer permissions that OpsCrew uses in steps 2–4 (the test's own cleanup still uses `OPSCREW_E2E_CLOUDFLARE_TOKEN`). Start with Zone → Zone → Read, Zone → DNS → Edit and Account → Cloudflare Tunnel → Edit; when a step fails because a permission is missing, OpsCrew names it: add it and run again. Record the list that passed in [Live results](#live-results). |
+| `OPSCREW_E2E_PORTAINER_SHORT_HOST` | Optional, the short host name of step 11 (default `nas`). `portainer` is refused: OpsCrew's own text uses that word, so the check could not tell a leak from it. |
+| `OPSCREW_E2E_PORTAINER_MANUAL_MINUTES` | Optional, for example `20`: after step 1 the test writes Portainer's address and the administrator's login to a file in its temporary folder (never printed) and waits up to that many minutes until you delete the file. Use the time to check the guide's steps the test cannot: the certificate's SHA-256 fingerprint in a browser's padlock (the file names the fingerprint OpsCrew pins), and in Portainer's UI Registries → Add registry → Custom registry and the environment's Registries → Manage access. Look only: do not save, add or change anything (the run compares Portainer and the decoys with how they were, taken again after the pause). Only the test computer can reach Portainer. |
+| `OPSCREW_E2E_REGION` | Optional, as for your own server. |
+| `OPSCREW_E2E_PORTAINER_SERVER_TYPE` | Optional, a Hetzner server type instead of the cheapest x86 one. |
+| `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as for your own server (only examples; the default `nextjs-postgres` has the Postgres volume the `--delete-data` step checks). |
+
+Requirements: the built CLI, `git`, OpenTofu or Terraform, `ssh`, `ssh-keygen` and `ssh-keyscan`,
+Node.js 22.9+, outgoing SSH (22), HTTPS to the server's port 9443 and HTTP to its port 8080 from
+the test computer, and the test computer's port 9443 free (the SSH tunnel of steps 10 and 11). Run only this
+file, never together with the other live tests (they share the throwaway repository):
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_PORTAINER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  OPSCREW_E2E_GHCR_READ_TOKEN=… npx vitest run test/live/portainer-target.test.ts
+```
+
+A full run is expected to take about two hours (an estimate until the first passing run: about ten
+deploy workflow runs, one of which waits ten minutes for its failing health check before it rolls
+back, plus Docker's installation). The server is the smallest x86 type, billed by the hour, so a run
+costs a few cents of server time, plus GitHub Actions minutes for the builds (free for public
+repositories). Left behind on purpose, as for your own server: the GitHub Actions secrets of other
+targets and the container image in the throwaway repository, the zone's rulesets that existed
+before the run, and the Zero Trust organization if OpsCrew created it.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
