@@ -9,17 +9,6 @@ import type {
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudflareClient } from "./client";
 
-/** The client calls {@link CloudflareRegistrar} needs (a `CloudflareClient` or a test fake). */
-export type CloudflareRegistrarApi = Pick<
-  CloudflareClient,
-  | "domainCheck"
-  | "domainSearch"
-  | "createRegistration"
-  | "registrationStatus"
-  | "getRegistration"
-  | "setAutoRenew"
->;
-
 /** Suggestions checked live per `suggest` call (one domain-check request). */
 const MAX_SUGGESTIONS_CHECKED = 20;
 
@@ -35,10 +24,10 @@ export class CloudflareRegistrar implements Registrar {
     dnssec: false,
     autoRenew: true,
   };
-  readonly #client: CloudflareRegistrarApi;
+  readonly #client: CloudflareClient;
   readonly #accountId: string;
 
-  constructor(client: CloudflareRegistrarApi, accountId: string) {
+  constructor(client: CloudflareClient, accountId: string) {
     this.#client = client;
     this.#accountId = accountId;
   }

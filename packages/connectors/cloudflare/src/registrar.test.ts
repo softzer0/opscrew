@@ -228,7 +228,6 @@ describe("CloudflareClient registrar calls", () => {
         domains: [
           { name: "coffeeshop.dev", pricing: pricing("12.00", "12.00") },
           { name: "coffee-shop.com", registrable: true, pricing: pricing("10.44", "10.44") },
-          { registrable: true },
         ],
       }),
     });
@@ -672,6 +671,62 @@ describe("CloudflareClient registrar calls", () => {
     expect((await plainError(cf.domainCheck(ACCOUNT, ["a.com"]))).message).toMatch(
       /unexpected answer/,
     );
+  });
+
+  it("never matches a check or a suggestion without a name by its position", async () => {
+    const { cf } = client({
+      [`POST ${REG}/domain-check`]: ok({
+        domains: [{ registrable: true, pricing: pricing("10.44", "10.44") }],
+      }),
+      [`GET ${REG}/domain-search?q=shop`]: ok({ domains: [{ registrable: true }] }),
+    });
+    expect((await plainError(cf.domainCheck(ACCOUNT, ["a.com"]))).message).toMatch(
+      /unexpected answer/,
+    );
+    expect((await plainError(cf.domainSearch(ACCOUNT, "shop"))).message).toMatch(
+      /unexpected answer/,
+    );
+  });
+
+  it("sends a registrar or zone write once, even after a 5xx or a timeout", async () => {
+    const fake = fakeFetch({
+      [`PATCH ${REG}/registrations/a.com`]: fail(502, []),
+      "POST /zones": { hang: true },
+      "PATCH /zones/z1/dnssec": fail(503, []),
+      "PUT /zones/z1/activation_check": { hang: true },
+    });
+    const waits: number[] = [];
+    const cf = new CloudflareClient({
+      token: TOKEN,
+      fetch: fake.fetch,
+      sleep: async (ms) => void waits.push(ms),
+      timeoutMs: 5,
+    });
+    const autoRenew = await plainError(cf.setAutoRenew(ACCOUNT, "a.com", true));
+    expect(autoRenew.message).toContain("HTTP 502");
+    const zone = await plainError(cf.createZone(ACCOUNT, "a.com"));
+    expect(zone.message).toContain("did not answer within");
+    expect(zone.hint).toContain("may still have reached Cloudflare");
+    await plainError(cf.enableDnssec("z1"));
+    await plainError(cf.activationCheck("z1"));
+    expect(fake.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      `PATCH ${REG}/registrations/a.com`,
+      "POST /zones",
+      "PATCH /zones/z1/dnssec",
+      "PUT /zones/z1/activation_check",
+    ]);
+    expect(waits).toEqual([]);
+  });
+
+  it("repeats a domain check (a read sent as POST) after a server error", async () => {
+    const { cf, calls } = client({
+      [`POST ${REG}/domain-check`]: [
+        fail(502, []),
+        ok({ domains: [{ name: "a.com", registrable: true, pricing: pricing("9", "9") }] }),
+      ],
+    });
+    expect((await cf.domainCheck(ACCOUNT, ["a.com"]))[0]?.registrable).toBe(true);
+    expect(calls).toHaveLength(2);
   });
 });
 

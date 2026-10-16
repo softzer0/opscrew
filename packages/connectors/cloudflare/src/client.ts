@@ -350,7 +350,10 @@ interface RequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
   auth?: boolean;
-  /** Retry network failures and 5xx answers; off for requests that must never run twice. */
+  /**
+   * Retry network failures, timeouts and 5xx answers. On for `GET` only (a write may already have
+   * been carried out); a read sent as `POST` opts in.
+   */
   retryServerErrors?: boolean;
   /** Wait and retry 429 answers (default true). */
   retryRateLimit?: boolean;
@@ -466,11 +469,12 @@ export class CloudflareClient {
 
   /**
    * Raw request returning the parsed envelope and HTTP status. Every attempt has its own timeout;
-   * 429 answers are retried and (unless turned off) 5xx answers, timeouts and lost connections.
+   * 429 answers are retried (Cloudflare did not accept the request), and for reads also 5xx
+   * answers, timeouts and lost connections (see {@link RequestOptions.retryServerErrors}).
    */
   async #request(path: string, options: RequestOptions = {}): Promise<RawAnswer> {
     const method = options.method ?? "GET";
-    const retryServerErrors = options.retryServerErrors ?? true;
+    const retryServerErrors = options.retryServerErrors ?? method === "GET";
     const headers: Record<string, string> = {
       Accept: "application/json",
       "User-Agent": this.#userAgent,
@@ -825,9 +829,15 @@ export class CloudflareClient {
         this.#registrarPath(accountId, "/domain-check"),
         DomainListSchema,
         "check whether the domains can be registered",
-        { method: "POST", body: { domains: batch }, hints: REGISTRAR_HINTS },
+        // A read sent as POST: safe to repeat.
+        {
+          method: "POST",
+          body: { domains: batch },
+          retryServerErrors: true,
+          hints: REGISTRAR_HINTS,
+        },
       );
-      const checks = items.map((item, index) => toDomainCheck(item, batch[index] ?? "", false));
+      const checks = items.map((item) => toDomainCheck(item, false));
       const position = (check: DomainCheck) => {
         const at = batch.indexOf(check.domain);
         return at === -1 ? batch.length : at;
@@ -845,9 +855,7 @@ export class CloudflareClient {
       "search for domain names",
       { hints: REGISTRAR_HINTS },
     );
-    return items
-      .map((item) => toDomainCheck(item, "", true))
-      .filter((check) => check.domain !== "");
+    return items.map((item) => toDomainCheck(item, true));
   }
 
   /** Registrar settings of an extension (`us` or `.us`); undefined when Cloudflare does not know it. */
@@ -903,7 +911,6 @@ export class CloudflareClient {
           domain_name: domain,
           ...(sandbox ? { contacts: { registrant: SANDBOX_REGISTRANT } } : {}),
         },
-        retryServerErrors: false,
       });
     } catch (error) {
       if (error instanceof OpsCrewError && error.code === "PROVIDER_ERROR") {
@@ -1124,7 +1131,6 @@ export class CloudflareClient {
         {
           method: "POST",
           body: { posts },
-          retryServerErrors: false,
           hints: {
             ...ZONE_COVERAGE_HINTS,
             other: `None of the records in this call were created${ids.length > 0 ? ` (${ids.length} were created by earlier calls)` : ""}. Fix or leave out the record Cloudflare names, then run the command again.`,

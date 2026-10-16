@@ -38,7 +38,7 @@ const PricingSchema = z.looseObject({
 
 /** One domain in a domain-check or domain-search answer (the documented fields). */
 const DomainItemSchema = z.looseObject({
-  name: z.string().optional(),
+  name: z.string().min(1),
   registrable: z.boolean().optional(),
   tier: z.string().nullable().optional(),
   pricing: PricingSchema.nullable().optional(),
@@ -71,10 +71,9 @@ function money(amount: number | undefined, currency: Currency): Money | undefine
  */
 export function toDomainCheck(
   item: z.infer<typeof DomainItemSchema>,
-  fallbackName: string,
   registrableByDefault: boolean,
 ): DomainCheck {
-  const domain = (item.name ?? fallbackName).toLowerCase();
+  const domain = item.name.toLowerCase();
   const tier = item.tier === "premium" || item.tier === "standard" ? item.tier : undefined;
   const base: DomainCheck = { domain, registrable: false, ...(tier ? { tier } : {}) };
   const registrable = item.registrable ?? registrableByDefault;
