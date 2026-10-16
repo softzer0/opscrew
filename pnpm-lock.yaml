@@ -119,9 +119,6 @@ importers:
       smol-toml:
         specifier: ^1.9.1
         version: 1.9.1
-      tinyglobby:
-        specifier: ^0.2.17
-        version: 0.2.17
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -325,6 +322,9 @@ importers:
       '@opscrew/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../core
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
@@ -334,9 +334,6 @@ importers:
       smol-toml:
         specifier: ^1.9.1
         version: 1.9.1
-      tinyglobby:
-        specifier: ^0.2.17
-        version: 0.2.17
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -404,6 +401,9 @@ importers:
       '@opscrew/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../core
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -452,9 +452,6 @@ importers:
       smol-toml:
         specifier: ^1.9.1
         version: 1.9.1
-      tinyglobby:
-        specifier: ^0.2.17
-        version: 0.2.17
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
