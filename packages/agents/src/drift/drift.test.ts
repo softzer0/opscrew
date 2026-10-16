@@ -466,6 +466,23 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect(text).not.toContain("provider schemas");
   });
 
+  it("sorts the report once: resources by address with their attribute names, files by path", async () => {
+    const engine = new DriftEngine({
+      drift: [
+        drifted(SERVER, "update", ["labels", "delete_protection"]),
+        drifted(FIREWALL, "update", ["rule"]),
+      ],
+      pending: [change(SERVER, "update"), change(FIREWALL, "update")],
+    });
+    const { deps, services } = await setup({ engine });
+    const report = await runDrift(deps, { services });
+    expect(report.drift).toEqual([
+      drifted(FIREWALL, "update", ["rule"]),
+      drifted(SERVER, "update", ["delete_protection", "labels"]),
+    ]);
+    expect(report.pending).toEqual([change(FIREWALL, "update"), change(SERVER, "update")]);
+  });
+
   it.each([
     ["the schema command fails", "fail"],
     ["the schema has an unexpected shape", { provider_schemas: "nope" }],
@@ -816,27 +833,22 @@ describe("read-only attributes from the provider schema", () => {
 });
 
 describe("renderDriftReport", () => {
+  // As runDrift returns it: every list sorted.
   const base: DriftReport = {
     drift: [
-      drifted(SERVER, "update", ["labels", "delete_protection"]),
       drifted(FIREWALL, "update", ["rule"]),
+      drifted(SERVER, "update", ["delete_protection", "labels"]),
     ],
-    pending: [change(SERVER, "update"), change(FIREWALL, "update")],
-    files: { changed: ["opscrew/runtime/compose.yaml", "opscrew/infra/prod/main.tf"], created: [] },
+    pending: [change(FIREWALL, "update"), change(SERVER, "update")],
+    files: { changed: ["opscrew/runtime/compose.yaml"], created: ["opscrew/infra/prod/main.tf"] },
     foreignDnsRecords: [],
     clean: false,
     engine: { name: "tofu", version: "1.13.1", binary: "/fake/tofu" },
     checkedAt: "2026-10-11T12:00:00.000Z",
+    provider: "hetzner",
   };
 
-  it("is deterministic regardless of input order", () => {
-    const reversed: DriftReport = {
-      ...base,
-      drift: [...base.drift].reverse(),
-      pending: [...base.pending].reverse(),
-      files: { changed: [...base.files.changed].reverse(), created: [] },
-    };
-    expect(renderDriftReport(reversed)).toBe(renderDriftReport(base));
+  it("lists the resources in the report's order and the files by path, edited and missing together", () => {
     const text = renderDriftReport(base);
     expect(text.indexOf(FIREWALL)).toBeLessThan(text.indexOf(SERVER));
     expect(text).toContain("delete_protection, labels");
@@ -845,11 +857,11 @@ describe("renderDriftReport", () => {
     );
   });
 
-  it("names the deployment's provider console, or none for older reports", () => {
-    expect(renderDriftReport({ ...base, provider: "hetzner" })).toContain(
-      "in the Hetzner Cloud or Cloudflare console",
+  it("names the deployment's provider console", () => {
+    expect(renderDriftReport(base)).toContain("in the Hetzner Cloud or Cloudflare console");
+    expect(renderDriftReport({ ...base, provider: "digitalocean" })).toContain(
+      "in the DigitalOcean or Cloudflare console",
     );
-    expect(renderDriftReport(base)).toContain("in your cloud provider's or Cloudflare console");
   });
 
   it("names the engine and the time of the check", () => {

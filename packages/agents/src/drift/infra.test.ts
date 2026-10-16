@@ -8,7 +8,7 @@ import { detectEngines, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-eng
 import { describe, expect, it } from "vitest";
 import { runProvision } from "../provision";
 import { FakeEngine } from "../provision/__fixtures__/fakes";
-import { ensureStatePassphrase } from "../shared";
+import { ensureStatePassphrase, stateFile } from "../shared";
 import { createTestPhaseDeps } from "../testing";
 import {
   deployImage,
@@ -23,7 +23,7 @@ import {
   plainState,
   withStateList,
 } from "./__fixtures__/state";
-import { STATE_FILE, stateContents } from "./infra";
+import { stateContents } from "./infra";
 import { runDrift } from "./run";
 
 async function setup(content: string | undefined) {
@@ -184,7 +184,7 @@ describe.skipIf(!runIt)("a removed earlier setup with the real engines (integrat
           name === "tofu"
             ? { TF_ENCRYPTION: tofuEncryptionEnv(await ensureStatePassphrase(s.deps.paths)) }
             : {};
-        const statePath = join(s.deps.paths.files.tfstateDir, STATE_FILE);
+        const statePath = stateFile(s.deps.paths);
         await mkdir(s.deps.paths.files.tfstateDir, { recursive: true });
         await engine.init(dir, { env, backendConfig: { path: statePath } });
         const planFile = join(s.root, "earlier.tfplan");

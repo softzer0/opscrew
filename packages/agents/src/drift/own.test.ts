@@ -334,7 +334,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
     expect(driftNextSteps({ clean: true, provider: "digitalocean" })).toEqual([
       "nothing to do; run `opscrew drift` again after changes in the DigitalOcean or Cloudflare console.",
     ]);
-    expect(driftNextSteps({ clean: false })).toEqual([
+    expect(driftNextSteps({ clean: false, provider: "hetzner" })).toEqual([
       "to undo changes made outside OpsCrew and apply pending code, run `opscrew provision` (it shows the plan first).",
       "to keep a change made in the console, update opscrew/plan.yaml to match before you provision again.",
     ]);

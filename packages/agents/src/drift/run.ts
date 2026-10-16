@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { usesTunnel } from "@opscrew/iac-templates";
@@ -9,13 +8,13 @@ import { checkProvider } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
-import { hasDeployment } from "../shared";
+import { hasDeployment, stateFile, stringOutput } from "../shared";
 import { type HostDrift, ownHostDrift } from "./host";
 import {
   compareInfrastructure,
   driftEngine,
+  finishDriftReport,
   inspectState,
-  STATE_FILE,
   stateHoldsNothing,
 } from "./infra";
 import { portainerDrift } from "./portainer";
@@ -34,11 +33,6 @@ async function ownWithoutCloudResources(plan: DeployPlan, statePath: string): Pr
 /** Shown when a server the user owns has no cloud resources to compare. */
 const NO_CLOUD_RESOURCES_NOTE =
   "OpsCrew manages no DNS records or tunnel for this app, so there are no cloud resources to compare; only your server and the generated files were checked.";
-
-function stringOutput(outputs: Record<string, unknown> | undefined, name: string) {
-  const value = outputs?.[name];
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
 
 /**
  * `opscrew drift`: compares the live infrastructure with the state (refresh-only plan, changes made
@@ -72,9 +66,9 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     );
   }
   if (plan.target.provider === "portainer") return portainerDrift(deps, plan, options);
-  const statePath = join(deps.paths.files.tfstateDir, STATE_FILE);
+  const statePath = stateFile(deps.paths);
   const cloudResources = !(await ownWithoutCloudResources(plan, statePath));
-  const stateKind = cloudResources ? await inspectState(deps, statePath) : "unknown";
+  const stateKind = cloudResources ? await inspectState(deps, statePath) : undefined;
 
   // 2. Credentials (Cloudflare inside the file preview) and the rendered-file comparison
   const usesCloudflare = plan.dns.provider === "cloudflare";
@@ -94,8 +88,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   });
 
   // 3. Engine, state encryption, and 4. the refresh-only plan (drift) and normal plan (pending)
-  const engine = await driftEngine(deps, plan, options);
-  const engineEnv: Record<string, string | undefined> = { ...deps.env };
+  const { engine, env } = await driftEngine(deps, plan, options, stateKind);
   let drift: ResourceDrift[] = [];
   let pending: ResourceChange[] = [];
   let tunnelId: string | undefined;
@@ -107,16 +100,15 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     const compared = await compareInfrastructure(deps, {
       plan,
       engine,
-      engineEnv,
+      engineEnv: env,
       statePath,
-      stateKind,
       mirrored: providerProfile(provider).mirroredAttributes,
       changedFiles: preview.changed,
       ...(ownServer
         ? {
             // The server's address reaches the engine only as TF_VAR_* (FR-902), as in provision.
             prepare: async (readOutputs) => {
-              await ownEngineEnv(deps, { target: ownTarget(plan) }, engineEnv, readOutputs);
+              await ownEngineEnv(deps, { target: ownTarget(plan) }, env, readOutputs);
             },
           }
         : {}),
@@ -126,7 +118,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     notes.push(...compared.notes);
     // The connector on the server must run for the tunnel the state holds.
     if (ownServer && usesTunnel(plan)) {
-      tunnelId = stringOutput(await compared.outputs(), "tunnel_id");
+      tunnelId = stringOutput((await compared.outputs()) ?? {}, "tunnel_id");
     }
   }
 
@@ -141,41 +133,14 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     });
   }
 
-  const files = {
-    changed: [...preview.changed].sort(),
-    created: [...preview.created].sort(),
-  };
-  const foreignDnsRecords = [...(preview.foreignDnsRecords ?? [])].sort((a, b) =>
-    `${a.name} ${a.type}`.localeCompare(`${b.name} ${b.type}`),
-  );
-  const hostDifferences = host?.differences.length ?? 0;
-  const clean =
-    drift.length === 0 &&
-    pending.length === 0 &&
-    files.changed.length === 0 &&
-    files.created.length === 0 &&
-    foreignDnsRecords.length === 0 &&
-    hostDifferences === 0;
-  const report: DriftReport = {
+  return finishDriftReport(deps, plan, {
     drift,
     pending,
-    files,
-    foreignDnsRecords,
+    files: { changed: preview.changed, created: preview.created },
+    foreignDnsRecords: preview.foreignDnsRecords ?? [],
     ...(host !== undefined ? { host } : {}),
-    clean,
     engine: engine.info,
-    checkedAt: deps.clock.now().toISOString(),
     provider,
-    ...(notes.length > 0 ? { notes } : {}),
-  };
-  await deps.audit.append({
-    kind: "iac",
-    actor: "opscrew",
-    action: "drift-check",
-    target: plan.infra.dir,
-    detail: clean
-      ? "no drift"
-      : `${drift.length} changed outside OpsCrew, ${pending.length} pending, ${files.changed.length + files.created.length} files differ${host !== undefined ? `, ${hostDifferences} differences on the server` : ""}`,
+    notes,
   });
-  return report;
 }

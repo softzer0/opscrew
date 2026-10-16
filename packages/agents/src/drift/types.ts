@@ -39,9 +39,9 @@ export interface DriftOptions {
 
 /** Result of `opscrew drift`. Holds resource addresses, attribute names and paths, never values. */
 export interface DriftReport {
-  /** Resources changed outside OpsCrew (console, API), sorted by address. */
+  /** Resources changed outside OpsCrew (console, API), sorted by address, attribute names sorted. */
   drift: ResourceDrift[];
-  /** What `opscrew provision` would change now (code not applied yet, or undoing drift). */
+  /** What `opscrew provision` would change now (code not applied yet, or undoing drift), by address. */
   pending: ResourceChange[];
   /**
    * Repository files that differ from what OpsCrew renders from `opscrew/plan.yaml`: `changed`
@@ -50,7 +50,7 @@ export interface DriftReport {
   files: { changed: string[]; created: string[] };
   /**
    * DNS records at the app's hostnames that OpsCrew did not create (someone replaced or added one
-   * in the Cloudflare dashboard). Type, name and content, sorted by name.
+   * in the Cloudflare dashboard). Type, name and content, sorted by name, type and content.
    */
   foreignDnsRecords: { type: string; name: string; content: string }[];
   /**
@@ -68,11 +68,8 @@ export interface DriftReport {
   engine: IacEngineInfo;
   /** ISO time of the check. */
   checkedAt: string;
-  /**
-   * Provider of the deployment, named in the report (absent in reports made before 004):
-   * `portainer` for the user's Portainer.
-   */
-  provider?: VpsProviderId | "portainer";
+  /** Provider of the deployment, named in the report: `portainer` for the user's Portainer. */
+  provider: VpsProviderId | "portainer";
   /**
    * Plain-English remarks about the check itself, for example that the provider schemas could
    * not be read, so values the cloud maintains itself may show as drift. Absent when there are none.

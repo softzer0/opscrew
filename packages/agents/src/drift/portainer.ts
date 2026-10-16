@@ -1,4 +1,3 @@
-import { access } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { GitClient } from "@opscrew/connector-github";
 import {
@@ -17,9 +16,10 @@ import {
   planStacks,
   portainerClient,
   type StackPlan,
+  valueFingerprint,
   valueFingerprints,
 } from "@opscrew/connector-portainer";
-import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
+import type { PhaseName, ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
   fillPortainerStack,
@@ -55,19 +55,23 @@ import {
   readRequirements,
 } from "../provision/render";
 import { generatedValuesFile } from "../provision/secrets";
+import type { PortainerServices } from "../provision/types";
 import {
   type AppEnvironment,
   assembleAppEnv,
   diffRenderedFiles,
+  exists,
   type PortainerConnection,
   parseDotenv,
+  readIfExists,
+  stateFile,
+  stringOutput,
 } from "../shared";
 import {
   compareInfrastructure,
   driftEngine,
+  finishDriftReport,
   inspectState,
-  readOptional,
-  STATE_FILE,
   stateContents,
 } from "./infra";
 import type { DriftOptions, DriftReport, PortainerDifference } from "./types";
@@ -83,18 +87,74 @@ const APP_VALUES_NOTE = `OpsCrew compared the names of the app stack's variables
 const NO_VALUE_KEY_NOTE =
   "OpsCrew compared the names of the stacks' variables, not their values: its value key for your Portainer (portainer-env.key in OpsCrew's folder for this project) is not on this computer. Run `opscrew drift` on the computer that ran `opscrew provision` to compare the values too.";
 
-async function exists(file: string): Promise<boolean> {
-  try {
-    await access(file);
-    return true;
-  } catch {
-    return false;
-  }
+/** The host ports the app's stack publishes in the plan's web mode (none through the tunnel). */
+export function publishedPorts(target: PortainerDeployTarget): number[] {
+  if (target.web.mode === "proxy") return [target.web.port];
+  return target.web.mode === "caddy" ? [80, 443] : [];
 }
 
-function stringOutput(outputs: Record<string, unknown> | undefined, name: string) {
-  const value = outputs?.[name];
-  return typeof value === "string" && value !== "" ? value : undefined;
+/** OpsCrew's stack of `role` as Portainer reports it, found by the id OpsCrew recorded for it. */
+export function recordedStack(
+  connection: Pick<PortainerConnection, "created">,
+  facts: Pick<PortainerFacts, "stacks">,
+  role: "app" | "updater" | "tunnel-connector",
+): PortainerStackFacts | undefined {
+  const recorded = connection.created.stacks.find((stack) => stack.role === role);
+  return recorded === undefined
+    ? undefined
+    : facts.stacks.find((stack) => stack.id === recorded.id);
+}
+
+/**
+ * Reads the user's Portainer read-only for the app's stacks, through the client pinned to the
+ * confirmed certificate (`client`, a fake in tests; the value key, when given, lets it fingerprint
+ * the stacks' values), and audits the reading without Portainer's address (`detail` says for
+ * what; `phase` when the command has one).
+ */
+export async function inspectRecordedPortainer(
+  deps: Pick<PhaseDeps, "redactor" | "audit" | "reporter">,
+  input: {
+    plan: Pick<DeployPlan, "app">;
+    target: PortainerDeployTarget;
+    connection: PortainerConnection;
+    token: string;
+    client: PortainerServices["client"];
+    valueKey?: Uint8Array;
+    /** What the reporter says while it reads. */
+    step: string;
+    phase?: PhaseName;
+    detail: string;
+  },
+): Promise<{ client: PortainerClient; facts: PortainerFacts }> {
+  const { connection, target } = input;
+  const client = (input.client ?? portainerClient)(
+    {
+      url: connection.url,
+      ...(connection.certFingerprint !== undefined
+        ? { certFingerprint: connection.certFingerprint }
+        : {}),
+    },
+    input.token,
+    {
+      redactor: deps.redactor,
+      ...(input.valueKey !== undefined ? { valueKey: input.valueKey } : {}),
+    },
+  );
+  deps.reporter.step(input.step);
+  const facts = await inspectPortainer(client, {
+    environmentId: target.environmentId,
+    names: opscrewStackNames(input.plan.app.name),
+  });
+  await deps.audit.append({
+    kind: "provider-call",
+    actor: "opscrew",
+    action: "inspect Portainer (read-only)",
+    ...(input.phase !== undefined ? { phase: input.phase } : {}),
+    target: `portainer environment ${target.environmentId}`,
+    decision: "allow",
+    detail: input.detail,
+  });
+  return { client, facts };
 }
 
 /**
@@ -107,10 +167,7 @@ function asRemote(
   keys: readonly string[],
 ): Record<string, string> {
   return Object.fromEntries(
-    keys.map((name) => [
-      name,
-      remote?.[name] ?? (valueFingerprints(key, { [name]: "" })[name] as string),
-    ]),
+    keys.map((name) => [name, remote?.[name] ?? valueFingerprint(key, name, "")]),
   );
 }
 
@@ -139,12 +196,12 @@ async function readAppValues(
   const envFile = deps.env.OPSCREW_APP_ENV_FILE?.trim();
   if (!envFile) return false;
   const path = isAbsolute(envFile) ? envFile : join(deps.paths.root, envFile);
-  const dotenvText = await readOptional(path);
+  const dotenvText = await readIfExists(path);
   if (dotenvText === undefined) return false;
   let previous: z.infer<typeof GeneratedValuesSchema> | undefined;
   try {
     const parsed = GeneratedValuesSchema.safeParse(
-      JSON.parse((await readOptional(generatedValuesFile(deps))) ?? "null"),
+      JSON.parse((await readIfExists(generatedValuesFile(deps))) ?? "null"),
     );
     previous = parsed.success ? parsed.data : undefined;
   } catch {
@@ -209,15 +266,10 @@ async function desiredFingerprints(
   notes: string[],
   differences: PortainerDifference[],
 ): Promise<DesiredValueFingerprints> {
-  const { key, plan, target, facts, connection, outputs } = input;
-  const stackOf = (
-    role: "app" | "updater" | "tunnel-connector",
-  ): PortainerStackFacts | undefined => {
-    const recorded = connection.created.stacks.find((stack) => stack.role === role);
-    return recorded === undefined
-      ? undefined
-      : facts.stacks.find((stack) => stack.id === recorded.id);
-  };
+  const { key, plan, target, facts, connection } = input;
+  const outputs = input.outputs ?? {};
+  const stackOf = (role: "app" | "updater" | "tunnel-connector") =>
+    recordedStack(connection, facts, role);
   const keys = portainerStackEnvKeys(plan);
   const envKeys = [...keys.app, ...keys.opscrew].sort();
 
@@ -236,9 +288,7 @@ async function desiredFingerprints(
   for (const name of envKeys) {
     const value = values[name];
     app[name] =
-      value === undefined
-        ? (remoteApp[name] as string)
-        : (valueFingerprints(key, { [name]: value })[name] as string);
+      value === undefined ? (remoteApp[name] as string) : valueFingerprint(key, name, value);
   }
 
   // The webhook: OpsCrew's record of it, never a new one.
@@ -254,19 +304,22 @@ async function desiredFingerprints(
   }
   const webhook =
     webhookId !== undefined
-      ? (valueFingerprints(key, { webhook: webhookId }).webhook as string)
-      : (appStack?.autoUpdate?.webhookFingerprint ??
-        (valueFingerprints(key, { webhook: "" }).webhook as string));
+      ? valueFingerprint(key, "webhook", webhookId)
+      : (appStack?.autoUpdate?.webhookFingerprint ?? valueFingerprint(key, "webhook", ""));
 
-  const tokens = valueFingerprints(key, {
-    repositoryToken: input.repositoryPrivate ? (deps.env[REPOSITORY_TOKEN_VAR]?.trim() ?? "") : "",
-    registryToken: input.imagePrivate ? (deps.env[REGISTRY_TOKEN_VAR]?.trim() ?? "") : "",
-  });
   const out: DesiredValueFingerprints = {
     app,
     webhook,
-    repositoryToken: tokens.repositoryToken as string,
-    registryToken: tokens.registryToken as string,
+    repositoryToken: valueFingerprint(
+      key,
+      "repositoryToken",
+      input.repositoryPrivate ? (deps.env[REPOSITORY_TOKEN_VAR]?.trim() ?? "") : "",
+    ),
+    registryToken: valueFingerprint(
+      key,
+      "registryToken",
+      input.imagePrivate ? (deps.env[REGISTRY_TOKEN_VAR]?.trim() ?? "") : "",
+    ),
   };
   if (target.redeploy === "updater") {
     const updaterKeys = ["PORTAINER_PINNED_KEY", "PORTAINER_WEBHOOK_URL"];
@@ -489,8 +542,8 @@ export async function portainerDrift(
   const target = portainerTarget(plan.target);
   const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
   const hasRoot = root.appTunnel || root.webhook;
-  const statePath = join(deps.paths.files.tfstateDir, STATE_FILE);
-  const stateKind = hasRoot ? await inspectState(deps, statePath) : "unknown";
+  const statePath = stateFile(deps.paths);
+  const stateKind = hasRoot ? await inspectState(deps, statePath) : undefined;
 
   // 1. Credentials: Portainer's token and connection, GitHub, Cloudflare when the plan has a tunnel.
   deps.reporter.step(
@@ -534,18 +587,12 @@ export async function portainerDrift(
     }),
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);
-  const changedFiles = diff.changed.map((file) => file.path).sort();
-  const createdFiles = diff.created.map((file) => file.path).sort();
+  const changedFiles = diff.changed.map((file) => file.path);
   const template = files.find((file) => file.path === PORTAINER_STACK_TEMPLATE_PATH)?.content;
 
   // 3. The Cloudflare root: refresh-only and normal plans, both discarded.
-  const engine = await driftEngine(deps, current, options);
-  const engineEnv: Record<string, string | undefined> = { ...deps.env };
-  delete engineEnv.TF_VAR_portainer_origin;
-  // An earlier setup's Cloudflare resources count only while the state holds managed resources: a
-  // removal leaves an empty state (encrypted or not). A state the engine cannot read counts too.
-  const leftovers =
-    !hasRoot && (await stateContents(deps, statePath, async () => engine)) !== "nothing";
+  const { engine, env } = await driftEngine(deps, current, options, stateKind);
+  delete env.TF_VAR_portainer_origin;
   let drift: ResourceDrift[] = [];
   let pending: ResourceChange[] = [];
   let outputs: Record<string, unknown> | undefined;
@@ -556,14 +603,13 @@ export async function portainerDrift(
       // Portainer's address reaches the engine only as a sensitive variable, never in a file.
       const origin = portainerContainerUrl(connection.url);
       hidePortainerAddress(deps.redactor, origin);
-      engineEnv.TF_VAR_portainer_origin = origin;
+      env.TF_VAR_portainer_origin = origin;
     }
     const compared = await compareInfrastructure(deps, {
       plan: current,
       engine,
-      engineEnv,
+      engineEnv: env,
       statePath,
-      stateKind,
       mirrored: {},
       changedFiles,
     });
@@ -571,7 +617,9 @@ export async function portainerDrift(
     pending = compared.pending;
     notes.push(...compared.notes);
     outputs = await compared.outputs();
-  } else if (leftovers) {
+  } else if ((await stateContents(deps, statePath, async () => engine)) !== "nothing") {
+    // An earlier setup's Cloudflare resources count only while the state holds managed resources:
+    // a removal leaves an empty state (encrypted or not). A state the engine cannot read counts too.
     differences.push({
       area: "cloudflare",
       title:
@@ -584,30 +632,17 @@ export async function portainerDrift(
   }
 
   // 4. Portainer, read-only through the pinned client.
-  const keyFile = portainerValueKeyFile(deps.paths);
-  const valueKey = (await exists(keyFile)) ? await ensurePortainerValueKey(deps) : undefined;
-  const makeClient = services.portainer?.client ?? portainerClient;
-  const client: PortainerClient = makeClient(
-    {
-      url: connection.url,
-      ...(connection.certFingerprint !== undefined
-        ? { certFingerprint: connection.certFingerprint }
-        : {}),
-    },
+  const valueKey = (await exists(portainerValueKeyFile(deps.paths)))
+    ? await ensurePortainerValueKey(deps)
+    : undefined;
+  const { facts } = await inspectRecordedPortainer(deps, {
+    plan,
+    target,
+    connection,
     token,
-    { redactor: deps.redactor, ...(valueKey !== undefined ? { valueKey } : {}) },
-  );
-  deps.reporter.step("Inspecting your Portainer (read-only)");
-  const facts = await inspectPortainer(client, {
-    environmentId: target.environmentId,
-    names: opscrewStackNames(plan.app.name),
-  });
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "inspect Portainer (read-only)",
-    target: `portainer environment ${target.environmentId}`,
-    decision: "allow",
+    client: services.portainer?.client,
+    ...(valueKey !== undefined ? { valueKey } : {}),
+    step: "Inspecting your Portainer (read-only)",
     detail: "drift",
   });
   if (facts.findings.length > 0) {
@@ -670,19 +705,13 @@ export async function portainerDrift(
       ? { updater: { compose: renderUpdaterStack(current).content } }
       : { tunnelConnector: { compose: renderPortainerConnectorStack(current).content } }),
     record: connection.created,
-    ports:
-      target.web.mode === "proxy"
-        ? [target.web.port]
-        : target.web.mode === "caddy"
-          ? [80, 443]
-          : [],
+    ports: publishedPorts(target),
     volumes: portainerStackVolumes(current),
     ...(fingerprints !== undefined ? { valueFingerprints: fingerprints } : {}),
   };
   differences.push(...stackDifferences(planStacks(facts, desired)));
 
   // 5. The deploy branch's head against the committed template with its image.
-  const appRecorded = connection.created.stacks.find((stack) => stack.role === "app");
   differences.push(
     ...(await deployBranchDifferences(
       deps,
@@ -691,51 +720,27 @@ export async function portainerDrift(
         plan: current,
         template,
         repo,
-        appStackExists:
-          appRecorded !== undefined && facts.stacks.some((stack) => stack.id === appRecorded.id),
+        appStackExists: recordedStack(connection, facts, "app") !== undefined,
       },
       notes,
     )),
   );
 
-  const portainer = {
-    environment: facts.environment?.name ?? connection.environmentName,
-    differences: differences.map((item) => ({
-      area: item.area,
-      title: deps.redactor.redact(item.title),
-      ...(item.detail !== undefined ? { detail: deps.redactor.redact(item.detail) } : {}),
-    })),
-  };
-  const foreignDnsRecords = [...(cloudflare?.foreignRecords ?? [])].sort((a, b) =>
-    `${a.name} ${a.type}`.localeCompare(`${b.name} ${b.type}`),
-  );
-  const clean =
-    drift.length === 0 &&
-    pending.length === 0 &&
-    changedFiles.length === 0 &&
-    createdFiles.length === 0 &&
-    foreignDnsRecords.length === 0 &&
-    portainer.differences.length === 0;
-  const report: DriftReport = {
+  return finishDriftReport(deps, plan, {
     drift,
     pending,
-    files: { changed: changedFiles, created: createdFiles },
-    foreignDnsRecords,
-    portainer,
-    clean,
+    files: { changed: changedFiles, created: diff.created.map((file) => file.path) },
+    foreignDnsRecords: cloudflare?.foreignRecords ?? [],
+    portainer: {
+      environment: facts.environment?.name ?? connection.environmentName,
+      differences: differences.map((item) => ({
+        area: item.area,
+        title: deps.redactor.redact(item.title),
+        ...(item.detail !== undefined ? { detail: deps.redactor.redact(item.detail) } : {}),
+      })),
+    },
     engine: engine.info,
-    checkedAt: deps.clock.now().toISOString(),
     provider: "portainer",
-    ...(notes.length > 0 ? { notes: notes.map((note) => deps.redactor.redact(note)) } : {}),
-  };
-  await deps.audit.append({
-    kind: "iac",
-    actor: "opscrew",
-    action: "drift-check",
-    target: plan.infra.dir,
-    detail: clean
-      ? "no drift"
-      : `${drift.length} changed outside OpsCrew, ${pending.length} pending, ${changedFiles.length + createdFiles.length} files differ, ${portainer.differences.length} differences in Portainer`,
+    notes,
   });
-  return report;
 }

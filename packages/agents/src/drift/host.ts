@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import {
   APP_DIR,
   type HASHED_RUNTIME_FILES,
@@ -9,6 +7,7 @@ import {
   type HostStep,
   type HostStepId,
   inspectHost,
+  MIN_DOCKER_MAJOR,
   planHost,
   type RuntimeFileName,
   SECRET_RUNTIME_FILES,
@@ -16,7 +15,7 @@ import {
   UFW_WEB_COMMENT,
   webFilterFacts,
 } from "@opscrew/connector-ssh-host";
-import { OpsCrewError } from "@opscrew/core";
+import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
   type RenderContext,
@@ -29,7 +28,7 @@ import { connectOwnServer, desiredHost, type OwnServerServices, ownTarget } from
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
 import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
-import { hostPlanFile } from "../shared";
+import { hostPlanFile, readIfExists } from "../shared";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
 export interface HostDifference {
@@ -69,7 +68,7 @@ export async function lastHostSetup(
     .map((approval) => approval.planHash)
     .reverse();
   for (const hash of hashes) {
-    const text = await readFile(hostPlanFile(deps.paths, hash), "utf8").catch(() => undefined);
+    const text = await readIfExists(hostPlanFile(deps.paths, hash));
     if (text === undefined) continue;
     let json: unknown;
     try {
@@ -122,13 +121,6 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
 
 const RUNTIME_FILES_TITLE = "OpsCrew's runtime files in /srv/app";
 
-const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
-
-function words(list: readonly string[]): string {
-  if (list.length <= 1) return list.join("");
-  return `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
-}
-
 function portList(value: string | number | boolean | undefined): string[] {
   return String(value ?? "")
     .split(" ")
@@ -140,8 +132,10 @@ function dockerDetails(facts: HostFacts): string[] {
   if (docker.kind === "absent") return ["Docker is not installed."];
   const out: string[] = [];
   const major = Number((docker.version ?? "").split(".")[0]);
-  if (docker.version === null || !(major >= 28)) {
-    out.push(`Docker Engine ${docker.version ?? "(unknown version)"} is older than 28.`);
+  if (docker.version === null || !(major >= MIN_DOCKER_MAJOR)) {
+    out.push(
+      `Docker Engine ${docker.version ?? "(unknown version)"} is older than ${MIN_DOCKER_MAJOR}.`,
+    );
   }
   if (!docker.composePlugin || !docker.buildxPlugin) {
     out.push("The Docker Compose or Buildx plugin is missing.");
@@ -206,11 +200,11 @@ function ufwDetails(facts: HostFacts, step: HostStep): string[] {
   else if (facts.firewall.ufw === "inactive") out.push("The firewall (ufw) is off.");
   const ssh = portList(step.params.sshRulePorts);
   if (facts.firewall.ufw === "active" && ssh.length > 0) {
-    out.push(`ufw no longer lets SSH in on port ${words(ssh)}.`);
+    out.push(`ufw no longer lets SSH in on port ${listText(ssh)}.`);
   }
   const web = portList(step.params.webRules);
   if (facts.firewall.ufw === "active" && web.length > 0) {
-    out.push(`ufw no longer allows web traffic (${words(web)}).`);
+    out.push(`ufw no longer allows web traffic (${listText(web)}).`);
   }
   if (
     step.params.web === false &&
@@ -431,8 +425,8 @@ export function expectedRuntimeFiles(
   };
   return {
     rendered: {
-      "compose.yaml": sha256(renderCompose(plan, full).content),
-      Caddyfile: sha256(renderCaddyfile(plan, full).content),
+      "compose.yaml": sha256Hex(renderCompose(plan, full).content),
+      Caddyfile: sha256Hex(renderCaddyfile(plan, full).content),
     },
     dbEnv: plan.services.postgres,
   };
@@ -549,7 +543,7 @@ function tunnelDetails(facts: HostFacts, step: HostStep): string[] {
   if (tunnel.tunnelId !== null && tunnel.tunnelId !== step.params.tunnelId) {
     out.push("The connector runs for another tunnel than the one OpsCrew created.");
   }
-  if (tunnel.composeSha256 !== sha256(String(step.params.compose ?? ""))) {
+  if (tunnel.composeSha256 !== sha256Hex(String(step.params.compose ?? ""))) {
     out.push("The connector's Compose file was edited.");
   }
   if (!tunnel.secretFile) out.push("The connector's token file is missing.");
@@ -566,7 +560,7 @@ function portainerDetails(facts: HostFacts, step: HostStep): string[] {
   }
   if (!portainer.installed) return ["Portainer's files in /srv/opscrew/portainer are missing."];
   const out: string[] = [];
-  if (portainer.composeSha256 !== sha256(String(step.params.composeFinal ?? ""))) {
+  if (portainer.composeSha256 !== sha256Hex(String(step.params.composeFinal ?? ""))) {
     out.push("Portainer's Compose file was edited.");
   }
   if (!portainer.running) out.push("Portainer is not running.");
@@ -622,7 +616,6 @@ export function hostDifferences(
   setup: HostPlan,
   app: {
     name: string;
-    projectId: string;
     deployed: boolean;
     /** What OpsCrew renders now for /srv/app ({@link expectedRuntimeFiles}); unset skips the files. */
     runtimeFiles?: ExpectedRuntimeFiles;
@@ -685,7 +678,7 @@ export function hostDifferences(
     out.push({
       area: "app",
       title: "The app's containers",
-      detail: `${words(stopped)} ${stopped.length === 1 ? "is" : "are"} stopped.`,
+      detail: `${listText(stopped)} ${stopped.length === 1 ? "is" : "are"} stopped.`,
       restoredByProvision: false,
     });
   } else if (containers.length === 0 && app.deployed) {
@@ -719,9 +712,7 @@ export async function ownHostDrift(
   },
 ): Promise<HostDrift> {
   const own = options.own ?? {};
-  const deployPublicKey = (
-    await readFile(deps.paths.files.deployKeyPub, "utf8").catch(() => "")
-  ).trim();
+  const deployPublicKey = ((await readIfExists(deps.paths.files.deployKeyPub)) ?? "").trim();
   if (deployPublicKey === "") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -779,7 +770,6 @@ export async function ownHostDrift(
       planHost(facts, desired),
       {
         name: plan.app.name,
-        projectId: deps.paths.projectId,
         deployed: plan.deployment.lastDeployAt !== undefined,
         runtimeFiles,
       },
@@ -792,7 +782,7 @@ export async function ownHostDrift(
  * Served directly behind Cloudflare's proxy: Cloudflare's current ranges, so a change of
  * Cloudflare's list shows as drift. When they cannot be read, the comparison uses the ranges of
  * the last applied host plan (or OpsCrew's chain on the server) and says so, instead of reporting
- * a difference nobody made.
+ * a difference nobody made; with neither, the error that Cloudflare could not be read stops.
  */
 async function driftWebSources(
   deps: PhaseDeps,
@@ -804,13 +794,13 @@ async function driftWebSources(
   if (!ownWebFromCloudflare(plan)) return undefined;
   try {
     return await ownWebSources(deps, plan, cloudflare);
-  } catch {
+  } catch (error) {
+    const applied = filterRanges(setup?.steps.find((step) => step.id === "web-filter"));
+    const known = applied ?? webFilterFacts(facts).rules4.chain?.sources ?? [];
+    if (known.length === 0) throw error;
     deps.reporter.warn(
       "OpsCrew could not read Cloudflare's current IP ranges, so it compared the web filter with the ranges of the last provision. Run `opscrew drift` again when Cloudflare's API is reachable to see whether Cloudflare's list changed.",
     );
-    const applied = filterRanges(setup?.steps.find((step) => step.id === "web-filter"));
-    const known = applied ?? webFilterFacts(facts).rules4.chain?.sources ?? [];
-    // Nothing known at all: Cloudflare's list cannot be guessed, and the filter is missing anyway.
-    return { ipv4: known.length > 0 ? known : ["0.0.0.0/32"] };
+    return { ipv4: known };
   }
 }
