@@ -33,6 +33,9 @@ the feature directory and the effort level. Follow these rules exactly.
 - When an SDK or library API matters, read its installed type definitions under `node_modules`
   instead of guessing.
 - Keep public APIs minimal and documented with short TSDoc comments.
+- Build only what `Accept:` asks for. No unrequested features, options or configurability, no
+  abstraction with a single caller, and no new helper when one already exists in the repository
+  (search for it first). If you think something more is needed, report it instead of building it.
 
 ## Before you finish
 

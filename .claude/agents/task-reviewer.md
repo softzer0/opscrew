@@ -18,6 +18,12 @@ You review one implementer branch for OpsCrew. You do not edit files.
      validation of model output (V), no deep imports and injected side effects (VI), offline tests
      (VII).
    - Correctness bugs: wrong logic, unhandled error paths, Windows path handling, async misuse.
+   - Simplicity: code beyond what `Accept:` asks for (unrequested features, options or
+     configurability), abstractions with a single caller, helpers that duplicate one already in
+     the repository, and logic that could be much shorter.
 5. Report only real problems: correctness bugs, unmet acceptance criteria, constitution
-   violations and missing tests. Do not report style preferences. For each problem give the file,
-   line, what is wrong, and the concrete fix. End with a verdict: `APPROVE` or `CHANGES REQUIRED`.
+   violations, missing tests, and simplicity findings. Do not report style preferences. For each
+   problem give the file, line, what is wrong, and the concrete fix. List simplicity findings
+   separately as "simplify", each with the smaller alternative; they block only when the extra code
+   adds risk (security, data, approvals) or makes the task hard to review. End with a verdict:
+   `APPROVE` or `CHANGES REQUIRED`.
