@@ -1026,6 +1026,22 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect((await move(h))?.step).toBe("renamed");
   });
 
+  it("a size the new provider cannot create says to abort and start again, never `opscrew design`", async () => {
+    const h = await moveHarness();
+    h.engine.failApply = (effect) =>
+      effect.creates.length > 0
+        ? 'Error: Error creating droplet: POST https://api.digitalocean.com/v2/droplets: 422 (request "r1") Size is not available in this region.'
+        : undefined;
+    const error = await caught(run(h));
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.hint).toMatch(/^DigitalOcean cannot create a \S+ Droplet in \S+ right now /);
+    expect(error.hint).toContain(
+      "Run `opscrew retarget --abort` (your app keeps running on the old server), then start the move again and pick another option: `opscrew retarget --to digitalocean --option <id>`. Nothing that was already created is removed until you abort.",
+    );
+    expect(error.hint).not.toContain("opscrew design");
+    expect((await move(h))?.step).toBe("renamed");
+  });
+
   it("stops when the rename would change more than the state (drift)", async () => {
     const h = await moveHarness();
     h.engine.state.servers = {};

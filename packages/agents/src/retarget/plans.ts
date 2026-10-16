@@ -60,6 +60,8 @@ export interface InfraPlanInput {
    * the plan that creates it); `null` for a plan that changes nothing billed (DNS switch, restore).
    */
   costDelta?: Money | null;
+  /** The next step when the new provider cannot create the server's size in its location. */
+  redesignHint?: string;
 }
 
 /**
@@ -92,6 +94,7 @@ function planAndApplyOptions(session: MoveSession, input: InfraPlanInput): PlanA
     phase: "retarget",
     ...(input.notes && input.notes.length > 0 ? { approvalNotes: input.notes } : {}),
     ...(input.costDelta !== undefined ? { costDelta: input.costDelta } : {}),
+    ...(input.redesignHint !== undefined ? { redesignHint: input.redesignHint } : {}),
   };
 }
 

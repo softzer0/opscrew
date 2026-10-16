@@ -1,17 +1,8 @@
-import type { ResourceAction } from "@opscrew/contracts";
 import { engineLabel } from "@opscrew/iac-engine";
 import { providerProfile } from "../providers";
+import { CHANGE_SYMBOL } from "../shared";
 import type { HostDifference } from "./host";
 import type { DriftReport } from "./types";
-
-const SYMBOL: Record<ResourceAction, string> = {
-  create: "+",
-  update: "~",
-  delete: "-",
-  replace: "±",
-  read: "?",
-  "no-op": " ",
-};
 
 const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -192,7 +183,9 @@ export function renderDriftReport(report: DriftReport): string {
       const why = drifted.has(item.address)
         ? "undoes the change outside OpsCrew"
         : "not applied yet";
-      lines.push(`  ${SYMBOL[item.action]} ${item.action.padEnd(7)}  ${item.address} (${why})`);
+      lines.push(
+        `  ${CHANGE_SYMBOL[item.action]} ${item.action.padEnd(7)}  ${item.address} (${why})`,
+      );
     }
     lines.push("");
   }

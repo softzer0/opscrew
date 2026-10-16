@@ -4,6 +4,7 @@ import type { ResourceChange, ResourceMove } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { hidePortainerAddress } from "../interview/portainer-access";
+import { PlanRefusedError } from "../shared";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { FakeEngine, type FakeEngineScenario, testPlan } from "./__fixtures__/fakes";
 import { portainerPlan } from "./__fixtures__/portainer";
@@ -203,6 +204,18 @@ describe("planAndApply refusal hint", () => {
     );
   });
 
+  it("is a PlanRefusedError whose parts say what stayed as it was", async () => {
+    const { deps, engine, options } = await setup({ changes: DNS_UPDATE }, false);
+    const error = await planAndApply(deps, options).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PlanRefusedError);
+    expect(error).toMatchObject({
+      code: "APPROVAL_REFUSED",
+      message: "The infrastructure plan was not approved. Nothing was changed.",
+      refusal: { plan: "infrastructure plan", unchanged: "Nothing was changed." },
+    });
+    expect(engine.calls).not.toContain("apply");
+  });
+
   it("adds --confirm <app> for provision when the plan needs the typed app name", async () => {
     const hint = await refused(DNS_DELETE);
     expect(hint).toMatch(
@@ -214,6 +227,27 @@ describe("planAndApply refusal hint", () => {
     const hint = await refused(DNS_DELETE, "opscrew dns");
     expect(hint).toBe(
       "This plan deletes or replaces resources, so it needs the app's name: run `opscrew dns` in a terminal and type shop when asked, or in a script run `opscrew provision --plan-only` and then the command it prints (with --confirm shop).",
+    );
+  });
+});
+
+describe("planAndApply failure hint for an unavailable size", () => {
+  it("says what the provider cannot create, then the caller's next step instead of `opscrew design`", async () => {
+    const { deps, options } = await setup({ applyOk: false });
+    const plain = (await planAndApply(deps, options).catch((e: unknown) => e)) as OpsCrewError;
+    expect(plain.code).toBe("ENGINE_FAILED");
+    expect(plain.hint).toBe(
+      "Hetzner Cloud cannot create a cx23 server in nbg1 right now (the server type is unavailable or out of stock there). Run `opscrew design` to pick another server type or location, then run `opscrew provision` again. Nothing that was already created is removed.",
+    );
+
+    const moving = await setup({ applyOk: false });
+    const error = (await planAndApply(moving.deps, {
+      ...moving.options,
+      redesignHint: "Run `opscrew retarget --abort`, then start the move again.",
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.hint).toBe(
+      "Hetzner Cloud cannot create a cx23 server in nbg1 right now (the server type is unavailable or out of stock there). Run `opscrew retarget --abort`, then start the move again.",
     );
   });
 });

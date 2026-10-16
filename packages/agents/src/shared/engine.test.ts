@@ -1,10 +1,11 @@
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { IacEngine } from "@opscrew/contracts";
+import type { IacEngine, ResourceAction } from "@opscrew/contracts";
 import { describe, expect, it } from "vitest";
 import { FakeEngine, testPlan } from "../provision/__fixtures__/fakes";
 import { createTestPhaseDeps } from "../testing";
-import { hasState, projectEngine, stateFile } from "./engine";
+import { describeChanges, existingStateEngine, hasState, projectEngine, stateFile } from "./engine";
 import { pollUntil } from "./wait";
 
 const tofu = async (): Promise<IacEngine> => new FakeEngine();
@@ -29,8 +30,17 @@ describe("projectEngine", () => {
     const deps = await createTestPhaseDeps();
     const plan = testPlan();
     await expect(
-      projectEngine(deps, plan, { services: { engine: tofu }, passphrase: "require" }),
-    ).rejects.toMatchObject({ code: "PHASE_PRECONDITION" });
+      projectEngine(deps, plan, {
+        services: { engine: tofu },
+        passphrase: { requiredBy: "opscrew retarget --to digitalocean" },
+      }),
+    ).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "The OpenTofu state is encrypted, but this computer does not have its passphrase. Nothing was changed.",
+      hint: `Copy the state passphrase file from the computer that ran \`opscrew provision\` to ${deps.paths.files.statePassphrase}, then run \`opscrew retarget --to digitalocean\` again.`,
+    });
+    expect(existsSync(deps.paths.files.statePassphrase)).toBe(false);
     const quiet = await projectEngine(deps, plan, {
       services: { engine: tofu },
       passphrase: "if-present",
@@ -49,6 +59,26 @@ describe("projectEngine", () => {
     expect(env.TF_ENCRYPTION).toBeUndefined();
   });
 
+  it("existingStateEngine never makes a passphrase, says which engine it uses and warns Terraform", async () => {
+    const deps = await createTestPhaseDeps();
+    const plan = testPlan();
+    await expect(
+      existingStateEngine(deps, plan, { services: { engine: tofu }, command: "opscrew destroy" }),
+    ).rejects.toMatchObject({ hint: expect.stringContaining("then run `opscrew destroy` again.") });
+    expect(existsSync(deps.paths.files.statePassphrase)).toBe(false);
+
+    const { engine } = await existingStateEngine(deps, plan, {
+      services: { engine: terraform },
+      command: "opscrew destroy",
+    });
+    expect(engine.info.name).toBe("terraform");
+    expect(deps.reporter.text()).toContain("Using Terraform 1.9.0.");
+    expect(deps.reporter.text()).toContain(
+      "If OpenTofu provisioned this deployment, run `opscrew destroy --engine tofu` instead.",
+    );
+    expect(existsSync(deps.paths.files.plansDir)).toBe(true);
+  });
+
   it("tells whether the state file has content", async () => {
     const deps = await createTestPhaseDeps();
     expect(await hasState(deps.paths)).toBe(false);
@@ -57,6 +87,31 @@ describe("projectEngine", () => {
     expect(await hasState(deps.paths)).toBe(false);
     await writeFile(stateFile(deps.paths), "{}");
     expect(await hasState(deps.paths)).toBe(true);
+  });
+});
+
+describe("describeChanges", () => {
+  it("shows each change with its action's sign, one per line", () => {
+    const change = (action: ResourceAction, address: string) => ({
+      address,
+      type: "t",
+      name: "n",
+      provider: "p",
+      action,
+    });
+    expect(
+      describeChanges([
+        change("create", "module.dns.a"),
+        change("update", "module.dns.b"),
+        change("delete", "module.server.c"),
+        change("replace", "module.server.d"),
+      ]),
+    ).toEqual([
+      "  + create  module.dns.a",
+      "  ~ update  module.dns.b",
+      "  - delete  module.server.c",
+      "  ± replace module.server.d",
+    ]);
   });
 });
 

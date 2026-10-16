@@ -198,7 +198,7 @@ export async function driftEngine(
   const project = await projectEngine(deps, plan, {
     ...(options.engine !== undefined ? { preference: options.engine } : {}),
     ...(options.services !== undefined ? { services: options.services } : {}),
-    passphrase: stateKind === undefined ? "if-present" : "require",
+    passphrase: stateKind === undefined ? "if-present" : { requiredBy: "opscrew drift" },
   });
   if (stateKind === "encrypted" && project.engine.info.name === "terraform") {
     throw new OpsCrewError(

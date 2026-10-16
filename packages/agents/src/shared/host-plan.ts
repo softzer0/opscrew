@@ -79,6 +79,8 @@ export interface HostPlanStep {
   title: string;
   /** The server in words: `your server` (one the user owns) or `the server`. */
   server: string;
+  /** Said when the plan changes nothing: `Your server is already prepared; nothing on it changes.` */
+  upToDate: string;
   /** The command that applies it later (`--approve <hash>`), for example `opscrew provision`. */
   command: string;
   phase: PhaseName;
@@ -110,7 +112,7 @@ export interface HostPlanOutcome extends HostChangeResult {
  * deletes data) and checked against the approval store, then applied through the host adapter,
  * which refuses any other plan and gets the secrets only now. The start, every applied step and a
  * failure (with the steps applied before it) are audited by the hash. A plan without changes needs
- * no approval; with `planOnly` nothing is asked or changed.
+ * no approval (`upToDate` is said); with `planOnly` nothing is asked or changed.
  */
 export async function approveAndApplyHostPlan(
   deps: Pick<PhaseDeps, "paths" | "reporter" | "approvals" | "audit" | "version" | "clock">,
@@ -125,9 +127,7 @@ export async function approveAndApplyHostPlan(
   requireNoBlockers(plan, step);
   const changes = plan.steps.filter((item) => item.state === "change");
   if (changes.length === 0) {
-    deps.reporter.success(
-      `${server.charAt(0).toUpperCase()}${server.slice(1)} is already prepared; nothing on it changes.`,
-    );
+    deps.reporter.success(step.upToDate);
     return { plan, hash, applied: false, steps: [] };
   }
   if (step.planOnly === true) {

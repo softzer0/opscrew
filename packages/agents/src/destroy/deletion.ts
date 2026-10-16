@@ -15,13 +15,12 @@ import { isUserFacingError, OpsCrewError, plural, writeFileAtomic } from "@opscr
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { providerProfile, type VpsConnectorOptions, vpsConnector } from "../providers";
-import type { ProjectEngine } from "../shared";
+import { describeChanges, type ProjectEngine } from "../shared";
 import {
   type DeletionBounds,
   deletesServer,
   deletesUnconfirmedServer,
   deletionPlanProblems,
-  describeChanges,
   type ModulePrefix,
   planHeading,
   removeHostKeys,

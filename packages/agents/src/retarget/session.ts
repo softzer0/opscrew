@@ -24,7 +24,6 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { existingStateEngine } from "../destroy/common";
 import { providerProfile } from "../providers";
 import {
   type CloudflareSetup,
@@ -40,6 +39,7 @@ import {
   type DeployKey,
   diffRenderedFiles,
   ensureDeployKey,
+  existingStateEngine,
   hasState,
   infrastructureOutputs,
   pinHostKey,

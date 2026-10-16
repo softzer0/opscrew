@@ -298,6 +298,8 @@ async function runChange(
       services,
       deployPublicKey: deployKey.publicKeyOpenSsh,
       deployKeyFile: deployKey.privateKeyFile,
+      phase: "portainer",
+      command,
     });
   }
   // Hetzner/DigitalOcean: the deploy user's shell; enabling needs Docker 28 and looks for
@@ -333,10 +335,12 @@ async function runChange(
       deleteData: change.deleteData,
     });
 
-  // The change on the server: a host plan on the user's own server, or the deploy user's add-on
-  // steps. It normally follows the infrastructure apply (it may need the tunnel's id); when the
-  // infrastructure plan deletes the tunnel it goes first, because Cloudflare refuses to delete a
-  // tunnel whose connector still runs. `hostHash` names its plan as soon as it is shown.
+  // The change on the server: the host plan provision applies on the user's own server, now with
+  // Portainer as the plan describes it, or the deploy user's add-on steps. It normally follows the
+  // infrastructure apply (it may need the tunnel's id); when the infrastructure plan deletes the
+  // tunnel it goes first, because Cloudflare refuses to delete a tunnel whose connector still runs.
+  // `hostHash` names its plan as soon as it is shown; a refusal says to approve it later with this
+  // command, which finishes the change.
   let hostHash: string | undefined;
   const shown = (hash: string) => {
     hostHash = hash;
@@ -346,12 +350,17 @@ async function runChange(
     hostPlanOnly: boolean,
   ): Promise<HostChangeResult> =>
     ownRun
-      ? ownHostChange(deps, ownRun, {
+      ? applyOwnHostPlan(deps, ownRun, {
           plan,
           outputs,
           deployPublicKey: deployKey.publicKeyOpenSsh,
           planOnly: hostPlanOnly,
+          phase: "portainer",
           command,
+          upToDate:
+            change.command === "enable"
+              ? "Portainer already runs on your server as planned; nothing on it changes."
+              : "Portainer is no longer on your server; nothing on it changes.",
           shown,
         })
       : cloudHostChange(deps, change, {
@@ -465,6 +474,7 @@ async function runChange(
         verifyLogin: ownRun.verifyLogin,
         title: `Delete Portainer's data on your server (its admin account and settings)`,
         server: "your server",
+        upToDate: "Portainer's data is no longer on your server; nothing on it changes.",
         command,
         phase: "portainer",
         allowDestroy: true,
@@ -549,51 +559,10 @@ const CONNECTOR_GONE =
   "The change on the server is applied (its Cloudflare Tunnel connector is removed); the Cloudflare Tunnel and Access for Portainer are still there.";
 
 /**
- * A server the user owns: the host plan provision applies there, now with Portainer as the plan
- * describes it (`applyOwnHostPlan`); `shown` is told its hash as soon as it is shown. A refusal
- * says to approve it later with this command, which finishes the change.
- */
-async function ownHostChange(
-  deps: PhaseDeps,
-  run: OwnServerRun,
-  input: {
-    plan: DeployPlan;
-    outputs: Record<string, unknown>;
-    deployPublicKey: string;
-    planOnly: boolean;
-    command: string;
-    shown: (hash: string) => void;
-  },
-): Promise<HostPlanOutcome> {
-  let hash: string | undefined;
-  try {
-    return await applyOwnHostPlan(deps, run, {
-      plan: input.plan,
-      outputs: input.outputs,
-      deployPublicKey: input.deployPublicKey,
-      planOnly: input.planOnly,
-      phase: "provision",
-      shown: (shownHash) => {
-        hash = shownHash;
-        input.shown(shownHash);
-      },
-    });
-  } catch (error) {
-    if (!(error instanceof PlanRefusedError) || hash === undefined) throw error;
-    throw new PlanRefusedError(
-      {
-        ...error.refusal,
-        hint: `To apply it later without prompts, run: ${input.command} --approve ${hash}`,
-      },
-      error,
-    );
-  }
-}
-
-/**
  * The error of an infrastructure plan that was refused or failed after this run wrote repository
- * files: it lists them. A refusal changed nothing in Cloudflare or on the server and says so once,
- * after the files; a failed apply keeps the engine's own words about what happened.
+ * files: it lists them. A refusal (of the infrastructure plan, or of the host plan that goes before
+ * a tunnel's deletion) changed nothing in Cloudflare or on the server and says so once, after the
+ * files; a failed apply keeps the engine's own words about what happened.
  */
 function infrastructureStopped(
   deps: Pick<PhaseDeps, "redactor">,
@@ -602,16 +571,11 @@ function infrastructureStopped(
 ): unknown {
   if (!(error instanceof OpsCrewError) || written.length === 0) return error;
   const files = `The repository files were written (${written.join(", ")})`;
-  const unchanged = `${files}; nothing in Cloudflare or on the server changed.`;
   if (error instanceof PlanRefusedError) {
+    const unchanged = `${files}; nothing in Cloudflare or on the server changed.`;
     return new PlanRefusedError({ ...error.refusal, unchanged }, error);
   }
-  // The infrastructure plan's own refusal ends with "Nothing was changed.", said once at the end.
-  const message =
-    error.code === "APPROVAL_REFUSED"
-      ? `${error.message.replace(/ Nothing was changed\.$/, "")} ${unchanged}`
-      : `${error.message}\n${files}.`;
-  return new OpsCrewError(error.code, deps.redactor.redact(message), {
+  return new OpsCrewError(error.code, deps.redactor.redact(`${error.message}\n${files}.`), {
     ...(error.hint !== undefined ? { hint: error.hint } : {}),
     cause: error,
   });
@@ -886,6 +850,11 @@ async function cloudHostChange(
       : change.deleteData
         ? "Remove Portainer and delete its data on the server"
         : "Remove Portainer from the server (its data stays)",
+    upToDate: enabling
+      ? "Portainer already runs on the server as planned; nothing on it changes."
+      : change.deleteData
+        ? "Portainer and its data are no longer on the server; nothing on it changes."
+        : "Portainer is no longer on the server; nothing on it changes.",
     command: input.command,
     phase: "portainer",
     allowDestroy: !enabling && change.deleteData,
@@ -937,6 +906,7 @@ export async function cloudConnectorRemoval(
     server: "the server",
     title:
       "Remove the Cloudflare Tunnel connector from the server (Portainer's subdomain is no longer planned)",
+    upToDate: "The Cloudflare Tunnel connector is no longer on the server; nothing on it changes.",
     command: input.command,
     phase: "provision",
     planOnly: input.planOnly,

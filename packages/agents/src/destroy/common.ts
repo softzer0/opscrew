@@ -1,4 +1,4 @@
-import { mkdir, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { cloudflareConnector } from "@opscrew/connector-cloudflare";
 import {
@@ -9,26 +9,24 @@ import {
 } from "@opscrew/connector-github";
 import type { ApprovalRecord, PlanSummary, ResourceChange } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, plural } from "@opscrew/core";
-import { type EnginePreference, engineLabel } from "@opscrew/iac-engine";
+import { engineLabel } from "@opscrew/iac-engine";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { githubCoordinates } from "../provision";
 import {
   approvalEntry,
-  type EngineFactory,
+  describeChanges,
+  existingStateEngine,
   type ProjectEngine,
-  projectEngine,
   stateFile,
 } from "../shared";
 import {
-  deletedTunnel,
-  type TunnelRef,
+  requireTunnelClosed,
   tunnelBusyError,
   tunnelChange,
   tunnelSafeEngine,
-  waitForTunnelToClose,
 } from "../shared/tunnel-connections";
-import { describeChanges, planHeading } from "./checks";
+import { planHeading } from "./checks";
 import {
   applyApprovedPlan,
   assertDeletionPlan,
@@ -192,32 +190,6 @@ export function secretsPage(github: GitHubTarget): string {
   return github.owner && github.repo
     ? `https://github.com/${github.owner}/${github.repo}/settings/secrets/actions`
     : "your repository's Settings → Secrets and variables → Actions";
-}
-
-/**
- * The project's engine for the state that is already there ({@link projectEngine}: its passphrase
- * is only read, since a new one could not decrypt that state), saying which engine is used and,
- * with Terraform, that it cannot read a state OpenTofu encrypted (`command --engine tofu` can).
- * `.opscrew/plans` is created for the plans to come.
- */
-export async function existingStateEngine(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  options: { engine?: EnginePreference; services?: { engine?: EngineFactory }; command: string },
-): Promise<ProjectEngine> {
-  const setup = await projectEngine(deps, plan, {
-    preference: options.engine,
-    services: options.services,
-    passphrase: "require",
-  });
-  deps.reporter.info(`Using ${engineLabel(setup.engine.info.name)} ${setup.engine.info.version}.`);
-  if (plan.infra.stateEncryption && setup.engine.info.name !== "tofu") {
-    deps.reporter.warn(
-      `Terraform cannot read state that OpenTofu encrypted. If OpenTofu provisioned this deployment, run \`${options.command} --engine tofu\` instead.`,
-    );
-  }
-  await mkdir(deps.paths.files.plansDir, { recursive: true });
-  return setup;
 }
 
 /** 3. Engine, state encryption and `init` with the same backend path as provisioning. */
@@ -421,16 +393,6 @@ export async function approveCloudflareRemoval(
 }
 
 /**
- * Every Cloudflare Tunnel the plan deletes (a Portainer root can delete two: the app's and the one
- * in front of Portainer's webhook), each entry read as `deletedTunnel` reads one.
- */
-function deletedTunnels(planJson: unknown): TunnelRef[] {
-  const list = (planJson as { resource_changes?: unknown } | null)?.resource_changes;
-  if (!Array.isArray(list)) return [];
-  return list.flatMap((entry) => deletedTunnel({ resource_changes: [entry] }) ?? []);
-}
-
-/**
  * 6. Applies the approved Cloudflare part of the teardown and deletes its plan file. A plan that
  * deletes a tunnel runs after the app is gone, and only once Cloudflare reports no active
  * connections for every tunnel it deletes (read-only polls, up to 3 minutes each); if they stay
@@ -448,16 +410,11 @@ export async function applyCloudflareRemoval(
   try {
     const engine = tunnelSafeEngine(session.engine);
     if (removal.tunnel) {
-      for (const tunnel of deletedTunnels(summary.planJson)) {
-        const wait = await waitForTunnelToClose(deps, tunnel, sleep !== undefined ? { sleep } : {});
-        if (wait.closed) continue;
-        throw tunnelBusyError({
-          command: COMMAND,
-          reason: "timeout",
-          already: left,
-          ...(wait.problem !== undefined ? { problem: wait.problem } : {}),
-        });
-      }
+      await requireTunnelClosed(deps, summary, {
+        command: COMMAND,
+        already: left,
+        ...(sleep !== undefined ? { options: { sleep } } : {}),
+      });
     }
     deps.reporter.step(`Deleting the ${words.what}`);
     try {

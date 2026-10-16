@@ -10,7 +10,7 @@ import { BUSY_TUNNEL_LOG } from "./__fixtures__/tunnel";
 import { PlanRefusedError } from "./approvals";
 import {
   connectorFirst,
-  deletedTunnel,
+  deletedTunnels,
   isTunnelBusyText,
   onlyTunnelBusy,
   requireTunnelClosed,
@@ -23,6 +23,17 @@ import {
 } from "./tunnel-connections";
 
 const TUNNEL = { accountId: "acct-0001", tunnelId: "6f1f3a2e-7b1c-4d2e-9f00-112233445566" };
+/** The tunnel in front of Portainer's webhook, which a Portainer root deletes as well. */
+const WEBHOOK_TUNNEL = { accountId: "acct-0001", tunnelId: "0b5e8c1d-2f3a-4b5c-8d9e-aabbccddeeff" };
+
+/** A plan JSON resource change that deletes `tunnel`. */
+function tunnelDeletion(tunnel: typeof TUNNEL) {
+  return {
+    type: TUNNEL_RESOURCE_TYPE,
+    mode: "managed",
+    change: { actions: ["delete"], before: { id: tunnel.tunnelId, account_id: tunnel.accountId } },
+  };
+}
 /** An address Cloudflare returns as `origin_ip` (documentation range); never printed. */
 const ORIGIN_IP = "198.51.100.23";
 
@@ -106,16 +117,28 @@ describe("tunnel deletion in a plan", () => {
         },
       ],
     };
-    expect(deletedTunnel(planJson)).toEqual(TUNNEL);
+    expect(deletedTunnels(planJson)).toEqual([TUNNEL]);
     // A replacement creates a new tunnel; a plan JSON without resource changes names none.
     const replaced = structuredClone(planJson);
     (replaced.resource_changes[1] as { change: { actions: string[] } }).change.actions = [
       "delete",
       "create",
     ];
-    expect(deletedTunnel(replaced)).toBeUndefined();
-    expect(deletedTunnel({ format_version: "1.2" })).toBeUndefined();
-    expect(deletedTunnel(null)).toBeUndefined();
+    expect(deletedTunnels(replaced)).toEqual([]);
+    expect(deletedTunnels({ format_version: "1.2" })).toEqual([]);
+    expect(deletedTunnels(null)).toEqual([]);
+  });
+
+  it("finds every tunnel a plan deletes (a Portainer root can delete two)", () => {
+    expect(
+      deletedTunnels({
+        resource_changes: [
+          tunnelDeletion(TUNNEL),
+          { type: "cloudflare_dns_record" },
+          tunnelDeletion(WEBHOOK_TUNNEL),
+        ],
+      }),
+    ).toEqual([TUNNEL, WEBHOOK_TUNNEL]);
   });
 });
 
@@ -220,6 +243,31 @@ describe("waitForTunnelToClose", () => {
     await expect(
       requireTunnelClosed(d, { planJson: {} }, { command: "x" }),
     ).resolves.toBeUndefined();
+  });
+
+  it("requireTunnelClosed waits for every tunnel the plan deletes and stops at the first still open", async () => {
+    const planJson = {
+      resource_changes: [tunnelDeletion(TUNNEL), tunnelDeletion(WEBHOOK_TUNNEL)],
+    };
+    const options = { command: "opscrew destroy", options: { sleep: async () => undefined } };
+
+    const closed = scriptedFetch([json(tunnelBody("down"))]);
+    await requireTunnelClosed(await deps(closed.fetch), { planJson }, options);
+    expect(closed.calls.map((call) => call.url)).toEqual([
+      expect.stringContaining(`/cfd_tunnel/${TUNNEL.tunnelId}`),
+      expect.stringContaining(`/cfd_tunnel/${WEBHOOK_TUNNEL.tunnelId}`),
+    ]);
+
+    // The first closes, the second keeps its connections until the wait times out.
+    const open = scriptedFetch([json(tunnelBody("down")), json(tunnelBody("healthy", 1))]);
+    await expect(
+      requireTunnelClosed(await deps(open.fetch), { planJson }, options),
+    ).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+      message: expect.stringContaining("Nothing in Cloudflare was deleted."),
+    });
+    const webhookReads = open.calls.filter((call) => call.url.includes(WEBHOOK_TUNNEL.tunnelId));
+    expect(webhookReads.length).toBeGreaterThan(1);
   });
 });
 

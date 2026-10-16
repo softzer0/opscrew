@@ -205,14 +205,8 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
       `Both are billed until the move is finished or aborted: about ${formatMoney(session.plan.cost.monthly)} per month extra while they run.`,
       `Then OpsCrew deploys the app there with the deploy workflow and keeps its web server (Caddy) stopped until traffic is switched to it.`,
     ],
-  }).catch((error: unknown) => {
     // `opscrew design` refuses during a move: another size means aborting and starting again.
-    if (error instanceof OpsCrewError && error.hint?.includes("opscrew design")) {
-      throw new OpsCrewError(error.code, error.message, {
-        hint: `Run \`${ABORT_COMMAND}\` (your app keeps running on the old ${old.noun}), then start the move again and pick another option: \`${RUN_COMMAND} --to ${moveProvider(session.plan.target)} --option <id>\`. Nothing that was already created is removed until you abort.`,
-      });
-    }
-    throw error;
+    redesignHint: `Run \`${ABORT_COMMAND}\` (your app keeps running on the old ${old.noun}), then start the move again and pick another option: \`${RUN_COMMAND} --to ${moveProvider(session.plan.target)} --option <id>\`. Nothing that was already created is removed until you abort.`,
   });
   if (outcome.kind === "pending") return pendingStop(session, outcome.planHash);
   // The new server is the one on the new provider (a move always changes the provider).

@@ -1,12 +1,7 @@
 import type { Money, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError, plural } from "@opscrew/core";
 import type { MoveLayoutName, ServerModule } from "@opscrew/iac-templates";
-import {
-  describeChanges,
-  type ModulePrefix,
-  planHeading,
-  unprotectPlanProblems,
-} from "../destroy/checks";
+import { type ModulePrefix, planHeading, unprotectPlanProblems } from "../destroy/checks";
 import {
   assertDeletionPlan,
   type DeletionPreview,
@@ -15,6 +10,7 @@ import {
   previewDeletion,
 } from "../destroy/deletion";
 import { type DestroyTexts, destroyTexts } from "../destroy/texts";
+import { describeChanges } from "../shared";
 import { protectionVariable } from "./layouts";
 import type { MoveAction } from "./pending";
 import { deletionStep } from "./plans";

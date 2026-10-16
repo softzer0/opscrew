@@ -1,4 +1,4 @@
-import type { PlanSummary, ResourceAction, ResourceChange } from "@opscrew/contracts";
+import type { PlanSummary, ResourceChange } from "@opscrew/contracts";
 import { isRecord, listText } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
 import { cloudTarget, type ServerModule } from "@opscrew/iac-templates";
@@ -16,20 +16,6 @@ export const PROTECTED_SERVER_TYPE = providerProfile("hetzner").serverResourceTy
 
 /** Server attributes the protection-lifting plan is allowed to change. */
 export const PROTECTION_ATTRIBUTES: readonly string[] = ["delete_protection", "rebuild_protection"];
-
-const SYMBOL: Record<ResourceAction, string> = {
-  create: "+",
-  update: "~",
-  delete: "-",
-  replace: "±",
-  read: "?",
-  "no-op": " ",
-};
-
-/** One line per change, for example `  - delete  module.server.hcloud_server.this`. */
-export function describeChanges(changes: readonly ResourceChange[]): string[] {
-  return changes.map((c) => `  ${SYMBOL[c.action]} ${c.action.padEnd(7)} ${c.address}`);
-}
 
 /** `OpenTofu 1.13.1 plan:` (or `… destroy plan:`): the first line of a plan's details. */
 export function planHeading(

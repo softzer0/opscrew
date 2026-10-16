@@ -8,9 +8,9 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { costFor } from "../design";
-import { describeChanges } from "../destroy/checks";
 import { confirmDeletion, forgetHostKeys } from "../destroy/deletion";
 import { providerProfile, vpsConnector } from "../providers";
+import { describeChanges } from "../shared";
 import { moveProvider } from "../shared/vps-target";
 import { previousTarget } from "./layouts";
 import { clearPending } from "./pending";

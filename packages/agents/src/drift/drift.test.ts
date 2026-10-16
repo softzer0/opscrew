@@ -639,6 +639,7 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     const { deps, engine, services } = await setup({ passphrase: false });
     const error = await expectError(runDrift(deps, { services }), "PHASE_PRECONDITION");
     expect(error.hint).toContain(deps.paths.files.statePassphrase);
+    expect(error.hint).toContain("then run `opscrew drift` again.");
     expect(await exists(deps.paths.files.statePassphrase)).toBe(false);
     expect(engine.calls).not.toContain("plan");
   });

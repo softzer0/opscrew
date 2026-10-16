@@ -456,6 +456,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
       code: "PHASE_PRECONDITION",
       message: expect.stringContaining("does not have its passphrase"),
+      hint: expect.stringContaining("then run `opscrew destroy` again."),
     });
     expect(existsSync(s.deps.paths.files.statePassphrase)).toBe(false);
     expect(s.engine.calls.filter((c) => c.startsWith("plan"))).toEqual([]);

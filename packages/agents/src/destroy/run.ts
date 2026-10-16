@@ -7,22 +7,23 @@ import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-sche
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider } from "../provision";
-import { exists, hasDeployment, recordServerAddress, serverAddress, stateFile } from "../shared";
 import {
-  deletedTunnel,
+  describeChanges,
+  exists,
+  hasDeployment,
+  recordServerAddress,
+  serverAddress,
+  stateFile,
+} from "../shared";
+import {
+  deletedTunnels,
   requireTunnelClosed,
   tunnelBusyError,
   tunnelChange,
   tunnelSafeEngine,
   waitForTunnelToClose,
 } from "../shared/tunnel-connections";
-import {
-  dataWarning,
-  deletesServer,
-  deletionPlanProblems,
-  describeChanges,
-  planHeading,
-} from "./checks";
+import { dataWarning, deletesServer, deletionPlanProblems, planHeading } from "./checks";
 import {
   COMMAND,
   checkCloudflare,
@@ -306,17 +307,19 @@ async function deleteTunnelLeft(
       already: input.tunnelLeft,
       cause: input.refused,
     });
-  const tunnel = deletedTunnel(first.planJson);
-  if (tunnel === undefined) throw busy();
+  const tunnels = deletedTunnels(first.planJson);
+  if (tunnels.length === 0) throw busy();
   deps.reporter.info(
     `The ${texts.noun} is deleted, but Cloudflare refused to delete the app's Cloudflare Tunnel while it still had active connections (they can outlast the ${texts.noun} for a few minutes). OpsCrew waits until they close, then shows the plan that deletes the tunnel.`,
   );
-  const wait = await waitForTunnelToClose(
-    deps,
-    tunnel,
-    ctx.sleep !== undefined ? { sleep: ctx.sleep } : {},
-  );
-  if (!wait.closed) throw busy();
+  for (const tunnel of tunnels) {
+    const wait = await waitForTunnelToClose(
+      deps,
+      tunnel,
+      ctx.sleep !== undefined ? { sleep: ctx.sleep } : {},
+    );
+    if (!wait.closed) throw busy();
+  }
 
   deps.reporter.step("Planning the deletion of the Cloudflare Tunnel");
   const summary = await savePlan(session, "destroy-tunnel", {

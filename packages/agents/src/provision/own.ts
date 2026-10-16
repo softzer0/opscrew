@@ -260,12 +260,15 @@ export function desiredHost(
   };
 }
 
+/** The phases that change a server the user owns through its host plan. */
+type OwnHostPhase = Extract<PhaseName, "provision" | "dns" | "portainer">;
+
 /**
  * Connects to the user's own server (host key confirmed or `--host-key`, pinned), inspects it
- * read-only, and stops before any change when the host plan would be blocked: an unsupported
- * system, another firewall or web server, a different OpsCrew app, a password choice to make, and
- * so on. Also checks that the plan's architecture is the server's, and in public mode finds the
- * public address DNS points to.
+ * read-only (audited as `phase`), and stops before any change when the host plan would be blocked:
+ * an unsupported system, another firewall or web server, a different OpsCrew app, a password
+ * choice to make, and so on (the stop says to run `command` again). Also checks that the plan's
+ * architecture is the server's, and in public mode finds the public address DNS points to.
  */
 export async function prepareOwnServer(
   deps: PhaseDeps,
@@ -275,6 +278,9 @@ export async function prepareOwnServer(
     services: ProvisionServices;
     deployPublicKey: string;
     deployKeyFile: string;
+    phase: OwnHostPhase;
+    /** The command a stop says to run again, for example `opscrew portainer enable`. */
+    command: string;
   },
 ): Promise<OwnServerRun> {
   const { plan } = input;
@@ -305,7 +311,7 @@ export async function prepareOwnServer(
     kind: "remote-exec",
     actor: "opscrew",
     action: "inspect host (read-only)",
-    phase: "provision",
+    phase: input.phase,
     target: "own server",
     decision: "allow",
   });
@@ -349,7 +355,7 @@ export async function prepareOwnServer(
           : {}),
       }),
     ),
-    { server: "your server", command: "opscrew provision" },
+    { server: "your server", command: input.command },
   );
   if (target.access === "public") {
     const address = ownServerPublicAddress(session.connection, facts);
@@ -525,6 +531,7 @@ export function ownConnectorFirst(
       ...(input.passwordLogins !== undefined ? { passwordLogins: input.passwordLogins } : {}),
       planOnly,
       phase: input.phase,
+      command: `opscrew ${input.phase}`,
       withoutTunnel: true,
       shown: (hash) => {
         shownHash = hash;
@@ -583,7 +590,8 @@ function tunnelOutputs(
  * part of it), through {@link approveAndApplyHostPlan}: saved, shown, checked for blocking
  * findings, approved by its hash (`host-apply`) and applied through the host adapter, which gets
  * the tunnel token (and Portainer's password) only then and calls `verifyLogin` before keeping an
- * SSH or firewall change. With `planOnly` it stops after saving and showing the plan.
+ * SSH or firewall change; audited as `phase`, and a refusal or stop says to run `command`. With
+ * `planOnly` it stops after saving and showing the plan.
  */
 export async function applyOwnHostPlan(
   deps: PhaseDeps,
@@ -594,7 +602,11 @@ export async function applyOwnHostPlan(
     deployPublicKey: string;
     passwordLogins?: ProvisionOptions["passwordLogins"];
     planOnly?: boolean;
-    phase: Extract<PhaseName, "provision" | "dns">;
+    phase: OwnHostPhase;
+    /** The command that applies the plan later (`--approve <hash>`), e.g. `opscrew portainer enable`. */
+    command: string;
+    /** Said when the plan changes nothing (default: `Your server is already prepared; …`). */
+    upToDate?: string;
     /** No tunnel connector (see {@link desiredHost}); `outputs` are then not needed. */
     withoutTunnel?: boolean;
     /** Told the host plan's hash as soon as it is shown. */
@@ -624,7 +636,8 @@ export async function applyOwnHostPlan(
     verifyLogin: run.verifyLogin,
     title: `Apply the host plan to your server (${changes})`,
     server: "your server",
-    command: `opscrew ${input.phase}`,
+    upToDate: input.upToDate ?? "Your server is already prepared; nothing on it changes.",
+    command: input.command,
     phase: input.phase,
     ...(input.planOnly === true ? { planOnly: true } : {}),
     secrets: async (steps) => {

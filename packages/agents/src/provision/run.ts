@@ -324,6 +324,8 @@ async function provisionFlow(
       services,
       deployPublicKey: deployKey.publicKeyOpenSsh,
       deployKeyFile: deployKey.privateKeyFile,
+      phase,
+      command,
     });
     await ownEngineEnv(deps, ownRun, engineEnv, () =>
       infrastructureOutputs(deps, plan, { engine: async () => engine, engineEnv }),
@@ -476,6 +478,7 @@ async function provisionFlow(
             : {}),
           planOnly: true,
           phase,
+          command,
         });
         hostPlanHash = host.hash;
       } else {
@@ -550,6 +553,7 @@ async function provisionFlow(
       deployPublicKey: deployKey.publicKeyOpenSsh,
       ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
       phase,
+      command,
     });
     if (host.approval) approvals.push(approvalEntry(host.approval));
     // The server changed before the removal already when that deleted the tunnel.

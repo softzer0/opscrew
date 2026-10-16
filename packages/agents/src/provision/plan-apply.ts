@@ -8,7 +8,6 @@ import {
   type PhaseName,
   type PlanSummary,
   type PolicyResult,
-  type ResourceAction,
   SEVERITIES,
   type VpsProviderId,
 } from "@opscrew/contracts";
@@ -21,7 +20,7 @@ import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
-import { stateFile } from "../shared";
+import { describeChanges, PlanRefusedError, stateFile } from "../shared";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { maskSensitivePlanJson } from "./plan-json";
 import type { SavedPlan } from "./types";
@@ -71,6 +70,12 @@ export interface PlanAndApplyOptions {
   destroy?: boolean;
   /** Title of the approval instead of the default "Apply the infrastructure plan on …". */
   approvalTitle?: string;
+  /**
+   * The next step when the provider cannot create the server's size in its location, instead of
+   * "Run `opscrew design` to pick another …, then run the command again" (a move picks another
+   * option by starting again).
+   */
+  redesignHint?: string;
 }
 
 /** Engine log text meaning an API refused the token's permissions (HTTP 403, read-only token). */
@@ -113,14 +118,15 @@ function blockOwner(block: string, provider: VpsProviderId): "cloudflare" | "pro
 /**
  * Next step after a failed apply, in the plan provider's words: an exhausted server limit, a token
  * without a needed permission (blamed on the token of the API whose error block holds the 403), a
- * size unavailable in the location, or else "fix and re-run".
+ * size unavailable in the location (then `redesignHint`, when given), or else "fix and re-run".
  */
 function applyFailureHint(
   deps: PhaseDeps,
   log: string,
-  deployPlan: DeployPlan,
+  options: Pick<PlanAndApplyOptions, "deployPlan" | "redesignHint">,
   command: string,
 ): string {
+  const { deployPlan } = options;
   if (deployPlan.target.provider === "portainer") return portainerFailureHint(log, command);
   const provider = planProvider(deployPlan);
   const profile = providerProfile(provider);
@@ -154,7 +160,10 @@ function applyFailureHint(
   if (target.provider !== "own" && profile.unavailable.test(errors) && !SERVICE_DOWN.test(errors)) {
     const size = provider === "hetzner" ? "server type" : "size";
     const { serverType, location } = target;
-    return `${displayName} cannot create a ${serverType} ${serverNoun} in ${location} right now (the ${size} is unavailable or out of stock there). Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;
+    const next =
+      options.redesignHint ??
+      `Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;
+    return `${displayName} cannot create a ${serverType} ${serverNoun} in ${location} right now (the ${size} is unavailable or out of stock there). ${next}`;
   }
   return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
 }
@@ -186,15 +195,6 @@ export interface PlanAndApplyResult {
   approval?: ApprovalRecord;
   plan?: SavedPlan;
 }
-
-const SYMBOL: Record<ResourceAction, string> = {
-  create: "+",
-  update: "~",
-  delete: "-",
-  replace: "±",
-  read: "?",
-  "no-op": " ",
-};
 
 function money(amount: number, currency: string): string {
   return `${currency === "EUR" ? "€" : currency === "USD" ? "$" : `${currency} `}${amount.toFixed(2)}`;
@@ -228,10 +228,10 @@ export function describePlan(
   deployPlan: DeployPlan,
   options: { costUnchanged?: boolean } = {},
 ): string {
-  const lines = [`${engineLabel(saved.engine.name)} ${saved.engine.version} plan:`];
-  for (const change of saved.changes) {
-    lines.push(`  ${SYMBOL[change.action]} ${change.action.padEnd(7)} ${change.address}`);
-  }
+  const lines = [
+    `${engineLabel(saved.engine.name)} ${saved.engine.version} plan:`,
+    ...describeChanges(saved.changes),
+  ];
   const moves = saved.moves ?? [];
   for (const move of moves) {
     lines.push(`  → ${"moved".padEnd(7)} ${move.from} → ${move.to}`);
@@ -636,17 +636,16 @@ export async function planAndApply(
     ...(saved.hasDestroy ? { allowDestroy: true, confirmPhrase: deployPlan.app.name } : {}),
   });
   if (!approval.approved) {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      `The infrastructure plan was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was changed.`,
-      {
-        hint: approveLaterHint(
-          command,
-          saved.planHash,
-          saved.hasDestroy ? deployPlan.app.name : undefined,
-        ),
-      },
-    );
+    throw new PlanRefusedError({
+      plan: "infrastructure plan",
+      ...(approval.reason ? { reason: approval.reason } : {}),
+      unchanged: "Nothing was changed.",
+      hint: approveLaterHint(
+        command,
+        saved.planHash,
+        saved.hasDestroy ? deployPlan.app.name : undefined,
+      ),
+    });
   }
   await deps.approvals.assertApprovedPlan(saved.planHash, { allowDestroy: saved.hasDestroy });
   if (options.beforeApply !== undefined) await options.beforeApply(saved);
@@ -677,7 +676,7 @@ export async function planAndApply(
     const fullLog = deps.redactor.redact(result.log);
     options.applyFailed?.(fullLog, saved);
     throw new OpsCrewError("ENGINE_FAILED", `Applying the plan failed:\n${lastLines(fullLog)}`, {
-      hint: applyFailureHint(deps, fullLog, deployPlan, command),
+      hint: applyFailureHint(deps, fullLog, options, command),
     });
   }
   deps.reporter.success(

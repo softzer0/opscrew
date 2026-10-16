@@ -1,8 +1,13 @@
-import { stat } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { IacEngine } from "@opscrew/contracts";
+import type { IacEngine, ResourceAction, ResourceChange } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
-import { type EnginePreference, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
+import {
+  type EnginePreference,
+  engineLabel,
+  selectEngine,
+  tofuEncryptionEnv,
+} from "@opscrew/iac-engine";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { ensureStatePassphrase, readSecretFile, statePassphraseFile } from "./secret-files";
@@ -63,11 +68,12 @@ export interface ProjectEngineOptions {
   services?: { engine?: EngineFactory };
   /**
    * The state passphrase: made once when missing (`create`, the default: provision); only read,
-   * a missing one stopping plainly (`require`: commands that work on an existing state, since a
-   * new passphrase could not decrypt it); or used only when it is there (`if-present`: a read that
-   * may fail quietly, such as the outputs).
+   * a missing one stopping plainly with the hint to copy it here and run `requiredBy` again
+   * (`{ requiredBy: "opscrew destroy" }`: commands that work on an existing state, since a new
+   * passphrase could not decrypt it); or used only when it is there (`if-present`: a read that may
+   * fail quietly, such as the outputs).
    */
-  passphrase?: "create" | "require" | "if-present";
+  passphrase?: "create" | "if-present" | { requiredBy: string };
 }
 
 /**
@@ -90,23 +96,70 @@ export async function projectEngine(
   const env: Record<string, string | undefined> = { ...deps.env };
   if (!plan.infra.stateEncryption || engine.info.name !== "tofu") return { engine, env };
   const mode = options.passphrase ?? "create";
-  const passphrase =
-    mode === "create"
-      ? await ensureStatePassphrase(deps.paths)
-      : await readSecretFile(statePassphraseFile(deps.paths));
-  if (passphrase === undefined && mode === "if-present") return { engine, env };
-  if (passphrase === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "The OpenTofu state is encrypted, but this computer does not have its passphrase. Nothing was changed.",
-      {
-        hint: `Copy the state passphrase file from the computer that ran \`opscrew provision\` to ${deps.paths.files.statePassphrase}, then run the command again.`,
-      },
-    );
+  let passphrase: string | undefined;
+  if (mode === "create") {
+    passphrase = await ensureStatePassphrase(deps.paths);
+  } else {
+    passphrase = await readSecretFile(statePassphraseFile(deps.paths));
+    if (passphrase === undefined) {
+      if (mode === "if-present") return { engine, env };
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        "The OpenTofu state is encrypted, but this computer does not have its passphrase. Nothing was changed.",
+        {
+          hint: `Copy the state passphrase file from the computer that ran \`opscrew provision\` to ${deps.paths.files.statePassphrase}, then run \`${mode.requiredBy}\` again.`,
+        },
+      );
+    }
   }
   deps.redactor.addLiteral(passphrase, "state-passphrase");
   env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
   return { engine, env };
+}
+
+/**
+ * The project's engine for the state that is already there ({@link projectEngine}: its passphrase
+ * is only read, since a new one could not decrypt that state), saying which engine is used and,
+ * with Terraform, that it cannot read a state OpenTofu encrypted (`command --engine tofu` can).
+ * `.opscrew/plans` is created for the plans to come.
+ */
+export async function existingStateEngine(
+  deps: EngineDeps & Pick<PhaseDeps, "reporter">,
+  plan: Pick<DeployPlan, "infra">,
+  options: { engine?: EnginePreference; services?: { engine?: EngineFactory }; command: string },
+): Promise<ProjectEngine> {
+  const setup = await projectEngine(deps, plan, {
+    preference: options.engine,
+    services: options.services,
+    passphrase: { requiredBy: options.command },
+  });
+  deps.reporter.info(`Using ${engineLabel(setup.engine.info.name)} ${setup.engine.info.version}.`);
+  if (plan.infra.stateEncryption && setup.engine.info.name !== "tofu") {
+    deps.reporter.warn(
+      `Terraform cannot read state that OpenTofu encrypted. If OpenTofu provisioned this deployment, run \`${options.command} --engine tofu\` instead.`,
+    );
+  }
+  await mkdir(deps.paths.files.plansDir, { recursive: true });
+  return setup;
+}
+
+/** The sign each planned action is shown with: `+` create, `~` update, `-` delete, `±` replace. */
+export const CHANGE_SYMBOL: Readonly<Record<ResourceAction, string>> = {
+  create: "+",
+  update: "~",
+  delete: "-",
+  replace: "±",
+  read: "?",
+  "no-op": " ",
+};
+
+/** One line per change, for example `  - delete  module.server.hcloud_server.this`. */
+export function describeChanges(
+  changes: readonly Pick<ResourceChange, "action" | "address">[],
+): string[] {
+  return changes.map(
+    (change) => `  ${CHANGE_SYMBOL[change.action]} ${change.action.padEnd(7)} ${change.address}`,
+  );
 }
 
 /** How {@link infrastructureOutputs} reads the outputs. */

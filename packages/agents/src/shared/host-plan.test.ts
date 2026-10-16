@@ -45,6 +45,7 @@ async function setup(answer: (kind: string) => boolean = () => true) {
     verifyLogin: async () => true,
     title: "Apply the host plan to the server (1 change)",
     server: "the server",
+    upToDate: "Portainer already runs on the server as planned; nothing on it changes.",
     command: "opscrew portainer enable",
     phase: "dns",
     secrets: async () => ({ tunnelToken: token }),
@@ -114,15 +115,18 @@ describe("approveAndApplyHostPlan", () => {
     });
   });
 
-  it("needs no approval when nothing changes, and stops on blocking findings", async () => {
+  it("needs no approval when nothing changes, saying so in the step's words, and stops on blocking findings", async () => {
     const s = await setup();
     const inPlace: HostPlan = { ...PLAN, steps: PLAN.steps.filter((x) => x.state === "in-place") };
     expect(await approveAndApplyHostPlan(s.deps, s.step({ plan: inPlace }))).toMatchObject({
       applied: false,
     });
-    expect(s.deps.reporter.text()).toContain(
-      "The server is already prepared; nothing on it changes.",
-    );
+    expect(s.deps.reporter.lines.at(-1)).toEqual({
+      level: "success",
+      message: "Portainer already runs on the server as planned; nothing on it changes.",
+    });
+    expect(s.deps.reporter.text()).not.toContain("already prepared");
+    expect(s.applied).toEqual([]);
     const found: HostPlan = {
       ...PLAN,
       findings: [{ code: "other-firewall", message: "Another firewall.", hint: "Turn it off." }],

@@ -56,13 +56,15 @@ const ResourceChangeJson = z.looseObject({
 });
 
 /**
- * The tunnel the plan deletes, from the plan JSON (`resource_changes[].change.before`: the
- * tunnel's `id` and `account_id`, neither of them sensitive). `undefined` when it deletes none or
- * the plan JSON does not say.
+ * Every tunnel the plan deletes (a Portainer root can delete two: the app's and the one in front of
+ * Portainer's webhook), from the plan JSON (`resource_changes[].change.before`: the tunnel's `id`
+ * and `account_id`, neither of them sensitive). None when it deletes none or the plan JSON does not
+ * say.
  */
-export function deletedTunnel(planJson: unknown): TunnelRef | undefined {
+export function deletedTunnels(planJson: unknown): TunnelRef[] {
   const list = (planJson as { resource_changes?: unknown } | null)?.resource_changes;
-  if (!Array.isArray(list)) return undefined;
+  if (!Array.isArray(list)) return [];
+  const tunnels: TunnelRef[] = [];
   for (const entry of list) {
     const parsed = ResourceChangeJson.safeParse(entry);
     if (!parsed.success) continue;
@@ -70,9 +72,9 @@ export function deletedTunnel(planJson: unknown): TunnelRef | undefined {
     if (type !== TUNNEL_RESOURCE_TYPE || (mode !== undefined && mode !== "managed")) continue;
     if (!change.actions.includes("delete") || change.actions.includes("create")) continue;
     if (change.before == null) continue;
-    return { accountId: change.before.account_id, tunnelId: change.before.id };
+    tunnels.push({ accountId: change.before.account_id, tunnelId: change.before.id });
   }
-  return undefined;
+  return tunnels;
 }
 
 /** Options of {@link waitForTunnelToClose}; the defaults are the real ones. */
@@ -247,26 +249,27 @@ export function tunnelSafeEngine(engine: IacEngine): TunnelSafeEngine {
 }
 
 /**
- * Waits until the tunnel the plan deletes has no active connections; throws
- * {@link tunnelBusyError} when they do not close in time. Returns at once when the plan JSON does
- * not name the tunnel (then the apply itself tells, and a 1022 is translated by the caller).
+ * Waits, one after the other, until every tunnel the plan deletes has no active connections;
+ * throws {@link tunnelBusyError} for the first whose connections do not close in time. Returns at
+ * once when the plan JSON names no tunnel (then the apply itself tells, and a 1022 is translated by
+ * the caller).
  */
 export async function requireTunnelClosed(
   deps: Pick<PhaseDeps, "fetch" | "redactor" | "version" | "env" | "clock" | "reporter">,
   plan: Pick<PlanToApply, "planJson">,
   input: { command: string; already?: string; options?: TunnelWaitOptions },
 ): Promise<void> {
-  const tunnel = deletedTunnel(plan.planJson);
-  if (tunnel === undefined) return;
-  const result = await waitForTunnelToClose(deps, tunnel, input.options);
-  if (result.closed) return;
-  throw tunnelBusyError({
-    command: input.command,
-    reason: "timeout",
-    ...(input.already !== undefined ? { already: input.already } : {}),
-    ...(result.problem !== undefined ? { problem: result.problem } : {}),
-    ...(input.options?.timeoutMs !== undefined ? { timeoutMs: input.options.timeoutMs } : {}),
-  });
+  for (const tunnel of deletedTunnels(plan.planJson)) {
+    const result = await waitForTunnelToClose(deps, tunnel, input.options);
+    if (result.closed) continue;
+    throw tunnelBusyError({
+      command: input.command,
+      reason: "timeout",
+      ...(input.already !== undefined ? { already: input.already } : {}),
+      ...(result.problem !== undefined ? { problem: result.problem } : {}),
+      ...(input.options?.timeoutMs !== undefined ? { timeoutMs: input.options.timeoutMs } : {}),
+    });
+  }
 }
 
 /**

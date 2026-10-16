@@ -700,11 +700,13 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
   });
 });
 
-async function ownSetup(o: { engine?: OwnEngine; port?: number } = {}) {
+async function ownSetup(
+  o: { engine?: OwnEngine; port?: number; answer?: (request: ApprovalRequest) => boolean } = {},
+) {
   const project = await createProject(ownPlan());
   const engine = o.engine ?? new OwnEngine(PUBLIC_CHANGES, publicOutputs());
   const host = new FakeHostServer(freshFacts(o.port !== undefined ? { sshPorts: [o.port] } : {}));
-  const handler = new ScriptedApprovalHandler(() => true);
+  const handler = new ScriptedApprovalHandler(o.answer ?? (() => true));
   const home = await mkdtemp(join(tmpdir(), "opscrew-portainer-home-"));
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -834,6 +836,60 @@ describe.skipIf(!hasGit)("Portainer on a server the user owns (host plan)", () =
       }),
     ]);
     expect((await readArtifact("plan", s.deps.paths.files.plan)).portainer).toBeUndefined();
+  });
+
+  it("disable --delete-data with Portainer already gone says so in Portainer's words, then deletes the data", async () => {
+    const s = await ownSetup();
+    const before = s.deps.reporter.lines.length;
+    const audited = s.deps.audit.entries.length;
+    const result = await portainerDisable(s.deps, { deleteData: true, services: s.services });
+    const said = s.deps.reporter.lines.slice(before).map((line) => line.message);
+    expect(said).toContain("Portainer is no longer on your server; nothing on it changes.");
+    expect(said.join("\n")).not.toContain("already prepared");
+    // Only the data plan needs an approval, with the typed app name.
+    expect(s.handler.requests).toMatchObject([
+      {
+        kind: "host-apply",
+        allowDestroy: true,
+        confirmPhrase: "shop",
+        planHash: result.dataPlanHash,
+      },
+    ]);
+    expect(s.addonApplies).toHaveLength(1);
+    // The inspection and the data plan are audited as the portainer phase.
+    const entries = s.deps.audit.entries.slice(audited);
+    expect(entries.map((entry) => [entry.action, entry.phase])).toEqual(
+      expect.arrayContaining([
+        ["inspect host (read-only)", "portainer"],
+        ["host apply started", "portainer"],
+        ["host step portainer", "portainer"],
+      ]),
+    );
+    const phased = entries.filter((entry) => entry.phase !== undefined);
+    expect(new Set(phased.map((entry) => entry.phase))).toEqual(new Set(["portainer"]));
+  });
+
+  it("audits the own-server add-on as the portainer phase and names its command in a refusal", async () => {
+    let refuseHost = false;
+    const s = await ownSetup({
+      answer: (request) => !(refuseHost && request.kind === "host-apply"),
+    });
+    const audited = s.deps.audit.entries.length;
+    refuseHost = true;
+    const error = (await portainerEnable(s.deps, { services: s.services }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toBe(
+      "The host plan was not approved. Nothing on your server was changed.",
+    );
+    expect(error.hint).toMatch(
+      /^To apply it later without prompts, run: opscrew portainer enable --approve [0-9a-f]{64}$/,
+    );
+    const entries = s.deps.audit.entries.slice(audited);
+    expect(entries.map((entry) => entry.action)).toContain("inspect host (read-only)");
+    const phased = entries.filter((entry) => entry.phase !== undefined);
+    expect(new Set(phased.map((entry) => entry.phase))).toEqual(new Set(["portainer"]));
   });
 
   it("sends the local password when Portainer's data is already there (no admin yet is possible)", async () => {
