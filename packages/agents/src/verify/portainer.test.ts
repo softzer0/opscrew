@@ -1,4 +1,5 @@
 import { mkdtemp, readFile } from "node:fs/promises";
+import type { LookupFunction } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
@@ -174,10 +175,15 @@ describe("opscrew verify for the user's Portainer", () => {
     // The route on Portainer's own host name: checked, but the name is never shown.
     const route = `https://${PORTAINER_HOST}:8443`;
     const tlsPorts: number[] = [];
+    const routeSite = fakeSite(route);
     const result = await runVerify(deps, {
       url: `${route}/`,
       resolver: resolver([]),
-      fetch: fakeSite(route),
+      // A route that answers: its name is never sent to a public resolver.
+      fetch: async (input, init) => {
+        if (String(input).includes("cloudflare-dns.com")) throw new Error("no public lookup");
+        return routeSite(input, init);
+      },
       tlsConnect: async (host, options) => {
         tlsPorts.push(options.port ?? 443);
         return cert(PORTAINER_HOST)(host, options);
@@ -331,11 +337,21 @@ describe("opscrew verify for the user's Portainer", () => {
       return { fetch, dohQueries };
     }
 
+    /** This computer's own lookup (`dns.lookup`), which still says there is no such name. */
+    const systemLookup = ((host, _options, callback) =>
+      process.nextTick(() =>
+        callback(
+          Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" }),
+          "",
+          0,
+        ),
+      )) as LookupFunction;
+
     const tlsNotFound: TlsConnect = async (host) => {
       throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
     };
 
-    it("says the record exists publicly and how to clear the cache; verify still fails", async () => {
+    it("a public record without an address: says it exists publicly and how to clear the cache; verify still fails", async () => {
       const deps = await setup();
       const internet = staleInternet(true);
       const result = await runVerify(deps, {
@@ -344,13 +360,17 @@ describe("opscrew verify for the user's Portainer", () => {
         tlsConnect: tlsNotFound,
         tcpConnect: async () => false,
         cloudflareRanges: CLOUDFLARE_RANGES,
+        fetchWithLookup: () => {
+          throw new Error("no public address to connect to");
+        },
+        lookup: systemLookup,
       });
       expect(result.passed).toBe(false);
       const dns = result.checks.find((c) => c.id === "dns-records");
       expect(dns?.status).toBe("fail");
       expect(dns?.message).toContain("exists publicly");
       expect(dns?.message).toContain("this computer still holds an older answer");
-      expect(dns?.message).toContain("about 15 minutes");
+      expect(dns?.message).toContain("about 30 minutes");
       expect(dns?.remediation).toContain("ipconfig /flushdns");
       expect(dns?.remediation).not.toContain("opscrew dns");
       for (const id of [
@@ -367,11 +387,225 @@ describe("opscrew verify for the user's Portainer", () => {
         expect(check?.message, id).toContain("this computer still holds an older answer");
         expect(check?.message, id).toContain("ipconfig /flushdns");
       }
-      // One public lookup per host, however many checks fail.
+      // One public lookup per host (and its CNAME target), however many checks fail.
       expect(new Set(internet.dohQueries.map((q) => q.split(" ")[0]))).toEqual(
-        new Set(["shop.example.com"]),
+        new Set(["shop.example.com", "abc.cfargotunnel.com"]),
       );
-      expect(internet.dohQueries.length).toBeLessThanOrEqual(3);
+      expect(internet.dohQueries.length).toBeLessThanOrEqual(4);
+    });
+
+    /** Cloudflare's public resolver with `zone`'s addresses (NXDOMAIN elsewhere), GitHub, nothing else. */
+    function publicInternet(zone: Record<string, { ipv4?: string[]; ipv6?: string[] }>) {
+      const site = fakeSite("https://shop.example.com");
+      const fetch: FetchLike = async (input, init) => {
+        const url = new URL(String(input));
+        if (url.host === "cloudflare-dns.com") {
+          const name = url.searchParams.get("name") ?? "";
+          const type = url.searchParams.get("type");
+          const records = zone[name];
+          if (records === undefined) return Response.json({ Status: 3 });
+          const edge = `${name}.cdn.cloudflare.net.`;
+          const addresses = (type === "A" ? records.ipv4 : records.ipv6) ?? [];
+          return Response.json({
+            Status: 0,
+            Answer: [
+              { name: `${name}.`, type: 5, data: edge },
+              ...addresses.map((data) => ({ name: edge, type: type === "A" ? 1 : 28, data })),
+            ],
+          });
+        }
+        if (url.host === "api.github.com") return site(input, init);
+        throw notFound(url.hostname);
+      };
+      return fetch;
+    }
+
+    /** What the lookup a connection is given answers for `host`. */
+    const resolveWith = (lookup: LookupFunction, host: string) =>
+      new Promise<string[]>((resolve, reject) =>
+        lookup(host, { all: true }, (error, addresses) =>
+          error
+            ? reject(error)
+            : resolve((addresses as { address: string }[]).map((a) => a.address)),
+        ),
+      );
+
+    /**
+     * A fetch that connects through the lookup it is given: `sites[base]` answers when the lookup
+     * finds the host, so the site is reached only through the public answer.
+     */
+    function throughLookup(sites: Record<string, FetchLike>) {
+      const requests: { url: string; addresses: string[] }[] = [];
+      const fetchWithLookup = (lookup: LookupFunction): FetchLike => {
+        return async (input, init) => {
+          const url = new URL(String(input));
+          const addresses = await resolveWith(lookup, url.hostname).catch((cause: unknown) => {
+            throw new TypeError("fetch failed", { cause });
+          });
+          requests.push({ url: url.href, addresses });
+          const site = sites[`https://${url.host}`];
+          if (!site) throw new Error(`no site at ${url.host}`);
+          return site(input, init);
+        };
+      };
+      return { fetchWithLookup, requests };
+    }
+
+    it("tunnel: checks the site through the public answer, passes, and says how to clear the cache", async () => {
+      const deps = await setup();
+      const site = fakeSite("https://shop.example.com");
+      const via = throughLookup({ "https://shop.example.com": site });
+      const tlsLookups: string[][] = [];
+      const result = await runVerify(deps, {
+        resolver: resolver([]),
+        fetch: publicInternet({
+          "shop.example.com": { ipv4: [CLOUDFLARE_IPV4], ipv6: [CLOUDFLARE_IPV6] },
+        }),
+        fetchWithLookup: via.fetchWithLookup,
+        lookup: systemLookup,
+        tlsConnect: async (host, options) => {
+          expect(host).toBe("shop.example.com");
+          if (!options.lookup) throw notFound(host);
+          tlsLookups.push(await resolveWith(options.lookup, host));
+          return cert(host)(host, options);
+        },
+        tcpConnect: async () => false,
+        cloudflareRanges: CLOUDFLARE_RANGES,
+      });
+      expect(statuses(result.checks)).toEqual([
+        ["dns-records", "warn"],
+        ["site-reachable", "pass"],
+        ["tls-certificate", "pass"],
+        ["http-redirect", "pass"],
+        ["health-endpoint", "pass"],
+        ["security-headers", "pass"],
+        ["env-file-not-served", "pass"],
+        ["git-config-not-served", "pass"],
+        ["origin-not-direct", "skip"],
+        ["deploy-run", "pass"],
+      ]);
+      expect(result.passed).toBe(true);
+      const dns = result.checks.find((c) => c.id === "dns-records");
+      expect(dns?.message).toContain("resolves to Cloudflare");
+      expect(dns?.message).toContain("This computer's DNS still holds an older answer");
+      expect(dns?.message).toContain("as visitors reach it");
+      expect(dns?.remediation).toContain("ipconfig /flushdns");
+      expect(result.checks.find((c) => c.id === "site-reachable")?.message).toContain(
+        "through a public resolver's answer",
+      );
+      // Connections keep the host name (for SNI and the certificate); only the lookup changed.
+      expect(via.requests.map((r) => new URL(r.url).hostname)).toEqual(
+        Array(via.requests.length).fill("shop.example.com"),
+      );
+      expect(via.requests.length).toBeGreaterThanOrEqual(5);
+      for (const request of via.requests) {
+        expect(request.addresses).toEqual([CLOUDFLARE_IPV4, CLOUDFLARE_IPV6]);
+      }
+      expect(tlsLookups).toEqual([[CLOUDFLARE_IPV4, CLOUDFLARE_IPV6]]);
+      // No address is printed.
+      const everything = `${deps.reporter.text()}\n${JSON.stringify(result.checks)}`;
+      expect(everything).not.toContain(CLOUDFLARE_IPV4);
+      expect(everything).not.toContain(CLOUDFLARE_IPV6);
+      const plan = await readArtifact("plan", deps.paths.files.plan);
+      expect(plan.deployment.url).toBe("https://shop.example.com");
+    });
+
+    it("caddy: a connection error through the public answer never shows the host's address", async () => {
+      const deps = await setup({ web: { mode: "caddy" } });
+      const refused = (host: string) =>
+        new TypeError("fetch failed", {
+          cause: Object.assign(new Error(`connect ECONNREFUSED ${HOME_IPV4}:443 (${host})`), {
+            code: "ECONNREFUSED",
+          }),
+        });
+      const fetchWithLookup = (lookup: LookupFunction): FetchLike => {
+        return async (input) => {
+          const url = new URL(String(input));
+          expect(await resolveWith(lookup, url.hostname)).toEqual([HOME_IPV4]);
+          throw refused(url.hostname);
+        };
+      };
+      const result = await runVerify(deps, {
+        resolver: resolver([]),
+        fetch: publicInternet({ "shop.example.com": { ipv4: [HOME_IPV4] } }),
+        fetchWithLookup,
+        lookup: systemLookup,
+        tlsConnect: async (host, options) => {
+          if (!options.lookup) throw notFound(host);
+          throw Object.assign(new Error(`connect ECONNREFUSED ${HOME_IPV4}:443`), {
+            code: "ECONNREFUSED",
+          });
+        },
+        tcpConnect: async () => false,
+      });
+      expect(result.passed).toBe(false);
+      const dns = result.checks.find((c) => c.id === "dns-records");
+      expect(dns?.status).toBe("warn");
+      expect(dns?.message).toContain("This computer's DNS still holds an older answer");
+      const site = result.checks.find((c) => c.id === "site-reachable");
+      expect(site?.status).toBe("fail");
+      expect(site?.message).toContain("ECONNREFUSED");
+      expect(site?.message).not.toContain("ENOTFOUND");
+      const tls = result.checks.find((c) => c.id === "tls-certificate");
+      expect(tls?.status).toBe("fail");
+      const everything = `${deps.reporter.text()}\n${JSON.stringify(result.checks)}\n${await readFile(deps.paths.files.runbook, "utf8")}`;
+      expect(everything).not.toContain(HOME_IPV4);
+    });
+
+    it("proxy without a domain: the user's route is reached through the public answer", async () => {
+      const deps = await setup({ web: { mode: "proxy", port: 8080 }, domain: null });
+      const route = "https://proxy.example.net";
+      const via = throughLookup({ [route]: fakeSite(route) });
+      const result = await runVerify(deps, {
+        url: route,
+        resolver: resolver([]),
+        fetch: publicInternet({ "proxy.example.net": { ipv4: [HOME_IPV4] } }),
+        fetchWithLookup: via.fetchWithLookup,
+        lookup: systemLookup,
+        tlsConnect: async (host, options) => {
+          if (!options.lookup) throw notFound(host);
+          expect(await resolveWith(options.lookup, host)).toEqual([HOME_IPV4]);
+          return cert(host)(host, options);
+        },
+        tcpConnect: async () => false,
+      });
+      expect(statuses(result.checks).slice(0, 4)).toEqual([
+        ["dns-records", "skip"],
+        ["site-reachable", "pass"],
+        ["tls-certificate", "pass"],
+        ["http-redirect", "pass"],
+      ]);
+      expect(result.passed).toBe(true);
+      const dns = result.checks.find((c) => c.id === "dns-records");
+      expect(dns?.message).toContain("This computer's DNS still holds an older answer");
+      expect(dns?.message).toContain("ipconfig /flushdns");
+      expect(`${deps.reporter.text()}\n${JSON.stringify(result.checks)}`).not.toContain(HOME_IPV4);
+    });
+
+    it("this computer's own lookup still answers first (a hosts file): the site check adds no note", async () => {
+      const deps = await setup();
+      const site = fakeSite("https://shop.example.com");
+      const via = throughLookup({ "https://shop.example.com": site });
+      const hostsFile = ((_host, options, callback) =>
+        process.nextTick(() =>
+          options.all
+            ? callback(null, [{ address: CLOUDFLARE_IPV4, family: 4 }])
+            : callback(null, CLOUDFLARE_IPV4, 4),
+        )) as LookupFunction;
+      const result = await runVerify(deps, {
+        resolver: resolver([]),
+        fetch: publicInternet({ "shop.example.com": { ipv4: ["104.21.32.9"] } }),
+        fetchWithLookup: via.fetchWithLookup,
+        lookup: hostsFile,
+        tlsConnect: cert("shop.example.com"),
+        tcpConnect: async () => false,
+        cloudflareRanges: CLOUDFLARE_RANGES,
+      });
+      expect(result.passed).toBe(true);
+      expect(via.requests.every((r) => r.addresses[0] === CLOUDFLARE_IPV4)).toBe(true);
+      expect(result.checks.find((c) => c.id === "site-reachable")?.message).not.toContain(
+        "public resolver",
+      );
     });
 
     it("without a public record: the usual messages, no cache note", async () => {

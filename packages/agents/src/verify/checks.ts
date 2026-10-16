@@ -1,12 +1,20 @@
-import { BlockList, isIPv6 } from "node:net";
+import { BlockList, isIP, isIPv6, type LookupFunction } from "node:net";
 import type { CheckResult, FetchLike, Severity } from "@opscrew/contracts";
 import { tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
-import type { AddressRecordLookup } from "../provision/portainer";
 import { providerConsole, type ServerAddress } from "../shared";
-import { type DnsResolver, hasIpv6Route, type TlsCertificateInfo, type TlsConnect } from "./net";
+import {
+  type DnsResolver,
+  type FetchWithLookup,
+  hasIpv6Route,
+  type PublicAddresses,
+  publicAnswerLookup,
+  type TlsCertificateInfo,
+  type TlsConnect,
+} from "./net";
+import type { PublicAddressLookup } from "./public-dns";
 
 /** Cloudflare edge ranges (CIDRs) used to confirm proxied DNS records. */
 export interface CloudflareRanges {
@@ -52,12 +60,19 @@ export interface VerifyCheckContext {
    */
   ipv6Route?: () => Promise<boolean>;
   /**
-   * Asks a public resolver whether a host has a record (for the user's Portainer: Cloudflare's DNS
-   * over HTTPS). When this computer finds none but the public resolver does, the DNS check and the
-   * site checks that fail with ENOTFOUND say this computer still holds an older answer. Absent:
-   * no public lookup and no such note.
+   * Asks a public resolver about a host (for the user's Portainer: Cloudflare's DNS over HTTPS).
+   * When this computer finds no record but the public resolver does, verify says this computer
+   * still holds an older answer; with the public addresses and {@link fetchWithLookup}, the DNS
+   * and site checks use the public answer. Absent: no public lookup and no such note.
    */
-  publicDns?: (host: string) => Promise<AddressRecordLookup>;
+  publicDns?: (host: string) => Promise<PublicAddressLookup>;
+  /**
+   * Builds the fetch the site checks use for a host checked through the public answer (the lookup
+   * asks this computer first). Absent: such hosts are not checked through the public answer.
+   */
+  fetchWithLookup?: FetchWithLookup;
+  /** This computer's own host name lookup, asked first (default `dns.lookup`). */
+  lookup?: LookupFunction;
 }
 
 /**
@@ -143,11 +158,19 @@ function errorText(error: unknown): string {
 
 /** Why this computer cannot find a record that exists publicly (a cached negative answer). */
 const STALE_LOCAL_DNS =
-  "The record exists publicly (a public resolver has it), but this computer still holds an older answer that says there is none; it clears within about 15 minutes.";
+  "The record exists publicly (a public resolver has it), but this computer still holds an older answer that says there is none (kept by this computer, your router or your internet provider for up to about 30 minutes).";
 
 /** How to clear a cached negative answer on this computer. */
 const FLUSH_DNS =
-  "Wait about 15 minutes, or flush this computer's DNS cache (`ipconfig /flushdns` on Windows, `sudo resolvectl flush-caches` on Linux, `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder` on macOS), then run `opscrew verify` again.";
+  "Flush this computer's DNS cache (`ipconfig /flushdns` on Windows, `sudo resolvectl flush-caches` on Linux, `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder` on macOS); if it still finds no record, your router or internet provider keeps the older answer for up to about 30 minutes (restarting the router clears its copy). Then run `opscrew verify` again.";
+
+/** What verify did when this computer holds an older answer but the public resolver has the record. */
+const CHECKED_PUBLICLY =
+  "This computer's DNS still holds an older answer that says there is no record, so OpsCrew checked the site through a public resolver's answer, as visitors reach it.";
+
+/** The site-check note for a host reached through the public answer (with a leading space). */
+const REACHED_PUBLICLY =
+  " OpsCrew reached it through a public resolver's answer, since this computer's DNS still holds an older one.";
 
 /** True when `error` (or its cause) says the host name was not found (`ENOTFOUND`). */
 function isNotFound(error: unknown): boolean {
@@ -180,11 +203,95 @@ async function staleNote(error: unknown, host: string, ctx: VerifyCheckContext):
     : "";
 }
 
+/**
+ * The public addresses to check `host` through: the public resolver has its record with at least
+ * one address and the site checks can connect through them (`fetchWithLookup`); otherwise none.
+ */
+async function publicAddresses(
+  host: string,
+  ctx: VerifyCheckContext,
+): Promise<PublicAddresses | undefined> {
+  if (!ctx.publicDns || !ctx.fetchWithLookup) return undefined;
+  let answer: PublicAddressLookup;
+  try {
+    answer = await ctx.publicDns(host);
+  } catch {
+    return undefined;
+  }
+  if (answer.state !== "found") return undefined;
+  const ipv4 = answer.ipv4 ?? [];
+  const ipv6 = answer.ipv6 ?? [];
+  return ipv4.length + ipv6.length > 0 ? { ipv4, ipv6 } : undefined;
+}
+
+/** A resolver that answers with `addresses` for every name (the public answer for one host). */
+function fixedResolver(addresses: PublicAddresses): DnsResolver {
+  return { resolve4: async () => [...addresses.ipv4], resolve6: async () => [...addresses.ipv6] };
+}
+
+/** Replaces each of `addresses` in `text` (longest first), so no public address is printed. */
+function withoutAddresses(text: string, addresses: readonly string[]): string {
+  return [...addresses]
+    .sort((a, b) => b.length - a.length)
+    .reduce((out, address) => out.split(address).join("(address hidden)"), text);
+}
+
+/** `error` with every public address removed from its message and causes (codes kept). */
+function hideAddresses(error: unknown, addresses: readonly string[], depth = 0): unknown {
+  if (!(error instanceof Error) || depth > 3) return error;
+  const cause = (error as { cause?: unknown }).cause;
+  const copy = new (error instanceof TypeError ? TypeError : Error)(
+    withoutAddresses(error.message, addresses),
+    cause === undefined ? undefined : { cause: hideAddresses(cause, addresses, depth + 1) },
+  );
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code !== undefined) Object.assign(copy, { code });
+  return copy;
+}
+
+/**
+ * The context for the site checks when hosts are checked through the public answer: requests and
+ * TLS connections to those hosts find addresses with a lookup that asks this computer first and
+ * then the public answer (the URL, SNI and certificate check keep the host name); other hosts are
+ * unchanged. `used` collects the hosts that were answered publicly.
+ */
+function throughPublicAnswers(
+  ctx: VerifyCheckContext,
+  answers: ReadonlyMap<string, PublicAddresses>,
+  used: Set<string>,
+): VerifyCheckContext {
+  const build = ctx.fetchWithLookup;
+  if (answers.size === 0 || !build) return ctx;
+  const lookup = publicAnswerLookup(answers, ctx.lookup, (host) => used.add(host));
+  const viaLookup = build(lookup);
+  const hidden = [...answers.values()].flatMap((a) => [...a.ipv4, ...a.ipv6]);
+  const pinned = (host: string) => answers.has(host.toLowerCase().replace(/\.$/, ""));
+  return {
+    ...ctx,
+    fetch: async (input, init) => {
+      if (!pinned(new URL(String(input)).hostname)) return ctx.fetch(input, init);
+      try {
+        return await viaLookup(input, init);
+      } catch (error) {
+        throw hideAddresses(error, hidden);
+      }
+    },
+    tlsConnect: async (host, options) => {
+      if (!pinned(host)) return ctx.tlsConnect(host, options);
+      try {
+        return await ctx.tlsConnect(host, { ...options, lookup });
+      } catch (error) {
+        throw hideAddresses(error, hidden);
+      }
+    },
+  };
+}
+
 /** Asks the public resolver at most once per host during one verify run. */
 function oncePerHost(ctx: VerifyCheckContext): VerifyCheckContext {
   const lookup = ctx.publicDns;
   if (!lookup) return ctx;
-  const answers = new Map<string, Promise<AddressRecordLookup>>();
+  const answers = new Map<string, Promise<PublicAddressLookup>>();
   return {
     ...ctx,
     publicDns: (host) => {
@@ -290,15 +397,42 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
   return (await dnsCheck(host, ctx)).check;
 }
 
-/** {@link checkDns}, and whether this computer holds an older answer than the public resolver. */
+/**
+ * {@link checkDns}, and how this computer's answer compares with the public resolver's: `stale`
+ * when this computer holds an older answer that nothing here can work around, `answer` when the
+ * check used the public addresses instead (the site checks then use them too).
+ */
 async function dnsCheck(
   host: string,
   ctx: VerifyCheckContext,
-): Promise<{ check: CheckResult; stale: boolean }> {
+): Promise<{ check: CheckResult; stale: boolean; answer?: PublicAddresses }> {
   const check = await dnsRecords(host, ctx);
   if (check !== "none") return { check, stale: false };
   const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
   const title = `DNS for ${host} points to the right place`;
+  const answer = await publicAddresses(host, ctx);
+  if (answer) {
+    // The public answer, never printed: checked as this computer's would be.
+    const checked = await dnsRecords(host, { ...ctx, resolver: fixedResolver(answer) }, true);
+    if (checked !== "none") {
+      return {
+        check:
+          checked.status === "pass"
+            ? {
+                ...checked,
+                status: "warn",
+                message: `Through a public resolver, ${checked.message} ${CHECKED_PUBLICLY}`,
+                remediation: FLUSH_DNS,
+              }
+            : {
+                ...checked,
+                message: `Through a public resolver, ${checked.message} ${CHECKED_PUBLICLY}`,
+              },
+        stale: false,
+        answer,
+      };
+    }
+  }
   if (await publiclyFound(host, ctx)) {
     return {
       check: result(
@@ -325,8 +459,15 @@ async function dnsCheck(
   };
 }
 
-/** The DNS check's result, or `none` when this computer's resolver finds no A or AAAA record. */
-async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckResult | "none"> {
+/**
+ * The DNS check's result, or `none` when this computer's resolver finds no A or AAAA record.
+ * `quiet`: the messages name no address (for the public resolver's answer).
+ */
+async function dnsRecords(
+  host: string,
+  ctx: VerifyCheckContext,
+  quiet = false,
+): Promise<CheckResult | "none"> {
   const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
   const title = `DNS for ${host} points to the right place`;
   const { plan } = ctx;
@@ -351,6 +492,8 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
   }
   if (a.length === 0 && aaaa.length === 0) return "none";
   const addresses = [...a, ...aaaa];
+  // The addresses in a message (none for the public resolver's answer).
+  const shown = (list: readonly string[]) => (quiet ? "" : ` (${list.join(", ")})`);
   if (portainer && !tunnel && !plan.dns.proxied) {
     // The host's public address is the user's (often a home connection): never printed.
     return result(
@@ -376,7 +519,7 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
         "fail",
         own
           ? `${host} resolves to your server itself, so Cloudflare's proxy is bypassed and your server's address is public.`
-          : `${host} resolves to the server itself (${exposed.join(", ")}), so Cloudflare's proxy is bypassed and the server's IP is public.`,
+          : `${host} resolves to the server itself${shown(exposed)}, so Cloudflare's proxy is bypassed and the server's IP is public.`,
         {
           remediation:
             "Turn the proxy (orange cloud) back on for the record, or run `opscrew dns`.",
@@ -395,7 +538,7 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
           title,
           "high",
           "fail",
-          own
+          own || quiet
             ? `${host} resolves to an address that is not a Cloudflare address.`
             : `${host} resolves to ${outside.join(", ")}, which is not a Cloudflare address.`,
           {
@@ -412,12 +555,12 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
       "high",
       "pass",
       tunnel
-        ? `${host} resolves to Cloudflare (${addresses.join(", ")}); the app is served through the Cloudflare Tunnel.`
+        ? `${host} resolves to Cloudflare${shown(addresses)}; the app is served through the Cloudflare Tunnel.`
         : portainer
-          ? `${host} resolves to Cloudflare (${addresses.join(", ")}); your Portainer host's address stays hidden.`
+          ? `${host} resolves to Cloudflare${shown(addresses)}; your Portainer host's address stays hidden.`
           : own
-            ? `${host} resolves to Cloudflare (${addresses.join(", ")}); your server's address stays hidden.`
-            : `${host} resolves to Cloudflare (${addresses.join(", ")}); the server's IP stays hidden.`,
+            ? `${host} resolves to Cloudflare${shown(addresses)}; your server's address stays hidden.`
+            : `${host} resolves to Cloudflare${shown(addresses)}; the server's IP stays hidden.`,
       { target: host },
     );
   }
@@ -431,7 +574,7 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
       "warn",
       own
         ? `${host} has DNS records, but OpsCrew does not know your server's address on this computer, so it cannot tell whether they point to your server.`
-        : `${host} resolves to ${addresses.join(", ")}, but OpsCrew does not know the server's address on this computer, so it cannot tell whether that is the server.`,
+        : `${host} ${quiet ? "has DNS records" : `resolves to ${addresses.join(", ")}`}, but OpsCrew does not know the server's address on this computer, so it cannot tell whether that is the server.`,
       { remediation: UNKNOWN_ADDRESS_REMEDIATION, target: host },
     );
   }
@@ -450,7 +593,9 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
         ? wrong.length > 0
           ? `${host} resolves not only to your server's address: ${wrong.length} record${wrong.length === 1 ? " points" : "s point"} somewhere else.`
           : `${host} has no A record for your server's IPv4 address.`
-        : `${host} resolves to ${addresses.join(", ")} but the server is ${expected}.`,
+        : quiet
+          ? `${host} resolves to an address that is not the server's.`
+          : `${host} resolves to ${addresses.join(", ")} but the server is ${expected}.`,
       {
         remediation:
           "Run `opscrew dns` to point the records at the server (DNS changes can take a few minutes).",
@@ -465,7 +610,7 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
     "pass",
     own
       ? `${host} resolves to your server's address.`
-      : `${host} resolves to the server (${addresses.join(", ")}).`,
+      : `${host} resolves to the server${shown(addresses)}.`,
     {
       target: host,
     },
@@ -477,6 +622,15 @@ export async function checkSiteReachable(
   url: string,
   ctx: VerifyCheckContext,
 ): Promise<{ check: CheckResult; headers?: Headers }> {
+  const { error: _error, ...outcome } = await siteReachable(url, ctx);
+  return outcome;
+}
+
+/** {@link checkSiteReachable}, with the error when the site could not be reached. */
+async function siteReachable(
+  url: string,
+  ctx: VerifyCheckContext,
+): Promise<{ check: CheckResult; headers?: Headers; error?: unknown }> {
   const title = "The site answers";
   const target = `${url}/`;
   try {
@@ -529,6 +683,7 @@ export async function checkSiteReachable(
           target,
         },
       ),
+      error,
     };
   }
 }
@@ -1055,12 +1210,16 @@ function userDomain(
  * warn (the site is served over plain HTTP on the server IP) instead of failing.
  */
 export async function runVerifyChecks(context: VerifyCheckContext): Promise<VerifyChecksOutcome> {
-  const ctx = oncePerHost(context);
-  const { plan } = ctx;
+  const base = oncePerHost(context);
+  const { plan } = base;
   // Hosts this computer cannot find although a public resolver has their record.
   const stale = new Set<string>();
+  // Hosts this computer cannot find, with the public resolver's addresses to check them through.
+  const answers = new Map<string, PublicAddresses>();
+  // Hosts the site checks reached through the public answer.
+  const used = new Set<string>();
   const hosts = verifyHosts(plan);
-  const url = ctx.url ?? siteUrl(plan, ctx.server);
+  const url = base.url ?? siteUrl(plan, base.server);
   const checks: CheckResult[] = [];
   const [domain] = hosts;
   // The user's Portainer behind their own reverse proxy, without a domain: their route is checked,
@@ -1092,8 +1251,9 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
     );
   } else {
     for (const host of hosts) {
-      const dns = await dnsCheck(host, ctx);
+      const dns = await dnsCheck(host, base);
       if (dns.stale) stale.add(host);
+      if (dns.answer) answers.set(host.toLowerCase(), dns.answer);
       checks.push(userDomain(dns.check, host, plan, dns.stale));
     }
   }
@@ -1101,7 +1261,32 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
   if (url === undefined) {
     throw new Error("runVerifyChecks needs a domain or the server's address.");
   }
-  const site = await checkSiteReachable(url, ctx);
+  const urlHost = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+  let site: Awaited<ReturnType<typeof siteReachable>> | undefined;
+  if (userRoute && isIP(urlHost.replace(/^\[|\]$/g, "")) === 0) {
+    // The user's route has no DNS check: only when this computer cannot find its host (the
+    // request fails with ENOTFOUND) is the public resolver asked, and the route checked again
+    // through its answer. A name only this computer knows (a hosts file, mDNS) is never sent.
+    site = await siteReachable(url, base);
+    const answer = isNotFound(site.error) ? await publicAddresses(urlHost, base) : undefined;
+    if (answer) {
+      answers.set(urlHost, answer);
+      site = undefined;
+    }
+  }
+  // The site checks: hosts this computer still holds an older answer for are reached through the
+  // public answer; only their address lookup changes.
+  const ctx = throughPublicAnswers(base, answers, used);
+  site ??= await siteReachable(url, ctx);
+  if (used.has(urlHost)) {
+    site.check = { ...site.check, message: `${site.check.message}${REACHED_PUBLICLY}` };
+    if (userRoute && checks[0]?.id === "dns-records") {
+      checks[0] = {
+        ...checks[0],
+        message: `${checks[0].message} ${CHECKED_PUBLICLY} ${FLUSH_DNS}`,
+      };
+    }
+  }
   checks.push(site.check);
 
   if (userRoute) {

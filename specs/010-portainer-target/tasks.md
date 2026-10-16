@@ -148,7 +148,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: medium
 
-- [ ] T1018 [US2] `verify` checks the site as the world sees it when this computer's DNS is stale, in `packages/agents/src/verify/`; the live test's wait only observes
+- [X] T1018 [US2] `verify` checks the site as the world sees it when this computer's DNS is stale, in `packages/agents/src/verify/`; the live test's wait only observes
   - Owns: `packages/agents/src/verify/**` (+ tests), `packages/cli/test/live/portainer-target.test.ts` (`waitForLocalResolution` only)
   - Reads: the eighth full live run (2026-10-16): after step 7 created the tunnel's record, the site answered through public DNS (the test's own checks) but this computer's resolver still said ENOTFOUND after 16 minutes (a cache beyond Windows, such as the router's or the ISP's, may keep a negative answer up to Cloudflare's 30-minute SOA minimum); T1017's notes and `lookupAddressRecord`
   - Depends: T1017

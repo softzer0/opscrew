@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import type { LookupFunction } from "node:net";
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import {
   GitClient,
@@ -13,7 +14,6 @@ import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-sche
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { readOwnServerRecord } from "../provision";
-import { lookupAddressRecord } from "../provision/portainer";
 import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
 import { withoutOwnServer } from "../secure/own";
 import {
@@ -25,12 +25,20 @@ import {
   writeRenderedFiles,
 } from "../shared";
 import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
-import { type DnsResolver, defaultDnsResolver, defaultTlsConnect, type TlsConnect } from "./net";
+import {
+  type DnsResolver,
+  defaultDnsResolver,
+  defaultTlsConnect,
+  type FetchWithLookup,
+  nodeFetchWithLookup,
+  type TlsConnect,
+} from "./net";
 import {
   hideRecordedPortainerAddress,
   portainerVerifyUrl,
   renderPortainerRunbook,
 } from "./portainer";
+import { lookupPublicAddresses } from "./public-dns";
 
 /** Network functions for `opscrew verify`; each defaults to a Node built-in adapter. */
 export interface RunVerifyOptions {
@@ -54,6 +62,14 @@ export interface RunVerifyOptions {
    * committed: `deployment.url` is only ever `https://<domain>`.
    */
   url?: string;
+  /**
+   * The user's Portainer only: builds the fetch for a host this computer still holds an older
+   * "no such name" answer for, connecting through the public resolver's addresses (default
+   * `node:http`/`node:https` with a custom lookup; the host name stays for SNI and certificates).
+   */
+  fetchWithLookup?: FetchWithLookup;
+  /** This computer's own host name lookup, asked first for such a host (default `dns.lookup`). */
+  lookup?: LookupFunction;
 }
 
 /** Outcome of {@link runVerify}. */
@@ -161,8 +177,15 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(portainer && url !== undefined ? { url } : {}),
     // The user's Portainer: a record this computer cannot find yet is looked up publicly
-    // (read-only DNS over HTTPS), so a stale local answer is named as such.
-    ...(portainer ? { publicDns: (host: string) => lookupAddressRecord(fetch, host) } : {}),
+    // (read-only DNS over HTTPS); a stale local answer is named as such, and the checks reach the
+    // site through the public answer.
+    ...(portainer
+      ? {
+          publicDns: (host: string) => lookupPublicAddresses(fetch, host),
+          fetchWithLookup: options.fetchWithLookup ?? nodeFetchWithLookup,
+          ...(options.lookup !== undefined ? { lookup: options.lookup } : {}),
+        }
+      : {}),
     ...(await cloudflareRanges(deps, plan, fetch, options)),
     deployRuns: async () => {
       if (!github.client || !github.repo) return undefined;

@@ -463,7 +463,13 @@ describe("runVerify", () => {
           }),
         });
       },
-      tlsConnect: cert(),
+      fetchWithLookup: () => {
+        throw new Error("no public answer outside the user's Portainer");
+      },
+      tlsConnect: async (_host, options) => {
+        if (options.lookup) throw new Error("no public answer outside the user's Portainer");
+        return cert()(_host, options);
+      },
       tcpConnect: closed,
       cloudflareRanges: CLOUDFLARE_RANGES,
     });

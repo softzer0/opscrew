@@ -23,7 +23,10 @@ export {
   type DnsResolver,
   defaultDnsResolver,
   defaultTlsConnect,
+  type FetchWithLookup,
+  type PublicAddresses,
   type TlsCertificateInfo,
   type TlsConnect,
 } from "./net";
+export type { PublicAddressLookup } from "./public-dns";
 export { type RunVerifyOptions, runVerify, summarizeChecks, type VerifyResult } from "./run";

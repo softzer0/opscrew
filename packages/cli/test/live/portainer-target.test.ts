@@ -953,28 +953,34 @@ describe.skipIf(MISSING.length > 0)(
     }
 
     /**
-     * Before a `verify` that follows a DNS change: waits (about 16 minutes at most) until this
-     * computer's own resolver finds the app's hosts, since Windows keeps a "no such name" answer
-     * for up to 15 minutes (run 7: step 6's verify cached it, step 7's verify then failed
-     * everywhere with ENOTFOUND). Records how long it took; never the addresses.
+     * Before a `verify` that follows a DNS change: only records how long this computer's own
+     * resolver took to find the app's hosts (or that it still did not after a short wait), never
+     * the addresses, and never fails the step. A cache beyond this computer (the router's or the
+     * provider's) can keep a "no such name" answer past 16 minutes (run 8), so `verify` itself
+     * checks such a host through the public resolver's answer (T1018).
      */
     async function waitForLocalResolution(what: string) {
       if (appHost === "") return;
       const hosts = (await readPlan()).dns.www ? [appHost, `www.${appHost}`] : [appHost];
       const started = Date.now();
-      for (const host of hosts) {
-        await waitFor(
-          `${host} resolving through this computer's resolver`,
-          minutes(16),
-          async () => {
+      const deadline = started + minutes(2);
+      const missing = new Set(hosts);
+      for (;;) {
+        for (const host of [...missing]) {
+          try {
             await dnsPromises.lookup(host);
-            return true;
-          },
-          15_000,
-        );
+            missing.delete(host);
+          } catch {
+            // Still "no such name" here (or a resolver error): asked again below.
+          }
+        }
+        if (missing.size === 0 || Date.now() >= deadline) break;
+        await sleep(15_000);
       }
       observe(
-        `${what}: this computer resolved ${hosts.join(" and ")} ${duration(Date.now() - started)} after the wait began`,
+        missing.size === 0
+          ? `${what}: this computer resolved ${hosts.join(" and ")} ${duration(Date.now() - started)} after the wait began`
+          : `${what}: this computer still did not resolve ${[...missing].join(" and ")} after ${duration(Date.now() - started)}; verify checks it through the public resolver's answer`,
       );
     }
 
