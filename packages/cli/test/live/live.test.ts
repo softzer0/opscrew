@@ -4,17 +4,19 @@
  * OPSCREW_E2E_* token is set; see docs/e2e.md. It creates a real server for a few minutes (cents)
  * and always tears it down, even when a step fails. OPSCREW_E2E_APP picks the app to deploy.
  */
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { readServerAddresses } from "@opscrew/agents";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
 import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { api, GitHubRepo, HETZNER_API, minutes, retryDelete } from "./cloud";
+import { CLI, EXAMPLES, isExample } from "./harness";
+import { approveHashes } from "./support";
 
 const E2E = {
   hcloudToken: process.env.OPSCREW_E2E_HCLOUD_TOKEN,
@@ -34,16 +36,10 @@ const withDns = Boolean(E2E.cloudflareToken && E2E.domain);
 const withAi = process.env.OPSCREW_E2E_AI === "1";
 const aiFlags = withAi ? [] : ["--no-ai"];
 
-const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
-const CLI = join(REPO_ROOT, "packages/cli/dist/opscrew.js");
-const EXAMPLES = join(REPO_ROOT, "examples");
-const HETZNER_API = "https://api.hetzner.cloud/v1";
 const DIGITALOCEAN_API = "https://api.digitalocean.com/v2";
-const GITHUB_API = "https://api.github.com";
 
 const runner = new NodeCommandRunner();
-const minutes = (n: number) => n * 60_000;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const github = new GitHubRepo(E2E.githubToken ?? "", E2E.githubRepo ?? "");
 
 /** The app a live pass deploys, from OPSCREW_E2E_APP. */
 type E2eApp =
@@ -57,7 +53,7 @@ const GITHUB_APP = /^github:([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z
  * Parses OPSCREW_E2E_APP: an example name under `examples/` (default `nextjs-postgres`) or
  * `github:<owner>/<repo>@<40-character commit SHA>`. Throws a plain message for anything else.
  */
-function parseE2eApp(value: string | undefined, exampleExists: (name: string) => boolean): E2eApp {
+function parseE2eApp(value: string | undefined): E2eApp {
   const raw = value?.trim() || DEFAULT_E2E_APP;
   if (raw.startsWith("github:")) {
     const match = GITHUB_APP.exec(raw);
@@ -75,7 +71,7 @@ function parseE2eApp(value: string | undefined, exampleExists: (name: string) =>
     const sha = commit.toLowerCase();
     return { kind: "github", owner, repo, commit: sha, label: `github:${owner}/${repo}@${sha}` };
   }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(raw) || !exampleExists(raw)) {
+  if (!isExample(raw)) {
     throw new Error(
       `OPSCREW_E2E_APP="${raw}" is not an example under examples/ and not github:<owner>/<repo>@<commit>. Use a folder name from examples/, for example ${DEFAULT_E2E_APP}.`,
     );
@@ -83,18 +79,10 @@ function parseE2eApp(value: string | undefined, exampleExists: (name: string) =>
   return { kind: "example", name: raw, label: `examples/${raw}` };
 }
 
-const isExample = (name: string) => {
-  try {
-    return statSync(join(EXAMPLES, name)).isDirectory();
-  } catch {
-    return false;
-  }
-};
-
 /** The parsed app, or the reason OPSCREW_E2E_APP was refused (each pass stops on it first). */
 const APP: E2eApp | Error = (() => {
   try {
-    return parseE2eApp(process.env.OPSCREW_E2E_APP, isExample);
+    return parseE2eApp(process.env.OPSCREW_E2E_APP);
   } catch (error) {
     return error as Error;
   }
@@ -103,55 +91,6 @@ const APP_LABEL =
   APP instanceof Error ? `OPSCREW_E2E_APP=${process.env.OPSCREW_E2E_APP}` : APP.label;
 const isDefaultApp =
   !(APP instanceof Error) && APP.kind === "example" && APP.name === DEFAULT_E2E_APP;
-
-describe("OPSCREW_E2E_APP", () => {
-  const exists = (name: string) => ["nextjs-postgres", "fastapi-redis"].includes(name);
-  const sha = "0123456789abcdef0123456789abcdef01234567";
-
-  it("defaults to examples/nextjs-postgres", () => {
-    for (const value of [undefined, "", "  "]) {
-      expect(parseE2eApp(value, exists)).toEqual({
-        kind: "example",
-        name: "nextjs-postgres",
-        label: "examples/nextjs-postgres",
-      });
-    }
-  });
-
-  it("accepts an example name", () => {
-    expect(parseE2eApp("fastapi-redis", exists).label).toBe("examples/fastapi-redis");
-  });
-
-  it("accepts a public repository at a full commit SHA", () => {
-    expect(parseE2eApp(`github:softzer0/slog_cvrp_app@${sha.toUpperCase()}`, exists)).toEqual({
-      kind: "github",
-      owner: "softzer0",
-      repo: "slog_cvrp_app",
-      commit: sha,
-      label: `github:softzer0/slog_cvrp_app@${sha}`,
-    });
-  });
-
-  it("refuses an unknown example or a path", () => {
-    expect(() => parseE2eApp("rails-app", exists)).toThrow(/not an example under examples\//);
-    expect(() => parseE2eApp("../nextjs-postgres", exists)).toThrow(/not an example/);
-    expect(() => parseE2eApp("README.md", () => false)).toThrow(/not an example/);
-  });
-
-  it("refuses a ref that is not a full commit SHA", () => {
-    for (const ref of ["main", "v1.0.0", sha.slice(0, 7), `${sha}0`, ""]) {
-      expect(() => parseE2eApp(`github:octocat/hello-world@${ref}`, exists)).toThrow(
-        /full 40-character commit SHA/,
-      );
-    }
-  });
-
-  it("refuses a malformed repository", () => {
-    for (const value of [`github:octocat@${sha}`, `github:/x@${sha}`, `github:a/b/c@${sha}`]) {
-      expect(() => parseE2eApp(value, exists)).toThrow(/not github:<owner>\/<repo>@<commit>/);
-    }
-  });
-});
 
 /**
  * Puts the app's files into `dest`: a fresh copy of the example, or the public repository fetched
@@ -187,51 +126,10 @@ async function materializeApp(app: E2eApp, dest: string): Promise<void> {
   });
 }
 
-async function api(
-  base: string,
-  token: string,
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<{ status: number; json: unknown }> {
-  const response = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: base === GITHUB_API ? "application/vnd.github+json" : "application/json",
-      "User-Agent": "opscrew-e2e",
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  const text = await response.text();
-  return { status: response.status, json: text ? JSON.parse(text) : undefined };
-}
-
-const github = (method: string, path: string, body?: unknown) =>
-  api(GITHUB_API, E2E.githubToken as string, method, path, body);
 const hetzner = (method: string, path: string, body?: unknown) =>
   api(HETZNER_API, E2E.hcloudToken as string, method, path, body);
 const digitalocean = (method: string, path: string, body?: unknown) =>
   api(DIGITALOCEAN_API, E2E.digitaloceanToken as string, method, path, body);
-
-/**
- * Resets the throwaway repository before a pass: closes open pull requests and deletes every
- * branch but `main`, so branches and pull requests of an earlier run never change this one.
- */
-async function resetRepository(repoName: string): Promise<void> {
-  const pulls = await github("GET", `/repos/${repoName}/pulls?state=open&per_page=100`);
-  for (const pull of (pulls.json as { number: number }[] | undefined) ?? []) {
-    await github("PATCH", `/repos/${repoName}/pulls/${pull.number}`, { state: "closed" });
-  }
-  const branches = await github("GET", `/repos/${repoName}/branches?per_page=100`);
-  for (const branch of (branches.json as { name: string }[] | undefined) ?? []) {
-    if (branch.name === "main") continue;
-    const ref = branch.name.split("/").map(encodeURIComponent).join("/");
-    const deleted = await github("DELETE", `/repos/${repoName}/git/refs/heads/${ref}`);
-    expect(deleted.status, `delete the branch ${branch.name}`).toBe(204);
-  }
-}
 
 /** What differs between the providers in this test. */
 interface LiveProvider {
@@ -331,14 +229,6 @@ const DIGITALOCEAN: LiveProvider = {
     });
   },
 };
-
-async function retryDelete(request: () => Promise<{ status: number }>): Promise<void> {
-  for (let attempt = 0; attempt < 12; attempt++) {
-    const deleted = await request();
-    if (deleted.status < 300 || deleted.status === 404) return;
-    await sleep(5_000);
-  }
-}
 
 for (const provider of [HETZNER, DIGITALOCEAN]) {
   describe.skipIf(!(provider.token && withGitHub))(`live end-to-end on ${provider.name}`, () => {
@@ -440,7 +330,6 @@ async function deployAndTearDown(
   const repo = join(work, "repo");
   const home = join(work, "home");
   await mkdir(repo);
-  const repoName = E2E.githubRepo as string;
   const basic = Buffer.from(`x-access-token:${E2E.githubToken}`).toString("base64");
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -470,34 +359,14 @@ async function deployAndTearDown(
     });
     return { ...result, output: `${result.stdout}\n${result.stderr}` };
   };
+  /** Merges the open pull request from `head`, checks `main` out again and returns the merge commit. */
   const mergePullRequest = async (head: string) => {
-    const [owner] = repoName.split("/");
-    const list = await github(
-      "GET",
-      `/repos/${repoName}/pulls?state=open&head=${owner}:${encodeURIComponent(head)}`,
-    );
-    const pull = (list.json as { number: number }[])[0];
+    const pull = await github.openPullRequest(head);
     expect(pull, `an open pull request from ${head}`).toBeDefined();
-    // GitHub computes mergeability in the background right after a pull request opens, and
-    // refuses a merge (405) until it has; wait for it, then retry a refused merge briefly.
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const state = await github("GET", `/repos/${repoName}/pulls/${pull?.number}`);
-      if ((state.json as { mergeable: boolean | null }).mergeable === true) break;
-      await sleep(5_000);
-    }
-    let merged = { status: 0, json: undefined as unknown };
-    for (let attempt = 0; attempt < 4; attempt++) {
-      merged = await github("PUT", `/repos/${repoName}/pulls/${pull?.number}/merge`, {
-        merge_method: "squash",
-      });
-      if (merged.status !== 405) break;
-      await sleep(5_000);
-    }
-    expect(merged.status, `merge the pull request: ${JSON.stringify(merged.json)}`).toBe(200);
+    const sha = await github.merge(pull as number);
     await git("fetch", "-q", "origin");
     await git("checkout", "-q", "-B", "main", "origin/main");
-    // The merge commit on main, whose workflow run the test waits for.
-    return (merged.json as { sha: string }).sha;
+    return sha;
   };
 
   // A fresh copy of the app becomes the throwaway repository's main branch.
@@ -513,11 +382,11 @@ async function deployAndTearDown(
   await git("config", "user.email", "e2e@example.invalid");
   await git("config", "commit.gpgsign", "false");
   await git("config", "http.https://github.com/.extraheader", `AUTHORIZATION: basic ${basic}`);
-  await git("remote", "add", "origin", `https://github.com/${repoName}.git`);
+  await git("remote", "add", "origin", `https://github.com/${github.name}.git`);
   await git("add", "-A");
   await git("commit", "-q", "-m", `e2e: ${app.label}`);
   await git("push", "-q", "--force", "origin", "main");
-  await resetRepository(repoName);
+  await github.reset();
 
   let appName: string | undefined;
   try {
@@ -549,12 +418,11 @@ async function deployAndTearDown(
       "--format=%(refname:short)",
       "refs/heads/opscrew/prepare-deploy*",
     );
-    const adaptBranch = branches.split(/\r?\n/)[0];
-    await mergePullRequest(adaptBranch as string);
+    await mergePullRequest(branches.split(/\r?\n/)[0] as string);
 
     const planned = await opscrew("provision", "--plan-only", "--yes");
     expect(planned.exitCode, planned.output).toBe(0);
-    const hash = /--approve ([0-9a-f]{64})/.exec(planned.output)?.[1];
+    const hash = approveHashes(planned.output)[0];
     expect(hash, "the plan hash is printed").toBeDefined();
     const applied = await opscrew("provision", "--approve", hash as string, "--yes");
     expect(applied.exitCode, applied.output).toBe(0);
@@ -567,41 +435,29 @@ async function deployAndTearDown(
     const mergeSha = await mergePullRequest(deployBranch as string);
 
     // The merge to main triggers the deploy workflow; wait for the run of that exact commit (a
-    // run of an earlier pass on the same repository must never count, and the new run may take a
-    // few seconds to appear).
-    const deadline = Date.now() + minutes(25);
-    let conclusion: string | null = null;
-    while (Date.now() < deadline) {
-      const runs = await github(
-        "GET",
-        `/repos/${repoName}/actions/workflows/opscrew-deploy.yml/runs?head_sha=${mergeSha}&per_page=1`,
-      );
-      const run = (runs.json as { workflow_runs?: { status: string; conclusion: string | null }[] })
-        .workflow_runs?.[0];
-      if (run?.status === "completed") {
-        conclusion = run.conclusion;
-        break;
-      }
-      await sleep(20_000);
-    }
-    expect(conclusion, "the deploy workflow succeeded").toBe("success");
+    // run of an earlier pass on the same repository never counts).
+    const deployed = await github.waitForDeploy({ headSha: mergeSha }, minutes(25));
+    expect(deployed.conclusion, "the deploy workflow succeeded").toBe("success");
 
     const verify = await opscrew("verify");
     expect(verify.exitCode, verify.output).toBe(0);
     // The app answers on the health path OpsCrew planned for it (not a framework default).
-    const deployed = await readArtifact("plan", join(repo, "opscrew/plan.yaml"));
+    const deployedPlan = await readArtifact("plan", join(repo, "opscrew/plan.yaml"));
     const ipv4 = (await readServerAddresses(resolveProjectPaths(repo, { env }))).deployment?.ipv4;
-    const health = new URL(deployed.app.healthPath, deployed.deployment.url ?? `http://${ipv4}`);
+    const health = new URL(
+      deployedPlan.app.healthPath,
+      deployedPlan.deployment.url ?? `http://${ipv4}`,
+    );
     const answered = await fetch(health);
     console.log(
-      `OpsCrew E2E: ${app.label} answered ${answered.status} on ${deployed.app.healthPath}`,
+      `OpsCrew E2E: ${app.label} answered ${answered.status} on ${deployedPlan.app.healthPath}`,
     );
-    expect(answered.status, `GET ${deployed.app.healthPath}`).toBe(200);
+    expect(answered.status, `GET ${deployedPlan.app.healthPath}`).toBe(200);
     const secure = await opscrew("secure");
     expect(secure.output).toContain("SECURITY_REPORT.md");
     const drift = await opscrew("drift");
     expect(drift.exitCode, drift.output).toBe(0);
-    await expectAddressUnpublished(repo, repoName, env, startedAt);
+    await expectAddressUnpublished(repo, env, startedAt);
     console.log(`OpsCrew E2E: ${app.label} deployed, verified, secured and drift-free`);
 
     if (options.afterDeploy !== undefined) {
@@ -670,7 +526,6 @@ async function deployAndTearDown(
  */
 async function expectAddressUnpublished(
   repo: string,
-  repoName: string,
   env: Record<string, string | undefined>,
   since: Date,
 ): Promise<void> {
@@ -687,32 +542,18 @@ async function expectAddressUnpublished(
     expect(log.stdout.includes(needle), "the server address in a commit message").toBe(false);
   }
 
-  for (let page = 1; ; page++) {
-    const pulls = await github(
-      "GET",
-      `/repos/${repoName}/pulls?state=all&per_page=100&page=${page}`,
-    );
-    expect(pulls.status, "list the pull requests").toBe(200);
-    const list = pulls.json as {
-      number: number;
-      title: string;
-      body: string | null;
-      created_at: string;
-    }[];
-    for (const pull of list) {
-      const named = needles.some((needle) => `${pull.title}\n${pull.body ?? ""}`.includes(needle));
-      if (new Date(pull.created_at) >= since) {
-        expect(named, `the server address in pull request #${pull.number}`).toBe(false);
-      } else if (named) {
-        // Older runs' pull requests stay in the repository and Hetzner reuses addresses, so one
-        // from before T814 may name the address this server was given: worth knowing, not this
-        // run's leak. The address itself is never printed.
-        console.warn(
-          `OpsCrew E2E: pull request #${pull.number} (opened ${pull.created_at}, before this run) contains this server's address; an earlier server had the same one. Edit its description if it should not be public.`,
-        );
-      }
+  for (const pull of await github.pullRequestTexts()) {
+    const named = needles.some((needle) => pull.text.includes(needle));
+    if (pull.createdAt >= since) {
+      expect(named, `the server address in pull request #${pull.number}`).toBe(false);
+    } else if (named) {
+      // Older runs' pull requests stay in the repository and Hetzner reuses addresses, so one
+      // from before T814 may name the address this server was given: worth knowing, not this
+      // run's leak. The address itself is never printed.
+      console.warn(
+        `OpsCrew E2E: pull request #${pull.number} (opened ${pull.createdAt.toISOString()}, before this run) contains this server's address; an earlier server had the same one. Edit its description if it should not be public.`,
+      );
     }
-    if (list.length < 100) break;
   }
 
   const plan = await readArtifact("plan", join(repo, "opscrew/plan.yaml"));

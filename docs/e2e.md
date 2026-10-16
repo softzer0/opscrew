@@ -198,7 +198,7 @@ OpsCrew rulesets whose rules name only that run's hostnames.
 | `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as above. |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | A Cloudflare token for the zone with Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit, plus the account permissions tunnel mode needs: Cloudflare Tunnel Edit, Access: Apps and Policies Edit, Access: Service Tokens Edit, Access: Organizations, Identity Providers, and Groups Edit. Cloudflare Zero Trust must be turned on for the account. |
 | `OPSCREW_E2E_DOMAIN` | A hostname one level below that zone, for example `e2e.example.com`, or the zone itself. It names the zone only: each run uses its own hostname `e2e-<run id>.<zone>` (see step 1) and owns its records while it runs. |
-| `OPSCREW_E2E_REGION` | Optional, where the server runs: `eu-central` (default; Nuremberg, then Falkenstein, then Helsinki), `us-east`, `us-west` or `ap-southeast`. |
+| `OPSCREW_E2E_REGION` | Optional, where the server runs, with OpsCrew's own Hetzner locations for the region: `eu-central` (default; Nuremberg, then Falkenstein), `eu-north` (Helsinki), `us-east`, `us-west` or `ap-southeast`. |
 | `OPSCREW_E2E_OWN_SERVER_TYPE` | Optional, a Hetzner server type to use instead of the cheapest x86 one, for example `cx23`. |
 | `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as above, but only examples under `examples/` (default `nextjs-postgres`). |
 
@@ -224,19 +224,19 @@ Zero Trust organization if OpsCrew created it (other apps may use them).
 ## Your existing Portainer
 
 `packages/cli/test/live/portainer-target.test.ts` runs the flow for a Portainer the user already
-runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install. It has two passes,
-chosen with `OPSCREW_E2E_PORTAINER_STEPS`:
+runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install.
+`OPSCREW_E2E_PORTAINER_STEPS` chooses the steps:
 
-- `core` (the default, about 15 minutes): steps 1 (with the optional pause 1b), 2, 3 without the
-  deliberately failing change and its rollback (that alone waits about ten minutes), 8, 9 and 12.
-  Step 8 then removes an updater + tunnel setup (one tunnel, no Access application), and step 12
-  searches what this pass produced; the bare short host name is searched only in the full pass,
-  where step 11 gives it to OpsCrew.
-- `full` (about 2 hours): every step and check below.
+- `core` (the default, about 15 minutes): steps 1, 1b, 2a, 2, 3, 8, 9 and 12. Step 8 then removes
+  an updater + tunnel setup (one tunnel, no Access application), and step 12 searches what this
+  pass produced; the bare short host name is searched only when step 11 ran and gave it to
+  OpsCrew.
+- `full` (about 1 to 1½ hours): every step and check below.
+- A comma-separated list of steps, such as `11,12`: those steps and every step they need (see
+  [Running chosen steps](#running-chosen-steps)).
 
-The test prints the selected pass and its expected duration at the start. Steps outside the
-selected pass are reported as skipped, "not in the core pass; set OPSCREW_E2E_PORTAINER_STEPS=full";
-any other value skips the whole test and names the variable.
+The test prints the steps it takes at the start. The other steps are reported as skipped; any
+other value skips the whole test and names the variable.
 
 1. **The user's Portainer.** It creates a throwaway Hetzner Cloud server through the Hetzner API
    (Ubuntu 24.04, the cheapest x86 type near `OPSCREW_E2E_REGION`, labels `managed-by=opscrew-e2e`
@@ -254,9 +254,17 @@ any other value skips the whole test and names the variable.
    entry stays unset when the stack has no value for it, whether a bare entry takes a value from
    the stack's environment, and whether stopping a stack removes its containers. OpsCrew never gets
    the Hetzner token, an SSH login or a Portainer password: only `PORTAINER_API_KEY`.
-2. **updater + tunnel** (the defaults): `init --fix`, `analyze --no-ai`,
+
+   1b. With `OPSCREW_E2E_PORTAINER_MANUAL_MINUTES`, a pause for the guide's steps a person checks
+   (see the variables below); without it, nothing.
+2. **updater + tunnel** (the defaults).
+
+   2a. **Preparing the project**: `init --fix`, `analyze --no-ai`,
    `interview --answers <file> --portainer-cert SHA256:…`, `init` again, `design`,
-   `adapt --no-ai --yes` (pull request merged). With the standard user's token and a private image
+   `adapt --no-ai --yes` (pull request merged), and the snapshot of what is in Cloudflare before
+   the run.
+
+   2. With the standard user's token and a private image
    `provision --plan-only` must stop before any change with the registry steps (FR-1018); the
    test then does the guide's step 1 through the API (a Custom `ghcr.io` registry entry granted to
    that user on the environment), the same token must get past that check, and the entry is
@@ -277,10 +285,12 @@ any other value skips the whole test and names the variable.
    unchanged branch must not redeploy the app's stack (the same containers, and the same
    `UpdateDate`, `UpdatedBy`, number of `DeploymentStatus` entries and `GitConfig.ConfigHash`,
    compared but never printed); a merged change must be live within 5
-   minutes of the deploy workflow writing it to `opscrew-deploy`; a deliberately failing change
-   (a Dockerfile whose last `CMD` exits) must fail its run, roll back (the branch's newest commit is
-   "Roll back to the previous version" with the previous image) and the site must serve the
-   previous version again; a revert then deploys normally.
+   minutes of the deploy workflow writing it to `opscrew-deploy`.
+
+   3b. **The rollback**: a deliberately failing change (a Dockerfile whose last `CMD` exits) must
+   fail its run, roll back (the branch's newest commit is "Roll back to the previous version" with
+   the previous image) and the site must serve the previous version again; a revert then deploys
+   normally. The failing run waits about ten minutes for its health check.
 4. **An apply through MCP**: `opscrew mcp` with `opscrew_plan` and then `opscrew_apply` (against
    the real provision), both with `replaceTokens: ["registry"]` and the stack plan's hash as
    `planHash`. The test's MCP client approves the stack plan's dialog as the user would and never
@@ -306,12 +316,11 @@ any other value skips the whole test and names the variable.
    saved stack plans removed; the `opscrew-deploy` branch deleted on GitHub (destroy says
    "Deleted the branch opscrew-deploy" and does not list it under "What remains"); Portainer's
    users, environments, registries, other stacks and settings as before the run; the decoys
-   unchanged; the zone's rulesets that existed before the run have the same rules (a difference
-   is reported, never restored).
+   unchanged. (The zone's rulesets that existed before the run are compared by the cleanup.)
 9. `destroy --confirm <app> --delete-data`: the recorded volumes are gone, nothing else changed;
    it deletes data only, so GitHub is left alone (the branch stays absent, the Actions secrets as
-   they were). OpsCrew's record is now empty, which steps 10 and 11 need: while the record lists
-   anything, OpsCrew refuses another Portainer address.
+   they were). OpsCrew's record is now empty, which steps 10 and 11 need after step 2: while the
+   record lists anything, OpsCrew refuses another Portainer address.
 10. **A loopback Portainer address**, as a setup of its own: through an SSH tunnel on the test
     computer's port 9443 the interview uses `https://localhost:9443` (web mode `proxy`, the
     updater, no Cloudflare). Provision must create `opscrew-deploy` anew ("Created the branch",
@@ -340,7 +349,7 @@ any other value skips the whole test and names the variable.
     `.opscrew/server.json`. The bare short host name counts in what OpsCrew printed or saved
     (the app's own files and history may use it as a word); its URL forms count everywhere.
 
-After every step from 2 on, the decoy Compose project's and the decoy stack's containers, volumes,
+After every step from 2 on that changes the setup, the decoy Compose project's and the decoy stack's containers, volumes,
 stack file and environment must be exactly as they were. Facts the run observes (versions, shapes,
 the R5 result, the bare-variable and stop results, GHCR's answers, timings) are logged as
 `observed:` lines and repeated as `run log:` lines in step 12; copy them into
@@ -359,7 +368,7 @@ server's `run=<id>` label).
 | Variable | What it is |
 |---|---|
 | `OPSCREW_E2E_PORTAINER` | `1` runs this test. |
-| `OPSCREW_E2E_PORTAINER_STEPS` | Optional, `core` (the default) or `full`: which steps run (see above). |
+| `OPSCREW_E2E_PORTAINER_STEPS` | Optional, `core` (the default), `full` or a list of steps such as `11,12`: which steps run (see above and [Running chosen steps](#running-chosen-steps)). |
 | `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test for the server, its key and firewall. Use a separate, empty project. |
 | `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its fine-grained token, as above (Contents, Pull requests, Secrets, Actions and Workflows read and write, Metadata read). |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for [your own server](#your-own-server) (the zone permissions and the account's Tunnel and Access permissions). Cloudflare Zero Trust must be turned on. |
@@ -389,8 +398,35 @@ OPSCREW_E2E_PORTAINER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you
 That runs the core pass. For the full one, add `OPSCREW_E2E_PORTAINER_STEPS=full` to the same
 command.
 
-The full pass takes about two hours (the run on 2026-10-15: about ten deploy workflow runs, one of
-which waits ten minutes for its failing health check before it rolls back, plus Docker's
+### Running chosen steps
+
+To check one step again (for example after a fix), give `OPSCREW_E2E_PORTAINER_STEPS` the steps as
+a comma-separated list. The test adds every step they need and runs them on a fresh throwaway
+server, which it deletes at the end like every run (a server is never kept between runs). Steps 1,
+1b and 12 always run: the server with Portainer, the optional pause and the leak search.
+
+| Step | Needs |
+|---|---|
+| 1, 1b, 12 | (always taken) |
+| 2a | 1 |
+| 2, 10, 11 | 2a |
+| 3, 3b, 4, 5, 6, 7, 8 | 2 |
+| 9 | 8 |
+
+When the list takes step 2 together with step 10 or 11, it also takes steps 8 and 9: they empty
+OpsCrew's record, and while the record lists anything OpsCrew refuses another Portainer address.
+Steps run in their usual order. Examples:
+
+- `OPSCREW_E2E_PORTAINER_STEPS=11,12` runs steps 1, 1b, 2a, 11 and 12 (about 15 minutes): the short
+  host name on a freshly prepared project, then the leak search.
+- `OPSCREW_E2E_PORTAINER_STEPS=3b` runs steps 1, 1b, 2a, 2, 3b and 12: the rollback after the first
+  deploy.
+- `OPSCREW_E2E_PORTAINER_STEPS=2,10` runs steps 1, 1b, 2a, 2, 8, 9, 10 and 12.
+
+An unknown step skips the whole test and names the variable.
+
+The full pass takes about an hour (runs 9 and 10 on 2026-10-16: about ten deploy workflow runs,
+one of which waits ten minutes for its failing health check before it rolls back, plus Docker's
 installation); the core pass about 15 minutes (its first run on 2026-10-15 took 14½ minutes). The server is the smallest x86 type, billed by the hour, so a run
 costs a few cents of server time, plus GitHub Actions minutes for the builds (free for public
 repositories). Left behind on purpose, as for your own server: the GitHub Actions secrets of other
