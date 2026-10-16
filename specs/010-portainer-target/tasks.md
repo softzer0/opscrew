@@ -197,7 +197,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/connector-digitalocean --filter=@opscrew/connector-github --filter=@opscrew/connector-godaddy --filter=@opscrew/connector-hetzner --filter=@opscrew/connector-namecheap --filter=@opscrew/connector-porkbun --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T1023 [P] iac-templates and secops (Area 10)
+- [X] T1023 [P] iac-templates and secops (Area 10)
   - Owns: `packages/{iac-templates,secops}/**` except `package.json` (+ tests; snapshots unchanged except the renames Area 10 lists)
   - Reads: Area 10; Area 1 and Area 4 (the guards and move layouts agents will import)
   - Depends: T1020

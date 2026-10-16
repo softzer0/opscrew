@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testPlan } from "../__fixtures__/plans";
@@ -17,6 +18,42 @@ function outputBlock(source: string, name: string): string {
   if (!match?.[1]) throw new Error(`no output ${name}`);
   return match[1];
 }
+
+describe("cloudflare-waf module security", () => {
+  const main = MODULE_FILES["cloudflare-waf/main.tf"] ?? "";
+
+  it("blocks probes for secrets and admin panels on the app's hostnames only", () => {
+    expect(main).toContain(
+      'host_expression = "(http.host in {${join(" ", [for host in var.hostnames : "\\"${host}\\""])}})"',
+    );
+    const paths = /probe_paths = join\(" or ", \[\n([\s\S]*?)\n {2}\]\)/.exec(main)?.[1] ?? "";
+    expect(paths.split("\n").map((line) => line.trim())).toEqual([
+      '"http.request.uri.path contains \\"/.env\\"",',
+      '"starts_with(http.request.uri.path, \\"/.git\\")",',
+      '"http.request.uri.path contains \\"/wp-admin\\"",',
+      '"http.request.uri.path contains \\"/wp-login.php\\"",',
+      '"http.request.uri.path contains \\"/xmlrpc.php\\"",',
+      '"http.request.uri.path contains \\"/phpmyadmin\\"",',
+    ]);
+    const ruleset = resource(main, "cloudflare_ruleset", "this");
+    expect(ruleset).toMatch(/^ {2}phase {7}= "http_request_firewall_custom"$/m);
+    expect(ruleset).toContain(
+      'description = "OpsCrew: block probes for secrets and admin panels on ${var.hostnames[0]}"',
+    );
+    expect(ruleset).toContain(
+      'expression  = "${local.host_expression} and (${local.probe_paths})"',
+    );
+    expect(ruleset).toContain('action      = "block"');
+  });
+
+  it("is the one WAF rule of the DNS and tunnel modules", () => {
+    for (const module of ["cloudflare-dns", "cloudflare-tunnel"]) {
+      const source = MODULE_FILES[`${module}/main.tf`] ?? "";
+      expect(source, module).toContain('module "waf" {\n  source = "../cloudflare-waf"');
+      expect(source, module).not.toMatch(/probe_paths|resource "cloudflare_ruleset" "waf"/);
+    }
+  });
+});
 
 describe("cloudflare-tunnel module security", () => {
   const main = MODULE_FILES["cloudflare-tunnel/main.tf"] ?? "";

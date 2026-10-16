@@ -284,4 +284,25 @@ describe("evaluatePlanPolicies (DigitalOcean)", () => {
       ),
     ).toBe(false);
   });
+
+  // The safety gate's exact results (ids, severities, messages, resources): any change to them
+  // must show up here.
+  it("reports every DigitalOcean check with its exact result when all pass and when all fail", () => {
+    expect(evaluatePlanPolicies(planJson(), deployPlan())).toMatchSnapshot("all pass");
+    const failing = evaluatePlanPolicies(
+      planJson({
+        attach: "none",
+        sshKeys: false,
+        backups: false,
+        webSources: WORLD,
+        extraRules: [{ protocol: "tcp", port_range: "5432", source_addresses: ["0.0.0.0/0"] }],
+      }),
+      deployPlan({ sshAllowedCidrs: ["198.51.100.7/32"] }),
+    );
+    expect(failing.every((r) => !r.passed)).toBe(true);
+    expect(failing).toMatchSnapshot("all fail");
+    expect(evaluatePlanPolicies(planJson({ withFirewall: false }), deployPlan())).toMatchSnapshot(
+      "no firewall",
+    );
+  });
 });

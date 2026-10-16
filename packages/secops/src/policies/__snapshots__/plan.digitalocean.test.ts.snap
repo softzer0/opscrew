@@ -1,0 +1,143 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`evaluatePlanPolicies (DigitalOcean) > reports every DigitalOcean check with its exact result when all pass and when all fail > all fail 1`] = `
+[
+  {
+    "message": "No firewall lists this Droplet, so every port is reachable from the internet. Attach the OpsCrew firewall.",
+    "passed": false,
+    "policyId": "firewall-attached",
+    "resource": "module.server.digitalocean_droplet.this",
+    "severity": "high",
+    "title": "Server has a firewall",
+  },
+  {
+    "message": "The Droplet has no SSH key; DigitalOcean would email a root password. Add the deploy key.",
+    "passed": false,
+    "policyId": "ssh-keys-set",
+    "resource": "module.server.digitalocean_droplet.this",
+    "severity": "high",
+    "title": "Server uses SSH keys",
+  },
+  {
+    "message": "The plan requires automated backups but the Droplet has them turned off.",
+    "passed": false,
+    "policyId": "backups-for-critical-data",
+    "resource": "module.server.digitalocean_droplet.this",
+    "severity": "high",
+    "title": "Automated backups are on",
+  },
+  {
+    "message": "These ports are open to the whole internet: tcp/5432. Databases, caches and admin panels must never be public; remove those rules.",
+    "passed": false,
+    "policyId": "no-open-admin-ports",
+    "resource": "module.server.digitalocean_firewall.this",
+    "severity": "critical",
+    "title": "Only SSH and web ports are open to the internet",
+  },
+  {
+    "message": "Ports tcp/80, tcp/443, udp/443 are open to everyone even though traffic should come through Cloudflare. Restrict them to Cloudflare's IP ranges.",
+    "passed": false,
+    "policyId": "origin-cloudflare-only",
+    "resource": "module.server.digitalocean_firewall.this",
+    "severity": "medium",
+    "title": "Web ports accept only Cloudflare",
+  },
+  {
+    "message": "SSH (port 22) is open to the whole internet, but the plan limits it to specific address ranges. Restrict the firewall rule to those ranges.",
+    "passed": false,
+    "policyId": "ssh-not-public",
+    "resource": "module.server.digitalocean_firewall.this",
+    "severity": "high",
+    "title": "SSH is open only as planned",
+  },
+]
+`;
+
+exports[`evaluatePlanPolicies (DigitalOcean) > reports every DigitalOcean check with its exact result when all pass and when all fail > all pass 1`] = `
+[
+  {
+    "message": "The Droplet is attached to a DigitalOcean Cloud Firewall.",
+    "passed": true,
+    "policyId": "firewall-attached",
+    "resource": "module.server.digitalocean_droplet.this",
+    "severity": "high",
+    "title": "Server has a firewall",
+  },
+  {
+    "message": "The Droplet is created with an SSH key, so no root password is emailed or used.",
+    "passed": true,
+    "policyId": "ssh-keys-set",
+    "resource": "module.server.digitalocean_droplet.this",
+    "severity": "high",
+    "title": "Server uses SSH keys",
+  },
+  {
+    "message": "DigitalOcean automated backups are enabled as the plan requires.",
+    "passed": true,
+    "policyId": "backups-for-critical-data",
+    "resource": "module.server.digitalocean_droplet.this",
+    "severity": "high",
+    "title": "Automated backups are on",
+  },
+  {
+    "message": "Only ports 22, 80 and 443 accept traffic from anywhere.",
+    "passed": true,
+    "policyId": "no-open-admin-ports",
+    "resource": "module.server.digitalocean_firewall.this",
+    "severity": "critical",
+    "title": "Only SSH and web ports are open to the internet",
+  },
+  {
+    "message": "Ports 80 and 443 accept only Cloudflare's IP ranges, so attackers cannot bypass the proxy.",
+    "passed": true,
+    "policyId": "origin-cloudflare-only",
+    "resource": "module.server.digitalocean_firewall.this",
+    "severity": "medium",
+    "title": "Web ports accept only Cloudflare",
+  },
+  {
+    "message": "SSH (port 22) is open to the internet as the plan allows; only key logins are accepted.",
+    "passed": true,
+    "policyId": "ssh-not-public",
+    "resource": "module.server.digitalocean_firewall.this",
+    "severity": "high",
+    "title": "SSH is open only as planned",
+  },
+]
+`;
+
+exports[`evaluatePlanPolicies (DigitalOcean) > reports every DigitalOcean check with its exact result when all pass and when all fail > no firewall 1`] = `
+[
+  {
+    "message": "No firewall lists this Droplet, so every port is reachable from the internet. Attach the OpsCrew firewall.",
+    "passed": false,
+    "policyId": "firewall-attached",
+    "resource": "module.server.digitalocean_droplet.this",
+    "severity": "high",
+    "title": "Server has a firewall",
+  },
+  {
+    "message": "The Droplet is created with an SSH key, so no root password is emailed or used.",
+    "passed": true,
+    "policyId": "ssh-keys-set",
+    "resource": "module.server.digitalocean_droplet.this",
+    "severity": "high",
+    "title": "Server uses SSH keys",
+  },
+  {
+    "message": "DigitalOcean automated backups are enabled as the plan requires.",
+    "passed": true,
+    "policyId": "backups-for-critical-data",
+    "resource": "module.server.digitalocean_droplet.this",
+    "severity": "high",
+    "title": "Automated backups are on",
+  },
+  {
+    "message": "The plan creates a Droplet but no firewall. Every port would be reachable from the internet.",
+    "passed": false,
+    "policyId": "firewall-attached",
+    "severity": "high",
+    "title": "Server has a firewall",
+  },
+]
+`;

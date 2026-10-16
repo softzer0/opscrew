@@ -1,3 +1,4 @@
+import type { PolicyResult } from "@opscrew/contracts";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { blockingPolicyFailures, evaluatePlanPolicies, plannedResources } from "./index";
@@ -264,6 +265,39 @@ describe("evaluatePlanPolicies", () => {
     expect(failed(evaluatePlanPolicies(planJson({ proxiedRecord: false }), deployPlan()))).toEqual([
       "dns-proxied",
     ]);
+  });
+
+  // The safety gate's exact results (ids, severities, messages, resources): any change to them
+  // must show up here.
+  it("reports every Hetzner check with its exact result when all pass and when all fail", () => {
+    expect(evaluatePlanPolicies(planJson(), deployPlan())).toMatchSnapshot("all pass");
+    const plan = deployPlan();
+    const limited = {
+      ...plan,
+      security: { ...plan.security, sshAllowedCidrs: ["203.0.113.0/24"] },
+    };
+    const failing = evaluatePlanPolicies(
+      planJson({
+        firewallIds: "none",
+        sshKeys: false,
+        deleteProtection: false,
+        backups: false,
+        webSources: ["0.0.0.0/0", "::/0"],
+        extraRules: [{ direction: "in", protocol: "tcp", port: "5432", source_ips: ["0.0.0.0/0"] }],
+        proxiedRecord: false,
+      }),
+      limited,
+    );
+    expect(failing.every((r) => !r.passed)).toBe(true);
+    expect(failing).toMatchSnapshot("all fail");
+    // Without any firewall: compared as a set, its place in the list is not part of the gate.
+    const bySubject = (a: PolicyResult, b: PolicyResult) =>
+      `${a.policyId}|${a.resource ?? ""}`.localeCompare(`${b.policyId}|${b.resource ?? ""}`);
+    const unprotected = evaluatePlanPolicies(
+      planJson({ firewallIds: "none", withFirewall: false }),
+      deployPlan(),
+    );
+    expect(unprotected.sort(bySubject)).toMatchSnapshot("no firewall");
   });
 });
 
