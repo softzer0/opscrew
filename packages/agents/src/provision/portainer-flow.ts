@@ -563,8 +563,12 @@ export async function provisionPortainer(
       });
     } catch (error) {
       if (error instanceof StackApplyError) {
-        // What was created before the failure is OpsCrew's: record it before the error is shown.
-        connection = await recordConnection(deps, connection, { created: error.record });
+        // What was created before the failure is OpsCrew's: record it (and the route of an app
+        // stack it holds) before the error is shown.
+        connection = await recordConnection(deps, connection, {
+          created: error.record,
+          ...(hasAppStack(error.record) ? { appliedWeb: target.web } : {}),
+        });
         await deps.audit.append({
           kind: "provider-call",
           actor: "opscrew",

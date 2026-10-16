@@ -642,10 +642,14 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
     expect(error).toBeInstanceOf(OpsCrewError);
     expect(error.message).toContain("Done before it");
-    const created = (await readPortainerConnection(s.deps.paths))?.created;
+    const connection = await readPortainerConnection(s.deps.paths);
     const app = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop");
-    expect(created?.stacks).toEqual([{ id: app?.Id, name: "opscrew-shop", role: "app" }]);
-    expect(created?.registryId).toBe(s.fake.registries[0]?.Id);
+    expect(connection?.created.stacks).toEqual([
+      { id: app?.Id, name: "opscrew-shop", role: "app" },
+    ]);
+    expect(connection?.created.registryId).toBe(s.fake.registries[0]?.Id);
+    // The app's stack exists with this route now, so a later switch is noticed.
+    expect(connection?.appliedWeb).toEqual({ mode: "proxy", port: 8080 });
     expect(s.deps.audit.entries).toContainEqual(
       expect.objectContaining({ action: "stack apply failed", decision: "refused" }),
     );
