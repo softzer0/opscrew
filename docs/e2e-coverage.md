@@ -22,8 +22,8 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Namecheap sandbox (`registrars.test.ts`) | Namecheap sandbox keys | Passed | 2026-10-14 | — |
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
 | Your own server (`own-server.test.ts`) | `OPSCREW_E2E_OWN_SERVER=1` | Passed | 2026-10-15 (run 11) | — |
-| Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | **Partly passed** (run 1, 2026-10-15: steps 1–3 and the leak search; step 8 failed on a test check, step 9 not reached) | — | A rerun after T1013 |
-| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Steps 1–11 passed** (run 9, 2026-10-16); the leak check's two items fixed in T1019, rerun pending | — | A rerun (about 45–60 minutes) |
+| Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | Passed (every core step, within the full pass's run 10) | 2026-10-16 | — |
+| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Steps 1–11 passed** (run 10, 2026-10-16); the leak check's only item was a chance match in an encrypted plan file, the check fixed | 2026-10-16 (run 10, steps 1–11) | Steps 11 and 12 again after the simplification (T1032) |
 
 Run in development, not tracked by date:
 
@@ -50,7 +50,7 @@ Tick a step once it has passed live.
 | 9. `destroy --delete-data` removes the data volumes and nothing else | core | [x] 2026-10-16 |
 | 10. A loopback Portainer address (the updater through `host.docker.internal`) | full | [x] 2026-10-16 |
 | 11. A short Portainer host name in the leak check | full | [x] 2026-10-16 |
-| 12. No token, secret, server address or Portainer address anywhere | core | [x] 2026-10-15 (core pass); full pass: two items fixed in T1019, rerun pending |
+| 12. No token, secret, server address or Portainer address anywhere | core | [x] 2026-10-15 (core pass); full pass run 10 (2026-10-16): no known value anywhere, one chance match of the short host in an encrypted plan file (the check now skips those), rerun with step 11 in T1032 |
 
 ## Your existing Portainer: behaviour still to confirm live
 
@@ -73,4 +73,5 @@ live test records each one as an `observed:` line.
 | GitHub accepts the orphan-branch calls and drift's `git fetch` with the user's fine-grained token | core | [x] 2026-10-15 |
 | The smallest Cloudflare token for a tunnel-only `updater` setup | core, with `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | [ ] |
 | The guide's `openssl` command shows the fingerprint OpsCrew pins | core | [x] 2026-10-15 |
+| Two OpsCrew apps in one environment stay apart (their own stacks, registry entries and volumes; ports and 80/443 checked) | not exercised (unit tests only) | [ ] |
 | The guide's steps that need a person: the certificate fingerprint in a browser, the registry steps in Portainer's UI | not automated | [ ] |

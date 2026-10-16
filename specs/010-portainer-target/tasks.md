@@ -164,7 +164,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: medium
 
-- [ ] T1009 Live run, core pass (founder, 2026-10-15: the full matrix took about 2 hours): setup, updater + tunnel, one merged change deploying by itself with the unchanged-branch webhook check, destroy keeping data, `--delete-data`, the leak check; results in `docs/e2e.md` (lead). The other steps (caddy, proxy, cloudflare redeploy, rollback wait, loopback, short host, MCP) stay in the test behind `OPSCREW_E2E_PORTAINER_STEPS=full`
+- [X] T1009 Live run, core pass (founder, 2026-10-15: the full matrix took about 2 hours): setup, updater + tunnel, one merged change deploying by itself with the unchanged-branch webhook check, destroy keeping data, `--delete-data`, the leak check; results in `docs/e2e.md` (lead). The other steps (caddy, proxy, cloudflare redeploy, rollback wait, loopback, short host, MCP) stay in the test behind `OPSCREW_E2E_PORTAINER_STEPS=full`
 
 ## Phase 6: Simplification of features 000–010 (founder, 2026-10-16)
 
@@ -273,7 +273,7 @@ each with a test that fails without the fix.
 
 ## Dependencies
 
-T1001 → {T1002, T1003, T1004} (parallel) → T1010 → T1005 → T1006 → T1007 → {T1008, T1011} (parallel) → T1012 → T1009 (core run 1) → T1013 → T1009 (core run 2).
+T1001 → {T1002, T1003, T1004} (parallel) → T1010 → T1005 → T1006 → T1007 → {T1008, T1011} (parallel) → T1012 → T1009 (core run 1) → T1013 → T1009 (full runs 1–10, with T1014–T1019 between them).
 
 Phase 6: T1020 → {T1021, T1022, T1023} → T1024 → {T1025, T1026, T1027, T1028} → T1029 → {T1030, T1031} → T1032.
 
