@@ -228,6 +228,8 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     it("--approve <hash> --confirm <app> applies exactly that plan in a script", async () => {
       const hash = await planned();
       const second = context(project as DeployProject, { engine: removal() });
+      // The confirmation decides on the run's clock, never the computer's.
+      withServices(second.ctx, { clock: { now: () => new Date("2030-01-02T03:04:05.000Z") } });
       expect(
         await run(second.ctx, "provision", "--approve", hash, "--confirm", "shop", "--yes"),
       ).toBe(0);
@@ -237,6 +239,17 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
         allowDestroy: true,
       });
       expect(second.ctx.output).toContain("(confirmed with --confirm shop)");
+      const paths = resolveProjectPaths((project as DeployProject).root, {
+        env: (project as DeployProject).env,
+      });
+      const confirmed = (await readFile(paths.files.approvals, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { approver: string; decidedAt: string })
+        .filter((record) => record.approver === "--approve and --confirm flags");
+      expect(confirmed).toEqual([
+        expect.objectContaining({ decidedAt: "2030-01-02T03:04:05.000Z" }),
+      ]);
     });
 
     it("stops before anything runs when --confirm is not the app's name", async () => {

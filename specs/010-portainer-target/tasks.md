@@ -245,7 +245,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: xhigh
 
-- [ ] T1029 [P] CLI, MCP server and plugin (Area 8)
+- [X] T1029 [P] CLI, MCP server and plugin (Area 8)
   - Owns: `packages/cli/src/**` except fixtures, `packages/mcp-server/src/**` except test fakes, `plugin/**`, new files in `packages/agents/src/shared/**` for what Area 8 moves into agents (with their export lines in the agents root `index.ts`)
   - Reads: Area 8
   - Depends: T1025, T1026, T1027, T1028
