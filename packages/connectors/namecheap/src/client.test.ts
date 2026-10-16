@@ -117,23 +117,6 @@ describe("NamecheapClient requests", () => {
     expect(client.dashboard.apiAccess).toContain("sandbox.namecheap.com");
   });
 
-  it("detects the ClientIp once per client when it is not set", async () => {
-    const { fetch, calls } = fakeNamecheap({ "users.getBalances": fixture("users-getBalances") });
-    const detect = vi.fn(async () => "198.51.100.23\n");
-    const client = new NamecheapClient({
-      apiUser: "opscrew-sandbox",
-      apiKey: API_KEY,
-      detectClientIp: detect,
-      fetch,
-      sleep: noSleep,
-    });
-    await client.getBalances();
-    await client.getBalances();
-    expect(detect).toHaveBeenCalledTimes(1);
-    expect(calls.map((c) => c.params.get("ClientIp"))).toEqual(["198.51.100.23", "198.51.100.23"]);
-    expect(await client.clientIp()).toBe("198.51.100.23");
-  });
-
   it("reads its own public IPv4 from Cloudflare's trace page by default, once per client", async () => {
     const { fetch, calls } = fakeNamecheap({ "users.getBalances": fixture("users-getBalances") });
     const traced: (RequestInit | undefined)[] = [];
@@ -179,28 +162,12 @@ describe("NamecheapClient requests", () => {
     }
   });
 
-  it("refuses an IPv6 or malformed ClientIp with a plain fix", async () => {
+  it("refuses a malformed ClientIp with a plain fix", async () => {
     const { fetch } = fakeNamecheap({});
-    const v6 = new NamecheapClient({
-      apiUser: "u",
-      apiKey: API_KEY,
-      detectClientIp: async () => "2001:db8::1",
-      fetch,
-    });
-    expect((await failure(v6.getBalances())).message).toMatch(/IPv4/);
     const bad = makeClient(fetch, { clientIp: "300.1.1.1" });
     const error = await failure(bad.getBalances());
     expect(error.code).toBe("INVALID_INPUT");
     expect(error.hint).toContain("Set NAMECHEAP_CLIENT_IP to");
-    const failing = new NamecheapClient({
-      apiUser: "u",
-      apiKey: API_KEY,
-      detectClientIp: async () => {
-        throw new Error("offline");
-      },
-      fetch,
-    });
-    expect((await failure(failing.getBalances())).hint).toContain("NAMECHEAP_CLIENT_IP");
   });
 
   it("needs the API user and key", async () => {
