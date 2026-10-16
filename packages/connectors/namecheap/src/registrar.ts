@@ -10,12 +10,11 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import {
   type NamecheapClient,
   type NamecheapDomain,
   type NamecheapPrice,
-  normalizeDomain,
   splitDomain,
 } from "./client";
 
@@ -103,7 +102,14 @@ export class NamecheapRegistrar implements Registrar {
 
   /** Live availability with first-year and renewal prices (fees included). */
   async check(domains: readonly string[]): Promise<DomainCheck[]> {
-    const names = [...new Set(domains.map(normalizeDomain))];
+    return (await this.#check(domains)).map((c) => c.check);
+  }
+
+  /** {@link check}, with the registration and renewal price rows read for registrable domains. */
+  async #check(
+    domains: readonly string[],
+  ): Promise<{ check: DomainCheck; register?: NamecheapPrice[] }[]> {
+    const names = [...new Set(domains.map(normalizeHostName))];
     if (names.length === 0) return [];
     const results = await this.#client.checkDomains(names);
     const byName = new Map(results.map((r) => [r.domain, r]));
@@ -119,43 +125,30 @@ export class NamecheapRegistrar implements Registrar {
       }
       return p;
     };
-    const checks: DomainCheck[] = [];
+    const checks: { check: DomainCheck; register?: NamecheapPrice[] }[] = [];
     for (const domain of names) {
       const { tld } = splitDomain(domain);
       const r = byName.get(domain);
+      const no = (reason: string, tier?: "standard" | "premium") => ({
+        check: { domain, registrable: false, ...(tier ? { tier } : {}), reason },
+      });
       if (!r) {
-        checks.push({
-          domain,
-          registrable: false,
-          reason: "Namecheap did not return a result for this domain; try again in a minute.",
-        });
+        checks.push(
+          no("Namecheap did not return a result for this domain; try again in a minute."),
+        );
       } else if (r.error) {
-        checks.push({
-          domain,
-          registrable: false,
-          reason: `Namecheap could not check this domain: ${r.error.replace(/\.$/, "")}.`,
-        });
+        checks.push(no(`Namecheap could not check this domain: ${r.error.replace(/\.$/, "")}.`));
       } else if (!r.available) {
-        checks.push({
-          domain,
-          registrable: false,
-          ...(r.premium ? { tier: "premium" as const } : {}),
-          reason: "This domain is already registered by someone else.",
-        });
+        checks.push(
+          no(
+            "This domain is already registered by someone else.",
+            r.premium ? "premium" : undefined,
+          ),
+        );
       } else if (r.premium) {
-        checks.push({
-          domain,
-          registrable: false,
-          tier: "premium",
-          reason: this.#premiumReason(domain),
-        });
+        checks.push(no(this.#premiumReason(domain), "premium"));
       } else if (NAMECHEAP_EXTENDED_ATTRIBUTE_TLDS.includes(tld)) {
-        checks.push({
-          domain,
-          registrable: false,
-          tier: "standard",
-          reason: this.#extensionReason(domain, tld),
-        });
+        checks.push(no(this.#extensionReason(domain, tld), "standard"));
       } else {
         const [register, renew] = await pricesOf(tld);
         const firstYear = priceFor(register, 1);
@@ -163,18 +156,19 @@ export class NamecheapRegistrar implements Registrar {
         checks.push(
           firstYear
             ? {
-                domain,
-                registrable: true,
-                tier: "standard",
-                firstYear,
-                ...(renewal ? { renewal } : {}),
+                check: {
+                  domain,
+                  registrable: true,
+                  tier: "standard",
+                  firstYear,
+                  ...(renewal ? { renewal } : {}),
+                },
+                register,
               }
-            : {
-                domain,
-                registrable: false,
-                tier: "standard",
-                reason: `Namecheap did not return a USD price for .${tld}; it may not sell this extension through its API.`,
-              },
+            : no(
+                `Namecheap did not return a USD price for .${tld}; it may not sell this extension through its API.`,
+                "standard",
+              ),
         );
       }
     }
@@ -186,7 +180,7 @@ export class NamecheapRegistrar implements Registrar {
    * checked with a few common extensions.
    */
   async suggest(query: string): Promise<DomainCheck[]> {
-    const q = normalizeDomain(query);
+    const q = normalizeHostName(query);
     if (q.includes(".")) return this.check([q]);
     const name = q.replace(/[^a-z0-9-]/g, "").replace(/^-+|-+$/g, "");
     if (!name) return [];
@@ -194,7 +188,7 @@ export class NamecheapRegistrar implements Registrar {
   }
 
   async #find(domain: string): Promise<NamecheapDomain | undefined> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const domains = await this.#client.listDomains(name);
     return domains.find((d) => d.domain === name);
   }
@@ -205,42 +199,32 @@ export class NamecheapRegistrar implements Registrar {
     return found ? { domain: found.domain, state: "succeeded" } : undefined;
   }
 
-  /** The live price for `years` (fees included) and the yearly renewal price, in USD. */
+  /**
+   * The live price for `years` (fees included) and the yearly renewal price, in USD, from a live
+   * {@link check}; a domain it cannot sell stops with the check's reason.
+   */
   async quote(domain: string, years: number): Promise<RegistrationQuote> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     checkYears(years);
     const { tld } = splitDomain(name);
     const stop = (reason: string) =>
       new OpsCrewError("PHASE_PRECONDITION", `Namecheap cannot sell ${name} through its API.`, {
         hint: reason,
       });
-    if (NAMECHEAP_EXTENDED_ATTRIBUTE_TLDS.includes(tld))
+    if (NAMECHEAP_EXTENDED_ATTRIBUTE_TLDS.includes(tld)) {
       throw stop(this.#extensionReason(name, tld));
-    const result = (await this.#client.checkDomains([name])).find((r) => r.domain === name);
-    if (!result || result.error) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `Namecheap could not check ${name}${result?.error ? `: ${result.error.replace(/\.$/, "")}` : ""}.`,
-        { hint: "Try again in a minute." },
-      );
     }
-    if (!result.available) {
-      throw new OpsCrewError("PHASE_PRECONDITION", `${name} is already registered.`, {
-        hint: "Pick another name; `opscrew domain search` lists available ones.",
-      });
+    const [checked] = await this.#check([name]);
+    if (!checked?.check.registrable || !checked.register) {
+      throw stop(checked?.check.reason ?? "Namecheap did not check the domain.");
     }
-    if (result.premium) throw stop(this.#premiumReason(name));
-    const [register, renew] = await Promise.all([
-      this.#client.getPricing("REGISTER", tld),
-      this.#client.getPricing("RENEW", tld),
-    ]);
-    const price = priceFor(register, years);
+    const price = priceFor(checked.register, years);
     if (!price) {
       throw stop(
         `Namecheap lists no USD price for ${years} year${years === 1 ? "" : "s"} of .${tld}; try another number of years or buy it in the dashboard at ${this.#client.dashboard.domainList}.`,
       );
     }
-    const renewal = priceFor(renew, 1);
+    const { renewal } = checked.check;
     return { price, ...(renewal ? { renewal } : {}) };
   }
 
@@ -255,7 +239,7 @@ export class NamecheapRegistrar implements Registrar {
    * default nameservers are kept until the Cloudflare zone exists.
    */
   async register(request: RegistrationRequest): Promise<RegistrationStatus> {
-    const domain = normalizeDomain(request.domain);
+    const domain = normalizeHostName(request.domain);
     if (!request.quote) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -320,13 +304,12 @@ export class NamecheapRegistrar implements Registrar {
       };
     }
     if (!result.registered) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `Namecheap answered that ${result.domain} was not registered, without saying why. The purchase may still have started; check your Namecheap domain list before trying again.`,
-        {
-          hint: `Run \`opscrew domain status\` or look at ${this.#client.dashboard.domainList} before buying ${result.domain} again.`,
-        },
-      );
+      throw maybeStarted({
+        registrar: "Namecheap",
+        domain: result.domain,
+        detail: "it answered that the domain was not registered, without saying why",
+        dashboard: this.#client.dashboard.domainList,
+      });
     }
     const note = await this.#autoRenewNote(result.domain, request.autoRenew);
     return { domain: result.domain, state: "succeeded", ...(note ? { message: note } : {}) };
@@ -367,7 +350,7 @@ export class NamecheapRegistrar implements Registrar {
 
   /** Not available through Namecheap's API: a plain error pointing at the dashboard. */
   setAutoRenew(domain: string, on: boolean): Promise<RegisteredDomain> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     return Promise.reject(
       new OpsCrewError(
         "PHASE_PRECONDITION",
@@ -399,7 +382,7 @@ export class NamecheapRegistrar implements Registrar {
    * pseudo-record says so: that mail stops working once the nameservers move.
    */
   async listRecords(domain: string): Promise<RegistrarDnsRecord[] | undefined> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const list = await this.#client.getHosts(name);
     if (!list) return undefined;
     const records: RegistrarDnsRecord[] = list.hosts.map((h) => {

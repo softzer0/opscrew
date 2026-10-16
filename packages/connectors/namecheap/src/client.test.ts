@@ -13,13 +13,13 @@ import {
 import {
   isClearRejection,
   NAMECHEAP_API,
-  NAMECHEAP_DASHBOARD_URLS,
   NAMECHEAP_SANDBOX_API,
   NamecheapClient,
   namecheapDate,
-  normalizePhone,
   splitDomain,
-} from "./index";
+} from "./client";
+import { normalizePhone } from "./contacts";
+import { NAMECHEAP_DASHBOARD_URLS } from "./errors";
 
 /** Everything a thrown value exposes: message, hint, JSON, inspect output (with its cause). */
 function exposed(error: unknown): string {
@@ -375,19 +375,6 @@ describe("NamecheapClient commands", () => {
     expect(await makeClient(empty.fetch).listDomains("nothing.com")).toEqual([]);
   });
 
-  it("reads domain details", async () => {
-    const { fetch } = fakeNamecheap({ "domains.getInfo": fixture("domains-getInfo") });
-    expect(await makeClient(fetch).getDomainInfo("shopapp.com")).toEqual({
-      domain: "shopapp.com",
-      status: "Ok",
-      owner: true,
-      createdAt: "2026-10-13T00:00:00.000Z",
-      expiresAt: "2027-10-13T00:00:00.000Z",
-      privacy: true,
-      usesNamecheapDns: true,
-    });
-  });
-
   it("reads and sets nameservers with SLD and TLD", async () => {
     const { fetch, of } = fakeNamecheap({
       "domains.dns.getList": fixture("domains-dns-getList"),
@@ -446,14 +433,6 @@ describe("NamecheapClient commands", () => {
       ),
     });
     expect(await makeClient(flagged.fetch).getHosts("shopapp.com")).toBeUndefined();
-  });
-
-  it("locks the domain", async () => {
-    const { fetch, of } = fakeNamecheap({
-      "domains.setRegistrarLock": fixture("domains-setRegistrarLock"),
-    });
-    await makeClient(fetch).setRegistrarLock("shopapp.com", true);
-    expect(of("domains.setRegistrarLock")[0]?.params.get("LockAction")).toBe("LOCK");
   });
 });
 

@@ -1,5 +1,5 @@
 import type { FetchLike } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import type { z } from "zod";
 import { ContactCard } from "./contacts";
 import {
@@ -17,14 +17,12 @@ import {
   CheckResponse,
   CreateResponse,
   DnsListResponse,
-  DomainInfoResponse,
   DomainListResponse,
   type Envelope,
   HostsResponse,
   type NamecheapApiError,
   PricingResponse,
   parseXml,
-  RegistrarLockResponse,
   SetCustomResponse,
   toEnvelope,
 } from "./xml";
@@ -115,16 +113,6 @@ export interface NamecheapDomain {
   usesNamecheapDns?: boolean;
 }
 
-export interface NamecheapDomainInfo {
-  domain: string;
-  status?: string;
-  owner?: boolean;
-  createdAt?: string;
-  expiresAt?: string;
-  privacy?: boolean;
-  usesNamecheapDns?: boolean;
-}
-
 export interface NamecheapDnsList {
   usesNamecheapDns: boolean;
   nameservers: string[];
@@ -152,17 +140,12 @@ const MAX_RETRIES = 2;
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 
-/** Lower case, trimmed, without a trailing dot. */
-export function normalizeDomain(domain: string): string {
-  return domain.trim().toLowerCase().replace(/\.$/, "");
-}
-
 /**
  * Splits a registrable domain into Namecheap's `SLD` (the first label) and `TLD` (the rest):
  * `example.co.uk` → `example` + `co.uk`.
  */
 export function splitDomain(domain: string): { sld: string; tld: string } {
-  const name = normalizeDomain(domain);
+  const name = normalizeHostName(domain);
   const labels = name.split(".");
   if (labels.length < 2 || !labels.every((l) => LABEL.test(l))) {
     throw new OpsCrewError("INVALID_INPUT", `"${domain}" is not a valid domain name.`, {
@@ -181,8 +164,6 @@ export function namecheapDate(value: string | undefined): string | undefined {
 }
 
 class Unreachable extends Error {}
-/** Thrown internally for error 2030288 (the domain does not use Namecheap's DNS). */
-class NotOurDns extends Error {}
 
 interface Answer {
   status: number;
@@ -327,14 +308,8 @@ export class NamecheapClient {
     return this.#fixedIp ?? this.#detected;
   }
 
-  /** A read-only (or idempotent) command; returns its `CommandResponse` validated by `schema`. */
-  async #call<T>(
-    command: string,
-    params: Record<string, string>,
-    schema: z.ZodType<T>,
-    what: string,
-    special?: (errors: NamecheapApiError[]) => Error | undefined,
-  ): Promise<T> {
+  /** A read-only (or idempotent) command's answer, retried after network errors, 5xx and 429. */
+  async #send(command: string, params: Record<string, string>, what: string): Promise<Answer> {
     const body = await this.#body(command, params);
     for (let attempt = 0; ; attempt++) {
       let answer: Answer;
@@ -356,32 +331,45 @@ export class NamecheapClient {
         await this.#sleep((status === 429 ? 10_000 : 1000) * 2 ** attempt);
         continue;
       }
-      if (envelope && !envelope.ok) {
-        throw special?.(envelope.errors) ?? this.#error(envelope.errors, what);
-      }
-      if (!envelope || status < 200 || status >= 300) {
-        throw new OpsCrewError(
-          "PROVIDER_ERROR",
-          `Namecheap returned an unreadable answer (HTTP ${status}) when trying to ${what}.`,
-          {
-            hint: "Try again in a minute; if it keeps failing, check https://www.namecheap.com/status-updates/.",
-          },
-        );
-      }
-      const parsed = schema.safeParse(envelope.commandResponse);
-      if (!parsed.success) {
-        throw new OpsCrewError(
-          "PROVIDER_ERROR",
-          `Namecheap returned an unexpected answer when trying to ${what}.`,
-        );
-      }
-      return parsed.data;
+      return answer;
     }
+  }
+
+  /** The answer's `CommandResponse` validated by `schema`; Namecheap's errors in plain English. */
+  #read<T>({ status, envelope }: Answer, schema: z.ZodType<T>, what: string): T {
+    if (envelope && !envelope.ok) throw this.#error(envelope.errors, what);
+    if (!envelope || status < 200 || status >= 300) {
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `Namecheap returned an unreadable answer (HTTP ${status}) when trying to ${what}.`,
+        {
+          hint: "Try again in a minute; if it keeps failing, check https://www.namecheap.com/status-updates/.",
+        },
+      );
+    }
+    const parsed = schema.safeParse(envelope.commandResponse);
+    if (!parsed.success) {
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `Namecheap returned an unexpected answer when trying to ${what}.`,
+      );
+    }
+    return parsed.data;
+  }
+
+  /** A read-only (or idempotent) command; returns its `CommandResponse` validated by `schema`. */
+  async #call<T>(
+    command: string,
+    params: Record<string, string>,
+    schema: z.ZodType<T>,
+    what: string,
+  ): Promise<T> {
+    return this.#read(await this.#send(command, params, what), schema, what);
   }
 
   /** `domains.check`: live availability, in batches of 50. */
   async checkDomains(domains: readonly string[]): Promise<NamecheapCheckResult[]> {
-    const names = [...new Set(domains.map(normalizeDomain))];
+    const names = [...new Set(domains.map(normalizeHostName))];
     for (const name of names) splitDomain(name);
     const results: NamecheapCheckResult[] = [];
     for (let i = 0; i < names.length; i += NAMECHEAP_CHECK_BATCH) {
@@ -396,7 +384,7 @@ export class NamecheapClient {
         const errorNo = r["@_ErrorNo"]?.trim();
         const description = r["@_Description"]?.trim();
         results.push({
-          domain: normalizeDomain(r["@_Domain"]),
+          domain: normalizeHostName(r["@_Domain"]),
           available: r["@_Available"],
           premium: r["@_IsPremiumName"] ?? false,
           ...(errorNo && errorNo !== "0"
@@ -493,7 +481,7 @@ export class NamecheapClient {
     const entries = list.AddressGetListResult?.List ?? [];
     if (entries.length === 0) throw noDefault();
     const flagged = entries.find((e) => e["@_IsDefault"] === true);
-    const candidates = flagged ? [flagged] : entries.slice(0, 20);
+    const candidates = flagged ? [flagged] : entries;
     for (const entry of candidates) {
       const info = await this.#call(
         "users.address.getInfo",
@@ -523,7 +511,7 @@ export class NamecheapClient {
    * response from provider") — is a `PROVIDER_ERROR` saying the purchase may still have started.
    */
   async createDomain(request: NamecheapCreateRequest): Promise<NamecheapCreateResult> {
-    const domain = normalizeDomain(request.domain);
+    const domain = normalizeHostName(request.domain);
     splitDomain(domain);
     if (!Number.isInteger(request.years) || request.years < 1 || request.years > 10) {
       throw new OpsCrewError(
@@ -543,13 +531,12 @@ export class NamecheapClient {
     });
     const scrub = (text: string) => contact.scrub(this.#scrub(text));
     const uncertain = (detail: string) =>
-      new OpsCrewError(
-        "PROVIDER_ERROR",
-        `Namecheap gave no clear answer while registering ${domain} (${detail}). The purchase may still have started; check your Namecheap domain list before trying again.`,
-        {
-          hint: `Run \`opscrew domain status\` or look at ${this.dashboard.domainList} before buying ${domain} again.`,
-        },
-      );
+      maybeStarted({
+        registrar: "Namecheap",
+        domain,
+        detail,
+        dashboard: this.dashboard.domainList,
+      });
     let answer: Answer;
     try {
       answer = await this.#post(body);
@@ -585,7 +572,7 @@ export class NamecheapClient {
     if (!parsed.success) throw uncertain("an unexpected answer");
     const r = parsed.data.DomainCreateResult;
     return {
-      domain: normalizeDomain(r["@_Domain"]) || domain,
+      domain: normalizeHostName(r["@_Domain"]) || domain,
       registered: r["@_Registered"],
       nonRealTime: r["@_NonRealTimeDomain"] ?? false,
       ...(r["@_ChargedAmount"] !== undefined ? { chargedAmount: r["@_ChargedAmount"] } : {}),
@@ -598,14 +585,14 @@ export class NamecheapClient {
   async listDomains(searchTerm?: string): Promise<NamecheapDomain[]> {
     const domains: NamecheapDomain[] = [];
     const pageSize = 100;
-    for (let page = 1; page <= 100; page++) {
+    for (let page = 1; ; page++) {
       const answer = await this.#call(
         "domains.getList",
         {
           ListType: "ALL",
           Page: String(page),
           PageSize: String(pageSize),
-          ...(searchTerm ? { SearchTerm: normalizeDomain(searchTerm) } : {}),
+          ...(searchTerm ? { SearchTerm: normalizeHostName(searchTerm) } : {}),
         },
         DomainListResponse,
         "list the domains of the account",
@@ -616,7 +603,7 @@ export class NamecheapClient {
         const expiresAt = namecheapDate(d["@_Expires"]);
         const guard = d["@_WhoisGuard"]?.trim().toUpperCase();
         domains.push({
-          domain: normalizeDomain(d["@_Name"]),
+          domain: normalizeHostName(d["@_Name"]),
           ...(createdAt ? { createdAt } : {}),
           ...(expiresAt ? { expiresAt } : {}),
           ...(d["@_IsExpired"] !== undefined ? { expired: d["@_IsExpired"] } : {}),
@@ -627,39 +614,15 @@ export class NamecheapClient {
         });
       }
       const total = answer.Paging?.TotalItems;
-      if (rows.length < pageSize || (total !== undefined && domains.length >= total)) break;
+      if (rows.length < pageSize || (total !== undefined && domains.length >= total)) {
+        return domains;
+      }
     }
-    return domains;
-  }
-
-  /** `domains.getInfo` for a domain of the account. */
-  async getDomainInfo(domain: string): Promise<NamecheapDomainInfo> {
-    const name = normalizeDomain(domain);
-    const answer = await this.#call(
-      "domains.getInfo",
-      { DomainName: name },
-      DomainInfoResponse,
-      `read the details of ${name}`,
-    );
-    const r = answer.DomainGetInfoResult;
-    const createdAt = namecheapDate(r.DomainDetails?.CreatedDate);
-    const expiresAt = namecheapDate(r.DomainDetails?.ExpiredDate);
-    const privacy = r.Whoisguard?.["@_Enabled"];
-    const ourDns = r.DnsDetails?.["@_IsUsingOurDNS"];
-    return {
-      domain: normalizeDomain(r["@_DomainName"]),
-      ...(r["@_Status"] ? { status: r["@_Status"] } : {}),
-      ...(r["@_IsOwner"] !== undefined ? { owner: r["@_IsOwner"] } : {}),
-      ...(createdAt ? { createdAt } : {}),
-      ...(expiresAt ? { expiresAt } : {}),
-      ...(privacy !== undefined ? { privacy } : {}),
-      ...(ourDns !== undefined ? { usesNamecheapDns: ourDns } : {}),
-    };
   }
 
   /** `domains.dns.getList`: the domain's nameservers and whether Namecheap's DNS is used. */
   async getDnsList(domain: string): Promise<NamecheapDnsList> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const { sld, tld } = splitDomain(name);
     const answer = await this.#call(
       "domains.dns.getList",
@@ -670,15 +633,15 @@ export class NamecheapClient {
     const r = answer.DomainDNSGetListResult;
     return {
       usesNamecheapDns: r["@_IsUsingOurDNS"],
-      nameservers: (r.Nameserver ?? []).map(normalizeDomain).filter(Boolean),
+      nameservers: (r.Nameserver ?? []).map(normalizeHostName).filter(Boolean),
     };
   }
 
   /** `domains.dns.setCustom`: points the domain at other nameservers (Cloudflare's). */
   async setCustomNameservers(domain: string, nameservers: readonly string[]): Promise<void> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const { sld, tld } = splitDomain(name);
-    const list = [...new Set(nameservers.map(normalizeDomain).filter(Boolean))];
+    const list = [...new Set(nameservers.map(normalizeHostName).filter(Boolean))];
     if (list.length < 2) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -704,23 +667,12 @@ export class NamecheapClient {
    * use Namecheap's DNS (`IsUsingOurDNS` false or error 2030288).
    */
   async getHosts(domain: string): Promise<NamecheapHostList | undefined> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const { sld, tld } = splitDomain(name);
-    let answer: z.infer<typeof HostsResponse>;
-    try {
-      answer = await this.#call(
-        "domains.dns.getHosts",
-        { SLD: sld, TLD: tld },
-        HostsResponse,
-        `read the DNS records of ${name}`,
-        (errors) =>
-          errors.some((e) => errorKind(e) === "notOurDns") ? new NotOurDns() : undefined,
-      );
-    } catch (error) {
-      if (error instanceof NotOurDns) return undefined;
-      throw error;
-    }
-    const r = answer.DomainDNSGetHostsResult;
+    const what = `read the DNS records of ${name}`;
+    const answer = await this.#send("domains.dns.getHosts", { SLD: sld, TLD: tld }, what);
+    if (answer.envelope?.errors.some((e) => errorKind(e) === "notOurDns")) return undefined;
+    const r = this.#read(answer, HostsResponse, what).DomainDNSGetHostsResult;
     if (r?.["@_IsUsingOurDNS"] === false) return undefined;
     const hosts = [...(r?.Host ?? []), ...(r?.host ?? [])].map((h) => ({
       name: h["@_Name"].trim(),
@@ -731,21 +683,6 @@ export class NamecheapClient {
     }));
     const emailType = r?.["@_EmailType"]?.trim().toUpperCase();
     return { hosts, ...(emailType ? { emailType } : {}) };
-  }
-
-  /** `domains.setRegistrarLock`: locks or unlocks the domain against transfers. */
-  async setRegistrarLock(domain: string, locked: boolean): Promise<void> {
-    const name = normalizeDomain(domain);
-    const what = `${locked ? "lock" : "unlock"} ${name}`;
-    const answer = await this.#call(
-      "domains.setRegistrarLock",
-      { DomainName: name, LockAction: locked ? "LOCK" : "UNLOCK" },
-      RegistrarLockResponse,
-      what,
-    );
-    if (!answer.DomainSetRegistrarLockResult["@_IsSuccess"]) {
-      throw new OpsCrewError("PROVIDER_ERROR", `Namecheap did not ${what}.`);
-    }
   }
 }
 

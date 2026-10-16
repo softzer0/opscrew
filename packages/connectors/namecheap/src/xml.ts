@@ -257,22 +257,6 @@ export const DomainListResponse = z.looseObject({
     .optional(),
 });
 
-export const DomainInfoResponse = z.looseObject({
-  DomainGetInfoResult: z.looseObject({
-    "@_Status": z.string().optional(),
-    "@_DomainName": z.string(),
-    "@_IsOwner": flag.optional(),
-    DomainDetails: maybeEmpty(z.looseObject({ CreatedDate: text, ExpiredDate: text })).optional(),
-    Whoisguard: maybeEmpty(z.looseObject({ "@_Enabled": flag.optional() })).optional(),
-    DnsDetails: maybeEmpty(
-      z.looseObject({
-        "@_ProviderType": z.string().optional(),
-        "@_IsUsingOurDNS": flag.optional(),
-      }),
-    ).optional(),
-  }),
-});
-
 export const DnsListResponse = z.looseObject({
   DomainDNSGetListResult: z.looseObject({
     "@_IsUsingOurDNS": flag,
@@ -301,8 +285,4 @@ export const HostsResponse = z.looseObject({
       host: z.array(HostNode).optional(),
     }),
   ),
-});
-
-export const RegistrarLockResponse = z.looseObject({
-  DomainSetRegistrarLockResult: z.looseObject({ "@_IsSuccess": flag }),
 });

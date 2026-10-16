@@ -11,7 +11,8 @@ import {
   makeClient,
   type Route,
 } from "./__fixtures__/fake-namecheap";
-import { NAMECHEAP_DASHBOARD_URLS, NamecheapRegistrar, priceFor } from "./index";
+import { NAMECHEAP_DASHBOARD_URLS } from "./errors";
+import { NamecheapRegistrar, priceFor } from "./registrar";
 
 function setup(extra: Record<string, Route | Route[]> = {}) {
   const fake = fakeNamecheap({
@@ -132,7 +133,10 @@ describe("NamecheapRegistrar", () => {
     expect(premium.code).toBe("PHASE_PRECONDITION");
     expect(premium.hint).toContain(NAMECHEAP_DASHBOARD_URLS.domainList);
     expect(premium.hint).toContain("`opscrew domain connect us.xyz`");
-    expect((await failure(registrar.quote("taken.com", 1))).message).toMatch(/already registered/);
+    const taken = await failure(registrar.quote("taken.com", 1));
+    expect(taken.code).toBe("PHASE_PRECONDITION");
+    expect(taken.message).toBe("Namecheap cannot sell taken.com through its API.");
+    expect(taken.hint).toMatch(/already registered/);
     const before = calls.length;
     const us = await failure(registrar.quote("shopapp.us", 1));
     expect(us.hint).toMatch(/extended attributes/);
