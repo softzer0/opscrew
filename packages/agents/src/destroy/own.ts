@@ -94,8 +94,11 @@ function requireOwnApp(plan: DeployPlan, projectId: string, facts: HostFacts): v
   );
 }
 
-/** Stops (`PHASE_PRECONDITION`, nothing changed) when a teardown or undo plan cannot run. */
-function requireNoHostBlockers(plan: HostPlan, what: string, already = ""): void {
+/**
+ * Stops (`PHASE_PRECONDITION`, nothing changed) when a teardown or undo plan cannot run; the
+ * findings of a plan made for `command` already say to run it again.
+ */
+function requireNoHostBlockers(plan: HostPlan, what: string, command: string, already = ""): void {
   const blocked = plan.steps.filter((step) => step.state === "blocked");
   if (plan.findings.length === 0 && blocked.length === 0) return;
   const reasons =
@@ -109,8 +112,8 @@ function requireNoHostBlockers(plan: HostPlan, what: string, already = ""): void
     {
       hint:
         hints.length > 0
-          ? `${hints.join(" ")} Then run \`${COMMAND}\` again.`
-          : `Fix what blocks these steps on the server, then run \`${COMMAND}\` again.`,
+          ? hints.join(" ")
+          : `Fix what blocks these steps on the server, then run \`${command}\` again.`,
     },
   );
 }
@@ -135,6 +138,8 @@ async function applyHostPlanApproved(
     allowDestroy: boolean;
     confirmPhrase?: string;
     refused: string;
+    /** What the user runs again after a failure: `opscrew destroy`, with `--undo-host` if given. */
+    command: string;
     /** Added to the hint when the apply fails, saying what already happened before it. */
     afterFailure?: string;
   },
@@ -173,6 +178,7 @@ async function applyHostPlanApproved(
   try {
     const result = await host.adapter.apply(host.session.remote, plan, {
       approvedHash: hash,
+      command: request.command,
       verifyLogin: host.verifyLogin,
       version: deps.version,
       now: () => deps.clock.now(),
@@ -369,6 +375,8 @@ export async function destroyOwnServer(
   const own = services.own ?? {};
   const name = plan.app.name;
   const deleteData = options.deleteData === true;
+  // What the user runs again after a stop, in the findings and the hints of the host adapter.
+  const command = options.undoHost === true ? `${COMMAND} --undo-host` : COMMAND;
   const stateHere = await hasState(deps.paths);
   // A finished teardown records `destroyedAt`; an interrupted one does not, so it continues.
   const removeApp = hasDeployment(plan) || (stateHere && plan.deployment.destroyedAt === undefined);
@@ -463,8 +471,10 @@ export async function destroyOwnServer(
     ({ resources, confirmed } = await previewCloudflareRemoval(iac, words));
   }
   // Without the marker (deleted on the server) the record or the plan names the app (T931).
-  const teardown = removeApp ? planTeardown(facts, { deleteData, app: name }) : undefined;
-  if (teardown !== undefined) requireNoHostBlockers(teardown, `remove ${name} from your server`);
+  const teardown = removeApp ? planTeardown(facts, { deleteData, app: name }, command) : undefined;
+  if (teardown !== undefined) {
+    requireNoHostBlockers(teardown, `remove ${name} from your server`, command);
+  }
   const hostSteps = (teardown?.steps ?? []).filter((step) => step.state === "change");
   // The teardown deletes the app's data (with `deleteData`) in its step that removes the app.
   const deletesData =
@@ -546,6 +556,7 @@ export async function destroyOwnServer(
           ? "The app's Cloudflare resources are deleted already; the app is still on your server. Run `opscrew destroy` again to finish."
           : undefined;
       const result = await applyHostPlanApproved(deps, host, teardown, {
+        command,
         title: `Remove ${name} from your server (${plural(hostSteps.length, "change")})`,
         intro: [
           deleteData
@@ -613,10 +624,11 @@ export async function destroyOwnServer(
   if (options.undoHost === true) {
     const after = removeApp && hostSteps.length > 0 ? await inspect() : facts;
     requireOwnApp(plan, deps.paths.projectId, after);
-    const undo = planUndo(after);
+    const undo = planUndo(after, command);
     requireNoHostBlockers(
       undo,
       "undo its changes to your server",
+      command,
       removeApp ? ` (the app itself is removed already)` : "",
     );
     const undoSteps = undo.steps.filter((step) => step.state === "change");
@@ -633,6 +645,7 @@ export async function destroyOwnServer(
       // it installed): a destroy, so it needs allowDestroy and the typed app name (Constitution I).
       const deletesDeployUser = undoSteps.some((step) => step.id === "deploy-user");
       const result = await applyHostPlanApproved(deps, host, undo, {
+        command,
         title: `Undo OpsCrew's changes to your server (${plural(undoSteps.length, "change")})`,
         intro: [
           "This reverses what OpsCrew changed on your server, from its record in /etc/opscrew/host.json, and leaves alone anything OpsCrew did not install. Docker stays installed (other software may use it).",

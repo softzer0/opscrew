@@ -714,7 +714,8 @@ export async function ownHostDrift(
   return {
     differences: hostDifferences(
       facts,
-      planHost(facts, desired),
+      // Its findings say what stops `opscrew provision`, which puts the setup back.
+      planHost(facts, desired, "opscrew provision"),
       {
         name: plan.app.name,
         deployed: plan.deployment.lastDeployAt !== undefined,

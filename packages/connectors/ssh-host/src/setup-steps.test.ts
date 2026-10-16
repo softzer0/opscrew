@@ -138,7 +138,7 @@ describe("ufw that is on but lets everything in (T927)", () => {
     const fake = activeUfw("allow");
     await provision(fake);
     fake.files.delete("/etc/opscrew/app.json");
-    const undo = planUndo(await inspectHost(fake));
+    const undo = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
     const ufw = stepOf(undo, "ufw");
     expect(ufw?.state).toBe("change");
     expect(ufw?.params).toEqual({

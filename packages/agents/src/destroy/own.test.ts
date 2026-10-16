@@ -464,6 +464,30 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(s.engine.applies).toHaveLength(before.engine);
   });
 
+  it("a blocked teardown or undo says once to run opscrew destroy (--undo-host) again", async () => {
+    const s = await deployed();
+    s.host.facts = HostFactsSchema.parse({
+      ...structuredClone(s.host.facts),
+      privilege: "sudo-password",
+      user: "alice",
+    });
+    const teardown = await expectError(
+      runDestroy(s.deps, { services: services(s) }),
+      "PHASE_PRECONDITION",
+    );
+    expect(teardown.message).toContain("needs a password for sudo");
+    expect(teardown.hint).toMatch(/, then run opscrew destroy again\.$/);
+    expect(teardown.hint?.match(/opscrew (?:destroy|provision)/g)).toEqual(["opscrew destroy"]);
+
+    const undo = await expectError(
+      runDestroy(s.deps, { services: services(s), undoHost: true }),
+      "PHASE_PRECONDITION",
+    );
+    expect(undo.hint).toMatch(/, then run opscrew destroy --undo-host again\.$/);
+    expect(undo.hint?.match(/opscrew (?:destroy|provision)/g)).toEqual(["opscrew destroy"]);
+    expect(s.handler.requests).toEqual([]);
+  });
+
   it("an unconfirmed app name changes nothing", async () => {
     const s = await deployed();
     const before = { host: s.host.applies.length, engine: s.engine.applies.length };

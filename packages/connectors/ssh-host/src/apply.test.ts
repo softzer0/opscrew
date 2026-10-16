@@ -326,7 +326,7 @@ describe("docker daemon settings", () => {
     await provision(fake);
     fake.files.delete("/etc/opscrew/app.json");
     fake.files.set("/etc/docker/daemon.json", '{ "log-driver": "journald" }\n');
-    const undo = planUndo(await inspectHost(fake));
+    const undo = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
     expect(undo.steps.find((step) => step.id === "docker-daemon")).toMatchObject({
       state: "in-place",
     });
@@ -398,7 +398,7 @@ describe("ufw default policies", () => {
       defaultRouted: "reject",
     });
     fake.files.delete("/etc/opscrew/app.json");
-    await applyApproved(fake, planUndo(await inspectHost(fake)));
+    await applyApproved(fake, planUndo(await inspectHost(fake), "opscrew destroy --undo-host"));
     expect(fake.ufwDefaults).toEqual({ incoming: "allow", outgoing: "allow", routed: "reject" });
     expect(fake.ufwActive).toBe(false);
   });
@@ -418,6 +418,7 @@ describe("applyHostPlan refuses", () => {
     const error = await rejection(
       applyHostPlan(fake, tampered, {
         approvedHash: hostPlanHash(plan),
+        command: "opscrew provision",
         verifyLogin: async () => true,
       }),
     );
@@ -426,7 +427,11 @@ describe("applyHostPlan refuses", () => {
     expect(error.message).toMatch(/not the one that was approved/);
     expect(fake.calls).toEqual([]);
     const malformed = await rejection(
-      applyHostPlan(fake, plan, { approvedHash: "not-a-hash", verifyLogin: async () => true }),
+      applyHostPlan(fake, plan, {
+        approvedHash: "not-a-hash",
+        command: "opscrew provision",
+        verifyLogin: async () => true,
+      }),
     );
     expect(malformed.code).toBe("PLAN_HASH_MISMATCH");
     expect(fake.calls).toEqual([]);
@@ -438,6 +443,7 @@ describe("applyHostPlan refuses", () => {
     await expect(
       applyHostPlan(fake, plan, {
         approvedHash: hostPlanHash(plan).toUpperCase(),
+        command: "opscrew provision",
         verifyLogin: async () => true,
       }),
     ).resolves.toMatchObject({ skipped: [] });
@@ -476,8 +482,12 @@ describe("applyHostPlan refuses", () => {
     const fake = new FakeHost({ login: "alice", sudo: "nopasswd" });
     const plan = await planFor(fake);
     fake.sudo = "password";
-    const error = await rejection(applyApproved(fake, plan));
+    const error = await rejection(
+      applyApproved(fake, plan, { command: "opscrew portainer enable" }),
+    );
     expect(error.message).toMatch(/needs a password for sudo/);
+    // The hint names the command that is running, not always `opscrew provision`.
+    expect(error.hint).toMatch(/, then run opscrew portainer enable again\.$/);
     expect(fake.names().filter((name) => STEP_SCRIPTS.test(name))).toEqual([]);
   });
 });
@@ -625,7 +635,7 @@ describe("resuming after an interruption", () => {
     expect(fake.timers.has("sshd")).toBe(true);
     const facts = await inspectHost(fake);
     expect(facts.pendingUndo.sshd).toBe(true);
-    const plan = planHost(facts, desiredFor(fake));
+    const plan = planHost(facts, desiredFor(fake), "opscrew provision");
     expect(plan.steps.find((step) => step.id === "sshd")?.state).toBe("change");
     await applyApproved(fake, plan);
     expect(fake.timers.size).toBe(0);
@@ -663,6 +673,7 @@ describe("secrets", () => {
     const error = await rejection(
       applyHostPlan(deaf, plan, {
         approvedHash: hostPlanHash(plan),
+        command: "opscrew provision",
         verifyLogin: async () => true,
         secrets: { tunnelToken: tunnelToken() },
       }),
@@ -700,7 +711,11 @@ describe("teardown", () => {
 
   it("removes the app but keeps its data without deleteData, and never touches other containers", async () => {
     const fake = await deployed(true);
-    const plan = planTeardown(await inspectHost(fake), { deleteData: false, app: "shop" });
+    const plan = planTeardown(
+      await inspectHost(fake),
+      { deleteData: false, app: "shop" },
+      "opscrew destroy",
+    );
     const result = await applyApproved(fake, plan);
     expect(result.applied).toEqual(["runtime-dirs", "portainer", "app-marker"]);
     expect(fake.containers.map((container) => container.name)).toEqual(["grafana"]);
@@ -720,7 +735,11 @@ describe("teardown", () => {
 
   it("deletes the data only with deleteData", async () => {
     const fake = await deployed(true);
-    const plan = planTeardown(await inspectHost(fake), { deleteData: true, app: "shop" });
+    const plan = planTeardown(
+      await inspectHost(fake),
+      { deleteData: true, app: "shop" },
+      "opscrew destroy",
+    );
     await applyApproved(fake, plan);
     expect(fake.dirs.get("/srv/data")?.entries).toBe(0);
     expect(fake.volumes.has("opscrew-portainer")).toBe(false);
@@ -741,10 +760,10 @@ describe("undo", () => {
     deployApp(fake, "shop");
     await applyApproved(
       fake,
-      planTeardown(await inspectHost(fake), { deleteData: true, app: "shop" }),
+      planTeardown(await inspectHost(fake), { deleteData: true, app: "shop" }, "opscrew destroy"),
     );
 
-    const undo = planUndo(await inspectHost(fake));
+    const undo = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
     expect(undo.findings).toEqual([]);
     const result = await applyApproved(fake, undo);
     expect(result).toEqual({
@@ -785,7 +804,7 @@ describe("undo", () => {
     await provision(fake);
     expect(fake.files.get("/etc/opscrew/backup/10-opscrew.conf")).toBe("X11Forwarding no\n");
     fake.files.delete("/etc/opscrew/app.json");
-    await applyApproved(fake, planUndo(await inspectHost(fake)));
+    await applyApproved(fake, planUndo(await inspectHost(fake), "opscrew destroy --undo-host"));
     expect(fake.files.get("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe("X11Forwarding no\n");
   });
 });
@@ -795,7 +814,7 @@ describe("apply errors name the steps applied before the failure", () => {
     const fake = new FakeHost();
     const plan = await planFor(fake);
     fake.failScripts.set("fail2ban.apply", "fail2ban did not start");
-    const error = await rejection(applyApproved(fake, plan));
+    const error = await rejection(applyApproved(fake, plan, { command: "opscrew dns" }));
     const before = plan.steps
       .slice(
         0,
@@ -808,7 +827,9 @@ describe("apply errors name the steps applied before the failure", () => {
     expect((error as HostApplyError).applied).toEqual(before);
     expect(error.code).toBe("COMMAND_FAILED");
     expect(error.message).toContain("fail2ban did not start");
-    expect(error.hint).toMatch(/Nothing after this step was changed/);
+    expect(error.hint).toBe(
+      "Nothing after this step was changed. Then fix the problem on the server, then run opscrew dns again; steps that are already done are skipped.",
+    );
   });
 
   it("is empty when the first change fails", async () => {

@@ -29,7 +29,7 @@ import {
   type HostRecordEntry,
   type WebFilterRules,
 } from "./facts";
-import { findings, privilegeFindings } from "./findings";
+import { type HostFindings, hostFindings, privilegeFindings } from "./findings";
 import { isLoopback, majorOf, publishesPort, ufwRuleCovers, WEB_FILTER_PORTS } from "./parse";
 import { type RunAs, stepScripts } from "./steps";
 import {
@@ -83,8 +83,8 @@ function step(
 }
 
 /** Plain findings that make the rest of the facts unreliable; every step is blocked. */
-function fatalFindings(facts: HostFacts): HostFinding[] {
-  const found = privilegeFindings(facts);
+function fatalFindings(facts: HostFacts, findings: HostFindings): HostFinding[] {
+  const found = privilegeFindings(facts, findings);
   if (found.length > 0) return found;
   const versions = SUPPORTED_OS[facts.os.id];
   if (!versions?.includes(facts.os.versionId)) {
@@ -244,9 +244,10 @@ interface SetupContext {
   facts: HostFacts;
   desired: DesiredHost;
   found: HostFinding[];
+  findings: HostFindings;
 }
 
-function dockerStep({ facts, found }: SetupContext): HostStep {
+function dockerStep({ facts, found, findings }: SetupContext): HostStep {
   const docker = facts.docker;
   const base = { distro: facts.os.id };
   const blocked = (finding: HostFinding, reason: string) => {
@@ -438,7 +439,7 @@ function fail2banStep({ facts, desired }: SetupContext): HostStep {
   );
 }
 
-function deployUserStep({ facts, desired, found }: SetupContext): HostStep {
+function deployUserStep({ facts, desired, found, findings }: SetupContext): HostStep {
   const params = { user: desired.deploy.user, publicKey: desired.deploy.publicKey };
   const existing = facts.deployUser;
   if (existing === null) {
@@ -486,7 +487,7 @@ function deployUserStep({ facts, desired, found }: SetupContext): HostStep {
   );
 }
 
-function sshdStep({ facts, desired, found }: SetupContext): HostStep {
+function sshdStep({ facts, desired, found, findings }: SetupContext): HostStep {
   const sshd = facts.sshd;
   const permitRootLogin = desired.admin.isRoot ? "prohibit-password" : "no";
   const rootText = desired.admin.isRoot
@@ -571,7 +572,7 @@ function realSshPorts(facts: HostFacts, desired: DesiredHost): number[] {
   return [...ports].sort((a, b) => a - b);
 }
 
-function ufwStep({ facts, desired, found }: SetupContext): HostStep {
+function ufwStep({ facts, desired, found, findings }: SetupContext): HostStep {
   const sshPorts = realSshPorts(facts, desired);
   const web = desired.access === "public";
   const portText = sshPorts.join(", ");
@@ -697,7 +698,7 @@ const TITLE_WEB_FILTER =
  * ranges reach the ports 80 and 443 Docker publishes, fail closed; otherwise a filter left from an
  * earlier setup is removed. No step when there is no filter and none is wanted.
  */
-function webFilterStep({ facts, desired, found }: SetupContext): HostStep | undefined {
+function webFilterStep({ facts, desired, found, findings }: SetupContext): HostStep | undefined {
   const wf = facts.webFilter;
   if (desired.webFilter === undefined) {
     if (!webFilterPresent(facts)) return undefined;
@@ -763,7 +764,7 @@ function upgradesStep({ facts }: SetupContext): HostStep {
   );
 }
 
-function runtimeStep({ facts, found }: SetupContext): HostStep {
+function runtimeStep({ facts, found, findings }: SetupContext): HostStep {
   const ours = setupEntry(facts, "runtime-dirs") !== undefined;
   const params = { owner: "deploy" };
   const foreign = facts.dirs.filter(
@@ -794,7 +795,7 @@ function runtimeStep({ facts, found }: SetupContext): HostStep {
       );
 }
 
-function markerStep({ facts, desired, found }: SetupContext): HostStep {
+function markerStep({ facts, desired, found, findings }: SetupContext): HostStep {
   // A Compose project named like the app may only exist when OpsCrew deployed this app here before
   // (its record says so, for example data kept by a teardown); the apply checks again.
   const ownProject =
@@ -837,7 +838,7 @@ function imageIn(compose: string): string {
  * subdomain in either mode (the tunnel then serves only Portainer's hostname). Without one, a
  * connector OpsCrew left behind is removed.
  */
-function tunnelStep({ facts, desired, found }: SetupContext): HostStep | undefined {
+function tunnelStep({ facts, desired, found, findings }: SetupContext): HostStep | undefined {
   const tunnel = facts.tunnel;
   const tunnelMode = desired.access === "tunnel";
   if (desired.tunnel === undefined) {
@@ -907,7 +908,7 @@ function tunnelStep({ facts, desired, found }: SetupContext): HostStep | undefin
   );
 }
 
-function portainerStep({ facts, desired, found }: SetupContext): HostStep | undefined {
+function portainerStep({ facts, desired, found, findings }: SetupContext): HostStep | undefined {
   const portainer = facts.portainer;
   if (desired.portainer === undefined) {
     if (!portainer.installed && !portainer.running) return undefined;
@@ -993,9 +994,10 @@ function allBlocked(desired: DesiredHost): HostStep[] {
  * The host plan that prepares the server for `desired`: Docker, the deploy user, SSH hardening,
  * ufw, automatic updates, the runtime directories, the app marker and, when asked for, the tunnel
  * connector and Portainer. Each step is in place, a change or blocked; every blocked step comes
- * with a finding that says what was found and what to do.
+ * with a finding that says what was found and what to do, and to run `command` (for example
+ * `opscrew provision`) again once it is fixed.
  */
-export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
+export function planHost(facts: HostFacts, desired: DesiredHost, command: string): HostPlan {
   const f = parseFacts(facts);
   const d = parseDesired(desired);
   if (f.privilege === "root" || f.privilege === "sudo") {
@@ -1014,9 +1016,10 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
     steps,
     findings: found,
   });
-  const fatal = fatalFindings(f);
+  const findings = hostFindings(command);
+  const fatal = fatalFindings(f, findings);
   if (fatal.length > 0) return setup(allBlocked(d), fatal);
-  const ctx: SetupContext = { facts: f, desired: d, found: [] };
+  const ctx: SetupContext = { facts: f, desired: d, found: [], findings };
   const sameApp = (owner: { app: string; projectId: string } | null | undefined) =>
     owner?.app === d.app && (owner.projectId === "" || owner.projectId === d.projectId);
   // The host record belongs to another app (its marker is gone but its host changes remain).
@@ -1069,11 +1072,13 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
  * The app is `opts.app` (the deploy plan's app name), the one the marker (`/etc/opscrew/app.json`)
  * names, or when the marker is missing the one OpsCrew's host record names; so without a marker
  * the app's containers (by their Compose project label) and /srv/app still go. When the marker or
- * the record names another app, the plan removes nothing and says why.
+ * the record names another app, the plan removes nothing and says why. Findings say to run
+ * `command` (for example `opscrew destroy`) again once fixed.
  */
 export function planTeardown(
   facts: HostFacts,
   opts: { deleteData: boolean; app: string },
+  command: string,
 ): HostPlan {
   const f = parseFacts(facts);
   if (!AppNameSchema.safeParse(opts.app).success) {
@@ -1083,7 +1088,8 @@ export function planTeardown(
     );
   }
   const deleteData = opts.deleteData;
-  const found = privilegeFindings(f);
+  const findings = hostFindings(command);
+  const found = privilegeFindings(f, findings);
   if (f.markerDamaged) found.push(findings.markerDamaged());
   // Who the server belongs to: the marker, else the host record (both empty when unknown).
   const owner = f.marker?.app || (f.marker === null ? (f.record?.app ?? "") : "");
@@ -1185,11 +1191,13 @@ function rulesToRemove(
  * The host plan that reverses OpsCrew's own host changes, from the record in
  * `/etc/opscrew/host.json`: Portainer and the tunnel connector, empty runtime directories,
  * automatic updates, firewall rules, SSH settings and the deploy user. Anything OpsCrew did not
- * install is left alone, and Docker stays installed (other software may use it).
+ * install is left alone, and Docker stays installed (other software may use it). Findings say to
+ * run `command` (for example `opscrew destroy --undo-host`) again once fixed.
  */
-export function planUndo(facts: HostFacts): HostPlan {
+export function planUndo(facts: HostFacts, command: string): HostPlan {
   const f = parseFacts(facts);
-  const found = privilegeFindings(f);
+  const findings = hostFindings(command);
+  const found = privilegeFindings(f, findings);
   if (f.recordDamaged) found.push(findings.recordDamaged());
   if (f.markerDamaged) found.push(findings.markerDamaged());
   if (f.marker !== null) found.push(findings.appStillDeployed(f.marker.app));

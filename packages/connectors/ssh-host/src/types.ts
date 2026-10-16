@@ -171,6 +171,8 @@ export type DesiredHost = z.infer<typeof DesiredHostSchema>;
 export interface ApplyOptions {
   /** The hash the user approved; apply refuses any other plan. */
   approvedHash: string;
+  /** What the user runs again once a problem is fixed (for example `opscrew provision`); errors name it. */
+  command: string;
   /** Supplied at apply, never part of the plan. */
   secrets?: { tunnelToken?: string; portainerPassword?: string };
   /** Opens NEW connections (deploy user, admin login); true when both work. */

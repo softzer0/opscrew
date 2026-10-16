@@ -7,7 +7,7 @@ import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
 import { DEFAULT_DEAD_MAN_SECONDS } from "./constants";
 import { AppMarkerSchema, HOST_ADAPTER_VERSION, type HostRecord, HostRecordSchema } from "./facts";
-import { findings } from "./findings";
+import { hostFindings } from "./findings";
 import { hostPlanHash } from "./hash";
 import { probePrivilege } from "./inspect";
 import { asLogin, asRoot, type Privilege } from "./shell";
@@ -58,12 +58,12 @@ interface Context {
   version: string;
   /** Clock for the host record's timestamps. */
   now: () => Date;
+  /** What the user runs again once a problem is fixed, for example `opscrew provision`. */
+  command: string;
 }
 
-function nextStep(plan: HostPlan): string {
-  return plan.purpose === "setup"
-    ? "fix the problem on the server, then run opscrew provision again; steps that are already done are skipped"
-    : "fix the problem on the server, then run the command again; steps that are already done are skipped";
+function nextStep(command: string): string {
+  return `fix the problem on the server, then run ${command} again; steps that are already done are skipped`;
 }
 
 /** Plain detail from a failed script: its `opscrew: ` lines, else the last stderr lines. */
@@ -92,7 +92,7 @@ async function run(
       "COMMAND_FAILED",
       `OpsCrew lost the connection to the server while ${doing}.`,
       {
-        hint: `Check that the server is reachable over SSH, then ${nextStep(ctx.plan)}.`,
+        hint: `Check that the server is reachable over SSH, then ${nextStep(ctx.command)}.`,
         // Never attach the error of a command that carried a secret on stdin.
         ...(options.input === undefined ? { cause: error } : {}),
       },
@@ -111,7 +111,7 @@ async function runOk(
     throw new OpsCrewError(
       "COMMAND_FAILED",
       `OpsCrew stopped while ${doing}: ${detail(result, ctx.redactor)}.`,
-      { hint: `Nothing after this step was changed. Then ${nextStep(ctx.plan)}.` },
+      { hint: `Nothing after this step was changed. Then ${nextStep(ctx.command)}.` },
     );
   }
   return result;
@@ -161,7 +161,7 @@ class Recorder {
       try {
         record = HostRecordSchema.parse(JSON.parse(text));
       } catch {
-        const finding = findings.recordDamaged();
+        const finding = hostFindings(ctx.command).recordDamaged();
         throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
       }
     }
@@ -179,7 +179,7 @@ class Recorder {
       (record.app !== plan.app ||
         (projectId !== "" && record.projectId !== "" && record.projectId !== projectId))
     ) {
-      const finding = findings.hostRecordOtherApp(record.app);
+      const finding = hostFindings(ctx.command).hostRecordOtherApp(record.app);
       throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
     }
     if (record === undefined) {
@@ -278,7 +278,7 @@ async function guardedApply(
         restored
           ? `${error.message} The previous ${what} are back.`
           : `${error.message} The server puts the previous ${what} back on its own within ${seconds} seconds.`,
-        { hint: error.hint ?? nextStep(ctx.plan) },
+        { hint: error.hint ?? nextStep(ctx.command) },
       );
     }
     throw error;
@@ -298,7 +298,7 @@ async function guardedApply(
         ? `New SSH logins (as deploy and as your own login) did not work after ${scripts.doing}, so OpsCrew put the previous ${what} back.`
         : `New SSH logins (as deploy and as your own login) did not work after ${scripts.doing}, and OpsCrew could not reach the server to undo it right away. The server puts the previous ${what} back on its own within ${seconds} seconds.`,
       {
-        hint: `Wait ${restored ? "a moment" : `${seconds} seconds`}, check that you can still log in, then ${nextStep(ctx.plan)}.`,
+        hint: `Wait ${restored ? "a moment" : `${seconds} seconds`}, check that you can still log in, then ${nextStep(ctx.command)}.`,
       },
     );
   }
@@ -316,7 +316,7 @@ async function guardedApply(
     throw new OpsCrewError(
       "COMMAND_FAILED",
       `OpsCrew could not cancel the automatic undo after ${scripts.doing}, so the server puts the previous ${what} back on its own within ${seconds} seconds.`,
-      { hint: `Wait ${seconds} seconds, then ${nextStep(ctx.plan)}.` },
+      { hint: `Wait ${seconds} seconds, then ${nextStep(ctx.command)}.` },
     );
   }
   if (!cancel.stdout.includes("cancelled")) {
@@ -324,7 +324,7 @@ async function guardedApply(
       "COMMAND_FAILED",
       `Checking the new logins took longer than ${seconds} seconds, so the server already put the previous ${what} back.`,
       {
-        hint: `Try again (a slow connection may need a longer automatic-undo delay), then ${nextStep(ctx.plan)}.`,
+        hint: `Try again (a slow connection may need a longer automatic-undo delay), then ${nextStep(ctx.command)}.`,
       },
     );
   }
@@ -401,11 +401,12 @@ async function claimCheck(ctx: Context): Promise<void> {
   try {
     marker = AppMarkerSchema.parse(JSON.parse(text));
   } catch {
-    const finding = findings.markerDamaged();
+    const finding = hostFindings(ctx.command).markerDamaged();
     throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
   }
   const projectId = planProjectId(ctx.plan);
   if (marker.app === ctx.plan.app && (projectId === "" || marker.projectId === projectId)) return;
+  const findings = hostFindings(ctx.command);
   const finding =
     marker.app === ctx.plan.app
       ? findings.sameAppOtherProject(marker.app, marker.projectId)
@@ -474,7 +475,7 @@ export async function applyHostPlan(
   const parsed = HostPlanSchema.safeParse(plan);
   if (!parsed.success) {
     throw new OpsCrewError("INVALID_INPUT", "The host plan is not valid.", {
-      hint: "Make a fresh host plan with opscrew provision and approve it.",
+      hint: `Make a fresh host plan with ${opts.command} and approve it.`,
     });
   }
   const valid = parsed.data;
@@ -561,6 +562,7 @@ export async function applyHostPlan(
     recorder: null,
     version: opts.version ?? HOST_ADAPTER_VERSION,
     now: opts.now ?? (() => new Date()),
+    command: opts.command,
   };
   const needsRoot = changes.some(({ step }) => runAsOf(step) === "root");
   if (needsRoot) {
@@ -568,8 +570,8 @@ export async function applyHostPlan(
     if (privilege === "sudo-password" || privilege === "none") {
       const finding =
         privilege === "sudo-password"
-          ? findings.sudoNeedsPassword("this login")
-          : findings.noRoot("");
+          ? hostFindings(ctx.command).sudoNeedsPassword("this login")
+          : hostFindings(ctx.command).noRoot("");
       throw refuse(finding.message, finding.hint);
     }
     ctx.privilege = privilege;

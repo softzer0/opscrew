@@ -38,10 +38,11 @@ describe("hostPlanHash", () => {
   it("changes when any parameter changes", async () => {
     const fake = new FakeHost();
     const facts = await inspectHost(fake);
-    const a = planHost(facts, desiredFor(fake));
+    const a = planHost(facts, desiredFor(fake), "opscrew provision");
     const b = planHost(
       facts,
       desiredFor(fake, { deploy: { user: "deploy", publicKey: `${DEPLOY_KEY}2` } }),
+      "opscrew provision",
     );
     expect(hostPlanHash(a)).not.toBe(hostPlanHash(b));
   });
@@ -79,10 +80,18 @@ describe("planHost: steps", () => {
     expect(codes(plan)).toEqual(["password-users-without-keys"]);
     expect(plan.findings[0]?.message).toContain("bob");
 
-    const off = planHost(await inspectHost(fake), desiredFor(fake, { disablePasswords: true }));
+    const off = planHost(
+      await inspectHost(fake),
+      desiredFor(fake, { disablePasswords: true }),
+      "opscrew provision",
+    );
     expect(codes(off)).toEqual([]);
     expect(paramsOf(off, "sshd")?.disablePasswords).toBe(true);
-    const keep = planHost(await inspectHost(fake), desiredFor(fake, { disablePasswords: false }));
+    const keep = planHost(
+      await inspectHost(fake),
+      desiredFor(fake, { disablePasswords: false }),
+      "opscrew provision",
+    );
     expect(paramsOf(keep, "sshd")).toMatchObject({
       disablePasswords: false,
       kbdInteractiveOff: false,
@@ -230,6 +239,7 @@ describe("planHost: steps", () => {
       const chosen = planHost(
         await inspectHost(fake),
         desiredFor(fake, { disablePasswords: false }),
+        "opscrew provision",
       );
       expect(codes(chosen)).toEqual([]);
       expect(paramsOf(chosen, "sshd")).toMatchObject({ disablePasswords: false });
@@ -501,6 +511,32 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     });
   }
 
+  it("says to run the command that made the plan again, not always opscrew provision", async () => {
+    const sudo = new FakeHost({ login: "alice", sudo: "password" });
+    const facts = await inspectHost(sudo);
+    const hints = (plan: HostPlan) => plan.findings.map((finding) => finding.hint);
+    expect(hints(planHost(facts, desiredFor(sudo), "opscrew dns"))).toEqual([
+      expect.stringMatching(/, then run opscrew dns again\.$/),
+    ]);
+    expect(
+      hints(planTeardown(facts, { deleteData: false, app: "shop" }, "opscrew destroy")),
+    ).toEqual([expect.stringMatching(/, then run opscrew destroy again\.$/)]);
+    expect(hints(planUndo(facts, "opscrew destroy --undo-host"))).toEqual([
+      expect.stringMatching(/, then run opscrew destroy --undo-host again\.$/),
+    ]);
+    const firewalled = new FakeHost();
+    firewalled.firewalld = true;
+    const enable = planHost(
+      await inspectHost(firewalled),
+      desiredFor(firewalled, { portainer: portainerDesired() }),
+      "opscrew portainer enable",
+    );
+    expect(hints(enable)).toEqual([
+      expect.stringMatching(/ Then run opscrew portainer enable again after the change\.$/),
+    ]);
+    expect(JSON.stringify(enable)).not.toContain("opscrew provision");
+  });
+
   it("blocks a Compose project with the app's name that OpsCrew did not deploy", async () => {
     const fake = new FakeHost();
     fake.dockerRunning = true;
@@ -519,7 +555,7 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     fake.volumes.set("shop", 2);
     await applyApproved(
       fake,
-      planTeardown(await inspectHost(fake), { deleteData: false, app: "shop" }),
+      planTeardown(await inspectHost(fake), { deleteData: false, app: "shop" }, "opscrew destroy"),
     );
     expect(fake.volumes.get("shop")).toBe(2);
     const plan = await planFor(fake);
@@ -682,16 +718,25 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
   it("refuses inconsistent input", async () => {
     const fake = new FakeHost();
     const facts = await inspectHost(fake);
-    expect(() => planHost(facts, desiredFor(fake, { app: "Not An App" }))).toThrow(/not valid/);
+    expect(() =>
+      planHost(facts, desiredFor(fake, { app: "Not An App" }), "opscrew provision"),
+    ).toThrow(/not valid/);
     expect(() =>
       planHost(
         facts,
         desiredFor(fake, { deploy: { user: "deploy", publicKey: fakeSecret("private-key-pem") } }),
+        "opscrew provision",
       ),
     ).toThrow(/not valid/);
-    expect(() => planHost(facts, desiredFor(fake, { access: "tunnel" }))).toThrow(/tunnel/);
     expect(() =>
-      planHost(facts, desiredFor(fake, { admin: { user: "alice", isRoot: false } })),
+      planHost(facts, desiredFor(fake, { access: "tunnel" }), "opscrew provision"),
+    ).toThrow(/tunnel/);
+    expect(() =>
+      planHost(
+        facts,
+        desiredFor(fake, { admin: { user: "alice", isRoot: false } }),
+        "opscrew provision",
+      ),
     ).toThrow(/inspected as root/);
   });
 });
@@ -704,7 +749,7 @@ describe("planTeardown and planUndo", () => {
     });
     deployApp(fake, "shop");
     const facts = await inspectHost(fake);
-    const keep = planTeardown(facts, { deleteData: false, app: "shop" });
+    const keep = planTeardown(facts, { deleteData: false, app: "shop" }, "opscrew destroy");
     expect(keep.purpose).toBe("teardown");
     expect(keep.deleteData).toBe(false);
     expect(keep.steps.map((step) => [step.id, step.state])).toEqual([
@@ -713,7 +758,7 @@ describe("planTeardown and planUndo", () => {
       ["app-marker", "change"],
     ]);
     expect(keep.steps[0]?.title).toMatch(/data in \/srv\/data and Compose volumes stay/);
-    const wipe = planTeardown(facts, { deleteData: true, app: "shop" });
+    const wipe = planTeardown(facts, { deleteData: true, app: "shop" }, "opscrew destroy");
     expect(wipe.steps[0]?.params).toEqual({ app: "shop", deleteData: true });
     expect(hostPlanHash(wipe)).not.toBe(hostPlanHash(keep));
     expect(JSON.stringify(keep)).not.toMatch(/docker|deploy-user|sshd|ufw/);
@@ -729,7 +774,7 @@ describe("planTeardown and planUndo", () => {
     expect(facts.marker).toBeNull();
 
     // The host record names the same app, so the teardown goes ahead.
-    const plan = planTeardown(facts, { deleteData: false, app: "shop" });
+    const plan = planTeardown(facts, { deleteData: false, app: "shop" }, "opscrew destroy");
     expect(plan.app).toBe("shop");
     expect(codes(plan)).toEqual([]);
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([["runtime-dirs", "change"]]);
@@ -747,7 +792,7 @@ describe("planTeardown and planUndo", () => {
     fake.files.delete("/etc/opscrew/app.json");
     fake.files.delete("/etc/opscrew/host.json");
     const facts = await inspectHost(fake);
-    const plan = planTeardown(facts, { deleteData: true, app: "shop" });
+    const plan = planTeardown(facts, { deleteData: true, app: "shop" }, "opscrew destroy");
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([["runtime-dirs", "change"]]);
     expect(plan.steps[0]?.title).toMatch(/Remove the app "shop".*its data/);
   });
@@ -757,7 +802,7 @@ describe("planTeardown and planUndo", () => {
     await provision(fake);
     deployApp(fake, "shop");
     const facts = await inspectHost(fake);
-    const other = planTeardown(facts, { deleteData: true, app: "blog" });
+    const other = planTeardown(facts, { deleteData: true, app: "blog" }, "opscrew destroy");
     expect(codes(other)).toEqual(["teardown-other-app"]);
     expect(other.findings[0]?.message).toBe(
       'This server belongs to the OpsCrew app "shop", not "blog", so OpsCrew removes nothing from it.',
@@ -765,18 +810,22 @@ describe("planTeardown and planUndo", () => {
     expect(other.steps).toEqual([]);
 
     fake.files.delete("/etc/opscrew/app.json");
-    const byRecord = planTeardown(await inspectHost(fake), { deleteData: false, app: "blog" });
+    const byRecord = planTeardown(
+      await inspectHost(fake),
+      { deleteData: false, app: "blog" },
+      "opscrew destroy",
+    );
     expect(codes(byRecord)).toEqual(["teardown-other-app"]);
     expect(byRecord.steps).toEqual([]);
-    expect(() => planTeardown(facts, { deleteData: false, app: "Not An App" })).toThrow(
-      /lower-case letters/,
-    );
+    expect(() =>
+      planTeardown(facts, { deleteData: false, app: "Not An App" }, "opscrew destroy"),
+    ).toThrow(/lower-case letters/);
   });
 
   it("refuses to undo the host while the app is still there", async () => {
     const fake = new FakeHost();
     await provision(fake);
-    const plan = planUndo(await inspectHost(fake));
+    const plan = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
     expect(codes(plan)).toEqual(["app-still-deployed"]);
   });
 
@@ -786,7 +835,7 @@ describe("planTeardown and planUndo", () => {
     fake.ufwRules = [{ rule: "allow 8080/tcp", comment: null }];
     await provision(fake);
     fake.files.delete("/etc/opscrew/app.json");
-    const plan = planUndo(await inspectHost(fake));
+    const plan = planUndo(await inspectHost(fake), "opscrew destroy --undo-host");
     expect(codes(plan)).toEqual([]);
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
       ["runtime-dirs", "change"],
@@ -830,10 +879,10 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     const fake = new FakeHost();
     const facts = await inspectHost(fake);
     // The hashes these fake servers gave before the web filter existed.
-    expect(hostPlanHash(planHost(facts, desiredFor(fake)))).toBe(
+    expect(hostPlanHash(planHost(facts, desiredFor(fake), "opscrew provision"))).toBe(
       "8bd89c637763c4e9cfd08f879e2aba4b8ef78d1ecfba19e51017cad421fa0094",
     );
-    expect(hostPlanHash(planHost(facts, tunnelDesired(fake)))).toBe(
+    expect(hostPlanHash(planHost(facts, tunnelDesired(fake), "opscrew provision"))).toBe(
       "677da9f02b897841fa98068ab9e9ec79293fac911438502a34aae7e75d9c09b0",
     );
     const used = new FakeHost();
@@ -842,7 +891,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
       "2d87883293aac5e108b8999375ccb6fab320ca4a5a122f4b3cb09ce2d90ae65f",
     );
     used.files.delete("/etc/opscrew/app.json");
-    expect(hostPlanHash(planUndo(await inspectHost(used)))).toBe(
+    expect(hostPlanHash(planUndo(await inspectHost(used), "opscrew destroy --undo-host"))).toBe(
       "f78e9cb81ccf608aa453e7d7cd2a4edd3bd23ec3d4fa9f76974e6e4ff899a7e8",
     );
   });
@@ -850,8 +899,8 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
   it("plans the IPv4 filter after ufw, with the ranges sorted, and leaves ufw as it is", async () => {
     const fake = new FakeHost();
     const facts = await inspectHost(fake);
-    const plain = planHost(facts, desiredFor(fake));
-    const plan = planHost(facts, filtered(fake));
+    const plain = planHost(facts, desiredFor(fake), "opscrew provision");
+    const plan = planHost(facts, filtered(fake), "opscrew provision");
     expect(plan.steps.map((s) => s.id)).toEqual(
       plain.steps.flatMap((s) => (s.id === "ufw" ? ["ufw", "web-filter"] : [s.id])),
     );
@@ -871,15 +920,20 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
   it("gives the same hash for the same ranges in any order or with duplicates", async () => {
     const fake = new FakeHost();
     const facts = await inspectHost(fake);
-    const a = planHost(facts, filtered(fake));
+    const a = planHost(facts, filtered(fake), "opscrew provision");
     const b = planHost(
       facts,
       filtered(fake, {
         ipv4: ["104.16.0.0/13", "173.245.48.0/20", "103.21.244.0/22", "104.16.0.9/13"],
       }),
+      "opscrew provision",
     );
     expect(hostPlanHash(b)).toBe(hostPlanHash(a));
-    const c = planHost(facts, filtered(fake, { ipv4: [...CF.ipv4, "131.0.72.0/22"] }));
+    const c = planHost(
+      facts,
+      filtered(fake, { ipv4: [...CF.ipv4, "131.0.72.0/22"] }),
+      "opscrew provision",
+    );
     expect(hostPlanHash(c)).not.toBe(hostPlanHash(a));
   });
 
@@ -893,27 +947,33 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
       { ipv4: ["1.2.3.0/24; reboot"] },
       { ipv4: CF.ipv4, ipv6: ["2400:cb00::/32"] },
     ]) {
-      expect(() => planHost(facts, filtered(fake, webFilter as never))).toThrowError(/webFilter/);
+      expect(() =>
+        planHost(facts, filtered(fake, webFilter as never), "opscrew provision"),
+      ).toThrowError(/webFilter/);
     }
-    expect(() => planHost(facts, tunnelDesired(fake, { webFilter: CF }))).toThrowError(
-      /only for a site served directly/,
-    );
+    expect(() =>
+      planHost(facts, tunnelDesired(fake, { webFilter: CF }), "opscrew provision"),
+    ).toThrowError(/only for a site served directly/);
   });
 
   it("refuses Docker's nftables backend and Docker without iptables, in plain words", async () => {
     const nft = new FakeHost();
     nft.files.set("/etc/docker/daemon.json", '{ "firewall-backend": "nftables" }\n');
-    const nftPlan = planHost(await inspectHost(nft), filtered(nft));
+    const nftPlan = planHost(await inspectHost(nft), filtered(nft), "opscrew provision");
     expect(codes(nftPlan)).toEqual(["docker-nftables"]);
     expect(stateOf(nftPlan, "web-filter")).toBe("blocked");
 
     const env = new FakeHost();
     env.dockerdFlags = ["}\nEnvironment=DOCKER_FIREWALL_BACKEND=nftables"];
-    expect(codes(planHost(await inspectHost(env), filtered(env)))).toEqual(["docker-nftables"]);
+    expect(codes(planHost(await inspectHost(env), filtered(env), "opscrew provision"))).toEqual([
+      "docker-nftables",
+    ]);
 
     const off = new FakeHost();
     off.files.set("/etc/docker/daemon.json", '{ "iptables": false }\n');
-    expect(codes(planHost(await inspectHost(off), filtered(off)))).toEqual(["docker-no-iptables"]);
+    expect(codes(planHost(await inspectHost(off), filtered(off), "opscrew provision"))).toEqual([
+      "docker-no-iptables",
+    ]);
 
     // IPv6 settings do not matter: the site is not published on IPv6.
     const v6 = new FakeHost();
@@ -921,7 +981,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     v6.addresses.push(
       "2: eth0    inet6 2001:db8::20/64 scope global dynamic mngtmpaddr\\       valid_lft 86000sec preferred_lft 14000sec",
     );
-    expect(codes(planHost(await inspectHost(v6), filtered(v6)))).toEqual([]);
+    expect(codes(planHost(await inspectHost(v6), filtered(v6), "opscrew provision"))).toEqual([]);
   });
 
   it("is in place on a re-run, re-applies changed ranges, and keeps the user's DOCKER-USER rules", async () => {
@@ -965,7 +1025,7 @@ describe("planHost: the web filter behind Cloudflare's proxy", () => {
     const undone = new FakeHost();
     await provision(undone, filtered(undone));
     undone.files.delete("/etc/opscrew/app.json");
-    const undo = planUndo(await inspectHost(undone));
+    const undo = planUndo(await inspectHost(undone), "opscrew destroy --undo-host");
     expect(undo.steps.map((s) => s.id)).toContain("web-filter");
     await applyApproved(undone, undo);
     expect(undone.web4.chain).toBeNull();

@@ -388,6 +388,9 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     }).catch((e: unknown) => e)) as OpsCrewError;
     expect(stop.code).toBe("PHASE_PRECONDITION");
     expect(stop.message).toContain("nginx on port 80");
+    // The finding says to run the command that is running again, not `opscrew provision`.
+    expect(stop.hint).toMatch(/, then run opscrew dns again\.$/);
+    expect(stop.hint).not.toContain("provision");
     expect(blocked.engine.plans).toHaveLength(0);
     expect(blocked.host.applies).toHaveLength(0);
     const inspected = blocked.deps.audit.entries.filter(

@@ -353,6 +353,7 @@ export async function prepareOwnServer(
           ? { passwordLogins: input.options.passwordLogins }
           : {}),
       }),
+      input.command,
     ),
     { server: "your server", command: input.command },
   );
@@ -626,6 +627,7 @@ export async function applyOwnHostPlan(
       ...(input.passwordLogins !== undefined ? { passwordLogins: input.passwordLogins } : {}),
       ...(input.withoutTunnel === true ? { withoutTunnel: true } : {}),
     }),
+    input.command,
   );
   const changes = plural(plan.steps.filter((step) => step.state === "change").length, "change");
   const outcome = await approveAndApplyHostPlan(deps, {

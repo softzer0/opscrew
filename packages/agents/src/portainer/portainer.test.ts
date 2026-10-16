@@ -891,6 +891,24 @@ describe.skipIf(!hasGit)("Portainer on a server the user owns (host plan)", () =
     expect(new Set(phased.map((entry) => entry.phase))).toEqual(new Set(["portainer"]));
   });
 
+  it("a blocked host plan says to run opscrew portainer enable again, not opscrew provision", async () => {
+    const s = await ownSetup();
+    const applies = s.host.applies.length;
+    s.host.facts = {
+      ...s.host.facts,
+      firewall: { ...s.host.facts.firewall, foreign: ["firewalld"] },
+    };
+    const error = (await portainerEnable(s.deps, { services: s.services }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toMatch(/^OpsCrew cannot prepare your server, so it changed nothing:/);
+    expect(error.hint).toMatch(/ Then run opscrew portainer enable again after the change\.$/);
+    expect(error.hint).not.toContain("provision");
+    expect(s.host.applies).toHaveLength(applies);
+    expect(kinds(s.handler)).toEqual([]);
+  });
+
   it("sends the local password when Portainer's data is already there (no admin yet is possible)", async () => {
     const s = await ownSetup();
     const password = fakeSecret("generic-password", "portainer-own-earlier");

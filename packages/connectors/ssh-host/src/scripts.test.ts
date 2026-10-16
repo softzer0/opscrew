@@ -57,9 +57,19 @@ async function everyPlan(): Promise<HostPlan[]> {
   fresh.packages.delete("ufw");
   fresh.dpkgInterrupted = true;
   plans.push(
-    planHost(await inspectHost(fresh), desiredFor(fresh, { portainer: portainerDesired() })),
+    planHost(
+      await inspectHost(fresh),
+      desiredFor(fresh, { portainer: portainerDesired() }),
+      "opscrew provision",
+    ),
   );
-  plans.push(planHost(await inspectHost(fresh), tunnelDesired(fresh, { disablePasswords: false })));
+  plans.push(
+    planHost(
+      await inspectHost(fresh),
+      tunnelDesired(fresh, { disablePasswords: false }),
+      "opscrew provision",
+    ),
+  );
 
   const used = new FakeHost();
   await provision(used, tunnelDesired(used, { portainer: portainerDesired() }), {
@@ -67,23 +77,29 @@ async function everyPlan(): Promise<HostPlan[]> {
   });
   deployApp(used, "shop", "tunnel");
   // Switching to public mode removes the tunnel connector and Portainer.
-  plans.push(planHost(await inspectHost(used), desiredFor(used)));
-  plans.push(planTeardown(await inspectHost(used), { deleteData: true, app: "shop" }));
+  plans.push(planHost(await inspectHost(used), desiredFor(used), "opscrew provision"));
+  plans.push(
+    planTeardown(await inspectHost(used), { deleteData: true, app: "shop" }, "opscrew destroy"),
+  );
   await applyApproved(
     used,
-    planTeardown(await inspectHost(used), { deleteData: false, app: "shop" }),
+    planTeardown(await inspectHost(used), { deleteData: false, app: "shop" }, "opscrew destroy"),
   );
-  plans.push(planUndo(await inspectHost(used)));
+  plans.push(planUndo(await inspectHost(used), "opscrew destroy --undo-host"));
 
   // Behind Cloudflare's proxy: the web filter, its removal and its undo.
   const filtered = new FakeHost();
   const webFilter = { ipv4: ["173.245.48.0/20", "103.21.244.0/22"] };
-  const withFilter = planHost(await inspectHost(filtered), desiredFor(filtered, { webFilter }));
+  const withFilter = planHost(
+    await inspectHost(filtered),
+    desiredFor(filtered, { webFilter }),
+    "opscrew provision",
+  );
   plans.push(withFilter);
   await applyApproved(filtered, withFilter);
-  plans.push(planHost(await inspectHost(filtered), desiredFor(filtered)));
+  plans.push(planHost(await inspectHost(filtered), desiredFor(filtered), "opscrew provision"));
   filtered.files.delete("/etc/opscrew/app.json");
-  plans.push(planUndo(await inspectHost(filtered)));
+  plans.push(planUndo(await inspectHost(filtered), "opscrew destroy --undo-host"));
   plans.push(
     planPortainer({
       app: "shop",
@@ -198,7 +214,7 @@ describe("generated scripts", () => {
 describe("sshd scripts", () => {
   it("write only a drop-in, check it with sshd -t before reloading, and never restrict users, forwarding or addresses", async () => {
     const fake = new FakeHost();
-    const plan = planHost(await inspectHost(fake), desiredFor(fake));
+    const plan = planHost(await inspectHost(fake), desiredFor(fake), "opscrew provision");
     const sshd = plan.steps.find((step) => step.id === "sshd");
     if (!sshd) throw new Error("no sshd step");
     const { apply, deadMan } = stepScripts(plan, sshd);
@@ -247,7 +263,7 @@ describe("ufw scripts", () => {
     const fake = new FakeHost();
     fake.sshdBase.port = [2222];
     fake.listeners = [{ proto: "tcp", address: "0.0.0.0", port: 2222, process: "sshd" }];
-    const plan = planHost(await inspectHost(fake), tunnelDesired(fake));
+    const plan = planHost(await inspectHost(fake), tunnelDesired(fake), "opscrew provision");
     const ufw = plan.steps.find((step) => step.id === "ufw");
     if (!ufw) throw new Error("no ufw step");
     const { apply } = stepScripts(plan, ufw);
@@ -281,7 +297,7 @@ async function stepOf(
 ) {
   const fake = new FakeHost();
   arrange?.(fake);
-  const plan = planHost(await inspectHost(fake), desired(fake));
+  const plan = planHost(await inspectHost(fake), desired(fake), "opscrew provision");
   const step = plan.steps.find((item) => item.id === id);
   if (!step) throw new Error(`no ${id} step`);
   return stepScripts(plan, step);
@@ -438,6 +454,7 @@ describe("secret handling in scripts", () => {
     const plan = planHost(
       await inspectHost(fake),
       tunnelDesired(fake, { portainer: portainerDesired() }),
+      "opscrew provision",
     );
     for (const id of ["tunnel-connector", "portainer"] as const) {
       const step = plan.steps.find((item) => item.id === id);

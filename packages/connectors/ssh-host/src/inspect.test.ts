@@ -30,7 +30,7 @@ describe("inspectHost", () => {
         expect(facts.privilege).toBe("root");
         expect(facts.sshd?.ports).toEqual([22]);
         expect(facts.docker.kind).toBe("absent");
-        const plan = planHost(facts, desiredFor(fake));
+        const plan = planHost(facts, desiredFor(fake), "opscrew provision");
         expect(plan.findings).toEqual([]);
         expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
           ["docker", "change"],
@@ -87,7 +87,7 @@ describe("inspectHost", () => {
     const facts = await inspectHost(fake);
     expect(facts.user).toBe("alice");
     expect(facts.privilege).toBe("sudo");
-    const plan = planHost(facts, desiredFor(fake));
+    const plan = planHost(facts, desiredFor(fake), "opscrew provision");
     expect(plan.findings).toEqual([]);
     expect(plan.steps.find((step) => step.id === "sshd")?.params.permitRootLogin).toBe("no");
   });

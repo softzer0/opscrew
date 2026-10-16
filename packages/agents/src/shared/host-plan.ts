@@ -222,6 +222,7 @@ export async function approveAndApplyHostPlan(
   try {
     result = await step.apply(step.remote, plan, {
       approvedHash: hash,
+      command: step.command,
       secrets,
       verifyLogin: step.verifyLogin,
       version: deps.version,

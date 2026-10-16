@@ -109,7 +109,7 @@ export function portainerDesired() {
 }
 
 export async function planFor(fake: FakeHost, desired: DesiredHost = desiredFor(fake)): Promise<HostPlan> {
-  return planHost(await inspectHost(fake), desired);
+  return planHost(await inspectHost(fake), desired, "opscrew provision");
 }
 
 /** Applies a plan with its own hash and a verifyLogin that succeeds (unless given). */
@@ -119,7 +119,7 @@ export function applyApproved(
   options: Partial<ApplyOptions> = {},
 ) {
   return applyHostPlan(fake, plan, {
-    approvedHash: hostPlanHash(plan),
+    approvedHash: hostPlanHash(plan), command: "opscrew provision",
     verifyLogin: async () => true,
     ...options,
   });
