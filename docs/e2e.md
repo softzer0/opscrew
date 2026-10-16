@@ -325,8 +325,8 @@ any other value skips the whole test and names the variable.
 11. **A short Portainer host name**, as a setup of its own: with a DNS preload in the CLI's Node
     process (`NODE_OPTIONS=--import=…`, which resolves only that name to the tunnel) the CLI runs
     interview, design, provision, `secure`, `drift` and `verify --url` with Portainer at a short
-    host name (`nas`, or `OPSCREW_E2E_PORTAINER_SHORT_HOST`). Containers on the server cannot
-    resolve that name, so this setup is not deployed: the branch holds only the placeholder, no
+    host name (`nas` and a random part, or `OPSCREW_E2E_PORTAINER_SHORT_HOST`). Containers on the
+    server cannot resolve that name, so this setup is not deployed: the branch holds only the placeholder, no
     app answers, and the exits of `secure`, `drift` and `verify` are only recorded. Then
     `destroy --confirm <app> --delete-data` (the branch is deleted), with Portainer and the
     decoys as before.
@@ -367,7 +367,7 @@ server's `run=<id>` label).
 | `OPSCREW_E2E_GHCR_READ_TOKEN` | A GitHub **classic** token with only `read:packages` (<https://github.com/settings/tokens/new?scopes=read:packages>), for the user that owns the throwaway repository. OpsCrew gets it as `OPSCREW_GHCR_READ_TOKEN` and puts it into Portainer's registry entry. |
 | `OPSCREW_E2E_REPO_READ_TOKEN` | Only when the throwaway repository is private: a fine-grained token for that repository with Contents read-only. OpsCrew gets it as `OPSCREW_REPO_READ_TOKEN`; Portainer reads the deploy branch with it. |
 | `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | Optional, to narrow the guide's Cloudflare list for the tunnel-only `updater` setup: a token with fewer permissions that OpsCrew uses in steps 2–4 (the test's own cleanup still uses `OPSCREW_E2E_CLOUDFLARE_TOKEN`). Start with Zone → Zone → Read, Zone → DNS → Edit and Account → Cloudflare Tunnel → Edit; when a step fails because a permission is missing, OpsCrew names it: add it and run again. Record the list that passed in [Live results](#live-results). |
-| `OPSCREW_E2E_PORTAINER_SHORT_HOST` | Optional, the short host name of step 11 (default `nas`). `portainer` is refused: OpsCrew's own text uses that word, so the check could not tell a leak from it. |
+| `OPSCREW_E2E_PORTAINER_SHORT_HOST` | Optional, the short host name of step 11 (default `nas` and five random letters or digits, so no word in the app or an encoded value matches it by chance). `portainer` is refused: OpsCrew's own text uses that word, so the check could not tell a leak from it. |
 | `OPSCREW_E2E_PORTAINER_MANUAL_MINUTES` | Optional, for example `20`: after step 1 the test writes Portainer's address and the administrator's login to a file in its temporary folder (never printed) and waits up to that many minutes until you delete the file. Use the time to check the guide's steps the test cannot: the certificate's SHA-256 fingerprint in a browser's padlock (the file names the fingerprint OpsCrew pins), and in Portainer's UI Registries → Add registry → Custom registry and the environment's Registries → Manage access. Look only: do not save, add or change anything (the run compares Portainer and the decoys with how they were, taken again after the pause). Only the test computer can reach Portainer. |
 | `OPSCREW_E2E_REGION` | Optional, as for your own server. |
 | `OPSCREW_E2E_PORTAINER_SERVER_TYPE` | Optional, a Hetzner server type instead of the cheapest x86 one. |

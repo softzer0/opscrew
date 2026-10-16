@@ -167,8 +167,9 @@ describe("Portainer live test helpers", () => {
     ]);
   });
 
-  it("takes a short host name for the output check, nas by default", () => {
-    expect(shortHostName(undefined)).toBe("nas");
+  it("takes a short host name for the output check, nas and a random part by default", () => {
+    expect(shortHostName(undefined, "k3v9q")).toBe("nask3v9q");
+    expect(shortHostName(undefined)).toMatch(/^nas[a-z0-9]{5}$/);
     expect(shortHostName(" nas2 ")).toBe("nas2");
     expect(() => shortHostName("portainer")).toThrow(/a word OpsCrew itself prints/);
     for (const bad of [

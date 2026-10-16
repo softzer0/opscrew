@@ -47,13 +47,14 @@ export function missingPortainerVariables(env: Record<string, string | undefined
 }
 
 /**
- * A short host name for the output check (default `nas`): one lower-case DNS label of 2 to 15
- * characters that is not a loopback name, and not `portainer`: OpsCrew's own text uses that word
- * (`opscrew portainer status`, "your Portainer"), so a bare mention would not tell a leak from a
- * command name. Throws a plain message for anything else.
+ * A short host name for the output check: one lower-case DNS label of 2 to 15 characters that is
+ * not a loopback name, and not `portainer`: OpsCrew's own text uses that word (`opscrew portainer
+ * status`, "your Portainer"), so a bare mention would not tell a leak from a command name. By
+ * default `nas` and five random letters or digits (`nasq7v2k`): still one short label, but never a
+ * word an app or an encoded value contains by chance. Throws a plain message for anything else.
  */
-export function shortHostName(value: string | undefined): string {
-  const host = (value ?? "").trim() || "nas";
+export function shortHostName(value: string | undefined, suffix = randomLabel(5)): string {
+  const host = (value ?? "").trim() || `nas${suffix}`;
   if (!/^[a-z][a-z0-9-]{1,14}$/.test(host) || host.endsWith("-") || host === "localhost") {
     throw new Error(
       `OPSCREW_E2E_PORTAINER_SHORT_HOST="${host}" must be one lower-case label of 2 to 15 letters, digits or dashes (for example nas), not localhost.`,
@@ -65,6 +66,12 @@ export function shortHostName(value: string | undefined): string {
     );
   }
   return host;
+}
+
+/** `length` random lower-case letters and digits. */
+function randomLabel(length: number): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  return [...randomBytes(length)].map((byte) => alphabet[byte % alphabet.length]).join("");
 }
 
 /** A token-like value: 8 or more characters with at least one digit or upper-case letter. */
