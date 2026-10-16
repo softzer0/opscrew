@@ -316,7 +316,8 @@ function applyCorrections(
   }
   const startCommand = corrections.startCommand?.trim();
   if (startCommand && startCommand !== facts.build.startCommand) {
-    next.build.startCommand = deps.redactor.redact(startCommand);
+    // Secrets only: a registered name (the user's server, for example `nas`) can be a path here.
+    next.build.startCommand = deps.redactor.redactSecrets(startCommand);
     changes.push(`start command → \`${next.build.startCommand}\``);
   }
   if (

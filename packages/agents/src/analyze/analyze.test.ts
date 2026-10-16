@@ -319,6 +319,30 @@ describe("runAnalyze", () => {
     expect(markdown).not.toContain(token);
   });
 
+  it("keeps a registered name in the corrected start command but masks secrets", async () => {
+    const secret = fakeSecret("generic-password");
+    const runtime = new FakeAgentRuntime({
+      phases: {
+        analyze: {
+          output: {
+            summary: "An API.",
+            risks: [],
+            corrections: { startCommand: `TOKEN=${secret} node nas/server.js` },
+          },
+        },
+      },
+    });
+    const deps = await createTestPhaseDeps({ root: await project("static-vite"), runtime });
+    // An MCP session's interview registers the Portainer short host before analyze runs again.
+    deps.redactor.addName("nas", "portainer-address");
+    deps.redactor.addLiteral(secret, "api-key");
+    const { architecture } = await runAnalyze(deps);
+    const startCommand = architecture.facts.build.startCommand;
+    expect(startCommand).toContain("node nas/server.js");
+    expect(startCommand).not.toContain(secret);
+    expect(startCommand).toContain("[REDACTED");
+  });
+
   it("falls back to the deterministic result when the output is invalid", async () => {
     const runtime = new FakeAgentRuntime({
       phases: { analyze: { output: { summary: 42, risks: "none" }, costUsd: 0.01 } },
