@@ -32,5 +32,5 @@ is nothing to stay compatible with.
 - The safety core is unchanged: plan, policy, an approval bound to the plan's SHA-256 and apply
   through the IaC engine or a typed adapter; typed confirmation for deletions; redaction.
 - Projects made before these changes may need `opscrew design` again.
-- The provider plugin system (feature 015) designs its own versioned contract instead of reviving
+- The provider plugin system (feature 016) designs its own versioned contract instead of reviving
   the in-process tools.
