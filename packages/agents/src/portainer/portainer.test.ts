@@ -260,6 +260,41 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     expect(result.status.url).toBe("https://portainer.example.com");
   });
 
+  it("audits enable and disable as the portainer phase, never as provision", async () => {
+    const { token } = tunnelSecrets();
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+          type: "cloudflare_zero_trust_tunnel_cloudflared",
+          name: "this",
+          provider: "registry.opentofu.org/cloudflare/cloudflare",
+          action: "create",
+        },
+      ],
+      outputs: { server_ipv4: SERVER_IPV4, tunnel_id: TUNNEL_ID, tunnel_token: token },
+    });
+    const s = await cloudSetup({ engine });
+    await portainerEnable(s.deps, {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+      services: s.services,
+    });
+    await portainerDisable(s.deps, { deleteData: true, services: s.services });
+    const phased = s.deps.audit.entries.filter((entry) => entry.phase !== undefined);
+    // The read-only checks, the infrastructure apply and every host step.
+    expect(phased.map((entry) => entry.action)).toEqual(
+      expect.arrayContaining([
+        "read Docker version (read-only)",
+        "look for Portainer's data volume (read-only)",
+        "apply",
+        "host apply started",
+        "host step portainer",
+      ]),
+    );
+    expect(new Set(phased.map((entry) => entry.phase))).toEqual(new Set(["portainer"]));
+  });
+
   it("refuses a subdomain without an email or without a Cloudflare domain, changing nothing", async () => {
     const s = await cloudSetup();
     const before = await readFile(s.deps.paths.files.plan, "utf8");

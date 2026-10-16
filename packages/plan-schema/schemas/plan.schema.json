@@ -556,7 +556,8 @@
             "dns",
             "secure",
             "verify",
-            "retarget"
+            "retarget",
+            "portainer"
           ]
         },
         "url": {

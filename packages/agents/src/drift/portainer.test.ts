@@ -77,6 +77,18 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     await expectNothingLeaked(s, report);
   });
 
+  it("audits its read-only inspection as drift, never as provision", async () => {
+    const s = await deployed();
+    const before = s.deps.audit.entries.length;
+    await drift(s);
+    const entries = s.deps.audit.entries.slice(before);
+    expect(entries.map((entry) => entry.action)).toEqual([
+      "inspect Portainer (read-only)",
+      "drift-check",
+    ]);
+    expect(entries.map((entry) => entry.phase)).toEqual([undefined, undefined]);
+  });
+
   it("reports changed variables, values, the webhook and polling, by key name only", async () => {
     const s = await deployed();
     const app = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop");

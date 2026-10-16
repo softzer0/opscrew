@@ -9,7 +9,7 @@ import {
   planHost,
   planPortainer,
 } from "@opscrew/connector-ssh-host";
-import type { ApprovalRecord, IacEngine, RemoteExec } from "@opscrew/contracts";
+import type { ApprovalRecord, IacEngine, PhaseName, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { type EnginePreference, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import {
@@ -328,6 +328,8 @@ async function applyAddonPlan(
     planOnly: boolean;
     secrets: () => Promise<{ tunnelToken?: string; portainerPassword?: string }>;
     command: string;
+    /** The phase the audit entries name: `portainer`, or `provision` for its connector removal. */
+    phase: Extract<PhaseName, "portainer" | "provision">;
     /** Receives the plan's hash as soon as it is shown (for an error after it). */
     shown?: { hostHash?: string };
   },
@@ -364,7 +366,7 @@ async function applyAddonPlan(
     kind: "remote-exec",
     actor: "opscrew",
     action: "host apply started",
-    phase: "provision",
+    phase: input.phase,
     target: hash,
     decision: "approved",
     detail: `steps to change: ${changeIds.join(", ")}`,
@@ -384,7 +386,7 @@ async function applyAddonPlan(
       kind: "remote-exec",
       actor: "opscrew",
       action: "host apply failed",
-      phase: "provision",
+      phase: input.phase,
       target: hash,
       decision: "refused",
       detail: Array.isArray(reported)
@@ -399,7 +401,7 @@ async function applyAddonPlan(
       kind: "remote-exec",
       actor: "opscrew",
       action: `host step ${id}`,
-      phase: "provision",
+      phase: input.phase,
       target: hash,
       decision: "approved",
       ...(step !== undefined ? { detail: step.title } : {}),
@@ -560,7 +562,7 @@ async function runChange(
         deployPlan: plan,
         files,
         command,
-        phase: "provision",
+        phase: "portainer",
         costDelta: null,
         approvalTitle:
           change.command === "enable" && portainerHostname(plan) !== undefined
@@ -629,6 +631,7 @@ async function runChange(
         allowDestroy: true,
         planOnly,
         secrets: async () => ({}),
+        phase: "portainer",
         command,
       });
       dataPlanHash = data.hash;
@@ -868,7 +871,7 @@ async function portainerDataExists(deps: PhaseDeps, remote: RemoteExec): Promise
     kind: "remote-exec",
     actor: "opscrew",
     action: "look for Portainer's data volume (read-only)",
-    phase: "provision",
+    phase: "portainer",
     target: "server",
     decision: "allow",
     detail: exists ? "present" : "absent",
@@ -890,7 +893,7 @@ async function requireDocker28(deps: PhaseDeps, remote: RemoteExec): Promise<voi
     kind: "remote-exec",
     actor: "opscrew",
     action: "read Docker version (read-only)",
-    phase: "provision",
+    phase: "portainer",
     target: "server",
     decision: "allow",
     ...(version !== "" ? { detail: `Docker ${version}` } : {}),
@@ -1017,6 +1020,7 @@ async function cloudHostChange(
       };
     },
     command: input.command,
+    phase: "portainer",
     ...(input.shown !== undefined ? { shown: input.shown } : {}),
   });
 }
@@ -1074,6 +1078,7 @@ export async function cloudConnectorRemoval(
       return portainerPassword !== undefined ? { portainerPassword } : {};
     },
     command: input.command,
+    phase: "provision",
     shown: input.shown,
   });
 }

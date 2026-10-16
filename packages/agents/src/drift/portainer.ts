@@ -606,7 +606,6 @@ export async function portainerDrift(
     kind: "provider-call",
     actor: "opscrew",
     action: "inspect Portainer (read-only)",
-    phase: "provision",
     target: `portainer environment ${target.environmentId}`,
     decision: "allow",
     detail: "drift",

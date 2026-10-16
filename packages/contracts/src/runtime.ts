@@ -1,6 +1,9 @@
 import type { z } from "zod";
 
-/** OpsCrew phases in pipeline order. */
+/**
+ * OpsCrew phases in pipeline order, then the commands that change a deployment later
+ * (`opscrew retarget`, `opscrew portainer enable|disable`).
+ */
 export const PHASES = [
   "scan",
   "analyze",
@@ -12,6 +15,7 @@ export const PHASES = [
   "secure",
   "verify",
   "retarget",
+  "portainer",
 ] as const;
 export type PhaseName = (typeof PHASES)[number];
 
