@@ -733,7 +733,10 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     });
     const refused = await h.call("opscrew_portainer_enable");
     expect(refused.isError).toBe(true);
-    expect(textOf(refused)).toContain("npx opscrew portainer enable");
+    // No plan exists yet when it stops, so the refusal names none.
+    expect(textOf(refused)).toBe(
+      "This MCP client cannot show OpsCrew's approval dialog (MCP elicitation), so OpsCrew changes nothing. Nothing was changed.\n\nNext step: Ask the user to run `npx opscrew portainer enable` in a terminal in the project directory; it shows each plan before it asks.",
+    );
     expect(h.host.applies).toEqual([]);
 
     const ok = await connect({

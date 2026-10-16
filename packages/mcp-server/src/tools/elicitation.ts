@@ -33,16 +33,17 @@ export function clientSupportsElicitation(server: McpServer): boolean {
 }
 
 /**
- * Stops a change before anything runs when the client cannot show the approval dialog: through
- * MCP only the user approves, in a dialog, never the model. `terminal` is the command to run.
+ * Stops a change before anything runs (for some callers before any plan exists) when the client
+ * cannot show the approval dialog: through MCP only the user approves, in a dialog, never the
+ * model. `terminal` is the command to run instead.
  */
 export function requireDialogs(server: McpServer, terminal: string): void {
   if (clientSupportsElicitation(server)) return;
   throw new OpsCrewError(
     "APPROVAL_REFUSED",
-    "This MCP client cannot show OpsCrew's approval dialog (MCP elicitation), so OpsCrew will not apply the plan. Nothing was changed.",
+    "This MCP client cannot show OpsCrew's approval dialog (MCP elicitation), so OpsCrew changes nothing. Nothing was changed.",
     {
-      hint: `Ask the user to review the plan and run \`${terminal}\` in a terminal in the project directory.`,
+      hint: `Ask the user to run \`${terminal}\` in a terminal in the project directory; it shows each plan before it asks.`,
     },
   );
 }

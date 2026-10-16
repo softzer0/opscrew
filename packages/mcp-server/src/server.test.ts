@@ -129,10 +129,13 @@ const ANSWERS = {
 };
 
 describe("createOpscrewMcpServer", () => {
-  it("gives the model only the hard rules, every one of them", async () => {
+  it("gives the model the order of the tools and every hard rule, nothing more", async () => {
     const h = await connect(await fixture("static-vite"));
     const instructions = h.client.getInstructions() ?? "";
     for (const rule of [
+      // A client without the plugin has no skill: the instructions name both flows.
+      "opscrew_scan → opscrew_detect → opscrew_interview_questions → opscrew_save_requirements → opscrew_design_options → opscrew_select_design",
+      "only after the app is adapted and merged: opscrew_render → opscrew_plan → show the user the plan, its cost and policy results → opscrew_apply → the user merges the pull request → opscrew_verify and opscrew_secure",
       "never approve or claim approval yourself",
       "SSH host key",
       "certificate fingerprint",
@@ -158,7 +161,7 @@ describe("createOpscrewMcpServer", () => {
     ]) {
       expect(instructions, rule).toContain(rule);
     }
-    // The flow and the tools' behaviour are in the skill and the tool descriptions.
+    // What each tool does is in its description, the details of the flow in the skill.
     expect(instructions.length).toBeLessThan(2_500);
   });
 

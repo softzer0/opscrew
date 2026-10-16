@@ -624,9 +624,23 @@ describe.skipIf(!findExecutable("git"))(
       const result = await h.call("opscrew_apply", { planHash });
       expect(result.isError).toBe(true);
       expect(dataOf(result).error.code).toBe("APPROVAL_REFUSED");
-      expect(textOf(result)).toContain("cannot show OpsCrew's approval dialog");
-      expect(textOf(result)).toContain(`opscrew provision --approve ${planHash}`);
+      expect(textOf(result)).toContain(
+        "cannot show OpsCrew's approval dialog (MCP elicitation), so OpsCrew changes nothing. Nothing was changed.",
+      );
+      expect(textOf(result)).toContain(
+        `Ask the user to run \`opscrew provision --approve ${planHash}\` in a terminal in the project directory; it shows each plan before it asks.`,
+      );
       expect(h.engine.calls).not.toContain("apply");
+    });
+
+    it("opscrew_plan's terminal command repeats the engine the call asked for", async () => {
+      const h = await connect({ elicit: approveAll });
+      const chosen = dataOf(await h.call("opscrew_plan", { engine: "terraform" }));
+      expect(chosen.applyCommand).toBe(
+        `opscrew provision --approve ${chosen.planHash} --engine terraform`,
+      );
+      const auto = dataOf(await h.call("opscrew_plan", { engine: "auto" }));
+      expect(auto.applyCommand).toBe(`opscrew provision --approve ${auto.planHash}`);
     });
 
     it("rejects malformed and unknown plan hashes before asking anything", async () => {
