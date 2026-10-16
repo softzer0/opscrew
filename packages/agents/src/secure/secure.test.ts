@@ -21,12 +21,8 @@ import {
   type TestPlanOptions,
   testPlan,
 } from "../verify/__fixtures__/plan";
-import {
-  renderSecurityReport,
-  runSecure,
-  type SecurityReportInput,
-  securityProblems,
-} from "./index";
+import { renderSecurityReport, type SecurityReportInput, securityProblems } from "./report";
+import { runSecure } from "./run";
 
 const NOW = "2026-10-11T12:00:00.000Z";
 

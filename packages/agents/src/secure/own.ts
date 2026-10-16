@@ -1,3 +1,4 @@
+import { replaceNames } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { OwnServerHardening } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -81,21 +82,11 @@ export async function ownSecureTarget(
   };
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /**
- * `text` with every address and host name of `hidden` replaced by "your server", for the committed
- * security report of a server the user owns (FR-902).
+ * `text` with every address and host name of `hidden` replaced by "your server" where it stands
+ * alone (core's `replaceNames`), for the committed security report and the output of a server the
+ * user owns (FR-902).
  */
 export function withoutOwnServer(text: string, hidden: readonly string[]): string {
-  let out = text;
-  for (const name of [...hidden].sort((a, b) => b.length - a.length)) {
-    out = out.replace(
-      new RegExp(`(?<![0-9A-Za-z.:-])${escapeRegExp(name)}(?![0-9A-Za-z:-]|\\.[0-9A-Za-z])`, "gi"),
-      "your server",
-    );
-  }
-  return out;
+  return replaceNames(text, hidden, "your server");
 }

@@ -10,7 +10,7 @@ import type { PublicAddressLookup } from "../shared/public-dns";
 import {
   type DnsResolver,
   type FetchWithLookup,
-  hasIpv6Route,
+  ipv6HttpsAnswers,
   type PublicAddresses,
   publicAnswerLookup,
   type TlsCertificateInfo,
@@ -906,9 +906,12 @@ async function ownOriginResult(
   const id = "origin-not-direct";
   const title = "The server is not reachable around Cloudflare";
   const ipv6 = ctx.server?.ipv6;
-  const canTryIpv6 = ipv6 !== undefined && (await (ctx.ipv6Route ?? hasIpv6Route)());
-  const open6 = canTryIpv6 ? await ctx.tcpConnect(ipv6, 443, timeout) : false;
-  if (open4 || open6) {
+  // `undefined`: this computer cannot try the IPv6 address.
+  const open6 =
+    ipv6 === undefined
+      ? false
+      : await ipv6HttpsAnswers(ipv6, ctx.tcpConnect, timeout, ctx.ipv6Route);
+  if (open4 || open6 === true) {
     const where =
       open4 && open6 ? "IPv4 and IPv6 addresses" : open4 ? "IPv4 address" : "IPv6 address";
     return checkResult(
@@ -923,9 +926,9 @@ async function ownOriginResult(
   const note =
     ipv6 === undefined
       ? ""
-      : canTryIpv6
-        ? " (IPv4 and IPv6)"
-        : ". OpsCrew could not try its IPv6 address: this computer has no IPv6 route; run `opscrew verify` from a network with IPv6 to check it too";
+      : open6 === undefined
+        ? ". OpsCrew could not try its IPv6 address: this computer has no IPv6 route; run `opscrew verify` from a network with IPv6 to check it too"
+        : " (IPv4 and IPv6)";
   return checkResult(
     id,
     title,

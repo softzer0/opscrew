@@ -1,4 +1,3 @@
-import { access } from "node:fs/promises";
 import type {
   CheckResult,
   PolicyResult,
@@ -22,7 +21,13 @@ import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
 import { findSavedPlan } from "../provision/plan-apply";
 import type { PortainerServices } from "../provision/types";
-import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
+import {
+  exists,
+  hidesServerAddress,
+  SshRemoteExec,
+  serverAddress,
+  withoutServerAddress,
+} from "../shared";
 import { type OwnSecureTarget, ownSecureTarget, withoutOwnServer } from "./own";
 import {
   PORTAINER_PROBES_SKIPPED,
@@ -94,42 +99,27 @@ function privateReportInput(
   return { ...rest, hostChecks: strip(input.hostChecks), probes: strip(input.probes) };
 }
 
-async function exists(file: string): Promise<boolean> {
-  try {
-    await access(file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * The host checks and outside probes of a server the user owns: the checks run as `deploy` over
- * SSH on the recorded login's address and port (pinned host key), with what OpsCrew set up there
- * (sshd's real ports, root's key-only login, a password choice); the probes expect SSH and, in
- * public mode, the web ports, and in tunnel mode no web port at all.
+ * The server's hardening checks, run as `deploy` over SSH (pinned host key), and the outside
+ * probes. On a server the user owns (`own`) they run on the recorded login's address and port with
+ * what OpsCrew set up there (sshd's real ports, root's key-only login, a password choice), and the
+ * probes expect SSH and, in public mode, the web ports, in tunnel mode no web port at all. On a
+ * server OpsCrew created they run on `host` with the provider firewall's expectations.
  */
-async function checkOwnServer(
+async function checkServer(
   deps: PhaseDeps,
   plan: DeployPlan,
+  host: string,
   own: OwnSecureTarget | undefined,
   options: RunSecureOptions,
 ): Promise<{ hostChecks: CheckResult[]; probes: CheckResult[]; skipped?: string }> {
-  if (own === undefined) {
-    return {
-      hostChecks: [],
-      probes: [],
-      skipped:
-        "OpsCrew does not know how to reach your server on this computer. Run `opscrew secure` on the computer that ran `opscrew provision` (its `.opscrew/` folder holds the login and the confirmed host key).",
-    };
-  }
   const { paths, reporter } = deps;
   const remote =
     options.remote ??
     ((await exists(paths.files.deployKey))
       ? new SshRemoteExec({
-          host: own.sshHost,
-          port: own.sshPort,
+          host,
+          ...(own !== undefined ? { port: own.sshPort } : {}),
           keyFile: paths.files.deployKey,
           knownHostsFile: paths.files.knownHosts,
           runner: deps.runner,
@@ -138,33 +128,45 @@ async function checkOwnServer(
   let hostChecks: CheckResult[] = [];
   let skipped: string | undefined;
   if (remote === undefined) {
-    skipped =
-      "the deploy key is not on this machine (it is created by `opscrew provision`). Run the checks from the machine that prepared your server.";
-  } else {
+    skipped = `the deploy key is not on this machine (it is created by \`opscrew provision\`). Run the checks from the machine that ${own !== undefined ? "prepared your server" : "provisioned the server"}.`;
+  } else if (own !== undefined) {
     reporter.step("Checking your server's hardening over SSH");
     hostChecks = await runHostChecks(remote, ownServerHostChecks(own.hardening));
+  } else {
+    reporter.step(`Checking the server's hardening over SSH (${host})`);
+    hostChecks = await runHostChecks(remote);
   }
   reporter.step(
-    own.access === "tunnel"
-      ? "Probing your server from this machine (the app is served through the Cloudflare Tunnel, so no web port should answer)"
-      : "Probing your server from outside",
+    own === undefined
+      ? `Probing ${host} from outside`
+      : own.access === "tunnel"
+        ? "Probing your server from this machine (the app is served through the Cloudflare Tunnel, so no web port should answer)"
+        : "Probing your server from outside",
   );
   const connect = options.tcpConnect ?? defaultTcpConnect;
   const timeoutMs = options.probeTimeoutMs ?? 3000;
+  const probeHost = own?.probeHost ?? host;
   const probes = [
-    ...(await probeOwnServerPorts(own.probeHost, plan, {
+    ...(own === undefined
+      ? await probeExpectedPorts(host, plan, { connect, timeoutMs })
+      : await probeOwnServerPorts(probeHost, plan, {
+          connect,
+          timeoutMs,
+          sshPort: own.sshPort,
+          ...(own.probeIpv6 !== undefined ? { ipv6: own.probeIpv6 } : {}),
+          ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
+        })),
+    ...(await probePorts(probeHost, {
       connect,
       timeoutMs,
-      sshPort: own.sshPort,
-      ...(own.probeIpv6 !== undefined ? { ipv6: own.probeIpv6 } : {}),
-      ...(options.ipv6Route !== undefined ? { ipv6Route: options.ipv6Route } : {}),
+      providerName: own !== undefined ? "ufw" : providerProfile(planProvider(plan)).displayName,
     })),
-    ...(await probePorts(own.probeHost, { connect, timeoutMs, providerName: "ufw" })),
-    await probeSshPasswordAuth(own.sshHost, {
+    await probeSshPasswordAuth(host, {
       runner: deps.runner,
       knownHostsFile: paths.files.knownHosts,
-      port: own.sshPort,
-      passwordsKept: own.hardening.passwordsKept,
+      ...(own !== undefined
+        ? { port: own.sshPort, passwordsKept: own.hardening.passwordsKept }
+        : {}),
     }),
   ];
   return { hostChecks, probes, ...(skipped !== undefined ? { skipped } : {}) };
@@ -225,51 +227,21 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   let probes: CheckResult[] = [];
   let hostChecksSkipped: string | undefined;
   const own = plan.target.provider === "own" ? await ownSecureTarget(deps, plan) : undefined;
-  if (plan.target.provider === "own") {
-    const checked = await checkOwnServer(deps, plan, own, options);
-    hostChecks = checked.hostChecks;
-    probes = checked.probes;
-    hostChecksSkipped = checked.skipped;
-  } else if (portainer) {
+  const sshHost = own?.sshHost ?? host;
+  if (portainer) {
     const checked = await portainerSecurityChecks(deps, plan, options.portainer);
     hostChecks = checked.checks;
     hostChecksSkipped = checked.skipped;
-  } else if (host === undefined) {
+  } else if (sshHost === undefined) {
     hostChecksSkipped =
-      "OpsCrew does not know the server's address on this computer. If the app is deployed, run `opscrew secure` on the computer that provisioned the server (its `.opscrew/` folder holds the address); otherwise deploy it first.";
+      plan.target.provider === "own"
+        ? "OpsCrew does not know how to reach your server on this computer. Run `opscrew secure` on the computer that ran `opscrew provision` (its `.opscrew/` folder holds the login and the confirmed host key)."
+        : "OpsCrew does not know the server's address on this computer. If the app is deployed, run `opscrew secure` on the computer that provisioned the server (its `.opscrew/` folder holds the address); otherwise deploy it first.";
   } else {
-    const remote =
-      options.remote ??
-      ((await exists(paths.files.deployKey))
-        ? new SshRemoteExec({
-            host,
-            keyFile: paths.files.deployKey,
-            knownHostsFile: paths.files.knownHosts,
-            runner: deps.runner,
-          })
-        : undefined);
-    if (remote === undefined) {
-      hostChecksSkipped =
-        "the deploy key is not on this machine (it is created by `opscrew provision`). Run the checks from the machine that provisioned the server.";
-    } else {
-      reporter.step(`Checking the server's hardening over SSH (${host})`);
-      hostChecks = await runHostChecks(remote);
-    }
-    reporter.step(`Probing ${host} from outside`);
-    const connect = options.tcpConnect ?? defaultTcpConnect;
-    const timeoutMs = options.probeTimeoutMs ?? 3000;
-    probes = [
-      ...(await probeExpectedPorts(host, plan, { connect, timeoutMs })),
-      ...(await probePorts(host, {
-        connect,
-        timeoutMs,
-        providerName: providerProfile(planProvider(plan)).displayName,
-      })),
-      await probeSshPasswordAuth(host, {
-        runner: deps.runner,
-        knownHostsFile: paths.files.knownHosts,
-      }),
-    ];
+    const checked = await checkServer(deps, plan, sshHost, own, options);
+    hostChecks = checked.hostChecks;
+    probes = checked.probes;
+    hostChecksSkipped = checked.skipped;
   }
 
   const shownHost = plan.target.provider === "own" ? own?.probeHost : host;

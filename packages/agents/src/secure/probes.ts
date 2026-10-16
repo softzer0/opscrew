@@ -4,7 +4,7 @@ import type { TcpConnect } from "@opscrew/secops";
 import { planProvider, providerProfile } from "../providers";
 import { providerConsole } from "../shared";
 import { originIsCloudflareOnly } from "../verify/checks";
-import { hasIpv6Route } from "../verify/net";
+import { ipv6HttpsAnswers } from "../verify/net";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 
@@ -152,7 +152,8 @@ async function probeOwnIpv6(
     title: "Web port 443 does not answer on IPv6 (the site is published on IPv4 only)",
     target: ipv6,
   };
-  if (!(await (options.ipv6Route ?? hasIpv6Route)())) {
+  const open = await ipv6HttpsAnswers(ipv6, options.connect, timeoutMs, options.ipv6Route);
+  if (open === undefined) {
     return {
       ...base,
       severity: "info",
@@ -161,7 +162,7 @@ async function probeOwnIpv6(
         "Skipped: this computer has no IPv6 route, so it cannot try your server's IPv6 address. Run `opscrew secure` from a network with IPv6 to check it.",
     };
   }
-  return (await options.connect(ipv6, 443, timeoutMs))
+  return open
     ? {
         ...base,
         severity: "medium",

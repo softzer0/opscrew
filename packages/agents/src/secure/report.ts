@@ -5,7 +5,15 @@ import {
   SEVERITIES,
   type Severity,
 } from "@opscrew/contracts";
-import { formatCounts, formatUtc, inlineCode, renderScanSummary, tableCell } from "@opscrew/secops";
+import {
+  formatCounts,
+  formatUtc,
+  inlineCode,
+  renderScanSummary,
+  SEVERITY_RANK,
+  tableCell,
+} from "@opscrew/secops";
+import { summarizeChecks } from "../verify/checks";
 
 /** Everything `SECURITY_REPORT.md` shows. All values must already be secret-free. */
 export interface SecurityReportInput {
@@ -62,8 +70,6 @@ const STATUS: Record<CheckResult["status"], string> = {
   warn: "Warn",
   skip: "Skip",
 };
-const RANK: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-
 function prose(text: string): string {
   return text
     .replace(/\r?\n+/g, " ")
@@ -134,7 +140,7 @@ export function securityProblems(input: SecurityReportInput): SecurityProblem[] 
     .map((problem, index) => ({ problem, index }))
     .sort(
       (a, b) =>
-        RANK[a.problem.severity] - RANK[b.problem.severity] ||
+        SEVERITY_RANK[b.problem.severity] - SEVERITY_RANK[a.problem.severity] ||
         (a.problem.status === b.problem.status ? 0 : a.problem.status === "fail" ? -1 : 1) ||
         a.index - b.index,
     )
@@ -149,12 +155,6 @@ function countLine(problems: readonly SecurityProblem[]): string {
     .filter((entry) => entry.count > 0)
     .map((entry) => `${entry.count} ${entry.severity}`);
   return parts.join(", ");
-}
-
-function tally(checks: readonly CheckResult[]): string {
-  const count = (status: CheckResult["status"]) => checks.filter((c) => c.status === status).length;
-  const warnings = count("warn");
-  return `${count("pass")} passed, ${count("fail")} failed, ${warnings} warning${warnings === 1 ? "" : "s"}, ${count("skip")} skipped`;
 }
 
 function checkTable(checks: readonly CheckResult[]): string[] {
@@ -198,8 +198,8 @@ export function renderSecurityReport(input: SecurityReportInput): string {
         ? "not evaluated (no infrastructure plan available)"
         : `${input.policies.filter((p) => p.passed).length} passed, ${input.policies.filter((p) => !p.passed).length} failed`
     } |`,
-    `| ${input.portainer !== undefined ? "Stacks in your Portainer" : "Server hardening"} | ${input.hostChecksSkipped !== undefined ? "skipped" : tally(input.hostChecks)} |`,
-    `| Outside probes | ${input.probes.length === 0 ? "skipped" : tally(input.probes)} |`,
+    `| ${input.portainer !== undefined ? "Stacks in your Portainer" : "Server hardening"} | ${input.hostChecksSkipped !== undefined ? "skipped" : summarizeChecks(input.hostChecks)} |`,
+    `| Outside probes | ${input.probes.length === 0 ? "skipped" : summarizeChecks(input.probes)} |`,
     "",
     "## What to fix",
     "",

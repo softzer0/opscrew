@@ -14,8 +14,8 @@ import {
   recordServerAddress,
 } from "../shared";
 import { createTestPhaseDeps, ScriptedRunner } from "../testing";
-import { runSecure } from "./index";
 import { withoutOwnServer } from "./own";
+import { runSecure } from "./run";
 
 const NOW = "2026-10-14T12:00:00.000Z";
 
