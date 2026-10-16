@@ -1,10 +1,10 @@
 import type { DsRecord } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { normalizeHostName, OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 
 /** Normalises a domain (lower case, no trailing dot) and refuses anything that is not one. */
 export function normalizeDomain(domain: string): string {
-  const name = domain.trim().toLowerCase().replace(/\.$/, "");
+  const name = normalizeHostName(domain);
   if (!isDomainName(name)) {
     throw new OpsCrewError("INVALID_INPUT", `"${domain.slice(0, 80)}" is not a domain name.`, {
       hint: "Use a name like example.com (internationalized names in their xn-- form).",

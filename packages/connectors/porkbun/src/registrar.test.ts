@@ -240,6 +240,25 @@ describe("PorkbunRegistrar", () => {
       expect(us.hint).toContain("opscrew domain connect shopapp.us");
     });
 
+    it("refuses a website-only extension even when the check could not read its rules", async () => {
+      const { registrar, calls } = setup({
+        "POST /domain/checkDomain": ok({ domains: { "shopapp.us": availability() } }),
+        "GET /domain/getRegistrationRequirements/us": [
+          err(400, "INVALID_TLD", "Temporarily unavailable."),
+          ok({
+            tld: "us",
+            apiRegisterable: false,
+            notApiRegisterableReason: "The .us registry needs nexus information.",
+          }),
+        ],
+      });
+      const error = await failure(registrar.quote("shopapp.us", 1));
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe("Porkbun cannot sell shopapp.us through its API.");
+      expect(error.hint).toContain("nexus");
+      expect(calls.some((c) => c.path.startsWith("/domain/create"))).toBe(false);
+    });
+
     it("stops before the approval when the credit or the spend limit does not cover it", async () => {
       const { registrar } = setup({
         "POST /domain/checkDomain": ok({ domains: { "shopapp.dev": availability() } }),

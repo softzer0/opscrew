@@ -295,7 +295,7 @@ export class DigitalOceanClient {
     );
   }
 
-  /** Every page of a list, following `links.pages.next`. */
+  /** Every page of a list, following `links.pages.next` until a page without one or an empty page. */
   async #listAll<T>(
     path: string,
     key: string,
@@ -310,8 +310,9 @@ export class DigitalOceanClient {
         per_page: String(PER_PAGE),
         ...query,
       })) as Record<string, unknown> & { links?: z.infer<typeof linksSchema> };
-      out.push(...(body[key] as T[]));
-      if (!body.links?.pages?.next) return out;
+      const items = body[key] as T[];
+      out.push(...items);
+      if (items.length === 0 || !body.links?.pages?.next) return out;
     }
   }
 

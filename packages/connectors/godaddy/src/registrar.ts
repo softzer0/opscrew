@@ -444,7 +444,7 @@ export class GoDaddyRegistrar implements Registrar {
       const answer = await this.#client.listDnsRecords(name, page);
       if (!answer) return page === 1 ? undefined : records;
       records.push(...answer.items.map((r) => toRegistrarRecord(r, name)));
-      if (!answer.hasNext) return records;
+      if (!answer.hasNext || answer.items.length === 0) return records;
     }
   }
 

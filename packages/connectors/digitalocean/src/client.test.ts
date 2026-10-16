@@ -115,6 +115,24 @@ describe("DigitalOceanClient pagination", () => {
     expect(sizes[1]).toMatchObject({ memory: 1024, price_monthly: 6 });
   });
 
+  it("stops at an empty page even when a next link is present", async () => {
+    const next = { pages: { next: "https://api.digitalocean.com/v2/regions?page=2" } };
+    const { client: c, calls } = client({
+      "/v2/regions?page=1": {
+        body: { regions: [{ slug: "fra1", available: true, sizes: ["s-1vcpu-1gb"] }], links: next },
+      },
+      "/v2/regions?page=2": {
+        body: {
+          regions: [],
+          links: { pages: { next: "https://api.digitalocean.com/v2/regions?page=3" } },
+        },
+      },
+    });
+    const regions = await c.listRegions();
+    expect(regions.map((r) => r.slug)).toEqual(["fra1"]);
+    expect(calls).toHaveLength(2);
+  });
+
   it("stops when there is no links object at all", async () => {
     const { client: c, calls } = client({ "/v2/regions": { body: fixture("regions.json") } });
     const regions = await c.listRegions();

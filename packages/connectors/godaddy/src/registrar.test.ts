@@ -812,6 +812,23 @@ describe("listRecords", () => {
       { type: "A", name: "mail.example.com", content: "192.0.2.2", ttl: 600 },
     ]);
   });
+
+  it("stops at an empty page even when GoDaddy says there are more", async () => {
+    const next = [{ rel: "next", href: "/v3/domains/zones/example.com/dns-records?page=9" }];
+    const { registrar, calls } = setup({
+      "GET /v3/domains/domain-names/example.com": { body: domainBody() },
+      "GET /v3/domains/zones/example.com/dns-records?page=1": {
+        body: { items: [{ name: "@", type: "A", data: "192.0.2.1" }], links: next },
+      },
+      "GET /v3/domains/zones/example.com/dns-records?page=2": {
+        body: { items: [], links: next, totalPages: 9 },
+      },
+    });
+    expect(await registrar.listRecords("example.com")).toEqual([
+      { type: "A", name: "example.com", content: "192.0.2.1" },
+    ]);
+    expect(calls.filter((c) => c.path.includes("/dns-records"))).toHaveLength(2);
+  });
 });
 
 describe("accountCheck", () => {

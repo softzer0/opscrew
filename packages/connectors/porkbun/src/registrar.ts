@@ -12,7 +12,7 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { isUserFacingError, listText, OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, listText, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import type {
   PorkbunAvailability,
   PorkbunClient,
@@ -158,7 +158,7 @@ function requireTerm(domain: string, years: number, term: number): void {
 
 /** A record name as a lower-case FQDN without the trailing dot. */
 function fqdn(name: string, domain: string): string {
-  const n = name.trim().toLowerCase().replace(/\.$/, "");
+  const n = normalizeHostName(name);
   if (n === "" || n === "@") return domain;
   return n === domain || n.endsWith(`.${domain}`) ? n : `${n}.${domain}`;
 }
@@ -224,7 +224,7 @@ export class PorkbunRegistrar implements Registrar {
     const names: string[] = [];
     const invalidNames: { check: DomainCheck }[] = [];
     for (const raw of domains) {
-      const name = raw.trim().toLowerCase().replace(/\.$/, "");
+      const name = normalizeHostName(raw);
       if (isDomainName(name)) names.push(name);
       else {
         invalidNames.push({
@@ -274,7 +274,7 @@ export class PorkbunRegistrar implements Registrar {
    * a few common extensions.
    */
   async suggest(query: string): Promise<DomainCheck[]> {
-    const text = query.trim().toLowerCase().replace(/\.$/, "");
+    const text = normalizeHostName(query);
     if (isDomainName(text)) return this.check([text]);
     const label = text
       .replace(/[^a-z0-9-]+/g, "")
@@ -301,13 +301,16 @@ export class PorkbunRegistrar implements Registrar {
         },
       );
     }
-    const [checked] = await this.#check([name]);
-    if (!checked?.check.registrable || !checked.item) {
-      throw new OpsCrewError("PHASE_PRECONDITION", `Porkbun cannot sell ${name} through its API.`, {
-        hint: checked?.check.reason ?? "Porkbun did not check the domain.",
+    const cannotSell = (reason: string | undefined) =>
+      new OpsCrewError("PHASE_PRECONDITION", `Porkbun cannot sell ${name} through its API.`, {
+        hint: reason ?? "Porkbun did not check the domain.",
       });
-    }
+    const [checked] = await this.#check([name]);
+    if (!checked?.check.registrable || !checked.item) throw cannotSell(checked?.check.reason);
+    // The check goes on without the extension's rules when reading them fails; the quote does not.
     const requirements = await this.#requirementsFor(tldOf(name));
+    const reason = unavailableReason(checked.item, requirements);
+    if (reason !== undefined) throw cannotSell(reason);
     requireTerm(name, years, Math.max(checked.item.minYears, requirements.termYears ?? 1));
     await this.#paceCreate();
     const preview = await this.#client.previewDomain(name);
