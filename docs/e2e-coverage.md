@@ -11,7 +11,7 @@ tests that need real accounts, Docker or the infrastructure engines.
 
 | Live test | Gate | Status | Last passed | Needs to run |
 |---|---|---|---|---|
-| Hetzner, full flow (`live.test.ts`) | `OPSCREW_E2E_HCLOUD_TOKEN` + GitHub | Passed | 2026-10-13 (run 7) | — |
+| Hetzner, full flow (`live.test.ts`) | `OPSCREW_E2E_HCLOUD_TOKEN` + GitHub | Passed | 2026-10-17 (after the simplification) | — |
 | Hetzner with a Cloudflare domain | + `OPSCREW_E2E_DOMAIN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN` | Passed | 2026-10-13 | — |
 | Framework matrix on Hetzner (19 apps) | `OPSCREW_E2E_APP` per app | Passed | 2026-10-14 | — |
 | With a model (`adapt`, `analyze`) | `OPSCREW_E2E_AI=1` | Passed (FastAPI + Redis) | 2026-10-14 | — |
@@ -21,7 +21,7 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Porkbun sandbox (`registrars.test.ts`) | Porkbun sandbox keys | Passed | 2026-10-14 | — |
 | Namecheap sandbox (`registrars.test.ts`) | Namecheap sandbox keys | Passed | 2026-10-14 | — |
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
-| Your own server (`own-server.test.ts`) | `OPSCREW_E2E_OWN_SERVER=1` | Passed | 2026-10-15 (run 11) | — |
+| Your own server (`own-server.test.ts`) | `OPSCREW_E2E_OWN_SERVER=1` | Passed | 2026-10-17 (after the simplification) | — |
 | Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | Passed (every core step, within the full pass's run 10) | 2026-10-16 | — |
 | Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Steps 1–11 passed** (run 10, 2026-10-16); the leak check's only item was a chance match in an encrypted plan file, the check fixed | 2026-10-16 (run 10, steps 1–11) | Steps 11 and 12 again after the simplification (T1032) |
 
