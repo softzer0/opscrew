@@ -1,19 +1,7 @@
-import type {
-  ComputeCatalog,
-  ComputeLocation,
-  ComputeOffer,
-  ProviderExtras,
-} from "@opscrew/contracts";
+import type { ComputeCatalog, ComputeOffer, ProviderExtras } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { DigitalOceanClient, DigitalOceanSize } from "./client";
-import {
-  BACKUP_PERCENT,
-  regionLocation,
-  STATIC_PRICES_AS_OF,
-  STATIC_REGIONS,
-  STATIC_SIZES,
-  TRAFFIC_PER_TB_USD,
-} from "./static-prices";
+import { BACKUP_PERCENT, STATIC_PRICES_AS_OF, STATIC_REGIONS, STATIC_SIZES } from "./static-prices";
 
 /** Basic regular sizes (`s-<n>vcpu-<m>gb`); premium Intel/AMD and 512 MiB variants do not match. */
 const BASIC_SLUG = /^s-\d+vcpu-\d+gb$/;
@@ -50,14 +38,6 @@ export class DigitalOceanCatalog implements ComputeCatalog {
     options: DigitalOceanCatalogOptions = {},
   ) {
     this.now = options.now ?? (() => new Date());
-  }
-
-  /** Regions that are available and offer Droplet sizes. */
-  async listLocations(): Promise<ComputeLocation[]> {
-    const regions = await this.client.listRegions();
-    return regions
-      .filter((region) => region.available && region.sizes.length > 0)
-      .map((region) => regionLocation(region.slug, region.name));
   }
 
   async listOffers(location?: string): Promise<ComputeOffer[]> {
@@ -97,9 +77,9 @@ export class DigitalOceanCatalog implements ComputeCatalog {
   }
 
   /**
-   * Daily backup percentage and outbound traffic rate, IPv4 included in the Droplet price. The API
-   * does not return these rates, so they come from DigitalOcean's published price page in
-   * `static-prices.ts` and are labelled `static` with that table's date, never `live`.
+   * Daily backup percentage, IPv4 included in the Droplet price. The API does not return the rate,
+   * so it comes from DigitalOcean's published price page in `static-prices.ts` and is labelled
+   * `static` with that table's date, never `live`.
    */
   async extras(_location: string): Promise<ProviderExtras> {
     return publishedExtras();
@@ -114,10 +94,6 @@ export class StaticDigitalOceanCatalog implements ComputeCatalog {
   readonly provider = "digitalocean" as const;
   /** Date of the price list this catalogue is built from. */
   readonly asOf = STATIC_PRICES_AS_OF;
-
-  async listLocations(): Promise<ComputeLocation[]> {
-    return STATIC_REGIONS.map((slug) => regionLocation(slug));
-  }
 
   async listOffers(location?: string): Promise<ComputeOffer[]> {
     const offers: ComputeOffer[] = [];
@@ -156,11 +132,10 @@ export class StaticDigitalOceanCatalog implements ComputeCatalog {
   }
 }
 
-/** Backup percentage and traffic rate from the dated published price table. */
+/** The backup percentage from the dated published price table. */
 function publishedExtras(): ProviderExtras {
   return {
     backupPercent: BACKUP_PERCENT,
-    trafficPerTb: { amount: TRAFFIC_PER_TB_USD, currency: "USD" },
     pricesIncludeVat: false,
     source: "static",
     asOf: STATIC_PRICES_AS_OF,

@@ -41,14 +41,6 @@ export interface Connector {
   verifyCredentials(): Promise<CredentialCheck>;
 }
 
-export interface ComputeLocation {
-  /** Provider location id, for example `nbg1`. */
-  id: string;
-  /** Display name, for example `Nuremberg`. */
-  name: string;
-  country: string;
-}
-
 /** One purchasable server size in one location. */
 export interface ComputeOffer {
   provider: ProviderId;
@@ -75,7 +67,6 @@ export interface ProviderExtras {
   ipv4Monthly?: Money;
   /** Automated backups as a percentage of the server price, for example 20. */
   backupPercent?: number;
-  trafficPerTb?: Money;
   pricesIncludeVat: boolean;
   source: "live" | "static";
   asOf: IsoDateTime;
@@ -84,7 +75,6 @@ export interface ProviderExtras {
 /** Live (or dated static) price and availability catalogue for a compute provider. */
 export interface ComputeCatalog {
   readonly provider: ProviderId;
-  listLocations(): Promise<ComputeLocation[]>;
   /** Offers for one location, or all locations when omitted. */
   listOffers(location?: string): Promise<ComputeOffer[]>;
   extras(location: string): Promise<ProviderExtras>;

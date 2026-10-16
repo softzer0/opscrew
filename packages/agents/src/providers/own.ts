@@ -1,6 +1,5 @@
 import type {
   ComputeCatalog,
-  ComputeLocation,
   ComputeOffer,
   CredentialCheck,
   ProviderExtras,
@@ -99,12 +98,8 @@ export function ownServerConnector(options: OwnServerConnectorOptions = {}): Vps
 }
 
 function ownServerCatalog(facts: OwnServerFacts | undefined, now: () => Date): ComputeCatalog {
-  const location: ComputeLocation = { id: OWN_SERVER_ID, name: "Your server", country: "" };
   return {
     provider: "own",
-    async listLocations() {
-      return [location];
-    },
     async listOffers(where?: string): Promise<ComputeOffer[]> {
       if (facts === undefined || (where !== undefined && where !== OWN_SERVER_ID)) return [];
       return [

@@ -1,5 +1,3 @@
-import type { ComputeLocation } from "@opscrew/contracts";
-
 /**
  * Dated static fallback for Hetzner Cloud prices.
  *
@@ -15,7 +13,13 @@ export const STATIC_PRICES_AS_OF = "2026-10-14T00:00:00.000Z";
 /** Price group a location belongs to in Hetzner's price list. */
 export type StaticPriceGroup = "eu" | "us" | "sin";
 
-export interface StaticLocation extends ComputeLocation {
+export interface StaticLocation {
+  /** Hetzner location id, for example `nbg1`. */
+  id: string;
+  /** City, for example `Nuremberg`. */
+  name: string;
+  /** Country code, checked against the API by the live price test. */
+  country: string;
   group: StaticPriceGroup;
 }
 

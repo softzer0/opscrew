@@ -12,7 +12,6 @@ function liveCatalog() {
   const fake = hetznerFetch({
     "/server_types?page=1": { body: fixture("server-types-page1.json") },
     "/server_types?page=2": { body: fixture("server-types-page2.json") },
-    "/locations": { body: fixture("locations.json") },
     "/pricing": { body: fixture("pricing.json") },
   });
   const client = new HetznerClient({
@@ -78,14 +77,6 @@ describe("HetznerCatalog (live)", () => {
     expect(calls.filter((c) => c.path.startsWith("/server_types?"))).toHaveLength(2);
   });
 
-  it("maps locations", async () => {
-    const { catalog } = liveCatalog();
-    expect(await catalog.listLocations()).toEqual([
-      { id: "fsn1", name: "Falkenstein", country: "DE" },
-      { id: "ash", name: "Ashburn, VA", country: "US" },
-    ]);
-  });
-
   it("reads extras: IPv4 per location and backup percent", async () => {
     const { catalog } = liveCatalog();
     expect(await catalog.extras("fsn1")).toEqual({
@@ -149,8 +140,8 @@ describe("StaticHetznerCatalog", () => {
     expect(await catalog.listOffers()).toHaveLength(3 * 21 + 2 * 11 + 13);
   });
 
-  it("lists six locations and static extras", async () => {
-    expect((await catalog.listLocations()).map((l) => l.id)).toEqual([
+  it("offers six locations and static extras", async () => {
+    expect([...new Set((await catalog.listOffers()).map((o) => o.location))]).toEqual([
       "fsn1",
       "nbg1",
       "hel1",

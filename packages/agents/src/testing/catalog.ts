@@ -1,6 +1,5 @@
 import type {
   ComputeCatalog,
-  ComputeLocation,
   ComputeOffer,
   ProviderExtras,
   VpsProviderId,
@@ -44,13 +43,6 @@ export class MemoryCatalog implements ComputeCatalog {
     },
     readonly provider: VpsProviderId = "hetzner",
   ) {}
-  async listLocations(): Promise<ComputeLocation[]> {
-    return [...new Set(this.offers.map((o) => o.location))].map((id) => ({
-      id,
-      name: id,
-      country: "DE",
-    }));
-  }
   async listOffers(location?: string): Promise<ComputeOffer[]> {
     this.requested.push(location);
     return this.offers.filter((o) => location === undefined || o.location === location);
@@ -176,7 +168,6 @@ export function makeRequirements(overrides: Partial<Requirements> = {}): Require
 /** DigitalOcean-like extras: daily backups at 30 %, IPv4 included (no separate price). */
 export const DIGITALOCEAN_EXTRAS: Omit<ProviderExtras, "asOf" | "source"> = {
   backupPercent: 30,
-  trafficPerTb: { amount: 10.24, currency: "USD" },
   pricesIncludeVat: false,
 };
 

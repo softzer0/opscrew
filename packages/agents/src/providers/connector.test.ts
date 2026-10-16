@@ -89,7 +89,6 @@ describe("a server the user owns", () => {
   it("offers the inspected server as the single, unpriced option", async () => {
     const catalog = vpsConnector("own", deps({}), { ownServer: facts, now }).catalog();
     expect(catalog.provider).toBe("own");
-    expect(await catalog.listLocations()).toHaveLength(1);
     const offers = await catalog.listOffers();
     expect(offers).toEqual([
       {

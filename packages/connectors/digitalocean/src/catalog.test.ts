@@ -12,7 +12,6 @@ function liveCatalog() {
   const fake = digitaloceanFetch({
     "/v2/sizes?page=1": { body: fixture("sizes-page1.json") },
     "/v2/sizes?page=2": { body: fixture("sizes-page2.json") },
-    "/v2/regions": { body: fixture("regions.json") },
   });
   const client = new DigitalOceanClient({
     token: fakeSecret("digitalocean-token"),
@@ -23,16 +22,6 @@ function liveCatalog() {
 }
 
 describe("DigitalOceanCatalog (live)", () => {
-  it("lists available regions that offer sizes, named from the table or by the API", async () => {
-    const { catalog } = liveCatalog();
-    const locations = await catalog.listLocations();
-    expect(locations).toEqual([
-      { id: "fra1", name: "Frankfurt", country: "DE" },
-      { id: "ams3", name: "Amsterdam", country: "NL" },
-      { id: "xyz1", name: "Somewhere 1", country: "" },
-    ]);
-  });
-
   it("offers Basic regular (shared) and CPU-Optimized (dedicated) sizes only", async () => {
     const { catalog } = liveCatalog();
     const offers = await catalog.listOffers();
@@ -113,13 +102,12 @@ describe("DigitalOceanCatalog (live)", () => {
     expect((await catalog.listOffers()).length).toBeGreaterThan(0);
   });
 
-  it("labels backups and traffic as the dated published rates, never live", async () => {
+  it("labels backups as the dated published rate, never live", async () => {
     const { catalog, calls } = liveCatalog();
     const extras = await catalog.extras("fra1");
-    // The API has no backup or traffic prices: they come from the dated table, so say so.
+    // The API has no backup prices: they come from the dated table, so say so.
     expect(extras).toEqual({
       backupPercent: 30,
-      trafficPerTb: { amount: 10.24, currency: "USD" },
       pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,
@@ -138,9 +126,9 @@ describe("StaticDigitalOceanCatalog", () => {
     expect(catalog.provider).toBe("digitalocean");
   });
 
-  it("lists every Droplet region", async () => {
-    const locations = await catalog.listLocations();
-    expect(locations.map((l) => l.id)).toEqual([
+  it("offers sizes in every Droplet region", async () => {
+    const locations = [...new Set((await catalog.listOffers()).map((o) => o.location))];
+    expect(locations).toEqual([
       "nyc1",
       "nyc2",
       "nyc3",
@@ -158,7 +146,6 @@ describe("StaticDigitalOceanCatalog", () => {
       "mkc1",
       "mem1",
     ]);
-    expect(locations.find((l) => l.id === "lon1")).toMatchObject({ name: "London", country: "GB" });
   });
 
   it("offers the dated Basic table in every region with USD prices", async () => {
@@ -190,7 +177,6 @@ describe("StaticDigitalOceanCatalog", () => {
   it("returns static extras and rejects unknown regions", async () => {
     expect(await catalog.extras("ams3")).toEqual({
       backupPercent: 30,
-      trafficPerTb: { amount: 10.24, currency: "USD" },
       pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,

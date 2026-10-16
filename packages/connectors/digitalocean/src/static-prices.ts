@@ -1,5 +1,3 @@
-import type { ComputeLocation } from "@opscrew/contracts";
-
 /**
  * Dated static fallback for DigitalOcean Droplet prices.
  *
@@ -13,38 +11,6 @@ export const STATIC_PRICES_AS_OF = "2026-10-12T00:00:00.000Z";
  * does not return it, so even live estimates use this published rate and name its date.
  */
 export const BACKUP_PERCENT = 30;
-/**
- * Outbound transfer beyond the pooled allowance: USD 0.01 per GiB, so 10.24 per TiB. Published
- * rate (not in the API), like {@link BACKUP_PERCENT}.
- */
-export const TRAFFIC_PER_TB_USD = 10.24;
-
-/** Display names and countries of known Droplet regions; other regions are named by slug. */
-export const REGION_NAMES: Readonly<Record<string, { city: string; country: string }>> = {
-  fra1: { city: "Frankfurt", country: "DE" },
-  ams3: { city: "Amsterdam", country: "NL" },
-  lon1: { city: "London", country: "GB" },
-  nyc1: { city: "New York", country: "US" },
-  nyc2: { city: "New York", country: "US" },
-  nyc3: { city: "New York", country: "US" },
-  sfo2: { city: "San Francisco", country: "US" },
-  sfo3: { city: "San Francisco", country: "US" },
-  tor1: { city: "Toronto", country: "CA" },
-  sgp1: { city: "Singapore", country: "SG" },
-  blr1: { city: "Bangalore", country: "IN" },
-  syd1: { city: "Sydney", country: "AU" },
-  atl1: { city: "Atlanta", country: "US" },
-};
-
-/**
- * A location for a region slug. Unknown regions keep the slug (or the API's name) as their name
- * and an empty country, because OpsCrew does not know where they are.
- */
-export function regionLocation(slug: string, apiName?: string | null): ComputeLocation {
-  const known = REGION_NAMES[slug];
-  if (known === undefined) return { id: slug, name: apiName || slug, country: "" };
-  return { id: slug, name: known.city, country: known.country };
-}
 
 /** Droplet regions on 2026-10-12 (https://docs.digitalocean.com/platform/regional-availability/). */
 export const STATIC_REGIONS: readonly string[] = [

@@ -339,10 +339,9 @@ describe("buildDesignOptions", () => {
 describe("live prices with published rates (DigitalOcean)", () => {
   const TABLE_AS_OF = "2026-10-12T00:00:00.000Z";
   const LIVE_AS_OF = "2026-10-14T09:00:00.000Z";
-  /** DigitalOcean's extras: the API has no backup or traffic rates, so they are the dated table's. */
+  /** DigitalOcean's extras: the API has no backup rate, so it is the dated table's. */
   const published: ProviderExtras = {
     backupPercent: 30,
-    trafficPerTb: { amount: 10.24, currency: "USD" },
     pricesIncludeVat: false,
     source: "static",
     asOf: TABLE_AS_OF,

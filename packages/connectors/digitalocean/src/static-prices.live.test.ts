@@ -6,8 +6,8 @@
  * the API; the offline checks of the comparison itself always run. A failure lists every
  * difference at once and never includes the token.
  *
- * The API has no backup or traffic prices, so `BACKUP_PERCENT` and `TRAFFIC_PER_TB_USD` are checked
- * by hand against https://www.digitalocean.com/pricing/droplets (docs/e2e.md).
+ * The API has no backup prices, so `BACKUP_PERCENT` is checked by hand against
+ * https://www.digitalocean.com/pricing/droplets (docs/e2e.md).
  */
 import { describe, expect, it } from "vitest";
 import { DigitalOceanClient, type DigitalOceanRegion, type DigitalOceanSize } from "./client";

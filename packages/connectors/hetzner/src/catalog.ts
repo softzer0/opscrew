@@ -1,10 +1,4 @@
-import type {
-  ComputeCatalog,
-  ComputeLocation,
-  ComputeOffer,
-  Currency,
-  ProviderExtras,
-} from "@opscrew/contracts";
+import type { ComputeCatalog, ComputeOffer, Currency, ProviderExtras } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { HetznerClient, HetznerPricing, HetznerServerType } from "./client";
 import {
@@ -32,15 +26,6 @@ export class HetznerCatalog implements ComputeCatalog {
     options: HetznerCatalogOptions = {},
   ) {
     this.now = options.now ?? (() => new Date());
-  }
-
-  async listLocations(): Promise<ComputeLocation[]> {
-    const locations = await this.client.listLocations();
-    return locations.map((location) => ({
-      id: location.name,
-      name: location.city ?? location.description ?? location.name,
-      country: location.country,
-    }));
   }
 
   async listOffers(location?: string): Promise<ComputeOffer[]> {
@@ -119,10 +104,6 @@ export class StaticHetznerCatalog implements ComputeCatalog {
   readonly provider = "hetzner" as const;
   /** Date of the price list this catalogue is built from. */
   readonly asOf = STATIC_PRICES_AS_OF;
-
-  async listLocations(): Promise<ComputeLocation[]> {
-    return STATIC_LOCATIONS.map(({ id, name, country }) => ({ id, name, country }));
-  }
 
   async listOffers(location?: string): Promise<ComputeOffer[]> {
     const offers: ComputeOffer[] = [];
