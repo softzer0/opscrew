@@ -23,7 +23,7 @@ tests that need real accounts, Docker or the infrastructure engines.
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
 | Your own server (`own-server.test.ts`) | `OPSCREW_E2E_OWN_SERVER=1` | Passed | 2026-10-15 (run 11) | — |
 | Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | **Partly passed** (run 1, 2026-10-15: steps 1–3 and the leak search; step 8 failed on a test check, step 9 not reached) | — | A rerun after T1013 |
-| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Partly passed** (run 5, 2026-10-16: steps 1–5; stopped in step 6, fixed in T1015) | — | A rerun (about 45–60 minutes) |
+| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Partly passed** (run 7, 2026-10-16: steps 1–6 and most of 7; stopped at step 7's `verify`, fixed in T1017) | — | A rerun (about 45–60 minutes) |
 
 Run in development, not tracked by date:
 
@@ -44,7 +44,7 @@ Tick a step once it has passed live.
 | 3. A failing change rolls back | full | [x] 2026-10-16 |
 | 4. An apply through MCP that replaces the registry token | full | [x] 2026-10-16 |
 | 5. Caddy: the app stack updated in place, the DNS record OpsCrew prints, certificates on 80/443 | full | [x] 2026-10-16 |
-| 6. Your own proxy: the app on a host port, `verify --url` | full | [ ] |
+| 6. Your own proxy: the app on a host port, `verify --url` | full | [x] 2026-10-16 |
 | 7. Cloudflare redeploys with the tunnel: a deploy through Access, 404 outside the webhook, a token replace | full | [ ] |
 | 8. Destroy keeps the data volumes; Portainer, its settings and the decoys stay | core | [ ] |
 | 9. `destroy --delete-data` removes the data volumes and nothing else | core | [ ] |
@@ -69,7 +69,7 @@ live test records each one as an `observed:` line.
 | A registry token replace keeps the entry granted to the environment | full (steps 4, 7) | [x] 2026-10-16 |
 | Starting a stopped stack answers only once it runs | full | [ ] |
 | The updater reaches a loopback Portainer through `host.docker.internal` | full (step 10) | [ ] |
-| cloudflared reaches Portainer with `no_tls_verify`; the hostname answers 404 outside `/api/stacks/webhooks/` | full (step 7) | [ ] |
+| cloudflared reaches Portainer with `no_tls_verify`; the hostname answers 404 outside `/api/stacks/webhooks/` | full (step 7) | [x] 2026-10-16 (401 without the service token) |
 | GitHub accepts the orphan-branch calls and drift's `git fetch` with the user's fine-grained token | core | [x] 2026-10-15 |
 | The smallest Cloudflare token for a tunnel-only `updater` setup | core, with `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | [ ] |
 | The guide's `openssl` command shows the fingerprint OpsCrew pins | core | [x] 2026-10-15 |
