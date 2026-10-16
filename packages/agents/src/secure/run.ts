@@ -5,7 +5,7 @@ import type {
   Scanner,
   ScanReport,
 } from "@opscrew/contracts";
-import { isUserFacingError, toPosixRelative, writeFileAtomic } from "@opscrew/core";
+import { isUserFacingError, plural, toPosixRelative, writeFileAtomic } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import {
   defaultTcpConnect,
@@ -309,8 +309,8 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     "secure",
     passed ? "ok" : "failed",
     passed
-      ? `no failures, ${problems.length} warning${problems.length === 1 ? "" : "s"}`
-      : `${failures} problem${failures === 1 ? "" : "s"} to fix`,
+      ? `no failures, ${plural(problems.length, "warning")}`
+      : `${plural(failures, "problem")} to fix`,
   );
   return {
     scan,

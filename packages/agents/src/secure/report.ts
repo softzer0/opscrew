@@ -5,6 +5,7 @@ import {
   SEVERITIES,
   type Severity,
 } from "@opscrew/contracts";
+import { plural } from "@opscrew/core";
 import {
   formatCounts,
   formatUtc,
@@ -187,8 +188,8 @@ export function renderSecurityReport(input: SecurityReportInput): string {
     failures.length === 0
       ? warnings.length === 0
         ? "**No problems found.**"
-        : `**No failures**, ${warnings.length} warning${warnings.length === 1 ? "" : "s"} to look at.`
-      : `**${failures.length} problem${failures.length === 1 ? "" : "s"} to fix** (${countLine(failures)})${warnings.length > 0 ? ` and ${warnings.length} warning${warnings.length === 1 ? "" : "s"}` : ""}.`,
+        : `**No failures**, ${plural(warnings.length, "warning")} to look at.`
+      : `**${plural(failures.length, "problem")} to fix** (${countLine(failures)})${warnings.length > 0 ? ` and ${plural(warnings.length, "warning")}` : ""}.`,
     "",
     "| Area | Result |",
     "|---|---|",
@@ -330,8 +331,8 @@ export function renderSecuritySummary(
   const top = options.top ?? 10;
   const lines = [
     failures === 0
-      ? `Security check of ${input.appName}: no failures${problems.length > 0 ? `, ${problems.length} warning${problems.length === 1 ? "" : "s"}` : ""}.`
-      : `Security check of ${input.appName}: ${failures} problem${failures === 1 ? "" : "s"} to fix (${countLine(problems.filter((p) => p.status === "fail"))}).`,
+      ? `Security check of ${input.appName}: no failures${problems.length > 0 ? `, ${plural(problems.length, "warning")}` : ""}.`
+      : `Security check of ${input.appName}: ${plural(failures, "problem")} to fix (${countLine(problems.filter((p) => p.status === "fail"))}).`,
   ];
   for (const problem of problems.slice(0, top)) {
     lines.push(
