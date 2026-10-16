@@ -1,6 +1,7 @@
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PhaseDeps } from "../context";
+import { readIfExists } from "../shared";
 
 /**
  * The lines `ensureGitignore` adds: `.opscrew/` (OpsCrew's machine-local state: saved plans,
@@ -18,7 +19,13 @@ const ENTRY_PATTERNS: Record<GitignoreEntry, RegExp> = {
   ".terraform/": /^(?:\*\*\/)?\.terraform(?:\/(?:\*\*?)?)?$/,
 };
 
-/** True when the `.gitignore` text ignores `entry`; a later negation un-ignores it, as in git. */
+/**
+ * True when the `.gitignore` text ignores `entry`: `.opscrew/` at the repository root
+ * (`.opscrew`, `.opscrew/`, `/.opscrew/`, `.opscrew/*` or `.opscrew/**`), `.terraform` directories
+ * at any depth (`.terraform`, `.terraform/`, `**\/.terraform/`, `.terraform/*`, …; a rooted
+ * `/.terraform/` does not reach `opscrew/infra/prod/.terraform/`). A later negation un-ignores it,
+ * as in git.
+ */
 function covers(text: string, entry: GitignoreEntry): boolean {
   const pattern = ENTRY_PATTERNS[entry];
   let covered = false;
@@ -29,24 +36,6 @@ function covers(text: string, entry: GitignoreEntry): boolean {
     if (pattern.test(negated ? line.slice(1) : line)) covered = !negated;
   }
   return covered;
-}
-
-/**
- * True when the `.gitignore` text ignores the `.opscrew/` directory at the repository root
- * (`.opscrew`, `.opscrew/`, `/.opscrew/`, `.opscrew/*` or `.opscrew/**`). A later negation
- * (`!.opscrew/`) un-ignores it again, as in git.
- */
-export function gitignoreCoversOpsCrew(text: string): boolean {
-  return covers(text, ".opscrew/");
-}
-
-/**
- * True when the `.gitignore` text ignores `.terraform` directories at any depth (`.terraform`,
- * `.terraform/`, `**\/.terraform/`, `.terraform/*`, …; a rooted `/.terraform/` does not reach
- * `opscrew/infra/prod/.terraform/`).
- */
-export function gitignoreCoversTerraform(text: string): boolean {
-  return covers(text, ".terraform/");
 }
 
 /** The {@link GITIGNORE_ENTRIES} the `.gitignore` text (`undefined`: no file) does not ignore. */
@@ -60,13 +49,8 @@ export function describeGitignoreEntries(entries: readonly string[]): string {
 }
 
 /** Contents of `<root>/.gitignore`, or `undefined` when the file does not exist. */
-export async function readGitignore(root: string): Promise<string | undefined> {
-  try {
-    return await readFile(join(root, ".gitignore"), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
+export function readGitignore(root: string): Promise<string | undefined> {
+  return readIfExists(join(root, ".gitignore"));
 }
 
 export interface EnsureGitignoreOptions {

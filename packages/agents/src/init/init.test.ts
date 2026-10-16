@@ -17,15 +17,13 @@ import {
   type TestPhaseDeps,
 } from "../testing";
 import { type TestPlanOptions, testPlan } from "../verify/__fixtures__/plan";
+import { missingGitignoreEntries } from "./gitignore";
 import {
   ensureGitignore,
-  gitignoreCoversOpsCrew,
-  gitignoreCoversTerraform,
   type InitCheck,
   type InitCheckId,
   type InitServices,
   initPassed,
-  missingGitignoreEntries,
   runInitChecks,
 } from "./index";
 
@@ -801,26 +799,27 @@ describe("initPassed", () => {
   });
 });
 
-describe("gitignoreCoversOpsCrew", () => {
-  it("recognises the usual spellings and honours negation", () => {
+describe("missingGitignoreEntries", () => {
+  const covers = (text: string, entry: ".opscrew/" | ".terraform/") =>
+    !missingGitignoreEntries(text).includes(entry);
+
+  it("recognises the usual spellings of .opscrew/ and honours negation", () => {
     for (const line of [".opscrew", ".opscrew/", "/.opscrew/", ".opscrew/*", "/.opscrew/**"]) {
-      expect(gitignoreCoversOpsCrew(`dist\n${line}\n`)).toBe(true);
+      expect(covers(`dist\n${line}\n`, ".opscrew/")).toBe(true);
     }
     const bom = String.fromCharCode(0xfeff);
-    expect(gitignoreCoversOpsCrew(`${bom}.opscrew/\r\n`)).toBe(true);
-    expect(gitignoreCoversOpsCrew("# .opscrew/\nopscrew/\n")).toBe(false);
-    expect(gitignoreCoversOpsCrew(".opscrew/\n!.opscrew/\n")).toBe(false);
+    expect(covers(`${bom}.opscrew/\r\n`, ".opscrew/")).toBe(true);
+    expect(covers("# .opscrew/\nopscrew/\n", ".opscrew/")).toBe(false);
+    expect(covers(".opscrew/\n!.opscrew/\n", ".opscrew/")).toBe(false);
   });
-});
 
-describe("gitignoreCoversTerraform", () => {
   it("recognises .terraform at any depth and honours negation", () => {
     for (const line of [".terraform", ".terraform/", "**/.terraform/", "**/.terraform/*"]) {
-      expect(gitignoreCoversTerraform(`dist\n${line}\n`)).toBe(true);
+      expect(covers(`dist\n${line}\n`, ".terraform/")).toBe(true);
     }
     // A rooted pattern does not reach opscrew/infra/prod/.terraform/.
-    expect(gitignoreCoversTerraform("/.terraform/\n")).toBe(false);
-    expect(gitignoreCoversTerraform(".terraform/\n!.terraform/\n")).toBe(false);
+    expect(covers("/.terraform/\n", ".terraform/")).toBe(false);
+    expect(covers(".terraform/\n!.terraform/\n", ".terraform/")).toBe(false);
     expect(missingGitignoreEntries(undefined)).toEqual([".opscrew/", ".terraform/"]);
     expect(missingGitignoreEntries(".terraform/\n")).toEqual([".opscrew/"]);
   });

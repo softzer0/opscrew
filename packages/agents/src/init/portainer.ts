@@ -8,13 +8,12 @@ import {
 } from "@opscrew/connector-portainer";
 import { isUserFacingError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
+import { hasEnv } from "../domain/registrars";
 import { hidePortainerAddress } from "../interview/portainer-access";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer";
 import { type PortainerConnection, readPortainerConnection } from "../shared/server-record";
-import type { InitCheck } from "./checks";
-
-type CheckResult = Omit<InitCheck, "id" | "title">;
+import { type CheckResult, failFrom } from "./check-result";
 
 /** Makes the Portainer client of the init check (default: the adapter's pinned `portainerClient`). */
 export type InitPortainerClient = (
@@ -42,9 +41,6 @@ const REGISTRY_FIX = `For ${REGISTRY_TOKEN_VAR}, create a classic token with onl
 
 const REPOSITORY_FIX = `For ${REPOSITORY_TOKEN_VAR}, create a fine-grained token at https://github.com/settings/personal-access-tokens/new for only this repository with Contents: Read-only (OpsCrew sends it only to your Portainer, for the app's stack, and never saves it).`;
 
-const set = (env: Record<string, string | undefined>, name: string) =>
-  (env[name] ?? "").trim() !== "";
-
 /**
  * Reads the Portainer connection the interview recorded in `.opscrew/server.json` and registers
  * Portainer's address with the redactor, so no check shows it. A damaged record becomes a plain
@@ -54,16 +50,10 @@ export async function readPortainerRecord(deps: PhaseDeps): Promise<PortainerRec
   try {
     const connection = await readPortainerConnection(deps.paths);
     if (connection !== undefined) hidePortainerAddress(deps.redactor, connection.url);
-    return connection === undefined ? {} : { connection };
+    return { connection };
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
-    return {
-      problem: {
-        status: "fail",
-        message: error.message,
-        ...(error.hint ? { fix: error.hint } : {}),
-      },
-    };
+    return { problem: failFrom(error) };
   }
 }
 
@@ -120,20 +110,13 @@ export async function checkPortainer(
   let role: "admin" | "user";
   try {
     const client = makeClient(
-      {
-        url: connection.url,
-        ...(connection.certFingerprint !== undefined
-          ? { certFingerprint: connection.certFingerprint }
-          : {}),
-      },
+      { url: connection.url, certFingerprint: connection.certFingerprint },
       token,
       { redactor: deps.redactor },
     );
     role = (await client.currentUser()).role;
   } catch (error) {
-    if (error instanceof PortainerCertificateError) {
-      return { status: "fail", message: error.message, ...(error.hint ? { fix: error.hint } : {}) };
-    }
+    if (error instanceof PortainerCertificateError) return failFrom(error);
     if (error instanceof PortainerApiError && error.status === 401) {
       return {
         status: "fail",
@@ -142,11 +125,10 @@ export async function checkPortainer(
       };
     }
     if (!isUserFacingError(error)) throw error;
-    return {
-      status: "fail",
-      message: `OpsCrew could not check ${PORTAINER_TOKEN_VAR} with your Portainer: ${error.message}`,
-      ...(error.hint ? { fix: error.hint } : {}),
-    };
+    return failFrom(
+      error,
+      `OpsCrew could not check ${PORTAINER_TOKEN_VAR} with your Portainer: ${error.message}`,
+    );
   }
   const whose = role === "admin" ? "an administrator's token" : "a limited user's token";
   return {
@@ -173,7 +155,7 @@ export function checkPortainerTokens(
   const fixes: string[] = [];
   if (publicImage) {
     notes.push("The app's image is public, so Portainer needs no registry token.");
-  } else if (set(env, REGISTRY_TOKEN_VAR)) {
+  } else if (hasEnv(env, REGISTRY_TOKEN_VAR)) {
     notes.push(`${REGISTRY_TOKEN_VAR} is set for the app's private image.`);
   } else {
     missing.push(
@@ -182,7 +164,7 @@ export function checkPortainerTokens(
     fixes.push(REGISTRY_FIX);
   }
   if (repoPrivate === true) {
-    if (set(env, REPOSITORY_TOKEN_VAR)) {
+    if (hasEnv(env, REPOSITORY_TOKEN_VAR)) {
       notes.push(`${REPOSITORY_TOKEN_VAR} is set for the private repository.`);
     } else {
       missing.push(`${REPOSITORY_TOKEN_VAR} (the repository is private)`);

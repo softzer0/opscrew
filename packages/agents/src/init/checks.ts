@@ -1,7 +1,7 @@
 import {
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
   CLOUDFLARE_TOKEN_PERMISSIONS,
-  type CloudflareConnector,
+  type CloudflareClient,
   cloudflareConnector,
 } from "@opscrew/connector-cloudflare";
 import {
@@ -20,9 +20,17 @@ import type {
 import { findExecutable, isUserFacingError } from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
 import { usesTunnel } from "@opscrew/iac-templates";
-import { readArtifact } from "@opscrew/plan-schema";
+import {
+  type ArtifactKind,
+  type ArtifactOf,
+  type DeployPlan,
+  type Requirements,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
+  hasEnv,
+  OTHER_REGISTRAR_IDS,
   type OtherRegistrarId,
   REGISTRAR_ENV,
   REGISTRAR_NAMES,
@@ -42,6 +50,7 @@ import {
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer";
 import { CLOUDFLARE_TUNNEL_PERMISSIONS, tunnelTokenPermissions } from "../provision/zero-trust";
 import { ownServerLogin, readOwnServerRecord, requireOwnServerKey } from "../shared/own-server";
+import { type CheckResult, failFrom } from "./check-result";
 import {
   describeGitignoreEntries,
   GITIGNORE_ENTRIES,
@@ -117,7 +126,7 @@ export interface InitCheckOptions {
 }
 
 /** Oldest Node.js OpsCrew runs on. */
-export const MIN_NODE_VERSION = "20.19.0";
+const MIN_NODE_VERSION = "20.19.0";
 
 const NETWORK_TIMEOUT_MS = 10_000;
 
@@ -140,9 +149,6 @@ export function initPassed(checks: readonly InitCheck[]): boolean {
   return !checks.some((check) => check.status === "fail");
 }
 
-const set = (env: Record<string, string | undefined>, name: string) =>
-  (env[name] ?? "").trim() !== "";
-
 function errorText(error: unknown): string {
   if (isUserFacingError(error)) return `${error.message}${error.hint ? ` ${error.hint}` : ""}`;
   return error instanceof Error ? error.message : String(error);
@@ -156,28 +162,40 @@ interface CloudflareUsage {
   tunnel?: boolean;
 }
 
+/** The plan and the interview answers, each when there is a usable one. */
+interface ProjectArtifacts {
+  plan?: DeployPlan;
+  requirements?: Requirements;
+}
+
+/**
+ * The artefact, or undefined when it is missing or invalid: init then checks what it can without
+ * it. Any other error stops the run.
+ */
+async function readUsable<K extends ArtifactKind>(
+  kind: K,
+  file: string,
+): Promise<ArtifactOf<K> | undefined> {
+  try {
+    return await readArtifact(kind, file);
+  } catch (error) {
+    const code = isUserFacingError(error) ? error.code : undefined;
+    if (code === "ARTIFACT_MISSING" || code === "ARTIFACT_INVALID") return undefined;
+    throw error;
+  }
+}
+
 /** Whether the plan (or, before design, the requirements) puts the domain on Cloudflare. */
-async function cloudflareUsage(deps: PhaseDeps): Promise<CloudflareUsage> {
-  try {
-    const plan = await readArtifact("plan", deps.paths.files.plan);
+function cloudflareUsage({ plan, requirements }: ProjectArtifacts): CloudflareUsage {
+  if (plan !== undefined) {
     return plan.dns.provider === "cloudflare"
-      ? {
-          needed: true,
-          ...(plan.dns.domain ? { domain: plan.dns.domain } : {}),
-          ...(usesTunnel(plan) ? { tunnel: true } : {}),
-        }
+      ? { needed: true, domain: plan.dns.domain, tunnel: usesTunnel(plan) }
       : { needed: false };
-  } catch {
-    // No usable plan yet: fall back to the interview answers.
   }
-  try {
-    const requirements = await readArtifact("requirements", deps.paths.files.requirements);
-    return requirements.dnsProvider === "cloudflare"
-      ? { needed: true, ...(requirements.domain ? { domain: requirements.domain } : {}) }
-      : { needed: false };
-  } catch {
-    return { needed: undefined };
-  }
+  if (requirements === undefined) return { needed: undefined };
+  return requirements.dnsProvider === "cloudflare"
+    ? { needed: true, domain: requirements.domain }
+    : { needed: false };
 }
 
 interface RepoInfo {
@@ -206,7 +224,7 @@ export async function runInitChecks(
   const budget = services.timeoutMs ?? NETWORK_TIMEOUT_MS;
 
   const providerTokens = VPS_PROVIDERS.flatMap((id) => providerProfile(id).tokenVars);
-  const registrarSecrets = OTHER_REGISTRARS.flatMap((id) => REGISTRAR_ENV[id]).filter(
+  const registrarSecrets = OTHER_REGISTRAR_IDS.flatMap((id) => REGISTRAR_ENV[id]).filter(
     (name) => name !== "NAMECHEAP_API_USER",
   );
   for (const name of [
@@ -225,7 +243,11 @@ export async function runInitChecks(
 
   const repoInfo = inspectRepository(deps, which);
   const github = githubLookup(deps, offline, repoInfo);
-  const choice = await providerChoice(deps);
+  const artifacts: ProjectArtifacts = {
+    plan: await readUsable("plan", deps.paths.files.plan),
+    requirements: await readUsable("requirements", deps.paths.files.requirements),
+  };
+  const choice = providerChoice(artifacts, env);
   // Read before any check runs, so Portainer's address is registered with the redactor first.
   const portainer: PortainerRecord | undefined =
     choice.provider === "portainer" ? await readPortainerRecord(deps) : undefined;
@@ -269,26 +291,27 @@ export async function runInitChecks(
         ]
       : []),
     guard("cloudflare", "Cloudflare token", false, async () => {
-      const usage = await cloudflareUsage(deps);
+      const usage = cloudflareUsage(artifacts);
       return withBudget(
-        checkCloudflare(deps, offline, usage, cloudflare),
+        checkCloudflare(usage, cloudflare),
         budget,
         "Cloudflare",
         usage.needed === true,
       );
     }),
     guard("registrar", "Buying domains through Cloudflare (optional)", false, () =>
-      withBudget(checkRegistrar(deps, offline, cloudflare), budget, "Cloudflare", false),
+      withBudget(checkRegistrar(cloudflare), budget, "Cloudflare", false),
     ),
-    ...OTHER_REGISTRARS.filter((id) => REGISTRAR_ENV[id].some((name) => set(env, name))).map((id) =>
-      guard(id, `${REGISTRAR_NAMES[id]} API access (optional)`, false, () =>
-        withBudget(
-          checkOtherRegistrar(deps, offline, id, services.registrarCheck),
-          budget,
-          REGISTRAR_NAMES[id],
-          false,
+    ...OTHER_REGISTRAR_IDS.filter((id) => REGISTRAR_ENV[id].some((name) => hasEnv(env, name))).map(
+      (id) =>
+        guard(id, `${REGISTRAR_NAMES[id]} API access (optional)`, false, () =>
+          withBudget(
+            checkOtherRegistrar(deps, offline, id, services.registrarCheck),
+            budget,
+            REGISTRAR_NAMES[id],
+            false,
+          ),
         ),
-      ),
     ),
     guard("github", "GitHub token", true, () =>
       withBudget(checkGitHub(offline, github), budget, "GitHub", true),
@@ -306,8 +329,6 @@ export async function runInitChecks(
     ...(check.fix === undefined ? {} : { fix: deps.redactor.redact(check.fix) }),
   }));
 }
-
-type CheckResult = Omit<InitCheck, "id" | "title">;
 
 /** Runs one check; an unexpected error becomes a `fail` (required) or `warn` (optional). */
 async function guard(
@@ -466,27 +487,24 @@ interface ProviderChoice {
  * The planned target, else the requested one, else the provider whose token alone is set. A
  * Portainer target (`portainer`) is recognised in the plan and in the answers.
  */
-async function providerChoice(deps: PhaseDeps): Promise<ProviderChoice> {
-  try {
-    const plan = await readArtifact("plan", deps.paths.files.plan);
+function providerChoice(
+  { plan, requirements }: ProjectArtifacts,
+  env: Record<string, string | undefined>,
+): ProviderChoice {
+  if (plan !== undefined) {
     return {
       provider: plan.target.provider === "portainer" ? "portainer" : planProvider(plan),
       source: "plan",
     };
-  } catch {
-    // No usable plan yet: fall back to the interview answers.
   }
-  try {
-    const requirements = await readArtifact("requirements", deps.paths.files.requirements);
+  if (requirements !== undefined) {
     return {
       provider:
         requirements.provider === "portainer" ? "portainer" : requestedProvider(requirements),
       source: "requirements",
     };
-  } catch {
-    // No answers yet: fall back to the tokens.
   }
-  const provider = providerFromTokens(deps.env);
+  const provider = providerFromTokens(env);
   return provider ? { provider, source: "token" } : { source: "none" };
 }
 
@@ -520,7 +538,7 @@ async function checkOwnServerLogin(deps: PhaseDeps, choice: ProviderChoice): Pro
     connection = await readOwnServerRecord(deps.paths);
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
-    return { status: "fail", message: error.message, ...(error.hint ? { fix: error.hint } : {}) };
+    return failFrom(error);
   }
   const deploysTo = choice.source === "plan" ? "The plan deploys" : "Your interview answers deploy";
   if (connection === undefined) {
@@ -534,7 +552,7 @@ async function checkOwnServerLogin(deps: PhaseDeps, choice: ProviderChoice): Pro
     await requireOwnServerKey(connection, deps.env);
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
-    return { status: "fail", message: error.message, ...(error.hint ? { fix: error.hint } : {}) };
+    return failFrom(error);
   }
   const login = await vpsConnector("own", deps, {
     ownLogin: ownServerLogin(connection),
@@ -548,7 +566,7 @@ async function checkOwnServerLogin(deps: PhaseDeps, choice: ProviderChoice): Pro
 
 /** The first token variable of a provider that is set. */
 function tokenVarOf(env: Record<string, string | undefined>, profile: ProviderProfile) {
-  return profile.tokenVars.find((name) => set(env, name));
+  return profile.tokenVars.find((name) => hasEnv(env, name));
 }
 
 /** How to create the provider's token, naming the page, the variable and the scopes. */
@@ -683,25 +701,29 @@ function tunnelNote(usage: CloudflareUsage): string {
     : "";
 }
 
-/** The Cloudflare connector and a token verification shared by the Cloudflare checks. */
-interface CloudflareAccess {
-  connector: CloudflareConnector;
-  /** Verifies the token once, however many checks ask. */
-  verified: () => Promise<CredentialCheck>;
-}
+/**
+ * What the Cloudflare checks share: no token, offline (token set, not checked), or online with
+ * the client and one token verification, however many checks ask.
+ */
+type CloudflareAccess =
+  | { state: "unset" }
+  | { state: "offline" }
+  | { state: "online"; client: CloudflareClient; verified: () => Promise<CredentialCheck> };
 
-/** Online with a token set: the shared connector; otherwise undefined. */
-function cloudflareAccess(deps: PhaseDeps, offline: boolean): CloudflareAccess | undefined {
-  if (offline || !set(deps.env, "CLOUDFLARE_API_TOKEN")) return undefined;
+function cloudflareAccess(deps: PhaseDeps, offline: boolean): CloudflareAccess {
   const connector = cloudflareConnector({
     env: deps.env,
     fetch: deps.fetch,
     redactor: deps.redactor,
     version: deps.version,
   });
+  const client = connector.client;
+  if (client === undefined) return { state: "unset" };
+  if (offline) return { state: "offline" };
   let verification: Promise<CredentialCheck> | undefined;
   return {
-    connector,
+    state: "online",
+    client,
     verified: () => {
       verification ??= connector.verifyCredentials();
       return verification;
@@ -710,15 +732,13 @@ function cloudflareAccess(deps: PhaseDeps, offline: boolean): CloudflareAccess |
 }
 
 async function checkCloudflare(
-  deps: PhaseDeps,
-  offline: boolean,
   usage: CloudflareUsage,
-  access: CloudflareAccess | undefined,
+  access: CloudflareAccess,
 ): Promise<CheckResult> {
   const { needed, domain } = usage;
   const tunnel = usage.tunnel === true;
   const problem = needed === true ? "fail" : "warn";
-  if (!set(deps.env, "CLOUDFLARE_API_TOKEN")) {
+  if (access.state === "unset") {
     if (needed === true) {
       return {
         status: "fail",
@@ -739,14 +759,13 @@ async function checkCloudflare(
       fix: cloudflareFix(),
     };
   }
-  if (offline) {
+  if (access.state === "offline") {
     return {
       status: "pass",
       message: `CLOUDFLARE_API_TOKEN is set (${OFFLINE_NOTE}).${tunnelNote(usage)}`,
     };
   }
-  const client = access?.connector.client;
-  if (!access || !client) return { status: problem, message: "CLOUDFLARE_API_TOKEN is not set." };
+  const { client } = access;
   const verified = await access.verified();
   if (!verified.ok) {
     return {
@@ -790,11 +809,9 @@ const REGISTRAR_FIX = `Buying domains is optional; to enable it add ${CLOUDFLARE
 /** The permissions a purchase needs beyond the read the probe makes. */
 const REGISTRAR_EDIT_PERMISSIONS = `${CLOUDFLARE_REGISTRAR_PERMISSIONS[0]} and ${CLOUDFLARE_REGISTRAR_PERMISSIONS[1]}, with the zone permissions covering all zones of the account`;
 
-/** A refusal for missing permissions (401/403 or a permission/authentication error). */
+/** A refusal for missing permissions: Cloudflare answered 401 or 403. */
 function isPermissionError(error: unknown): boolean {
-  if (isUserFacingError(error) && error.code === "CREDENTIALS_INVALID") return true;
-  const text = error instanceof Error ? error.message : String(error);
-  return /permission|unauthori[sz]ed|forbidden|authentication/i.test(text);
+  return isUserFacingError(error) && error.code === "CREDENTIALS_INVALID";
 }
 
 /** Plain cause of a refusal, without the connector's hint (the fix names the permissions). */
@@ -806,27 +823,22 @@ function causeText(error: unknown): string {
  * Optional check (FR-607): whether the Cloudflare token can buy domains. Lists the accounts and
  * runs a read-only Registrar `domain-check` on a probe name; never fails init.
  */
-async function checkRegistrar(
-  deps: PhaseDeps,
-  offline: boolean,
-  access: CloudflareAccess | undefined,
-): Promise<CheckResult> {
-  if (!set(deps.env, "CLOUDFLARE_API_TOKEN")) {
+async function checkRegistrar(access: CloudflareAccess): Promise<CheckResult> {
+  if (access.state === "unset") {
     return {
       status: "skip",
       message:
         "Not checked: CLOUDFLARE_API_TOKEN is not set. Buying domains through Cloudflare is optional.",
     };
   }
-  if (offline) {
+  if (access.state === "offline") {
     return {
       status: "skip",
       message:
         "Offline: not checked whether CLOUDFLARE_API_TOKEN can buy domains (optional); run `opscrew init` without --offline to check.",
     };
   }
-  const client = access?.connector.client;
-  if (!access || !client) return { status: "skip", message: "CLOUDFLARE_API_TOKEN is not set." };
+  const { client } = access;
   const verified = await access.verified();
   if (!verified.ok) {
     return {
@@ -879,9 +891,6 @@ async function checkRegistrar(
   return refused(firstError);
 }
 
-/** Registrars besides Cloudflare, in checklist order. */
-const OTHER_REGISTRARS: readonly OtherRegistrarId[] = ["porkbun", "namecheap", "godaddy"];
-
 /** What a registrar's credentials are called in messages. */
 const REGISTRAR_CREDENTIALS: Readonly<Record<OtherRegistrarId, string>> = {
   porkbun: "API keys are",
@@ -904,7 +913,7 @@ async function checkOtherRegistrar(
   const name = REGISTRAR_NAMES[id];
   const vars = REGISTRAR_ENV[id];
   const api = registrarLinks(id, deps.env).api;
-  const missing = vars.filter((variable) => !set(deps.env, variable));
+  const missing = vars.filter((variable) => !hasEnv(deps.env, variable));
   if (missing.length > 0) {
     return {
       status: "warn",
@@ -990,9 +999,9 @@ function githubLookup(
     const token = await resolveGitHubToken(deps.env, deps.runner);
     if (!token) return { info };
     deps.redactor.addLiteral(token, "github-token");
-    const source = set(deps.env, "GITHUB_TOKEN")
+    const source = hasEnv(deps.env, "GITHUB_TOKEN")
       ? "GITHUB_TOKEN"
-      : set(deps.env, "GH_TOKEN")
+      : hasEnv(deps.env, "GH_TOKEN")
         ? "GH_TOKEN"
         : "the GitHub CLI login";
     const coordinates = info.coordinates;
@@ -1059,8 +1068,8 @@ async function checkGitHub(
 async function checkModel(deps: PhaseDeps): Promise<CheckResult> {
   const env = deps.env;
   const fromEnv =
-    set(env, "ANTHROPIC_API_KEY") ||
-    set(env, "ANTHROPIC_AUTH_TOKEN") ||
+    hasEnv(env, "ANTHROPIC_API_KEY") ||
+    hasEnv(env, "ANTHROPIC_AUTH_TOKEN") ||
     ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].some(
       (name) => env[name] === "1",
     );
