@@ -1,7 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
+import { cloudTarget } from "@opscrew/iac-templates";
 import type { DeployPlan, Retarget } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { cloudTarget } from "../providers";
 import { testPlan } from "./__fixtures__/fakes";
 import { moveInProgress, requireNoMoveInProgress } from "./guard";
 

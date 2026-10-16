@@ -1,7 +1,6 @@
-import { renderDeployment } from "@opscrew/iac-templates";
+import { cloudTarget, renderDeployment } from "@opscrew/iac-templates";
 import type { CloudProvider } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { cloudTarget } from "../providers";
 import { testPlan } from "../provision/__fixtures__/fakes";
 import { MOVE_LAYOUTS, moveLayout, previousTarget, protectionVariable } from "./layouts";
 

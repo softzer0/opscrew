@@ -1,6 +1,5 @@
 import { RegionSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { cloudTarget } from "./own";
 import {
   PORTAINER_TOKEN_VAR,
   planProvider,
@@ -108,10 +107,6 @@ describe("provider choice", () => {
       id: "portainer",
       displayName: "My existing Portainer",
       tokenVars: [PORTAINER_TOKEN_VAR],
-      catalogue: false,
-      priced: false,
-      providerBackups: false,
-      changesHost: false,
     });
     expect(PORTAINER_TOKEN_VAR).toBe("PORTAINER_API_KEY");
     // Not a server provider: never inferred from tokens, never in the cloud provider list.
@@ -123,16 +118,6 @@ describe("provider choice", () => {
   it("refuses an unknown provider id instead of using another provider", () => {
     expect(() => providerProfile("aws" as never)).toThrow(
       expect.objectContaining({ code: "INVALID_INPUT", message: expect.stringContaining('"aws"') }),
-    );
-  });
-
-  it("keeps cloud targets and refuses an own-server target where a cloud one is needed", () => {
-    const own = { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" } as const;
-    expect(() => cloudTarget(own)).toThrow(
-      expect.objectContaining({
-        code: "PHASE_PRECONDITION",
-        message: expect.stringContaining("server you already own"),
-      }),
     );
   });
 

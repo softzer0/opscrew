@@ -660,15 +660,6 @@ export function isVpsTarget(target: DeployTarget): target is VpsDeployTarget {
 }
 
 /**
- * The plain refusal (code `PHASE_PRECONDITION`) of a command that does not handle a Portainer
- * target yet, while feature 010 is built. Callers throw it as an `OpsCrewError`.
- */
-export const PORTAINER_TARGET_NOT_YET = {
-  message: "A Portainer target is not supported by this command yet.",
-  hint: "Deploy to Hetzner Cloud, DigitalOcean or a server you own for now: run `opscrew interview` and `opscrew design` again and choose one of them.",
-} as const;
-
-/**
  * The plain refusal (code `PHASE_PRECONDITION`) of `opscrew retarget` for a Portainer target,
  * which never moves to or from another target. Callers throw it as an `OpsCrewError`.
  */

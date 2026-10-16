@@ -1,4 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
+import { cloudTarget } from "@opscrew/iac-templates";
 import {
   type CloudDeployTarget,
   type DeployPlan,
@@ -8,16 +9,10 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { buildDesignOptions, formatMoney, priceLabel } from "../design";
-import {
-  cloudTarget,
-  ownServerNotYet,
-  providerProfile,
-  requestedProvider,
-  vpsConnector,
-} from "../providers";
+import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { readRequirements } from "../provision";
 import { serverAddress } from "../shared";
-import { portainerTargetNoMove } from "../shared/vps-target";
+import { ownServerNoMove, portainerTargetNoMove } from "../shared/vps-target";
 import { databaseSize } from "./server-ops";
 import { recordMoveServers } from "./servers";
 import {
@@ -83,7 +78,7 @@ async function pickOption(
 /** The new target from the chosen option, with the provider's default image. */
 function targetOf(option: DesignOption): CloudDeployTarget {
   const { provider } = option.target;
-  if (provider === "own") throw ownServerNotYet();
+  if (provider === "own") throw ownServerNoMove();
   if (provider === "portainer") throw portainerTargetNoMove();
   return {
     provider,
@@ -193,12 +188,14 @@ export async function startMove(
       },
     );
   }
+  // A server the user owns never moves (spec 009): said before the cloud-only steps.
+  if (plan.target.provider === "own") throw ownServerNoMove();
   const from = cloudTarget(plan.target);
   if (options.to === undefined && requirements.provider === "portainer") {
     throw portainerTargetNoMove();
   }
   const to = options.to ?? requestedProvider(requirements);
-  if (to === "own") throw ownServerNotYet();
+  if (to === "own") throw ownServerNoMove();
   if (to === from.provider) {
     const name = providerProfile(to).displayName;
     throw new OpsCrewError(

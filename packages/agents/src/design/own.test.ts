@@ -44,7 +44,7 @@ const ownRequirements = (overrides: Partial<Requirements> = {}): Requirements =>
 };
 
 const catalogOf = (facts: OwnServerFacts) =>
-  ownServerConnector({ facts, now: () => NOW, currency: "USD" }).catalog();
+  ownServerConnector({ facts, now: () => NOW }).catalog();
 
 describe("buildDesignOptions for a server the user owns", () => {
   it("offers the inspected server as one recommended option without a price", async () => {

@@ -1,8 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { cloudTarget, readServerAddresses } from "@opscrew/agents";
+import { readServerAddresses } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
+import { cloudTarget } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import {

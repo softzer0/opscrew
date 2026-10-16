@@ -1,12 +1,17 @@
 import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type HostFacts, inspectHost } from "@opscrew/connector-ssh-host";
+import { type HostFacts, inspectHost, isPublicAddress } from "@opscrew/connector-ssh-host";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { type OwnServerFacts, OwnServerFactsSchema, type OwnServerLogin } from "../providers";
+import {
+  type OwnServerFacts,
+  OwnServerFactsSchema,
+  type OwnServerLogin,
+  sshKeyWords,
+} from "../providers";
 import { SshRemoteExec } from "./remote";
 import {
   type OwnServerConnection,
@@ -310,13 +315,6 @@ export async function connectOwnServer(
   return { connection: session, remote, hostKey: chosen, knownHostsFile, pinned: changed };
 }
 
-/** The key a login uses, in words. */
-function keyWords(connection: Pick<OwnServerConnection, "agent" | "keyPath">): string {
-  return connection.agent || connection.keyPath === undefined
-    ? "the key in your SSH agent"
-    : `the key ${connection.keyPath}`;
-}
-
 /** ssh's own words about a failed login: its last lines, redacted, for a hint. */
 function sshSaid(deps: Pick<OwnServerDeps, "redactor">, stderr: string): string {
   const lines = stderr
@@ -375,7 +373,7 @@ async function testLogin(
         : `If the key has a passphrase, add it to your SSH agent first (\`ssh-add ${connection.keyPath}\`): OpsCrew never asks for a passphrase.`;
     throw new OpsCrewError(
       "CREDENTIALS_INVALID",
-      `Your server at ${where} refused the login as ${connection.user} with ${keyWords(connection)}. Nothing was changed.`,
+      `Your server at ${where} refused the login as ${connection.user} with ${sshKeyWords(connection)}. Nothing was changed.`,
       {
         hint: `Check that ${connection.user} may log in with this key (its public key must be in that user's ~/.ssh/authorized_keys on the server). ${add} If the user or key is wrong, fix them with \`opscrew interview\`.${detail}`,
       },
@@ -475,25 +473,12 @@ export async function inspectOwnServer(
   return { facts, server: ownServerFacts(facts) };
 }
 
-const PRIVATE_V4 = [
-  /^0\./,
-  /^10\./,
-  /^127\./,
-  /^169\.254\./,
-  /^192\.168\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./,
-];
-
-function publicIpv4(value: string | undefined): string | undefined {
-  if (value === undefined || !z.ipv4().safeParse(value).success) return undefined;
-  return PRIVATE_V4.some((range) => range.test(value)) ? undefined : value;
-}
-
-function publicIpv6(value: string | undefined): string | undefined {
-  if (value === undefined || !z.ipv6().safeParse(value).success) return undefined;
-  const lower = value.toLowerCase();
-  return lower === "::1" || /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower) ? undefined : value;
+/** `value` when it is a public address of the family (`isPublicAddress`, as inspection judges it). */
+function publicAddress(value: string | undefined, family: "ipv4" | "ipv6"): string | undefined {
+  if (value === undefined || !(family === "ipv4" ? z.ipv4() : z.ipv6()).safeParse(value).success) {
+    return undefined;
+  }
+  return isPublicAddress(value) ? value : undefined;
 }
 
 /**
@@ -508,8 +493,14 @@ export function ownServerPublicAddress(
 ): ServerAddress | undefined {
   const found = (family: "ipv4" | "ipv6") =>
     facts?.addresses.find((a) => a.family === family && a.public)?.address;
-  const ipv4 = connection.publicIpv4 ?? publicIpv4(connection.host) ?? publicIpv4(found("ipv4"));
+  const ipv4 =
+    connection.publicIpv4 ??
+    publicAddress(connection.host, "ipv4") ??
+    publicAddress(found("ipv4"), "ipv4");
   if (ipv4 === undefined) return undefined;
-  const ipv6 = connection.publicIpv6 ?? publicIpv6(connection.host) ?? publicIpv6(found("ipv6"));
+  const ipv6 =
+    connection.publicIpv6 ??
+    publicAddress(connection.host, "ipv6") ??
+    publicAddress(found("ipv6"), "ipv6");
   return { ipv4, ...(ipv6 !== undefined ? { ipv6 } : {}) };
 }

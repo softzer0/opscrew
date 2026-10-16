@@ -1,15 +1,16 @@
+import { cloudTarget } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { defaultProvider } from "../interview/questions";
-import { cloudTarget, planProvider, requestedProvider } from "../providers";
+import { planProvider, requestedProvider } from "../providers";
 import { testPlan } from "../provision/__fixtures__/fakes";
 import { runRetarget } from "../retarget/run";
 import { createTestPhaseDeps } from "../testing";
-import { moveProvider, vpsProvider, vpsTarget } from "./vps-target";
+import { moveProvider, ownServerNoMove } from "./vps-target";
 
-const NOT_YET = {
+const BUG = {
   code: "PHASE_PRECONDITION",
-  message: "A Portainer target is not supported by this command yet.",
+  hint: "This is a bug in OpsCrew: please report it with the command you ran.",
 };
 const NO_MOVE = {
   code: "PHASE_PRECONDITION",
@@ -40,17 +41,15 @@ function refusal(run: () => unknown): unknown {
   throw new Error("expected a refusal");
 }
 
-describe("a Portainer target in phases that only know single servers", () => {
-  it("is refused plainly where a server's provider is needed", () => {
+describe("a Portainer target in steps that only know single servers", () => {
+  it("is a bug in OpsCrew where a server's provider is needed", () => {
     const plan = portainerPlan();
     for (const attempt of [
       () => planProvider(plan),
       () => requestedProvider({ provider: "portainer" }),
       () => cloudTarget(plan.target),
-      () => vpsTarget(plan.target),
-      () => vpsProvider("portainer"),
     ]) {
-      expect(refusal(attempt)).toMatchObject(NOT_YET);
+      expect(refusal(attempt)).toMatchObject(BUG);
     }
     expect(refusal(() => moveProvider(plan.target))).toMatchObject(NO_MOVE);
     // The interview handles a Portainer target (T1004): its previous answer is the default.
@@ -64,12 +63,18 @@ describe("a Portainer target in phases that only know single servers", () => {
     expect(requestedProvider({ provider: "own" })).toBe("own");
     expect(defaultProvider(undefined)).toBe("hetzner");
     expect(moveProvider(testPlan().target)).toBe("hetzner");
-    expect(vpsTarget(testPlan().target)).toEqual(testPlan().target);
   });
 
   it("never moves: opscrew retarget refuses a Portainer target before anything else", async () => {
     const deps = await createTestPhaseDeps();
     await writeArtifact("plan", deps.paths.files.plan, portainerPlan());
     await expect(runRetarget(deps, { to: "hetzner" })).rejects.toMatchObject(NO_MOVE);
+  });
+
+  it("says plainly that a server the user owns never moves", () => {
+    expect(ownServerNoMove()).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("to or from a server you already own is not supported"),
+    });
   });
 });

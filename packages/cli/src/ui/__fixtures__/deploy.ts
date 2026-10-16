@@ -21,13 +21,13 @@ import type {
 } from "@opscrew/contracts";
 import {
   type CloudflareApi,
-  cloudTarget,
   type GitHubApi,
   hasDeployment,
   type ProvisionServices,
   recordServerAddress,
 } from "@opscrew/agents";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
+import { cloudTarget } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { git, type TempProject, tempProject } from "./harness";
 

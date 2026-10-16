@@ -4,10 +4,9 @@ import { dirname, join } from "node:path";
 import type { ApprovalDecision, ApprovalRequest, FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import { cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { cloudTarget } from "../providers";
 import {
   createProject,
   fakeCloudflare,

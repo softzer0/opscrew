@@ -1,7 +1,13 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import type { CloudProvider, DeployPlan, Region, Requirements } from "@opscrew/plan-schema";
-import { vpsProvider } from "../shared/vps-target";
+import { wrongTarget } from "@opscrew/iac-templates";
+import type {
+  CloudProvider,
+  DeployPlan,
+  DeployProvider,
+  Region,
+  Requirements,
+} from "@opscrew/plan-schema";
 
 /** What the phases need to know about a VPS provider, so none of them imports its connector. */
 export interface ProviderProfile {
@@ -197,24 +203,12 @@ export interface PortainerProfile {
   displayName: string;
   /** Environment variables holding the Portainer access token: only `PORTAINER_API_KEY`. */
   tokenVars: readonly string[];
-  /** Always false: there are no server sizes or locations to choose from. */
-  catalogue: false;
-  /** Always false: the user already runs the host, so OpsCrew shows no server price. */
-  priced: false;
-  /** Always false: backups (including the app's volumes) are the user's responsibility. */
-  providerBackups: false;
-  /** Always false: OpsCrew never changes the host, its firewall, SSH or Portainer's settings. */
-  changesHost: false;
 }
 
 const PORTAINER: PortainerProfile = {
   id: "portainer",
   displayName: "My existing Portainer",
   tokenVars: [PORTAINER_TOKEN_VAR],
-  catalogue: false,
-  priced: false,
-  providerBackups: false,
-  changesHost: false,
 };
 
 const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
@@ -248,19 +242,26 @@ export function providerProfile(
   return profile;
 }
 
-/** The provider of a plan; throws a plain `PHASE_PRECONDITION` for a Portainer target. */
-export function planProvider(plan: Pick<DeployPlan, "target">): VpsProviderId {
-  return vpsProvider(plan.target.provider);
+/** `provider` when the app runs on one server; a Portainer target here is a bug in OpsCrew. */
+function serverProvider(provider: DeployProvider): VpsProviderId {
+  if (provider === "portainer") {
+    throw wrongTarget(
+      "This step only applies to an app on one server (Hetzner Cloud, DigitalOcean or a server you own), not to an app in your existing Portainer.",
+    );
+  }
+  return provider;
 }
 
-/**
- * The provider the user asked for; requirements written before feature 004 mean Hetzner. Throws a
- * plain `PHASE_PRECONDITION` for a Portainer target.
- */
+/** The provider of a plan whose app runs on one server. */
+export function planProvider(plan: Pick<DeployPlan, "target">): VpsProviderId {
+  return serverProvider(plan.target.provider);
+}
+
+/** The provider the user asked for; requirements written before feature 004 mean Hetzner. */
 export function requestedProvider(
   requirements: Pick<Requirements, "provider"> | undefined,
 ): VpsProviderId {
-  return vpsProvider(requirements?.provider ?? "hetzner");
+  return serverProvider(requirements?.provider ?? "hetzner");
 }
 
 /**

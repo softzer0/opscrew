@@ -9,16 +9,13 @@ import {
 } from "@opscrew/connector-portainer";
 import type { CheckResult, Severity } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { portainerTarget } from "@opscrew/iac-templates";
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { PORTAINER_TOKEN_VAR } from "../providers";
-import {
-  portainerTargetOf,
-  requirePortainerConnection,
-  requirePortainerToken,
-} from "../provision/portainer";
+import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { PortainerServices } from "../provision/types";
 import { type PortainerConnection, readPortainerConnection } from "../shared";
 
@@ -328,7 +325,7 @@ export async function portainerSecurityChecks(
   plan: DeployPlan,
   services: Pick<PortainerServices, "client"> = {},
 ): Promise<{ checks: CheckResult[]; skipped?: string }> {
-  const target = portainerTargetOf(plan);
+  const target = portainerTarget(plan.target);
   // Without the connection or the token there is nothing to ask Portainer: the checks are skipped
   // with the reason, and the rest of the report is written as usual.
   if ((await readPortainerConnection(deps.paths)) === undefined) {

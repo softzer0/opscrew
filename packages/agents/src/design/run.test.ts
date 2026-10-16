@@ -5,6 +5,7 @@ import { STATIC_PRICES_AS_OF as HETZNER_PRICES_AS_OF } from "@opscrew/connector-
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
+import { cloudTarget } from "@opscrew/iac-templates";
 import {
   type Architecture,
   type DeployPlan,
@@ -14,7 +15,6 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runInterview } from "../interview";
-import { cloudTarget } from "../providers";
 import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
 import {

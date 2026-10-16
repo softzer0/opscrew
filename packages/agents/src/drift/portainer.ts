@@ -27,6 +27,7 @@ import {
   PORTAINER_STACK_VARIABLES,
   portainerStackEnvKeys,
   portainerStackVolumes,
+  portainerTarget,
   renderPlaceholderStack,
   renderPortainerConnectorStack,
   renderUpdaterStack,
@@ -39,7 +40,6 @@ import { portainerCloudflare, setupCloudflare, setupGitHub } from "../provision/
 import {
   ensurePortainerValueKey,
   portainerContainerUrl,
-  portainerTargetOf,
   portainerValueKeyFile,
   portainerWebhookId,
   REGISTRY_TOKEN_VAR,
@@ -486,7 +486,7 @@ export async function portainerDrift(
   options: DriftOptions,
 ): Promise<DriftReport> {
   const services = options.services ?? {};
-  const target = portainerTargetOf(plan);
+  const target = portainerTarget(plan.target);
   const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
   const hasRoot = root.appTunnel || root.webhook;
   const statePath = join(deps.paths.files.tfstateDir, STATE_FILE);

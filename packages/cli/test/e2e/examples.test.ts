@@ -8,9 +8,9 @@
 import { existsSync, readdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { cloudTarget } from "@opscrew/agents";
 import type { ScanReport } from "@opscrew/contracts";
 import { FakeAgentRuntime } from "@opscrew/core/testing";
+import { cloudTarget } from "@opscrew/iac-templates";
 import {
   ArchitectureSchema,
   type DeployPlan,

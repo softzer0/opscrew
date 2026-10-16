@@ -1,8 +1,9 @@
 import type { ResourceAction, ResourceChange, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { cloudTarget } from "@opscrew/iac-templates";
 import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
-import { cloudTarget, providerProfile } from "../providers";
+import { providerProfile } from "../providers";
 import { destroyTexts } from "./texts";
 
 /**

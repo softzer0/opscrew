@@ -1,11 +1,12 @@
 import type { GitClient, PullRequest } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { portainerTarget } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { planProvider, providerProfile } from "../providers";
-import type { GitHubSetup } from "./credentials";
+import { type GitHubSetup, portainerCloudflare } from "./credentials";
 
 /** Branch holding the generated deployment files. */
 export const DEPLOY_SETUP_BRANCH = "opscrew/deploy-setup";
@@ -116,11 +117,8 @@ function portainerPullRequestBody(
   version: string,
   options: { secretsStored?: boolean },
 ): string {
-  const target = plan.target;
-  if (target.provider !== "portainer") throw new Error("Expected a plan for the user's Portainer.");
-  const cloudflare = plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
-  const appTunnel = cloudflare && target.web.mode === "tunnel";
-  const webhook = cloudflare && target.redeploy === "cloudflare";
+  const target = portainerTarget(plan.target);
+  const { appTunnel, webhook } = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
   const where = plan.dns.domain ?? "your Portainer";
   const roots = [
     ...(appTunnel ? ["the Cloudflare Tunnel that serves the app and its DNS records"] : []),

@@ -1,6 +1,6 @@
 import type { ResourceChange } from "@opscrew/contracts";
+import { cloudTarget } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
-import { cloudTarget } from "../providers";
 import { HOST_KEY, testPlan } from "../provision/__fixtures__/fakes";
 import {
   DROPLET_ADDRESS,

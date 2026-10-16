@@ -45,6 +45,7 @@ import {
   PORTAINER_STACK_VARIABLES,
   portainerStackEnvKeys,
   portainerStackVolumes,
+  portainerTarget,
   portainerWebhookHostname,
   type RenderedFile,
   renderPlaceholderStack,
@@ -189,14 +190,6 @@ export async function portainerWebhookId(
   return id;
 }
 
-/** The plan's Portainer target; throws for any other. */
-export function portainerTargetOf(plan: Pick<DeployPlan, "target">): PortainerDeployTarget {
-  if (plan.target.provider !== "portainer") {
-    throw new Error(`Expected a plan for your Portainer, got ${plan.target.provider}.`);
-  }
-  return plan.target;
-}
-
 /**
  * Portainer's address as a container on the Portainer host reaches it: the user's address, with
  * `localhost` (Portainer on the same computer) replaced by `host.docker.internal`, which the
@@ -216,7 +209,7 @@ export async function requirePortainerConnection(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
   plan: Pick<DeployPlan, "target">,
 ): Promise<PortainerConnection> {
-  const target = portainerTargetOf(plan);
+  const target = portainerTarget(plan.target);
   const connection = await readPortainerConnection(deps.paths);
   if (connection === undefined) {
     throw new OpsCrewError(
@@ -464,7 +457,7 @@ export async function provisionPortainer(
   const command = `opscrew ${phase}`;
   const root = deps.paths.root;
   let plan = input.plan;
-  const target = portainerTargetOf(plan);
+  const target = portainerTarget(plan.target);
   const cloudflareRoot = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
   const hasRoot = cloudflareRoot.appTunnel || cloudflareRoot.webhook;
 

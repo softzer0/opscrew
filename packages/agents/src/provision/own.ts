@@ -17,6 +17,7 @@ import {
   renderTunnelConnectorCompose,
   sshHostname,
   usesTunnel,
+  wrongTarget,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, OwnDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -76,10 +77,10 @@ export interface OwnServerRun {
 /** Placeholder tunnel id for the check before anything changes (the real one comes from the apply). */
 const PENDING_TUNNEL_ID = "00000000-0000-0000-0000-000000000000";
 
-/** The target of an own-server plan; throws for any other. */
+/** The target of an own-server plan; any other here is a bug in OpsCrew. */
 export function ownTarget(plan: Pick<DeployPlan, "target">): OwnDeployTarget {
   if (plan.target.provider !== "own") {
-    throw new Error(`Expected a plan for your own server, got ${plan.target.provider}.`);
+    throw wrongTarget("This step only applies to a server you already own.");
   }
   return plan.target;
 }

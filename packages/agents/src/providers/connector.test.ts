@@ -113,9 +113,9 @@ describe("a server the user owns", () => {
     expect(await catalog.listOffers("own")).toHaveLength(1);
     expect(await catalog.listOffers("nbg1")).toEqual([]);
     expect(await catalog.extras("own")).toMatchObject({ source: "live" });
-    const usd = ownServerConnector({ facts: { ...facts, arch: "amd64" }, currency: "USD" });
-    const [offer] = await usd.catalog().listOffers();
-    expect(offer).toMatchObject({ architecture: "x86", monthly: { amount: 0, currency: "USD" } });
+    const amd64 = ownServerConnector({ facts: { ...facts, arch: "amd64" } });
+    const [offer] = await amd64.catalog().listOffers();
+    expect(offer).toMatchObject({ architecture: "x86", monthly: { amount: 0, currency: "EUR" } });
   });
 
   it("has an empty catalogue before the server is inspected and validates the facts", async () => {

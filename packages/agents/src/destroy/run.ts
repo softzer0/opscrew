@@ -3,10 +3,10 @@ import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
-import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import { cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { cloudTarget, type ProviderProfile, planProvider, providerProfile } from "../providers";
+import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import { checkProvider } from "../provision";
 import { hasDeployment, recordServerAddress, serverAddress } from "../shared";
 import {
