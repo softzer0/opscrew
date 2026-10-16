@@ -95,6 +95,7 @@
     "answeredAt",
     "expectedMonthlyUsers",
     "budgetMonthly",
+    "provider",
     "uptime",
     "dataCriticality",
     "dnsProvider",

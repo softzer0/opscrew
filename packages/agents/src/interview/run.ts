@@ -297,7 +297,7 @@ export async function runInterview(
     // folder detection rejects is never written to requirements.yaml.
     const reanalyzed =
       requirements.appDir !== undefined &&
-      normalizeAppDir(requirements.appDir) !== normalizeAppDir(facts.appDir ?? ".");
+      normalizeAppDir(requirements.appDir) !== normalizeAppDir(facts.appDir);
     if (reanalyzed && requirements.appDir !== undefined) {
       reporter.info(`Analysing ${requirements.appDir} again, the app you chose to deploy.`);
       await runAnalyze(deps, { ai: false, appDir: requirements.appDir });

@@ -161,7 +161,7 @@ function summaryText(facts: ProjectFacts, options: SummarizeOptions): string {
   if (facts.platformExport.platform !== "none") {
     sentences.push(`It was exported from ${PLATFORM_NAMES[facts.platformExport.platform]}.`);
   }
-  if (facts.appDir !== undefined && facts.appDir !== ".") {
+  if (facts.appDir !== ".") {
     sentences.push(
       `It lives in \`${facts.appDir}\`${facts.monorepo ? " of a monorepo" : ""} and is built from the repository root.`,
     );

@@ -26,6 +26,7 @@ import {
   createTestPhaseDeps,
   fakeCloudflare,
   movingPlan,
+  plainStateResources,
   projectRunner,
   ScriptedApprovalHandler,
   testPlan,
@@ -91,7 +92,7 @@ interface DriftScenario {
   failOn?: "refresh" | "plan";
   /**
    * What `providerSchemas` returns (default: the recorded excerpts); `fail` throws like a failed
-   * command, `missing` leaves the capability out (an engine that cannot read schemas).
+   * command.
    */
   schemas?: unknown;
 }
@@ -103,24 +104,20 @@ class DriftEngine implements IacEngine {
   readonly plans: PlanCall[] = [];
   readonly schemaCalls: { dir: string; env: IacRunOptions["env"] }[] = [];
   initOptions: IacInitOptions | undefined;
-  providerSchemas?: (dir: string, options?: IacRunOptions) => Promise<unknown>;
+  readonly stateResources = plainStateResources;
 
   constructor(readonly scenario: DriftScenario = {}) {
     const name = scenario.name ?? "tofu";
     this.info = { name, version: "1.13.1", binary: `/fake/${name}` };
-    if (scenario.schemas !== "missing") {
-      this.providerSchemas = async (dir, options) => {
-        this.calls.push("providers-schema");
-        this.schemaCalls.push({ dir, env: options?.env });
-        if (scenario.schemas === "fail") {
-          throw new OpsCrewError(
-            "ENGINE_FAILED",
-            "OpenTofu providers schema failed (exit code 1).",
-          );
-        }
-        return scenario.schemas === undefined ? RECORDED_SCHEMAS : scenario.schemas;
-      };
+  }
+
+  async providerSchemas(dir: string, options?: IacRunOptions): Promise<unknown> {
+    this.calls.push("providers-schema");
+    this.schemaCalls.push({ dir, env: options?.env });
+    if (this.scenario.schemas === "fail") {
+      throw new OpsCrewError("ENGINE_FAILED", "OpenTofu providers schema failed (exit code 1).");
     }
+    return this.scenario.schemas === undefined ? RECORDED_SCHEMAS : this.scenario.schemas;
   }
 
   async init(_dir: string, options?: IacInitOptions): Promise<void> {
@@ -487,7 +484,6 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
   it.each([
     ["the schema command fails", "fail"],
     ["the schema has an unexpected shape", { provider_schemas: "nope" }],
-    ["the engine cannot read schemas", "missing"],
   ])("reports everything as before with a plain note when %s", async (_, schemas) => {
     const engine = new DriftEngine({
       schemas,

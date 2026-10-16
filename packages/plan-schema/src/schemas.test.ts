@@ -578,13 +578,23 @@ describe("DeployPlan target on a server the user owns", () => {
     expect(RequirementsSchema.parse({ ...requirements, provider: "own" }).region).toBe(
       "eu-central",
     );
-    for (const provider of [undefined, "hetzner", "digitalocean"]) {
+    for (const provider of ["hetzner", "digitalocean"]) {
       const result = RequirementsSchema.safeParse({ ...noRegion, provider });
-      expect(pathsOf(result), String(provider)).toEqual(["region"]);
-      expect(result.error?.issues[0]?.message).toContain(`"${provider ?? "hetzner"}"`);
+      expect(pathsOf(result), provider).toEqual(["region"]);
+      expect(result.error?.issues[0]?.message).toContain(`"${provider}"`);
     }
     const bad = { ...requirements, provider: "own", region: "mars" };
     expect(pathsOf(RequirementsSchema.safeParse(bad))).toEqual(["region"]);
+  });
+
+  it("needs the provider: requirements without one are not read as Hetzner", async () => {
+    const requirements = parseArtifact(
+      "requirements",
+      await fixture("requirements.yaml"),
+      "fixture",
+    );
+    const { provider: _provider, ...noProvider } = requirements;
+    expect(pathsOf(RequirementsSchema.safeParse(noProvider))).toContain("provider");
   });
 });
 

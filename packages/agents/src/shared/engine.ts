@@ -9,7 +9,9 @@ import {
   tofuEncryptionEnv,
 } from "@opscrew/iac-engine";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { readIfExists } from "./files";
 import { ensureStatePassphrase, readSecretFile, statePassphraseFile } from "./secret-files";
 
 /** `.opscrew/tfstate/prod.tfstate`: the state file provision, destroy, drift and retarget use. */
@@ -23,6 +25,70 @@ export async function hasState(paths: Pick<ProjectPaths, "files">): Promise<bool
     return (await stat(stateFile(paths))).size > 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * What the infrastructure state holds: `resources` when it has at least one managed resource,
+ * `nothing` when the file is missing or blank or has none (outputs and data sources do not count:
+ * they are no infrastructure), `unknown` when it cannot be read.
+ */
+export type StateContents = "resources" | "nothing" | "unknown";
+
+/** Just enough of a state file to tell an OpenTofu-encrypted one apart. */
+const StateEnvelopeSchema = z.looseObject({
+  encrypted_data: z.string().optional(),
+  encryption_version: z.string().optional(),
+});
+
+/**
+ * Whether the state file at `statePath` holds managed resources ({@link StateContents}). The engine
+ * `engine()` returns (asked for only when the file has content) lists them with `state list` from
+ * no root module, so neither the infrastructure code nor a credential is needed; an
+ * OpenTofu-encrypted state opens with `TF_ENCRYPTION` from the passphrase on this computer (read,
+ * never created), exactly as for every other engine command. A destroy empties the state, encrypted
+ * or not, so after a removal it holds `nothing`. `unknown` when the engine cannot read it (no
+ * passphrase, Terraform on encrypted state, a damaged file) or no engine is available.
+ */
+export async function stateContents(
+  deps: Pick<PhaseDeps, "env" | "paths" | "redactor">,
+  statePath: string,
+  engine: () => Promise<IacEngine>,
+): Promise<StateContents> {
+  const text = await readIfExists(statePath);
+  if (text === undefined || text.trim() === "") return "nothing";
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return "unknown";
+  }
+  const envelope = StateEnvelopeSchema.safeParse(raw);
+  const encrypted =
+    envelope.success &&
+    (envelope.data.encrypted_data !== undefined || envelope.data.encryption_version !== undefined);
+  let reader: IacEngine;
+  try {
+    reader = await engine();
+  } catch {
+    return "unknown"; // no usable engine here: the command's own engine setup says so plainly
+  }
+  const env: Record<string, string | undefined> = { ...deps.env };
+  if (encrypted) {
+    if (reader.info.name !== "tofu") return "unknown";
+    const passphrase = (await readIfExists(deps.paths.files.statePassphrase))?.trim();
+    if (!passphrase) return "unknown";
+    deps.redactor.addLiteral(passphrase, "state-passphrase");
+    try {
+      env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
+    } catch {
+      return "unknown"; // a passphrase too short for OpenTofu cannot have encrypted it
+    }
+  }
+  try {
+    return (await reader.stateResources(statePath, { env })).length > 0 ? "resources" : "nothing";
+  } catch {
+    return "unknown";
   }
 }
 

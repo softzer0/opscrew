@@ -257,11 +257,9 @@ export function planProvider(plan: Pick<DeployPlan, "target">): VpsProviderId {
   return serverProvider(plan.target.provider);
 }
 
-/** The provider the user asked for; requirements written before feature 004 mean Hetzner. */
-export function requestedProvider(
-  requirements: Pick<Requirements, "provider"> | undefined,
-): VpsProviderId {
-  return serverProvider(requirements?.provider ?? "hetzner");
+/** The provider the user asked for, when the app runs on one server. */
+export function requestedProvider(requirements: Pick<Requirements, "provider">): VpsProviderId {
+  return serverProvider(requirements.provider);
 }
 
 /**

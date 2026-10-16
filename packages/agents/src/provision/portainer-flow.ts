@@ -34,7 +34,6 @@ import {
 import { type DeployPlan, type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
-import { stateContents } from "../drift/infra";
 import {
   type AppEnvironment,
   approvalEntry,
@@ -45,6 +44,7 @@ import {
   PlanRefusedError,
   type ProjectEngine,
   publishedPorts,
+  stateContents,
   stateFile,
   stringOutput,
 } from "../shared";

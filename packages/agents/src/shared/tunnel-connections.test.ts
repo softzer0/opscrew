@@ -302,6 +302,14 @@ describe("Cloudflare's error 1022", () => {
       init: async () => undefined,
       validate: async () => ({ valid: true, diagnostics: [] }),
       output: async () => ({}),
+      providerSchemas: async () => {
+        order.push("providers schema");
+        return {};
+      },
+      stateResources: async () => {
+        order.push("state list");
+        return [];
+      },
       plan: async (_dir, planFile) => {
         order.push("plan");
         await writeFile(planFile, "plan");
@@ -324,9 +332,11 @@ describe("Cloudflare's error 1022", () => {
     };
     const engine = tunnelSafeEngine(inner);
     const approval = { approvedPlanHash: "0".repeat(64), allowDestroy: true };
+    await engine.providerSchemas(dir);
+    await engine.stateResources(join(dir, "prod.tfstate"));
     await engine.plan(dir, join(dir, "a.tfplan"));
     await engine.apply(dir, join(dir, "a.tfplan"), approval);
-    expect(order).toEqual(["plan", "apply"]);
+    expect(order).toEqual(["providers schema", "state list", "plan", "apply"]);
     expect(engine.refusedBusyTunnel).toBe(false);
     result = { ok: false, outputs: {}, log };
     await engine.apply(dir, join(dir, "a.tfplan"), approval);

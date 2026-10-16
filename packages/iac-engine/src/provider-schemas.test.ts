@@ -1,12 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { IacEngine } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScriptedRunner } from "./__fixtures__/fake-runner";
 import { createEngine } from "./engine";
-import { readsProviderSchemas } from "./provider-schemas";
 
 const SCHEMAS = {
   format_version: "1.0",
@@ -104,12 +102,5 @@ describe("providerSchemas", () => {
     const error = await failure(makeEngine(runner).providerSchemas(dir));
     expect(error.code).toBe("ENGINE_FAILED");
     expect(error.message).toContain("could not be read");
-  });
-
-  it("is an optional capability engines can be checked for", () => {
-    const engine: IacEngine = makeEngine(new ScriptedRunner());
-    expect(readsProviderSchemas(engine)).toBe(true);
-    const plain = { info: engine.info } as unknown as IacEngine;
-    expect(readsProviderSchemas(plain)).toBe(false);
   });
 });

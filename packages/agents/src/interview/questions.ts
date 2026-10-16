@@ -68,7 +68,7 @@ export function inferredAnswers(
 
 /** True when the facts describe the repository root (no app folder was chosen). */
 export function describesRoot(facts: ProjectFacts): boolean {
-  return facts.appDir === undefined || facts.appDir === ".";
+  return facts.appDir === ".";
 }
 
 /** Short description of a candidate app from the frameworks detected in its folder. */

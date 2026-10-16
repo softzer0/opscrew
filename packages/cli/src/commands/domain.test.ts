@@ -41,6 +41,7 @@ async function writeRequirements(t: DomainTestProject, domain: string): Promise<
     answeredAt: "2026-10-01T09:00:00.000Z",
     expectedMonthlyUsers: "<1k",
     budgetMonthly: { amount: 20, currency: "EUR" },
+    provider: "hetzner",
     region: "eu-central",
     uptime: "standard",
     dataCriticality: "important",

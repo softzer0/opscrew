@@ -26,8 +26,7 @@ import {
 import { z } from "zod";
 import { encryptionSecrets } from "./encryption";
 import { parsePlanJson, problems } from "./plan-json";
-import type { ProviderSchemaReader } from "./provider-schemas";
-import { managedAddresses, type StateResourceReader } from "./state-resources";
+import { managedAddresses } from "./state-resources";
 
 /** Default timeout for `apply`: 30 minutes. */
 export const APPLY_TIMEOUT_MS = 30 * 60_000;
@@ -104,7 +103,7 @@ const HINTS: Record<string, string> = {
     "Check that the state file exists and, for OpenTofu state encryption, that the state passphrase on this computer is the one that encrypted it.",
 };
 
-class Engine implements IacEngine, ProviderSchemaReader, StateResourceReader {
+class Engine implements IacEngine {
   readonly info: IacEngineInfo;
   private readonly runner: CommandRunner;
   private readonly baseEnv: Record<string, string | undefined>;
@@ -485,12 +484,8 @@ class Engine implements IacEngine, ProviderSchemaReader, StateResourceReader {
 }
 
 /**
- * Creates the `IacEngine` for a detected binary, which can also read provider schemas and list a
- * state file's resources. All engine commands run through `runner`.
+ * Creates the `IacEngine` for a detected binary. All engine commands run through `runner`.
  */
-export function createEngine(
-  info: IacEngineInfo,
-  options: EngineOptions,
-): IacEngine & ProviderSchemaReader & StateResourceReader {
+export function createEngine(info: IacEngineInfo, options: EngineOptions): IacEngine {
   return new Engine(info, options);
 }

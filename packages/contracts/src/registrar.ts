@@ -34,8 +34,7 @@ export interface RegistrationRequest {
   idempotencyKey?: string;
 }
 
-/** What a registrar can do through its API. Without it, a registrar is assumed to buy (with
- * selectable years) and change auto-renew, and nothing else (Cloudflare's 006 behaviour). */
+/** What a registrar can do through its API. */
 export interface RegistrarCapabilities {
   purchase: boolean;
   /** Years can be chosen at purchase (Porkbun registers the registry minimum only). */
@@ -131,8 +130,8 @@ export interface Registrar {
   register(request: RegistrationRequest): Promise<RegistrationStatus>;
   getDomain(domain: string): Promise<RegisteredDomain | undefined>;
   setAutoRenew(domain: string, on: boolean): Promise<RegisteredDomain>;
-  /** What this registrar supports; see `RegistrarCapabilities` for the default. */
-  readonly capabilities?: RegistrarCapabilities;
+  /** What this registrar supports through its API. */
+  readonly capabilities: RegistrarCapabilities;
   /** A price (or quote) for buying the domain for `years`, to show before the approval. */
   quote?(domain: string, years: number): Promise<RegistrationQuote>;
   /** Masked registrant summary for the approval, e.g. "J*** D***, DE" — never the full data. */
@@ -149,13 +148,3 @@ export interface Registrar {
   /** API access, permissions, whitelisting and balance, in plain English. */
   accountCheck?(): Promise<RegistrarAccountCheck>;
 }
-
-/** Capabilities assumed when a registrar declares none (Cloudflare's 006 behaviour). */
-export const DEFAULT_REGISTRAR_CAPABILITIES: RegistrarCapabilities = {
-  purchase: true,
-  chooseYears: true,
-  nameservers: false,
-  records: false,
-  dnssec: false,
-  autoRenew: true,
-};

@@ -45,6 +45,7 @@ function baseFacts(overrides: Partial<ProjectFacts> = {}): ProjectFacts {
     docker: { dockerfile: "Dockerfile" },
     healthEndpoint: "/health",
     monorepo: false,
+    appDir: ".",
     git: {},
     ...overrides,
   };
@@ -424,6 +425,7 @@ describe("runAnalyze", () => {
         answeredAt: "2026-10-11T11:00:00.000Z",
         expectedMonthlyUsers: "<1k",
         budgetMonthly: { amount: 10, currency: "EUR" },
+        provider: "hetzner",
         region: "eu-central",
         uptime: "standard",
         dataCriticality: "none",

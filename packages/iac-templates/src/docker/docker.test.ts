@@ -23,6 +23,7 @@ function facts(overrides: Partial<ProjectFacts>): ProjectFacts {
     services: [],
     docker: {},
     monorepo: false,
+    appDir: ".",
     git: {},
     ...overrides,
   };
@@ -112,6 +113,7 @@ const nextMonorepoApp = facts({
     },
   ],
   monorepo: true,
+  appDir: "apps/web",
 });
 
 const ALL = { nextApp, viteApp, expressApp, fastapiApp, djangoApp, pythonApp, nextMonorepoApp };
@@ -316,7 +318,7 @@ describe("renderDockerAssets", () => {
         appPort: sample.port ?? 3000,
         healthPath: "/health",
       });
-      // Older facts without `appDir`: the framework's folder locates the app.
+      // An app in a monorepo folder has its Dockerfile there.
       const dockerfilePath = sample === nextMonorepoApp ? "apps/web/Dockerfile" : "Dockerfile";
       expect(files.map((f) => f.path)).toEqual([dockerfilePath, ".dockerignore", ".env.example"]);
       const dockerfile = files[0]?.content ?? "";
@@ -428,7 +430,8 @@ describe("renderDockerAssets", () => {
   it("quotes monorepo app folders that need it", () => {
     const spaced = facts({
       ...nextMonorepoApp,
-      frameworks: [{ name: "next", path: "apps/my web/" }],
+      frameworks: [{ name: "next", path: "apps/my web" }],
+      appDir: "apps/my web",
     });
     const dockerfile =
       renderDockerAssets(spaced, { appPort: 4000, healthPath: "/" })[0]?.content ?? "";
@@ -578,17 +581,6 @@ describe("renderDockerAssets for an app in a subfolder (facts.appDir)", () => {
     expect(files[0]?.path).toBe("Dockerfile");
     expect(files[0]?.content).toContain("  && if [ -f .next/standalone/server.js ]; then \\");
     expect(files[0]?.content).toContain(`exec node "%s"\\n' /app/server.js`);
-  });
-
-  it("falls back to the framework path for every stack", () => {
-    const { appDir: _ignored, ...withoutAppDir } = npmWorkspaceApi;
-    const files = renderDockerAssets(withoutAppDir, { appPort: 4000, healthPath: "/" });
-    expect(files[0]?.path).toBe("apps/api/Dockerfile");
-    const python = renderDockerAssets(
-      { ...pythonSubfolderApi, appDir: undefined },
-      { appPort: 8000, healthPath: "/" },
-    );
-    expect(python[0]?.path).toBe("services/api/Dockerfile");
   });
 
   it("installs an npm workspace from the root and runs the app with --workspace", () => {

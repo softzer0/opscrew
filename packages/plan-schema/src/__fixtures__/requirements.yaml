@@ -5,6 +5,7 @@ expectedMonthlyUsers: 1k-10k
 budgetMonthly:
   amount: 25
   currency: EUR
+provider: hetzner
 region: eu-central
 uptime: standard
 dataCriticality: important

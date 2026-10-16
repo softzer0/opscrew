@@ -12,12 +12,7 @@ import {
 import { buyCommandOf, registrarDashboard } from "./links";
 import { nextProjectStep, type ProjectFiles, registeredName } from "./project";
 import { formatTime, type Offer, type RegistrarFlow, type SetUp } from "./purchase";
-import {
-  capabilitiesOf,
-  type OtherRegistrarId,
-  REGISTRAR_NAMES,
-  registrarLinks,
-} from "./registrars";
+import { type OtherRegistrarId, REGISTRAR_NAMES, registrarLinks } from "./registrars";
 import { dsRecordText, hosts, type SwitchResult, sameHosts, switchToCloudflare } from "./switch";
 import type { DomainSetUpResult } from "./types";
 import type { PurchaseContext } from "./wait";
@@ -69,7 +64,7 @@ export function requireRegistrarYears(
   years: number,
 ): void {
   const name = REGISTRAR_NAMES[registrarId];
-  if (!capabilitiesOf(registrar).chooseYears && years !== 1) {
+  if (!registrar.capabilities.chooseYears && years !== 1) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       `${name} registers a new domain for the registry minimum term only (usually 1 year), so OpsCrew cannot buy ${domain} for ${plural(years, "year")} there.`,
@@ -91,7 +86,7 @@ async function mayTakeOverOwned(ctx: PurchaseContext, files: ProjectFiles): Prom
   if (files.plan?.dns.registration?.registrar === registrarId && registeredName(files) === domain) {
     return true;
   }
-  if (!capabilitiesOf(registrar).nameservers || registrar.getNameservers === undefined) {
+  if (!registrar.capabilities.nameservers || registrar.getNameservers === undefined) {
     return false;
   }
   const zone = await ctx.zones.findZone(domain);
@@ -147,7 +142,7 @@ async function elsewhereOffer(
   const { deps, domain, registrar, registrarId } = ctx;
   const name = REGISTRAR_NAMES[registrarId];
   const command = buyCommandOf(domain, registrarId);
-  if (!capabilitiesOf(registrar).purchase || registrar.quote === undefined) {
+  if (!registrar.capabilities.purchase || registrar.quote === undefined) {
     throw cannotBuyHere(ctx);
   }
 
@@ -267,7 +262,7 @@ function purchaseLines(
   const { years, autoRenew, quote, contact, balance } = options;
   const name = REGISTRAR_NAMES[ctx.registrarId];
   const page = registrarLinks(ctx.registrarId, deps.env).domains;
-  const caps = capabilitiesOf(registrar);
+  const caps = registrar.capabilities;
   const renewal =
     quote.renewal === undefined
       ? `${name} did not quote the renewal price; check it at ${page} before the domain renews`
@@ -319,7 +314,7 @@ function switchLines(ctx: PurchaseContext, purchase: boolean, dnssecLater = fals
   const { deps, domain, registrar } = ctx;
   const name = REGISTRAR_NAMES[ctx.registrarId];
   const page = registrarLinks(ctx.registrarId, deps.env).domains;
-  const caps = capabilitiesOf(registrar);
+  const caps = registrar.capabilities;
   return [
     purchase
       ? `Cloudflare zone: right after the purchase OpsCrew creates a Cloudflare zone for ${domain} in this account (an existing zone in this account is reused).`

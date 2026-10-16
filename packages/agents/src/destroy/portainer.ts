@@ -16,7 +16,6 @@ import { DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS, portainerTarget } from "@opsc
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
-import { stateContents } from "../drift/infra";
 import { portainerCloudflare } from "../provision/credentials";
 import {
   portainerContainerUrl,
@@ -35,6 +34,7 @@ import {
   type PortainerConnection,
   readPortainerConnection,
   recordPortainerConnection,
+  stateContents,
   stateFile,
 } from "../shared";
 import {

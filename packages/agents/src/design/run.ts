@@ -645,7 +645,7 @@ async function requireChosenApp(
   facts: ProjectFacts,
   requirements: Requirements,
 ): Promise<void> {
-  const factsDir = normalizeAppDir(facts.appDir ?? ".");
+  const factsDir = normalizeAppDir(facts.appDir);
   if (requirements.appDir !== undefined) {
     const chosen = normalizeAppDir(requirements.appDir);
     if (chosen === factsDir) return;

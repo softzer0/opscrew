@@ -58,7 +58,7 @@ describe("a Portainer target in steps that only know single servers", () => {
   it("leaves Hetzner, DigitalOcean and own servers as they were", () => {
     expect(planProvider(testPlan())).toBe("hetzner");
     expect(planProvider(testPlan({ provider: "digitalocean" }))).toBe("digitalocean");
-    expect(requestedProvider(undefined)).toBe("hetzner");
+    expect(requestedProvider({ provider: "hetzner" })).toBe("hetzner");
     expect(requestedProvider({ provider: "own" })).toBe("own");
     expect(defaultProvider(undefined)).toBe("hetzner");
     expect(moveProvider(testPlan().target)).toBe("hetzner");

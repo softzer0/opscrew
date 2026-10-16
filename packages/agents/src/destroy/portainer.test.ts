@@ -16,7 +16,6 @@ import {
   portainerProject,
   provisionPortainerProject,
 } from "../drift/__fixtures__/portainer-project";
-import { encryptedState, withStateList } from "../drift/__fixtures__/state";
 import { readPortainerConnection } from "../shared";
 import {
   deleteTunnelIn,
@@ -25,7 +24,7 @@ import {
   tunnelDeletePlanJson,
   tunnelDeletes,
 } from "../shared/__fixtures__/tunnel";
-import { writeFakeState } from "../testing";
+import { encryptedState, withStateList, writeFakeState } from "../testing";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
 

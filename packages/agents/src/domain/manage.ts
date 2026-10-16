@@ -27,7 +27,6 @@ import {
 } from "./project";
 import { purchaseRecordPath, readPurchaseRecord, recordRegistrar } from "./record";
 import {
-  capabilitiesOf,
   type OtherRegistrarId,
   parseRegistrarId,
   REGISTRAR_NAMES,
@@ -356,7 +355,7 @@ async function statusElsewhere(
     };
   }
   const info: RegisteredDomain = { ...found, registrar: registrarId };
-  const caps = capabilitiesOf(registrar);
+  const caps = registrar.capabilities;
   const dnssec = files.plan?.dns.registration?.dnssec;
   const next = [...finishPending, renewalNoteElsewhere(deps, info, registrarId, caps.autoRenew)];
   if (dnssec === false) {
@@ -405,7 +404,7 @@ export async function setDomainAutoRenew(
       : { name: projectName, ...otherRegistrarTarget(deps, registrarId, options.services) };
   const registrarName = REGISTRAR_NAMES[registrarId];
   const onOff = options.on ? "on" : "off";
-  if (registrarId !== "cloudflare" && !capabilitiesOf(target.registrar).autoRenew) {
+  if (registrarId !== "cloudflare" && !target.registrar.capabilities.autoRenew) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `${registrarName}'s API cannot change auto-renew, so OpsCrew did not turn it ${onOff} for ${projectName}. Nothing was changed.`,

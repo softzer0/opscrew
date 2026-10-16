@@ -176,6 +176,15 @@ export class FakeCloudflare {
   registrar(accountId: string): Registrar {
     return {
       id: "cloudflare",
+      // As Cloudflare's adapter declares them.
+      capabilities: {
+        purchase: true,
+        chooseYears: true,
+        nameservers: false,
+        records: false,
+        dnssec: false,
+        autoRenew: true,
+      },
       check: async (domains) => {
         this.enter("check", `check ${domains.join(",")}`);
         const answers: DomainCheck[] = [];
@@ -333,6 +342,7 @@ export function testRequirements(domain?: string): Requirements {
     answeredAt: "2026-10-01T09:00:00.000Z",
     expectedMonthlyUsers: "<1k",
     budgetMonthly: { amount: 20, currency: "EUR" },
+    provider: "hetzner",
     region: "eu-central",
     uptime: "standard",
     dataCriticality: "important",

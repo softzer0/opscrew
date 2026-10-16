@@ -4,7 +4,6 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
 import {
-  capabilitiesOf,
   configuredRegistrars,
   parseRegistrarId,
   registrarFor,
@@ -47,6 +46,14 @@ function recordingFetch() {
 function fakeRegistrar(id: Registrar["id"]): Registrar {
   return {
     id,
+    capabilities: {
+      purchase: true,
+      chooseYears: true,
+      nameservers: false,
+      records: false,
+      dnssec: false,
+      autoRenew: true,
+    },
     check: async () => [],
     suggest: async () => [],
     registrationStatus: async () => undefined,
@@ -117,7 +124,7 @@ describe("registrarFor", () => {
     const deps = await createTestPhaseDeps({ env: ALL_ENV });
     const registrar = registrarFor("porkbun", deps);
     expect(registrar.id).toBe("porkbun");
-    expect(capabilitiesOf(registrar).chooseYears).toBe(false);
+    expect(registrar.capabilities.chooseYears).toBe(false);
     const text = deps.redactor.redact(`${PORKBUN_KEY} ${PORKBUN_SECRET}`);
     expect(text).not.toContain(PORKBUN_KEY);
     expect(text).not.toContain(PORKBUN_SECRET);

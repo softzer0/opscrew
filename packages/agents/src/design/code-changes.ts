@@ -109,7 +109,7 @@ export function under(dir: string, path: string): string {
 
 /** Repo-relative folder of the app the facts describe (`.` for the repository root). */
 export function appDirOf(facts: ProjectFacts): string {
-  const dir = (facts.appDir ?? ".").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+  const dir = facts.appDir.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
   return isRootDir(dir) ? "." : dir;
 }
 

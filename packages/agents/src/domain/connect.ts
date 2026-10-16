@@ -46,7 +46,6 @@ import {
 } from "./project";
 import { formatTime } from "./purchase";
 import {
-  capabilitiesOf,
   OTHER_REGISTRAR_IDS,
   type OtherRegistrarId,
   parseRegistrarId,
@@ -348,7 +347,7 @@ function requireNameserverApi(ctx: ConnectContext): (domain: string) => Promise<
   const { registrar, domain } = ctx;
   const getNameservers = registrar.getNameservers?.bind(registrar);
   if (
-    !capabilitiesOf(registrar).nameservers ||
+    !registrar.capabilities.nameservers ||
     getNameservers === undefined ||
     registrar.setNameservers === undefined
   ) {
@@ -381,7 +380,7 @@ async function ownZone(ctx: ConnectContext): Promise<DomainZone | undefined> {
 }
 
 function canRemoveDs(ctx: ConnectContext): boolean {
-  return capabilitiesOf(ctx.registrar).dnssec && ctx.registrar.removeDsRecord !== undefined;
+  return ctx.registrar.capabilities.dnssec && ctx.registrar.removeDsRecord !== undefined;
 }
 
 /** Adds the records `extra` has and `list` lacks (same DS record: see `sameDs`). */
@@ -400,7 +399,7 @@ async function readDs(ctx: ConnectContext): Promise<DsReading> {
   const { registrar, domain, deps } = ctx;
   const at = deps.clock.now();
   const api =
-    capabilitiesOf(registrar).dnssec && registrar.listDsRecords !== undefined
+    registrar.capabilities.dnssec && registrar.listDsRecords !== undefined
       ? await registrar.listDsRecords(domain)
       : undefined;
   const published = await lookupPublishedDs(deps.fetch, domain);
@@ -592,7 +591,7 @@ async function currentRecords(
     const records = await readBindFile(path, domain, undefined, label);
     return { records, from: `the file ${label}`, audit: "a BIND file", where: `in ${label}` };
   }
-  if (capabilitiesOf(registrar).records && registrar.listRecords !== undefined) {
+  if (registrar.capabilities.records && registrar.listRecords !== undefined) {
     deps.reporter.step(`Reading the DNS records of ${domain} at ${name}…`);
     const records = await registrar.listRecords(domain);
     if (records !== undefined) {
@@ -974,7 +973,7 @@ function dnssecLater(ctx: ConnectContext): string {
   const { registrar } = ctx;
   const name = nameOf(ctx);
   const how =
-    capabilitiesOf(registrar).dnssec && registrar.addDsRecord !== undefined
+    registrar.capabilities.dnssec && registrar.addDsRecord !== undefined
       ? `OpsCrew then adds the zone's DS record at ${name}`
       : `OpsCrew then turns DNSSEC on and shows the DS record to add at ${linkOf(ctx)} (${name}'s API cannot publish it)`;
   return `Once Cloudflare shows the zone as active, run \`${ctx.command}\` again to turn DNSSEC on: ${how}. It asks first.`;
@@ -1059,7 +1058,7 @@ async function dnssecState(
       `OpsCrew could not read the DNSSEC (DS) records of ${domain} ${where} (${errorText(deps, error)}), so it did not check them against the Cloudflare zone; run \`${ctx.command}\` again later.`,
     );
   let api: DsRecord[] | undefined;
-  if (capabilitiesOf(registrar).dnssec && registrar.listDsRecords !== undefined) {
+  if (registrar.capabilities.dnssec && registrar.listDsRecords !== undefined) {
     try {
       api = await registrar.listDsRecords(domain);
     } catch (error) {
@@ -1112,7 +1111,7 @@ async function dnssecStep(
     published === undefined
       ? undefined
       : zoneDs !== undefined && published.some((r) => sameDs(r, zoneDs));
-  const api = capabilitiesOf(registrar).dnssec && registrar.addDsRecord !== undefined;
+  const api = registrar.capabilities.dnssec && registrar.addDsRecord !== undefined;
   const next: string[] = [...warnings];
   if (stale.length > 0) {
     const warning = `${domain} has DNSSEC (DS) records at ${name} that do not match its Cloudflare zone: ${stale.map(dsRecordText).join("; ")}. Until they are removed in ${name}'s dashboard (${link}), ${domain} may fail to resolve for visitors whose resolver checks DNSSEC.`;

@@ -6,6 +6,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { portainerValueKeyFile } from "../provision/portainer";
 import { generatedValuesFile } from "../provision/secrets";
+import { DATA_ZONE, encryptedState, MANAGED_TUNNEL, plainState, withStateList } from "../testing";
 import {
   APP_IMAGE,
   deployImage,
@@ -17,13 +18,6 @@ import {
   provisionPortainerProject,
   writeBranch,
 } from "./__fixtures__/portainer-project";
-import {
-  DATA_ZONE,
-  encryptedState,
-  MANAGED_TUNNEL,
-  plainState,
-  withStateList,
-} from "./__fixtures__/state";
 import { renderDriftReport } from "./render";
 import { runDrift } from "./run";
 

@@ -65,8 +65,7 @@ const MAX_BUDGET_USD = 0.5;
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
 /** ` in apps/api` for an app in a subfolder, empty for the repository root. */
-const inFolder = (facts: ProjectFacts) =>
-  facts.appDir !== undefined && facts.appDir !== "." ? ` in ${facts.appDir}` : "";
+const inFolder = (facts: ProjectFacts) => (facts.appDir !== "." ? ` in ${facts.appDir}` : "");
 
 /**
  * The analyze phase: detects the project, builds the deterministic architecture, optionally lets
@@ -126,7 +125,7 @@ export async function runAnalyze(
     await writeArtifact("architecture", paths.files.architecture, architecture);
     await writeFileAtomic(paths.files.architectureMd, markdown, { mode: 0o644 });
     reporter.success("Wrote opscrew/architecture.json and opscrew/ARCHITECTURE.md.");
-    if (options.appDir !== undefined) await recordAppChoice(deps, architecture.facts.appDir ?? ".");
+    if (options.appDir !== undefined) await recordAppChoice(deps, architecture.facts.appDir);
 
     const { facts } = architecture;
     await deps.state.markPhase(

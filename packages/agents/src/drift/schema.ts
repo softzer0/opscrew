@@ -1,5 +1,4 @@
 import type { IacEngine, ResourceDrift } from "@opscrew/contracts";
-import { readsProviderSchemas } from "@opscrew/iac-engine";
 import { z } from "zod";
 
 /** Attribute names per resource type, for example `{ hcloud_server: ["status"] }`. */
@@ -59,14 +58,13 @@ export function readOnlyAttributes(document: unknown): Record<string, string[]> 
 
 /**
  * Read-only attributes of the providers installed in `dir` (after `init`), or `undefined` when the
- * engine cannot read provider schemas or prints something unreadable.
+ * engine fails to read the provider schemas or prints something unreadable.
  */
 export async function providerReadOnlyAttributes(
   engine: IacEngine,
   dir: string,
   env: Record<string, string | undefined>,
 ): Promise<Record<string, string[]> | undefined> {
-  if (!readsProviderSchemas(engine)) return undefined;
   let document: unknown;
   try {
     document = await engine.providerSchemas(dir, { env });

@@ -61,16 +61,11 @@ import {
   publishedPorts,
   readIfExists,
   recordedStack,
+  stateContents,
   stateFile,
   stringOutput,
 } from "../shared";
-import {
-  compareInfrastructure,
-  driftEngine,
-  finishDriftReport,
-  inspectState,
-  stateContents,
-} from "./infra";
+import { compareInfrastructure, driftEngine, finishDriftReport, inspectState } from "./infra";
 import type { DriftOptions, DriftReport, PortainerDifference } from "./types";
 
 /** Said when the plan has no Cloudflare root and the state holds nothing either. */

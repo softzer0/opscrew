@@ -82,6 +82,7 @@ export function nextFacts(): ProjectFacts {
     services: [],
     docker: {},
     monorepo: false,
+    appDir: ".",
     git: {},
   };
 }

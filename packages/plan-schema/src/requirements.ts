@@ -22,8 +22,8 @@ export const RequirementsSchema = z
       amount: z.number().positive(),
       currency: CurrencySchema,
     }),
-    /** Where to run the app; absent in files written before feature 004, which means Hetzner. */
-    provider: DeployProviderSchema.optional(),
+    /** Where to run the app. */
+    provider: DeployProviderSchema,
     /**
      * Where most users are; picks the provider's location. Required unless `provider` is `own` or
      * `portainer` (a server the user owns or runs Portainer on stays where it is, so a region given
@@ -50,7 +50,7 @@ export const RequirementsSchema = z
       ctx.addIssue({
         code: "custom",
         path: ["region"],
-        message: `is required when provider is "${value.provider ?? "hetzner"}"`,
+        message: `is required when provider is "${value.provider}"`,
       });
     }
     if (value.dnsProvider !== "none" && value.domain === undefined) {

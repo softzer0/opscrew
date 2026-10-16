@@ -2,7 +2,7 @@ import type { DsRecord, Registrar, RegistrarId } from "@opscrew/contracts";
 import { listText, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import { auditDomain, errorText } from "./common";
-import { capabilitiesOf, REGISTRAR_NAMES, registrarLinks } from "./registrars";
+import { REGISTRAR_NAMES, registrarLinks } from "./registrars";
 import type { DomainAccount, DomainZone, DomainZoneApi, ZoneDsRecord } from "./types";
 
 /**
@@ -125,7 +125,7 @@ export async function pointToZone(ctx: SwitchContext, zone: DomainZone): Promise
       { hint: "Try again in a minute." },
     );
   }
-  const caps = capabilitiesOf(registrar);
+  const caps = registrar.capabilities;
   if (caps.nameservers && registrar.getNameservers && registrar.setNameservers) {
     const current = hosts(await registrar.getNameservers(domain));
     if (sameHosts(current, nameservers)) {
@@ -178,7 +178,7 @@ export async function publishDs(
     );
     return { outcome: "pending" };
   }
-  const caps = capabilitiesOf(registrar);
+  const caps = registrar.capabilities;
   if (caps.dnssec && registrar.addDsRecord) {
     const published = registrar.listDsRecords ? await registrar.listDsRecords(domain) : [];
     if (published.some((r) => sameDs(r, ds))) return { ds, outcome: "already" };

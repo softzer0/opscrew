@@ -53,6 +53,7 @@ import {
   testPlan,
 } from "./deploy";
 import { MemoryReporter, ScriptedRunner } from "./deps";
+import { noProviderSchemas, plainStateResources } from "./state";
 
 export { HOST_KEY, SERVER_IPV4 as OLD_IPV4, SERVER_IPV6 as OLD_IPV6 };
 
@@ -483,6 +484,9 @@ export class FakeMoveEngine implements IacEngine {
   async output(_dir: string): Promise<Record<string, unknown>> {
     return structuredClone(this.state.outputs);
   }
+
+  readonly providerSchemas = noProviderSchemas;
+  readonly stateResources = plainStateResources;
 }
 
 /**

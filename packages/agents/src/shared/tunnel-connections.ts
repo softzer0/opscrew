@@ -236,6 +236,8 @@ export function tunnelSafeEngine(engine: IacEngine): TunnelSafeEngine {
     init: (dir, options) => engine.init(dir, options),
     validate: (dir, options) => engine.validate(dir, options),
     output: (dir, options) => engine.output(dir, options),
+    providerSchemas: (dir, options) => engine.providerSchemas(dir, options),
+    stateResources: (stateFile, options) => engine.stateResources(stateFile, options),
     plan: (dir, planFile, options) => engine.plan(dir, planFile, options),
     apply: async (dir, planFile, approval, options) => {
       const result = await engine.apply(dir, planFile, approval, options);

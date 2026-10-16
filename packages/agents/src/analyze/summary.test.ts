@@ -22,6 +22,7 @@ function ambiguousMonorepo(): ProjectFacts {
     services: [],
     docker: {},
     monorepo: true,
+    appDir: ".",
     git: {},
   };
 }

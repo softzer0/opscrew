@@ -19,6 +19,8 @@ import {
   createTestPhaseDeps,
   FakeServers,
   HOST_KEY,
+  noProviderSchemas,
+  plainStateResources,
   ScriptedApprovalHandler,
   serverAttributes,
 } from "../testing";
@@ -108,6 +110,8 @@ class MoveEngine implements IacEngine {
   async output() {
     return {};
   }
+  readonly providerSchemas = noProviderSchemas;
+  readonly stateResources = plainStateResources;
 
   async plan(
     dir: string,

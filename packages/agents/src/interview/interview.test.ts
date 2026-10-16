@@ -40,6 +40,7 @@ function facts(services: ProjectFacts["services"] = []): ProjectFacts {
     services,
     docker: {},
     monorepo: false,
+    appDir: ".",
     git: {},
   };
 }
@@ -93,6 +94,7 @@ describe("buildQuestions", () => {
       answeredAt: "2026-10-01T00:00:00.000Z",
       expectedMonthlyUsers: "10k-100k",
       budgetMonthly: { amount: 40, currency: "USD" },
+      provider: "hetzner",
       region: "us-east",
       uptime: "high",
       dataCriticality: "critical",
@@ -118,12 +120,12 @@ describe("buildQuestions", () => {
 });
 
 describe("provider question", () => {
-  const previousWith = (provider?: "hetzner" | "digitalocean"): Requirements => ({
+  const previousWith = (provider: Requirements["provider"]): Requirements => ({
     schemaVersion: 1,
     answeredAt: "2026-10-01T00:00:00.000Z",
     expectedMonthlyUsers: "<1k",
     budgetMonthly: { amount: 10, currency: "EUR" },
-    ...(provider !== undefined ? { provider } : {}),
+    provider,
     region: "eu-central",
     uptime: "standard",
     dataCriticality: "none",
@@ -167,7 +169,7 @@ describe("provider question", () => {
   });
 
   it("defaults to an existing Portainer chosen before, and records no region for it", () => {
-    const previous: Requirements = { ...previousWith(), provider: "portainer" };
+    const previous = previousWith("portainer");
     expect(providerQuestion(buildQuestions(facts(), previous))?.default).toBe("portainer");
     const requirements = answersToRequirements(
       { ...BASE_ANSWERS, provider: "Portainer", region: "eu-central" },
@@ -217,7 +219,6 @@ describe("provider question", () => {
       )?.default;
     expect(def(previousWith("hetzner"), "digitalocean")).toBe("hetzner");
     expect(def(previousWith("digitalocean"))).toBe("digitalocean");
-    expect(def(previousWith(), "digitalocean")).toBe("digitalocean");
     expect(def(undefined, "digitalocean")).toBe("digitalocean");
     expect(def()).toBe("hetzner");
     expect(inferredAnswers(facts()).provider).toBe("hetzner");

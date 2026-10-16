@@ -1,10 +1,28 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-import type { IacEngine, ResourceAction } from "@opscrew/contracts";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import type { IacEngine, IacEngineName, ResourceAction } from "@opscrew/contracts";
+import { tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { describe, expect, it } from "vitest";
-import { createTestPhaseDeps, FakeEngine, testPlan } from "../testing";
-import { describeChanges, existingStateEngine, hasState, projectEngine, stateFile } from "./engine";
+import {
+  createTestPhaseDeps,
+  DATA_ZONE,
+  encryptedState,
+  FakeEngine,
+  MANAGED_TUNNEL,
+  plainState,
+  testPlan,
+  withStateList,
+} from "../testing";
+import {
+  describeChanges,
+  existingStateEngine,
+  hasState,
+  projectEngine,
+  stateContents,
+  stateFile,
+} from "./engine";
 import { pollUntil } from "./wait";
 
 const tofu = async (): Promise<IacEngine> => new FakeEngine();
@@ -142,5 +160,103 @@ describe("pollUntil", () => {
     });
     expect(never).toBeUndefined();
     expect(waits).toEqual([5_000, 5_000, 2_000]);
+  });
+});
+
+async function setup(content: string | undefined) {
+  const deps = await createTestPhaseDeps();
+  const file = join(await mkdtemp(join(deps.paths.root, "state-")), "prod.tfstate");
+  if (content !== undefined) await writeFile(file, content);
+  return { deps, file };
+}
+
+/** A test engine named `name` with a scripted `state list` for encrypted state. */
+function listing(inside: string[] | undefined, name: IacEngineName = "tofu") {
+  const engine = new FakeEngine();
+  Object.defineProperty(engine, "info", { value: { ...engine.info, name } });
+  return withStateList(engine, () => inside);
+}
+
+async function writePassphrase(deps: Awaited<ReturnType<typeof createTestPhaseDeps>>) {
+  const passphrase = randomBytes(24).toString("base64url");
+  await mkdir(dirname(deps.paths.files.statePassphrase), { recursive: true });
+  await writeFile(deps.paths.files.statePassphrase, `${passphrase}\n`);
+  return passphrase;
+}
+
+describe("stateContents", () => {
+  it("asks the engine for managed resources: none in an emptied state, outputs and data sources do not count", async () => {
+    for (const [content, expected] of [
+      [plainState([MANAGED_TUNNEL]), "resources"],
+      [plainState([]), "nothing"],
+      [plainState([DATA_ZONE]), "nothing"],
+    ] as const) {
+      const { deps, file } = await setup(content);
+      const engine = listing(undefined);
+      expect(await stateContents(deps, file, async () => engine)).toBe(expected);
+      expect(engine.stateCalls).toEqual([{ file, encryption: undefined }]);
+    }
+  });
+
+  it("holds nothing without a state file or with a blank one, without asking for an engine", async () => {
+    for (const content of [undefined, "  \n"]) {
+      const { deps, file } = await setup(content);
+      let asked = false;
+      const engine = async () => {
+        asked = true;
+        return listing(undefined);
+      };
+      expect(await stateContents(deps, file, engine)).toBe("nothing");
+      expect(asked).toBe(false);
+    }
+  });
+
+  it("opens an encrypted state with TF_ENCRYPTION from the existing passphrase (OpenTofu only)", async () => {
+    const { deps, file } = await setup(encryptedState());
+    const passphrase = await writePassphrase(deps);
+    const removed = listing([]);
+    expect(await stateContents(deps, file, async () => removed)).toBe("nothing");
+    expect(removed.stateCalls).toEqual([{ file, encryption: tofuEncryptionEnv(passphrase) }]);
+    expect(deps.redactor.redact(`x ${passphrase} y`)).toBe("x [REDACTED:state-passphrase] y");
+    const held = listing(["module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this"]);
+    expect(await stateContents(deps, file, async () => held)).toBe("resources");
+
+    // Terraform cannot read OpenTofu-encrypted state.
+    const terraform = listing([], "terraform");
+    expect(await stateContents(deps, file, async () => terraform)).toBe("unknown");
+    expect(terraform.stateCalls).toEqual([]);
+  });
+
+  it("is unknown when the engine cannot read the state, or there is no passphrase or engine", async () => {
+    const { deps, file } = await setup(encryptedState());
+    // No passphrase on this computer: never created, never asked of the engine.
+    const engine = listing([]);
+    expect(await stateContents(deps, file, async () => engine)).toBe("unknown");
+    expect(engine.stateCalls).toEqual([]);
+    await expect(readFile(deps.paths.files.statePassphrase, "utf8")).rejects.toThrow();
+
+    await writePassphrase(deps);
+    expect(await stateContents(deps, file, async () => listing(undefined))).toBe("unknown");
+    const missing = async (): Promise<IacEngine> => {
+      throw new Error("no engine");
+    };
+    expect(await stateContents(deps, file, missing)).toBe("unknown");
+    const damaged = await setup("{ not json");
+    expect(await stateContents(damaged.deps, damaged.file, async () => engine)).toBe("unknown");
+  });
+
+  it("counts a plain state through the engine's `state list`: no instance is nothing, a non-state is unknown", async () => {
+    const fake = async () => new FakeEngine();
+    for (const [content, expected] of [
+      [plainState([MANAGED_TUNNEL]), "resources"],
+      [plainState([]), "nothing"],
+      [plainState([DATA_ZONE]), "nothing"],
+      [plainState([{ ...MANAGED_TUNNEL, instances: [] }]), "nothing"],
+      [JSON.stringify({ fake: true }), "unknown"],
+      [encryptedState(), "unknown"],
+    ] as const) {
+      const { deps, file } = await setup(content);
+      expect(await stateContents(deps, file, fake)).toBe(expected);
+    }
   });
 });

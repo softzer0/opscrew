@@ -19,12 +19,6 @@ import {
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
 import {
-  encryptedState,
-  MANAGED_TUNNEL,
-  plainState,
-  withStateList,
-} from "../drift/__fixtures__/state";
-import {
   type PortainerConnection,
   type PortainerConnectionInput,
   readPortainerConnection,
@@ -39,19 +33,23 @@ import {
 import {
   createProject,
   createTestPhaseDeps,
+  encryptedState,
   FakeEngine,
   FakeGitHub,
   type FakePortainerOptions,
   fakeCertificate,
   fakePortainer,
   fakeZeroTrust,
+  MANAGED_TUNNEL,
   ownCloudflare,
   PORTAINER_HOST,
   PORTAINER_URL,
+  plainState,
   portainerPlan,
   portainerPlanJson,
   projectRunner,
   ScriptedApprovalHandler,
+  withStateList,
   writeFakeState,
 } from "../testing";
 import {

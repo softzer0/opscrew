@@ -44,8 +44,8 @@ export function appFacts(options: {
     services: [],
     docker: {},
     monorepo: dir !== ".",
+    appDir: dir,
     git: {},
-    ...(dir === "." ? {} : { appDir: dir }),
   };
 }
 

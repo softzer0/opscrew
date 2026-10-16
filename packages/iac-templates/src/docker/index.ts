@@ -134,7 +134,7 @@ export function renderDockerAssets(
     );
   }
   const port = containerPort(stack, options.appPort);
-  const dir = appDirectory(facts, stack);
+  const dir = appDirectory(facts);
   return [
     {
       path: dir === "." ? "Dockerfile" : `${dir}/Dockerfile`,

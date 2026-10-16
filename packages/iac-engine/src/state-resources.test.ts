@@ -1,12 +1,11 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { IacEngine } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { ScriptedRunner } from "./__fixtures__/fake-runner";
 import { createEngine } from "./engine";
-import { managedAddresses, readsStateResources } from "./state-resources";
+import { managedAddresses } from "./state-resources";
 
 function makeEngine(runner: ScriptedRunner, name: "tofu" | "terraform" = "tofu") {
   return createEngine(
@@ -74,12 +73,6 @@ describe("stateResources", () => {
     expect((error as OpsCrewError).message).toContain("OpenTofu state list failed (exit code 1)");
     expect((error as OpsCrewError).hint).toContain("state passphrase");
     expect(existsSync(cwd)).toBe(false);
-  });
-
-  it("is an optional capability engines can be checked for", () => {
-    const engine: IacEngine = makeEngine(new ScriptedRunner());
-    expect(readsStateResources(engine)).toBe(true);
-    expect(readsStateResources({ info: engine.info } as unknown as IacEngine)).toBe(false);
   });
 });
 

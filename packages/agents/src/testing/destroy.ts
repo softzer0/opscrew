@@ -15,6 +15,7 @@ import type {
 import type { CloudProvider } from "@opscrew/plan-schema";
 import type { DestroyGitHubApi } from "../destroy/types";
 import { FakeGitHub, SERVER_IPV4 } from "./deploy";
+import { noProviderSchemas, plainStateResources } from "./state";
 
 const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 
@@ -259,6 +260,9 @@ export class ScriptedDestroyEngine implements IacEngine {
     this.calls.push("output");
     return {};
   }
+
+  readonly providerSchemas = noProviderSchemas;
+  readonly stateResources = plainStateResources;
 }
 
 /** The app's server as each provider's fake reports it, and the id its snapshot gets. */

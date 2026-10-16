@@ -144,8 +144,8 @@ export const ProjectFactsSchema = z.strictObject({
   }),
   healthEndpoint: UrlPathSchema.optional(),
   monorepo: z.boolean(),
-  /** Repo-relative directory of the app the facts describe (absent or `.` for the root). */
-  appDir: RepoPathSchema.optional(),
+  /** Repo-relative directory of the app the facts describe (`.` for the repository root). */
+  appDir: RepoPathSchema,
   /**
    * Plain-English notes on what OpsCrew deploys that the user must know, for example a part of the
    * app it does not serve yet; `design` and the adapt pull request show them. Absent when none.

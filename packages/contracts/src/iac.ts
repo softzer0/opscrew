@@ -144,4 +144,19 @@ export interface IacEngine {
     options?: IacRunOptions,
   ): Promise<IacApplyResult>;
   output(dir: string, options?: IacRunOptions): Promise<Record<string, unknown>>;
+  /**
+   * Runs `providers schema -json` in `dir` after `init` (reads the installed providers, no
+   * network) and returns the parsed, not yet validated document. Cached per directory for the
+   * engine's lifetime; a failure throws `ENGINE_FAILED` and is not cached.
+   */
+  providerSchemas(dir: string, options?: IacRunOptions): Promise<unknown>;
+  /**
+   * Runs `state list -state=<stateFile>` in an empty scratch folder: no root module, `init`,
+   * provider or credential is needed, and nothing is written. An OpenTofu-encrypted state opens
+   * with the same `TF_ENCRYPTION` in `options.env` as every other command. Returns the managed
+   * resource addresses, sorted, without data sources; `[]` for a state a destroy emptied. A missing
+   * file, or one the engine cannot read (encrypted without the right encryption settings, or
+   * damaged), throws `ENGINE_FAILED`.
+   */
+  stateResources(stateFile: string, options?: IacRunOptions): Promise<string[]>;
 }

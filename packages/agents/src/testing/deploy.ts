@@ -25,6 +25,7 @@ import {
 import type { CloudflareApi, GitHubApi } from "../provision/types";
 import { hasDeployment, updateServerAddresses } from "../shared";
 import { ScriptedRunner } from "./deps";
+import { noProviderSchemas, plainStateResources } from "./state";
 
 export const CF_V4 = ["173.245.48.0/20", "103.21.244.0/22"];
 export const CF_V6 = ["2400:cb00::/32"];
@@ -493,6 +494,9 @@ export class FakeEngine implements IacEngine {
     this.calls.push("output");
     return this.applied.length > 0 ? this.outputs : {};
   }
+
+  readonly providerSchemas = noProviderSchemas;
+  readonly stateResources = plainStateResources;
 }
 
 /** GitHub REST fake recording secrets (plaintext, test only) and pull requests. */

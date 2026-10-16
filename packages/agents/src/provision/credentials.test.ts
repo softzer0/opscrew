@@ -36,6 +36,12 @@ function outputsEngine(state: StateCase): IacEngine & { reads: number } {
     apply: async () => {
       throw new Error("no applies here");
     },
+    providerSchemas: async () => {
+      throw new Error("no provider schemas here");
+    },
+    stateResources: async () => {
+      throw new Error("no state lists here");
+    },
     output: async () => {
       engine.reads++;
       if (state.kind === "unreadable") throw new Error("Error: decrypting the state failed");

@@ -16,12 +16,7 @@ import {
   PorkbunClient,
   PorkbunRegistrar,
 } from "@opscrew/connector-porkbun";
-import {
-  DEFAULT_REGISTRAR_CAPABILITIES,
-  type Registrar,
-  type RegistrarCapabilities,
-  type RegistrarId,
-} from "@opscrew/contracts";
+import type { Registrar, RegistrarId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import { DASHBOARD, TOKEN_PAGE } from "./common";
@@ -78,11 +73,6 @@ export function hasEnv(env: Record<string, string | undefined>, name: string): b
 /** Registrars whose credentials are set, in {@link REGISTRAR_IDS} order. */
 export function configuredRegistrars(env: Record<string, string | undefined>): RegistrarId[] {
   return REGISTRAR_IDS.filter((id) => REGISTRAR_ENV[id].every((name) => hasEnv(env, name)));
-}
-
-/** What the registrar can do through its API (Cloudflare's 006 behaviour when it declares none). */
-export function capabilitiesOf(registrar: Registrar): RegistrarCapabilities {
-  return registrar.capabilities ?? DEFAULT_REGISTRAR_CAPABILITIES;
 }
 
 /**

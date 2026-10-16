@@ -19,7 +19,7 @@ import { buyCommandOf, registrarDashboard } from "./links";
 import { auditAutoRenew, autoRenewApproval, renewalPrice } from "./manage";
 import type { ProjectFiles } from "./project";
 import { markPurchase, type PurchaseRecord, removePurchaseRecord } from "./record";
-import { capabilitiesOf, REGISTRAR_NAMES, registrarLinks } from "./registrars";
+import { REGISTRAR_NAMES, registrarLinks } from "./registrars";
 import type { DomainSetUpResult, MaxPrice } from "./types";
 import type { PurchaseContext } from "./wait";
 
@@ -327,7 +327,7 @@ export async function autoRenewLine(
   on: boolean,
 ): Promise<string> {
   const { domain, registrar, registrarId } = ctx;
-  if (capabilitiesOf(registrar).autoRenew) {
+  if (registrar.capabilities.autoRenew) {
     const price = await renewalPrice(registrar, domain);
     return autoRenewApproval(domain, details, on, price, registrarId).details;
   }
@@ -346,7 +346,7 @@ export async function applyAutoRenew(
 ): Promise<{ info: RegisteredDomain; next?: string }> {
   if (wanted === undefined || info.autoRenew === wanted) return { info };
   const { deps, domain, registrar, registrarId } = ctx;
-  if (!capabilitiesOf(registrar).autoRenew) {
+  if (!registrar.capabilities.autoRenew) {
     const name = REGISTRAR_NAMES[registrarId];
     return {
       info,

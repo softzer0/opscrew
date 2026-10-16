@@ -27,6 +27,7 @@ import type { ZeroTrustApi } from "../provision/zero-trust";
 import type { HostAdapterApi } from "../shared";
 import { fakeCloudflare } from "./deploy";
 import { ScriptedRunner } from "./deps";
+import { noProviderSchemas, plainStateResources } from "./state";
 
 /** The user's own server: a documentation address (RFC 5737), public. */
 export const OWN_IPV4 = "203.0.113.20";
@@ -651,6 +652,9 @@ export class OwnEngine implements IacEngine {
     if (options?.env) this.envs.push(options.env);
     return this.state;
   }
+
+  readonly providerSchemas = noProviderSchemas;
+  readonly stateResources = plainStateResources;
 }
 
 /** The DNS records an own public-mode plan creates. */

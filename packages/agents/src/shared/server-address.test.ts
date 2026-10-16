@@ -62,6 +62,12 @@ class OutputEngine implements IacEngine {
   async apply(): Promise<never> {
     throw new Error("apply is not expected");
   }
+  async providerSchemas(): Promise<never> {
+    throw new Error("providers schema is not expected");
+  }
+  async stateResources(): Promise<never> {
+    throw new Error("state list is not expected");
+  }
   async output(dir: string, options?: IacRunOptions): Promise<Record<string, unknown>> {
     this.calls.push({ dir, env: options?.env });
     if (this.outputs === "fail") throw new Error("Backend initialization required");

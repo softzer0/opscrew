@@ -100,25 +100,9 @@ function normaliseDir(path: string): string {
   return dir === "" ? "." : dir;
 }
 
-/** Frameworks whose folder locates the app when `facts.appDir` is absent (older facts). */
-const STACK_FRAMEWORKS: Record<DockerStack, string[]> = {
-  "next-standalone": ["next"],
-  "node-server": NODE_SERVER_FRAMEWORKS,
-  "static-spa": [],
-  "python-fastapi": ["fastapi"],
-  "python-django": ["django"],
-  "python-generic": [],
-};
-
-/**
- * Repo-relative directory of the app (`.` for the repository root): `facts.appDir` when detection
- * recorded it, otherwise the folder of the stack's framework (or of the first framework).
- */
-export function appDirectory(facts: ProjectFacts, stack: DockerStack): string {
-  if (facts.appDir !== undefined) return normaliseDir(facts.appDir);
-  const names = STACK_FRAMEWORKS[stack];
-  const framework = facts.frameworks.find((f) => names.includes(f.name)) ?? facts.frameworks.at(0);
-  return normaliseDir(framework?.path ?? ".");
+/** Repo-relative directory of the app (`facts.appDir`, normalised; `.` for the repository root). */
+export function appDirectory(facts: ProjectFacts): string {
+  return normaliseDir(facts.appDir);
 }
 
 const PLAIN_PATH = /^[A-Za-z0-9._/@+-]+$/;
@@ -226,7 +210,7 @@ function standaloneToOut(dir: string, serverDir: string): string[] {
  * the repository root) or at the standalone root.
  */
 export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): string {
-  const dir = appDirectory(facts, "next-standalone");
+  const dir = appDirectory(facts);
   const atRoot = dir === ".";
   const inApp = (path: string) => (atRoot ? path : `${dir}/${path}`);
   const command = facts.build.buildCommand ?? jsScript(facts, dir, "build");
@@ -296,7 +280,7 @@ export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): str
 
 /** Node.js server image; an app in a subfolder is built from the root and started from there. */
 export function nodeServerDockerfile(facts: ProjectFacts, port: number): string {
-  const dir = appDirectory(facts, "node-server");
+  const dir = appDirectory(facts);
   const start = facts.build.startCommand ?? jsScript(facts, dir, "start");
   const lines = [
     HEADER("node-server"),
@@ -332,7 +316,7 @@ export function nodeServerDockerfile(facts: ProjectFacts, port: number): string 
  * (a detected `outputDir` is already relative to the repository root).
  */
 export function staticSpaDockerfile(facts: ProjectFacts): string {
-  const dir = appDirectory(facts, "static-spa");
+  const dir = appDirectory(facts);
   const build = facts.build.buildCommand ?? jsScript(facts, dir, "build");
   const outputDir = facts.build.outputDir ?? (dir === "." ? "dist" : `${dir}/dist`);
   const caddyfile = [
@@ -381,7 +365,7 @@ export function staticSpaDockerfile(facts: ProjectFacts): string {
  */
 function pythonBase(stack: DockerStack, port: number, facts: ProjectFacts): string[] {
   const version = facts.runtimeVersions.python?.match(/^3\.\d+/)?.[0] ?? "3.13";
-  const dir = appDirectory(facts, stack);
+  const dir = appDirectory(facts);
   return [
     HEADER(stack),
     ...(dir === "."
@@ -428,9 +412,9 @@ function pythonInstall(facts: ProjectFacts, dir: string): string[] {
  * Detected start command as it runs inside the image: the `cd <dir> && ` prefix detection adds for
  * an app in a subfolder is dropped, because the image holds only that folder.
  */
-function pythonStart(facts: ProjectFacts, stack: DockerStack): string | undefined {
+function pythonStart(facts: ProjectFacts): string | undefined {
   const start = facts.build.startCommand;
-  return start === undefined ? undefined : inAppFolder(start, appDirectory(facts, stack));
+  return start === undefined ? undefined : inAppFolder(start, appDirectory(facts));
 }
 
 /**
@@ -571,7 +555,7 @@ export function imageReleaseCommand(facts: ProjectFacts): ImageReleaseCommand {
   if (tool !== undefined && tool.runtime !== (python ? "python" : "node")) {
     return { notRun: wrongImage(tool, stack, command) };
   }
-  if (python) return { command: inAppFolder(command, appDirectory(facts, stack)) };
+  if (python) return { command: inAppFolder(command, appDirectory(facts)) };
   if (stack !== "next-standalone") return { command };
   if (/\bprisma\s+migrate\b/.test(command)) {
     return {
@@ -583,7 +567,7 @@ export function imageReleaseCommand(facts: ProjectFacts): ImageReleaseCommand {
       notRun: `OpsCrew found ${tool.found}, but the Next.js standalone image keeps only the files the server needs, not ${tool.needs}, so deploys cannot run \`${command}\`. Run the migrations another way: change the Dockerfile so the image keeps them, then set \`app.releaseCommand\` in opscrew/plan.yaml; or run the command yourself against the production database before each deploy that changes the schema.`,
     };
   }
-  const dir = appDirectory(facts, stack);
+  const dir = appDirectory(facts);
   if (dir !== "." && command.startsWith("cd ")) {
     return {
       notRun: `The release command \`${command}\` changes into ${dir}, which the Next.js standalone image may not contain, so OpsCrew left it out of the plan. Set \`app.releaseCommand\` in opscrew/plan.yaml to a command that runs from the image's working folder (/app).`,
@@ -599,7 +583,7 @@ export function releaseCommandInImage(facts: ProjectFacts): string | undefined {
 
 /** Uvicorn target (`module:app`) from the detected start command, or `main:app`. */
 function uvicornTarget(facts: ProjectFacts): string {
-  const match = pythonStart(facts, "python-fastapi")?.match(/uvicorn\s+([\w.]+:[\w]+)/);
+  const match = pythonStart(facts)?.match(/uvicorn\s+([\w.]+:[\w]+)/);
   return match?.[1] ?? "main:app";
 }
 
@@ -631,9 +615,7 @@ const DJANGO_COLLECTSTATIC =
 const GUNICORN_VERSION = "26.2.0";
 
 export function djangoDockerfile(facts: ProjectFacts, port: number): string {
-  const module =
-    pythonStart(facts, "python-django")?.match(/([\w.]+)\.wsgi/)?.[1] ??
-    facts.name.replace(/-/g, "_");
+  const module = pythonStart(facts)?.match(/([\w.]+)\.wsgi/)?.[1] ?? facts.name.replace(/-/g, "_");
   return [
     ...pythonBase("python-django", port, facts),
     "# gunicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
@@ -655,7 +637,7 @@ export function djangoDockerfile(facts: ProjectFacts, port: number): string {
 }
 
 export function pythonGenericDockerfile(facts: ProjectFacts, port: number): string {
-  const start = pythonStart(facts, "python-generic") ?? "python main.py";
+  const start = pythonStart(facts) ?? "python main.py";
   return [
     ...pythonBase("python-generic", port, facts),
     "USER app",

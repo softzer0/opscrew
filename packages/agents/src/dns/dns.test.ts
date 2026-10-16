@@ -91,6 +91,7 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
       answeredAt: "2026-10-11T09:00:00.000Z",
       expectedMonthlyUsers: "<1k",
       budgetMonthly: { amount: 20, currency: "EUR" },
+      provider: "hetzner",
       region: "eu-central",
       uptime: "standard",
       dataCriticality: "important",

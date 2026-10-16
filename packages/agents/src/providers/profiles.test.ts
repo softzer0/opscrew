@@ -62,9 +62,8 @@ describe("provider choice", () => {
     expect(planProvider({ target: { provider: "digitalocean" } } as never)).toBe("digitalocean");
   });
 
-  it("treats requirements without a provider as Hetzner", () => {
-    expect(requestedProvider(undefined)).toBe("hetzner");
-    expect(requestedProvider({})).toBe("hetzner");
+  it("reads the provider the requirements name", () => {
+    expect(requestedProvider({ provider: "hetzner" })).toBe("hetzner");
     expect(requestedProvider({ provider: "digitalocean" })).toBe("digitalocean");
   });
 
@@ -122,7 +121,7 @@ describe("provider choice", () => {
   });
 
   it("reads the region for cloud providers only", () => {
-    expect(requestedRegion({ region: "us-east" })).toBe("us-east");
+    expect(requestedRegion({ provider: "hetzner", region: "us-east" })).toBe("us-east");
     expect(requestedRegion({ provider: "digitalocean", region: "eu-north" })).toBe("eu-north");
     expect(requestedRegion({ provider: "own", region: "eu-central" })).toBeUndefined();
     expect(requestedRegion({ provider: "own" })).toBeUndefined();
