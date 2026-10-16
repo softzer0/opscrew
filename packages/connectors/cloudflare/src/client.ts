@@ -7,7 +7,7 @@ import type {
   RegistrarDnsRecord,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import type { CloudflareRecordInput } from "./records";
 import {
@@ -107,6 +107,8 @@ export interface CloudflareClientOptions {
   version?: string;
   /** Send registrar calls to Cloudflare's sandbox (`/registrar-sandbox/`, .com and .net only). */
   registrarSandbox?: boolean;
+  /** How long one request may take (default 30 seconds). */
+  timeoutMs?: number;
 }
 
 /** A Cloudflare account the token can see. */
@@ -148,6 +150,19 @@ export type ActivationCheckResult =
   | { requested: true }
   | { requested: false; reason: string; retryAfterSeconds?: number };
 
+/** A Cloudflare Access login method (identity provider) of an account. */
+export interface CloudflareIdentityProvider {
+  id: string;
+  /** For example `onetimepin`, `github` or `google`. */
+  type: string;
+}
+
+/**
+ * Whether a Cloudflare Tunnel still has connections: `active` while a connector is connected,
+ * `closed` once it has none, `gone` when the tunnel is deleted.
+ */
+export type TunnelConnectionState = "active" | "closed" | "gone";
+
 const Envelope = z.looseObject({
   success: z.boolean(),
   errors: z
@@ -159,9 +174,7 @@ const Envelope = z.looseObject({
     )
     .default([]),
   result: z.unknown().optional(),
-  result_info: z
-    .looseObject({ page: z.number().optional(), total_pages: z.number().optional() })
-    .optional(),
+  result_info: z.looseObject({ total_pages: z.number().optional() }).optional(),
 });
 type EnvelopeBody = z.infer<typeof Envelope>;
 
@@ -232,6 +245,21 @@ const BatchResultSchema = z.looseObject({
     .optional(),
 });
 
+const AccessOrganizationSchema = z.looseObject({ auth_domain: z.string().min(1) });
+
+const IdentityProvidersSchema = z
+  .array(z.looseObject({ id: z.string().min(1), type: z.string() }))
+  .nullable();
+
+/** The fields of a tunnel that say whether it has connections (their details are not kept). */
+const TunnelSchema = z.looseObject({
+  status: z.string().nullish(),
+  connections: z.array(z.unknown()).nullish(),
+  conns_active_at: z.string().nullish(),
+  conns_inactive_at: z.string().nullish(),
+  deleted_at: z.string().nullish(),
+});
+
 /**
  * Most records one batch call creates. Cloudflare's limit depends on the plan (200 on Free, 3,500
  * on paid plans); larger lists are split into several calls of 200, each its own transaction.
@@ -244,38 +272,30 @@ const SCAN_REVIEW_WAIT_MS = 2000;
 
 const MAX_RATE_LIMIT_RETRIES = 3;
 const MAX_SERVER_RETRIES = 2;
+/** Default time one request may take before it counts as failed (and a read is retried). */
+const REQUEST_TIMEOUT_MS = 30_000;
 
 /** Most domains one domain-check call accepts. */
 const DOMAIN_CHECK_BATCH = 20;
 
-/** Cloudflare error codes on a 404 that mean a wrong route, account or token, not "no such registration". */
-const NOT_A_MISSING_REGISTRATION_CODES = new Set([7000, 7001, 7003, 9109, 10000, 10001]);
-
-/**
- * The live Registrar API's exact "nothing here" answers, which use the generic code 10000 (also
- * used for authentication errors, so the code alone never counts): a 404 with "No workflow found
- * for <domain>" from the registration status, and "Domain not found" from the registration.
- * Checked against the real and sandbox APIs on 2026-10-14.
- */
-function isLiveNotFound(
-  message: string,
-  live: { domain: string; lookup: "status" | "detail" },
-): boolean {
-  const text = message.trim().replace(/\.$/, "").toLowerCase();
-  return live.lookup === "status"
-    ? text === `no workflow found for ${live.domain.toLowerCase()}`
-    : text === "domain not found";
-}
-
 /** Cloudflare's error code for "zone already exists". */
 const ZONE_EXISTS_CODE = 1061;
+
+/**
+ * Cloudflare's answer (HTTP 403, error 9999) when the account never turned on Zero Trust; checked
+ * before the permission errors so the user is not sent to fix a token that is fine.
+ */
+const ACCESS_NOT_ENABLED = /access\.api\.error\.not_enabled|access is not enabled/i;
+
+/** Cloudflare's answer when an account has no Zero Trust organization yet. */
+const NO_ORGANIZATION = /not (?:been )?found|does not exist|no (?:zero trust )?organi[sz]ation/i;
 
 /**
  * Lists the domain and each parent that could be the Cloudflare zone, most specific first:
  * `app.example.co.uk` → `app.example.co.uk`, `example.co.uk`, `co.uk`. Single labels are skipped.
  */
 export function zoneCandidates(domain: string): string[] {
-  const labels = domain.trim().toLowerCase().replace(/\.$/, "").split(".").filter(Boolean);
+  const labels = normalizeHostName(domain).split(".").filter(Boolean);
   const out: string[] = [];
   for (let i = 0; i < labels.length - 1; i++) out.push(labels.slice(i).join("."));
   return out;
@@ -315,6 +335,16 @@ const ZONE_COVERAGE_HINTS: FailHints = {
   auth: `The token's zone permissions do not cover this zone. If the token is limited to specific zones, add this zone (or all zones of the account) to it at ${CLOUDFLARE_TOKEN_PAGE} with ${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
+/** Hints for the account's Cloudflare Access settings. */
+const ACCESS_HINTS: FailHints = {
+  auth: `Reading Cloudflare Access needs the account permission "Access: Organizations, Identity Providers, and Groups" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/** Hints for the account's Cloudflare Tunnels. */
+const TUNNEL_HINTS: FailHints = {
+  auth: `Reading a Cloudflare Tunnel needs the account permission "Cloudflare Tunnel" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
 interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT";
   body?: unknown;
@@ -324,10 +354,6 @@ interface RequestOptions {
   retryServerErrors?: boolean;
   /** Wait and retry 429 answers (default true). */
   retryRateLimit?: boolean;
-}
-
-function normalizeDomain(domain: string): string {
-  return domain.trim().toLowerCase().replace(/\.$/, "");
 }
 
 function dsNumber(value: unknown): number | undefined {
@@ -362,7 +388,7 @@ function toScannedRecord(raw: z.infer<typeof ScannedRecordSchema>): RegistrarDns
   const priority = raw.priority ?? (type === "SRV" ? dsNumber(data.priority) : undefined);
   return {
     type,
-    name: normalizeDomain(raw.name),
+    name: normalizeHostName(raw.name),
     content,
     ...(raw.ttl === undefined ? {} : { ttl: raw.ttl }),
     ...(priority == null ? {} : { priority }),
@@ -377,6 +403,22 @@ function toZone(zone: z.infer<typeof ZoneSchema>): CloudflareZone {
     nameServers: zone.name_servers,
     ...(zone.account?.id ? { accountId: zone.account.id } : {}),
   };
+}
+
+/**
+ * The connection state of a tunnel: active while Cloudflare lists a connection or the status is
+ * `healthy` or `degraded`; closed once the status is `down` or `inactive` (or, without a status,
+ * once the tunnel has no connection since it was last active); gone once it is deleted.
+ */
+function tunnelState(tunnel: z.infer<typeof TunnelSchema>): TunnelConnectionState {
+  if (tunnel.deleted_at != null) return "gone";
+  const status = tunnel.status ?? undefined;
+  if (status === "healthy" || status === "degraded" || (tunnel.connections ?? []).length > 0) {
+    return "active";
+  }
+  if (status === "down" || status === "inactive") return "closed";
+  if (tunnel.conns_active_at == null || tunnel.conns_inactive_at != null) return "closed";
+  return "active";
 }
 
 /**
@@ -410,6 +452,7 @@ export class CloudflareClient {
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #userAgent: string;
   readonly #registrar: string;
+  readonly #timeoutMs: number;
 
   constructor(options: CloudflareClientOptions) {
     this.#token = options.token;
@@ -418,9 +461,13 @@ export class CloudflareClient {
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#userAgent = `opscrew/${options.version ?? "0.1.0"}`;
     this.#registrar = options.registrarSandbox ? "registrar-sandbox" : "registrar";
+    this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   }
 
-  /** Raw request returning the parsed envelope and HTTP status. Retries 429 and (opt-out) 5xx. */
+  /**
+   * Raw request returning the parsed envelope and HTTP status. Every attempt has its own timeout;
+   * 429 answers are retried and (unless turned off) 5xx answers, timeouts and lost connections.
+   */
   async #request(path: string, options: RequestOptions = {}): Promise<RawAnswer> {
     const method = options.method ?? "GET";
     const retryServerErrors = options.retryServerErrors ?? true;
@@ -446,21 +493,28 @@ export class CloudflareClient {
     let rateLimited = 0;
     let serverErrors = 0;
     for (;;) {
+      const signal = AbortSignal.timeout(this.#timeoutMs);
       let response: Response;
       try {
-        response = await this.#fetch(`${this.#baseUrl}${path}`, init);
+        response = await this.#fetch(`${this.#baseUrl}${path}`, { ...init, signal });
       } catch (error) {
         if (retryServerErrors && serverErrors < MAX_SERVER_RETRIES) {
           serverErrors++;
           await this.#sleep(1000 * 2 ** serverErrors);
           continue;
         }
-        throw new OpsCrewError("PROVIDER_ERROR", "Could not reach the Cloudflare API.", {
-          hint: retryServerErrors
-            ? "Check your internet connection and try again."
-            : "The request may still have reached Cloudflare; check the current state before trying again.",
-          cause: error,
-        });
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          signal.aborted
+            ? `The Cloudflare API did not answer within ${Math.round(this.#timeoutMs / 1000)} seconds.`
+            : "Could not reach the Cloudflare API.",
+          {
+            hint: retryServerErrors
+              ? "Check your internet connection and try again."
+              : "The request may still have reached Cloudflare; check the current state before trying again.",
+            cause: error,
+          },
+        );
       }
       if (
         response.status === 429 &&
@@ -543,10 +597,42 @@ export class CloudflareClient {
     return result.data;
   }
 
-  async #get<T>(path: string, schema: z.ZodType<T>, what: string, auth = true): Promise<T> {
-    const { status, body } = await this.#request(path, { auth });
-    if (!body.success || status >= 400) this.#fail(status, body, what);
-    return this.#parse(schema, body.result, what);
+  /** The `result` of a successful answer, parsed with `schema`; any other answer throws. */
+  #result<T>(answer: RawAnswer, schema: z.ZodType<T>, what: string, hints?: FailHints): T {
+    if (!answer.body.success || answer.status >= 400) {
+      this.#fail(answer.status, answer.body, what, hints);
+    }
+    return this.#parse(schema, answer.body.result, what);
+  }
+
+  /** Sends the request and returns the answer's `result` parsed with `schema`. */
+  async #call<T>(
+    path: string,
+    schema: z.ZodType<T>,
+    what: string,
+    options: RequestOptions & { hints?: FailHints } = {},
+  ): Promise<T> {
+    return this.#result(await this.#request(path, options), schema, what, options.hints);
+  }
+
+  /** Every page of a list: `?page=<n>&per_page=<perPage>`, then `filter`. */
+  async #all<T>(
+    path: string,
+    item: z.ZodType<T>,
+    what: string,
+    options: { perPage: number; filter?: Record<string, string>; hints?: FailHints },
+  ): Promise<T[]> {
+    const out: T[] = [];
+    for (let page = 1; ; page++) {
+      const query = new URLSearchParams({
+        page: String(page),
+        per_page: String(options.perPage),
+        ...options.filter,
+      });
+      const answer = await this.#request(`${path}?${query}`);
+      out.push(...this.#result(answer, z.array(item), what, options.hints));
+      if (page >= (answer.body.result_info?.total_pages ?? 1)) return out;
+    }
   }
 
   /** `/accounts/{id}/registrar{rest}` (or `registrar-sandbox`). */
@@ -583,7 +669,7 @@ export class CloudflareClient {
 
   /** The zone named exactly `name`, with its account id when Cloudflare returns it. */
   async #zoneByName(name: string): Promise<z.infer<typeof ZoneSchema> | undefined> {
-    const zones = await this.#get(
+    const zones = await this.#call(
       `/zones?name=${encodeURIComponent(name)}&per_page=1`,
       z.array(ZoneSchema),
       `look up the zone ${name}`,
@@ -605,33 +691,28 @@ export class CloudflareClient {
     zoneId: string,
     filter: { name?: string; type?: string } = {},
   ): Promise<CloudflareDnsRecord[]> {
-    const records: CloudflareDnsRecord[] = [];
-    for (let page = 1; ; page++) {
-      const query = new URLSearchParams({ page: String(page), per_page: "100" });
-      if (filter.name) query.set("name", filter.name);
-      if (filter.type) query.set("type", filter.type);
-      const { status, body } = await this.#request(
-        `/zones/${encodeURIComponent(zoneId)}/dns_records?${query}`,
-      );
-      if (!body.success || status >= 400) this.#fail(status, body, "list DNS records");
-      const parsed = z.array(RecordSchema).safeParse(body.result);
-      if (!parsed.success)
-        throw new OpsCrewError("PROVIDER_ERROR", "Cloudflare returned unexpected DNS records.");
-      for (const r of parsed.data) {
-        records.push({
-          id: r.id,
-          type: r.type,
-          name: r.name,
-          content: r.content,
-          ttl: r.ttl,
-          ...(r.proxied === undefined ? {} : { proxied: r.proxied }),
-          ...(r.priority == null ? {} : { priority: r.priority }),
-          ...(r.comment ? { comment: r.comment } : {}),
-        });
-      }
-      const totalPages = body.result_info?.total_pages ?? 1;
-      if (page >= totalPages) return records;
-    }
+    const records = await this.#all(
+      `/zones/${encodeURIComponent(zoneId)}/dns_records`,
+      RecordSchema,
+      "list DNS records",
+      {
+        perPage: 100,
+        filter: {
+          ...(filter.name ? { name: filter.name } : {}),
+          ...(filter.type ? { type: filter.type } : {}),
+        },
+      },
+    );
+    return records.map((r) => ({
+      id: r.id,
+      type: r.type,
+      name: r.name,
+      content: r.content,
+      ttl: r.ttl,
+      ...(r.proxied === undefined ? {} : { proxied: r.proxied }),
+      ...(r.priority == null ? {} : { priority: r.priority }),
+      ...(r.comment ? { comment: r.comment } : {}),
+    }));
   }
 
   /**
@@ -643,16 +724,11 @@ export class CloudflareClient {
     zoneId: string,
     phase: ManagedRulesetPhase,
   ): Promise<EntrypointRulesetStatus> {
-    const { status, body } = await this.#request(
+    const answer = await this.#request(
       `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/${phase}/entrypoint`,
     );
-    if (status === 404) return { exists: false, ownedByOpsCrew: false, ruleCount: 0 };
-    if (!body.success || status >= 400) this.#fail(status, body, `read the ${phase} rules`);
-    const parsed = RulesetSchema.safeParse(body.result);
-    if (!parsed.success) {
-      throw new OpsCrewError("PROVIDER_ERROR", `Cloudflare returned unexpected ${phase} rules.`);
-    }
-    const ruleset = parsed.data;
+    if (answer.status === 404) return { exists: false, ownedByOpsCrew: false, ruleCount: 0 };
+    const ruleset = this.#result(answer, RulesetSchema, `read the ${phase} rules`);
     const ownedByOpsCrew =
       ruleset.description?.trim() === OPSCREW_MANAGED_COMMENT ||
       OPSCREW_RULESET_NAMES.has(ruleset.name?.trim() ?? "");
@@ -666,22 +742,74 @@ export class CloudflareClient {
 
   /** Cloudflare's published edge IP ranges (public endpoint, no token needed). */
   async getIpRanges(): Promise<CloudflareIpRanges> {
-    const ips = await this.#get("/ips", IpsSchema, "read its IP ranges", false);
+    const ips = await this.#call("/ips", IpsSchema, "read its IP ranges", { auth: false });
     return { ipv4: ips.ipv4_cidrs, ipv6: ips.ipv6_cidrs };
   }
 
   /** Accounts the token can see. Follows pagination. */
   async listAccounts(): Promise<CloudflareAccount[]> {
-    const accounts: CloudflareAccount[] = [];
-    for (let page = 1; ; page++) {
-      const { status, body } = await this.#request(`/accounts?page=${page}&per_page=50`);
-      if (!body.success || status >= 400) {
-        this.#fail(status, body, "list your accounts", ACCOUNT_HINTS);
-      }
-      const list = this.#parse(z.array(AccountSchema), body.result, "list your accounts");
-      for (const a of list) accounts.push({ id: a.id, name: a.name });
-      if (page >= (body.result_info?.total_pages ?? 1)) return accounts;
+    const accounts = await this.#all("/accounts", AccountSchema, "list your accounts", {
+      perPage: 50,
+      hints: ACCOUNT_HINTS,
+    });
+    return accounts.map((a) => ({ id: a.id, name: a.name }));
+  }
+
+  /**
+   * The account's Zero Trust organization (its team domain), or `undefined` when the account has
+   * none yet. Throws `PHASE_PRECONDITION` when Cloudflare Access was never turned on, and an
+   * error for an organization without a team domain (OpsCrew cannot tell whose it is). Read-only.
+   */
+  async accessOrganization(accountId: string): Promise<{ authDomain: string } | undefined> {
+    const what = "read the account's Zero Trust organization";
+    const answer = await this.#request(
+      `/accounts/${encodeURIComponent(accountId)}/access/organizations`,
+    );
+    const { status, body } = answer;
+    if (body.errors.some((e) => ACCESS_NOT_ENABLED.test(e.message))) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        "Cloudflare Access is not turned on for this Cloudflare account yet. Nothing was changed.",
+        {
+          hint: "Open the Zero Trust dashboard at https://one.dash.cloudflare.com/, choose a team name and the Free plan, then run the command again.",
+        },
+      );
     }
+    if (status === 404) return undefined;
+    if (body.success && status < 400) {
+      // Only an absent or null result means "no organization"; anything else must name its team
+      // domain, or OpsCrew cannot tell whose organization it is (fail closed).
+      if (body.result === undefined || body.result === null) return undefined;
+      return { authDomain: this.#parse(AccessOrganizationSchema, body.result, what).auth_domain };
+    }
+    if (status !== 401 && status !== 403 && NO_ORGANIZATION.test(this.#detail(status, body))) {
+      return undefined;
+    }
+    this.#fail(status, body, what, ACCESS_HINTS);
+  }
+
+  /** The account's Cloudflare Access login methods (identity providers). Read-only. */
+  async accessIdentityProviders(accountId: string): Promise<CloudflareIdentityProvider[]> {
+    const providers = await this.#call(
+      `/accounts/${encodeURIComponent(accountId)}/access/identity_providers`,
+      IdentityProvidersSchema,
+      "list the account's Access login methods",
+      { hints: ACCESS_HINTS },
+    );
+    return (providers ?? []).map((p) => ({ id: p.id, type: p.type }));
+  }
+
+  /**
+   * Whether a Cloudflare Tunnel still has connections (`GET /accounts/{id}/cfd_tunnel/{id}`):
+   * `gone` when Cloudflare has no such tunnel. Only the state is kept: the answer also holds the
+   * server's address. Read-only.
+   */
+  async tunnelConnections(accountId: string, tunnelId: string): Promise<TunnelConnectionState> {
+    const answer = await this.#request(
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}`,
+    );
+    if (answer.status === 404) return "gone";
+    return tunnelState(this.#result(answer, TunnelSchema, "read the tunnel", TUNNEL_HINTS));
   }
 
   /**
@@ -689,17 +817,16 @@ export class CloudflareClient {
    * several calls; duplicates are checked once. Results keep the order of the input.
    */
   async domainCheck(accountId: string, domains: readonly string[]): Promise<DomainCheck[]> {
-    const unique = [...new Set(domains.map(normalizeDomain).filter(Boolean))];
+    const unique = [...new Set(domains.map(normalizeHostName).filter(Boolean))];
     const out: DomainCheck[] = [];
     for (let i = 0; i < unique.length; i += DOMAIN_CHECK_BATCH) {
       const batch = unique.slice(i, i + DOMAIN_CHECK_BATCH);
-      const what = "check whether the domains can be registered";
-      const { status, body } = await this.#request(
+      const items = await this.#call(
         this.#registrarPath(accountId, "/domain-check"),
-        { method: "POST", body: { domains: batch } },
+        DomainListSchema,
+        "check whether the domains can be registered",
+        { method: "POST", body: { domains: batch }, hints: REGISTRAR_HINTS },
       );
-      if (!body.success || status >= 400) this.#fail(status, body, what, REGISTRAR_HINTS);
-      const items = this.#parse(DomainListSchema, body.result, what);
       const checks = items.map((item, index) => toDomainCheck(item, batch[index] ?? "", false));
       const position = (check: DomainCheck) => {
         const at = batch.indexOf(check.domain);
@@ -712,12 +839,12 @@ export class CloudflareClient {
 
   /** Cached name suggestions for a query; confirm them with {@link domainCheck} before buying. */
   async domainSearch(accountId: string, query: string): Promise<DomainCheck[]> {
-    const what = "search for domain names";
-    const { status, body } = await this.#request(
+    const items = await this.#call(
       this.#registrarPath(accountId, `/domain-search?${new URLSearchParams({ q: query })}`),
+      DomainListSchema,
+      "search for domain names",
+      { hints: REGISTRAR_HINTS },
     );
-    if (!body.success || status >= 400) this.#fail(status, body, what, REGISTRAR_HINTS);
-    const items = this.#parse(DomainListSchema, body.result, what);
     return items
       .map((item) => toDomainCheck(item, "", true))
       .filter((check) => check.domain !== "");
@@ -728,15 +855,18 @@ export class CloudflareClient {
     accountId: string,
     tld: string,
   ): Promise<CloudflareRegistrarExtension | undefined> {
-    const ext = normalizeDomain(tld).replace(/^\./, "");
-    const what = `read the registrar settings of .${ext}`;
-    const { status, body } = await this.#request(
+    const ext = normalizeHostName(tld).replace(/^\./, "");
+    const answer = await this.#request(
       this.#registrarPath(accountId, `/extensions/${encodeURIComponent(ext)}`),
     );
-    if (status === 404) return undefined;
-    if (!body.success || status >= 400) this.#fail(status, body, what, REGISTRAR_HINTS);
-    const raw = this.#parse(ExtensionSchema, body.result ?? {}, what);
-    return { tld: ext, contactExtensionsRequired: needsContactExtensions(raw) };
+    if (answer.status === 404) return undefined;
+    const raw = this.#result(
+      answer,
+      ExtensionSchema.nullish(),
+      `read the registrar settings of .${ext}`,
+      REGISTRAR_HINTS,
+    );
+    return { tld: ext, contactExtensionsRequired: needsContactExtensions(raw ?? {}) };
   }
 
   /**
@@ -752,17 +882,16 @@ export class CloudflareClient {
     accountId: string,
     request: CloudflareRegistrationRequest,
   ): Promise<RegistrationStatus> {
-    const domain = normalizeDomain(request.domain_name);
+    const domain = normalizeHostName(request.domain_name);
     const what = `register ${domain}`;
     const uncertain = (detail: string, cause?: unknown) =>
-      new OpsCrewError(
-        "PROVIDER_ERROR",
-        `Cloudflare gave no clear answer while starting the registration of ${domain} (${detail}). The registration may still have started; check its status before trying again.`,
-        {
-          hint: `Run \`opscrew domain status\` or look at ${CLOUDFLARE_REGISTRAR_DASHBOARD} before buying ${domain} again.`,
-          ...(cause === undefined ? {} : { cause }),
-        },
-      );
+      maybeStarted({
+        registrar: "Cloudflare",
+        domain,
+        detail,
+        dashboard: CLOUDFLARE_REGISTRAR_DASHBOARD,
+        ...(cause === undefined ? {} : { cause }),
+      });
     const sandbox = this.#registrar === "registrar-sandbox";
     let answer: RawAnswer;
     try {
@@ -804,29 +933,18 @@ export class CloudflareClient {
   }
 
   /**
-   * True only when a 404 is Cloudflare saying the account has no registration of the domain.
-   * Routing, account and permission errors (codes 7000, 7003, 9109, 10000 …, or messages naming
-   * the account, a permission or the route) and bare 404s without an envelope are not that.
-   * Assumption (confirm live): the "none" answer names the registration or domain as not found.
+   * True only for the live Registrar API's exact "no registration" answer, checked against the
+   * real and sandbox APIs on 2026-10-14: a 404 envelope whose every error has code 10000 and the
+   * message `expected` ("No workflow found for <domain>" from the registration status, "Domain
+   * not found" from the registration). Code 10000 is also Cloudflare's authentication error, so
+   * the code alone never counts; every other answer fails closed.
    */
-  #noRegistration(
-    status: number,
-    body: EnvelopeBody,
-    envelope: boolean,
-    live?: { domain: string; lookup: "status" | "detail" },
-  ): boolean {
+  #noRegistration(answer: RawAnswer, expected: string): boolean {
+    const { status, body, envelope } = answer;
     if (status !== 404 || !envelope || body.success || body.errors.length === 0) return false;
-    return body.errors.every((e) => {
-      if (live !== undefined && e.code === 10000 && isLiveNotFound(e.message, live)) return true;
-      if (typeof e.code === "number" && NOT_A_MISSING_REGISTRATION_CODES.has(e.code)) return false;
-      const text = `${typeof e.code === "string" ? e.code : ""} ${e.message}`.toLowerCase();
-      if (/account|permission|route|authenticat|authori|token/.test(text)) return false;
-      return (
-        /\b(registration|domain)[ _]not[ _]found\b/.test(text) ||
-        /\b(registration|domain)\b.*\b(not found|does not exist|doesn't exist)\b/.test(text) ||
-        /\bno registration\b/.test(text)
-      );
-    });
+    return body.errors.every(
+      (e) => e.code === 10000 && e.message.trim().replace(/\.$/, "").toLowerCase() === expected,
+    );
   }
 
   /** Status of the account's registration of `domain`; undefined when there is none. */
@@ -834,38 +952,38 @@ export class CloudflareClient {
     accountId: string,
     domain: string,
   ): Promise<RegistrationStatus | undefined> {
-    const name = normalizeDomain(domain);
-    const what = `read the registration status of ${name}`;
-    const { status, body, envelope } = await this.#request(
+    const name = normalizeHostName(domain);
+    const answer = await this.#request(
       this.#registrarPath(
         accountId,
         `/registrations/${encodeURIComponent(name)}/registration-status`,
       ),
     );
-    if (this.#noRegistration(status, body, envelope, { domain: name, lookup: "status" })) {
-      return undefined;
+    if (this.#noRegistration(answer, `no workflow found for ${name}`)) return undefined;
+    const what = `read the registration status of ${name}`;
+    if (!answer.body.success || answer.status >= 400) {
+      this.#fail(answer.status, answer.body, what, REGISTRAR_HINTS);
     }
-    if (!body.success || status >= 400) this.#fail(status, body, what, REGISTRAR_HINTS);
-    return toRegistrationStatus(this.#parse(WorkflowSchema, body.result ?? {}, what), name);
+    return toRegistrationStatus(this.#parse(WorkflowSchema, answer.body.result ?? {}, what), name);
   }
 
   /** The account's registration of `domain`; undefined when the account does not hold it. */
   async getRegistration(accountId: string, domain: string): Promise<RegisteredDomain | undefined> {
-    const name = normalizeDomain(domain);
-    const what = `read the registration of ${name}`;
-    const { status, body, envelope } = await this.#request(
+    const name = normalizeHostName(domain);
+    const answer = await this.#request(
       this.#registrarPath(accountId, `/registrations/${encodeURIComponent(name)}`),
     );
-    if (this.#noRegistration(status, body, envelope, { domain: name, lookup: "detail" })) {
-      return undefined;
-    }
-    if (!body.success || status >= 400) this.#fail(status, body, what, REGISTRAR_HINTS);
-    return toRegisteredDomain(this.#parse(RegistrationSchema, body.result, what), name);
+    if (this.#noRegistration(answer, "domain not found")) return undefined;
+    const what = `read the registration of ${name}`;
+    return toRegisteredDomain(
+      this.#result(answer, RegistrationSchema, what, REGISTRAR_HINTS),
+      name,
+    );
   }
 
   /** Turns auto-renew on or off and returns the updated registration. */
   async setAutoRenew(accountId: string, domain: string, on: boolean): Promise<RegisteredDomain> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const what = `turn auto-renew ${on ? "on" : "off"} for ${name}`;
     const { status, body } = await this.#request(
       this.#registrarPath(accountId, `/registrations/${encodeURIComponent(name)}`),
@@ -891,7 +1009,7 @@ export class CloudflareClient {
    * the existing zone, provided it belongs to the same account.
    */
   async createZone(accountId: string, name: string): Promise<CloudflareZone> {
-    const zoneName = normalizeDomain(name);
+    const zoneName = normalizeHostName(name);
     const what = `create the zone ${zoneName}`;
     const hints: FailHints = {
       auth: `Creating a zone needs the token permission "${CLOUDFLARE_REGISTRAR_PERMISSIONS[1]}". Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
@@ -931,22 +1049,30 @@ export class CloudflareClient {
    * `digest`) and the full DS string (`ds`).
    */
   async getDnssec(zoneId: string): Promise<CloudflareDnssec> {
-    const what = "read the DNSSEC state";
-    const path = `/zones/${encodeURIComponent(zoneId)}/dnssec`;
-    const { status, body } = await this.#request(path);
-    if (!body.success || status >= 400) this.#fail(status, body, what, ZONE_COVERAGE_HINTS);
-    return toDnssec(this.#parse(DnssecSchema, body.result, what));
+    return toDnssec(
+      await this.#call(
+        `/zones/${encodeURIComponent(zoneId)}/dnssec`,
+        DnssecSchema,
+        "read the DNSSEC state",
+        { hints: ZONE_COVERAGE_HINTS },
+      ),
+    );
   }
 
   /** Turns on DNSSEC for a zone (Cloudflare Registrar publishes the DS record itself). */
   async enableDnssec(zoneId: string): Promise<CloudflareDnssec> {
-    const what = "turn on DNSSEC";
-    const { status, body } = await this.#request(`/zones/${encodeURIComponent(zoneId)}/dnssec`, {
-      method: "PATCH",
-      body: { status: "active" },
-    });
-    if (!body.success || status >= 400) this.#fail(status, body, what, ZONE_COVERAGE_HINTS);
-    return toDnssec(this.#parse(DnssecSchema, body.result, what));
+    return toDnssec(
+      await this.#call(
+        `/zones/${encodeURIComponent(zoneId)}/dnssec`,
+        DnssecSchema,
+        "turn on DNSSEC",
+        {
+          method: "PATCH",
+          body: { status: "active" },
+          hints: ZONE_COVERAGE_HINTS,
+        },
+      ),
+    );
   }
 
   /**
@@ -991,19 +1117,21 @@ export class CloudflareClient {
     const ids: string[] = [];
     for (let i = 0; i < records.length; i += BATCH_LIMIT) {
       const posts = records.slice(i, i + BATCH_LIMIT);
-      const what = `create ${posts.length} DNS record${posts.length === 1 ? "" : "s"}`;
-      const { status, body } = await this.#request(
+      const result = await this.#call(
         `/zones/${encodeURIComponent(zoneId)}/dns_records/batch`,
-        { method: "POST", body: { posts }, retryServerErrors: false },
+        BatchResultSchema.nullish(),
+        `create ${posts.length} DNS record${posts.length === 1 ? "" : "s"}`,
+        {
+          method: "POST",
+          body: { posts },
+          retryServerErrors: false,
+          hints: {
+            ...ZONE_COVERAGE_HINTS,
+            other: `None of the records in this call were created${ids.length > 0 ? ` (${ids.length} were created by earlier calls)` : ""}. Fix or leave out the record Cloudflare names, then run the command again.`,
+          },
+        },
       );
-      if (!body.success || status >= 400) {
-        this.#fail(status, body, what, {
-          ...ZONE_COVERAGE_HINTS,
-          other: `None of the records in this call were created${ids.length > 0 ? ` (${ids.length} were created by earlier calls)` : ""}. Fix or leave out the record Cloudflare names, then run the command again.`,
-        });
-      }
-      const result = this.#parse(BatchResultSchema, body.result ?? {}, what);
-      ids.push(...(result.posts ?? []).map((r) => r.id));
+      ids.push(...(result?.posts ?? []).map((r) => r.id));
     }
     return ids;
   }
@@ -1016,21 +1144,18 @@ export class CloudflareClient {
    */
   async scanDnsRecords(zoneId: string): Promise<RegistrarDnsRecord[]> {
     const base = `/zones/${encodeURIComponent(zoneId)}/dns_records/scan`;
-    const trigger = await this.#request(`${base}/trigger`, { method: "POST" });
-    if (!trigger.body.success || trigger.status >= 400) {
-      this.#fail(
-        trigger.status,
-        trigger.body,
-        "scan the domain's DNS records",
-        ZONE_COVERAGE_HINTS,
-      );
-    }
-    const what = "read the scanned DNS records";
+    await this.#call(`${base}/trigger`, z.unknown(), "scan the domain's DNS records", {
+      method: "POST",
+      hints: ZONE_COVERAGE_HINTS,
+    });
     for (let attempt = 1; ; attempt++) {
-      const { status, body } = await this.#request(`${base}/review`);
-      if (!body.success || status >= 400) this.#fail(status, body, what, ZONE_COVERAGE_HINTS);
       const found =
-        this.#parse(z.array(ScannedRecordSchema).nullable().optional(), body.result, what) ?? [];
+        (await this.#call(
+          `${base}/review`,
+          z.array(ScannedRecordSchema).nullable().optional(),
+          "read the scanned DNS records",
+          { hints: ZONE_COVERAGE_HINTS },
+        )) ?? [];
       if (found.length > 0 || attempt >= SCAN_REVIEW_ATTEMPTS) return found.map(toScannedRecord);
       await this.#sleep(SCAN_REVIEW_WAIT_MS);
     }

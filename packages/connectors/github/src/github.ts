@@ -24,7 +24,12 @@ export interface GitHubClientOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Monotonic milliseconds for wait loops (default: `Date.now`); injected by tests. */
   now?: () => number;
+  /** How long one request may take (default 30 seconds). */
+  timeoutMs?: number;
 }
+
+/** Default time one request to GitHub may take before it counts as failed. */
+const REQUEST_TIMEOUT_MS = 30_000;
 
 export interface RepoInfo {
   defaultBranch: string;
@@ -111,6 +116,11 @@ const BRANCH_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*\.lock$)[A-Za-z0-9._/-]{1,20
 /** One file at the root of the tree. */
 const ROOT_FILE = /^(?!\.\.?$)[A-Za-z0-9._-]{1,200}$/;
 
+/** True for an owner, repository and branch name that can safely go into an API path. */
+function isBranchOf(owner: string, repo: string, branch: string): boolean {
+  return REPO_PART.test(owner) && REPO_PART.test(repo) && BRANCH_NAME.test(branch);
+}
+
 /** Input of {@link GitHubClient.createOrphanBranch} and {@link GitHubClient.replaceOrphanBranch}. */
 export interface OrphanBranchInput {
   owner: string;
@@ -176,6 +186,7 @@ export class GitHubClient {
   readonly #userAgent: string;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #now: () => number;
+  readonly #timeoutMs: number;
 
   constructor(options: GitHubClientOptions) {
     this.#token = options.token;
@@ -184,6 +195,7 @@ export class GitHubClient {
     this.#userAgent = `opscrew/${options.version ?? "0.1.0"}`;
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#now = options.now ?? Date.now;
+    this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   }
 
   async #request(
@@ -193,7 +205,9 @@ export class GitHubClient {
     body?: unknown,
     okStatuses: readonly number[] = [],
   ): Promise<{ status: number; json: unknown }> {
+    const signal = AbortSignal.timeout(this.#timeoutMs);
     let response: Response;
+    let text: string;
     try {
       response = await this.#fetch(`${this.#baseUrl}${path}`, {
         method,
@@ -205,14 +219,18 @@ export class GitHubClient {
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal,
       });
+      text = await response.text();
     } catch (error) {
-      throw new OpsCrewError("PROVIDER_ERROR", `Could not reach GitHub to ${what}.`, {
-        hint: "Check your internet connection and try again.",
-        cause: error,
-      });
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        signal.aborted
+          ? `GitHub did not answer within ${Math.round(this.#timeoutMs / 1000)} seconds when trying to ${what}.`
+          : `Could not reach GitHub to ${what}.`,
+        { hint: "Check your internet connection and try again.", cause: error },
+      );
     }
-    const text = await response.text();
     let json: unknown;
     try {
       json = text.length > 0 ? JSON.parse(text) : undefined;
@@ -267,12 +285,8 @@ export class GitHubClient {
   /** Refuses input that is not a repository, a branch, one root file and a message. */
   #checkOrphanInput(input: OrphanBranchInput): void {
     if (
-      !REPO_PART.test(input.owner) ||
-      !REPO_PART.test(input.repo) ||
-      !BRANCH_NAME.test(input.branch) ||
+      !isBranchOf(input.owner, input.repo, input.branch) ||
       !ROOT_FILE.test(input.path) ||
-      typeof input.content !== "string" ||
-      typeof input.message !== "string" ||
       input.message.trim() === ""
     ) {
       throw new OpsCrewError(
@@ -397,7 +411,7 @@ export class GitHubClient {
    * when it goes between the check and the delete. Needs Contents: Read and write.
    */
   async deleteBranch(owner: string, repo: string, branch: string): Promise<"deleted" | "absent"> {
-    if (!REPO_PART.test(owner) || !REPO_PART.test(repo) || !BRANCH_NAME.test(branch)) {
+    if (!isBranchOf(owner, repo, branch)) {
       throw new OpsCrewError(
         "INVALID_INPUT",
         "Deleting a branch needs a repository and a branch name.",
@@ -429,13 +443,7 @@ export class GitHubClient {
     branch: string,
     file: { path: string; content: string },
   ): Promise<boolean> {
-    if (
-      !REPO_PART.test(owner) ||
-      !REPO_PART.test(repo) ||
-      !BRANCH_NAME.test(branch) ||
-      !ROOT_FILE.test(file.path) ||
-      typeof file.content !== "string"
-    ) {
+    if (!isBranchOf(owner, repo, branch) || !ROOT_FILE.test(file.path)) {
       throw new OpsCrewError(
         "INVALID_INPUT",
         "Reading a branch needs a repository, a branch name and one file name at the root.",

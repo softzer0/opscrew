@@ -33,35 +33,6 @@ export type ToolProfile = "none" | "read-only" | "edit-repo";
 export const BUILTIN_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"] as const;
 export type BuiltinTool = (typeof BUILTIN_TOOLS)[number];
 
-export interface ToolContext {
-  phase: PhaseName;
-  projectRoot: string;
-  signal?: AbortSignal;
-}
-
-export interface ToolResult {
-  /** Text returned to the model. MUST already be redacted. */
-  text: string;
-  isError?: boolean;
-}
-
-/**
- * An in-process tool exposed to the model (through the agent runtime) or to an MCP client.
- * Mutating tools MUST route their side effect through the approval gate.
- */
-export interface ToolDefinition<S extends z.ZodObject = z.ZodObject> {
-  /** snake_case, unique within one phase, for example `hetzner_list_offers`. */
-  readonly name: string;
-  readonly description: string;
-  readonly inputSchema: S;
-  /** True when the tool changes anything outside the process (files, network writes, providers). */
-  readonly mutates: boolean;
-  handler(input: z.infer<S>, ctx: ToolContext): Promise<ToolResult>;
-}
-
-// biome-ignore lint/suspicious/noExplicitAny: heterogeneous tool lists need an open schema type.
-export type AnyToolDefinition = ToolDefinition<z.ZodObject<any>>;
-
 /** Progress events streamed while a phase runs. `message` is always redacted. */
 export interface RuntimeEvent {
   kind: "assistant-text" | "tool-call" | "tool-denied" | "tool-result" | "status";

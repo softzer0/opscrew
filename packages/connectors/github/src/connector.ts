@@ -1,12 +1,5 @@
-import type {
-  AnyToolDefinition,
-  CommandRunner,
-  Connector,
-  CredentialCheck,
-  FetchLike,
-} from "@opscrew/contracts";
+import type { CommandRunner, Connector, CredentialCheck, FetchLike } from "@opscrew/contracts";
 import { findExecutable, Redactor } from "@opscrew/core";
-import { z } from "zod";
 import { GITHUB_TOKEN_PERMISSIONS, GitHubClient } from "./github";
 
 /**
@@ -41,7 +34,7 @@ export interface GitHubConnector extends Connector {
   readonly client: GitHubClient | undefined;
 }
 
-/** GitHub connector: credential check and a read-only repository tool. */
+/** GitHub connector: the credential check and the REST client. */
 export function githubConnector(options: GitHubConnectorOptions): GitHubConnector {
   const redactor = options.redactor ?? new Redactor();
   if (options.token) redactor.addLiteral(options.token, "github-token");
@@ -52,30 +45,6 @@ export function githubConnector(options: GitHubConnectorOptions): GitHubConnecto
         ...(options.version ? { version: options.version } : {}),
       })
     : undefined;
-  const tools: AnyToolDefinition[] = [
-    {
-      name: "github_repo_info",
-      description:
-        "Read a GitHub repository's default branch, visibility and whether the token can push (read-only).",
-      inputSchema: z.object({ owner: z.string().min(1), repo: z.string().min(1) }),
-      mutates: false,
-      handler: async (input: { owner: string; repo: string }) => {
-        try {
-          if (!client) throw new Error("No GitHub token is configured.");
-          return {
-            text: redactor.redact(
-              JSON.stringify(await client.getRepo(input.owner, input.repo), null, 2),
-            ),
-          };
-        } catch (error) {
-          return {
-            text: redactor.redact(error instanceof Error ? error.message : String(error)),
-            isError: true,
-          };
-        }
-      },
-    },
-  ];
   return {
     id: "github",
     displayName: "GitHub",
@@ -104,6 +73,5 @@ export function githubConnector(options: GitHubConnectorOptions): GitHubConnecto
         };
       }
     },
-    tools: () => tools,
   };
 }

@@ -1,22 +1,21 @@
 import type { ServerSnapshotApi, VpsConnector } from "@opscrew/contracts";
 import { OpsCrewError, Redactor } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   action,
-  type FakeReply,
+  digitaloceanFetch,
   fakeClock,
-  fakeFetch,
   fakeSleep,
   fixture,
-} from "./__fixtures__/fake-fetch";
+  param,
+} from "./__fixtures__/fixtures";
 import { DigitalOceanCatalog, StaticDigitalOceanCatalog } from "./catalog";
 import { DigitalOceanClient } from "./client";
 import { DIGITALOCEAN_CREDENTIALS, digitaloceanConnector } from "./connector";
 
 const token = fakeSecret("digitalocean-token");
 const otherToken = fakeSecret("digitalocean-token", "access");
-const ctx = { phase: "design" as const, projectRoot: "/tmp/project" };
 const SNAPSHOT_NAME = "opscrew-shop-before-destroy-20261012T100000Z";
 
 // Type-level check: the connector satisfies the provider-neutral contract.
@@ -27,7 +26,7 @@ function connector(
   env: Record<string, string | undefined> = { DIGITALOCEAN_TOKEN: token },
   extra: { redactor?: Redactor; clock?: ReturnType<typeof fakeClock> } = {},
 ) {
-  const fake = fakeFetch(routes);
+  const fake = digitaloceanFetch(routes);
   const clock = extra.clock;
   return {
     connector: digitaloceanConnector({
@@ -142,7 +141,7 @@ describe("digitaloceanConnector.verifyCredentials", () => {
     const check = await c.verifyCredentials();
     expect(check).toMatchObject({ ok: true, identity: "Shop Team" });
     expect(JSON.stringify(check)).not.toContain("sammy@example.com");
-    expect(calls[0]?.url.pathname).toBe("/v2/account");
+    expect(calls[0]?.path).toBe("/v2/account");
   });
 
   it("calls an account without a team a personal account", async () => {
@@ -223,7 +222,7 @@ describe("digitaloceanConnector.servers", () => {
     });
     const servers = await c.servers?.findAppServers("shop");
     expect(servers).toEqual([{ id: "3164444", name: "shop-web", status: "active" }]);
-    expect(calls[0]?.url.searchParams.get("tag_name")).toBe("opscrew-app:shop");
+    expect(param(calls[0], "tag_name")).toBe("opscrew-app:shop");
   });
 
   it("snapshots a Droplet: action, wait, then the newest snapshot with that name", async () => {
@@ -246,7 +245,7 @@ describe("digitaloceanConnector.servers", () => {
       labels: { "managed-by": "opscrew" },
     });
     expect(result).toEqual({ snapshotId: "6372399" });
-    expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+    expect(calls.map((call) => `${call.method} ${call.path.split("?")[0]}`)).toEqual([
       "POST /v2/droplets/3164444/actions",
       "GET /v2/actions/555",
       "GET /v2/actions/555",
@@ -267,7 +266,7 @@ describe("digitaloceanConnector.servers", () => {
     expect(error).toBeInstanceOf(OpsCrewError);
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("failed");
-    expect(calls.some((call) => call.url.pathname.endsWith("/snapshots"))).toBe(false);
+    expect(calls.some((call) => call.path.startsWith("/v2/droplets/7/snapshots"))).toBe(false);
   });
 
   it("honours the request timeout", async () => {
@@ -324,7 +323,9 @@ describe("digitaloceanConnector.servers", () => {
       labels: {},
     });
     expect(result).toEqual({ snapshotId: "99" });
-    expect(calls.filter((call) => call.url.pathname.endsWith("/snapshots"))).toHaveLength(2);
+    expect(calls.filter((call) => call.path.startsWith("/v2/droplets/7/snapshots"))).toHaveLength(
+      2,
+    );
     expect(clock.waits).toEqual([5000]);
   });
 
@@ -376,7 +377,9 @@ describe("digitaloceanConnector.servers", () => {
     expect(error.hint).toContain("Snapshots tab");
     expect(error.hint).toContain("before taking another snapshot");
     expect(`${error.message} ${error.hint}`).not.toMatch(/try again/i);
-    expect(calls.filter((call) => call.url.pathname.endsWith("/snapshots"))).toHaveLength(4);
+    expect(calls.filter((call) => call.path.startsWith("/v2/droplets/7/snapshots"))).toHaveLength(
+      4,
+    );
     expect(clock.waits).toEqual([5000, 5000, 5000]);
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
   });
@@ -391,60 +394,12 @@ describe("digitaloceanConnector.servers", () => {
   });
 });
 
-describe("digitaloceanConnector.tools", () => {
-  it("exposes two read-only tools that return redacted live data", async () => {
-    const { connector: c } = connector({
-      "/v2/sizes?page=1": { body: fixture("sizes-page1.json") },
-      "/v2/sizes?page=2": { body: fixture("sizes-page2.json") },
-      "/v2/regions": {
-        body: {
-          regions: [
-            { slug: "fra1", name: `leaked ${token}`, available: true, sizes: ["s-1vcpu-1gb"] },
-            { slug: "zzz9", name: `leaked ${token}`, available: true, sizes: ["s-1vcpu-1gb"] },
-          ],
-        },
-      },
-    });
-    const tools = c.tools();
-    expect(tools.map((t) => t.name)).toEqual([
-      "digitalocean_list_locations",
-      "digitalocean_list_offers",
-    ]);
-    expect(tools.every((t) => t.mutates === false)).toBe(true);
-    const [listLocations, listOffers] = tools;
-
-    const locations = await listLocations?.handler(listLocations.inputSchema.parse({}), ctx);
-    expect(locations?.text).toContain("fra1");
-    expect(locations?.text).not.toContain(token);
-
-    const offers = await listOffers?.handler(
-      listOffers.inputSchema.parse({ location: "lon1" }),
-      ctx,
-    );
-    expect(offers?.text).toContain("Live data from the DigitalOcean API");
-    expect(offers?.text).toContain('"s-2vcpu-4gb"');
-    expect(offers?.text).not.toContain('"c-2"');
-  });
-
+describe("digitaloceanConnector.catalog", () => {
   it("uses the dated static table without a token", async () => {
     const { connector: c, calls } = connector({}, {});
-    const tool = c.tools().find((t) => t.name === "digitalocean_list_offers");
-    const result = await tool?.handler({ location: "fra1" }, ctx);
-    expect(result?.isError).toBeUndefined();
-    expect(result?.text).toContain("2026-10-12");
-    expect(result?.text).toContain("DIGITALOCEAN_TOKEN not set");
-    expect(result?.text).toContain('"s-1vcpu-1gb"');
+    const offers = await c.catalog().listOffers("fra1");
+    expect(offers.map((o) => o.id)).toContain("s-1vcpu-1gb");
+    expect(offers.every((o) => o.source === "static")).toBe(true);
     expect(calls).toHaveLength(0);
-  });
-
-  it("returns redacted tool errors", async () => {
-    const { connector: c } = connector({
-      "/v2/regions": { status: 403, body: { id: "forbidden", message: `no ${token}` } },
-    });
-    const result = await c.tools()[0]?.handler({}, ctx);
-    expect(result?.isError).toBe(true);
-    expect(result?.text).toContain("HTTP 403");
-    expect(result?.text).toContain("regions:read");
-    expect(result?.text).not.toContain(token);
   });
 });

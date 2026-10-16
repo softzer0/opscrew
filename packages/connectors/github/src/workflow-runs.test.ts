@@ -1,37 +1,17 @@
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { fakeFetch as coreFakeFetch, type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
+import { GITHUB_API } from "./github";
 import { GitHubClient } from "./index";
 
 const TOKEN = fakeSecret("github-token");
 const FILE = ".github/workflows/opscrew-deploy.yml";
 const RUNS = "GET /repos/acme/shop/actions/workflows/opscrew-deploy.yml/runs";
 
-type Reply = { status?: number; body?: unknown };
-type Call = { method: string; url: string; body?: unknown };
-
 /** Routes by method + path prefix; each route serves its replies in order, repeating the last. */
-function fakeFetch(routes: Record<string, Reply[]>) {
-  const calls: Call[] = [];
-  const served: Record<string, number> = {};
-  const fetch: FetchLike = async (input, init) => {
-    const url = String(input);
-    const method = init?.method ?? "GET";
-    calls.push({ method, url, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
-    const path = url.replace("https://api.github.com", "");
-    const key = Object.keys(routes).find((k) => `${method} ${path}`.startsWith(k));
-    if (!key) throw new Error(`unrouted ${method} ${path}`);
-    const replies = routes[key] as Reply[];
-    const index = Math.min(served[key] ?? 0, replies.length - 1);
-    served[key] = (served[key] ?? 0) + 1;
-    const reply = replies[index] as Reply;
-    return new Response(reply.body === undefined ? null : JSON.stringify(reply.body), {
-      status: reply.status ?? 200,
-    });
-  };
-  return { fetch, calls };
-}
+const fakeFetch = (routes: Record<string, FakeReply[]>) =>
+  coreFakeFetch(routes, { base: GITHUB_API });
 
 function fakeClock() {
   let t = 1_000_000;

@@ -1,7 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { fakeFetch, fakeSleep, fixture } from "./__fixtures__/fake-fetch";
+import { fakeSleep, fixture, hetznerFetch, param } from "./__fixtures__/fixtures";
 import { HetznerClient } from "./client";
 
 const token = fakeSecret("hcloud-token");
@@ -11,10 +11,10 @@ const unauthorized = {
 };
 
 function client(
-  routes: Parameters<typeof fakeFetch>[0],
-  extra: { now?: () => number; version?: string } = {},
+  routes: Record<string, FakeReply | FakeReply[]>,
+  extra: { now?: () => number; version?: string; timeoutMs?: number } = {},
 ) {
-  const fake = fakeFetch(routes);
+  const fake = hetznerFetch(routes);
   const sleeper = fakeSleep();
   const c = new HetznerClient({ token, fetch: fake.fetch, sleep: sleeper.sleep, ...extra });
   return { client: c, calls: fake.calls, waits: sleeper.waits };
@@ -28,9 +28,9 @@ describe("HetznerClient", () => {
     });
     const types = await c.listServerTypes();
     expect(types.map((t) => t.name)).toEqual(["cx23", "cpx22", "cx22", "cax11"]);
-    expect(calls.map((call) => call.url.searchParams.get("page"))).toEqual(["1", "2"]);
-    expect(calls.every((call) => call.url.searchParams.get("per_page") === "50")).toBe(true);
-    expect(calls[0]?.url.toString()).toMatch(/^https:\/\/api\.hetzner\.cloud\/v1\/server_types\?/);
+    expect(calls.map((call) => param(call, "page"))).toEqual(["1", "2"]);
+    expect(calls.every((call) => param(call, "per_page") === "50")).toBe(true);
+    expect(calls[0]?.url).toMatch(/^https:\/\/api\.hetzner\.cloud\/v1\/server_types\?/);
   });
 
   it("keeps unknown fields (passthrough) and sends auth and User-Agent headers", async () => {
@@ -60,7 +60,6 @@ describe("HetznerClient", () => {
     });
     const [cx23] = await c.listServerTypes();
     expect(cx23?.prices[0]?.price_monthly.net).toBe(5.49);
-    expect(cx23?.prices[0]?.price_hourly.net).toBe(0.0088);
   });
 
   it("retries a 429 until RateLimit-Reset, then succeeds", async () => {
@@ -122,7 +121,6 @@ describe("HetznerClient", () => {
     });
     const pricing = await c.getPricing();
     expect(pricing.server_backup?.percentage).toBe(20);
-    expect(pricing.volume?.price_per_gb_month.net).toBe(0.044);
   });
 
   it("maps 401 to CREDENTIALS_INVALID with the API message and no token", async () => {
@@ -134,19 +132,19 @@ describe("HetznerClient", () => {
     expect(error.hint).toContain("HCLOUD_TOKEN");
     expect(`${error.message} ${error.hint}`).not.toContain(token);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url.searchParams.get("per_page")).toBe("1");
+    expect(param(calls[0], "per_page")).toBe("1");
   });
 
   it("maps other errors to PROVIDER_ERROR", async () => {
     const { client: c } = client({
-      "/servers/42": {
+      "/actions/42": {
         status: 404,
-        body: { error: { code: "not_found", message: "server not found" } },
+        body: { error: { code: "not_found", message: "action not found" } },
       },
     });
-    const error = (await c.getServer(42).catch((e: unknown) => e)) as OpsCrewError;
+    const error = (await c.getAction(42).catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("PROVIDER_ERROR");
-    expect(error.message).toContain("server not found");
+    expect(error.message).toContain("action not found");
   });
 
   it("rejects responses that do not match the schema", async () => {
@@ -172,14 +170,7 @@ describe("HetznerClient", () => {
   });
 
   it("retries a request that never answers, then fails with a plain-English timeout", async () => {
-    const calls: string[] = [];
-    // A fetch that never resolves and ignores the abort signal: the client must still give up.
-    const hanging = (input: string) => {
-      calls.push(input);
-      return new Promise<Response>(() => {});
-    };
-    const sleeper = fakeSleep();
-    const c = new HetznerClient({ token, fetch: hanging, sleep: sleeper.sleep, timeoutMs: 5 });
+    const { client: c, calls, waits } = client({ "/pricing": { hang: true } }, { timeoutMs: 5 });
     const error = (await c.getPricing().catch((e: unknown) => e)) as OpsCrewError;
     expect(error).toBeInstanceOf(OpsCrewError);
     expect(error.code).toBe("PROVIDER_ERROR");
@@ -188,49 +179,21 @@ describe("HetznerClient", () => {
     expect(error.hint).toMatch(/try again/i);
     expect(`${error.message} ${error.hint}`).not.toContain(token);
     expect(calls).toHaveLength(3);
-    expect(sleeper.waits).toEqual([1000, 2000]);
+    expect(waits).toEqual([1000, 2000]);
   });
 
   it("aborts a hanging fetch through its signal and recovers on the retry", async () => {
-    let attempt = 0;
-    const fetch = (_input: string, init?: RequestInit) => {
-      attempt++;
-      if (attempt > 1) {
-        return Promise.resolve(
-          new Response(JSON.stringify(fixture("pricing.json")), { status: 200 }),
-        );
-      }
-      return new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
-      });
-    };
-    const sleeper = fakeSleep();
-    const c = new HetznerClient({ token, fetch, sleep: sleeper.sleep, timeoutMs: 5 });
+    const {
+      client: c,
+      calls,
+      waits,
+    } = client(
+      { "/pricing": [{ hang: true }, { body: fixture("pricing.json") }] },
+      { timeoutMs: 5 },
+    );
     const pricing = await c.getPricing();
     expect(pricing.server_backup?.percentage).toBe(20);
-    expect(attempt).toBe(2);
-    expect(sleeper.waits).toEqual([1000]);
-  });
-
-  it("filters images by name and architecture and reads one server", async () => {
-    const { client: c, calls } = client({
-      "/images": {
-        body: {
-          images: [
-            { id: 1, name: "ubuntu-24.04", type: "system", architecture: "x86", deprecated: null },
-          ],
-          meta: { pagination: { page: 1, per_page: 50, next_page: null } },
-        },
-      },
-      "/servers/7": {
-        body: { server: { id: 7, name: "web", status: "running", server_type: { name: "cx23" } } },
-      },
-    });
-    const images = await c.listImages({ name: "ubuntu-24.04", architecture: "x86" });
-    expect(images[0]?.name).toBe("ubuntu-24.04");
-    expect(calls[0]?.url.searchParams.get("name")).toBe("ubuntu-24.04");
-    expect(calls[0]?.url.searchParams.get("architecture")).toBe("x86");
-    const server = await c.getServer(7);
-    expect(server.status).toBe("running");
+    expect(calls).toHaveLength(2);
+    expect(waits).toEqual([1000]);
   });
 });

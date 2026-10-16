@@ -1,42 +1,26 @@
-import type { FetchLike } from "@opscrew/contracts";
-import { fakeSecret } from "@opscrew/core/testing";
+import { OpsCrewError } from "@opscrew/core";
+import { fakeFetch as coreFakeFetch, type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
+  CLOUDFLARE_API,
   CloudflareClient,
-  cloudflareConnector,
   OPSCREW_MANAGED_COMMENT,
   zoneCandidates,
-} from "./index";
+} from "./client";
+import { cloudflareConnector } from "./connector";
 
 const TOKEN = fakeSecret("cloudflare-token");
 
-type Route = { status?: number; body: unknown; headers?: Record<string, string> };
-
-/** Fake fetch: routes by "path?query" prefix; records calls; each route may be a queue. */
-function fakeFetch(routes: Record<string, Route | Route[]>) {
-  const calls: { url: string; auth: string | undefined }[] = [];
-  const fetch: FetchLike = async (input, init) => {
-    const url = String(input);
-    const headers = (init?.headers ?? {}) as Record<string, string>;
-    calls.push({ url, auth: headers.Authorization });
-    const path = url.replace("https://api.cloudflare.com/client/v4", "");
-    const key = Object.keys(routes)
-      .filter((k) => path.startsWith(k))
-      .sort((a, b) => b.length - a.length)[0];
-    if (key === undefined) throw new Error(`unrouted ${path}`);
-    const entry = routes[key];
-    const route = Array.isArray(entry) ? (entry.length > 1 ? entry.shift() : entry[0]) : entry;
-    if (!route) throw new Error(`empty route ${key}`);
-    return new Response(JSON.stringify(route.body), {
-      status: route.status ?? 200,
-      headers: { "content-type": "application/json", ...(route.headers ?? {}) },
-    });
-  };
-  return { fetch, calls };
-}
+/** Fake Cloudflare API routed by "path?query" prefix; each route may be a queue. */
+const fakeFetch = (routes: Record<string, FakeReply | FakeReply[]>) =>
+  coreFakeFetch(routes, { base: CLOUDFLARE_API });
 
 const ok = (result: unknown, extra: Record<string, unknown> = {}) => ({
   body: { success: true, errors: [], messages: [], result, ...extra },
+});
+const fail = (status: number, errors: { code?: number; message: string }[]) => ({
+  status,
+  body: { success: false, errors, messages: [], result: null },
 });
 const noSleep = async () => {};
 
@@ -57,7 +41,7 @@ describe("CloudflareClient", () => {
     const { fetch, calls } = fakeFetch({ "/user/tokens/verify": ok({ status: "active" }) });
     const check = await new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep }).verifyToken();
     expect(check).toMatchObject({ ok: true, identity: "user API token" });
-    expect(calls[0]?.auth).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0]?.headers.Authorization).toBe(`Bearer ${TOKEN}`);
   });
 
   it("accepts account tokens that can list zones", async () => {
@@ -241,7 +225,7 @@ describe("CloudflareClient", () => {
     });
     const ranges = await new CloudflareClient({ fetch, sleep: noSleep }).getIpRanges();
     expect(ranges).toEqual({ ipv4: ["173.245.48.0/20"], ipv6: ["2400:cb00::/32"] });
-    expect(calls[0]?.auth).toBeUndefined();
+    expect(calls[0]?.headers.Authorization).toBeUndefined();
   });
 
   it("retries rate limits and server errors", async () => {
@@ -279,38 +263,140 @@ describe("CloudflareClient", () => {
       new CloudflareClient({ fetch, sleep: noSleep }).findZone("example.com"),
     ).rejects.toMatchObject({ code: "CREDENTIALS_MISSING" });
   });
+
+  it("gives every attempt a timeout and retries a read that never answers", async () => {
+    const waits: number[] = [];
+    const { fetch, calls } = fakeFetch({ "/zones?name=": { hang: true } });
+    const client = new CloudflareClient({
+      token: TOKEN,
+      fetch,
+      sleep: async (ms) => void waits.push(ms),
+      timeoutMs: 5,
+    });
+    const error = (await client.findZone("example.com").catch((e: unknown) => e)) as OpsCrewError;
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("did not answer within");
+    expect(calls).toHaveLength(3);
+    expect(waits).toEqual([2000, 4000]);
+  });
+});
+
+describe("CloudflareClient Zero Trust reads", () => {
+  const ORG = "/accounts/acc-1/access/organizations";
+  const IDPS = "/accounts/acc-1/access/identity_providers";
+  const TUNNEL = "/accounts/acc-1/cfd_tunnel/t-1";
+  const client = (routes: Record<string, FakeReply | FakeReply[]>) => {
+    const fake = fakeFetch(routes);
+    return {
+      ...fake,
+      cf: new CloudflareClient({ token: TOKEN, fetch: fake.fetch, sleep: noSleep }),
+    };
+  };
+
+  it("reads the account's Zero Trust organization, or none", async () => {
+    const { cf } = client({
+      [ORG]: [
+        ok({ auth_domain: "shop.cloudflareaccess.com", name: "shop" }),
+        ok(null),
+        fail(404, [{ code: 7003, message: "Not Found" }]),
+        fail(400, [{ code: 12130, message: "access.api.error.not_found: organization not found" }]),
+      ],
+    });
+    expect(await cf.accessOrganization("acc-1")).toEqual({
+      authDomain: "shop.cloudflareaccess.com",
+    });
+    expect(await cf.accessOrganization("acc-1")).toBeUndefined();
+    expect(await cf.accessOrganization("acc-1")).toBeUndefined();
+    expect(await cf.accessOrganization("acc-1")).toBeUndefined();
+  });
+
+  it("stops plainly when Access is off, the token is refused or the organization has no team domain", async () => {
+    const { cf } = client({
+      [ORG]: [
+        fail(403, [{ code: 9999, message: "access.api.error.not_enabled" }]),
+        fail(403, [{ code: 10000, message: "Authentication error" }]),
+        ok({ name: "shop" }),
+      ],
+    });
+    const off = (await cf.accessOrganization("acc-1").catch((e: unknown) => e)) as OpsCrewError;
+    expect(off.code).toBe("PHASE_PRECONDITION");
+    expect(off.message).toContain("Cloudflare Access is not turned on");
+    expect(off.hint).toContain("https://one.dash.cloudflare.com/");
+    const refused = (await cf.accessOrganization("acc-1").catch((e: unknown) => e)) as OpsCrewError;
+    expect(refused.code).toBe("CREDENTIALS_INVALID");
+    expect(refused.hint).toContain("Access: Organizations, Identity Providers, and Groups");
+    const unreadable = (await cf
+      .accessOrganization("acc-1")
+      .catch((e: unknown) => e)) as OpsCrewError;
+    expect(unreadable.code).toBe("PROVIDER_ERROR");
+    expect(`${refused.message} ${refused.hint}`).not.toContain(TOKEN);
+  });
+
+  it("lists the account's Access login methods", async () => {
+    const { cf, calls } = client({
+      [IDPS]: [
+        ok([
+          { id: "idp-1", type: "onetimepin", name: "PIN", config: {} },
+          { id: "idp-2", type: "github", name: "GitHub" },
+        ]),
+        ok(null),
+        fail(403, [{ code: 10000, message: "Authentication error" }]),
+      ],
+    });
+    expect(await cf.accessIdentityProviders("acc-1")).toEqual([
+      { id: "idp-1", type: "onetimepin" },
+      { id: "idp-2", type: "github" },
+    ]);
+    expect(calls[0]?.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(await cf.accessIdentityProviders("acc-1")).toEqual([]);
+    await expect(cf.accessIdentityProviders("acc-1")).rejects.toMatchObject({
+      code: "CREDENTIALS_INVALID",
+    });
+  });
+
+  it("reads whether a tunnel still has connections, keeping only the state", async () => {
+    const tunnel = (fields: Record<string, unknown>) => ok({ id: "t-1", name: "shop", ...fields });
+    const { cf } = client({
+      [TUNNEL]: [
+        tunnel({ status: "healthy", connections: [{ origin_ip: "203.0.113.10" }] }),
+        tunnel({ status: "inactive", connections: [] }),
+        tunnel({ conns_active_at: "2026-10-16T10:00:00Z", conns_inactive_at: null }),
+        tunnel({ conns_active_at: null }),
+        tunnel({ deleted_at: "2026-10-16T10:05:00Z" }),
+        fail(404, [{ code: 1003, message: "Tunnel not found" }]),
+        fail(403, [{ code: 10000, message: "Authentication error" }]),
+      ],
+    });
+    expect(await cf.tunnelConnections("acc-1", "t-1")).toBe("active");
+    expect(await cf.tunnelConnections("acc-1", "t-1")).toBe("closed");
+    expect(await cf.tunnelConnections("acc-1", "t-1")).toBe("active");
+    expect(await cf.tunnelConnections("acc-1", "t-1")).toBe("closed");
+    expect(await cf.tunnelConnections("acc-1", "t-1")).toBe("gone");
+    expect(await cf.tunnelConnections("acc-1", "t-1")).toBe("gone");
+    await expect(cf.tunnelConnections("acc-1", "t-1")).rejects.toMatchObject({
+      code: "CREDENTIALS_INVALID",
+      hint: expect.stringContaining("Cloudflare Tunnel"),
+    });
+  });
 });
 
 describe("cloudflareConnector", () => {
-  it("exposes credentials and read-only tools with redacted output", async () => {
-    const { fetch } = fakeFetch({
-      "/zones?name=": ok([{ id: "z1", name: "example.com", status: "active", name_servers: [] }]),
-    });
+  it("exposes the credentials and a client when a token is set", async () => {
+    const { fetch } = fakeFetch({ "/user/tokens/verify": ok({ status: "active" }) });
     const connector = cloudflareConnector({
       env: { CLOUDFLARE_API_TOKEN: TOKEN },
       fetch,
       sleep: noSleep,
     });
     expect(connector.credentials.envVars).toEqual(["CLOUDFLARE_API_TOKEN"]);
-    const tools = connector.tools();
-    expect(tools.map((t) => t.name)).toEqual([
-      "cloudflare_find_zone",
-      "cloudflare_list_dns_records",
-    ]);
-    expect(tools.every((t) => !t.mutates)).toBe(true);
-    const result = await tools[0]?.handler(
-      { domain: "example.com" },
-      { phase: "provision", projectRoot: "/p" },
-    );
-    expect(result?.text).toContain('"id": "z1"');
+    expect(connector.client).toBeInstanceOf(CloudflareClient);
+    expect(await connector.verifyCredentials()).toMatchObject({ ok: true });
   });
 
   it("reports a missing token without throwing", async () => {
     const connector = cloudflareConnector({ env: {}, fetch: fakeFetch({}).fetch });
+    expect(connector.client).toBeUndefined();
     expect(await connector.verifyCredentials()).toMatchObject({ ok: false });
-    const result = await connector
-      .tools()[0]
-      ?.handler({ domain: "example.com" }, { phase: "provision", projectRoot: "/p" });
-    expect(result?.isError).toBe(true);
   });
 });

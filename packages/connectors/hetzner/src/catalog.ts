@@ -15,8 +15,6 @@ import {
   STATIC_SERVER_TYPES,
 } from "./static-prices";
 
-const TIB = 2 ** 40;
-
 export interface HetznerCatalogOptions {
   /** Injectable clock for `asOf`. */
   now?: () => Date;
@@ -38,16 +36,11 @@ export class HetznerCatalog implements ComputeCatalog {
 
   async listLocations(): Promise<ComputeLocation[]> {
     const locations = await this.client.listLocations();
-    return locations.map((location) => {
-      const out: ComputeLocation = {
-        id: location.name,
-        name: location.city ?? location.description ?? location.name,
-        country: location.country,
-      };
-      if (location.city !== undefined) out.city = location.city;
-      if (location.network_zone !== undefined) out.networkZone = location.network_zone;
-      return out;
-    });
+    return locations.map((location) => ({
+      id: location.name,
+      name: location.city ?? location.description ?? location.name,
+      country: location.country,
+    }));
   }
 
   async listOffers(location?: string): Promise<ComputeOffer[]> {
@@ -75,7 +68,6 @@ export class HetznerCatalog implements ComputeCatalog {
           architecture: type.architecture === "arm" ? "arm" : "x86",
           location: price.location,
           monthly: { amount: price.price_monthly.net, currency: "EUR" },
-          hourly: { amount: price.price_hourly.net, currency: "EUR" },
           pricesIncludeVat: false,
           deprecated:
             typeDeprecated || (entry?.deprecation !== undefined && entry.deprecation !== null),
@@ -86,11 +78,6 @@ export class HetznerCatalog implements ComputeCatalog {
           asOf,
         };
         if (type.description !== undefined) offer.description = type.description;
-        if (entry?.recommended !== undefined) offer.recommended = entry.recommended;
-        const traffic = price.included_traffic ?? type.included_traffic;
-        if (typeof traffic === "number") {
-          offer.includedTrafficTb = Math.round((traffic / TIB) * 100) / 100;
-        }
         offers.push(offer);
       }
     }
@@ -114,9 +101,6 @@ export class HetznerCatalog implements ComputeCatalog {
       ?.prices.find((p) => p.location === location);
     if (ipv4 !== undefined) out.ipv4Monthly = { amount: ipv4.price_monthly.net, currency };
     if (pricing.server_backup !== undefined) out.backupPercent = pricing.server_backup.percentage;
-    if (pricing.volume !== undefined) {
-      out.volumePerGbMonthly = { amount: pricing.volume.price_per_gb_month.net, currency };
-    }
     return out;
   }
 }
@@ -137,7 +121,7 @@ export class StaticHetznerCatalog implements ComputeCatalog {
   readonly asOf = STATIC_PRICES_AS_OF;
 
   async listLocations(): Promise<ComputeLocation[]> {
-    return STATIC_LOCATIONS.map(({ group: _group, ...location }) => ({ ...location }));
+    return STATIC_LOCATIONS.map(({ id, name, country }) => ({ id, name, country }));
   }
 
   async listOffers(location?: string): Promise<ComputeOffer[]> {
@@ -145,8 +129,8 @@ export class StaticHetznerCatalog implements ComputeCatalog {
     for (const loc of STATIC_LOCATIONS) {
       if (location !== undefined && loc.id !== location) continue;
       for (const type of STATIC_SERVER_TYPES) {
-        const price = type.prices[loc.group];
-        if (price === undefined) continue;
+        const monthly = type.prices[loc.group];
+        if (monthly === undefined) continue;
         offers.push({
           provider: "hetzner",
           id: type.name,
@@ -156,8 +140,7 @@ export class StaticHetznerCatalog implements ComputeCatalog {
           cpuType: type.cpuType,
           architecture: type.architecture,
           location: loc.id,
-          monthly: { amount: price[0], currency: "EUR" },
-          hourly: { amount: price[1], currency: "EUR" },
+          monthly: { amount: monthly, currency: "EUR" },
           pricesIncludeVat: false,
           deprecated: false,
           available: true,

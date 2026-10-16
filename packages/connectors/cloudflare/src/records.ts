@@ -1,5 +1,5 @@
 import type { FetchLike, RegistrarDnsRecord } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { normalizeHostName, OpsCrewError } from "@opscrew/core";
 
 /** A DNS record to create in a Cloudflare zone, named as in the Cloudflare API. */
 export interface CloudflareRecordInput {
@@ -57,10 +57,6 @@ const REDIRECT_TYPES = new Set([
 
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
-function normalizeName(name: string): string {
-  return name.trim().toLowerCase().replace(/\.$/, "");
-}
-
 /** A host target without its trailing dot; `@` means the zone apex. */
 function target(value: string, zoneName: string): string {
   const v = value.trim().replace(/\.$/, "");
@@ -102,8 +98,8 @@ const skip = (reason: string): RecordMapping => ({ skipped: true, reason });
  * never proxied; the TTL is kept when Cloudflare accepts it (60–86400), else automatic.
  */
 export function mapRegistrarRecord(record: RegistrarDnsRecord, zoneName: string): RecordMapping {
-  const zone = normalizeName(zoneName);
-  const name = normalizeName(record.name) || zone;
+  const zone = normalizeHostName(zoneName);
+  const name = normalizeHostName(record.name) || zone;
   const type = record.type.trim().toUpperCase();
   const label = `${type} record for ${name}`;
   if (name !== zone && !name.endsWith(`.${zone}`)) {

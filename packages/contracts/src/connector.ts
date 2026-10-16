@@ -1,5 +1,4 @@
 import type { IsoDateTime, Money } from "./common";
-import type { AnyToolDefinition } from "./runtime";
 
 export type ProviderId =
   | "hetzner"
@@ -40,8 +39,6 @@ export interface Connector {
   readonly displayName: string;
   readonly credentials: CredentialRequirement;
   verifyCredentials(): Promise<CredentialCheck>;
-  /** In-process tools exposed to agents and the MCP server. */
-  tools(): AnyToolDefinition[];
 }
 
 export interface ComputeLocation {
@@ -50,9 +47,6 @@ export interface ComputeLocation {
   /** Display name, for example `Nuremberg`. */
   name: string;
   country: string;
-  city?: string;
-  /** Provider network zone or region group, for example `eu-central`. */
-  networkZone?: string;
 }
 
 /** One purchasable server size in one location. */
@@ -68,12 +62,9 @@ export interface ComputeOffer {
   architecture: "x86" | "arm";
   location: string;
   monthly: Money;
-  hourly?: Money;
   pricesIncludeVat: boolean;
-  includedTrafficTb?: number;
   deprecated: boolean;
   available: boolean;
-  recommended?: boolean;
   /** `live` when read from the provider API now; `static` when from a dated fallback table. */
   source: "live" | "static";
   asOf: IsoDateTime;
@@ -84,7 +75,6 @@ export interface ProviderExtras {
   ipv4Monthly?: Money;
   /** Automated backups as a percentage of the server price, for example 20. */
   backupPercent?: number;
-  volumePerGbMonthly?: Money;
   trafficPerTb?: Money;
   pricesIncludeVat: boolean;
   source: "live" | "static";

@@ -8,7 +8,6 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DigitalOceanClient, DigitalOceanSize } from "./client";
 import {
   BACKUP_PERCENT,
-  HOURS_PER_MONTH,
   regionLocation,
   STATIC_PRICES_AS_OF,
   STATIC_REGIONS,
@@ -91,10 +90,6 @@ export class DigitalOceanCatalog implements ComputeCatalog {
           asOf,
         };
         if (size.description) offer.description = size.description;
-        if (typeof size.price_hourly === "number") {
-          offer.hourly = { amount: size.price_hourly, currency: "USD" };
-        }
-        if (typeof size.transfer === "number") offer.includedTrafficTb = size.transfer;
         offers.push(offer);
       }
     }
@@ -140,12 +135,7 @@ export class StaticDigitalOceanCatalog implements ComputeCatalog {
           architecture: "x86",
           location: region,
           monthly: { amount: size.monthly, currency: "USD" },
-          hourly: {
-            amount: Math.round((size.monthly / HOURS_PER_MONTH) * 100_000) / 100_000,
-            currency: "USD",
-          },
           pricesIncludeVat: false,
-          includedTrafficTb: size.transferTb,
           deprecated: false,
           available: true,
           source: "static",

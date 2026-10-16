@@ -1,16 +1,14 @@
 import type {
-  AnyToolDefinition,
   ComputeCatalog,
   CredentialCheck,
   CredentialRequirement,
+  FetchLike,
   ServerSnapshotApi,
-  ToolDefinition,
   VpsConnector,
 } from "@opscrew/contracts";
 import { isUserFacingError, Redactor } from "@opscrew/core";
-import { z } from "zod";
 import { HetznerCatalog, StaticHetznerCatalog } from "./catalog";
-import { type FetchLike, HetznerClient } from "./client";
+import { HetznerClient } from "./client";
 import { hetznerServerApi } from "./servers";
 
 /** Credentials OpsCrew needs for Hetzner Cloud. */
@@ -46,7 +44,7 @@ export interface HetznerConnector extends VpsConnector {
   catalog(): ComputeCatalog;
 }
 
-/** Creates the Hetzner Cloud connector (credential check and read-only catalogue tools). */
+/** Creates the Hetzner Cloud connector: credential check, catalogue and server API. */
 export function hetznerConnector(options: HetznerConnectorOptions): HetznerConnector {
   const token = options.env.HCLOUD_TOKEN?.trim() || undefined;
   const redactor = options.redactor ?? new Redactor();
@@ -63,53 +61,6 @@ export function hetznerConnector(options: HetznerConnectorOptions): HetznerConne
           now: () => (options.now ?? (() => new Date()))().getTime(),
         });
   let catalog: ComputeCatalog | undefined;
-  const getCatalog = (): ComputeCatalog => {
-    catalog ??=
-      client === undefined
-        ? new StaticHetznerCatalog()
-        : new HetznerCatalog(client, options.now ? { now: options.now } : {});
-    return catalog;
-  };
-
-  const sourceNote = (): string =>
-    client === undefined
-      ? `Static Hetzner price table dated ${new StaticHetznerCatalog().asOf.slice(0, 10)} (HCLOUD_TOKEN not set; availability not checked). Prices are net EUR excluding VAT and IPv4.`
-      : "Live data from the Hetzner Cloud API. Prices are net EUR excluding VAT and IPv4.";
-
-  const run = async (produce: () => Promise<unknown>) => {
-    try {
-      const data = await produce();
-      return { text: redactor.redact(`${sourceNote()}\n${JSON.stringify(data, null, 2)}`) };
-    } catch (error) {
-      const message = isUserFacingError(error)
-        ? `${error.message}${error.hint ? ` ${error.hint}` : ""}`
-        : `Unexpected error: ${error instanceof Error ? error.message : String(error)}`;
-      return { text: redactor.redact(message), isError: true };
-    }
-  };
-
-  const listLocations: ToolDefinition<z.ZodObject<Record<string, never>>> = {
-    name: "hetzner_list_locations",
-    description: "List Hetzner Cloud locations (id, city, country, network zone). Read-only.",
-    inputSchema: z.object({}),
-    mutates: false,
-    handler: () => run(() => getCatalog().listLocations()),
-  };
-
-  const offersInput = z.object({
-    location: z
-      .string()
-      .optional()
-      .describe("Hetzner location id such as nbg1, fsn1, hel1, ash, hil or sin. Omit for all."),
-  });
-  const listOffers: ToolDefinition<typeof offersInput> = {
-    name: "hetzner_list_offers",
-    description:
-      "List Hetzner Cloud server offers with vCPU, memory, disk, monthly net price, availability and deprecation for one or all locations. Read-only.",
-    inputSchema: offersInput,
-    mutates: false,
-    handler: (input) => run(() => getCatalog().listOffers(input.location)),
-  };
 
   return {
     id: "hetzner",
@@ -118,7 +69,13 @@ export function hetznerConnector(options: HetznerConnectorOptions): HetznerConne
     configured: client !== undefined,
     client,
     servers: client === undefined ? undefined : hetznerServerApi(client),
-    catalog: getCatalog,
+    catalog: () => {
+      catalog ??=
+        client === undefined
+          ? new StaticHetznerCatalog()
+          : new HetznerCatalog(client, options.now ? { now: options.now } : {});
+      return catalog;
+    },
     async verifyCredentials(): Promise<CredentialCheck> {
       if (client === undefined) {
         return {
@@ -136,9 +93,6 @@ export function hetznerConnector(options: HetznerConnectorOptions): HetznerConne
           : "Could not check the Hetzner Cloud API token.";
         return { ok: false, message: redactor.redact(message) };
       }
-    },
-    tools(): AnyToolDefinition[] {
-      return [listLocations, listOffers];
     },
   };
 }

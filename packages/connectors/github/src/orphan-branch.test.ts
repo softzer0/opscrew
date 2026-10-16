@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { fakeFetch, fakeSecret, type FakeReply as Route } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
+import { GITHUB_API } from "./github";
 import { GitHubClient } from "./index";
 
 const TOKEN = fakeSecret("github-token");
@@ -10,32 +10,9 @@ const BLOB = "b".repeat(40);
 const TREE = "c".repeat(40);
 const COMMIT = "d".repeat(40);
 
-type Route = { status?: number; body?: unknown };
-type Recorded = { method: string; path: string; body?: unknown };
-
-/**
- * GitHub's Git Data API, routed by exact `METHOD path`; a list answers in turn (its last answer
- * repeats).
- */
-function fakeGitData(routes: Record<string, Route | Route[]>) {
-  const calls: Recorded[] = [];
-  const seen = new Map<string, number>();
-  const fetch: FetchLike = async (input, init) => {
-    const method = init?.method ?? "GET";
-    const path = String(input).replace("https://api.github.com", "");
-    calls.push({ method, path, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
-    const key = `${method} ${path}`;
-    const routed = routes[key];
-    const count = seen.get(key) ?? 0;
-    seen.set(key, count + 1);
-    const route = Array.isArray(routed) ? routed[Math.min(count, routed.length - 1)] : routed;
-    if (route === undefined) throw new Error(`unrouted ${method} ${path}`);
-    return new Response(route.body === undefined ? null : JSON.stringify(route.body), {
-      status: route.status ?? 200,
-    });
-  };
-  return { fetch, calls };
-}
+/** GitHub's Git Data API, routed by `METHOD path`; a list answers in turn (its last repeats). */
+const fakeGitData = (routes: Record<string, Route | Route[]>) =>
+  fakeFetch(routes, { base: GITHUB_API });
 
 const CREATED: Record<string, Route> = {
   "GET /repos/acme/shop/git/ref/heads/opscrew-deploy": {

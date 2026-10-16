@@ -17,10 +17,14 @@ const ok = (result: unknown, status = 200): Answer => ({
   status,
   body: { success: true, errors: [], messages: [], result },
 });
+/** The live Registrar API's "nothing here" answer: HTTP 404 with code 10000 and `message`. */
 const notFound = (message: string): Answer => ({
   status: 404,
-  body: { success: false, errors: [{ code: 1404, message }], messages: [], result: null },
+  body: { success: false, errors: [{ code: 10000, message }], messages: [], result: null },
 });
+/** The live answers for a domain without a registration (status and detail routes). */
+const NO_WORKFLOW = "No workflow found for shopapp.com";
+const NO_DOMAIN = "Domain not found";
 
 /** Fake Cloudflare API routed by "METHOD path"; a list answers in order (the last one repeats). */
 function fakeApi(routes: Record<string, Answer | Answer[]>) {
@@ -206,15 +210,12 @@ describe("defaultDomainServices", () => {
     const api = fakeApi({
       "GET /accounts?page=1&per_page=50": ok([{ id: "acc-1", name: "Shop" }]),
       [`GET ${REG}/registrations/shopapp.com/registration-status`]: [
-        notFound("Registration not found"),
-        notFound("Registration not found"),
+        notFound(NO_WORKFLOW),
+        notFound(NO_WORKFLOW),
         ok({ domain_name: "shopapp.com", state: "in_progress" }),
         ok({ domain_name: "shopapp.com", state: "succeeded" }),
       ],
-      [`GET ${REG}/registrations/shopapp.com`]: [
-        notFound("Registration not found"),
-        ok(registration),
-      ],
+      [`GET ${REG}/registrations/shopapp.com`]: [notFound(NO_DOMAIN), ok(registration)],
       [`GET ${REG}/extensions/com`]: ok({ contact_extensions: [] }),
       [`POST ${REG}/domain-check`]: ok({
         domains: [
@@ -322,9 +323,8 @@ describe("buyDomain through the Cloudflare adapter: refusals (fake API, no netwo
     ]) {
       const { error, api, deps, record } = await runWith({
         "GET /accounts?page=1&per_page=50": ok([{ id: "acc-1", name: "Shop" }]),
-        [`GET ${REG}/registrations/shopapp.com/registration-status`]:
-          notFound("Registration not found"),
-        [`GET ${REG}/registrations/shopapp.com`]: notFound("Registration not found"),
+        [`GET ${REG}/registrations/shopapp.com/registration-status`]: notFound(NO_WORKFLOW),
+        [`GET ${REG}/registrations/shopapp.com`]: notFound(NO_DOMAIN),
         [`GET ${REG}/extensions/com`]: ok({ contact_extensions: [] }),
         [`POST ${REG}/domain-check`]: checkAnswer,
         [`POST ${REG}/registrations`]: refused(400, 1001, reason),
@@ -398,14 +398,11 @@ describe("buyDomain through the Cloudflare adapter: refusals (fake API, no netwo
       {
         "GET /accounts?page=1&per_page=50": ok([{ id: "acc-1", name: "Shop" }]),
         [`GET ${SANDBOX}/registrations/shopapp.com/registration-status`]: [
-          notFound("Registration not found"),
-          notFound("Registration not found"),
+          notFound(NO_WORKFLOW),
+          notFound(NO_WORKFLOW),
           ok({ domain_name: "shopapp.com", state: "succeeded" }),
         ],
-        [`GET ${SANDBOX}/registrations/shopapp.com`]: [
-          notFound("Registration not found"),
-          ok(registration),
-        ],
+        [`GET ${SANDBOX}/registrations/shopapp.com`]: [notFound(NO_DOMAIN), ok(registration)],
         [`GET ${SANDBOX}/extensions/com`]: ok({ contact_extensions: [] }),
         [`POST ${SANDBOX}/domain-check`]: checkAnswer,
         [`POST ${SANDBOX}/registrations`]: ok(

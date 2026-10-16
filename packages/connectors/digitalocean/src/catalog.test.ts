@@ -1,7 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { fakeFetch, fakeSleep, fixture } from "./__fixtures__/fake-fetch";
+import { digitaloceanFetch, fakeSleep, fixture } from "./__fixtures__/fixtures";
 import { DigitalOceanCatalog, StaticDigitalOceanCatalog } from "./catalog";
 import { DigitalOceanClient } from "./client";
 import { STATIC_PRICES_AS_OF } from "./static-prices";
@@ -9,7 +9,7 @@ import { STATIC_PRICES_AS_OF } from "./static-prices";
 const NOW = new Date("2026-10-12T12:00:00.000Z");
 
 function liveCatalog() {
-  const fake = fakeFetch({
+  const fake = digitaloceanFetch({
     "/v2/sizes?page=1": { body: fixture("sizes-page1.json") },
     "/v2/sizes?page=2": { body: fixture("sizes-page2.json") },
     "/v2/regions": { body: fixture("regions.json") },
@@ -27,8 +27,8 @@ describe("DigitalOceanCatalog (live)", () => {
     const { catalog } = liveCatalog();
     const locations = await catalog.listLocations();
     expect(locations).toEqual([
-      { id: "fra1", name: "Frankfurt", city: "Frankfurt", country: "DE" },
-      { id: "ams3", name: "Amsterdam", city: "Amsterdam", country: "NL" },
+      { id: "fra1", name: "Frankfurt", country: "DE" },
+      { id: "ams3", name: "Amsterdam", country: "NL" },
       { id: "xyz1", name: "Somewhere 1", country: "" },
     ]);
   });
@@ -54,9 +54,7 @@ describe("DigitalOceanCatalog (live)", () => {
       cpuType: "shared",
       architecture: "x86",
       monthly: { amount: 24, currency: "USD" },
-      hourly: { amount: 0.03571, currency: "USD" },
       pricesIncludeVat: false,
-      includedTrafficTb: 4,
       deprecated: false,
       available: true,
       source: "live",
@@ -93,11 +91,11 @@ describe("DigitalOceanCatalog (live)", () => {
     ]);
     expect((await catalog.listOffers("lon1")).map((o) => o.id)).toEqual(["s-2vcpu-4gb"]);
     expect(await catalog.listOffers("nowhere")).toEqual([]);
-    expect(calls.filter((call) => call.url.pathname === "/v2/sizes")).toHaveLength(2);
+    expect(calls.filter((call) => call.path.startsWith("/v2/sizes?"))).toHaveLength(2);
   });
 
   it("retries the size list after a failure instead of caching the error", async () => {
-    const fake = fakeFetch({
+    const fake = digitaloceanFetch({
       "/v2/sizes?page=1": [
         { status: 500, body: { id: "server_error", message: "boom" } },
         { status: 500, body: { id: "server_error", message: "boom" } },
@@ -177,11 +175,9 @@ describe("StaticDigitalOceanCatalog", () => {
       vcpus: 1,
       memoryGb: 1,
       diskGb: 25,
-      includedTrafficTb: 1,
       cpuType: "shared",
       architecture: "x86",
       monthly: { amount: 6, currency: "USD" },
-      hourly: { amount: 0.00893, currency: "USD" },
       pricesIncludeVat: false,
       available: true,
       deprecated: false,

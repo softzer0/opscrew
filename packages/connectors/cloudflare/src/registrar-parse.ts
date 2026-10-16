@@ -36,23 +36,19 @@ const PricingSchema = z.looseObject({
   renewal_cost: z.union([z.string(), z.number()]).optional(),
 });
 
-/** One domain in a domain-check or domain-search answer. Field names are read leniently. */
-export const DomainItemSchema = z.looseObject({
+/** One domain in a domain-check or domain-search answer (the documented fields). */
+const DomainItemSchema = z.looseObject({
   name: z.string().optional(),
-  domain: z.string().optional(),
-  domain_name: z.string().optional(),
   registrable: z.boolean().optional(),
   tier: z.string().nullable().optional(),
   pricing: PricingSchema.nullable().optional(),
   reason: z.string().nullable().optional(),
 });
 
-/** A list of domains, either bare or wrapped in `{ domains }` / `{ results }`. */
-export const DomainListSchema = z.union([
-  z.array(DomainItemSchema),
-  z.looseObject({ domains: z.array(DomainItemSchema) }).transform((r) => r.domains),
-  z.looseObject({ results: z.array(DomainItemSchema) }).transform((r) => r.results),
-]);
+/** The `result` of a domain-check or domain-search answer: `{ domains: [...] }`. */
+export const DomainListSchema = z
+  .looseObject({ domains: z.array(DomainItemSchema) })
+  .transform((r) => r.domains);
 
 const SUPPORTED_CURRENCIES: readonly Currency[] = ["USD", "EUR"];
 
@@ -78,7 +74,7 @@ export function toDomainCheck(
   fallbackName: string,
   registrableByDefault: boolean,
 ): DomainCheck {
-  const domain = (item.name ?? item.domain_name ?? item.domain ?? fallbackName).toLowerCase();
+  const domain = (item.name ?? fallbackName).toLowerCase();
   const tier = item.tier === "premium" || item.tier === "standard" ? item.tier : undefined;
   const base: DomainCheck = { domain, registrable: false, ...(tier ? { tier } : {}) };
   const registrable = item.registrable ?? registrableByDefault;
@@ -108,10 +104,7 @@ export function toDomainCheck(
 /** A registration workflow status (answer to create or registration-status). */
 export const WorkflowSchema = z.looseObject({
   domain_name: z.string().optional(),
-  name: z.string().optional(),
   state: z.string().optional(),
-  status: z.string().optional(),
-  message: z.string().nullable().optional(),
   error: z
     .looseObject({
       code: z.union([z.string(), z.number()]).nullable().optional(),
@@ -139,11 +132,11 @@ export function toRegistrationStatus(
   raw: z.infer<typeof WorkflowSchema>,
   domain: string,
 ): RegistrationStatus {
-  const reported = (raw.state ?? raw.status)?.trim().toLowerCase();
+  const reported = raw.state?.trim().toLowerCase();
   const known = STATES.find((s) => s === reported);
   const state: RegistrationState = known ?? "in_progress";
-  const name = (raw.domain_name ?? raw.name ?? domain).toLowerCase();
-  const detail = (raw.error?.message ?? raw.message ?? "").trim().replace(/\.$/, "");
+  const name = (raw.domain_name ?? domain).toLowerCase();
+  const detail = (raw.error?.message ?? "").trim().replace(/\.$/, "");
   const code = raw.error?.code;
   const why = detail || (code !== undefined && code !== null ? `error ${code}` : "");
   const suffix = why ? `: ${why}` : "";
@@ -174,18 +167,14 @@ export function toRegistrationStatus(
   }
 }
 
-/** A domain registration as Cloudflare returns it. Field names are read leniently. */
+/** A domain registration as Cloudflare returns it (the documented fields). */
 export const RegistrationSchema = z.looseObject({
   domain_name: z.string().optional(),
-  name: z.string().optional(),
   created_at: z.string().nullable().optional(),
-  registered_at: z.string().nullable().optional(),
   expires_at: z.string().nullable().optional(),
-  expiration_date: z.string().nullable().optional(),
   auto_renew: z.boolean().nullable().optional(),
   locked: z.boolean().nullable().optional(),
   privacy_mode: z.string().nullable().optional(),
-  privacy: z.boolean().nullable().optional(),
 });
 
 function isoDate(value: string | null | undefined): string | undefined {
@@ -199,18 +188,16 @@ export function toRegisteredDomain(
   raw: z.infer<typeof RegistrationSchema>,
   domain: string,
 ): RegisteredDomain {
-  const createdAt = isoDate(raw.created_at ?? raw.registered_at);
-  const expiresAt = isoDate(raw.expires_at ?? raw.expiration_date);
-  const privacy =
-    raw.privacy_mode != null ? raw.privacy_mode !== "off" : (raw.privacy ?? undefined);
+  const createdAt = isoDate(raw.created_at);
+  const expiresAt = isoDate(raw.expires_at);
   return {
-    domain: (raw.domain_name ?? raw.name ?? domain).toLowerCase(),
+    domain: (raw.domain_name ?? domain).toLowerCase(),
     registrar: "cloudflare",
     ...(createdAt ? { createdAt } : {}),
     ...(expiresAt ? { expiresAt } : {}),
     autoRenew: raw.auto_renew ?? false,
     ...(raw.locked != null ? { locked: raw.locked } : {}),
-    ...(privacy !== undefined ? { privacy } : {}),
+    ...(raw.privacy_mode != null ? { privacy: raw.privacy_mode !== "off" } : {}),
   };
 }
 

@@ -1,8 +1,8 @@
 import type { VpsConnector } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { type FakeReply, fakeFetch, fakeSleep } from "./__fixtures__/fake-fetch";
+import { fakeSleep, hetznerFetch, param } from "./__fixtures__/fixtures";
 import { type HetznerConnector, hetznerConnector } from "./connector";
 
 const token = fakeSecret("hcloud-token");
@@ -11,7 +11,7 @@ const token = fakeSecret("hcloud-token");
 const asVps = (c: HetznerConnector) => c satisfies VpsConnector;
 
 function setup(routes: Record<string, FakeReply | FakeReply[]>, clockStepMs = 0) {
-  const fake = fakeFetch(routes);
+  const fake = hetznerFetch(routes);
   const sleeper = fakeSleep();
   let time = Date.parse("2026-10-12T10:00:00Z");
   const connector = hetznerConnector({
@@ -92,7 +92,7 @@ describe("servers.findAppServers", () => {
       { id: "42", name: "shop-web", status: "running" },
     ]);
     expect(calls[0]?.method).toBe("GET");
-    expect(calls[0]?.url.searchParams.get("label_selector")).toBe("managed-by=opscrew,app=shop");
+    expect(param(calls[0], "label_selector")).toBe("managed-by=opscrew,app=shop");
   });
 });
 
@@ -111,10 +111,10 @@ describe("servers.snapshotServer", () => {
       description: "before destroy",
       labels: { "managed-by": "opscrew", app: "shop" },
     });
-    expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
-      "POST /v1/servers/7/actions/create_image",
-      "GET /v1/actions/99",
-      "GET /v1/actions/99",
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "POST /servers/7/actions/create_image",
+      "GET /actions/99",
+      "GET /actions/99",
     ]);
     expect(waits).toEqual([2000]);
   });

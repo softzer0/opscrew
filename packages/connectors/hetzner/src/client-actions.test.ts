@@ -1,16 +1,30 @@
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { type FakeReply, fakeFetch, fakeSleep } from "./__fixtures__/fake-fetch";
+import { hetznerFetch, param } from "./__fixtures__/fixtures";
 import { HetznerClient } from "./client";
 
 const token = fakeSecret("hcloud-token");
 
-function client(routes: Record<string, FakeReply | FakeReply[]>) {
-  const fake = fakeFetch(routes);
-  const sleeper = fakeSleep();
-  const c = new HetznerClient({ token, fetch: fake.fetch, sleep: sleeper.sleep });
-  return { client: c, calls: fake.calls, waits: sleeper.waits };
+/** A client whose sleeps are recorded and advance its clock (starting at `start`). */
+function client(
+  routes: Record<string, FakeReply | FakeReply[]>,
+  options: { timeoutMs?: number; start?: number } = {},
+) {
+  const fake = hetznerFetch(routes);
+  const waits: number[] = [];
+  let clock = options.start ?? 0;
+  const c = new HetznerClient({
+    token,
+    fetch: fake.fetch,
+    sleep: async (ms) => {
+      waits.push(ms);
+      clock += ms;
+    },
+    now: () => clock,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+  });
+  return { client: c, calls: fake.calls, waits, clock: () => clock };
 }
 
 function action(id: number, status: string, extra: Record<string, unknown> = {}) {
@@ -77,11 +91,9 @@ describe("HetznerClient.listServers", () => {
       },
       { id: 2, name: "shop-worker", status: "off", labels: {} },
     ]);
-    expect(calls.map((call) => call.url.searchParams.get("page"))).toEqual(["1", "2"]);
+    expect(calls.map((call) => param(call, "page"))).toEqual(["1", "2"]);
     expect(
-      calls.every(
-        (call) => call.url.searchParams.get("label_selector") === "managed-by=opscrew,app=shop",
-      ),
+      calls.every((call) => param(call, "label_selector") === "managed-by=opscrew,app=shop"),
     ).toBe(true);
     expect(calls.every((call) => call.method === "GET")).toBe(true);
   });
@@ -91,7 +103,7 @@ describe("HetznerClient.listServers", () => {
       "/servers": { body: { servers: [], meta: { pagination: { next_page: null } } } },
     });
     expect(await c.listServers()).toEqual([]);
-    expect(calls[0]?.url.searchParams.has("label_selector")).toBe(false);
+    expect(param(calls[0], "label_selector")).toBeNull();
   });
 });
 
@@ -113,7 +125,7 @@ describe("HetznerClient.createSnapshot", () => {
     expect(result).toEqual({ imageId: 4711, actionId: 99 });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.method).toBe("POST");
-    expect(calls[0]?.url.pathname).toBe("/v1/servers/7/actions/create_image");
+    expect(calls[0]?.url).toBe("https://api.hetzner.cloud/v1/servers/7/actions/create_image");
     expect(calls[0]?.headers["Content-Type"]).toBe("application/json");
     expect(calls[0]?.headers.Authorization).toBe(`Bearer ${token}`);
     expect(calls[0]?.body).toEqual({
@@ -163,17 +175,11 @@ describe("HetznerClient.createSnapshot", () => {
   });
 
   it("never retries a POST that timed out and says it may have run", async () => {
-    let attempts = 0;
-    const sleeper = fakeSleep();
-    const c = new HetznerClient({
-      token,
-      fetch: () => {
-        attempts++;
-        return new Promise<Response>(() => {});
-      },
-      sleep: sleeper.sleep,
-      timeoutMs: 5,
-    });
+    const {
+      client: c,
+      calls,
+      waits,
+    } = client({ "POST /servers/7/actions/create_image": { hang: true } }, { timeoutMs: 5 });
     const error = (await c
       .createSnapshot(7, { description: "x" })
       .catch((e: unknown) => e)) as OpsCrewError;
@@ -181,8 +187,8 @@ describe("HetznerClient.createSnapshot", () => {
     expect(error.message).toContain("did not answer within");
     expect(error.hint).toMatch(/Hetzner Cloud Console/);
     expect(errorText(error)).not.toContain(token);
-    expect(attempts).toBe(1);
-    expect(sleeper.waits).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(waits).toEqual([]);
   });
 
   it("rejects a response without image or action", async () => {
@@ -198,30 +204,24 @@ describe("HetznerClient.createSnapshot", () => {
 });
 
 describe("HetznerClient.waitForAction", () => {
-  it("polls until the action succeeds", async () => {
-    const { client: c, calls } = client({
+  it("polls every 2 seconds until the action succeeds", async () => {
+    const {
+      client: c,
+      calls,
+      waits,
+    } = client({
       "/actions/99": [
         { body: action(99, "running") },
         { body: action(99, "running") },
         { body: action(99, "success", { finished: "2026-10-12T10:01:00+00:00" }) },
       ],
     });
-    const sleeps: number[] = [];
-    let clock = 0;
-    const done = await c.waitForAction(99, {
-      timeoutMs: 60_000,
-      intervalMs: 2_000,
-      sleep: async (ms) => {
-        sleeps.push(ms);
-        clock += ms;
-      },
-      now: () => clock,
-    });
+    const done = await c.waitForAction(99, { timeoutMs: 60_000 });
     expect(done.status).toBe("success");
     expect(done.id).toBe(99);
     expect(calls).toHaveLength(3);
-    expect(calls.every((call) => call.url.pathname === "/v1/actions/99")).toBe(true);
-    expect(sleeps).toEqual([2_000, 2_000]);
+    expect(calls.every((call) => call.path === "/actions/99")).toBe(true);
+    expect(waits).toEqual([2_000, 2_000]);
   });
 
   it("turns an action that ends in error into PROVIDER_ERROR with the API's message", async () => {
@@ -236,7 +236,7 @@ describe("HetznerClient.waitForAction", () => {
       ],
     });
     const error = (await c
-      .waitForAction(99, { timeoutMs: 60_000, intervalMs: 10, sleep: async () => {} })
+      .waitForAction(99, { timeoutMs: 60_000 })
       .catch((e: unknown) => e)) as OpsCrewError;
     expect(error).toBeInstanceOf(OpsCrewError);
     expect(error.code).toBe("PROVIDER_ERROR");
@@ -245,26 +245,22 @@ describe("HetznerClient.waitForAction", () => {
   });
 
   it("times out with a plain-English hint using the injected clock", async () => {
-    const { client: c, calls } = client({ "/actions/99": { body: action(99, "running") } });
-    let clock = 1_000_000;
+    const {
+      client: c,
+      calls,
+      clock,
+    } = client({ "/actions/99": { body: action(99, "running") } }, { start: 1_000_000 });
     const error = (await c
-      .waitForAction(99, {
-        timeoutMs: 10_000,
-        intervalMs: 3_000,
-        sleep: async (ms) => {
-          clock += ms;
-        },
-        now: () => clock,
-      })
+      .waitForAction(99, { timeoutMs: 9_000 })
       .catch((e: unknown) => e)) as OpsCrewError;
     expect(error).toBeInstanceOf(OpsCrewError);
     expect(error.code).toBe("PROVIDER_ERROR");
-    expect(error.message).toMatch(/did not finish within 10 seconds/);
+    expect(error.message).toMatch(/did not finish within 9 seconds/);
     expect(error.hint).toMatch(/Hetzner Cloud Console/);
     expect(errorText(error)).not.toContain(token);
-    // Polls at t=0, 3, 6, 9 s, then one last check at the deadline.
-    expect(calls).toHaveLength(5);
-    expect(clock).toBe(1_010_000);
+    // Polls at t=0, 2, 4, 6, 8 s, then one last check at the deadline.
+    expect(calls).toHaveLength(6);
+    expect(clock()).toBe(1_009_000);
   });
 
   it("retries a 429 while polling", async () => {
@@ -278,7 +274,7 @@ describe("HetznerClient.waitForAction", () => {
         { body: action(5, "success") },
       ],
     });
-    const done = await c.waitForAction(5, { timeoutMs: 1_000, intervalMs: 100 });
+    const done = await c.waitForAction(5, { timeoutMs: 1_000 });
     expect(done.status).toBe("success");
     expect(calls).toHaveLength(2);
     expect(waits).toEqual([1000]);

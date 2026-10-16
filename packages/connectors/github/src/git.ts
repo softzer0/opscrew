@@ -77,10 +77,6 @@ export class GitClient {
     }
   }
 
-  async root(): Promise<string> {
-    return (await this.#run(["rev-parse", "--show-toplevel"])).stdout.trim();
-  }
-
   /** Current branch name, or `HEAD` when detached. */
   async currentBranch(): Promise<string> {
     return (await this.#run(["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();

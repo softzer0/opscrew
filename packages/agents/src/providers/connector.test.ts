@@ -72,7 +72,6 @@ describe("a server the user owns", () => {
     expect(connector.servers).toBeUndefined();
     expect(connector.credentials.envVars).toEqual([]);
     expect(connector.credentials.description).toMatch(/never asks for or stores a password/);
-    expect(connector.tools()).toEqual([]);
     const check = await connector.verifyCredentials();
     expect(check.ok).toBe(true);
     expect(check.message).toContain("as admin on port 2222 with the key in your SSH agent");

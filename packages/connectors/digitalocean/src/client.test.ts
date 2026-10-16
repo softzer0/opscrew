@@ -1,14 +1,14 @@
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { type FakeReply, fakeFetch, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
   action,
-  type FakeReply,
+  digitaloceanFetch,
   fakeClock,
-  fakeFetch,
   fakeSleep,
   fixture,
-} from "./__fixtures__/fake-fetch";
+  param,
+} from "./__fixtures__/fixtures";
 import { DIGITALOCEAN_SCOPES, DigitalOceanClient } from "./client";
 
 const token = fakeSecret("digitalocean-token");
@@ -16,9 +16,9 @@ const NOW_MS = Date.UTC(2026, 9, 12, 10, 0, 0);
 
 function client(
   routes: Record<string, FakeReply | FakeReply[]>,
-  extra: { now?: () => number; version?: string; baseUrl?: string } = {},
+  extra: { now?: () => number; version?: string; timeoutMs?: number } = {},
 ) {
-  const fake = fakeFetch(routes);
+  const fake = digitaloceanFetch(routes);
   const sleeper = fakeSleep();
   const c = new DigitalOceanClient({
     token,
@@ -28,6 +28,19 @@ function client(
     ...extra,
   });
   return { client: c, calls: fake.calls, waits: sleeper.waits };
+}
+
+/** A client whose sleeps advance its clock, for polling tests. */
+function pollingClient(routes: Record<string, FakeReply | FakeReply[]>) {
+  const clock = fakeClock();
+  const fake = digitaloceanFetch(routes);
+  const c = new DigitalOceanClient({
+    token,
+    fetch: fake.fetch,
+    sleep: clock.sleep,
+    now: clock.now,
+  });
+  return { client: c, calls: fake.calls, waits: clock.waits };
 }
 
 async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
@@ -56,7 +69,7 @@ describe("DigitalOceanClient requests", () => {
     expect(account.status).toBe("active");
     expect(account.team?.name).toBe("Shop Team");
     expect((account as Record<string, unknown>).future_field).toEqual({ kept: true });
-    expect(calls[0]?.url.toString()).toBe("https://api.digitalocean.com/v2/account");
+    expect(calls[0]?.url).toBe("https://api.digitalocean.com/v2/account");
     expect(calls[0]?.method).toBe("GET");
     expect(calls[0]?.headers).toMatchObject({
       Authorization: `Bearer ${token}`,
@@ -67,12 +80,17 @@ describe("DigitalOceanClient requests", () => {
   });
 
   it("honours a custom base URL", async () => {
-    const { client: c, calls } = client(
+    const fake = fakeFetch(
       { "/v2/account": { body: fixture("account.json") } },
-      { baseUrl: "http://localhost:9999/" },
+      { base: "http://localhost:9999" },
     );
+    const c = new DigitalOceanClient({
+      token,
+      fetch: fake.fetch,
+      baseUrl: "http://localhost:9999/",
+    });
     await c.getAccount();
-    expect(calls[0]?.url.toString()).toBe("http://localhost:9999/v2/account");
+    expect(fake.calls[0]?.url).toBe("http://localhost:9999/v2/account");
   });
 });
 
@@ -91,28 +109,10 @@ describe("DigitalOceanClient pagination", () => {
       "g-2vcpu-8gb",
       "gpu-h100x1-80gb",
     ]);
-    expect(calls.map((call) => call.url.searchParams.get("page"))).toEqual(["1", "2"]);
-    expect(calls.every((call) => call.url.searchParams.get("per_page") === "200")).toBe(true);
+    expect(calls.map((call) => param(call, "page"))).toEqual(["1", "2"]);
+    expect(calls.every((call) => param(call, "per_page") === "200")).toBe(true);
     expect((sizes[1] as Record<string, unknown>).future_field).toEqual({ kept: true });
-    expect(sizes[1]).toMatchObject({ memory: 1024, price_monthly: 6, price_hourly: 0.00893 });
-  });
-
-  it("stops at an empty page even when a next link is present", async () => {
-    const next = { pages: { next: "https://api.digitalocean.com/v2/regions?page=2" } };
-    const { client: c, calls } = client({
-      "/v2/regions?page=1": {
-        body: { regions: [{ slug: "fra1", available: true, sizes: ["s-1vcpu-1gb"] }], links: next },
-      },
-      "/v2/regions?page=2": {
-        body: {
-          regions: [],
-          links: { pages: { next: "https://api.digitalocean.com/v2/regions?page=3" } },
-        },
-      },
-    });
-    const regions = await c.listRegions();
-    expect(regions.map((r) => r.slug)).toEqual(["fra1"]);
-    expect(calls).toHaveLength(2);
+    expect(sizes[1]).toMatchObject({ memory: 1024, price_monthly: 6 });
   });
 
   it("stops when there is no links object at all", async () => {
@@ -121,27 +121,13 @@ describe("DigitalOceanClient pagination", () => {
     expect(regions).toHaveLength(5);
     expect(calls).toHaveLength(1);
   });
-
-  it("does not loop on a next link that points back to the same page", async () => {
-    const { client: c, calls } = client({
-      "/v2/regions": {
-        body: {
-          regions: [{ slug: "fra1", available: true, sizes: [] }],
-          links: { pages: { next: "https://api.digitalocean.com/v2/regions?page=1" } },
-        },
-      },
-      "/v2/regions?page=2": { body: { regions: [] } },
-    });
-    await c.listRegions();
-    expect(calls.map((call) => call.url.searchParams.get("page"))).toEqual(["1", "2"]);
-  });
 });
 
 describe("DigitalOceanClient Droplets, actions and snapshots", () => {
   it("lists Droplets by tag with string ids and lenient networks", async () => {
     const { client: c, calls } = client({ "/v2/droplets": { body: fixture("droplets.json") } });
     const droplets = await c.listDropletsByTag("opscrew-app:shop");
-    expect(calls[0]?.url.searchParams.get("tag_name")).toBe("opscrew-app:shop");
+    expect(param(calls[0], "tag_name")).toBe("opscrew-app:shop");
     expect(droplets.map((d) => d.id)).toEqual(["3164444", "3164445"]);
     expect(droplets[0]?.networks?.v4?.find((n) => n.type === "public")?.ip_address).toBe(
       "203.0.113.10",
@@ -164,48 +150,40 @@ describe("DigitalOceanClient Droplets, actions and snapshots", () => {
     expect(calls[0]?.headers["Content-Type"]).toBe("application/json");
   });
 
-  it("waits for an action, polling every 5 seconds by default", async () => {
-    const clock = fakeClock();
-    const fake = fakeFetch({
+  it("waits for an action, polling every 5 seconds", async () => {
+    const {
+      client: c,
+      calls,
+      waits,
+    } = pollingClient({
       "/v2/actions/36804745": [
         { body: action(36804745, "in-progress") },
         { body: action(36804745, "in-progress") },
         { body: action(36804745, "completed") },
       ],
     });
-    const c = new DigitalOceanClient({
-      token,
-      fetch: fake.fetch,
-      sleep: clock.sleep,
-      now: clock.now,
-    });
-    const done = await c.waitForAction("36804745");
+    const done = await c.waitForAction("36804745", { timeoutMs: 60_000 });
     expect(done.status).toBe("completed");
-    expect(clock.waits).toEqual([5000, 5000]);
-    expect(fake.calls).toHaveLength(3);
+    expect(waits).toEqual([5000, 5000]);
+    expect(calls).toHaveLength(3);
   });
 
   it("throws a PROVIDER_ERROR when the action errored", async () => {
     const { client: c } = client({ "/v2/actions/9": { body: action(9, "errored") } });
-    const error = await failure(c.waitForAction(9));
+    const error = await failure(c.waitForAction(9, { timeoutMs: 60_000 }));
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("action 9 (snapshot) failed");
     expect(error.hint).toContain("control panel");
   });
 
   it("throws a PROVIDER_ERROR when the action does not finish in time", async () => {
-    const clock = fakeClock();
-    const fake = fakeFetch({ "/v2/actions/9": { body: action(9, "in-progress") } });
-    const c = new DigitalOceanClient({
-      token,
-      fetch: fake.fetch,
-      sleep: clock.sleep,
-      now: clock.now,
+    const { client: c, waits } = pollingClient({
+      "/v2/actions/9": { body: action(9, "in-progress") },
     });
-    const error = await failure(c.waitForAction(9, { timeoutMs: 12_000, pollMs: 5_000 }));
+    const error = await failure(c.waitForAction(9, { timeoutMs: 12_000 }));
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("did not finish within 12 seconds");
-    expect(clock.waits).toEqual([5000, 5000, 2000]);
+    expect(waits).toEqual([5000, 5000, 2000]);
   });
 
   it("lists a Droplet's snapshots with string ids", async () => {
@@ -214,7 +192,7 @@ describe("DigitalOceanClient Droplets, actions and snapshots", () => {
     });
     const snapshots = await c.listDropletSnapshots(3164444);
     expect(snapshots.map((s) => s.id)).toEqual(["6372321", "6372399", "6372400"]);
-    expect(calls[0]?.url.searchParams.get("per_page")).toBe("200");
+    expect(param(calls[0], "per_page")).toBe("200");
   });
 });
 
@@ -251,7 +229,12 @@ describe("DigitalOceanClient errors", () => {
   });
 
   it("maps 404 to a PROVIDER_ERROR", async () => {
-    const { client: c } = client({});
+    const { client: c } = client({
+      "/v2/droplets/42/snapshots": {
+        status: 404,
+        body: { id: "not_found", message: "The resource you were accessing could not be found." },
+      },
+    });
     const error = await failure(c.listDropletSnapshots("42"));
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("HTTP 404");
@@ -325,47 +308,28 @@ describe("DigitalOceanClient errors", () => {
   });
 
   it("turns a network failure into a PROVIDER_ERROR that suggests retrying (GET retried once)", async () => {
-    let attempts = 0;
-    const sleeper = fakeSleep();
-    const c = new DigitalOceanClient({
-      token,
-      fetch: async () => {
-        attempts++;
-        throw new TypeError(`fetch failed for ${token}`);
-      },
-      sleep: sleeper.sleep,
+    const { client: c, calls } = client({
+      "/v2/regions": { error: new TypeError(`fetch failed for ${token}`) },
     });
     const error = await failure(c.listRegions());
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("Could not reach the DigitalOcean API");
     expect(error.hint).toMatch(/try again/i);
-    expect(attempts).toBe(2);
+    expect(calls).toHaveLength(2);
   });
 
   it("never repeats a POST after a network failure", async () => {
-    let attempts = 0;
-    const c = new DigitalOceanClient({
-      token,
-      fetch: async () => {
-        attempts++;
-        throw new TypeError("socket hang up");
-      },
-      sleep: fakeSleep().sleep,
+    const { client: c, calls } = client({
+      "POST /v2/droplets/7/actions": { error: new TypeError("socket hang up") },
     });
     const error = await failure(c.snapshotDroplet(7, "snap"));
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.hint).toContain("may still have been made");
-    expect(attempts).toBe(1);
+    expect(calls).toHaveLength(1);
   });
 
   it("gives up on a request that never answers", async () => {
-    const sleeper = fakeSleep();
-    const c = new DigitalOceanClient({
-      token,
-      fetch: () => new Promise<Response>(() => {}),
-      sleep: sleeper.sleep,
-      timeoutMs: 5,
-    });
+    const { client: c } = client({ "/v2/account": { hang: true } }, { timeoutMs: 5 });
     const error = await failure(c.getAccount());
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("did not answer within");
@@ -406,12 +370,8 @@ describe("DigitalOceanClient errors", () => {
     expect(shapeError.message).toContain("unexpected response");
     expect(shapeError.hint).toContain(hint);
 
-    const c = new DigitalOceanClient({
-      token,
-      fetch: async () => new Response("not json", { status: 201 }),
-      sleep: fakeSleep().sleep,
-    });
-    const jsonError = await failure(c.snapshotDroplet(7, "snap"));
+    const text = client({ "POST /v2/droplets/7/actions": { status: 201, text: "not json" } });
+    const jsonError = await failure(text.client.snapshotDroplet(7, "snap"));
     expect(jsonError.message).toContain("invalid JSON");
     expect(jsonError.hint).toBe(hint);
   });

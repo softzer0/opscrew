@@ -126,7 +126,6 @@ export function ownServerConnector(options: OwnServerConnectorOptions = {}): Vps
         message: `No API token is needed: OpsCrew connects to your server over SSH as ${login.user} on port ${login.port} with ${keyText(login)}. \`opscrew provision\` checks the connection and asks you to confirm the server's host key.`,
       };
     },
-    tools: () => [],
     catalog: () => ownServerCatalog(facts, currency, now),
     servers: undefined,
   };

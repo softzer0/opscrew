@@ -1,7 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { fakeFetch, fakeSleep, fixture } from "./__fixtures__/fake-fetch";
+import { fakeSleep, fixture, hetznerFetch } from "./__fixtures__/fixtures";
 import { HetznerCatalog, StaticHetznerCatalog } from "./catalog";
 import { HetznerClient } from "./client";
 import { STATIC_PRICES_AS_OF } from "./static-prices";
@@ -9,7 +9,7 @@ import { STATIC_PRICES_AS_OF } from "./static-prices";
 const NOW = new Date("2026-10-11T12:00:00.000Z");
 
 function liveCatalog() {
-  const fake = fakeFetch({
+  const fake = hetznerFetch({
     "/server_types?page=1": { body: fixture("server-types-page1.json") },
     "/server_types?page=2": { body: fixture("server-types-page2.json") },
     "/locations": { body: fixture("locations.json") },
@@ -44,12 +44,9 @@ describe("HetznerCatalog (live)", () => {
       cpuType: "shared",
       architecture: "x86",
       monthly: { amount: 5.49, currency: "EUR" },
-      hourly: { amount: 0.0088, currency: "EUR" },
       pricesIncludeVat: false,
-      includedTrafficTb: 20,
       source: "live",
       asOf: NOW.toISOString(),
-      recommended: true,
     });
   });
 
@@ -78,35 +75,22 @@ describe("HetznerCatalog (live)", () => {
     const fsn1 = await catalog.listOffers("fsn1");
     expect(fsn1.map((o) => o.id)).toEqual(["cx23", "cax11"]);
     await catalog.listOffers("nbg1");
-    expect(calls.filter((c) => c.url.pathname.endsWith("/server_types"))).toHaveLength(2);
+    expect(calls.filter((c) => c.path.startsWith("/server_types?"))).toHaveLength(2);
   });
 
   it("maps locations", async () => {
     const { catalog } = liveCatalog();
     expect(await catalog.listLocations()).toEqual([
-      {
-        id: "fsn1",
-        name: "Falkenstein",
-        city: "Falkenstein",
-        country: "DE",
-        networkZone: "eu-central",
-      },
-      {
-        id: "ash",
-        name: "Ashburn, VA",
-        city: "Ashburn, VA",
-        country: "US",
-        networkZone: "us-east",
-      },
+      { id: "fsn1", name: "Falkenstein", country: "DE" },
+      { id: "ash", name: "Ashburn, VA", country: "US" },
     ]);
   });
 
-  it("reads extras: IPv4 per location, backup percent and volume price", async () => {
+  it("reads extras: IPv4 per location and backup percent", async () => {
     const { catalog } = liveCatalog();
     expect(await catalog.extras("fsn1")).toEqual({
       ipv4Monthly: { amount: 0.5, currency: "EUR" },
       backupPercent: 20,
-      volumePerGbMonthly: { amount: 0.044, currency: "EUR" },
       pricesIncludeVat: false,
       source: "live",
       asOf: NOW.toISOString(),
@@ -144,7 +128,6 @@ describe("StaticHetznerCatalog", () => {
       cpuType: "shared",
       architecture: "x86",
       monthly: { amount: 5.49, currency: "EUR" },
-      hourly: { amount: 0.0088, currency: "EUR" },
     });
     expect((await find("hel1", "cpx22"))?.monthly.amount).toBe(19.49);
     expect((await find("sin", "cpx22"))?.monthly.amount).toBe(26.49);
@@ -152,7 +135,6 @@ describe("StaticHetznerCatalog", () => {
     expect(await find("hil", "ccx63")).toMatchObject({
       cpuType: "dedicated",
       monthly: { amount: 859.99 },
-      hourly: { amount: 1.3782 },
     });
     expect((await find("fsn1", "cax11"))?.architecture).toBe("arm");
   });

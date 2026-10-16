@@ -24,8 +24,6 @@ const token = process.env.OPSCREW_E2E_HCLOUD_TOKEN;
 
 /** `5.49` for a monthly price; the table keeps cents. */
 const cents = (amount: number) => Math.round(amount * 100);
-/** Hourly prices are kept to four decimals in the table. */
-const tenThousandths = (amount: number) => Math.round(amount * 10_000);
 
 /** True when the API says the type can no longer be ordered in `location` (or anywhere). */
 function deprecatedIn(type: HetznerServerType, location: string): boolean {
@@ -37,10 +35,10 @@ function deprecatedIn(type: HetznerServerType, location: string): boolean {
 }
 
 /**
- * Every difference between the static table and the live API: locations, server types and their
- * specs, monthly (to the cent) and hourly (to the table's four decimals) net prices per location,
- * the primary IPv4 price and the backup percentage. Deprecated live types are not expected in the
- * table; a table entry the API marks deprecated is a difference.
+ * Every difference between the static table and the live API: locations and their country, server
+ * types and their specs, monthly net prices (to the cent) per location, the primary IPv4 price and
+ * the backup percentage. Deprecated live types are not expected in the table; a table entry the
+ * API marks deprecated is a difference.
  */
 function compareWithLive(
   types: readonly HetznerServerType[],
@@ -49,7 +47,7 @@ function compareWithLive(
 ): string[] {
   const out: string[] = [];
 
-  // Locations: both sides, plus country, city and network zone.
+  // Locations: both sides, plus the country.
   const liveLocations = new Map(locations.map((l) => [l.name, l]));
   for (const ours of STATIC_LOCATIONS) {
     const live = liveLocations.get(ours.id);
@@ -59,14 +57,6 @@ function compareWithLive(
     }
     if (live.country !== ours.country) {
       out.push(`Location ${ours.id}: country ${ours.country} in the table, ${live.country} live.`);
-    }
-    if (live.city !== undefined && live.city !== ours.city) {
-      out.push(`Location ${ours.id}: city "${ours.city}" in the table, "${live.city}" live.`);
-    }
-    if (live.network_zone !== undefined && live.network_zone !== ours.networkZone) {
-      out.push(
-        `Location ${ours.id}: network zone ${ours.networkZone} in the table, ${live.network_zone} live.`,
-      );
     }
   }
   const ourLocationIds = new Set(STATIC_LOCATIONS.map((l) => l.id));
@@ -100,11 +90,11 @@ function compareWithLive(
     for (const ours of STATIC_SERVER_TYPES) {
       const live = liveTypes.get(ours.name);
       if (live === undefined) continue;
-      const table = ours.prices[location.group];
+      const monthly = ours.prices[location.group];
       const price = live.prices.find((p) => p.location === location.id);
       const sold = price !== undefined && !deprecatedIn(live, location.id);
       const where = `${ours.name} in ${location.id} (${location.group} group)`;
-      if (table === undefined) {
+      if (monthly === undefined) {
         if (sold) out.push(`${where}: sold live, missing from the table.`);
         continue;
       }
@@ -113,12 +103,8 @@ function compareWithLive(
         continue;
       }
       if (!sold) out.push(`${where}: in the table, deprecated live.`);
-      const [monthly, hourly] = table;
       if (cents(monthly) !== cents(price.price_monthly.net)) {
         out.push(`${where}: monthly €${monthly} in the table, €${price.price_monthly.net} live.`);
-      }
-      if (tenThousandths(hourly) !== tenThousandths(price.price_hourly.net)) {
-        out.push(`${where}: hourly €${hourly} in the table, €${price.price_hourly.net} live.`);
       }
     }
   }
@@ -172,24 +158,15 @@ function apiFromTable(): {
     cpu_type: type.cpuType,
     architecture: type.architecture,
     prices: STATIC_LOCATIONS.flatMap((location) => {
-      const price = type.prices[location.group];
-      if (price === undefined) return [];
-      const [monthly, hourly] = price;
-      return [
-        {
-          location: location.id,
-          price_monthly: { net: monthly, gross: monthly },
-          price_hourly: { net: hourly, gross: hourly },
-        },
-      ];
+      const monthly = type.prices[location.group];
+      if (monthly === undefined) return [];
+      return [{ location: location.id, price_monthly: { net: monthly, gross: monthly } }];
     }),
   }));
   const locations = STATIC_LOCATIONS.map((location, id) => ({
     id,
     name: location.id,
     country: location.country,
-    city: location.city,
-    network_zone: location.networkZone,
   }));
   const ipv4 = { net: STATIC_IPV4_MONTHLY_EUR, gross: STATIC_IPV4_MONTHLY_EUR };
   const pricing = {

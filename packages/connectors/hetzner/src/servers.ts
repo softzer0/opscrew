@@ -3,18 +3,15 @@ import { OpsCrewError } from "@opscrew/core";
 import type { HetznerClient } from "./client";
 
 /** Default wait for a snapshot to finish (15 minutes). */
-export const SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
-
-/** Label selector for the servers OpsCrew created for `app`. */
-export function appServerSelector(app: string): string {
-  return `managed-by=opscrew,app=${app}`;
-}
+const SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
 
 /** Server lookup and snapshots for the provider-neutral teardown, backed by `HetznerClient`. */
 export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
   return {
     async findAppServers(app: string): Promise<AppServer[]> {
-      const servers = await client.listServers({ labelSelector: appServerSelector(app) });
+      const servers = await client.listServers({
+        labelSelector: `managed-by=opscrew,app=${app}`,
+      });
       return servers.map((server) => ({
         id: String(server.id),
         name: server.name,

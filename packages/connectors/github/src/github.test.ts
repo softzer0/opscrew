@@ -1,45 +1,25 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CommandRunner, FetchLike } from "@opscrew/contracts";
+import type { CommandRunner } from "@opscrew/contracts";
 import { findExecutable, NodeCommandRunner, OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { fakeFetch as coreFakeFetch, type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import sodium from "libsodium-wrappers";
 import { describe, expect, it } from "vitest";
+import { GITHUB_API } from "./github";
 import {
   GitClient,
   GitHubClient,
   githubConnector,
   parseGitHubRepo,
   resolveGitHubToken,
-  sealSecret,
 } from "./index";
+import { sealSecret } from "./seal";
 
 const TOKEN = fakeSecret("github-token");
 
-type Recorded = { method: string; url: string; headers: Record<string, string>; body?: unknown };
-
-function fakeFetch(routes: Record<string, { status?: number; body?: unknown }>) {
-  const calls: Recorded[] = [];
-  const fetch: FetchLike = async (input, init) => {
-    const url = String(input);
-    const method = init?.method ?? "GET";
-    calls.push({
-      method,
-      url,
-      headers: (init?.headers ?? {}) as Record<string, string>,
-      ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
-    });
-    const path = url.replace("https://api.github.com", "");
-    const key = Object.keys(routes).find((k) => `${method} ${path}`.startsWith(k));
-    if (!key) throw new Error(`unrouted ${method} ${path}`);
-    const route = routes[key] as { status?: number; body?: unknown };
-    return new Response(route.body === undefined ? null : JSON.stringify(route.body), {
-      status: route.status ?? 200,
-    });
-  };
-  return { fetch, calls };
-}
+const fakeFetch = (routes: Record<string, FakeReply | FakeReply[]>) =>
+  coreFakeFetch(routes, { base: GITHUB_API });
 
 describe("parseGitHubRepo", () => {
   it("handles https, ssh and scp-like remotes", () => {
@@ -248,6 +228,17 @@ describe("GitHubClient", () => {
     expect(JSON.stringify(error)).not.toContain(TOKEN);
   });
 
+  it("gives up on a request that never answers", async () => {
+    const { fetch } = fakeFetch({ "GET /repos/acme/shop": { hang: true } });
+    const error = (await new GitHubClient({ token: TOKEN, fetch, timeoutMs: 5 })
+      .getRepo("acme", "shop")
+      .catch((e: unknown) => e)) as OpsCrewError;
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("GitHub did not answer within");
+    expect(error.message).toContain("read acme/shop");
+  });
+
   it("produces sealed boxes in base64", async () => {
     await sodium.ready;
     const pair = sodium.crypto_box_keypair();
@@ -276,11 +267,10 @@ describe("resolveGitHubToken", () => {
 });
 
 describe("githubConnector", () => {
-  it("verifies the token and redacts tool output", async () => {
+  it("verifies the token", async () => {
     const { fetch } = fakeFetch({ "GET /user": { body: { login: "octocat" } } });
     const connector = githubConnector({ token: TOKEN, fetch });
     expect(await connector.verifyCredentials()).toMatchObject({ ok: true, identity: "octocat" });
-    expect(connector.tools().map((t) => t.name)).toEqual(["github_repo_info"]);
     expect(await githubConnector({ token: undefined, fetch }).verifyCredentials()).toMatchObject({
       ok: false,
     });

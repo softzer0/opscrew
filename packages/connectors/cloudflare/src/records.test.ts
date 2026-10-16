@@ -1,18 +1,11 @@
 import type { FetchLike, RegistrarDnsRecord } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { type FakeReply, fakeFetch, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import {
-  type ActivationCheckResult,
-  CloudflareClient,
-  detectPublicIpv4,
-  mapRegistrarRecord,
-  mapRegistrarRecords,
-  quoteTxt,
-} from "./index";
+import { type ActivationCheckResult, CLOUDFLARE_API, CloudflareClient } from "./client";
+import { detectPublicIpv4, mapRegistrarRecord, mapRegistrarRecords, quoteTxt } from "./records";
 
 const TOKEN = fakeSecret("cloudflare-token");
-const API = "https://api.cloudflare.com/client/v4";
 const ZONE = "example.com";
 
 const rec = (
@@ -217,34 +210,13 @@ describe("mapRegistrarRecords", () => {
   });
 });
 
-/** Fake fetch routed by "METHOD path"; each route may be a queue. */
-function fakeFetch(routes: Record<string, { status?: number; body: unknown }[]>) {
-  const calls: { method: string; path: string; body: unknown }[] = [];
-  const fetch: FetchLike = async (input, init) => {
-    const path = String(input).replace(API, "");
-    const method = init?.method ?? "GET";
-    calls.push({
-      method,
-      path,
-      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
-    });
-    const queue = routes[`${method} ${path}`];
-    const route = queue && (queue.length > 1 ? queue.shift() : queue[0]);
-    if (!route) throw new Error(`unrouted ${method} ${path}`);
-    return new Response(JSON.stringify(route.body), {
-      status: route.status ?? 200,
-      headers: { "content-type": "application/json" },
-    });
-  };
-  return { fetch, calls };
-}
 const ok = (result: unknown) => ({ body: { success: true, errors: [], messages: [], result } });
 const fail = (status: number, message: string, code = 1000) => ({
   status,
   body: { success: false, errors: [{ code, message }], messages: [], result: null },
 });
-const client = (routes: Record<string, { status?: number; body: unknown }[]>) => {
-  const fake = fakeFetch(routes);
+const client = (routes: Record<string, FakeReply[]>) => {
+  const fake = fakeFetch(routes, { base: CLOUDFLARE_API });
   const sleeps: number[] = [];
   const cf = new CloudflareClient({
     token: TOKEN,

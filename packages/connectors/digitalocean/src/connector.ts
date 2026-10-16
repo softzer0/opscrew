@@ -1,16 +1,14 @@
 import type {
-  AnyToolDefinition,
   AppServer,
   ComputeCatalog,
   CredentialCheck,
   CredentialRequirement,
+  FetchLike,
   ServerSnapshotApi,
   SnapshotRequest,
-  ToolDefinition,
   VpsConnector,
 } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, Redactor } from "@opscrew/core";
-import { z } from "zod";
 import { DigitalOceanCatalog, StaticDigitalOceanCatalog } from "./catalog";
 import {
   DIGITALOCEAN_SCOPES,
@@ -18,7 +16,6 @@ import {
   type DigitalOceanAccount,
   DigitalOceanClient,
   type DigitalOceanSnapshot,
-  type FetchLike,
   SCOPE_HINT,
 } from "./client";
 
@@ -61,9 +58,9 @@ export interface DigitalOceanConnector extends VpsConnector {
 }
 
 /**
- * Creates the DigitalOcean connector: credential check, live (or dated static) catalogue,
- * Droplet lookup and snapshots, and read-only catalogue tools. The token comes from
- * `DIGITALOCEAN_TOKEN`, else `DIGITALOCEAN_ACCESS_TOKEN`, and is registered with the redactor.
+ * Creates the DigitalOcean connector: credential check, live (or dated static) catalogue, and
+ * Droplet lookup and snapshots. The token comes from `DIGITALOCEAN_TOKEN`, else
+ * `DIGITALOCEAN_ACCESS_TOKEN`, and is registered with the redactor.
  */
 export function digitaloceanConnector(
   options: DigitalOceanConnectorOptions,
@@ -85,56 +82,6 @@ export function digitaloceanConnector(
         });
 
   let catalog: ComputeCatalog | undefined;
-  const getCatalog = (): ComputeCatalog => {
-    catalog ??=
-      client === undefined
-        ? new StaticDigitalOceanCatalog()
-        : new DigitalOceanCatalog(client, options.now ? { now: options.now } : {});
-    return catalog;
-  };
-
-  const sourceNote = (): string =>
-    client === undefined
-      ? `Static DigitalOcean price table dated ${new StaticDigitalOceanCatalog().asOf.slice(0, 10)} (DIGITALOCEAN_TOKEN not set; availability not checked). Prices are USD excluding tax.`
-      : "Live data from the DigitalOcean API. Prices are USD excluding tax.";
-
-  const userMessage = (error: unknown, fallback: string): string =>
-    redactor.redact(
-      isUserFacingError(error) ? `${error.message}${error.hint ? ` ${error.hint}` : ""}` : fallback,
-    );
-
-  const run = async (produce: () => Promise<unknown>) => {
-    try {
-      const data = await produce();
-      return { text: redactor.redact(`${sourceNote()}\n${JSON.stringify(data, null, 2)}`) };
-    } catch (error) {
-      const fallback = `Unexpected error: ${error instanceof Error ? error.message : String(error)}`;
-      return { text: userMessage(error, fallback), isError: true };
-    }
-  };
-
-  const listLocations: ToolDefinition<z.ZodObject<Record<string, never>>> = {
-    name: "digitalocean_list_locations",
-    description: "List DigitalOcean Droplet regions (id, city, country). Read-only.",
-    inputSchema: z.object({}),
-    mutates: false,
-    handler: () => run(() => getCatalog().listLocations()),
-  };
-
-  const offersInput = z.object({
-    location: z
-      .string()
-      .optional()
-      .describe("DigitalOcean region slug such as fra1, ams3, lon1, nyc3 or sfo3. Omit for all."),
-  });
-  const listOffers: ToolDefinition<typeof offersInput> = {
-    name: "digitalocean_list_offers",
-    description:
-      "List DigitalOcean Droplet sizes (Basic and CPU-Optimized) with vCPU, memory, disk, monthly USD price and included transfer for one or all regions. Read-only.",
-    inputSchema: offersInput,
-    mutates: false,
-    handler: (input) => run(() => getCatalog().listOffers(input.location)),
-  };
 
   return {
     id: "digitalocean",
@@ -143,7 +90,13 @@ export function digitaloceanConnector(
     configured: client !== undefined,
     client,
     servers: client === undefined ? undefined : serverApi(client, options.sleep ?? defaultSleep),
-    catalog: getCatalog,
+    catalog: () => {
+      catalog ??=
+        client === undefined
+          ? new StaticDigitalOceanCatalog()
+          : new DigitalOceanCatalog(client, options.now ? { now: options.now } : {});
+      return catalog;
+    },
     async verifyCredentials(): Promise<CredentialCheck> {
       if (client === undefined) {
         return {
@@ -155,15 +108,12 @@ export function digitaloceanConnector(
       try {
         account = await client.getAccount();
       } catch (error) {
-        return {
-          ok: false,
-          message: userMessage(error, "Could not check the DigitalOcean API token."),
-        };
+        const message = isUserFacingError(error)
+          ? `${error.message}${error.hint ? ` ${error.hint}` : ""}`
+          : "Could not check the DigitalOcean API token.";
+        return { ok: false, message: redactor.redact(message) };
       }
       return redactor.redactDeep(accountCheck(account));
-    },
-    tools(): AnyToolDefinition[] {
-      return [listLocations, listOffers];
     },
   };
 }

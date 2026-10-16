@@ -1,50 +1,20 @@
-import type { FetchLike, Registrar } from "@opscrew/contracts";
+import type { Registrar } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { fakeFetch as coreFakeFetch, type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import {
-  CLOUDFLARE_REGISTRAR_PERMISSIONS,
-  CloudflareClient,
-  CloudflareRegistrar,
-  cloudflareConnector,
-  registrarReasonText,
-} from "./index";
+import { CLOUDFLARE_API, CLOUDFLARE_REGISTRAR_PERMISSIONS, CloudflareClient } from "./client";
+import { cloudflareConnector } from "./connector";
+import { CloudflareRegistrar } from "./registrar";
+import { registrarReasonText } from "./registrar-parse";
 
 const TOKEN = fakeSecret("cloudflare-token");
-const API = "https://api.cloudflare.com/client/v4";
 const ACCOUNT = "acc123";
 const REG = `/accounts/${ACCOUNT}/registrar`;
+const networkError: FakeReply = { error: new TypeError("fetch failed") };
 
-/** `raw` sends a non-JSON body instead of `body`. */
-type Route = { status?: number; body?: unknown; raw?: string } | "network-error";
-interface Call {
-  method: string;
-  path: string;
-  headers: Record<string, string>;
-  body: unknown;
-}
-
-/** Fake fetch routed by "METHOD path" (exact path incl. query); each route may be a queue. */
-function fakeFetch(routes: Record<string, Route | Route[]>) {
-  const calls: Call[] = [];
-  const fetch: FetchLike = async (input, init) => {
-    const path = String(input).replace(API, "");
-    const method = init?.method ?? "GET";
-    const headers = (init?.headers ?? {}) as Record<string, string>;
-    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
-    calls.push({ method, path, headers, body });
-    const entry = routes[`${method} ${path}`];
-    if (entry === undefined) throw new Error(`unrouted ${method} ${path}`);
-    const route = Array.isArray(entry) ? (entry.length > 1 ? entry.shift() : entry[0]) : entry;
-    if (!route) throw new Error(`empty route ${method} ${path}`);
-    if (route === "network-error") throw new TypeError("fetch failed");
-    return new Response(route.raw ?? JSON.stringify(route.body), {
-      status: route.status ?? 200,
-      headers: { "content-type": "application/json" },
-    });
-  };
-  return { fetch, calls };
-}
+/** Fake Cloudflare API routed by "METHOD path?query" prefix; each route may be a queue. */
+const fakeFetch = (routes: Record<string, FakeReply | FakeReply[]>) =>
+  coreFakeFetch(routes, { base: CLOUDFLARE_API });
 
 const ok = (result: unknown, status = 200, extra: Record<string, unknown> = {}) => ({
   status,
@@ -56,7 +26,7 @@ const fail = (status: number, errors: { code?: number | string; message?: string
 });
 const noSleep = async () => {};
 const client = (
-  routes: Record<string, Route | Route[]>,
+  routes: Record<string, FakeReply | FakeReply[]>,
   options: { registrarSandbox?: boolean } = {},
 ) => {
   const fake = fakeFetch(routes);
@@ -169,12 +139,14 @@ describe("CloudflareClient registrar calls", () => {
 
   it("never offers a domain it cannot price or that is premium", async () => {
     const { cf } = client({
-      [`POST ${REG}/domain-check`]: ok([
-        { name: "a.com", registrable: true, tier: "premium", pricing: pricing("900.00", "900") },
-        { name: "b.com", registrable: true },
-        { name: "c.com", registrable: true, pricing: pricing("8.00", "8.00", "JPY") },
-        { name: "d.com", registrable: true, pricing: pricing("$9.15", "", "usd") },
-      ]),
+      [`POST ${REG}/domain-check`]: ok({
+        domains: [
+          { name: "a.com", registrable: true, tier: "premium", pricing: pricing("900.00", "900") },
+          { name: "b.com", registrable: true },
+          { name: "c.com", registrable: true, pricing: pricing("8.00", "8.00", "JPY") },
+          { name: "d.com", registrable: true, pricing: pricing("$9.15", "", "usd") },
+        ],
+      }),
     });
     const [a, b, c, d] = await cf.domainCheck(ACCOUNT, ["a.com", "b.com", "c.com", "d.com"]);
     expect(a).toMatchObject({ registrable: false, tier: "premium" });
@@ -190,11 +162,11 @@ describe("CloudflareClient registrar calls", () => {
   it("splits more than 20 domains into batches and keeps the input order", async () => {
     const domains = Array.from({ length: 45 }, (_, i) => `name${i}.com`);
     const answer = (names: string[]) =>
-      ok(
-        [...names]
+      ok({
+        domains: [...names]
           .reverse()
           .map((name) => ({ name, registrable: true, pricing: pricing("10", "10") })),
-      );
+      });
     const { cf, calls } = client({
       [`POST ${REG}/domain-check`]: [
         answer(domains.slice(0, 20)),
@@ -213,7 +185,7 @@ describe("CloudflareClient registrar calls", () => {
     const sandbox = `/accounts/${ACCOUNT}/registrar-sandbox`;
     const { cf, calls } = client(
       {
-        [`POST ${sandbox}/domain-check`]: ok([]),
+        [`POST ${sandbox}/domain-check`]: ok({ domains: [] }),
         [`GET ${sandbox}/domain-search?q=my+app`]: ok({ domains: [] }),
         [`GET ${sandbox}/extensions/com`]: ok({}),
         [`POST ${sandbox}/registrations`]: ok({ domain_name: "a.com", state: "pending" }, 202),
@@ -323,7 +295,6 @@ describe("CloudflareClient registrar calls", () => {
     expect(await cf.createRegistration(ACCOUNT, done)).toEqual({
       domain: "done.com",
       state: "in_progress",
-      message: 'Cloudflare reported the state "active".',
     });
     expect(await cf.createRegistration(ACCOUNT, done)).toEqual({
       domain: "done.com",
@@ -342,20 +313,21 @@ describe("CloudflareClient registrar calls", () => {
     privacy_mode: "off",
   } as const;
 
-  /** Asserts the error says the registration may have started and names the status command. */
+  /** Asserts the error says the purchase may have started and names the status command. */
   async function mayHaveStarted(promise: Promise<unknown>) {
     const error = await plainError(promise);
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain(
-      "The registration may still have started; check its status before trying again.",
+      "The purchase may still have started; check its status before trying again.",
     );
     expect(error.hint).toContain("opscrew domain status");
+    expect(error.hint).toContain("dash.cloudflare.com");
     return error;
   }
 
   it("never retries a registration after a server or network error", async () => {
     const { cf, calls } = client({
-      [`POST ${REG}/registrations`]: [fail(502, []), "network-error"],
+      [`POST ${REG}/registrations`]: [fail(502, []), networkError],
     });
     expect((await mayHaveStarted(cf.createRegistration(ACCOUNT, purchase))).message).toContain(
       "HTTP 502",
@@ -369,7 +341,7 @@ describe("CloudflareClient registrar calls", () => {
   it("treats every unusable registration answer as possibly started", async () => {
     const { cf, calls } = client({
       [`POST ${REG}/registrations`]: [
-        { status: 202, raw: "<html>Accepted</html>" },
+        { status: 202, text: "<html>Accepted</html>" },
         ok("nonsense", 201),
         ok({ state: 7 }, 201),
         fail(200, [{ code: 1002, message: "Something odd" }]),
@@ -430,7 +402,7 @@ describe("CloudflareClient registrar calls", () => {
   it("treats a 4xx without a Cloudflare envelope as possibly started", async () => {
     const { cf } = client({
       [`POST ${REG}/registrations`]: [
-        { status: 400, raw: "<html>Bad request</html>" },
+        { status: 400, text: "<html>Bad request</html>" },
         { status: 404, body: { hello: "world" } },
         { status: 409, body: { success: true, errors: [], result: null } },
       ],
@@ -456,7 +428,7 @@ describe("CloudflareClient registrar calls", () => {
         ok({ domain_name: "a.com", state: "blocked", error: { code: "billing" } }),
         ok({ domain_name: "a.com", state: "failed", error: { message: "Registry timeout" } }),
         ok({ domain_name: "a.com", state: "queued" }),
-        fail(404, [{ code: 10404, message: "Registration not found" }]),
+        fail(404, [{ code: 10000, message: "No workflow found for a.com" }]),
       ],
     });
     expect(await cf.registrationStatus(ACCOUNT, "A.com")).toEqual({
@@ -486,7 +458,7 @@ describe("CloudflareClient registrar calls", () => {
     expect(await cf.registrationStatus(ACCOUNT, "a.com")).toBeUndefined();
   });
 
-  it("returns undefined only for a 404 that says the registration does not exist", async () => {
+  it("fails closed on every 404 that is not the live API's exact not-found answer", async () => {
     const statusPath = `GET ${REG}/registrations/a.com/registration-status`;
     const detailPath = `GET ${REG}/registrations/a.com`;
     const notRegistration = [
@@ -497,19 +469,19 @@ describe("CloudflareClient registrar calls", () => {
       fail(404, [{ message: "Account not found" }]),
       fail(404, [{ message: "Domain not found: missing permission" }]),
       fail(404, [{ message: "Not found" }]),
+      fail(404, [{ code: 10404, message: "Registration not found" }]),
+      fail(404, [{ code: "registration_not_found" }]),
+      fail(404, [{ message: "Domain a.com does not exist" }]),
+      fail(404, [{ message: "Domain not found" }]),
+      fail(404, [{ message: "No workflow found for a.com" }]),
       fail(404, []),
-      { status: 404, raw: "Not Found" },
+      { status: 404, text: "Not Found" },
     ];
-    const { cf } = client({
-      [statusPath]: [...notRegistration, fail(404, [{ code: "registration_not_found" }])],
-      [detailPath]: [...notRegistration, fail(404, [{ message: "Domain a.com does not exist" }])],
-    });
+    const { cf } = client({ [statusPath]: notRegistration, [detailPath]: notRegistration });
     for (let i = 0; i < notRegistration.length; i++) {
       await plainError(cf.registrationStatus(ACCOUNT, "a.com"));
       await plainError(cf.getRegistration(ACCOUNT, "a.com"));
     }
-    expect(await cf.registrationStatus(ACCOUNT, "a.com")).toBeUndefined();
-    expect(await cf.getRegistration(ACCOUNT, "a.com")).toBeUndefined();
   });
 
   it("reads the live API's exact not-found answers (code 10000) as no registration, nothing else", async () => {
@@ -545,7 +517,9 @@ describe("CloudflareClient registrar calls", () => {
     };
     const { cf, calls } = client({
       [`GET ${REG}/registrations/a.com`]: ok(registration),
-      [`GET ${REG}/registrations/gone.com`]: fail(404, [{ message: "Domain not found" }]),
+      [`GET ${REG}/registrations/gone.com`]: fail(404, [
+        { code: 10000, message: "Domain not found" },
+      ]),
       [`PATCH ${REG}/registrations/a.com`]: [ok({ ...registration, auto_renew: true }), ok(null)],
     });
     expect(await cf.getRegistration(ACCOUNT, "a.com")).toEqual({
@@ -713,10 +687,12 @@ describe("CloudflareRegistrar", () => {
 
   it("checks, suggests with a live check, registers and manages a domain", async () => {
     const { cf, calls } = client({
-      [`POST ${REG}/domain-check`]: ok([
-        { name: "brew.dev", registrable: true, pricing: pricing("12.00", "12.00") },
-        { name: "brew.com", registrable: false, reason: "domain_unavailable" },
-      ]),
+      [`POST ${REG}/domain-check`]: ok({
+        domains: [
+          { name: "brew.dev", registrable: true, pricing: pricing("12.00", "12.00") },
+          { name: "brew.com", registrable: false, reason: "domain_unavailable" },
+        ],
+      }),
       [`GET ${REG}/domain-search?q=brew`]: ok({
         domains: [{ name: "brew.dev" }, { name: "brew.com" }, { name: "brew.dev" }],
       }),
@@ -757,7 +733,7 @@ describe("CloudflareRegistrar", () => {
   });
 
   it("skips the live check when there are no suggestions and validates years", async () => {
-    const { cf, calls } = client({ [`GET ${REG}/domain-search?q=zzz`]: ok([]) });
+    const { cf, calls } = client({ [`GET ${REG}/domain-search?q=zzz`]: ok({ domains: [] }) });
     const registrar = new CloudflareRegistrar(cf, ACCOUNT);
     expect(await registrar.suggest("zzz")).toEqual([]);
     expect(calls).toHaveLength(1);

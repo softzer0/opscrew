@@ -12,7 +12,6 @@
 import { describe, expect, it } from "vitest";
 import { DigitalOceanClient, type DigitalOceanRegion, type DigitalOceanSize } from "./client";
 import {
-  HOURS_PER_MONTH,
   STATIC_PRICES_AS_OF,
   STATIC_REGIONS,
   STATIC_SIZES,
@@ -24,13 +23,11 @@ const token = process.env.OPSCREW_E2E_DIGITALOCEAN_TOKEN;
 /** Basic regular sizes, the same filter as the live catalogue's shared sizes. */
 const BASIC_SLUG = /^s-\d+vcpu-\d+gb$/;
 const cents = (amount: number) => Math.round(amount * 100);
-const tenThousandths = (amount: number) => Math.round(amount * 10_000);
 
 /**
  * Every difference between the static table and the live API: Droplet regions on both sides; for
- * each table size its specs, monthly price (to the cent), the hourly price the static catalogue
- * derives from it (to four decimals), availability and every table region it is not sold in; and
- * live Basic sizes missing from the table. The table deliberately lists only the Basic sizes up to
+ * each table size its specs, monthly price (to the cent), availability and every table region it
+ * is not sold in; and live Basic sizes missing from the table. The table deliberately lists only the Basic sizes up to
  * its most expensive one (bigger and CPU-Optimized sizes come from the live API only), so larger
  * live sizes are not differences.
  */
@@ -60,7 +57,6 @@ function compareWithLive(
       ["vCPUs", ours.vcpus, size.vcpus],
       ["memory GB", ours.memoryGb, size.memory / 1024],
       ["disk GB", ours.diskGb, size.disk],
-      ["transfer TB", ours.transferTb, size.transfer ?? "(none)"],
     ];
     for (const [what, table, api] of specs) {
       if (table !== api) out.push(`Size ${ours.slug}: ${what} ${table} in the table, ${api} live.`);
@@ -68,15 +64,6 @@ function compareWithLive(
     if (cents(ours.monthly) !== cents(size.price_monthly)) {
       out.push(
         `Size ${ours.slug}: monthly $${ours.monthly} in the table, $${size.price_monthly} live.`,
-      );
-    }
-    const hourly = ours.monthly / HOURS_PER_MONTH;
-    if (
-      typeof size.price_hourly === "number" &&
-      tenThousandths(hourly) !== tenThousandths(size.price_hourly)
-    ) {
-      out.push(
-        `Size ${ours.slug}: hourly $${hourly.toFixed(5)} derived from the table (${HOURS_PER_MONTH} hours a month), $${size.price_hourly} live.`,
       );
     }
     if (!size.available) out.push(`Size ${ours.slug}: in the table, not available live.`);
@@ -109,9 +96,7 @@ function apiSize(size: StaticSize, regions: readonly string[] = STATIC_REGIONS):
     vcpus: size.vcpus,
     memory: size.memoryGb * 1024,
     disk: size.diskGb,
-    transfer: size.transferTb,
     price_monthly: size.monthly,
-    price_hourly: Math.round((size.monthly / HOURS_PER_MONTH) * 100_000) / 100_000,
     regions: [...regions],
     available: true,
   };
