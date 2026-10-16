@@ -12,9 +12,8 @@ import path from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
 import { resolveProjectPaths } from "@opscrew/core";
 import { FakeAgentRuntime, fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, DeployPlanSchema, RequirementsSchema } from "@opscrew/plan-schema";
+import { readArtifact } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { parse } from "yaml";
 import { withServices } from "../../src/deps";
 import {
   DeployRunner,
@@ -35,7 +34,15 @@ import {
   type TempProject,
   tempProject,
 } from "../../src/ui/__fixtures__/harness";
-import { findLeaks, listFiles, plantedSecrets, ScriptedApprovals, snapshotFiles } from "./support";
+import {
+  findLeaks,
+  initRepoWithBareOrigin,
+  listFiles,
+  plantedSecrets,
+  readPlan,
+  ScriptedApprovals,
+  snapshotFiles,
+} from "./support";
 
 const EXAMPLE = "nextjs-postgres";
 const ANSWERS = {
@@ -50,17 +57,11 @@ const ANSWERS = {
 };
 const STEP_TIMEOUT = 120_000;
 
-async function readPlan(root: string): Promise<DeployPlan> {
-  const text = await readFile(path.join(root, "opscrew", "plan.yaml"), "utf8");
-  return DeployPlanSchema.parse(parse(text));
-}
-
 describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
   /** Seeded at runtime; only `provision` sees it (design uses the static price list). */
   const TOKEN = fakeSecret("digitalocean-token", "e2e");
   let project: TempProject;
   let inputs: Map<string, string>;
-  let bare: string;
   const runtime = new FakeAgentRuntime();
   const approvals = new ScriptedApprovals([
     "repo-write",
@@ -98,14 +99,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
     project = await tempProject(EXAMPLE);
     inputs = await snapshotFiles(project.root);
     // `origin` is a GitHub URL (provision reads owner and name from it); pushes land in `bare`.
-    const { env, root, dir } = project;
-    await git(env, root, "init", "-q", "-b", "main");
-    await git(env, root, "add", "-A");
-    await git(env, root, "commit", "-q", "-m", "initial import");
-    bare = path.join(dir, "origin.git");
-    await git(env, dir, "init", "-q", "--bare", "-b", "main", bare);
-    await git(env, root, "remote", "add", "origin", "https://github.com/acme/nextjs-postgres.git");
-    await git(env, root, "remote", "set-url", "--push", "origin", bare);
+    await initRepoWithBareOrigin(project, "https://github.com/acme/nextjs-postgres.git");
   }, STEP_TIMEOUT);
 
   afterAll(async () => {
@@ -120,8 +114,9 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
       const answersFile = path.join(project.dir, "answers.yaml");
       await writeFile(answersFile, `${JSON.stringify(ANSWERS, null, 2)}\n`);
       expect((await opscrew(["interview", "--answers", answersFile])).code).toBe(0);
-      const requirements = RequirementsSchema.parse(
-        parse(await readFile(path.join(project.root, "opscrew", "requirements.yaml"), "utf8")),
+      const requirements = await readArtifact(
+        "requirements",
+        path.join(project.root, "opscrew", "requirements.yaml"),
       );
       expect(requirements.provider).toBe("digitalocean");
       expect(requirements.budgetMonthly).toEqual({ amount: 30, currency: "USD" });

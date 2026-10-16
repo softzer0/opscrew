@@ -18,13 +18,13 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
 import { FakeAgentRuntime } from "@opscrew/core/testing";
 import { renderCompose } from "@opscrew/iac-templates";
-import { ArchitectureSchema, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import {
@@ -36,7 +36,7 @@ import {
   type TempProject,
   tempProject,
 } from "../../src/ui/__fixtures__/harness";
-import { type Expected, readExpected, ScriptedApprovals } from "./support";
+import { BASE_ANSWERS, exampleNames, readExpected, readPlan, ScriptedApprovals } from "./support";
 
 const DOCKER = findExecutable("docker");
 const TEN_MINUTES = 600_000;
@@ -44,11 +44,7 @@ const TWO_MINUTES = 120_000;
 const STEP_TIMEOUT = 180_000;
 
 /** Every example with an `expected.json`. */
-const ALL_EXAMPLES = readdirSync(EXAMPLES_DIR, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory())
-  .map((entry) => entry.name)
-  .filter((name) => existsSync(path.join(EXAMPLES_DIR, name, "expected.json")))
-  .sort();
+const ALL_EXAMPLES = exampleNames();
 
 /** OPSCREW_DOCKER_EXAMPLES=a,b, or undefined for every example. */
 const REQUESTED = process.env.OPSCREW_DOCKER_EXAMPLES?.split(",")
@@ -109,21 +105,6 @@ async function removeImage(tag: string): Promise<void> {
 /** The last `lines` lines of a log (build output, container output). */
 function tail(text: string, lines = 60): string {
   return text.trimEnd().split(/\r?\n/).slice(-lines).join("\n");
-}
-
-/**
- * Interview answers: one small production setup for every example; a monorepo picks the app its
- * `expected.json` names. Everything else (kept external services, domain) uses the defaults.
- */
-function answersFor(expected: Expected): Record<string, unknown> {
-  return {
-    ...(expected.chosenApp !== undefined ? { appDir: expected.chosenApp.appDir } : {}),
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  };
 }
 
 /**
@@ -322,18 +303,23 @@ describe.skipIf(SKIP !== undefined)(
           const { root, dir } = project;
           const expected = await readExpected(path.join(EXAMPLES_DIR, example));
           const answersFile = path.join(dir, "answers.yaml");
-          await writeFile(answersFile, `${JSON.stringify(answersFor(expected), null, 2)}\n`);
+          // One small production setup for every example; a monorepo picks the app its
+          // `expected.json` names.
+          const answers = {
+            ...(expected.chosenApp !== undefined ? { appDir: expected.chosenApp.appDir } : {}),
+            ...BASE_ANSWERS,
+          };
+          await writeFile(answersFile, `${JSON.stringify(answers, null, 2)}\n`);
 
           await opscrew("analyze", "--no-ai");
           await opscrew("interview", "--answers", answersFile);
           await opscrew("design");
           const adapted = await opscrew("adapt", "--no-ai", "--no-push");
 
-          const plan = DeployPlanSchema.parse(
-            parse(await readFile(path.join(root, "opscrew", "plan.yaml"), "utf8")),
-          );
-          const architecture = ArchitectureSchema.parse(
-            JSON.parse(await readFile(path.join(root, "opscrew", "architecture.json"), "utf8")),
+          const plan = await readPlan(root);
+          const architecture = await readArtifact(
+            "architecture",
+            path.join(root, "opscrew", "architecture.json"),
           );
           const clientExposed = new Set(
             architecture.facts.envVars.filter((v) => v.clientExposed).map((v) => v.name),

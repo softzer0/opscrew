@@ -5,21 +5,14 @@
  * `design --option` → `adapt --no-ai --no-push`. The last check searches every output and every
  * written file for the fake secret values the example plants.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ScanReport } from "@opscrew/contracts";
 import { FakeAgentRuntime } from "@opscrew/core/testing";
 import { cloudTarget } from "@opscrew/iac-templates";
-import {
-  ArchitectureSchema,
-  type DeployPlan,
-  DeployPlanSchema,
-  type ProjectFacts,
-  RequirementsSchema,
-} from "@opscrew/plan-schema";
+import { type ProjectFacts, readArtifact } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { parse } from "yaml";
 import {
   EXAMPLES_DIR,
   GIT,
@@ -30,161 +23,58 @@ import {
   tempProject,
 } from "../../src/ui/__fixtures__/harness";
 import {
+  BASE_ANSWERS,
   type Expected,
+  exampleNames,
   findLeaks,
+  initRepoWithBareOrigin,
   plantedSecrets,
   readExpected,
+  readPlan,
   ScriptedApprovals,
   snapshotFiles,
 } from "./support";
 
 /** Every example with an `expected.json`. */
-const EXAMPLES = readdirSync(EXAMPLES_DIR, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory())
-  .map((entry) => entry.name)
-  .filter((name) => existsSync(path.join(EXAMPLES_DIR, name, "expected.json")))
-  .sort();
+const EXAMPLES = exampleNames();
 
-/** Interview answers per example; a mix of regions, budgets, domains and kept services. */
-const ANSWERS: Record<string, Record<string, unknown>> = {
-  "express-drizzle": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  },
-  "fastapi-sqlmodel": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  },
-  "koa-knex": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  },
-  "nestjs-typeorm": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  },
-  "angular-static": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "10 EUR",
-    region: "eu-central",
-    uptime: "best-effort",
-    dataCriticality: "none",
-  },
-  "astro-ssr": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "10 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "none",
-  },
-  "nuxt-ssr": {
-    expectedMonthlyUsers: "1k-10k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "none",
-  },
-  "react-router-ssr": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "10 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "none",
-  },
-  "sveltekit-ssr": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "10 EUR",
-    region: "eu-central",
-    uptime: "best-effort",
-    dataCriticality: "none",
-  },
-  "django-postgres": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  },
-  "express-api": {
-    expectedMonthlyUsers: "1k-10k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  },
-  "fastify-api": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  },
-  "hono-api": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "10 EUR",
-    region: "eu-central",
-    uptime: "best-effort",
-    dataCriticality: "none",
-  },
-  "nestjs-api": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "10 EUR",
-    region: "eu-central",
-    uptime: "best-effort",
-    dataCriticality: "none",
-  },
-  "fastapi-redis": {
-    expectedMonthlyUsers: "1k-10k",
-    budgetMonthly: "20 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  },
-  "lovable-supabase": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "15 USD",
-    region: "eu-north",
-    uptime: "best-effort",
-    dataCriticality: "important",
-    keepExternalServices: true,
-  },
-  "nextjs-postgres": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "30 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "critical",
-    domain: "app.example.com",
-    dnsProvider: "cloudflare",
-  },
-  "monorepo-two-apps": {
-    appDir: "apps/api",
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "10 EUR",
-    region: "eu-central",
-    uptime: "standard",
-    dataCriticality: "important",
-  },
-  "static-vite": {
-    expectedMonthlyUsers: "<1k",
-    budgetMonthly: "10 EUR",
-    region: "us-east",
-    uptime: "best-effort",
-    dataCriticality: "none",
-  },
-};
+/** A small static or SSR site: a lower budget, best-effort uptime, no data. */
+const SMALL_SITE = { budgetMonthly: "10 EUR", uptime: "best-effort", dataCriticality: "none" };
+
+/** Interview answers per example: `BASE_ANSWERS` with a mix of regions, budgets, domains and kept services. */
+const ANSWERS: Record<string, Record<string, unknown>> = Object.fromEntries(
+  Object.entries({
+    "express-drizzle": {},
+    "fastapi-sqlmodel": {},
+    "koa-knex": {},
+    "nestjs-typeorm": {},
+    "angular-static": SMALL_SITE,
+    "astro-ssr": { budgetMonthly: "10 EUR", dataCriticality: "none" },
+    "nuxt-ssr": { expectedMonthlyUsers: "1k-10k", dataCriticality: "none" },
+    "react-router-ssr": { budgetMonthly: "10 EUR", dataCriticality: "none" },
+    "sveltekit-ssr": SMALL_SITE,
+    "django-postgres": {},
+    "express-api": { expectedMonthlyUsers: "1k-10k" },
+    "fastify-api": {},
+    "hono-api": SMALL_SITE,
+    "nestjs-api": SMALL_SITE,
+    "fastapi-redis": { expectedMonthlyUsers: "1k-10k" },
+    "lovable-supabase": {
+      budgetMonthly: "15 USD",
+      region: "eu-north",
+      uptime: "best-effort",
+      keepExternalServices: true,
+    },
+    "nextjs-postgres": {
+      budgetMonthly: "30 EUR",
+      dataCriticality: "critical",
+      domain: "app.example.com",
+      dnsProvider: "cloudflare",
+    },
+    "monorepo-two-apps": { appDir: "apps/api", budgetMonthly: "10 EUR" },
+    "static-vite": { ...SMALL_SITE, region: "us-east" },
+  }).map(([name, answers]) => [name, { ...BASE_ANSWERS, ...answers }]),
+);
 
 /** Code-change kinds `adapt --no-ai` writes from templates, and the file each one writes. */
 const TEMPLATED: Record<string, string> = {
@@ -196,10 +86,8 @@ const TEMPLATED: Record<string, string> = {
 const HIGH = new Set(["high", "critical"]);
 const STEP_TIMEOUT = 120_000;
 
-async function readPlan(root: string): Promise<DeployPlan> {
-  const text = await readFile(path.join(root, "opscrew", "plan.yaml"), "utf8");
-  return DeployPlanSchema.parse(parse(text));
-}
+const readArchitecture = (root: string) =>
+  readArtifact("architecture", path.join(root, "opscrew", "architecture.json"));
 
 it("finds the example apps and the secrets they plant", async () => {
   expect(EXAMPLES).toEqual(
@@ -248,14 +136,8 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
 
     // A repository with one commit of everything, including the `.env` some examples plant
     // (`secrets/committed-env` needs it tracked), and a bare `origin` that must stay empty.
-    const { env, root, dir } = project;
-    await git(env, root, "init", "-q", "-b", "main");
-    await git(env, root, "add", "-A");
-    await git(env, root, "commit", "-q", "-m", "initial import");
-    bare = path.join(dir, "origin.git");
-    await git(env, dir, "init", "-q", "--bare", bare);
-    await git(env, root, "remote", "add", "origin", bare);
-    baseSha = await git(env, root, "rev-parse", "HEAD");
+    bare = await initRepoWithBareOrigin(project);
+    baseSha = await git(project.env, project.root, "rev-parse", "HEAD");
   }, STEP_TIMEOUT);
 
   afterAll(async () => {
@@ -296,9 +178,7 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
     async () => {
       const { code } = await opscrew("analyze", "--no-ai");
       expect(code).toBe(0);
-      const architecture = ArchitectureSchema.parse(
-        JSON.parse(await readFile(path.join(project.root, "opscrew", "architecture.json"), "utf8")),
-      );
+      const architecture = await readArchitecture(project.root);
       expect(architecture.aiEnriched).toBe(false);
       expectFacts(architecture.facts, expected.facts);
       expect(existsSync(path.join(project.root, "opscrew", "ARCHITECTURE.md"))).toBe(true);
@@ -312,8 +192,9 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
       const answersFile = path.join(project.dir, "answers.yaml");
       await writeFile(answersFile, `${JSON.stringify(ANSWERS[example], null, 2)}\n`);
       expect((await opscrew("interview", "--answers", answersFile)).code).toBe(0);
-      const requirements = RequirementsSchema.parse(
-        parse(await readFile(path.join(project.root, "opscrew", "requirements.yaml"), "utf8")),
+      const requirements = await readArtifact(
+        "requirements",
+        path.join(project.root, "opscrew", "requirements.yaml"),
       );
       const answers = ANSWERS[example] ?? {};
       expect(requirements.region).toBe(answers.region);
@@ -322,11 +203,7 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
       // Monorepos: the chosen app is recorded and the analysis now describes only that app.
       if (expected.chosenApp !== undefined) {
         expect(requirements.appDir).toBe(expected.chosenApp.appDir);
-        const architecture = ArchitectureSchema.parse(
-          JSON.parse(
-            await readFile(path.join(project.root, "opscrew", "architecture.json"), "utf8"),
-          ),
-        );
+        const architecture = await readArchitecture(project.root);
         expect(architecture.facts.appDir).toBe(expected.chosenApp.appDir);
         expect(architecture.facts.appKind).toBe(expected.chosenApp.appKind);
         const names = architecture.facts.frameworks.map((framework) => framework.name);

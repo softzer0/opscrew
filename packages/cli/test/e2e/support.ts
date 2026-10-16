@@ -1,13 +1,60 @@
 /**
- * Support code for the end-to-end tests over `examples/`: the `expected.json` schema, the fake
- * secret values an example plants, a snapshot of the materialised files and a leak search over
- * every file a run wrote.
+ * Support code for the end-to-end tests over `examples/`: the examples and their `expected.json`
+ * schema, the project's git repository with a bare `origin`, the fake secret values an example
+ * plants, a snapshot of the materialised files and a leak search over every file a run wrote.
  */
+import { existsSync, readdirSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { FAKE_SECRET_KINDS, type FakeSecretKind, fakeSecret } from "@opscrew/core/testing";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { EXAMPLES_DIR, git, type TempProject } from "../../src/ui/__fixtures__/harness";
+
+/** Every example with an `expected.json`, sorted. */
+export function exampleNames(): string[] {
+  return readdirSync(EXAMPLES_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => existsSync(path.join(EXAMPLES_DIR, name, "expected.json")))
+    .sort();
+}
+
+/** Interview answers for one small production setup; tests change only what they vary. */
+export const BASE_ANSWERS: Readonly<Record<string, unknown>> = {
+  expectedMonthlyUsers: "<1k",
+  budgetMonthly: "20 EUR",
+  region: "eu-central",
+  uptime: "standard",
+  dataCriticality: "important",
+};
+
+/** The project's `opscrew/plan.yaml`, read and validated. */
+export function readPlan(root: string): Promise<DeployPlan> {
+  return readArtifact("plan", path.join(root, "opscrew", "plan.yaml"));
+}
+
+/**
+ * Makes the project a git repository on `main` with one commit of everything, and a bare
+ * `origin.git` next to it that receives every push. With `fetchUrl` (a GitHub URL, from which
+ * provision reads the owner and name) `origin` fetches from there and pushes to the bare one.
+ * Returns the bare repository's path.
+ */
+export async function initRepoWithBareOrigin(
+  project: TempProject,
+  fetchUrl?: string,
+): Promise<string> {
+  const { env, root, dir } = project;
+  await git(env, root, "init", "-q", "-b", "main");
+  await git(env, root, "add", "-A");
+  await git(env, root, "commit", "-q", "-m", "initial import");
+  const bare = path.join(dir, "origin.git");
+  await git(env, dir, "init", "-q", "--bare", "-b", "main", bare);
+  await git(env, root, "remote", "add", "origin", fetchUrl ?? bare);
+  if (fetchUrl !== undefined) await git(env, root, "remote", "set-url", "--push", "origin", bare);
+  return bare;
+}
 
 /** `examples/<name>/expected.json` (see `examples/README.md`). */
 export const ExpectedSchema = z.strictObject({
