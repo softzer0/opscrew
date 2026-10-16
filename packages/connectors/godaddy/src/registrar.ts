@@ -9,11 +9,10 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { normalizeHostName, OpsCrewError } from "@opscrew/core";
 import type { z } from "zod";
 import { GODADDY_MAX_BATCH, type GoDaddyClient } from "./client";
 import {
-  agreementType,
   describeError,
   formatAgreement,
   GODADDY_DASHBOARD_URLS,
@@ -23,7 +22,6 @@ import {
   isHeld,
   isoDate,
   isPremium,
-  normalizeDomain,
   type ResolvedSchema,
   toDomainCheck,
   toMoney,
@@ -64,9 +62,6 @@ type Resolved = z.infer<typeof ResolvedSchema>;
 
 /** Suggestions requested per `suggest` call. */
 const SUGGESTIONS = 20;
-/** Pages read when looking for a pending registration or listing records. */
-const MAX_DOMAIN_PAGES = 10;
-const MAX_RECORD_PAGES = 50;
 /** Any domain name works for the access probe; GoDaddy only answers whether it is available. */
 const ACCESS_PROBE_DOMAIN = "opscrew-access-check.com";
 const IDEMPOTENCY_KEY = /^[\x21-\x7e]{16,64}$/;
@@ -102,8 +97,8 @@ export class GoDaddyRegistrar implements Registrar {
   readonly #pollIntervalMs: number;
   readonly #pollTimeoutMs: number;
   readonly #sleep: (ms: number) => Promise<void>;
-  /** Per quote token: agreement types and the settings GoDaddy will apply. */
-  readonly #quotes = new Map<string, { agreementTypes: string[]; resolved?: Resolved }>();
+  /** Per quote token: the settings GoDaddy will apply. */
+  readonly #resolved = new Map<string, Resolved>();
   /** Registrations this instance started that had not finished when `register` returned. */
   readonly #pending = new Map<string, { operationId?: string; registrationId?: string }>();
   #lastResolved: Resolved | undefined;
@@ -120,16 +115,16 @@ export class GoDaddyRegistrar implements Registrar {
 
   /** Indicative availability and prices, 25 domains per call, matched to the names by name. */
   async check(domains: readonly string[]): Promise<DomainCheck[]> {
-    const names = domains.map(normalizeDomain);
+    const names = domains.map(normalizeHostName);
     const results: DomainCheck[] = [];
     for (let i = 0; i < names.length; i += GODADDY_MAX_BATCH) {
       const chunk = names.slice(i, i + GODADDY_MAX_BATCH);
       const items = await this.#client.checkAvailability(chunk);
       for (const name of chunk) {
-        const item = items.find((it) => normalizeDomain(it.domain) === name);
+        const item = items.find((it) => normalizeHostName(it.domain) === name);
         results.push(
           item
-            ? toDomainCheck(item, name)
+            ? toDomainCheck(item)
             : {
                 domain: name,
                 registrable: false,
@@ -144,12 +139,12 @@ export class GoDaddyRegistrar implements Registrar {
   /** GoDaddy's suggestions for `query` (available names, indicative prices). */
   async suggest(query: string): Promise<DomainCheck[]> {
     const suggestions = await this.#client.suggestDomains(query, SUGGESTIONS);
-    return suggestions.map((s) => toDomainCheck({ ...s, available: true }, s.domain));
+    return suggestions.map((s) => toDomainCheck({ ...s, available: true }));
   }
 
   /** A locked price and quote token (valid 10 minutes) for buying `domain` for `years`. */
   async quote(domain: string, years: number): Promise<RegistrationQuote> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     checkYears(years);
     const raw = await this.#client.quoteRegistration({
       domain: name,
@@ -195,16 +190,14 @@ export class GoDaddyRegistrar implements Registrar {
     const renewal = raw.renewalPrice ? toMoney(raw.renewalPrice, raw.period ?? years) : undefined;
     const agreements = raw.requiredAgreements ?? [];
     const expiresAt = isoDate(raw.expiresAt);
-    this.#quotes.set(raw.quoteToken, {
-      agreementTypes: agreements.map((a) => a.agreementType),
-      ...(raw.resolved ? { resolved: raw.resolved } : {}),
-    });
+    if (raw.resolved) this.#resolved.set(raw.quoteToken, raw.resolved);
     this.#lastResolved = raw.resolved;
     return {
       price,
       ...(renewal ? { renewal } : {}),
       token: raw.quoteToken,
       agreements: agreements.map(formatAgreement),
+      agreementTypes: agreements.map((a) => a.agreementType),
       ...(expiresAt ? { expiresAt } : {}),
     };
   }
@@ -224,7 +217,7 @@ export class GoDaddyRegistrar implements Registrar {
    * `COMPLETED` or `FAILED` (bounded; still running → `in_progress`).
    */
   async register(request: RegistrationRequest): Promise<RegistrationStatus> {
-    const domain = normalizeDomain(request.domain);
+    const domain = normalizeHostName(request.domain);
     checkYears(request.years);
     const quote = request.quote;
     if (!quote?.token) {
@@ -249,16 +242,12 @@ export class GoDaddyRegistrar implements Registrar {
         "GoDaddy needs an idempotency key of 16 to 64 printable characters for a purchase.",
       );
     }
-    const cached = this.#quotes.get(quote.token);
-    const agreementTypes =
-      cached?.agreementTypes ??
-      (quote.agreements ?? []).map(agreementType).filter((t): t is string => t !== undefined);
     const registration = await this.#client.registerDomain({
       domain,
       period: request.years,
       quoteToken: quote.token,
       ...(this.#profileId ? { profileId: this.#profileId } : {}),
-      agreementTypes,
+      agreementTypes: quote.agreementTypes ?? [],
       agreedAt: this.#now().toISOString(),
       idempotencyKey: key,
     });
@@ -270,7 +259,7 @@ export class GoDaddyRegistrar implements Registrar {
     const status = await this.#pollRegistration(domain, registration, ids);
     if (status.state !== "in_progress") this.#pending.delete(domain);
     if (status.state === "failed") return status;
-    const note = settingsNote(request, cached?.resolved);
+    const note = settingsNote(request, this.#resolved.get(quote.token));
     if (!note) return status;
     return { ...status, message: status.message ? `${status.message} ${note}` : note };
   }
@@ -324,7 +313,7 @@ export class GoDaddyRegistrar implements Registrar {
    * GoDaddy's pending domains are searched, and undefined means there is no registration.
    */
   async registrationStatus(domain: string): Promise<RegistrationStatus | undefined> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const raw = await this.#client.getDomain(name);
     const state = raw ? holding(raw) : "gone";
     if (state === "held") {
@@ -355,13 +344,13 @@ export class GoDaddyRegistrar implements Registrar {
       };
     }
     let pageToken: string | undefined;
-    for (let page = 0; page < MAX_DOMAIN_PAGES; page++) {
+    do {
       const list = await this.#client.listDomains({
         pageSize: 200,
         ...(pageToken ? { pageToken } : {}),
         lifecycleGroups: ["PENDING"],
       });
-      if (list.items.some((d) => normalizeDomain(d.domain) === name)) {
+      if (list.items.some((d) => normalizeHostName(d.domain) === name)) {
         return {
           domain: name,
           state: "in_progress",
@@ -369,23 +358,18 @@ export class GoDaddyRegistrar implements Registrar {
         };
       }
       pageToken = list.nextPageToken;
-      if (!pageToken) return undefined;
-    }
-    throw new OpsCrewError(
-      "PROVIDER_ERROR",
-      `OpsCrew could not confirm whether ${name} has a pending registration at GoDaddy: the account has too many pending domains to search.`,
-      { hint: `Check ${name} at ${GODADDY_DASHBOARD_URLS.portfolio} before buying it.` },
-    );
+    } while (pageToken);
+    return undefined;
   }
 
   async getDomain(domain: string): Promise<RegisteredDomain | undefined> {
-    const raw = await this.#client.getDomain(normalizeDomain(domain));
+    const raw = await this.#client.getDomain(normalizeHostName(domain));
     return raw && isHeld(raw) ? toRegisteredDomain(raw) : undefined;
   }
 
   /** GoDaddy's v3 API cannot change auto-renew; always a plain error with the dashboard link. */
   setAutoRenew(domain: string, on: boolean): Promise<RegisteredDomain> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     return Promise.reject(
       new OpsCrewError(
         "PHASE_PRECONDITION",
@@ -402,16 +386,16 @@ export class GoDaddyRegistrar implements Registrar {
   }
 
   async getNameservers(domain: string): Promise<string[]> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const raw = await this.#client.getDomain(name);
     if (!raw || !isHeld(raw)) throw notInAccount(name);
-    return (raw.nameServers ?? []).map(normalizeDomain);
+    return (raw.nameServers ?? []).map(normalizeHostName);
   }
 
   /** Replaces the nameservers (2–13) and waits (bounded) for GoDaddy's operation to finish. */
   async setNameservers(domain: string, nameservers: readonly string[]): Promise<void> {
-    const name = normalizeDomain(domain);
-    const list = nameservers.map(normalizeDomain);
+    const name = normalizeHostName(domain);
+    const list = nameservers.map(normalizeHostName);
     if (list.length < 2 || list.length > 13) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -451,18 +435,17 @@ export class GoDaddyRegistrar implements Registrar {
 
   /** Records of the GoDaddy-hosted zone; undefined when the domain uses other nameservers. */
   async listRecords(domain: string): Promise<RegistrarDnsRecord[] | undefined> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const raw = await this.#client.getDomain(name);
     if (!raw || !isHeld(raw)) throw notInAccount(name);
     if (!usesGoDaddyDns(raw.nameServers)) return undefined;
     const records: RegistrarDnsRecord[] = [];
-    for (let page = 1; page <= MAX_RECORD_PAGES; page++) {
+    for (let page = 1; ; page++) {
       const answer = await this.#client.listDnsRecords(name, page);
       if (!answer) return page === 1 ? undefined : records;
       records.push(...answer.items.map((r) => toRegistrarRecord(r, name)));
-      if (!answer.hasNext || answer.items.length === 0) break;
+      if (!answer.hasNext) return records;
     }
-    return records;
   }
 
   /**

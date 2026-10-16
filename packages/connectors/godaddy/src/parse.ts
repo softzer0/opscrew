@@ -5,6 +5,7 @@ import type {
   RegisteredDomain,
   RegistrarDnsRecord,
 } from "@opscrew/contracts";
+import { normalizeHostName } from "@opscrew/core";
 import { z } from "zod";
 
 /** GoDaddy pages users are sent to for what the API cannot do. */
@@ -166,11 +167,6 @@ export function nextLink(links: z.infer<typeof LinkSchema>[] | undefined): strin
   return links?.find((l) => l.rel === "next")?.href;
 }
 
-/** Lower case, trimmed, without a trailing dot. */
-export function normalizeDomain(domain: string): string {
-  return domain.trim().toLowerCase().replace(/\.$/, "");
-}
-
 const SUPPORTED_CURRENCIES: readonly Currency[] = ["USD", "EUR"];
 
 /** The currency if OpsCrew can show it, else undefined. */
@@ -267,17 +263,14 @@ function yearlyPrices(prices: z.infer<typeof TermPriceSchema>[]): {
 }
 
 /** Maps one availability result or suggestion to a {@link DomainCheck}. Conservative. */
-export function toDomainCheck(
-  raw: {
-    domain: string;
-    available?: boolean;
-    inventory?: string;
-    prices?: z.infer<typeof TermPriceSchema>[];
-    error?: GoDaddyError;
-  },
-  fallbackName: string,
-): DomainCheck {
-  const domain = normalizeDomain(raw.domain || fallbackName);
+export function toDomainCheck(raw: {
+  domain: string;
+  available?: boolean;
+  inventory?: string;
+  prices?: z.infer<typeof TermPriceSchema>[];
+  error?: GoDaddyError;
+}): DomainCheck {
+  const domain = normalizeHostName(raw.domain);
   if (raw.error) {
     return {
       domain,
@@ -317,20 +310,13 @@ export function toDomainCheck(
   };
 }
 
-/** The premium-name explanation for a quote. */
-export function premiumQuoteReason(domain: string): string {
-  return premiumReason(domain);
-}
-
-function isoDate(value: string | undefined): string | undefined {
+/** An ISO date (UTC) for GoDaddy's RFC 3339 time, or the text as it is when it is not one. */
+export function isoDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toISOString();
 }
 
-export { isoDate };
-
-/** Domain statuses that mean the account no longer holds the domain. */
 /**
  * Statuses of a domain the account holds: the `REGISTERED` lifecycle group (ACTIVE, PARKED,
  * LOCKED) and the `PENDING_TERMINAL` group (EXPIRED, PENDING_TRANSFER) of the v3 OpenAPI.
@@ -364,7 +350,7 @@ export function toRegisteredDomain(raw: GoDaddyDomain): RegisteredDomain {
   const createdAt = isoDate(raw.createdAt);
   const expiresAt = isoDate(raw.expiresAt);
   return {
-    domain: normalizeDomain(raw.domain),
+    domain: normalizeHostName(raw.domain),
     registrar: "godaddy",
     ...(createdAt ? { createdAt } : {}),
     ...(expiresAt ? { expiresAt } : {}),
@@ -377,7 +363,7 @@ export function toRegisteredDomain(raw: GoDaddyDomain): RegisteredDomain {
 /** True when every nameserver is one of GoDaddy's (`*.domaincontrol.com`). */
 export function usesGoDaddyDns(nameServers: readonly string[] | undefined): boolean {
   if (!nameServers || nameServers.length === 0) return false;
-  return nameServers.every((ns) => /(^|\.)domaincontrol\.com$/.test(normalizeDomain(ns)));
+  return nameServers.every((ns) => /(^|\.)domaincontrol\.com$/.test(normalizeHostName(ns)));
 }
 
 const HOSTNAME_TYPES = new Set(["CNAME", "MX", "NS", "SRV"]);
@@ -426,13 +412,8 @@ export function toRegistrarRecord(raw: GoDaddyDnsRecord, zone: string): Registra
   };
 }
 
-/** Shows one required agreement as `TYPE: Title (url)`; {@link agreementType} reads it back. */
+/** Shows one required agreement as `TYPE: Title (url)`. */
 export function formatAgreement(agreement: z.infer<typeof AgreementSchema>): string {
   const url = agreement.url ? ` (${agreement.url})` : "";
   return `${agreement.agreementType}: ${agreement.title}${url}`;
-}
-
-/** The agreement type at the start of a {@link formatAgreement} string. */
-export function agreementType(text: string): string | undefined {
-  return /^([A-Za-z0-9_.-]+): /.exec(text)?.[1];
 }

@@ -1,8 +1,8 @@
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { errorText, fakeFetch, gdError, noSleep, usd } from "./__fixtures__/fake-fetch";
-import { GoDaddyClient } from "./index";
+import { errorText, fakeFetch, gdError, noSleep, usd } from "./__fixtures__/fixtures";
+import { GoDaddyClient } from "./client";
 
 const TOKEN = fakeSecret("godaddy-token");
 const KEY = "opscrew-key-0123456789abcdef";
@@ -147,6 +147,33 @@ describe("GoDaddyClient requests", () => {
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toMatch(/could not reach/i);
     expect(errorText(error)).not.toContain(TOKEN);
+  });
+
+  it("gives up on a request that never answers", async () => {
+    const fake = fakeFetch({ "GET /v3/domains/domain-names": { hang: true } });
+    const gd = new GoDaddyClient({ token: TOKEN, fetch: fake.fetch, sleep: noSleep, timeoutMs: 5 });
+    const error = await rejection(gd.listDomains());
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("The GoDaddy API did not answer within");
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it("says a purchase that timed out may have started", async () => {
+    const fake = fakeFetch({ "POST /v3/domains/registrations": { hang: true } });
+    const gd = new GoDaddyClient({ token: TOKEN, fetch: fake.fetch, sleep: noSleep, timeoutMs: 5 });
+    const error = await rejection(
+      gd.registerDomain({
+        domain: "example.com",
+        period: 1,
+        quoteToken: "q",
+        agreementTypes: ["API_DPA"],
+        agreedAt: "2026-10-13T10:00:00Z",
+        idempotencyKey: KEY,
+      }),
+    );
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("The purchase may still have started");
+    expect(fake.calls).toHaveLength(1);
   });
 
   it("returns undefined for a domain the account does not hold", async () => {

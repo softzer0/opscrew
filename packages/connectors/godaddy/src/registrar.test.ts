@@ -1,8 +1,8 @@
 import type { RegistrationQuote, RegistrationRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { errorText, type FakeRoute, fakeFetch, gdError, usd } from "./__fixtures__/fake-fetch";
+import { errorText, fakeFetch, gdError, usd } from "./__fixtures__/fixtures";
 import { GODADDY_DASHBOARD_URLS, GoDaddyClient, GoDaddyRegistrar } from "./index";
 
 const TOKEN = fakeSecret("godaddy-token");
@@ -12,7 +12,7 @@ const NOW = new Date("2026-10-13T10:00:00.000Z");
 const KEY = "purchase-key-0123456789abcdef";
 
 function setup(
-  routes: Record<string, FakeRoute | FakeRoute[]>,
+  routes: Record<string, FakeReply | FakeReply[]>,
   options: ConstructorParameters<typeof GoDaddyRegistrar>[1] = {},
 ) {
   const fake = fakeFetch(routes);
@@ -83,6 +83,7 @@ const approvedQuote: RegistrationQuote = {
     "API_DPA: API Domain Purchase Agreement (https://example.invalid/dpa)",
     "DNPA: Domain Name Privacy Agreement",
   ],
+  agreementTypes: ["API_DPA", "DNPA"],
   expiresAt: "2026-10-13T10:10:00.000Z",
 };
 
@@ -624,22 +625,6 @@ describe("registration status and domain details", () => {
     expect(status?.state).toBe("in_progress");
     expect(status?.message).toContain("SUSPENDED");
     expect(await registrar.ownsDomain("example.com")).toBe(false);
-  });
-
-  it("refuses to guess when the pending list is longer than it searches", async () => {
-    const { registrar, calls } = setup({
-      "GET /v3/domains/domain-names/example.com": { status: 404, body: gdError("NOT_FOUND") },
-      "GET /v3/domains/domain-names?": {
-        body: {
-          items: [domainBody({ domain: "other.com", status: "PENDING_REGISTRATION" })],
-          links: [{ rel: "next", href: "/v3/domains/domain-names?pageToken=more" }],
-        },
-      },
-    });
-    const error = await rejection(registrar.registrationStatus("example.com"));
-    expect(error.code).toBe("PROVIDER_ERROR");
-    expect(error.message).toMatch(/could not confirm whether example\.com has a pending/);
-    expect(calls).toHaveLength(11);
   });
 
   it("sends auto-renew changes to the dashboard", async () => {

@@ -1,5 +1,5 @@
 import type { FetchLike } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import type { z } from "zod";
 import {
   AvailabilityListSchema,
@@ -21,7 +21,6 @@ import {
   type GoDaddySuggestion,
   hasCode,
   nextLink,
-  normalizeDomain,
   OperationSchema,
   QuoteSchema,
   RegistrationSchema,
@@ -37,6 +36,8 @@ export const GODADDY_MAX_BATCH = 25;
 /** Longest wait honoured from a `Retry-After` header on a rate-limited read. */
 const MAX_RETRY_AFTER_MS = 30_000;
 const DEFAULT_RETRY_MS = 2_000;
+/** Default time one request may take before it counts as failed. */
+const REQUEST_TIMEOUT_MS = 30_000;
 
 export interface GoDaddyClientOptions {
   /** A GoDaddy Personal Access Token (sent as `Authorization: Bearer`; never shown). */
@@ -45,6 +46,8 @@ export interface GoDaddyClientOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Defaults to {@link GODADDY_API}. */
   baseUrl?: string;
+  /** How long one request may take (default 30 seconds). */
+  timeoutMs?: number;
 }
 
 /** Input for {@link GoDaddyClient.quoteRegistration}. */
@@ -110,15 +113,20 @@ export class GoDaddyClient {
   readonly #fetch: FetchLike;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #baseUrl: string;
+  readonly #timeoutMs: number;
 
   constructor(options: GoDaddyClientOptions) {
     this.#token = options.token;
     this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#baseUrl = (options.baseUrl ?? GODADDY_API).replace(/\/+$/, "");
+    this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   }
 
-  /** One HTTP exchange; throws `PROVIDER_ERROR` (no cause attached) when GoDaddy is unreachable. */
+  /**
+   * One HTTP exchange with a timeout; throws `PROVIDER_ERROR` (no cause attached) when GoDaddy is
+   * unreachable or does not answer in time.
+   */
   async #request(path: string, options: RequestOptions = {}): Promise<Answer> {
     if (!this.#token) {
       throw new OpsCrewError("CREDENTIALS_MISSING", "No GoDaddy API token is set.", {
@@ -137,14 +145,19 @@ export class GoDaddyClient {
       init.body = JSON.stringify(options.body);
     }
     for (let attempt = 0; ; attempt++) {
+      const signal = AbortSignal.timeout(this.#timeoutMs);
       let response: Response;
       try {
-        response = await this.#fetch(`${this.#baseUrl}${path}`, init);
+        response = await this.#fetch(`${this.#baseUrl}${path}`, { ...init, signal });
       } catch {
         // The cause is dropped on purpose: a transport error may echo request headers.
-        throw new OpsCrewError("PROVIDER_ERROR", "Could not reach the GoDaddy API.", {
-          hint: "Check your internet connection and try again.",
-        });
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          signal.aborted
+            ? `The GoDaddy API did not answer within ${Math.round(this.#timeoutMs / 1000)} seconds.`
+            : "Could not reach the GoDaddy API.",
+          { hint: "Check your internet connection and try again." },
+        );
       }
       if (response.status === 429 && options.retryRateLimit && attempt === 0) {
         const seconds = Number(response.headers.get("retry-after"));
@@ -239,7 +252,7 @@ export class GoDaddyClient {
         `GoDaddy checks at most ${GODADDY_MAX_BATCH} domains at a time, not ${domains.length}.`,
       );
     }
-    const names = domains.map(normalizeDomain);
+    const names = domains.map(normalizeHostName);
     if (names.length === 0) return [];
     const list = await this.#read(
       "/v3/domains/check-availability",
@@ -252,7 +265,7 @@ export class GoDaddyClient {
 
   /** Availability of one domain (a cheap read, also used to probe API access). */
   async checkOne(domain: string): Promise<GoDaddyAvailability> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const query = new URLSearchParams({ domain: name });
     return this.#read(
       `/v3/domains/check-availability?${query}`,
@@ -278,7 +291,7 @@ export class GoDaddyClient {
    * stop about the contact profile.
    */
   async quoteRegistration(input: GoDaddyQuoteInput): Promise<GoDaddyQuote> {
-    const domain = normalizeDomain(input.domain);
+    const domain = normalizeHostName(input.domain);
     const what = `quote the registration of ${domain}`;
     const body = {
       domain,
@@ -320,15 +333,14 @@ export class GoDaddyClient {
    * consumed quote, unreadable bodies) is `PROVIDER_ERROR` saying it may still have started.
    */
   async registerDomain(input: GoDaddyRegisterInput): Promise<GoDaddyRegistration> {
-    const domain = normalizeDomain(input.domain);
+    const domain = normalizeHostName(input.domain);
     const uncertain = (detail: string) =>
-      new OpsCrewError(
-        "PROVIDER_ERROR",
-        `GoDaddy gave no clear answer while starting the registration of ${domain} (${detail}). The registration may still have started; check its status before trying again.`,
-        {
-          hint: `Run \`opscrew domain status\` or look at ${GODADDY_DASHBOARD_URLS.portfolio} before buying ${domain} again.`,
-        },
-      );
+      maybeStarted({
+        registrar: "GoDaddy",
+        domain,
+        detail,
+        dashboard: GODADDY_DASHBOARD_URLS.portfolio,
+      });
     const refused = (
       code: "PHASE_PRECONDITION" | "CREDENTIALS_INVALID",
       why: string,
@@ -420,7 +432,7 @@ export class GoDaddyClient {
 
   /** The account's domain; undefined on 404 (the account does not hold it). */
   async getDomain(domain: string): Promise<GoDaddyDomain | undefined> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const what = `read ${name}`;
     const answer = await this.#request(`/v3/domains/domain-names/${encodeURIComponent(name)}`, {
       retryRateLimit: true,
@@ -458,7 +470,7 @@ export class GoDaddyClient {
     nameservers: readonly string[],
     idempotencyKey: string,
   ): Promise<GoDaddyOperation> {
-    const name = normalizeDomain(domain);
+    const name = normalizeHostName(domain);
     const what = `change the nameservers of ${name}`;
     const uncertain = (detail: string) =>
       new OpsCrewError(
@@ -509,7 +521,7 @@ export class GoDaddyClient {
     page: number,
     pageSize = 100,
   ): Promise<{ items: GoDaddyDnsRecord[]; totalPages?: number; hasNext: boolean } | undefined> {
-    const name = normalizeDomain(zone);
+    const name = normalizeHostName(zone);
     const what = `list the DNS records of ${name}`;
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     const answer = await this.#request(
