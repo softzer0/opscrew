@@ -6,6 +6,7 @@ import type {
   RegistrationStatus,
 } from "@opscrew/contracts";
 import { type ErrorCode, isUserFacingError, OpsCrewError, plural } from "@opscrew/core";
+import { shellWord } from "../shared/apply-command";
 import {
   auditDomain,
   cents,
@@ -160,7 +161,7 @@ export function exactBuyCommand(
   const parts = [buyCommandOf(domain, ctx.registrarId)];
   if (options.years !== 1) parts.push(`--years ${options.years}`);
   if (!options.autoRenew) parts.push("--no-auto-renew");
-  if (options.account?.trim()) parts.push(`--account ${options.account.trim()}`);
+  if (options.account?.trim()) parts.push(`--account ${shellWord(options.account.trim())}`);
   const { charge } = options.quote;
   parts.push(
     `--confirm ${domain}`,

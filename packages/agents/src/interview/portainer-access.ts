@@ -12,12 +12,11 @@ import {
 } from "@opscrew/connector-portainer";
 import { OpsCrewError, type Redactor } from "@opscrew/core";
 import { PORTAINER_TOKEN_VAR } from "../providers";
-import { hidePortainerAddress } from "../shared";
 import type { PortainerAccess, PortainerEnvironment } from "./portainer";
 
 /** Collaborators of {@link createPortainerAccess}; tests replace them with fakes. */
 export interface PortainerAccessOptions {
-  /** Registers the address and the token, so they never reach the output. */
+  /** The Portainer client registers the token with it, so it never reaches the output. */
   redactor: Redactor;
   /** The Portainer client (default: the pinned `portainerClient` of the adapter). */
   client?: (
@@ -66,19 +65,14 @@ function oneLine(name: string, id: number): string {
  * `environmentKind` (`docker-agent` is a Docker host; a Swarm snapshot or Docker's Swarm mode is
  * `swarm`), and its architecture comes from Docker's `info` (only for a Docker host that is up).
  * A rejected token stops with its own plain message; other failures pass the adapter's error on.
- * Portainer's address is registered with the redactor before anything is sent.
+ * The interview hides Portainer's address before it calls these.
  */
 export function createPortainerAccess(options: PortainerAccessOptions): PortainerAccess {
   const makeClient = options.client ?? portainerClient;
-  const fingerprint =
-    options.fetchCertificateFingerprint ?? ((url) => fetchCertificateFingerprint(url));
   return {
-    async fetchCertificateFingerprint(url) {
-      hidePortainerAddress(options.redactor, url);
-      return fingerprint(url);
-    },
+    fetchCertificateFingerprint:
+      options.fetchCertificateFingerprint ?? ((url) => fetchCertificateFingerprint(url)),
     async listEnvironments(url, token, certFingerprint) {
-      hidePortainerAddress(options.redactor, url);
       const client = makeClient(
         { url, ...(certFingerprint !== undefined ? { certFingerprint } : {}) },
         token,

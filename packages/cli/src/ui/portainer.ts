@@ -1,8 +1,6 @@
 import {
   type ConfirmPortainerCertificate,
   createPortainerAccess,
-  hidePortainerAddress,
-  type PortainerAccess,
   type PortainerInterviewOptions,
 } from "@opscrew/agents";
 import { normalizeCertFingerprint } from "@opscrew/connector-portainer";
@@ -35,25 +33,6 @@ export function checkPortainerCert(value: string | undefined): string | undefine
     );
   }
   return fingerprint;
-}
-
-/**
- * How the CLI reaches the user's Portainer for the interview: the attached fake (tests) or the
- * adapter, with Portainer's address registered with the redactor before anything is sent, so the
- * terminal never shows it.
- */
-export function portainerAccessFor(ctx: CliContext): PortainerAccess {
-  const base = servicesOf(ctx).portainerAccess ?? createPortainerAccess({ redactor: ctx.redactor });
-  return {
-    fetchCertificateFingerprint: async (url) => {
-      hidePortainerAddress(ctx.redactor, url);
-      return base.fetchCertificateFingerprint(url);
-    },
-    listEnvironments: async (url, token, certFingerprint) => {
-      hidePortainerAddress(ctx.redactor, url);
-      return base.listEnvironments(url, token, certFingerprint);
-    },
-  };
 }
 
 /**
@@ -101,7 +80,7 @@ export function portainerInterviewOptions(
   certFingerprint: string | undefined,
 ): PortainerInterviewOptions {
   return {
-    access: portainerAccessFor(ctx),
+    access: servicesOf(ctx).portainerAccess ?? createPortainerAccess({ redactor: ctx.redactor }),
     ...(ctx.isInteractive
       ? { confirmCertificate: terminalCertificateConfirmation(ctx, prompts) }
       : {}),

@@ -11,6 +11,7 @@ import { runAnalyze } from "../analyze";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_TOKEN_VAR, providerFromTokens } from "../providers";
 import {
+  hidePortainerAddress,
   type OwnServerConnection,
   readOwnServer,
   readPortainerConnection,
@@ -188,6 +189,8 @@ async function portainerAnswers(
     merge(await ask(buildPortainerQuestions(context).filter((q) => q.id === "portainer.url")));
   }
   const url = portainerUrlAnswer(split, context);
+  // Before anything reaches Portainer, so no output, error or audit entry shows its address.
+  hidePortainerAddress(deps.redactor, url);
   const token = deps.env[PORTAINER_TOKEN_VAR]?.trim();
   if (token !== undefined && token !== "") deps.redactor.addLiteral(token, PORTAINER_TOKEN_VAR);
   const reached = await reachPortainer(url, token, context, options.portainer);

@@ -15,6 +15,7 @@ import {
   PORTAINER_FIELDS,
   type PortainerAccess,
   type PortainerCertificate,
+  PortainerCertificateError,
   type PortainerEnvironment,
   type PortainerQuestion,
   recordPortainerAnswers,
@@ -397,6 +398,7 @@ describe("runInterview with an existing Portainer", () => {
       }),
     ).rejects.toMatchObject({
       code: "PHASE_PRECONDITION",
+      reason: "declined",
       message:
         "You did not confirm Portainer's certificate, so OpsCrew sent nothing and saved nothing.",
     });
@@ -413,9 +415,16 @@ describe("runInterview with an existing Portainer", () => {
     );
 
     const unattended = await deps();
-    await expect(runInterview(unattended, { answers, portainer: { access } })).rejects.toThrow(
-      /OpsCrew must confirm Portainer's certificate before it sends the token\. Its fingerprint is SHA256:/,
+    const unconfirmed = await runInterview(unattended, { answers, portainer: { access } }).catch(
+      (error: unknown) => error,
     );
+    expect(unconfirmed).toBeInstanceOf(PortainerCertificateError);
+    expect(unconfirmed).toMatchObject({
+      reason: "unconfirmed",
+      message: expect.stringMatching(
+        /^OpsCrew must confirm Portainer's certificate before it sends the token\. Its fingerprint is SHA256:/,
+      ),
+    });
 
     const tokenless = await deps("");
     await expect(runInterview(tokenless, { answers, portainer: { access } })).rejects.toMatchObject(
@@ -595,5 +604,43 @@ describe("runInterview with an existing Portainer", () => {
     expect(result.portainer).toBeUndefined();
     expect(d.reporter.text()).toMatch(/portainer\.\*\) were ignored/);
     expect(await readPortainerConnection(d.paths)).toBeUndefined();
+  });
+
+  it("hides Portainer's address before it reaches Portainer, whatever answers for it", async () => {
+    for (const [url, after, hidden] of [
+      [
+        "https://nas:9443",
+        "Answer portainer.url; stack opscrew-shop-nas-tunnel on NAS:9000.",
+        "Answer portainer.url; stack opscrew-shop-nas-tunnel on [REDACTED:portainer-address]:9000.",
+      ],
+      [
+        "https://portainer:9443",
+        "Your Portainer at https://portainer:9443 runs opscrew-shop-portainer-tunnel; answer portainer.environment.",
+        "Your Portainer at [REDACTED:portainer-address] runs opscrew-shop-portainer-tunnel; answer portainer.environment.",
+      ],
+    ] as const) {
+      const d = await deps();
+      const seen: string[] = [];
+      // An access that is not OpsCrew's adapter (a test fake, or a client of its own).
+      const access: PortainerAccess = {
+        fetchCertificateFingerprint: async (asked) => {
+          seen.push(d.redactor.redact(`reading the certificate of ${asked}`));
+          return CERT;
+        },
+        listEnvironments: async (asked) => {
+          seen.push(d.redactor.redact(`listing ${asked}`));
+          return ENVIRONMENTS;
+        },
+      };
+      await runInterview(d, {
+        answers: { ...BASE, portainer: { url, environment: "local", web: "proxy", port: 8080 } },
+        portainer: { access, confirmCertificate: async () => true },
+      });
+      expect(seen).toEqual([
+        "reading the certificate of [REDACTED:portainer-address]",
+        "listing [REDACTED:portainer-address]",
+      ]);
+      expect(d.redactor.redact(after)).toBe(hidden);
+    }
   });
 });

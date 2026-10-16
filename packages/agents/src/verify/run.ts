@@ -7,14 +7,13 @@ import {
   resolveGitHubToken,
 } from "@opscrew/connector-github";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError, replaceNames, toPosixRelative } from "@opscrew/core";
 import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { readOwnServerRecord } from "../provision";
 import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
-import { withoutOwnServer } from "../secure/own";
 import {
   committableUrl,
   editCheckText,
@@ -144,7 +143,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
       ? hideRoute(deps.redactor, url, plan.dns.domain)
       : [];
   const say = (text: string) =>
-    deps.redactor.redact(withoutRoute(withoutOwnServer(text, hidden), route));
+    deps.redactor.redact(withoutRoute(replaceNames(text, hidden, "your server"), route));
   if (url === undefined) {
     // Deployed, but not from here (a fresh clone): provisioning here would create a second server.
     throw hasDeployment(plan)

@@ -878,7 +878,7 @@ async function cloudHostChange(
  * connector of a Portainer subdomain the plan no longer has, keeping Portainer as the plan
  * describes it (on and local only, or off with its data kept). It goes before a plan that deletes
  * the tunnel (`opscrew provision`), with its own `host-apply` approval by its hash; with
- * `planOnly` it is only shown and saved. `shown.hostHash` names its hash as soon as it is shown.
+ * `planOnly` it is only shown and saved. `shown` gets its hash as soon as it is shown.
  */
 export async function cloudConnectorRemoval(
   deps: PhaseDeps,
@@ -887,7 +887,7 @@ export async function cloudConnectorRemoval(
     services: PortainerServices;
     command: string;
     planOnly: boolean;
-    shown: { hostHash?: string };
+    shown: (hash: string) => void;
   },
 ): Promise<HostChangeResult> {
   const { plan, services } = input;
@@ -914,10 +914,7 @@ export async function cloudConnectorRemoval(
       const portainerPassword = enabled ? await portainerPasswordToSend(deps, false) : undefined;
       return portainerPassword !== undefined ? { portainerPassword } : {};
     },
-    // `opscrew provision` reads the hash from `shown.hostHash` when the deletion stops.
-    shown: (hash) => {
-      input.shown.hostHash = hash;
-    },
+    shown: input.shown,
   });
 }
 

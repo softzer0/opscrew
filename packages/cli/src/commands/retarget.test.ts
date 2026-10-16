@@ -56,7 +56,7 @@ function scripted(
 ) {
   const printed: string[] = [];
   const base = new NonInteractiveApprovalHandler({
-    ...(options.approve !== undefined ? { approvePlanHash: options.approve } : {}),
+    ...(options.approve !== undefined ? { approvePlanHashes: [options.approve] } : {}),
     assumeYes: true,
     approver: "--yes flag",
   });

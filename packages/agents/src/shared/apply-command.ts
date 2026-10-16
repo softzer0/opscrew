@@ -22,6 +22,14 @@ export interface ApplyCommandFlags {
 }
 
 /**
+ * `value` as one word of a command OpsCrew suggests, for a POSIX shell: as it is when it holds only
+ * plain characters, otherwise in single quotes (a `'` inside written as `'\''`).
+ */
+export function shellWord(value: string): string {
+  return /^[\w./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
  * `opscrew <command> --approve <hash>…`: the command that applies exactly the plans with these
  * hashes, one `--approve` each, with the flags of the run that made them.
  */

@@ -21,7 +21,7 @@ const apply = (overrides: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
 describe("NonInteractiveApprovalHandler", () => {
   const handler = (approvePlanHash?: string) =>
     new NonInteractiveApprovalHandler({
-      ...(approvePlanHash === undefined ? {} : { approvePlanHash }),
+      ...(approvePlanHash === undefined ? {} : { approvePlanHashes: [approvePlanHash] }),
       approver: "--approve flag",
       clock,
     });

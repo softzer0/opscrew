@@ -151,23 +151,6 @@ describe("createPortainerAccess", () => {
       unreachable,
     );
   });
-
-  it("registers Portainer's address with the redactor before anything is sent", async () => {
-    const redactor = new Redactor();
-    let seen = "";
-    const access = createPortainerAccess({
-      redactor,
-      fetchCertificateFingerprint: async (url) => {
-        seen = redactor.redact(`reading ${url}`);
-        return FINGERPRINT;
-      },
-    });
-    expect(await access.fetchCertificateFingerprint(URL_)).toBe(FINGERPRINT);
-    expect(seen).toBe("reading [REDACTED:portainer-address]");
-    expect(redactor.redact(`at ${URL_}/api, NAS:9000 and nas; kept nas.url and nas-agent`)).toBe(
-      "at [REDACTED:portainer-address]/api, [REDACTED:portainer-address]:9000 and [REDACTED:portainer-address]; kept nas.url and nas-agent",
-    );
-  });
 });
 
 describe("Portainer's address", () => {

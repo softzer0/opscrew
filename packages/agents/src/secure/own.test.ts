@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
 import type { CheckResult, CommandResult, Scanner } from "@opscrew/contracts";
+import { replaceNames } from "@opscrew/core";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
@@ -13,7 +14,7 @@ import {
   recordServerAddress,
 } from "../shared";
 import { createTestPhaseDeps, LAN_IPV4, OWN_IPV4, ownPlan, ScriptedRunner } from "../testing";
-import { withoutOwnServer } from "./own";
+
 import { runSecure } from "./run";
 
 const NOW = "2026-10-14T12:00:00.000Z";
@@ -436,13 +437,14 @@ describe("runSecure on a server the user owns", () => {
   });
 });
 
-describe("withoutOwnServer", () => {
+describe("the server's names in secure's texts", () => {
   it("replaces addresses and host names, not longer names that contain them", () => {
     expect(
-      withoutOwnServer("ssh deploy@192.168.1.20 and 192.168.1.200, home.example.net", [
-        "192.168.1.20",
-        "home.example.net",
-      ]),
+      replaceNames(
+        "ssh deploy@192.168.1.20 and 192.168.1.200, home.example.net",
+        ["192.168.1.20", "home.example.net"],
+        "your server",
+      ),
     ).toBe("ssh deploy@your server and 192.168.1.200, your server");
   });
 });

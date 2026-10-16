@@ -4,6 +4,7 @@ import { listText, OpsCrewError, plural } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requireNoMoveInProgress } from "../provision/guard";
+import { shellWord } from "../shared/apply-command";
 import {
   auditDomain,
   errorText,
@@ -145,16 +146,10 @@ function commandOf(
   const parts = [`opscrew domain connect ${domain}`];
   if (options.registrar !== undefined) parts.push(`--registrar ${options.registrar}`);
   if (options.recordsFile !== undefined) {
-    parts.push(`--records-file ${shellWord(options.recordsFile)}`);
+    parts.push(`--records-file ${shellWord(options.recordsFile.replaceAll("\\", "/"))}`);
   }
   if (options.account !== undefined) parts.push(`--account ${shellWord(options.account)}`);
   return parts.join(" ");
-}
-
-/** A word a POSIX shell reads back unchanged (paths with `/`, single quotes when needed). */
-function shellWord(value: string): string {
-  const word = value.replaceAll("\\", "/");
-  return /^[A-Za-z0-9._/:@%+=,-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
 }
 
 function nameOf(ctx: Pick<ConnectContext, "registrarId">): string {

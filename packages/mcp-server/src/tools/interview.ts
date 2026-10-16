@@ -8,6 +8,7 @@ import {
   inferredAnswers,
   PORTAINER_FIELDS,
   type PortainerAccess,
+  PortainerCertificateError,
   type PortainerInterviewOptions,
   providerFromTokens,
   providerProfile,
@@ -16,7 +17,7 @@ import {
   runInterview,
   SERVER_FIELDS,
 } from "@opscrew/agents";
-import { isUserFacingError, OpsCrewError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
+import { isUserFacingError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
 import { detectProject, detectProjectDetails } from "@opscrew/detect";
 import {
   type ProjectFacts,
@@ -227,35 +228,11 @@ function certificateDialog(
 const CERTIFICATE_IN_TERMINAL =
   "Ask the user to run `npx opscrew interview` in a terminal in the project directory: it shows Portainer's certificate fingerprint to check and pins it. Then call this tool again (the saved answers are pre-filled). Never pass a fingerprint yourself.";
 
-/**
- * Who confirms Portainer's certificate in a tool call: the user in a dialog when the client can
- * show one (a declined dialog is noted in `outcome`), otherwise nobody, so the call stops with the
- * terminal command. The fingerprint never comes from the tool's input.
- */
-function certificateConfirmation(
-  server: McpServer,
-  deps: Pick<ResolvedMcpDeps, "redactor">,
-  extra: CallExtra,
-  outcome: { declined: boolean },
-): ConfirmPortainerCertificate {
-  if (!clientSupportsElicitation(server)) {
-    return async ({ fingerprint, previous }) => {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        previous === undefined
-          ? `OpsCrew must confirm Portainer's certificate before it sends the token. Its fingerprint is ${fingerprint}.`
-          : `Portainer's certificate changed from ${previous} to ${fingerprint}, so OpsCrew sent nothing.`,
-        { hint: `This MCP client cannot show the confirmation dialog. ${CERTIFICATE_IN_TERMINAL}` },
-      );
-    };
-  }
-  const dialog = certificateDialog(server, deps, extra);
-  return async (certificate) => {
-    const trusted = await dialog(certificate);
-    if (!trusted) outcome.declined = true;
-    return trusted;
-  };
-}
+/** The next step after the interview stopped at Portainer's certificate, in a tool call. */
+const CERTIFICATE_HINTS: Readonly<Record<PortainerCertificateError["reason"], string>> = {
+  unconfirmed: `This MCP client cannot show the confirmation dialog. ${CERTIFICATE_IN_TERMINAL}`,
+  declined: `The user did not trust the certificate in the dialog. If they checked it and want to continue: ${CERTIFICATE_IN_TERMINAL}`,
+};
 
 /**
  * `opscrew_interview_questions` (read-only) and `opscrew_save_requirements` (writes
@@ -374,11 +351,13 @@ export function registerInterviewTools(
     ({ projectDir, answers }, extra: CallExtra) =>
       runTool(deps, "opscrew_save_requirements", projectDir, async (call) => {
         const phase = await call.phaseDeps();
-        // The certificate is confirmed only by the user in a dialog: never from the tool's input.
-        const certificate = { declined: false };
+        // The certificate is confirmed only by the user in a dialog, never from the tool's input;
+        // a client without dialogs leaves nobody to confirm it, so the call stops.
         const portainer: PortainerInterviewOptions = {
           access: options.portainerAccess ?? createPortainerAccess({ redactor: deps.redactor }),
-          confirmCertificate: certificateConfirmation(server, deps, extra, certificate),
+          ...(clientSupportsElicitation(server)
+            ? { confirmCertificate: certificateDialog(server, deps, extra) }
+            : {}),
         };
         let result: Awaited<ReturnType<typeof runInterview>>;
         try {
@@ -387,11 +366,8 @@ export function registerInterviewTools(
             portainer,
           });
         } catch (error) {
-          if (certificate.declined) {
-            withHint(
-              error,
-              `The user did not trust the certificate in the dialog. If they checked it and want to continue: ${CERTIFICATE_IN_TERMINAL}`,
-            );
+          if (error instanceof PortainerCertificateError) {
+            withHint(error, CERTIFICATE_HINTS[error.reason]);
           }
           // Missing or invalid answers; every other stop keeps its own next step.
           if (isUserFacingError(error) && error.code === "INVALID_INPUT") {

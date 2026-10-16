@@ -374,12 +374,27 @@ export interface ReachedPortainer {
 }
 
 /**
+ * The interview stopped at Portainer's certificate before sending anything: `unconfirmed` when
+ * nobody can confirm it here (no `confirmCertificate`), `declined` when the user did not trust it.
+ * A caller that knows another way to confirm it replaces only the hint.
+ */
+export class PortainerCertificateError extends OpsCrewError {
+  readonly reason: "unconfirmed" | "declined";
+
+  constructor(reason: "unconfirmed" | "declined", message: string, hint: string) {
+    super("PHASE_PRECONDITION", message, { hint });
+    this.name = "PortainerCertificateError";
+    this.reason = reason;
+  }
+}
+
+/**
  * Confirms Portainer's certificate and lists its environments with the token. Over HTTPS the
  * certificate's fingerprint must match the one given up front, the one pinned earlier for the same
  * address, or be confirmed by the user through `options.confirmCertificate`; the token is sent
  * only after that. Plain HTTP (this computer only) has no certificate.
- * @throws OpsCrewError `PHASE_PRECONDITION` when the token is missing or the certificate is not
- * confirmed; nothing is saved then.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when the token is missing or the certificate does not
+ * match; {@link PortainerCertificateError} when it is not confirmed. Nothing is saved then.
  */
 export async function reachPortainer(
   url: string,
@@ -443,23 +458,19 @@ export async function reachPortainer(
     } else if (pinned === undefined || !sameCertFingerprint(pinned, fingerprint)) {
       const certificate = { fingerprint, ...(pinned !== undefined ? { previous: pinned } : {}) };
       if (options.confirmCertificate === undefined) {
-        throw new OpsCrewError(
-          "PHASE_PRECONDITION",
+        throw new PortainerCertificateError(
+          "unconfirmed",
           pinned === undefined
             ? `OpsCrew must confirm Portainer's certificate before it sends the token. Its fingerprint is ${fingerprint}.`
             : `Portainer's certificate changed from ${pinned} to ${fingerprint}, so OpsCrew sent nothing.`,
-          {
-            hint: `Check the fingerprint against Portainer's certificate, then run \`opscrew interview\` in a terminal to confirm it, or pass --portainer-cert ${fingerprint}.`,
-          },
+          `Check the fingerprint against Portainer's certificate, then run \`opscrew interview\` in a terminal to confirm it, or pass --portainer-cert ${fingerprint}.`,
         );
       }
       if (!(await options.confirmCertificate(certificate))) {
-        throw new OpsCrewError(
-          "PHASE_PRECONDITION",
+        throw new PortainerCertificateError(
+          "declined",
           "You did not confirm Portainer's certificate, so OpsCrew sent nothing and saved nothing.",
-          {
-            hint: "Check the fingerprint against Portainer's certificate and run `opscrew interview` again.",
-          },
+          "Check the fingerprint against Portainer's certificate and run `opscrew interview` again.",
         );
       }
     }

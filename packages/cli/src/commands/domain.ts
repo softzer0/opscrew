@@ -16,6 +16,7 @@ import {
   type SearchDomainsResult,
   searchDomains,
   setDomainAutoRenew,
+  shellWord,
 } from "@opscrew/agents";
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type {
@@ -513,14 +514,9 @@ function registrarArg(registrar: RegistrarId | undefined): string {
   return usesCloudflare(registrar) ? "" : ` --registrar ${registrar}`;
 }
 
-/** A value for a suggested command, in single quotes unless it is plainly safe. */
-function shellArg(value: string): string {
-  return /^[\w./:@+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-/** A file path for a suggested command: `/` separators, quoted like {@link shellArg}. */
+/** A file path for a suggested command: `/` separators, quoted like any word (`shellWord`). */
 export function pathArg(value: string): string {
-  return shellArg(value.replaceAll("\\", "/"));
+  return shellWord(value.replaceAll("\\", "/"));
 }
 
 /**
@@ -677,7 +673,7 @@ export function register(program: Command, ctx: CliContext): void {
         const parts = [buy];
         if (flags.years !== undefined) parts.push(`--years ${flags.years.trim()}`);
         if (autoRenew === false) parts.push("--no-auto-renew");
-        if (account !== undefined) parts.push(`--account ${shellArg(account)}`);
+        if (account !== undefined) parts.push(`--account ${shellWord(account)}`);
         parts.push(`--confirm ${phrase}`);
         if (refused.kind === "domain-purchase") {
           parts.push(`--max-price ${flags.maxPrice?.trim().replace(/\s+/g, "") || "<amount>"}`);
@@ -753,7 +749,7 @@ export function register(program: Command, ctx: CliContext): void {
           `opscrew domain connect ${name}`,
           ...(registrar === undefined ? [] : [`--registrar ${registrar}`]),
           ...(recordsFile === undefined ? [] : [`--records-file ${pathArg(recordsFile)}`]),
-          ...(account === undefined ? [] : [`--account ${shellArg(account)}`]),
+          ...(account === undefined ? [] : [`--account ${shellWord(account)}`]),
         ].join(" ");
       const scripted = (_refused: ApprovalRequest, phrase: string) =>
         `${again()} --confirm ${phrase}`;
@@ -838,7 +834,7 @@ export function register(program: Command, ctx: CliContext): void {
         [
           `opscrew domain auto-renew ${state}`,
           ...(registrar === undefined ? [] : [`--registrar ${registrar}`]),
-          ...(account === undefined ? [] : [`--account ${shellArg(account)}`]),
+          ...(account === undefined ? [] : [`--account ${shellWord(account)}`]),
           `--confirm ${phrase}`,
         ].join(" ");
       const deps = createPhaseDeps(ctx, {

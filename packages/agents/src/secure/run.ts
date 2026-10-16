@@ -5,7 +5,13 @@ import type {
   Scanner,
   ScanReport,
 } from "@opscrew/contracts";
-import { isUserFacingError, plural, toPosixRelative, writeFileAtomic } from "@opscrew/core";
+import {
+  isUserFacingError,
+  plural,
+  replaceNames,
+  toPosixRelative,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import {
   defaultTcpConnect,
@@ -28,7 +34,7 @@ import {
   serverAddress,
   withoutServerAddress,
 } from "../shared";
-import { type OwnSecureTarget, ownSecureTarget, withoutOwnServer } from "./own";
+import { type OwnSecureTarget, ownSecureTarget } from "./own";
 import {
   PORTAINER_PROBES_SKIPPED,
   PORTAINER_SECURE_NOTES,
@@ -263,9 +269,10 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   // for a server the user owns it never names its address or host name at all (FR-902).
   const report = say(
     plan.target.provider === "own"
-      ? withoutOwnServer(
+      ? replaceNames(
           renderSecurityReport(privateReportInput(input, own?.hidden ?? [])),
           own?.hidden ?? [],
+          "your server",
         )
       : hidesServerAddress(plan)
         ? withoutServerAddress(
@@ -283,9 +290,10 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   const hidden = own?.hidden ?? [];
   const summary = say(
     plan.target.provider === "own"
-      ? withoutOwnServer(
+      ? replaceNames(
           renderSecuritySummary(privateReportInput(input, hidden), { reportPath }),
           hidden,
+          "your server",
         )
       : renderSecuritySummary(input, { reportPath }),
   );
@@ -297,9 +305,10 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   if (hostChecksSkipped !== undefined)
     reporter.warn(
       say(
-        withoutOwnServer(
+        replaceNames(
           `${portainer ? "Portainer checks" : "Server checks"} skipped: ${hostChecksSkipped}`,
           hidden,
+          "your server",
         ),
       ),
     );

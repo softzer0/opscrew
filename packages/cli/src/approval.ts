@@ -118,11 +118,10 @@ export function formatRequest(request: ApprovalRequest): string {
 }
 
 export interface NonInteractiveApprovalHandlerOptions {
-  /** Plan hash passed with `--approve <hash>`. */
-  approvePlanHash?: string;
   /**
-   * Every hash passed with a repeated `--approve <hash>` (each names one plan): on a server the
-   * user owns, the infrastructure plan and the host plan. Only these exact hashes are granted.
+   * Every hash passed with `--approve <hash>`, which may be repeated (each names one plan): on a
+   * server the user owns, the infrastructure plan and the host plan. Only these exact hashes are
+   * granted.
    */
   approvePlanHashes?: readonly string[];
   /**
@@ -219,8 +218,8 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
 
   /** Every non-empty `--approve` value, trimmed. */
   private hashes(): string[] {
-    return [this.options.approvePlanHash, ...(this.options.approvePlanHashes ?? [])]
-      .map((hash) => (hash ?? "").trim())
+    return (this.options.approvePlanHashes ?? [])
+      .map((hash) => hash.trim())
       .filter((hash) => hash !== "");
   }
 }

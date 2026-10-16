@@ -6,6 +6,7 @@ export {
   type ConfirmPortainerCertificate,
   PORTAINER_FIELDS,
   type PortainerAccess,
+  PortainerCertificateError,
   type PortainerEnvironment,
   type PortainerInterviewOptions,
 } from "./portainer";

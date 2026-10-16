@@ -1,4 +1,3 @@
-import { replaceNames } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { OwnServerHardening } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -79,13 +78,4 @@ export async function ownSecureTarget(
     },
     hidden: [...new Set(hidden)],
   };
-}
-
-/**
- * `text` with every address and host name of `hidden` replaced by "your server" where it stands
- * alone (core's `replaceNames`), for the committed security report and the output of a server the
- * user owns (FR-902).
- */
-export function withoutOwnServer(text: string, hidden: readonly string[]): string {
-  return replaceNames(text, hidden, "your server");
 }

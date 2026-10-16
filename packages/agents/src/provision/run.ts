@@ -402,9 +402,18 @@ async function provisionFlow(
   // 5. Plan → policies → approval → apply. A plan that deletes the tunnel (for example when
   // plan.yaml no longer has a Portainer subdomain) is applied only after the connector on the
   // server is removed (its own host-apply approval) and Cloudflare reports no active connections.
-  const cloudShown: { hostHash?: string } = {};
+  // The connector removal's hash, once it is shown (the hint names it when the deletion stops).
+  let cloudHostHash: string | undefined;
   const cloudConnector = (planOnly: boolean) =>
-    cloudConnectorRemoval(deps, { plan, services, command, planOnly, shown: cloudShown });
+    cloudConnectorRemoval(deps, {
+      plan,
+      services,
+      command,
+      planOnly,
+      shown: (hash) => {
+        cloudHostHash = hash;
+      },
+    });
   const first = ownRun
     ? ownConnectorFirst(deps, {
         run: ownRun,
@@ -421,7 +430,7 @@ async function provisionFlow(
         app: plan.app.name,
         where: "on the server",
         hostChange: () => cloudConnector(false),
-        hostHash: () => cloudShown.hostHash,
+        hostHash: () => cloudHostHash,
         done: "The Cloudflare Tunnel connector is removed from the server; the Cloudflare Tunnel this plan deletes is still there.",
         ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
         ...(extras.approvalNotes ? { notes: extras.approvalNotes } : {}),

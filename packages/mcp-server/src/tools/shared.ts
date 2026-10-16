@@ -1,12 +1,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import {
-  type PhaseDeps,
-  portainerAddressNames,
-  readServerAddresses,
-  withoutOwnServer,
-} from "@opscrew/agents";
+import { type PhaseDeps, portainerAddressNames, readServerAddresses } from "@opscrew/agents";
 import type { ApprovalHandler, UserFacingError } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, replaceNames, resolveProjectPaths } from "@opscrew/core";
 import { z } from "zod";
@@ -166,7 +161,7 @@ function hideNames<T>(value: T, names: HiddenNames): T {
   if (names.server.length === 0 && names.portainer.length === 0) return value;
   const walk = (item: unknown): unknown => {
     if (typeof item === "string") {
-      return withoutPortainer(withoutOwnServer(item, names.server), names.portainer);
+      return withoutPortainer(replaceNames(item, names.server, "your server"), names.portainer);
     }
     if (Array.isArray(item)) return item.map(walk);
     if (item !== null && typeof item === "object") {
