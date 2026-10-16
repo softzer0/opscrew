@@ -6,7 +6,7 @@ import type { ResolvedMcpDeps } from "../deps";
 import { projectDirInput, runTool } from "./shared";
 
 /** Short plain-text list of the facts an agent needs to describe the stack. */
-export function describeFacts(facts: ProjectFacts): string[] {
+function describeFacts(facts: ProjectFacts): string[] {
   const lines = [`App kind: ${facts.appKind}`];
   if (facts.frameworks.length > 0) {
     lines.push(`Frameworks: ${facts.frameworks.map((f) => f.name).join(", ")}`);

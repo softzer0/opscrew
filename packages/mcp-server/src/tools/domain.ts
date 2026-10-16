@@ -7,7 +7,7 @@ import type { ResolvedMcpDeps } from "../deps";
 import { projectDirInput, runTool } from "./shared";
 
 /** What the user runs in a terminal to buy a domain (there is no purchase tool on purpose). */
-export const DOMAIN_BUY_COMMAND = "npx opscrew domain buy <domain>";
+const DOMAIN_BUY_COMMAND = "npx opscrew domain buy <domain>";
 
 /** The registrars the check can ask (the ids of `opscrew domain search --registrar`). */
 const REGISTRARS = [

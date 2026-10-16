@@ -1,5 +1,4 @@
-import { tmpdir } from "node:os";
-import type { PhaseDeps } from "@opscrew/agents";
+import { buildPhaseDeps, type PhaseDeps } from "@opscrew/agents";
 import type {
   ApprovalDecision,
   ApprovalHandler,
@@ -10,16 +9,7 @@ import type {
   Reporter,
   Scanner,
 } from "@opscrew/contracts";
-import {
-  ApprovalGate,
-  CostLedger,
-  JsonlApprovalStore,
-  JsonlAuditLog,
-  ProjectStateStore,
-  Redactor,
-  registerEnvSecrets,
-  resolveProjectPaths,
-} from "@opscrew/core";
+import { Redactor, registerEnvSecrets } from "@opscrew/core";
 import { defaultScanners } from "@opscrew/secops";
 
 /** One message a phase reported while a tool ran. */
@@ -62,8 +52,8 @@ export interface PhaseDepsExtras {
   /** The server's redactor (env secrets registered). Use it as `PhaseDeps.redactor`. */
   redactor: Redactor;
   /**
-   * Asks the human to approve a mutation. Deploy tools (002/T212) pass an elicitation-based
-   * handler; when absent, the default factory refuses every approval with a plain-English reason.
+   * Asks the human to approve a mutation: the deploy tools pass a dialog (elicitation) handler;
+   * when absent, the default factory refuses every approval with a plain-English reason.
    */
   approvalHandler?: ApprovalHandler;
 }
@@ -76,7 +66,7 @@ export type PhaseDepsFactory = (
 
 /**
  * Everything the OpsCrew MCP server needs from the outside world. Tests inject fakes; the real
- * process uses {@link startStdioServer}, which fills these from `process`.
+ * process uses `startStdioServer`, which fills these from `process`.
  */
 export interface OpscrewMcpDeps {
   /** OpsCrew version: reported to the client and written into reports and plans. */
@@ -99,8 +89,6 @@ export interface OpscrewMcpDeps {
   redactor?: Redactor;
   /** Diagnostics sink; never stdout (default: discard). `startStdioServer` writes to stderr. */
   log?: (message: string) => void;
-  /** Directory for scratch files (default: `os.tmpdir()`). */
-  tmpDir?: string;
 }
 
 /** {@link OpscrewMcpDeps} with every default filled in; what tool registrations receive. */
@@ -123,7 +111,6 @@ export function resolveMcpDeps(deps: OpscrewMcpDeps): ResolvedMcpDeps {
     scanners: deps.scanners ?? (() => defaultScanners()),
     redactor,
     log: (message: string) => deps.log?.(redactor.redact(message)),
-    tmpDir: deps.tmpDir ?? tmpdir(),
   };
   return {
     ...partial,
@@ -131,8 +118,8 @@ export function resolveMcpDeps(deps: OpscrewMcpDeps): ResolvedMcpDeps {
   };
 }
 
-/** Refuses every approval: planning tools never mutate, and MCP approvals arrive with 002/T212. */
-export class RefusingApprovalHandler implements ApprovalHandler {
+/** Refuses every approval: a tool without a dialog for the user changes nothing. */
+class RefusingApprovalHandler implements ApprovalHandler {
   constructor(private readonly clock: Clock) {}
   async request(_request: ApprovalRequest): Promise<ApprovalDecision> {
     return {
@@ -146,39 +133,24 @@ export class RefusingApprovalHandler implements ApprovalHandler {
 }
 
 /**
- * The production `PhaseDeps` factory: project paths (with `OPSCREW_HOME` from `env`), file-backed
- * state, cost ledger, approvals and audit log, the injected fetch/runner/clock, no model runtime
- * (the MCP server is deterministic) and `interactive: false`.
+ * The production `PhaseDeps` factory (see `buildPhaseDeps`): project paths (with `OPSCREW_HOME`
+ * from `env`), file-backed state, cost ledger, approvals and audit log, the injected
+ * fetch/runner/clock, no model runtime (the MCP server is deterministic) and `interactive: false`.
  */
-export function createDefaultPhaseDepsFactory(
+function createDefaultPhaseDepsFactory(
   deps: Pick<ResolvedMcpDeps, "version" | "env" | "fetch" | "runner" | "clock">,
 ): PhaseDepsFactory {
-  return (projectDir, extras) => {
-    const paths = resolveProjectPaths(projectDir, { env: deps.env });
-    const audit = new JsonlAuditLog({
-      dir: paths.auditDir,
-      redact: extras.redactor.redact,
-      clock: deps.clock,
-    });
-    return {
-      paths,
+  return (projectDir, extras) =>
+    buildPhaseDeps({
+      root: projectDir,
+      env: deps.env,
       reporter: extras.reporter,
-      approvals: new ApprovalGate({
-        handler: extras.approvalHandler ?? new RefusingApprovalHandler(deps.clock),
-        store: new JsonlApprovalStore(paths.files.approvals),
-        audit,
-        clock: deps.clock,
-      }),
-      audit,
-      state: new ProjectStateStore(paths.files.state, deps.clock),
-      costs: new CostLedger(paths.files.costs, deps.clock),
+      redactor: extras.redactor,
+      approvalHandler: extras.approvalHandler ?? new RefusingApprovalHandler(deps.clock),
       runner: deps.runner,
       fetch: deps.fetch,
-      env: deps.env,
       clock: deps.clock,
-      redactor: extras.redactor,
       interactive: false,
       version: deps.version,
-    };
-  };
+    });
 }

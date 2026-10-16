@@ -4,8 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   type PhaseDeps,
   portainerAddressNames,
-  readOwnServer,
-  readPortainerConnection,
+  readServerAddresses,
   withoutOwnServer,
 } from "@opscrew/agents";
 import type { ApprovalHandler, UserFacingError } from "@opscrew/contracts";
@@ -41,7 +40,7 @@ export interface ToolCall {
 }
 
 /** Validates `projectDir` (absolute, an existing directory), defaulting to the server's cwd. */
-export async function resolveProjectDir(deps: ResolvedMcpDeps, input?: string): Promise<string> {
+async function resolveProjectDir(deps: ResolvedMcpDeps, input?: string): Promise<string> {
   const dir = input ?? deps.cwd;
   if (!path.isAbsolute(dir)) {
     throw new OpsCrewError("INVALID_INPUT", `projectDir must be an absolute path (got "${dir}").`, {
@@ -77,10 +76,10 @@ function warningsSection(messages: readonly ReportedMessage[], text: string): st
 }
 
 /** A successful tool result: text plus `structuredContent`, both redacted. */
-export function successResult(
+function successResult(
   deps: ResolvedMcpDeps,
   output: ToolOutput,
-  messages: readonly ReportedMessage[] = [],
+  messages: readonly ReportedMessage[],
 ): CallToolResult {
   const text = deps.redactor.redact(output.text + warningsSection(messages, output.text));
   return {
@@ -90,7 +89,7 @@ export function successResult(
 }
 
 /** Turns any error into a user-facing one; unexpected errors get a generic message and hint. */
-export function toUserFacing(error: unknown): UserFacingError {
+function toUserFacing(error: unknown): UserFacingError {
   if (isUserFacingError(error)) {
     return {
       code: error.code,
@@ -107,10 +106,10 @@ export function toUserFacing(error: unknown): UserFacingError {
 }
 
 /** An error tool result (`isError: true`) with the message and the next step, redacted. */
-export function errorResult(
+function errorResult(
   deps: ResolvedMcpDeps,
   error: unknown,
-  messages: readonly ReportedMessage[] = [],
+  messages: readonly ReportedMessage[],
 ): CallToolResult {
   const failure = toUserFacing(error);
   const text =
@@ -124,34 +123,28 @@ export function errorResult(
   };
 }
 
-/**
- * The names of the user's own server that must not reach the model: its address (IP or host name)
- * and the public addresses OpsCrew recorded, from `.opscrew/server.json` (local state only).
- */
-export async function ownServerNames(deps: ResolvedMcpDeps, projectDir: string): Promise<string[]> {
-  try {
-    const own = await readOwnServer(resolveProjectPaths(projectDir, { env: deps.env }));
-    if (own === undefined) return [];
-    return [own.host, own.publicIpv4, own.publicIpv6].filter(
-      (name): name is string => typeof name === "string" && name.trim() !== "",
-    );
-  } catch {
-    return [];
-  }
+/** The names that must not reach the model, by what replaces them. */
+interface HiddenNames {
+  /** The address of the user's own server and the public addresses OpsCrew recorded. */
+  server: string[];
+  /** The address of the user's Portainer: its URL, origin and host name. */
+  portainer: string[];
 }
 
-/**
- * The names of the user's Portainer that must not reach the model: its address (the URL, its
- * origin and host name), from `.opscrew/server.json` (local state only).
- */
-export async function portainerNames(deps: ResolvedMcpDeps, projectDir: string): Promise<string[]> {
+/** {@link HiddenNames} from `.opscrew/server.json` (local state only); none when it is unreadable. */
+async function hiddenNames(deps: ResolvedMcpDeps, projectDir: string): Promise<HiddenNames> {
   try {
-    const connection = await readPortainerConnection(
+    const { own, portainer } = await readServerAddresses(
       resolveProjectPaths(projectDir, { env: deps.env }),
     );
-    return connection === undefined ? [] : portainerAddressNames(connection.url);
+    return {
+      server: [own?.host, own?.publicIpv4, own?.publicIpv6].filter(
+        (name): name is string => typeof name === "string" && name.trim() !== "",
+      ),
+      portainer: portainer === undefined ? [] : portainerAddressNames(portainer.url),
+    };
   } catch {
-    return [];
+    return { server: [], portainer: [] };
   }
 }
 
@@ -169,10 +162,12 @@ export function withoutPortainer(text: string, names: readonly string[]): string
  * `value` with every own-server name replaced by "your server" and every Portainer name by
  * "your Portainer" in every string, deeply.
  */
-function hideNames<T>(value: T, names: readonly string[], portainer: readonly string[] = []): T {
-  if (names.length === 0 && portainer.length === 0) return value;
+function hideNames<T>(value: T, names: HiddenNames): T {
+  if (names.server.length === 0 && names.portainer.length === 0) return value;
   const walk = (item: unknown): unknown => {
-    if (typeof item === "string") return withoutPortainer(withoutOwnServer(item, names), portainer);
+    if (typeof item === "string") {
+      return withoutPortainer(withoutOwnServer(item, names.server), names.portainer);
+    }
     if (Array.isArray(item)) return item.map(walk);
     if (item !== null && typeof item === "object") {
       return Object.fromEntries(Object.entries(item).map(([key, inner]) => [key, walk(inner)]));
@@ -184,10 +179,10 @@ function hideNames<T>(value: T, names: readonly string[], portainer: readonly st
 
 /**
  * Runs one tool call: resolves `projectDir`, gives the body a collecting reporter and lazy
- * `PhaseDeps`, and maps the outcome to a redacted result (errors → `isError: true`). The address
- * of a server the user owns never leaves in a result (FR-902): it reads "your server" instead; the
- * address of the user's Portainer reads "your Portainer" (FR-1002). Unexpected errors are logged
- * (stderr in production) with their stack.
+ * `PhaseDeps`, and maps the outcome to a redacted result (errors → `isError: true`). Then the
+ * address of a server the user owns is hidden in the redacted result (FR-902): it reads "your
+ * server" instead; the address of the user's Portainer reads "your Portainer" (FR-1002).
+ * Unexpected errors are logged (stderr in production) with their stack.
  */
 export async function runTool(
   deps: ResolvedMcpDeps,
@@ -195,72 +190,39 @@ export async function runTool(
   projectDirArg: string | undefined,
   body: (call: ToolCall) => Promise<ToolOutput>,
 ): Promise<CallToolResult> {
-  let projectDir: string | undefined;
-  const result = await runToolBody(deps, tool, projectDirArg, body, (dir) => {
-    projectDir = dir;
-  });
-  if (projectDir === undefined) return result;
-  return hideNames(
-    result,
-    await ownServerNames(deps, projectDir),
-    await portainerNames(deps, projectDir),
-  );
-}
-
-async function runToolBody(
-  deps: ResolvedMcpDeps,
-  tool: string,
-  projectDirArg: string | undefined,
-  body: (call: ToolCall) => Promise<ToolOutput>,
-  resolved: (projectDir: string) => void,
-): Promise<CallToolResult> {
   const reporter = new CollectingReporter(deps.redactor.redact);
+  let projectDir: string | undefined;
+  let result: CallToolResult;
   try {
-    const projectDir = await resolveProjectDir(deps, projectDirArg);
-    resolved(projectDir);
+    const dir = await resolveProjectDir(deps, projectDirArg);
+    projectDir = dir;
     let built: Promise<PhaseDeps> | undefined;
     const call: ToolCall = {
-      projectDir,
+      projectDir: dir,
       reporter,
       phaseDeps: (extras = {}) => {
         built ??= Promise.resolve(
-          deps.createPhaseDeps(projectDir, { reporter, redactor: deps.redactor, ...extras }),
+          deps.createPhaseDeps(dir, { reporter, redactor: deps.redactor, ...extras }),
         );
         return built;
       },
     };
-    return successResult(deps, await body(call), reporter.messages);
+    result = successResult(deps, await body(call), reporter.messages);
   } catch (error) {
     if (!isUserFacingError(error)) {
       deps.log(
         `${tool} failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
       );
     }
-    return errorResult(deps, error, reporter.messages);
+    result = errorResult(deps, error, reporter.messages);
   }
+  if (projectDir === undefined) return result;
+  return hideNames(result, await hiddenNames(deps, projectDir));
 }
-
-/** Repo-relative POSIX form of an absolute path inside the project (for text and data). */
-export function relativeTo(projectDir: string, file: string): string {
-  return path.relative(projectDir, file).split(path.sep).join("/");
-}
-
-/** True when `file` exists. */
-export async function exists(file: string): Promise<boolean> {
-  try {
-    await stat(file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const errorCode = (error: unknown) =>
-  typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
 
 /** True for an `ArtifactError` / `OpsCrewError` with code `ARTIFACT_MISSING`. */
 export function isMissingArtifact(error: unknown): boolean {
-  return errorCode(error) === "ARTIFACT_MISSING";
+  return isUserFacingError(error) && error.code === "ARTIFACT_MISSING";
 }
 
 /** Re-throws `error` with a tool-oriented hint when it is user-facing (keeps code and message). */

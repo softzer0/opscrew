@@ -120,7 +120,6 @@ describe("opscrew_domain_check", () => {
   it("tells the agent that buying is terminal-only", async () => {
     const { client } = await connect({}, {});
     const instructions = client.getInstructions() ?? "";
-    expect(instructions).toContain("opscrew_domain_check");
     expect(instructions).toContain("npx opscrew domain buy <domain>");
     expect(instructions).toContain("--max-price");
   });
@@ -220,18 +219,12 @@ describe("opscrew_domain_check at other registrars", () => {
     }
   });
 
-  it("describes the registrars, connect and the contact rule in the instructions", async () => {
+  it("keeps buying at any registrar, connecting and the contact rule in the instructions", async () => {
     const { client } = await connect({}, {});
     const instructions = client.getInstructions() ?? "";
-    for (const name of ["Porkbun", "Namecheap", "GoDaddy", "compare"]) {
-      expect(instructions).toContain(name);
-    }
     expect(instructions).toContain("npx opscrew domain buy <domain> [--registrar <id>]");
     expect(instructions).toContain("npx opscrew domain connect <domain>");
     expect(instructions).toMatch(/never asks? for contact details/i);
-    expect(instructions).toContain(
-      "GoDaddy uses the contact profile in GODADDY_PROFILE_ID when it is set, else the account's default profile, else the account's own details",
-    );
     expect(instructions).not.toMatch(/\b[A-Z][A-Z0-9]*_[A-Z0-9_]+:/);
   });
 

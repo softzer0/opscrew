@@ -3,7 +3,6 @@ import {
   describePortainerStatus,
   type PortainerResult,
   type PortainerServices,
-  type PortainerStatus,
   portainerDisable,
   portainerEnable,
   portainerStatus,
@@ -12,36 +11,12 @@ import { OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
-import { clientSupportsElicitation, ElicitationApprovalHandler } from "./deploy";
+import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
 import { projectDirInput, runTool } from "./shared";
 
 /** Test-only collaborators for the Portainer tools (production uses the real ones). */
 export interface PortainerToolOptions {
   services?: PortainerServices;
-}
-
-/** `_meta` that makes Claude Code ask for permission on every call, even in auto modes. */
-const REQUIRES_USER = { "anthropic/requiresUserInteraction": true } as const;
-
-/** Per-call context the SDK passes to a tool callback. */
-interface CallExtra {
-  requestId?: string | number;
-  signal?: AbortSignal;
-}
-
-/** The status for the model: how to open Portainer, never the password (the address is hidden). */
-function statusData(status: PortainerStatus): Record<string, unknown> {
-  return {
-    enabled: status.enabled,
-    ...(status.version !== undefined ? { version: status.version } : {}),
-    ...(status.access !== undefined ? { access: status.access } : {}),
-    ...(status.url !== undefined ? { url: status.url } : {}),
-    ...(status.allowedEmails !== undefined ? { allowedEmails: status.allowedEmails } : {}),
-    localUrl: status.localUrl,
-    ...(status.tunnelCommand !== undefined ? { tunnelCommand: status.tunnelCommand } : {}),
-    passwordFile: status.passwordFile,
-    passwordFileExists: status.passwordFileExists,
-  };
 }
 
 /** What a change did, in plain text: the hashes approved and how to open Portainer now. */
@@ -61,16 +36,6 @@ function changeText(command: "enable" | "disable", result: PortainerResult): str
     "",
     "The admin password is only in the file named above on the user's computer: never read it into this chat. To open Portainer, the user runs `npx opscrew portainer status` in a terminal and starts the SSH tunnel it prints.",
   ].join("\n");
-}
-
-/** Refuses a change when the client cannot ask the user (no auto-approval through MCP). */
-function requireDialogs(server: McpServer, terminal: string): void {
-  if (clientSupportsElicitation(server)) return;
-  throw new OpsCrewError(
-    "APPROVAL_REFUSED",
-    "This MCP client cannot show OpsCrew's approval dialog (MCP elicitation), so OpsCrew changes nothing. Nothing was changed.",
-    { hint: `Ask the user to run \`${terminal}\` in a terminal in the project directory.` },
-  );
 }
 
 /**
@@ -118,7 +83,7 @@ export function registerPortainerTools(
             ? ["Never read the password file into this chat; the user opens it themselves."]
             : []),
         ].join("\n");
-        return { text, data: statusData(status) };
+        return { text, data: { ...status } };
       }),
   );
 
@@ -154,11 +119,7 @@ export function registerPortainerTools(
     ({ projectDir, subdomain, allowEmails }, extra: CallExtra) =>
       runTool(deps, "opscrew_portainer_enable", projectDir, async (call) => {
         requireDialogs(server, "npx opscrew portainer enable");
-        const handler = new ElicitationApprovalHandler(server, {
-          clock: deps.clock,
-          redact: deps.redactor.redact,
-          extra,
-        });
+        const handler = dialogHandler(server, deps, extra);
         const phase = await call.phaseDeps({ approvalHandler: handler });
         const result = await portainerEnable(phase, {
           ...(subdomain === undefined ? {} : { subdomain }),
@@ -174,7 +135,7 @@ export function registerPortainerTools(
             hostApplied: result.hostApplied,
             files: result.files,
             approvals: handler.decisions,
-            status: statusData(result.status),
+            status: result.status,
           },
         };
       }),
@@ -215,11 +176,7 @@ export function registerPortainerTools(
           );
         }
         requireDialogs(server, "npx opscrew portainer disable");
-        const handler = new ElicitationApprovalHandler(server, {
-          clock: deps.clock,
-          redact: deps.redactor.redact,
-          extra,
-        });
+        const handler = dialogHandler(server, deps, extra);
         const phase = await call.phaseDeps({ approvalHandler: handler });
         const result = await portainerDisable(phase, { ...services });
         return {

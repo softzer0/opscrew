@@ -1,30 +1,27 @@
-import { readFile } from "node:fs/promises";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ElicitRequestFormParams } from "@modelcontextprotocol/sdk/types.js";
 import {
+  applyCommand,
   describePlan,
   findSavedPlan,
-  hostPlanFile,
-  type PhaseDeps,
   PORTAINER_BACKUPS_NOTE,
   PORTAINER_HOST_NOTE,
-  type ProvisionOptions,
   type ProvisionResult,
   type ProvisionServices,
+  portainerImageOptions,
   previewDeploymentFiles,
+  REPLACEABLE_TOKENS,
   type RunSecureOptions,
   type RunVerifyOptions,
+  readSavedPlanChanges,
   runProvision,
   runSecure,
   runVerify,
   type SavedPlan,
-  stackPlanFile,
   summarizeChecks,
 } from "@opscrew/agents";
 import type {
   ApprovalDecision,
   ApprovalHandler,
-  ApprovalKind,
   ApprovalRequest,
   CheckResult,
   Clock,
@@ -33,6 +30,13 @@ import { isPlanHash, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
+import {
+  type CallExtra,
+  dialogHandler,
+  type ElicitationApprovalHandler,
+  REQUIRES_USER,
+  requireDialogs,
+} from "./elicitation";
 import { projectDirInput, runTool } from "./shared";
 
 /**
@@ -48,154 +52,6 @@ export interface DeployToolOptions {
   verify?: RunVerifyOptions;
   /** Replaces `runProvision` (tests of the user's Portainer, whose flow `@opscrew/agents` tests). */
   runProvision?: typeof runProvision;
-}
-
-/** How long OpsCrew waits for the user to answer one approval dialog. */
-const ELICITATION_TIMEOUT_MS = 30 * 60_000;
-
-/** `_meta` that makes Claude Code ask for permission on every call, even in auto modes. */
-const REQUIRES_USER = { "anthropic/requiresUserInteraction": true } as const;
-
-/** Per-call context the SDK passes to a tool callback (only what the deploy tools use). */
-interface CallExtra {
-  requestId?: string | number;
-  signal?: AbortSignal;
-}
-
-/** True when the connected client declared form-mode MCP elicitation. */
-export function clientSupportsElicitation(server: McpServer): boolean {
-  const elicitation = server.server.getClientCapabilities()?.elicitation;
-  if (elicitation === undefined) return false;
-  // An empty capability object means form mode (backwards compatibility).
-  return elicitation.form !== undefined || elicitation.url === undefined;
-}
-
-const ElicitedAnswer = z.object({
-  approve: z.boolean().optional(),
-  confirmation: z.string().optional(),
-});
-
-/** The text of the approval dialog: title, details, failed policies, cost and destroy warning. */
-export function approvalMessage(request: ApprovalRequest): string {
-  const lines = [`OpsCrew asks for your approval: ${request.title}`, ""];
-  if (request.details.trim() !== "") lines.push(request.details.trimEnd(), "");
-  const failures = (request.policy ?? []).filter((result) => !result.passed);
-  if (failures.length > 0) {
-    lines.push("Policy checks that did not pass:");
-    for (const f of failures) lines.push(`  ✗ [${f.severity}] ${f.title}: ${f.message}`);
-    lines.push("");
-  }
-  if (request.costDelta !== undefined) {
-    const { amount, currency } = request.costDelta;
-    const change = new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency,
-      signDisplay: "always",
-    }).format(amount);
-    lines.push(`Monthly cost change: ${change}`, "");
-  }
-  if (request.allowDestroy === true) {
-    lines.push("WARNING: this change deletes or replaces resources.", "");
-  }
-  lines.push(
-    request.confirmPhrase === undefined
-      ? "Approve only if you reviewed the change above. Your coding agent cannot approve this for you."
-      : `To approve, type "${request.confirmPhrase}" exactly. Anything else cancels.`,
-  );
-  return lines.join("\n");
-}
-
-/**
- * Asks the human through MCP elicitation (a dialog in the client, not the model). Each request
- * becomes a form with one yes/no field, or a text field when the user must type `confirmPhrase`.
- * It never asks for secret values. Declines, cancels, wrong phrases and client errors all refuse.
- */
-export class ElicitationApprovalHandler implements ApprovalHandler {
-  /** Every request and its outcome, in order. */
-  readonly decisions: { kind: ApprovalKind; approved: boolean }[] = [];
-
-  constructor(
-    private readonly server: McpServer,
-    private readonly options: {
-      clock: Clock;
-      redact: (text: string) => string;
-      extra?: CallExtra;
-    },
-  ) {}
-
-  private approver(): string {
-    const client = this.server.server.getClientVersion()?.name;
-    return `user via ${client ?? "MCP client"} (elicitation)`;
-  }
-
-  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
-    const decision = await this.ask(request);
-    this.decisions.push({ kind: request.kind, approved: decision.approved });
-    return decision;
-  }
-
-  private async ask(request: ApprovalRequest): Promise<ApprovalDecision> {
-    const decide = (approved: boolean, extra: Partial<ApprovalDecision> = {}) => ({
-      approved,
-      approver: this.approver(),
-      decidedAt: this.options.clock.now().toISOString(),
-      ...extra,
-    });
-    const phrase = request.confirmPhrase;
-    const requestedSchema: ElicitRequestFormParams["requestedSchema"] = {
-      type: "object" as const,
-      properties:
-        phrase === undefined
-          ? {
-              approve: {
-                type: "boolean" as const,
-                title: "Approve",
-                description: request.title,
-                default: false,
-              },
-            }
-          : {
-              confirmation: {
-                type: "string" as const,
-                title: `Type "${phrase}" to approve`,
-                description: request.title,
-              },
-            },
-      required: [phrase === undefined ? "approve" : "confirmation"],
-    };
-    const extra = this.options.extra;
-    let result: Awaited<ReturnType<McpServer["server"]["elicitInput"]>>;
-    try {
-      result = await this.server.server.elicitInput(
-        { mode: "form", message: this.options.redact(approvalMessage(request)), requestedSchema },
-        {
-          timeout: ELICITATION_TIMEOUT_MS,
-          ...(extra?.requestId !== undefined ? { relatedRequestId: extra.requestId } : {}),
-          ...(extra?.signal !== undefined ? { signal: extra.signal } : {}),
-        },
-      );
-    } catch {
-      return decide(false, {
-        reason: "the approval dialog could not be shown or was not answered",
-      });
-    }
-    if (result.action !== "accept") {
-      return decide(false, {
-        reason: result.action === "decline" ? "declined by the user" : "cancelled by the user",
-      });
-    }
-    const answer = ElicitedAnswer.safeParse(result.content ?? {});
-    if (!answer.success) return decide(false, { reason: "the approval answer was not understood" });
-    if (phrase !== undefined) {
-      const typed = (answer.data.confirmation ?? "").trim();
-      return typed === phrase
-        ? decide(true, { confirmation: typed })
-        : decide(false, { confirmation: typed, reason: "confirmation phrase did not match" });
-    }
-    return answer.data.approve === true
-      ? decide(true)
-      : decide(false, { reason: "declined by the user" });
-  }
 }
 
 /**
@@ -258,112 +114,19 @@ const PUBLIC_IMAGE_INPUT = z
 
 /** The CLI's `--replace-token repository|registry` for the user's Portainer. */
 const REPLACE_TOKENS_INPUT = z
-  .array(z.enum(["repository", "registry"]))
+  .array(z.enum(REPLACEABLE_TOKENS))
   .max(2)
   .optional()
   .describe(
     'The user\'s Portainer, only when the user rotated a token and asks to send it again: "repository" (OPSCREW_REPO_READ_TOKEN) and/or "registry" (OPSCREW_GHCR_READ_TOKEN). Never the tokens themselves. Pass the same value to opscrew_plan and opscrew_apply.',
   );
 
-/** `publicImage` and `replaceTokens` for `runProvision` from the tool's inputs. */
-function portainerOptions(input: {
-  publicImage?: boolean | undefined;
-  replaceTokens?: readonly ("repository" | "registry")[] | undefined;
-}): Pick<ProvisionOptions, "publicImage" | "replaceTokens"> {
-  const tokens = input.replaceTokens ?? [];
-  return {
-    ...(input.publicImage === undefined ? {} : { publicImage: input.publicImage }),
-    ...(tokens.length === 0
-      ? {}
-      : {
-          replaceTokens: {
-            ...(tokens.includes("repository") ? { repository: true } : {}),
-            ...(tokens.includes("registry") ? { registry: true } : {}),
-          },
-        }),
-  };
-}
-
-const SavedHostPlanSchema = z.looseObject({
-  steps: z.array(z.looseObject({ state: z.string() })),
-});
-
-/**
- * A server the user owns: whether the saved host plan `hash` exists (`.opscrew/plans/host-<hash>.json`)
- * and whether it changes something on the server.
- */
-async function savedHostPlan(
-  phase: Pick<PhaseDeps, "paths">,
-  hash: string,
-): Promise<{ changes: boolean } | undefined> {
-  let text: string;
-  try {
-    text = await readFile(hostPlanFile(phase.paths, hash), "utf8");
-  } catch (error) {
-    // Only a missing file means "no such host plan"; any other problem must not hide one.
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return undefined;
-    throw error;
-  }
-  const parsed = SavedHostPlanSchema.safeParse(
-    (() => {
-      try {
-        return JSON.parse(text) as unknown;
-      } catch {
-        return undefined;
-      }
-    })(),
-  );
-  if (!parsed.success) {
-    throw new OpsCrewError(
-      "ARTIFACT_INVALID",
-      `The saved host plan ${hash} (.opscrew/plans/host-${hash}.json) is damaged, so OpsCrew cannot tell what it changes.`,
-      { hint: "Call opscrew_plan again and show the user the new plans." },
-    );
-  }
-  return { changes: parsed.data.steps.some((step) => step.state === "change") };
-}
+/** What to do about a damaged saved host or stack plan through MCP. */
+const PLAN_AGAIN = "Call opscrew_plan again and show the user the new plans.";
 
 /** The host plan as OpsCrew described it while planning (from the collected messages). */
 function hostPlanText(messages: readonly { message: string }[]): string | undefined {
   return messages.find((m) => m.message.startsWith("Host plan for your server"))?.message;
-}
-
-const SavedStackPlanSchema = z.looseObject({
-  changes: z.array(z.looseObject({ state: z.string() })),
-});
-
-/**
- * The user's Portainer: whether the saved stack plan `hash` exists
- * (`.opscrew/plans/stack-<hash>.json`) and whether it changes something in Portainer.
- */
-async function savedStackPlan(
-  phase: Pick<PhaseDeps, "paths">,
-  hash: string,
-): Promise<{ changes: boolean } | undefined> {
-  let text: string;
-  try {
-    text = await readFile(stackPlanFile(phase.paths, hash), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return undefined;
-    throw error;
-  }
-  const parsed = SavedStackPlanSchema.safeParse(
-    (() => {
-      try {
-        return JSON.parse(text) as unknown;
-      } catch {
-        return undefined;
-      }
-    })(),
-  );
-  if (!parsed.success) {
-    throw new OpsCrewError(
-      "ARTIFACT_INVALID",
-      `The saved stack plan ${hash} (.opscrew/plans/stack-${hash}.json) is damaged, so OpsCrew cannot tell what it changes.`,
-      { hint: "Call opscrew_plan again and show the user the new plans." },
-    );
-  }
-  return { changes: parsed.data.changes.some((change) => change.state === "change") };
 }
 
 /** The stack plan as OpsCrew described it while planning (from the collected messages). */
@@ -472,7 +235,7 @@ export function registerDeployTools(
           planOnly: true,
           ...(engine !== undefined ? { engine } : {}),
           ...(passwordLogins === undefined ? {} : { passwordLogins }),
-          ...portainerOptions({ publicImage, replaceTokens }),
+          ...portainerImageOptions(publicImage, replaceTokens),
           ...servicesOption(options),
         });
         const plan = await readArtifact("plan", phase.paths.files.plan);
@@ -486,14 +249,16 @@ export function registerDeployTools(
         // A server the user owns: the host plan, approved on its own by its hash.
         const hostHash =
           result.hostPlanHash !== undefined &&
-          (await savedHostPlan(phase, result.hostPlanHash))?.changes === true
+          (await readSavedPlanChanges(phase.paths, "host", result.hostPlanHash, PLAN_AGAIN)) ===
+            true
             ? result.hostPlanHash
             : undefined;
         const hostText = hostHash === undefined ? undefined : hostPlanText(call.reporter.messages);
         // The user's Portainer: the stack plan, approved on its own by its hash.
         const stackHash =
           result.stackPlanHash !== undefined &&
-          (await savedStackPlan(phase, result.stackPlanHash))?.changes === true
+          (await readSavedPlanChanges(phase.paths, "stack", result.stackPlanHash, PLAN_AGAIN)) ===
+            true
             ? result.stackPlanHash
             : undefined;
         const stackText =
@@ -505,24 +270,21 @@ export function registerDeployTools(
           ...(saved !== undefined ? [saved.planHash] : []),
           ...(second !== undefined ? [second] : []),
         ];
-        const imageFlags = [
-          ...(publicImage === true ? ["--public-image"] : []),
-          ...(publicImage === false ? ["--private-image"] : []),
-          ...(replaceTokens ?? []).map((token) => `--replace-token ${token}`),
-        ];
-        const applyCommand = [
-          "opscrew provision",
-          ...hashes.map((h) => `--approve ${h}`),
-          ...(passwordLogins === undefined ? [] : [`--password-logins ${passwordLogins}`]),
-          ...imageFlags,
-        ].join(" ");
+        // The terminal run repeats this call's engine, password-logins and image choices.
+        const command = applyCommand("provision", hashes, {
+          ...(engine === "tofu" || engine === "terraform" ? { engine } : {}),
+          ...(passwordLogins === undefined ? {} : { passwordLogins }),
+          ...(publicImage === undefined ? {} : { publicImage }),
+          ...(replaceTokens === undefined ? {} : { replaceTokens }),
+        });
         if (saved === undefined && second === undefined) {
+          const matched = own
+            ? "Cloudflare and the user's server already match the plans"
+            : portainer
+              ? "Cloudflare and the user's Portainer already match the plans"
+              : "The infrastructure already matches the plan";
           return {
-            text: own
-              ? "Cloudflare and the user's server already match the plans; there is nothing to apply. Next: call opscrew_secure and opscrew_verify, or run `opscrew provision` in a terminal to finish any remaining steps."
-              : portainer
-                ? "Cloudflare and the user's Portainer already match the plans; there is nothing to apply. Next: call opscrew_secure and opscrew_verify, or run `opscrew provision` in a terminal to finish any remaining steps."
-                : "The infrastructure already matches the plan; there is nothing to apply. Next: call opscrew_secure and opscrew_verify, or run `opscrew provision` in a terminal to finish any remaining steps.",
+            text: `${matched}; there is nothing to apply. Next: call opscrew_secure and opscrew_verify, or run \`opscrew provision\` in a terminal to finish any remaining steps.`,
             data: {
               upToDate: true,
               ...(result.planHash ? { planHash: result.planHash } : {}),
@@ -553,7 +315,7 @@ export function registerDeployTools(
           ...(stackText !== undefined ? ["", stackText] : []),
           "",
           `Nothing was created${own ? " and nothing on the user's server was changed" : portainer ? " and nothing in the user's Portainer was changed" : ""}. Show ${hashes.length > 1 ? "both plans" : "this plan"} to the user. To apply exactly ${hashes.length > 1 ? "these plans" : "this plan"}, call opscrew_apply with ${applyArgs}: OpsCrew then asks the user to approve each in a dialog. Without that dialog, the user can run this in a terminal:`,
-          `  ${applyCommand}`,
+          `  ${command}`,
           ...(stackFollows
             ? [
                 "The stack plan for the user's Portainer follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token: opscrew_apply then shows it to the user in its own dialog. In a terminal script that takes three runs: `opscrew provision --plan-only`, the command above, then `opscrew provision --approve <stack plan hash>`.",
@@ -573,7 +335,7 @@ export function registerDeployTools(
             ...(stackHash !== undefined ? { stackPlanHash: stackHash } : {}),
             ...(stackFollows ? { stackPlanFollows: true } : {}),
             ...(cost === undefined ? {} : { cost }),
-            applyCommand,
+            applyCommand: command,
           },
         };
       }),
@@ -643,40 +405,34 @@ export function registerDeployTools(
         const hash = planHash.toLowerCase();
         const hostHash = hostPlanHash?.toLowerCase();
         const stackHash = stackPlanHash?.toLowerCase();
-        const terminal = [
-          `opscrew provision --approve ${hash}`,
-          ...(hostHash === undefined ? [] : [`--approve ${hostHash}`]),
-          ...(stackHash === undefined ? [] : [`--approve ${stackHash}`]),
-          ...(passwordLogins === undefined ? [] : [`--password-logins ${passwordLogins}`]),
-          ...(publicImage === true ? ["--public-image"] : []),
-          ...(publicImage === false ? ["--private-image"] : []),
-          ...(replaceTokens ?? []).map((token) => `--replace-token ${token}`),
-        ].join(" ");
-        if (!clientSupportsElicitation(server)) {
-          throw new OpsCrewError(
-            "APPROVAL_REFUSED",
-            "This MCP client cannot show OpsCrew's approval dialog (MCP elicitation), so OpsCrew will not apply the plan. Nothing was changed.",
-            {
-              hint: `Ask the user to review the plan and run \`${terminal}\` in a terminal in the project directory.`,
-            },
-          );
-        }
-        const handler = new ElicitationApprovalHandler(server, {
-          clock: deps.clock,
-          redact: deps.redactor.redact,
-          extra,
-        });
+        const terminal = applyCommand(
+          "provision",
+          [
+            hash,
+            ...(hostHash === undefined ? [] : [hostHash]),
+            ...(stackHash === undefined ? [] : [stackHash]),
+          ],
+          {
+            ...(passwordLogins === undefined ? {} : { passwordLogins }),
+            ...(publicImage === undefined ? {} : { publicImage }),
+            ...(replaceTokens === undefined ? {} : { replaceTokens }),
+          },
+        );
+        requireDialogs(server, terminal);
+        const handler = dialogHandler(server, deps, extra);
         const phase = await call.phaseDeps({ approvalHandler: handler });
         const saved = await findSavedPlan(phase.paths.files.plansDir, hash);
         const plan = await readArtifact("plan", phase.paths.files.plan);
         const own = plan.target.provider === "own";
         const portainer = plan.target.provider === "portainer";
+        const savedChanges = (kind: "host" | "stack", planHash: string) =>
+          readSavedPlanChanges(phase.paths, kind, planHash, PLAN_AGAIN);
         // A server the user owns whose infrastructure needs no change: the hash names the host plan.
         const hostOnly =
-          saved === undefined && own && (await savedHostPlan(phase, hash)) !== undefined;
+          saved === undefined && own && (await savedChanges("host", hash)) !== undefined;
         // The user's Portainer whose Cloudflare setup needs no change: the hash names the stack plan.
         const stackOnly =
-          saved === undefined && portainer && (await savedStackPlan(phase, hash)) !== undefined;
+          saved === undefined && portainer && (await savedChanges("stack", hash)) !== undefined;
         if (saved === undefined && !hostOnly && !stackOnly) {
           throw new OpsCrewError("PLAN_HASH_MISMATCH", `No saved plan has the hash ${hash}.`, {
             hint: "Call opscrew_plan again, show the new plan to the user and apply its hash.",
@@ -684,7 +440,7 @@ export function registerDeployTools(
         }
         if (
           hostHash !== undefined &&
-          (!own || (await savedHostPlan(phase, hostHash)) === undefined)
+          (!own || (await savedChanges("host", hostHash)) === undefined)
         ) {
           throw new OpsCrewError(
             "PLAN_HASH_MISMATCH",
@@ -696,7 +452,7 @@ export function registerDeployTools(
         }
         if (
           stackHash !== undefined &&
-          (!portainer || (await savedStackPlan(phase, stackHash)) === undefined)
+          (!portainer || (await savedChanges("stack", stackHash)) === undefined)
         ) {
           throw new OpsCrewError(
             "PLAN_HASH_MISMATCH",
@@ -720,7 +476,7 @@ export function registerDeployTools(
             ],
             ...(saved === undefined ? {} : { engine: saved.engine.name }),
             ...(passwordLogins === undefined ? {} : { passwordLogins }),
-            ...portainerOptions({ publicImage, replaceTokens }),
+            ...portainerImageOptions(publicImage, replaceTokens),
             secrets,
             ...servicesOption(options),
           });

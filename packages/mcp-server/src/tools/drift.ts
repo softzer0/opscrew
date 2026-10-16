@@ -6,22 +6,21 @@ import {
   renderDriftReport,
   runDrift,
 } from "@opscrew/agents";
-import { OpsCrewError, resolveProjectPaths } from "@opscrew/core";
+import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
-import { clientSupportsElicitation, ElicitationApprovalHandler } from "./deploy";
+import {
+  type CallExtra,
+  clientSupportsElicitation,
+  dialogHandler,
+  hostKeyNeedsTerminal,
+} from "./elicitation";
 import { projectDirInput, runTool, type ToolCall } from "./shared";
 
 /** Test-only collaborators for `opscrew_drift` (production uses the real ones). */
 export interface DriftToolOptions {
   /** Engine, cloud provider, Cloudflare and own-server fakes (same shape as provision's). */
   services?: ProvisionServices;
-}
-
-/** Per-call context the SDK passes to a tool callback. */
-interface CallExtra {
-  requestId?: string | number;
-  signal?: AbortSignal;
 }
 
 /**
@@ -41,22 +40,9 @@ async function driftPhaseDeps(
   if (plan?.target.provider !== "own") return call.phaseDeps();
   const recorded = await readOwnServer(paths).catch(() => undefined);
   if (recorded === undefined || recorded.hostKey !== undefined) return call.phaseDeps();
-  if (!clientSupportsElicitation(server)) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "OpsCrew must confirm the SSH host key of the user's server once before it connects, and this MCP client cannot show the confirmation dialog. Nothing was checked.",
-      {
-        hint: "Ask the user to run `npx opscrew drift` in a terminal in the project directory: it shows the server's fingerprint to check against the server and pins it. Then call this tool again.",
-      },
-    );
-  }
-  const phase = await call.phaseDeps({
-    approvalHandler: new ElicitationApprovalHandler(server, {
-      clock: deps.clock,
-      redact: deps.redactor.redact,
-      extra,
-    }),
-  });
+  if (!clientSupportsElicitation(server))
+    throw hostKeyNeedsTerminal("drift", "Nothing was checked.");
+  const phase = await call.phaseDeps({ approvalHandler: dialogHandler(server, deps, extra) });
   // Only the first connection asks (a dialog for the user); a pinned key is checked silently.
   return { ...phase, interactive: true };
 }

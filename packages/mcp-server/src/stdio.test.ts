@@ -5,7 +5,6 @@ import { PassThrough } from "node:stream";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { PLANNING_TOOLS } from "./server";
 import { type RunningStdioServer, startStdioServer } from "./stdio";
 
 let running: RunningStdioServer | undefined;
@@ -82,7 +81,7 @@ describe("startStdioServer", () => {
     send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
     const list = (await out.waitFor(2)) as { result: { tools: Array<{ name: string }> } };
     const names = list.result.tools.map((tool) => tool.name);
-    expect(names).toEqual(expect.arrayContaining([...PLANNING_TOOLS]));
+    expect(names).toEqual(expect.arrayContaining(["opscrew_scan", "opscrew_status"]));
 
     send({
       jsonrpc: "2.0",

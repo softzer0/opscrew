@@ -1,10 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
-  connectOwnServer,
   type DesignPreview,
   type DesignResult,
   formatMoney,
-  inspectOwnServer,
+  inspectOwnServerForDesign,
+  isUnpriced,
   type OwnServerDesignInput,
   type OwnServerServices,
   type PhaseDeps,
@@ -17,20 +17,25 @@ import {
   runDesign,
 } from "@opscrew/agents";
 import type { ApprovalHandler } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { detectProject } from "@opscrew/detect";
 import { type DesignOption, readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
-import { clientSupportsElicitation, ElicitationApprovalHandler } from "./deploy";
-import { isMissingArtifact, projectDirInput, relativeTo, runTool, withHint } from "./shared";
+import {
+  type CallExtra,
+  clientSupportsElicitation,
+  dialogHandler,
+  hostKeyNeedsTerminal,
+} from "./elicitation";
+import { isMissingArtifact, projectDirInput, runTool, withHint } from "./shared";
 
 const REQUIREMENTS_HINT =
   "Call opscrew_interview_questions, ask the user the questions, then call opscrew_save_requirements.";
 
 /** Fails with a tool-oriented hint unless `opscrew/requirements.yaml` exists and is valid. */
 async function requireRequirements(phase: PhaseDeps): Promise<void> {
-  const file = relativeTo(phase.paths.root, phase.paths.files.requirements);
+  const file = toPosixRelative(phase.paths.root, phase.paths.files.requirements);
   try {
     await readArtifact("requirements", phase.paths.files.requirements);
   } catch (error) {
@@ -52,7 +57,7 @@ async function checkArchitecture(phase: PhaseDeps): Promise<boolean> {
     return true;
   } catch (error) {
     if (isMissingArtifact(error)) return false;
-    const file = relativeTo(phase.paths.root, phase.paths.files.architecture);
+    const file = toPosixRelative(phase.paths.root, phase.paths.files.architecture);
     return withHint(
       error,
       `Fix ${file}, or delete it so OpsCrew detects the project again, then retry.`,
@@ -66,12 +71,6 @@ export interface DesignToolOptions {
   own?: OwnServerServices;
 }
 
-/** Per-call context the SDK passes to a tool callback (only what the design tools use). */
-interface CallExtra {
-  requestId?: string | number;
-  signal?: AbortSignal;
-}
-
 /**
  * The approval handler of a design tool call: a dialog for the user (MCP elicitation) when the
  * client can show one. Design asks only one thing: trusting the SSH host key of the user's own
@@ -83,13 +82,7 @@ function designApprovals(
   extra: CallExtra,
 ): { approvalHandler?: ApprovalHandler } {
   if (!clientSupportsElicitation(server)) return {};
-  return {
-    approvalHandler: new ElicitationApprovalHandler(server, {
-      clock: deps.clock,
-      redact: deps.redactor.redact,
-      extra,
-    }),
-  };
+  return { approvalHandler: dialogHandler(server, deps, extra) };
 }
 
 /**
@@ -108,31 +101,13 @@ async function ownServerInput(
   const recorded = await readOwnServer(phase.paths).catch(() => undefined);
   const pinned = recorded?.hostKey !== undefined;
   if (recorded !== undefined && !pinned && !clientSupportsElicitation(server)) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "OpsCrew must confirm the SSH host key of the user's server once before it connects, and this MCP client cannot show the confirmation dialog. Nothing was changed.",
-      {
-        hint: "Ask the user to run `npx opscrew design` in a terminal in the project directory: it shows the server's fingerprint to check against the server and pins it. Then call this tool again.",
-      },
-    );
+    throw hostKeyNeedsTerminal("design", "Nothing was changed.");
   }
-  const own = options.own ?? {};
   // Only the first connection asks (a dialog for the user); a pinned key is checked silently.
-  const session = await connectOwnServer(
+  return inspectOwnServerForDesign(
     { ...phase, interactive: !pinned },
-    {
-      ...(own.remote === undefined ? {} : { remote: own.remote }),
-      ...(own.homeDir === undefined ? {} : { homeDir: own.homeDir }),
-    },
+    options.own === undefined ? {} : { services: options.own },
   );
-  const host = own.host;
-  const inspect =
-    host?.inspect === undefined
-      ? undefined
-      : (remote: Parameters<NonNullable<typeof host.inspect>>[0]) =>
-          (host as Required<typeof host>).inspect(remote);
-  const inspected = await inspectOwnServer(session, inspect === undefined ? {} : { inspect });
-  return { facts: inspected.server };
 }
 
 /**
@@ -153,25 +128,12 @@ async function previewDesign(
   });
 }
 
-/** True for the option on a server the user already owns, which has no price (FR-913). */
-function isOwnServer(option: DesignOption): boolean {
-  return option.target.provider === "own";
-}
-
-/** True for the option in the user's existing Portainer: no price and no sizes (FR-1015). */
-function isPortainer(option: DesignOption): boolean {
-  return option.target.provider === "portainer";
-}
-
-/** True for an option without a server price: the user's own server or their Portainer. */
-function isUnpriced(option: DesignOption): boolean {
-  return isOwnServer(option) || isPortainer(option);
-}
-
 /** The option's cost in words: never a price for the user's own server or their Portainer. */
 function costText(option: DesignOption): string {
-  if (isPortainer(option)) return "no server price (the user already runs this Portainer)";
-  return isOwnServer(option)
+  if (option.target.provider === "portainer") {
+    return "no server price (the user already runs this Portainer)";
+  }
+  return option.target.provider === "own"
     ? "no server price (the user already pays for this server)"
     : `${formatMoney(option.cost.monthly)}/month, ${priceLabel(option.cost)}`;
 }
@@ -187,7 +149,6 @@ function taxLabel(cost: Pick<DesignOption["cost"], "monthly" | "pricesIncludeVat
 
 /** Plain-text block for one option. */
 function renderOption(option: DesignOption): string {
-  const own = isOwnServer(option);
   const unpriced = isUnpriced(option);
   const marks = [
     ...(unpriced ? [] : [option.fitsBudget ? "fits the budget" : "over budget"]),
@@ -198,10 +159,10 @@ function renderOption(option: DesignOption): string {
     `${option.title} (id: ${option.id}) — ${costText(option)}${marks.length > 0 ? `; ${marks.join(", ")}` : ""}`,
     `  ${option.summary}`,
     // The user's Portainer: OpsCrew does not size the host, so it shows no sizes at all.
-    ...(isPortainer(option)
+    ...(t.provider === "portainer"
       ? []
       : [
-          `  Server: ${t.serverType} in ${t.location}, ${t.vcpus} vCPU (${t.cpuType}), ${t.memoryGb} GB RAM, ${t.diskGb} GB ${own ? "free disk" : "disk"}`,
+          `  Server: ${t.serverType} in ${t.location}, ${t.vcpus} vCPU (${t.cpuType}), ${t.memoryGb} GB RAM, ${t.diskGb} GB ${t.provider === "own" ? "free disk" : "disk"}`,
         ]),
     ...(unpriced
       ? []
@@ -244,7 +205,7 @@ function withoutCost(plan: DesignResult["plan"]): Record<string, unknown> {
 function optionData(option: DesignOption): Record<string, unknown> {
   if (!isUnpriced(option)) return option;
   const { cost: _cost, fitsBudget: _fits, ...rest } = option;
-  if (isPortainer(option)) {
+  if (option.target.provider === "portainer") {
     const {
       vcpus: _vcpus,
       memoryGb: _memory,
@@ -256,6 +217,13 @@ function optionData(option: DesignOption): Record<string, unknown> {
   }
   return { ...rest, price: "none: the user already pays for this server" };
 }
+
+/** The heading of the one unpriced option: the user's own server or their Portainer. */
+const UNPRICED_HEADING = {
+  own: "Deployment on the user's own server (no server price: they already pay for it; OpsCrew cannot turn on backups there, so backups are the user's responsibility):",
+  portainer:
+    "Deployment in the user's existing Portainer (no server price: they already run it; OpsCrew does not change the host, and backups of the app's data are the user's responsibility):",
+} as const;
 
 /**
  * `opscrew_design_options` (read-only preview of 2–3 priced options on the chosen provider, or the
@@ -288,9 +256,13 @@ export function registerDesignTools(
         for (const warning of result.warnings) call.reporter.warn(warning);
         const recommended = result.options.find((o) => o.recommended);
         const requirements = await readArtifact("requirements", phase.paths.files.requirements);
-        if (ownServer !== undefined) {
+        const unpriced =
+          requirements.provider === "own" || requirements.provider === "portainer"
+            ? requirements.provider
+            : undefined;
+        if (unpriced !== undefined) {
           const text = [
-            "Deployment on the user's own server (no server price: they already pay for it; OpsCrew cannot turn on backups there, so backups are the user's responsibility):",
+            UNPRICED_HEADING[unpriced],
             "",
             ...result.options.map(renderOption),
             "",
@@ -301,25 +273,7 @@ export function registerDesignTools(
             data: {
               options: result.options.map(optionData),
               recommendedId: recommended?.id,
-              ownServer: true,
-              warnings: result.warnings,
-            },
-          };
-        }
-        if (requirements.provider === "portainer") {
-          const text = [
-            "Deployment in the user's existing Portainer (no server price: they already run it; OpsCrew does not change the host, and backups of the app's data are the user's responsibility):",
-            "",
-            ...result.options.map(renderOption),
-            "",
-            `After the user agrees, call opscrew_select_design with the option id (${recommended?.id ?? result.options[0]?.id}).`,
-          ].join("\n");
-          return {
-            text,
-            data: {
-              options: result.options.map(optionData),
-              recommendedId: recommended?.id,
-              portainer: true,
+              ...(unpriced === "own" ? { ownServer: true } : { portainer: true }),
               warnings: result.warnings,
             },
           };
@@ -380,7 +334,7 @@ export function registerDesignTools(
         if (!hasArchitecture) {
           await runAnalyze(phase, { ai: false });
           notes.push(
-            `Wrote ${relativeTo(phase.paths.root, phase.paths.files.architecture)} from deterministic detection.`,
+            `Wrote ${toPosixRelative(phase.paths.root, phase.paths.files.architecture)} from deterministic detection.`,
           );
         }
         const ownServer = await ownServerInput(server, phase, options);
@@ -400,7 +354,7 @@ export function registerDesignTools(
           throw error;
         }
         const { chosen, plan } = result;
-        const planFile = relativeTo(phase.paths.root, phase.paths.files.plan);
+        const planFile = toPosixRelative(phase.paths.root, phase.paths.files.plan);
         const pending = plan.codeChanges.filter((change) => change.status === "pending");
         const text = [
           ...notes,

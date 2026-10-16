@@ -468,7 +468,6 @@ async function connect(options: Options = {}) {
     runner: ownRunner(),
     clock: { now: () => new Date("2026-10-14T12:00:00.000Z") },
     cwd: root,
-    tmpDir: home,
   });
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
   registerInterviewTools(server, deps);

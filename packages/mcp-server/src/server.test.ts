@@ -11,7 +11,18 @@ import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpscrewMcpDeps } from "./deps";
-import { createOpscrewMcpServer, PLANNING_TOOLS } from "./server";
+import { createOpscrewMcpServer } from "./server";
+
+/** The planning tools (FR-110). */
+const PLANNING_TOOLS = [
+  "opscrew_scan",
+  "opscrew_detect",
+  "opscrew_interview_questions",
+  "opscrew_save_requirements",
+  "opscrew_design_options",
+  "opscrew_select_design",
+  "opscrew_status",
+];
 
 /** Lets a test lower the scan's file limit (20,000) so truncation can be tested on a small fixture. */
 const limits = vi.hoisted(() => ({ maxFiles: undefined as number | undefined }));
@@ -65,7 +76,6 @@ interface Harness {
 
 async function connect(cwd: string, overrides: Partial<OpscrewMcpDeps> = {}): Promise<Harness> {
   const home = await tempDir("opscrew-mcp-home-");
-  const scratch = await tempDir("opscrew-mcp-scratch-");
   const fetchCalls: string[] = [];
   const server = createOpscrewMcpServer({
     version: "0.0.0-test",
@@ -78,7 +88,6 @@ async function connect(cwd: string, overrides: Partial<OpscrewMcpDeps> = {}): Pr
     clock: { now: () => new Date("2026-10-11T12:00:00.000Z") },
     cwd,
     scanners: () => defaultScanners({ includeExternal: false }),
-    tmpDir: scratch,
     ...overrides,
   });
   const client = new Client({ name: "opscrew-test", version: "0.0.0" });
@@ -120,6 +129,39 @@ const ANSWERS = {
 };
 
 describe("createOpscrewMcpServer", () => {
+  it("gives the model only the hard rules, every one of them", async () => {
+    const h = await connect(await fixture("static-vite"));
+    const instructions = h.client.getInstructions() ?? "";
+    for (const rule of [
+      "never approve or claim approval yourself",
+      "SSH host key",
+      "certificate fingerprint",
+      "never confirm one for them or pass one yourself",
+      "Never ask the user to paste tokens, passwords, passphrases, private keys or .env values",
+      "PORTAINER_API_KEY",
+      "never a password",
+      "Never read Portainer's password file into the chat",
+      '"your server"',
+      '"your Portainer"',
+      "never write the address into a file",
+      "Never run tofu, terraform, hcloud, doctl, ssh or curl against Portainer yourself",
+      "`npx opscrew retarget --to <provider>`",
+      "continue, finish or abort",
+      "`npx opscrew domain buy <domain> [--registrar <id>]`",
+      "scripts need --confirm and --max-price",
+      "`npx opscrew domain connect <domain>`",
+      "`npx opscrew destroy`",
+      "`--delete-data` and the app's name typed by the user",
+      "`--undo-host`",
+      "never asks for contact details",
+      "backups are the user's",
+    ]) {
+      expect(instructions, rule).toContain(rule);
+    }
+    // The flow and the tools' behaviour are in the skill and the tool descriptions.
+    expect(instructions.length).toBeLessThan(2_500);
+  });
+
   it("lists the seven planning tools with descriptions, schemas and annotations", async () => {
     const h = await connect(await fixture("static-vite"));
     const { tools } = await h.client.listTools();

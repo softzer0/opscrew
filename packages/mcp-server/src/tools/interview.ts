@@ -11,13 +11,12 @@ import {
   type PortainerInterviewOptions,
   providerFromTokens,
   providerProfile,
-  readOwnServer,
-  readPortainerConnection,
+  readServerAddresses,
   requestedProvider,
   runInterview,
   SERVER_FIELDS,
 } from "@opscrew/agents";
-import { isUserFacingError, type ProjectPaths } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
 import { detectProject, detectProjectDetails } from "@opscrew/detect";
 import {
   type ProjectFacts,
@@ -28,11 +27,11 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
-import { clientSupportsElicitation } from "./deploy";
-import { isMissingArtifact, projectDirInput, relativeTo, runTool, withHint } from "./shared";
+import { type CallExtra, clientSupportsElicitation, ELICITATION_TIMEOUT_MS } from "./elicitation";
+import { projectDirInput, runTool, withHint } from "./shared";
 
 /** Facts from `opscrew/architecture.json` when it is valid, otherwise fresh detection. */
-export async function loadFacts(
+async function loadFacts(
   paths: ProjectPaths,
 ): Promise<{ facts: ProjectFacts; source: "architecture" | "detected" }> {
   try {
@@ -164,15 +163,6 @@ export interface InterviewToolOptions {
   portainerAccess?: PortainerAccess;
 }
 
-/** Per-call context the SDK passes to a tool callback (only what the interview tools use). */
-interface CallExtra {
-  requestId?: string | number;
-  signal?: AbortSignal;
-}
-
-/** How long OpsCrew waits for the user to answer the certificate dialog. */
-const CERTIFICATE_TIMEOUT_MS = 30 * 60_000;
-
 const CertificateAnswer = z.object({ trust: z.boolean().optional() });
 
 /**
@@ -180,10 +170,10 @@ const CertificateAnswer = z.object({ trust: z.boolean().optional() });
  * shows its fingerprint (and the one pinned before, when it changed) and how to check it. Only an
  * explicit "trust" in the dialog trusts it; declines, cancels and client errors trust nothing.
  */
-export function certificateDialog(
+function certificateDialog(
   server: McpServer,
   deps: Pick<ResolvedMcpDeps, "redactor">,
-  extra: CallExtra = {},
+  extra: CallExtra,
 ): ConfirmPortainerCertificate {
   return async ({ fingerprint, previous }) => {
     const message = [
@@ -220,7 +210,7 @@ export function certificateDialog(
           },
         },
         {
-          timeout: CERTIFICATE_TIMEOUT_MS,
+          timeout: ELICITATION_TIMEOUT_MS,
           ...(extra.requestId !== undefined ? { relatedRequestId: extra.requestId } : {}),
           ...(extra.signal !== undefined ? { signal: extra.signal } : {}),
         },
@@ -237,22 +227,34 @@ export function certificateDialog(
 const CERTIFICATE_IN_TERMINAL =
   "Ask the user to run `npx opscrew interview` in a terminal in the project directory: it shows Portainer's certificate fingerprint to check and pins it. Then call this tool again (the saved answers are pre-filled). Never pass a fingerprint yourself.";
 
-/** How OpsCrew reached the user's own server before (pre-filled defaults), if recorded. */
-async function previousServer(paths: ProjectPaths) {
-  try {
-    return await readOwnServer(paths);
-  } catch {
-    return undefined;
+/**
+ * Who confirms Portainer's certificate in a tool call: the user in a dialog when the client can
+ * show one (a declined dialog is noted in `outcome`), otherwise nobody, so the call stops with the
+ * terminal command. The fingerprint never comes from the tool's input.
+ */
+function certificateConfirmation(
+  server: McpServer,
+  deps: Pick<ResolvedMcpDeps, "redactor">,
+  extra: CallExtra,
+  outcome: { declined: boolean },
+): ConfirmPortainerCertificate {
+  if (!clientSupportsElicitation(server)) {
+    return async ({ fingerprint, previous }) => {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        previous === undefined
+          ? `OpsCrew must confirm Portainer's certificate before it sends the token. Its fingerprint is ${fingerprint}.`
+          : `Portainer's certificate changed from ${previous} to ${fingerprint}, so OpsCrew sent nothing.`,
+        { hint: `This MCP client cannot show the confirmation dialog. ${CERTIFICATE_IN_TERMINAL}` },
+      );
+    };
   }
-}
-
-/** How OpsCrew reached the user's Portainer before (pre-filled defaults), if recorded. */
-async function previousPortainer(paths: ProjectPaths) {
-  try {
-    return await readPortainerConnection(paths);
-  } catch {
-    return undefined;
-  }
+  const dialog = certificateDialog(server, deps, extra);
+  return async (certificate) => {
+    const trusted = await dialog(certificate);
+    if (!trusted) outcome.declined = true;
+    return trusted;
+  };
 }
 
 /**
@@ -286,14 +288,16 @@ export function registerInterviewTools(
         const context = inferredProvider !== undefined ? { inferredProvider } : {};
         const questions = buildQuestions(facts, previous, appCandidates, context);
         const inferred = inferredAnswers(facts, context);
-        const server = await previousServer(paths);
+        // How OpsCrew reached the user's own server or Portainer before (the defaults), if known.
+        const recorded = await readServerAddresses(paths).catch(() => undefined);
+        const server = recorded?.own;
         // The follow-ups for a server the user already has (asked only when provider is "own").
         const serverQuestions = buildServerQuestions(
           server === undefined ? {} : { previous: server },
         );
         // The follow-ups for an existing Portainer (asked only when provider is "portainer"). The
         // saved address is never shown: leaving portainer.url out keeps it.
-        const portainer = await previousPortainer(paths);
+        const portainer = recorded?.portainer;
         const portainerQuestions = buildPortainerQuestions({
           ...(portainer === undefined ? {} : { previous: portainer }),
           ...(previous === undefined
@@ -370,11 +374,11 @@ export function registerInterviewTools(
     ({ projectDir, answers }, extra: CallExtra) =>
       runTool(deps, "opscrew_save_requirements", projectDir, async (call) => {
         const phase = await call.phaseDeps();
-        const dialogs = clientSupportsElicitation(server);
         // The certificate is confirmed only by the user in a dialog: never from the tool's input.
+        const certificate = { declined: false };
         const portainer: PortainerInterviewOptions = {
           access: options.portainerAccess ?? createPortainerAccess({ redactor: deps.redactor }),
-          ...(dialogs ? { confirmCertificate: certificateDialog(server, deps, extra) } : {}),
+          confirmCertificate: certificateConfirmation(server, deps, extra, certificate),
         };
         let result: Awaited<ReturnType<typeof runInterview>>;
         try {
@@ -383,27 +387,23 @@ export function registerInterviewTools(
             portainer,
           });
         } catch (error) {
-          if (isMissingArtifact(error)) throw error;
-          const message = isUserFacingError(error) ? error.message : "";
-          if (/did not confirm Portainer's certificate/.test(message)) {
+          if (certificate.declined) {
             withHint(
               error,
               `The user did not trust the certificate in the dialog. If they checked it and want to continue: ${CERTIFICATE_IN_TERMINAL}`,
             );
           }
-          if (/must confirm Portainer's certificate|certificate changed/.test(message)) {
+          // Missing or invalid answers; every other stop keeps its own next step.
+          if (isUserFacingError(error) && error.code === "INVALID_INPUT") {
             withHint(
               error,
-              `This MCP client cannot show the confirmation dialog. ${CERTIFICATE_IN_TERMINAL}`,
+              "Ask the user for the missing or invalid answers and call opscrew_save_requirements again.",
             );
           }
-          withHint(
-            error,
-            "Ask the user for the missing or invalid answers and call opscrew_save_requirements again.",
-          );
+          throw error;
         }
         const { requirements } = result;
-        const file = relativeTo(phase.paths.root, phase.paths.files.requirements);
+        const file = toPosixRelative(phase.paths.root, phase.paths.files.requirements);
         const budget = requirements.budgetMonthly;
         const own = requirements.provider === "own";
         const inPortainer = requirements.provider === "portainer";

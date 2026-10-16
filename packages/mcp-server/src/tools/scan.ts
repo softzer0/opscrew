@@ -1,10 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ScanReport } from "@opscrew/contracts";
-import { ensureStateDir, writeFileAtomic } from "@opscrew/core";
-import { formatCounts, renderScanMarkdown, renderScanSummary, runScan } from "@opscrew/secops";
+import { runScanPhase } from "@opscrew/agents";
+import { toPosixRelative } from "@opscrew/core";
+import { renderScanSummary } from "@opscrew/secops";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
-import { projectDirInput, relativeTo, runTool } from "./shared";
+import { projectDirInput, runTool } from "./shared";
 
 /** Severities at or above which a finding counts as blocking in the summary. */
 const BLOCKING = ["critical", "high"] as const;
@@ -48,35 +48,12 @@ export function registerScanTool(server: McpServer, deps: ResolvedMcpDeps): void
         const phase = await call.phaseDeps();
         const { paths } = phase;
         const limit = top ?? 10;
-        const reportPath = relativeTo(paths.root, paths.files.scanReportMd);
-        const jsonPath = relativeTo(paths.root, paths.files.scanReportJson);
-        let report: ScanReport;
-        const warnings: string[] = [];
-        try {
-          report = await runScan(paths.root, {
-            offline: offline ?? false,
-            fetch: phase.fetch,
-            runner: phase.runner,
-            scanners: deps.scanners(),
-            version: phase.version,
-            now: () => phase.clock.now(),
-            onProgress: (event) => {
-              if (event.type === "warning") warnings.push(event.message);
-            },
-          });
-          await ensureStateDir(paths);
-          await writeFileAtomic(paths.files.scanReportMd, renderScanMarkdown(report), {
-            mode: 0o644,
-          });
-          await writeFileAtomic(paths.files.scanReportJson, `${JSON.stringify(report, null, 2)}\n`);
-          await phase.state.markPhase("scan", "ok", formatCounts(report));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          await phase.state
-            .markPhase("scan", "failed", phase.redactor.redact(message).slice(0, 300))
-            .catch(() => undefined);
-          throw error;
-        }
+        const reportPath = toPosixRelative(paths.root, paths.files.scanReportMd);
+        const jsonPath = toPosixRelative(paths.root, paths.files.scanReportJson);
+        const { report, warnings } = await runScanPhase(phase, {
+          offline: offline ?? false,
+          scanners: deps.scanners(),
+        });
 
         const blocking = report.findings.filter((f) =>
           (BLOCKING as readonly string[]).includes(f.severity),

@@ -59,8 +59,11 @@ const trust: Answer = (params) => {
   return accepted;
 };
 
-/** A Portainer with one Docker environment; records whether the token was sent. */
-function fakeAccess() {
+/**
+ * A Portainer with one Docker environment; records whether the token was sent. `rejectToken`:
+ * it answers the token with HTTP 401, as the adapter reports it.
+ */
+function fakeAccess(rejectToken = false) {
   const listed: { token: string; cert?: string }[] = [];
   const environments: PortainerEnvironment[] = [
     { id: 3, name: "nas", kind: "docker", up: true, arch: "arm64" },
@@ -69,6 +72,13 @@ function fakeAccess() {
     fetchCertificateFingerprint: async () => FINGERPRINT,
     listEnvironments: async (_url, token, cert) => {
       listed.push({ token, ...(cert === undefined ? {} : { cert }) });
+      if (rejectToken) {
+        throw new OpsCrewError(
+          "CREDENTIALS_INVALID",
+          "Portainer rejected the access token (HTTP 401), so OpsCrew saved nothing.",
+          { hint: "Create an access token in Portainer and set PORTAINER_API_KEY to it." },
+        );
+      }
       return environments;
     },
   };
@@ -108,7 +118,7 @@ function fakeProvision() {
   return { run, calls };
 }
 
-async function connect(options: { elicit?: Answer; token?: string } = {}) {
+async function connect(options: { elicit?: Answer; token?: string; rejectToken?: boolean } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-portainer-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, "repo");
@@ -132,9 +142,8 @@ async function connect(options: { elicit?: Answer; token?: string } = {}) {
     runner: new ScriptedRunner(),
     clock: { now: () => new Date("2026-10-15T12:00:00.000Z") },
     cwd: root,
-    tmpDir: dir,
   });
-  const { access, listed } = fakeAccess();
+  const { access, listed } = fakeAccess(options.rejectToken);
   const provision = fakeProvision();
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
   registerInterviewTools(server, deps, { portainerAccess: access });
@@ -244,6 +253,24 @@ describe("the MCP tools for the user's existing Portainer", () => {
     expect(textOf(noDialog)).toContain("cannot show the confirmation dialog");
     expect(textOf(noDialog)).toContain("npx opscrew interview");
     expect(JSON.stringify(noDialog)).not.toContain(HOST);
+  });
+
+  it("keeps Portainer's own next step when it refuses the token; only bad answers get the generic one", async () => {
+    const h = await connect({ elicit: trust, rejectToken: true });
+    const refused = await h.call("opscrew_save_requirements", { answers: ANSWERS });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain(
+      "Next step: Create an access token in Portainer and set PORTAINER_API_KEY to it.",
+    );
+    expect(textOf(refused)).not.toContain("Ask the user for the missing or invalid answers");
+
+    const answers = { ...ANSWERS, "portainer.url": "ftp://nas" };
+    const invalid = await connect({ elicit: trust });
+    const wrong = await invalid.call("opscrew_save_requirements", { answers });
+    expect(wrong.isError).toBe(true);
+    expect(textOf(wrong)).toContain(
+      "Next step: Ask the user for the missing or invalid answers and call opscrew_save_requirements again.",
+    );
   });
 
   it("designs without a price or sizes, then plans and applies the stack plan after a dialog", async () => {

@@ -29,7 +29,8 @@ import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-sch
 import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
-import { approvalMessage, type DeployToolOptions, registerDeployTools } from "./deploy";
+import { type DeployToolOptions, registerDeployTools } from "./deploy";
+import { approvalMessage } from "./elicitation";
 
 // ---------------------------------------------------------------------------------------------
 // Fakes (adapted from packages/agents/src/provision/__fixtures__/fakes.ts, which is not exported)
@@ -364,7 +365,6 @@ async function connect(options: HarnessOptions = {}) {
     clock: { now: () => new Date("2026-10-11T12:00:00.000Z") },
     cwd: project.root,
     scanners: () => defaultScanners({ includeExternal: false }),
-    tmpDir: home,
   });
   deps.redactor.addLiteral(STRIPE, "STRIPE_SECRET_KEY");
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });

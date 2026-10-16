@@ -1,8 +1,15 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { moveInProgress, moveProvider, phaseStatusLines, providerProfile } from "@opscrew/agents";
+import {
+  exists,
+  moveInProgress,
+  moveProvider,
+  phaseStatusLines,
+  providerProfile,
+} from "@opscrew/agents";
+import { toPosixRelative } from "@opscrew/core";
 import { type Retarget, readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
-import { exists, projectDirInput, relativeTo, runTool, withHint } from "./shared";
+import { projectDirInput, runTool, withHint } from "./shared";
 
 /** The next planning step for the plugin flow, given which artefacts exist. */
 function nextStep(have: Record<string, boolean>): string {
@@ -55,7 +62,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
           .catch((error: unknown) =>
             withHint(
               error,
-              `Delete ${relativeTo(paths.root, paths.files.state)} to reset the phase history; it is rebuilt on the next run.`,
+              `Delete ${toPosixRelative(paths.root, paths.files.state)} to reset the phase history; it is rebuilt on the next run.`,
             ),
           );
         const files = {
@@ -69,7 +76,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
         for (const [name, file] of Object.entries(files)) {
           const present = await exists(file);
           have[name] = present;
-          artifacts[name] = { path: relativeTo(paths.root, file), exists: present };
+          artifacts[name] = { path: toPosixRelative(paths.root, file), exists: present };
         }
         const phases = current.phases;
         const lines = phaseStatusLines(phases);
