@@ -13,6 +13,7 @@ import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { runDns } from "../dns";
 import type { PortainerServices } from "../portainer";
 import {
   hostPlanFile,
@@ -370,6 +371,47 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(s.host.applies).toHaveLength(0);
     expect(existsSync(join(s.root, "opscrew/infra"))).toBe(false);
     expect((await s.deps.state.read()).phases.provision?.status).toBe("failed");
+  });
+
+  it("opscrew dns audits the server's inspection as dns and names itself to approve the host plan", async () => {
+    // A blocking problem: the run stops before any change, its inspection audited as dns.
+    const blocked = await setup({
+      facts: freshFacts({
+        listeners: [{ proto: "tcp", address: "0.0.0.0", port: 80, process: "nginx" }],
+      }),
+    });
+    const stop = (await runDns(blocked.deps, {
+      services: blocked.services,
+      hostKey: ED25519_FINGERPRINT,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(stop.code).toBe("PHASE_PRECONDITION");
+    expect(stop.message).toContain("nginx on port 80");
+    expect(blocked.engine.plans).toHaveLength(0);
+    expect(blocked.host.applies).toHaveLength(0);
+    const inspected = blocked.deps.audit.entries.filter(
+      (entry) => entry.action === "inspect host (read-only)",
+    );
+    expect(inspected.map((entry) => entry.phase)).toEqual(["dns"]);
+
+    // A refused host plan names `opscrew dns` with its hash, and nothing on the server changes.
+    const s = await setup({ answer: (request) => request.kind !== "host-apply" });
+    const error = (await runDns(s.deps, {
+      services: s.services,
+      hostKey: ED25519_FINGERPRINT,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toBe(
+      "The host plan was not approved. Nothing on your server was changed.",
+    );
+    expect(error.hint).toMatch(
+      /^To apply it later without prompts, run: opscrew dns --approve [0-9a-f]{64}$/,
+    );
+    expect(s.host.applies).toHaveLength(0);
+    expect(
+      s.deps.audit.entries
+        .filter((entry) => entry.action === "inspect host (read-only)")
+        .map((entry) => entry.phase),
+    ).toEqual(["dns"]);
   });
 
   it("asks for an explicit choice when other users log in with passwords", async () => {

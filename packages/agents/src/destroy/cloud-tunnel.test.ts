@@ -15,6 +15,7 @@ import {
 import { ensureStatePassphrase } from "../shared";
 import {
   BUSY_TUNNEL_LOG,
+  FAKE_TUNNEL,
   fakeTunnelApi,
   tunnelDeletePlanJson,
   tunnelDeletes,
@@ -29,6 +30,34 @@ import {
 } from "./__fixtures__/fakes";
 import { runDestroy } from "./run";
 import type { DestroyServices } from "./types";
+
+/** The second tunnel a destroy plan may delete (synthetic id, same account as the app's). */
+const SECOND_TUNNEL_ID = "0b5e8c1d-2f3a-4b5c-8d9e-aabbccddeeff";
+const SECOND_TUNNEL_CHANGE: ResourceChange = {
+  address: `module.portainer_tunnel.${TUNNEL_RESOURCE_TYPE}.this`,
+  type: TUNNEL_RESOURCE_TYPE,
+  name: "this",
+  provider: "registry.opentofu.org/cloudflare/cloudflare",
+  action: "delete",
+};
+
+/** The plan JSON with the second tunnel's own id (the fixture gives every tunnel the app's). */
+function withSecondTunnelId(planJson: ReturnType<typeof tunnelDeletePlanJson>) {
+  return {
+    ...planJson,
+    resource_changes: planJson.resource_changes.map((entry) =>
+      entry.address === SECOND_TUNNEL_CHANGE.address
+        ? {
+            ...entry,
+            change: {
+              ...entry.change,
+              before: { id: SECOND_TUNNEL_ID, account_id: FAKE_TUNNEL.accountId, name: "webhook" },
+            },
+          }
+        : entry,
+    ),
+  };
+}
 
 /**
  * A DigitalOcean deployment with Portainer on a subdomain: its destroy plan deletes the Droplet
@@ -45,6 +74,8 @@ async function deployed(
     refuseTunnelPlan?: boolean;
     /** What the plan for what is left deletes besides the tunnel. */
     alsoLeft?: ResourceChange[];
+    /** The destroy plan also deletes a second tunnel, `module.portainer_tunnel` (its own id). */
+    secondTunnel?: boolean;
   } = {},
 ) {
   const events: string[] = [];
@@ -62,15 +93,21 @@ async function deployed(
   };
   const project = await createProject(plan);
   const engine = new ScriptedDestroyEngine(
-    { resources: [...deployedResources({ provider: "digitalocean" }), ...tunnelDeletes()] },
+    {
+      resources: [
+        ...deployedResources({ provider: "digitalocean" }),
+        ...tunnelDeletes(),
+        ...(o.secondTunnel === true ? [SECOND_TUNNEL_CHANGE] : []),
+      ],
+    },
     events,
   );
-  // The plan JSON names the tunnel's id and account, as tofu writes it.
+  // The plan JSON names each tunnel's id and account, as tofu writes it.
   const innerPlan = engine.plan.bind(engine);
   engine.plan = async (dir, planFile, options) => {
     const summary = await innerPlan(dir, planFile, options);
     return options?.destroy
-      ? { ...summary, planJson: tunnelDeletePlanJson(summary.changes) }
+      ? { ...summary, planJson: withSecondTunnelId(tunnelDeletePlanJson(summary.changes)) }
       : summary;
   };
   // The first apply: everything but the tunnel is deleted, then Cloudflare refuses it (1022).
@@ -233,6 +270,46 @@ describe.skipIf(!findExecutable("git"))(
       expect(
         (await readArtifact("plan", s.deps.paths.files.plan)).deployment.destroyedAt,
       ).toBeDefined();
+    });
+
+    it("a 1022 with two tunnels in the plan: it waits for each, and stops plainly while the second stays connected", async () => {
+      const s = await deployed({ secondTunnel: true });
+      // The app's tunnel has closed; the one in front of Portainer's webhook keeps its connection.
+      const read: string[] = [];
+      s.deps.fetch = async (url) => {
+        const id = /\/cfd_tunnel\/([^/?]+)/.exec(String(url))?.[1] ?? "";
+        read.push(id);
+        s.events.push("poll");
+        const active = id === SECOND_TUNNEL_ID;
+        return Response.json({
+          success: true,
+          errors: [],
+          result: {
+            id,
+            status: active ? "healthy" : "down",
+            connections: active ? [{ id: "conn-1", colo_name: "fra" }] : [],
+          },
+        });
+      };
+      const error = await failure(runDestroy(s.deps, { services: s.services, snapshot: false }));
+      expect(error.code).toBe("PROVIDER_ERROR");
+      expect(error.message).toBe(
+        "Cloudflare refused to delete the app's Cloudflare Tunnel because it still has active connections, so the tunnel is still there. The Droplet is deleted; the Cloudflare Tunnel is still there.",
+      );
+      expect(error.hint).toBe(
+        "Run `opscrew destroy` again in a few minutes (the connections close on their own once the connector is gone); it continues with what is left.",
+      );
+      // Both tunnels were read, the app's first; the second until the wait gave up.
+      expect(read[0]).toBe(FAKE_TUNNEL.tunnelId);
+      expect(new Set(read)).toEqual(new Set([FAKE_TUNNEL.tunnelId, SECOND_TUNNEL_ID]));
+      expect(read.filter((id) => id === SECOND_TUNNEL_ID).length).toBeGreaterThan(1);
+      // Nothing more was planned, approved or applied.
+      expect(afterFirstApply(s.events)).not.toContain("plan:destroy");
+      expect(s.events.filter((e) => e === "apply:destroy")).toHaveLength(1);
+      expect(s.handler.requests.filter((r) => r.kind === "iac-apply")).toHaveLength(1);
+      expect(
+        (await readArtifact("plan", s.deps.paths.files.plan)).deployment.destroyedAt,
+      ).toBeUndefined();
     });
 
     it("a refused tunnel-only plan deletes nothing more and says how to finish", async () => {
