@@ -15,7 +15,8 @@ import {
 import { recordPortainerConnection } from "../shared";
 import { createTestPhaseDeps, ScriptedRunner } from "../testing";
 import { CLOUDFLARE_IPV4, CLOUDFLARE_IPV6, CLOUDFLARE_RANGES } from "./__fixtures__/plan";
-import { type DnsResolver, runVerify, type TlsConnect } from "./index";
+import type { DnsResolver, TlsConnect } from "./net";
+import { runVerify } from "./run";
 
 const NOW = "2026-10-11T12:00:00.000Z";
 /** Portainer's address: never printed or committed. */
@@ -380,7 +381,7 @@ describe("opscrew verify for the user's Portainer", () => {
       throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
     };
 
-    it("a public record without an address: says it exists publicly and how to clear the cache; verify still fails", async () => {
+    it("a public record without an address: nothing to connect to, so the usual messages; one lookup", async () => {
       const deps = await setup();
       const internet = staleInternet(true);
       const result = await runVerify(deps, {
@@ -396,27 +397,13 @@ describe("opscrew verify for the user's Portainer", () => {
       });
       expect(result.passed).toBe(false);
       const dns = result.checks.find((c) => c.id === "dns-records");
-      expect(dns?.status).toBe("fail");
-      expect(dns?.message).toContain("exists publicly");
-      expect(dns?.message).toContain("this computer still holds an older answer");
-      expect(dns?.message).toContain("about 30 minutes");
-      expect(dns?.remediation).toContain("ipconfig /flushdns");
-      expect(dns?.remediation).not.toContain("opscrew dns");
-      for (const id of [
-        "site-reachable",
-        "tls-certificate",
-        "http-redirect",
-        "health-endpoint",
-        "env-file-not-served",
-        "git-config-not-served",
-      ]) {
-        const check = result.checks.find((c) => c.id === id);
-        expect(check?.status, id).not.toBe("pass");
-        expect(check?.message, id).toContain("ENOTFOUND");
-        expect(check?.message, id).toContain("this computer still holds an older answer");
-        expect(check?.message, id).toContain("ipconfig /flushdns");
+      expect(dns?.message).toBe("shop.example.com has no A or AAAA record.");
+      expect(dns?.remediation).toContain("opscrew dns");
+      for (const id of ["site-reachable", "tls-certificate", "health-endpoint"]) {
+        expect(result.checks.find((c) => c.id === id)?.message, id).toContain("ENOTFOUND");
       }
-      // One public lookup per host (and its CNAME target), however many checks fail.
+      expect(JSON.stringify(result.checks)).not.toContain("older answer");
+      // The host is looked up once (A and AAAA, each following its CNAME), however many checks fail.
       expect(new Set(internet.dohQueries.map((q) => q.split(" ")[0]))).toEqual(
         new Set(["shop.example.com", "abc.cfargotunnel.com"]),
       );
@@ -519,9 +506,6 @@ describe("opscrew verify for the user's Portainer", () => {
       expect(dns?.message).toContain("This computer's DNS still holds an older answer");
       expect(dns?.message).toContain("as visitors reach it");
       expect(dns?.remediation).toContain("ipconfig /flushdns");
-      expect(result.checks.find((c) => c.id === "site-reachable")?.message).toContain(
-        "through a public resolver's answer",
-      );
       // Connections keep the host name (for SNI and the certificate); only the lookup changed.
       expect(via.requests.map((r) => new URL(r.url).hostname)).toEqual(
         Array(via.requests.length).fill("shop.example.com"),
@@ -658,21 +642,29 @@ describe("opscrew verify for the user's Portainer", () => {
       const deps = await setup({ web: { mode: "proxy", port: 8080 } });
       const route = "https://proxy.example.net";
       const routeSite = fakeSite(route);
-      const internet = staleInternet(true);
+      const internet = publicInternet({ "shop.example.com": { ipv4: [HOME_IPV4] } });
+      const via = throughLookup({
+        "https://shop.example.com": fakeSite("https://shop.example.com"),
+      });
       const result = await runVerify(deps, {
         url: route,
         resolver: resolver([]),
         fetch: (input, init) =>
-          String(input).startsWith(route) ? routeSite(input, init) : internet.fetch(input, init),
+          String(input).startsWith(route) ? routeSite(input, init) : internet(input, init),
+        fetchWithLookup: via.fetchWithLookup,
+        lookup: systemLookup,
         tlsConnect: async (host, options) =>
-          host === "shop.example.com" ? tlsNotFound(host, options) : cert(host)(host, options),
+          host === "shop.example.com" && !options.lookup
+            ? tlsNotFound(host, options)
+            : cert(host)(host, options),
         tcpConnect: async () => false,
       });
       const dns = result.checks.find((c) => c.id === "dns-records");
       expect(dns?.status).toBe("warn");
-      expect(dns?.message).toContain("this computer still holds an older answer");
+      expect(dns?.message).toContain("This computer's DNS still holds an older answer");
       expect(dns?.remediation).toContain("ipconfig /flushdns");
       expect(result.checks.find((c) => c.id === "site-reachable")?.status).toBe("pass");
+      expect(result.passed).toBe(true);
     });
   });
 

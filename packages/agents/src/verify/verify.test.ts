@@ -19,7 +19,8 @@ import {
   testPlan,
 } from "./__fixtures__/plan";
 import { certificateCoversHost } from "./checks";
-import { type DnsResolver, runVerify, type TlsCertificateInfo, type TlsConnect } from "./index";
+import type { DnsResolver, TlsCertificateInfo, TlsConnect } from "./net";
+import { runVerify } from "./run";
 
 const NOW = "2026-10-11T12:00:00.000Z";
 const RUN_URL = "https://github.com/acme/shop/actions/runs/42";

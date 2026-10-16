@@ -37,21 +37,16 @@ describe("publicAnswerLookup", () => {
   const answers = new Map([["shop.example.com", { ipv4: ["192.0.2.10"], ipv6: ["2001:db8::10"] }]]);
 
   it("asks this computer first and keeps its answer", async () => {
-    const used: string[] = [];
-    const lookup = publicAnswerLookup(
-      answers,
-      systemLookup({ "shop.example.com": "198.51.100.1" }),
-      (host) => used.push(host),
-    );
+    const system = systemLookup({ "shop.example.com": "198.51.100.1" });
+    const lookup = publicAnswerLookup(answers, system);
     expect(await ask(lookup, "shop.example.com", { all: true })).toEqual({
       address: [{ address: "198.51.100.1", family: 4 }],
     });
-    expect(used).toEqual([]);
+    expect(system.asked).toEqual(["shop.example.com"]);
   });
 
   it("answers from the public answer when this computer finds no such name", async () => {
-    const used: string[] = [];
-    const lookup = publicAnswerLookup(answers, systemLookup(), (host) => used.push(host));
+    const lookup = publicAnswerLookup(answers, systemLookup());
     expect(await ask(lookup, "Shop.Example.com.", { all: true })).toEqual({
       address: [
         { address: "192.0.2.10", family: 4 },
@@ -66,7 +61,6 @@ describe("publicAnswerLookup", () => {
       address: "2001:db8::10",
       family: 6,
     });
-    expect(used).toEqual(["shop.example.com", "shop.example.com", "shop.example.com"]);
   });
 
   it("keeps this computer's error for other names and for a family the public answer lacks", async () => {

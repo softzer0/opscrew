@@ -1,5 +1,6 @@
 import { BlockList, isIP, isIPv6, type LookupFunction } from "node:net";
 import type { CheckResult, FetchLike, Severity } from "@opscrew/contracts";
+import { normalizeHostName, plural } from "@opscrew/core";
 import { tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
@@ -60,15 +61,16 @@ export interface VerifyCheckContext {
    */
   ipv6Route?: () => Promise<boolean>;
   /**
-   * Asks a public resolver about a host (for the user's Portainer: Cloudflare's DNS over HTTPS).
-   * When this computer finds no record but the public resolver does, verify says this computer
-   * still holds an older answer; with the public addresses and {@link fetchWithLookup}, the DNS
-   * and site checks use the public answer. Absent: no public lookup and no such note.
+   * Asks a public resolver about a host this computer cannot resolve (for the user's Portainer:
+   * Cloudflare's DNS over HTTPS), once per host; the caller registers the addresses it returns
+   * with the redactor. With addresses and {@link fetchWithLookup}, the DNS, site and TLS checks of
+   * that host use them, and the DNS check says this computer still holds an older answer. Absent:
+   * no public lookup.
    */
   publicDns?: (host: string) => Promise<PublicAddressLookup>;
   /**
    * Builds the fetch the site checks use for a host checked through the public answer (the lookup
-   * asks this computer first). Absent: such hosts are not checked through the public answer.
+   * asks this computer first). Absent: no host is checked through a public answer.
    */
   fetchWithLookup?: FetchWithLookup;
   /** This computer's own host name lookup, asked first (default `dns.lookup`). */
@@ -93,7 +95,8 @@ const SECURITY_HEADERS: readonly { name: string; httpsOnly?: boolean; expect?: R
   { name: "referrer-policy" },
 ];
 
-function result(
+/** One check's result; `remediation` and `target` only when given. */
+export function checkResult(
   id: string,
   title: string,
   severity: Severity,
@@ -109,6 +112,17 @@ function result(
     message,
     ...(extra.remediation !== undefined ? { remediation: extra.remediation } : {}),
     ...(extra.target !== undefined ? { target: extra.target } : {}),
+  };
+}
+
+/** `check` with `edit` applied to the texts it shows: title, message, remediation and target. */
+export function editCheckText(check: CheckResult, edit: (text: string) => string): CheckResult {
+  return {
+    ...check,
+    title: edit(check.title),
+    message: edit(check.message),
+    ...(check.remediation !== undefined ? { remediation: edit(check.remediation) } : {}),
+    ...(check.target !== undefined ? { target: edit(check.target) } : {}),
   };
 }
 
@@ -156,10 +170,6 @@ function errorText(error: unknown): string {
   return String(error);
 }
 
-/** Why this computer cannot find a record that exists publicly (a cached negative answer). */
-const STALE_LOCAL_DNS =
-  "The record exists publicly (a public resolver has it), but this computer still holds an older answer that says there is none (kept by this computer, your router or your internet provider for up to about 30 minutes).";
-
 /** How to clear a cached negative answer on this computer. */
 const FLUSH_DNS =
   "Flush this computer's DNS cache (`ipconfig /flushdns` on Windows, `sudo resolvectl flush-caches` on Linux, `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder` on macOS); if it still finds no record, your router or internet provider keeps the older answer for up to about 30 minutes (restarting the router clears its copy). Then run `opscrew verify` again.";
@@ -167,10 +177,6 @@ const FLUSH_DNS =
 /** What verify did when this computer holds an older answer but the public resolver has the record. */
 const CHECKED_PUBLICLY =
   "This computer's DNS still holds an older answer that says there is no record, so OpsCrew checked the site through a public resolver's answer, as visitors reach it.";
-
-/** The site-check note for a host reached through the public answer (with a leading space). */
-const REACHED_PUBLICLY =
-  " OpsCrew reached it through a public resolver's answer, since this computer's DNS still holds an older one.";
 
 /** True when `error` (or its cause) says the host name was not found (`ENOTFOUND`). */
 function isNotFound(error: unknown): boolean {
@@ -183,26 +189,6 @@ function isNotFound(error: unknown): boolean {
   return false;
 }
 
-/** Whether the public resolver (when injected) has a record for `host`; any failure is "no". */
-async function publiclyFound(host: string, ctx: VerifyCheckContext): Promise<boolean> {
-  if (!ctx.publicDns) return false;
-  try {
-    return (await ctx.publicDns(host)).state === "found";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The note a site check adds when it failed with ENOTFOUND although `host` has a public record
- * (with a leading space), or an empty string.
- */
-async function staleNote(error: unknown, host: string, ctx: VerifyCheckContext): Promise<string> {
-  return isNotFound(error) && (await publiclyFound(host, ctx))
-    ? ` ${STALE_LOCAL_DNS} ${FLUSH_DNS}`
-    : "";
-}
-
 /**
  * The public addresses to check `host` through: the public resolver has its record with at least
  * one address and the site checks can connect through them (`fetchWithLookup`); otherwise none.
@@ -212,12 +198,7 @@ async function publicAddresses(
   ctx: VerifyCheckContext,
 ): Promise<PublicAddresses | undefined> {
   if (!ctx.publicDns || !ctx.fetchWithLookup) return undefined;
-  let answer: PublicAddressLookup;
-  try {
-    answer = await ctx.publicDns(host);
-  } catch {
-    return undefined;
-  }
+  const answer = await ctx.publicDns(host);
   if (answer.state !== "found") return undefined;
   const ipv4 = answer.ipv4 ?? [];
   const ipv6 = answer.ipv6 ?? [];
@@ -229,80 +210,27 @@ function fixedResolver(addresses: PublicAddresses): DnsResolver {
   return { resolve4: async () => [...addresses.ipv4], resolve6: async () => [...addresses.ipv6] };
 }
 
-/** Replaces each of `addresses` in `text` (longest first), so no public address is printed. */
-function withoutAddresses(text: string, addresses: readonly string[]): string {
-  return [...addresses]
-    .sort((a, b) => b.length - a.length)
-    .reduce((out, address) => out.split(address).join("(address hidden)"), text);
-}
-
-/** `error` with every public address removed from its message and causes (codes kept). */
-function hideAddresses(error: unknown, addresses: readonly string[], depth = 0): unknown {
-  if (!(error instanceof Error) || depth > 3) return error;
-  const cause = (error as { cause?: unknown }).cause;
-  const copy = new (error instanceof TypeError ? TypeError : Error)(
-    withoutAddresses(error.message, addresses),
-    cause === undefined ? undefined : { cause: hideAddresses(cause, addresses, depth + 1) },
-  );
-  const code = (error as NodeJS.ErrnoException).code;
-  if (code !== undefined) Object.assign(copy, { code });
-  return copy;
-}
-
 /**
- * The context for the site checks when hosts are checked through the public answer: requests and
- * TLS connections to those hosts find addresses with a lookup that asks this computer first and
- * then the public answer (the URL, SNI and certificate check keep the host name); other hosts are
- * unchanged. `used` collects the hosts that were answered publicly.
+ * The context for the site checks when hosts are checked through their public answer: requests
+ * and TLS connections to those hosts find addresses with a lookup that asks this computer first
+ * and then the public answer (the URL, SNI and certificate check keep the host name); other hosts
+ * are unchanged.
  */
 function throughPublicAnswers(
   ctx: VerifyCheckContext,
   answers: ReadonlyMap<string, PublicAddresses>,
-  used: Set<string>,
 ): VerifyCheckContext {
   const build = ctx.fetchWithLookup;
   if (answers.size === 0 || !build) return ctx;
-  const lookup = publicAnswerLookup(answers, ctx.lookup, (host) => used.add(host));
+  const lookup = publicAnswerLookup(answers, ctx.lookup);
   const viaLookup = build(lookup);
-  const hidden = [...answers.values()].flatMap((a) => [...a.ipv4, ...a.ipv6]);
-  const pinned = (host: string) => answers.has(host.toLowerCase().replace(/\.$/, ""));
+  const pinned = (host: string) => answers.has(normalizeHostName(host));
   return {
     ...ctx,
-    fetch: async (input, init) => {
-      if (!pinned(new URL(String(input)).hostname)) return ctx.fetch(input, init);
-      try {
-        return await viaLookup(input, init);
-      } catch (error) {
-        throw hideAddresses(error, hidden);
-      }
-    },
-    tlsConnect: async (host, options) => {
-      if (!pinned(host)) return ctx.tlsConnect(host, options);
-      try {
-        return await ctx.tlsConnect(host, { ...options, lookup });
-      } catch (error) {
-        throw hideAddresses(error, hidden);
-      }
-    },
-  };
-}
-
-/** Asks the public resolver at most once per host during one verify run. */
-function oncePerHost(ctx: VerifyCheckContext): VerifyCheckContext {
-  const lookup = ctx.publicDns;
-  if (!lookup) return ctx;
-  const answers = new Map<string, Promise<PublicAddressLookup>>();
-  return {
-    ...ctx,
-    publicDns: (host) => {
-      const key = host.toLowerCase();
-      let answer = answers.get(key);
-      if (!answer) {
-        answer = lookup(host);
-        answers.set(key, answer);
-      }
-      return answer;
-    },
+    fetch: (input, init) =>
+      pinned(new URL(String(input)).hostname) ? viaLookup(input, init) : ctx.fetch(input, init),
+    tlsConnect: (host, options) =>
+      ctx.tlsConnect(host, pinned(host) ? { ...options, lookup } : options),
   };
 }
 
@@ -382,9 +310,9 @@ function sameAddress(a: string, b: string): boolean {
 
 /** Certificate name matching with single-label wildcards (`*.example.com`). */
 export function certificateCoversHost(host: string, names: readonly string[]): boolean {
-  const wanted = host.toLowerCase().replace(/\.$/, "");
+  const wanted = normalizeHostName(host);
   return names.some((raw) => {
-    const name = raw.toLowerCase().replace(/\.$/, "");
+    const name = normalizeHostName(raw);
     if (name === wanted) return true;
     if (!name.startsWith("*.")) return false;
     const suffix = name.slice(1);
@@ -392,82 +320,50 @@ export function certificateCoversHost(host: string, names: readonly string[]): b
   });
 }
 
-/** DNS A/AAAA records for `host`: Cloudflare edge addresses when proxied, the server otherwise. */
-export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<CheckResult> {
-  return (await dnsCheck(host, ctx)).check;
-}
-
 /**
- * {@link checkDns}, and how this computer's answer compares with the public resolver's: `stale`
- * when this computer holds an older answer that nothing here can work around, `answer` when the
- * check used the public addresses instead (the site checks then use them too).
+ * DNS A/AAAA records for `host`: Cloudflare edge addresses when proxied, the server otherwise.
+ * When this computer finds none, a public resolver is asked once ({@link publicAddresses}): with
+ * its addresses the check runs on them, says this computer still holds an older answer (a pass
+ * becomes a warning with how to clear it), and `answers` gets them for the site and TLS checks.
  */
 async function dnsCheck(
   host: string,
   ctx: VerifyCheckContext,
-): Promise<{ check: CheckResult; stale: boolean; answer?: PublicAddresses }> {
-  const check = await dnsRecords(host, ctx);
-  if (check !== "none") return { check, stale: false };
-  const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
-  const title = `DNS for ${host} points to the right place`;
+  answers: Map<string, PublicAddresses>,
+): Promise<CheckResult> {
+  const local = await dnsRecords(host, ctx);
+  if (local !== "none") return local;
   const answer = await publicAddresses(host, ctx);
-  if (answer) {
-    // The public answer, never printed: checked as this computer's would be.
-    const checked = await dnsRecords(host, { ...ctx, resolver: fixedResolver(answer) }, true);
-    if (checked !== "none") {
-      return {
-        check:
-          checked.status === "pass"
-            ? {
-                ...checked,
-                status: "warn",
-                message: `Through a public resolver, ${checked.message} ${CHECKED_PUBLICLY}`,
-                remediation: FLUSH_DNS,
-              }
-            : {
-                ...checked,
-                message: `Through a public resolver, ${checked.message} ${CHECKED_PUBLICLY}`,
-              },
-        stale: false,
-        answer,
-      };
-    }
-  }
-  if (await publiclyFound(host, ctx)) {
-    return {
-      check: result(
-        id,
-        title,
-        "high",
-        "fail",
-        `${host} has no A or AAAA record through this computer's DNS resolver. ${STALE_LOCAL_DNS}`,
-        { remediation: FLUSH_DNS, target: host },
-      ),
-      stale: true,
-    };
+  const checked =
+    answer === undefined
+      ? "none"
+      : await dnsRecords(host, { ...ctx, resolver: fixedResolver(answer) });
+  if (answer !== undefined && checked !== "none") {
+    answers.set(normalizeHostName(host), answer);
+    const message = `Through a public resolver, ${checked.message} ${CHECKED_PUBLICLY}`;
+    return checked.status === "pass"
+      ? { ...checked, status: "warn", message, remediation: FLUSH_DNS }
+      : { ...checked, message };
   }
   const tunnel = tunnelMode(ctx.plan) || portainerWeb(ctx.plan) === "tunnel";
-  return {
-    check: result(id, title, "high", "fail", `${host} has no A or AAAA record.`, {
+  return checkResult(
+    host.startsWith("www.") ? "dns-records-www" : "dns-records",
+    `DNS for ${host} points to the right place`,
+    "high",
+    "fail",
+    `${host} has no A or AAAA record.`,
+    {
       remediation:
         ctx.plan.target.provider === "portainer" && !tunnel
           ? `OpsCrew creates no DNS record for ${host} in this setup: create one that points it at your Portainer host (an A record, and AAAA for IPv6, to its public address, or a CNAME to its dynamic-DNS name).`
           : "Run `opscrew dns` to create the records, and check that the domain's nameservers point to Cloudflare.",
       target: host,
-    }),
-    stale: false,
-  };
+    },
+  );
 }
 
-/**
- * The DNS check's result, or `none` when this computer's resolver finds no A or AAAA record.
- * `quiet`: the messages name no address (for the public resolver's answer).
- */
-async function dnsRecords(
-  host: string,
-  ctx: VerifyCheckContext,
-  quiet = false,
-): Promise<CheckResult | "none"> {
+/** The DNS check's result, or `none` when this computer's resolver finds no A or AAAA record. */
+async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckResult | "none"> {
   const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
   const title = `DNS for ${host} points to the right place`;
   const { plan } = ctx;
@@ -484,19 +380,25 @@ async function dnsRecords(
   try {
     [a, aaaa] = await Promise.all([ctx.resolver.resolve4(host), ctx.resolver.resolve6(host)]);
   } catch (error) {
-    return result(id, title, "high", "fail", `Could not look up ${host}: ${errorText(error)}.`, {
-      remediation:
-        "Check that the domain's nameservers point to Cloudflare, then try again in a few minutes.",
-      target: host,
-    });
+    return checkResult(
+      id,
+      title,
+      "high",
+      "fail",
+      `Could not look up ${host}: ${errorText(error)}.`,
+      {
+        remediation:
+          "Check that the domain's nameservers point to Cloudflare, then try again in a few minutes.",
+        target: host,
+      },
+    );
   }
   if (a.length === 0 && aaaa.length === 0) return "none";
   const addresses = [...a, ...aaaa];
-  // The addresses in a message (none for the public resolver's answer).
-  const shown = (list: readonly string[]) => (quiet ? "" : ` (${list.join(", ")})`);
+  const shown = (list: readonly string[]) => ` (${list.join(", ")})`;
   if (portainer && !tunnel && !plan.dns.proxied) {
     // The host's public address is the user's (often a home connection): never printed.
-    return result(
+    return checkResult(
       id,
       title,
       "high",
@@ -512,7 +414,7 @@ async function dnsRecords(
         (ipv6 !== undefined && sameAddress(address, ipv6)),
     );
     if (exposed.length > 0) {
-      return result(
+      return checkResult(
         id,
         title,
         "high",
@@ -533,12 +435,12 @@ async function dnsRecords(
         (address) => !list.check(address, isIPv6(address) ? "ipv6" : "ipv4"),
       );
       if (outside.length > 0) {
-        return result(
+        return checkResult(
           id,
           title,
           "high",
           "fail",
-          own || quiet
+          own
             ? `${host} resolves to an address that is not a Cloudflare address.`
             : `${host} resolves to ${outside.join(", ")}, which is not a Cloudflare address.`,
           {
@@ -549,7 +451,7 @@ async function dnsRecords(
         );
       }
     }
-    return result(
+    return checkResult(
       id,
       title,
       "high",
@@ -567,14 +469,14 @@ async function dnsRecords(
   if (ipv4 === undefined) {
     // A fresh clone: the address lives in the `.opscrew/` folder of the computer that provisioned
     // the server, so the records cannot be compared here (and `opscrew dns` would not help).
-    return result(
+    return checkResult(
       id,
       title,
       "high",
       "warn",
       own
         ? `${host} has DNS records, but OpsCrew does not know your server's address on this computer, so it cannot tell whether they point to your server.`
-        : `${host} ${quiet ? "has DNS records" : `resolves to ${addresses.join(", ")}`}, but OpsCrew does not know the server's address on this computer, so it cannot tell whether that is the server.`,
+        : `${host} resolves to ${addresses.join(", ")}, but OpsCrew does not know the server's address on this computer, so it cannot tell whether that is the server.`,
       { remediation: UNKNOWN_ADDRESS_REMEDIATION, target: host },
     );
   }
@@ -584,7 +486,7 @@ async function dnsRecords(
   ];
   if (wrong.length > 0 || a.length === 0) {
     const expected = [ipv4, ipv6].filter((x): x is string => x !== undefined).join(" / ");
-    return result(
+    return checkResult(
       id,
       title,
       "high",
@@ -593,9 +495,7 @@ async function dnsRecords(
         ? wrong.length > 0
           ? `${host} resolves not only to your server's address: ${wrong.length} record${wrong.length === 1 ? " points" : "s point"} somewhere else.`
           : `${host} has no A record for your server's IPv4 address.`
-        : quiet
-          ? `${host} resolves to an address that is not the server's.`
-          : `${host} resolves to ${addresses.join(", ")} but the server is ${expected}.`,
+        : `${host} resolves to ${addresses.join(", ")} but the server is ${expected}.`,
       {
         remediation:
           "Run `opscrew dns` to point the records at the server (DNS changes can take a few minutes).",
@@ -603,7 +503,7 @@ async function dnsRecords(
       },
     );
   }
-  return result(
+  return checkResult(
     id,
     title,
     "high",
@@ -617,16 +517,10 @@ async function dnsRecords(
   );
 }
 
-/** GET `/` answers with a status below 500. Returns the response headers for the header check. */
-export async function checkSiteReachable(
-  url: string,
-  ctx: VerifyCheckContext,
-): Promise<{ check: CheckResult; headers?: Headers }> {
-  const { error: _error, ...outcome } = await siteReachable(url, ctx);
-  return outcome;
-}
-
-/** {@link checkSiteReachable}, with the error when the site could not be reached. */
+/**
+ * GET `/` answers with a status below 500. Returns the response headers for the header check, or
+ * the error when the site could not be reached.
+ */
 async function siteReachable(
   url: string,
   ctx: VerifyCheckContext,
@@ -642,7 +536,7 @@ async function siteReachable(
     await discard(response);
     if (response.status >= 500) {
       return {
-        check: result(
+        check: checkResult(
           "site-reachable",
           title,
           "high",
@@ -660,7 +554,7 @@ async function siteReachable(
       };
     }
     return {
-      check: result(
+      check: checkResult(
         "site-reachable",
         title,
         "high",
@@ -672,12 +566,12 @@ async function siteReachable(
     };
   } catch (error) {
     return {
-      check: result(
+      check: checkResult(
         "site-reachable",
         title,
         "high",
         "fail",
-        `Could not reach ${target}: ${errorText(error)}.${await staleNote(error, new URL(target).hostname, ctx)}`,
+        `Could not reach ${target}: ${errorText(error)}.`,
         {
           remediation: `Check that the latest deploy run succeeded and ${serverRunningHint(ctx.plan)}.`,
           target,
@@ -700,12 +594,12 @@ export async function checkTls(
   try {
     cert = await ctx.tlsConnect(host, { port, timeoutMs: ctx.timeoutMs ?? 10_000 });
   } catch (error) {
-    return result(
+    return checkResult(
       id,
       title,
       "high",
       "fail",
-      `Could not open an HTTPS connection to ${host}: ${errorText(error)}.${await staleNote(error, host, ctx)}`,
+      `Could not open an HTTPS connection to ${host}: ${errorText(error)}.`,
       {
         remediation:
           tunnelMode(ctx.plan) || portainerWeb(ctx.plan) === "tunnel"
@@ -722,7 +616,7 @@ export async function checkTls(
   const names =
     cert.subjectAltNames.length > 0 ? cert.subjectAltNames : [cert.subjectCommonName ?? ""];
   if (!certificateCoversHost(host, names)) {
-    return result(
+    return checkResult(
       id,
       title,
       "high",
@@ -739,12 +633,19 @@ export async function checkTls(
   const validFrom = new Date(cert.validFrom).getTime();
   const validTo = new Date(cert.validTo).getTime();
   if (Number.isNaN(validTo) || Number.isNaN(validFrom)) {
-    return result(id, title, "high", "fail", `The certificate's validity dates cannot be read.`, {
-      target: host,
-    });
+    return checkResult(
+      id,
+      title,
+      "high",
+      "fail",
+      `The certificate's validity dates cannot be read.`,
+      {
+        target: host,
+      },
+    );
   }
   if (validTo <= now) {
-    return result(
+    return checkResult(
       id,
       title,
       "critical",
@@ -758,7 +659,7 @@ export async function checkTls(
     );
   }
   if (validFrom > now) {
-    return result(
+    return checkResult(
       id,
       title,
       "high",
@@ -769,7 +670,7 @@ export async function checkTls(
   }
   const days = Math.floor((validTo - now) / 86_400_000);
   if (days < MIN_CERT_DAYS) {
-    return result(
+    return checkResult(
       id,
       title,
       "medium",
@@ -782,7 +683,7 @@ export async function checkTls(
       },
     );
   }
-  return result(
+  return checkResult(
     id,
     title,
     "high",
@@ -809,9 +710,11 @@ export async function checkHttpRedirect(
     await discard(response);
     const location = response.headers.get("location") ?? "";
     if (response.status >= 300 && response.status < 400 && location.startsWith("https://")) {
-      return result(id, title, "medium", "pass", `${target} redirects to ${location}.`, { target });
+      return checkResult(id, title, "medium", "pass", `${target} redirects to ${location}.`, {
+        target,
+      });
     }
-    return result(
+    return checkResult(
       id,
       title,
       "medium",
@@ -826,13 +729,12 @@ export async function checkHttpRedirect(
       },
     );
   } catch (error) {
-    const note = await staleNote(error, host, ctx);
-    return result(
+    return checkResult(
       id,
       title,
       "medium",
       "fail",
-      `Could not reach ${target}: ${errorText(error)}.${note}`,
+      `Could not reach ${target}: ${errorText(error)}.`,
       {
         remediation: "Make sure port 80 is open in the firewall; Caddy needs it for redirects.",
         target,
@@ -858,19 +760,18 @@ export async function checkHealth(url: string, ctx: VerifyCheckContext): Promise
     });
     await discard(response);
     return response.status === 200
-      ? result(id, title, "high", "pass", `${target} answered 200.`, { target })
-      : result(id, title, "high", "fail", `${target} answered with HTTP ${response.status}.`, {
+      ? checkResult(id, title, "high", "pass", `${target} answered 200.`, { target })
+      : checkResult(id, title, "high", "fail", `${target} answered with HTTP ${response.status}.`, {
           remediation,
           target,
         });
   } catch (error) {
-    const note = await staleNote(error, new URL(target).hostname, ctx);
-    return result(
+    return checkResult(
       id,
       title,
       "high",
       "fail",
-      `Could not reach ${target}: ${errorText(error)}.${note}`,
+      `Could not reach ${target}: ${errorText(error)}.`,
       {
         remediation,
         target,
@@ -885,7 +786,7 @@ export function checkSecurityHeaders(headers: Headers | undefined, url: string):
   const title = "Security headers are set";
   const target = `${url}/`;
   if (headers === undefined) {
-    return result(id, title, "medium", "skip", "Skipped because the site did not answer.", {
+    return checkResult(id, title, "medium", "skip", "Skipped because the site did not answer.", {
       target,
     });
   }
@@ -897,15 +798,22 @@ export function checkSecurityHeaders(headers: Headers | undefined, url: string):
     })
     .map((header) => header.name);
   if (missing.length === 0) {
-    return result(id, title, "medium", "pass", "All expected security headers are present.", {
+    return checkResult(id, title, "medium", "pass", "All expected security headers are present.", {
       target,
     });
   }
-  return result(id, title, "medium", "fail", `Missing or weak headers: ${missing.join(", ")}.`, {
-    remediation:
-      "Restore the `header` block in opscrew/runtime/Caddyfile (re-run `opscrew provision` to regenerate it) and redeploy.",
-    target,
-  });
+  return checkResult(
+    id,
+    title,
+    "medium",
+    "fail",
+    `Missing or weak headers: ${missing.join(", ")}.`,
+    {
+      remediation:
+        "Restore the `header` block in opscrew/runtime/Caddyfile (re-run `opscrew provision` to regenerate it) and redeploy.",
+      target,
+    },
+  );
 }
 
 /** `.env` and `.git/config` are not served (a SPA fallback page is fine; the real file is not). */
@@ -925,7 +833,7 @@ export async function checkSensitiveFile(
     });
     if (response.status !== 200) {
       await discard(response);
-      return result(
+      return checkResult(
         id,
         title,
         "critical",
@@ -944,7 +852,7 @@ export async function checkSensitiveFile(
         ? /^\s*(export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=/m.test(body) && !/<html|<!doctype/i.test(body)
         : /^\s*\[core\]/m.test(body);
     if (!looksReal) {
-      return result(
+      return checkResult(
         id,
         title,
         "critical",
@@ -953,7 +861,7 @@ export async function checkSensitiveFile(
         { target },
       );
     }
-    return result(
+    return checkResult(
       id,
       title,
       "critical",
@@ -970,15 +878,13 @@ export async function checkSensitiveFile(
       },
     );
   } catch (error) {
-    return result(
+    return checkResult(
       id,
       title,
       "critical",
       "warn",
-      `Could not request ${target}: ${errorText(error)}.${await staleNote(error, new URL(target).hostname, ctx)}`,
-      {
-        target,
-      },
+      `Could not request ${target}: ${errorText(error)}.`,
+      { target },
     );
   }
 }
@@ -1005,7 +911,7 @@ async function ownOriginResult(
   if (open4 || open6) {
     const where =
       open4 && open6 ? "IPv4 and IPv6 addresses" : open4 ? "IPv4 address" : "IPv6 address";
-    return result(
+    return checkResult(
       id,
       title,
       "medium",
@@ -1020,7 +926,7 @@ async function ownOriginResult(
       : canTryIpv6
         ? " (IPv4 and IPv6)"
         : ". OpsCrew could not try its IPv6 address: this computer has no IPv6 route; run `opscrew verify` from a network with IPv6 to check it too";
-  return result(
+  return checkResult(
     id,
     title,
     "medium",
@@ -1037,7 +943,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
   const ip = ctx.server?.ipv4;
   const web = portainerWeb(plan);
   if (web !== undefined) {
-    return result(
+    return checkResult(
       id,
       title,
       "medium",
@@ -1048,7 +954,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
     );
   }
   if (tunnelMode(plan)) {
-    return result(
+    return checkResult(
       id,
       title,
       "medium",
@@ -1057,7 +963,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
     );
   }
   if (plan.dns.provider !== "cloudflare" || !plan.dns.proxied) {
-    return result(
+    return checkResult(
       id,
       title,
       "medium",
@@ -1066,7 +972,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
     );
   }
   if (plan.security.httpAllowedFrom !== "cloudflare") {
-    return result(
+    return checkResult(
       id,
       title,
       "medium",
@@ -1075,7 +981,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
     );
   }
   if (!ip) {
-    return result(
+    return checkResult(
       id,
       title,
       "medium",
@@ -1088,7 +994,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
   const open = await ctx.tcpConnect(ip, 443, timeout);
   if (plan.target.provider === "own") return ownOriginResult(ctx, open, timeout);
   return open
-    ? result(
+    ? checkResult(
         id,
         title,
         "medium",
@@ -1099,7 +1005,7 @@ export async function checkOriginBlocked(ctx: VerifyCheckContext): Promise<Check
           target: ip,
         },
       )
-    : result(id, title, "medium", "pass", `Port 443 on ${ip} is closed to direct visitors.`, {
+    : checkResult(id, title, "medium", "pass", `Port 443 on ${ip} is closed to direct visitors.`, {
         target: ip,
       });
 }
@@ -1122,7 +1028,7 @@ export async function checkDeployRun(ctx: VerifyCheckContext): Promise<{
   }
   if (runs === undefined) {
     return {
-      check: result(id, title, "high", "warn", `Could not read the deploy runs: ${reason}.`, {
+      check: checkResult(id, title, "high", "warn", `Could not read the deploy runs: ${reason}.`, {
         remediation: "Check the latest run in GitHub → Actions yourself.",
       }),
     };
@@ -1130,14 +1036,14 @@ export async function checkDeployRun(ctx: VerifyCheckContext): Promise<{
   const latest = runs[0];
   if (latest === undefined) {
     return {
-      check: result(id, title, "high", "fail", `${workflow} has not run on ${branch} yet.`, {
+      check: checkResult(id, title, "high", "fail", `${workflow} has not run on ${branch} yet.`, {
         remediation: `Merge the OpsCrew pull request into ${branch} (or push to it) to start the first deploy.`,
       }),
     };
   }
   if (latest.status !== "completed") {
     return {
-      check: result(
+      check: checkResult(
         id,
         title,
         "high",
@@ -1152,7 +1058,7 @@ export async function checkDeployRun(ctx: VerifyCheckContext): Promise<{
   }
   if (latest.conclusion !== "success") {
     return {
-      check: result(
+      check: checkResult(
         id,
         title,
         "high",
@@ -1168,11 +1074,25 @@ export async function checkDeployRun(ctx: VerifyCheckContext): Promise<{
   }
   const at = new Date(latest.createdAt);
   return {
-    check: result(id, title, "high", "pass", `The latest deploy succeeded: ${latest.htmlUrl}`, {
-      target: latest.htmlUrl,
-    }),
+    check: checkResult(
+      id,
+      title,
+      "high",
+      "pass",
+      `The latest deploy succeeded: ${latest.htmlUrl}`,
+      {
+        target: latest.htmlUrl,
+      },
+    ),
     ...(Number.isNaN(at.getTime()) ? {} : { lastDeployAt: at.toISOString() }),
   };
+}
+
+/** One-line summary of check results, e.g. `9 passed, 1 failed, 1 warning, 0 skipped`. */
+export function summarizeChecks(checks: readonly CheckResult[]): string {
+  const count = (status: CheckResult["status"]) =>
+    checks.filter((check) => check.status === status).length;
+  return `${count("pass")} passed, ${count("fail")} failed, ${plural(count("warn"), "warning")}, ${count("skip")} skipped`;
 }
 
 /** Result of {@link runVerifyChecks}. */
@@ -1187,37 +1107,26 @@ export interface VerifyChecksOutcome {
  * domain (it prints the one the user creates) and the proxy manages its certificate and redirect,
  * so a failed domain check is a warning that says so. Other targets and modes are unchanged.
  */
-function userDomain(
-  check: CheckResult,
-  host: string,
-  plan: DeployPlan,
-  stale = false,
-): CheckResult {
+function userDomain(check: CheckResult, host: string, plan: DeployPlan): CheckResult {
   if (portainerWeb(plan) !== "proxy" || check.status !== "fail") return check;
   return {
     ...check,
     status: "warn",
     message: `${check.message} Behind your own reverse proxy the DNS record and the certificate for ${host} are yours, so this is a warning.`,
-    // This computer holds an older answer for a record that exists: clearing it is what helps.
-    remediation: stale
-      ? FLUSH_DNS
-      : `The record and the certificate are yours: create the record OpsCrew printed and route ${host} in your proxy (it serves HTTPS and redirects HTTP), then run \`opscrew verify\` again.`,
+    remediation: `The record and the certificate are yours: create the record OpsCrew printed and route ${host} in your proxy (it serves HTTPS and redirects HTTP), then run \`opscrew verify\` again.`,
   };
 }
 
 /**
  * Runs every verify check from plan.md in report order. Without a domain the DNS and TLS checks
- * warn (the site is served over plain HTTP on the server IP) instead of failing.
+ * warn (the site is served over plain HTTP on the server IP) instead of failing. A host this
+ * computer cannot resolve is looked up once through the public resolver; with its addresses, every
+ * check of that host connects through them (see {@link dnsCheck}).
  */
-export async function runVerifyChecks(context: VerifyCheckContext): Promise<VerifyChecksOutcome> {
-  const base = oncePerHost(context);
+export async function runVerifyChecks(base: VerifyCheckContext): Promise<VerifyChecksOutcome> {
   const { plan } = base;
-  // Hosts this computer cannot find although a public resolver has their record.
-  const stale = new Set<string>();
   // Hosts this computer cannot find, with the public resolver's addresses to check them through.
   const answers = new Map<string, PublicAddresses>();
-  // Hosts the site checks reached through the public answer.
-  const used = new Set<string>();
   const hosts = verifyHosts(plan);
   const url = base.url ?? siteUrl(plan, base.server);
   const checks: CheckResult[] = [];
@@ -1228,7 +1137,7 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
 
   if (userRoute) {
     checks.push(
-      result(
+      checkResult(
         "dns-records",
         "DNS points to the right place",
         "medium",
@@ -1240,7 +1149,7 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
     const addDomain =
       "Add a domain with `opscrew dns --domain <your-domain>` to get HTTPS, a certificate and a stable address.";
     checks.push(
-      result(
+      checkResult(
         "dns-records",
         "DNS points to the right place",
         "medium",
@@ -1251,17 +1160,14 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
     );
   } else {
     for (const host of hosts) {
-      const dns = await dnsCheck(host, base);
-      if (dns.stale) stale.add(host);
-      if (dns.answer) answers.set(host.toLowerCase(), dns.answer);
-      checks.push(userDomain(dns.check, host, plan, dns.stale));
+      checks.push(userDomain(await dnsCheck(host, base, answers), host, plan));
     }
   }
 
   if (url === undefined) {
     throw new Error("runVerifyChecks needs a domain or the server's address.");
   }
-  const urlHost = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+  const urlHost = normalizeHostName(new URL(url).hostname);
   let site: Awaited<ReturnType<typeof siteReachable>> | undefined;
   if (userRoute && isIP(urlHost.replace(/^\[|\]$/g, "")) === 0) {
     // The user's route has no DNS check: only when this computer cannot find its host (the
@@ -1269,24 +1175,19 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
     // through its answer. A name only this computer knows (a hosts file, mDNS) is never sent.
     site = await siteReachable(url, base);
     const answer = isNotFound(site.error) ? await publicAddresses(urlHost, base) : undefined;
-    if (answer) {
+    if (answer !== undefined && checks[0] !== undefined) {
       answers.set(urlHost, answer);
       site = undefined;
-    }
-  }
-  // The site checks: hosts this computer still holds an older answer for are reached through the
-  // public answer; only their address lookup changes.
-  const ctx = throughPublicAnswers(base, answers, used);
-  site ??= await siteReachable(url, ctx);
-  if (used.has(urlHost)) {
-    site.check = { ...site.check, message: `${site.check.message}${REACHED_PUBLICLY}` };
-    if (userRoute && checks[0]?.id === "dns-records") {
       checks[0] = {
         ...checks[0],
         message: `${checks[0].message} ${CHECKED_PUBLICLY} ${FLUSH_DNS}`,
       };
     }
   }
+  // The site checks: hosts this computer still holds an older answer for are reached through the
+  // public answer; only their address lookup changes.
+  const ctx = throughPublicAnswers(base, answers);
+  site ??= await siteReachable(url, ctx);
   checks.push(site.check);
 
   if (userRoute) {
@@ -1296,7 +1197,7 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
       checks.push(
         route.port === ""
           ? await checkHttpRedirect(route.hostname, ctx)
-          : result(
+          : checkResult(
               "http-redirect",
               "HTTP redirects to HTTPS",
               "medium",
@@ -1306,7 +1207,7 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
       );
     } else {
       checks.push(
-        result(
+        checkResult(
           "tls-certificate",
           "HTTPS certificate is valid",
           "medium",
@@ -1317,7 +1218,7 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
               "Serve the app over HTTPS in your reverse proxy (it manages the certificate), then run `opscrew verify` again with the https:// address.",
           },
         ),
-        result(
+        checkResult(
           "http-redirect",
           "HTTP redirects to HTTPS",
           "medium",
@@ -1328,7 +1229,7 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
     }
   } else if (domain === undefined) {
     checks.push(
-      result(
+      checkResult(
         "tls-certificate",
         "HTTPS certificate is valid",
         "medium",
@@ -1339,7 +1240,7 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
             "Add a domain with `opscrew dns --domain <your-domain>`; Caddy then gets a certificate automatically.",
         },
       ),
-      result(
+      checkResult(
         "http-redirect",
         "HTTP redirects to HTTPS",
         "medium",
@@ -1348,9 +1249,8 @@ export async function runVerifyChecks(context: VerifyCheckContext): Promise<Veri
       ),
     );
   } else {
-    const domainStale = stale.has(domain);
-    checks.push(userDomain(await checkTls(domain, ctx), domain, plan, domainStale));
-    checks.push(userDomain(await checkHttpRedirect(domain, ctx), domain, plan, domainStale));
+    checks.push(userDomain(await checkTls(domain, ctx), domain, plan));
+    checks.push(userDomain(await checkHttpRedirect(domain, ctx), domain, plan));
   }
 
   checks.push(await checkHealth(url, ctx));

@@ -7,6 +7,7 @@ import { networkInterfaces } from "node:os";
 import { Readable } from "node:stream";
 import { connect as tlsConnectSocket } from "node:tls";
 import type { FetchLike } from "@opscrew/contracts";
+import { normalizeHostName } from "@opscrew/core";
 
 /**
  * Whether this computer can probably reach IPv6 addresses: one of its interfaces has a global
@@ -61,28 +62,22 @@ export interface PublicAddresses {
 /** Builds a fetch whose connections find addresses with `lookup`; everything else stays as is. */
 export type FetchWithLookup = (lookup: LookupFunction) => FetchLike;
 
-function hostKey(host: string): string {
-  return host.trim().toLowerCase().replace(/\.$/, "");
-}
-
 /** `dns.lookup` errors that mean the name is not found (rather than a broken resolver). */
 const NOT_FOUND_LOOKUP = new Set(["ENOTFOUND", "ENODATA", "EAI_NONAME", "EAI_NODATA"]);
 
 /**
  * A `dns.lookup`-compatible function for a host this computer still holds an older "no such name"
  * answer for: it asks `system` (default `dns.lookup`) first and keeps its answer; only when that
- * finds no such name for a host in `answers` does it answer with the public addresses (IPv4
- * first), calling `onPublic` with the host. Other names and errors are `system`'s.
+ * finds no such name for a host in `answers` (keyed by `normalizeHostName`) does it answer with
+ * the public addresses (IPv4 first). Other names and errors are `system`'s.
  */
 export function publicAnswerLookup(
   answers: ReadonlyMap<string, PublicAddresses>,
   system: LookupFunction = dnsLookup as LookupFunction,
-  onPublic?: (host: string) => void,
 ): LookupFunction {
   return (hostname, options, callback) => {
     system(hostname, options, (error, address, family) => {
-      const key = hostKey(hostname);
-      const answer = answers.get(key);
+      const answer = answers.get(normalizeHostName(hostname));
       if (!error || !answer || !NOT_FOUND_LOOKUP.has(String(error.code))) {
         callback(error, address, family);
         return;
@@ -97,7 +92,6 @@ export function publicAnswerLookup(
         callback(error, address, family);
         return;
       }
-      onPublic?.(key);
       if (options.all) callback(null, list);
       else callback(null, first.address, first.family);
     });

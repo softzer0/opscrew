@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import type { LookupFunction } from "node:net";
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import {
@@ -20,12 +19,20 @@ import {
   committableUrl,
   hasDeployment,
   hidesServerAddress,
+  lookupPublicAddresses,
+  readIfExists,
   type ServerAddress,
   serverAddress,
   writeRenderedFiles,
 } from "../shared";
-import { lookupPublicAddresses } from "../shared/public-dns";
-import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
+import {
+  type CloudflareRanges,
+  type DeployRunInfo,
+  editCheckText,
+  runVerifyChecks,
+  siteUrl,
+  summarizeChecks,
+} from "./checks";
 import {
   type DnsResolver,
   defaultDnsResolver,
@@ -35,7 +42,6 @@ import {
   type TlsConnect,
 } from "./net";
 import {
-  checkWithoutRoute,
   hideRecordedPortainerAddress,
   hideRoute,
   portainerVerifyUrl,
@@ -86,16 +92,6 @@ export interface VerifyResult {
   runbookPath: string;
   /** The plan after verification (with `deployment.url`/`lastDeployAt` when passed). */
   plan: DeployPlan;
-}
-
-function countBy(checks: readonly CheckResult[], status: CheckResult["status"]): number {
-  return checks.filter((check) => check.status === status).length;
-}
-
-/** One-line summary, e.g. `9 passed, 1 failed, 1 warning, 0 skipped`. */
-export function summarizeChecks(checks: readonly CheckResult[]): string {
-  const warn = countBy(checks, "warn");
-  return `${countBy(checks, "pass")} passed, ${countBy(checks, "fail")} failed, ${warn} warning${warn === 1 ? "" : "s"}, ${countBy(checks, "skip")} skipped`;
 }
 
 /**
@@ -186,12 +182,20 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     now: deps.clock.now(),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(portainer && url !== undefined ? { url } : {}),
-    // The user's Portainer: a record this computer cannot find yet is looked up publicly
-    // (read-only DNS over HTTPS); a stale local answer is named as such, and the checks reach the
-    // site through the public answer.
+    // The user's Portainer: a host this computer cannot find yet is looked up publicly (read-only
+    // DNS over HTTPS), and the checks reach the site through that answer. Its addresses are
+    // registered with the redactor, so no output or result names them.
     ...(portainer
       ? {
-          publicDns: (host: string) => lookupPublicAddresses(fetch, host),
+          publicDns: async (host: string) => {
+            const answer = await lookupPublicAddresses(fetch, host);
+            if (answer.state === "found") {
+              for (const address of [...(answer.ipv4 ?? []), ...(answer.ipv6 ?? [])]) {
+                deps.redactor.addName(address, "public-address");
+              }
+            }
+            return answer;
+          },
           fetchWithLookup: options.fetchWithLookup ?? nodeFetchWithLookup,
           ...(options.lookup !== undefined ? { lookup: options.lookup } : {}),
         }
@@ -215,7 +219,11 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     },
   });
 
-  const checks = checked.map((check) => checkWithoutRoute(check, route));
+  // The route reads as "your route"; addresses a public resolver gave (and other registered
+  // names) are masked.
+  const checks = checked.map((check) =>
+    editCheckText(check, (text) => deps.redactor.redact(withoutRoute(text, route))),
+  );
   for (const check of checks) {
     const line = say(`${check.title}: ${check.message}`);
     if (check.status === "pass") reporter.success(line);
@@ -266,7 +274,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     : renderRunbook(current, {
         opscrewVersion: deps.version,
         github: repo,
-        deploySshPublicKey: await readOptional(paths.files.deployKeyPub),
+        deploySshPublicKey: (await readIfExists(paths.files.deployKeyPub))?.trim() ?? "",
         projectId: paths.projectId,
         ...(shown !== undefined ? { serverIpv4: shown.ipv4 } : {}),
         ...(shown?.ipv6 !== undefined ? { serverIpv6: shown.ipv6 } : {}),
@@ -310,14 +318,6 @@ async function ownServerNames(
     connection?.publicIpv4,
     connection?.publicIpv6,
   ].filter((name): name is string => name !== undefined && name !== "");
-}
-
-async function readOptional(file: string): Promise<string> {
-  try {
-    return (await readFile(file, "utf8")).trim();
-  } catch {
-    return "";
-  }
 }
 
 interface GitHubContext {

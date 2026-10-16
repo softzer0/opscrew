@@ -1,5 +1,4 @@
-import type { CheckResult } from "@opscrew/contracts";
-import { OpsCrewError, type Redactor } from "@opscrew/core";
+import { normalizeHostName, OpsCrewError, type Redactor, replaceNames } from "@opscrew/core";
 import {
   portainerConnectorStackName,
   portainerStackName,
@@ -12,7 +11,7 @@ import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { hidePortainerAddress } from "../interview/portainer-access";
 import { portainerDnsRecordNote } from "../provision/publish";
-import { readPortainerConnection } from "../shared";
+import { addressNames, readPortainerConnection } from "../shared";
 
 /**
  * Registers the address of the user's Portainer (as `.opscrew/server.json` records it) with the
@@ -30,31 +29,16 @@ export async function hideRecordedPortainerAddress(
 export const YOUR_ROUTE = "your route";
 
 /**
- * The names under which the user's route can appear (the address, its origin, host and host
- * name), longest first. None when the route is the app's own domain (public and committed) or on
- * this computer (`localhost`, a loopback address).
+ * The names under which the user's route can appear (`addressNames`). None when the route is the
+ * app's own domain (public and committed) or on this computer (`localhost`, a loopback address).
  */
 export function routeNames(route: string, domain: string | undefined): string[] {
-  let parsed: URL;
-  try {
-    parsed = new URL(route);
-  } catch {
-    return [];
-  }
-  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
-  const bare = /^\[(.+)\]$/.exec(hostname)?.[1] ?? hostname;
-  if (
-    hostname === domain?.toLowerCase().replace(/\.$/, "") ||
-    bare === "localhost" ||
-    bare === "::1" ||
-    /^127\./.test(bare)
-  ) {
-    return [];
-  }
-  const names = new Set(
-    [route, parsed.origin, parsed.host, parsed.hostname, hostname, bare].filter((n) => n !== ""),
-  );
-  return [...names].sort((a, b) => b.length - a.length);
+  const names = addressNames(route);
+  if (names.length === 0) return [];
+  const hostname = normalizeHostName(new URL(route).hostname);
+  const bare = hostname.replace(/^\[|\]$/g, "");
+  const local = bare === "localhost" || bare === "::1" || /^127\./.test(bare);
+  return local || hostname === normalizeHostName(domain ?? "") ? [] : names;
 }
 
 /**
@@ -71,34 +55,9 @@ export function hideRoute(
   return names;
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /** `text` with every standalone name of the user's route ({@link routeNames}) as "your route". */
 export function withoutRoute(text: string, names: readonly string[]): string {
-  let out = text;
-  for (const name of names) {
-    out = out.replace(
-      new RegExp(`(?<![0-9A-Za-z.:-])${escapeRegExp(name)}(?![0-9A-Za-z:-]|\\.[0-9A-Za-z])`, "gi"),
-      YOUR_ROUTE,
-    );
-  }
-  return out;
-}
-
-/** A check result with the user's route named as "your route" ({@link withoutRoute}). */
-export function checkWithoutRoute(check: CheckResult, names: readonly string[]): CheckResult {
-  if (names.length === 0) return check;
-  return {
-    ...check,
-    title: withoutRoute(check.title, names),
-    message: withoutRoute(check.message, names),
-    ...(check.remediation !== undefined
-      ? { remediation: withoutRoute(check.remediation, names) }
-      : {}),
-    ...(check.target !== undefined ? { target: withoutRoute(check.target, names) } : {}),
-  };
+  return replaceNames(text, names, YOUR_ROUTE);
 }
 
 /**

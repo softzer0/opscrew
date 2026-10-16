@@ -10,7 +10,8 @@ import { LAN_IPV4, OWN_IPV4, ownPlan } from "../provision/__fixtures__/own";
 import { recordOwnServer, recordServerAddress } from "../shared";
 import { createTestPhaseDeps, ScriptedRunner } from "../testing";
 import { CLOUDFLARE_IPV4, CLOUDFLARE_IPV6, CLOUDFLARE_RANGES } from "./__fixtures__/plan";
-import { type DnsResolver, runVerify, type TlsConnect } from "./index";
+import type { DnsResolver, TlsConnect } from "./net";
+import { runVerify } from "./run";
 
 const NOW = "2026-10-14T12:00:00.000Z";
 
