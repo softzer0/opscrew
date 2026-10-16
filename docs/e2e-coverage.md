@@ -22,8 +22,8 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Namecheap sandbox (`registrars.test.ts`) | Namecheap sandbox keys | Passed | 2026-10-14 | — |
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
 | Your own server (`own-server.test.ts`) | `OPSCREW_E2E_OWN_SERVER=1` | Passed | 2026-10-17 (after the simplification) | — |
-| Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | Passed (every core step, within the full pass's run 10) | 2026-10-16 | — |
-| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Steps 1–11 passed** (run 10, 2026-10-16); the leak check's only item was a chance match in an encrypted plan file, the check fixed | 2026-10-16 (run 10, steps 1–11) | Steps 11 and 12 again after the simplification (T1032) |
+| Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | Passed (with step 11, after the simplification) | 2026-10-17 | — |
+| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | Passed: steps 1–11 in run 10 (2026-10-16), steps 11 and 12 with the fixed leak check on 2026-10-17 | 2026-10-17 (steps 11, 12) | — |
 
 Run in development, not tracked by date:
 
@@ -51,8 +51,8 @@ Tick a step once it has passed live. Since the simplification (T1031) any steps 
 | 8. Destroy keeps the data volumes; Portainer, its settings and the decoys stay | core | [x] 2026-10-16 |
 | 9. `destroy --delete-data` removes the data volumes and nothing else | core | [x] 2026-10-16 |
 | 10. A loopback Portainer address (the updater through `host.docker.internal`) | full | [x] 2026-10-16 |
-| 11. A short Portainer host name in the leak check | full | [x] 2026-10-16 |
-| 12. No token, secret, server address or Portainer address anywhere | core | [x] 2026-10-15 (core pass); full pass run 10 (2026-10-16): no known value anywhere, one chance match of the short host in an encrypted plan file (the check now skips those), rerun with step 11 in T1032 |
+| 11. A short Portainer host name in the leak check | full | [x] 2026-10-16; 2026-10-17 with a random short host |
+| 12. No token, secret, server address or Portainer address anywhere | core | [x] 2026-10-15 (core pass); 2026-10-17 with step 11 (nothing found) |
 
 ## Your existing Portainer: behaviour still to confirm live
 

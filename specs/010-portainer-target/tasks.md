@@ -277,7 +277,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
   - Effort: high
 
-- [ ] T1032 Live check after the simplification (lead): the Hetzner live test, the own-server live test and the Portainer core pass, results in `docs/e2e.md` and `docs/e2e-coverage.md`
+- [X] T1032 Live check after the simplification (lead): the Hetzner live test, the own-server live test and the Portainer core pass, results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 ## Dependencies
 
