@@ -116,6 +116,14 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
+- [ ] T1014 [US1] [US5] No address in saved plans; a removed Cloudflare setup is really gone, in `packages/agents/src/{provision,drift}/`
+  - Owns: `packages/agents/src/provision/plan-apply.ts` (saving sidecars), `packages/agents/src/provision/portainer.ts` (detecting an earlier Cloudflare setup), `packages/agents/src/drift/{portainer,infra}.ts` (the same check) (+ tests)
+  - Reads: the fourth full live run (2026-10-16): after the switch from the tunnel to Caddy, the leak check found the server's IPv4 (Portainer's address) in `.opscrew/plans/<stamp>-removal.tfplan.json`, although `maskSensitivePlanJson` masks marked values and sensitive variables; and `opscrew drift` right after that switch reported "The infrastructure state still holds what an earlier setup of this app created in Cloudflare" although provision had applied the removal
+  - Depends: T1005, T1006
+  - Accept: every saved plan sidecar (and any other file OpsCrew writes from engine output) also passes through the redactor (literals and names: Portainer's address, host and server addresses) before it is written, without breaking how `--approve` finds and validates a saved plan; a test where an unmarked value holds the registered address shows it masked in the sidecar; the cause of the unmarked value is named in the report if it can be found offline. An earlier Cloudflare setup counts as present only when the state holds managed resources (not merely outputs or an empty state file), in provision and in drift alike; after a removal is applied, the next provision shows no removal and drift reports nothing for it (check with the engines, `OPSCREW_IT=1`, using a local resource such as `terraform_data` if the Cloudflare provider is not needed to show it); other targets unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
 - [ ] T1009 Live run, core pass (founder, 2026-10-15: the full matrix took about 2 hours): setup, updater + tunnel, one merged change deploying by itself with the unchanged-branch webhook check, destroy keeping data, `--delete-data`, the leak check; results in `docs/e2e.md` (lead). The other steps (caddy, proxy, cloudflare redeploy, rollback wait, loopback, short host, MCP) stay in the test behind `OPSCREW_E2E_PORTAINER_STEPS=full`
 
 ## Dependencies
