@@ -13,8 +13,8 @@ import type {
   SnapshotRequest,
 } from "@opscrew/contracts";
 import type { CloudProvider } from "@opscrew/plan-schema";
-import { FakeGitHub, SERVER_IPV4 } from "../../provision/__fixtures__/fakes";
-import type { DestroyGitHubApi } from "../types";
+import type { DestroyGitHubApi } from "../destroy/types";
+import { FakeGitHub, SERVER_IPV4 } from "./deploy";
 
 const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 
@@ -59,7 +59,12 @@ export function deployedResources(
   if (options.dns) {
     resources.unshift(
       change("module.dns.cloudflare_dns_record.a", "cloudflare_dns_record", "delete", CLOUDFLARE),
-      change("module.dns.cloudflare_dns_record.aaaa", "cloudflare_dns_record", "delete", CLOUDFLARE),
+      change(
+        "module.dns.cloudflare_dns_record.aaaa",
+        "cloudflare_dns_record",
+        "delete",
+        CLOUDFLARE,
+      ),
     );
   }
   return resources;

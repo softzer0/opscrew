@@ -16,19 +16,20 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { renderDeployment } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { deploymentRenderContext } from "../provision/render";
+import type { ProvisionServices } from "../provision/types";
+import { ensureDeployKey, ensureStatePassphrase, writeRenderedFiles } from "../shared";
 import {
   CF_V4,
   CF_V6,
   createProject,
+  createTestPhaseDeps,
   fakeCloudflare,
   movingPlan,
   projectRunner,
+  ScriptedApprovalHandler,
   testPlan,
-} from "../provision/__fixtures__/fakes";
-import { deploymentRenderContext } from "../provision/render";
-import type { ProvisionServices } from "../provision/types";
-import { ensureDeployKey, ensureStatePassphrase, writeRenderedFiles } from "../shared";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
+} from "../testing";
 import { renderDriftReport } from "./render";
 import { runDrift } from "./run";
 import {

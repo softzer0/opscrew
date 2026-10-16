@@ -1,6 +1,6 @@
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { testPlan } from "../provision/__fixtures__/fakes";
+import { testPlan } from "../testing";
 import { PORTAINER_VERSION, portainerSettings, withPortainer } from "./settings";
 
 function code(run: () => unknown): string | undefined {

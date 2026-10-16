@@ -1,6 +1,6 @@
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { buyable, domainProject, TOKEN, visibleText } from "./__fixtures__/fakes";
+import { buyable, domainProject, TOKEN, visibleText } from "../testing";
 import { searchDomains } from "./search";
 
 const DOMAIN = "shopapp.com";

@@ -1,19 +1,19 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
+import {
+  FakeDestroyGitHub,
+  FakeServers,
+  ScriptedDestroyEngine,
+  testPlan,
+} from "@opscrew/agents/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
-import {
-  type DeployProject,
-  DeployRunner,
-  deployProject,
-  testPlan,
-} from "../ui/__fixtures__/deploy";
-import { DestroyEngine, destroyServices } from "../ui/__fixtures__/destroy";
+import { type DeployProject, DeployRunner, deployProject } from "../ui/__fixtures__/deploy";
 import { CANCEL, GIT, projectContext, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
 
 let project: DeployProject | undefined;
@@ -32,7 +32,9 @@ class RecordingApprovals implements ApprovalHandler {
 }
 
 async function setup(options: { interactive?: boolean; typed?: unknown } = {}) {
-  project = await deployProject(testPlan({ deployed: true, httpAllowedFrom: "any" }));
+  project = await deployProject(
+    testPlan({ deployed: true, httpAllowedFrom: "any", userSecret: false }),
+  );
   const approvals = new RecordingApprovals();
   const prompts = new ScriptedPrompts(options.typed === undefined ? [] : [options.typed]);
   const ctx = projectContext(project, {
@@ -56,10 +58,27 @@ async function setup(options: { interactive?: boolean; typed?: unknown } = {}) {
     `${"p".repeat(43)}
 `,
   );
-  const engine = new DestroyEngine();
-  const fakes = destroyServices(engine);
-  withServices(ctx, { destroy: fakes.services });
-  return { ctx, engine, fakes, approvals, prompts, paths };
+  const engine = new ScriptedDestroyEngine();
+  const servers = new FakeServers();
+  const github = new FakeDestroyGitHub();
+  withServices(ctx, {
+    destroy: {
+      engine: async () => engine,
+      provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+      servers,
+      cloudflare: null,
+      github,
+      sleep: async () => undefined,
+    },
+  });
+  const fakes = {
+    /** The plan kinds applied, in order. */
+    applied: () => engine.applied.map((apply) => apply.kind),
+    /** The ids of the servers snapshotted, in order. */
+    snapshots: () => servers.snapshots.map((snapshot) => snapshot.serverId),
+    deletedSecrets: github.deleted,
+  };
+  return { ctx, fakes, approvals, prompts, paths };
 }
 
 describe.skipIf(!GIT)("opscrew destroy", () => {
@@ -72,26 +91,26 @@ describe.skipIf(!GIT)("opscrew destroy", () => {
   });
 
   it("refuses a non-interactive run without --confirm and says how to run it", async () => {
-    const { ctx, engine, fakes } = await setup();
+    const { ctx, fakes } = await setup();
     expect(await run(ctx, "destroy")).toBe(1);
     expect(ctx.errors).toContain("opscrew destroy --confirm shop");
-    expect(engine.applied).toEqual([]);
-    expect(fakes.snapshots).toEqual([]);
+    expect(fakes.applied()).toEqual([]);
+    expect(fakes.snapshots()).toEqual([]);
   });
 
   it("refuses a --confirm that is not the server name before anything happens", async () => {
-    const { ctx, engine, fakes } = await setup();
+    const { ctx, fakes } = await setup();
     expect(await run(ctx, "destroy", "--confirm", "shpo")).toBe(1);
     expect(ctx.errors).toContain("does not match the server name");
-    expect(engine.applied).toEqual([]);
-    expect(fakes.snapshots).toEqual([]);
+    expect(fakes.applied()).toEqual([]);
+    expect(fakes.snapshots()).toEqual([]);
   });
 
   it("tears everything down without prompts with --confirm <server name>", async () => {
-    const { ctx, engine, fakes, approvals, paths } = await setup();
+    const { ctx, fakes, approvals, paths } = await setup();
     expect(await run(ctx, "destroy", "--confirm", "shop")).toBe(0);
-    expect(fakes.snapshots).toEqual([4711]);
-    expect(engine.applied).toEqual(["unprotect", "destroy"]);
+    expect(fakes.snapshots()).toEqual(["4711"]);
+    expect(fakes.applied()).toEqual(["unprotect", "destroy"]);
     expect(fakes.deletedSecrets).toContain("OPSCREW_HOST");
     expect(approvals.requests).toEqual([]);
     const plan = await readArtifact("plan", paths.files.plan);
@@ -109,11 +128,11 @@ describe.skipIf(!GIT)("opscrew destroy", () => {
       target: { ...cloudTarget(plan.target), backups: false },
     });
     expect(await run(ctx, "destroy", "--confirm", "shop", "--snapshot")).toBe(0);
-    expect(fakes.snapshots).toEqual([4711]);
+    expect(fakes.snapshots()).toEqual(["4711"]);
   });
 
   it("takes no snapshot by default when no data lives only on the server", async () => {
-    const { ctx, engine, fakes, paths } = await setup();
+    const { ctx, fakes, paths } = await setup();
     const plan = await readArtifact("plan", paths.files.plan);
     await writeArtifact("plan", paths.files.plan, {
       ...plan,
@@ -121,30 +140,30 @@ describe.skipIf(!GIT)("opscrew destroy", () => {
       target: { ...cloudTarget(plan.target), backups: false },
     });
     expect(await run(ctx, "destroy", "--confirm", "shop")).toBe(0);
-    expect(fakes.snapshots).toEqual([]);
-    expect(engine.applied).toEqual(["unprotect", "destroy"]);
+    expect(fakes.snapshots()).toEqual([]);
+    expect(fakes.applied()).toEqual(["unprotect", "destroy"]);
   });
 
   it("changes nothing when the typed name is wrong, not even a snapshot", async () => {
-    const { ctx, engine, fakes, prompts } = await setup({ interactive: true, typed: "shpo" });
+    const { ctx, fakes, prompts } = await setup({ interactive: true, typed: "shpo" });
     expect(await run(ctx, "destroy")).toBe(1);
     expect(prompts.calls[0]?.message).toContain("Type shop to delete everything listed above");
     expect(ctx.errors).toContain("nothing was deleted and nothing was changed");
-    expect(engine.applied).toEqual([]);
-    expect(fakes.snapshots).toEqual([]);
+    expect(fakes.applied()).toEqual([]);
+    expect(fakes.snapshots()).toEqual([]);
   });
 
   it("changes nothing when the prompt is cancelled", async () => {
-    const { ctx, engine } = await setup({ interactive: true, typed: CANCEL });
+    const { ctx, fakes } = await setup({ interactive: true, typed: CANCEL });
     expect(await run(ctx, "destroy")).toBe(1);
-    expect(engine.applied).toEqual([]);
+    expect(fakes.applied()).toEqual([]);
   });
 
   it("deletes after the typed name and still asks before removing the GitHub secrets", async () => {
-    const { ctx, engine, fakes, approvals } = await setup({ interactive: true, typed: "shop" });
+    const { ctx, fakes, approvals } = await setup({ interactive: true, typed: "shop" });
     expect(await run(ctx, "destroy", "--no-snapshot")).toBe(0);
-    expect(fakes.snapshots).toEqual([]);
-    expect(engine.applied).toEqual(["unprotect", "destroy"]);
+    expect(fakes.snapshots()).toEqual([]);
+    expect(fakes.applied()).toEqual(["unprotect", "destroy"]);
     expect(approvals.requests.map((r) => r.kind)).toEqual(["github-secrets"]);
     expect(ctx.output).toContain("confirmed with the server name");
   });

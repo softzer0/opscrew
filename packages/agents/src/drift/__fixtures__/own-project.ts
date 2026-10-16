@@ -1,20 +1,18 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  type ApplyOptions,
-  type ApplyResult,
-  type HostFacts,
-  HostFactsSchema,
-  type HostPlan,
-  hostPlanHash,
-} from "@opscrew/connector-ssh-host";
-import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
+import type { HostFacts } from "@opscrew/connector-ssh-host";
+import type { ApprovalRequest } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { createProject, FakeGitHub } from "../../provision/__fixtures__/fakes";
+import { runProvision } from "../../provision/run";
+import type { ProvisionServices } from "../../provision/types";
+import { type OwnServerConnectionInput, recordOwnServer } from "../../shared";
 import {
+  createProject,
+  createTestPhaseDeps,
   ED25519_FINGERPRINT,
+  FakeDestroyGitHub,
   FakeHostServer,
   fakeZeroTrust,
   freshFacts,
@@ -27,92 +25,12 @@ import {
   PUBLIC_CHANGES,
   placeholderKey,
   publicOutputs,
+  ScriptedApprovalHandler,
   TUNNEL_CHANGES,
   tunnelOutputs,
-} from "../../provision/__fixtures__/own";
-import { runProvision } from "../../provision/run";
-import type { ProvisionServices } from "../../provision/types";
-import { type OwnServerConnectionInput, recordOwnServer } from "../../shared";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../../testing";
+} from "../../testing";
 
 export { ED25519_FINGERPRINT, LAN_IPV4, OWN_IPV4 };
-
-const ADDON = {
-  installed: false,
-  composeSha256: null,
-  running: false,
-  secretFile: false,
-  dataVolume: false,
-  tunnelId: null,
-};
-
-/**
- * A fake host adapter for the whole life of an own server: setup plans as provision's fake, and
- * teardown and undo plans that change only what OpsCrew set up (the app's Compose project, the
- * add-ons, the marker; then OpsCrew's host settings), as the real adapter does. Containers,
- * volumes and users that OpsCrew did not create are never touched.
- */
-export class LifecycleHost extends FakeHostServer {
-  override async apply(
-    remote: RemoteExec,
-    plan: HostPlan,
-    options: ApplyOptions,
-  ): Promise<ApplyResult> {
-    if (plan.purpose === "setup") return super.apply(remote, plan, options);
-    if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");
-    const record = { plan, options } as (typeof this.applies)[number];
-    this.applies.push(record);
-    if (this.fail !== undefined) {
-      const error = this.fail;
-      this.fail = undefined;
-      throw error;
-    }
-    const changes = plan.steps.filter((step) => step.state === "change");
-    if (changes.some((step) => step.id === "sshd" || step.id === "ufw")) {
-      record.verified = await options.verifyLogin();
-    }
-    const f = structuredClone(this.facts) as HostFacts;
-    if (plan.purpose === "teardown") {
-      const app = plan.app;
-      f.containers = f.containers.filter((container) => container.project !== app);
-      if (plan.deleteData === true) {
-        f.volumeProjects = f.volumeProjects.filter((project) => project !== app);
-      }
-      f.dirs = f.dirs.map((dir) =>
-        dir.path === "/srv/app" || (plan.deleteData === true && dir.path === "/srv/data")
-          ? { ...dir, entries: 0 }
-          : dir,
-      );
-      f.tunnel = ADDON;
-      f.portainer = { ...ADDON, dataVolume: plan.deleteData === true ? false : f.portainer.dataVolume };
-      f.marker = null;
-    } else {
-      f.deployUser = null;
-      f.sshd = f.sshd === null ? null : { ...f.sshd, dropIn: null, permitRootLogin: "yes" };
-      f.firewall = { ...f.firewall, ufw: "inactive", ufwRules: [] };
-      f.fail2ban = { active: false, jail: null, sshdJail: false };
-      f.autoUpgrades = false;
-      f.dockerDaemonJson = "absent";
-      f.dirs = f.dirs.map((dir) => ((dir.entries ?? 0) === 0 ? { path: dir.path, kind: "absent" } : dir));
-      f.record = null;
-      f.ready = false;
-    }
-    this.facts = HostFactsSchema.parse(f);
-    return {
-      applied: changes.map((step) => step.id),
-      skipped: plan.steps.filter((step) => step.state !== "change").map((step) => step.id),
-    };
-  }
-}
-
-/** GitHub fake that also deletes Actions secrets (names recorded in order). */
-export class LifecycleGitHub extends FakeGitHub {
-  readonly deleted: string[] = [];
-  async deleteActionsSecret(_owner: string, _repo: string, name: string): Promise<void> {
-    this.deleted.push(name);
-    this.secrets.delete(name);
-  }
-}
 
 export interface OwnProjectOptions {
   access?: "public" | "tunnel";
@@ -143,7 +61,7 @@ export async function ownProject(o: OwnProjectOptions = {}) {
   const engine = tunnel
     ? new OwnEngine(TUNNEL_CHANGES, tunnelOutputs(secrets))
     : new OwnEngine(PUBLIC_CHANGES, publicOutputs());
-  const host = new LifecycleHost(
+  const host = new FakeHostServer(
     o.facts ??
       (tunnel
         ? freshFacts({
@@ -153,7 +71,7 @@ export async function ownProject(o: OwnProjectOptions = {}) {
           })
         : freshFacts()),
   );
-  const github = new LifecycleGitHub();
+  const github = new FakeDestroyGitHub();
   const handler = new ScriptedApprovalHandler(o.answer ?? (() => true));
   const home = await mkdtemp(join(tmpdir(), "opscrew-own-day2-"));
   const env: Record<string, string | undefined> = {

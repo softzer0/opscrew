@@ -36,9 +36,11 @@ import {
   DeployPlanSchema,
   writeArtifact,
 } from "@opscrew/plan-schema";
-import type { PhaseDeps } from "../../context";
-import { euCatalog, makeFacts, makeRequirements } from "../../design/__fixtures__/catalog";
-import { doEuCatalog } from "../../design/__fixtures__/digitalocean-catalog";
+import type { PhaseDeps } from "../context";
+import { isMaintenanceWindowRequest } from "../retarget/texts";
+import type { RetargetGitHubApi, RetargetServices } from "../retarget/types";
+import { ensureDeployKey, ensureStatePassphrase } from "../shared";
+import { doEuCatalog, euCatalog, makeFacts, makeRequirements } from "./catalog";
 import {
   createProject,
   FakeGitHub,
@@ -49,11 +51,8 @@ import {
   SERVER_IPV4,
   SERVER_IPV6,
   testPlan,
-} from "../../provision/__fixtures__/fakes";
-import { ensureDeployKey, ensureStatePassphrase } from "../../shared";
-import { MemoryReporter, ScriptedRunner } from "../../testing";
-import { isMaintenanceWindowRequest } from "../texts";
-import type { RetargetGitHubApi, RetargetServices } from "../types";
+} from "./deploy";
+import { MemoryReporter, ScriptedRunner } from "./deps";
 
 export { HOST_KEY, SERVER_IPV4 as OLD_IPV4, SERVER_IPV6 as OLD_IPV6 };
 
@@ -88,7 +87,14 @@ export type MoveEvent =
   | { type: "confirm"; name: string; resources: number }
   | { type: "init"; modules: string }
   | { type: "plan"; hash: string; vars: string }
-  | { type: "apply"; hash: string; deletes: string[]; creates: string[]; updates: string[]; moves: number }
+  | {
+      type: "apply";
+      hash: string;
+      deletes: string[];
+      creates: string[];
+      updates: string[];
+      moves: number;
+    }
   | { type: "remote"; host: string; op: string }
   | { type: "scp"; from: string; to: string }
   | { type: "secret"; name: string }
@@ -188,7 +194,13 @@ function change(
   [type, name]: readonly [string, string],
   action: ResourceChange["action"],
 ): ResourceChange {
-  return { address: `module.${module}.${type}.${name}`, type, name, provider: REGISTRY[provider], action };
+  return {
+    address: `module.${module}.${type}.${name}`,
+    type,
+    name,
+    provider: REGISTRY[provider],
+    action,
+  };
 }
 
 /**
@@ -217,6 +229,8 @@ export class FakeMoveEngine implements IacEngine {
   /** Edits a computed plan (e.g. a delete that appears after the preview). */
   tamper: ((effect: Effect) => void) | undefined;
   readonly plans: { hash: string; effect: Effect }[] = [];
+  /** Hashes of the plans applied, in order. */
+  readonly applied: string[] = [];
   #installed = new Set<string>();
   #effects = new Map<string, Effect>();
   #counter = 0;
@@ -293,7 +307,11 @@ export class FakeMoveEngine implements IacEngine {
         delete servers[from];
         effect.moves.push([from, to]);
         for (const [type, name] of RESOURCES[server.provider]) {
-          effect.moved.push({ from: `module.${from}.${type}.${name}`, to: `module.${to}.${type}.${name}`, type });
+          effect.moved.push({
+            from: `module.${from}.${type}.${name}`,
+            to: `module.${to}.${type}.${name}`,
+            type,
+          });
         }
       }
     }
@@ -304,7 +322,11 @@ export class FakeMoveEngine implements IacEngine {
         for (const resource of RESOURCES[provider]) {
           const c = change(m, provider, resource, "create");
           effect.changes.push(c);
-          details.push({ address: c.address, type: c.type, change: { actions: ["create"], before: null, after: {}, after_unknown: { id: true } } });
+          details.push({
+            address: c.address,
+            type: c.type,
+            change: { actions: ["create"], before: null, after: {}, after_unknown: { id: true } },
+          });
         }
         continue;
       }
@@ -313,8 +335,23 @@ export class FakeMoveEngine implements IacEngine {
         effect.unprotects.push(m);
         const c = change(m, provider, ["hcloud_server", "this"], "update");
         effect.changes.push(c);
-        const before = { id: server.id, name: APP, backups: true, delete_protection: true, rebuild_protection: true };
-        details.push({ address: c.address, type: c.type, change: { actions: ["update"], before, after: { ...before, delete_protection: false, rebuild_protection: false }, after_unknown: {} } });
+        const before = {
+          id: server.id,
+          name: APP,
+          backups: true,
+          delete_protection: true,
+          rebuild_protection: true,
+        };
+        details.push({
+          address: c.address,
+          type: c.type,
+          change: {
+            actions: ["update"],
+            before,
+            after: { ...before, delete_protection: false, rebuild_protection: false },
+            after_unknown: {},
+          },
+        });
       }
     }
     for (const [m, server] of Object.entries(servers) as [ModuleName, FakeServer][]) {
@@ -323,8 +360,13 @@ export class FakeMoveEngine implements IacEngine {
       for (const resource of RESOURCES[server.provider]) {
         const c = change(m, server.provider, resource, "delete");
         effect.changes.push(c);
-        const id = resource[0] === SERVER_TYPE[server.provider] ? server.id : `${resource[1]}-${server.id}`;
-        details.push({ address: c.address, type: c.type, change: { actions: ["delete"], before: { id, name: APP }, after: null } });
+        const id =
+          resource[0] === SERVER_TYPE[server.provider] ? server.id : `${resource[1]}-${server.id}`;
+        details.push({
+          address: c.address,
+          type: c.type,
+          change: { actions: ["delete"], before: { id, name: APP }, after: null },
+        });
       }
     }
     if (config.dns !== undefined && this.state.dns !== undefined) {
@@ -332,9 +374,19 @@ export class FakeMoveEngine implements IacEngine {
       if (target !== undefined && target !== this.state.dns) {
         effect.dnsTo = target;
         for (const name of ["a", "aaaa"]) {
-          const c: ResourceChange = { address: `module.dns.cloudflare_dns_record.${name}`, type: "cloudflare_dns_record", name, provider: "registry.opentofu.org/cloudflare/cloudflare", action: "update" };
+          const c: ResourceChange = {
+            address: `module.dns.cloudflare_dns_record.${name}`,
+            type: "cloudflare_dns_record",
+            name,
+            provider: "registry.opentofu.org/cloudflare/cloudflare",
+            action: "update",
+          };
           effect.changes.push(c);
-          details.push({ address: c.address, type: c.type, change: { actions: ["update"], before: { name: DOMAIN }, after: { name: DOMAIN } } });
+          details.push({
+            address: c.address,
+            type: c.type,
+            change: { actions: ["update"], before: { name: DOMAIN }, after: { name: DOMAIN } },
+          });
         }
       }
     }
@@ -368,7 +420,12 @@ export class FakeMoveEngine implements IacEngine {
       planHash,
       createdAt: "2026-10-13T12:00:00.000Z",
       changes: effect.changes,
-      counts: { create: count("create"), update: count("update"), delete: count("delete"), replace: count("replace") },
+      counts: {
+        create: count("create"),
+        update: count("update"),
+        delete: count("delete"),
+        replace: count("replace"),
+      },
       hasDestroy: effect.destroys.length > 0,
       planJson: effect.planJson,
       ...(effect.moved.length > 0 ? { moves: effect.moved } : {}),
@@ -383,6 +440,7 @@ export class FakeMoveEngine implements IacEngine {
     if (effect.destroys.length > 0 && approval.allowDestroy !== true) {
       throw new Error("the plan deletes resources but the approval does not allow it");
     }
+    this.applied.push(hash);
     this.events.push({
       type: "apply",
       hash,
@@ -544,7 +602,11 @@ export class FakeHosts {
         return ok();
       case "restore":
         if (h.app) {
-          return { exitCode: 1, stdout: "", stderr: 'pg_restore: error: database "app" is being accessed by other users' };
+          return {
+            exitCode: 1,
+            stdout: "",
+            stderr: 'pg_restore: error: database "app" is being accessed by other users',
+          };
         }
         if (h.dump === undefined) return { exitCode: 1, stdout: "", stderr: "No such file" };
         // Without `--clean`, a restore onto a database that holds tables fails.
@@ -552,7 +614,8 @@ export class FakeHosts {
           return {
             exitCode: 1,
             stdout: "",
-            stderr: 'pg_restore: error: could not execute query: ERROR:  relation "orders" already exists',
+            stderr:
+              'pg_restore: error: could not execute query: ERROR:  relation "orders" already exists',
           };
         }
         h.db = h.dump;
@@ -713,19 +776,17 @@ export interface MoveHarnessOptions {
   release?: boolean;
 }
 
-/** A provisioned project (git repo, plan, state, keys) with every fake a move talks to. */
-export async function moveHarness(options: MoveHarnessOptions = {}) {
-  const from = options.from ?? "hetzner";
-  const to: CloudProvider = from === "hetzner" ? "digitalocean" : "hetzner";
+/** The live deployment a move starts from (`opscrew/plan.yaml` after provision). */
+export function movePlan(options: MoveHarnessOptions = {}): DeployPlan {
   const dns = options.dns ?? "cloudflare";
   const postgres = options.postgres ?? true;
   const base = testPlan({
-    provider: from,
+    provider: options.from ?? "hetzner",
     deployed: true,
     postgres,
     ...(dns === "cloudflare" ? { domain: DOMAIN } : {}),
   });
-  const plan: DeployPlan = DeployPlanSchema.parse({
+  return DeployPlanSchema.parse({
     ...base,
     // Without the Postgres container nothing derives DATABASE_URL (design leaves it out).
     app: {
@@ -740,11 +801,25 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
       lastCompletedPhase: "provision",
     },
   });
-  const project = await createProject(plan);
-  const { root } = project;
+}
+
+/**
+ * Leaves in the project at `root` (a git repository holding {@link movePlan}'s plan) what
+ * `opscrew provision` left on this computer, and builds every fake a move talks to: the engine,
+ * the two servers, GitHub with the deploy workflow, Cloudflare, the outside network and the
+ * retarget services. `runEnv` is the run's environment; the returned `env` adds the provider
+ * tokens and the user's env file.
+ */
+export async function moveFakes(
+  root: string,
+  runEnv: Record<string, string | undefined>,
+  options: MoveHarnessOptions = {},
+) {
+  const from = options.from ?? "hetzner";
+  const to: CloudProvider = from === "hetzner" ? "digitalocean" : "hetzner";
+  const dns = options.dns ?? "cloudflare";
   const env: Record<string, string | undefined> = {
-    ...process.env,
-    OPSCREW_HOME: join(root, ".home-opscrew"),
+    ...runEnv,
     HCLOUD_TOKEN: TOKENS.hetzner,
     DIGITALOCEAN_TOKEN: TOKENS.digitalocean,
     CLOUDFLARE_API_TOKEN: TOKENS.cloudflare,
@@ -777,27 +852,17 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
   await writeFile(join(paths.files.tfstateDir, "prod.tfstate"), '{"version":4}\n');
   await writeFile(paths.files.knownHosts, `${SERVER_IPV4} ${HOST_KEY}\n`);
   await writeFile(
-    join(paths.projectHomeDir, "deploy_secrets.json"),
+    paths.files.deploySecrets,
     `${JSON.stringify({ host: SERVER_IPV4, repo: "acme/shop", names: [] })}\n`,
   );
   await writeFile(join(root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
 
   const events: MoveEvent[] = [];
-  const reporter = new MemoryReporter();
-  let seconds = 0;
-  const clock: Clock = { now: () => new Date(Date.UTC(2026, 9, 13, 12, 0, seconds++)) };
-  const audit = new MemoryAuditLog({ clock });
-  const handler = new RecordingHandler(events);
-  const approvals = new ApprovalGate({ handler, store: new MemoryApprovalStore(), audit, clock });
   const hosts = new FakeHosts(events);
   hosts.release = options.release === true;
   Object.assign(hosts.host(SERVER_IPV4), { app: true, caddy: true, db: "orders before the move" });
   const engine = new FakeMoveEngine(events, { from, dns: dns === "cloudflare" });
   const github = new FakeMoveGitHub(events, hosts);
-  const real = projectRunner();
-  const runner = new ScriptedRunner(async (command, args, opts) =>
-    command === "scp" ? hosts.scp(args) : real.run(command, args, opts),
-  );
   /** Where the domain resolves when DNS is not managed (the user changes it). */
   const manual = { ip: SERVER_IPV4 };
   const fetch: FetchLike = async (input) => {
@@ -812,23 +877,6 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
     const h = ip !== undefined ? hosts.hosts.get(ip) : undefined;
     const ok = h?.app === true && h.caddy;
     return new Response(ok ? "ok" : "bad gateway", { status: ok ? 200 : 502 });
-  };
-  const redactor = new Redactor();
-  for (const [name, value] of Object.entries(TOKENS)) redactor.addLiteral(value, name);
-  const deps: PhaseDeps = {
-    paths,
-    reporter,
-    approvals,
-    audit,
-    state: new ProjectStateStore(paths.files.state, clock),
-    costs: new CostLedger(paths.files.costs, clock),
-    runner,
-    fetch,
-    env,
-    clock,
-    redactor,
-    interactive: options.interactive ?? true,
-    version: "0.0.0-test",
   };
   const fakeServers = (provider: CloudProvider): ServerSnapshotApi => ({
     findAppServers: async (): Promise<AppServer[]> =>
@@ -871,6 +919,46 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
     },
     now: () => monotonic,
   };
+  return { env, paths, from, to, events, hosts, engine, github, fetch, services, manual };
+}
+
+/** A provisioned project (git repo, plan, state, keys) with every fake a move talks to. */
+export async function moveHarness(options: MoveHarnessOptions = {}) {
+  const plan = movePlan(options);
+  const project = await createProject(plan);
+  const fakes = await moveFakes(
+    project.root,
+    { ...process.env, OPSCREW_HOME: join(project.root, ".home-opscrew") },
+    options,
+  );
+  const { paths, events, hosts } = fakes;
+  const reporter = new MemoryReporter();
+  let seconds = 0;
+  const clock: Clock = { now: () => new Date(Date.UTC(2026, 9, 13, 12, 0, seconds++)) };
+  const audit = new MemoryAuditLog({ clock });
+  const handler = new RecordingHandler(events);
+  const approvals = new ApprovalGate({ handler, store: new MemoryApprovalStore(), audit, clock });
+  const real = projectRunner();
+  const runner = new ScriptedRunner(async (command, args, opts) =>
+    command === "scp" ? hosts.scp(args) : real.run(command, args, opts),
+  );
+  const redactor = new Redactor();
+  for (const [name, value] of Object.entries(TOKENS)) redactor.addLiteral(value, name);
+  const deps: PhaseDeps = {
+    paths,
+    reporter,
+    approvals,
+    audit,
+    state: new ProjectStateStore(paths.files.state, clock),
+    costs: new CostLedger(paths.files.costs, clock),
+    runner,
+    fetch: fakes.fetch,
+    env: fakes.env,
+    clock,
+    redactor,
+    interactive: options.interactive ?? true,
+    version: "0.0.0-test",
+  };
   const confirm = async (preview: { name: string; resources: unknown[] }) => {
     events.push({ type: "confirm", name: preview.name, resources: preview.resources.length });
     return true;
@@ -880,23 +968,15 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
   if (deps.interactive === false) handler.answer = cliAnswer(() => cli);
   return {
     ...project,
-    paths,
+    ...fakes,
     deps,
     plan,
-    from,
-    to,
-    events,
     reporter,
     audit,
     handler,
-    hosts,
-    engine,
-    github,
-    services,
-    manual,
     confirm,
     cli,
-    newServer: NEW_SERVERS[to],
+    newServer: NEW_SERVERS[fakes.to],
   };
 }
 

@@ -4,8 +4,7 @@ import type { FetchLike } from "@opscrew/contracts";
 import type { OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { createTestPhaseDeps } from "../testing";
-import { domainProject, domainTestPlan, TOKEN, visibleText } from "./__fixtures__/fakes";
+import { createTestPhaseDeps, domainProject, domainTestPlan, TOKEN, visibleText } from "../testing";
 import { buyDomain } from "./buy";
 import { defaultDomainServices, resolveDomainServices, SANDBOX_ZONES } from "./services";
 

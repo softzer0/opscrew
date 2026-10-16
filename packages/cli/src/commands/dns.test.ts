@@ -1,4 +1,5 @@
 import path from "node:path";
+import { FakeEngine, FakeGitHub, planJsonFor } from "@opscrew/agents/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
@@ -6,9 +7,6 @@ import {
   type DeployProject,
   DeployRunner,
   deployProject,
-  FakeEngine,
-  FakeGitHub,
-  planJsonFor,
   provisionServices,
 } from "../ui/__fixtures__/deploy";
 import { GIT, projectContext, run } from "../ui/__fixtures__/harness";

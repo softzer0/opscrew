@@ -6,8 +6,18 @@ import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { planJsonFor } from "../provision/__fixtures__/fakes";
 import { readServerAddresses, serverAddressesFile } from "../shared";
+import {
+  DOMAIN,
+  HOST_KEY,
+  type MoveHarness,
+  moveHarness,
+  OLD_IPV4,
+  OLD_IPV6,
+  planJsonFor,
+  STRIPE,
+  TOKENS,
+} from "../testing";
 import {
   caught,
   crashAfter,
@@ -19,16 +29,6 @@ import {
   run,
   trail,
 } from "./__fixtures__/assert";
-import {
-  DOMAIN,
-  HOST_KEY,
-  type MoveHarness,
-  moveHarness,
-  OLD_IPV4,
-  OLD_IPV6,
-  STRIPE,
-  TOKENS,
-} from "./__fixtures__/move";
 import {
   PRISMA_P3018,
   RELEASE_OUTPUT_FRAGMENTS,

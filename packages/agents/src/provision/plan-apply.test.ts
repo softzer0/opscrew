@@ -4,9 +4,14 @@ import type { ResourceChange, ResourceMove } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { hidePortainerAddress, PlanRefusedError } from "../shared";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
-import { FakeEngine, type FakeEngineScenario, testPlan } from "./__fixtures__/fakes";
-import { portainerPlan } from "./__fixtures__/portainer";
+import {
+  createTestPhaseDeps,
+  FakeEngine,
+  type FakeEngineScenario,
+  portainerPlan,
+  ScriptedApprovalHandler,
+  testPlan,
+} from "../testing";
 import {
   describePlan,
   findSavedPlan,

@@ -1,6 +1,6 @@
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { domainProject, ZONE_DS, ZONE_NAMESERVERS } from "./__fixtures__/fakes";
+import { domainProject, ZONE_DS, ZONE_NAMESERVERS } from "../testing";
 import { registrarLinks } from "./registrars";
 import { SANDBOX_NAMESERVERS, SANDBOX_ZONES } from "./services";
 import {

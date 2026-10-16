@@ -7,9 +7,8 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { detectEngines, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { describe, expect, it } from "vitest";
 import { runProvision } from "../provision";
-import { FakeEngine } from "../provision/__fixtures__/fakes";
 import { ensureStatePassphrase, stateFile } from "../shared";
-import { createTestPhaseDeps } from "../testing";
+import { createTestPhaseDeps, FakeEngine } from "../testing";
 import {
   deployImage,
   portainerPlan,

@@ -7,20 +7,22 @@ import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { recordPortainerConnection } from "../shared";
 import {
+  CLOUDFLARE_IPV4,
+  CLOUDFLARE_IPV6,
+  CLOUDFLARE_RANGES,
+  createTestPhaseDeps,
   fakeCertificate,
+  PORTAINER_HOST,
   type PortainerPlanOptions,
   portainerPlan,
-} from "../provision/__fixtures__/portainer";
-import { recordPortainerConnection } from "../shared";
-import { createTestPhaseDeps, ScriptedRunner } from "../testing";
-import { CLOUDFLARE_IPV4, CLOUDFLARE_IPV6, CLOUDFLARE_RANGES } from "./__fixtures__/plan";
+  ScriptedRunner,
+} from "../testing";
 import type { DnsResolver, TlsConnect } from "./net";
 import { runVerify } from "./run";
 
 const NOW = "2026-10-11T12:00:00.000Z";
-/** Portainer's address: never printed or committed. */
-const PORTAINER_HOST = "nas-portainer.home.arpa";
 /** The user's home address, which a Caddy record points at: never printed. */
 const HOME_IPV4 = "198.51.100.77";
 

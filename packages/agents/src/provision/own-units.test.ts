@@ -4,22 +4,24 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { zeroTrustAuthDomain } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import { describeHostPlan, recordOwnServer, requireNoBlockers } from "../shared";
-import { createTestPhaseDeps } from "../testing";
-import { createProject, FakeGitHub, opscrewRecord } from "./__fixtures__/fakes";
 import {
   ACCOUNT_ID,
+  createProject,
+  createTestPhaseDeps,
   ED25519_FINGERPRINT,
+  FakeGitHub,
   FakeHostServer,
   fakeZeroTrust,
   freshFacts,
   OWN_IPV4,
   OwnEngine,
+  opscrewRecord,
   ownCloudflare,
   ownPlan,
   ownRunner,
   TUNNEL_CHANGES,
   tunnelOutputs,
-} from "./__fixtures__/own";
+} from "../testing";
 import { checkProvider, OWN_SERVER_CONNECT_HINT, setupCloudflare } from "./credentials";
 import { deploySetupPullRequestBody } from "./publish";
 import { previewDeploymentFiles } from "./render";

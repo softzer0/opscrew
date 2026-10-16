@@ -1,25 +1,27 @@
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  buyable,
+  DEFAULT_NAMESERVERS,
+  type FakeRegistrar,
+  OLD_DS,
+  TOKEN,
+  testPlan,
+  ZONE_DS,
+  ZONE_NAMESERVERS,
+} from "@opscrew/agents/testing";
 import type { ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { testPlan } from "../ui/__fixtures__/deploy";
-import {
-  buyable,
-  CF_NAMESERVERS,
-  CF_TOKEN,
-  type DomainTestProject,
-  domainTestProject,
-  type FakeOtherRegistrar,
-  OLD_DS,
-  REGISTRAR_NAMESERVERS,
-  ZONE_DS,
-} from "../ui/__fixtures__/domain";
+import { type DomainTestProject, domainTestProject } from "../ui/__fixtures__/domain";
 import { CANCEL, run } from "../ui/__fixtures__/harness";
 import type { UiPrompts } from "../ui/prompts";
 import { DomainApprovalHandler, localAndUtc, parseMaxPriceFlag, pathArg } from "./domain";
+
+/** The zone's DS record as a registrar holds it (without the zone-file line). */
+const { ds: _line, ...ZONE_DS_RECORD } = ZONE_DS;
 
 let current: DomainTestProject | undefined;
 afterEach(async () => {
@@ -354,6 +356,7 @@ describe("opscrew domain status and auto-renew", () => {
     await writeRequirements(t, "shopapp.com");
     t.cf.own("shopapp.com");
     t.cf.zones.set("shopapp.com", { id: "zone-1", name: "shopapp.com" });
+    t.cf.dnssec.add("zone-1");
     const ctx = t.context();
     expect(await run(ctx, "domain", "status")).toBe(0);
     expect(ctx.output).toMatch(/^shopapp\.com$/m);
@@ -428,14 +431,12 @@ describe("opscrew domain exit codes and output", () => {
     expect(await run(ctx, "domain", "buy", "https://shopapp.com/x")).toBe(2);
     expect(ctx.errors).toContain("is not a valid domain name");
 
-    t.cf.checkError = new OpsCrewError(
-      "PROVIDER_ERROR",
-      `Cloudflare rejected the request made with ${CF_TOKEN}.`,
-    );
+    t.cf.failures.check = () =>
+      new OpsCrewError("PROVIDER_ERROR", `Cloudflare rejected the request made with ${TOKEN}.`);
     expect(await run(ctx, "domain", "buy", "shopapp.com", "--max-price", "20")).toBe(2);
     expect(await run(ctx, "domain", "search", "shopapp.com")).toBe(2);
     expect(ctx.errors).toContain("Cloudflare rejected the request");
-    expect(ctx.output + ctx.errors).not.toContain(CF_TOKEN);
+    expect(ctx.output + ctx.errors).not.toContain(TOKEN);
     expect(t.cf.registerCalls).toEqual([]);
   });
 
@@ -493,7 +494,7 @@ describe("opscrew domain exit codes and output", () => {
 describe("opscrew domain search at other registrars", () => {
   it("--registrar searches that registrar only, without a Cloudflare token", async () => {
     const t = await setup();
-    const porkbun = t.cf.other("porkbun");
+    const porkbun = t.other("porkbun");
     porkbun.checks.set("shopapp.dev", buyable("shopapp.dev", 9.73, 10.81));
     porkbun.checks.set("shopapp.com", buyable("shopapp.com", 11.08));
     const ctx = t.context({ token: null });
@@ -510,7 +511,7 @@ describe("opscrew domain search at other registrars", () => {
 
   it("--registrar --json prints the registrar and its results", async () => {
     const t = await setup();
-    t.cf.other("porkbun").checks.set("shopapp.dev", buyable("shopapp.dev", 9.73, 10.81));
+    t.other("porkbun").checks.set("shopapp.dev", buyable("shopapp.dev", 9.73, 10.81));
     const ctx = t.context();
     expect(
       await run(ctx, "domain", "search", "shopapp.dev", "--registrar", "porkbun", "--json"),
@@ -525,8 +526,8 @@ describe("opscrew domain search at other registrars", () => {
 
   it("--compare lists each registrar's prices in the order given, without ranking words", async () => {
     const t = await setup();
-    t.cf.other("porkbun").checks.set("shopapp.com", buyable("shopapp.com", 9.73, 10.81));
-    t.cf.other("namecheap").checks.set("shopapp.com", {
+    t.other("porkbun").checks.set("shopapp.com", buyable("shopapp.com", 9.73, 10.81));
+    t.other("namecheap").checks.set("shopapp.com", {
       domain: "shopapp.com",
       registrable: false,
       reason: "already registered",
@@ -552,7 +553,7 @@ describe("opscrew domain search at other registrars", () => {
 
   it("--compare --json prints the comparison", async () => {
     const t = await setup();
-    t.cf.other("porkbun").checks.set("shopapp.com", buyable("shopapp.com", 9.73, 10.81));
+    t.other("porkbun").checks.set("shopapp.com", buyable("shopapp.com", 9.73, 10.81));
     const ctx = t.context();
     expect(await run(ctx, "domain", "search", "shopapp.com", "--compare", "--json")).toBe(0);
     const parsed = JSON.parse(ctx.output) as {
@@ -564,7 +565,7 @@ describe("opscrew domain search at other registrars", () => {
 
   it("--compare with --registrar and an unknown registrar are usage errors (exit 2)", async () => {
     const t = await setup();
-    t.cf.other("porkbun");
+    t.other("porkbun");
     const ctx = t.context();
     expect(
       await run(ctx, "domain", "search", "shopapp", "--compare", "--registrar", "porkbun"),
@@ -580,7 +581,7 @@ describe("opscrew domain search at other registrars", () => {
 describe("opscrew domain buy --registrar", () => {
   it("buys at Porkbun with --confirm and --max-price, then shows the registrar and nameservers", async () => {
     const t = await setup();
-    const porkbun = t.cf.other("porkbun");
+    const porkbun = t.other("porkbun");
     porkbun.checks.set("shopapp.dev", buyable("shopapp.dev", 9.73, 10.81));
     const ctx = t.context();
     expect(
@@ -603,10 +604,10 @@ describe("opscrew domain buy --registrar", () => {
     expect(t.cf.registerCalls).toEqual([]);
     expect(ctx.output).toMatch(/^ {2}Registrar\s+Porkbun$/m);
     expect(ctx.output).toMatch(
-      /^ {2}Nameservers\s+ada\.ns\.cloudflare\.com, bob\.ns\.cloudflare\.com$/m,
+      /^ {2}Nameservers\s+kim\.ns\.cloudflare\.com, lee\.ns\.cloudflare\.com$/m,
     );
     expect(t.cf.events).toContain(
-      "porkbun setNameservers shopapp.dev ada.ns.cloudflare.com,bob.ns.cloudflare.com",
+      "porkbun setNameservers shopapp.dev kim.ns.cloudflare.com,lee.ns.cloudflare.com",
     );
     expect(t.cf.events).toContain("porkbun addDsRecord shopapp.dev 2371");
     expect(ctx.output).toContain("Cloudflare activates the zone for shopapp.dev");
@@ -614,7 +615,7 @@ describe("opscrew domain buy --registrar", () => {
 
   it("never buys at another registrar with --yes; the hint names the registrar", async () => {
     const t = await setup();
-    const porkbun = t.cf.other("porkbun");
+    const porkbun = t.other("porkbun");
     porkbun.checks.set("shopapp.dev", buyable("shopapp.dev", 9.73, 10.81));
     const ctx = t.context();
     expect(await run(ctx, "domain", "buy", "shopapp.dev", "--registrar", "porkbun", "--yes")).toBe(
@@ -647,7 +648,7 @@ describe("opscrew domain status and auto-renew --registrar", () => {
   it("status reads the registration from the given registrar", async () => {
     const t = await setup();
     await writeRequirements(t, "shopapp.dev");
-    t.cf.other("porkbun").own("shopapp.dev", { autoRenew: false });
+    t.other("porkbun").own("shopapp.dev", { autoRenew: false });
     const ctx = t.context({ token: null });
     expect(await run(ctx, "domain", "status", "--registrar", "porkbun")).toBe(0);
     expect(ctx.output).toMatch(/^shopapp\.dev$/m);
@@ -662,7 +663,7 @@ describe("opscrew domain status and auto-renew --registrar", () => {
       { id: "acc-1", name: "Shop" },
       { id: "acc-2", name: "Personal" },
     ];
-    const plan = testPlan({ domain: "shopapp.dev" });
+    const plan = testPlan({ domain: "shopapp.dev", userSecret: false });
     await writeArtifact("plan", path.join(t.project.root, "opscrew", "plan.yaml"), {
       ...plan,
       dns: {
@@ -671,7 +672,7 @@ describe("opscrew domain status and auto-renew --registrar", () => {
         registration: { registrar: "porkbun", autoRenew: true, privacy: true, dnssec: true },
       },
     });
-    const porkbun = t.cf.other("porkbun");
+    const porkbun = t.other("porkbun");
     porkbun.own("shopapp.dev");
     const ctx = t.context({ interactive: true });
     expect(await run(ctx, "domain", "status")).toBe(0);
@@ -707,7 +708,7 @@ describe("opscrew domain status and auto-renew --registrar", () => {
   it("auto-renew at Porkbun needs the typed domain; the hint keeps --registrar", async () => {
     const t = await setup();
     await writeRequirements(t, "shopapp.dev");
-    const porkbun = t.cf.other("porkbun");
+    const porkbun = t.other("porkbun");
     porkbun.own("shopapp.dev");
     const ctx = t.context();
     expect(await run(ctx, "domain", "auto-renew", "off", "--registrar", "porkbun")).toBe(1);
@@ -738,25 +739,25 @@ describe("opscrew domain connect", () => {
   const TXT = { type: "TXT", name: DOMAIN, content: "v=spf1 include:_spf.mail.example.net ~all" };
 
   /** A domain at Porkbun whose DNS Porkbun serves (MX and TXT). */
-  async function atPorkbun(): Promise<{ t: DomainTestProject; porkbun: FakeOtherRegistrar }> {
+  async function atPorkbun(): Promise<{ t: DomainTestProject; porkbun: FakeRegistrar }> {
     const t = await setup();
-    const porkbun = t.cf.other("porkbun");
+    const porkbun = t.other("porkbun");
     porkbun.own(DOMAIN);
     porkbun.records.set(DOMAIN, [{ ...MX }, { ...TXT }]);
     return { t, porkbun };
   }
 
   /** The domain already points at its active Cloudflare zone. */
-  async function connected(): Promise<{ t: DomainTestProject; porkbun: FakeOtherRegistrar }> {
+  async function connected(): Promise<{ t: DomainTestProject; porkbun: FakeRegistrar }> {
     const t = await setup();
-    const porkbun = t.cf.other("porkbun");
+    const porkbun = t.other("porkbun");
     porkbun.own(DOMAIN);
-    porkbun.nameservers.set(DOMAIN, [...CF_NAMESERVERS]);
+    porkbun.nameservers.set(DOMAIN, [...ZONE_NAMESERVERS]);
     t.cf.zones.set(DOMAIN, {
       id: "zone-1",
       name: DOMAIN,
       status: "active",
-      nameServers: [...CF_NAMESERVERS],
+      nameServers: [...ZONE_NAMESERVERS],
     });
     return { t, porkbun };
   }
@@ -775,14 +776,14 @@ describe("opscrew domain connect", () => {
     expect(ctx.output).toMatch(/^ {2}Registrar\s+Porkbun$/m);
     expect(ctx.output).toMatch(/^ {2}Records copied\s+2$/m);
     expect(ctx.output).toMatch(
-      /^ {2}Nameservers\s+ada\.ns\.cloudflare\.com, bob\.ns\.cloudflare\.com$/m,
+      /^ {2}Nameservers\s+kim\.ns\.cloudflare\.com, lee\.ns\.cloudflare\.com$/m,
     );
     expect(ctx.output).toContain("Cloudflare activates the zone for example.com");
     const copy = t.cf.events.indexOf(`createRecords zone-${DOMAIN} MX,TXT`);
     const switched = t.cf.events.findIndex((e) => e.startsWith("porkbun setNameservers"));
     expect(copy).toBeGreaterThanOrEqual(0);
     expect(switched).toBeGreaterThan(copy);
-    expect(porkbun.nameservers.get(DOMAIN)).toEqual([...CF_NAMESERVERS]);
+    expect(porkbun.nameservers.get(DOMAIN)).toEqual([...ZONE_NAMESERVERS]);
   });
 
   it("--yes alone never approves the switch without a terminal (exit 1, with the exact command)", async () => {
@@ -794,15 +795,15 @@ describe("opscrew domain connect", () => {
     // the exact command is shown once
     expect(ctx.errors.split("--confirm example.com`")).toHaveLength(2);
     expect(t.cf.zones.has(DOMAIN)).toBe(false);
-    expect(porkbun.nameservers.get(DOMAIN)).toEqual([...REGISTRAR_NAMESERVERS.porkbun]);
+    expect(porkbun.nameservers.get(DOMAIN)).toEqual([...DEFAULT_NAMESERVERS.porkbun]);
   });
 
   it("--confirm answers both typed approvals of one run (scan zone, then copy and switch)", async () => {
     const t = await setup();
-    const porkbun = t.cf.other("porkbun");
+    const porkbun = t.other("porkbun");
     porkbun.own(DOMAIN);
     porkbun.nameservers.set(DOMAIN, ["ns1.dns-host.example.net", "ns2.dns-host.example.net"]);
-    t.cf.scans.set(DOMAIN, [{ ...MX }]);
+    t.zones.scans.set(DOMAIN, [{ ...MX }]);
     const ctx = t.context({ interactive: true });
     expect(await run(ctx, "domain", "connect", DOMAIN, "--confirm", DOMAIN)).toBe(0);
     expect(ctx.prompts.calls).toEqual([]);
@@ -810,7 +811,7 @@ describe("opscrew domain connect", () => {
     expect(ctx.output).toContain("Move the DNS of example.com to Cloudflare");
     expect(ctx.output.split("(confirmed with --confirm example.com)")).toHaveLength(3);
     expect(ctx.output).toMatch(/^ {2}Records copied\s+1$/m);
-    expect(porkbun.nameservers.get(DOMAIN)).toEqual([...CF_NAMESERVERS]);
+    expect(porkbun.nameservers.get(DOMAIN)).toEqual([...ZONE_NAMESERVERS]);
   });
 
   it("passes --records-file, --registrar and --account; the refusal shows only the exact command", async () => {
@@ -819,7 +820,7 @@ describe("opscrew domain connect", () => {
       { id: "acc-1", name: "Shop" },
       { id: "acc-2", name: "Personal" },
     ];
-    const porkbun = t.cf.other("porkbun");
+    const porkbun = t.other("porkbun");
     porkbun.own(DOMAIN);
     await writeFile(
       path.join(t.project.root, "zone.txt"),
@@ -909,7 +910,7 @@ describe("opscrew domain connect", () => {
         message: "Type example.com to approve (anything else cancels)",
       }),
     ]);
-    expect(typed.porkbun.nameservers.get(DOMAIN)).toEqual([...CF_NAMESERVERS]);
+    expect(typed.porkbun.nameservers.get(DOMAIN)).toEqual([...ZONE_NAMESERVERS]);
     await typed.t.project.cleanup();
 
     for (const answer of ["example.net", CANCEL]) {
@@ -921,7 +922,7 @@ describe("opscrew domain connect", () => {
       );
       expect(t.cf.zones.has(DOMAIN)).toBe(false);
       expect(t.cf.events.some((e) => e.startsWith("porkbun setNameservers"))).toBe(false);
-      expect(porkbun.nameservers.get(DOMAIN)).toEqual([...REGISTRAR_NAMESERVERS.porkbun]);
+      expect(porkbun.nameservers.get(DOMAIN)).toEqual([...DEFAULT_NAMESERVERS.porkbun]);
       await t.project.cleanup();
     }
   });
@@ -935,7 +936,7 @@ describe("opscrew domain connect", () => {
     );
     expect(t.cf.zones.has(DOMAIN)).toBe(false);
     expect(t.cf.events.some((e) => e.startsWith("porkbun setNameservers"))).toBe(false);
-    expect(porkbun.nameservers.get(DOMAIN)).toEqual([...REGISTRAR_NAMESERVERS.porkbun]);
+    expect(porkbun.nameservers.get(DOMAIN)).toEqual([...DEFAULT_NAMESERVERS.porkbun]);
   });
 
   it("--json prints the result object only", async () => {
@@ -962,12 +963,12 @@ describe("opscrew domain connect", () => {
     expect(ctx.output).toContain("Turn on DNSSEC for example.com");
     expect(ctx.output).toContain("example.com is connected and DNSSEC is published.");
     expect(ctx.output).toMatch(/^ {2}DNSSEC\s+on$/m);
-    expect(porkbun.dsRecords.get(DOMAIN)).toEqual([ZONE_DS]);
+    expect(porkbun.dsRecords.get(DOMAIN)).toEqual([ZONE_DS_RECORD]);
   });
 
   it("already connected: nothing to switch (exit 0)", async () => {
     const { t, porkbun } = await connected();
-    porkbun.dsRecords.set(DOMAIN, [{ ...ZONE_DS }]);
+    porkbun.dsRecords.set(DOMAIN, [{ ...ZONE_DS_RECORD }]);
     const ctx = t.context();
     expect(await run(ctx, "domain", "connect", DOMAIN)).toBe(0);
     expect(ctx.output).toContain(

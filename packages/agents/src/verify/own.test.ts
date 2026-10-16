@@ -6,10 +6,17 @@ import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
-import { LAN_IPV4, OWN_IPV4, ownPlan } from "../provision/__fixtures__/own";
 import { recordOwnServer, recordServerAddress } from "../shared";
-import { createTestPhaseDeps, ScriptedRunner } from "../testing";
-import { CLOUDFLARE_IPV4, CLOUDFLARE_IPV6, CLOUDFLARE_RANGES } from "./__fixtures__/plan";
+import {
+  CLOUDFLARE_IPV4,
+  CLOUDFLARE_IPV6,
+  CLOUDFLARE_RANGES,
+  createTestPhaseDeps,
+  LAN_IPV4,
+  OWN_IPV4,
+  ownPlan,
+  ScriptedRunner,
+} from "../testing";
 import type { DnsResolver, TlsConnect } from "./net";
 import { runVerify } from "./run";
 

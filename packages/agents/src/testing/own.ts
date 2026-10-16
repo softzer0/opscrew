@@ -23,10 +23,10 @@ import type {
 } from "@opscrew/contracts";
 import { NodeCommandRunner } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
-import type { ZeroTrustApi } from "../zero-trust";
-import { ScriptedRunner } from "../../testing";
-import type { HostAdapterApi } from "../../shared";
-import { fakeCloudflare } from "./fakes";
+import type { ZeroTrustApi } from "../provision/zero-trust";
+import type { HostAdapterApi } from "../shared";
+import { fakeCloudflare } from "./deploy";
+import { ScriptedRunner } from "./deps";
 
 /** The user's own server: a documentation address (RFC 5737), public. */
 export const OWN_IPV4 = "203.0.113.20";
@@ -61,16 +61,25 @@ export const ED25519_FINGERPRINT = fingerprintOf(ED25519);
 export interface OwnPlanOptions {
   access?: "public" | "tunnel";
   arch?: "amd64" | "arm64";
-  /** Default `shop.example.com` on Cloudflare (proxied); `null` for no domain. */
+  /** Default `shop.example.com` on Cloudflare; `null` for no domain. */
   domain?: string | null;
+  /** Behind Cloudflare's proxy (default true); false serves the domain with DNS only. */
+  proxied?: boolean;
+  /** Self-hosted Postgres (default true), which derives `DATABASE_URL`. */
   postgres?: boolean;
-  /** Portainer on `portainer.example.com` behind Cloudflare Access (a tunnel in either mode). */
-  portainerSubdomain?: boolean;
+  /**
+   * Portainer on: `local` (reached through SSH only) or `subdomain` (on `portainer.example.com`
+   * behind Cloudflare Access, a tunnel in either mode).
+   */
+  portainer?: "local" | "subdomain";
+  /** Record an apply in `deployment`, as provision does. */
+  deployed?: boolean;
 }
 
 /** A valid own-server `opscrew/plan.yaml` for the `shop` app. */
 export function ownPlan(o: OwnPlanOptions = {}): DeployPlan {
   const domain = o.domain === undefined ? "shop.example.com" : o.domain;
+  const postgres = o.postgres ?? true;
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-14T10:00:00.000Z",
@@ -80,7 +89,7 @@ export function ownPlan(o: OwnPlanOptions = {}): DeployPlan {
       port: 3000,
       healthPath: "/api/health",
       env: [
-        { name: "DATABASE_URL", secret: true, source: "derived" },
+        ...(postgres ? [{ name: "DATABASE_URL", secret: true, source: "derived" }] : []),
         { name: "SESSION_SECRET", secret: true, source: "generated" },
       ],
     },
@@ -90,12 +99,15 @@ export function ownPlan(o: OwnPlanOptions = {}): DeployPlan {
       arch: o.arch ?? "amd64",
       access: o.access ?? "public",
     },
-    services: { postgres: o.postgres ?? true, redis: false },
+    services: { postgres, redis: false },
     externalServices: [],
     cost: {
       monthly: { amount: 0, currency: "EUR" },
       breakdown: [
-        { item: "Your own server (you already pay for it)", monthly: { amount: 0, currency: "EUR" } },
+        {
+          item: "Your own server (you already pay for it)",
+          monthly: { amount: 0, currency: "EUR" },
+        },
       ],
       pricesIncludeVat: false,
       source: "live",
@@ -107,14 +119,14 @@ export function ownPlan(o: OwnPlanOptions = {}): DeployPlan {
       ? {
           provider: "cloudflare",
           domain,
-          proxied: true,
+          proxied: o.proxied ?? true,
           www: false,
-          ...(o.portainerSubdomain ? { zone: "example.com" } : {}),
+          ...(o.portainer === "subdomain" ? { zone: "example.com" } : {}),
         }
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: {},
-    ...(o.portainerSubdomain
+    ...(o.portainer === "subdomain"
       ? {
           portainer: {
             enabled: true,
@@ -124,7 +136,10 @@ export function ownPlan(o: OwnPlanOptions = {}): DeployPlan {
             allowedEmails: ["owner@example.com"],
           },
         }
-      : {}),
+      : o.portainer === "local"
+        ? { portainer: { enabled: true, version: "2.45.2", access: "local" } }
+        : {}),
+    ...(o.deployed ? { deployment: { lastApplyAt: "2026-10-14T11:00:00.000Z" } } : {}),
   });
 }
 
@@ -146,6 +161,8 @@ export interface FactsOptions {
   /** Extra listeners (for example a web server on port 80). */
   listeners?: HostFacts["listeners"];
   loginUsers?: HostFacts["loginUsers"];
+  /** Memory in GiB (default 4). */
+  memoryGb?: number;
 }
 
 /** A fresh Ubuntu 24.04 server as `inspectHost` reports it: nothing of OpsCrew's is there yet. */
@@ -165,7 +182,7 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
     arch: o.arch ?? "amd64",
     machine: o.arch === "arm64" ? "aarch64" : "x86_64",
     cpus: 2,
-    memoryBytes: 4 * 1024 ** 3,
+    memoryBytes: (o.memoryGb ?? 4) * 1024 ** 3,
     memoryAvailableBytes: 3 * 1024 ** 3,
     diskFreeBytes: 40 * 1024 ** 3,
     diskTotalBytes: 80 * 1024 ** 3,
@@ -215,7 +232,9 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
     volumeProjects: [],
     directoryLogins: [],
     dpkgInterrupted: false,
-    loginUsers: o.loginUsers ?? [{ name: user, uid: user === "root" ? 0 : 1000, password: false, keys: true }],
+    loginUsers: o.loginUsers ?? [
+      { name: user, uid: user === "root" ? 0 : 1000, password: false, keys: true },
+    ],
     deployUser: null,
     packages: { ufw: true, unattendedUpgrades: true, curl: true, fail2ban: false },
     autoUpgrades: false,
@@ -243,10 +262,6 @@ function paramsOf(plan: HostPlan, id: string): Params | undefined {
   return plan.steps.find((step) => step.id === id)?.params;
 }
 
-/**
- * The facts of the server after `plan` was applied to it, so the next inspection plans no
- * changes (what OpsCrew's host adapter leaves behind, as far as planning can tell).
- */
 /** What inspection reports for a server with OpsCrew's web filter for these (sorted) ranges. */
 export function filteredFacts(ipv4: string[]): HostFacts["webFilter"] {
   const hashes = webFilterFileHashes({ ipv4 });
@@ -263,6 +278,10 @@ export function filteredFacts(ipv4: string[]): HostFacts["webFilter"] {
   };
 }
 
+/**
+ * The facts of the server after the setup `plan` was applied to it, so the next inspection plans
+ * no changes (what OpsCrew's host adapter leaves behind, as far as planning can tell).
+ */
 export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
   const marker = paramsOf(plan, "app-marker") as Params;
   const app = String(marker.app);
@@ -311,7 +330,8 @@ export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
     sshd: {
       ...before.sshd,
       permitRootLogin: sshd.permitRootLogin,
-      passwordAuthentication: sshd.disablePasswords === true ? false : before.sshd?.passwordAuthentication,
+      passwordAuthentication:
+        sshd.disablePasswords === true ? false : before.sshd?.passwordAuthentication,
       kbdInteractiveAuthentication: false,
       dropIn,
     },
@@ -375,6 +395,91 @@ export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
   });
 }
 
+/**
+ * A server OpsCrew prepared before for the app `shop` of the project `projectId`: Docker from
+ * Docker's repository, the deploy user, the runtime directories, the app marker and OpsCrew's
+ * record of its changes.
+ */
+export function preparedServerFacts(projectId: string): HostFacts {
+  const fresh = freshFacts();
+  const entry = (step: string, previous: Record<string, string | boolean>) => ({
+    step,
+    purpose: "setup",
+    at: "2026-10-14T12:00:00.000Z",
+    previous,
+  });
+  return HostFactsSchema.parse({
+    ...fresh,
+    docker: {
+      ...fresh.docker,
+      kind: "docker-repo",
+      version: "28.5.1",
+      running: true,
+      composePlugin: true,
+      buildxPlugin: true,
+    },
+    deployUser: { groups: ["deploy", "docker"], keys: [] },
+    ready: true,
+    dirs: ["/srv/app", "/srv/data"].map((path) => ({
+      path,
+      kind: "dir",
+      owner: "deploy",
+      group: "deploy",
+      mode: "750",
+      entries: 0,
+    })),
+    marker: { app: "shop", projectId },
+    record: {
+      schemaVersion: 1,
+      app: "shop",
+      projectId,
+      opscrewVersion: "0.0.0-test",
+      changes: [
+        entry("deploy-user", { existed: false }),
+        entry("runtime-dirs", { app: "absent", data: "absent" }),
+      ],
+    },
+  });
+}
+
+/**
+ * The facts after the teardown `plan`: only what OpsCrew set up for the app goes (its Compose
+ * project, the add-ons, the marker; its data only with `deleteData`), as the real adapter does.
+ * Containers, volumes and users OpsCrew did not create stay.
+ */
+function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
+  const f = structuredClone(before);
+  const deleteData = plan.deleteData === true;
+  f.containers = f.containers.filter((container) => container.project !== plan.app);
+  if (deleteData) f.volumeProjects = f.volumeProjects.filter((project) => project !== plan.app);
+  f.dirs = f.dirs.map((dir) =>
+    dir.path === "/srv/app" || (deleteData && dir.path === "/srv/data")
+      ? { ...dir, entries: 0 }
+      : dir,
+  );
+  f.tunnel = ADDON;
+  f.portainer = { ...ADDON, dataVolume: deleteData ? false : f.portainer.dataVolume };
+  f.marker = null;
+  return HostFactsSchema.parse(f);
+}
+
+/** The facts after an undo plan: OpsCrew's host settings are reversed (Docker stays). */
+function undoneFacts(before: HostFacts): HostFacts {
+  const f = structuredClone(before);
+  f.deployUser = null;
+  f.sshd = f.sshd === null ? null : { ...f.sshd, dropIn: null, permitRootLogin: "yes" };
+  f.firewall = { ...f.firewall, ufw: "inactive", ufwRules: [] };
+  f.fail2ban = { active: false, jail: null, sshdJail: false };
+  f.autoUpgrades = false;
+  f.dockerDaemonJson = "absent";
+  f.dirs = f.dirs.map((dir) =>
+    (dir.entries ?? 0) === 0 ? { path: dir.path, kind: "absent" as const } : dir,
+  );
+  f.record = null;
+  f.ready = false;
+  return HostFactsSchema.parse(f);
+}
+
 /** One host apply the fake adapter received. */
 export interface FakeApply {
   plan: HostPlan;
@@ -386,7 +491,9 @@ export interface FakeApply {
 /**
  * The host adapter over a fake server: `inspect` reports its facts; `apply` refuses a plan whose
  * hash is not the approved one (as the real adapter does), calls `verifyLogin` around the SSH and
- * firewall steps, and leaves the server prepared.
+ * firewall steps, and leaves the server as the plan would: prepared after a setup plan with the
+ * app marker ({@link preparedFacts}), unchanged after a Portainer or connector add-on, without the
+ * app after a teardown and without OpsCrew's host settings after an undo.
  */
 export class FakeHostServer implements HostAdapterApi {
   readonly applies: FakeApply[] = [];
@@ -413,7 +520,11 @@ export class FakeHostServer implements HostAdapterApi {
     if (changes.some((step) => step.id === "sshd" || step.id === "ufw")) {
       record.verified = await options.verifyLogin();
     }
-    this.facts = preparedFacts(this.facts, plan);
+    if (plan.purpose === "teardown") this.facts = tornDownFacts(this.facts, plan);
+    else if (plan.purpose === "undo") this.facts = undoneFacts(this.facts);
+    else if (paramsOf(plan, "app-marker") !== undefined) {
+      this.facts = preparedFacts(this.facts, plan);
+    }
     return {
       applied: changes.map((step) => step.id),
       skipped: plan.steps.filter((step) => step.state !== "change").map((step) => step.id),
@@ -622,7 +733,8 @@ export function fakeZeroTrust(
       asked.push(accountId);
       return authDomain === undefined ? undefined : { authDomain };
     },
-    accessIdentityProviders: async () => (pin === undefined ? [] : [{ id: pin, type: "onetimepin" }]),
+    accessIdentityProviders: async () =>
+      pin === undefined ? [] : [{ id: pin, type: "onetimepin" }],
   };
 }
 
@@ -655,6 +767,8 @@ export function ownRunner(
 export async function placeholderKey(home: string, name = "id_ed25519"): Promise<string> {
   const file = join(home, ".ssh", name);
   await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, "placeholder for a key file path; OpsCrew never reads it\n", { mode: 0o600 });
+  await writeFile(file, "placeholder for a key file path; OpsCrew never reads it\n", {
+    mode: 0o600,
+  });
   return file;
 }

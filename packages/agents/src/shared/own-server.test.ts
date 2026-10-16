@@ -7,6 +7,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
+  createTestPhaseDeps,
   ED25519,
   ED25519_FINGERPRINT,
   freshFacts,
@@ -16,8 +17,9 @@ import {
   ownRunner,
   placeholderKey,
   RSA,
-} from "../provision/__fixtures__/own";
-import { createTestPhaseDeps, ScriptedApprovalHandler, ScriptedRunner } from "../testing";
+  ScriptedApprovalHandler,
+  ScriptedRunner,
+} from "../testing";
 import {
   connectOwnServer,
   inspectOwnServer,

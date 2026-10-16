@@ -12,7 +12,7 @@ import {
   testRequirements,
   usd,
   visibleText,
-} from "./__fixtures__/fakes";
+} from "../testing";
 import { buyDomain } from "./buy";
 import { SANDBOX_ZONES } from "./services";
 import type { BuyDomainResult, DomainSetUpResult } from "./types";

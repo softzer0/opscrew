@@ -6,10 +6,10 @@ import type {
   RegistrarCapabilities,
   RegistrarDnsRecord,
 } from "@opscrew/contracts";
-import { DNS_OVER_HTTPS_URL } from "../../shared";
-import type { OtherRegistrarId } from "../registrars";
-import type { DomainZoneApi, ZoneRecord } from "../types";
-import { type DomainProject, domainProject, type Run, type RunOptions } from "./fakes";
+import type { OtherRegistrarId } from "../domain/registrars";
+import type { DomainZoneApi, ZoneRecord } from "../domain/types";
+import { DNS_OVER_HTTPS_URL } from "../shared";
+import { type DomainProject, domainProject, type Run, type RunOptions } from "./domain";
 import type { FakeRegistrar } from "./registrars";
 
 /** An old DS record of the domain's current DNS provider (fake values). */
@@ -118,7 +118,7 @@ export class FakePublicDns {
 }
 
 /** The registrar as `connect` sees it: ownership logged; Porkbun can remove DS records. */
-function connectApi(fake: FakeRegistrar, events: string[], ownsError?: Error): Registrar {
+export function connectApi(fake: FakeRegistrar, events: string[], ownsError?: Error): Registrar {
   const base = fake.api();
   const owns = base.ownsDomain;
   const api: Registrar = {

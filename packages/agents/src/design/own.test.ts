@@ -10,13 +10,14 @@ import { describe, expect, it } from "vitest";
 import { recordOwnServerAnswers } from "../interview";
 import { type OwnServerFacts, ownServerConnector } from "../providers";
 import { recordOwnServer } from "../shared";
-import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
 import {
+  createTestPhaseDeps,
   euCatalog,
   makeRequirements,
   nextPostgresFacts,
   staticSpaFacts,
-} from "./__fixtures__/catalog";
+  type TestPhaseDeps,
+} from "../testing";
 import {
   buildOwnServerOption,
   distinctAmounts,

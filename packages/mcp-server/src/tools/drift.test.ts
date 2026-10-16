@@ -4,8 +4,8 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
-import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { forbiddenFetch, movingPlan, ScriptedRunner } from "@opscrew/agents/testing";
+import { writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOpscrewMcpServer } from "../server";
 
@@ -13,50 +13,6 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
-
-/** A DigitalOcean plan in the middle of a move from Hetzner Cloud (`opscrew retarget`). */
-function movingPlan() {
-  return DeployPlanSchema.parse({
-    schemaVersion: 1,
-    createdAt: "2026-10-11T10:00:00.000Z",
-    updatedAt: "2026-10-11T10:00:00.000Z",
-    app: { name: "shop", port: 3000, healthPath: "/api/health", env: [] },
-    target: {
-      provider: "digitalocean",
-      mode: "vps-compose",
-      location: "fra1",
-      serverType: "s-1vcpu-2gb",
-      backups: false,
-    },
-    services: { postgres: true, redis: false },
-    externalServices: [],
-    cost: {
-      monthly: { amount: 12, currency: "USD" },
-      breakdown: [{ item: "server", monthly: { amount: 12, currency: "USD" } }],
-      pricesIncludeVat: false,
-      source: "static",
-      asOf: "2026-06-15T00:00:00.000Z",
-    },
-    codeChanges: [],
-    infra: { engine: "tofu" },
-    dns: { provider: "none", proxied: false },
-    cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
-    security: {},
-    retarget: {
-      from: {
-        target: {
-          provider: "hetzner",
-          mode: "vps-compose",
-          location: "nbg1",
-          serverType: "cpx22",
-          backups: false,
-        },
-      },
-      step: "deployed",
-      startedAt: "2026-10-12T09:00:00.000Z",
-    },
-  });
-}
 
 async function connect(setup?: (dir: string) => Promise<void>) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-drift-"));
@@ -100,7 +56,7 @@ describe("opscrew_drift", () => {
   it("stops with the move guard's message and next step while a move is in progress", async () => {
     const { client, dir, runner } = await connect(async (root) => {
       await mkdir(path.join(root, "opscrew"), { recursive: true });
-      await writeArtifact("plan", path.join(root, "opscrew", "plan.yaml"), movingPlan());
+      await writeArtifact("plan", path.join(root, "opscrew", "plan.yaml"), movingPlan("deployed"));
     });
     const planFile = path.join(dir, "opscrew", "plan.yaml");
     const before = await readFile(planFile, "utf8");
@@ -138,7 +94,7 @@ describe("moving between providers", () => {
   it("opscrew_status shows a move in progress and the terminal command to continue it", async () => {
     const { client } = await connect(async (root) => {
       await mkdir(path.join(root, "opscrew"), { recursive: true });
-      await writeArtifact("plan", path.join(root, "opscrew", "plan.yaml"), movingPlan());
+      await writeArtifact("plan", path.join(root, "opscrew", "plan.yaml"), movingPlan("deployed"));
     });
     const result = (await client.callTool({
       name: "opscrew_status",

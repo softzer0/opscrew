@@ -7,26 +7,25 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { ensureStatePassphrase, readServerAddresses } from "../shared";
 import {
   createProject,
-  fakeCloudflare,
-  HOST_KEY,
-  projectRunner,
-  SERVER_IPV4,
-  testPlan,
-} from "../provision/__fixtures__/fakes";
-import { ensureStatePassphrase, readServerAddresses } from "../shared";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
-import {
+  createTestPhaseDeps,
   type DestroyScript,
   DROPLET_ADDRESS,
   deployedResources,
   FakeDestroyGitHub,
   FakeServers,
+  fakeCloudflare,
+  HOST_KEY,
+  projectRunner,
+  ScriptedApprovalHandler,
   ScriptedDestroyEngine,
   SERVER_ADDRESS,
+  SERVER_IPV4,
+  testPlan,
   unprotectPlan,
-} from "./__fixtures__/fakes";
+} from "../testing";
 import { runDestroy } from "./run";
 import type { DestroyPreview, DestroyServices } from "./types";
 

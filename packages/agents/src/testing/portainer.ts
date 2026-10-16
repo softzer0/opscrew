@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import type { PinnedRequest, PinnedRequestInit } from "@opscrew/connector-portainer";
 import { type DeployPlan, DeployPlanSchema, type PortainerWeb } from "@opscrew/plan-schema";
-import { testPlan } from "./fakes";
+import { testPlan } from "./deploy";
+
+/** Portainer's address: it must never be printed, audited, committed or sent to GitHub. */
+export const PORTAINER_HOST = "nas-portainer.home.arpa";
+export const PORTAINER_URL = `https://${PORTAINER_HOST}:9443`;
 
 export interface PortainerPlanOptions {
   web?: PortainerWeb;
@@ -153,7 +157,8 @@ export function fakePortainer(options: FakePortainerOptions): FakePortainer {
   const request: PinnedRequest = async (init: PinnedRequestInit) => {
     const call = `${init.method} ${init.path}`;
     calls.push(call);
-    const body = init.body === undefined ? undefined : (JSON.parse(init.body) as Record<string, unknown>);
+    const body =
+      init.body === undefined ? undefined : (JSON.parse(init.body) as Record<string, unknown>);
     if (body !== undefined) bodies.push({ call, body });
     if (init.path !== "/api/system/status" && init.headers["X-API-Key"] !== options.token) {
       return json(401, { message: "Unauthorized" });
@@ -174,14 +179,23 @@ export function fakePortainer(options: FakePortainerOptions): FakePortainer {
           ServerVersion: options.version ?? "2.45.2",
           ServerEdition: "CE",
           VersionSupport: "LTS",
-          Dependencies: { ComposeVersion: options.composeVersion ?? "v2.39.1", DockerVersion: "28.5.1" },
+          Dependencies: {
+            ComposeVersion: options.composeVersion ?? "v2.39.1",
+            DockerVersion: "28.5.1",
+          },
         });
       }
       if (path === "/api/users/me") {
-        return json(200, { Id: userId, Username: admin ? "admin" : "deployer", Role: admin ? 1 : 2 });
+        return json(200, {
+          Id: userId,
+          Username: admin ? "admin" : "deployer",
+          Role: admin ? 1 : 2,
+        });
       }
       if (path === "/api/endpoints") {
-        return json(200, [{ Id: envId, Name: "local", Type: 1, Status: 1, Snapshots: [{ Swarm: false }] }]);
+        return json(200, [
+          { Id: envId, Name: "local", Type: 1, Status: 1, Snapshots: [{ Swarm: false }] },
+        ]);
       }
       if (path === `/api/endpoints/${envId}/docker/info`) {
         return json(200, {
@@ -206,14 +220,20 @@ export function fakePortainer(options: FakePortainerOptions): FakePortainer {
         return json(
           200,
           registries
-            .filter((entry) => admin || entry.RegistryAccesses[String(envId)]?.UserAccessPolicies[String(userId)])
+            .filter(
+              (entry) =>
+                admin || entry.RegistryAccesses[String(envId)]?.UserAccessPolicies[String(userId)],
+            )
             .map(({ Username: _u, RegistryAccesses: _a, ...entry }) => entry),
         );
       }
       if (path === `/api/endpoints/${envId}/docker/volumes`) return json(200, { Volumes: volumes });
       if (path === "/api/registries") {
         return admin
-          ? json(200, registries.map(({ Username: _u, ...entry }) => entry))
+          ? json(
+              200,
+              registries.map(({ Username: _u, ...entry }) => entry),
+            )
           : json(403, { message: "Access denied" });
       }
       if (path === `/api/endpoints/${envId}/docker/containers/json`) {
@@ -286,7 +306,8 @@ export function fakePortainer(options: FakePortainerOptions): FakePortainer {
         file: "name: placeholder\n",
         owner: "opscrew",
       };
-      if (stacks.some((other) => other.Name === stack.Name)) return json(409, { message: "exists" });
+      if (stacks.some((other) => other.Name === stack.Name))
+        return json(409, { message: "exists" });
       stacks.push(stack);
       deploy(stack);
       return json(200, raw(stack));
@@ -303,7 +324,8 @@ export function fakePortainer(options: FakePortainerOptions): FakePortainer {
         file: String(body?.StackFileContent),
         owner: "opscrew",
       };
-      if (stacks.some((other) => other.Name === stack.Name)) return json(409, { message: "exists" });
+      if (stacks.some((other) => other.Name === stack.Name))
+        return json(409, { message: "exists" });
       stacks.push(stack);
       deploy(stack);
       projectVolumes(stack);

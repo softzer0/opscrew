@@ -12,13 +12,14 @@ import {
   recordPortainerConnection,
   recordServerAddress,
 } from "../shared";
-import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
 import {
+  createTestPhaseDeps,
   euCatalog,
   makeRequirements,
   nextPostgresFacts,
   staticSpaFacts,
-} from "./__fixtures__/catalog";
+  type TestPhaseDeps,
+} from "../testing";
 import {
   buildPortainerOption,
   PORTAINER_BACKUPS_NOTE,

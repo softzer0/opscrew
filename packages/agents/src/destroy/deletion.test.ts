@@ -15,9 +15,13 @@ import type {
 } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { HOST_KEY } from "../provision/__fixtures__/fakes";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
-import { FakeServers, serverAttributes } from "./__fixtures__/fakes";
+import {
+  createTestPhaseDeps,
+  FakeServers,
+  HOST_KEY,
+  ScriptedApprovalHandler,
+  serverAttributes,
+} from "../testing";
 import {
   assertDeletionPlan,
   confirmDeletion,

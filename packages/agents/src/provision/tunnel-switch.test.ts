@@ -12,10 +12,11 @@ import type { PortainerServices } from "../portainer";
 import { recordOwnServer } from "../shared";
 import { deleteTunnelIn, fakeTunnelApi, ORIGIN_IP } from "../shared/__fixtures__/tunnel";
 import { SERVER_GOES_FIRST } from "../shared/tunnel-connections";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
-import { createProject, FakeGitHub } from "./__fixtures__/fakes";
 import {
+  createProject,
+  createTestPhaseDeps,
   ED25519_FINGERPRINT,
+  FakeGitHub,
   FakeHostServer,
   fakeZeroTrust,
   freshFacts,
@@ -26,9 +27,10 @@ import {
   ownRunner,
   PUBLIC_CHANGES,
   publicOutputs,
+  ScriptedApprovalHandler,
   TUNNEL_ID,
   tunnelOutputs,
-} from "./__fixtures__/own";
+} from "../testing";
 import { runProvision } from "./run";
 
 /**

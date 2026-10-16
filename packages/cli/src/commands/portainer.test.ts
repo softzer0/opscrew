@@ -1,27 +1,26 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { portainerPasswordFile } from "@opscrew/agents";
+import {
+  ED25519_FINGERPRINT,
+  FakeEngine,
+  FakeGitHub,
+  FakeHostServer,
+  ownPlan,
+  preparedServerFacts,
+} from "@opscrew/agents/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
-import {
-  type DeployProject,
-  deployProject,
-  FakeEngine,
-  FakeGitHub,
-} from "../ui/__fixtures__/deploy";
+import { type DeployProject, deployProject } from "../ui/__fixtures__/deploy";
 import { GIT, projectContext, run } from "../ui/__fixtures__/harness";
 import {
-  FakeHost,
   fakeHome,
-  OWN_FINGERPRINT,
   OwnRunner,
-  ownPlan,
   ownProvisionServices,
   ownServices,
-  preparedFacts,
   recordOwnLogin,
 } from "../ui/__fixtures__/own";
 
@@ -48,11 +47,11 @@ class ApproveAll implements ApprovalHandler {
 /** An app deployed on the user's own server (no domain); Portainer on when `enabled`. */
 async function setup(options: { enabled?: boolean } = {}) {
   project = await deployProject(
-    ownPlan({ domain: null, deployed: true, portainer: options.enabled }),
+    ownPlan({ domain: null, deployed: true, ...(options.enabled ? { portainer: "local" } : {}) }),
   );
-  await recordOwnLogin(project, { hostKey: OWN_FINGERPRINT });
+  await recordOwnLogin(project, { hostKey: ED25519_FINGERPRINT });
   const paths = resolveProjectPaths(project.root, { env: project.env });
-  const facts = preparedFacts(paths.projectId);
+  const facts = preparedServerFacts(paths.projectId);
   if (options.enabled) {
     facts.portainer = {
       installed: true,
@@ -63,7 +62,7 @@ async function setup(options: { enabled?: boolean } = {}) {
       tunnelId: null,
     };
   }
-  const host = new FakeHost(facts);
+  const host = new FakeHostServer(facts);
   const own = ownServices(host, await fakeHome(project));
   const services = ownProvisionServices(new FakeEngine(), new FakeGitHub(), own);
   // A person answering (`approvals`) sits at a terminal.
@@ -127,7 +126,7 @@ describe.skipIf(!GIT)("opscrew portainer", () => {
     expect(ctx.errors).toContain("--subdomain");
   });
 
-  const deletesData = (s: { host: FakeHost }) =>
+  const deletesData = (s: { host: FakeHostServer }) =>
     s.host.applies.some((a) => JSON.stringify(a.plan).includes('"deleteData":true'));
 
   /** The hashes `disable --delete-data --plan-only` printed (removal and data deletion). */

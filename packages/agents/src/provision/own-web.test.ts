@@ -13,10 +13,13 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { recordOwnServer } from "../shared";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
-import { CF_V4, CF_V6, createProject, FakeGitHub } from "./__fixtures__/fakes";
 import {
+  CF_V4,
+  CF_V6,
+  createProject,
+  createTestPhaseDeps,
   ED25519_FINGERPRINT,
+  FakeGitHub,
   FakeHostServer,
   fakeZeroTrust,
   freshFacts,
@@ -27,9 +30,10 @@ import {
   ownRunner,
   PUBLIC_CHANGES,
   publicOutputs,
+  ScriptedApprovalHandler,
   TUNNEL_CHANGES,
   tunnelOutputs,
-} from "./__fixtures__/own";
+} from "../testing";
 import { ownWebFromCloudflare, ownWebSources, SWITCH_TO_FILTER_NOTE } from "./own";
 import { runProvision } from "./run";
 import type { ProvisionServices } from "./types";

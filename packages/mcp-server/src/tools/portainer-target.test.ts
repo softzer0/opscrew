@@ -19,7 +19,7 @@ import {
   type runProvision,
   stackPlanFile,
 } from "@opscrew/agents";
-import { ScriptedRunner } from "@opscrew/agents/testing";
+import { PORTAINER_HOST, PORTAINER_URL, ScriptedRunner } from "@opscrew/agents/testing";
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -29,8 +29,6 @@ import { registerDeployTools } from "./deploy";
 import { registerDesignTools } from "./design";
 import { registerInterviewTools } from "./interview";
 
-const HOST = "nas-portainer.home.arpa";
-const PORTAINER_URL = `https://${HOST}:9443`;
 const FINGERPRINT = `SHA256:${Array.from({ length: 32 }, () => "3C").join(":")}`;
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -205,7 +203,7 @@ describe("the MCP tools for the user's existing Portainer", () => {
 
     expect((await h.call("opscrew_save_requirements", { answers: ANSWERS })).isError).toBeFalsy();
     const again = await h.call("opscrew_interview_questions");
-    expect(JSON.stringify(again)).not.toContain(HOST);
+    expect(JSON.stringify(again)).not.toContain(PORTAINER_HOST);
     expect(textOf(again)).toContain("leave portainer.url out to keep it");
   });
 
@@ -215,12 +213,12 @@ describe("the MCP tools for the user's existing Portainer", () => {
     expect(saved.isError, textOf(saved)).toBeFalsy();
     expect(h.elicited).toHaveLength(1);
     expect(h.elicited[0]?.message).toContain(FINGERPRINT);
-    expect(h.elicited[0]?.message).not.toContain(HOST);
+    expect(h.elicited[0]?.message).not.toContain(PORTAINER_HOST);
     expect(h.elicited[0]?.message).toContain("cannot confirm this for you");
     expect(h.listed).toEqual([{ token: h.token, cert: FINGERPRINT }]);
     expect(textOf(saved)).toContain('the user\'s existing Portainer, environment "nas"');
     for (const output of h.outputs) {
-      expect(JSON.stringify(output)).not.toContain(HOST);
+      expect(JSON.stringify(output)).not.toContain(PORTAINER_HOST);
       expect(JSON.stringify(output)).not.toContain(h.token);
     }
     const local = JSON.parse(
@@ -252,7 +250,7 @@ describe("the MCP tools for the user's existing Portainer", () => {
     expect(plain.listed).toEqual([]);
     expect(textOf(noDialog)).toContain("cannot show the confirmation dialog");
     expect(textOf(noDialog)).toContain("npx opscrew interview");
-    expect(JSON.stringify(noDialog)).not.toContain(HOST);
+    expect(JSON.stringify(noDialog)).not.toContain(PORTAINER_HOST);
   });
 
   it("keeps Portainer's own next step when it refuses the token; only bad answers get the generic one", async () => {
@@ -314,7 +312,7 @@ describe("the MCP tools for the user's existing Portainer", () => {
     });
     expect(textOf(applied)).toContain("Set up the app's stacks in the user's Portainer");
     expect(textOf(applied)).toContain("backups of the app's data volumes are the user's");
-    for (const output of h.outputs) expect(JSON.stringify(output)).not.toContain(HOST);
+    for (const output of h.outputs) expect(JSON.stringify(output)).not.toContain(PORTAINER_HOST);
   });
 
   it("changes nothing when the user declines the stack plan's dialog", async () => {

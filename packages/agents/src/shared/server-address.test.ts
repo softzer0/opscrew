@@ -5,8 +5,7 @@ import type { IacEngine, IacInitOptions, IacRunOptions } from "@opscrew/contract
 import { fakeSecret } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { testPlan } from "../provision/__fixtures__/fakes";
-import { createTestPhaseDeps } from "../testing";
+import { createTestPhaseDeps, testPlan } from "../testing";
 import {
   addressFromOutputs,
   addressNames,

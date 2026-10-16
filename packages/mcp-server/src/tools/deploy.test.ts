@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,137 +11,30 @@ import {
   ElicitRequestSchema,
   type ElicitResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import { hasDeployment, type ProvisionServices, recordServerAddress } from "@opscrew/agents";
-import { ScriptedRunner } from "@opscrew/agents/testing";
-import type {
-  FetchLike,
-  IacApplyResult,
-  IacApproval,
-  IacEngine,
-  PlanSummary,
-  RemoteExec,
-  ResourceChange,
-} from "@opscrew/contracts";
-import { findExecutable, NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
+import type { ProvisionServices } from "@opscrew/agents";
+import {
+  createProject as createGitProject,
+  FakeEngine,
+  FakeGitHub,
+  forbiddenFetch,
+  projectRunner,
+  readyRemote,
+  SERVER_IPV4,
+  testPlan,
+} from "@opscrew/agents/testing";
+import type { FetchLike, RemoteExec, ResourceChange } from "@opscrew/contracts";
+import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { readArtifact } from "@opscrew/plan-schema";
 import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
 import { type DeployToolOptions, registerDeployTools } from "./deploy";
 import { approvalMessage } from "./elicitation";
 
-// ---------------------------------------------------------------------------------------------
-// Fakes (adapted from packages/agents/src/provision/__fixtures__/fakes.ts, which is not exported)
-// ---------------------------------------------------------------------------------------------
-
-const SERVER_IPV4 = "203.0.113.10";
-const SERVER_IPV6 = "2001:db8::1";
-/** A public host key (not a secret). */
-const HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHostKeyForTestsOnlyHostKeyForTestsOnly";
 const STRIPE = fakeSecret("stripe-live-key");
 const HCLOUD = fakeSecret("hcloud-token");
 const PR_URL = "https://github.com/acme/shop/pull/7";
-
-const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
-
-function testPlan(options: { deployed?: boolean } = {}) {
-  return DeployPlanSchema.parse({
-    schemaVersion: 1,
-    createdAt: "2026-10-11T10:00:00.000Z",
-    updatedAt: "2026-10-11T10:00:00.000Z",
-    app: {
-      name: "shop",
-      port: 3000,
-      healthPath: "/api/health",
-      env: [
-        { name: "DATABASE_URL", secret: true, source: "derived" },
-        { name: "SESSION_SECRET", secret: true, source: "generated" },
-        { name: "STRIPE_SECRET_KEY", secret: true, source: "user" },
-      ],
-    },
-    target: {
-      provider: "hetzner",
-      mode: "vps-compose",
-      location: "nbg1",
-      serverType: "cx23",
-      backups: true,
-    },
-    services: { postgres: true, redis: false },
-    externalServices: [],
-    cost: {
-      monthly: { amount: 8.41, currency: "EUR" },
-      breakdown: [
-        { item: "server", monthly: { amount: 6.59, currency: "EUR" } },
-        { item: "backups", monthly: { amount: 1.32, currency: "EUR" } },
-        { item: "ipv4", monthly: { amount: 0.5, currency: "EUR" } },
-      ],
-      pricesIncludeVat: false,
-      source: "static",
-      asOf: "2026-06-15T00:00:00.000Z",
-    },
-    codeChanges: [],
-    infra: { engine: "tofu" },
-    dns: { provider: "none", proxied: false },
-    cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
-    security: {},
-    ...(options.deployed ? { deployment: { lastApplyAt: "2026-10-11T11:00:00.000Z" } } : {}),
-  });
-}
-
-/** `show -json` shaped like the rendered root module; passes every policy. */
-function planJson() {
-  const web = ["0.0.0.0/0", "::/0"];
-  return {
-    format_version: "1.2",
-    planned_values: {
-      root_module: {
-        child_modules: [
-          {
-            address: "module.server",
-            resources: [
-              {
-                address: "module.server.hcloud_server.this",
-                mode: "managed",
-                type: "hcloud_server",
-                name: "this",
-                values: {
-                  name: "shop",
-                  backups: true,
-                  delete_protection: true,
-                  rebuild_protection: true,
-                },
-              },
-              {
-                address: "module.server.hcloud_firewall.this",
-                mode: "managed",
-                type: "hcloud_firewall",
-                name: "this",
-                values: {
-                  name: "shop-firewall",
-                  rule: [
-                    { direction: "in", protocol: "tcp", port: "22", source_ips: web },
-                    { direction: "in", protocol: "tcp", port: "80", source_ips: web },
-                    { direction: "in", protocol: "tcp", port: "443", source_ips: web },
-                  ],
-                },
-              },
-            ],
-          },
-        ],
-      },
-    },
-    resource_changes: [
-      {
-        address: "module.server.hcloud_server.this",
-        change: {
-          actions: ["create"],
-          after_unknown: { id: true, firewall_ids: true, ssh_keys: [true] },
-        },
-      },
-    ],
-  };
-}
 
 const change = (name: string, type: string, action: ResourceChange["action"]): ResourceChange => ({
   address: `module.server.${type}.${name}`,
@@ -151,121 +43,6 @@ const change = (name: string, type: string, action: ResourceChange["action"]): R
   provider: "registry.opentofu.org/hetznercloud/hcloud",
   action,
 });
-
-const CREATE: ResourceChange[] = [
-  change("deploy", "hcloud_ssh_key", "create"),
-  change("this", "hcloud_firewall", "create"),
-  change("this", "hcloud_server", "create"),
-];
-
-/** IaC engine fake: writes real plan files and enforces the hash binding like the real engines. */
-class FakeEngine implements IacEngine {
-  readonly info = { name: "tofu" as const, version: "1.13.1", binary: "/fake/tofu" };
-  readonly calls: string[] = [];
-  readonly applied: { planFile: string; approval: IacApproval }[] = [];
-  #counter = 0;
-  constructor(private readonly changes: ResourceChange[] = CREATE) {}
-
-  async init() {
-    this.calls.push("init");
-  }
-  async validate() {
-    this.calls.push("validate");
-    return { valid: true, diagnostics: [] };
-  }
-  async plan(dir: string, planFile: string): Promise<PlanSummary> {
-    this.calls.push("plan");
-    const content = `fake plan ${++this.#counter} for ${dir}`;
-    await writeFile(planFile, content);
-    const count = (action: string) => this.changes.filter((c) => c.action === action).length;
-    return {
-      engine: this.info,
-      dir,
-      planFile,
-      planHash: sha256(content),
-      createdAt: "2026-10-11T12:00:00.000Z",
-      changes: this.changes,
-      counts: {
-        create: count("create"),
-        update: count("update"),
-        delete: count("delete"),
-        replace: count("replace"),
-      },
-      hasDestroy: this.changes.some((c) => c.action === "delete" || c.action === "replace"),
-      planJson: planJson(),
-    };
-  }
-  async apply(_dir: string, planFile: string, approval: IacApproval): Promise<IacApplyResult> {
-    this.calls.push("apply");
-    if (sha256(await readFile(planFile)) !== approval.approvedPlanHash) {
-      throw new Error("plan hash mismatch");
-    }
-    this.applied.push({ planFile, approval });
-    return {
-      ok: true,
-      outputs: {
-        server_ipv4: SERVER_IPV4,
-        server_ipv6: SERVER_IPV6,
-        server_id: "4711",
-        server_name: "shop",
-        url: `http://${SERVER_IPV4}`,
-      },
-      log: "Apply complete!",
-    };
-  }
-  async output() {
-    this.calls.push("output");
-    return {};
-  }
-}
-
-/** GitHub REST fake recording secrets (plaintext, test only) and pull requests. */
-class FakeGitHub {
-  readonly secrets = new Map<string, string>();
-  readonly pulls: { head: string; base: string; title: string }[] = [];
-  async getRepo() {
-    return { defaultBranch: "main", private: true, canPush: true };
-  }
-  async getActionsPublicKey() {
-    return { keyId: "key-1", key: "dGVzdC1wdWJsaWMta2V5LXRlc3QtcHVibGljLWtleQ==" };
-  }
-  async setActionsSecret(_owner: string, _repo: string, name: string, value: string) {
-    this.secrets.set(name, value);
-  }
-  async findOpenPullRequest() {
-    return undefined;
-  }
-  async createPullRequest(input: { head: string; base: string; title: string }) {
-    this.pulls.push(input);
-    return { number: 7, url: PR_URL };
-  }
-  async createOrphanBranch() {
-    return { commit: "c".repeat(40) };
-  }
-  async replaceOrphanBranch() {
-    return { commit: "d".repeat(40), previous: "e".repeat(40) };
-  }
-  async branchHoldsOnly() {
-    return false;
-  }
-}
-
-const readyRemote = (host: string): RemoteExec => ({
-  host,
-  run: async () => ({ exitCode: 0, stdout: "ready\n", stderr: "" }),
-});
-
-/** Real git; `ssh-keyscan` answers with {@link HOST_KEY}; every other command fails. */
-function projectRunner(): ScriptedRunner {
-  const real = new NodeCommandRunner();
-  return new ScriptedRunner(async (command, args, options) => {
-    if (command === "git") return real.run(command, args, options);
-    if (command === "ssh-keyscan") {
-      return { exitCode: 0, stdout: `${args[args.length - 1]} ${HOST_KEY}\n`, stderr: "" };
-    }
-    return { exitCode: 127, stdout: "", stderr: `${command}: not available in tests` };
-  });
-}
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -278,34 +55,11 @@ async function tempDir(prefix: string): Promise<string> {
   return dir;
 }
 
-/** Temp git project with a committed Dockerfile and a GitHub `origin` that pushes to a bare repo. */
+/** The shared git project with the user's env file (`production.env`) next to it. */
 async function createProject(plan = testPlan()) {
-  const runner = new NodeCommandRunner();
-  const root = await tempDir("opscrew-mcp-deploy-");
-  const bare = await tempDir("opscrew-mcp-deploy-remote-");
-  const git = async (cwd: string, ...args: string[]) => {
-    const result = await runner.run("git", ["-C", cwd, ...args]);
-    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
-    return result.stdout.trim();
-  };
-  await git(bare, "init", "--bare", "-b", "main");
-  await git(root, "init", "-b", "main");
-  await git(root, "config", "user.name", "OpsCrew Test");
-  await git(root, "config", "user.email", "test@example.invalid");
-  await git(root, "config", "commit.gpgsign", "false");
-  await git(root, "remote", "add", "origin", "https://github.com/acme/shop.git");
-  await git(root, "remote", "set-url", "--push", "origin", bare);
-  await writeFile(path.join(root, "Dockerfile"), "FROM node:22-alpine\nUSER node\n");
-  await writeFile(path.join(root, ".gitignore"), ".opscrew/\n.env\nproduction.env\n");
-  await git(root, "add", "Dockerfile", ".gitignore");
-  await git(root, "commit", "-m", "init");
-  await writeArtifact("plan", path.join(root, "opscrew", "plan.yaml"), plan);
-  // A deployed project: the server's address is in the local state, as provision leaves it.
-  if (hasDeployment(plan)) {
-    await recordServerAddress(resolveProjectPaths(root), { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 });
-  }
-  await writeFile(path.join(root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
-  return { root, bare, git };
+  const project = await createGitProject(plan);
+  await writeFile(path.join(project.root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
+  return project;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -329,10 +83,6 @@ const textOf = (result: CallToolResult) =>
 
 // biome-ignore lint/suspicious/noExplicitAny: structured content is loosely typed JSON.
 const dataOf = (result: CallToolResult) => result.structuredContent as Record<string, any>;
-
-const forbiddenFetch: FetchLike = async (input) => {
-  throw new Error(`Unexpected network call in a test: ${String(input)}`);
-};
 
 async function connect(options: HarnessOptions = {}) {
   const project = await createProject(options.plan);
@@ -594,7 +344,7 @@ describe.skipIf(!findExecutable("git"))(
     it("a destroying plan needs the typed resource name; a wrong phrase refuses", async () => {
       const destroy = [change("this", "hcloud_server", "replace")];
       const wrong = await connect({
-        engine: new FakeEngine(destroy),
+        engine: new FakeEngine({ changes: destroy }),
         elicit: () => ({ action: "accept", content: { confirmation: "yes" } }),
       });
       const planned = await wrong.call("opscrew_plan");
@@ -608,7 +358,10 @@ describe.skipIf(!findExecutable("git"))(
       expect(wrong.elicited[0]?.message).toContain("deletes or replaces");
       expect(wrong.engine.applied).toEqual([]);
 
-      const right = await connect({ engine: new FakeEngine(destroy), elicit: approveAll });
+      const right = await connect({
+        engine: new FakeEngine({ changes: destroy }),
+        elicit: approveAll,
+      });
       const hash = dataOf(await right.call("opscrew_plan")).planHash as string;
       const applied = await right.call("opscrew_apply", { planHash: hash });
       expect(applied.isError, textOf(applied)).toBeFalsy();

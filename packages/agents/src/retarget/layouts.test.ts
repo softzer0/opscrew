@@ -1,7 +1,7 @@
 import { cloudTarget, MOVE_LAYOUTS, moveLayout, renderDeployment } from "@opscrew/iac-templates";
 import type { CloudProvider } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { testPlan } from "../provision/__fixtures__/fakes";
+import { testPlan } from "../testing";
 import { previousTarget, protectionVariable } from "./layouts";
 
 const DIRECTIONS: [CloudProvider, CloudProvider][] = [

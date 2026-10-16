@@ -6,12 +6,6 @@ import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import {
-  createProject,
-  fakeCloudflare,
-  projectRunner,
-  testPlan,
-} from "../provision/__fixtures__/fakes";
 import { ensureStatePassphrase } from "../shared";
 import {
   BUSY_TUNNEL_LOG,
@@ -21,13 +15,18 @@ import {
   tunnelDeletes,
 } from "../shared/__fixtures__/tunnel";
 import { TUNNEL_RESOURCE_TYPE } from "../shared/tunnel-connections";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import {
+  createProject,
+  createTestPhaseDeps,
   deployedResources,
   FakeDestroyGitHub,
   FakeServers,
+  fakeCloudflare,
+  projectRunner,
+  ScriptedApprovalHandler,
   ScriptedDestroyEngine,
-} from "./__fixtures__/fakes";
+  testPlan,
+} from "../testing";
 import { runDestroy } from "./run";
 import type { DestroyServices } from "./types";
 

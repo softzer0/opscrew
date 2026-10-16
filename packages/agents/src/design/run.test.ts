@@ -16,15 +16,16 @@ import {
 import { describe, expect, it } from "vitest";
 import { runInterview } from "../interview";
 import { recordServerAddress } from "../shared";
-import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
 import {
+  createTestPhaseDeps,
+  doEuCatalog,
   euCatalog,
   makeFacts,
   makeRequirements,
   nextPostgresFacts,
   staticSpaFacts,
-} from "./__fixtures__/catalog";
-import { doEuCatalog } from "./__fixtures__/digitalocean-catalog";
+  type TestPhaseDeps,
+} from "../testing";
 import { previewDesignOptions, runDesign } from "./run";
 
 const TOKEN = "hcloud-test-token-not-a-real-value";

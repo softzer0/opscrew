@@ -234,7 +234,7 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     expect(report.notes?.join("\n")).toContain("OpsCrew manages no Cloudflare resources");
     expect(s.engine.calls).not.toContain("plan");
 
-    const { writeFakeState } = await import("../provision/__fixtures__/fakes");
+    const { writeFakeState } = await import("../testing");
     await writeFakeState(s.deps.paths);
     report = await drift(s);
     expect(report.portainer?.differences).toEqual([

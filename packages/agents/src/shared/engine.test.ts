@@ -3,8 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { IacEngine, ResourceAction } from "@opscrew/contracts";
 import { describe, expect, it } from "vitest";
-import { FakeEngine, testPlan } from "../provision/__fixtures__/fakes";
-import { createTestPhaseDeps } from "../testing";
+import { createTestPhaseDeps, FakeEngine, testPlan } from "../testing";
 import { describeChanges, existingStateEngine, hasState, projectEngine, stateFile } from "./engine";
 import { pollUntil } from "./wait";
 

@@ -9,29 +9,6 @@ import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import {
-  createProject,
-  FakeEngine,
-  FakeGitHub,
-  projectRunner,
-  readyRemote,
-  SERVER_IPV4,
-  testPlan,
-} from "../provision/__fixtures__/fakes";
-import {
-  ED25519_FINGERPRINT,
-  FakeHostServer,
-  fakeZeroTrust,
-  freshFacts,
-  OWN_IPV4,
-  OwnEngine,
-  ownCloudflare,
-  ownPlan,
-  ownRunner,
-  PUBLIC_CHANGES,
-  publicOutputs,
-  TUNNEL_ID,
-} from "../provision/__fixtures__/own";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
 import { recordOwnServer } from "../shared";
@@ -44,7 +21,29 @@ import {
   tunnelDeletes,
 } from "../shared/__fixtures__/tunnel";
 import { SERVER_GOES_FIRST } from "../shared/tunnel-connections";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
+import {
+  createProject,
+  createTestPhaseDeps,
+  ED25519_FINGERPRINT,
+  FakeEngine,
+  FakeGitHub,
+  FakeHostServer,
+  fakeZeroTrust,
+  freshFacts,
+  OWN_IPV4,
+  OwnEngine,
+  ownCloudflare,
+  ownPlan,
+  ownRunner,
+  PUBLIC_CHANGES,
+  projectRunner,
+  publicOutputs,
+  readyRemote,
+  ScriptedApprovalHandler,
+  SERVER_IPV4,
+  TUNNEL_ID,
+  testPlan,
+} from "../testing";
 import { pendingPortainerFile } from "./pending";
 import { type PortainerServices, portainerDisable, portainerEnable } from "./run";
 import { CLOUD_PORTAINER_DIR, CLOUD_TUNNEL_DIR, PORTAINER_VERSION } from "./settings";

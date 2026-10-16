@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type CloudflareDnsRecord, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
 import type {
   IacApplyResult,
   IacApproval,
@@ -12,24 +13,34 @@ import type {
   ResourceChange,
   ResourceMove,
 } from "@opscrew/contracts";
-import { type CloudflareDnsRecord, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
 import { NodeCommandRunner, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
+import { cloudTarget } from "@opscrew/iac-templates";
 import {
   type CloudProvider,
   type DeployPlan,
   DeployPlanSchema,
+  type Retarget,
   writeArtifact,
 } from "@opscrew/plan-schema";
-import { hasDeployment, updateServerAddresses } from "../../shared";
-import { ScriptedRunner } from "../../testing";
-import type { CloudflareApi, GitHubApi } from "../types";
+import type { CloudflareApi, GitHubApi } from "../provision/types";
+import { hasDeployment, updateServerAddresses } from "../shared";
+import { ScriptedRunner } from "./deps";
 
 export const CF_V4 = ["173.245.48.0/20", "103.21.244.0/22"];
 export const CF_V6 = ["2400:cb00::/32"];
+/** An address of Cloudflare's edge, inside {@link CLOUDFLARE_RANGES}' 104.16.0.0/13. */
+export const CLOUDFLARE_IPV4 = "104.21.32.1";
+export const CLOUDFLARE_IPV6 = "2606:4700:3030::6815:2001";
+/** Cloudflare's published ranges as verify reads them. */
+export const CLOUDFLARE_RANGES = {
+  ipv4: ["104.16.0.0/13", "172.64.0.0/13"],
+  ipv6: ["2606:4700::/32"],
+};
 export const SERVER_IPV4 = "203.0.113.10";
 export const SERVER_IPV6 = "2001:db8::1";
 /** A public host key (not a secret). */
-export const HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHostKeyForTestsOnlyHostKeyForTestsOnly";
+export const HOST_KEY =
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHostKeyForTestsOnlyHostKeyForTestsOnly";
 
 const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 
@@ -41,6 +52,9 @@ export interface PlanInputOptions {
   www?: boolean;
   /** Cloud provider of the plan (default Hetzner). */
   provider?: CloudProvider;
+  /** The user supplies `STRIPE_SECRET_KEY` (default true); false leaves it out of the app's env. */
+  userSecret?: boolean;
+  httpAllowedFrom?: "any" | "cloudflare";
 }
 
 /** Plan targets per provider: location, size and image as design would choose them. */
@@ -64,7 +78,9 @@ export function testPlan(options: PlanInputOptions = {}) {
       env: [
         { name: "DATABASE_URL", secret: true, source: "derived" },
         { name: "SESSION_SECRET", secret: true, source: "generated" },
-        { name: "STRIPE_SECRET_KEY", secret: true, source: "user" },
+        ...(options.userSecret === false
+          ? []
+          : [{ name: "STRIPE_SECRET_KEY", secret: true, source: "user" }]),
       ],
     },
     target: {
@@ -92,7 +108,7 @@ export function testPlan(options: PlanInputOptions = {}) {
       ? { provider: "cloudflare", domain: options.domain, proxied: true, www: !!options.www }
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
-    security: {},
+    security: options.httpAllowedFrom ? { httpAllowedFrom: options.httpAllowedFrom } : {},
     // A deployed plan records the apply; the server's address is in the local state only
     // (`createProject` writes it there, as provision does).
     ...(options.deployed ? { deployment: { lastApplyAt: DEPLOYED_AT } } : {}),
@@ -106,7 +122,7 @@ export const DEPLOYED_AT = "2026-10-11T11:00:00.000Z";
  * A deployed Hetzner plan in the middle of `opscrew retarget` to DigitalOcean: `target` is already
  * the new provider, `retarget.from` the live Hetzner server.
  */
-export function movingPlan(step: "started" | "renamed" | "created" = "renamed") {
+export function movingPlan(step: Retarget["step"] = "renamed") {
   const from = testPlan({ deployed: true });
   return DeployPlanSchema.parse({
     ...from,
@@ -138,6 +154,11 @@ export interface PlanJsonOptions {
   proxied?: boolean;
   openDatabasePort?: boolean;
   provider?: CloudProvider;
+  /**
+   * DigitalOcean: the app's name, the Droplet and the record's name come from this plan (default
+   * `testPlan({ provider: "digitalocean" })`).
+   */
+  plan?: DeployPlan;
 }
 
 /** `show -json` shaped like the rendered root module, passing every policy unless told otherwise. */
@@ -207,8 +228,8 @@ export function planJsonFor(options: PlanJsonOptions = {}) {
   };
 }
 
-/** The DNS module's planned record when the site is behind Cloudflare's proxy. */
-function dnsModule(proxied: boolean | undefined) {
+/** The DNS module's planned record for `domain` when the site is behind Cloudflare's proxy. */
+function dnsModule(proxied: boolean | undefined, domain: string) {
   return proxied
     ? [
         {
@@ -219,7 +240,7 @@ function dnsModule(proxied: boolean | undefined) {
               mode: "managed",
               type: "cloudflare_dns_record",
               name: "a",
-              values: { name: "shop.example.com", type: "A", proxied: true, ttl: 1 },
+              values: { name: domain, type: "A", proxied: true, ttl: 1 },
             },
           ],
         },
@@ -229,6 +250,9 @@ function dnsModule(proxied: boolean | undefined) {
 
 /** `show -json` shaped like the rendered DigitalOcean root module (module `server`). */
 function digitalOceanPlanJson(options: PlanJsonOptions) {
+  const plan = options.plan ?? testPlan({ provider: "digitalocean" });
+  const name = plan.app.name;
+  const target = cloudTarget(plan.target);
   const world = ["0.0.0.0/0", "::/0"];
   const web = options.proxied ? [...CF_V4, ...CF_V6] : world;
   const inbound: Record<string, unknown>[] = [
@@ -248,11 +272,11 @@ function digitalOceanPlanJson(options: PlanJsonOptions) {
       type: "digitalocean_droplet",
       name: "this",
       values: {
-        name: "shop",
-        region: "fra1",
-        size: "s-1vcpu-2gb",
-        image: "ubuntu-24-04-x64",
-        backups: true,
+        name,
+        region: target.location,
+        size: target.serverType,
+        image: target.image,
+        backups: target.backups,
         ipv6: true,
         monitoring: true,
       },
@@ -263,7 +287,7 @@ function digitalOceanPlanJson(options: PlanJsonOptions) {
       type: "digitalocean_firewall",
       name: "this",
       values: {
-        name: "shop-firewall",
+        name: `${name}-firewall`,
         inbound_rule: inbound,
         outbound_rule: [
           { protocol: "tcp", port_range: "1-65535", destination_addresses: world },
@@ -276,21 +300,24 @@ function digitalOceanPlanJson(options: PlanJsonOptions) {
       mode: "managed",
       type: "digitalocean_ssh_key",
       name: "deploy",
-      values: { name: "shop-deploy" },
+      values: { name: `${name}-deploy` },
     },
     {
       address: "module.server.digitalocean_tag.app",
       mode: "managed",
       type: "digitalocean_tag",
       name: "app",
-      values: { name: "opscrew-app:shop" },
+      values: { name: `opscrew-app:${name}` },
     },
   ];
   return {
     format_version: "1.2",
     planned_values: {
       root_module: {
-        child_modules: [{ address: "module.server", resources }, ...dnsModule(options.proxied)],
+        child_modules: [
+          { address: "module.server", resources },
+          ...dnsModule(options.proxied, plan.dns.domain ?? "shop.example.com"),
+        ],
       },
     },
     resource_changes: [
@@ -315,7 +342,9 @@ function digitalOceanPlanJson(options: PlanJsonOptions) {
                   mode: "managed",
                   type: "digitalocean_droplet",
                   name: "this",
-                  expressions: { ssh_keys: { references: ["digitalocean_ssh_key.deploy.fingerprint"] } },
+                  expressions: {
+                    ssh_keys: { references: ["digitalocean_ssh_key.deploy.fingerprint"] },
+                  },
                 },
                 {
                   address: "digitalocean_firewall.this",
@@ -540,7 +569,7 @@ export interface FakeCloudflareOptions {
 }
 
 /** Cloudflare fake whose zone contents tests may change between runs. */
-export interface FakeCloudflare extends CloudflareApi {
+export interface FakeCloudflareApi extends CloudflareApi {
   readonly state: { config: FakeRuleset; waf: FakeRuleset; records: CloudflareDnsRecord[] };
   /** Names passed to `listDnsRecords`, in call order. */
   readonly listed: string[];
@@ -568,7 +597,7 @@ export function opscrewRecord(
   };
 }
 
-export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudflare {
+export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudflareApi {
   const state = {
     config: rulesetOwner(options.configRules),
     waf: rulesetOwner(options.wafRules),

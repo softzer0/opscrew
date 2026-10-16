@@ -1,14 +1,15 @@
+import {
+  CLOUDFLARE_RANGES,
+  PORTAINER_HOST,
+  PORTAINER_URL,
+  portainerPlan,
+} from "@opscrew/agents/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
-import { CF_V4, CF_V6, DeployRunner, fakeSite, writeProjectPlan } from "../ui/__fixtures__/deploy";
+import { DeployRunner, fakeSite, writeProjectPlan } from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
-import {
-  PORTAINER_HOST,
-  PORTAINER_URL,
-  portainerTestPlan,
-  recordPortainer,
-} from "../ui/__fixtures__/portainer";
+import { recordPortainer } from "../ui/__fixtures__/portainer";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -37,7 +38,7 @@ async function setup(plan: DeployPlan) {
         issuer: "Let's Encrypt",
       }),
       tcpConnect: async () => false,
-      cloudflareRanges: { ipv4: CF_V4, ipv6: CF_V6 },
+      cloudflareRanges: CLOUDFLARE_RANGES,
       timeoutMs: 1000,
     },
   });
@@ -47,7 +48,7 @@ async function setup(plan: DeployPlan) {
 describe("opscrew verify for the user's Portainer", () => {
   it("checks the route given with --url behind the user's own reverse proxy", async () => {
     const ctx = await setup(
-      portainerTestPlan({ web: { mode: "proxy", port: 8080 }, domain: null, deployed: true }),
+      portainerPlan({ web: { mode: "proxy", port: 8080 }, domain: null, deployed: true }),
     );
     expect(await run(ctx, "verify", "--url", "https://shop.example.com/"), ctx.errors).toBe(0);
     // The user's route is never shown: messages call it "your route".
@@ -58,14 +59,14 @@ describe("opscrew verify for the user's Portainer", () => {
   });
 
   it("refuses --url when the app is served through its domain", async () => {
-    const ctx = await setup(portainerTestPlan({ deployed: true }));
+    const ctx = await setup(portainerPlan({ deployed: true }));
     expect(await run(ctx, "verify", "--url", "https://shop.example.com")).toBe(2);
     expect(ctx.errors).toContain("only for an app in your Portainer behind your own reverse proxy");
   });
 
   it("never shows Portainer's address, even inside the route the user gave", async () => {
     const ctx = await setup(
-      portainerTestPlan({ web: { mode: "proxy", port: 8080 }, domain: null, deployed: true }),
+      portainerPlan({ web: { mode: "proxy", port: 8080 }, domain: null, deployed: true }),
     );
     await run(ctx, "verify", "--url", `${PORTAINER_URL.replace(":9443", ":8080")}/`);
     expect(`${ctx.output}${ctx.errors}`).not.toContain(PORTAINER_HOST);

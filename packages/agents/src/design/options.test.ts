@@ -11,7 +11,7 @@ import {
   nextPostgresFacts,
   offer,
   staticSpaFacts,
-} from "./__fixtures__/catalog";
+} from "../testing";
 import { convertMoney, costFor, EXCHANGE_RATE_NOTE } from "./cost";
 import { buildDesignOptions, minimumMonthlyCost } from "./options";
 

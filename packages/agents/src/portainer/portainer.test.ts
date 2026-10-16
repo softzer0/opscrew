@@ -13,16 +13,16 @@ import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { portainerPasswordFile } from "../provision/own";
+import { runProvision } from "../provision/run";
+import type { ProvisionServices } from "../provision/types";
+import { hostPlanFile, recordOwnServer } from "../shared";
 import {
   createProject,
+  createTestPhaseDeps,
+  ED25519_FINGERPRINT,
   FakeEngine,
   FakeGitHub,
-  projectRunner,
-  SERVER_IPV4,
-  testPlan,
-} from "../provision/__fixtures__/fakes";
-import {
-  ED25519_FINGERPRINT,
   FakeHostServer,
   fakeZeroTrust,
   freshFacts,
@@ -32,14 +32,13 @@ import {
   ownPlan,
   ownRunner,
   PUBLIC_CHANGES,
+  projectRunner,
   publicOutputs,
+  ScriptedApprovalHandler,
+  SERVER_IPV4,
   TUNNEL_ID,
-} from "../provision/__fixtures__/own";
-import { portainerPasswordFile } from "../provision/own";
-import { runProvision } from "../provision/run";
-import type { ProvisionServices } from "../provision/types";
-import { hostPlanFile, recordOwnServer } from "../shared";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
+  testPlan,
+} from "../testing";
 import { pendingPortainerFile } from "./pending";
 import { type PortainerServices, portainerDisable, portainerEnable } from "./run";
 import { CLOUD_PORTAINER_DIR, CLOUD_TUNNEL_DIR, PORTAINER_VERSION } from "./settings";

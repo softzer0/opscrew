@@ -23,12 +23,13 @@ import {
   recordOwnServer,
   recordServerAddress,
 } from "../shared";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
-import { createProject, FakeGitHub } from "./__fixtures__/fakes";
 import {
   ACCOUNT_ID,
+  createProject,
+  createTestPhaseDeps,
   ED25519,
   ED25519_FINGERPRINT,
+  FakeGitHub,
   FakeHostServer,
   fakeZeroTrust,
   freshFacts,
@@ -41,10 +42,11 @@ import {
   PUBLIC_CHANGES,
   placeholderKey,
   publicOutputs,
+  ScriptedApprovalHandler,
   TUNNEL_CHANGES,
   TUNNEL_ID,
   tunnelOutputs,
-} from "./__fixtures__/own";
+} from "../testing";
 import { runProvision } from "./run";
 import type { ProvisionOptions } from "./types";
 
@@ -748,7 +750,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
   it("runs the tunnel connector for a Portainer subdomain on a public server too", async () => {
     const token = `eyJ${fakeSecret("cloudflare-token", "portainer")}`;
     const s = await setup({
-      plan: ownPlan({ portainerSubdomain: true }),
+      plan: ownPlan({ portainer: "subdomain" }),
       engine: new OwnEngine(PUBLIC_CHANGES, {
         ...publicOutputs(),
         tunnel_id: TUNNEL_ID,

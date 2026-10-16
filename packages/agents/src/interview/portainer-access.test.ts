@@ -10,14 +10,13 @@ import {
 import { OpsCrewError, Redactor } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { fakeCertificate, portainerPlan } from "../provision/__fixtures__/portainer";
 import {
   PortainerEnvironmentError,
   portainerContainerUrl,
   requirePortainerConnection,
 } from "../provision/portainer";
 import { hidePortainerAddress, portainerAddressNames, recordPortainerConnection } from "../shared";
-import { createTestPhaseDeps } from "../testing";
+import { createTestPhaseDeps, fakeCertificate, portainerPlan } from "../testing";
 import { hideRecordedPortainerAddress } from "../verify/portainer";
 import { PortainerEnvironmentSchema } from "./portainer";
 import { createPortainerAccess } from "./portainer-access";

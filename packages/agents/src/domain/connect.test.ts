@@ -5,16 +5,19 @@ import type { RegistrarDnsRecord } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { type ConnectProject, connectProject, OLD_DS } from "./__fixtures__/connect";
 import {
+  type ConnectProject,
+  connectProject,
+  DEFAULT_NAMESERVERS,
   domainTestPlan,
+  OLD_DS,
   RUN_NOW,
+  SEEDED_CONTACT,
   testRequirements,
   visibleText,
   ZONE_DS,
   ZONE_NAMESERVERS,
-} from "./__fixtures__/fakes";
-import { DEFAULT_NAMESERVERS, SEEDED_CONTACT } from "./__fixtures__/registrars";
+} from "../testing";
 import { connectDomain } from "./connect";
 import { registrarLinks } from "./registrars";
 import { SANDBOX_NAMESERVERS, SANDBOX_ZONES } from "./services";

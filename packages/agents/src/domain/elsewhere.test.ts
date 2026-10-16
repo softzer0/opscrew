@@ -5,16 +5,18 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   buyable,
+  DEFAULT_NAMESERVERS,
   type DomainProject,
   domainProject,
   domainTestPlan,
+  MASKED_CONTACT,
+  SEEDED_CONTACT,
   TOKEN,
   testRequirements,
   usd,
   visibleText,
   ZONE_NAMESERVERS,
-} from "./__fixtures__/fakes";
-import { DEFAULT_NAMESERVERS, MASKED_CONTACT, SEEDED_CONTACT } from "./__fixtures__/registrars";
+} from "../testing";
 import { buyDomain } from "./buy";
 import { registrarLinks } from "./registrars";
 import { SANDBOX_NAMESERVERS, SANDBOX_ZONES } from "./services";

@@ -6,16 +6,6 @@ import { describe, expect, it } from "vitest";
 import { previewDeploymentFiles } from "../provision";
 import { readServerAddresses, serverAddressesFile } from "../shared";
 import {
-  caught,
-  crashAfter,
-  drive,
-  everythingPrinted,
-  expectGated,
-  moveOnDisk,
-  run,
-  trail,
-} from "./__fixtures__/assert";
-import {
   APP,
   cliAnswer,
   DOMAIN,
@@ -26,7 +16,17 @@ import {
   OLD_IPV6,
   STRIPE,
   TOKENS,
-} from "./__fixtures__/move";
+} from "../testing";
+import {
+  caught,
+  crashAfter,
+  drive,
+  everythingPrinted,
+  expectGated,
+  moveOnDisk,
+  run,
+  trail,
+} from "./__fixtures__/assert";
 import { abortRetarget } from "./abort";
 import { finishRetarget } from "./finish";
 import type { AbortRetargetOptions, FinishRetargetOptions } from "./types";

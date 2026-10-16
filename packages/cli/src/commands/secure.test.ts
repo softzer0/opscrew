@@ -1,17 +1,12 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { SERVER_IPV4, testPlan } from "@opscrew/agents/testing";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { type CliServices, withServices } from "../deps";
-import {
-  DeployRunner,
-  fakeServer,
-  SERVER_IPV4,
-  testPlan,
-  writeProjectPlan,
-} from "../ui/__fixtures__/deploy";
+import { DeployRunner, fakeServer, writeProjectPlan } from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
 
 let project: TempProject | undefined;
@@ -37,7 +32,7 @@ async function setup(plan: DeployPlan | undefined, secure: CliServices["secure"]
   return { ctx, root: project.root };
 }
 
-const deployed = () => testPlan({ deployed: true, httpAllowedFrom: "any" });
+const deployed = () => testPlan({ deployed: true, httpAllowedFrom: "any", userSecret: false });
 
 describe("opscrew secure", () => {
   it("writes the report and exits 0 for a hardened server", async () => {

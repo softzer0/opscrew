@@ -1,14 +1,10 @@
+import { PORTAINER_HOST, portainerPlan } from "@opscrew/agents/testing";
 import { Command } from "commander";
 import { afterEach, describe, expect, it } from "vitest";
 import { CliExit } from "../exit";
 import { writeProjectPlan } from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
-import {
-  fakePortainerProvision,
-  PORTAINER_HOST,
-  portainerTestPlan,
-  recordPortainer,
-} from "../ui/__fixtures__/portainer";
+import { fakePortainerProvision, recordPortainer } from "../ui/__fixtures__/portainer";
 import { type InfraFlags, runInfraCommand } from "./provision";
 
 let project: TempProject | undefined;
@@ -19,7 +15,7 @@ afterEach(async () => {
 
 const INFRA = "ab".repeat(32);
 
-async function portainerProject(plan = portainerTestPlan()): Promise<TempProject> {
+async function portainerProject(plan = portainerPlan()): Promise<TempProject> {
   project = await tempProject();
   await writeProjectPlan(project, plan);
   await recordPortainer(project);

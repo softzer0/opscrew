@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,18 +18,24 @@ import {
   readOwnServer,
   recordOwnServer,
 } from "@opscrew/agents";
-import { ScriptedRunner } from "@opscrew/agents/testing";
-import type {
-  FetchLike,
-  IacApplyResult,
-  IacApproval,
-  IacEngine,
-  PlanSummary,
-  RemoteExec,
-  ResourceChange,
-} from "@opscrew/contracts";
+import {
+  ED25519_FINGERPRINT,
+  FakeEngine,
+  FakeGitHub,
+  FakeHostServer,
+  forbiddenFetch,
+  freshFacts,
+  OWN_IPV4,
+  ownCloudflare,
+  ownPlan,
+  ownRunner,
+  PUBLIC_CHANGES,
+  preparedServerFacts,
+} from "@opscrew/agents/testing";
+import type { RemoteExec, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
-import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { writeArtifact } from "@opscrew/plan-schema";
+import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
 import { registerDeployTools } from "./deploy";
@@ -39,294 +44,22 @@ import { registerDriftTool } from "./drift";
 import { registerInterviewTools } from "./interview";
 import { registerPortainerTools } from "./portainer";
 
-// ---------------------------------------------------------------------------------------------
-// Fakes for a server the user owns (adapted from @opscrew/agents' own-server fixtures)
-// ---------------------------------------------------------------------------------------------
-
-/** The user's own server: a documentation address (RFC 5737). */
-const OWN_IPV4 = "203.0.113.20";
-const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
-
-function hostKeyBlob(): string {
-  const name = Buffer.from("ssh-ed25519");
-  const key = createHash("sha256").update("own-server").digest();
-  const length = (n: number) => {
-    const out = Buffer.alloc(4);
-    out.writeUInt32BE(n);
-    return out;
-  };
-  return Buffer.concat([length(name.length), name, length(key.length), key]).toString("base64");
-}
-const HOST_KEY = hostKeyBlob();
-const FINGERPRINT = `SHA256:${createHash("sha256").update(Buffer.from(HOST_KEY, "base64")).digest("base64").replace(/=+$/, "")}`;
-
-type HostAdapter = Required<NonNullable<OwnServerServices["host"]>>;
-type HostFacts = Awaited<ReturnType<HostAdapter["inspect"]>>;
-type HostPlan = Parameters<HostAdapter["apply"]>[1];
-type ApplyOptions = Parameters<HostAdapter["apply"]>[2];
-
-const ADDON = {
-  installed: false,
-  composeSha256: null,
-  running: false,
-  secretFile: false,
-  dataVolume: false,
-  tunnelId: null,
-};
-
-function freshFacts(): HostFacts {
-  return {
-    user: "root",
-    privilege: "root",
-    os: {
-      id: "ubuntu",
-      idLike: "debian",
-      versionId: "24.04",
-      codename: "noble",
-      prettyName: "Ubuntu 24.04.3 LTS",
-    },
-    arch: "amd64",
-    machine: "x86_64",
-    cpus: 2,
-    memoryBytes: 4 * 1024 ** 3,
-    memoryAvailableBytes: 3 * 1024 ** 3,
-    diskFreeBytes: 40 * 1024 ** 3,
-    diskTotalBytes: 80 * 1024 ** 3,
-    systemd: true,
-    flock: true,
-    addresses: [{ interface: "eth0", family: "ipv4", address: OWN_IPV4, public: true }],
-    sshd: {
-      ports: [22],
-      passwordAuthentication: true,
-      kbdInteractiveAuthentication: false,
-      permitRootLogin: "yes",
-      authenticationMethods: "any",
-      allowUsers: [],
-      allowGroups: [],
-      denyUsers: [],
-      denyGroups: [],
-      authorizedKeysCommand: false,
-      allowTcpForwarding: "yes",
-      dropInIncluded: true,
-      dropIn: null,
-    },
-    listeners: [{ proto: "tcp", address: "0.0.0.0", port: 22, process: "sshd" }],
-    webServers: [],
-    firewall: {
-      ufw: "inactive",
-      ufwRules: [],
-      ufwDefaults: { incoming: "deny", outgoing: "allow", routed: "disabled" },
-      foreign: [],
-    },
-    docker: {
-      kind: "absent",
-      version: null,
-      running: false,
-      composePlugin: false,
-      buildxPlugin: false,
-      conflicting: [],
-      sources: [],
-      daemonFlags: [],
-      swarm: false,
-    },
-    containers: [],
-    volumeProjects: [],
-    directoryLogins: [],
-    dpkgInterrupted: false,
-    loginUsers: [{ name: "root", uid: 0, password: false, keys: true }],
-    deployUser: null,
-    packages: { ufw: true, unattendedUpgrades: true, curl: true, fail2ban: false },
-    autoUpgrades: false,
-    autoUpgradesService: false,
-    dockerDaemonJson: "absent",
-    fail2ban: { active: false, jail: null, sshdJail: false },
-    ready: false,
-    dirs: [
-      { path: "/srv/app", kind: "absent" },
-      { path: "/srv/data", kind: "absent" },
-    ],
-    marker: null,
-    markerDamaged: false,
-    record: null,
-    recordDamaged: false,
-    pendingUndo: { sshd: false, ufw: false },
-    tunnel: ADDON,
-    portainer: ADDON,
-  } as HostFacts;
-}
-
-/** A server prepared for the app `shop` of `projectId`. */
-function preparedFacts(projectId: string): HostFacts {
-  const fresh = freshFacts();
-  return {
-    ...fresh,
-    docker: { ...fresh.docker, kind: "docker-repo", version: "28.5.1", running: true },
-    deployUser: { groups: ["deploy", "docker"], keys: [] },
-    ready: true,
-    marker: { app: "shop", projectId },
-    record: {
-      schemaVersion: 1,
-      app: "shop",
-      projectId,
-      opscrewVersion: "0.0.0-test",
-      changes: [
-        {
-          step: "deploy-user",
-          purpose: "setup",
-          at: "2026-10-14T12:00:00.000Z",
-          previous: { existed: false },
-        },
-      ],
-    },
-  } as HostFacts;
-}
-
-class FakeHost implements HostAdapter {
-  readonly applies: { plan: HostPlan; options: ApplyOptions }[] = [];
-  inspections = 0;
-  constructor(public facts: HostFacts = freshFacts()) {}
-  async inspect(): Promise<HostFacts> {
-    this.inspections++;
-    return this.facts;
-  }
-  async apply(_remote: RemoteExec, plan: HostPlan, options: ApplyOptions) {
-    this.applies.push({ plan, options });
-    const changes = plan.steps.filter((step) => step.state === "change");
-    return {
-      applied: changes.map((step) => step.id),
-      skipped: plan.steps.filter((step) => step.state !== "change").map((step) => step.id),
-    };
-  }
-}
-
-/** IaC engine fake: plans `changes`, refuses an apply whose hash does not match. */
-class FakeEngine implements IacEngine {
-  readonly info = { name: "tofu" as const, version: "1.13.1", binary: "/fake/tofu" };
-  readonly applied: IacApproval[] = [];
-  #counter = 0;
-  constructor(readonly changes: ResourceChange[] = []) {}
-  async init(): Promise<void> {}
-  async validate() {
-    return { valid: true, diagnostics: [] };
-  }
-  async plan(dir: string, planFile: string): Promise<PlanSummary> {
-    const content = `fake own plan ${++this.#counter} for ${dir}`;
-    await writeFile(planFile, content);
-    const count = (action: string) => this.changes.filter((c) => c.action === action).length;
-    return {
-      engine: this.info,
-      dir,
-      planFile,
-      planHash: sha256(content),
-      createdAt: "2026-10-14T12:00:00.000Z",
-      changes: this.changes,
-      counts: {
-        create: count("create"),
-        update: count("update"),
-        delete: count("delete"),
-        replace: count("replace"),
-      },
-      hasDestroy: false,
-      planJson: { format_version: "1.2", planned_values: { root_module: {} } },
-    };
-  }
-  async apply(_dir: string, planFile: string, approval: IacApproval): Promise<IacApplyResult> {
-    if (sha256(await readFile(planFile)) !== approval.approvedPlanHash) {
-      throw new Error("plan hash mismatch");
-    }
-    this.applied.push(approval);
-    return { ok: true, outputs: {}, log: "Apply complete!" };
-  }
-  async output(): Promise<Record<string, unknown>> {
-    return {};
-  }
-}
-
-class FakeGitHub {
-  readonly secrets = new Map<string, string>();
-  async getRepo() {
-    return { defaultBranch: "main", private: true, canPush: true };
-  }
-  async getActionsPublicKey() {
-    return { keyId: "key-1", key: "dGVzdC1wdWJsaWMta2V5LXRlc3QtcHVibGljLWtleQ==" };
-  }
-  async setActionsSecret(_owner: string, _repo: string, name: string, value: string) {
-    this.secrets.set(name, value);
-  }
-  async findOpenPullRequest() {
-    return undefined;
-  }
-  async createPullRequest() {
-    return { number: 7, url: "https://github.com/acme/shop/pull/7" };
-  }
-  async createOrphanBranch() {
-    return { commit: "c".repeat(40) };
-  }
-  async replaceOrphanBranch() {
-    return { commit: "d".repeat(40), previous: "e".repeat(40) };
-  }
-  async branchHoldsOnly() {
-    return false;
-  }
-}
-
-/** Real git; `ssh-keyscan` answers with the host key; `ssh` succeeds. */
-function ownRunner(): ScriptedRunner {
-  const real = new NodeCommandRunner();
-  return new ScriptedRunner(async (command, args, options) => {
-    if (command === "git") return real.run(command, args, options);
-    if (command === "ssh-keyscan") {
-      const host = args[args.length - 1] as string;
-      return { exitCode: 0, stdout: `${host} ssh-ed25519 ${HOST_KEY}\n`, stderr: "" };
-    }
-    if (command === "ssh") return { exitCode: 0, stdout: "", stderr: "" };
-    return { exitCode: 127, stdout: "", stderr: `${command}: not available in tests` };
-  });
-}
+type HostFacts = FakeHostServer["facts"];
 
 const adminShell: RemoteExec = {
   host: OWN_IPV4,
   run: async (command) => ({ exitCode: command === "true" ? 0 : 1, stdout: "", stderr: "" }),
 };
 
-function ownPlan(o: { deployed?: boolean; portainer?: boolean; cloudflare?: boolean } = {}) {
-  return DeployPlanSchema.parse({
-    schemaVersion: 1,
-    createdAt: "2026-10-14T10:00:00.000Z",
-    updatedAt: "2026-10-14T10:00:00.000Z",
-    app: {
-      name: "shop",
-      port: 3000,
-      healthPath: "/api/health",
-      env: [{ name: "SESSION_SECRET", secret: true, source: "generated" }],
-    },
-    target: { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" },
-    services: { postgres: false, redis: false },
-    externalServices: [],
-    cost: {
-      monthly: { amount: 0, currency: "EUR" },
-      breakdown: [{ item: "Your own server", monthly: { amount: 0, currency: "EUR" } }],
-      pricesIncludeVat: false,
-      source: "live",
-      asOf: "2026-10-14T00:00:00.000Z",
-    },
-    codeChanges: [],
-    infra: { engine: "tofu" },
-    dns: o.cloudflare
-      ? {
-          provider: "cloudflare",
-          domain: "shop.example.com",
-          zone: "example.com",
-          proxied: false,
-          www: false,
-        }
-      : { provider: "none", proxied: false },
-    cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
-    security: {},
-    ...(o.portainer ? { portainer: { enabled: true, version: "2.45.2", access: "local" } } : {}),
-    ...(o.deployed ? { deployment: { lastApplyAt: "2026-10-14T11:00:00.000Z" } } : {}),
+/** The `shop` app on the user's own server without Postgres; its domain DNS-only on Cloudflare. */
+const shopPlan = (o: { deployed?: boolean; portainer?: boolean; cloudflare?: boolean } = {}) =>
+  ownPlan({
+    postgres: false,
+    domain: o.cloudflare ? "shop.example.com" : null,
+    proxied: false,
+    ...(o.portainer ? { portainer: "local" } : {}),
+    ...(o.deployed ? { deployed: true } : {}),
   });
-}
 
 // ---------------------------------------------------------------------------------------------
 // Harness
@@ -365,31 +98,6 @@ interface Options {
   /** Resource changes the fake engine plans (Cloudflare's DNS record for a domain). */
   changes?: ResourceChange[];
 }
-
-/** The DNS record a public-mode own plan with a Cloudflare domain creates. */
-const DNS_RECORD: ResourceChange = {
-  address: "module.dns.cloudflare_dns_record.a",
-  type: "cloudflare_dns_record",
-  name: "a",
-  provider: "registry.opentofu.org/cloudflare/cloudflare",
-  action: "create",
-};
-
-/** Cloudflare fake: the token works and `example.com` is visible with no records of its own. */
-const fakeCloudflare: NonNullable<ProvisionServices["cloudflare"]> = {
-  verifyToken: async () => ({ ok: true, message: "The Cloudflare token is active." }),
-  findZone: async () => ({
-    id: "zone-123",
-    name: "example.com",
-    status: "active",
-    nameServers: [],
-    accountId: "acct-0001",
-  }),
-  listDnsRecords: async () => [],
-  inspectEntrypointRuleset: async () => ({ exists: false, ownedByOpsCrew: false, ruleCount: 0 }),
-  getIpRanges: async () => ({ ipv4: ["173.245.48.0/20"], ipv6: ["2400:cb00::/32"] }),
-  listAccounts: async () => [],
-};
 
 async function connect(options: Options = {}) {
   const root = await tempDir("opscrew-mcp-own-");
@@ -439,7 +147,7 @@ async function connect(options: Options = {}) {
       ...options.login,
     } as OwnServerConnectionInput);
   }
-  const host = new FakeHost(options.facts?.(paths.projectId) ?? freshFacts());
+  const host = new FakeHostServer(options.facts?.(paths.projectId) ?? freshFacts());
   const keyHome = path.join(home, "user");
   await mkdir(keyHome, { recursive: true });
   const own: OwnServerServices = {
@@ -448,18 +156,18 @@ async function connect(options: Options = {}) {
     verifyLogin: async () => true,
     homeDir: keyHome,
   };
-  const engine = new FakeEngine(options.changes ?? []);
+  const engine = new FakeEngine({
+    changes: options.changes ?? [],
+    planJson: { format_version: "1.2", planned_values: { root_module: {} } },
+  });
   const github = new FakeGitHub();
   const services: ProvisionServices = {
     engine: async () => engine,
     github,
-    cloudflare: fakeCloudflare,
+    cloudflare: ownCloudflare(),
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own,
-  };
-  const forbiddenFetch: FetchLike = async (input) => {
-    throw new Error(`Unexpected network call in a test: ${String(input)}`);
   };
   const deps = resolveMcpDeps({
     version: "0.0.0-test",
@@ -468,6 +176,7 @@ async function connect(options: Options = {}) {
     runner: ownRunner(),
     clock: { now: () => new Date("2026-10-14T12:00:00.000Z") },
     cwd: root,
+    scanners: () => defaultScanners({ includeExternal: false }),
   });
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
   registerInterviewTools(server, deps);
@@ -564,8 +273,8 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     const result = await h.call("opscrew_design_options");
     expect(result.isError, textOf(result)).toBeFalsy();
     expect(h.elicited).toHaveLength(1);
-    expect(h.elicited[0]?.message).toContain(FINGERPRINT);
-    expect((await readOwnServer(h.paths))?.hostKey).toBe(FINGERPRINT);
+    expect(h.elicited[0]?.message).toContain(ED25519_FINGERPRINT);
+    expect((await readOwnServer(h.paths))?.hostKey).toBe(ED25519_FINGERPRINT);
     const text = textOf(result);
     expect(text).toContain("no server price");
     expect(text).not.toMatch(/€|EUR\/month|prices live from|dated price list/);
@@ -601,8 +310,8 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
   it("opscrew_plan returns the host plan's hash; opscrew_apply applies it only after the user's dialog", async () => {
     const h = await connect({
       elicit: approveAll,
-      plan: ownPlan(),
-      login: { hostKey: FINGERPRINT },
+      plan: shopPlan(),
+      login: { hostKey: ED25519_FINGERPRINT },
     });
     const planned = await h.call("opscrew_plan");
     expect(planned.isError, textOf(planned)).toBeFalsy();
@@ -625,9 +334,9 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
   it("with a Cloudflare domain: two plans, two dialogs (infrastructure, then host), no price", async () => {
     const h = await connect({
       elicit: approveAll,
-      plan: ownPlan({ cloudflare: true }),
-      login: { hostKey: FINGERPRINT },
-      changes: [DNS_RECORD],
+      plan: shopPlan({ cloudflare: true }),
+      login: { hostKey: ED25519_FINGERPRINT },
+      changes: PUBLIC_CHANGES,
     });
     const planned = await h.call("opscrew_plan");
     expect(planned.isError, textOf(planned)).toBeFalsy();
@@ -649,7 +358,7 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
       .map((d) => d.kind)
       .filter((kind) => kind === "iac-apply" || kind === "host-apply");
     expect(kinds).toEqual(["iac-apply", "host-apply"]);
-    expect(h.engine.applied.map((a) => a.approvedPlanHash)).toEqual([planHash]);
+    expect(h.engine.applied.map((a) => a.approval.approvedPlanHash)).toEqual([planHash]);
     expect(h.host.applies.map((a) => a.options.approvedHash)).toEqual([hostPlanHash]);
     expectNoAddress(h);
   });
@@ -659,9 +368,9 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
       params.message.includes("host plan") ? { action: "decline" } : approveAll(params);
     const h = await connect({
       elicit: decline,
-      plan: ownPlan({ cloudflare: true }),
-      login: { hostKey: FINGERPRINT },
-      changes: [DNS_RECORD],
+      plan: shopPlan({ cloudflare: true }),
+      login: { hostKey: ED25519_FINGERPRINT },
+      changes: PUBLIC_CHANGES,
     });
     const planned = await h.call("opscrew_plan");
     const { planHash, hostPlanHash } = dataOf(planned) as {
@@ -688,8 +397,8 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     };
     const h = await connect({
       elicit: approveAll,
-      plan: ownPlan(),
-      login: { hostKey: FINGERPRINT },
+      plan: shopPlan(),
+      login: { hostKey: ED25519_FINGERPRINT },
       facts: withPasswords,
     });
     const blocked = await h.call("opscrew_plan");
@@ -717,7 +426,11 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
   it("a declined host plan changes nothing on the server", async () => {
     const decline: Answer = (params) =>
       params.message.includes("host plan") ? { action: "decline" } : approveAll(params);
-    const h = await connect({ elicit: decline, plan: ownPlan(), login: { hostKey: FINGERPRINT } });
+    const h = await connect({
+      elicit: decline,
+      plan: shopPlan(),
+      login: { hostKey: ED25519_FINGERPRINT },
+    });
     const planned = await h.call("opscrew_plan");
     const hostHash = dataOf(planned).hostPlanHash as string;
     const applied = await h.call("opscrew_apply", { planHash: hostHash });
@@ -727,9 +440,9 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
 
   it("Portainer: status shows no password and no address; enable needs the user's dialog", async () => {
     const h = await connect({
-      plan: ownPlan({ deployed: true }),
-      login: { hostKey: FINGERPRINT },
-      facts: preparedFacts,
+      plan: shopPlan({ deployed: true }),
+      login: { hostKey: ED25519_FINGERPRINT },
+      facts: preparedServerFacts,
     });
     const refused = await h.call("opscrew_portainer_enable");
     expect(refused.isError).toBe(true);
@@ -741,9 +454,9 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
 
     const ok = await connect({
       elicit: approveAll,
-      plan: ownPlan({ deployed: true }),
-      login: { hostKey: FINGERPRINT },
-      facts: preparedFacts,
+      plan: shopPlan({ deployed: true }),
+      login: { hostKey: ED25519_FINGERPRINT },
+      facts: preparedServerFacts,
     });
     const enabled = await ok.call("opscrew_portainer_enable");
     expect(enabled.isError, textOf(enabled)).toBeFalsy();
@@ -760,9 +473,9 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
   it("Portainer: disable refuses deleteData and points to the terminal, deleting nothing", async () => {
     const h = await connect({
       elicit: approveAll,
-      plan: ownPlan({ deployed: true, portainer: true }),
-      login: { hostKey: FINGERPRINT },
-      facts: preparedFacts,
+      plan: shopPlan({ deployed: true, portainer: true }),
+      login: { hostKey: ED25519_FINGERPRINT },
+      facts: preparedServerFacts,
     });
     const refused = await h.call("opscrew_portainer_disable", { deleteData: true });
     expect(refused.isError).toBe(true);
@@ -777,9 +490,9 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     async function deployed(elicit: Answer = approveAll) {
       const h = await connect({
         elicit,
-        plan: ownPlan(),
-        login: { hostKey: FINGERPRINT },
-        facts: preparedFacts,
+        plan: shopPlan(),
+        login: { hostKey: ED25519_FINGERPRINT },
+        facts: preparedServerFacts,
       });
       const planned = await h.call("opscrew_plan");
       expect(planned.isError, textOf(planned)).toBeFalsy();
@@ -827,9 +540,9 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
       const refused = await h.call("opscrew_drift");
       expect(refused.isError).toBe(true);
       expect(textOf(refused)).toContain("did not confirm the server's host key");
-      expect(h.elicited.at(-1)?.message).toContain(FINGERPRINT);
+      expect(h.elicited.at(-1)?.message).toContain(ED25519_FINGERPRINT);
       // A host key named by the model is not an input: the dialog still decides.
-      const supplied = await h.call("opscrew_drift", { hostKey: FINGERPRINT });
+      const supplied = await h.call("opscrew_drift", { hostKey: ED25519_FINGERPRINT });
       expect(supplied.isError).toBe(true);
       expect(h.host.inspections).toBe(inspections);
       expect((await readOwnServer(h.paths))?.hostKey).toBeUndefined();
@@ -843,14 +556,14 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
       const confirmed = await ok.call("opscrew_drift");
       expect(confirmed.isError, textOf(confirmed)).toBeFalsy();
       expect(ok.elicited.slice(before).map((e) => e.message)).toEqual([
-        expect.stringContaining(FINGERPRINT),
+        expect.stringContaining(ED25519_FINGERPRINT),
       ]);
-      expect((await readOwnServer(ok.paths))?.hostKey).toBe(FINGERPRINT);
+      expect((await readOwnServer(ok.paths))?.hostKey).toBe(ED25519_FINGERPRINT);
       expectNoAddress(ok);
     });
 
     it("refuses an unconfirmed host key when the client cannot show a dialog", async () => {
-      const h = await connect({ plan: ownPlan({ deployed: true }), facts: preparedFacts });
+      const h = await connect({ plan: shopPlan({ deployed: true }), facts: preparedServerFacts });
       const result = await h.call("opscrew_drift");
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain("npx opscrew drift");

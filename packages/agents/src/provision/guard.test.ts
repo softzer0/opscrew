@@ -2,7 +2,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
 import type { DeployPlan, Retarget } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { testPlan } from "./__fixtures__/fakes";
+import { testPlan } from "../testing";
 import { moveInProgress, requireNoMoveInProgress } from "./guard";
 
 /** A plan moving from Hetzner Cloud to DigitalOcean, at `step`, optionally being aborted. */

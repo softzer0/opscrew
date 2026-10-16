@@ -17,7 +17,7 @@ import {
   makeRequirements,
   nextPostgresFacts,
   staticSpaFacts,
-} from "./__fixtures__/catalog";
+} from "../testing";
 import { deriveCodeChanges } from "./code-changes";
 import { buildDesignOptions } from "./options";
 import { appNameFor, appPortFor, optionToPlan } from "./plan";

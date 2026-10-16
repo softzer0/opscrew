@@ -5,6 +5,7 @@ import {
   destroyConfirmPrompt,
   type PhaseDeps,
 } from "@opscrew/agents";
+import { PORTAINER_HOST, portainerPlan } from "@opscrew/agents/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,7 +17,7 @@ import {
   type TempProject,
   tempProject,
 } from "../ui/__fixtures__/harness";
-import { PORTAINER_HOST, portainerTestPlan, recordPortainer } from "../ui/__fixtures__/portainer";
+import { recordPortainer } from "../ui/__fixtures__/portainer";
 import {
   confirmMessage,
   type DestroyFlags,
@@ -135,7 +136,7 @@ function fakeDestroy(): FakeDestroy {
 
 async function portainerProject(): Promise<TempProject> {
   project = await tempProject();
-  await writeProjectPlan(project, portainerTestPlan());
+  await writeProjectPlan(project, portainerPlan());
   await recordPortainer(project, {
     stacks: [{ id: 7, name: "opscrew-shop", role: "app" }],
     volumes: ["opscrew-shop_pgdata"],

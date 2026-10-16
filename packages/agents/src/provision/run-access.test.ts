@@ -6,16 +6,19 @@ import { zeroTrustAuthDomain } from "@opscrew/iac-templates";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import type { PortainerServices } from "../portainer";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import {
+  ACCOUNT_ID,
   createProject,
+  createTestPhaseDeps,
   FakeEngine,
   FakeGitHub,
+  fakeZeroTrust,
+  ownCloudflare,
   projectRunner,
   readyRemote,
+  ScriptedApprovalHandler,
   testPlan,
-} from "./__fixtures__/fakes";
-import { ACCOUNT_ID, fakeZeroTrust, ownCloudflare } from "./__fixtures__/own";
+} from "../testing";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 

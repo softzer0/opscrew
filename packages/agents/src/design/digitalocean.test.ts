@@ -1,13 +1,15 @@
 import { DesignOptionListSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
+  digitaloceanCatalog,
+  doEuCatalog,
+  doOffer,
   euCatalog,
   makeFacts,
   makeRequirements,
   nextPostgresFacts,
   staticSpaFacts,
-} from "./__fixtures__/catalog";
-import { digitaloceanCatalog, doEuCatalog, doOffer } from "./__fixtures__/digitalocean-catalog";
+} from "../testing";
 import { buildDesignOptions } from "./options";
 import { optionToPlan } from "./plan";
 import { regionLocations } from "./sizing";

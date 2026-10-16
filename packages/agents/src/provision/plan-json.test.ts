@@ -2,8 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { createTestPhaseDeps } from "../testing";
-import { FakeEngine, planJsonFor, testPlan } from "./__fixtures__/fakes";
+import { createTestPhaseDeps, FakeEngine, planJsonFor, testPlan } from "../testing";
 import { planAndApply } from "./plan-apply";
 import { maskBySensitivity, maskSensitivePlanJson, SENSITIVE_VALUE } from "./plan-json";
 

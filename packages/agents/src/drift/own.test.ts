@@ -5,9 +5,8 @@ import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { CF_V4, CF_V6 } from "../provision/__fixtures__/fakes";
-import { ownCloudflare, ownPlan } from "../provision/__fixtures__/own";
 import { lastHostSetup, passwordLoginChoice, recordOwnServer } from "../shared";
+import { CF_V4, CF_V6, ownCloudflare, ownPlan } from "../testing";
 import {
   ED25519_FINGERPRINT,
   everythingPrinted,

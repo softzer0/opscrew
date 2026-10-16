@@ -6,14 +6,13 @@ import type { CheckResult, CommandResult, Scanner } from "@opscrew/contracts";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
-import { LAN_IPV4, OWN_IPV4, ownPlan } from "../provision/__fixtures__/own";
 import {
   hostPlanFile,
   type OwnServerConnectionInput,
   recordOwnServer,
   recordServerAddress,
 } from "../shared";
-import { createTestPhaseDeps, ScriptedRunner } from "../testing";
+import { createTestPhaseDeps, LAN_IPV4, OWN_IPV4, ownPlan, ScriptedRunner } from "../testing";
 import { withoutOwnServer } from "./own";
 import { runSecure } from "./run";
 

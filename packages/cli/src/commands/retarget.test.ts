@@ -1,4 +1,5 @@
 import { readServerAddresses } from "@opscrew/agents";
+import { testPlan } from "@opscrew/agents/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import {
   type DeployPlan,
@@ -8,7 +9,6 @@ import {
 } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { NonInteractiveApprovalHandler } from "../approval";
-import { testPlan } from "../ui/__fixtures__/deploy";
 import { CANCEL, GIT, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
 import { APP, type MoveProject, moveProject, NEW_SERVERS } from "../ui/__fixtures__/retarget";
 import { retargetStatusLine } from "../ui/retarget";
@@ -183,7 +183,7 @@ describe("flagProblems", () => {
 
 describe("retargetStatusLine", () => {
   const moving = (retarget: Record<string, unknown>): DeployPlan => {
-    const from = testPlan({ deployed: true });
+    const from = testPlan({ deployed: true, userSecret: false });
     return DeployPlanSchema.parse({
       ...from,
       target: {
@@ -201,7 +201,7 @@ describe("retargetStatusLine", () => {
   };
 
   it("is absent without a move", () => {
-    expect(retargetStatusLine(testPlan({ deployed: true }))).toBeUndefined();
+    expect(retargetStatusLine(testPlan({ deployed: true, userSecret: false }))).toBeUndefined();
   });
 
   it("names the providers, the last step and the next command", () => {

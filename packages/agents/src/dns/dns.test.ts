@@ -4,8 +4,12 @@ import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { DEPLOY_SETUP_BRANCH } from "../provision/publish";
+import { ADDRESS_MAY_BE_PUBLIC_NOTE, runProvision } from "../provision/run";
+import type { ProvisionServices } from "../provision/types";
 import {
   createProject,
+  createTestPhaseDeps,
   FakeEngine,
   FakeGitHub,
   fakeCloudflare,
@@ -13,12 +17,9 @@ import {
   planJsonFor,
   projectRunner,
   readyRemote,
+  ScriptedApprovalHandler,
   testPlan,
-} from "../provision/__fixtures__/fakes";
-import { DEPLOY_SETUP_BRANCH } from "../provision/publish";
-import { ADDRESS_MAY_BE_PUBLIC_NOTE, runProvision } from "../provision/run";
-import type { ProvisionServices } from "../provision/types";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
+} from "../testing";
 import { runDns } from "./run";
 
 /** The pull request an earlier run opened, while it is still open. */

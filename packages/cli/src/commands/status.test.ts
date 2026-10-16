@@ -2,12 +2,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { recordServerAddress, serverAddressesFile } from "@opscrew/agents";
+import { SERVER_IPV4, SERVER_IPV6, testPlan } from "@opscrew/agents/testing";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
 import { writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { main } from "../program";
 import { createTestContext } from "../test-context";
-import { deployedPlan, SERVER_IPV4, SERVER_IPV6 } from "../ui/__fixtures__/deploy";
 
 const argv = (...args: string[]) => ["node", "opscrew", ...args];
 
@@ -22,7 +22,7 @@ afterEach(async () => {
 /** A provisioned project: the plan (without any address) and the address in the local state. */
 async function provisioned(): Promise<void> {
   const paths = resolveProjectPaths(dir, { env: {} });
-  await writeArtifact("plan", paths.files.plan, deployedPlan());
+  await writeArtifact("plan", paths.files.plan, testPlan({ deployed: true, userSecret: false }));
   await recordServerAddress(paths, { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 });
   await new ProjectStateStore(paths.files.state).markPhase("provision", "ok");
 }
@@ -69,7 +69,7 @@ describe("opscrew status and the server's address", () => {
 
   it("says where the address is when this computer does not know it", async () => {
     const paths = resolveProjectPaths(dir, { env: {} });
-    await writeArtifact("plan", paths.files.plan, deployedPlan());
+    await writeArtifact("plan", paths.files.plan, testPlan({ deployed: true, userSecret: false }));
     const ctx = createTestContext({ cwd: dir });
     expect(await main(argv("status", "--ip"), ctx)).toBe(1);
     expect(ctx.output).toBe("");

@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { buyable, domainProject, domainTestPlan, usd } from "./__fixtures__/fakes";
+import { buyable, domainProject, domainTestPlan, usd } from "../testing";
 import { buyDomain } from "./buy";
 import { domainStatus, setDomainAutoRenew } from "./manage";
 import { registrarLinks } from "./registrars";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { euCatalog, makeFacts, makeRequirements, nextPostgresFacts } from "./__fixtures__/catalog";
+import { euCatalog, makeFacts, makeRequirements, nextPostgresFacts } from "../testing";
 import { buildDesignOptions } from "./options";
 import { optionToPlan } from "./plan";
 import { releaseCommandNote } from "./release";

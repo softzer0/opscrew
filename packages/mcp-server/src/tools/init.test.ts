@@ -4,9 +4,9 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
+import { forbiddenFetch, ScriptedRunner, testPlan } from "@opscrew/agents/testing";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOpscrewMcpServer } from "../server";
 
@@ -16,37 +16,6 @@ afterEach(async () => {
 });
 
 const TOKEN = fakeSecret("hcloud-token");
-
-/** A minimal valid plan on DigitalOcean (`fra1`, `s-1vcpu-2gb`). */
-function digitalOceanPlan() {
-  return DeployPlanSchema.parse({
-    schemaVersion: 1,
-    createdAt: "2026-10-11T10:00:00.000Z",
-    updatedAt: "2026-10-11T10:00:00.000Z",
-    app: { name: "shop", port: 3000, healthPath: "/api/health", env: [] },
-    target: {
-      provider: "digitalocean",
-      mode: "vps-compose",
-      location: "fra1",
-      serverType: "s-1vcpu-2gb",
-      backups: false,
-    },
-    services: { postgres: false, redis: false },
-    externalServices: [],
-    cost: {
-      monthly: { amount: 12, currency: "USD" },
-      breakdown: [{ item: "server", monthly: { amount: 12, currency: "USD" } }],
-      pricesIncludeVat: false,
-      source: "static",
-      asOf: "2026-06-15T00:00:00.000Z",
-    },
-    codeChanges: [],
-    infra: { engine: "tofu" },
-    dns: { provider: "none", proxied: false },
-    cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
-    security: {},
-  });
-}
 
 async function connect(
   options: { env?: Record<string, string>; setup?: (dir: string) => Promise<void> } = {},
@@ -106,7 +75,11 @@ describe("opscrew_init_check", () => {
     const { client, fetchCalls } = await connect({
       env: { DIGITALOCEAN_TOKEN: doToken },
       setup: (dir) =>
-        writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), digitalOceanPlan()),
+        writeArtifact(
+          "plan",
+          path.join(dir, "opscrew", "plan.yaml"),
+          testPlan({ provider: "digitalocean" }),
+        ),
     });
     const result = (await client.callTool({
       name: "opscrew_init_check",
@@ -128,7 +101,11 @@ describe("opscrew_init_check", () => {
     const { client } = await connect({
       env: {},
       setup: (dir) =>
-        writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), digitalOceanPlan()),
+        writeArtifact(
+          "plan",
+          path.join(dir, "opscrew", "plan.yaml"),
+          testPlan({ provider: "digitalocean" }),
+        ),
     });
     const result = (await client.callTool({
       name: "opscrew_init_check",

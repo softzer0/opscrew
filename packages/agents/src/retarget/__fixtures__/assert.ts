@@ -4,7 +4,7 @@ import { readArtifact, type Retarget } from "@opscrew/plan-schema";
 import { expect } from "vitest";
 import { runRetarget } from "../run";
 import type { RetargetOptions, RetargetResult } from "../types";
-import { APP, type MoveEvent, type MoveHarness } from "./move";
+import { APP, type MoveEvent, type MoveHarness } from "../../testing";
 
 /**
  * SC-502: every apply follows an approval of the same plan hash, and an apply that deletes follows

@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { ED25519_FINGERPRINT, FakeHostServer, freshFacts, OWN_IPV4 } from "@opscrew/agents/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
@@ -10,15 +11,7 @@ import {
   type TempProject,
   tempProject,
 } from "../ui/__fixtures__/harness";
-import {
-  FakeHost,
-  fakeHome,
-  freshFacts,
-  OWN_FINGERPRINT,
-  OWN_IPV4,
-  OwnRunner,
-  ownServices,
-} from "../ui/__fixtures__/own";
+import { fakeHome, OwnRunner, ownServices } from "../ui/__fixtures__/own";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -44,7 +37,7 @@ async function setup(
   options: { interactive?: boolean; prompts?: ScriptedPrompts; memoryGb?: number } = {},
 ) {
   project = await tempProject("nextjs-postgres");
-  const host = new FakeHost(freshFacts({ memoryGb: options.memoryGb ?? 4 }));
+  const host = new FakeHostServer(freshFacts({ memoryGb: options.memoryGb ?? 4 }));
   const home = await fakeHome(project);
   const context = () => {
     const ctx = projectContext(project as TempProject, {
@@ -69,7 +62,7 @@ describe("opscrew design on a server the user owns", () => {
   it("connects with --host-key, inspects the server and plans it without a price", async () => {
     const s = await setup();
     const ctx = s.context();
-    expect(await run(ctx, "design", "--host-key", OWN_FINGERPRINT), ctx.errors).toBe(0);
+    expect(await run(ctx, "design", "--host-key", ED25519_FINGERPRINT), ctx.errors).toBe(0);
     expect(s.host.inspections).toBe(1);
     expect(ctx.output).toContain("Chose the recommended option, own-server.");
     const text = `${ctx.output}${ctx.errors}`;
@@ -87,7 +80,7 @@ describe("opscrew design on a server the user owns", () => {
     const s = await setup();
     const ctx = s.context();
     expect(await run(ctx, "design")).toBe(1);
-    expect(ctx.errors).toContain(`--host-key ${OWN_FINGERPRINT}`);
+    expect(ctx.errors).toContain(`--host-key ${ED25519_FINGERPRINT}`);
     expect(s.host.inspections).toBe(0);
   });
 
@@ -95,7 +88,7 @@ describe("opscrew design on a server the user owns", () => {
     const prompts = new ScriptedPrompts(["own-server"]);
     const s = await setup({ interactive: true, prompts, memoryGb: 1 });
     const ctx = s.context();
-    expect(await run(ctx, "design", "--host-key", OWN_FINGERPRINT), ctx.errors).toBe(0);
+    expect(await run(ctx, "design", "--host-key", ED25519_FINGERPRINT), ctx.errors).toBe(0);
     const choice = prompts.calls.find((call) => call.kind === "select");
     expect(choice?.options?.[0]?.label).toBe(
       "Your server: no server price (you already pay for it)",

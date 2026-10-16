@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
-import { portainerPlan } from "./__fixtures__/portainer";
+import { portainerPlan } from "../testing";
 import { deploySetupPullRequestBody, portainerDnsRecordNote } from "./publish";
 
 describe("the deploy pull request for the user's Portainer", () => {

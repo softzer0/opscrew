@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextPostgresFacts } from "./__fixtures__/catalog";
+import { nextPostgresFacts } from "../testing";
 import { backgroundJobLibraries, backgroundJobsWarning } from "./background-jobs";
 
 const withQueue = (evidence: string[], appKind = "api" as const) =>

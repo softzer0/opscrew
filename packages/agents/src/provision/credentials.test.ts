@@ -1,17 +1,18 @@
 import type { IacEngine } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { createTestPhaseDeps } from "../testing";
 import {
+  createTestPhaseDeps,
   type FakeRuleset,
   fakeCloudflare,
   fakeRulesetId,
   heldRulesetsOutput,
+  ownCloudflare,
+  ownPlan,
+  portainerPlan,
   testPlan,
   writeFakeState,
-} from "./__fixtures__/fakes";
-import { ownCloudflare, ownPlan } from "./__fixtures__/own";
-import { portainerPlan } from "./__fixtures__/portainer";
+} from "../testing";
 import { setupCloudflare } from "./credentials";
 
 type Phase = "http_config_settings" | "http_request_firewall_custom";

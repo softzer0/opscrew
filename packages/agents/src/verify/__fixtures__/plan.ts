@@ -4,13 +4,6 @@ export const SERVER_IPV4 = "203.0.113.10";
 export const SERVER_IPV6 = "2001:db8::10";
 /** The server as OpsCrew's local state records it (`.opscrew/server.json`). */
 export const SERVER = { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 };
-/** Inside Cloudflare's published 104.16.0.0/13 range. */
-export const CLOUDFLARE_IPV4 = "104.21.32.1";
-export const CLOUDFLARE_IPV6 = "2606:4700:3030::6815:2001";
-export const CLOUDFLARE_RANGES = {
-  ipv4: ["104.16.0.0/13", "172.64.0.0/13"],
-  ipv6: ["2606:4700::/32"],
-};
 
 export interface TestPlanOptions {
   domain?: string;

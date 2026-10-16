@@ -1,5 +1,11 @@
 import path from "node:path";
 import type { DestroyServices } from "@opscrew/agents";
+import {
+  ED25519_FINGERPRINT,
+  FakeHostServer,
+  ownPlan,
+  preparedServerFacts,
+} from "@opscrew/agents/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
@@ -7,16 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
 import { type DeployProject, deployProject } from "../ui/__fixtures__/deploy";
 import { CANCEL, GIT, projectContext, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
-import {
-  FakeHost,
-  fakeHome,
-  OWN_FINGERPRINT,
-  OwnRunner,
-  ownPlan,
-  ownServices,
-  preparedFacts,
-  recordOwnLogin,
-} from "../ui/__fixtures__/own";
+import { fakeHome, OwnRunner, ownServices, recordOwnLogin } from "../ui/__fixtures__/own";
 import { TypedConfirmationHandler } from "./destroy";
 
 let project: DeployProject | undefined;
@@ -49,9 +46,9 @@ interface Options {
 /** A deployed app on the user's own server (no Cloudflare), its login and pinned host key recorded. */
 async function setup(options: Options = {}) {
   project = await deployProject(ownPlan({ domain: null, deployed: true }));
-  await recordOwnLogin(project, { hostKey: OWN_FINGERPRINT });
+  await recordOwnLogin(project, { hostKey: ED25519_FINGERPRINT });
   const paths = resolveProjectPaths(project.root, { env: project.env });
-  const host = new FakeHost(preparedFacts(paths.projectId));
+  const host = new FakeHostServer(preparedServerFacts(paths.projectId));
   const prompts = new ScriptedPrompts(options.typed ?? []);
   const deletedSecrets: string[] = [];
   const own = ownServices(host, await fakeHome(project));
@@ -79,7 +76,7 @@ async function setup(options: Options = {}) {
   return { context, host, prompts, deletedSecrets, paths };
 }
 
-const purposes = (host: FakeHost) => host.applies.map((apply) => apply.plan.purpose);
+const purposes = (host: FakeHostServer) => host.applies.map((apply) => apply.plan.purpose);
 
 describe.skipIf(!GIT)("opscrew destroy on a server the user owns", () => {
   it("asks for the app's name with the agents' prompt and removes only the app", async () => {

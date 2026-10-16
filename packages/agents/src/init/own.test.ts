@@ -4,9 +4,14 @@ import type { CommandResult, FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { ED25519_FINGERPRINT, OWN_IPV4, ownPlan } from "../provision/__fixtures__/own";
 import { type OwnServerConnectionInput, recordOwnServer, serverAddressesFile } from "../shared";
-import { createTestPhaseDeps, ScriptedRunner } from "../testing";
+import {
+  createTestPhaseDeps,
+  ED25519_FINGERPRINT,
+  OWN_IPV4,
+  ownPlan,
+  ScriptedRunner,
+} from "../testing";
 import { type InitCheck, runInitChecks } from "./index";
 
 const GITHUB = fakeSecret("github-token", "init-own");

@@ -1,9 +1,9 @@
 /**
- * Fakes for the user's existing Portainer as a deploy target (`target.provider: portainer`): a
- * plan, a recorded connection in `.opscrew/server.json`, saved stack plans and a fake phase that
- * records the options the CLI passes and asks for the approvals a real run asks for. The full
- * flows (inspection, stack plans, apply, teardown) are tested in `@opscrew/agents`; these fakes
- * only check the CLI's wiring. Tests only: no network, no Portainer.
+ * The CLI side of the tests for the user's existing Portainer as a deploy target: the recorded
+ * connection in `.opscrew/server.json`, saved stack plans and a fake phase that records the
+ * options the CLI passes and asks for the approvals a real run asks for. The full flows
+ * (inspection, stack plans, apply, teardown) are tested in `@opscrew/agents`; these fakes only
+ * check the CLI's wiring. Tests only: no network, no Portainer.
  */
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -15,67 +15,21 @@ import {
   recordPortainerConnection,
   stackPlanFile,
 } from "@opscrew/agents";
+import { fakeCertificate, PORTAINER_URL } from "@opscrew/agents/testing";
 import { OpsCrewError, resolveProjectPaths } from "@opscrew/core";
-import { type DeployPlan, DeployPlanSchema, type PortainerWeb } from "@opscrew/plan-schema";
-import { testPlan } from "./deploy";
 import type { TempProject } from "./harness";
-
-/** Portainer's address: it must never be printed. */
-export const PORTAINER_HOST = "nas-portainer.home.arpa";
-export const PORTAINER_URL = `https://${PORTAINER_HOST}:9443`;
-export const PORTAINER_FINGERPRINT = `SHA256:${Array.from({ length: 32 }, () => "5A").join(":")}`;
-
-export interface PortainerPlanOptions {
-  web?: PortainerWeb;
-  redeploy?: "updater" | "cloudflare";
-  /** Default `shop.example.com` on Cloudflare; `null` for no domain. */
-  domain?: string | null;
-  /** Record an apply in `deployment`, as provision does. */
-  deployed?: boolean;
-}
-
-/** A valid `opscrew/plan.yaml` for the `shop` app in the user's Portainer (environment 3). */
-export function portainerTestPlan(options: PortainerPlanOptions = {}): DeployPlan {
-  const web = options.web ?? { mode: "tunnel" };
-  const domain = options.domain === undefined ? "shop.example.com" : options.domain;
-  const base = testPlan({
-    ...(domain === null ? {} : { domain }),
-    ...(options.deployed === true ? { deployed: true } : {}),
-  });
-  return DeployPlanSchema.parse({
-    ...base,
-    target: {
-      provider: "portainer",
-      mode: "portainer-stack",
-      environmentId: 3,
-      arch: "amd64",
-      redeploy: options.redeploy ?? "updater",
-      web,
-    },
-    dns:
-      domain === null
-        ? { provider: "none", proxied: false }
-        : { ...base.dns, proxied: web.mode === "tunnel" },
-    cost: {
-      monthly: { amount: 0, currency: "EUR" },
-      breakdown: [
-        { item: "Your Portainer (you already run it)", monthly: { amount: 0, currency: "EUR" } },
-      ],
-      pricesIncludeVat: false,
-      source: "live",
-      asOf: "2026-10-15T00:00:00.000Z",
-    },
-  });
-}
 
 /** Records how OpsCrew reaches the user's Portainer, as the interview does. */
 export async function recordPortainer(
   project: TempProject,
-  created: { stacks?: { id: number; name: string; role: "app" | "updater" | "tunnel-connector" }[]; volumes?: string[] } = {},
+  created: {
+    stacks?: { id: number; name: string; role: "app" | "updater" | "tunnel-connector" }[];
+    volumes?: string[];
+  } = {},
 ): Promise<void> {
   await recordPortainerConnection(resolveProjectPaths(project.root, { env: project.env }), {
     url: PORTAINER_URL,
-    certFingerprint: PORTAINER_FINGERPRINT,
+    certFingerprint: fakeCertificate().fingerprint,
     environmentId: 3,
     environmentName: "nas",
     arch: "amd64",
@@ -89,9 +43,9 @@ export async function recordPortainer(
  * Saves a stack plan as provision does (`.opscrew/plans/stack-<hash>.json`) and returns its hash:
  * `changes` changes and `inPlace` changes already in place.
  */
-export async function saveStackPlan(
+async function saveStackPlan(
   deps: Pick<PhaseDeps, "paths">,
-  options: { changes: number; inPlace?: number; seed?: string },
+  options: { changes: number; inPlace?: number },
 ): Promise<string> {
   const plan = {
     schemaVersion: 1,
@@ -114,7 +68,7 @@ export async function saveStackPlan(
     ],
     findings: [],
     record: { stacks: [], volumes: [] },
-    seed: options.seed ?? "",
+    seed: "",
   };
   const text = `${JSON.stringify(plan, null, 2)}\n`;
   const hash = createHash("sha256").update(text).digest("hex");
@@ -125,7 +79,7 @@ export async function saveStackPlan(
 }
 
 /** Saves an infrastructure plan sidecar (`<plans>/<stamp>.tfplan.json`) with `hash`, as provision does. */
-export async function saveInfraPlan(deps: Pick<PhaseDeps, "paths">, hash: string): Promise<void> {
+async function saveInfraPlan(deps: Pick<PhaseDeps, "paths">, hash: string): Promise<void> {
   const dir = deps.paths.files.plansDir;
   await mkdir(dir, { recursive: true });
   const sidecar = {

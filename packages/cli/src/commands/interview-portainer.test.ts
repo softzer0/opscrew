@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { PortainerAccess, PortainerEnvironment } from "@opscrew/agents";
+import { PORTAINER_HOST, PORTAINER_URL } from "@opscrew/agents/testing";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,8 +21,6 @@ afterEach(async () => {
   project = undefined;
 });
 
-const HOST = "nas-portainer.home.arpa";
-const URL_ = `https://${HOST}:9443`;
 const FINGERPRINT = `SHA256:${Array.from({ length: 32 }, (_, i) => (i + 16).toString(16).toUpperCase()).join(":")}`;
 const OTHER_FINGERPRINT = `SHA256:${Array.from({ length: 32 }, () => "CD").join(":")}`;
 
@@ -56,7 +55,7 @@ const ANSWERS = [
   "dataCriticality: important",
   "domain: shop.example.com",
   "dnsProvider: cloudflare",
-  `portainer.url: ${URL_}`,
+  `portainer.url: ${PORTAINER_URL}`,
   "portainer.environment: nas",
   "portainer.redeploy: updater",
   "portainer.web: tunnel",
@@ -95,10 +94,10 @@ describe("opscrew interview for an existing Portainer", () => {
       await readFile(resolveProjectPaths(p.root, { env: p.env }).files.requirements, "utf8"),
     );
     expect(requirements.provider).toBe("portainer");
-    expect(JSON.stringify(requirements)).not.toContain(HOST);
+    expect(JSON.stringify(requirements)).not.toContain(PORTAINER_HOST);
     const local = await serverJson(p);
     expect(local.portainer).toMatchObject({
-      url: URL_,
+      url: PORTAINER_URL,
       certFingerprint: FINGERPRINT,
       environmentId: 3,
       environmentName: "nas",
@@ -107,7 +106,7 @@ describe("opscrew interview for an existing Portainer", () => {
     expect(ctx.output).toContain("your existing Portainer");
     expect(ctx.output).toContain("opscrew design");
     for (const text of [ctx.output, ctx.errors]) {
-      expect(text).not.toContain(HOST);
+      expect(text).not.toContain(PORTAINER_HOST);
       expect(text).not.toContain(token);
     }
   });
@@ -121,7 +120,7 @@ describe("opscrew interview for an existing Portainer", () => {
     expect(calls.listed).toEqual([]);
     expect(ctx.errors).toContain(FINGERPRINT);
     expect(ctx.errors).toContain("--portainer-cert");
-    expect(`${ctx.output}${ctx.errors}`).not.toContain(HOST);
+    expect(`${ctx.output}${ctx.errors}`).not.toContain(PORTAINER_HOST);
   });
 
   it("refuses a --portainer-cert that does not match, and one that is not a fingerprint", async () => {
@@ -149,7 +148,7 @@ describe("opscrew interview for an existing Portainer", () => {
     const answer = (kind: string, message: string, initial: unknown, options?: string[]) => {
       asked.push({ kind, message: message.split("\n")[0] ?? "", ...(options ? { options } : {}) });
       if (message.includes("Where should OpsCrew run your app?")) return "portainer";
-      if (message.includes("Portainer's address")) return URL_;
+      if (message.includes("Portainer's address")) return PORTAINER_URL;
       if (message.startsWith("Trust this certificate")) return true;
       if (message.includes("Which Portainer environment")) return "3";
       if (message.includes("How should visitors reach the app?")) return "proxy";
@@ -199,7 +198,7 @@ describe("opscrew interview for an existing Portainer", () => {
       environmentId: 3,
       web: { mode: "proxy", port: 8088 },
     });
-    expect(ctx.output).not.toContain(HOST);
+    expect(ctx.output).not.toContain(PORTAINER_HOST);
   });
 
   it("trusts nothing and saves nothing when the user declines the certificate", async () => {

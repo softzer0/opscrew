@@ -7,26 +7,28 @@ import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { fillPortainerStack, PORTAINER_STACK_TEMPLATE_PATH } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import {
-  createProject,
-  FakeEngine,
-  FakeGitHub,
-  projectRunner,
-  writeFakeState,
-} from "../../provision/__fixtures__/fakes";
-import { fakeZeroTrust, ownCloudflare } from "../../provision/__fixtures__/own";
-import {
-  type FakePortainerOptions,
-  fakeCertificate,
-  fakePortainer,
-  portainerPlan,
-  portainerPlanJson,
-} from "../../provision/__fixtures__/portainer";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../../provision/portainer";
 import { runProvision } from "../../provision/run";
 import type { ProvisionServices } from "../../provision/types";
 import { type PortainerConnectionInput, recordPortainerConnection } from "../../shared";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../../testing";
+import {
+  createProject,
+  createTestPhaseDeps,
+  FakeEngine,
+  FakeGitHub,
+  type FakePortainerOptions,
+  fakeCertificate,
+  PORTAINER_HOST,
+  PORTAINER_URL,
+  fakePortainer,
+  fakeZeroTrust,
+  ownCloudflare,
+  portainerPlan,
+  portainerPlanJson,
+  projectRunner,
+  ScriptedApprovalHandler,
+  writeFakeState,
+} from "../../testing";
 
 export { fakeCertificate, portainerPlan };
 
@@ -44,9 +46,6 @@ export function portainerSecrets() {
   };
 }
 
-/** Portainer's address: it must never be printed, audited, committed or sent to GitHub. */
-export const PORTAINER_HOST = "nas-portainer.home.arpa";
-export const PORTAINER_URL = `https://${PORTAINER_HOST}:9443`;
 export const CERT = fakeCertificate();
 export const WEBHOOK_UUID = "6f1c2d3e-4a5b-4c6d-8e7f-901a2b3c4d5e";
 /** The image the fake deploy workflow writes to the deploy branch. */

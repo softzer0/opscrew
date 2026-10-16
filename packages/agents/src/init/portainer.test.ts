@@ -9,13 +9,20 @@ import type { CommandResult, FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { fakeCertificate, fakePortainer, portainerPlan } from "../provision/__fixtures__/portainer";
 import {
   type PortainerConnectionInput,
   recordPortainerConnection,
   serverAddressesFile,
 } from "../shared";
-import { createTestPhaseDeps, ScriptedRunner } from "../testing";
+import {
+  createTestPhaseDeps,
+  fakeCertificate,
+  fakePortainer,
+  PORTAINER_HOST,
+  PORTAINER_URL,
+  portainerPlan,
+  ScriptedRunner,
+} from "../testing";
 import { type InitCheck, runInitChecks } from "./index";
 
 const GITHUB = fakeSecret("github-token", "init-portainer");
@@ -25,9 +32,6 @@ const PORTAINER_TOKEN = fakeSecret("generic-password", "init-portainer token");
 const REGISTRY_TOKEN = fakeSecret("github-token", "init-portainer ghcr");
 const REPOSITORY_TOKEN = fakeSecret("github-pat", "init-portainer repo");
 
-/** Portainer's address: no check may show it. */
-const PORTAINER_HOST = "nas-portainer.home.arpa";
-const PORTAINER_URL = `https://${PORTAINER_HOST}:9443`;
 const CERT = fakeCertificate("init portainer certificate");
 const OTHER_CERT = fakeCertificate("someone else's certificate");
 

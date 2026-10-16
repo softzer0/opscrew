@@ -36,22 +36,24 @@ import {
   tunnelDeletePlanJson,
   tunnelDeletes,
 } from "../shared/__fixtures__/tunnel";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import {
   createProject,
+  createTestPhaseDeps,
   FakeEngine,
   FakeGitHub,
-  projectRunner,
-  writeFakeState,
-} from "./__fixtures__/fakes";
-import { fakeZeroTrust, ownCloudflare } from "./__fixtures__/own";
-import {
   type FakePortainerOptions,
   fakeCertificate,
   fakePortainer,
+  fakeZeroTrust,
+  ownCloudflare,
+  PORTAINER_HOST,
+  PORTAINER_URL,
   portainerPlan,
   portainerPlanJson,
-} from "./__fixtures__/portainer";
+  projectRunner,
+  ScriptedApprovalHandler,
+  writeFakeState,
+} from "../testing";
 import {
   portainerContainerUrl,
   portainerValueKeyFile,
@@ -72,9 +74,6 @@ const TUNNEL_TOKEN = fakeSecret("generic-password", "app tunnel token");
 const WEBHOOK_TUNNEL_TOKEN = fakeSecret("generic-password", "webhook tunnel token");
 const ACCESS_ID = fakeSecret("generic-password", "access client id");
 const ACCESS_SECRET = fakeSecret("generic-password", "access client secret");
-/** Portainer's address: it must never be printed, audited, committed or sent to GitHub. */
-const PORTAINER_HOST = "nas-portainer.home.arpa";
-const PORTAINER_URL = `https://${PORTAINER_HOST}:9443`;
 const CERT = fakeCertificate();
 const UUIDS = ["6f1c2d3e-4a5b-4c6d-8e7f-901a2b3c4d5e", "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"];
 

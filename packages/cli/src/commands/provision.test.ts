@@ -1,6 +1,13 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
+import {
+  FakeEngine,
+  FakeGitHub,
+  planJsonFor,
+  SERVER_IPV4,
+  testPlan,
+} from "@opscrew/agents/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -11,12 +18,7 @@ import {
   type DeployProject,
   DeployRunner,
   deployProject,
-  FakeEngine,
-  FakeGitHub,
-  planJsonFor,
   provisionServices,
-  SERVER_IPV4,
-  testPlan,
 } from "../ui/__fixtures__/deploy";
 import { GIT, git, projectContext, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
 

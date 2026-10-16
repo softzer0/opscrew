@@ -1,26 +1,25 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  ED25519_FINGERPRINT,
+  FakeEngine,
+  FakeGitHub,
+  FakeHostServer,
+  freshFacts,
+  OWN_IPV4,
+  ownPlan,
+  PUBLIC_CHANGES,
+} from "@opscrew/agents/testing";
 import type { ApprovalHandler } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
-import {
-  type DeployProject,
-  deployProject,
-  FakeEngine,
-  FakeGitHub,
-} from "../ui/__fixtures__/deploy";
+import { type DeployProject, deployProject } from "../ui/__fixtures__/deploy";
 import { GIT, projectContext, run } from "../ui/__fixtures__/harness";
 import {
-  FakeHost,
   fakeHome,
-  freshFacts,
-  OWN_FINGERPRINT,
-  OWN_IPV4,
-  OWN_PUBLIC_CHANGES,
   OwnRunner,
-  ownPlan,
   ownProvisionServices,
   ownServices,
   recordOwnLogin,
@@ -33,15 +32,15 @@ afterEach(async () => {
 });
 
 interface Setup {
-  host?: FakeHost;
+  host?: FakeHostServer;
   approvals?: ApprovalHandler;
 }
 
 /** A non-interactive context (the real `--approve`/`--yes` handler) with own-server fakes. */
 async function context(p: DeployProject, options: Setup = {}) {
-  const engine = new FakeEngine({ changes: OWN_PUBLIC_CHANGES, planJson: {} });
+  const engine = new FakeEngine({ changes: PUBLIC_CHANGES, planJson: {} });
   const github = new FakeGitHub();
-  const host = options.host ?? new FakeHost();
+  const host = options.host ?? new FakeHostServer();
   const ctx = projectContext(p, {
     services: {
       runner: new OwnRunner(),
@@ -71,13 +70,13 @@ describe.skipIf(GIT === undefined)("opscrew provision on a server the user owns"
   it("--plan-only prints both hashes and one command; repeated --approve applies exactly those plans", async () => {
     project = await ownProject();
     const first = await context(project);
-    const planOnly = ["provision", "--plan-only", "--host-key", OWN_FINGERPRINT, "--yes"];
+    const planOnly = ["provision", "--plan-only", "--host-key", ED25519_FINGERPRINT, "--yes"];
     expect(await run(first.ctx, ...planOnly), first.ctx.errors).toBe(0);
     expect(first.engine.calls).not.toContain("apply");
     expect(first.host.applies).toEqual([]);
     const { infra, host } = printedHashes(first.ctx.output);
     expect(first.ctx.output).toContain(
-      `    opscrew provision --approve ${infra} --approve ${host} --host-key ${OWN_FINGERPRINT} --yes\n`,
+      `    opscrew provision --approve ${infra} --approve ${host} --host-key ${ED25519_FINGERPRINT} --yes\n`,
     );
     // The host key is pinned on this first connection; the address stays in the local state.
     const paths = resolveProjectPaths(project.root, { env: project.env });
@@ -103,7 +102,7 @@ describe.skipIf(GIT === undefined)("opscrew provision on a server the user owns"
   it("grants the host plan only for a listed hash: the infrastructure hash alone stops before the server changes", async () => {
     project = await ownProject();
     const first = await context(project);
-    await run(first.ctx, "provision", "--plan-only", "--host-key", OWN_FINGERPRINT, "--yes");
+    await run(first.ctx, "provision", "--plan-only", "--host-key", ED25519_FINGERPRINT, "--yes");
     const { infra, host } = printedHashes(first.ctx.output);
 
     const second = await context(project);
@@ -117,7 +116,7 @@ describe.skipIf(GIT === undefined)("opscrew provision on a server the user owns"
   it("never grants the host plan through --yes", async () => {
     project = await ownProject();
     const { ctx, engine, host } = await context(project);
-    expect(await run(ctx, "provision", "--host-key", OWN_FINGERPRINT, "--yes")).toBe(1);
+    expect(await run(ctx, "provision", "--host-key", ED25519_FINGERPRINT, "--yes")).toBe(1);
     expect(engine.calls).not.toContain("apply");
     expect(host.applies).toEqual([]);
   });
@@ -127,7 +126,7 @@ describe.skipIf(GIT === undefined)("opscrew provision on a server the user owns"
     const { ctx, host } = await context(project);
     expect(await run(ctx, "provision", "--plan-only", "--yes")).toBe(1);
     expect(ctx.errors).toContain("--host-key");
-    expect(ctx.errors).toContain(OWN_FINGERPRINT);
+    expect(ctx.errors).toContain(ED25519_FINGERPRINT);
     expect(host.inspections).toBe(0);
   });
 
@@ -147,16 +146,16 @@ describe.skipIf(GIT === undefined)("opscrew provision on a server the user owns"
       { name: "root", uid: 0, password: false, keys: true },
       { name: "alice", uid: 1000, password: true, keys: false },
     ];
-    const blocked = await context(project, { host: new FakeHost(facts) });
-    const base = ["provision", "--plan-only", "--host-key", OWN_FINGERPRINT, "--yes"];
+    const blocked = await context(project, { host: new FakeHostServer(facts) });
+    const base = ["provision", "--plan-only", "--host-key", ED25519_FINGERPRINT, "--yes"];
     expect(await run(blocked.ctx, ...base)).toBe(1);
     expect(blocked.ctx.errors).toContain("--password-logins");
 
-    const kept = await context(project, { host: new FakeHost(facts) });
+    const kept = await context(project, { host: new FakeHostServer(facts) });
     expect(await run(kept.ctx, ...base, "--password-logins", "keep"), kept.ctx.errors).toBe(0);
     const { host } = printedHashes(kept.ctx.output);
     expect(kept.ctx.output).toContain(
-      `--approve ${host} --host-key ${OWN_FINGERPRINT} --password-logins keep --yes`,
+      `--approve ${host} --host-key ${ED25519_FINGERPRINT} --password-logins keep --yes`,
     );
   });
 

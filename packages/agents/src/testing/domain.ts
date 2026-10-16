@@ -19,19 +19,22 @@ import {
   type Requirements,
   writeArtifact,
 } from "@opscrew/plan-schema";
-import { createTestPhaseDeps, ScriptedApprovalHandler, type TestPhaseDeps } from "../../testing";
-import type { OtherRegistrarId } from "../registrars";
+import type { OtherRegistrarId } from "../domain/registrars";
 import type {
   DomainAccount,
   DomainServices,
   DomainZone,
   DomainZoneApi,
   ZoneDsRecord,
-} from "../types";
+} from "../domain/types";
+import { createTestPhaseDeps, ScriptedApprovalHandler, type TestPhaseDeps } from "./deps";
 import { FakeRegistrar } from "./registrars";
 
 /** The nameservers Cloudflare assigns to the fake's new zones. */
-export const ZONE_NAMESERVERS: readonly string[] = ["kim.ns.cloudflare.com", "lee.ns.cloudflare.com"];
+export const ZONE_NAMESERVERS: readonly string[] = [
+  "kim.ns.cloudflare.com",
+  "lee.ns.cloudflare.com",
+];
 
 /** The DS record the fake's zones publish once DNSSEC is on. */
 export const ZONE_DS: ZoneDsRecord = {

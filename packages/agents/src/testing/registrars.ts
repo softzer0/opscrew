@@ -13,7 +13,7 @@ import type {
   RegistrationStatus,
 } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import type { OtherRegistrarId } from "../registrars";
+import type { OtherRegistrarId } from "../domain/registrars";
 
 /** The capabilities the real adapters declare (see each connector's `capabilities`). */
 export const CAPABILITIES: Readonly<Record<OtherRegistrarId, RegistrarCapabilities>> = {
@@ -309,7 +309,9 @@ export class FakeRegistrar {
     } else {
       registrar.contactSummary = async () => {
         this.enter("contactSummary", "contactSummary");
-        return id === "namecheap" ? MASKED_CONTACT : "the GoDaddy account's default contact profile";
+        return id === "namecheap"
+          ? MASKED_CONTACT
+          : "the GoDaddy account's default contact profile";
       };
     }
     return registrar;

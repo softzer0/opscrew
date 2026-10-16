@@ -1,19 +1,16 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  CLOUDFLARE_IPV4,
+  CLOUDFLARE_IPV6,
+  CLOUDFLARE_RANGES,
+  SERVER_IPV4,
+  testPlan,
+} from "@opscrew/agents/testing";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
-import {
-  CF_V4,
-  CF_V6,
-  CLOUDFLARE_IPV4,
-  CLOUDFLARE_IPV6,
-  DeployRunner,
-  fakeSite,
-  SERVER_IPV4,
-  testPlan,
-  writeProjectPlan,
-} from "../ui/__fixtures__/deploy";
+import { DeployRunner, fakeSite, writeProjectPlan } from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
 
 let project: TempProject | undefined;
@@ -42,14 +39,14 @@ async function setup(plan: DeployPlan, options: { healthStatus?: number } = {}) 
         issuer: "Let's Encrypt",
       }),
       tcpConnect: async () => false,
-      cloudflareRanges: { ipv4: CF_V4, ipv6: CF_V6 },
+      cloudflareRanges: CLOUDFLARE_RANGES,
       timeoutMs: 1000,
     },
   });
   return { ctx, root: project.root, planFile };
 }
 
-const live = () => testPlan({ domain: "shop.example.com", deployed: true });
+const live = () => testPlan({ domain: "shop.example.com", deployed: true, userSecret: false });
 
 describe("opscrew verify", () => {
   it("passes for a healthy deployment, writes the runbook and exits 0", async () => {
@@ -76,7 +73,7 @@ describe("opscrew verify", () => {
   });
 
   it("exits 1 with the next step when nothing is provisioned yet", async () => {
-    const { ctx } = await setup(testPlan());
+    const { ctx } = await setup(testPlan({ userSecret: false }));
     expect(await run(ctx, "verify")).toBe(1);
     expect(ctx.errors).toContain("does not know the server's address");
     expect(ctx.errors).toContain("opscrew provision");

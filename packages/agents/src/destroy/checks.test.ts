@@ -1,14 +1,15 @@
 import type { ResourceChange } from "@opscrew/contracts";
 import { cloudTarget } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
-import { HOST_KEY, testPlan } from "../provision/__fixtures__/fakes";
 import {
   DROPLET_ADDRESS,
   deployedResources,
+  HOST_KEY,
   SERVER_ADDRESS,
   serverAttributes,
+  testPlan,
   unprotectPlan,
-} from "./__fixtures__/fakes";
+} from "../testing";
 import {
   dataWarning,
   deletesServer,

@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  makeFacts,
-  makeRequirements,
-  nextPostgresFacts,
-  staticSpaFacts,
-} from "./__fixtures__/catalog";
+import { makeFacts, makeRequirements, nextPostgresFacts, staticSpaFacts } from "../testing";
 import { regionLocations, sizeFor } from "./sizing";
 
 describe("regionLocations", () => {

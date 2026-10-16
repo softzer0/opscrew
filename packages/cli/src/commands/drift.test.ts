@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { deploymentRenderContext, ensureDeployKey, writeRenderedFiles } from "@opscrew/agents";
+import { FakeEngine, FakeGitHub, testPlan } from "@opscrew/agents/testing";
 import type { PlanSummary, ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { renderDeployment } from "@opscrew/iac-templates";
@@ -10,10 +11,7 @@ import {
   type DeployProject,
   DeployRunner,
   deployProject,
-  FakeEngine,
-  FakeGitHub,
   provisionServices,
-  testPlan,
 } from "../ui/__fixtures__/deploy";
 import { GIT, projectContext, run } from "../ui/__fixtures__/harness";
 
@@ -58,7 +56,9 @@ const FIREWALL: ResourceDrift = {
 };
 
 async function setup(engine: DriftEngine) {
-  project = await deployProject(testPlan({ deployed: true, httpAllowedFrom: "any" }));
+  project = await deployProject(
+    testPlan({ deployed: true, httpAllowedFrom: "any", userSecret: false }),
+  );
   const ctx = projectContext(project, { services: { runner: new DeployRunner() } });
   const paths = resolveProjectPaths(project.root, { env: ctx.env });
   await mkdir(paths.files.tfstateDir, { recursive: true });
@@ -81,7 +81,7 @@ describe.skipIf(!GIT)("opscrew drift", () => {
     const engine = new DriftEngine();
     const ctx = await setup(engine);
     const deps = createPhaseDeps(ctx, { ai: false });
-    const plan = testPlan({ deployed: true, httpAllowedFrom: "any" });
+    const plan = testPlan({ deployed: true, httpAllowedFrom: "any", userSecret: false });
     const key = await ensureDeployKey(deps.paths);
     const files = renderDeployment(
       plan,

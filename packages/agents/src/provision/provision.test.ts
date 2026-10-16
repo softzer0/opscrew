@@ -8,9 +8,9 @@ import { renderRunbook } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { readServerAddresses } from "../shared";
-import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import {
   createProject,
+  createTestPhaseDeps,
   DIGITALOCEAN_CREATE,
   FakeEngine,
   type FakeEngineScenario,
@@ -23,11 +23,12 @@ import {
   planJsonFor,
   projectRunner,
   readyRemote,
+  ScriptedApprovalHandler,
   SERVER_IPV4,
   SERVER_IPV6,
   testPlan,
   writeFakeState,
-} from "./__fixtures__/fakes";
+} from "../testing";
 import { findSavedPlan } from "./plan-apply";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { deploymentRenderContext, previewDeploymentFiles } from "./render";

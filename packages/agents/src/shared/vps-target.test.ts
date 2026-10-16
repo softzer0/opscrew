@@ -3,9 +3,8 @@ import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-
 import { describe, expect, it } from "vitest";
 import { defaultProvider } from "../interview/questions";
 import { planProvider, requestedProvider } from "../providers";
-import { testPlan } from "../provision/__fixtures__/fakes";
 import { runRetarget } from "../retarget/run";
-import { createTestPhaseDeps } from "../testing";
+import { createTestPhaseDeps, testPlan } from "../testing";
 import { moveProvider, ownServerNoMove } from "./vps-target";
 
 const BUG = {
