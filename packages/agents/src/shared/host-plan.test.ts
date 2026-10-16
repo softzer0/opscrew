@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { HostApplyError, type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
-import type { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
@@ -131,5 +131,36 @@ describe("approveAndApplyHostPlan", () => {
       /cannot prepare your server/,
     );
     expect(s.handler.requests).toHaveLength(0);
+  });
+
+  it("applies nothing and reads no secret when the approval store does not confirm the approval", async () => {
+    for (const allowDestroy of [false, true]) {
+      const s = await setup();
+      const checked: { hash: string; allowDestroy: boolean }[] = [];
+      s.deps.approvals.assertApprovedHostPlan = async (hash, options) => {
+        checked.push({ hash, allowDestroy: options?.allowDestroy === true });
+        throw new OpsCrewError(
+          options?.allowDestroy ? "DESTROY_NOT_APPROVED" : "PLAN_NOT_APPROVED",
+          "The approval store has no matching approval.",
+        );
+      };
+      let read = 0;
+      const step = s.step({
+        allowDestroy,
+        secrets: async () => {
+          read++;
+          return {};
+        },
+      });
+      await expect(approveAndApplyHostPlan(s.deps, step)).rejects.toMatchObject({
+        code: allowDestroy ? "DESTROY_NOT_APPROVED" : "PLAN_NOT_APPROVED",
+      });
+      // The handler said yes, but only the store's confirmation lets anything happen.
+      expect(s.handler.requests).toHaveLength(1);
+      expect(checked).toEqual([{ hash: hostPlanHash(PLAN), allowDestroy }]);
+      expect(read).toBe(0);
+      expect(s.applied).toEqual([]);
+      expect(s.deps.audit.entries.map((e) => e.action)).not.toContain("host apply started");
+    }
   });
 });
