@@ -8,8 +8,11 @@ export function fixture(name: string): string {
   return readFileSync(new URL(`./${name}.xml`, import.meta.url), "utf8");
 }
 
-/** A route answer: XML text (HTTP 200), an HTTP status with a body, or a network failure. */
-export type Route = string | { status: number; body: string } | Error;
+/**
+ * A route answer: XML text (HTTP 200), an HTTP status with a body, a network failure, or `hang`
+ * (no answer until the request's signal aborts: a timeout).
+ */
+export type Route = string | { status: number; body: string } | Error | { hang: true };
 
 export interface RecordedCall {
   url: string;
@@ -48,6 +51,12 @@ export function fakeNamecheap(routes: Record<string, Route | Route[]>) {
     const route = Array.isArray(entry) ? (entry.length > 1 ? entry.shift() : entry[0]) : entry;
     if (route === undefined) throw new Error(`empty route ${key}`);
     if (route instanceof Error) throw route;
+    if (typeof route === "object" && "hang" in route) {
+      const signal = init?.signal ?? undefined;
+      return new Promise<Response>((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }
     const { status, body: text } = typeof route === "string" ? { status: 200, body: route } : route;
     return new Response(text, { status, headers: { "content-type": "text/xml" } });
   };

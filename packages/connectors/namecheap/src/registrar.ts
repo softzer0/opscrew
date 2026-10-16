@@ -386,7 +386,7 @@ export class NamecheapRegistrar implements Registrar {
     const list = await this.#client.getHosts(name);
     if (!list) return undefined;
     const records: RegistrarDnsRecord[] = list.hosts.map((h) => {
-      const label = h.name.trim().toLowerCase().replace(/\.$/, "");
+      const label = normalizeHostName(h.name);
       const fqdn = label === "" || label === "@" ? name : `${label}.${name}`;
       const hostTarget = ["CNAME", "MX", "ALIAS", "NS"].includes(h.type);
       const content = hostTarget ? h.address.trim().replace(/\.$/, "") : h.address;

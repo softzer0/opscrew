@@ -188,6 +188,21 @@ describe("NamecheapClient requests", () => {
     expect(sleep).toHaveBeenCalledTimes(2);
   });
 
+  it("gives every request a timeout and retries a read that never answers", async () => {
+    const { fetch, of } = fakeNamecheap({
+      "users.getBalances": [{ hang: true }, fixture("users-getBalances")],
+    });
+    const sleep = vi.fn(noSleep);
+    const client = makeClient(fetch, { sleep, timeoutMs: 5 });
+    expect((await client.getBalances()).available).toBe(64.2);
+    expect(of("users.getBalances")).toHaveLength(2);
+
+    const hanging = fakeNamecheap({ "users.getBalances": { hang: true } });
+    const error = await failure(makeClient(hanging.fetch, { timeoutMs: 5 }).getBalances());
+    expect(error.message).toMatch(/Could not reach the Namecheap API .*\(the request timed out\)/);
+    expect(hanging.of("users.getBalances")).toHaveLength(3);
+  });
+
   it("gives up on an unreachable API with a plain message", async () => {
     const { fetch, of } = fakeNamecheap({ "users.getBalances": new TypeError("fetch failed") });
     const error = await failure(makeClient(fetch).getBalances());
@@ -523,6 +538,25 @@ describe("NamecheapClient.createDomain", () => {
     expect(error.message).toMatch(why);
     // Namecheap's free text is left out (it could echo parts of the contact).
     expect(error.message).not.toMatch(/Unknown response|Insufficient|Order creation|Too many/);
+    expect(error.hint).toContain(NAMECHEAP_DASHBOARD_URLS.domainList);
+    expect(of("domains.create")).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("says a purchase that timed out may have started and never sends it again", async () => {
+    const { fetch, of } = routes({ hang: true });
+    const sleep = vi.fn(noSleep);
+    const error = await failure(
+      makeClient(fetch, { sleep, timeoutMs: 5 }).createDomain({
+        domain: "shopapp.com",
+        years: 1,
+        privacy: true,
+      }),
+    );
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe(
+      "Namecheap gave no clear answer while registering shopapp.com (the request timed out). The purchase may still have started; check its status before trying again.",
+    );
     expect(error.hint).toContain(NAMECHEAP_DASHBOARD_URLS.domainList);
     expect(of("domains.create")).toHaveLength(1);
     expect(sleep).not.toHaveBeenCalled();

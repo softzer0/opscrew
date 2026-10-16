@@ -50,6 +50,8 @@ export interface NamecheapClientOptions {
   fetch?: FetchLike;
   /** Sleep between retries of read-only calls (injected in tests). */
   sleep?: (ms: number) => Promise<void>;
+  /** How long one request may take (default 30 seconds). */
+  timeoutMs?: number;
 }
 
 /** One `domains.check` result. */
@@ -135,8 +137,10 @@ export interface NamecheapHost {
   ttl?: number;
 }
 
-/** Retries of read-only calls on network errors, 5xx and HTTP 429. */
+/** Retries of read-only calls on network errors, timeouts, 5xx and HTTP 429. */
 const MAX_RETRIES = 2;
+/** Default time one request may take before it counts as failed. */
+const REQUEST_TIMEOUT_MS = 30_000;
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 
@@ -163,6 +167,7 @@ export function namecheapDate(value: string | undefined): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
+/** No answer to a POST; the message says why, in a phrase (`the request timed out`). */
 class Unreachable extends Error {}
 
 interface Answer {
@@ -185,6 +190,7 @@ export class NamecheapClient {
   readonly #endpoint: string;
   readonly #fetch: FetchLike;
   readonly #sleep: (ms: number) => Promise<void>;
+  readonly #timeoutMs: number;
   #detected: string | undefined;
 
   constructor(options: NamecheapClientOptions) {
@@ -197,6 +203,7 @@ export class NamecheapClient {
     this.#endpoint = this.sandbox ? NAMECHEAP_SANDBOX_API : NAMECHEAP_API;
     this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   }
 
   /** Dashboard pages of the production or sandbox account. */
@@ -274,8 +281,12 @@ export class NamecheapClient {
     });
   }
 
-  /** One POST. Network failures become {@link Unreachable} (without the request in it). */
+  /**
+   * One POST with a timeout. Network failures and timeouts become {@link Unreachable} (without the
+   * request in it).
+   */
   async #post(body: URLSearchParams): Promise<Answer> {
+    const signal = AbortSignal.timeout(this.#timeoutMs);
     let response: Response;
     let text: string;
     try {
@@ -286,10 +297,11 @@ export class NamecheapClient {
           Accept: "application/xml",
         },
         body: body.toString(),
+        signal,
       });
       text = await response.text();
     } catch {
-      throw new Unreachable();
+      throw new Unreachable(signal.aborted ? "the request timed out" : "the connection failed");
     }
     return { status: response.status, envelope: toEnvelope(parseXml(text)) };
   }
@@ -308,7 +320,10 @@ export class NamecheapClient {
     return this.#fixedIp ?? this.#detected;
   }
 
-  /** A read-only (or idempotent) command's answer, retried after network errors, 5xx and 429. */
+  /**
+   * A read-only (or idempotent) command's answer, retried after network errors, timeouts, 5xx and
+   * 429.
+   */
   async #send(command: string, params: Record<string, string>, what: string): Promise<Answer> {
     const body = await this.#body(command, params);
     for (let attempt = 0; ; attempt++) {
@@ -321,9 +336,11 @@ export class NamecheapClient {
           await this.#sleep(1000 * 2 ** attempt);
           continue;
         }
-        throw new OpsCrewError("PROVIDER_ERROR", `Could not reach the Namecheap API to ${what}.`, {
-          hint: "Check your internet connection and try again.",
-        });
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          `Could not reach the Namecheap API to ${what} (${error.message}).`,
+          { hint: "Check your internet connection and try again." },
+        );
       }
       const { status, envelope } = answer;
       const retryable = status === 429 || status >= 500;
@@ -541,7 +558,7 @@ export class NamecheapClient {
     try {
       answer = await this.#post(body);
     } catch (error) {
-      if (error instanceof Unreachable) throw uncertain("the connection failed");
+      if (error instanceof Unreachable) throw uncertain(error.message);
       throw error;
     }
     const { status, envelope } = answer;
