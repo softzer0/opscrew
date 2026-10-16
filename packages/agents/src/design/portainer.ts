@@ -31,13 +31,12 @@ export const PORTAINER_BACKUPS_NOTE =
 export const PORTAINER_PRICE_NOTE = "No server price: you already run this Portainer.";
 
 /**
- * The option's `target.serverType` and `target.location`, which the option schema requires but
- * an existing Portainer does not have; surfaces printing them read naturally, and they never reach
- * the plan. OpsCrew does not size the host either: its `vcpus`, `memoryGb` and `diskGb` are the
- * schema's smallest placeholders.
+ * The option's `target.serverType` (its `target.location` is {@link OWN_SERVER_LOCATION}), which
+ * the option schema requires but an existing Portainer does not have; surfaces printing them read
+ * naturally, and they never reach the plan. OpsCrew does not size the host either: its `vcpus`,
+ * `memoryGb` and `diskGb` are the schema's smallest placeholders.
  */
 export const PORTAINER_SERVER_TYPE = "your Portainer environment";
-export const PORTAINER_LOCATION = OWN_SERVER_LOCATION;
 
 /**
  * The design choice from the interview's record, or a plain refusal: without the environment's
@@ -182,7 +181,7 @@ export function buildPortainerOption(input: PortainerOptionInput): DesignOption 
     summary,
     target: {
       provider: "portainer",
-      location: PORTAINER_LOCATION,
+      location: OWN_SERVER_LOCATION,
       serverType: PORTAINER_SERVER_TYPE,
       vcpus: 1,
       memoryGb: 0.01,

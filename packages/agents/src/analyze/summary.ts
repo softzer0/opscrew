@@ -1,9 +1,6 @@
 import { listText, plural } from "@opscrew/core";
 import type { AppKind, PlatformExport, ProjectFacts, ServiceKind } from "@opscrew/plan-schema";
 
-// interview/questions.ts still imports it from here.
-export { listText };
-
 /** Plain-English summary and deployment risks of a project. */
 export interface FactsSummary {
   summary: string;

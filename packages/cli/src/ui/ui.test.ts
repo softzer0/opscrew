@@ -1,4 +1,4 @@
-import { PORTAINER_LOCATION, PORTAINER_SERVER_TYPE } from "@opscrew/agents";
+import { OWN_SERVER_LOCATION, PORTAINER_SERVER_TYPE } from "@opscrew/agents";
 import type { DesignOption, Question } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { CANCEL, ScriptedPrompts } from "./__fixtures__/harness";
@@ -160,7 +160,7 @@ describe("renderOptionsTable for the user's Portainer", () => {
       recommended: true,
       target: {
         provider: "portainer",
-        location: PORTAINER_LOCATION,
+        location: OWN_SERVER_LOCATION,
         serverType: PORTAINER_SERVER_TYPE,
         vcpus: 1,
         memoryGb: 0.01,

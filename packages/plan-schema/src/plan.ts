@@ -651,14 +651,6 @@ export type CloudDeployTarget = Extract<DeployTarget, { provider: CloudProvider 
 export type OwnDeployTarget = Extract<DeployTarget, { provider: "own" }>;
 /** A Portainer the user already runs. */
 export type PortainerDeployTarget = Extract<DeployTarget, { provider: "portainer" }>;
-/** A target on one server: Hetzner Cloud, DigitalOcean or a server the user owns. */
-export type VpsDeployTarget = Exclude<DeployTarget, { provider: "portainer" }>;
-
-/** True when the app runs on one server (Hetzner Cloud, DigitalOcean, own), not in a Portainer. */
-export function isVpsTarget(target: DeployTarget): target is VpsDeployTarget {
-  return target.provider !== "portainer";
-}
-
 /**
  * The plain refusal (code `PHASE_PRECONDITION`) of `opscrew retarget` for a Portainer target,
  * which never moves to or from another target. Callers throw it as an `OpsCrewError`.

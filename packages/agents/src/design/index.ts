@@ -1,12 +1,8 @@
 /** Architect: sizing, provider options and costs, code-change derivation and the design phase. */
 export { convertMoney, costFor, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
 export { type BuildDesignOptionsInput, buildDesignOptions } from "./options";
-export {
-  PORTAINER_BACKUPS_NOTE,
-  PORTAINER_HOST_NOTE,
-  PORTAINER_LOCATION,
-  PORTAINER_SERVER_TYPE,
-} from "./portainer";
+export { OWN_SERVER_LOCATION } from "./own";
+export { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE, PORTAINER_SERVER_TYPE } from "./portainer";
 export {
   type DesignPreview,
   type DesignResult,

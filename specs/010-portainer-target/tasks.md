@@ -261,7 +261,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: xhigh
 
-- [ ] T1030 [P] Shared test fakes and the two contract tightenings
+- [X] T1030 [P] Shared test fakes and the two contract tightenings
   - Owns: `packages/agents/src/testing/**`, `packages/agents/src/**/__fixtures__/**`, test files in `packages/agents/src/**`, `packages/cli/src/**/__fixtures__/**`, test files in `packages/cli/src/**` and `packages/mcp-server/src/**`, `packages/contracts/src/{iac,registrar}.ts`, the requirements and facts schemas in `packages/plan-schema/src/**`, ssh-host's facts types in `packages/connectors/ssh-host/src/**`, the iac-templates renderer signatures and `InfraLayout`, and the fakes, fallbacks and source lines they touch in agents and iac-templates; the files the T1029 leftovers name in `packages/agents/src/{domain,interview}/**`, `packages/cli/src/**` and `packages/mcp-server/src/**`; the unused exports its Accept names in `packages/connectors/cloudflare/src/index.ts` and `packages/plan-schema/src/**` (lead-approved, ADR 0013)
   - Reads: Areas 8 and 11
   - Depends: T1029, T1033
