@@ -4,10 +4,11 @@ import {
   DEFAULT_REDACTION_RULES,
   maskSecret,
   Redactor,
+  redactDeep,
   registerEnvSecrets,
   replaceNames,
-  SECRET_ENV_NAMES,
   shannonEntropy,
+  TOKEN_PATTERNS,
 } from "./redact";
 import { expandFakeSecrets, fakeSecret } from "./testing";
 
@@ -338,6 +339,23 @@ describe("Redactor", () => {
     expect(r.redactDeep(`x ${GITHUB}`)).toBe("x [REDACTED:github-token]");
   });
 
+  it("redactDeep returns the value itself where nothing was masked and keeps other objects", () => {
+    const untouched = { list: ["plain", 1], nested: { flag: true } };
+    expect(redactDeep(untouched, (text) => text)).toBe(untouched);
+    const when = new Date(0);
+    const input = { secret: `x ${GITHUB}`, clean: { a: "b" }, when };
+    const out = redactDeep(input, new Redactor().redact);
+    expect(out.secret).toBe("x [REDACTED:github-token]");
+    expect(out.clean).toBe(input.clean);
+    expect(out.when).toBe(when);
+    const crafted = JSON.parse(`{"__proto__": "${GITHUB}"}`) as Record<string, unknown>;
+    const masked = redactDeep(crafted, new Redactor().redact);
+    expect(Object.getPrototypeOf(masked)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(masked, "__proto__")?.value).toBe(
+      "[REDACTED:github-token]",
+    );
+  });
+
   it("handles large adversarial input in linear time", () => {
     const inputs = [
       "a.b-".repeat(250_000),
@@ -450,6 +468,17 @@ describe("names with word boundaries (T1011)", () => {
     expect(url.redact("x=HTTPS%3a%2f%2fNAS%3a9443&y")).toBe("x=[REDACTED:URL]&y");
   });
 
+  it("redactSecrets masks literals and token patterns but never registered names", () => {
+    const secret = fakeSecret("generic-password");
+    const r = new Redactor();
+    r.addName("nas");
+    r.addLiteral(secret);
+    const command = `node nas/server.js ${secret}`;
+    expect(r.redactSecrets(command)).toBe("node nas/server.js [REDACTED:secret]");
+    expect(r.redactSecrets(`curl -H ${GITHUB}`)).toBe("curl -H [REDACTED:github-token]");
+    expect(r.redact(command)).toBe("node [REDACTED:name]/server.js [REDACTED:secret]");
+  });
+
   it("redactDeep masks names in nested values", () => {
     const r = new Redactor();
     r.addName("nas");
@@ -501,6 +530,14 @@ describe("DEFAULT_REDACTION_RULES", () => {
     expect(new Set(ids).size).toBe(ids.length);
     for (const rule of DEFAULT_REDACTION_RULES) expect(rule.pattern.global).toBe(true);
   });
+
+  it("masks every token family in TOKEN_PATTERNS with the rule of the same id", () => {
+    for (const [id, pattern] of Object.entries(TOKEN_PATTERNS)) {
+      expect(pattern.global).toBe(true);
+      expect(DEFAULT_REDACTION_RULES.find((rule) => rule.id === id)?.pattern).toBe(pattern);
+    }
+    expect(Object.keys(TOKEN_PATTERNS)).toContain("github-token");
+  });
 });
 
 describe("maskSecret", () => {
@@ -546,8 +583,22 @@ describe("registerEnvSecrets", () => {
     expect(r.redact("FAKE123 /home/someone-long")).toBe("FAKE123 /home/someone-long");
   });
 
-  it("covers the documented secret variable names", () => {
-    expect(SECRET_ENV_NAMES).toEqual([
+  it.each([
+    "DJANGO_SECRET_KEY",
+    "MINIO_ACCESS_KEY",
+    "NGROK_AUTHTOKEN",
+    "CLIENT_SECRET_VALUE",
+    "CLOUDFLARE_API_KEY",
+    "OPSCREW_STATE_PASSPHRASE",
+  ])("masks the value of %s, a name the agent environment also strips", (name) => {
+    const value = fakeSecret("generic-password", name);
+    const r = new Redactor();
+    expect(registerEnvSecrets(r, { [name]: value })).toBe(1);
+    expect(r.redact(`value ${value}`)).toBe(`value [REDACTED:${name}]`);
+  });
+
+  it("registers the provider, model and OpsCrew secrets by name", () => {
+    const names = [
       "HCLOUD_TOKEN",
       "CLOUDFLARE_API_TOKEN",
       "CF_API_TOKEN",
@@ -565,6 +616,8 @@ describe("registerEnvSecrets", () => {
       "GODADDY_API_TOKEN",
       "OPSCREW_STATE_PASSPHRASE",
       "TF_ENCRYPTION",
-    ]);
+    ];
+    const env = Object.fromEntries(names.map((name) => [name, `FAKE-value-of-${name}`]));
+    expect(registerEnvSecrets(new Redactor(), env)).toBe(names.length);
   });
 });

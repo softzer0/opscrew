@@ -151,38 +151,30 @@ describe("MemoryAuditLog", () => {
 
 describe("JSONL helpers", () => {
   it("reads a missing file as empty", async () => {
-    const result = await readJsonLines(join(root, "missing.jsonl"));
-    expect(result).toEqual({ values: [], warnings: [] });
+    expect(await readJsonLines(join(root, "missing.jsonl"))).toEqual([]);
   });
 
-  it("skips corrupt lines with a warning, accepts CRLF and a BOM", async () => {
+  it("skips corrupt lines, accepts CRLF and a BOM", async () => {
     const file = join(root, "mixed.jsonl");
     await writeFile(
       file,
       `${String.fromCharCode(0xfeff)}{"a":1}\r\nnot json\r\n\r\n{"a":2}\n{"a":`,
       "utf8",
     );
-    const result = await readJsonLines(file);
-    expect(result.values).toEqual([{ a: 1 }, { a: 2 }]);
-    expect(result.warnings).toHaveLength(2);
-    expect(result.warnings[0]).toContain("line 2");
-    expect(result.warnings[1]).toContain("line 5");
+    expect(await readJsonLines(file)).toEqual([{ a: 1 }, { a: 2 }]);
   });
 
   it("starts a new line after a torn last line so the next record survives", async () => {
     const file = join(root, "torn.jsonl");
     await writeFile(file, '{"n":1}\n{"n":2,"partial', "utf8");
     await appendJsonLine(file, { n: 3 });
-    const result = await readJsonLines(file);
-    expect(result.values).toEqual([{ n: 1 }, { n: 3 }]);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toContain("line 2");
+    expect(await readJsonLines(file)).toEqual([{ n: 1 }, { n: 3 }]);
   });
 
   it("appends lines and creates parent directories", async () => {
     const file = join(root, "a", "b", "c.jsonl");
     await appendJsonLine(file, { n: 1 });
     await appendJsonLine(file, { n: 2 });
-    expect((await readJsonLines(file)).values).toEqual([{ n: 1 }, { n: 2 }]);
+    expect(await readJsonLines(file)).toEqual([{ n: 1 }, { n: 2 }]);
   });
 });

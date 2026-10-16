@@ -84,7 +84,6 @@ export interface IacRunOptions {
 export interface IacInitOptions extends IacRunOptions {
   /** Values for a partial backend configuration (`-backend-config=key=value`). */
   backendConfig?: Record<string, string>;
-  upgrade?: boolean;
 }
 
 export interface IacDiagnostic {

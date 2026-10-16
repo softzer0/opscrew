@@ -186,7 +186,6 @@ describe("CostLedger", () => {
     const ledger = new CostLedger(join(root, "costs.jsonl"));
     expect(await ledger.entries()).toEqual([]);
     expect(await ledger.total()).toBe(0);
-    expect(await ledger.byPhase()).toEqual({});
   });
 
   it("appends entries with `at` from the clock and sums them", async () => {
@@ -202,10 +201,9 @@ describe("CostLedger", () => {
       { at: "2026-10-11T12:02:00.000Z", phase: "design", costUsd: 1 },
     ]);
     expect(await ledger.total()).toBeCloseTo(1.75);
-    expect(await ledger.byPhase()).toEqual({ analyze: 0.75, design: 1 });
   });
 
-  it("skips corrupt lines and exposes warnings", async () => {
+  it("skips corrupt lines", async () => {
     const file = join(root, "costs.jsonl");
     await writeFile(
       file,
@@ -220,7 +218,6 @@ describe("CostLedger", () => {
     );
     const ledger = new CostLedger(file);
     expect(await ledger.total()).toBeCloseTo(0.1);
-    expect(ledger.warnings).toHaveLength(4);
   });
 
   it("rejects negative or non-finite costs", async () => {
@@ -239,7 +236,6 @@ describe("CostLedger", () => {
       Array.from({ length: 100 }, () => ledger.append({ phase: "adapt", costUsd: 0.01 })),
     );
     expect(await ledger.entries()).toHaveLength(100);
-    expect(ledger.warnings).toEqual([]);
     expect(await ledger.total()).toBeCloseTo(1);
   });
 });

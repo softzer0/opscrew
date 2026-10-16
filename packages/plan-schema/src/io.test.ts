@@ -10,8 +10,8 @@ import {
   readArtifact,
   serializeArtifact,
   writeArtifact,
-  YAML_HEADER,
 } from "./index";
+import { YAML_HEADER } from "./io";
 
 const BOM = String.fromCharCode(0xfeff);
 const FIXTURES = new URL("./__fixtures__/", import.meta.url);

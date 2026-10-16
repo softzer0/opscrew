@@ -1,7 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import type { UserFacingError } from "@opscrew/contracts";
+import { readFile } from "node:fs/promises";
+import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
 import { parseDocument, stringify } from "yaml";
 import type { z } from "zod";
 import { type Architecture, ArchitectureSchema } from "./architecture";
@@ -42,14 +40,14 @@ export const ARTIFACT_FILES: Record<ArtifactKind, string> = {
 };
 
 /** Next step shown when an artefact is invalid. */
-export const ARTIFACT_HINTS: Record<ArtifactKind, string> = {
+const ARTIFACT_HINTS: Record<ArtifactKind, string> = {
   architecture: "Run `opscrew analyze` to regenerate it.",
   requirements: "Run `opscrew interview` to answer the questions again.",
   plan: "Run `opscrew design` to regenerate the plan, or fix the field shown above.",
 };
 
 /** Next step shown when an artefact does not exist yet. */
-export const ARTIFACT_MISSING_HINTS: Record<ArtifactKind, string> = {
+const ARTIFACT_MISSING_HINTS: Record<ArtifactKind, string> = {
   architecture: "Run `opscrew analyze` to create it.",
   requirements: "Run `opscrew interview` to answer the deployment questions.",
   plan: "Run `opscrew design` to create the plan (after `opscrew analyze` and `opscrew interview`).",
@@ -65,12 +63,10 @@ export interface ArtifactIssue {
 }
 
 /** A missing or invalid artefact. The message names the file, each bad field and the next step. */
-export class ArtifactError extends Error implements UserFacingError {
+export class ArtifactError extends OpsCrewError {
   override readonly name = "ArtifactError";
-  readonly code: "ARTIFACT_INVALID" | "ARTIFACT_MISSING";
   readonly file: string;
   readonly issues: ArtifactIssue[];
-  readonly hint: string;
 
   constructor(init: {
     code: "ARTIFACT_INVALID" | "ARTIFACT_MISSING";
@@ -90,11 +86,9 @@ export class ArtifactError extends Error implements UserFacingError {
             ...issues.map((issue) => `  - ${issue.path}: ${issue.message}`),
             init.hint,
           ].join("\n"));
-    super(message, init.cause === undefined ? undefined : { cause: init.cause });
-    this.code = init.code;
+    super(init.code, message, { hint: init.hint, cause: init.cause });
     this.file = init.file;
     this.issues = issues;
-    this.hint = init.hint;
   }
 }
 
@@ -248,29 +242,6 @@ export async function writeArtifact<K extends ArtifactKind>(
   file: string,
   value: ArtifactOf<K>,
 ): Promise<void> {
-  const text = serializeTo(kind, value, file);
-  const dir = dirname(file);
-  await mkdir(dir, { recursive: true });
-  const temp = join(dir, `.${basename(file)}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
-  try {
-    await writeFile(temp, text, "utf8");
-    await renameWithRetry(temp, file);
-  } catch (error) {
-    await unlink(temp).catch(() => undefined);
-    throw error;
-  }
-}
-
-/** On Windows a rename can fail briefly while another process (antivirus, indexer) holds the file. */
-async function renameWithRetry(from: string, to: string): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await rename(from, to);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (attempt >= 4 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
-    }
-  }
+  // Committed files: the umask decides who may read them, as for any file the user creates.
+  await writeFileAtomic(file, serializeTo(kind, value, file), { mode: 0o666 });
 }

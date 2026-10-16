@@ -62,19 +62,19 @@ describe("PROFILE_TOOLS", () => {
 });
 
 describe("DefaultToolPolicy: tool gating order", () => {
-  it("allows the OpsCrew MCP server's tools in every profile and denies other MCP servers", () => {
+  it("denies every MCP tool in every profile, OpsCrew's own included", () => {
     for (const profile of PROFILES) {
-      expect(decide("mcp__opscrew__scan_repo", {}, profile).decision).toBe("allow");
-      expect(decide("mcp__github__create_pull_request", {}, profile).decision).toBe("deny");
-      expect(decide("mcp__opscrew__", {}, profile).decision).toBe("deny");
-      expect(decide("mcp__opscrewx__scan", {}, profile).decision).toBe("deny");
+      for (const tool of [
+        "mcp__opscrew__scan_repo",
+        "mcp__github__create_pull_request",
+        "mcp__opscrew__",
+        "mcp__",
+      ]) {
+        const decision = decide(tool, {}, profile);
+        expect(decision.decision, `${tool} in ${profile}`).toBe("deny");
+        expect(decision).toMatchObject({ reason: expect.stringContaining("MCP") });
+      }
     }
-  });
-
-  it("honours a custom MCP server name", () => {
-    const policy = new DefaultToolPolicy({ mcpServerName: "crew", platform: "linux" });
-    expect(policy.evaluate(call("mcp__crew__scan", {}, "none")).decision).toBe("allow");
-    expect(policy.evaluate(call("mcp__opscrew__scan", {}, "none")).decision).toBe("deny");
   });
 
   it("allows TodoWrite in every profile", () => {

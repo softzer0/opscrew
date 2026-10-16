@@ -6,17 +6,11 @@ import type {
   ApprovalHandler,
   ApprovalRecord,
   ApprovalRequest,
+  ApprovalStore,
   Clock,
 } from "@opscrew/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  ApprovalGate,
-  assertApprovedHostPlan,
-  assertApprovedStackPlan,
-  isPlanHash,
-  JsonlApprovalStore,
-  MemoryApprovalStore,
-} from "./approvals";
+import { ApprovalGate, isPlanHash, JsonlApprovalStore, MemoryApprovalStore } from "./approvals";
 import { MemoryAuditLog } from "./audit";
 import { OpsCrewError } from "./errors";
 
@@ -60,6 +54,16 @@ function makeGate(decision: Partial<ApprovalDecision> = {}) {
   let n = 0;
   const gate = new ApprovalGate({ handler, store, audit, clock, newId: () => `id-${++n}` });
   return { gate, handler, store, audit };
+}
+
+/** A gate over `store`, to check what a store's records authorise. */
+function gateOver(store: ApprovalStore): ApprovalGate {
+  return new ApprovalGate({
+    handler: new ScriptedHandler({}),
+    store,
+    audit: new MemoryAuditLog({ clock }),
+    clock,
+  });
 }
 
 let root: string;
@@ -107,9 +111,12 @@ describe.each([
     await store.append(record({ id: "3", planHash: HASH_A, approved: false }));
     await store.append(record({ id: "4", planHash: HASH_A, kind: "tool-call" }));
     await store.append(record({ id: "5", planHash: HASH_B }));
-    expect((await store.findApprovedPlan(HASH_A.toUpperCase()))?.id).toBe("2");
-    expect((await store.findApprovedPlan(HASH_B))?.id).toBe("5");
-    expect(await store.findApprovedPlan("d".repeat(64))).toBeUndefined();
+    const gate = gateOver(store);
+    expect((await gate.assertApprovedPlan(HASH_A.toUpperCase())).id).toBe("2");
+    expect((await gate.assertApprovedPlan(HASH_B)).id).toBe("5");
+    await expect(gate.assertApprovedPlan("d".repeat(64))).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
   });
 });
 
@@ -135,18 +142,16 @@ describe("JsonlApprovalStore", () => {
     expect(await store.list()).toEqual([]);
     await writeFile(file, "", "utf8");
     expect(await store.list()).toEqual([]);
-    expect(store.warnings).toEqual([]);
   });
 
-  it("skips corrupt and malformed lines and exposes warnings", async () => {
+  it("skips corrupt and malformed lines", async () => {
     const file = join(root, "approvals.jsonl");
     const good = JSON.stringify(record({ id: "good" }));
     const wrongShape = JSON.stringify({ id: "x", kind: "launch-missiles" });
     await writeFile(file, `${good}\n{broken\n${wrongShape}\n${good.slice(0, 20)}`, "utf8");
     const store = new JsonlApprovalStore(file);
     expect((await store.list()).map((r) => r.id)).toEqual(["good"]);
-    expect(store.warnings).toHaveLength(3);
-    expect(await store.findApprovedPlan(HASH_A)).toMatchObject({ id: "good" });
+    expect(await gateOver(store).assertApprovedPlan(HASH_A)).toMatchObject({ id: "good" });
   });
 
   it("never interleaves 100 concurrent appends", async () => {
@@ -159,7 +164,6 @@ describe("JsonlApprovalStore", () => {
     );
     const records = await store.list();
     expect(records).toHaveLength(100);
-    expect(store.warnings).toEqual([]);
     expect(new Set(records.map((r) => r.id)).size).toBe(100);
   });
 });
@@ -398,7 +402,6 @@ describe("host-apply approvals", () => {
     const store = new JsonlApprovalStore(join(root, "host", "approvals.jsonl"));
     await store.append(record({ id: "h", kind: "host-apply" }));
     expect((await store.list()).map((r) => r.kind)).toEqual(["host-apply"]);
-    expect(store.warnings).toEqual([]);
   });
 
   describe.each([
@@ -410,13 +413,15 @@ describe("host-apply approvals", () => {
       await store.append(record({ id: "1", kind: "host-apply", planHash: HASH_A }));
       await store.append(record({ id: "2", kind: "host-apply", planHash: HASH_A }));
       await store.append(record({ id: "3", kind: "host-apply", planHash: HASH_B }));
-      expect((await assertApprovedHostPlan(store, HASH_A.toUpperCase())).id).toBe("2");
+      expect((await gateOver(store).assertApprovedHostPlan(HASH_A.toUpperCase())).id).toBe("2");
     });
 
     it("refuses another hash and tells the user about --approve", async () => {
       const store = makeStore();
       await store.append(record({ kind: "host-apply", planHash: HASH_A }));
-      const error = await assertApprovedHostPlan(store, HASH_B).catch((e: unknown) => e);
+      const error = await gateOver(store)
+        .assertApprovedHostPlan(HASH_B)
+        .catch((e: unknown) => e);
       expect(error).toBeInstanceOf(OpsCrewError);
       expect(error).toMatchObject({ code: "PLAN_NOT_APPROVED" });
       expect((error as OpsCrewError).message).toContain("host plan");
@@ -430,7 +435,7 @@ describe("host-apply approvals", () => {
       );
       await store.append(record({ id: "i", kind: "iac-apply", planHash: HASH_B }));
       for (const hash of [HASH_A, HASH_B, "not-a-hash"]) {
-        await expect(assertApprovedHostPlan(store, hash)).rejects.toMatchObject({
+        await expect(gateOver(store).assertApprovedHostPlan(hash)).rejects.toMatchObject({
           code: "PLAN_NOT_APPROVED",
         });
       }
@@ -519,7 +524,6 @@ describe("stack-apply approvals", () => {
     const store = new JsonlApprovalStore(join(root, "stack", "approvals.jsonl"));
     await store.append(record({ id: "s", kind: "stack-apply" }));
     expect((await store.list()).map((r) => r.kind)).toEqual(["stack-apply"]);
-    expect(store.warnings).toEqual([]);
   });
 
   describe.each([
@@ -531,13 +535,15 @@ describe("stack-apply approvals", () => {
       await store.append(record({ id: "1", kind: "stack-apply", planHash: HASH_A }));
       await store.append(record({ id: "2", kind: "stack-apply", planHash: HASH_A }));
       await store.append(record({ id: "3", kind: "stack-apply", planHash: HASH_B }));
-      expect((await assertApprovedStackPlan(store, HASH_A.toUpperCase())).id).toBe("2");
+      expect((await gateOver(store).assertApprovedStackPlan(HASH_A.toUpperCase())).id).toBe("2");
     });
 
     it("refuses another hash and tells the user about --approve", async () => {
       const store = makeStore();
       await store.append(record({ kind: "stack-apply", planHash: HASH_A }));
-      const error = await assertApprovedStackPlan(store, HASH_B).catch((e: unknown) => e);
+      const error = await gateOver(store)
+        .assertApprovedStackPlan(HASH_B)
+        .catch((e: unknown) => e);
       expect(error).toBeInstanceOf(OpsCrewError);
       expect(error).toMatchObject({ code: "PLAN_NOT_APPROVED" });
       expect((error as OpsCrewError).message).toContain("stack plan");
@@ -552,7 +558,7 @@ describe("stack-apply approvals", () => {
       await store.append(record({ id: "i", kind: "iac-apply", planHash: HASH_B }));
       await store.append(record({ id: "h", kind: "host-apply", planHash: HASH_C_UPPER }));
       for (const hash of [HASH_A, HASH_B, HASH_C_UPPER, "not-a-hash"]) {
-        await expect(assertApprovedStackPlan(store, hash)).rejects.toMatchObject({
+        await expect(gateOver(store).assertApprovedStackPlan(hash)).rejects.toMatchObject({
           code: "PLAN_NOT_APPROVED",
         });
       }
@@ -565,9 +571,11 @@ describe("stack-apply approvals", () => {
         record({ id: "d", kind: "stack-apply", planHash: HASH_B, allowDestroy: true }),
       );
       await expect(
-        assertApprovedStackPlan(store, HASH_A, { allowDestroy: true }),
+        gateOver(store).assertApprovedStackPlan(HASH_A, { allowDestroy: true }),
       ).rejects.toMatchObject({ code: "DESTROY_NOT_APPROVED" });
-      expect((await assertApprovedStackPlan(store, HASH_B, { allowDestroy: true })).id).toBe("d");
+      expect(
+        (await gateOver(store).assertApprovedStackPlan(HASH_B, { allowDestroy: true })).id,
+      ).toBe("d");
     });
   });
 

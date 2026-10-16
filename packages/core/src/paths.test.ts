@@ -3,13 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  ensureProjectHome,
-  ensureStateDir,
-  projectIdFor,
-  resolveProjectPaths,
-  toPosixRelative,
-} from "./paths";
+import { ensureStateDir, projectIdFor, resolveProjectPaths, toPosixRelative } from "./paths";
 
 const isWindows = process.platform === "win32";
 
@@ -50,9 +44,6 @@ describe("resolveProjectPaths", () => {
       scanReportJson: path.join(root, ".opscrew", "scan.json"),
       securityReport: path.join(root, "opscrew", "SECURITY_REPORT.md"),
       runbook: path.join(root, "opscrew", "RUNBOOK.md"),
-      infraDir: path.join(root, "opscrew", "infra"),
-      runtimeDir: path.join(root, "opscrew", "runtime"),
-      workflow: path.join(root, ".github", "workflows", "opscrew-deploy.yml"),
       state: path.join(root, ".opscrew", "state.json"),
       approvals: path.join(root, ".opscrew", "approvals.jsonl"),
       costs: path.join(root, ".opscrew", "costs.jsonl"),
@@ -62,6 +53,7 @@ describe("resolveProjectPaths", () => {
       deployKeyPub: path.join(p.projectHomeDir, "deploy_key.pub"),
       knownHosts: path.join(p.projectHomeDir, "known_hosts"),
       statePassphrase: path.join(p.projectHomeDir, "state_passphrase"),
+      deploySecrets: path.join(p.projectHomeDir, "deploy_secrets.json"),
     });
   });
 
@@ -150,19 +142,6 @@ describe("ensureStateDir", () => {
     await writeFile(path.join(p.stateDir, ".gitignore"), "*\n!keep\n");
     await ensureStateDir(p);
     expect(await readFile(path.join(p.stateDir, ".gitignore"), "utf8")).toBe("*\n!keep\n");
-  });
-});
-
-describe("ensureProjectHome", () => {
-  it("creates the per-project home directory", async () => {
-    const p = resolveProjectPaths(path.join(tmp, "app"), {
-      env: { OPSCREW_HOME: path.join(tmp, "home") },
-    });
-    await ensureProjectHome(p);
-    const info = await stat(p.projectHomeDir);
-    expect(info.isDirectory()).toBe(true);
-    if (!isWindows) expect(info.mode & 0o777).toBe(0o700);
-    await ensureProjectHome(p);
   });
 });
 

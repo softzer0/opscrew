@@ -10,23 +10,27 @@ import {
   type SDKResultError,
   type SDKResultMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type {
-  AgentRuntime,
-  ApprovalRequest,
-  AuditLog,
-  BuiltinTool,
-  PhaseName,
-  PhaseRequest,
-  PhaseResult,
-  PhaseStopReason,
-  PhaseUsage,
-  RuntimeAvailability,
-  RuntimeEvent,
-  ToolPolicy,
+import {
+  type AgentRuntime,
+  type ApprovalRequest,
+  type AuditLog,
+  BUILTIN_TOOLS,
+  type PhaseName,
+  type PhaseRequest,
+  type PhaseResult,
+  type PhaseStopReason,
+  type RuntimeAvailability,
+  type RuntimeEvent,
+  type ToolPolicy,
 } from "@opscrew/contracts";
-import { PROFILE_TOOLS, STRUCTURED_OUTPUT_TOOL, sanitizeAgentEnv } from "@opscrew/core";
+import {
+  isRecord,
+  PROFILE_TOOLS,
+  redactDeep,
+  STRUCTURED_OUTPUT_TOOL,
+  sanitizeAgentEnv,
+} from "@opscrew/core";
 import { z } from "zod";
-import { createToolServer, MCP_SERVER_NAME } from "./tools";
 
 /** The subset of the SDK's `query()` the runtime uses; `typeof query` satisfies it. */
 export type QueryFn = (params: { prompt: string; options?: Options }) => AsyncIterable<SDKMessage>;
@@ -49,9 +53,6 @@ export interface ClaudeAgentRuntimeOptions {
   /** Injectable SDK entry point for tests. Defaults to the SDK's `query`. */
   queryFn?: QueryFn;
 }
-
-/** Every built-in tool name OpsCrew knows; anything not enabled for a phase is disallowed. */
-const ALL_BUILTINS: readonly BuiltinTool[] = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
 
 /** SDK tools OpsCrew agents never get, disallowed explicitly as defence in depth. */
 const ALWAYS_DISALLOWED = [
@@ -225,11 +226,10 @@ class PhaseRun<T> {
     const builtins = profileTools.filter(
       (name) => request.builtinTools === undefined || request.builtinTools.includes(name),
     );
-    const tools = request.tools ?? [];
     const systemPrompt = this.#redact(request.systemPrompt);
 
-    // One gate (constitution I): the PreToolUse hook (no matcher) decides every call, built-in,
-    // MCP or the SDK's StructuredOutput, and its allow or deny is final. No `allowedTools`: a
+    // One gate (constitution I): the PreToolUse hook (no matcher) decides every call, built-in
+    // or the SDK's StructuredOutput, and its allow or deny is final. No `allowedTools`: a
     // bare entry would auto-approve the whole tool, so the SDK would skip `canUseTool`
     // (CLAUDE_SDK_CAN_USE_TOOL_SHADOWED). `canUseTool` stays only as the prompt surface for a
     // call the SDK still wants a decision on; it returns the hook's cached decision, so nothing
@@ -244,7 +244,7 @@ class PhaseRun<T> {
           : systemPrompt,
       tools: [...builtins],
       disallowedTools: [
-        ...ALL_BUILTINS.filter((name) => !builtins.includes(name)),
+        ...BUILTIN_TOOLS.filter((name) => !builtins.includes(name)),
         ...ALWAYS_DISALLOWED,
       ],
       permissionMode: "default",
@@ -260,16 +260,6 @@ class PhaseRun<T> {
       strictMcpConfig: true,
       env: sanitizeAgentEnv(this.env),
     };
-    if (tools.length > 0) {
-      const ctx = {
-        phase: request.phase,
-        projectRoot: request.projectRoot,
-        ...(request.signal === undefined ? {} : { signal: request.signal }),
-      };
-      options.mcpServers = {
-        [MCP_SERVER_NAME]: createToolServer(tools, ctx, this.options.redact),
-      };
-    }
     if (request.maxTurns !== undefined) options.maxTurns = request.maxTurns;
     if (request.maxBudgetUsd !== undefined) options.maxBudgetUsd = request.maxBudgetUsd;
     if (request.effort !== undefined) options.effort = request.effort;
@@ -353,12 +343,8 @@ class PhaseRun<T> {
     // Constitution IV: whatever a tool returned (a file read, a grep hit, command output) reaches
     // the model only after redaction, so a hard-coded key in the repository is never sent on.
     const redacted = redactDeep(input.tool_response, (text) => this.#redact(text));
-    if (redacted.changed) {
-      return {
-        hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: redacted.value },
-      };
-    }
-    return {};
+    if (redacted === input.tool_response) return {};
+    return { hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: redacted } };
   };
 
   /**
@@ -581,7 +567,6 @@ class PhaseRun<T> {
       costUsd,
       turns: message.num_turns ?? 0,
       model,
-      usage: toUsage(message),
     };
     const sessionId = message.session_id ?? this.#sessionId;
     if (sessionId !== undefined) base.sessionId = sessionId;
@@ -716,28 +701,6 @@ function errorStopReason(message: SDKResultError, aborted: boolean): PhaseStopRe
   }
 }
 
-function toUsage(message: SDKResultMessage): PhaseUsage {
-  const perModel = Object.values(message.modelUsage ?? {});
-  if (perModel.length > 0) {
-    return perModel.reduce<Required<PhaseUsage>>(
-      (sum, usage) => ({
-        inputTokens: sum.inputTokens + (usage.inputTokens ?? 0),
-        outputTokens: sum.outputTokens + (usage.outputTokens ?? 0),
-        cacheReadTokens: sum.cacheReadTokens + (usage.cacheReadInputTokens ?? 0),
-        cacheCreationTokens: sum.cacheCreationTokens + (usage.cacheCreationInputTokens ?? 0),
-      }),
-      { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
-    );
-  }
-  const usage = message.usage;
-  return {
-    inputTokens: usage?.input_tokens ?? 0,
-    outputTokens: usage?.output_tokens ?? 0,
-    cacheReadTokens: usage?.cache_read_input_tokens ?? 0,
-    cacheCreationTokens: usage?.cache_creation_input_tokens ?? 0,
-  };
-}
-
 /** A short, human-readable description of what a tool call touches (path, command, pattern). */
 function describeInput(tool: string, input: unknown): string | undefined {
   // StructuredOutput's input is the phase's answer, not something the call touches.
@@ -756,31 +719,6 @@ function shorten(text: string, max = 300): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-/** Redacts every string inside a JSON-like value; `changed` tells whether anything was masked. */
-export function redactDeep(
-  value: unknown,
-  redact: (text: string) => string,
-): { value: unknown; changed: boolean } {
-  let changed = false;
-  const walk = (node: unknown, depth: number): unknown => {
-    if (typeof node === "string") {
-      const masked = redact(node);
-      if (masked !== node) changed = true;
-      return masked;
-    }
-    if (depth > 50 || node === null || typeof node !== "object") return node;
-    if (Array.isArray(node)) return node.map((item) => walk(item, depth + 1));
-    return Object.fromEntries(
-      Object.entries(node as Record<string, unknown>).map(([key, item]) => [
-        key,
-        walk(item, depth + 1),
-      ]),
-    );
-  };
-  const result = walk(value, 0);
-  return { value: changed ? result : value, changed };
-}
-
 function parseJson(text: string | undefined): unknown {
   if (text === undefined) return undefined;
   const trimmed = text.trim();
@@ -790,10 +728,6 @@ function parseJson(text: string | undefined): unknown {
   } catch {
     return undefined;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isAbortError(error: unknown): boolean {

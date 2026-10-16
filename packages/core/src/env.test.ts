@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROVIDER_SECRET_ENV, sanitizeAgentEnv } from "./env";
+import { isSecretEnvName, sanitizeAgentEnv } from "./env";
 
 const FAKE = "fake-value-for-tests";
 
@@ -25,9 +25,29 @@ const NAMED = [
   "OPSCREW_STATE_PASSPHRASE",
 ];
 
-describe("PROVIDER_SECRET_ENV", () => {
-  it("lists every named provider secret", () => {
-    expect([...PROVIDER_SECRET_ENV].sort()).toEqual([...NAMED].sort());
+/** Account names that go with a provider secret: kept from the agent, but not secrets. */
+const ACCOUNT_NAMES = ["CLOUDFLARE_EMAIL", "NAMECHEAP_API_USER"];
+
+describe("isSecretEnvName", () => {
+  it.each([
+    ...NAMED.filter((name) => !ACCOUNT_NAMES.includes(name)),
+    "ANTHROPIC_API_KEY",
+    "AWS_SECRET_ACCESS_KEY",
+    "DJANGO_SECRET_KEY",
+  ])("is true for %s", (name) => {
+    expect(isSecretEnvName(name)).toBe(true);
+    expect(isSecretEnvName(name.toLowerCase())).toBe(true);
+  });
+
+  it.each([
+    ...ACCOUNT_NAMES,
+    "PATH",
+    "HOME",
+    "TOKENIZERS_PARALLELISM",
+    "KEYBOARD_LAYOUT",
+    "ANTHROPIC_MODEL",
+  ])("is false for %s", (name) => {
+    expect(isSecretEnvName(name)).toBe(false);
   });
 });
 

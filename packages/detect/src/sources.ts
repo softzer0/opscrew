@@ -3,6 +3,7 @@
  * health routes, Python ASGI/WSGI app objects and database URL schemes. Pure functions over text.
  */
 import { parseAllDocuments } from "yaml";
+import { schemeKind } from "./connections";
 import { type EnvRead, extractEnvReads } from "./env";
 import { basenameRel } from "./paths";
 
@@ -244,16 +245,8 @@ export function scanSource(text: string): SourceSignals {
   }
   const urlSchemes = new Set<string>();
   for (const match of text.matchAll(URL_SCHEME)) {
-    const scheme = (match[1] ?? "").toLowerCase();
-    urlSchemes.add(
-      scheme.startsWith("postgres")
-        ? "postgres"
-        : scheme.startsWith("mongodb")
-          ? "mongodb"
-          : scheme.startsWith("redis")
-            ? "redis"
-            : scheme,
-    );
+    const kind = schemeKind(match[1] ?? "");
+    if (kind) urlSchemes.add(kind);
   }
   const configPrefixes = new Set<string>();
   for (const match of text.matchAll(PREFIXED_ENV)) {

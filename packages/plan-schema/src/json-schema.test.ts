@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { ARTIFACT_KINDS, renderJsonSchemaFiles, toJsonSchemas } from "./index";
+import { ARTIFACT_KINDS } from "./io";
+import { renderJsonSchemaFiles, toJsonSchemas } from "./json-schema";
 
 const SCHEMAS_DIR = new URL("../schemas/", import.meta.url);
 

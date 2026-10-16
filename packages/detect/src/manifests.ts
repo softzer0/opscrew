@@ -3,6 +3,7 @@
  * pyproject.toml, requirements*.txt, Pipfile, Gemfile, composer.json, go.mod, Cargo.toml);
  * detection reasons about units rather than single files.
  */
+import { isRecord } from "@opscrew/core";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
 import { basenameRel, dirnameRel, sortStrings } from "./paths";
@@ -79,10 +80,6 @@ function isManifest(path: string): boolean {
 /** Normalises a PyPI project name (PEP 503): lower case, runs of `-_.` become `-`. */
 export function normalizePythonName(name: string): string {
   return name.toLowerCase().replace(/[-_.]+/g, "-");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringRecord(value: unknown): Record<string, string> {

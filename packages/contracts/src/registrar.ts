@@ -59,6 +59,8 @@ export interface RegistrationQuote {
   token?: string;
   /** Agreements the registrar requires the user to accept (shown in the approval). */
   agreements?: string[];
+  /** The registrar's ids of those agreements, sent back with the purchase (GoDaddy). */
+  agreementTypes?: string[];
   expiresAt?: IsoDateTime;
 }
 

@@ -1,3 +1,5 @@
+import { isSecretEnvName } from "./env";
+
 /** A pattern that finds one kind of secret in free text. */
 export interface RedactionRule {
   /** Stable id, used in the replacement `[REDACTED:<id>]`. */
@@ -32,6 +34,29 @@ function isPlaceholder(value: string): boolean {
   return /^(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|<[^>]*>|\*+)$/.test(value);
 }
 
+/**
+ * Patterns for the token families with a recognisable shape, by id: the redactor masks them and
+ * the secret scanner reports them. Each has the global flag; `aws-secret-access-key` captures the
+ * key in group 1 (the match includes its label). Use them with `matchAll` or `replace`, or copy
+ * them (`new RegExp(pattern)`) before calling `exec` or `test`, which keep state in `lastIndex`.
+ */
+export const TOKEN_PATTERNS = {
+  "github-token": /(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36,251}(?![A-Za-z0-9])/g,
+  "github-pat": /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{22,255}/g,
+  "anthropic-api-key": /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}/g,
+  "openai-api-key":
+    /(?<![A-Za-z0-9_-])sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{32,}(?![A-Za-z0-9_-]))/g,
+  "aws-access-key-id": /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])/g,
+  "aws-secret-access-key":
+    /aws_?secret_?access_?key["']?\s*[=:]\s*["']?([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])/gi,
+  "stripe-secret-key": /(?<![A-Za-z0-9_])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/g,
+  "slack-token": /(?<![A-Za-z0-9_-])xox[abposr]-[A-Za-z0-9-]{10,}/g,
+  /** DigitalOcean personal access (`dop_`), OAuth (`doo_`) and refresh (`dor_`) tokens. */
+  "digitalocean-token": /(?<![A-Za-z0-9_])do[por]_v1_[0-9a-f]{64}(?![A-Za-z0-9_])/g,
+  "google-api-key": /(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/g,
+  jwt: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])/g,
+} as const satisfies Record<string, RegExp>;
+
 /** Built-in rules (spec FR-007). Order matters: specific prefixes first, generic rules last. */
 export const DEFAULT_REDACTION_RULES: readonly RedactionRule[] = [
   {
@@ -40,36 +65,17 @@ export const DEFAULT_REDACTION_RULES: readonly RedactionRule[] = [
     pattern:
       /-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----(?:[\s\S]*?-----END[A-Z0-9 ]*PRIVATE KEY-----|[\s\S]*$)/g,
   },
-  { id: "github-token", pattern: /(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36,251}(?![A-Za-z0-9])/g },
-  { id: "github-pat", pattern: /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{22,255}/g },
-  { id: "anthropic-api-key", pattern: /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}/g },
-  {
-    id: "openai-api-key",
-    pattern:
-      /(?<![A-Za-z0-9_-])sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{32,}(?![A-Za-z0-9_-]))/g,
-  },
-  { id: "aws-access-key-id", pattern: /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])/g },
-  {
-    id: "aws-secret-access-key",
-    pattern: /aws_?secret_?access_?key["']?\s*[=:]\s*["']?([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])/gi,
-    group: 1,
-  },
-  {
-    id: "stripe-secret-key",
-    pattern: /(?<![A-Za-z0-9_])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/g,
-  },
-  { id: "slack-token", pattern: /(?<![A-Za-z0-9_-])xox[abposr]-[A-Za-z0-9-]{10,}/g },
-  // DigitalOcean personal access (`dop_`), OAuth (`doo_`) and refresh (`dor_`) tokens.
-  {
-    id: "digitalocean-token",
-    pattern: /(?<![A-Za-z0-9_])do[por]_v1_[0-9a-f]{64}(?![A-Za-z0-9_])/g,
-  },
-  { id: "google-api-key", pattern: /(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/g },
-  {
-    id: "jwt",
-    pattern:
-      /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{10,}(?![A-Za-z0-9_-])/g,
-  },
+  { id: "github-token", pattern: TOKEN_PATTERNS["github-token"] },
+  { id: "github-pat", pattern: TOKEN_PATTERNS["github-pat"] },
+  { id: "anthropic-api-key", pattern: TOKEN_PATTERNS["anthropic-api-key"] },
+  { id: "openai-api-key", pattern: TOKEN_PATTERNS["openai-api-key"] },
+  { id: "aws-access-key-id", pattern: TOKEN_PATTERNS["aws-access-key-id"] },
+  { id: "aws-secret-access-key", pattern: TOKEN_PATTERNS["aws-secret-access-key"], group: 1 },
+  { id: "stripe-secret-key", pattern: TOKEN_PATTERNS["stripe-secret-key"] },
+  { id: "slack-token", pattern: TOKEN_PATTERNS["slack-token"] },
+  { id: "digitalocean-token", pattern: TOKEN_PATTERNS["digitalocean-token"] },
+  { id: "google-api-key", pattern: TOKEN_PATTERNS["google-api-key"] },
+  { id: "jwt", pattern: TOKEN_PATTERNS.jwt },
   {
     id: "url-password",
     pattern: /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/[^\s:/?#@]*:([^\s/?#@]+)@/gi,
@@ -172,8 +178,8 @@ export interface RedactorOptions {
 
 /**
  * Masks secrets in text: registered literal values first (longest first), then pattern rules,
- * then registered names (whole names only). `redact` and `redactDeep` are bound and can be passed
- * around as plain functions.
+ * then registered names (whole names only). `redact`, `redactSecrets` and `redactDeep` are bound
+ * and can be passed around as plain functions.
  */
 export class Redactor {
   private readonly rules: CompiledRule[];
@@ -231,40 +237,27 @@ export class Redactor {
 
   /** Returns `text` with every registered literal, rule match and name replaced by a placeholder. */
   readonly redact = (text: string): string => {
+    const out = this.redactSecrets(text);
+    const names = this.namesPattern();
+    return names === undefined ? out : out.replace(names, (name) => this.nameReplacement(name));
+  };
+
+  /**
+   * {@link redact} without the registered names ({@link addName}): only literals and rule matches
+   * are masked. For values OpsCrew saves and later runs or parses, such as a start command, where
+   * hiding a name (a folder called like the server) would change the value.
+   */
+  readonly redactSecrets = (text: string): string => {
     let out = text;
     for (const [literal, replacement] of this.literalsByLength()) {
       if (out.includes(literal)) out = out.split(literal).join(replacement);
     }
     for (const rule of this.rules) out = applyRule(out, rule);
-    const names = this.namesPattern();
-    if (names !== undefined) out = out.replace(names, (name) => this.nameReplacement(name));
     return out;
   };
 
-  /**
-   * Returns a copy of `value` with every string (inside arrays and plain objects, recursively)
-   * redacted. Other values are returned as they are; the input is never mutated.
-   */
-  readonly redactDeep = <T>(value: T): T => this.deep(value, new WeakMap()) as T;
-
-  private deep(value: unknown, seen: WeakMap<object, unknown>): unknown {
-    if (typeof value === "string") return this.redact(value);
-    if (typeof value !== "object" || value === null) return value;
-    const existing = seen.get(value);
-    if (existing !== undefined) return existing;
-    if (Array.isArray(value)) {
-      const copy: unknown[] = [];
-      seen.set(value, copy);
-      for (const item of value) copy.push(this.deep(item, seen));
-      return copy;
-    }
-    const proto = Object.getPrototypeOf(value);
-    if (proto !== Object.prototype && proto !== null) return value;
-    const copy: Record<string, unknown> = {};
-    seen.set(value, copy);
-    for (const [key, item] of Object.entries(value)) copy[key] = this.deep(item, seen);
-    return copy;
-  }
+  /** {@link redactDeep} with this redactor. */
+  readonly redactDeep = <T>(value: T): T => redactDeep(value, this.redact);
 
   private namesPattern(): RegExp | undefined {
     if (this.namePattern === undefined) this.namePattern = namesPattern(this.names.keys()) ?? null;
@@ -277,48 +270,39 @@ export class Redactor {
   }
 }
 
+/**
+ * `value` with every string inside arrays and plain objects (recursively) passed through
+ * `redact`; other values are kept as they are. Returns `value` itself when nothing changed, and
+ * new arrays and objects only where something did. The input is never mutated.
+ */
+export function redactDeep<T>(value: T, redact: (text: string) => string): T {
+  if (typeof value === "string") return redact(value) as T;
+  if (Array.isArray(value)) {
+    const items = value.map((item) => redactDeep(item, redact));
+    return (items.every((item, i) => item === value[i]) ? value : items) as T;
+  }
+  if (typeof value !== "object" || value === null) return value;
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  const record = value as Record<string, unknown>;
+  const entries = Object.entries(record).map(([key, item]) => [key, redactDeep(item, redact)]);
+  return (
+    entries.every(([key, item]) => item === record[key as string])
+      ? value
+      : Object.fromEntries(entries)
+  ) as T;
+}
+
 /** Masked form for display: first 4 chars + `…(N chars)`; values < 12 chars show only the length. */
 export function maskSecret(value: string): string {
   const suffix = `…(${value.length} chars)`;
   return value.length < 12 ? suffix : `${value.slice(0, 4)}${suffix}`;
 }
 
-/** Environment variables that always hold secrets. */
-export const SECRET_ENV_NAMES = [
-  "HCLOUD_TOKEN",
-  "CLOUDFLARE_API_TOKEN",
-  "CF_API_TOKEN",
-  "GITHUB_TOKEN",
-  "GH_TOKEN",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "OPENAI_API_KEY",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "DIGITALOCEAN_TOKEN",
-  "NAMECHEAP_API_KEY",
-  "PORKBUN_API_KEY",
-  "PORKBUN_SECRET_API_KEY",
-  "GODADDY_API_TOKEN",
-  "OPSCREW_STATE_PASSPHRASE",
-  "TF_ENCRYPTION",
-] as const;
-
-const SECRET_ENV_SUFFIXES = [
-  "_TOKEN",
-  "_SECRET",
-  "_PASSWORD",
-  "_PASSWD",
-  "_API_KEY",
-  "_PRIVATE_KEY",
-];
-const SECRET_ENV_NAME_SET: ReadonlySet<string> = new Set(SECRET_ENV_NAMES);
-
 /**
- * Registers the values of secret-looking environment variables (`SECRET_ENV_NAMES` plus names
- * ending in `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASSWD`, `_API_KEY`, `_PRIVATE_KEY`; matched
- * case-insensitively) as literals labelled with the variable name. Values shorter than 8 characters
- * are skipped. Returns the number of variables registered.
+ * Registers the values of secret environment variables ({@link isSecretEnvName}) as literals
+ * labelled with the variable name. Values shorter than 8 characters are skipped. Returns the
+ * number of variables registered.
  */
 export function registerEnvSecrets(
   redactor: Redactor,
@@ -327,11 +311,7 @@ export function registerEnvSecrets(
   let count = 0;
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined || value.length < 8) continue;
-    const upper = name.toUpperCase();
-    const isSecret =
-      SECRET_ENV_NAME_SET.has(upper) ||
-      SECRET_ENV_SUFFIXES.some((suffix) => upper.endsWith(suffix));
-    if (!isSecret) continue;
+    if (!isSecretEnvName(name)) continue;
     redactor.addLiteral(value, name);
     count++;
   }

@@ -20,7 +20,7 @@ import {
   registerEnvSecrets,
   resolveProjectPaths,
 } from "@opscrew/core";
-import { ClaudeAgentRuntime, MCP_SERVER_NAME } from "@opscrew/runtime-claude";
+import { ClaudeAgentRuntime } from "@opscrew/runtime-claude";
 import { createApprovalHandler } from "./approval";
 import type { CliContext } from "./context";
 import { clackPrompts, type UiPrompts } from "./ui/prompts";
@@ -147,7 +147,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     } else if (claudeConfigured(ctx.env)) {
       // Phases record their own spend in the cost ledger, so the runtime gets none (no doubles).
       runtime = new ClaudeAgentRuntime({
-        policy: new DefaultToolPolicy({ mcpServerName: MCP_SERVER_NAME, realpath: nodeRealpath }),
+        policy: new DefaultToolPolicy({ realpath: nodeRealpath }),
         audit,
         redact: redactor.redact,
         approvals,

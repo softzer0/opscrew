@@ -216,8 +216,6 @@ const costEntrySchema: z.ZodType<CostEntry> = z.object({
 
 /** Append-only JSONL ledger of model spend per phase. */
 export class CostLedger {
-  /** Warnings about skipped (corrupt or malformed) lines from the most recent read. */
-  warnings: string[] = [];
   private readonly clock: Clock;
 
   constructor(
@@ -241,22 +239,13 @@ export class CostLedger {
     await appendJsonLine(this.file, record);
   }
 
-  /** All valid entries in append order; corrupt lines are skipped and listed in `warnings`. */
-  async entries(): Promise<CostEntry[]> {
-    const { values, warnings } = await readJsonLines(this.file, costEntrySchema);
-    this.warnings = warnings;
-    return values;
+  /** All valid entries in append order; corrupt lines are skipped. */
+  entries(): Promise<CostEntry[]> {
+    return readJsonLines(this.file, costEntrySchema);
   }
 
   /** Total spend in USD. */
   async total(): Promise<number> {
     return (await this.entries()).reduce((sum, e) => sum + e.costUsd, 0);
-  }
-
-  /** Spend in USD per phase (phases without spend are omitted). */
-  async byPhase(): Promise<Partial<Record<PhaseName, number>>> {
-    const totals: Partial<Record<PhaseName, number>> = {};
-    for (const e of await this.entries()) totals[e.phase] = (totals[e.phase] ?? 0) + e.costUsd;
-    return totals;
   }
 }

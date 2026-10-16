@@ -6,11 +6,6 @@ export type ProviderId =
   | "cloudflare"
   | "github"
   | "digitalocean"
-  | "aws"
-  | "gcp"
-  | "azure"
-  | "contabo"
-  | "namecheap"
   /** A server the user already owns, reached over SSH (no provider API). */
   | "own"
   /**
@@ -37,7 +32,6 @@ export interface CredentialCheck {
   identity?: string;
   /** Plain-English result, safe to show. */
   message: string;
-  missingScopes?: string[];
 }
 
 /** A typed adapter for one provider. Reads are free; writes go through the approval gate. */

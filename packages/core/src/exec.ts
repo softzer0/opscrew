@@ -8,8 +8,6 @@ import { OpsCrewError } from "./errors";
 
 /** Exit code reported when a command is killed because it exceeded its timeout (as in `timeout(1)`). */
 const TIMEOUT_EXIT_CODE = 124;
-/** Largest delay `setTimeout` accepts. */
-const MAX_TIMER_MS = 2_147_483_647;
 /** After killing a process tree, how long to wait for its pipes to close before giving up on them. */
 const KILL_GRACE_MS = 5_000;
 const TRUNCATED_MARKER = "\n[output truncated]";
@@ -244,14 +242,11 @@ export class NodeCommandRunner implements CommandRunner {
 
       const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
       if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-        timer = setTimeout(
-          () => {
-            if (settled) return;
-            timedOut = true;
-            terminate();
-          },
-          Math.min(timeoutMs, MAX_TIMER_MS),
-        );
+        timer = setTimeout(() => {
+          if (settled) return;
+          timedOut = true;
+          terminate();
+        }, timeoutMs);
       }
       signal?.addEventListener("abort", onAbort, { once: true });
     });

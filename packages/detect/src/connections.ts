@@ -47,7 +47,7 @@ const SCHEME_KINDS = new Map<string, EnvUrlScheme>([
  * `postgres`, `rediss` → `redis`, `mongodb+srv` → `mongodb`, `rpc` or `db+postgresql` → `other`.
  * Undefined for web schemes.
  */
-function schemeKind(scheme: string): EnvUrlScheme | undefined {
+export function schemeKind(scheme: string): EnvUrlScheme | undefined {
   const base = scheme.toLowerCase().split("+")[0] ?? "";
   if (WEB_SCHEMES.has(base)) return undefined;
   return SCHEME_KINDS.get(base) ?? "other";

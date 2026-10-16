@@ -5,7 +5,7 @@ import type {
   ResourceDrift,
   ResourceMove,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { isRecord, OpsCrewError } from "@opscrew/core";
 
 /** What `parsePlanJson` extracts from a machine-readable plan (`show -json`). */
 export interface ParsedPlan {
@@ -58,10 +58,6 @@ function toAction(actions: readonly string[]): ResourceAction {
     default:
       throw invalid(`unknown resource action "${key}"`);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Structural JSON equality; object key order does not matter. */

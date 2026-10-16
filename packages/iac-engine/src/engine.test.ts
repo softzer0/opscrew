@@ -47,7 +47,6 @@ describe("init", () => {
   it("runs non-interactively with backend config and automation env", async () => {
     const runner = new ScriptedRunner().on("init", { stdout: "ok" });
     await makeEngine(runner).init(dir, {
-      upgrade: true,
       backendConfig: { path: "/abs/state/terraform.tfstate" },
       env: { HCLOUD_TOKEN: "x", TF_IN_AUTOMATION: "0" },
     });
@@ -57,7 +56,6 @@ describe("init", () => {
       "init",
       "-input=false",
       "-no-color",
-      "-upgrade",
       "-backend-config=path=/abs/state/terraform.tfstate",
     ]);
     expect(call?.options.cwd).toBe(path.resolve(dir));
@@ -83,6 +81,21 @@ describe("init", () => {
     expect(error.message).not.toContain("line 5\n");
     expect(error.message).toContain("line 29");
     expect(error.hint).toBeTruthy();
+  });
+
+  it("masks the values of every secret-looking variable in its output (DJANGO_SECRET_KEY, MINIO_ACCESS_KEY)", async () => {
+    const django = fakeSecret("generic-password", "django");
+    const minio = fakeSecret("generic-password", "minio");
+    const runner = new ScriptedRunner().on("init", {
+      exitCode: 1,
+      stderr: `Error: rejected ${django} and ${minio}\n`,
+    });
+    const error = await failure(
+      makeEngine(runner).init(dir, { env: { DJANGO_SECRET_KEY: django, MINIO_ACCESS_KEY: minio } }),
+    );
+    expect(error.message).toContain(
+      "rejected [REDACTED:DJANGO_SECRET_KEY] and [REDACTED:MINIO_ACCESS_KEY]",
+    );
   });
 
   it("maps a timeout to ENGINE_FAILED", async () => {

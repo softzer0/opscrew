@@ -21,7 +21,7 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 /**
  * What an LLM phase is allowed to do. Enforced by the tool policy (`ToolPolicy`), never by
  * prompts alone.
- * - `none`: no built-in tools; only the in-process tools passed with the request.
+ * - `none`: no tools; the phase only answers (with its structured output when it asks for one).
  * - `read-only`: read, list and search files inside the project root.
  * - `edit-repo`: additionally edit and create files inside the project root and run allow-listed
  *   read-only commands; running project code (package managers, build and test runners) needs a
@@ -30,7 +30,8 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export type ToolProfile = "none" | "read-only" | "edit-repo";
 
 /** Built-in agent tools that a profile may enable. */
-export type BuiltinTool = "Read" | "Glob" | "Grep" | "Edit" | "Write" | "Bash";
+export const BUILTIN_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"] as const;
+export type BuiltinTool = (typeof BUILTIN_TOOLS)[number];
 
 export interface ToolContext {
   phase: PhaseName;
@@ -85,8 +86,6 @@ export interface PhaseRequest<T = unknown> {
   profile: ToolProfile;
   /** Subset of the profile's built-in tools to enable. Defaults to all tools of the profile. */
   builtinTools?: BuiltinTool[];
-  /** In-process tools available to the model in addition to built-ins. */
-  tools?: AnyToolDefinition[];
   output?: PhaseOutputSpec<T>;
   /** Model id, for example `claude-opus-5-5`. Defaults to the runtime's configured model. */
   model?: string;
@@ -107,13 +106,6 @@ export type PhaseStopReason =
   | "aborted"
   | "error";
 
-export interface PhaseUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens?: number;
-  cacheCreationTokens?: number;
-}
-
 export interface PhaseResult<T = unknown> {
   /** True only when `stopReason` is `completed` and, if an output schema was given, it validated. */
   ok: boolean;
@@ -126,7 +118,6 @@ export interface PhaseResult<T = unknown> {
   turns: number;
   sessionId?: string;
   model?: string;
-  usage?: PhaseUsage;
   /** Plain-English error when `ok` is false. */
   error?: string;
 }

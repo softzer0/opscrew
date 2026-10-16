@@ -163,13 +163,7 @@ export const PortainerSchema = z
  * A Portainer subdomain is served through Cloudflare (tunnel and Access), so it needs the app's
  * Cloudflare DNS: a hostname inside the zone, but not the app's own domain or its `www.` alias.
  */
-function checkPortainerSubdomain(
-  plan: {
-    dns: { provider: string; domain?: string | undefined; zone?: string | undefined };
-    portainer?: { access: string; hostname?: string | undefined } | undefined;
-  },
-  ctx: z.RefinementCtx,
-): void {
+function checkPortainerSubdomain(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   const { dns, portainer } = plan;
   if (portainer?.access !== "subdomain") return;
   if (dns.provider !== "cloudflare") {
@@ -266,20 +260,7 @@ export function likelyCloudflareZone(domain: string): string {
  * {@link cloudflareEdgeCoverage}): the domain when proxied or behind the tunnel, its `www.` alias
  * then, and a Portainer subdomain. DNS-only names get Caddy's own certificates and are unaffected.
  */
-function checkCloudflareEdgeNames(
-  plan: {
-    target: { provider: string; access?: string | undefined; web?: { mode: string } | undefined };
-    dns: {
-      provider: string;
-      domain?: string | undefined;
-      zone?: string | undefined;
-      proxied: boolean;
-      www: boolean;
-    };
-    portainer?: { access: string; hostname?: string | undefined } | undefined;
-  },
-  ctx: z.RefinementCtx,
-): void {
+function checkCloudflareEdgeNames(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   const { dns, target, portainer } = plan;
   const zone = dns.zone;
   if (dns.provider !== "cloudflare" || zone === undefined) return;
@@ -335,15 +316,11 @@ function checkCloudflareEdgeNames(
  * not available, and OpsCrew never installs Portainer CE next to an existing Portainer.
  */
 function checkPortainerTarget(
-  plan: {
-    target: z.output<typeof PortainerTargetSchema>;
-    dns: { provider: string; domain?: string | undefined };
-    portainer?: unknown;
-    retarget?: unknown;
-  },
+  target: z.output<typeof PortainerTargetSchema>,
+  plan: DeployPlanFields,
   ctx: z.RefinementCtx,
 ): void {
-  const { target, dns } = plan;
+  const { dns } = plan;
   // The zone is learned from Cloudflare at provision, before rendering (as for an own tunnel).
   const onCloudflare = dns.provider === "cloudflare" && dns.domain !== undefined;
   if (target.web.mode === "tunnel" && !onCloudflare) {
@@ -426,198 +403,200 @@ export const RetargetSchema = z.strictObject({
   startedAt: IsoDateTimeSchema,
 });
 
-const DeployPlanObjectSchema = z
-  .strictObject({
-    schemaVersion: z.literal(1),
-    createdAt: IsoDateTimeSchema,
-    updatedAt: IsoDateTimeSchema,
-    app: z.strictObject({
-      /** DNS-label safe; used for resource names. */
-      name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
-        message:
-          "must be 1-41 lower-case letters, digits or hyphens and start with a letter or digit",
-      }),
-      /** Container port. */
-      port: PortSchema,
-      healthPath: UrlPathSchema.default("/health"),
-      buildContext: RepoPathSchema.default("."),
-      dockerfile: RepoPathSchema.default("Dockerfile"),
-      /**
-       * Runs before each new version takes traffic (database migrations), in a one-off container
-       * of the new image with the app's environment, from the image's working folder. A failure
-       * stops the deploy and the previous version keeps serving. Change or remove it freely.
-       */
-      releaseCommand: CommandLineSchema.optional(),
-      /** Names only, never values. */
-      env: z.array(
-        z.strictObject({
-          name: EnvVarNameSchema,
-          secret: z.boolean(),
-          /**
-           * `user`: the user provides it; `generated`: a random secret OpsCrew creates;
-           * `derived`: OpsCrew fills it from the deployment (container URLs, the domain).
-           */
-          source: z.enum(["user", "generated", "derived"]),
-          /**
-           * True when the code has a default for it: `provision` may leave it unset and the app
-           * keeps that default. Absent means false (a value is required).
-           */
-          optional: z.boolean().optional(),
-        }),
-      ),
+const DeployPlanFieldsSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  createdAt: IsoDateTimeSchema,
+  updatedAt: IsoDateTimeSchema,
+  app: z.strictObject({
+    /** DNS-label safe; used for resource names. */
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
+      message:
+        "must be 1-41 lower-case letters, digits or hyphens and start with a letter or digit",
     }),
-    target: DeployTargetSchema,
-    services: z.strictObject({ postgres: z.boolean(), redis: z.boolean() }),
-    externalServices: z.array(ServiceKindSchema),
-    cost: CostEstimateSchema,
-    codeChanges: z.array(
+    /** Container port. */
+    port: PortSchema,
+    healthPath: UrlPathSchema.default("/health"),
+    buildContext: RepoPathSchema.default("."),
+    dockerfile: RepoPathSchema.default("Dockerfile"),
+    /**
+     * Runs before each new version takes traffic (database migrations), in a one-off container
+     * of the new image with the app's environment, from the image's working folder. A failure
+     * stops the deploy and the previous version keeps serving. Change or remove it freely.
+     */
+    releaseCommand: CommandLineSchema.optional(),
+    /** Names only, never values. */
+    env: z.array(
       z.strictObject({
-        id: z.string().min(1),
-        kind: CodeChangeKindSchema,
-        path: RepoPathSchema,
-        reason: z.string().min(1),
-        status: CodeChangeStatusSchema,
+        name: EnvVarNameSchema,
+        secret: z.boolean(),
+        /**
+         * `user`: the user provides it; `generated`: a random secret OpsCrew creates;
+         * `derived`: OpsCrew fills it from the deployment (container URLs, the domain).
+         */
+        source: z.enum(["user", "generated", "derived"]),
+        /**
+         * True when the code has a default for it: `provision` may leave it unset and the app
+         * keeps that default. Absent means false (a value is required).
+         */
+        optional: z.boolean().optional(),
       }),
     ),
-    infra: z
-      .strictObject({
-        engine: z.enum(["auto", "tofu", "terraform"]).default("auto"),
-        dir: RepoPathSchema.default("opscrew/infra/prod"),
-        /** Effective only with OpenTofu. */
-        stateEncryption: z.boolean().default(true),
-      })
-      .prefault({}),
-    dns: z.strictObject({
-      provider: z.enum(["cloudflare", "none"]),
-      /** Required when `provider` is `cloudflare`. */
-      domain: FqdnSchema.optional(),
-      /** Registrable zone, for example `example.com`. */
-      zone: FqdnSchema.optional(),
-      proxied: z.boolean().default(true),
-      /** Also serve `www.<domain>`. */
-      www: z.boolean().default(false),
-      /** Set when OpsCrew bought the domain (`opscrew domain buy`). */
-      registration: z
-        .strictObject({
-          registrar: RegistrarSchema,
-          registeredAt: IsoDateTimeSchema.optional(),
-          expiresAt: IsoDateTimeSchema.optional(),
-          autoRenew: z.boolean(),
-          privacy: z.boolean(),
-          dnssec: z.boolean(),
-        })
-        .optional(),
+  }),
+  target: DeployTargetSchema,
+  services: z.strictObject({ postgres: z.boolean(), redis: z.boolean() }),
+  externalServices: z.array(ServiceKindSchema),
+  cost: CostEstimateSchema,
+  codeChanges: z.array(
+    z.strictObject({
+      id: z.string().min(1),
+      kind: CodeChangeKindSchema,
+      path: RepoPathSchema,
+      reason: z.string().min(1),
+      status: CodeChangeStatusSchema,
     }),
-    cicd: z.strictObject({
-      provider: z.literal("github-actions"),
-      workflowPath: RepoPathSchema.default(".github/workflows/opscrew-deploy.yml"),
-      registry: z.literal("ghcr"),
-      /** Deploys run on pushes to this branch. */
-      branch: z.string().min(1).default("main"),
-    }),
-    security: z
+  ),
+  infra: z
+    .strictObject({
+      engine: z.enum(["auto", "tofu", "terraform"]).default("auto"),
+      dir: RepoPathSchema.default("opscrew/infra/prod"),
+      /** Effective only with OpenTofu. */
+      stateEncryption: z.boolean().default(true),
+    })
+    .prefault({}),
+  dns: z.strictObject({
+    provider: z.enum(["cloudflare", "none"]),
+    /** Required when `provider` is `cloudflare`. */
+    domain: FqdnSchema.optional(),
+    /** Registrable zone, for example `example.com`. */
+    zone: FqdnSchema.optional(),
+    proxied: z.boolean().default(true),
+    /** Also serve `www.<domain>`. */
+    www: z.boolean().default(false),
+    /** Set when OpsCrew bought the domain (`opscrew domain buy`). */
+    registration: z
       .strictObject({
-        sshAllowedCidrs: z
-          .array(z.union([z.cidrv4(), z.cidrv6()]))
-          .default(() => ["0.0.0.0/0", "::/0"]),
-        /** Defaults to `cloudflare` when `dns.proxied`, else `any`. */
-        httpAllowedFrom: z.enum(["any", "cloudflare"]).optional(),
-        wafCustomRules: z.boolean().default(true),
-        imageScan: z.boolean().default(true),
+        registrar: RegistrarSchema,
+        registeredAt: IsoDateTimeSchema.optional(),
+        expiresAt: IsoDateTimeSchema.optional(),
+        autoRenew: z.boolean(),
+        privacy: z.boolean(),
+        dnssec: z.boolean(),
       })
-      .prefault({}),
-    /** Portainer CE on the server; absent means off. */
-    portainer: PortainerSchema.optional(),
-    /** Informational copy of approvals; the approval store is authoritative. */
-    approvals: z
-      .array(
-        z.strictObject({
-          planHash: PlanHashSchema,
-          approver: z.string().min(1),
-          at: IsoDateTimeSchema,
-          kind: z.string().min(1),
-        }),
-      )
-      .default(() => []),
-    /**
-     * What was deployed and when. The server's IP addresses are never committed (in a public
-     * repository they would let anyone go around Cloudflare's proxy): OpsCrew keeps them in its
-     * local state, `.opscrew/server.json`.
-     */
-    deployment: z
-      .strictObject({
-        lastCompletedPhase: PhaseNameSchema.optional(),
-        /** The app's public URL on its domain; absent without a domain. */
-        url: DomainUrlSchema.optional(),
-        lastPlanHash: PlanHashSchema.optional(),
-        lastApplyAt: IsoDateTimeSchema.optional(),
-        lastDeployAt: IsoDateTimeSchema.optional(),
-        /** When `opscrew destroy` removed the infrastructure. */
-        destroyedAt: IsoDateTimeSchema.optional(),
-      })
-      .prefault({}),
-    retarget: RetargetSchema.optional(),
-  })
-  .superRefine((plan, ctx) => {
-    if (plan.dns.provider === "cloudflare" && plan.dns.domain === undefined) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["dns", "domain"],
-        message: 'is required when dns.provider is "cloudflare"',
-      });
-    }
-    if (
-      plan.target.provider === "own" &&
-      plan.target.access === "tunnel" &&
-      // The zone is learned from Cloudflare at provision, before rendering (the renderer requires it).
-      (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined)
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["target", "access"],
-        message:
-          'can be "tunnel" only with a domain on Cloudflare (dns.provider "cloudflare" with dns.domain): the tunnel serves the app on that domain',
-      });
-    }
-    if (
-      plan.target.provider === "own" &&
-      plan.target.access === "public" &&
-      plan.dns.provider === "cloudflare" &&
-      plan.dns.proxied &&
-      plan.security.httpAllowedFrom === "any"
-    ) {
-      // Docker-published ports bypass the server's firewall: behind the proxy only OpsCrew's
-      // filter for Cloudflare's addresses keeps visitors from going around Cloudflare.
-      ctx.addIssue({
-        code: "custom",
-        path: ["security", "httpAllowedFrom"],
-        message:
-          'must be "cloudflare" when your own server serves the site directly behind Cloudflare\'s proxy (only OpsCrew\'s filter then keeps visitors from reaching the server around Cloudflare); to let everyone reach the server, set dns.proxied to false (DNS only), or use a Cloudflare Tunnel (target.access "tunnel")',
-      });
-    }
-    if (plan.retarget !== undefined && plan.target.provider === "own") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["retarget"],
-        message: "moving an app to or from a server you already own is not available",
-      });
-    }
-    if (plan.target.provider === "portainer")
-      checkPortainerTarget({ ...plan, target: plan.target }, ctx);
-    checkPortainerSubdomain(plan, ctx);
-    checkCloudflareEdgeNames(plan, ctx);
-    if (plan.services.postgres) {
-      plan.externalServices.forEach((service, i) => {
-        if (POSTGRES_PROVIDERS.has(service)) {
-          ctx.addIssue({
-            code: "custom",
-            path: ["externalServices", i],
-            message: `"${service}" conflicts with services.postgres: use either the self-hosted Postgres container or the external database, not both`,
-          });
-        }
-      });
-    }
-  });
+      .optional(),
+  }),
+  cicd: z.strictObject({
+    provider: z.literal("github-actions"),
+    workflowPath: RepoPathSchema.default(".github/workflows/opscrew-deploy.yml"),
+    registry: z.literal("ghcr"),
+    /** Deploys run on pushes to this branch. */
+    branch: z.string().min(1).default("main"),
+  }),
+  security: z
+    .strictObject({
+      sshAllowedCidrs: z
+        .array(z.union([z.cidrv4(), z.cidrv6()]))
+        .default(() => ["0.0.0.0/0", "::/0"]),
+      /** Defaults to `cloudflare` when `dns.proxied`, else `any`. */
+      httpAllowedFrom: z.enum(["any", "cloudflare"]).optional(),
+      wafCustomRules: z.boolean().default(true),
+      imageScan: z.boolean().default(true),
+    })
+    .prefault({}),
+  /** Portainer CE on the server; absent means off. */
+  portainer: PortainerSchema.optional(),
+  /** Informational copy of approvals; the approval store is authoritative. */
+  approvals: z
+    .array(
+      z.strictObject({
+        planHash: PlanHashSchema,
+        approver: z.string().min(1),
+        at: IsoDateTimeSchema,
+        kind: z.string().min(1),
+      }),
+    )
+    .default(() => []),
+  /**
+   * What was deployed and when. The server's IP addresses are never committed (in a public
+   * repository they would let anyone go around Cloudflare's proxy): OpsCrew keeps them in its
+   * local state, `.opscrew/server.json`.
+   */
+  deployment: z
+    .strictObject({
+      lastCompletedPhase: PhaseNameSchema.optional(),
+      /** The app's public URL on its domain; absent without a domain. */
+      url: DomainUrlSchema.optional(),
+      lastPlanHash: PlanHashSchema.optional(),
+      lastApplyAt: IsoDateTimeSchema.optional(),
+      lastDeployAt: IsoDateTimeSchema.optional(),
+      /** When `opscrew destroy` removed the infrastructure. */
+      destroyedAt: IsoDateTimeSchema.optional(),
+    })
+    .prefault({}),
+  retarget: RetargetSchema.optional(),
+});
+
+/** A parsed plan before its cross-field rules and its defaults that depend on other fields. */
+type DeployPlanFields = z.output<typeof DeployPlanFieldsSchema>;
+
+const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) => {
+  if (plan.dns.provider === "cloudflare" && plan.dns.domain === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["dns", "domain"],
+      message: 'is required when dns.provider is "cloudflare"',
+    });
+  }
+  if (
+    plan.target.provider === "own" &&
+    plan.target.access === "tunnel" &&
+    // The zone is learned from Cloudflare at provision, before rendering (the renderer requires it).
+    (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["target", "access"],
+      message:
+        'can be "tunnel" only with a domain on Cloudflare (dns.provider "cloudflare" with dns.domain): the tunnel serves the app on that domain',
+    });
+  }
+  if (
+    plan.target.provider === "own" &&
+    plan.target.access === "public" &&
+    plan.dns.provider === "cloudflare" &&
+    plan.dns.proxied &&
+    plan.security.httpAllowedFrom === "any"
+  ) {
+    // Docker-published ports bypass the server's firewall: behind the proxy only OpsCrew's
+    // filter for Cloudflare's addresses keeps visitors from going around Cloudflare.
+    ctx.addIssue({
+      code: "custom",
+      path: ["security", "httpAllowedFrom"],
+      message:
+        'must be "cloudflare" when your own server serves the site directly behind Cloudflare\'s proxy (only OpsCrew\'s filter then keeps visitors from reaching the server around Cloudflare); to let everyone reach the server, set dns.proxied to false (DNS only), or use a Cloudflare Tunnel (target.access "tunnel")',
+    });
+  }
+  if (plan.retarget !== undefined && plan.target.provider === "own") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["retarget"],
+      message: "moving an app to or from a server you already own is not available",
+    });
+  }
+  if (plan.target.provider === "portainer") checkPortainerTarget(plan.target, plan, ctx);
+  checkPortainerSubdomain(plan, ctx);
+  checkCloudflareEdgeNames(plan, ctx);
+  if (plan.services.postgres) {
+    plan.externalServices.forEach((service, i) => {
+      if (POSTGRES_PROVIDERS.has(service)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["externalServices", i],
+          message: `"${service}" conflicts with services.postgres: use either the self-hosted Postgres container or the external database, not both`,
+        });
+      }
+    });
+  }
+});
 
 /**
  * Ubuntu 24.04 LTS image name per cloud provider, used when `target.image` is omitted. A server the

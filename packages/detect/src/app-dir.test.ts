@@ -1,19 +1,20 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { OpsCrewError } from "@opscrew/core";
 import { ProjectFactsSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { DetectError, detectProject, detectProjectDetails, normalizeAppDir } from "./index";
+import { detectProject, detectProjectDetails, normalizeAppDir } from "./index";
 
 const FIXTURES = fileURLToPath(new URL("../test/fixtures/", import.meta.url));
 const TURBO = join(FIXTURES, "monorepo-turbo");
 const TWO_APPS = join(FIXTURES, "monorepo-two-apps");
 
-async function rejection(promise: Promise<unknown>): Promise<DetectError> {
+async function rejection(promise: Promise<unknown>): Promise<OpsCrewError> {
   try {
     await promise;
   } catch (error) {
-    expect(error).toBeInstanceOf(DetectError);
-    return error as DetectError;
+    expect(error).toBeInstanceOf(OpsCrewError);
+    return error as OpsCrewError;
   }
   throw new Error("expected detection to fail");
 }
@@ -63,8 +64,7 @@ describe("chosen app directory: monorepo-turbo", () => {
     const error = await rejection(detectProjectDetails(TURBO, { appDir: "apps/missing" }));
     expect(error.code).toBe("INVALID_INPUT");
     expect(error.message).toContain("apps/missing");
-    expect(error.message).toContain("apps/web");
-    expect(error.candidates).toEqual(["apps/web"]);
+    expect(error.message).toContain("Deployable apps found: apps/web.");
   });
 });
 
@@ -132,8 +132,7 @@ describe("chosen app directory: two-app monorepo", () => {
   it("throws INVALID_INPUT listing the candidates for an unknown directory", async () => {
     const error = await rejection(detectProjectDetails(TWO_APPS, { appDir: "apps/worker" }));
     expect(error.code).toBe("INVALID_INPUT");
-    expect(error.candidates).toEqual(["apps/api", "apps/web"]);
-    expect(error.message).toContain("apps/api, apps/web");
+    expect(error.message).toContain("Deployable apps found: apps/api, apps/web.");
     expect(error.hint).toContain("--app");
   });
 

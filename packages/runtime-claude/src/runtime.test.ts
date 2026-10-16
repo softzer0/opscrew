@@ -5,7 +5,6 @@ import {
   type Options,
   type PermissionResult,
   type SDKMessage,
-  type SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   ApprovalRequest,
@@ -20,7 +19,6 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ClaudeAgentRuntime, type ClaudeAgentRuntimeOptions, type QueryFn } from "./runtime";
-import { toSdkTools } from "./tools";
 
 const ROOT = resolve("opscrew-test-project");
 const SESSION = "session-1";
@@ -337,25 +335,17 @@ describe("ClaudeAgentRuntime option mapping", () => {
     expect(options.disallowedTools).not.toContain("Bash");
   });
 
-  it("maps none to no built-in tools plus the in-process OpsCrew tools", async () => {
-    const lookup = {
-      name: "hetzner_list_offers",
-      description: "List server offers.",
-      inputSchema: z.object({ location: z.string() }),
-      mutates: false,
-      handler: async () => ({ text: "cx22" }),
-    };
+  it("maps none to no tools and no MCP server", async () => {
     const { runtime, calls } = setup([success()]);
-    await runtime.runPhase(request({ phase: "design", profile: "none", tools: [lookup] }));
+    await runtime.runPhase(request({ phase: "design", profile: "none" }));
     const options = onlyCall(calls);
     expect(options.tools).toEqual([]);
     expect(options.allowedTools).toBeUndefined();
     expect(options.disallowedTools).toEqual(
       expect.arrayContaining(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]),
     );
-    const server = options.mcpServers?.opscrew as { type: string; name: string } | undefined;
-    expect(server?.type).toBe("sdk");
-    expect(server?.name).toBe("opscrew");
+    expect(options.mcpServers).toBeUndefined();
+    expect(options.strictMcpConfig).toBe(true);
   });
 
   it("intersects the profile tools with builtinTools", async () => {
@@ -666,13 +656,6 @@ function shadowedByOptions(options: Options): string[] | undefined {
 }
 
 describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () => {
-  const lookup = {
-    name: "hetzner_list_offers",
-    description: "List server offers.",
-    inputSchema: z.object({ location: z.string() }),
-    mutates: false,
-    handler: async () => ({ text: "cx22" }),
-  };
   const report = z.object({
     changes: z.array(z.object({ id: z.string(), status: z.enum(["applied", "skipped"]) })),
     path: z.string().optional(),
@@ -681,40 +664,36 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
 
   it.each(
     profiles.flatMap((profile) => [
-      { profile, tools: false, output: false },
-      { profile, tools: true, output: true },
+      { profile, output: false },
+      { profile, output: true },
     ]),
-  )(
-    "auto-approves nothing outside the gate ($profile, tools $tools, output $output)",
-    async (c) => {
-      const { runtime, calls } = setup([success({ structured_output: { changes: [] } })]);
-      await runtime.runPhase(
-        request({
-          profile: c.profile,
-          ...(c.tools ? { tools: [lookup] } : {}),
-          ...(c.output ? { output: { name: "code_change_report", schema: report } } : {}),
-        }),
-      );
-      const options = onlyCall(calls);
-      expect(shadowedByOptions(options)).toBeUndefined();
-      expect(options.allowedTools).toBeUndefined();
-      // Nothing prompts in a non-interactive run: the hook allows or denies every call, and the
-      // callback (consulted only if the SDK still wants a decision) repeats the same gate.
-      expect(options.permissionMode).toBe("default");
-      expect(options.allowDangerouslySkipPermissions).toBeUndefined();
-      expect(options.permissionPromptToolName).toBeUndefined();
-      expect(typeof options.canUseTool).toBe("function");
-      // The gate runs for every tool: no matcher narrows it.
-      expect(options.hooks?.PreToolUse).toHaveLength(1);
-      expect(options.hooks?.PreToolUse?.[0]?.matcher).toBeUndefined();
-      expect(options.hooks?.PostToolUse?.[0]?.matcher).toBeUndefined();
-      expect(options.hooks?.PostToolUseFailure?.[0]?.matcher).toBeUndefined();
-      // The SDK adds StructuredOutput itself when outputFormat is set; it is never a listed tool.
-      expect(options.tools).not.toContain("StructuredOutput");
-      expect(options.disallowedTools).not.toContain("StructuredOutput");
-      expect(options.outputFormat?.type).toBe(c.output ? "json_schema" : undefined);
-    },
-  );
+  )("auto-approves nothing outside the gate ($profile, output $output)", async (c) => {
+    const { runtime, calls } = setup([success({ structured_output: { changes: [] } })]);
+    await runtime.runPhase(
+      request({
+        profile: c.profile,
+        ...(c.output ? { output: { name: "code_change_report", schema: report } } : {}),
+      }),
+    );
+    const options = onlyCall(calls);
+    expect(shadowedByOptions(options)).toBeUndefined();
+    expect(options.allowedTools).toBeUndefined();
+    // Nothing prompts in a non-interactive run: the hook allows or denies every call, and the
+    // callback (consulted only if the SDK still wants a decision) repeats the same gate.
+    expect(options.permissionMode).toBe("default");
+    expect(options.allowDangerouslySkipPermissions).toBeUndefined();
+    expect(options.permissionPromptToolName).toBeUndefined();
+    expect(typeof options.canUseTool).toBe("function");
+    // The gate runs for every tool: no matcher narrows it.
+    expect(options.hooks?.PreToolUse).toHaveLength(1);
+    expect(options.hooks?.PreToolUse?.[0]?.matcher).toBeUndefined();
+    expect(options.hooks?.PostToolUse?.[0]?.matcher).toBeUndefined();
+    expect(options.hooks?.PostToolUseFailure?.[0]?.matcher).toBeUndefined();
+    // The SDK adds StructuredOutput itself when outputFormat is set; it is never a listed tool.
+    expect(options.tools).not.toContain("StructuredOutput");
+    expect(options.disallowedTools).not.toContain("StructuredOutput");
+    expect(options.outputFormat?.type).toBe(c.output ? "json_schema" : undefined);
+  });
 
   it.each(profiles)(
     "lets the %s agent return its structured result through StructuredOutput",
@@ -779,12 +758,12 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
       { tool: "Task", input: { prompt: "help" } },
       { tool: "mcp__github__create_pull_request", input: {} },
       { tool: "mcp__other__x", input: {} },
+      { tool: "mcp__opscrew__hetzner_list_offers", input: { location: "fsn1" } },
       { tool: "SomethingNew", input: {} },
       // allowed
       { tool: "Read", input: { file_path: inside } },
       { tool: "Edit", input: { file_path: inside, old_string: "a", new_string: "b" } },
       { tool: "Grep", input: { pattern: "REDIS_URL" } },
-      { tool: "mcp__opscrew__hetzner_list_offers", input: { location: "fsn1" } },
       { tool: "StructuredOutput", input: { changes: [] } },
     ];
     const { runtime, audit, outcomes } = setup([init(), ...steps, success()]);
@@ -792,7 +771,6 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
       request({
         phase: "adapt",
         profile: "edit-repo",
-        tools: [lookup],
         output: { name: "code_change_report", schema: report },
       }),
     );
@@ -812,15 +790,15 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
       "Task:false",
       "mcp__github__create_pull_request:false",
       "mcp__other__x:false",
+      "mcp__opscrew__hetzner_list_offers:false",
       "SomethingNew:false",
       "Read:true",
       "Edit:true",
       "Grep:true",
-      "mcp__opscrew__hetzner_list_offers:true",
       "StructuredOutput:true",
     ]);
     const denied = audit.entries.filter((e) => e.kind === "tool-denied");
-    expect(denied).toHaveLength(15);
+    expect(denied).toHaveLength(16);
     expect(denied.map((e) => e.action)).toEqual(
       executed.filter((e) => e.endsWith(":false")).map((e) => e.split(":")[0]),
     );
@@ -828,7 +806,6 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
       "Read",
       "Edit",
       "Grep",
-      "mcp__opscrew__hetzner_list_offers",
       "StructuredOutput",
     ]);
   });
@@ -867,7 +844,7 @@ describe("ClaudeAgentRuntime: one tool gate and structured results (T818)", () =
 // ---------------------------------------------------------------------------------------------
 
 describe("ClaudeAgentRuntime result mapping", () => {
-  it("maps a successful result with cost, turns, session, usage and model", async () => {
+  it("maps a successful result with cost, turns, session and model", async () => {
     const { runtime, ledger, audit } = setup([init("claude-opus-5-5"), success()]);
     const result = await runtime.runPhase(request());
     expect(result).toEqual({
@@ -878,7 +855,6 @@ describe("ClaudeAgentRuntime result mapping", () => {
       turns: 3,
       sessionId: SESSION,
       model: "claude-opus-5-5",
-      usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheCreationTokens: 5 },
     });
     expect(ledger).toEqual([{ phase: "analyze", model: "claude-opus-5-5", costUsd: 0.42 }]);
     expect(audit.entries.find((entry) => entry.kind === "phase")).toMatchObject({
@@ -887,25 +863,9 @@ describe("ClaudeAgentRuntime result mapping", () => {
     });
   });
 
-  it("falls back to the main-loop usage when modelUsage is empty", async () => {
-    const { runtime } = setup([
-      success({
-        modelUsage: {},
-        usage: {
-          input_tokens: 7,
-          output_tokens: 3,
-          cache_read_input_tokens: 2,
-          cache_creation_input_tokens: 1,
-        },
-      }),
-    ]);
+  it("falls back to the requested model when the SDK names none", async () => {
+    const { runtime } = setup([success({ modelUsage: {} })]);
     const result = await runtime.runPhase(request({ model: "claude-sonnet-5" }));
-    expect(result.usage).toEqual({
-      inputTokens: 7,
-      outputTokens: 3,
-      cacheReadTokens: 2,
-      cacheCreationTokens: 1,
-    });
     expect(result.model).toBe("claude-sonnet-5");
   });
 
@@ -1063,88 +1023,6 @@ describe("ClaudeAgentRuntime result mapping", () => {
       }),
     );
     expect(result.ok).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------------------------
-// In-process tools
-// ---------------------------------------------------------------------------------------------
-
-describe("toSdkTools", () => {
-  const ctx = { phase: "design" as const, projectRoot: ROOT };
-  const redactor = new Redactor();
-
-  function only(tools: SdkMcpToolDefinition[]) {
-    const [first] = tools;
-    if (first === undefined) throw new Error("no tool");
-    return first;
-  }
-
-  it("validates input, calls the handler with the context and redacts the result", async () => {
-    const token = fakeSecret("github-token");
-    const handler = vi.fn(async (input: { location: string }) => ({
-      text: `offers in ${input.location} via ${token}`,
-    }));
-    const definition = only(
-      toSdkTools(
-        [
-          {
-            name: "hetzner_list_offers",
-            description: "List offers.",
-            inputSchema: z.object({ location: z.string().min(3) }),
-            mutates: false,
-            handler,
-          },
-        ],
-        ctx,
-        redactor.redact,
-      ),
-    );
-    expect(definition.name).toBe("hetzner_list_offers");
-    expect(Object.keys(definition.inputSchema)).toEqual(["location"]);
-
-    const ok = await definition.handler({ location: "fsn1" }, {});
-    expect(handler).toHaveBeenCalledWith({ location: "fsn1" }, ctx);
-    const text = (ok.content[0] as { text: string }).text;
-    expect(text).toContain("offers in fsn1");
-    expect(text).not.toContain(token);
-    expect(ok.isError).toBeUndefined();
-
-    const bad = await definition.handler({ location: "x" }, {});
-    expect(bad.isError).toBe(true);
-    expect(handler).toHaveBeenCalledTimes(1);
-  });
-
-  it("turns handler errors and error results into MCP error results", async () => {
-    const [throwing, failing] = toSdkTools(
-      [
-        {
-          name: "boom",
-          description: "Throws.",
-          inputSchema: z.object({}),
-          mutates: false,
-          handler: async () => {
-            throw new Error("exploded");
-          },
-        },
-        {
-          name: "fails",
-          description: "Fails.",
-          inputSchema: z.object({}),
-          mutates: false,
-          handler: async () => ({ text: "nope", isError: true }),
-        },
-      ],
-      ctx,
-      redactor.redact,
-    );
-    const thrown = await throwing?.handler({}, {});
-    expect(thrown?.isError).toBe(true);
-    expect((thrown?.content[0] as { text?: string } | undefined)?.text).toMatch(
-      /boom failed: exploded/,
-    );
-    const failed = await failing?.handler({}, {});
-    expect(failed?.isError).toBe(true);
   });
 });
 

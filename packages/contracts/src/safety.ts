@@ -6,7 +6,7 @@ import type { PhaseName, ToolProfile } from "./runtime";
 // ---------------------------------------------------------------------------------------------
 
 export interface ToolCall {
-  /** Tool name as the runtime reports it, for example `Read`, `Bash`, `mcp__opscrew__scan`. */
+  /** Tool name as the runtime reports it, for example `Read`, `Bash`, `StructuredOutput`. */
   tool: string;
   input: Record<string, unknown>;
   phase: PhaseName;
@@ -107,8 +107,6 @@ export interface ApprovalRecord {
 export interface ApprovalStore {
   append(record: ApprovalRecord): Promise<void>;
   list(): Promise<ApprovalRecord[]>;
-  /** Latest approved `iac-apply` record for this plan hash, if any (case-insensitive hex). */
-  findApprovedPlan(planHash: string): Promise<ApprovalRecord | undefined>;
 }
 
 // ---------------------------------------------------------------------------------------------

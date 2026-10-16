@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir as osHomedir } from "node:os";
 import path from "node:path";
+import { sha256Hex } from "./values";
 
 /** Absolute paths of every file and directory OpsCrew reads or writes for one project. */
 export interface ProjectFiles {
@@ -13,9 +13,6 @@ export interface ProjectFiles {
   scanReportJson: string;
   securityReport: string;
   runbook: string;
-  infraDir: string;
-  runtimeDir: string;
-  workflow: string;
   state: string;
   approvals: string;
   costs: string;
@@ -25,6 +22,8 @@ export interface ProjectFiles {
   deployKeyPub: string;
   knownHosts: string;
   statePassphrase: string;
+  /** Private record of the server and repository the deploy secrets were last stored for. */
+  deploySecrets: string;
 }
 
 /** Resolved locations for a project: committed artefacts, local state and user-level data. */
@@ -87,9 +86,6 @@ export function resolveProjectPaths(
       scanReportJson: path.join(stateDir, "scan.json"),
       securityReport: path.join(artefactsDir, "SECURITY_REPORT.md"),
       runbook: path.join(artefactsDir, "RUNBOOK.md"),
-      infraDir: path.join(artefactsDir, "infra"),
-      runtimeDir: path.join(artefactsDir, "runtime"),
-      workflow: path.join(absRoot, ".github", "workflows", "opscrew-deploy.yml"),
       state: path.join(stateDir, "state.json"),
       approvals: path.join(stateDir, "approvals.jsonl"),
       costs: path.join(stateDir, "costs.jsonl"),
@@ -99,6 +95,7 @@ export function resolveProjectPaths(
       deployKeyPub: path.join(projectHomeDir, "deploy_key.pub"),
       knownHosts: path.join(projectHomeDir, "known_hosts"),
       statePassphrase: path.join(projectHomeDir, "state_passphrase"),
+      deploySecrets: path.join(projectHomeDir, "deploy_secrets.json"),
     },
   };
 }
@@ -127,7 +124,7 @@ function slug(name: string): string {
 /** Stable project id: `<slug(basename)>-<first 12 hex of sha256(normalised absolute root)>`. */
 export function projectIdFor(root: string): string {
   const normalised = normaliseRoot(path.resolve(root));
-  const hash = createHash("sha256").update(normalised, "utf8").digest("hex").slice(0, 12);
+  const hash = sha256Hex(normalised).slice(0, 12);
   return `${slug(path.basename(normalised))}-${hash}`;
 }
 
@@ -139,12 +136,6 @@ export async function ensureStateDir(paths: ProjectPaths): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-}
-
-/** Creates the per-project home directory (mode 0o700 where the platform supports it). */
-export async function ensureProjectHome(paths: ProjectPaths): Promise<void> {
-  await mkdir(paths.projectHomeDir, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") await chmod(paths.projectHomeDir, 0o700);
 }
 
 /** Path of `abs` relative to `root`, with forward slashes (`""` when they are the same). */

@@ -13,23 +13,19 @@ const systemClock: Clock = { now: () => new Date() };
 const writeQueues = new Map<string, Promise<void>>();
 
 /**
- * Appends `value` as one JSON line to `file`, creating parent directories (mode 0o700 by default;
- * new files get 0o600). Appends to the same file from one process are serialised, so concurrent
- * calls never interleave lines.
+ * Appends `value` as one JSON line to `file`, creating parent directories (mode 0o700; new files
+ * get 0o600). Appends to the same file from one process are serialised, so concurrent calls never
+ * interleave lines.
  */
-export function appendJsonLine(
-  file: string,
-  value: unknown,
-  options: { dirMode?: number; fileMode?: number } = {},
-): Promise<void> {
+export function appendJsonLine(file: string, value: unknown): Promise<void> {
   const key = resolve(file);
   const line = `${JSON.stringify(value)}\n`;
   const previous = writeQueues.get(key) ?? Promise.resolve();
   const next = previous.then(async () => {
-    await mkdir(dirname(key), { recursive: true, mode: options.dirMode ?? 0o700 });
+    await mkdir(dirname(key), { recursive: true, mode: 0o700 });
     // A torn last line (crash mid-write) must not swallow this record: start a fresh line.
     const prefix = (await endsWithNewline(key)) ? "" : "\n";
-    await appendFile(key, prefix + line, { encoding: "utf8", mode: options.fileMode ?? 0o600 });
+    await appendFile(key, prefix + line, { encoding: "utf8", mode: 0o600 });
   });
   const settled = next.catch(() => {});
   writeQueues.set(key, settled);
@@ -62,51 +58,47 @@ async function endsWithNewline(file: string): Promise<boolean> {
 /**
  * Reads a JSONL file. A missing file reads as empty; blank lines, CRLF line endings and a leading
  * BOM are accepted. Lines that are not valid JSON, or that fail `schema` when one is given, are
- * skipped and reported in `warnings` by line number (never by content, which may be sensitive).
+ * skipped.
  */
 export async function readJsonLines<T = unknown>(
   file: string,
   schema?: z.ZodType<T>,
-): Promise<{ values: T[]; warnings: string[] }> {
+): Promise<T[]> {
   let text: string;
   try {
     text = await readFile(file, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { values: [], warnings: [] };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   const values: T[] = [];
-  const warnings: string[] = [];
-  text.split("\n").forEach((raw, index) => {
-    const line = raw.trimEnd();
-    if (line.trim() === "") return;
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
     let value: unknown;
     try {
       value = JSON.parse(line);
     } catch {
-      warnings.push(`${file} line ${index + 1} is not valid JSON; skipped.`);
-      return;
+      continue;
     }
     if (schema === undefined) {
       values.push(value as T);
-      return;
+      continue;
     }
     const result = schema.safeParse(value);
     if (result.success) values.push(result.data);
-    else warnings.push(`${file} line ${index + 1} does not have the expected fields; skipped.`);
-  });
-  return { values, warnings };
+  }
+  return values;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Audit log
 // ---------------------------------------------------------------------------------------------
 
-/** Builds a complete entry with every string field redacted. Fields outside `AuditEntry` are dropped. */
+/** Builds a complete entry with every free-text field redacted. Fields outside `AuditEntry` are dropped. */
 function toEntry(input: AuditInput, at: string, redact: (text: string) => string): AuditEntry {
   const entry: AuditEntry = {
-    at: redact(at),
+    at,
     kind: input.kind,
     actor: input.actor,
     action: redact(input.action),
@@ -148,7 +140,7 @@ export class JsonlAuditLog implements AuditLog {
     const date = parsed && !Number.isNaN(parsed.getTime()) ? parsed : this.clock.now();
     const entry = toEntry(input, input.at ?? date.toISOString(), this.redact);
     const file = join(this.dir, `${date.toISOString().slice(0, 10)}.jsonl`);
-    await appendJsonLine(file, entry, { dirMode: 0o700, fileMode: 0o600 });
+    await appendJsonLine(file, entry);
   }
 }
 

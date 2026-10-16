@@ -8,13 +8,15 @@
  */
 import { realpathSync } from "node:fs";
 import path from "node:path";
-import type {
-  BuiltinTool,
-  ToolCall,
-  ToolDecision,
-  ToolPolicy,
-  ToolProfile,
+import {
+  BUILTIN_TOOLS,
+  type BuiltinTool,
+  type ToolCall,
+  type ToolDecision,
+  type ToolPolicy,
+  type ToolProfile,
 } from "@opscrew/contracts";
+import { isRecord } from "./values";
 
 // =============================================================================================
 // Profiles
@@ -24,10 +26,10 @@ import type {
 export const PROFILE_TOOLS: Readonly<Record<ToolProfile, readonly BuiltinTool[]>> = Object.freeze({
   none: Object.freeze([]),
   "read-only": Object.freeze(["Read", "Glob", "Grep"]),
-  "edit-repo": Object.freeze(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]),
+  "edit-repo": Object.freeze([...BUILTIN_TOOLS]),
 } satisfies Record<ToolProfile, readonly BuiltinTool[]>);
 
-const KNOWN_BUILTINS = new Set<string>(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]);
+const KNOWN_BUILTINS = new Set<string>(BUILTIN_TOOLS);
 
 /**
  * The Claude Agent SDK's structured-output tool, offered to the model only when a phase asks for
@@ -1588,13 +1590,7 @@ function deny(reason: string): ToolDecision {
   return { decision: "deny", reason };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 export interface DefaultToolPolicyOptions {
-  /** Name of OpsCrew's in-process MCP server; its tools (`mcp__<name>__*`) are allowed. */
-  mcpServerName?: string;
   /** Platform whose path rules apply. Defaults to `process.platform`; injectable for tests. */
   platform?: NodeJS.Platform;
   /**
@@ -1615,18 +1611,17 @@ export function nodeRealpath(absolute: string): string | undefined {
 }
 
 /**
- * The default OpsCrew tool policy. Decides, in order: OpsCrew MCP tools (allow; other MCP
- * servers deny), `TodoWrite` and `StructuredOutput` (allow), never-allowed and unknown tools (deny), profile membership,
- * file-path rules for `Read`/`Edit`/`MultiEdit`/`Write`/`Glob`/`Grep`, and Bash command rules
- * (deny list, allow list, otherwise `ask`). Any internal error denies the call.
+ * The default OpsCrew tool policy. Decides, in order: MCP tools (deny: phases reach providers only
+ * through OpsCrew's typed connectors), `TodoWrite` and `StructuredOutput` (allow), never-allowed
+ * and unknown tools (deny), profile membership, file-path rules for
+ * `Read`/`Edit`/`MultiEdit`/`Write`/`Glob`/`Grep`, and Bash command rules (deny list, allow list,
+ * otherwise `ask`). Any internal error denies the call.
  */
 export class DefaultToolPolicy implements ToolPolicy {
-  readonly #mcpPrefix: string;
   readonly #win: boolean;
   readonly #realpath: ((absolute: string) => string | undefined) | undefined;
 
   constructor(options: DefaultToolPolicyOptions = {}) {
-    this.#mcpPrefix = `mcp__${options.mcpServerName ?? "opscrew"}__`;
     this.#win = (options.platform ?? process.platform) === "win32";
     this.#realpath = options.realpath;
   }
@@ -1644,9 +1639,7 @@ export class DefaultToolPolicy implements ToolPolicy {
     if (typeof tool !== "string" || tool === "") return deny("The tool name is missing.");
 
     if (tool.startsWith("mcp__")) {
-      return tool.startsWith(this.#mcpPrefix) && tool.length > this.#mcpPrefix.length
-        ? allow()
-        : deny(`\`${tool}\` is not an OpsCrew tool; other MCP servers are not available.`);
+      return deny(`\`${tool}\` is an MCP tool; MCP servers are not available to OpsCrew agents.`);
     }
     if (tool === "TodoWrite" || tool === STRUCTURED_OUTPUT_TOOL) return allow();
     const never = Object.hasOwn(ALWAYS_DENIED, tool) ? ALWAYS_DENIED[tool] : undefined;

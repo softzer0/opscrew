@@ -1,46 +1,14 @@
 /**
- * Environment sanitiser for the agent subprocess (plan decision 7, constitution IV).
+ * Environment variable names that hold secrets, and the sanitiser for the agent subprocess (plan
+ * decision 7, constitution IV).
  *
  * The agent receives the parent environment minus provider credentials and anything that looks
  * like a secret. Model credentials the agent SDK needs are kept. Names are compared
  * case-insensitively because Windows environment variables are case-insensitive.
  */
 
-/** Provider and OpsCrew secrets that are always removed from the agent environment, by name. */
-export const PROVIDER_SECRET_ENV: readonly string[] = Object.freeze([
-  "HCLOUD_TOKEN",
-  "CLOUDFLARE_API_TOKEN",
-  "CLOUDFLARE_API_KEY",
-  "CLOUDFLARE_EMAIL",
-  "CF_API_TOKEN",
-  "GITHUB_TOKEN",
-  "GH_TOKEN",
-  "GH_ENTERPRISE_TOKEN",
-  "DIGITALOCEAN_TOKEN",
-  "DIGITALOCEAN_ACCESS_TOKEN",
-  "NAMECHEAP_API_KEY",
-  "NAMECHEAP_API_USER",
-  "PORKBUN_API_KEY",
-  "PORKBUN_SECRET_API_KEY",
-  "GODADDY_API_TOKEN",
-  "NPM_TOKEN",
-  "NODE_AUTH_TOKEN",
-  "TF_ENCRYPTION",
-  "OPSCREW_STATE_PASSPHRASE",
-]);
-
-const NAMED = new Set(PROVIDER_SECRET_ENV);
-
-/** Variables that hand out credentials indirectly (SSH agent, git credential prompts). */
-const CREDENTIAL_CHANNELS = new Set([
-  "SSH_AUTH_SOCK",
-  "GIT_ASKPASS",
-  "SSH_ASKPASS",
-  "VSCODE_GIT_IPC_HANDLE",
-]);
-
-/** Always removed, whatever model provider is configured. */
-const ALWAYS_PREFIXES = ["TF_VAR_", "CONTABO_", "ARM_", "VSCODE_GIT_ASKPASS_"];
+/** Secrets whose names have no secret-looking suffix, matched by name. */
+const SECRET_NAMES = new Set(["TF_ENCRYPTION", "OPSCREW_STATE_PASSPHRASE"]);
 
 const SECRET_SUFFIXES = [
   "_TOKEN",
@@ -54,6 +22,38 @@ const SECRET_SUFFIXES = [
   "_AUTHTOKEN",
 ];
 const SECRET_INFIXES = ["_TOKEN_", "_SECRET_", "_PASSWORD_", "_PRIVATE_KEY_"];
+
+/**
+ * True when the variable `name` holds a secret (compared case-insensitively): `TF_ENCRYPTION`,
+ * `OPSCREW_STATE_PASSPHRASE`, and names ending in `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASSWD`,
+ * `_PRIVATE_KEY`, `_API_KEY`, `_SECRET_KEY`, `_ACCESS_KEY` or `_AUTHTOKEN` or containing `_TOKEN_`,
+ * `_SECRET_`, `_PASSWORD_` or `_PRIVATE_KEY_`. The redactor masks the values of these variables
+ * and the agent environment leaves them out.
+ */
+export function isSecretEnvName(name: string): boolean {
+  const upper = name.toUpperCase();
+  return (
+    SECRET_NAMES.has(upper) ||
+    SECRET_SUFFIXES.some((suffix) => upper.endsWith(suffix)) ||
+    SECRET_INFIXES.some((infix) => upper.includes(infix))
+  );
+}
+
+/**
+ * Never given to the agent although they are not secrets: the account half of a provider
+ * credential, and variables that hand out credentials indirectly (SSH agent, credential prompts).
+ */
+const CREDENTIAL_PARTS = new Set([
+  "CLOUDFLARE_EMAIL",
+  "NAMECHEAP_API_USER",
+  "SSH_AUTH_SOCK",
+  "GIT_ASKPASS",
+  "SSH_ASKPASS",
+  "VSCODE_GIT_IPC_HANDLE",
+]);
+
+/** Always removed, whatever model provider is configured. */
+const ALWAYS_PREFIXES = ["TF_VAR_", "CONTABO_", "ARM_", "VSCODE_GIT_ASKPASS_"];
 
 /** Model credentials the agent SDK needs; never removed. */
 const MODEL_CREDENTIALS = new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
@@ -79,27 +79,22 @@ const CLOUD_FAMILIES: CloudFamily[] = [
   },
 ];
 
-function isEnabled(env: Record<string, string | undefined>, flag: string): boolean {
-  return env[flag] === "1";
-}
-
 function isRemoved(name: string, env: Record<string, string | undefined>): boolean {
   const upper = name.toUpperCase();
-  if (NAMED.has(upper) || CREDENTIAL_CHANNELS.has(upper)) return true;
+  if (CREDENTIAL_PARTS.has(upper)) return true;
   if (ALWAYS_PREFIXES.some((prefix) => upper.startsWith(prefix))) return true;
   if (MODEL_CREDENTIALS.has(upper)) return false;
   for (const family of CLOUD_FAMILIES) {
-    if (family.matches(upper)) return !isEnabled(env, family.flag);
+    if (family.matches(upper)) return env[family.flag] !== "1";
   }
-  return (
-    SECRET_SUFFIXES.some((suffix) => upper.endsWith(suffix)) ||
-    SECRET_INFIXES.some((infix) => upper.includes(infix))
-  );
+  return isSecretEnvName(upper);
 }
 
 /**
- * Returns a new environment for the agent subprocess without provider tokens and secret-looking
- * variables. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are kept; `AWS_*`, Google
+ * Returns a new environment for the agent subprocess without secrets ({@link isSecretEnvName}),
+ * `TF_VAR_*`, `ARM_*`, `CONTABO_*`, the account names of provider credentials (`CLOUDFLARE_EMAIL`,
+ * `NAMECHEAP_API_USER`) and credential channels such as `SSH_AUTH_SOCK`.
+ * `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are kept; `AWS_*`, Google
  * credentials/`CLOUDSDK_*` and `AZURE_*` (plus `ANTHROPIC_FOUNDRY_API_KEY`) are kept only when
  * `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY` is `1`.
  * Undefined values are dropped. The input is not modified.

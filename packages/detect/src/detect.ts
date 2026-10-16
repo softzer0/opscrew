@@ -52,6 +52,7 @@ import {
 } from "./paths";
 import { detectPlatform } from "./platform";
 import { detectRelease } from "./release";
+import { byDepth, inFolder } from "./release/context";
 import {
   addDependencyServices,
   addDjangoServices,
@@ -81,7 +82,7 @@ export interface DetectOptions {
    * Repo-relative directory of the app to describe (a workspace member, a detected subdirectory
    * app, or `.` for the root). Trailing slashes, `./` prefixes and backslashes are accepted. When
    * set, `appCandidates` is empty and other deployable apps are left out of the facts. An unknown
-   * directory throws a `DetectError` (`INVALID_INPUT`) listing the candidates.
+   * directory throws an `OpsCrewError` (`INVALID_INPUT`) listing the candidates.
    */
   appDir?: string;
 }
@@ -106,7 +107,14 @@ interface UnitInfo {
   hints: AppKindHints;
   roles: Set<FrameworkRole>;
   appKind: AppKind;
+  /** The unit's `next.config.*` text, read when it uses Next.js. */
+  nextConfig: string | undefined;
+  /** The unit's `astro.config.*` text, read when it uses Astro. */
+  astroConfig: string | undefined;
 }
+
+const NEXT_CONFIG = /^next\.config\.[cm]?[jt]s$/;
+const ASTRO_CONFIG = /^astro\.config\.[cm]?[jt]s$/;
 
 type JsPackageManager = "npm" | "pnpm" | "yarn" | "bun";
 type PyPackageManager = "pip" | "poetry" | "uv" | "pipenv";
@@ -284,10 +292,10 @@ export async function detectProjectDetails(
     const frameworks = detectFrameworks(unit);
     const names = new Set(frameworks.map((f) => f.name));
     const nextConfig = names.has("next")
-      ? await read(filesIn(unit.dir, (n) => /^next\.config\.[cm]?[jt]s$/.test(n))[0] ?? "")
+      ? await read(filesIn(unit.dir, (n) => NEXT_CONFIG.test(n))[0] ?? "")
       : undefined;
     const astroConfig = names.has("astro")
-      ? await read(filesIn(unit.dir, (n) => /^astro\.config\.[cm]?[jt]s$/.test(n))[0] ?? "")
+      ? await read(filesIn(unit.dir, (n) => ASTRO_CONFIG.test(n))[0] ?? "")
       : undefined;
     const hints: AppKindHints = {
       nextStaticExport: /\boutput\s*:\s*["'`]export["'`]/.test(nextConfig ?? ""),
@@ -306,6 +314,8 @@ export async function detectProjectDetails(
       hints,
       roles: effectiveRoles(unit, frameworks, hints),
       appKind: appKindOf(unit, frameworks, hints),
+      nextConfig,
+      astroConfig,
     });
   }
   const rootInfo = infos.find((info) => info.unit.dir === ".");
@@ -369,52 +379,15 @@ export async function detectProjectDetails(
     if (text !== undefined) signals.set(file, scanSource(text));
   });
 
-  // Environment variables.
-  const envFiles = new Map<string, Set<string>>();
-  const addEnv = (name: string, file: string) => {
-    const set = envFiles.get(name) ?? new Set<string>();
-    set.add(file);
-    envFiles.set(name, set);
-  };
-  // A variable has a default only when every read in the code has one; names found only in
-  // example env files stay required.
-  const envDefaults = new Map<string, boolean>();
-  for (const [file, found] of signals) {
-    for (const read of found.envReads) {
-      addEnv(read.name, file);
-      envDefaults.set(read.name, (envDefaults.get(read.name) ?? true) && read.hasDefault);
-    }
-  }
-  // Committed env files: every name of an example file, and the names Flask loads by prefix
-  // (`app.config.from_prefixed_env()`) from the others. Values are only checked for a URL scheme.
-  const configPrefixes = new Set<string>();
-  for (const found of signals.values()) for (const p of found.configPrefixes) configPrefixes.add(p);
-  const configUrlSchemes = new Set<string>();
-  // URL kinds per variable; files that disagree make it `other` (the plan then leaves it alone).
-  const envSchemes = new Map<string, EnvUrlScheme>();
-  for (const file of scopedFiles.filter(isCommittedEnvFile)) {
-    const text = (await read(file)) ?? "";
-    for (const [name, scheme] of envFileSchemes(text)) {
-      configUrlSchemes.add(scheme);
-      const known = envSchemes.get(name);
-      envSchemes.set(name, known === undefined || known === scheme ? scheme : "other");
-    }
-    const names = parseEnvExampleKeys(text);
-    const wanted = isEnvExampleFile(file) ? names : prefixedConfigNames(names, configPrefixes);
-    for (const name of wanted) addEnv(name, file);
-  }
+  const { envVars, configUrlSchemes } = await collectEnvVars(
+    signals,
+    scopedFiles.filter(isCommittedEnvFile),
+    read,
+  );
   let composeRedis = false;
   for (const file of scopedFiles.filter(isComposeFile)) {
     if (composeUsesRedis((await read(file)) ?? "")) composeRedis = true;
   }
-  const envVars = sortStrings(envFiles.keys()).map((name) => ({
-    name,
-    files: sortStrings(envFiles.get(name) ?? []),
-    clientExposed: isClientExposed(name),
-    secretLikely: isSecretLikely(name),
-    ...(envDefaults.get(name) === true ? { hasDefault: true } : {}),
-    ...(envSchemes.has(name) ? { urlScheme: envSchemes.get(name) } : {}),
-  }));
 
   // Services.
   const pythonUrlSchemes = new Set<string>();
@@ -443,7 +416,10 @@ export async function detectProjectDetails(
     settingsTexts.set(file, text);
     addDjangoServices(services, text);
   }
-  addEnvServices(services, envFiles.keys());
+  addEnvServices(
+    services,
+    envVars.map((envVar) => envVar.name),
+  );
 
   // Platform fingerprints.
   const platformUnits = [...new Set([rootInfo?.unit, primary?.unit])].filter(
@@ -482,9 +458,7 @@ export async function detectProjectDetails(
       for (const name of exact) if (fileSet.has(joinRel(dir, name))) return joinRel(dir, name);
     }
     if (!loose) return undefined;
-    return scopedFiles
-      .filter((f) => loose(basenameRel(f)))
-      .sort((a, b) => depthOf(a) - depthOf(b) || (a < b ? -1 : 1))[0];
+    return scopedFiles.filter((f) => loose(basenameRel(f))).sort(byDepth)[0];
   };
   const dockerfile = pickFile(
     ["Dockerfile"],
@@ -507,7 +481,7 @@ export async function detectProjectDetails(
       : infos.some((info) => info.unit.python)
         ? "python"
         : "none";
-  const cdPrefix = (command: string) => (appDir === "." ? command : `cd ${appDir} && ${command}`);
+  const cdPrefix = (command: string) => inFolder(appDir, command);
 
   let packageManager: ProjectFacts["packageManager"] = "none";
   const build: ProjectFacts["build"] = {};
@@ -627,9 +601,7 @@ export async function detectProjectDetails(
       jsPm &&
       appFrameworkNames.has("astro") &&
       hasNpmDependency("@astrojs/node") &&
-      !/\bmode\s*:\s*["'`]middleware["'`]/.test(
-        (await read(filesIn(appDir, (n) => /^astro\.config\.[cm]?[jt]s$/.test(n))[0] ?? "")) ?? "",
-      )
+      !/\bmode\s*:\s*["'`]middleware["'`]/.test(primary?.astroConfig ?? "")
     ) {
       start = cdPrefix("node ./dist/server/entry.mjs");
     } else if (appPackage?.main && primary?.roles.has("server")) {
@@ -643,9 +615,8 @@ export async function detectProjectDetails(
       : undefined;
     if (redwoodToml) {
       const root = dirnameRel(redwoodToml);
-      const inRoot = (command: string) => (root === "." ? command : `cd ${root} && ${command}`);
-      build.buildCommand ??= inRoot("yarn rw build api");
-      start ??= inRoot(`yarn rw serve api${port ? ` --port ${port}` : ""}`);
+      build.buildCommand ??= inFolder(root, "yarn rw build api");
+      start ??= inFolder(root, `yarn rw serve api${port ? ` --port ${port}` : ""}`);
       // Redwood's own Docker setup serves the web side from a second server that proxies API
       // requests to this one; OpsCrew runs one app for now.
       notes.push(
@@ -683,11 +654,7 @@ export async function detectProjectDetails(
   const nestPrefix = appCode
     .map((file) => signals.get(file)?.nestPrefix)
     .find((prefix) => prefix !== undefined);
-  const nextBase = appFrameworkNames.has("next")
-    ? nextBasePathLiteral(
-        await read(filesIn(appDir, (n) => /^next\.config\.[cm]?[jt]s$/.test(n))[0] ?? ""),
-      )
-    : undefined;
+  const nextBase = nextBasePathLiteral(primary?.nextConfig);
   let healthEndpoint: string | undefined;
   for (const file of appCode) {
     const found = signals.get(file);
@@ -797,6 +764,59 @@ export async function detectProject(
   return (await detectProjectDetails(root, options)).facts;
 }
 
+/**
+ * The app's environment variables: the names the code reads, every name of an example env file,
+ * and the names Flask loads by prefix (`app.config.from_prefixed_env()`) from the other committed
+ * env files. Values are only looked at for their URL scheme (`configUrlSchemes`, and each
+ * variable's `urlScheme`), never kept.
+ */
+async function collectEnvVars(
+  signals: ReadonlyMap<string, SourceSignals>,
+  committedEnvFiles: readonly string[],
+  read: ReadText,
+): Promise<{ envVars: ProjectFacts["envVars"]; configUrlSchemes: Set<string> }> {
+  const envFiles = new Map<string, Set<string>>();
+  const addEnv = (name: string, file: string) => {
+    const set = envFiles.get(name) ?? new Set<string>();
+    set.add(file);
+    envFiles.set(name, set);
+  };
+  // A variable has a default only when every read in the code has one; names found only in
+  // example env files stay required.
+  const envDefaults = new Map<string, boolean>();
+  for (const [file, found] of signals) {
+    for (const envRead of found.envReads) {
+      addEnv(envRead.name, file);
+      envDefaults.set(envRead.name, (envDefaults.get(envRead.name) ?? true) && envRead.hasDefault);
+    }
+  }
+  const configPrefixes = new Set<string>();
+  for (const found of signals.values()) for (const p of found.configPrefixes) configPrefixes.add(p);
+  const configUrlSchemes = new Set<string>();
+  // URL kinds per variable; files that disagree make it `other` (the plan then leaves it alone).
+  const envSchemes = new Map<string, EnvUrlScheme>();
+  for (const file of committedEnvFiles) {
+    const text = (await read(file)) ?? "";
+    for (const [name, scheme] of envFileSchemes(text)) {
+      configUrlSchemes.add(scheme);
+      const known = envSchemes.get(name);
+      envSchemes.set(name, known === undefined || known === scheme ? scheme : "other");
+    }
+    const names = parseEnvExampleKeys(text);
+    const wanted = isEnvExampleFile(file) ? names : prefixedConfigNames(names, configPrefixes);
+    for (const name of wanted) addEnv(name, file);
+  }
+  const envVars = sortStrings(envFiles.keys()).map((name) => ({
+    name,
+    files: sortStrings(envFiles.get(name) ?? []),
+    clientExposed: isClientExposed(name),
+    secretLikely: isSecretLikely(name),
+    ...(envDefaults.get(name) === true ? { hasDefault: true } : {}),
+    ...(envSchemes.has(name) ? { urlScheme: envSchemes.get(name) } : {}),
+  }));
+  return { envVars, configUrlSchemes };
+}
+
 function pythonStartCommand(
   frameworks: ReadonlySet<string>,
   appDir: string,
@@ -805,7 +825,6 @@ function pythonStartCommand(
   settingsTexts: ReadonlyMap<string, string>,
   port: number,
 ): string | undefined {
-  const byDepth = (a: string, b: string) => depthOf(a) - depthOf(b) || (a < b ? -1 : 1);
   if (frameworks.has("django")) {
     let wsgi: string | undefined;
     for (const [file, text] of settingsTexts) {

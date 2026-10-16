@@ -15,9 +15,15 @@ import type {
   IacValidation,
   PlanSummary,
 } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, Redactor, registerEnvSecrets } from "@opscrew/core";
+import {
+  isUserFacingError,
+  OpsCrewError,
+  plural,
+  Redactor,
+  registerEnvSecrets,
+  sha256Hex,
+} from "@opscrew/core";
 import { encryptionSecrets } from "./encryption";
-import { hashBytes } from "./hash";
 import { parsePlanJson } from "./plan-json";
 import type { ProviderSchemaReader } from "./provider-schemas";
 import { managedAddresses, type StateResourceReader } from "./state-resources";
@@ -63,7 +69,7 @@ function tail(text: string): string {
 
 function minutes(ms: number): string {
   const m = Math.round(ms / 60_000);
-  return m >= 1 ? `${m} minute${m === 1 ? "" : "s"}` : `${Math.round(ms / 1000)} seconds`;
+  return m >= 1 ? plural(m, "minute") : `${Math.round(ms / 1000)} seconds`;
 }
 
 const HINTS: Record<string, string> = {
@@ -100,7 +106,6 @@ class Engine implements IacEngine, ProviderSchemaReader, StateResourceReader {
 
   async init(dir: string, options: IacInitOptions = {}): Promise<void> {
     const args = ["init", "-input=false", "-no-color"];
-    if (options.upgrade) args.push("-upgrade");
     for (const [key, value] of Object.entries(options.backendConfig ?? {})) {
       args.push(`-backend-config=${key}=${value}`);
     }
@@ -177,7 +182,7 @@ class Engine implements IacEngine, ProviderSchemaReader, StateResourceReader {
     }
 
     const bytes = await readFile(file);
-    const planHash = hashBytes(bytes);
+    const planHash = sha256Hex(bytes);
     const planJson = await this.show(cwd, file, options);
     const parsed = parsePlanJson(planJson);
     // A refresh-only plan only updates the state, so it never carries resource changes.
@@ -229,7 +234,7 @@ class Engine implements IacEngine, ProviderSchemaReader, StateResourceReader {
         },
       );
     }
-    const actual = hashBytes(bytes);
+    const actual = sha256Hex(bytes);
     if (actual !== approved.toLowerCase()) {
       throw new OpsCrewError(
         "PLAN_HASH_MISMATCH",
