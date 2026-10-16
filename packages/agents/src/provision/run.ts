@@ -526,7 +526,7 @@ async function provisionFlow(
     : connectorFirst(deps, {
         command,
         app: plan.app.name,
-        where: "the server",
+        where: "on the server",
         hostChange: () => cloudConnector(false),
         hostHash: () => cloudShown.hostHash,
         done: "The Cloudflare Tunnel connector is removed from the server; the Cloudflare Tunnel this plan deletes is still there.",

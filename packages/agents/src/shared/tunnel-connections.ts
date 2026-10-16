@@ -3,6 +3,7 @@ import type { ApprovalRecord, IacEngine, ResourceChange } from "@opscrew/contrac
 import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { PlanRefusedError } from "./approvals";
 
 /**
  * Cloudflare refuses to delete a tunnel while its connector (`cloudflared`) is still connected
@@ -389,8 +390,9 @@ export function connectorFirst(
   input: {
     command: string;
     app: string;
-    /** `your server` (one the user owns) or `the server`. */
+    /** Where the host change happens: `on your server`, `on the server`, `in your Portainer`. */
     where: string;
+    /** The host change; a refused approval throws a {@link PlanRefusedError}. */
     hostChange: () => Promise<HostChangeResult>;
     /** The host change's plan hash once it was shown (for the hint after a refusal). */
     hostHash: () => string | undefined;
@@ -400,25 +402,24 @@ export function connectorFirst(
   },
 ): ConnectorFirst {
   const notes = input.notes ?? [];
-  const note = `The change on ${input.where} is shown next and applied first: Cloudflare deletes a tunnel only after its connector has stopped, so OpsCrew applies this plan after that.`;
+  const note = `The change ${input.where} is shown next and applied first: Cloudflare deletes a tunnel only after its connector has stopped, so OpsCrew applies this plan after that.`;
   let host: HostChangeResult | undefined;
   let refusedBusy = false;
+  /** True once {@link ConnectorFirst.stopped} added `done` to an engine error (said once). */
+  let doneSaid = false;
   const refusedFirst = (error: unknown, planHash: string): unknown => {
-    if (!(error instanceof OpsCrewError) || error.code !== "APPROVAL_REFUSED") return error;
+    if (!(error instanceof PlanRefusedError)) return error;
     const hostHash = input.hostHash();
-    return new OpsCrewError(
-      error.code,
-      error.message.replace(
-        / Nothing on (?:your|the) server was changed\.$/,
-        ` Nothing on ${input.where} was changed and nothing in Cloudflare was deleted.`,
-      ),
+    return new PlanRefusedError(
       {
+        ...error.refusal,
+        unchanged: `Nothing ${input.where} was changed and nothing in Cloudflare was deleted.`,
         hint:
           hostHash !== undefined
-            ? `Run \`${input.command} --approve ${planHash} --approve ${hostHash}\` when you are ready, typing ${input.app} to confirm: the change on ${input.where} goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`
+            ? `Run \`${input.command} --approve ${planHash} --approve ${hostHash}\` when you are ready, typing ${input.app} to confirm: the change ${input.where} goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`
             : `Run \`${input.command}\` again when you are ready; it shows both plans again.`,
-        cause: error,
       },
+      error,
     );
   };
   const hooks: TunnelPlanHooks = {
@@ -457,11 +458,8 @@ export function connectorFirst(
           cause: error,
         });
       }
-      if (
-        host !== undefined &&
-        error.code === "ENGINE_FAILED" &&
-        !error.message.includes(input.done)
-      ) {
+      if (host !== undefined && error.code === "ENGINE_FAILED" && !doneSaid) {
+        doneSaid = true;
         return new OpsCrewError(error.code, `${error.message}\n${input.done}`, {
           ...(error.hint !== undefined ? { hint: error.hint } : {}),
           cause: error,

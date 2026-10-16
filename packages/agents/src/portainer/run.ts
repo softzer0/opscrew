@@ -51,6 +51,7 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
+  PlanRefusedError,
   readServerAddresses,
   SshRemoteExec,
   writeRenderedFiles,
@@ -348,11 +349,12 @@ async function applyAddonPlan(
     ...(input.allowDestroy ? { allowDestroy: true, confirmPhrase: plan.app } : {}),
   });
   if (!approval.approved) {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      `The host plan was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing on the server was changed.`,
-      { hint: `To apply it later without prompts, run: ${input.command} --approve ${hash}` },
-    );
+    throw new PlanRefusedError({
+      plan: "host plan",
+      ...(approval.reason ? { reason: approval.reason } : {}),
+      unchanged: "Nothing on the server was changed.",
+      hint: `To apply it later without prompts, run: ${input.command} --approve ${hash}`,
+    });
   }
   await deps.approvals.assertApprovedHostPlan(hash, { allowDestroy: input.allowDestroy });
   const secrets = await input.secrets();
@@ -536,7 +538,7 @@ async function runChange(
     const first = connectorFirst(deps, {
       command,
       app: plan.app.name,
-      where: ownRun ? "your server" : "the server",
+      where: ownRun ? "on your server" : "on the server",
       hostChange: () => hostChange({}, false),
       hostHash: () => shown.hostHash,
       done: CONNECTOR_GONE,

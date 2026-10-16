@@ -25,6 +25,7 @@ import {
   ensureSecretFile,
   infrastructureOutputs,
   knownHostsName,
+  PlanRefusedError,
   randomPassword,
   readSecretFile,
   readServerAddresses,
@@ -592,7 +593,7 @@ export function ownConnectorFirst(
   const first = connectorFirst(deps, {
     command: `opscrew ${input.phase}`,
     app: input.plan.app.name,
-    where: "your server",
+    where: "on your server",
     hostChange: async () => {
       const host = await apply(false);
       if (host.applied) {
@@ -725,11 +726,12 @@ export async function applyOwnHostPlan(
     planHash: hash,
   });
   if (!approval.approved) {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      `The host plan was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing on your server was changed.`,
-      { hint: `To apply it later without prompts, run: opscrew ${input.phase} --approve ${hash}` },
-    );
+    throw new PlanRefusedError({
+      plan: "host plan",
+      ...(approval.reason ? { reason: approval.reason } : {}),
+      unchanged: "Nothing on your server was changed.",
+      hint: `To apply it later without prompts, run: opscrew ${input.phase} --approve ${hash}`,
+    });
   }
   await deps.approvals.assertApprovedHostPlan(hash);
 

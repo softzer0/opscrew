@@ -774,6 +774,45 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     expect(tunnelDeletePlanJson(tunnelDeletes()).resource_changes).toHaveLength(4);
   });
 
+  it("a refused stack change that goes first says nothing in Portainer or Cloudflare changed", async () => {
+    const s = await setup({
+      plan: portainerPlan({ web: { mode: "caddy" }, redeploy: "cloudflare" }),
+      changes: WEBHOOK_TUNNEL,
+      env: { CLOUDFLARE_API_TOKEN: fakeSecret("cloudflare-token") },
+    });
+    await s.run();
+    await writeFakeState(s.deps.paths);
+    s.github.openPull = OPEN_PULL;
+    const current = await readArtifact("plan", s.deps.paths.files.plan);
+    if (current.target.provider !== "portainer") throw new Error("expected a Portainer plan");
+    await writeArtifact("plan", s.deps.paths.files.plan, {
+      ...current,
+      target: { ...current.target, redeploy: "updater" },
+    });
+    s.engine.scenario.changes = [];
+    const events: string[] = [];
+    deleteTunnelIn(s.engine, events, () => true);
+    s.deps.fetch = s.withDns(fakeTunnelApi({ events, connectorRunning: () => true }).fetch);
+    const handler = s.handler as unknown as { request: (r: ApprovalRequest) => Promise<unknown> };
+    const request = handler.request.bind(s.handler);
+    handler.request = async (r) =>
+      r.kind === "stack-apply"
+        ? { approved: false, approver: "test-user", decidedAt: "2026-10-11T12:00:00.000Z" }
+        : request(r);
+    const applies = s.engine.applied.length;
+
+    const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toBe(
+      "The stack plan was not approved. Nothing in your Portainer was changed and nothing in Cloudflare was deleted.",
+    );
+    expect(error.hint).toMatch(
+      /^Run `opscrew provision --approve [0-9a-f]{64} --approve [0-9a-f]{64}` when you are ready, typing shop to confirm: the change in your Portainer goes first/,
+    );
+    expect(s.engine.applied).toHaveLength(applies);
+    expect(s.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop-portainer-tunnel");
+  });
+
   it("replaces the repository token only when asked, sending the new one with a Git update", async () => {
     const s = await setup({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
     await s.run();

@@ -7,6 +7,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
 import { BUSY_TUNNEL_LOG } from "./__fixtures__/tunnel";
+import { PlanRefusedError } from "./approvals";
 import {
   connectorFirst,
   deletedTunnel,
@@ -358,7 +359,7 @@ describe("connectorFirst hooks", () => {
     const first = connectorFirst(d, {
       command: "opscrew portainer disable",
       app: "shop",
-      where: "the server",
+      where: "on the server",
       hostChange:
         hostChange ??
         (async () => {
@@ -399,8 +400,12 @@ describe("connectorFirst hooks", () => {
   });
 
   it("a refused host change names both hashes; a 1022 heard by applyFailed is said in plain words", async () => {
-    const refusal = new OpsCrewError(
-      "APPROVAL_REFUSED",
+    const refusal = new PlanRefusedError({
+      plan: "host plan",
+      unchanged: "Nothing on the server was changed.",
+      hint: "To apply it later without prompts, run: opscrew portainer disable --approve …",
+    });
+    expect(refusal.message).toBe(
       "The host plan was not approved. Nothing on the server was changed.",
     );
     const refused = await setup([json(tunnelBody("down"))], async () => {

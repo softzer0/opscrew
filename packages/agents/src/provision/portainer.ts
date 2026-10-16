@@ -75,6 +75,7 @@ import {
   ensureStatePassphrase,
   hostListKind,
   infrastructureOutputs,
+  PlanRefusedError,
   type PortainerConnection,
   parseDotenv,
   readPortainerConnection,
@@ -811,11 +812,12 @@ export async function provisionPortainer(
       planHash: hash,
     });
     if (!approval.approved) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The stack plan was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing in Portainer was changed.`,
-        { hint: `To apply it later without prompts, run: ${command} --approve ${hash}` },
-      );
+      throw new PlanRefusedError({
+        plan: "stack plan",
+        ...(approval.reason ? { reason: approval.reason } : {}),
+        unchanged: "Nothing in Portainer was changed.",
+        hint: `To apply it later without prompts, run: ${command} --approve ${hash}`,
+      });
     }
     await deps.approvals.assertApprovedStackPlan(hash);
     const secrets: ApplySecrets = {
@@ -913,7 +915,7 @@ export async function provisionPortainer(
     const first = connectorFirst(deps, {
       command,
       app: plan.app.name,
-      where: "your Portainer",
+      where: "in your Portainer",
       hostChange: async () => {
         // The stack change that goes first may create the app stack: its branch must start first.
         if (createsAppStack) await placeholderBranch.start(false);
