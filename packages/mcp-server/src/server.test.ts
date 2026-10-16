@@ -328,6 +328,10 @@ describe("createOpscrewMcpServer", () => {
     expect(data.artifacts.requirements.exists).toBe(true);
     expect(data.nextStep).toContain("opscrew_design_options");
     expect(textOf(later)).toMatch(/scan\s+ok/);
+    expect(textOf(later)).toMatch(/provision\s+not run/);
+    // A move and the Portainer add-on are rows only once they ran.
+    expect(textOf(later)).not.toMatch(/retarget\s+not run/);
+    expect(textOf(later)).not.toMatch(/portainer\s+not run/);
   });
 
   it("maps a bad projectDir to an isError result with a hint", async () => {

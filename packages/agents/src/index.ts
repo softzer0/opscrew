@@ -14,4 +14,5 @@ export * from "./provision";
 export * from "./retarget";
 export * from "./secure";
 export * from "./shared";
+export * from "./shared/phase-status";
 export * from "./verify";

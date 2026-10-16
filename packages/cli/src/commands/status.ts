@@ -1,10 +1,10 @@
 import {
   formatServerAddress,
   type PhaseDeps,
+  phaseStatusLines,
   type ServerAddress,
   serverAddress,
 } from "@opscrew/agents";
-import { PHASES } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, ProjectStateStore } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
@@ -89,19 +89,13 @@ export function register(program: Command, ctx: CliContext): void {
         if (extra.length > 0) ctx.stdout(`${extra.join("\n")}\n`);
         return;
       }
-      const width = Math.max(...PHASES.map((phase) => phase.length));
-      const lines = [`OpsCrew phases in ${paths.root}`, ""];
-      for (const phase of PHASES) {
-        const record = state.phases[phase];
-        const name = phase.padEnd(width);
-        if (record === undefined) {
-          lines.push(`  ${name}  not run`);
-          continue;
-        }
-        const summary = record.summary === undefined ? "" : `  ${record.summary}`;
-        lines.push(`  ${name}  ${record.status.padEnd(7)}  ${record.at}${summary}`);
-      }
-      lines.push(...serverLines, ...moveLines);
+      const lines = [
+        `OpsCrew phases in ${paths.root}`,
+        "",
+        ...phaseStatusLines(state.phases),
+        ...serverLines,
+        ...moveLines,
+      ];
       ctx.stdout(`${lines.join("\n")}\n`);
     });
 }

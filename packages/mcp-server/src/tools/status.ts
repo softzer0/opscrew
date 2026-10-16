@@ -1,7 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { moveInProgress, moveProvider, providerProfile } from "@opscrew/agents";
-import { PHASES, type PhaseName } from "@opscrew/contracts";
-import type { PhaseRecord } from "@opscrew/core";
+import { moveInProgress, moveProvider, phaseStatusLines, providerProfile } from "@opscrew/agents";
 import { type Retarget, readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
 import { exists, projectDirInput, relativeTo, runTool, withHint } from "./shared";
@@ -73,15 +71,8 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
           have[name] = present;
           artifacts[name] = { path: relativeTo(paths.root, file), exists: present };
         }
-        const phases: Partial<Record<PhaseName, PhaseRecord>> = current.phases;
-        const width = Math.max(...PHASES.map((phase) => phase.length));
-        const lines = PHASES.map((phase) => {
-          const record = phases[phase];
-          const name = phase.padEnd(width);
-          if (record === undefined) return `  ${name}  not run`;
-          const summary = record.summary === undefined ? "" : `  ${record.summary}`;
-          return `  ${name}  ${record.status.padEnd(7)}  ${record.at}${summary}`;
-        });
+        const phases = current.phases;
+        const lines = phaseStatusLines(phases);
         // A move to another provider in progress (`opscrew retarget`): where it stands and the
         // terminal command to continue it. An unreadable plan is not this tool's concern.
         const plan = have.plan

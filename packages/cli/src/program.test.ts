@@ -81,6 +81,15 @@ describe("opscrew status", () => {
     expect(ctx.output).toMatch(/scan\s+ok\s+2026-10-11T08:30:00.000Z\s+2 findings/);
     expect(ctx.output).toMatch(/analyze\s+failed\s+2026-10-11T08:30:00.000Z/);
     expect(ctx.output).toMatch(/design\s+not run/);
+    // A move and the Portainer add-on are rows only once they ran.
+    expect(ctx.output).not.toMatch(/retarget\s+not run/);
+    expect(ctx.output).not.toMatch(/portainer\s+not run/);
+
+    await store.markPhase("portainer", "ok", "on");
+    const later = createTestContext({ cwd: dir });
+    expect(await main(argv("status"), later)).toBe(0);
+    expect(later.output).toMatch(/portainer\s+ok\s+2026-10-11T08:30:00.000Z\s+on/);
+    expect(later.output).not.toMatch(/retarget\s+not run/);
   });
 
   it("honours the global --cwd option", async () => {
