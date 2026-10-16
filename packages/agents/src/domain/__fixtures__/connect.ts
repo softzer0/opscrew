@@ -6,7 +6,7 @@ import type {
   RegistrarCapabilities,
   RegistrarDnsRecord,
 } from "@opscrew/contracts";
-import { DNS_OVER_HTTPS_URL } from "../connect-dns";
+import { DNS_OVER_HTTPS_URL } from "../../shared";
 import type { OtherRegistrarId } from "../registrars";
 import type { DomainZoneApi, ZoneRecord } from "../types";
 import { type DomainProject, domainProject, type Run, type RunOptions } from "./fakes";

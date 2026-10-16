@@ -1,6 +1,6 @@
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { lookupPublishedDs } from "./connect-dns";
 
 function answering(body: unknown, status = 200) {
@@ -93,5 +93,31 @@ describe("lookupPublishedDs", () => {
 
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain(reason);
+  });
+
+  it("gives up on a resolver that does not answer instead of waiting forever", async () => {
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const asked: number[] = [];
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      asked.push(ms);
+      return realTimeout(1);
+    });
+    // Answers only by failing once the request's signal aborts.
+    const silent: FetchLike = (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return reject(new Error("the request has no timeout"));
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    try {
+      const error = await failure(lookupPublishedDs(silent, "example.com"));
+
+      expect(asked).toEqual([15_000]);
+      expect(error.code).toBe("PROVIDER_ERROR");
+      expect(error.message).toContain("aborted due to timeout");
+      expect(error.hint).toContain("does not switch nameservers");
+    } finally {
+      timeout.mockRestore();
+    }
   });
 });
