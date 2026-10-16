@@ -5,13 +5,12 @@ import {
   type DesiredHost,
   type HostFacts,
   type HostPlan,
-  hostPlanHash,
   inspectHost,
   planHost,
   webFilterFacts,
 } from "@opscrew/connector-ssh-host";
-import type { ApprovalRecord, IacEngine, PhaseName } from "@opscrew/contracts";
-import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
+import type { IacEngine, PhaseName } from "@opscrew/contracts";
+import { OpsCrewError, type ProjectPaths, plural } from "@opscrew/core";
 import {
   renderPortainerCompose,
   renderTunnelConnectorCompose,
@@ -23,15 +22,19 @@ import type { DeployPlan, OwnDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   addressFromOutputs,
+  approveAndApplyHostPlan,
   ensureSecretFile,
+  type HostAdapterApi,
+  type HostPlanOutcome,
   infrastructureOutputs,
   knownHostsName,
-  PlanRefusedError,
   randomPassword,
   readSecretFile,
   readServerAddresses,
+  requireNoBlockers,
   type SecretFile,
   type ServerAddress,
+  stringOutput,
 } from "../shared";
 import {
   connectOwnServer,
@@ -46,7 +49,7 @@ import {
   tunnelChange,
 } from "../shared/tunnel-connections";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
-import type { CloudflareApi, HostAdapterApi, ProvisionOptions, ProvisionServices } from "./types";
+import type { CloudflareApi, ProvisionOptions, ProvisionServices } from "./types";
 
 /** Cloudflare's IP ranges, the only sources of web traffic when the site is served directly behind the proxy. */
 export type OwnWebSources = NonNullable<DesiredHost["webFilter"]>;
@@ -133,11 +136,6 @@ export async function portainerPasswordToSend(
   return existing;
 }
 
-function stringOutput(outputs: Record<string, unknown>, name: string): string | undefined {
-  const value = outputs[name];
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
 /**
  * True when the user's own server serves the site directly behind Cloudflare's proxy (the user's
  * explicit choice): public mode, the domain on Cloudflare, proxied, and `security.httpAllowedFrom:
@@ -186,9 +184,7 @@ export async function ownWebSources(
   } catch (error) {
     throw rangesUnreadable(error);
   }
-  if (!Array.isArray(ranges?.ipv4) || ranges.ipv4.length === 0) {
-    throw rangesUnreadable();
-  }
+  if (ranges.ipv4.length === 0) throw rangesUnreadable();
   return { ipv4: [...ranges.ipv4] };
 }
 
@@ -264,68 +260,6 @@ export function desiredHost(
   };
 }
 
-/** Findings that need the user's explicit choice about password logins. */
-const PASSWORD_CHOICE = new Set(["password-users-without-keys", "directory-logins"]);
-
-/**
- * Stops (`PHASE_PRECONDITION`, nothing changed) when the host plan has blocking findings or
- * blocked steps: each named with what was found and what to do (the host plan's policy check).
- */
-export function requireNoBlockers(plan: HostPlan): void {
-  const blocked = plan.steps.filter((step) => step.state === "blocked");
-  if (plan.findings.length === 0 && blocked.length === 0) return;
-  const reasons =
-    plan.findings.length > 0
-      ? plan.findings.map((finding) => finding.message)
-      : blocked.map((step) => `${step.title}: ${step.reason ?? "blocked"}`);
-  const hints = [...new Set(plan.findings.map((finding) => finding.hint))];
-  if (plan.findings.some((finding) => PASSWORD_CHOICE.has(finding.code))) {
-    hints.push(
-      "To decide, run `opscrew provision --password-logins off` (turn password logins off anyway) or `opscrew provision --password-logins keep` (leave them as they are).",
-    );
-  }
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `OpsCrew cannot prepare your server, so it changed nothing:\n${reasons.map((reason) => `  - ${reason}`).join("\n")}`,
-    {
-      hint:
-        hints.length > 0
-          ? hints.join(" ")
-          : "Fix what blocks these steps on the server, then run `opscrew provision` again.",
-    },
-  );
-}
-
-/** Plain-English host plan shown before the `host-apply` approval: every step, then the hash. */
-export function describeHostPlan(plan: HostPlan, hash: string): string {
-  const count = (state: string) => plan.steps.filter((step) => step.state === state).length;
-  const blocked = count("blocked");
-  const lines = [
-    `Host plan for your server: ${count("change")} to change, ${count("in-place")} already in place${blocked > 0 ? `, ${blocked} blocked` : ""}.`,
-  ];
-  for (const step of plan.steps) {
-    if (step.state === "in-place") {
-      lines.push(`  ✓ ${step.title} (already in place)`);
-      continue;
-    }
-    lines.push(`  ${step.state === "change" ? "~" : "✗"} ${step.title}`);
-    if (step.reason !== undefined) lines.push(`      ${step.reason}`);
-  }
-  for (const finding of plan.findings) {
-    lines.push(`  ! ${finding.message}`, `      ${finding.hint}`);
-  }
-  lines.push(
-    "OpsCrew changes nothing it did not list here, never removes what it did not install, and records every change (and the value it replaced) in /etc/opscrew/host.json on the server.",
-    `Host plan hash: ${hash}`,
-  );
-  return lines.join("\n");
-}
-
-/** `.opscrew/plans/host-<hash>.json`: the host plan the hash names, kept for review and audit. */
-export function hostPlanFile(paths: Pick<ProjectPaths, "files">, hash: string): string {
-  return join(paths.files.plansDir, `host-${hash}.json`);
-}
-
 /**
  * Connects to the user's own server (host key confirmed or `--host-key`, pinned), inspects it
  * read-only, and stops before any change when the host plan would be blocked: an unsupported
@@ -346,11 +280,11 @@ export async function prepareOwnServer(
   const { plan } = input;
   const target = ownTarget(plan);
   const own = input.services.own ?? {};
-  const adapter = own.host;
+  const adapter = own.host ?? { inspect: inspectHost, apply: applyHostPlan };
+  // Bound, so `run.host.apply` can be passed on as a function.
   const host: HostAdapterApi = {
-    inspect: (remote) => (adapter?.inspect ? adapter.inspect(remote) : inspectHost(remote)),
-    apply: (remote, plan, options) =>
-      adapter?.apply ? adapter.apply(remote, plan, options) : applyHostPlan(remote, plan, options),
+    inspect: (remote) => adapter.inspect(remote),
+    apply: (remote, plan, options) => adapter.apply(remote, plan, options),
   };
   if (target.access === "tunnel") sshHostname(plan); // a tunnel needs a Cloudflare domain
   // Behind Cloudflare's proxy the firewall needs Cloudflare's current ranges; read them first, so
@@ -579,8 +513,9 @@ export function ownConnectorFirst(
     done: string;
     notes?: readonly string[];
   },
-): ConnectorFirst & { show(): Promise<OwnHostResult> } {
+): ConnectorFirst & { show(): Promise<HostPlanOutcome> } {
   const { run } = input;
+  let shownHash: string | undefined;
   const apply = (planOnly: boolean) =>
     applyOwnHostPlan(deps, run, {
       plan: input.plan,
@@ -590,6 +525,9 @@ export function ownConnectorFirst(
       planOnly,
       phase: input.phase,
       withoutTunnel: true,
+      shown: (hash) => {
+        shownHash = hash;
+      },
     });
   const first = connectorFirst(deps, {
     command: `opscrew ${input.phase}`,
@@ -611,18 +549,7 @@ export function ownConnectorFirst(
       }
       return host;
     },
-    hostHash: () =>
-      hostPlanHash(
-        planHost(
-          run.facts,
-          desiredHost(deps, run, {
-            plan: input.plan,
-            deployPublicKey: input.deployPublicKey,
-            ...(input.passwordLogins !== undefined ? { passwordLogins: input.passwordLogins } : {}),
-            withoutTunnel: true,
-          }),
-        ),
-      ),
+    hostHash: () => shownHash,
     done: input.done,
     ...(input.sleep !== undefined ? { sleep: input.sleep } : {}),
     ...(input.notes !== undefined ? { notes: input.notes } : {}),
@@ -651,30 +578,11 @@ function tunnelOutputs(
 }
 
 /**
- * The steps a failed host apply had applied, when the adapter's error reports them (an `applied`
- * list of step ids); only ids of the plan's changes count. `undefined` when not reported.
- */
-function appliedBeforeFailure(error: unknown, changeIds: readonly string[]): string[] | undefined {
-  const reported = (error as { applied?: unknown } | null)?.applied;
-  if (!Array.isArray(reported)) return undefined;
-  return reported.filter((id): id is string => typeof id === "string" && changeIds.includes(id));
-}
-
-/** Outcome of {@link applyOwnHostPlan}. */
-export interface OwnHostResult {
-  plan: HostPlan;
-  hash: string;
-  applied: boolean;
-  approval?: ApprovalRecord;
-}
-
-/**
  * The host plan for the user's own server, after the infrastructure exists (the tunnel's id is
- * part of it): saved as `.opscrew/plans/host-<hash>.json`, shown, checked for blocking findings,
- * approved by its hash (`host-apply`), then applied through the host adapter, which refuses any
- * other plan, gets the tunnel token (and Portainer's password) only at apply, and calls
- * `verifyLogin` before keeping an SSH or firewall change. Every step is audited. With `planOnly`
- * it stops after saving and showing the plan. A plan without changes needs no approval.
+ * part of it), through {@link approveAndApplyHostPlan}: saved, shown, checked for blocking
+ * findings, approved by its hash (`host-apply`) and applied through the host adapter, which gets
+ * the tunnel token (and Portainer's password) only then and calls `verifyLogin` before keeping an
+ * SSH or firewall change. With `planOnly` it stops after saving and showing the plan.
  */
 export async function applyOwnHostPlan(
   deps: PhaseDeps,
@@ -688,8 +596,10 @@ export async function applyOwnHostPlan(
     phase: Extract<PhaseName, "provision" | "dns">;
     /** No tunnel connector (see {@link desiredHost}); `outputs` are then not needed. */
     withoutTunnel?: boolean;
+    /** Told the host plan's hash as soon as it is shown. */
+    shown?: (hash: string) => void;
   },
-): Promise<OwnHostResult> {
+): Promise<HostPlanOutcome> {
   // The connector runs whenever the plan has a tunnel: tunnel mode or a Portainer subdomain.
   const tunnel =
     usesTunnel(input.plan) && input.withoutTunnel !== true
@@ -705,103 +615,39 @@ export async function applyOwnHostPlan(
       ...(input.withoutTunnel === true ? { withoutTunnel: true } : {}),
     }),
   );
-  const hash = hostPlanHash(plan);
-  await writeFileAtomic(hostPlanFile(deps.paths, hash), `${JSON.stringify(plan, null, 2)}\n`);
-  const details = describeHostPlan(plan, hash);
-  deps.reporter.info(details);
-  requireNoBlockers(plan);
-  const changes = plan.steps.filter((step) => step.state === "change");
-  if (changes.length === 0) {
-    deps.reporter.success("Your server is already prepared; nothing on it changes.");
-    return { plan, hash, applied: false };
-  }
-  if (input.planOnly) {
-    deps.reporter.info(`Saved the host plan (hash ${hash}); nothing on your server was changed.`);
-    return { plan, hash, applied: false };
-  }
-
-  const approval = await deps.approvals.request({
-    kind: "host-apply",
-    title: `Apply the host plan to your server (${changes.length} change${changes.length === 1 ? "" : "s"})`,
-    details,
-    planHash: hash,
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
-      plan: "host plan",
-      ...(approval.reason ? { reason: approval.reason } : {}),
-      unchanged: "Nothing on your server was changed.",
-      hint: `To apply it later without prompts, run: opscrew ${input.phase} --approve ${hash}`,
-    });
-  }
-  await deps.approvals.assertApprovedHostPlan(hash);
-
-  const portainerStep = changes.find((step) => step.id === "portainer");
-  const portainerPassword =
-    portainerStep === undefined || portainerStep.params.remove === true
-      ? undefined
-      : await portainerPasswordToSend(deps, portainerStep.params.needsPassword === true);
-  const secrets = {
-    ...(tunnel !== undefined ? { tunnelToken: tunnel.token } : {}),
-    ...(portainerPassword !== undefined ? { portainerPassword } : {}),
-  };
-  deps.reporter.step(
-    `Preparing your server (${changes.length} change${changes.length === 1 ? "" : "s"}; installing Docker can take a few minutes)`,
-  );
-  const changeIds = changes.map((step) => step.id);
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "host apply started",
+  const changes = plural(plan.steps.filter((step) => step.state === "change").length, "change");
+  const outcome = await approveAndApplyHostPlan(deps, {
+    plan,
+    remote: run.session.remote,
+    apply: run.host.apply,
+    verifyLogin: run.verifyLogin,
+    title: `Apply the host plan to your server (${changes})`,
+    server: "your server",
+    command: `opscrew ${input.phase}`,
     phase: input.phase,
-    target: hash,
-    decision: "approved",
-    detail: `steps to change: ${changeIds.join(", ")}`,
+    ...(input.planOnly === true ? { planOnly: true } : {}),
+    secrets: async (steps) => {
+      const portainerStep = steps.find((step) => step.id === "portainer");
+      const portainerPassword =
+        portainerStep === undefined || portainerStep.params.remove === true
+          ? undefined
+          : await portainerPasswordToSend(deps, portainerStep.params.needsPassword === true);
+      return {
+        ...(tunnel !== undefined ? { tunnelToken: tunnel.token } : {}),
+        ...(portainerPassword !== undefined ? { portainerPassword } : {}),
+      };
+    },
+    applying: `Preparing your server (${changes}; installing Docker can take a few minutes)`,
+    ...(input.shown !== undefined ? { shown: input.shown } : {}),
   });
-  let result: Awaited<ReturnType<HostAdapterApi["apply"]>>;
-  try {
-    result = await run.host.apply(run.session.remote, plan, {
-      approvedHash: hash,
-      secrets,
-      verifyLogin: run.verifyLogin,
-      ...(/^[0-9A-Za-z.+-]{1,64}$/.test(deps.version) ? { version: deps.version } : {}),
-      now: () => deps.clock.now(),
-    });
-  } catch (error) {
-    const done = appliedBeforeFailure(error, changeIds);
-    await deps.audit.append({
-      kind: "remote-exec",
-      actor: "opscrew",
-      action: "host apply failed",
-      phase: input.phase,
-      target: hash,
-      decision: "refused",
-      detail:
-        done === undefined
-          ? "the host adapter did not report which steps were applied before the failure; /etc/opscrew/host.json on the server lists every change"
-          : `steps applied before the failure: ${done.length > 0 ? done.join(", ") : "none"}`,
-    });
-    throw error;
-  }
-  for (const id of result.applied) {
-    const step = plan.steps.find((item) => item.id === id);
-    await deps.audit.append({
-      kind: "remote-exec",
-      actor: "opscrew",
-      action: `host step ${id}`,
-      phase: input.phase,
-      target: hash,
-      decision: "approved",
-      ...(step !== undefined ? { detail: step.title } : {}),
-    });
-  }
+  if (!outcome.approval) return outcome;
   deps.reporter.success(
-    `Prepared your server (${result.applied.length} change${result.applied.length === 1 ? "" : "s"} applied).`,
+    `Prepared your server (${plural(outcome.steps.length, "change")} applied).`,
   );
-  if (switchesToWebFilter(run.facts, plan, input.plan.app.name, result.applied)) {
+  if (switchesToWebFilter(run.facts, plan, input.plan.app.name, outcome.steps)) {
     deps.reporter.warn(SWITCH_TO_FILTER_NOTE);
   }
-  return { plan, hash, applied: result.applied.length > 0, approval };
+  return outcome;
 }
 
 /** Said after a running app switched to the web filter mode (published on IPv4 only). */

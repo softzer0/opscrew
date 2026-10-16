@@ -157,15 +157,9 @@ export function checkApproveFlags(
   return hashes;
 }
 
-/** `approvePlanHash`/`approvePlanHashes` for a phase from the `--approve` values. */
-export function approveOptions(
-  hashes: readonly string[],
-): Pick<ProvisionOptions, "approvePlanHash" | "approvePlanHashes"> {
-  const [first, ...rest] = hashes;
-  return {
-    ...(first === undefined ? {} : { approvePlanHash: first }),
-    ...(rest.length === 0 ? {} : { approvePlanHashes: rest }),
-  };
+/** `approveHashes` for a phase from the `--approve` values. */
+export function approveOptions(hashes: readonly string[]): Pick<ProvisionOptions, "approveHashes"> {
+  return hashes.length === 0 ? {} : { approveHashes: hashes };
 }
 
 /** The command that applies the plans a `--plan-only` run saved, with the flags that matter. */

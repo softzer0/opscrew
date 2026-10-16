@@ -282,10 +282,9 @@ describe("the MCP tools for the user's existing Portainer", () => {
     expect(h.elicited.length).toBe(before + 1);
     expect(h.elicited.at(-1)?.message).toContain("Apply the stack plan to your Portainer");
     expect(h.provision.calls[1]).toMatchObject({
-      approvePlanHashes: [stackPlanHash],
+      approveHashes: [stackPlanHash],
       publicImage: true,
     });
-    expect(h.provision.calls[1]).not.toHaveProperty("approvePlanHash");
     expect(textOf(applied)).toContain("Set up the app's stacks in the user's Portainer");
     expect(textOf(applied)).toContain("backups of the app's data volumes are the user's");
     for (const output of h.outputs) expect(JSON.stringify(output)).not.toContain(HOST);

@@ -25,7 +25,7 @@ import { NodeCommandRunner } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import type { ZeroTrustApi } from "../zero-trust";
 import { ScriptedRunner } from "../../testing";
-import type { HostAdapterApi } from "../types";
+import type { HostAdapterApi } from "../../shared";
 import { fakeCloudflare } from "./fakes";
 
 /** The user's own server: a documentation address (RFC 5737), public. */

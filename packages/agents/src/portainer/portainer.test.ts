@@ -35,10 +35,10 @@ import {
   publicOutputs,
   TUNNEL_ID,
 } from "../provision/__fixtures__/own";
-import { hostPlanFile, portainerPasswordFile } from "../provision/own";
+import { portainerPasswordFile } from "../provision/own";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
-import { recordOwnServer } from "../shared";
+import { hostPlanFile, recordOwnServer } from "../shared";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { pendingPortainerFile } from "./pending";
 import { type PortainerServices, portainerDisable, portainerEnable } from "./run";

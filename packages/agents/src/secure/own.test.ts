@@ -7,8 +7,12 @@ import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
 import { LAN_IPV4, OWN_IPV4, ownPlan } from "../provision/__fixtures__/own";
-import { hostPlanFile } from "../provision/own";
-import { type OwnServerConnectionInput, recordOwnServer, recordServerAddress } from "../shared";
+import {
+  hostPlanFile,
+  type OwnServerConnectionInput,
+  recordOwnServer,
+  recordServerAddress,
+} from "../shared";
 import { createTestPhaseDeps, ScriptedRunner } from "../testing";
 import { runSecure } from "./index";
 import { withoutOwnServer } from "./own";

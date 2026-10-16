@@ -2,7 +2,12 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type HostFacts, HostPlanSchema, hostPlanHash } from "@opscrew/connector-ssh-host";
+import {
+  HostApplyError,
+  type HostFacts,
+  HostPlanSchema,
+  hostPlanHash,
+} from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -10,6 +15,7 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import type { PortainerServices } from "../portainer";
 import {
+  hostPlanFile,
   type OwnServerConnectionInput,
   readOwnServer,
   readServerAddresses,
@@ -38,7 +44,6 @@ import {
   TUNNEL_ID,
   tunnelOutputs,
 } from "./__fixtures__/own";
-import { hostPlanFile } from "./own";
 import { runProvision } from "./run";
 import type { ProvisionOptions } from "./types";
 
@@ -470,7 +475,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
 
     // Only the infrastructure hash: the host plan is refused and the hint names its hash.
     approved.push(iacHash);
-    const options: ProvisionOptions = { services: s.services, approvePlanHashes: [iacHash] };
+    const options: ProvisionOptions = { services: s.services, approveHashes: [iacHash] };
     const refused = (await runProvision(s.deps, options).catch((e: unknown) => e)) as OpsCrewError;
     expect(refused.code).toBe("APPROVAL_REFUSED");
     expect(refused.hint).toContain(`--approve ${hostHash}`);
@@ -484,7 +489,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     s.engine.changes = [];
     const result = await runProvision(s.deps, {
       services: s.services,
-      approvePlanHashes: [iacHash, hostHash],
+      approveHashes: [iacHash, hostHash],
     });
     expect(result.hostApplied).toBe(true);
     expect(s.host.applies[0]?.options.approvedHash).toBe(hostHash);
@@ -507,7 +512,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     approved.push(planned.planHash as string, planned.hostPlanHash as string);
     const result = await runProvision(s.deps, {
       services: s.services,
-      approvePlanHashes: [planned.planHash as string, planned.hostPlanHash as string],
+      approveHashes: [planned.planHash as string, planned.hostPlanHash as string],
     });
     expect(result).toMatchObject({
       applied: true,
@@ -591,7 +596,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
 
     await runProvision(s.deps, {
       services: s.services,
-      approvePlanHashes: [planned.planHash as string],
+      approveHashes: [planned.planHash as string],
     });
     expect(s.engine.applies.map((a) => a.destroy)).toEqual([true, false]);
     expect(s.engine.plans.map((p) => p.destroy)).toEqual([true, false]);
@@ -625,7 +630,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
 
     const error = (await runProvision(s.deps, {
       services: s.services,
-      approvePlanHashes: [planned.planHash as string],
+      approveHashes: [planned.planHash as string],
     }).catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("PLAN_HASH_MISMATCH");
     expect(error.message).toContain("no switch is pending");
@@ -665,9 +670,10 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
 
   it("records the address right after the infrastructure apply and audits the host apply's start and failure", async () => {
     const s = await setup();
-    s.host.fail = Object.assign(
-      new OpsCrewError("COMMAND_FAILED", "OpsCrew stopped while installing Docker: apt failed."),
-      { applied: ["docker"] },
+    s.host.fail = new HostApplyError(
+      "COMMAND_FAILED",
+      "OpsCrew stopped while installing Docker: apt failed.",
+      ["docker"],
     );
     await expect(
       runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT }),

@@ -9,6 +9,7 @@ import { testPlan } from "../provision/__fixtures__/fakes";
 import { createTestPhaseDeps } from "../testing";
 import {
   addressFromOutputs,
+  addressNames,
   committableUrl,
   damagedServerAddressesFile,
   ensureStatePassphrase,
@@ -636,6 +637,25 @@ describe("helpers", () => {
     expect(withoutServerAddress(text, [{ ipv4: IPV4, ipv6: IPV6 }, undefined])).toBe(
       `Server: the server. Probe the server:22, not ${IPV4}0 or 1${IPV4}. AAAA the server.`,
     );
+  });
+
+  it("lists every name an address URL can appear under, longest first and once each", () => {
+    expect(addressNames("https://NAS.lan.:9443/portainer")).toEqual([
+      "https://NAS.lan.:9443/portainer",
+      "https://nas.lan.:9443",
+      "nas.lan.:9443",
+      "nas.lan:9443",
+      "nas.lan.",
+      "nas.lan",
+    ]);
+    expect(addressNames("http://[fd00::5]:9000")).toEqual([
+      "http://[fd00::5]:9000",
+      "[fd00::5]:9000",
+      "[fd00::5]",
+      "fd00::5",
+    ]);
+    expect(addressNames(`http://${IPV4}`)).toEqual([`http://${IPV4}`, IPV4]);
+    expect(addressNames("not a url")).toEqual([]);
   });
 
   it("commits only domain URLs", () => {

@@ -1,5 +1,3 @@
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
 import {
   type CloudflareDnsRecord,
   cloudflareConnector,
@@ -25,7 +23,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
-import { infrastructureOutputs, readServerAddresses, STATE_FILE, serverAddress } from "../shared";
+import { hasState, infrastructureOutputs, readServerAddresses, serverAddress } from "../shared";
 import {
   ownServerLogin,
   ownServerNotSetUp,
@@ -228,24 +226,12 @@ const RulesetIdsSchema = z.looseObject({
 /**
  * Which of the zone's OpsCrew-named entrypoint rulesets this project's state holds:
  * - `fresh`: no state file, an empty one, a state without outputs (nothing deployed), or outputs of
- *   a root without a Cloudflare domain (no `https://` URL): none;
- * - `before-ids`: a Cloudflare root applied before OpsCrew recorded the ids (an `https://` URL, no
- *   `cloudflare_rulesets` output); OpsCrew keeps managing them so it never plans to delete its
- *   own ruleset;
+ *   a root without a `cloudflare_rulesets` output (no Cloudflare domain): none;
  * - `ids`: the ids by phase.
  */
 type HeldRulesets =
   | { kind: "fresh" }
-  | { kind: "before-ids" }
   | { kind: "ids"; ids: Partial<Record<RulePhase, string | null>> };
-
-async function stateFileHasContent(deps: PhaseDeps): Promise<boolean> {
-  try {
-    return (await stat(join(deps.paths.files.tfstateDir, STATE_FILE))).size > 0;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Reads which entrypoint rulesets this project's state holds, from the root-module outputs (read
@@ -259,7 +245,7 @@ async function heldRulesets(
   services: Pick<ProvisionServices, "engine">,
   zone: string,
 ): Promise<HeldRulesets> {
-  if (!(await stateFileHasContent(deps))) return { kind: "fresh" };
+  if (!(await hasState(deps.paths))) return { kind: "fresh" };
   const outputs = await infrastructureOutputs(
     deps,
     plan,
@@ -274,13 +260,8 @@ async function heldRulesets(
       },
     );
   if (outputs === undefined) throw unreadable();
-  if (Object.keys(outputs).length === 0) return { kind: "fresh" };
-  if (!("cloudflare_rulesets" in outputs)) {
-    // Only a root applied with a Cloudflare domain (an `https://` URL) can hold a ruleset; a root
-    // without one never did, so skipping a phase cannot plan to delete one.
-    const url = typeof outputs.url === "string" ? outputs.url : "";
-    return url.startsWith("https://") ? { kind: "before-ids" } : { kind: "fresh" };
-  }
+  // Only a root with a Cloudflare domain has the output, and only such a root holds a ruleset.
+  if (!("cloudflare_rulesets" in outputs)) return { kind: "fresh" };
   const ids = RulesetIdsSchema.safeParse(outputs.cloudflare_rulesets);
   if (!ids.success) throw unreadable();
   return { kind: "ids", ids: ids.data };
@@ -303,7 +284,6 @@ async function mayManagePhase(
   if (!status.exists) return true;
   if (status.ownedByOpsCrew) {
     const state = await held();
-    if (state.kind === "before-ids") return true;
     if (state.kind === "ids" && status.id !== undefined && state.ids[phase] === status.id) {
       return true;
     }

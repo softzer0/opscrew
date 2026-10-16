@@ -20,16 +20,19 @@ import type { PhaseDeps } from "../context";
 import {
   checkProvider,
   connectOwnServer,
-  describeHostPlan,
-  type HostAdapterApi,
-  hostPlanFile,
   type OwnServerSession,
   ownEngineEnv,
   ownServerLoginCheck,
   ownTarget,
 } from "../provision";
 import { withoutOwnServer } from "../secure/own";
-import { hasDeployment, recordServerAddress } from "../shared";
+import {
+  describeHostPlan,
+  type HostAdapterApi,
+  hasDeployment,
+  hostPlanFile,
+  recordServerAddress,
+} from "../shared";
 import {
   requireTunnelClosed,
   tunnelBusyError,
@@ -851,7 +854,7 @@ export async function destroyOwnServer(
     await writeArtifact("plan", deps.paths.files.plan, current);
     // The address DNS pointed at; the login and the confirmed host key stay (the server stays).
     await recordServerAddress(deps.paths, undefined);
-    await rm(join(deps.paths.projectHomeDir, "deploy_secrets.json"), { force: true });
+    await rm(deps.paths.files.deploySecrets, { force: true });
     await deps.state.markPhase("provision", "skipped", "app removed from your server");
     await deps.audit.append({
       kind: "phase",

@@ -11,7 +11,7 @@ import type { PhaseDeps } from "../context";
 import { hidePortainerAddress } from "../interview/portainer-access";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer";
-import { type PortainerConnection, readPortainerConnection } from "../shared/server-address";
+import { type PortainerConnection, readPortainerConnection } from "../shared/server-record";
 import type { InitCheck } from "./checks";
 
 type CheckResult = Omit<InitCheck, "id" | "title">;

@@ -706,8 +706,7 @@ export function registerDeployTools(
         try {
           // The hashes only pick the saved plans: every approval still comes from the user's dialog.
           result = await (options.runProvision ?? runProvision)(phase, {
-            ...(hostOnly || stackOnly ? {} : { approvePlanHash: hash }),
-            approvePlanHashes: [
+            approveHashes: [
               ...new Set([
                 hash,
                 ...(hostHash === undefined ? [] : [hostHash]),

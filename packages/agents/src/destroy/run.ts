@@ -657,7 +657,7 @@ export async function runDestroy(
     ]),
   );
   await recordServerAddress(deps.paths, undefined);
-  await rm(join(deps.paths.projectHomeDir, "deploy_secrets.json"), { force: true });
+  await rm(deps.paths.files.deploySecrets, { force: true });
   await removeSnapshotRecord(deps, "destroy");
   await deps.state.markPhase("provision", "skipped", "infrastructure destroyed");
   await deps.audit.append({

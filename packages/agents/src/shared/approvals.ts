@@ -1,4 +1,22 @@
+import type { ApprovalRecord } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import type { DeployPlan } from "@opscrew/plan-schema";
+
+/** An approval as `opscrew/plan.yaml` keeps it. */
+export type PlanApproval = DeployPlan["approvals"][number];
+
+/**
+ * An approval of a plan bound to its hash (`iac-apply`, `host-apply`, `stack-apply`) as
+ * `opscrew/plan.yaml` keeps it: an informational copy, the approval store is authoritative.
+ */
+export function approvalEntry(record: ApprovalRecord): PlanApproval {
+  return {
+    planHash: record.planHash as string,
+    approver: record.approver,
+    at: record.decidedAt,
+    kind: record.kind,
+  };
+}
 
 /** What {@link PlanRefusedError} says: which plan, why, and what stayed as it was. */
 export interface PlanRefusal {

@@ -29,11 +29,8 @@ export {
 export { type MoveInProgress, moveInProgress, requireNoMoveInProgress } from "./guard";
 export {
   applyOwnHostPlan,
-  describeHostPlan,
   desiredHost,
   ensurePortainerPassword,
-  hostPlanFile,
-  type OwnHostResult,
   type OwnServerRun,
   ownDeployTarget,
   ownEngineEnv,
@@ -41,7 +38,6 @@ export {
   portainerPasswordFile,
   prepareOwnServer,
   removeOldAccessMode,
-  requireNoBlockers,
 } from "./own";
 export {
   describePlan,
@@ -53,13 +49,7 @@ export {
   REMOVAL_PLAN_SUFFIX,
 } from "./plan-apply";
 export { maskBySensitivity, maskSensitivePlanJson, SENSITIVE_VALUE } from "./plan-json";
-export {
-  describeStackPlan,
-  REGISTRY_TOKEN_VAR,
-  REPOSITORY_TOKEN_VAR,
-  ROUTE_CHANGE_NOTE,
-  stackPlanFile,
-} from "./portainer";
+export { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR, stackPlanFile } from "./portainer";
 export {
   chooseDeployBranch,
   DEPLOY_SETUP_BRANCH,
@@ -88,10 +78,10 @@ export {
   generatedValuesFile,
   setDeploySecrets,
 } from "./secrets";
+export { describeStackPlan, ROUTE_CHANGE_NOTE } from "./stack-plan";
 export type {
   CloudflareApi,
   GitHubApi,
-  HostAdapterApi,
   OwnServerServices,
   ProvisionOptions,
   ProvisionResult,

@@ -32,7 +32,7 @@ import {
   readOwnServer,
   recordOwnServer,
   serverAddressesFile,
-} from "./server-address";
+} from "./server-record";
 import { hostKeyFingerprint, knownHostsName, scanHostKeys, writeKnownHost } from "./wait";
 
 const OTHER = hostKeyBlob("ssh-ed25519", "someone-else");

@@ -134,10 +134,10 @@ function applyFailureHint(
     blocks.filter((block) => FORBIDDEN.test(block)).map((block) => blockOwner(block, provider)),
   );
   if (refused.has("cloudflare") && !refused.has("provider")) {
-    const permissions = usesTunnel(deployPlan)
-      ? tunnelTokenPermissions()
-      : CLOUDFLARE_TOKEN_PERMISSIONS.join(", ");
-    return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at https://dash.cloudflare.com/profile/api-tokens with ${permissions} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. ${kept}`;
+    return cloudflareRefusedHint(
+      usesTunnel(deployPlan) ? tunnelTokenPermissions() : CLOUDFLARE_TOKEN_PERMISSIONS.join(", "),
+      command,
+    );
   }
   if (refused.has("provider")) {
     const requirement = vpsConnector(provider, deps).credentials;
@@ -165,9 +165,14 @@ function applyFailureHint(
  */
 function portainerFailureHint(log: string, command: string): string {
   if (errorBlocks(log).some((block) => FORBIDDEN.test(block))) {
-    return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at https://dash.cloudflare.com/profile/api-tokens with ${tunnelTokenPermissions()} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. Nothing that was already created is removed.`;
+    return cloudflareRefusedHint(tunnelTokenPermissions(), command);
   }
   return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
+}
+
+/** Next step when Cloudflare refused a request of the apply: a token with `permissions`. */
+function cloudflareRefusedHint(permissions: string, command: string): string {
+  return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at https://dash.cloudflare.com/profile/api-tokens with ${permissions} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. Nothing that was already created is removed.`;
 }
 
 /** File name ending of a saved plan that removes everything in the state (`destroy: true`). */

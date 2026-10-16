@@ -906,7 +906,7 @@ export async function destroyPortainer(
         { record: stackApproval, kind: "stack-apply" },
       ]),
     );
-    await rm(join(deps.paths.projectHomeDir, "deploy_secrets.json"), { force: true });
+    await rm(deps.paths.files.deploySecrets, { force: true });
     await deps.state.markPhase("provision", "skipped", "app removed from your Portainer");
   }
   await deps.audit.append({

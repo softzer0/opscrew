@@ -5,6 +5,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import { providerConsole, type ServerAddress } from "../shared";
+import type { PublicAddressLookup } from "../shared/public-dns";
 import {
   type DnsResolver,
   type FetchWithLookup,
@@ -14,7 +15,6 @@ import {
   type TlsCertificateInfo,
   type TlsConnect,
 } from "./net";
-import type { PublicAddressLookup } from "./public-dns";
 
 /** Cloudflare edge ranges (CIDRs) used to confirm proxied DNS records. */
 export interface CloudflareRanges {

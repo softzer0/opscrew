@@ -618,11 +618,11 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(saved?.planHash).toBe(planned.planHash);
 
     await expect(
-      runProvision(deps, { services, approvePlanHash: "0".repeat(64) }),
+      runProvision(deps, { services, approveHashes: ["0".repeat(64)] }),
     ).rejects.toMatchObject({ code: "PLAN_HASH_MISMATCH" });
 
     approved = planned.planHash as string;
-    const applied = await runProvision(deps, { services, approvePlanHash: approved });
+    const applied = await runProvision(deps, { services, approveHashes: [approved] });
     expect(applied).toMatchObject({ applied: true, planHash: approved });
     expect(engine.calls).toEqual(["init", "validate", "plan", "apply"]);
     expect(engine.applied[0]?.planFile).toBe(saved?.planFile);

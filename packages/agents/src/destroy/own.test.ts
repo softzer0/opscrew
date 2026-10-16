@@ -15,8 +15,7 @@ import {
   provisionOwn,
 } from "../drift/__fixtures__/own-project";
 import { ED25519 } from "../provision/__fixtures__/own";
-import { hostPlanFile } from "../provision/own";
-import { readOwnServer, readServerAddresses } from "../shared";
+import { hostPlanFile, readOwnServer, readServerAddresses } from "../shared";
 import { savedHostPlanPurpose } from "./own";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";

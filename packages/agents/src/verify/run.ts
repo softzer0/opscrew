@@ -24,6 +24,7 @@ import {
   serverAddress,
   writeRenderedFiles,
 } from "../shared";
+import { lookupPublicAddresses } from "../shared/public-dns";
 import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
 import {
   type DnsResolver,
@@ -41,7 +42,6 @@ import {
   renderPortainerRunbook,
   withoutRoute,
 } from "./portainer";
-import { lookupPublicAddresses } from "./public-dns";
 
 /** Network functions for `opscrew verify`; each defaults to a Node built-in adapter. */
 export interface RunVerifyOptions {

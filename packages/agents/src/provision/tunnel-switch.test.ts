@@ -259,7 +259,7 @@ describe.skipIf(!findExecutable("git"))(
 
       await runProvision(s.deps, {
         services: s.services,
-        approvePlanHashes: [planned.planHash as string, planned.hostPlanHash as string],
+        approveHashes: [planned.planHash as string, planned.hostPlanHash as string],
       });
       expect(s.events.slice(0, 5)).toEqual([
         "approve:iac-apply",

@@ -296,6 +296,7 @@ describe("assembleAppEnv: exact values", () => {
         TRICKY: tricky,
       },
       build: { NEXT_PUBLIC_SITE: "https://shop.example.com" },
+      db: { user: "app", name: "app", password: "generated-value-0123456789" },
     });
     // The env-file texts are what they always were (the value with a quote is escaped for Compose).
     expect(result.appEnv).toBe(

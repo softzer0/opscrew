@@ -18,7 +18,7 @@ import {
   readOwnServer,
   recordOwnServer,
   type ServerAddress,
-} from "./server-address";
+} from "./server-record";
 import {
   HOST_KEY_FINGERPRINT,
   knownHostsName,
@@ -165,8 +165,13 @@ function adminRemote(
   });
 }
 
-const CHECK_ON_SERVER =
-  "Check the fingerprint on the server itself, for example in its provider's web console: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.";
+/** How the user reads the host key's fingerprint on the server, after "Check" or "check". */
+const ON_SERVER =
+  "the fingerprint on the server itself, for example in its provider's web console: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.";
+const CHECK_ON_SERVER = `Check ${ON_SERVER}`;
+
+/** What to do when the server presents another host key than the one the user confirmed. */
+const CHANGED_KEY_HINT = `If you did not reinstall the server or change its SSH keys, someone may be intercepting the connection: check the server in its provider's console before going on. If you did, check ${ON_SERVER} Then run the command again with --host-key and the new fingerprint.`;
 
 function keyName(type: string): string {
   if (type === "ssh-ed25519") return "ED25519";
@@ -241,7 +246,7 @@ export async function connectOwnServer(
           "PHASE_PRECONDITION",
           `The server at ${where} presented the host key ${presented}, not the fingerprint you gave with --host-key (${given}). OpsCrew did not connect and changed nothing.`,
           {
-            hint: `If you are sure this is your server, ${CHECK_ON_SERVER.charAt(0).toLowerCase()}${CHECK_ON_SERVER.slice(1)} Otherwise someone may be intercepting the connection.`,
+            hint: `If you are sure this is your server, check ${ON_SERVER} Otherwise someone may be intercepting the connection.`,
           },
         );
       }
@@ -249,7 +254,7 @@ export async function connectOwnServer(
         "PHASE_PRECONDITION",
         `The SSH host key of your server at ${where} changed since you confirmed it (confirmed: ${pinned}; now: ${presented}). OpsCrew stopped and changed nothing.`,
         {
-          hint: `If you did not reinstall the server or change its SSH keys, someone may be intercepting the connection: check the server in its provider's console before going on. If you did, ${CHECK_ON_SERVER.charAt(0).toLowerCase()}${CHECK_ON_SERVER.slice(1)} Then run the command again with --host-key and the new fingerprint.`,
+          hint: CHANGED_KEY_HINT,
         },
       );
     }
@@ -362,7 +367,7 @@ async function testLogin(
       "PHASE_PRECONDITION",
       `The SSH host key of your server at ${where} is not the one you confirmed (${connection.hostKey}), so ssh refused to log in. OpsCrew stopped and changed nothing.`,
       {
-        hint: `If you did not reinstall the server or change its SSH keys, someone may be intercepting the connection: check the server in its provider's console before going on. If you did, ${CHECK_ON_SERVER.charAt(0).toLowerCase()}${CHECK_ON_SERVER.slice(1)} Then run the command again with --host-key and the new fingerprint.${detail}`,
+        hint: `${CHANGED_KEY_HINT}${detail}`,
       },
     );
   }

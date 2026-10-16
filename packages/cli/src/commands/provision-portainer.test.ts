@@ -86,10 +86,7 @@ describe("opscrew provision for the user's Portainer", () => {
     const approved = projectContext(p);
     expect(await provision(approved, { approve: [INFRA, stack], yes: true }, fake)).toBe(0);
     expect(fake.decisions.at(-1)).toMatchObject({ kind: "stack-apply", approved: true });
-    expect(fake.options.at(-1)).toMatchObject({
-      approvePlanHash: INFRA,
-      approvePlanHashes: [stack],
-    });
+    expect(fake.options.at(-1)).toMatchObject({ approveHashes: [INFRA, stack] });
     expect(approved.output).toContain(`Applied the stack plan ${stack} to your Portainer.`);
     expect(approved.output).toContain("opscrew verify");
     expect(approved.output).toContain("back up the app's data volumes yourself");

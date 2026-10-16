@@ -1,7 +1,10 @@
 import { isIPv4, isIPv6 } from "node:net";
 import type { FetchLike } from "@opscrew/contracts";
+import { normalizeHostName } from "@opscrew/core";
 import { z } from "zod";
-import { DNS_OVER_HTTPS_URL } from "../domain/connect-dns";
+
+/** Cloudflare's public DNS over HTTPS (JSON answers). */
+export const DNS_OVER_HTTPS_URL = "https://cloudflare-dns.com/dns-query";
 
 /**
  * What a public resolver says about a host name right now: `found` when it has an A, AAAA or
@@ -24,21 +27,32 @@ const DNS_LOOKUP_TIMEOUT_MS = 15_000;
 const DnsJsonResponse = z.looseObject({
   Status: z.number().int(),
   Answer: z
-    .array(z.looseObject({ name: z.string(), type: z.number().int(), data: z.string() }))
+    .array(
+      z.looseObject({
+        name: z.string(),
+        type: z.number().int(),
+        TTL: z.number().int().nonnegative().optional(),
+        data: z.string(),
+      }),
+    )
     .nullish(),
 });
-type DnsRecord = { name: string; type: number; data: string };
 
-function hostName(name: string): string {
-  return name.trim().toLowerCase().replace(/\.$/, "");
-}
+/** A record in a resolver's answer: its name, type code, TTL (seconds) and data. */
+export type DohRecord = { name: string; type: number; TTL?: number; data: string };
 
-type Query =
-  | { state: "answer"; records: DnsRecord[] }
+/** A public resolver's answer to one query: its records, no such name, or a failed lookup. */
+export type DohAnswer =
+  | { state: "answer"; records: DohRecord[] }
   | { state: "missing" }
   | { state: "unknown"; problem: string };
 
-async function query(fetch: FetchLike, name: string, type: "A" | "AAAA"): Promise<Query> {
+/**
+ * One read-only query to Cloudflare's public resolver over DNS over HTTPS
+ * (`application/dns-json`), with a 15-second timeout. NXDOMAIN is `missing`; a failed request,
+ * another DNS status or an unreadable answer is `unknown`, never taken as an answer.
+ */
+export async function dohQuery(fetch: FetchLike, name: string, type: string): Promise<DohAnswer> {
   const url = `${DNS_OVER_HTTPS_URL}?${new URLSearchParams({ name, type })}`;
   let response: Response;
   try {
@@ -74,14 +88,15 @@ async function resolveType(fetch: FetchLike, name: string, type: "A" | "AAAA"): 
   let current = name;
   let found = false;
   for (let asked = 0; asked <= MAX_CNAME_QUERIES; asked++) {
-    const answer = await query(fetch, current, type);
+    const answer = await dohQuery(fetch, current, type);
     // A target that fails or does not exist: the host has its record, but no address.
     if (answer.state !== "answer")
       return asked === 0 ? answer : { state: "answer", found, addresses: [] };
     const { records } = answer;
     if (asked === 0) {
       found = records.some(
-        (r) => (r.type === TYPE_CODES[type] || r.type === CNAME) && hostName(r.name) === name,
+        (r) =>
+          (r.type === TYPE_CODES[type] || r.type === CNAME) && normalizeHostName(r.name) === name,
       );
     }
     const addresses = [
@@ -95,7 +110,9 @@ async function resolveType(fetch: FetchLike, name: string, type: "A" | "AAAA"): 
     if (addresses.length > 0) return { state: "answer", found: true, addresses };
     // The end of the CNAME chain the answer shows, then ask for it.
     const cnames = new Map(
-      records.filter((r) => r.type === CNAME).map((r) => [hostName(r.name), hostName(r.data)]),
+      records
+        .filter((r) => r.type === CNAME)
+        .map((r) => [normalizeHostName(r.name), normalizeHostName(r.data)]),
     );
     let next = current;
     for (let target = cnames.get(next); target !== undefined && !seen.has(target); ) {
@@ -119,7 +136,7 @@ export async function lookupPublicAddresses(
   fetch: FetchLike,
   host: string,
 ): Promise<PublicAddressLookup> {
-  const name = hostName(host);
+  const name = normalizeHostName(host);
   const ipv4 = await resolveType(fetch, name, "A");
   if (ipv4.state !== "answer") return ipv4;
   const ipv6 = await resolveType(fetch, name, "AAAA");

@@ -24,9 +24,7 @@ import { githubCoordinates, setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import {
   applyOwnHostPlan,
-  describeHostPlan,
   desiredHost,
-  hostPlanFile,
   type OwnServerRun,
   ownEngineEnv,
   portainerPasswordFile,
@@ -41,15 +39,18 @@ import {
   type OwnRenderInput,
   readRequirements,
 } from "../provision/render";
-import type { HostAdapterApi, ProvisionServices } from "../provision/types";
+import type { ProvisionServices } from "../provision/types";
 import { cloudflareZeroTrust, createZeroTrustOrganization } from "../provision/zero-trust";
 import {
   describeDiff,
+  describeHostPlan,
   diffRenderedFiles,
   ensureDeployKey,
   ensureStatePassphrase,
+  type HostAdapterApi,
   hasDeployment,
   hidesServerAddress,
+  hostPlanFile,
   infrastructureOutputs,
   PlanRefusedError,
   readServerAddresses,

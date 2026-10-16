@@ -186,13 +186,13 @@ describe("setupCloudflare: which entrypoint rulesets OpsCrew manages", () => {
         expect(deps.reporter.text()).toContain(another);
       });
 
-      it(`${label}: keeps managing OpsCrew's ruleset of a state applied before the ids were recorded`, async () => {
+      it(`${label}: leaves OpsCrew's ruleset alone when the state names no rulesets`, async () => {
         const { deps, setup } = await run(target, phase, "opscrew", {
           kind: "outputs",
           outputs: SERVER,
         });
-        expect(await managed(setup, phase.flag)).toBe(true);
-        expect(deps.reporter.text()).not.toContain("Another OpsCrew deployment");
+        expect(await managed(setup, phase.flag)).toBe(false);
+        expect(deps.reporter.text()).toContain("Another OpsCrew deployment");
       });
 
       it(`${label}: stops with a plain error when the state's outputs cannot be read`, async () => {
@@ -267,13 +267,6 @@ describe("setupCloudflare: which entrypoint rulesets OpsCrew manages", () => {
     });
     expect(await managed(another.setup, waf.flag), "another deployment's").toBe(false);
     expect(another.deps.reporter.text()).toContain("Another OpsCrew deployment");
-
-    const before = await run(target, waf, "opscrew", {
-      kind: "outputs",
-      outputs: { url: "https://shop.example.com", tunnel_id: "tunnel-1" },
-    });
-    expect(await managed(before.setup, waf.flag), "pre-change state").toBe(true);
-    expect(before.deps.reporter.text()).not.toContain("Another OpsCrew deployment");
   });
 
   it("reads the state once for both phases", async () => {

@@ -25,16 +25,11 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import {
-  connectOwnServer,
-  desiredHost,
-  hostPlanFile,
-  type OwnServerServices,
-  ownTarget,
-} from "../provision";
+import { connectOwnServer, desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
 import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
+import { hostPlanFile } from "../shared";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
 export interface HostDifference {

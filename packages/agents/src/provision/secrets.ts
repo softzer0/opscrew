@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import type { PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
@@ -14,7 +13,7 @@ import {
   assembleAppEnv,
   type GeneratedValues,
   hostListKind,
-  parseDotenv,
+  readIfExists,
 } from "../shared";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
@@ -22,15 +21,6 @@ import type { ProvisionServices } from "./types";
 /** Private file (0600) beside the deploy key holding generated values between runs. */
 export function generatedValuesFile(deps: PhaseDeps): string {
   return join(deps.paths.projectHomeDir, "generated_values.json");
-}
-
-async function readIfExists(file: string): Promise<string | undefined> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
 }
 
 async function readGenerated(deps: PhaseDeps): Promise<GeneratedValues | undefined> {
@@ -85,14 +75,12 @@ export async function buildAppEnvironment(
     ...(await readGenerated(deps).then((previous) => (previous ? { previous } : {}))),
   });
   await writeFileAtomic(generatedValuesFile(deps), `${JSON.stringify(environment.generated)}\n`);
-  for (const text of [environment.appEnv, environment.dbEnv ?? "", environment.buildEnv]) {
-    for (const [name, value] of parseDotenv(text)) {
-      // Host lists hold the domain (or the address), which OpsCrew's own messages show as usual.
-      if (value.length >= 8 && hostListKind(name) === undefined) {
-        deps.redactor.addLiteral(value, "app-env");
-      }
-    }
+  const { app, build, db } = environment.values;
+  for (const [name, value] of Object.entries({ ...app, ...build })) {
+    // Host lists hold the domain (or the address), which OpsCrew's own messages show as usual.
+    if (hostListKind(name) === undefined) deps.redactor.addLiteral(value, "app-env");
   }
+  if (db !== undefined) deps.redactor.addLiteral(db.password, "app-env");
   if (options.portainer === true) reportUnsetStackVariables(deps, environment);
   else reportUnsetVariables(deps, environment);
   return environment;
@@ -194,11 +182,6 @@ export function portainerDeploySecrets(input: {
  */
 export const PORTAINER_SECRETS_RECORD = "portainer";
 
-/** Private file recording the server and repository the deploy secrets were last stored for. */
-function deploySecretsRecordFile(deps: PhaseDeps): string {
-  return join(deps.paths.projectHomeDir, "deploy_secrets.json");
-}
-
 /**
  * True when OpsCrew stored the deploy secrets for this server (`host`) in this repository from
  * this computer. The record holds names only, never values.
@@ -207,7 +190,7 @@ export async function deploySecretsStoredFor(
   deps: PhaseDeps,
   where: { host: string; owner: string; repo: string },
 ): Promise<boolean> {
-  const text = await readIfExists(deploySecretsRecordFile(deps));
+  const text = await readIfExists(deps.paths.files.deploySecrets);
   if (text === undefined) return false;
   try {
     const record = JSON.parse(text) as { host?: unknown; repo?: unknown };
@@ -274,7 +257,7 @@ export async function setDeploySecrets(
     });
   }
   await writeFileAtomic(
-    deploySecretsRecordFile(deps),
+    deps.paths.files.deploySecrets,
     `${JSON.stringify({
       host: secrets[DEPLOY_SECRETS.host] ?? options.record,
       repo,

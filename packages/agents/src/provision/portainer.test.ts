@@ -4,7 +4,6 @@ import {
   PortainerCertificateError,
   type PortainerClientDeps,
   type PortainerEndpoint,
-  type PortainerFacts,
   portainerClient,
 } from "@opscrew/connector-portainer";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
@@ -54,17 +53,15 @@ import {
   portainerPlanJson,
 } from "./__fixtures__/portainer";
 import {
-  lookupAddressRecord,
   portainerContainerUrl,
   portainerValueKeyFile,
   portainerWebhookFile,
   REGISTRY_TOKEN_VAR,
   REPOSITORY_TOKEN_VAR,
-  ROUTE_CHANGE_NOTE,
   stackPlanFile,
-  switchesWebRoute,
 } from "./portainer";
 import { runProvision } from "./run";
+import { ROUTE_CHANGE_NOTE, switchesWebRoute } from "./stack-plan";
 import type { ProvisionOptions, ProvisionServices } from "./types";
 
 const STRIPE = fakeSecret("stripe-live-key");
@@ -537,7 +534,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
       runner: projectRunner(),
       approvalHandler: approving,
     });
-    const result = await runProvision(deps, { services: s.services, approvePlanHashes: [listed] });
+    const result = await runProvision(deps, { services: s.services, approveHashes: [listed] });
     expect(result.stackPlanHash).toBe(listed);
     expect(result.stackApplied).toBe(true);
     expect(s.fake.stacks.map((stack) => stack.Name).sort()).toEqual([
@@ -861,7 +858,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     });
     const error = (await runProvision(refusing, {
       services: s.services,
-      approvePlanHashes: [planned.planHash as string],
+      approveHashes: [planned.planHash as string],
     }).catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("APPROVAL_REFUSED");
     expect(s.engine.applied).toHaveLength(1);
@@ -995,7 +992,7 @@ describe.skipIf(!findExecutable("git"))(
       });
       const error = (await runProvision(scripted, {
         services: s.services,
-        approvePlanHashes: [listed],
+        approveHashes: [listed],
       }).catch((e: unknown) => e)) as OpsCrewError;
       expect(error.code).toBe("APPROVAL_REFUSED");
       expect(error.hint).not.toContain(listed);
@@ -1051,7 +1048,7 @@ describe.skipIf(!findExecutable("git"))(
       });
       const result = await runProvision(scripted, {
         services: s.services,
-        approvePlanHashes: [planned.planHash as string, planned.stackPlanHash as string],
+        approveHashes: [planned.planHash as string, planned.stackPlanHash as string],
       });
       expect(result.applied).toBe(true);
       expect(s.fake.stacks.map((stack) => stack.Name).sort()).toEqual([
@@ -1458,116 +1455,7 @@ describe.skipIf(!findExecutable("git"))(
   },
 );
 
-describe("lookupAddressRecord", () => {
-  const answer = (body: unknown, status = 200) =>
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/dns-json" },
-    });
-  const scripted = (answers: Record<string, () => Response>, urls: string[]) => {
-    return async (url: string | URL, init?: RequestInit) => {
-      urls.push(String(url));
-      expect(new Headers(init?.headers).get("accept")).toBe("application/dns-json");
-      const type = new URL(String(url)).searchParams.get("type") ?? "";
-      const make = answers[type];
-      if (make === undefined) throw new Error(`unexpected query ${String(url)}`);
-      return make();
-    };
-  };
-
-  it("finds an A record with one query to Cloudflare's public resolver", async () => {
-    const urls: string[] = [];
-    const fetch = scripted(
-      {
-        A: () =>
-          answer({
-            Status: 0,
-            Answer: [{ name: "shop.example.com.", type: 1, TTL: 60, data: HOST_IPV4 }],
-          }),
-      },
-      urls,
-    );
-    expect(await lookupAddressRecord(fetch, "Shop.Example.com.")).toEqual({ state: "found" });
-    expect(urls).toEqual(["https://cloudflare-dns.com/dns-query?name=shop.example.com&type=A"]);
-  });
-
-  it("finds an AAAA record or a CNAME after an empty answer", async () => {
-    const empty = () => answer({ Status: 0 });
-    const aaaa = scripted(
-      {
-        A: empty,
-        AAAA: () =>
-          answer({
-            Status: 0,
-            Answer: [{ name: "shop.example.com", type: 28, TTL: 60, data: HOST_IPV6 }],
-          }),
-      },
-      [],
-    );
-    expect(await lookupAddressRecord(aaaa, "shop.example.com")).toEqual({ state: "found" });
-    const cname = scripted(
-      {
-        A: empty,
-        AAAA: empty,
-        CNAME: () =>
-          answer({
-            Status: 0,
-            Answer: [
-              { name: "shop.example.com.", type: 5, TTL: 60, data: "nas.dyndns.example.net." },
-            ],
-          }),
-      },
-      [],
-    );
-    expect(await lookupAddressRecord(cname, "shop.example.com")).toEqual({ state: "found" });
-  });
-
-  it("reports a missing record: NXDOMAIN at once, or no record of the three types", async () => {
-    const urls: string[] = [];
-    const nx = scripted({ A: () => answer({ Status: 3 }) }, urls);
-    expect(await lookupAddressRecord(nx, "shop.example.com")).toEqual({ state: "missing" });
-    expect(urls).toHaveLength(1);
-    // A record of another name or type (for example the zone's SOA) is no address record.
-    const other = () =>
-      answer({
-        Status: 0,
-        Answer: [
-          { name: "example.com.", type: 1, TTL: 60, data: HOST_IPV4 },
-          { name: "shop.example.com.", type: 16, TTL: 60, data: '"txt"' },
-        ],
-      });
-    const none = scripted({ A: other, AAAA: other, CNAME: other }, []);
-    expect(await lookupAddressRecord(none, "shop.example.com")).toEqual({ state: "missing" });
-  });
-
-  it("a failed lookup says why and is never taken as an answer", async () => {
-    const failing = async () => {
-      throw new Error("getaddrinfo ENOTFOUND cloudflare-dns.com");
-    };
-    expect(await lookupAddressRecord(failing, "shop.example.com")).toEqual({
-      state: "unknown",
-      problem: "the request failed: getaddrinfo ENOTFOUND cloudflare-dns.com",
-    });
-    const servfail = scripted({ A: () => answer({ Status: 2 }) }, []);
-    expect(await lookupAddressRecord(servfail, "shop.example.com")).toEqual({
-      state: "unknown",
-      problem: "the resolver answered with DNS status 2",
-    });
-    const http = scripted({ A: () => answer({}, 500) }, []);
-    expect(await lookupAddressRecord(http, "shop.example.com")).toEqual({
-      state: "unknown",
-      problem: "HTTP 500",
-    });
-    const garbage = scripted({ A: () => new Response("<html>") }, []);
-    expect(await lookupAddressRecord(garbage, "shop.example.com")).toEqual({
-      state: "unknown",
-      problem: "an unexpected answer",
-    });
-  });
-});
-
 describe("switchesWebRoute", () => {
-  const app = "shop";
   const target = (web: PortainerWeb): PortainerDeployTarget => ({
     provider: "portainer",
     mode: "portainer-stack",
@@ -1575,16 +1463,6 @@ describe("switchesWebRoute", () => {
     arch: "amd64",
     redeploy: "updater",
     web,
-  });
-  const facts = (
-    envKeys: string[],
-    publishedPorts?: { port: number; project?: string }[],
-  ): PortainerFacts => ({
-    version: "2.45.2",
-    environments: [],
-    stacks: [{ id: 12, name: "opscrew-shop", deploymentStatus: [], envKeys }],
-    findings: [],
-    ...(publishedPorts !== undefined ? { publishedPorts } : {}),
   });
   const connection = (appliedWeb?: PortainerWeb): PortainerConnection => ({
     url: "https://nas.example:9443",
@@ -1596,46 +1474,21 @@ describe("switchesWebRoute", () => {
   const proxy = (port: number): PortainerWeb => ({ mode: "proxy", port });
 
   it("compares the recorded route with the plan's: proxy:8080 → caddy is a switch", () => {
-    expect(
-      switchesWebRoute(facts([]), target({ mode: "caddy" }), app, connection(proxy(8080))),
-    ).toBe(true);
+    expect(switchesWebRoute(target({ mode: "caddy" }), connection(proxy(8080)))).toBe(true);
+    expect(switchesWebRoute(target(proxy(8080)), connection({ mode: "caddy" }))).toBe(true);
   });
 
   it("the same proxy port is no switch, another port is", () => {
-    expect(switchesWebRoute(facts([]), target(proxy(8080)), app, connection(proxy(8080)))).toBe(
-      false,
-    );
-    expect(switchesWebRoute(facts([]), target(proxy(9090)), app, connection(proxy(8080)))).toBe(
-      true,
-    );
+    expect(switchesWebRoute(target(proxy(8080)), connection(proxy(8080)))).toBe(false);
+    expect(switchesWebRoute(target(proxy(9090)), connection(proxy(8080)))).toBe(true);
   });
 
-  it("notices a proxy ↔ caddy switch with a limited token (no published ports) through the record", () => {
-    // A limited token sees no published ports: only the record tells the route changed.
-    const limited = facts([]);
-    expect(switchesWebRoute(limited, target({ mode: "caddy" }), app, connection())).toBe(false);
-    expect(switchesWebRoute(limited, target({ mode: "caddy" }), app, connection(proxy(8080)))).toBe(
-      true,
-    );
-    expect(switchesWebRoute(limited, target(proxy(8080)), app, connection({ mode: "caddy" }))).toBe(
-      true,
-    );
-  });
-
-  it("falls back to what Portainer shows when nothing is recorded", () => {
-    const tunnel = facts(["DATABASE_URL", "OPSCREW_TUNNEL_TOKEN"]);
-    expect(switchesWebRoute(tunnel, target(proxy(8080)), app, connection())).toBe(true);
-    expect(switchesWebRoute(tunnel, target({ mode: "tunnel" }), app, connection())).toBe(false);
-    const ports = facts([], [{ port: 8080, project: "opscrew-shop" }]);
-    expect(switchesWebRoute(ports, target({ mode: "caddy" }), app, connection())).toBe(true);
-    expect(switchesWebRoute(ports, target(proxy(8080)), app, connection())).toBe(false);
-  });
-
-  it("no stack recorded: a first setup, never a switch", () => {
+  it("no route recorded or no stack recorded: never a switch", () => {
+    expect(switchesWebRoute(target({ mode: "caddy" }), connection())).toBe(false);
     const none: PortainerConnection = {
       ...connection(proxy(8080)),
       created: { stacks: [], volumes: [] },
     };
-    expect(switchesWebRoute(facts([]), target({ mode: "caddy" }), app, none)).toBe(false);
+    expect(switchesWebRoute(target({ mode: "caddy" }), none)).toBe(false);
   });
 });

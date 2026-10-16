@@ -3,7 +3,7 @@ import { findExecutable, type OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { zeroTrustAuthDomain } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
-import { recordOwnServer } from "../shared";
+import { describeHostPlan, recordOwnServer, requireNoBlockers } from "../shared";
 import { createTestPhaseDeps } from "../testing";
 import { createProject, FakeGitHub, opscrewRecord } from "./__fixtures__/fakes";
 import {
@@ -21,7 +21,6 @@ import {
   tunnelOutputs,
 } from "./__fixtures__/own";
 import { checkProvider, OWN_SERVER_CONNECT_HINT, setupCloudflare } from "./credentials";
-import { describeHostPlan, requireNoBlockers } from "./own";
 import { deploySetupPullRequestBody } from "./publish";
 import { previewDeploymentFiles } from "./render";
 import { runProvision } from "./run";

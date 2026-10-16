@@ -8,7 +8,7 @@ import type {
   PortainerClientDeps,
   PortainerEndpoint,
 } from "@opscrew/connector-portainer";
-import type { ApplyOptions, ApplyResult, HostFacts, HostPlan } from "@opscrew/connector-ssh-host";
+
 import type {
   CredentialCheck,
   IacEngine,
@@ -19,7 +19,7 @@ import type {
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
-import type { EnvAnswer, EnvQuestion, OwnServerConnection } from "../shared";
+import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
 import type { ZeroTrustApi } from "./zero-trust";
 
 /**
@@ -117,12 +117,6 @@ export interface PortainerServices {
   wait?: ApplyStackOptions["wait"];
 }
 
-/** The host adapter calls provision makes on a server the user owns. */
-export interface HostAdapterApi {
-  inspect(remote: RemoteExec): Promise<HostFacts>;
-  apply(remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult>;
-}
-
 /**
  * Collaborators for a server the user owns (`target.provider: own`). Each defaults to the real
  * implementation: an SSH shell with the recorded admin login and `@opscrew/connector-ssh-host`.
@@ -131,7 +125,7 @@ export interface OwnServerServices {
   /** The admin login's shell (default: `SshRemoteExec` with the login from `.opscrew/server.json`). */
   remote?: (connection: OwnServerConnection) => RemoteExec;
   /** Inspection and apply (default: `inspectHost` and `applyHostPlan`). */
-  host?: Partial<HostAdapterApi>;
+  host?: HostAdapterApi;
   /**
    * Proves after an SSH or firewall change that new logins still work (default: new SSH
    * connections as the deploy user and the admin login, see `ownServerLoginCheck`).
@@ -144,15 +138,13 @@ export interface OwnServerServices {
 export interface ProvisionOptions {
   /** Plan and print the plan hash; do not apply. */
   planOnly?: boolean;
-  /** Apply the saved plan with exactly this hash (from an earlier `--plan-only` run). */
-  approvePlanHash?: string;
   /**
-   * Every hash given with `--approve` (each names one plan). On a server the user owns there are
-   * two plans: the saved infrastructure plan among them is applied as with `approvePlanHash`, and
-   * the host plan is granted by the approval handler when its hash is one of them. The CLI's
-   * non-interactive approval handler must approve `host-apply` requests by these hashes too.
+   * Every hash given with `--approve` (each names one plan of an earlier `--plan-only` run). The
+   * saved infrastructure plan among them is applied instead of planning again (on servers OpsCrew
+   * creates: the first hash); a host or stack plan is granted by the approval handler when its hash
+   * is one of them, so the CLI's non-interactive handler approves those requests by these hashes.
    */
-  approvePlanHashes?: readonly string[];
+  approveHashes?: readonly string[];
   /**
    * `--host-key SHA256:…`: the host key fingerprint of the user's own server, required on the
    * first connection when nobody can answer a prompt.

@@ -5,14 +5,12 @@
  * by {@link SENSITIVE_VALUE} and the prior state (all values, unmarked) is dropped.
  */
 
+import { isRecord } from "@opscrew/core";
+
 /** What a sensitive value is replaced with. */
 export const SENSITIVE_VALUE = "(sensitive value)";
 
 type Json = Record<string, unknown>;
-
-function isRecord(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * `value` with every part `sensitive` marks replaced: `true` marks the whole value, an array or

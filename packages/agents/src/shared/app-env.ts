@@ -198,9 +198,13 @@ export interface AppEnvironment {
   /**
    * The same values by name, exactly as set (no env-file quoting), for a target that takes them one
    * by one, such as a Portainer stack's environment: `app` holds what {@link appEnv} holds, `build`
-   * what {@link buildEnv} holds. Never logged.
+   * what {@link buildEnv} holds, `db` what {@link dbEnv} holds. Never logged.
    */
-  values: { app: Record<string, string>; build: Record<string, string> };
+  values: {
+    app: Record<string, string>;
+    build: Record<string, string>;
+    db?: { user: string; name: string; password: string };
+  };
 }
 
 /**
@@ -219,7 +223,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   const missing: string[] = [];
   const defaulted: string[] = [];
   const unresolved: string[] = [];
-  let dbEnv: string | undefined;
+  let db: { user: string; name: string; password: string } | undefined;
   const newPassword = options.password ?? randomPassword;
   const generatedEnv: Record<string, string> = {};
   const generated: GeneratedValues = { env: generatedEnv };
@@ -229,9 +233,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   if (plan.services.postgres) {
     const password = options.previous?.dbPassword ?? newPassword();
     generated.dbPassword = password;
-    dbEnv = ["POSTGRES_USER=app", "POSTGRES_DB=app", `POSTGRES_PASSWORD=${password}`, ""].join(
-      "\n",
-    );
+    db = { user: "app", name: "app", password };
     // `postgresql://` for every name: SQLAlchemy rejects `postgres://`, while libpq, node-postgres,
     // Prisma, Sequelize, dj-database-url, Rails and the Go and Rust drivers accept both.
     const url = `postgresql://app:${password}@db:5432/app`;
@@ -302,7 +304,16 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     [...values.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([n, v]) => format(n, v));
   return {
     appEnv: `${sortedLines(app, dotenvLine).join("\n")}\n`,
-    ...(dbEnv !== undefined ? { dbEnv } : {}),
+    ...(db !== undefined
+      ? {
+          dbEnv: [
+            `POSTGRES_USER=${db.user}`,
+            `POSTGRES_DB=${db.name}`,
+            `POSTGRES_PASSWORD=${db.password}`,
+            "",
+          ].join("\n"),
+        }
+      : {}),
     buildEnv: `${sortedLines(build, (n, v) => `${n}=${v}`).join("\n")}\n`,
     names: [...new Set([...app.keys(), ...build.keys()])].sort(),
     defaulted,
@@ -311,6 +322,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     values: {
       app: Object.fromEntries([...app.entries()].sort(([a], [b]) => a.localeCompare(b))),
       build: Object.fromEntries([...build.entries()].sort(([a], [b]) => a.localeCompare(b))),
+      ...(db !== undefined ? { db } : {}),
     },
   };
 }
