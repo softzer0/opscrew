@@ -87,7 +87,12 @@ export function approvalMessage(request: ApprovalRequest): string {
   }
   if (request.costDelta !== undefined) {
     const { amount, currency } = request.costDelta;
-    lines.push(`Monthly cost: ${amount.toFixed(2)} ${currency}`, "");
+    const change = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      signDisplay: "always",
+    }).format(amount);
+    lines.push(`Monthly cost change: ${change}`, "");
   }
   if (request.allowDestroy === true) {
     lines.push("WARNING: this change deletes or replaces resources.", "");

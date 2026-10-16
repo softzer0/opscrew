@@ -29,7 +29,7 @@ import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-sch
 import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
-import { type DeployToolOptions, registerDeployTools } from "./deploy";
+import { approvalMessage, type DeployToolOptions, registerDeployTools } from "./deploy";
 
 // ---------------------------------------------------------------------------------------------
 // Fakes (adapted from packages/agents/src/provision/__fixtures__/fakes.ts, which is not exported)
@@ -706,3 +706,20 @@ describe.skipIf(!findExecutable("git"))(
   },
   120_000,
 );
+
+describe("the approval dialog's text", () => {
+  const request = {
+    kind: "iac-apply",
+    title: "Create 3 resources on Hetzner Cloud",
+    details: "+ hcloud_server.app",
+    planHash: "ab".repeat(32),
+  } as const;
+
+  it("labels the cost as the change in the monthly cost, with its sign", () => {
+    const more = approvalMessage({ ...request, costDelta: { amount: 4.51, currency: "EUR" } });
+    expect(more).toContain("Monthly cost change: +€4.51");
+    expect(more).not.toContain("Monthly cost:");
+    const less = approvalMessage({ ...request, costDelta: { amount: -4.51, currency: "EUR" } });
+    expect(less).toContain("Monthly cost change: -€4.51");
+  });
+});
