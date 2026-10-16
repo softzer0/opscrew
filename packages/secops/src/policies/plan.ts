@@ -1,4 +1,5 @@
 import type { PolicyResult, Severity } from "@opscrew/contracts";
+import { isRecord } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 
 /** One managed resource from an engine plan, with known values and unknown-at-plan-time markers. */
@@ -22,10 +23,6 @@ const PUBLIC_UDP_PORTS = new Set(["443"]);
 function planWantsBackups(deployPlan: Pick<DeployPlan, "target">): boolean {
   const { target } = deployPlan;
   return (target.provider === "hetzner" || target.provider === "digitalocean") && target.backups;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Flattens `planned_values` (root and child modules) and merges `after_unknown` from changes. */
@@ -180,7 +177,6 @@ function openPorts(rules: FirewallRule[]): { admin: string[]; web: string[]; ssh
   return { admin, web, ssh };
 }
 
-/** `no-open-admin-ports` and, behind Cloudflare, `origin-cloudflare-only` for one firewall. */
 /** SSH (port 22) may be open to the whole internet only when the plan allows it. */
 function sshPolicyResult(
   firewall: PlannedResource,
@@ -203,6 +199,7 @@ function sshPolicyResult(
   );
 }
 
+/** `no-open-admin-ports` and, behind Cloudflare, `origin-cloudflare-only` for one firewall. */
 function openPortResults(
   firewall: PlannedResource,
   rules: FirewallRule[],
@@ -238,43 +235,93 @@ function openPortResults(
   return out;
 }
 
-/** DigitalOcean equivalents of the Hetzner checks (spec 004 plan "Security checks"). */
-function digitalOceanPolicies(
+/** What differs between the providers whose servers the policies check. */
+interface ProviderChecks {
+  /** Resource types of the server and of its cloud firewall. */
+  server: string;
+  firewall: string;
+  /** "server" or "Droplet". */
+  noun: string;
+  /** The firewall's inbound rules in the Hetzner shape. */
+  rules(firewall: PlannedResource): FirewallRule[];
+  /** True when one of `firewalls` is attached to `server`. */
+  attached(server: PlannedResource, firewalls: PlannedResource[], planJson: unknown): boolean;
+  /** Messages of `firewall-attached`, `ssh-keys-set` and `backups-for-critical-data`. */
+  attachedText: string;
+  unattachedText: string;
+  keylessText: string;
+  backupsText: string;
+  /** Whether the server has delete and rebuild protection to check. */
+  deleteProtection: boolean;
+}
+
+/** Hetzner first, then DigitalOcean: the order the results are reported in. */
+const PROVIDERS: readonly ProviderChecks[] = [
+  {
+    server: "hcloud_server",
+    firewall: "hcloud_firewall",
+    noun: "server",
+    rules: firewallRules,
+    attached: (server) => isSet(server, "firewall_ids"),
+    attachedText: "The server is attached to a Hetzner Cloud firewall.",
+    unattachedText:
+      "The server has no firewall attached, so every port is reachable from the internet. Attach the OpsCrew firewall.",
+    keylessText:
+      "The server has no SSH key; Hetzner would create a root password. Add the deploy key.",
+    backupsText: "Hetzner automated backups are enabled as the plan requires.",
+    deleteProtection: true,
+  },
+  {
+    server: "digitalocean_droplet",
+    firewall: "digitalocean_firewall",
+    noun: "Droplet",
+    rules: digitalOceanInboundRules,
+    attached: (droplet, firewalls, planJson) => {
+      const id = droplet.values.id;
+      const target = configAddress(droplet.address);
+      const references = firewallDropletReferences(planJson);
+      return firewalls.some((firewall) => {
+        const ids = firewall.values.droplet_ids;
+        if (id !== undefined && id !== null && id !== "" && Array.isArray(ids)) {
+          if (ids.some((value) => String(value) === String(id))) return true;
+        }
+        return references.get(configAddress(firewall.address))?.has(target) ?? false;
+      });
+    },
+    attachedText: "The Droplet is attached to a DigitalOcean Cloud Firewall.",
+    unattachedText:
+      "No firewall lists this Droplet, so every port is reachable from the internet. Attach the OpsCrew firewall.",
+    keylessText:
+      "The Droplet has no SSH key; DigitalOcean would email a root password. Add the deploy key.",
+    backupsText: "DigitalOcean automated backups are enabled as the plan requires.",
+    deleteProtection: false,
+  },
+];
+
+/** The server and firewall policies of one provider (spec 004 plan "Security checks"). */
+function providerPolicies(
+  provider: ProviderChecks,
   planJson: unknown,
   resources: PlannedResource[],
   deployPlan: DeployPlan,
   proxiedBehindCloudflare: boolean,
 ): PolicyResult[] {
   const results: PolicyResult[] = [];
-  const droplets = resources.filter((r) => r.type === "digitalocean_droplet");
-  const firewalls = resources.filter((r) => r.type === "digitalocean_firewall");
-  const references = firewallDropletReferences(planJson);
+  const servers = resources.filter((r) => r.type === provider.server);
+  const firewalls = resources.filter((r) => r.type === provider.firewall);
+  const { noun } = provider;
 
-  const attached = (droplet: PlannedResource): boolean => {
-    const id = droplet.values.id;
-    const target = configAddress(droplet.address);
-    return firewalls.some((firewall) => {
-      const ids = firewall.values.droplet_ids;
-      if (id !== undefined && id !== null && id !== "" && Array.isArray(ids)) {
-        if (ids.some((value) => String(value) === String(id))) return true;
-      }
-      return references.get(configAddress(firewall.address))?.has(target) ?? false;
-    });
-  };
-
-  for (const droplet of droplets) {
-    const hasFirewall = attached(droplet);
-    const hasKeys = isSet(droplet, "ssh_keys");
+  for (const server of servers) {
+    const hasFirewall = provider.attached(server, firewalls, planJson);
+    const hasKeys = isSet(server, "ssh_keys");
     results.push(
       result(
         "firewall-attached",
         "Server has a firewall",
         "high",
         hasFirewall,
-        hasFirewall
-          ? "The Droplet is attached to a DigitalOcean Cloud Firewall."
-          : "No firewall lists this Droplet, so every port is reachable from the internet. Attach the OpsCrew firewall.",
-        droplet.address,
+        hasFirewall ? provider.attachedText : provider.unattachedText,
+        server.address,
       ),
       result(
         "ssh-keys-set",
@@ -282,41 +329,57 @@ function digitalOceanPolicies(
         "high",
         hasKeys,
         hasKeys
-          ? "The Droplet is created with an SSH key, so no root password is emailed or used."
-          : "The Droplet has no SSH key; DigitalOcean would email a root password. Add the deploy key.",
-        droplet.address,
+          ? `The ${noun} is created with an SSH key, so no root password is emailed or used.`
+          : provider.keylessText,
+        server.address,
       ),
     );
+    if (provider.deleteProtection) {
+      const protectedServer = server.values.delete_protection === true;
+      results.push(
+        result(
+          "delete-protection",
+          "Server is protected against accidental deletion",
+          "medium",
+          protectedServer,
+          protectedServer
+            ? "Delete and rebuild protection are on."
+            : "Delete protection is off, so one wrong command could delete the server and its data. Turn it on.",
+          server.address,
+        ),
+      );
+    }
     if (planWantsBackups(deployPlan)) {
+      const backups = server.values.backups === true;
       results.push(
         result(
           "backups-for-critical-data",
           "Automated backups are on",
           "high",
-          droplet.values.backups === true,
-          droplet.values.backups === true
-            ? "DigitalOcean automated backups are enabled as the plan requires."
-            : "The plan requires automated backups but the Droplet has them turned off.",
-          droplet.address,
+          backups,
+          backups
+            ? provider.backupsText
+            : `The plan requires automated backups but the ${noun} has them turned off.`,
+          server.address,
         ),
       );
     }
   }
 
   for (const firewall of firewalls) {
-    const rules = digitalOceanInboundRules(firewall);
+    const rules = provider.rules(firewall);
     results.push(...openPortResults(firewall, rules, proxiedBehindCloudflare));
     results.push(sshPolicyResult(firewall, rules, deployPlan));
   }
 
-  if (droplets.length > 0 && firewalls.length === 0) {
+  if (servers.length > 0 && firewalls.length === 0) {
     results.push(
       result(
         "firewall-attached",
         "Server has a firewall",
         "high",
         false,
-        "The plan creates a Droplet but no firewall. Every port would be reachable from the internet.",
+        `The plan creates a ${noun} but no firewall. Every port would be reachable from the internet.`,
       ),
     );
   }
@@ -331,71 +394,13 @@ function digitalOceanPolicies(
  */
 export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan): PolicyResult[] {
   const resources = plannedResources(planJson);
-  const results: PolicyResult[] = [];
-  const servers = resources.filter((r) => r.type === "hcloud_server");
-  const firewalls = resources.filter((r) => r.type === "hcloud_firewall");
-
-  for (const server of servers) {
-    results.push(
-      result(
-        "firewall-attached",
-        "Server has a firewall",
-        "high",
-        isSet(server, "firewall_ids"),
-        isSet(server, "firewall_ids")
-          ? "The server is attached to a Hetzner Cloud firewall."
-          : "The server has no firewall attached, so every port is reachable from the internet. Attach the OpsCrew firewall.",
-        server.address,
-      ),
-      result(
-        "ssh-keys-set",
-        "Server uses SSH keys",
-        "high",
-        isSet(server, "ssh_keys"),
-        isSet(server, "ssh_keys")
-          ? "The server is created with an SSH key, so no root password is emailed or used."
-          : "The server has no SSH key; Hetzner would create a root password. Add the deploy key.",
-        server.address,
-      ),
-      result(
-        "delete-protection",
-        "Server is protected against accidental deletion",
-        "medium",
-        server.values.delete_protection === true,
-        server.values.delete_protection === true
-          ? "Delete and rebuild protection are on."
-          : "Delete protection is off, so one wrong command could delete the server and its data. Turn it on.",
-        server.address,
-      ),
-    );
-    if (planWantsBackups(deployPlan)) {
-      results.push(
-        result(
-          "backups-for-critical-data",
-          "Automated backups are on",
-          "high",
-          server.values.backups === true,
-          server.values.backups === true
-            ? "Hetzner automated backups are enabled as the plan requires."
-            : "The plan requires automated backups but the server has them turned off.",
-          server.address,
-        ),
-      );
-    }
-  }
-
   const proxiedBehindCloudflare =
     deployPlan.dns.provider === "cloudflare" &&
     deployPlan.dns.proxied &&
     deployPlan.security.httpAllowedFrom === "cloudflare";
-
-  for (const firewall of firewalls) {
-    const rules = firewallRules(firewall);
-    results.push(...openPortResults(firewall, rules, proxiedBehindCloudflare));
-    results.push(sshPolicyResult(firewall, rules, deployPlan));
-  }
-
-  results.push(...digitalOceanPolicies(planJson, resources, deployPlan, proxiedBehindCloudflare));
+  const results = PROVIDERS.flatMap((provider) =>
+    providerPolicies(provider, planJson, resources, deployPlan, proxiedBehindCloudflare),
+  );
 
   if (deployPlan.dns.provider === "cloudflare" && deployPlan.dns.proxied && deployPlan.dns.domain) {
     const domain = deployPlan.dns.domain;
@@ -420,21 +425,8 @@ export function evaluatePlanPolicies(planJson: unknown, deployPlan: DeployPlan):
       );
     }
   }
-
-  if (servers.length > 0 && firewalls.length === 0) {
-    results.push(
-      result(
-        "firewall-attached",
-        "Server has a firewall",
-        "high",
-        false,
-        "The plan creates a server but no firewall. Every port would be reachable from the internet.",
-      ),
-    );
-  }
   return results;
 }
-
 /** Failed results at or above `high`; provisioning stops before approval when any exist. */
 export function blockingPolicyFailures(results: PolicyResult[]): PolicyResult[] {
   return results.filter((r) => !r.passed && (r.severity === "critical" || r.severity === "high"));

@@ -6,14 +6,20 @@
  * storage buckets). Deterministic and offline; raw secret values never leave this module
  * (evidence is masked with `maskSecret`).
  */
-import type { Finding, FindingCategory, ScanContext, Scanner, Severity } from "@opscrew/contracts";
+import type { Finding, FindingCategory, ScanContext, Scanner } from "@opscrew/contracts";
 import { maskSecret, Redactor } from "@opscrew/core";
 import { CLIENT_EXPOSED_PREFIXES } from "@opscrew/detect";
-import { findingId } from "../scan/finding";
+import { createFinding, type FindingInput } from "../scan/finding";
 import {
   BINARY_EXTENSION,
   basename,
-  isEnvFile as holdsLocalValues,
+  dirname,
+  extension,
+  compact as flatten,
+  isDotenvFile,
+  isEnvFile,
+  isPlaceholderValue,
+  lineLocator,
   mapConcurrent,
   readText,
 } from "../scan/text";
@@ -44,65 +50,12 @@ export function createSupabaseScanner(): Scanner {
 
 const redactor = new Redactor();
 
-interface FindingInput {
-  ruleId: string;
-  title: string;
-  severity: Severity;
-  file: string;
-  line: number;
-  /** Raw matched text; hashed into the id, never stored. */
-  raw: string;
-  evidence: string;
-  description: string;
-  remediation: string;
-  references: string[];
-  /** Default `supabase`. */
-  category?: FindingCategory;
-}
-
-function makeFinding(input: FindingInput): Finding {
-  const { raw, category, ...rest } = input;
-  return {
-    id: findingId(input.ruleId, input.file, input.line, raw),
-    ...rest,
-    category: category ?? "supabase",
-    source: SOURCE,
-  };
-}
-
-/** Returns a function mapping a character offset in `text` to its 1-based line number. */
-function lineLocator(text: string): (index: number) => number {
-  const starts = [0];
-  for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
-  return (index) => {
-    let lo = 0;
-    let hi = starts.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if ((starts[mid] ?? 0) <= index) lo = mid;
-      else hi = mid - 1;
-    }
-    return lo + 1;
-  };
-}
-
-function dirname(path: string): string {
-  const at = path.lastIndexOf("/");
-  return at < 0 ? "" : path.slice(0, at);
-}
-
-function extension(path: string): string {
-  const name = basename(path);
-  const at = name.lastIndexOf(".");
-  return at <= 0 ? "" : name.slice(at + 1).toLowerCase();
-}
-
-async function readSafe(context: ScanContext, file: string): Promise<string | undefined> {
-  try {
-    return await context.readFile(file);
-  } catch {
-    return undefined;
-  }
+/** A Supabase finding (category `supabase` unless given); `rawMatch` is only hashed into its id. */
+function makeFinding(
+  input: Omit<FindingInput, "category" | "source"> & { category?: FindingCategory },
+): Finding {
+  const { rawMatch, category, ...rest } = input;
+  return createFinding({ ...rest, category: category ?? "supabase", source: SOURCE, rawMatch });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -143,7 +96,7 @@ async function readProjectShape(context: ScanContext): Promise<ProjectShape> {
   for (const file of context.files) {
     const name = basename(file);
     if (name === "package.json") {
-      const text = await readSafe(context, file);
+      const text = await readText(context, file);
       let deps: Record<string, unknown> = {};
       try {
         const json = JSON.parse(text ?? "{}") as Record<string, unknown>;
@@ -167,7 +120,7 @@ async function readProjectShape(context: ScanContext): Promise<ProjectShape> {
       !usesSupabase &&
       (/^requirements[^/]*\.txt$/.test(name) || name === "pyproject.toml")
     ) {
-      const text = await readSafe(context, file);
+      const text = await readText(context, file);
       if (text && /^\s*supabase\b/im.test(text)) usesSupabase = true;
     }
   }
@@ -221,11 +174,6 @@ const SERVER_ONLY_DIRS = new Set(["server", "servers"]);
 /** Next.js API routes (`pages/api`, `app/api`) and App Router route handlers (`route.ts`). */
 const NEXT_SERVER_ROUTE = /^(?:src\/)?(?:(?:app|pages)\/api\/|app\/(?:.+\/)?route\.[cm]?[jt]sx?$)/;
 
-function isEnvFile(file: string): boolean {
-  const name = basename(file);
-  return name === ".env" || name.startsWith(".env.");
-}
-
 /** True for files inside a frontend folder that never reach the browser. */
 function isServerOnlyFile(relative: string, root: string, shape: ProjectShape): boolean {
   if (SERVER_FILE_NAME.test(basename(relative))) return true;
@@ -272,7 +220,6 @@ function isClientFile(file: string, shape: ProjectShape): boolean {
 
 const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+/g;
 const SECRET_KEY = /\bsb_secret_[A-Za-z0-9_-]{16,}/g;
-const PLACEHOLDER = /your[-_]|xxx|changeme|example|placeholder|<|>|\$\{|process\.env/i;
 const CLIENT_SECRET_ENV = new RegExp(
   `\\b(?:${CLIENT_EXPOSED_PREFIXES.join("|")})[A-Z0-9_]*(?:SERVICE_ROLE|SUPABASE_SECRET)[A-Z0-9_]*\\b`,
   "g",
@@ -299,10 +246,6 @@ function jwtRole(token: string): string | undefined {
   return undefined;
 }
 
-function isPlaceholder(value: string): boolean {
-  return PLACEHOLDER.test(value) || /^(.)\1*$/.test(value.replace(/^sb_secret_/, ""));
-}
-
 interface KeyMatch {
   value: string;
   index: number;
@@ -315,7 +258,9 @@ function findSecretKeys(text: string): KeyMatch[] {
     if (jwtRole(match[0]) === "service_role") out.push({ value: match[0], index: match.index });
   }
   for (const match of text.matchAll(SECRET_KEY)) {
-    if (!isPlaceholder(match[0])) out.push({ value: match[0], index: match.index });
+    // The key after its prefix: `sb_secret_` followed by one repeated character is a placeholder.
+    const key = match[0].slice("sb_secret_".length);
+    if (!isPlaceholderValue(key)) out.push({ value: match[0], index: match.index });
   }
   return out;
 }
@@ -330,7 +275,7 @@ function serviceRoleFinding(file: string, line: number, value: string, viaEnv?: 
     severity: "critical",
     file,
     line,
-    raw: value,
+    rawMatch: value,
     evidence: maskSecret(value),
     description:
       `A Supabase service-role (secret) key was found in frontend code. ${where} ` +
@@ -359,7 +304,7 @@ function secretInSourceFinding(
     category: "secret",
     file,
     line,
-    raw: value,
+    rawMatch: value,
     evidence: maskSecret(value),
     description:
       `A Supabase ${kind} key is written directly in this file. It bypasses row-level security, ` +
@@ -382,7 +327,7 @@ function exposedEnvFinding(file: string, line: number, name: string): Finding {
     severity: "critical",
     file,
     line,
-    raw: name,
+    rawMatch: name,
     evidence: name,
     description:
       `\`${name}\` has a prefix that makes the bundler inline its value into browser code, and ` +
@@ -400,7 +345,7 @@ function exposedEnvFinding(file: string, line: number, name: string): Finding {
 function isScannable(file: string): boolean {
   const ext = extension(file);
   return (
-    isEnvFile(file) ||
+    isDotenvFile(file) ||
     CODE_EXTENSIONS.has(ext) ||
     MARKUP_EXTENSIONS.has(ext) ||
     DATA_EXTENSIONS.has(ext)
@@ -423,7 +368,7 @@ function scanKeysAndEnv(
     keyLines.add(line);
     findings.push(secretInSourceFinding(file, line, key.value, tracked));
   };
-  if (isEnvFile(file)) {
+  if (isDotenvFile(file)) {
     // Client-prefixed variables are browser-visible. Other values in a real `.env` file are the
     // secrets scanner's concern (committed `.env`); example and template files are committed by
     // design, so a real key there is hard-coded in the repository.
@@ -434,7 +379,7 @@ function scanKeysAndEnv(
         const line = lineAt(key.index);
         keyLines.add(line);
         findings.push(serviceRoleFinding(file, line, key.value, name));
-      } else if (!holdsLocalValues(file)) {
+      } else if (!isEnvFile(file)) {
         inSource(key);
       }
     }
@@ -598,9 +543,9 @@ function splitTopLevel(text: string): string[] {
   return parts.map((part) => part.trim()).filter((part) => part.length > 0);
 }
 
+/** {@link flatten}ed SQL with anything secret-shaped masked. */
 function compact(text: string, max = 160): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return redactor.redact(flat.length > max ? `${flat.slice(0, max - 1)}…` : flat);
+  return redactor.redact(flatten(text, max));
 }
 
 function isTrueExpression(expr: string | undefined): boolean {
@@ -701,7 +646,7 @@ function rlsFindings(files: ParsedFile[]): Finding[] {
         severity: "high",
         file: table.file,
         line: table.line,
-        raw: key,
+        rawMatch: key,
         evidence: table.header,
         description:
           `The table \`${key}\` is in the \`public\` schema, which Supabase exposes through its ` +
@@ -792,7 +737,7 @@ function policyFindings(files: ParsedFile[], columns: Map<string, Set<string>>):
             severity: "high",
             file: parsed.file,
             line: stmt.line,
-            raw: `${key}|${name}|${command}`,
+            rawMatch: `${key}|${name}|${command}`,
             evidence,
             description:
               `The row-level security policy "${name}" on \`${key}\` allows ${command.toUpperCase()} ` +
@@ -816,7 +761,7 @@ function policyFindings(files: ParsedFile[], columns: Map<string, Set<string>>):
             severity: "medium",
             file: parsed.file,
             line: stmt.line,
-            raw: `${key}|${name}|select`,
+            rawMatch: `${key}|${name}|select`,
             evidence,
             description:
               `The policy "${name}" allows SELECT on \`${key}\` with \`using (true)\`, and the ` +
@@ -867,7 +812,7 @@ function grantFindings(files: ParsedFile[]): Finding[] {
           severity: "high",
           file: parsed.file,
           line: stmt.line,
-          raw: compact(stmt.text, 400),
+          rawMatch: compact(stmt.text, 400),
           evidence: compact(stmt.text),
           description:
             `This migration grants ${writes.map((w) => w.toUpperCase()).join(", ")} on ${target} ` +
@@ -902,7 +847,7 @@ function bucketFinding(
     severity: "medium",
     file,
     line,
-    raw: `${bucket ?? ""}|${compact(stmt, 400)}`,
+    rawMatch: `${bucket ?? ""}|${compact(stmt, 400)}`,
     evidence: compact(stmt),
     description:
       `The migration makes ${label} public: every file in it can be downloaded by anyone who ` +
@@ -983,7 +928,7 @@ async function scanSupabase(context: ScanContext): Promise<Finding[]> {
   );
   findings.push(...perFile.flat());
   for (const file of migrationFiles) {
-    const text = await readSafe(context, file);
+    const text = await readText(context, file);
     if (text === undefined) continue;
     migrations.push({ file, ...splitSql(text) });
   }

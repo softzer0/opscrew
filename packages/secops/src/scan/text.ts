@@ -17,14 +17,31 @@ export function basename(file: string): string {
   return file.slice(file.lastIndexOf("/") + 1);
 }
 
+/** Directory of a repo-relative POSIX path (`""` for the repository root). */
+export function dirname(file: string): string {
+  const at = file.lastIndexOf("/");
+  return at < 0 ? "" : file.slice(0, at);
+}
+
+/** Lower-case extension of a file name without the dot (`""` for none and for dotfiles). */
+export function extension(file: string): string {
+  const name = basename(file);
+  const at = name.lastIndexOf(".");
+  return at <= 0 ? "" : name.slice(at + 1).toLowerCase();
+}
+
+/** True for every dotenv file name: `.env` and `.env.<anything>` (examples and vaults too). */
+export function isDotenvFile(file: string): boolean {
+  const name = basename(file);
+  return name === ".env" || name.startsWith(".env.");
+}
+
 /**
  * True for dotenv files that hold real values (`.env`, `.env.local`, `.env.production`, …), false
  * for examples/templates and encrypted `.env.vault` files that are meant to be committed.
  */
 export function isEnvFile(file: string): boolean {
-  const name = basename(file);
-  if (name !== ".env" && !name.startsWith(".env.")) return false;
-  return !isEnvExampleFile(file) && name !== ".env.vault";
+  return isDotenvFile(file) && !isEnvExampleFile(file) && basename(file) !== ".env.vault";
 }
 
 const PLACEHOLDER_WORDS = [
@@ -90,12 +107,24 @@ export function splitLines(text: string): string[] {
   return text.split(/\r?\n/);
 }
 
-/** 1-based line number of the character at `offset`. */
-export function lineAt(text: string, offset: number): number {
-  let line = 1;
-  for (let index = text.indexOf("\n"); index !== -1 && index < offset; ) {
-    line++;
-    index = text.indexOf("\n", index + 1);
-  }
-  return line;
+/** A function from a character offset in `text` to its 1-based line number. */
+export function lineLocator(text: string): (offset: number) => number {
+  const starts = [0];
+  for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) starts.push(i + 1);
+  return (offset) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if ((starts[mid] ?? 0) <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+}
+
+/** `text` on one line (whitespace runs become one space), cut to `max` characters with `…`. */
+export function compact(text: string, max = 160): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }

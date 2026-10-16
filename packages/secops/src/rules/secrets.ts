@@ -1,12 +1,12 @@
 import type { Finding, ScanContext, Scanner, Severity } from "@opscrew/contracts";
-import { maskSecret, shannonEntropy } from "@opscrew/core";
+import { maskSecret, shannonEntropy, TOKEN_PATTERNS } from "@opscrew/core";
 import { createFinding } from "../scan/finding";
 import {
   BINARY_EXTENSION,
   basename,
   isEnvFile,
   isPlaceholderValue,
-  lineAt,
+  lineLocator,
   MAX_LINE_LENGTH,
   mapConcurrent,
   readText,
@@ -20,7 +20,10 @@ const ROTATE =
   "a secret store instead. Deleting the line is not enough once it was committed: the value stays " +
   "in git history, so treat it as leaked.";
 
-/** A token family with a recognisable shape (spec 000 FR-007). JWTs are left to the Supabase rules. */
+/**
+ * A token family with a recognisable shape (spec 000 FR-007); the shapes the redactor also masks
+ * come from core's {@link TOKEN_PATTERNS}. JWTs are left to the Supabase rules.
+ */
 interface TokenRule {
   id: string;
   title: string;
@@ -54,8 +57,10 @@ const TOKEN_RULES: readonly TokenRule[] = [
     id: "github-token",
     title: "GitHub token",
     severity: "critical",
-    pattern:
-      /(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{36,251}(?![A-Za-z0-9])|github_pat_[A-Za-z0-9_]{22,255})/g,
+    pattern: new RegExp(
+      `${TOKEN_PATTERNS["github-token"].source}|${TOKEN_PATTERNS["github-pat"].source}`,
+      "g",
+    ),
     description:
       "A GitHub access token is written in this file. Anyone who can read it can act as its owner on GitHub.",
   },
@@ -63,7 +68,7 @@ const TOKEN_RULES: readonly TokenRule[] = [
     id: "anthropic-api-key",
     title: "Anthropic API key",
     severity: "critical",
-    pattern: /(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}/g,
+    pattern: TOKEN_PATTERNS["anthropic-api-key"],
     description:
       "An Anthropic API key is written in this file. Anyone who can read it can spend on your account.",
   },
@@ -71,8 +76,7 @@ const TOKEN_RULES: readonly TokenRule[] = [
     id: "openai-api-key",
     title: "OpenAI API key",
     severity: "critical",
-    pattern:
-      /(?<![A-Za-z0-9_-])sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{32,}(?![A-Za-z0-9_-]))/g,
+    pattern: TOKEN_PATTERNS["openai-api-key"],
     description:
       "An OpenAI API key is written in this file. Anyone who can read it can spend on your account.",
   },
@@ -80,7 +84,7 @@ const TOKEN_RULES: readonly TokenRule[] = [
     id: "aws-access-key-id",
     title: "AWS access key id",
     severity: "high",
-    pattern: /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])/g,
+    pattern: TOKEN_PATTERNS["aws-access-key-id"],
     description:
       "An AWS access key id is written in this file. It is usually stored next to its secret key, which together give access to your AWS account.",
   },
@@ -88,7 +92,7 @@ const TOKEN_RULES: readonly TokenRule[] = [
     id: "aws-secret-access-key",
     title: "AWS secret access key",
     severity: "critical",
-    pattern: /aws_?secret_?access_?key["']?\s*[=:]\s*["']?([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])/gi,
+    pattern: TOKEN_PATTERNS["aws-secret-access-key"],
     group: 1,
     description:
       "An AWS secret access key is written in this file. It gives access to your AWS account.",
@@ -97,7 +101,7 @@ const TOKEN_RULES: readonly TokenRule[] = [
     id: "stripe-secret-key",
     title: "Stripe secret key",
     severity: (secret) => (secret.includes("_live_") ? "critical" : "medium"),
-    pattern: /(?<![A-Za-z0-9_])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/g,
+    pattern: TOKEN_PATTERNS["stripe-secret-key"],
     description:
       "A Stripe secret or restricted key is written in this file. Live keys can create charges and refunds and read customer data.",
   },
@@ -105,7 +109,7 @@ const TOKEN_RULES: readonly TokenRule[] = [
     id: "slack-token",
     title: "Slack token",
     severity: "critical",
-    pattern: /(?<![A-Za-z0-9_-])xox[abposr]-[A-Za-z0-9-]{10,}/g,
+    pattern: TOKEN_PATTERNS["slack-token"],
     description:
       "A Slack token is written in this file. It can read or post messages in your workspace.",
   },
@@ -113,7 +117,7 @@ const TOKEN_RULES: readonly TokenRule[] = [
     id: "google-api-key",
     title: "Google API key",
     severity: "medium",
-    pattern: /(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/g,
+    pattern: TOKEN_PATTERNS["google-api-key"],
     description:
       "A Google API key is written in this file. Firebase web keys are public by design, but unrestricted keys can be abused for paid Google APIs.",
   },
@@ -155,8 +159,7 @@ const TOKEN_RULES: readonly TokenRule[] = [
     id: "digitalocean-token",
     title: "DigitalOcean API token",
     severity: "critical",
-    // Personal access (`dop_`), OAuth (`doo_`) and refresh (`dor_`) tokens.
-    pattern: /(?<![A-Za-z0-9_])do[por]_v1_[0-9a-f]{64}(?![A-Za-z0-9_])/g,
+    pattern: TOKEN_PATTERNS["digitalocean-token"],
     description:
       "A DigitalOcean API token is written in this file. Depending on its scopes it can create, change and delete Droplets, firewalls and other resources in your DigitalOcean team.",
   },
@@ -298,6 +301,7 @@ function scanLines(file: string, text: string): Finding[] {
 /** PEM private-key blocks anywhere in the text (also inside long or JSON-escaped lines). */
 function scanPrivateKeys(file: string, text: string): Finding[] {
   const findings: Finding[] = [];
+  const lineAt = lineLocator(text);
   for (const match of text.matchAll(PEM_BLOCK)) {
     const body = (match[3] ?? "").replace(/\\[nr]/g, "").replace(/^[A-Za-z-]+:.*$/gm, "");
     const base64 = body.replace(/[^A-Za-z0-9+/=]/g, "");
@@ -314,7 +318,7 @@ function scanPrivateKeys(file: string, text: string): Finding[] {
         severity: encrypted ? "high" : "critical",
         category: "secret",
         file,
-        line: lineAt(text, match.index ?? 0),
+        line: lineAt(match.index),
         evidence: maskSecret(block),
         description:
           "A private key is stored in this file. Anyone with a copy can impersonate the server, user or service it belongs to.",

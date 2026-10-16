@@ -12,6 +12,7 @@ import { Redactor } from "@opscrew/core";
 import { defaultScanners } from "../scanners";
 import { createScanContext, type ScanContextOptions } from "./context";
 import { countFindings, SEVERITY_RANK, sortFindings } from "./finding";
+import { mapConcurrent } from "./text";
 
 /**
  * Optional extension a scanner may implement to explain why `isAvailable` returned false (for
@@ -246,27 +247,19 @@ export async function runScan(root: string, options: RunScanOptions): Promise<Sc
   if (options.maxFiles !== undefined) contextOptions.maxFiles = options.maxFiles;
   const context = await createScanContext(root, contextOptions);
 
-  const outcomes: ScannerOutcome[] = new Array(scanners.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < scanners.length) {
-      const index = next++;
-      const scanner = scanners[index];
-      if (!scanner) continue;
-      notify({ type: "started", scanner: scanner.id });
-      const outcome = await runOne(scanner, context, sanitize);
-      outcomes[index] = outcome;
-      const event: ScanProgressEvent = {
-        type: "finished",
-        scanner: scanner.id,
-        status: outcome.status.status,
-        findings: outcome.findings.length,
-      };
-      if (outcome.status.reason !== undefined) event.reason = outcome.status.reason;
-      notify(event);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, scanners.length) }, worker));
+  const outcomes = await mapConcurrent(scanners, CONCURRENCY, async (scanner) => {
+    notify({ type: "started", scanner: scanner.id });
+    const outcome = await runOne(scanner, context, sanitize);
+    const event: ScanProgressEvent = {
+      type: "finished",
+      scanner: scanner.id,
+      status: outcome.status.status,
+      findings: outcome.findings.length,
+    };
+    if (outcome.status.reason !== undefined) event.reason = outcome.status.reason;
+    notify(event);
+    return outcome;
+  });
 
   const raw = outcomes.flatMap((outcome) => outcome.findings);
   const findings = sortFindings(

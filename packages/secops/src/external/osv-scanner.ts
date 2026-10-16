@@ -1,4 +1,4 @@
-import type { Finding, ScanContext, Scanner } from "@opscrew/contracts";
+import type { Finding, ScanContext } from "@opscrew/contracts";
 import {
   dependencyFinding,
   type OsvVulnerability,
@@ -8,14 +8,13 @@ import {
 import {
   asRecord,
   asString,
-  DEFAULT_TIMEOUT_MS,
+  type ExternalScanner,
   type ExternalScannerOptions,
+  externalScanner,
   failure,
   isUsageError,
-  notInstalledReason,
   parseJsonOutput,
   relativePath,
-  resolveWhich,
 } from "./shared";
 
 /** osv-scanner exit codes that still mean "the scan ran": none found, found, no packages. */
@@ -70,39 +69,24 @@ function toFindings(context: ScanContext, report: unknown): Finding[] {
  * osv-scanner (`osv-scanner scan source -r`, falling back to the v1 syntax). Needs the network, so
  * it is skipped in offline mode; when it runs, the OSV API scanner skips itself as superseded.
  */
-export function createOsvScannerCli(options: ExternalScannerOptions = {}): Scanner & {
-  skipReason(context: ScanContext): string | undefined;
-} {
-  const which = resolveWhich(options);
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return {
-    id: "osv-scanner",
-    kind: "external",
-    async isAvailable(context) {
-      return !context.offline && which("osv-scanner") !== undefined;
+export function createOsvScannerCli(options: ExternalScannerOptions = {}): ExternalScanner {
+  return externalScanner(
+    {
+      id: "osv-scanner",
+      adds: "check dependencies in more lockfile formats against the OSV database",
+      offline: "Offline mode: osv-scanner needs the network.",
+      async scan(context, run) {
+        let result = await run(["scan", "source", "-r", "--format", "json", context.rootDir]);
+        if (!OK_EXIT_CODES.has(result.exitCode) && isUsageError(result)) {
+          result = await run(["--format", "json", "-r", context.rootDir]);
+        }
+        if (!OK_EXIT_CODES.has(result.exitCode) || result.timedOut) {
+          throw failure("osv-scanner", result);
+        }
+        if (result.exitCode === 128) return [];
+        return toFindings(context, parseJsonOutput("osv-scanner", result.stdout));
+      },
     },
-    skipReason(context) {
-      if (which("osv-scanner") === undefined) {
-        return notInstalledReason(
-          "osv-scanner",
-          "check dependencies in more lockfile formats against the OSV database",
-        );
-      }
-      return context.offline ? "Offline mode: osv-scanner needs the network." : undefined;
-    },
-    async scan(context) {
-      const bin = which("osv-scanner");
-      if (!bin) return [];
-      const run = (args: string[]) =>
-        context.runner.run(bin, args, { cwd: context.rootDir, timeoutMs });
-      let result = await run(["scan", "source", "-r", "--format", "json", context.rootDir]);
-      if (!OK_EXIT_CODES.has(result.exitCode) && isUsageError(result)) {
-        result = await run(["--format", "json", "-r", context.rootDir]);
-      }
-      if (!OK_EXIT_CODES.has(result.exitCode) || result.timedOut)
-        throw failure("osv-scanner", result);
-      if (result.exitCode === 128) return [];
-      return toFindings(context, parseJsonOutput("osv-scanner", result.stdout));
-    },
-  };
+    options,
+  );
 }

@@ -10,10 +10,6 @@ export interface LockedPackage {
   file: string;
 }
 
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Insertion-ordered set of packages keyed by ecosystem, name and version (first file wins). */
 export class PackageSet {
   readonly #items = new Map<string, LockedPackage>();

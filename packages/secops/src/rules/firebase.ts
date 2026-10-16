@@ -2,9 +2,9 @@
  * Firebase exposure rules (`opscrew-firebase`): open or test-mode Cloud Firestore and Cloud
  * Storage security rules, and open Realtime Database rules. Deterministic and offline.
  */
-import type { Finding, ScanContext, Scanner, Severity } from "@opscrew/contracts";
-import { findingId } from "../scan/finding";
-import { basename, lineAt } from "../scan/text";
+import type { Finding, ScanContext, Scanner } from "@opscrew/contracts";
+import { createFinding, type FindingInput } from "../scan/finding";
+import { basename, compact, dirname, lineLocator, readText } from "../scan/text";
 
 const SOURCE = "opscrew-firebase";
 
@@ -29,35 +29,14 @@ export function createFirebaseScanner(): Scanner {
 // Helpers
 // ---------------------------------------------------------------------------------------------
 
-interface FindingInput {
-  ruleId: string;
-  title: string;
-  severity: Severity;
-  file: string;
-  line: number;
-  evidence: string;
-  description: string;
-  remediation: string;
-  references: string[];
-}
-
-function makeFinding(input: FindingInput): Finding {
-  return {
-    id: findingId(input.ruleId, input.file, input.line, input.evidence),
+/** A Firebase finding; its evidence (a rule, never a secret) is what its id fingerprints. */
+function makeFinding(input: Omit<FindingInput, "category" | "source" | "rawMatch">): Finding {
+  return createFinding({
     ...input,
     category: "firebase",
     source: SOURCE,
-  };
-}
-
-function dirname(path: string): string {
-  const at = path.lastIndexOf("/");
-  return at < 0 ? "" : path.slice(0, at);
-}
-
-function compact(text: string, max = 160): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+    rawMatch: input.evidence ?? "",
+  });
 }
 
 /** Replaces `//` and block comments with spaces (newlines kept), leaving string contents alone. */
@@ -153,6 +132,7 @@ function scanRulesFile(file: string, source: string): Finding[] {
   const storage = service ? service === "firebase.storage" : basename(file) === "storage.rules";
   const product = storage ? "Cloud Storage" : "Cloud Firestore";
   const findings: Finding[] = [];
+  const lineAt = lineLocator(text);
   const stack: Array<string | null> = [];
   for (const token of text.matchAll(TOKEN)) {
     const [whole, matchPath, methodList, condition] = token;
@@ -181,7 +161,7 @@ function scanRulesFile(file: string, source: string): Finding[] {
         .filter((part): part is string => part !== null)
         .join("")
         .replace(/^\/databases\/\{[^}]*\}\/documents|^\/b\/\{[^}]*\}\/o/, "") || "/";
-    const line = lineAt(text, token.index);
+    const line = lineAt(token.index);
     const evidence = compact(`match ${path} { ${whole} }`);
     const writes = methods.some((method) => WRITE_METHODS.has(method));
     const what = methods.join(", ");
@@ -271,6 +251,7 @@ function scanDatabaseRules(file: string, source: string): Finding[] {
   }
   const seen: Record<string, number> = { ".read": 0, ".write": 0 };
   const findings: Finding[] = [];
+  const lineAt = lineLocator(text);
   const walk = (node: Record<string, unknown>, path: string[]) => {
     for (const [key, value] of Object.entries(node)) {
       if (key === ".read" || key === ".write") {
@@ -284,7 +265,7 @@ function scanDatabaseRules(file: string, source: string): Finding[] {
         const isWrite = key === ".write";
         const root = path.length === 0;
         const evidence = compact(`${where}: "${key}": ${JSON.stringify(value)}`);
-        const line = lineAt(text, index);
+        const line = lineAt(index);
         if (testMode) {
           findings.push(
             makeFinding({
@@ -364,13 +345,7 @@ function declaredRules(firebaseJson: string, dir: string): { rules: string[]; da
 }
 
 async function scanFirebase(context: ScanContext): Promise<Finding[]> {
-  const read = async (file: string) => {
-    try {
-      return await context.readFile(file);
-    } catch {
-      return undefined;
-    }
-  };
+  const read = (file: string) => readText(context, file);
   const available = new Set(context.files);
   const rulesFiles = new Set<string>();
   const databaseFiles = new Set<string>();

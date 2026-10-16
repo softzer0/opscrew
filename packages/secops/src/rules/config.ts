@@ -6,7 +6,7 @@ import {
   basename,
   isEnvFile,
   isPlaceholderValue,
-  lineAt,
+  lineLocator,
   MAX_LINE_LENGTH,
   mapConcurrent,
   readText,
@@ -283,6 +283,7 @@ function isDjangoSettings(file: string, text: string): boolean {
 function scanDjango(file: string, text: string): Finding[] {
   if (!isDjangoSettings(file, text)) return [];
   const findings: Finding[] = [];
+  const lineAt = lineLocator(text);
   for (const match of text.matchAll(/^DEBUG\s*(?::\s*bool\s*)?=\s*True\b/gm)) {
     findings.push(
       configFinding({
@@ -290,7 +291,7 @@ function scanDjango(file: string, text: string): Finding[] {
         title: "Django DEBUG is on",
         severity: "high",
         file,
-        line: lineAt(text, match.index ?? 0),
+        line: lineAt(match.index),
         evidence: "DEBUG = True",
         description:
           "Django runs with DEBUG = True. Error pages then show source code, settings and request data to anyone who triggers an error.",
@@ -315,11 +316,11 @@ function scanFlask(file: string, text: string): Finding[] {
   if (!/^[ \t]*(?:from\s+flask\s+import|import\s+flask)\b/m.test(text)) return [];
   const findings: Finding[] = [];
   const lines = splitLines(text);
+  const lineAt = lineLocator(text);
   const seen = new Set<number>();
   for (const pattern of FLASK_DEBUG) {
     for (const match of text.matchAll(pattern)) {
-      const end = (match.index ?? 0) + match[0].length - 1;
-      const line = lineAt(text, end);
+      const line = lineAt(match.index + match[0].length - 1);
       if (seen.has(line) || isCommentLine(lines[line - 1] ?? "")) continue;
       seen.add(line);
       findings.push(
@@ -360,11 +361,12 @@ const CORS_WINDOW = 15;
 function scanCors(file: string, text: string): Finding[] {
   if (!CODE_EXTENSION.test(file) || TEST_FILE.test(file)) return [];
   const lines = splitLines(text);
+  const lineAt = lineLocator(text);
   const findings: Finding[] = [];
   const seen = new Set<number>();
   for (const pattern of CORS_WILDCARD) {
     for (const match of text.matchAll(pattern)) {
-      const line = lineAt(text, match.index ?? 0);
+      const line = lineAt(match.index);
       const lineText = lines[line - 1] ?? "";
       if (seen.has(line) || isCommentLine(lineText) || lineText.length > MAX_LINE_LENGTH) continue;
       const django = match[0].includes("CORS_");

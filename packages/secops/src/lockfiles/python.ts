@@ -1,5 +1,6 @@
+import { isRecord } from "@opscrew/core";
 import { parse as parseToml } from "smol-toml";
-import { isRecord, type LockedPackage, PackageSet } from "./types";
+import { type LockedPackage, PackageSet } from "./types";
 
 /** PEP 503 normalised project name (`Django_REST.framework` → `django-rest-framework`). */
 export function normalizePythonName(name: string): string {

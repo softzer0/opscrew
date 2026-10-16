@@ -7,6 +7,7 @@ import {
   SUPPORTED_LOCKFILES,
 } from "../lockfiles";
 import { findingId } from "../scan/finding";
+import { mapConcurrent } from "../scan/text";
 
 export const OSV_API = "https://api.osv.dev/v1";
 const BATCH_SIZE = 500;
@@ -319,14 +320,11 @@ export function createOsvScanner(options: OsvScannerOptions = {}): Scanner & {
       const packages = await collectLockedPackages(context);
       if (packages.length === 0) return [];
       const idsPerPackage = await queryBatch(context.fetch, packages);
-      const unique = [...new Set(idsPerPackage.flat())];
-      const details = new Map<string, OsvVulnerability>();
-      const wanted = unique.slice(0, MAX_DETAILS);
-      for (let i = 0; i < wanted.length; i += DETAIL_CONCURRENCY) {
-        const chunk = wanted.slice(i, i + DETAIL_CONCURRENCY);
-        const records = await Promise.all(chunk.map((id) => vulnDetails(context.fetch, id)));
-        for (const [j, id] of chunk.entries()) details.set(id, records[j] ?? { id });
-      }
+      const wanted = [...new Set(idsPerPackage.flat())].slice(0, MAX_DETAILS);
+      const records = await mapConcurrent(wanted, DETAIL_CONCURRENCY, (id) =>
+        vulnDetails(context.fetch, id),
+      );
+      const details = new Map(wanted.map((id, index) => [id, records[index] ?? { id }]));
       const findings: Finding[] = [];
       packages.forEach((pkg, index) => {
         for (const id of new Set(idsPerPackage[index])) {

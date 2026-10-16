@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { type Finding, SEVERITIES, type Severity } from "@opscrew/contracts";
+import { sha256Hex } from "@opscrew/core";
 
 /** Numeric rank per severity; higher is more severe (`critical` = 4 … `info` = 0). */
 export const SEVERITY_RANK: Readonly<Record<Severity, number>> = {
@@ -9,10 +9,6 @@ export const SEVERITY_RANK: Readonly<Record<Severity, number>> = {
   low: 1,
   info: 0,
 };
-
-function sha256Hex(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
 
 /**
  * Stable finding id: the first 16 hex characters of

@@ -1,5 +1,6 @@
+import { isRecord } from "@opscrew/core";
 import { parse as parseYaml } from "yaml";
-import { isRecord, type LockedPackage, PackageSet } from "./types";
+import { type LockedPackage, PackageSet } from "./types";
 
 /** Exact npm versions only (`1.2.3`, `1.2.3-beta.1`); ranges, tags, URLs and paths are skipped. */
 const NPM_VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/;

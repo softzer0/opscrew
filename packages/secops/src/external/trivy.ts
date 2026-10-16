@@ -1,16 +1,15 @@
-import type { Finding, FindingCategory, ScanContext, Scanner, Severity } from "@opscrew/contracts";
+import type { Finding, FindingCategory, ScanContext, Severity } from "@opscrew/contracts";
 import { findingId } from "../scan/finding";
 import {
   asNumber,
   asRecord,
   asString,
-  DEFAULT_TIMEOUT_MS,
+  type ExternalScanner,
   type ExternalScannerOptions,
+  externalScanner,
   failure,
-  notInstalledReason,
   parseJsonOutput,
   relativePath,
-  resolveWhich,
 } from "./shared";
 
 const SEVERITY: Record<string, Severity> = {
@@ -79,36 +78,26 @@ function toFindings(context: ScanContext, report: unknown): Finding[] {
  * Trivy misconfiguration scanning (`trivy fs --scanners misconfig`). Skipped in offline mode because
  * Trivy may download its checks bundle.
  */
-export function createTrivyScanner(options: ExternalScannerOptions = {}): Scanner & {
-  skipReason(context: ScanContext): string | undefined;
-} {
-  const which = resolveWhich(options);
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return {
-    id: "trivy",
-    kind: "external",
-    async isAvailable(context) {
-      return !context.offline && which("trivy") !== undefined;
+export function createTrivyScanner(options: ExternalScannerOptions = {}): ExternalScanner {
+  return externalScanner(
+    {
+      id: "trivy",
+      adds: "check Dockerfiles and infrastructure code against more misconfiguration rules",
+      offline: "Offline mode: trivy may download its checks.",
+      async scan(context, run) {
+        const result = await run([
+          "fs",
+          "--scanners",
+          "misconfig",
+          "--format",
+          "json",
+          "--quiet",
+          context.rootDir,
+        ]);
+        if (result.exitCode !== 0 || result.timedOut) throw failure("trivy", result);
+        return toFindings(context, parseJsonOutput("trivy", result.stdout));
+      },
     },
-    skipReason(context) {
-      if (which("trivy") === undefined) {
-        return notInstalledReason(
-          "trivy",
-          "check Dockerfiles and infrastructure code against more misconfiguration rules",
-        );
-      }
-      return context.offline ? "Offline mode: trivy may download its checks." : undefined;
-    },
-    async scan(context) {
-      const bin = which("trivy");
-      if (!bin) return [];
-      const result = await context.runner.run(
-        bin,
-        ["fs", "--scanners", "misconfig", "--format", "json", "--quiet", context.rootDir],
-        { cwd: context.rootDir, timeoutMs },
-      );
-      if (result.exitCode !== 0 || result.timedOut) throw failure("trivy", result);
-      return toFindings(context, parseJsonOutput("trivy", result.stdout));
-    },
-  };
+    options,
+  );
 }
