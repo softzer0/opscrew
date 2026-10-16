@@ -50,7 +50,7 @@ export interface StackPlan { /* see data-model.md "Stack plan"; also `record` (t
   apply) and `valuesDigest` (SHA-256 over the intended value fingerprints), both under the hash */ }
 export function planStacks(facts: PortainerFacts, desired: DesiredStacks): StackPlan;
 export function planStackTeardown(facts: PortainerFacts, record: CreatedRecord,
-  opts: { deleteData: boolean; app?: string }): StackPlan;
+  opts: { deleteData: boolean; app: string }): StackPlan;
 /** SHA-256 of the canonical JSON of the plan. */
 export function stackPlanHash(plan: StackPlan): string;
 

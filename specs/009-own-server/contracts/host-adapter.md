@@ -33,8 +33,8 @@ export interface HostPlan {
   schemaVersion: 1;
   purpose: "setup" | "teardown" | "undo";
   app: string;
-  steps: readonly HostStep[];
-  findings: readonly HostFinding[];
+  steps: HostStep[];
+  findings: HostFinding[];
   deleteData?: boolean;
 }
 
@@ -54,7 +54,7 @@ export interface DesiredHost {
    * Cloudflare's current IPv4 ranges, sorted and de-duplicated, for the `web-filter` step (the site
    * is published on IPv4 only in this mode, so nothing listens on IPv6 80/443).
    */
-  webFilter?: { ipv4: readonly string[] };
+  webFilter?: { ipv4: string[] };
   /** The user's explicit choice when other logins still use passwords (else the step blocks). */
   disablePasswords?: boolean;
 }
@@ -65,7 +65,7 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan;
 /** The Portainer step alone, for Hetzner/DigitalOcean (run as `deploy` in its home) or own servers. */
 export function planPortainer(/* facts, desired portainer, directory, run-as user */): HostPlan;
 /** `app`: the plan's app name, used when the server's app marker is missing (after the host record). */
-export function planTeardown(facts: HostFacts, opts: { deleteData: boolean; app?: string }): HostPlan;
+export function planTeardown(facts: HostFacts, opts: { deleteData: boolean; app: string }): HostPlan;
 export function planUndo(facts: HostFacts): HostPlan;
 /** SHA-256 of the canonical JSON of the plan. */
 export function hostPlanHash(plan: HostPlan): string;
@@ -87,7 +87,8 @@ export interface ApplyOptions {
 
 export interface ApplyResult { applied: HostStepId[]; skipped: HostStepId[] }
 
-/** Throws OpsCrewError PLAN_HASH_MISMATCH on a hash mismatch, PHASE_PRECONDITION on a blocked step or a claimed server. */
+/** Throws OpsCrewError PLAN_HASH_MISMATCH on a hash mismatch, PHASE_PRECONDITION on a blocked step or a claimed server;
+ *  HostApplyError {applied} (same code, message and hint) when a step fails part-way (T1021). */
 export function applyHostPlan(remote: RemoteExec, plan: HostPlan, opts: ApplyOptions): Promise<ApplyResult>;
 ```
 
