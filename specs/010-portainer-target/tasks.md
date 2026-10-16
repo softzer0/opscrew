@@ -237,7 +237,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: xhigh
 
-- [ ] T1028 [P] Agents drift, verify, secure, interview and portainer (Area 5)
+- [X] T1028 [P] Agents drift, verify, secure, interview and portainer (Area 5)
   - Owns: `packages/agents/src/{drift,verify,secure,interview,portainer}/**` (+ tests); `PhaseName` in `packages/contracts/src/**` (adding `portainer`, lead-approved)
   - Reads: Area 5; `packages/agents/src/shared/` after T1024
   - Depends: T1024

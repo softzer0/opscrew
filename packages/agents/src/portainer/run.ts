@@ -8,7 +8,7 @@ import {
   planPortainer,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import {
   portainerHostname,
@@ -336,8 +336,11 @@ async function runChange(
   // The change on the server: a host plan on the user's own server, or the deploy user's add-on
   // steps. It normally follows the infrastructure apply (it may need the tunnel's id); when the
   // infrastructure plan deletes the tunnel it goes first, because Cloudflare refuses to delete a
-  // tunnel whose connector still runs.
-  const shown: { hostHash?: string } = {};
+  // tunnel whose connector still runs. `hostHash` names its plan as soon as it is shown.
+  let hostHash: string | undefined;
+  const shown = (hash: string) => {
+    hostHash = hash;
+  };
   const hostChange = (
     outputs: Record<string, unknown>,
     hostPlanOnly: boolean,
@@ -379,7 +382,7 @@ async function runChange(
       app: plan.app.name,
       where: ownRun ? "on your server" : "on the server",
       hostChange: () => hostChange({}, false),
-      hostHash: () => shown.hostHash,
+      hostHash: () => hostHash,
       done: CONNECTOR_GONE,
       ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
     });
@@ -487,12 +490,12 @@ async function runChange(
         command,
         enabling: change.command === "enable",
         hostname: portainerHostname(plan) ?? portainerHostname(change.before),
-        ...(shown.hostHash !== undefined ? { hostHash: shown.hostHash } : {}),
+        ...(hostHash !== undefined ? { hostHash } : {}),
         written,
       });
     }
     // A host plan was shown: `--approve <its hash>` without options applies exactly this change.
-    if (shown.hostHash !== undefined) await planned();
+    if (hostHash !== undefined) await planned();
     throw error;
   }
 
@@ -547,8 +550,8 @@ const CONNECTOR_GONE =
 
 /**
  * A server the user owns: the host plan provision applies there, now with Portainer as the plan
- * describes it (`applyOwnHostPlan`); `shown.hostHash` names its hash as soon as it is shown. A
- * refusal says to approve it later with this command, which finishes the change.
+ * describes it (`applyOwnHostPlan`); `shown` is told its hash as soon as it is shown. A refusal
+ * says to approve it later with this command, which finishes the change.
  */
 async function ownHostChange(
   deps: PhaseDeps,
@@ -559,9 +562,10 @@ async function ownHostChange(
     deployPublicKey: string;
     planOnly: boolean;
     command: string;
-    shown: { hostHash?: string };
+    shown: (hash: string) => void;
   },
 ): Promise<HostPlanOutcome> {
+  let hash: string | undefined;
   try {
     return await applyOwnHostPlan(deps, run, {
       plan: input.plan,
@@ -569,12 +573,12 @@ async function ownHostChange(
       deployPublicKey: input.deployPublicKey,
       planOnly: input.planOnly,
       phase: "provision",
-      shown: (hash) => {
-        input.shown.hostHash = hash;
+      shown: (shownHash) => {
+        hash = shownHash;
+        input.shown(shownHash);
       },
     });
   } catch (error) {
-    const hash = input.shown.hostHash;
     if (!(error instanceof PlanRefusedError) || hash === undefined) throw error;
     throw new PlanRefusedError(
       {
@@ -806,29 +810,8 @@ function cloudPortainerPlan(
   });
 }
 
-/** Hetzner and DigitalOcean: approves (by its hash) and applies an add-on plan as the deploy user. */
-function applyCloudAddon(
-  deps: PhaseDeps,
-  remote: RemoteExec,
-  services: PortainerServices,
-  step: Pick<
-    Parameters<typeof approveAndApplyHostPlan>[1],
-    "plan" | "title" | "command" | "phase" | "allowDestroy" | "planOnly" | "secrets"
-  > & { shown: { hostHash?: string } },
-): Promise<HostPlanOutcome> {
-  const { shown, ...rest } = step;
-  return approveAndApplyHostPlan(deps, {
-    ...rest,
-    remote,
-    apply: services.applyHost ?? applyHostPlan,
-    // Add-on steps never touch SSH or the firewall, so the adapter never needs a login check.
-    verifyLogin: async () => true,
-    server: "the server",
-    shown: (hash) => {
-      shown.hostHash = hash;
-    },
-  });
-}
+/** Add-on steps never touch SSH or the firewall, so the adapter never needs a login check. */
+const NO_LOGIN_CHECK = async () => true;
 
 /**
  * Hetzner and DigitalOcean: Portainer (and, for a subdomain, its tunnel connector) runs as the
@@ -847,7 +830,8 @@ async function cloudHostChange(
     facts: CloudFacts | undefined;
     planOnly: boolean;
     command: string;
-    shown: { hostHash?: string };
+    /** Told the host plan's hash as soon as it is shown. */
+    shown: (hash: string) => void;
   },
 ): Promise<HostPlanOutcome> {
   const { plan, outputs } = input;
@@ -885,7 +869,7 @@ async function cloudHostChange(
   } else if (portainerHostname(change.before) !== undefined) {
     connector = { dir: CLOUD_TUNNEL_DIR, remove: true };
   }
-  return applyCloudAddon(deps, input.remote, input.services, {
+  return approveAndApplyHostPlan(deps, {
     plan: cloudPortainerPlan(
       plan,
       enabling
@@ -893,6 +877,10 @@ async function cloudHostChange(
         : { enabled: false, deleteData: change.deleteData },
       connector,
     ),
+    remote: input.remote,
+    apply: input.services.applyHost ?? applyHostPlan,
+    verifyLogin: NO_LOGIN_CHECK,
+    server: "the server",
     title: enabling
       ? "Run Portainer on the server as the deploy user"
       : change.deleteData
@@ -936,13 +924,17 @@ export async function cloudConnectorRemoval(
   const { plan, services } = input;
   const remote = await deployRemote(deps, services);
   const enabled = plan.portainer?.enabled === true;
-  return applyCloudAddon(deps, remote, services, {
+  return approveAndApplyHostPlan(deps, {
     plan: cloudPortainerPlan(
       plan,
       // Portainer runs already: its admin account exists.
       enabled ? { enabled: true, needsPassword: false } : { enabled: false, deleteData: false },
       { dir: CLOUD_TUNNEL_DIR, remove: true },
     ),
+    remote,
+    apply: services.applyHost ?? applyHostPlan,
+    verifyLogin: NO_LOGIN_CHECK,
+    server: "the server",
     title:
       "Remove the Cloudflare Tunnel connector from the server (Portainer's subdomain is no longer planned)",
     command: input.command,
@@ -952,8 +944,35 @@ export async function cloudConnectorRemoval(
       const portainerPassword = enabled ? await portainerPasswordToSend(deps, false) : undefined;
       return portainerPassword !== undefined ? { portainerPassword } : {};
     },
-    shown: input.shown,
+    // `opscrew provision` reads the hash from `shown.hostHash` when the deletion stops.
+    shown: (hash) => {
+      input.shown.hostHash = hash;
+    },
   });
+}
+
+/**
+ * Runs an enable or disable and records the `portainer` phase: `ok` with `summary` once the change
+ * went through (a `--plan-only` run records nothing), `failed` with the reason when it stopped.
+ */
+async function recordedPhase(
+  deps: PhaseDeps,
+  planOnly: boolean,
+  summary: "Portainer on" | "Portainer off",
+  run: () => Promise<PortainerResult>,
+): Promise<PortainerResult> {
+  try {
+    const result = await run();
+    if (!planOnly) await deps.state.markPhase("portainer", "ok", summary);
+    return result;
+  } catch (error) {
+    await deps.state.markPhase(
+      "portainer",
+      "failed",
+      isUserFacingError(error) ? deps.redactor.redact(error.message) : undefined,
+    );
+    throw error;
+  }
 }
 
 /**
@@ -964,11 +983,32 @@ export async function cloudConnectorRemoval(
  * printed. On a server the user owns it is a host-plan step (`host-apply`); on Hetzner and
  * DigitalOcean it runs as the deploy user. The subdomain opt-in also plans the Cloudflare Tunnel
  * and Access (`iac-apply`) and needs the app's Cloudflare domain and at least one email address.
+ * Records the `portainer` phase.
  */
-export async function portainerEnable(
+export function portainerEnable(
   deps: PhaseDeps,
   options: PortainerEnableOptions = {},
 ): Promise<PortainerResult> {
+  return recordedPhase(deps, options.planOnly === true, "Portainer on", () =>
+    enable(deps, options),
+  );
+}
+
+/**
+ * `opscrew portainer disable [--delete-data]`: removes Portainer (and the tunnel and Access of a
+ * subdomain) behind the same approvals. Its data stays unless `deleteData` is set; deleting it is
+ * a separate approval that needs the app's name typed to confirm. Records the `portainer` phase.
+ */
+export function portainerDisable(
+  deps: PhaseDeps,
+  options: PortainerDisableOptions = {},
+): Promise<PortainerResult> {
+  return recordedPhase(deps, options.planOnly === true, "Portainer off", () =>
+    disable(deps, options),
+  );
+}
+
+async function enable(deps: PhaseDeps, options: PortainerEnableOptions): Promise<PortainerResult> {
   const before = await readArtifact("plan", deps.paths.files.plan);
   requireNoMoveInProgress(before);
   if (!hasDeployment(before)) throw noDeployment("enable");
@@ -992,14 +1032,9 @@ export async function portainerEnable(
   return runChange(deps, { command: "enable", before, after, deleteData: false }, options);
 }
 
-/**
- * `opscrew portainer disable [--delete-data]`: removes Portainer (and the tunnel and Access of a
- * subdomain) behind the same approvals. Its data stays unless `deleteData` is set; deleting it is
- * a separate approval that needs the app's name typed to confirm.
- */
-export async function portainerDisable(
+async function disable(
   deps: PhaseDeps,
-  options: PortainerDisableOptions = {},
+  options: PortainerDisableOptions,
 ): Promise<PortainerResult> {
   const before = await readArtifact("plan", deps.paths.files.plan);
   requireNoMoveInProgress(before);

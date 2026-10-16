@@ -84,9 +84,6 @@ const SECRET_KEYS = /pass(word|phrase)?$|^secret$|^private_?key$/i;
 const NEVER_A_PASSWORD =
   "OpsCrew never asks for or stores a password or passphrase: give the path to your SSH key, or `agent` to use the SSH agent (which also handles a key with a passphrase).";
 
-/** The server follow-ups (`server.<field>`), split from the requirements answers. */
-export type ServerAnswers = FollowUps<ServerField>;
-
 const PRIVATE_V4 = [
   /^10\./,
   /^127\./,
@@ -258,7 +255,7 @@ function boolean(value: unknown): boolean | undefined {
  * a password or passphrase is always refused, and never echoed.
  */
 export function answersToOwnServer(
-  split: Pick<ServerAnswers, "values" | "unknown">,
+  split: Pick<FollowUps<ServerField>, "values" | "unknown">,
   context: OwnServerContext = {},
 ): OwnServerAnswers {
   const problems: string[] = [];

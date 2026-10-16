@@ -337,7 +337,7 @@ async function dnsCheck(
   const checked =
     answer === undefined
       ? "none"
-      : await dnsRecords(host, { ...ctx, resolver: fixedResolver(answer) });
+      : await dnsRecords(host, { ...ctx, resolver: fixedResolver(answer) }, true);
   if (answer !== undefined && checked !== "none") {
     answers.set(normalizeHostName(host), answer);
     const message = `Through a public resolver, ${checked.message} ${CHECKED_PUBLICLY}`;
@@ -362,8 +362,15 @@ async function dnsCheck(
   );
 }
 
-/** The DNS check's result, or `none` when this computer's resolver finds no A or AAAA record. */
-async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckResult | "none"> {
+/**
+ * The DNS check's result, or `none` when this computer's resolver finds no A or AAAA record.
+ * `quiet`: the messages name no address (for the public resolver's answer).
+ */
+async function dnsRecords(
+  host: string,
+  ctx: VerifyCheckContext,
+  quiet = false,
+): Promise<CheckResult | "none"> {
   const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
   const title = `DNS for ${host} points to the right place`;
   const { plan } = ctx;
@@ -395,7 +402,8 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
   }
   if (a.length === 0 && aaaa.length === 0) return "none";
   const addresses = [...a, ...aaaa];
-  const shown = (list: readonly string[]) => ` (${list.join(", ")})`;
+  // The addresses in a message (none for the public resolver's answer).
+  const shown = (list: readonly string[]) => (quiet ? "" : ` (${list.join(", ")})`);
   if (portainer && !tunnel && !plan.dns.proxied) {
     // The host's public address is the user's (often a home connection): never printed.
     return checkResult(
@@ -440,7 +448,7 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
           title,
           "high",
           "fail",
-          own
+          own || quiet
             ? `${host} resolves to an address that is not a Cloudflare address.`
             : `${host} resolves to ${outside.join(", ")}, which is not a Cloudflare address.`,
           {
@@ -476,7 +484,7 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
       "warn",
       own
         ? `${host} has DNS records, but OpsCrew does not know your server's address on this computer, so it cannot tell whether they point to your server.`
-        : `${host} resolves to ${addresses.join(", ")}, but OpsCrew does not know the server's address on this computer, so it cannot tell whether that is the server.`,
+        : `${host} ${quiet ? "has DNS records" : `resolves to ${addresses.join(", ")}`}, but OpsCrew does not know the server's address on this computer, so it cannot tell whether that is the server.`,
       { remediation: UNKNOWN_ADDRESS_REMEDIATION, target: host },
     );
   }
@@ -495,7 +503,9 @@ async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckR
         ? wrong.length > 0
           ? `${host} resolves not only to your server's address: ${wrong.length} record${wrong.length === 1 ? " points" : "s point"} somewhere else.`
           : `${host} has no A record for your server's IPv4 address.`
-        : `${host} resolves to ${addresses.join(", ")} but the server is ${expected}.`,
+        : quiet
+          ? `${host} resolves to an address that is not the server's.`
+          : `${host} resolves to ${addresses.join(", ")} but the server is ${expected}.`,
       {
         remediation:
           "Run `opscrew dns` to point the records at the server (DNS changes can take a few minutes).",

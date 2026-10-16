@@ -295,6 +295,27 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     expect(new Set(phased.map((entry) => entry.phase))).toEqual(new Set(["portainer"]));
   });
 
+  it("records the portainer phase: on and off, nothing for --plan-only, failed with the reason", async () => {
+    const s = await cloudSetup();
+    const phase = async (deps = s.deps) => (await deps.state.read()).phases.portainer;
+    await portainerEnable(s.deps, { planOnly: true, services: s.services });
+    expect(await phase()).toBeUndefined();
+    await portainerEnable(s.deps, { services: s.services });
+    expect(await phase()).toMatchObject({ status: "ok", summary: "Portainer on" });
+    await portainerDisable(s.deps, { services: s.services });
+    expect(await phase()).toMatchObject({ status: "ok", summary: "Portainer off" });
+
+    const refused = await cloudSetup({ answer: (r) => r.kind !== "host-apply" });
+    const error = await portainerEnable(refused.deps, { services: refused.services }).catch(
+      (e: unknown) => e,
+    );
+    expect((error as OpsCrewError).code).toBe("APPROVAL_REFUSED");
+    expect(await phase(refused.deps)).toMatchObject({
+      status: "failed",
+      summary: (error as OpsCrewError).message,
+    });
+  });
+
   it("refuses a subdomain without an email or without a Cloudflare domain, changing nothing", async () => {
     const s = await cloudSetup();
     const before = await readFile(s.deps.paths.files.plan, "utf8");

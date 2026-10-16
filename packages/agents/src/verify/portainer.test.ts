@@ -502,7 +502,11 @@ describe("opscrew verify for the user's Portainer", () => {
       ]);
       expect(result.passed).toBe(true);
       const dns = result.checks.find((c) => c.id === "dns-records");
-      expect(dns?.message).toContain("resolves to Cloudflare");
+      // The public answer's addresses are not listed at all, not even masked.
+      expect(dns?.message).toContain(
+        "shop.example.com resolves to Cloudflare; the app is served through the Cloudflare Tunnel.",
+      );
+      expect(dns?.message).not.toContain("REDACTED");
       expect(dns?.message).toContain("This computer's DNS still holds an older answer");
       expect(dns?.message).toContain("as visitors reach it");
       expect(dns?.remediation).toContain("ipconfig /flushdns");

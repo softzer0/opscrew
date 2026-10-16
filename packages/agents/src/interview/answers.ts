@@ -172,7 +172,7 @@ function serviceList(value: unknown): unknown {
  * describe a chosen app folder, then from the previous requirements. For a server the user already
  * has (`provider: own`) or an existing Portainer (`provider: portainer`) no region is needed and
  * none is recorded; their follow-up answers (`server.*`, `portainer.*`) are not requirements (see
- * `splitServerAnswers` and `splitPortainerAnswers`). Throws
+ * `splitFollowUps`). Throws
  * `OpsCrewError("INVALID_INPUT")` listing unknown keys, missing required answers or invalid values.
  */
 export function answersToRequirements(
