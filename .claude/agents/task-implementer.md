@@ -35,7 +35,8 @@ the feature directory and the effort level. Follow these rules exactly.
 - Keep public APIs minimal and documented with short TSDoc comments.
 - Build only what `Accept:` asks for. No unrequested features, options or configurability, no
   abstraction with a single caller, and no new helper when one already exists in the repository
-  (search for it first). If you think something more is needed, report it instead of building it.
+  (search for it first). If you think something more is needed, report it to the lead instead of
+  building it; the lead decides.
 - No workarounds or hacks, and no defensive code for far-fetched edge cases. Handle the cases the
   spec and real use need, and let anything else fail with a plain error. When the clean fix is
   outside your `Owns:`, report it rather than working around it. Safety is not an edge case:
