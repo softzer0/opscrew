@@ -2,11 +2,24 @@ import type { CheckResult } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { planProvider, providerProfile } from "../providers";
-import { providerConsole } from "../shared";
-import { originIsCloudflareOnly } from "../verify/checks";
-import { ipv6HttpsAnswers } from "../verify/net";
+import { ipv6HttpsAnswers, providerConsole } from "../shared";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
+
+/**
+ * True when web traffic may reach the server only through Cloudflare: behind Cloudflare's proxy
+ * with `security.httpAllowedFrom: cloudflare`, the cloud firewall (Hetzner, DigitalOcean) or, on a
+ * server the user owns in public mode, OpsCrew's web filter in Docker's DOCKER-USER chain lets
+ * ports 80/443 in only from Cloudflare's IP ranges. Never in tunnel mode, where no web port is open.
+ */
+function originIsCloudflareOnly(plan: DeployPlan): boolean {
+  return (
+    !(plan.target.provider === "own" && plan.target.access === "tunnel") &&
+    plan.dns.provider === "cloudflare" &&
+    plan.dns.proxied &&
+    plan.security.httpAllowedFrom === "cloudflare"
+  );
+}
 
 /**
  * Outside probes of the ports a server the user owns should (or should not) answer on. Public

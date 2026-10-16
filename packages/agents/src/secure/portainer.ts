@@ -9,7 +9,6 @@ import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
-import { inspectRecordedPortainer, publishedPorts, recordedStack } from "../drift/portainer";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import {
   PortainerEnvironmentError,
@@ -17,8 +16,15 @@ import {
   requirePortainerToken,
 } from "../provision/portainer";
 import type { PortainerServices } from "../provision/types";
-import { type PortainerConnection, readPortainerConnection } from "../shared";
-import { checkResult, editCheckText } from "../verify/checks";
+import {
+  checkResult,
+  editCheckText,
+  inspectRecordedPortainer,
+  type PortainerConnection,
+  publishedPorts,
+  readPortainerConnection,
+  recordedStack,
+} from "../shared";
 
 /** Said in the report and the terminal for an app in the user's Portainer (FR-1015). */
 export const PORTAINER_SECURE_NOTES = [PORTAINER_HOST_NOTE, PORTAINER_BACKUPS_NOTE] as const;

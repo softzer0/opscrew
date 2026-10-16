@@ -4,10 +4,10 @@ import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
 import { portainerTarget } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { hidePortainerAddress } from "../interview/portainer-access";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import {
   ensureSecretFile,
+  hidePortainerAddress,
   type PortainerConnection,
   readPortainerConnection,
   readSecretFile,

@@ -9,10 +9,6 @@ export {
   type PortainerEnvironment,
   type PortainerInterviewOptions,
 } from "./portainer";
-export {
-  createPortainerAccess,
-  hidePortainerAddress,
-  portainerAddressNames,
-} from "./portainer-access";
+export { createPortainerAccess } from "./portainer-access";
 export { buildQuestions, type InterviewAnswers, inferredAnswers } from "./questions";
 export { type InterviewOptions, type InterviewResult, runInterview } from "./run";

@@ -9,12 +9,15 @@ import { providerProfile } from "../providers";
 import { ScriptedRunner } from "../testing";
 import {
   assembleAppEnv,
+  checkResult,
   describeDiff,
   diffRenderedFiles,
   dotenvLine,
+  editCheckText,
   ensureDeployKey,
   ensureStatePassphrase,
   generateEd25519KeyPair,
+  ipv6HttpsAnswers,
   parseDotenv,
   parseKeyscan,
   pinHostKey,
@@ -22,12 +25,55 @@ import {
   randomPassword,
   SshRemoteExec,
   sshArgs,
+  summarizeChecks,
   waitForCloudInit,
   waitForPort,
   writeRenderedFiles,
 } from "./index";
 
 const temp = () => mkdtemp(join(tmpdir(), "opscrew-shared-"));
+
+describe("check results", () => {
+  it("builds a result with only the extras given, edits its texts and summarizes a list", () => {
+    const plain = checkResult("tls", "TLS", "high", "pass", "Valid for 80 days.");
+    expect(plain).toEqual({
+      id: "tls",
+      title: "TLS",
+      severity: "high",
+      status: "pass",
+      message: "Valid for 80 days.",
+    });
+    const named = checkResult("dns", "DNS for nas", "high", "fail", "nas is public.", {
+      remediation: "Hide nas.",
+      target: "nas",
+    });
+    expect(editCheckText(named, (text) => text.replaceAll("nas", "your host"))).toEqual({
+      ...named,
+      title: "DNS for your host",
+      message: "your host is public.",
+      remediation: "Hide your host.",
+      target: "your host",
+    });
+    const warning = checkResult("x", "X", "low", "warn", "Hm.");
+    expect(summarizeChecks([plain, named, warning, warning])).toBe(
+      "1 passed, 1 failed, 2 warnings, 0 skipped",
+    );
+  });
+
+  it("probes port 443 on IPv6 only when this computer has an IPv6 route", async () => {
+    const tried: string[] = [];
+    const connect = async (host: string, port: number) => {
+      tried.push(`${host}:${port}`);
+      return false;
+    };
+    expect(await ipv6HttpsAnswers("2001:db8::10", connect, 1000, async () => false)).toBe(
+      undefined,
+    );
+    expect(tried).toEqual([]);
+    expect(await ipv6HttpsAnswers("2001:db8::10", connect, 1000, async () => true)).toBe(false);
+    expect(tried).toEqual(["2001:db8::10:443"]);
+  });
+});
 
 describe("Ed25519 deploy keys", () => {
   it("produces OpenSSH public and private keys", () => {

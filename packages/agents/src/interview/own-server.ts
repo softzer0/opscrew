@@ -1,8 +1,12 @@
 import { normalizeHostName, OpsCrewError, type ProjectPaths } from "@opscrew/core";
 import type { Question } from "@opscrew/plan-schema";
 import { z } from "zod";
-import { type OwnServerConnection, readOwnServer, recordOwnServer } from "../shared";
-import { deepDomainProblem } from "./answers";
+import {
+  deepDomainProblem,
+  type OwnServerConnection,
+  readOwnServer,
+  recordOwnServer,
+} from "../shared";
 import { type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
 
 /** The follow-up answers for a server the user already has (`server.<field>` in answers files). */

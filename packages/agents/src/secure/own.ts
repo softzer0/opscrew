@@ -2,9 +2,8 @@ import { replaceNames } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { OwnServerHardening } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import { lastHostSetup, passwordLoginChoice } from "../drift/host";
 import { readOwnServerRecord } from "../provision";
-import { readServerAddresses } from "../shared";
+import { lastHostSetup, passwordLoginChoice, readServerAddresses } from "../shared";
 
 /** How `opscrew secure` checks a server the user owns. Local state only; never committed. */
 export interface OwnSecureTarget {

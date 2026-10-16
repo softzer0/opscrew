@@ -17,22 +17,17 @@ import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
 import { withoutOwnServer } from "../secure/own";
 import {
   committableUrl,
+  editCheckText,
   hasDeployment,
   hidesServerAddress,
   lookupPublicAddresses,
   readIfExists,
   type ServerAddress,
   serverAddress,
+  summarizeChecks,
   writeRenderedFiles,
 } from "../shared";
-import {
-  type CloudflareRanges,
-  type DeployRunInfo,
-  editCheckText,
-  runVerifyChecks,
-  siteUrl,
-  summarizeChecks,
-} from "./checks";
+import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
 import {
   type DnsResolver,
   defaultDnsResolver,

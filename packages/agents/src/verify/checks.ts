@@ -1,16 +1,21 @@
 import { BlockList, isIP, isIPv6, type LookupFunction } from "node:net";
-import type { CheckResult, FetchLike, Severity } from "@opscrew/contracts";
-import { normalizeHostName, plural } from "@opscrew/core";
+import type { CheckResult, FetchLike } from "@opscrew/contracts";
+import { normalizeHostName } from "@opscrew/core";
 import { tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
-import { providerConsole, type ServerAddress, sameIp } from "../shared";
+import {
+  checkResult,
+  ipv6HttpsAnswers,
+  providerConsole,
+  type ServerAddress,
+  sameIp,
+} from "../shared";
 import type { PublicAddressLookup } from "../shared/public-dns";
 import {
   type DnsResolver,
   type FetchWithLookup,
-  ipv6HttpsAnswers,
   type PublicAddresses,
   publicAnswerLookup,
   type TlsCertificateInfo,
@@ -94,37 +99,6 @@ const SECURITY_HEADERS: readonly { name: string; httpsOnly?: boolean; expect?: R
   { name: "x-frame-options" },
   { name: "referrer-policy" },
 ];
-
-/** One check's result; `remediation` and `target` only when given. */
-export function checkResult(
-  id: string,
-  title: string,
-  severity: Severity,
-  status: CheckResult["status"],
-  message: string,
-  extra: { remediation?: string; target?: string } = {},
-): CheckResult {
-  return {
-    id,
-    title,
-    severity,
-    status,
-    message,
-    ...(extra.remediation !== undefined ? { remediation: extra.remediation } : {}),
-    ...(extra.target !== undefined ? { target: extra.target } : {}),
-  };
-}
-
-/** `check` with `edit` applied to the texts it shows: title, message, remediation and target. */
-export function editCheckText(check: CheckResult, edit: (text: string) => string): CheckResult {
-  return {
-    ...check,
-    title: edit(check.title),
-    message: edit(check.message),
-    ...(check.remediation !== undefined ? { remediation: edit(check.remediation) } : {}),
-    ...(check.target !== undefined ? { target: edit(check.target) } : {}),
-  };
-}
 
 /** The plan provider's names and links for remediation text. */
 function profileOf(plan: DeployPlan): ProviderProfile {
@@ -269,21 +243,6 @@ export function siteUrl(plan: DeployPlan, server?: ServerAddress): string | unde
   const [host] = verifyHosts(plan);
   if (host) return `https://${host}`;
   return server ? `http://${server.ipv4}` : undefined;
-}
-
-/**
- * True when web traffic may reach the server only through Cloudflare: behind Cloudflare's proxy
- * with `security.httpAllowedFrom: cloudflare`, the cloud firewall (Hetzner, DigitalOcean) or, on a
- * server the user owns in public mode, OpsCrew's web filter in Docker's DOCKER-USER chain lets
- * ports 80/443 in only from Cloudflare's IP ranges. Never in tunnel mode, where no web port is open.
- */
-export function originIsCloudflareOnly(plan: DeployPlan): boolean {
-  return (
-    !(plan.target.provider === "own" && plan.target.access === "tunnel") &&
-    plan.dns.provider === "cloudflare" &&
-    plan.dns.proxied &&
-    plan.security.httpAllowedFrom === "cloudflare"
-  );
 }
 
 function rangeList(ranges: CloudflareRanges): BlockList {
@@ -1091,13 +1050,6 @@ export async function checkDeployRun(ctx: VerifyCheckContext): Promise<{
     ),
     ...(Number.isNaN(at.getTime()) ? {} : { lastDeployAt: at.toISOString() }),
   };
-}
-
-/** One-line summary of check results, e.g. `9 passed, 1 failed, 1 warning, 0 skipped`. */
-export function summarizeChecks(checks: readonly CheckResult[]): string {
-  const count = (status: CheckResult["status"]) =>
-    checks.filter((check) => check.status === status).length;
-  return `${count("pass")} passed, ${count("fail")} failed, ${plural(count("warn"), "warning")}, ${count("skip")} skipped`;
 }
 
 /** Result of {@link runVerifyChecks}. */

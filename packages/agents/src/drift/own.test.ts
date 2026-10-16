@@ -7,7 +7,7 @@ import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { CF_V4, CF_V6 } from "../provision/__fixtures__/fakes";
 import { ownCloudflare, ownPlan } from "../provision/__fixtures__/own";
-import { recordOwnServer } from "../shared";
+import { lastHostSetup, passwordLoginChoice, recordOwnServer } from "../shared";
 import {
   ED25519_FINGERPRINT,
   everythingPrinted,
@@ -17,12 +17,7 @@ import {
   ownProject,
   provisionOwn,
 } from "./__fixtures__/own-project";
-import {
-  expectedRuntimeFiles,
-  type HostDifference,
-  lastHostSetup,
-  passwordLoginChoice,
-} from "./host";
+import { expectedRuntimeFiles, type HostDifference } from "./host";
 import { driftNextSteps, renderDriftReport } from "./render";
 import { runDrift } from "./run";
 import type { DriftReport } from "./types";

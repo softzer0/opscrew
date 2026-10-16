@@ -51,6 +51,7 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
+  oneTimePinIdentityProvider,
   PlanRefusedError,
   projectEngine,
   readServerAddresses,
@@ -58,7 +59,6 @@ import {
   stringOutput,
 } from "../shared";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
-import { oneTimePinIdentityProvider } from "./access";
 import {
   clearPendingPortainer,
   optionsDiffer,

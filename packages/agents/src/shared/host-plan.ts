@@ -5,14 +5,17 @@ import {
   HostApplyError,
   type HostFacts,
   type HostPlan,
+  HostPlanSchema,
   type HostStep,
   hostPlanHash,
 } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import { type ProjectPaths, writeFileAtomic } from "@opscrew/core";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { adapterBlocked, describeAdapterPlan } from "./adapter-plan";
 import { PlanRefusedError } from "./approvals";
+import { readIfExists } from "./files";
 import type { HostChangeResult } from "./tunnel-connections";
 
 /** The host adapter calls made on a server the user owns (`@opscrew/connector-ssh-host` or a fake). */
@@ -24,6 +27,56 @@ export interface HostAdapterApi {
 /** `.opscrew/plans/host-<hash>.json`: the host plan the hash names, kept for review and audit. */
 export function hostPlanFile(paths: Pick<ProjectPaths, "files">, hash: string): string {
   return join(paths.files.plansDir, `host-${hash}.json`);
+}
+
+/**
+ * The last setup host plan the user approved and OpsCrew applied (`plan.approvals` of kind
+ * `host-apply`, newest first, read from `.opscrew/plans/host-<hash>.json`), or `undefined` when
+ * none is on this computer. Plans of other purposes (teardown, undo) and plans without the SSH step
+ * (an add-on alone) are skipped.
+ */
+export async function lastHostSetup(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: Pick<DeployPlan, "approvals">,
+): Promise<HostPlan | undefined> {
+  const hashes = plan.approvals
+    .filter((approval) => approval.kind === "host-apply")
+    .map((approval) => approval.planHash)
+    .reverse();
+  for (const hash of hashes) {
+    const text = await readIfExists(hostPlanFile(deps.paths, hash));
+    if (text === undefined) continue;
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    const parsed = HostPlanSchema.safeParse(json);
+    if (!parsed.success) continue;
+    if (parsed.data.purpose === "setup" && parsed.data.steps.some((step) => step.id === "sshd")) {
+      return parsed.data;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The user's choice about password logins when OpsCrew set the server up: from the last applied
+ * setup plan, else from OpsCrew's own SSH settings file on the server; `undefined` when unknown.
+ */
+export function passwordLoginChoice(
+  setup: HostPlan | undefined,
+  facts?: Pick<HostFacts, "sshd">,
+): "off" | "keep" | undefined {
+  const chosen = setup?.steps.find((step) => step.id === "sshd")?.params.disablePasswords;
+  if (chosen === true) return "off";
+  if (chosen === false) return "keep";
+  const dropIn = facts?.sshd?.dropIn;
+  if (dropIn?.startsWith("# Managed by OpsCrew")) {
+    return /^\s*PasswordAuthentication\s+no\s*$/im.test(dropIn) ? "off" : "keep";
+  }
+  return undefined;
 }
 
 /** Plain-English host plan shown before the `host-apply` approval: every step, then the hash. */

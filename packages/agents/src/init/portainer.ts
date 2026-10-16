@@ -9,9 +9,9 @@ import {
 import { isUserFacingError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import { hasEnv } from "../domain/registrars";
-import { hidePortainerAddress } from "../interview/portainer-access";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer";
+import { hidePortainerAddress } from "../shared";
 import { type PortainerConnection, readPortainerConnection } from "../shared/server-record";
 import { type CheckResult, failFrom } from "./check-result";
 

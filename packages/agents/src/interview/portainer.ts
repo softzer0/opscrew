@@ -4,11 +4,11 @@ import type { PortainerWeb, Question } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import {
+  deepDomainProblem,
   type PortainerConnection,
   readPortainerConnection,
   recordPortainerConnection,
 } from "../shared";
-import { deepDomainProblem } from "./answers";
 import { type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
 
 /** The follow-up answers for an existing Portainer (`portainer.<field>` in answers files). */

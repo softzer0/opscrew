@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { oneTimePinIdentityProvider } from "./access";
+import { oneTimePinIdentityProvider } from "./one-time-pin";
 
 /** Cloudflare's Access login methods: a GitHub login and, when given, a one-time PIN. */
 const api = (id: string | undefined) => {

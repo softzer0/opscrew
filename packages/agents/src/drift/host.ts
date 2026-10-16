@@ -3,7 +3,6 @@ import {
   type HASHED_RUNTIME_FILES,
   type HostFacts,
   type HostPlan,
-  HostPlanSchema,
   type HostStep,
   type HostStepId,
   inspectHost,
@@ -28,7 +27,7 @@ import { connectOwnServer, desiredHost, type OwnServerServices, ownTarget } from
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
 import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
-import { hostPlanFile, readIfExists } from "../shared";
+import { lastHostSetup, passwordLoginChoice, readIfExists } from "../shared";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
 export interface HostDifference {
@@ -51,56 +50,6 @@ export interface HostDifference {
 /** Host drift of a server the user owns (FR-911): every difference found, in host-step order. */
 export interface HostDrift {
   differences: HostDifference[];
-}
-
-/**
- * The last setup host plan the user approved and OpsCrew applied (`plan.approvals` of kind
- * `host-apply`, newest first, read from `.opscrew/plans/host-<hash>.json`), or `undefined` when
- * none is on this computer. Plans of other purposes (teardown, undo) and plans without the SSH step
- * (an add-on alone) are skipped.
- */
-export async function lastHostSetup(
-  deps: Pick<PhaseDeps, "paths">,
-  plan: Pick<DeployPlan, "approvals">,
-): Promise<HostPlan | undefined> {
-  const hashes = plan.approvals
-    .filter((approval) => approval.kind === "host-apply")
-    .map((approval) => approval.planHash)
-    .reverse();
-  for (const hash of hashes) {
-    const text = await readIfExists(hostPlanFile(deps.paths, hash));
-    if (text === undefined) continue;
-    let json: unknown;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      continue;
-    }
-    const parsed = HostPlanSchema.safeParse(json);
-    if (!parsed.success) continue;
-    if (parsed.data.purpose === "setup" && parsed.data.steps.some((step) => step.id === "sshd")) {
-      return parsed.data;
-    }
-  }
-  return undefined;
-}
-
-/**
- * The user's choice about password logins when OpsCrew set the server up: from the last applied
- * setup plan, else from OpsCrew's own SSH settings file on the server; `undefined` when unknown.
- */
-export function passwordLoginChoice(
-  setup: HostPlan | undefined,
-  facts?: Pick<HostFacts, "sshd">,
-): "off" | "keep" | undefined {
-  const chosen = setup?.steps.find((step) => step.id === "sshd")?.params.disablePasswords;
-  if (chosen === true) return "off";
-  if (chosen === false) return "keep";
-  const dropIn = facts?.sshd?.dropIn;
-  if (dropIn?.startsWith("# Managed by OpsCrew")) {
-    return /^\s*PasswordAuthentication\s+no\s*$/im.test(dropIn) ? "off" : "keep";
-  }
-  return undefined;
 }
 
 const AREA_TITLES: Readonly<Record<HostStepId, string>> = {

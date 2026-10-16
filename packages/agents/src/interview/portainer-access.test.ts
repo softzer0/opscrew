@@ -16,15 +16,11 @@ import {
   portainerContainerUrl,
   requirePortainerConnection,
 } from "../provision/portainer";
-import { recordPortainerConnection } from "../shared";
+import { hidePortainerAddress, portainerAddressNames, recordPortainerConnection } from "../shared";
 import { createTestPhaseDeps } from "../testing";
 import { hideRecordedPortainerAddress } from "../verify/portainer";
 import { PortainerEnvironmentSchema } from "./portainer";
-import {
-  createPortainerAccess,
-  hidePortainerAddress,
-  portainerAddressNames,
-} from "./portainer-access";
+import { createPortainerAccess } from "./portainer-access";
 
 const URL_ = "https://nas:9443";
 const FINGERPRINT = `SHA256:${Array.from({ length: 32 }, () => "AB").join(":")}`;

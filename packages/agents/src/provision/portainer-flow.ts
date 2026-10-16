@@ -35,15 +35,16 @@ import { type DeployPlan, type Requirements, writeArtifact } from "@opscrew/plan
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { stateContents } from "../drift/infra";
-import { hidePortainerAddress } from "../interview/portainer-access";
 import {
   type AppEnvironment,
   approvalEntry,
   approveAndWriteRenderedFiles,
+  hidePortainerAddress,
   infrastructureOutputs,
   type PlanApproval,
   PlanRefusedError,
   type ProjectEngine,
+  publishedPorts,
   stateFile,
   stringOutput,
 } from "../shared";
@@ -320,12 +321,7 @@ export async function provisionPortainer(
       ? { updater: { compose: renderUpdaterStack(plan).content } }
       : { tunnelConnector: { compose: renderPortainerConnectorStack(plan).content } }),
     record: connection.created,
-    ports:
-      target.web.mode === "proxy"
-        ? [target.web.port]
-        : target.web.mode === "caddy"
-          ? [80, 443]
-          : [],
+    ports: publishedPorts(target),
     volumes: portainerStackVolumes(plan),
     ...(fingerprints !== undefined ? { valueFingerprints: fingerprints } : {}),
     ...(fingerprints !== undefined && options.replaceTokens !== undefined

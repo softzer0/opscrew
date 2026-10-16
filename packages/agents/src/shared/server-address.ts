@@ -1,5 +1,6 @@
 import { BlockList, isIP } from "node:net";
 import type { VpsProviderId } from "@opscrew/contracts";
+import { normalizeHostName, type Redactor } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { type EngineDeps, infrastructureOutputs, type OutputsOptions } from "./engine";
@@ -156,6 +157,39 @@ export function addressNames(url: string): string[] {
       return true;
     })
     .sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Host names that mean "this computer" (also from a container on it); never hidden alone, they
+ * are not Portainer's address to anyone else and are too common.
+ */
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1", "host.docker.internal"]);
+/** The product's own name: every message names it, so a host called that is not hidden alone. */
+const PRODUCT_NAME = "portainer";
+
+/**
+ * The names under which Portainer's address can appear in text (`addressNames`): the URL as given
+ * and its origin always, its host and host name forms only when it is not this computer. A host
+ * name that is just `portainer` is left out alone (every message names Portainer; with the port it
+ * is still listed). Invalid addresses give none (the interview refuses them with its own message).
+ */
+export function portainerAddressNames(url: string): string[] {
+  const names = addressNames(url);
+  if (names.length === 0) return [];
+  const local = LOOPBACK.has(new URL(url).hostname.replace(/\.$/, ""));
+  return names.filter(
+    (name) => name.includes("://") || (!local && normalizeHostName(name) !== PRODUCT_NAME),
+  );
+}
+
+/**
+ * Registers Portainer's address ({@link portainerAddressNames}) with `redactor` as names: masked
+ * ignoring case and only where they stand alone, so no output, tool result or audit entry shows
+ * the address, while words that contain the host name (`opscrew-shop-portainer-tunnel`,
+ * `portainer.url`) stay intact.
+ */
+export function hidePortainerAddress(redactor: Pick<Redactor, "addName">, url: string): void {
+  for (const name of portainerAddressNames(url)) redactor.addName(name, "portainer-address");
 }
 
 /**

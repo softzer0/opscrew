@@ -9,9 +9,8 @@ import {
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
-import { hidePortainerAddress } from "../interview/portainer-access";
 import { portainerDnsRecordNote } from "../provision/publish";
-import { addressNames, readPortainerConnection } from "../shared";
+import { addressNames, hidePortainerAddress, readPortainerConnection } from "../shared";
 
 /**
  * Registers the address of the user's Portainer (as `.opscrew/server.json` records it) with the

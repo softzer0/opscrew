@@ -7,9 +7,8 @@ import {
   type ProjectFacts,
   type Requirements,
 } from "@opscrew/plan-schema";
-import { deepDomainProblem } from "../interview/answers";
 import { providerProfile } from "../providers";
-import { hostListKind, serviceUrlKind } from "../shared";
+import { deepDomainProblem, hostListKind, serviceUrlKind } from "../shared";
 import {
   appDirOf,
   appDockerfile,

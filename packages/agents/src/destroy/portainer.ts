@@ -4,23 +4,19 @@ import {
   applyStackPlan,
   type CreatedRecord,
   DEPLOY_BRANCH,
-  inspectPortainer,
-  opscrewStackNames,
   type PortainerClient,
   planStackTeardown,
-  portainerClient,
   StackApplyError,
   type StackPlan,
   stackPlanHash,
 } from "@opscrew/connector-portainer";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { isUserFacingError, listText, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
-import { DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import { DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS, portainerTarget } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { stateContents } from "../drift/infra";
-import { hidePortainerAddress } from "../interview/portainer-access";
 import { portainerCloudflare } from "../provision/credentials";
 import {
   portainerContainerUrl,
@@ -34,6 +30,8 @@ import {
   chooseEngine,
   hasDeployment,
   hasState,
+  hidePortainerAddress,
+  inspectRecordedPortainer,
   type PortainerConnection,
   readPortainerConnection,
   recordPortainerConnection,
@@ -447,30 +445,14 @@ export async function destroyPortainer(
   }
 
   // 3. Connect (pinned certificate) and inspect (read-only)
-  const makeClient = portainerServices.client ?? portainerClient;
-  const client = makeClient(
-    {
-      url: connection.url,
-      ...(connection.certFingerprint !== undefined
-        ? { certFingerprint: connection.certFingerprint }
-        : {}),
-    },
+  const { client, facts } = await inspectRecordedPortainer(deps, {
+    plan,
+    target: portainerTarget(plan.target),
+    connection,
     token,
-    { redactor: deps.redactor },
-  );
-  const target = plan.target.provider === "portainer" ? plan.target : undefined;
-  deps.reporter.step("Inspecting your Portainer (read-only)");
-  const facts = await inspectPortainer(client, {
-    environmentId: target?.environmentId ?? connection.environmentId,
-    names: opscrewStackNames(name),
-  });
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "inspect Portainer (read-only)",
+    client: portainerServices.client,
+    step: "Inspecting your Portainer (read-only)",
     phase: "provision",
-    target: `portainer environment ${connection.environmentId}`,
-    decision: "allow",
     detail: "destroy",
   });
 

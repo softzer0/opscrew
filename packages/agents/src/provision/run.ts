@@ -6,7 +6,6 @@ import { portainerHostname, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import { oneTimePinIdentityProvider } from "../portainer/access";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
 import {
@@ -20,6 +19,7 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
+  oneTimePinIdentityProvider,
   type PlanApproval,
   pinHostKey,
   providerConsole,
