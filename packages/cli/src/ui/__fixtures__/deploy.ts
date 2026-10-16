@@ -12,7 +12,6 @@ import {
   type FakeGitHub,
   fakeCloudflare,
   HOST_KEY,
-  planJsonFor,
   readyRemote,
   recordTestServer,
   SERVER_IPV4,
@@ -28,24 +27,6 @@ import type {
 import { NodeCommandRunner } from "@opscrew/core";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { git, type TempProject, tempProject } from "./harness";
-
-// The end-to-end tests in `test/e2e` import these from here.
-export {
-  DIGITALOCEAN_CREATE,
-  FakeEngine,
-  FakeGitHub,
-  SERVER_IPV4,
-  SERVER_IPV6,
-} from "@opscrew/agents/testing";
-
-/** `show -json` of the DigitalOcean root module rendered for `plan`, passing every policy. */
-export function digitalOceanPlanJsonFor(plan: DeployPlan) {
-  return planJsonFor({
-    provider: "digitalocean",
-    plan,
-    proxied: plan.dns.proxied && plan.security.httpAllowedFrom === "cloudflare",
-  });
-}
 
 /** The fakes `provision` and `dns` need: engine, cloud provider, GitHub, Cloudflare, SSH and waits. */
 export function provisionServices(

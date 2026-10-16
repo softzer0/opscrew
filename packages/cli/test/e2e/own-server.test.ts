@@ -11,12 +11,19 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { readOwnServer } from "@opscrew/agents";
+import {
+  ED25519_FINGERPRINT,
+  FakeEngine,
+  FakeGitHub,
+  FakeHostServer,
+  OWN_IPV4,
+  PUBLIC_CHANGES,
+} from "@opscrew/agents/testing";
 import { resolveProjectPaths } from "@opscrew/core";
 import { FakeAgentRuntime } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withServices } from "../../src/deps";
-import { FakeEngine, FakeGitHub } from "../../src/ui/__fixtures__/deploy";
 import {
   EXAMPLES_DIR,
   GIT,
@@ -27,11 +34,7 @@ import {
   tempProject,
 } from "../../src/ui/__fixtures__/harness";
 import {
-  FakeHost,
   fakeHome,
-  OWN_FINGERPRINT,
-  OWN_IPV4,
-  OWN_PUBLIC_CHANGES,
   OwnRunner,
   ownProvisionServices,
   ownServices,
@@ -75,12 +78,12 @@ function printedHashes(output: string): { infra: string; host: string } {
 describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns`, () => {
   let project: TempProject;
   let inputs: Map<string, string>;
-  let host: FakeHost;
+  let host: FakeHostServer;
   let home: string;
   const runtime = new FakeAgentRuntime();
   // `--yes` covers the repository steps; the two plans are approved only by their hashes.
   const outputs = new Map<string, string>();
-  const engine = new FakeEngine({ changes: OWN_PUBLIC_CHANGES, planJson: {} });
+  const engine = new FakeEngine({ changes: PUBLIC_CHANGES, planJson: {} });
   const github = new FakeGitHub();
 
   /** Runs `opscrew <args>` offline with the own-server fakes attached. */
@@ -105,7 +108,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
   beforeAll(async () => {
     project = await tempProject(EXAMPLE);
     inputs = await snapshotFiles(project.root);
-    host = new FakeHost();
+    host = new FakeHostServer();
     home = await fakeHome(project);
     await initRepoWithBareOrigin(project, "https://github.com/acme/nextjs-postgres.git");
   }, STEP_TIMEOUT);
@@ -127,13 +130,13 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
       expect(requirements.provider).toBe("own");
       expect(await readFile(requirementsFile, "utf8")).not.toContain(OWN_IPV4);
 
-      const design = await opscrew(["design", "--host-key", OWN_FINGERPRINT]);
+      const design = await opscrew(["design", "--host-key", ED25519_FINGERPRINT]);
       expect(design.code, design.text).toBe(0);
       expect(host.inspections).toBe(1);
       expect(design.ctx.output).toContain("Chose the recommended option, own-server.");
       expect(design.text).not.toMatch(/Prices:|€\d/);
       const paths = resolveProjectPaths(project.root, { env: project.env });
-      expect((await readOwnServer(paths))?.hostKey).toBe(OWN_FINGERPRINT);
+      expect((await readOwnServer(paths))?.hostKey).toBe(ED25519_FINGERPRINT);
 
       const plan = await readPlan(project.root);
       expect(plan.target).toMatchObject({ provider: "own", arch: "amd64", access: "public" });

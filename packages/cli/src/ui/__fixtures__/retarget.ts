@@ -11,15 +11,6 @@ import { type CliServices, withServices } from "../../deps";
 import { deployProject } from "./deploy";
 import { projectContext } from "./harness";
 
-// The end-to-end tests in `test/e2e` import these from here.
-export {
-  APP,
-  DOMAIN,
-  NEW_SERVERS,
-  OLD_IPV4,
-  TOKENS as MOVE_TOKENS,
-} from "@opscrew/agents/testing";
-
 /** Real git; `ssh-keyscan` answers with {@link HOST_KEY}; `scp` copies between the fake hosts. */
 class MoveRunner implements CommandRunner {
   readonly #node = new NodeCommandRunner({ defaultTimeoutMs: 60_000 });

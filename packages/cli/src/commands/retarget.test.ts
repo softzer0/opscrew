@@ -1,5 +1,5 @@
 import { readServerAddresses } from "@opscrew/agents";
-import { testPlan } from "@opscrew/agents/testing";
+import { APP, NEW_SERVERS, testPlan } from "@opscrew/agents/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import {
   type DeployPlan,
@@ -10,7 +10,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { NonInteractiveApprovalHandler } from "../approval";
 import { CANCEL, GIT, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
-import { APP, type MoveProject, moveProject, NEW_SERVERS } from "../ui/__fixtures__/retarget";
+import { type MoveProject, moveProject } from "../ui/__fixtures__/retarget";
 import { retargetStatusLine } from "../ui/retarget";
 import { flagProblems, RetargetApprovalHandler } from "./retarget";
 

@@ -10,21 +10,20 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
+import {
+  DIGITALOCEAN_CREATE,
+  FakeEngine,
+  FakeGitHub,
+  planJsonFor,
+  SERVER_IPV4,
+  SERVER_IPV6,
+} from "@opscrew/agents/testing";
 import { resolveProjectPaths } from "@opscrew/core";
 import { FakeAgentRuntime, fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withServices } from "../../src/deps";
-import {
-  DeployRunner,
-  DIGITALOCEAN_CREATE,
-  digitalOceanPlanJsonFor,
-  FakeEngine,
-  FakeGitHub,
-  provisionServices,
-  SERVER_IPV4,
-  SERVER_IPV6,
-} from "../../src/ui/__fixtures__/deploy";
+import { DeployRunner, provisionServices } from "../../src/ui/__fixtures__/deploy";
 import {
   EXAMPLES_DIR,
   GIT,
@@ -164,7 +163,11 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
       await git(env, root, "push", "-q", "origin", "main");
       const before = await readPlan(project.root);
       const engine = new FakeEngine({
-        planJson: digitalOceanPlanJsonFor(before),
+        planJson: planJsonFor({
+          provider: "digitalocean",
+          plan: before,
+          proxied: before.dns.proxied && before.security.httpAllowedFrom === "cloudflare",
+        }),
         changes: DIGITALOCEAN_CREATE,
       });
       const github = new FakeGitHub();

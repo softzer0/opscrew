@@ -9,18 +9,11 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { readServerAddresses } from "@opscrew/agents";
+import { APP, DOMAIN, NEW_SERVERS, OLD_IPV4, TOKENS } from "@opscrew/agents/testing";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { GIT, run } from "../../src/ui/__fixtures__/harness";
-import {
-  APP,
-  DOMAIN,
-  MOVE_TOKENS,
-  type MoveProject,
-  moveProject,
-  NEW_SERVERS,
-  OLD_IPV4,
-} from "../../src/ui/__fixtures__/retarget";
+import { type MoveProject, moveProject } from "../../src/ui/__fixtures__/retarget";
 
 const STEP_TIMEOUT = 120_000;
 const NEW = NEW_SERVERS.digitalocean;
@@ -43,7 +36,7 @@ async function retarget(m: MoveProject, ...args: string[]) {
   const approved = approveAt >= 0 ? args[approveAt + 1] : undefined;
   for (const hash of applied) expect(hash, `${args.join(" ")} applied`).toBe(approved);
   expect(applied.length, `${args.join(" ")} applied`).toBeLessThanOrEqual(1);
-  for (const token of Object.values(MOVE_TOKENS)) expect(text).not.toContain(token);
+  for (const token of Object.values(TOKENS)) expect(text).not.toContain(token);
   const hash = /Plan hash \(SHA-256\): ([0-9a-f]{64})/.exec(ctx.output)?.[1];
   return { code, text, ctx, hash, applied };
 }

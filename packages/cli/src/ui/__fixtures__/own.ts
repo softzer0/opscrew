@@ -26,14 +26,6 @@ import type { CommandOptions, CommandResult, CommandRunner, RemoteExec } from "@
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import type { TempProject } from "./harness";
 
-// The end-to-end tests in `test/e2e` import these from here.
-export {
-  ED25519_FINGERPRINT as OWN_FINGERPRINT,
-  FakeHostServer as FakeHost,
-  OWN_IPV4,
-  PUBLIC_CHANGES as OWN_PUBLIC_CHANGES,
-} from "@opscrew/agents/testing";
-
 /** The admin login's shell: answers the test login (`true`); nothing else may run on it. */
 function fakeAdminShell(host = OWN_IPV4): RemoteExec {
   return {
