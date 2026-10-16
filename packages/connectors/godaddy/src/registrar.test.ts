@@ -238,6 +238,28 @@ describe("check and suggest", () => {
     expect(calls.map((c) => (c.body as { domains: string[] }).domains.length)).toEqual([25, 5]);
   });
 
+  it("matches results by domain name only, never by position", async () => {
+    const { registrar } = setup({
+      "POST /v3/domains/check-availability": {
+        body: {
+          items: [
+            {
+              domain: "free.com",
+              available: true,
+              prices: [{ term: "YEAR", period: 1, price: usd(1199) }],
+            },
+          ],
+        },
+      },
+    });
+    const checks = await registrar.check(["taken.com", "free.com"]);
+    expect(checks.map((c) => [c.domain, c.registrable])).toEqual([
+      ["taken.com", false],
+      ["free.com", true],
+    ]);
+    expect(checks[0]?.reason).toMatch(/did not return a result/);
+  });
+
   it("suggests available names from GoDaddy's suggestion endpoint", async () => {
     const { registrar, calls } = setup({
       "GET /v3/domains/suggestions": {

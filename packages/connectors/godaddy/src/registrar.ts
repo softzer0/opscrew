@@ -118,16 +118,15 @@ export class GoDaddyRegistrar implements Registrar {
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
-  /** Indicative availability and prices, 25 domains per call. */
+  /** Indicative availability and prices, 25 domains per call, matched to the names by name. */
   async check(domains: readonly string[]): Promise<DomainCheck[]> {
     const names = domains.map(normalizeDomain);
     const results: DomainCheck[] = [];
     for (let i = 0; i < names.length; i += GODADDY_MAX_BATCH) {
       const chunk = names.slice(i, i + GODADDY_MAX_BATCH);
       const items = await this.#client.checkAvailability(chunk);
-      chunk.forEach((name, j) => {
-        const item =
-          items.find((it) => normalizeDomain(it.domain) === name) ?? items[j] ?? undefined;
+      for (const name of chunk) {
+        const item = items.find((it) => normalizeDomain(it.domain) === name);
         results.push(
           item
             ? toDomainCheck(item, name)
@@ -137,7 +136,7 @@ export class GoDaddyRegistrar implements Registrar {
                 reason: "GoDaddy did not return a result for this domain; try again in a minute.",
               },
         );
-      });
+      }
     }
     return results;
   }
