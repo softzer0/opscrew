@@ -50,7 +50,9 @@ describe("opscrew verify for the user's Portainer", () => {
       portainerTestPlan({ web: { mode: "proxy", port: 8080 }, domain: null, deployed: true }),
     );
     expect(await run(ctx, "verify", "--url", "https://shop.example.com/"), ctx.errors).toBe(0);
-    expect(ctx.output).toContain("https://shop.example.com is live and healthy");
+    // The user's route is never shown: messages call it "your route".
+    expect(ctx.output).toContain("your route is live and healthy");
+    expect(ctx.output).not.toContain("shop.example.com");
     expect(ctx.output).toContain("run `opscrew secure` to check the app's stack");
     expect(`${ctx.output}${ctx.errors}`).not.toContain(PORTAINER_HOST);
   });

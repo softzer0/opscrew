@@ -156,7 +156,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T1019 [US2] `verify --url` never shows the route's address; the live test's short-host check allows `server.json`
+- [X] T1019 [US2] `verify --url` never shows the route's address; the live test's short-host check allows `server.json`
   - Owns: `packages/agents/src/verify/**` (the route's host) (+ tests), `packages/cli/test/live/portainer-target.test.ts` (the short-host leak check only)
   - Reads: the ninth full live run (2026-10-16): every step passed but the leak check found (1) the server's IPv4 in the output of `opscrew verify --url http://<ip>:8080` in step 10, where Portainer is reached at `localhost`, so OpsCrew did not know that address and printed the route as given, and (2) the short Portainer host name in `.opscrew/server.json`, the one local file meant to hold Portainer's address (the check already allows it for the main address)
   - Depends: T1018

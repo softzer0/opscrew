@@ -210,6 +210,35 @@ describe("opscrew verify for the user's Portainer", () => {
     ).rejects.toThrow(/http:\/\/ or https:\/\//);
   });
 
+  it("proxy: the user's route is never shown, whether an IP address or a host name (T1019)", async () => {
+    const ROUTE_IPV4 = "203.0.113.10";
+    for (const route of [`http://${ROUTE_IPV4}:8080`, "https://apps.lab.example.net"]) {
+      const deps = await setup({ web: { mode: "proxy", port: 8080 }, domain: null });
+      const host = new URL(route).hostname;
+      const result = await runVerify(deps, {
+        url: route,
+        resolver: resolver([]),
+        fetch: async (input, init) => {
+          if (String(input).includes("cloudflare-dns.com")) throw new Error("no public lookup");
+          return fakeSite(route)(input, init);
+        },
+        tlsConnect: async (h, options) => cert(h)(h, options),
+        tcpConnect: async () => false,
+      });
+      expect(result.passed).toBe(true);
+      const runbook = await readFile(deps.paths.files.runbook, "utf8");
+      const output = deps.reporter.text();
+      const everything = `${output}\n${JSON.stringify(result.checks)}\n${runbook}`;
+      expect(everything).not.toContain(host);
+      expect(everything).not.toContain(route);
+      // Where a message names the route, it reads as the user's route.
+      expect(output).toContain("your route");
+      expect(result.checks.find((c) => c.id === "site-reachable")?.message).toContain("your route");
+      // Anything else that passes through the redactor (MCP results, audit entries) hides it too.
+      expect(deps.redactor.redact(`at ${route}/ and ${host}`)).not.toContain(host);
+    }
+  });
+
   it("proxy with a domain and a route: checks the route, commits only the domain's URL", async () => {
     const deps = await setup({ web: { mode: "proxy", port: 8080 } });
     const route = "https://proxy.example.net";

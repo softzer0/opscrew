@@ -34,9 +34,12 @@ import {
   type TlsConnect,
 } from "./net";
 import {
+  checkWithoutRoute,
   hideRecordedPortainerAddress,
+  hideRoute,
   portainerVerifyUrl,
   renderPortainerRunbook,
+  withoutRoute,
 } from "./portainer";
 import { lookupPublicAddresses } from "./public-dns";
 
@@ -142,8 +145,15 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const server = tunnelMode(plan) || portainer ? undefined : await serverAddress(deps, plan);
   // A server the user owns: terminal lines say "your server", never its addresses or login host.
   const hidden = plan.target.provider === "own" ? await ownServerNames(deps, server) : [];
-  const say = (text: string) => deps.redactor.redact(withoutOwnServer(text, hidden));
   const url = portainer ? portainerVerifyUrl(plan, options.url) : siteUrl(plan, server);
+  // The user's own route (`--url`): registered before any check, so no output or result shows
+  // it; messages call it "your route".
+  const route =
+    portainer && options.url !== undefined && url !== undefined
+      ? hideRoute(deps.redactor, url, plan.dns.domain)
+      : [];
+  const say = (text: string) =>
+    deps.redactor.redact(withoutRoute(withoutOwnServer(text, hidden), route));
   if (url === undefined) {
     // Deployed, but not from here (a fresh clone): provisioning here would create a second server.
     throw hasDeployment(plan)
@@ -165,7 +175,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const fetch = options.fetch ?? deps.fetch;
   const github = await githubContext(deps, fetch);
 
-  const { checks, lastDeployAt } = await runVerifyChecks({
+  const { checks: checked, lastDeployAt } = await runVerifyChecks({
     plan,
     ...(server !== undefined ? { server } : {}),
     resolver: options.resolver ?? defaultDnsResolver,
@@ -205,6 +215,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     },
   });
 
+  const checks = checked.map((check) => checkWithoutRoute(check, route));
   for (const check of checks) {
     const line = say(`${check.title}: ${check.message}`);
     if (check.status === "pass") reporter.success(line);

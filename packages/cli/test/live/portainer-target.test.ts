@@ -3125,9 +3125,10 @@ describe.skipIf(MISSING.length > 0)(
           if (!existsSync(path) || statSync(path).size > 1_000_000) continue;
           search(`the file ${file}`, await readFile(path, "utf8"), known, false);
         }
+        // The one local file meant to hold Portainer's address: the short host too.
         const local = join(paths().stateDir, "server.json");
         if (existsSync(local))
-          search(".opscrew/server.json", await readFile(local, "utf8"), secrets);
+          search(".opscrew/server.json", await readFile(local, "utf8"), secrets, false);
         const auditDir = paths().auditDir;
         if (existsSync(auditDir)) {
           for (const file of await readdir(auditDir)) {
