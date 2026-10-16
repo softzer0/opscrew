@@ -25,7 +25,7 @@ import {
   registrationMissing,
   syncPlanRegistration,
 } from "./project";
-import { purchaseRecordPath, readPurchaseRecord, recordRegistrar } from "./record";
+import { purchaseRecordPath, readPurchaseRecord } from "./record";
 import {
   type OtherRegistrarId,
   parseRegistrarId,
@@ -231,7 +231,7 @@ export async function domainStatus(
     record === undefined
       ? []
       : [
-          `A purchase of ${record.domain} started on ${formatDate(record.requestedAt, record.requestedAt)} has not finished. Run \`${buyCommandOf(record.domain, recordRegistrar(record))}\` to finish it.`,
+          `A purchase of ${record.domain} started on ${formatDate(record.requestedAt, record.requestedAt)} has not finished. Run \`${buyCommandOf(record.domain, record.registrar)}\` to finish it.`,
         ];
   const name = registeredName(files);
   if (name === undefined) {

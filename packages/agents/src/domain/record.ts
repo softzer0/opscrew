@@ -16,8 +16,8 @@ const PurchaseRecordSchema = z.object({
   years: z.number().int().min(1).max(10).optional(),
   autoRenew: z.boolean().optional(),
   total: z.object({ amount: z.number(), currency: z.enum(["EUR", "USD"]) }).optional(),
-  /** Where the domain is bought; absent means Cloudflare (records written before feature 007). */
-  registrar: z.enum(REGISTRAR_IDS).optional(),
+  /** Where the domain is bought. */
+  registrar: z.enum(REGISTRAR_IDS),
   /**
    * Created once, with the record, and sent with the purchase by registrars that take one
    * (Porkbun, GoDaddy); kept unchanged on every resumed run.
@@ -47,11 +47,6 @@ export const UNSENT_PURCHASE_AGE_MS = 30 * 60_000;
 /** `<projectHome>/domain-purchase.json`. */
 export function purchaseRecordPath(paths: ProjectPaths): string {
   return join(paths.projectHomeDir, "domain-purchase.json");
-}
-
-/** The registrar a record's purchase was sent to (Cloudflare for records without one). */
-export function recordRegistrar(record: PurchaseRecord): RegistrarId {
-  return record.registrar ?? "cloudflare";
 }
 
 /**
@@ -98,7 +93,7 @@ export async function createPurchaseRecord(file: string, record: PurchaseRecord)
       "PHASE_PRECONDITION",
       `Another OpsCrew run started buying a domain at the same time, so this run did not buy ${record.domain}.`,
       {
-        hint: `Wait for it to finish, then run \`${buyCommandOf(record.domain, recordRegistrar(record))}\` again.`,
+        hint: `Wait for it to finish, then run \`${buyCommandOf(record.domain, record.registrar)}\` again.`,
       },
     );
   }
@@ -126,7 +121,7 @@ export function otherPurchaseInProgress(
   domain: string,
   options: { requested?: RegistrarId; env?: Record<string, string | undefined> } = {},
 ): OpsCrewError {
-  const at = recordRegistrar(record);
+  const at = record.registrar;
   const buy = buyCommandOf(domain, options.requested ?? "cloudflare");
   return new OpsCrewError(
     "PHASE_PRECONDITION",

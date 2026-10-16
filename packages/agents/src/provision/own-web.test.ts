@@ -6,7 +6,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type HostFacts, hostPlanHash, webFilterFacts } from "@opscrew/connector-ssh-host";
+import { type HostFacts, hostPlanHash } from "@opscrew/connector-ssh-host";
 import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -198,7 +198,7 @@ describe.skipIf(!findExecutable("git"))("runProvision: web ports of an own serve
   it("refuses Docker's nftables backend plainly before any change", async () => {
     const facts = freshFacts();
     const s = await setup({
-      facts: { ...facts, webFilter: { ...webFilterFacts(facts), backend: "nftables" } },
+      facts: { ...facts, webFilter: { ...facts.webFilter, backend: "nftables" } },
     });
     const error = (await runProvision(s.deps, {
       services: s.services,
@@ -283,7 +283,7 @@ describe.skipIf(!findExecutable("git"))("runProvision: web ports of an own serve
       ...s.host.facts,
       // Docker runs, so its DOCKER-USER chain exists; no OpsCrew filter yet.
       webFilter: {
-        ...webFilterFacts(s.host.facts),
+        ...s.host.facts.webFilter,
         rules4: { chain: null, dockerUser: { exists: true, leading: [], jumps: 0 } },
       },
       containers: [

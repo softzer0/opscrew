@@ -320,6 +320,7 @@ describe("opscrew domain buy in scripts", () => {
       domain: "shopapp.com",
       accountId: "acc-1",
       requestedAt: "2026-10-11T11:00:00.000Z",
+      registrar: "cloudflare",
       outcome: "uncertain",
     });
     const ctx = t.context();

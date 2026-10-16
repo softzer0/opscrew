@@ -28,12 +28,6 @@ function edit(s: OwnProject, change: (facts: OwnProject["host"]["facts"]) => voi
   s.host.facts = HostFactsSchema.parse(facts);
 }
 
-/** The web filter facts of a prepared server (inspection always reports them). */
-function filterOf(facts: OwnProject["host"]["facts"]) {
-  if (facts.webFilter === undefined) throw new Error("no web filter facts");
-  return facts.webFilter;
-}
-
 const details = (report: Awaited<ReturnType<typeof runDrift>>) =>
   (report.host?.differences ?? []).map((d) => `${d.area}: ${d.detail}`);
 
@@ -266,9 +260,9 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       const s = await ownProject();
       await provisionOwn(s);
       edit(s, (f) => {
-        filterOf(f).files.dropIn = null;
-        filterOf(f).active = false;
-        filterOf(f).rules4.dockerUser.leading = [];
+        f.webFilter.files.dropIn = null;
+        f.webFilter.active = false;
+        f.webFilter.rules4.dockerUser.leading = [];
       });
       expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
         "web-filter: Docker no longer requires the web filter (the docker.service.d drop-in is missing), so after a restart Docker could publish the web ports without it. Run `opscrew provision`: it shows the change and applies it only after you approve it.",
@@ -276,8 +270,8 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         "web-filter: OpsCrew's jumps are no longer the first rules of DOCKER-USER, so another rule may let visitors in around Cloudflare. Run `opscrew provision`: it shows the change and applies it only after you approve it.",
       ]);
       edit(s, (f) => {
-        filterOf(f).files.script = null;
-        filterOf(f).rules4.chain = null;
+        f.webFilter.files.script = null;
+        f.webFilter.rules4.chain = null;
       });
       expect(details(await runDrift(s.deps, { services: s.services }))).toEqual([
         "web-filter: The web filter is missing, so visitors can reach your server around Cloudflare. Run `opscrew provision`: it shows the change and applies it only after you approve it.",
@@ -474,7 +468,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       await provisionOwn(s);
       await deployed(s);
       edit(s, (f) => {
-        const files = f.runtimeFiles ?? [];
+        const files = f.runtimeFiles;
         const named = (name: string) => files.find((file) => file.name === name);
         Object.assign(named("Caddyfile") ?? {}, { sha256: "0".repeat(64) });
         Object.assign(named("compose.yaml") ?? {}, { kind: "link", sha256: null });

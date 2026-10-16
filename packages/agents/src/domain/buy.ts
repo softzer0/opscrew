@@ -44,7 +44,6 @@ import {
   type PurchaseRecord,
   purchaseRecordPath,
   readPurchaseRecord,
-  recordRegistrar,
   removePurchaseRecord,
   UNSENT_PURCHASE_AGE_MS,
 } from "./record";
@@ -123,7 +122,7 @@ export async function buyDomain(
   if (record !== undefined && record.domain !== domain) {
     throw otherPurchaseInProgress(record, domain, { requested: registrarId, env: deps.env });
   }
-  if (record !== undefined && recordRegistrar(record) !== registrarId) {
+  if (record !== undefined && record.registrar !== registrarId) {
     throw otherRegistrarInProgress(deps, record, registrarId);
   }
 
@@ -172,7 +171,7 @@ function otherRegistrarInProgress(
   record: PurchaseRecord,
   requested: RegistrarId,
 ): OpsCrewError {
-  const at = recordRegistrar(record);
+  const at = record.registrar;
   const { domain } = record;
   return new OpsCrewError(
     "PHASE_PRECONDITION",
@@ -191,7 +190,7 @@ function recordedAccount(
 ): DomainAccount {
   const account = accounts.find((a) => a.id === record.accountId);
   const wanted = requested?.trim();
-  const command = buyCommandOf(record.domain, recordRegistrar(record));
+  const command = buyCommandOf(record.domain, record.registrar);
   if (
     wanted &&
     wanted !== record.accountId &&
@@ -302,7 +301,7 @@ async function forgetPurchase(
   recordFile: string,
 ): Promise<void> {
   const account = recordedAccount(accounts, record, undefined);
-  const at = recordRegistrar(record);
+  const at = record.registrar;
   const name = REGISTRAR_NAMES[at];
   const dashboard = registrarDashboard(at, deps.env);
   const command = buyCommandOf(record.domain, at);

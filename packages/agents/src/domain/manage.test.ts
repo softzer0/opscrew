@@ -62,6 +62,7 @@ describe("domainStatus", () => {
         domain: DOMAIN,
         accountId: "acc-1",
         requestedAt: "2026-10-11T11:59:00.000Z",
+        registrar: "cloudflare",
       }),
     );
 

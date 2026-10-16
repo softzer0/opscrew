@@ -12,7 +12,6 @@ import {
   SECRET_RUNTIME_FILES,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
-  webFilterFacts,
 } from "@opscrew/connector-ssh-host";
 import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
 import {
@@ -197,7 +196,7 @@ function webFilterDetails(facts: HostFacts, step: HostStep, applied?: HostPlan):
       "OpsCrew's web filter is still on the server, although the site is no longer served directly behind Cloudflare's proxy, so visitors who do not come through Cloudflare cannot reach it.",
     ];
   }
-  const wf = webFilterFacts(facts);
+  const wf = facts.webFilter;
   const wanted = filterRanges(step) ?? [];
   const before = filterRanges(applied?.steps.find((item) => item.id === "web-filter"));
   const sameAs = (list: readonly string[]) =>
@@ -405,12 +404,11 @@ function runtimeFileDetails(
   expected: ExpectedRuntimeFiles,
   deployed: boolean,
 ): string[] {
-  const files = facts.runtimeFiles;
   const appDir = facts.dirs.find((dir) => dir.path === APP_DIR);
   // No /srv/app at all is reported with the runtime directories already.
-  if (files === undefined || appDir?.kind !== "dir") return [];
+  if (appDir?.kind !== "dir") return [];
   const out: string[] = [];
-  for (const file of files) {
+  for (const file of facts.runtimeFiles) {
     const path = `${APP_DIR}/${file.name}`;
     const wanted = (expected.rendered as Record<string, string | undefined>)[file.name];
     const secret = (SECRET_RUNTIME_FILES as readonly string[]).includes(file.name);
@@ -745,7 +743,7 @@ async function driftWebSources(
     return await ownWebSources(deps, plan, cloudflare);
   } catch (error) {
     const applied = filterRanges(setup?.steps.find((step) => step.id === "web-filter"));
-    const known = applied ?? webFilterFacts(facts).rules4.chain?.sources ?? [];
+    const known = applied ?? facts.webFilter.rules4.chain?.sources ?? [];
     if (known.length === 0) throw error;
     deps.reporter.warn(
       "OpsCrew could not read Cloudflare's current IP ranges, so it compared the web filter with the ranges of the last provision. Run `opscrew drift` again when Cloudflare's API is reachable to see whether Cloudflare's list changed.",

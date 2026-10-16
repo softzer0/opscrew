@@ -129,20 +129,16 @@ describe("splitSections", () => {
 });
 
 describe("parsers", () => {
-  it("reads os-release, preferring UBUNTU_CODENAME", () => {
+  it("reads os-release", () => {
     const os = parseOsRelease(
       'PRETTY_NAME="Ubuntu 24.04.3 LTS"\nID=ubuntu\nID_LIKE=debian\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\nUBUNTU_CODENAME=noble',
     );
-    expect(os).toEqual({
-      id: "ubuntu",
-      idLike: "debian",
-      versionId: "24.04",
-      codename: "noble",
-      prettyName: "Ubuntu 24.04.3 LTS",
+    expect(os).toEqual({ id: "ubuntu", versionId: "24.04", prettyName: "Ubuntu 24.04.3 LTS" });
+    expect(parseOsRelease('ID=Debian\nVERSION_ID="13"\nVERSION_CODENAME=trixie')).toEqual({
+      id: "debian",
+      versionId: "13",
+      prettyName: "",
     });
-    expect(parseOsRelease('ID=debian\nVERSION_ID="13"\nVERSION_CODENAME=trixie').codename).toBe(
-      "trixie",
-    );
   });
 
   it("reads memory and disk", () => {
@@ -150,12 +146,12 @@ describe("parsers", () => {
       parseFree(
         "               total        used        free      shared  buff/cache   available\nMem:      4000000000  1  2  3  4  3000000000\nSwap: 0 0 0",
       ),
-    ).toEqual({ total: 4_000_000_000, available: 3_000_000_000 });
+    ).toBe(4_000_000_000);
     expect(
       parseDf(
         "Filesystem 1-blocks Used Available Capacity Mounted on\n/dev/sda1 80000 20000 60000 25% /",
       ),
-    ).toEqual({ size: 80000, available: 60000 });
+    ).toBe(60000);
   });
 
   it("reads sshd -T and normalises without-password", () => {

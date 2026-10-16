@@ -7,7 +7,6 @@ import {
   type HostPlan,
   inspectHost,
   planHost,
-  webFilterFacts,
 } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, plural } from "@opscrew/core";
@@ -683,7 +682,7 @@ function switchesToWebFilter(
   if (filter === undefined || filter.params.remove === true || !applied.includes("web-filter")) {
     return false;
   }
-  const wasFiltered = webFilterFacts(facts).files.script !== null;
+  const wasFiltered = facts.webFilter.files.script !== null;
   return !wasFiltered && facts.containers.some((container) => container.project === app);
 }
 

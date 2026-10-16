@@ -173,20 +173,12 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
   return HostFactsSchema.parse({
     user,
     privilege: o.privilege ?? (user === "root" ? "root" : "sudo"),
-    os: {
-      id: "ubuntu",
-      idLike: "debian",
-      versionId: "24.04",
-      codename: "noble",
-      prettyName: "Ubuntu 24.04.3 LTS",
-    },
+    os: { id: "ubuntu", versionId: "24.04", prettyName: "Ubuntu 24.04.3 LTS" },
     arch: o.arch ?? "amd64",
     machine: o.arch === "arm64" ? "aarch64" : "x86_64",
     cpus: 2,
     memoryBytes: (o.memoryGb ?? 4) * 1024 ** 3,
-    memoryAvailableBytes: 3 * 1024 ** 3,
     diskFreeBytes: 40 * 1024 ** 3,
-    diskTotalBytes: 80 * 1024 ** 3,
     systemd: true,
     flock: true,
     addresses: o.addresses ?? [
@@ -211,7 +203,6 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
       ...sshPorts.map((port) => ({ proto: "tcp", address: "0.0.0.0", port, process: "sshd" })),
       ...(o.listeners ?? []),
     ],
-    webServers: [],
     firewall: {
       ufw: "inactive",
       ufwRules: [],
@@ -247,6 +238,8 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
       { path: "/srv/app", kind: "absent" },
       { path: "/srv/data", kind: "absent" },
     ],
+    // The fake server reports no runtime files, so drift compares none unless a test adds them.
+    runtimeFiles: [],
     marker: null,
     markerDamaged: false,
     record: null,
@@ -254,8 +247,18 @@ export function freshFacts(o: FactsOptions = {}): HostFacts {
     pendingUndo: { sshd: false, ufw: false },
     tunnel: ADDON,
     portainer: ADDON,
+    webFilter: NO_WEB_FILTER,
   });
 }
+
+/** What inspection reports for a server without OpsCrew's web filter, Docker on iptables. */
+const NO_WEB_FILTER: HostFacts["webFilter"] = {
+  backend: "iptables",
+  files: { script: null, unit: null, dropIn: null },
+  enabled: false,
+  active: false,
+  rules4: { chain: null, dockerUser: { exists: false, leading: [], jumps: 0 } },
+};
 
 type Params = Readonly<Record<string, string | number | boolean>>;
 
@@ -268,7 +271,6 @@ export function filteredFacts(ipv4: string[]): HostFacts["webFilter"] {
   const hashes = webFilterFileHashes({ ipv4 });
   return {
     backend: "iptables",
-    commands: ["iptables", "iptables-restore"],
     files: { script: hashes.script, unit: hashes.unit, dropIn: hashes.dropIn },
     enabled: true,
     active: true,
@@ -323,7 +325,7 @@ export function preparedFacts(before: HostFacts, plan: HostPlan): HostFacts {
     filter === undefined
       ? before.webFilter
       : filter.remove === true
-        ? undefined
+        ? NO_WEB_FILTER
         : filteredFacts(String(filter.ipv4).split(" "));
   return HostFactsSchema.parse({
     ...before,

@@ -151,15 +151,12 @@ const ADDONS_SNIPPET = `addon() {
 addon tunnel ${TUNNEL_DIR} tunnel.env
 addon portainer ${PORTAINER_DIR} admin_password`;
 
-/** OpsCrew's web filter: its files' SHA-256, its unit's state and the iptables commands. */
+/** OpsCrew's web filter: its files' SHA-256 and its unit's state. */
 const WEB_FILTER_SNIPPET = `for f in script:${WEB_FILTER_SCRIPT} unit:${WEB_FILTER_UNIT} dropin:${WEB_FILTER_DROP_IN}; do
   if [ -f "\${f#*:}" ]; then echo "file \${f%%:*} $(sha256sum "\${f#*:}" | cut -d ' ' -f 1)"; else echo "file \${f%%:*} -"; fi
 done
 echo "enabled $(systemctl is-enabled ${WEB_FILTER_SERVICE} 2>/dev/null)"
-echo "active $(systemctl is-active ${WEB_FILTER_SERVICE} 2>/dev/null)"
-for c in iptables iptables-restore; do
-  if command -v "$c" >/dev/null 2>&1; then echo "command $c"; fi
-done`;
+echo "active $(systemctl is-active ${WEB_FILTER_SERVICE} 2>/dev/null)"`;
 
 /** Directory services that log users in without local passwords or keys OpsCrew can see. */
 const DIRECTORY_PAM = "pam_(sss|ldap|krb5|winbind)";
@@ -199,7 +196,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["listeners", "ss -H -ltnup"],
   [
     "units",
-    `for u in nginx apache2 caddy traefik haproxy lighttpd firewalld nftables docker fail2ban; do printf '%s %s\\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)"; done`,
+    `for u in firewalld nftables docker fail2ban; do printf '%s %s\\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)"; done`,
   ],
   ["docker-daemon", `cat ${DOCKER_DAEMON_JSON_PATH}`],
   ["fail2ban-jail", `cat ${FAIL2BAN_JAIL_PATH}`],
@@ -361,16 +358,12 @@ export function dockerFirewall(input: { daemonJson: Section; execStart: string; 
   return { backend: nftables ? "nftables" : off ? "off" : "iptables" };
 }
 
-/** OpsCrew's web filter files, unit state and the iptables commands, from its section. */
-function webFilterFiles(
-  text: string,
-): Pick<WebFilterFacts, "files" | "enabled" | "active" | "commands"> {
+/** OpsCrew's web filter files and unit state, from its section. */
+function webFilterFiles(text: string): Pick<WebFilterFacts, "files" | "enabled" | "active"> {
   const values = new Map<string, string>();
-  const commands: string[] = [];
   for (const line of linesOf(text)) {
     const [kind, name, value] = line.split(/\s+/);
     if (kind === "file" && name && value) values.set(name, value);
-    else if (kind === "command" && name) commands.push(name);
     else if ((kind === "enabled" || kind === "active") && name) values.set(kind, name);
   }
   const hash = (name: string) => {
@@ -381,7 +374,6 @@ function webFilterFiles(
     files: { script: hash("script"), unit: hash("unit"), dropIn: hash("dropin") },
     enabled: values.get("enabled") === "enabled",
     active: values.get("active") === "active",
-    commands,
   };
 }
 
@@ -392,8 +384,6 @@ export function factsFromOutput(
 ): HostFacts {
   const sections = splitSections(output);
   const os = parseOsRelease(ok(sections, "os-release"));
-  const memory = parseFree(ok(sections, "free"));
-  const disk = parseDf(ok(sections, "df"));
   const units = parsePairs(section(sections, "units").text);
   const packages = parseDpkg(section(sections, "packages").text);
 
@@ -468,18 +458,13 @@ export function factsFromOutput(
     arch: ok(sections, "dpkg-arch").trim(),
     machine: ok(sections, "uname").trim(),
     cpus: Number.parseInt(ok(sections, "nproc").trim(), 10) || 0,
-    memoryBytes: memory.total,
-    memoryAvailableBytes: memory.available,
-    diskFreeBytes: disk.available,
-    diskTotalBytes: disk.size,
+    memoryBytes: parseFree(ok(sections, "free")),
+    diskFreeBytes: parseDf(ok(sections, "df")),
     systemd: section(sections, "systemd").exit === 0,
     flock: section(sections, "flock").exit === 0,
     addresses: parseAddresses(ok(sections, "addresses")),
     sshd,
     listeners: parseSs(text("listeners")),
-    webServers: ["nginx", "apache2", "caddy", "traefik", "haproxy", "lighttpd"].filter(
-      (unit) => units.get(unit) === "active",
-    ),
     firewall: {
       ufw,
       ufwRules: parseUfwAdded(text("ufw-added")),

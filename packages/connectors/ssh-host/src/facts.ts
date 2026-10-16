@@ -93,11 +93,6 @@ const WebFilterRulesSchema = z.object({
 });
 export type WebFilterRules = z.infer<typeof WebFilterRulesSchema>;
 
-const NO_WEB_FILTER_RULES: WebFilterRules = {
-  chain: null,
-  dockerUser: { exists: false, leading: [], jumps: 0 },
-};
-
 /** What the server says about Docker's firewall and OpsCrew's web filter (the `web-filter` step). */
 export const WebFilterFactsSchema = z.object({
   /**
@@ -106,8 +101,6 @@ export const WebFilterFactsSchema = z.object({
    * false`).
    */
   backend: z.enum(["iptables", "nftables", "off"]),
-  /** Which of `iptables` and `iptables-restore` exist. */
-  commands: z.array(z.string()),
   /** SHA-256 of OpsCrew's script, unit and Docker drop-in; null when the file is absent. */
   files: z.object({
     script: z.string().nullable(),
@@ -122,16 +115,6 @@ export const WebFilterFactsSchema = z.object({
 });
 export type WebFilterFacts = z.infer<typeof WebFilterFactsSchema>;
 
-/** A server without OpsCrew's web filter whose Docker (if any) uses iptables. */
-export const NO_WEB_FILTER: WebFilterFacts = {
-  backend: "iptables",
-  commands: [],
-  files: { script: null, unit: null, dropIn: null },
-  enabled: false,
-  active: false,
-  rules4: NO_WEB_FILTER_RULES,
-};
-
 /** Facts about the server found by `inspectHost`; read-only, zod-validated. */
 export const HostFactsSchema = z.object({
   /** The admin login OpsCrew connected as. */
@@ -139,9 +122,7 @@ export const HostFactsSchema = z.object({
   privilege: z.enum(["root", "sudo", "sudo-password", "none"]),
   os: z.object({
     id: z.string(),
-    idLike: z.string(),
     versionId: z.string(),
-    codename: z.string(),
     prettyName: z.string(),
   }),
   /** `dpkg --print-architecture` (amd64, arm64, ...), empty when unknown. */
@@ -150,9 +131,7 @@ export const HostFactsSchema = z.object({
   machine: z.string(),
   cpus: z.number().int().nonnegative(),
   memoryBytes: z.number().nonnegative(),
-  memoryAvailableBytes: z.number().nonnegative(),
   diskFreeBytes: z.number().nonnegative(),
-  diskTotalBytes: z.number().nonnegative(),
   systemd: z.boolean(),
   /** `flock` (util-linux) is there: the automatic undo and its cancel take turns with it. */
   flock: z.boolean(),
@@ -191,8 +170,6 @@ export const HostFactsSchema = z.object({
     })
     .nullable(),
   listeners: z.array(ListenerSchema),
-  /** Active web server units (nginx, apache2, caddy, traefik, haproxy, lighttpd). */
-  webServers: z.array(z.string()),
   firewall: z.object({
     ufw: z.enum(["absent", "inactive", "active"]),
     /** `ufw show added` rules without the `ufw ` prefix, e.g. `allow 22/tcp`. */
@@ -267,10 +244,9 @@ export const HostFactsSchema = z.object({
   dirs: z.array(DirSchema),
   /**
    * OpsCrew's runtime files in /srv/app (see {@link RUNTIME_FILE_NAMES}): checksums of the
-   * rendered ones, only presence, owner and mode of the ones that hold secrets. Inspection always
-   * reports them; absent means facts from before they were read (nothing to compare).
+   * rendered ones, only presence, owner and mode of the ones that hold secrets.
    */
-  runtimeFiles: z.array(RuntimeFileSchema).optional(),
+  runtimeFiles: z.array(RuntimeFileSchema),
   marker: AppMarkerSchema.nullable(),
   /** True when `/etc/opscrew/app.json` exists but could not be read as JSON. */
   markerDamaged: z.boolean(),
@@ -280,16 +256,8 @@ export const HostFactsSchema = z.object({
   pendingUndo: z.object({ sshd: z.boolean(), ufw: z.boolean() }),
   tunnel: AddonSchema,
   portainer: AddonSchema,
-  /**
-   * Docker's firewall and OpsCrew's web filter. Inspection always reports it; absent (facts from
-   * before the filter existed) reads as {@link NO_WEB_FILTER}.
-   */
-  webFilter: WebFilterFactsSchema.optional(),
+  /** Docker's firewall and OpsCrew's web filter. */
+  webFilter: WebFilterFactsSchema,
 });
 
 export type HostFacts = z.infer<typeof HostFactsSchema>;
-
-/** The web filter facts of `facts`, {@link NO_WEB_FILTER} when they are absent. */
-export function webFilterFacts(facts: Pick<HostFacts, "webFilter">): WebFilterFacts {
-  return facts.webFilter ?? NO_WEB_FILTER;
-}

@@ -58,6 +58,7 @@ const earlierRecord = (requestedAt: string, extra: Record<string, unknown> = {})
   years: 1,
   autoRenew: true,
   total: usd(10.44),
+  registrar: "cloudflare",
   ...extra,
 });
 
@@ -993,6 +994,21 @@ describe("buyDomain: never twice (SC-602)", () => {
     expect(error.code).toBe("PHASE_PRECONDITION");
     expect(project.cf.count("register")).toBe(0);
     expect(await readFile(file, "utf8")).toBe("{ not json");
+  });
+
+  it("stops at a record without its registrar instead of taking it for Cloudflare", async () => {
+    const project = await domainProject();
+    const { registrar: _registrar, ...withoutRegistrar } = earlierRecord(
+      "2026-10-11T11:55:00.000Z",
+    );
+    await project.writeRecord(withoutRegistrar);
+    const { deps, services } = await project.run();
+
+    const error = await caught(buyDomain(deps, { domain: DOMAIN, services }));
+
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("cannot read its note about an earlier domain purchase");
+    expect(project.cf.count("register")).toBe(0);
   });
 
   it("continues a recorded purchase on the recorded account and refuses another --account", async () => {

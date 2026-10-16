@@ -59,9 +59,7 @@ export function parseOsRelease(text: string): HostFacts["os"] {
   }
   return {
     id: (values.get("ID") ?? "").toLowerCase(),
-    idLike: (values.get("ID_LIKE") ?? "").toLowerCase(),
     versionId: values.get("VERSION_ID") ?? "",
-    codename: values.get("UBUNTU_CODENAME") || values.get("VERSION_CODENAME") || "",
     prettyName: values.get("PRETTY_NAME") ?? "",
   };
 }
@@ -71,22 +69,20 @@ function toNumber(value: string | undefined): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
-/** `free -b`: total and available memory in bytes. */
-export function parseFree(text: string): { total: number; available: number } {
+/** `free -b`: total memory in bytes. */
+export function parseFree(text: string): number {
   for (const line of linesOf(text)) {
     if (!line.startsWith("Mem:")) continue;
-    const cols = line.split(/\s+/);
     // Mem: total used free shared buff/cache available
-    return { total: toNumber(cols[1]), available: toNumber(cols[6] ?? cols[3]) };
+    return toNumber(line.split(/\s+/)[1]);
   }
-  return { total: 0, available: 0 };
+  return 0;
 }
 
-/** `df -P -B1 /`: size and available bytes of the root filesystem. */
-export function parseDf(text: string): { size: number; available: number } {
+/** `df -P -B1 /`: available bytes of the root filesystem. */
+export function parseDf(text: string): number {
   const rows = linesOf(text).filter((line) => !line.startsWith("Filesystem"));
-  const cols = rows[rows.length - 1]?.split(/\s+/) ?? [];
-  return { size: toNumber(cols[1]), available: toNumber(cols[3]) };
+  return toNumber(rows[rows.length - 1]?.split(/\s+/)[3]);
 }
 
 /**

@@ -17,7 +17,7 @@ export {
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
 } from "./constants";
-export { type HostFacts, HostFactsSchema, webFilterFacts } from "./facts";
+export { type HostFacts, HostFactsSchema } from "./facts";
 export { hostPlanHash } from "./hash";
 export { inspectHost } from "./inspect";
 export { isPublicAddress } from "./parse";

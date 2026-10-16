@@ -217,7 +217,6 @@ export class FakeHost implements RemoteExec {
   webFilterLog: string[] = [];
   ufwRules: UfwRule[] = [];
   ufwLog: string[] = [];
-  webUnits: string[] = [];
   firewalld = false;
   nftablesService = false;
   iptables = "";
@@ -521,9 +520,6 @@ export class FakeHost implements RemoteExec {
     add(
       "units",
       [
-        ...["nginx", "apache2", "caddy", "traefik", "haproxy", "lighttpd"].map((name) =>
-          unit(name, this.webUnits.includes(name)),
-        ),
         unit("firewalld", this.firewalld),
         unit("nftables", this.nftablesService),
         unit("docker", this.dockerRunning),
@@ -652,9 +648,6 @@ export class FakeHost implements RemoteExec {
         fileLine("dropin", WEB_FILTER_DROP_IN),
         `enabled ${this.webFilterUnit.enabled ? "enabled" : "disabled"}`,
         `active ${this.webFilterUnit.active ? "active" : "inactive"}`,
-        ...(this.installed("docker-ce")
-          ? ["iptables", "iptables-restore"].map((c) => `command ${c}`)
-          : []),
       ].join("\n"),
     );
     add(

@@ -353,7 +353,6 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     [
       "another web server on port 80",
       (fake) => {
-        fake.webUnits = ["nginx"];
         fake.listeners.push({ proto: "tcp", address: "0.0.0.0", port: 80, process: "nginx" });
       },
       "web-ports-in-use",

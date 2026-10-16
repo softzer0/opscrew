@@ -28,7 +28,6 @@ import {
   HostFactsSchema,
   type HostRecordEntry,
   type WebFilterRules,
-  webFilterFacts,
 } from "./facts";
 import { findings, privilegeFindings } from "./findings";
 import { isLoopback, majorOf, publishesPort, ufwRuleCovers, WEB_FILTER_PORTS } from "./parse";
@@ -665,7 +664,7 @@ function ufwStep({ facts, desired, found }: SetupContext): HostStep {
 
 /** OpsCrew's web filter is (partly) on the server: a file, its chain or a jump to it. */
 function webFilterPresent(facts: HostFacts): boolean {
-  const { files, rules4 } = webFilterFacts(facts);
+  const { files, rules4 } = facts.webFilter;
   return (
     files.script !== null ||
     files.unit !== null ||
@@ -699,7 +698,7 @@ const TITLE_WEB_FILTER =
  * earlier setup is removed. No step when there is no filter and none is wanted.
  */
 function webFilterStep({ facts, desired, found }: SetupContext): HostStep | undefined {
-  const wf = webFilterFacts(facts);
+  const wf = facts.webFilter;
   if (desired.webFilter === undefined) {
     if (!webFilterPresent(facts)) return undefined;
     return step(
