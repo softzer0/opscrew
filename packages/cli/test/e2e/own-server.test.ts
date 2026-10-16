@@ -13,9 +13,8 @@ import path from "node:path";
 import { readOwnServer } from "@opscrew/agents";
 import { resolveProjectPaths } from "@opscrew/core";
 import { FakeAgentRuntime } from "@opscrew/core/testing";
-import { type DeployPlan, DeployPlanSchema, RequirementsSchema } from "@opscrew/plan-schema";
+import { readArtifact } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { parse } from "yaml";
 import { withServices } from "../../src/deps";
 import { FakeEngine, FakeGitHub } from "../../src/ui/__fixtures__/deploy";
 import {
@@ -37,7 +36,15 @@ import {
   ownProvisionServices,
   ownServices,
 } from "../../src/ui/__fixtures__/own";
-import { findLeaks, listFiles, plantedSecrets, ScriptedApprovals, snapshotFiles } from "./support";
+import {
+  findLeaks,
+  initRepoWithBareOrigin,
+  listFiles,
+  plantedSecrets,
+  readPlan,
+  ScriptedApprovals,
+  snapshotFiles,
+} from "./support";
 
 const EXAMPLE = "nextjs-postgres";
 const ANSWERS = {
@@ -57,11 +64,6 @@ const ANSWERS = {
 };
 const STEP_TIMEOUT = 120_000;
 
-async function readPlan(root: string): Promise<DeployPlan> {
-  const text = await readFile(path.join(root, "opscrew", "plan.yaml"), "utf8");
-  return DeployPlanSchema.parse(parse(text));
-}
-
 /** The labelled hashes a `--plan-only` run on an own server prints. */
 function printedHashes(output: string): { infra: string; host: string } {
   const infra = /infrastructure \(Cloudflare\):\s+([0-9a-f]{64})/.exec(output)?.[1];
@@ -73,7 +75,6 @@ function printedHashes(output: string): { infra: string; host: string } {
 describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns`, () => {
   let project: TempProject;
   let inputs: Map<string, string>;
-  let bare: string;
   let host: FakeHost;
   let home: string;
   const runtime = new FakeAgentRuntime();
@@ -106,14 +107,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
     inputs = await snapshotFiles(project.root);
     host = new FakeHost();
     home = await fakeHome(project);
-    const { env, root, dir } = project;
-    await git(env, root, "init", "-q", "-b", "main");
-    await git(env, root, "add", "-A");
-    await git(env, root, "commit", "-q", "-m", "initial import");
-    bare = path.join(dir, "origin.git");
-    await git(env, dir, "init", "-q", "--bare", "-b", "main", bare);
-    await git(env, root, "remote", "add", "origin", "https://github.com/acme/nextjs-postgres.git");
-    await git(env, root, "remote", "set-url", "--push", "origin", bare);
+    await initRepoWithBareOrigin(project, "https://github.com/acme/nextjs-postgres.git");
   }, STEP_TIMEOUT);
 
   afterAll(async () => {
@@ -129,9 +123,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
       const interview = await opscrew(["interview", "--answers", answersFile]);
       expect(interview.code, interview.text).toBe(0);
       const requirementsFile = path.join(project.root, "opscrew", "requirements.yaml");
-      const requirements = RequirementsSchema.parse(
-        parse(await readFile(requirementsFile, "utf8")),
-      );
+      const requirements = await readArtifact("requirements", requirementsFile);
       expect(requirements.provider).toBe("own");
       expect(await readFile(requirementsFile, "utf8")).not.toContain(OWN_IPV4);
 

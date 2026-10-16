@@ -269,7 +269,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test`
   - Effort: high
 
-- [ ] T1031 [P] Live and e2e test harness, and rerunning chosen steps (Area 9)
+- [X] T1031 [P] Live and e2e test harness, and rerunning chosen steps (Area 9)
   - Owns: `packages/cli/test/**`, `docs/e2e.md` (how to run chosen steps), Namecheap's `detectClientIp` option (removal only)
   - Reads: Area 9
   - Depends: T1029

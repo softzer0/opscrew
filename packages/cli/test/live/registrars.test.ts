@@ -5,17 +5,13 @@
  * sets NAMECHEAP_SANDBOX=1. Registrar sandboxes get stand-in Cloudflare zones (the sandbox domains
  * do not exist), so a Cloudflare token is only used to resolve the account.
  */
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { NamecheapClient, NamecheapRegistrar } from "@opscrew/connector-namecheap";
 import { PorkbunClient, PorkbunRegistrar } from "@opscrew/connector-porkbun";
-import { NodeCommandRunner } from "@opscrew/core";
-import { materializeFixture } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { plannedProject } from "./harness";
 
 const E2E = {
   cloudflareToken: process.env.OPSCREW_E2E_CLOUDFLARE_REGISTRAR_TOKEN,
@@ -27,62 +23,13 @@ const E2E = {
   namecheapUserName: process.env.OPSCREW_E2E_NAMECHEAP_USERNAME,
   namecheapClientIp: process.env.OPSCREW_E2E_NAMECHEAP_CLIENT_IP,
 };
-const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
-const CLI = join(REPO_ROOT, "packages/cli/dist/opscrew.js");
-const EXAMPLE = join(REPO_ROOT, "examples/nextjs-postgres");
 /** The nameservers of the stand-in zones registrar sandboxes get (agents' SANDBOX_NAMESERVERS). */
 const SANDBOX_NAMESERVERS = ["ada.ns.cloudflare.com", "bob.ns.cloudflare.com"];
-const runner = new NodeCommandRunner();
 
 interface Offer {
   domain: string;
   registrable: boolean;
   firstYear?: { amount: number; currency: string };
-}
-
-/** A planned project (analyze, interview, design on the example) and a CLI runner in it. */
-async function plannedProject(registrarEnv: Record<string, string>) {
-  expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
-  const work = await mkdtemp(join(tmpdir(), "opscrew-e2e-registrar-"));
-  const repo = join(work, "repo");
-  const env: Record<string, string | undefined> = {
-    ...process.env,
-    CI: "1",
-    OPSCREW_HOME: join(work, "home"),
-    CLOUDFLARE_API_TOKEN: E2E.cloudflareToken,
-    ...registrarEnv,
-  };
-  for (const name of Object.keys(env)) if (name.startsWith("OPSCREW_E2E_")) delete env[name];
-  for (const name of ["HCLOUD_TOKEN", "DIGITALOCEAN_TOKEN", "DIGITALOCEAN_ACCESS_TOKEN"]) {
-    delete env[name];
-  }
-  await materializeFixture(EXAMPLE, repo);
-  await runner.run("git", ["-C", repo, "init", "-q"], { env });
-  const opscrew = async (...args: string[]) => {
-    const result = await runner.run(process.execPath, [CLI, ...args], {
-      cwd: repo,
-      env,
-      timeoutMs: 10 * 60_000,
-    });
-    return { ...result, output: `${result.stdout}\n${result.stderr}` };
-  };
-  expect((await opscrew("analyze", "--no-ai")).exitCode).toBe(0);
-  await writeFile(
-    join(work, "answers.json"),
-    JSON.stringify({
-      expectedMonthlyUsers: "<1k",
-      budgetMonthly: 20,
-      provider: "hetzner",
-      region: "eu-central",
-      uptime: "best-effort",
-      dataCriticality: "important",
-      dnsProvider: "none",
-      keepExternalServices: [],
-    }),
-  );
-  expect((await opscrew("interview", "--answers", join(work, "answers.json"))).exitCode).toBe(0);
-  expect((await opscrew("design")).exitCode).toBe(0);
-  return { repo, opscrew };
 }
 
 /** `domain search --registrar <id> --json` for `domain`, returning its row (if listed). */
@@ -121,6 +68,7 @@ describe.skipIf(!porkbunReady)("live registrar purchase (Porkbun sandbox)", () =
     expect(reset.ok, `sandbox reset: HTTP ${reset.status}`).toBe(true);
 
     const { repo, opscrew } = await plannedProject({
+      CLOUDFLARE_API_TOKEN: E2E.cloudflareToken,
       PORKBUN_API_KEY: apiKey,
       PORKBUN_SECRET_API_KEY: secretApiKey,
     });
@@ -240,20 +188,17 @@ describe.skipIf(!namecheapReady)("live registrar purchase (Namecheap sandbox)", 
       ...(E2E.namecheapUserName ? { NAMECHEAP_USERNAME: E2E.namecheapUserName } : {}),
       ...(E2E.namecheapClientIp ? { NAMECHEAP_CLIENT_IP: E2E.namecheapClientIp } : {}),
     };
-    const { repo, opscrew } = await plannedProject(namecheapEnv);
+    const { repo, opscrew } = await plannedProject({
+      CLOUDFLARE_API_TOKEN: E2E.cloudflareToken,
+      ...namecheapEnv,
+    });
+    // Without OPSCREW_E2E_NAMECHEAP_CLIENT_IP the client finds this computer's IPv4 itself.
     const client = new NamecheapClient({
       apiUser: namecheapEnv.NAMECHEAP_API_USER as string,
       apiKey: namecheapEnv.NAMECHEAP_API_KEY as string,
       sandbox: true,
       ...(E2E.namecheapUserName ? { userName: E2E.namecheapUserName } : {}),
-      ...(E2E.namecheapClientIp
-        ? { clientIp: E2E.namecheapClientIp }
-        : {
-            detectClientIp: async () => {
-              const trace = await (await fetch("https://www.cloudflare.com/cdn-cgi/trace")).text();
-              return /^ip=(.*)$/m.exec(trace)?.[1]?.trim() ?? "";
-            },
-          }),
+      ...(E2E.namecheapClientIp ? { clientIp: E2E.namecheapClientIp } : {}),
     });
     // API access, whitelisting and the balance (users.getBalances).
     const balance = await client.getBalances();

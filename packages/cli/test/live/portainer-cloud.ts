@@ -1,190 +1,23 @@
 /**
- * Network helpers of the Portainer live test (`portainer-target.test.ts`): the throwaway Hetzner
- * server with its firewall, the test's own calls to Portainer (setup as "the user", observations,
- * the decoys; always with the certificate pinned), what OpsCrew creates in Cloudflare for an app
- * in a Portainer, a few GitHub reads, GHCR's token endpoint, plain HTTP probes and an MCP client
- * session with the built CLI. Nothing here prints; the test masks everything it logs.
+ * Network helpers of the Portainer live test (`portainer-target.test.ts`): the test's own calls to
+ * Portainer (setup as "the user", observations, the decoys; always with the certificate pinned),
+ * the zone rulesets it compares and the DNS record it creates in Cloudflare, a few GitHub reads,
+ * GHCR's token endpoint, the test computer's public address and an MCP client session with the
+ * built CLI. Nothing here prints; the test masks everything it logs.
  */
-import { request as nodeHttpRequest } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { type PinnedRequest, pinnedRequest } from "@opscrew/connector-portainer";
 import {
-  type ApiResult,
   api,
   type Cloudflare,
-  type CloudflareAppResources,
   type CloudflareZone,
-  deleteThrowaway,
   GITHUB_API,
   type GitHubRepo,
-  HETZNER_API,
-  type HttpsAnswer,
-  hetznerLabels,
   minutes,
-  retryDelete,
-  sleep,
-  type ThrowawayServer,
-  type ZoneRuleset,
-} from "./own-cloud";
-import { type HetznerServerType, hetznerIpv6Address, serverCandidates } from "./own-support";
-import { firewallRules, logErrors } from "./portainer-support";
-
-// ---------------------------------------------------------------------------------------------
-// Hetzner: the throwaway server with its firewall, created outside OpsCrew.
-
-/**
- * Creates the throwaway server the test installs Portainer on: a firewall that opens Portainer's
- * port only to the test computer (`firewallRules`), the test's SSH key, then the cheapest x86
- * server type in the nearby locations that Hetzner accepts (Ubuntu 24.04, IPv4 and IPv6). The ids
- * are reported at once (`onFirewall`, `onKey`, `onServer`) so cleanup finds them after a failure.
- */
-export async function createPortainerServer(options: {
-  token: string;
-  runId: string;
-  publicKey: string;
-  locations: readonly string[];
-  forcedType?: string;
-  testIpv4: string;
-  onFirewall: (id: number) => void;
-  onKey: (id: number) => void;
-  onServer: (id: number) => void;
-  log: (message: string) => void;
-}): Promise<ThrowawayServer> {
-  const hetzner = (method: string, path: string, body?: unknown) =>
-    api(HETZNER_API, options.token, method, path, body);
-  const name = `opscrew-e2e-portainer-${options.runId}`;
-  const labels = hetznerLabels(options.runId);
-
-  const firewall = await hetzner("POST", "/firewalls", {
-    name,
-    labels,
-    rules: firewallRules(options.testIpv4),
-  });
-  const firewallId = (firewall.json as { firewall?: { id: number } } | undefined)?.firewall?.id;
-  if (firewall.status !== 201 || firewallId === undefined) {
-    throw new Error(`Hetzner refused the test's firewall (HTTP ${firewall.status}).`);
-  }
-  options.onFirewall(firewallId);
-
-  const key = await hetzner("POST", "/ssh_keys", { name, public_key: options.publicKey, labels });
-  const keyId = (key.json as { ssh_key?: { id: number } } | undefined)?.ssh_key?.id;
-  if (key.status !== 201 || keyId === undefined) {
-    throw new Error(`Hetzner refused the test's SSH key (HTTP ${key.status}).`);
-  }
-  options.onKey(keyId);
-
-  const types = await hetzner("GET", "/server_types?per_page=50");
-  const list = (types.json as { server_types?: HetznerServerType[] } | undefined)?.server_types;
-  if (types.status !== 200 || list === undefined) {
-    throw new Error(`Could not list Hetzner server types (HTTP ${types.status}).`);
-  }
-  const candidates = serverCandidates(list, options.locations, options.forcedType).slice(0, 8);
-  if (candidates.length === 0) {
-    throw new Error(
-      `No x86 server type${options.forcedType ? ` named ${options.forcedType}` : ""} is offered in ${options.locations.join(", ")}.`,
-    );
-  }
-  const refusals: string[] = [];
-  for (const candidate of candidates) {
-    options.log(
-      `creating a ${candidate.serverType} server in ${candidate.location} (${candidate.hourlyGross.toFixed(4)} EUR an hour)`,
-    );
-    const created = await hetzner("POST", "/servers", {
-      name,
-      server_type: candidate.serverType,
-      image: "ubuntu-24.04",
-      location: candidate.location,
-      ssh_keys: [keyId],
-      firewalls: [{ firewall: firewallId }],
-      labels,
-      public_net: { enable_ipv4: true, enable_ipv6: true },
-      start_after_create: true,
-    });
-    const server = (created.json as { server?: { id: number } } | undefined)?.server;
-    if (created.status === 201 && server !== undefined) {
-      options.onServer(server.id);
-      return { ...(await waitUntilRunning(hetzner, server.id, options.log)), name, ...candidate };
-    }
-    const error = (created.json as { error?: { code?: string } } | undefined)?.error?.code;
-    refusals.push(`${candidate.serverType} in ${candidate.location}: ${error ?? created.status}`);
-  }
-  throw new Error(`Hetzner created no server: ${refusals.join("; ")}.`);
-}
-
-async function waitUntilRunning(
-  hetzner: (method: string, path: string) => Promise<ApiResult>,
-  id: number,
-  log: (message: string) => void,
-): Promise<{ id: number; ipv4: string; ipv6?: string; ipv6Network?: string }> {
-  log("waiting for the server to run (up to 5 minutes)");
-  const deadline = Date.now() + minutes(5);
-  while (Date.now() < deadline) {
-    const got = await hetzner("GET", `/servers/${id}`);
-    const server = (
-      got.json as
-        | {
-            server?: {
-              status: string;
-              public_net: { ipv4?: { ip: string } | null; ipv6?: { ip: string } | null };
-            };
-          }
-        | undefined
-    )?.server;
-    const ipv4 = server?.public_net.ipv4?.ip;
-    if (server?.status === "running" && ipv4 !== undefined) {
-      const network = server.public_net.ipv6?.ip;
-      return {
-        id,
-        ipv4,
-        ...(network === undefined
-          ? {}
-          : { ipv6: hetznerIpv6Address(network), ipv6Network: network.replace(/\/\d+$/, "") }),
-      };
-    }
-    await sleep(5_000);
-  }
-  throw new Error("The throwaway server did not reach the running state within 5 minutes.");
-}
-
-/**
- * Deletes the throwaway server and SSH key (`deleteThrowaway`), then its firewall (the known id
- * and anything labelled with this run, never anything else), which Hetzner frees only once the
- * server is gone. Returns problems.
- */
-export async function deletePortainerThrowaway(options: {
-  token: string;
-  runId: string;
-  serverId?: number;
-  keyId?: number;
-  firewallId?: number;
-}): Promise<string[]> {
-  const problems = await deleteThrowaway({
-    token: options.token,
-    runId: options.runId,
-    ...(options.serverId === undefined ? {} : { serverId: options.serverId }),
-    ...(options.keyId === undefined ? {} : { keyId: options.keyId }),
-  });
-  const hetzner = (method: string, path: string) => api(HETZNER_API, options.token, method, path);
-  const selector = encodeURIComponent(`managed-by=opscrew-e2e,run=${options.runId}`);
-  const listed = await hetzner("GET", `/firewalls?label_selector=${selector}`);
-  const ids = new Set(
-    ((listed.json as { firewalls?: { id: number }[] } | undefined)?.firewalls ?? []).map(
-      (item) => item.id,
-    ),
-  );
-  if (options.firewallId !== undefined) ids.add(options.firewallId);
-  for (const id of ids) {
-    // A firewall stays "in use" for a little while after its server is deleted.
-    let deleted = false;
-    for (let attempt = 0; attempt < 3 && !deleted; attempt++) {
-      deleted = await retryDelete(() => hetzner("DELETE", `/firewalls/${id}`));
-    }
-    if (!deleted) problems.push(`Hetzner did not delete firewall ${id}`);
-  }
-  return problems;
-}
+} from "./cloud";
+import { logErrors } from "./portainer-support";
 
 // ---------------------------------------------------------------------------------------------
 // Portainer: the test's own calls, always with the certificate pinned.
@@ -285,58 +118,7 @@ export class PortainerApi {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Cloudflare: what OpsCrew creates for an app in a Portainer (iac-templates infra/portainer.ts).
-
-interface Named {
-  id: string;
-  name: string;
-}
-
-/**
- * What OpsCrew may have created in Cloudflare for `app` in a Portainer: DNS records on
- * `hostnames`, the tunnels `opscrew-<app>` (the app) and `opscrew-<app>-portainer` (the webhook),
- * the Access application `OpsCrew Portainer webhook (<app>)`, the policy and service token
- * `OpsCrew deploy (<app>)`, and the zone's rulesets (all of them, for the snapshot before the run;
- * `Cloudflare.removeCreated` deletes only the run's). Never the Zero Trust organization.
- */
-export async function portainerAppResources(
-  cloudflare: Cloudflare,
-  zone: CloudflareZone,
-  app: string,
-  hostnames: readonly string[],
-): Promise<CloudflareAppResources> {
-  const records = (
-    await cloudflare.list<Named & { type: string }>(`/zones/${zone.id}/dns_records`)
-  ).filter((record) => hostnames.includes(record.name));
-  const account = `/accounts/${zone.accountId}`;
-  const tunnelNames = [`opscrew-${app}`, `opscrew-${app}-portainer`];
-  const tunnels: Named[] = [];
-  for (const name of tunnelNames) {
-    const found = await cloudflare.list<Named>(
-      `${account}/cfd_tunnel?is_deleted=false&name=${encodeURIComponent(name)}`,
-    );
-    tunnels.push(...found.filter((tunnel) => tunnel.name === name));
-  }
-  const apps = (await cloudflare.list<Named>(`${account}/access/apps`)).filter(
-    (item) => item.name === `OpsCrew Portainer webhook (${app})`,
-  );
-  const policies = (await cloudflare.list<Named>(`${account}/access/policies`)).filter(
-    (item) => item.name === `OpsCrew deploy (${app})`,
-  );
-  const serviceTokens = (await cloudflare.list<Named>(`${account}/access/service_tokens`)).filter(
-    (item) => item.name === `OpsCrew deploy (${app})`,
-  );
-  const listed = await cloudflare.call("GET", `/zones/${zone.id}/rulesets`);
-  const rulesets = (listed.json as { result?: ZoneRuleset[] } | undefined)?.result;
-  return {
-    records,
-    tunnels,
-    apps,
-    policies,
-    serviceTokens,
-    ...(listed.status === 200 && Array.isArray(rulesets) ? { rulesets } : {}),
-  };
-}
+// Cloudflare: the zone's rulesets before and after the run, and the record the user creates.
 
 /**
  * The rules of a zone ruleset in a comparable form (each rule's id, expression, action, its
@@ -588,47 +370,15 @@ export async function ghcrPullStatus(
   return response.status;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Probes from this computer.
-
-/** The test computer's public IPv4 address, from Cloudflare's trace on 1.1.1.1. */
-export async function traceText(): Promise<string> {
+/** The test computer's public IPv4 address, from Cloudflare's trace on 1.1.1.1 (`ip=<address>`). */
+export async function publicIpv4(): Promise<string> {
   const response = await fetch("https://1.1.1.1/cdn-cgi/trace", {
     headers: { "User-Agent": "opscrew-e2e" },
   });
   if (!response.ok) throw new Error(`Cloudflare's trace answered HTTP ${response.status}.`);
-  return response.text();
-}
-
-/** A plain HTTP request (web mode `proxy`: Caddy on the Portainer host's port). */
-export function httpGet(
-  url: string,
-  options: { timeoutMs?: number; headers?: Record<string, string> } = {},
-): Promise<HttpsAnswer> {
-  return new Promise((resolve, reject) => {
-    const req = nodeHttpRequest(
-      new URL(url),
-      {
-        method: "GET",
-        headers: { "User-Agent": "opscrew-e2e", ...options.headers },
-        timeout: options.timeoutMs ?? 15_000,
-      },
-      (response) => {
-        let body = "";
-        response.setEncoding("utf8");
-        response.on("data", (chunk: string) => {
-          if (body.length < 100_000) body += chunk;
-        });
-        response.on("end", () =>
-          resolve({ status: response.statusCode ?? 0, headers: response.headers, body }),
-        );
-        response.on("error", reject);
-      },
-    );
-    req.on("timeout", () => req.destroy(new Error("The request timed out.")));
-    req.on("error", reject);
-    req.end();
-  });
+  const ip = /^ip=(\d{1,3}(?:\.\d{1,3}){3})$/m.exec(await response.text())?.[1];
+  if (ip === undefined) throw new Error("Could not read this computer's public IPv4 address.");
+  return ip;
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -1,15 +1,16 @@
 /**
- * Network helpers of the own-server live test (`own-server.test.ts`): the throwaway Hetzner server
- * it creates outside OpsCrew, the Cloudflare resources OpsCrew creates for the app (listed, and
- * removed only when this run created them), GitHub pull requests and workflow runs, TCP and HTTPS
- * probes, and root SSH to the server with the test's own key. Nothing here prints; the test masks
- * everything it logs.
+ * Network helpers of the live tests: the throwaway Hetzner server they create outside OpsCrew
+ * (with its own SSH key and, for the Portainer test, a firewall), the Cloudflare resources OpsCrew
+ * creates for an app (listed, and removed only when this run created them), the throwaway GitHub
+ * repository, TCP and HTTP probes, and root SSH to the server with the test's own key. Nothing
+ * here prints; the tests mask everything they log.
  */
 import { Resolver } from "node:dns";
+import { request as nodeHttpRequest } from "node:http";
 import { request as nodeHttpsRequest } from "node:https";
 import { connect, type LookupFunction } from "node:net";
 import type { CommandResult, CommandRunner } from "@opscrew/contracts";
-import { type HetznerServerType, hetznerIpv6Address, serverCandidates } from "./own-support";
+import { type HetznerServerType, hetznerIpv6Address, serverCandidates } from "./support";
 
 export const HETZNER_API = "https://api.hetzner.cloud/v1";
 export const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
@@ -79,42 +80,64 @@ export interface ThrowawayServer {
   ipv6Network?: string;
 }
 
-/** Labels on everything the test creates at Hetzner; cleanup deletes only `run=<runId>`. */
-export function hetznerLabels(runId: string): Record<string, string> {
-  return { "managed-by": "opscrew-e2e", run: runId };
+/** One inbound rule of a Hetzner Cloud firewall. */
+export interface FirewallRule {
+  direction: "in";
+  protocol: "tcp" | "udp";
+  port: string;
+  source_ips: string[];
+  description: string;
+}
+
+/** The ids of what the test created at Hetzner, recorded at once so cleanup finds them. */
+export interface HetznerIds {
+  serverId?: number;
+  keyId?: number;
+  firewallId?: number;
 }
 
 /**
- * Creates the throwaway server: uploads the test's public key, then tries the cheapest x86 server
- * types in the nearby locations until Hetzner accepts one (Ubuntu 24.04, IPv4 and IPv6), and waits
- * until it runs. `onKey` and `onServer` record the ids at once, so cleanup finds them even when a
- * later step fails.
+ * Creates the throwaway server `name`: its firewall first when `firewall` is given, then the
+ * test's public key, then the cheapest x86 server types in the nearby locations until Hetzner
+ * accepts one (Ubuntu 24.04, IPv4 and IPv6), and waits until it runs. Each id goes into `ids` as
+ * soon as Hetzner returns it, so cleanup finds it even when a later step fails. Everything carries
+ * the labels `managed-by=opscrew-e2e` and `run=<runId>`; cleanup deletes only those.
  */
 export async function createThrowawayServer(options: {
   token: string;
   runId: string;
+  name: string;
   publicKey: string;
   locations: readonly string[];
   forcedType?: string;
-  onKey: (id: number) => void;
-  onServer: (id: number) => void;
+  firewall?: readonly FirewallRule[];
+  ids: HetznerIds;
   log: (message: string) => void;
 }): Promise<ThrowawayServer> {
   const hetzner = (method: string, path: string, body?: unknown) =>
     api(HETZNER_API, options.token, method, path, body);
-  const name = `opscrew-e2e-own-${options.runId}`;
-  const labels = hetznerLabels(options.runId);
+  const { name } = options;
+  const labels = { "managed-by": "opscrew-e2e", run: options.runId };
 
-  const key = await hetzner("POST", "/ssh_keys", {
-    name,
-    public_key: options.publicKey,
-    labels,
-  });
+  if (options.firewall !== undefined) {
+    const firewall = await hetzner("POST", "/firewalls", {
+      name,
+      labels,
+      rules: options.firewall,
+    });
+    const firewallId = (firewall.json as { firewall?: { id: number } } | undefined)?.firewall?.id;
+    if (firewall.status !== 201 || firewallId === undefined) {
+      throw new Error(`Hetzner refused the test's firewall (HTTP ${firewall.status}).`);
+    }
+    options.ids.firewallId = firewallId;
+  }
+
+  const key = await hetzner("POST", "/ssh_keys", { name, public_key: options.publicKey, labels });
   const keyId = (key.json as { ssh_key?: { id: number } } | undefined)?.ssh_key?.id;
   if (key.status !== 201 || keyId === undefined) {
     throw new Error(`Hetzner refused the test's SSH key (HTTP ${key.status}).`);
   }
-  options.onKey(keyId);
+  options.ids.keyId = keyId;
 
   const types = await hetzner("GET", "/server_types?per_page=50");
   const list = (types.json as { server_types?: HetznerServerType[] } | undefined)?.server_types;
@@ -138,13 +161,16 @@ export async function createThrowawayServer(options: {
       image: "ubuntu-24.04",
       location: candidate.location,
       ssh_keys: [keyId],
+      ...(options.ids.firewallId === undefined
+        ? {}
+        : { firewalls: [{ firewall: options.ids.firewallId }] }),
       labels,
       public_net: { enable_ipv4: true, enable_ipv6: true },
       start_after_create: true,
     });
     const server = (created.json as { server?: { id: number } } | undefined)?.server;
     if (created.status === 201 && server !== undefined) {
-      options.onServer(server.id);
+      options.ids.serverId = server.id;
       return { ...(await waitUntilRunning(hetzner, server.id, options.log)), name, ...candidate };
     }
     const error = (created.json as { error?: { code?: string } } | undefined)?.error?.code;
@@ -180,10 +206,7 @@ async function waitUntilRunning(
         ipv4,
         ...(network === undefined
           ? {}
-          : {
-              ipv6: hetznerIpv6Address(network),
-              ipv6Network: network.replace(/\/\d+$/, ""),
-            }),
+          : { ipv6: hetznerIpv6Address(network), ipv6Network: network.replace(/\/\d+$/, "") }),
       };
     }
     await sleep(5_000);
@@ -192,26 +215,28 @@ async function waitUntilRunning(
 }
 
 /**
- * Deletes the throwaway server and SSH key: the known ids plus anything labelled with this run
- * (never anything else), then checks that nothing with the run's label is left. Returns problems.
+ * Deletes the throwaway server, its SSH key and its firewall: the known ids plus anything
+ * labelled with this run (never anything else), then checks that no server or key with the run's
+ * label is left. The firewall goes last: Hetzner frees it only once the server is gone. Returns
+ * problems.
  */
 export async function deleteThrowaway(options: {
   token: string;
   runId: string;
-  serverId?: number;
-  keyId?: number;
+  ids: HetznerIds;
 }): Promise<string[]> {
   const hetzner = (method: string, path: string) => api(HETZNER_API, options.token, method, path);
   const selector = encodeURIComponent(`managed-by=opscrew-e2e,run=${options.runId}`);
+  const labelled = async (kind: string) => {
+    const listed = await hetzner("GET", `/${kind}?label_selector=${selector}`);
+    return ((listed.json as Record<string, { id: number }[]> | undefined)?.[kind] ?? []).map(
+      (item) => item.id,
+    );
+  };
   const problems: string[] = [];
   for (const kind of ["servers", "ssh_keys"] as const) {
-    const listed = await hetzner("GET", `/${kind}?label_selector=${selector}`);
-    const ids = new Set(
-      ((listed.json as Record<string, { id: number }[]> | undefined)?.[kind] ?? []).map(
-        (item) => item.id,
-      ),
-    );
-    const known = kind === "servers" ? options.serverId : options.keyId;
+    const ids = new Set(await labelled(kind));
+    const known = kind === "servers" ? options.ids.serverId : options.ids.keyId;
     if (known !== undefined) ids.add(known);
     for (const id of ids) {
       if (!(await retryDelete(() => hetzner("DELETE", `/${kind}/${id}`)))) {
@@ -236,6 +261,16 @@ export async function deleteThrowaway(options: {
         `${remaining.length} ${what} labelled run=${options.runId} may be left; check the Hetzner project`,
       );
     }
+  }
+  const firewalls = new Set(await labelled("firewalls"));
+  if (options.ids.firewallId !== undefined) firewalls.add(options.ids.firewallId);
+  for (const id of firewalls) {
+    // A firewall stays "in use" for a little while after its server is deleted.
+    let deleted = false;
+    for (let attempt = 0; attempt < 3 && !deleted; attempt++) {
+      deleted = await retryDelete(() => hetzner("DELETE", `/firewalls/${id}`));
+    }
+    if (!deleted) problems.push(`Hetzner did not delete firewall ${id}`);
   }
   return problems;
 }
@@ -311,6 +346,26 @@ export function rulesetOfRun(ruleset: Omit<ZoneRuleset, "id">, hostnames: readon
   });
 }
 
+/**
+ * What of the app is still in Cloudflare after a destroy: every DNS record on its hostnames, and
+ * the tunnels, Access applications, policies and service tokens that were not there before the
+ * run (by name). All lists are empty when the destroy removed everything.
+ */
+export function cloudflareLeft(
+  now: CloudflareAppResources,
+  before: CloudflareAppResources,
+): Record<string, string[]> {
+  const fresh = (items: Named[], old: Named[]) =>
+    items.filter((item) => !old.some((o) => o.id === item.id)).map((item) => item.name);
+  return {
+    records: now.records.map((record) => `${record.type} ${record.name}`),
+    tunnels: fresh(now.tunnels, before.tunnels),
+    apps: fresh(now.apps, before.apps),
+    policies: fresh(now.policies, before.policies),
+    serviceTokens: fresh(now.serviceTokens, before.serviceTokens),
+  };
+}
+
 /** A Cloudflare API client for one token. */
 export class Cloudflare {
   constructor(private readonly token: string) {}
@@ -355,11 +410,12 @@ export class Cloudflare {
   }
 
   /**
-   * What OpsCrew creates for `app` (modules/cloudflare-dns, -tunnel and -access): DNS records on
-   * `hostnames`, the tunnel `opscrew-<app>`, the Access applications and policies
-   * `OpsCrew SSH|Portainer|deploy (<app>)`, the service token `OpsCrew deploy (<app>)` and the
-   * zone's rulesets (all of them, for the snapshot; `removeCreated` deletes only the run's). Never
-   * the Zero Trust organization.
+   * What OpsCrew creates for `app` on a server or in a Portainer (modules/cloudflare-dns, -tunnel
+   * and -access): DNS records on `hostnames`, the tunnels `opscrew-<app>` and
+   * `opscrew-<app>-portainer`, the Access applications `OpsCrew SSH|Portainer|Portainer webhook
+   * (<app>)`, the policies `OpsCrew deploy|Portainer (<app>)`, the service token `OpsCrew deploy
+   * (<app>)` and the zone's rulesets (all of them, for the snapshot; `removeCreated` deletes only
+   * the run's). Never the Zero Trust organization.
    */
   async appResources(
     zone: CloudflareZone,
@@ -370,10 +426,18 @@ export class Cloudflare {
       await this.list<Named & { type: string }>(`/zones/${zone.id}/dns_records`)
     ).filter((record) => hostnames.includes(record.name));
     const account = `/accounts/${zone.accountId}`;
-    const tunnels = await this.list<Named>(
-      `${account}/cfd_tunnel?is_deleted=false&name=${encodeURIComponent(`opscrew-${app}`)}`,
-    );
-    const appNames = [`OpsCrew SSH (${app})`, `OpsCrew Portainer (${app})`];
+    const tunnels: Named[] = [];
+    for (const name of [`opscrew-${app}`, `opscrew-${app}-portainer`]) {
+      const found = await this.list<Named>(
+        `${account}/cfd_tunnel?is_deleted=false&name=${encodeURIComponent(name)}`,
+      );
+      tunnels.push(...found.filter((tunnel) => tunnel.name === name));
+    }
+    const appNames = [
+      `OpsCrew SSH (${app})`,
+      `OpsCrew Portainer (${app})`,
+      `OpsCrew Portainer webhook (${app})`,
+    ];
     const policyNames = [`OpsCrew deploy (${app})`, `OpsCrew Portainer (${app})`];
     const apps = (await this.list<Named>(`${account}/access/apps`)).filter((a) =>
       appNames.includes(a.name),
@@ -389,7 +453,7 @@ export class Cloudflare {
       ?.result;
     return {
       records,
-      tunnels: tunnels.filter((t) => t.name === `opscrew-${app}`),
+      tunnels,
       apps,
       policies,
       serviceTokens,
@@ -476,6 +540,13 @@ export class Cloudflare {
 // ---------------------------------------------------------------------------------------------
 // GitHub: the throwaway repository's pull requests and deploy runs.
 
+/** A completed deploy workflow run and its jobs' conclusions. */
+export interface DeployRun {
+  id: number;
+  conclusion: string | null;
+  jobs: { name: string; conclusion: string | null }[];
+}
+
 /** A GitHub API client for the throwaway repository. */
 export class GitHubRepo {
   constructor(
@@ -519,18 +590,25 @@ export class GitHubRepo {
     return { status: second.status, text: second.status === 200 ? text : "" };
   }
 
-  /** Closes every open pull request and deletes every branch but `main` (as live.test.ts does). */
+  /**
+   * Closes every open pull request and deletes every branch but `main`, so branches and pull
+   * requests of an earlier run never change this one. Throws, after trying every branch, when
+   * GitHub kept one.
+   */
   async reset(): Promise<void> {
     const pulls = await this.call("GET", `/repos/${this.name}/pulls?state=open&per_page=100`);
     for (const pull of (pulls.json as { number: number }[] | undefined) ?? []) {
       await this.call("PATCH", `/repos/${this.name}/pulls/${pull.number}`, { state: "closed" });
     }
     const branches = await this.call("GET", `/repos/${this.name}/branches?per_page=100`);
+    const kept: string[] = [];
     for (const branch of (branches.json as { name: string }[] | undefined) ?? []) {
       if (branch.name === "main") continue;
       const ref = branch.name.split("/").map(encodeURIComponent).join("/");
-      await this.call("DELETE", `/repos/${this.name}/git/refs/heads/${ref}`);
+      const deleted = await this.call("DELETE", `/repos/${this.name}/git/refs/heads/${ref}`);
+      if (deleted.status !== 204) kept.push(`${branch.name} (HTTP ${deleted.status})`);
     }
+    if (kept.length > 0) throw new Error(`GitHub did not delete the branches ${kept.join(", ")}.`);
   }
 
   /** The open pull request from `head` (a branch of this repository), if there is one. */
@@ -541,6 +619,21 @@ export class GitHubRepo {
       `/repos/${this.name}/pulls?state=open&head=${owner}:${encodeURIComponent(head)}`,
     );
     return (list.json as { number: number }[] | undefined)?.[0]?.number;
+  }
+
+  /** Opens a pull request from `head` to `main` and returns its number. */
+  async createPullRequest(title: string, head: string): Promise<number> {
+    const opened = await this.call("POST", `/repos/${this.name}/pulls`, {
+      title,
+      head,
+      base: "main",
+      body: "Opened by an OpsCrew live test.",
+    });
+    const number = (opened.json as { number?: number } | undefined)?.number;
+    if (opened.status !== 201 || number === undefined) {
+      throw new Error(`GitHub did not open the pull request "${title}" (HTTP ${opened.status}).`);
+    }
+    return number;
   }
 
   /**
@@ -587,11 +680,7 @@ export class GitHubRepo {
   async waitForDeploy(
     filter: { headSha: string; event?: string; since?: Date },
     timeoutMs = minutes(30),
-  ): Promise<{
-    id: number;
-    conclusion: string | null;
-    jobs: { name: string; conclusion: string | null }[];
-  }> {
+  ): Promise<DeployRun> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const runs = await this.call(
@@ -632,9 +721,9 @@ export class GitHubRepo {
     throw new Error(`The deploy workflow run did not finish within ${timeoutMs / 60_000} minutes.`);
   }
 
-  /** Title and body of every pull request opened at or after `since`. */
-  async pullRequestTexts(since: Date): Promise<{ number: number; text: string }[]> {
-    const texts: { number: number; text: string }[] = [];
+  /** Title, body and opening time of every pull request of the repository (any state). */
+  async pullRequestTexts(): Promise<{ number: number; text: string; createdAt: Date }[]> {
+    const texts: { number: number; text: string; createdAt: Date }[] = [];
     for (let page = 1; page <= 20; page++) {
       const pulls = await this.call(
         "GET",
@@ -649,9 +738,11 @@ export class GitHubRepo {
         created_at: string;
       }[];
       for (const pull of list) {
-        if (new Date(pull.created_at) >= since) {
-          texts.push({ number: pull.number, text: `${pull.title}\n${pull.body ?? ""}` });
-        }
+        texts.push({
+          number: pull.number,
+          text: `${pull.title}\n${pull.body ?? ""}`,
+          createdAt: new Date(pull.created_at),
+        });
       }
       if (list.length < 100) break;
     }
@@ -707,20 +798,20 @@ const publicLookup = ((
   });
 }) as unknown as LookupFunction;
 
-/** An HTTPS answer: status, headers and body. */
-export interface HttpsAnswer {
+/** An HTTP answer: status, headers and body. */
+export interface HttpAnswer {
   status: number;
   headers: Record<string, string | string[] | undefined>;
   body: string;
 }
 
 /**
- * An HTTPS request. Names are resolved through Cloudflare's public resolver (so a just-changed
- * DNS record is seen at once), except `localhost`. `insecure` accepts a self-signed certificate
- * and is allowed only for `localhost` (Portainer through the SSH tunnel). Rejects on network
- * errors and after `timeoutMs`.
+ * An HTTP or HTTPS request. Names are resolved through Cloudflare's public resolver (so a
+ * just-changed DNS record is seen at once), except `localhost`. `insecure` accepts a self-signed
+ * certificate and is allowed only for `localhost` (Portainer through the SSH tunnel). Rejects on
+ * network errors and after `timeoutMs`.
  */
-export function httpsRequest(
+export function httpRequest(
   url: string,
   options: {
     method?: string;
@@ -729,14 +820,15 @@ export function httpsRequest(
     insecure?: boolean;
     timeoutMs?: number;
   } = {},
-): Promise<HttpsAnswer> {
+): Promise<HttpAnswer> {
   const target = new URL(url);
   const local = target.hostname === "localhost" || target.hostname === "127.0.0.1";
   if (options.insecure === true && !local) {
     throw new Error("Only localhost may be reached without checking its certificate.");
   }
+  const send = target.protocol === "http:" ? nodeHttpRequest : nodeHttpsRequest;
   return new Promise((resolve, reject) => {
-    const req = nodeHttpsRequest(
+    const req = send(
       target,
       {
         method: options.method ?? "GET",
@@ -797,6 +889,21 @@ export async function waitFor<T>(
     }
     await sleep(intervalMs);
   }
+}
+
+/**
+ * Waits up to 5 minutes until `url` (a hostname behind Cloudflare Access) refuses a request
+ * without the service token: 401 or 403, or a redirect to the Access login. Returns the status.
+ */
+export function waitForAccessRefusal(url: string): Promise<number> {
+  return waitFor(`${new URL(url).hostname} behind Cloudflare Access`, minutes(5), async () => {
+    const answer = await httpRequest(url);
+    const location = String(answer.headers.location ?? "");
+    return [401, 403].includes(answer.status) ||
+      (answer.status >= 300 && answer.status < 400 && location.includes("cloudflareaccess.com"))
+      ? answer.status
+      : undefined;
+  });
 }
 
 // ---------------------------------------------------------------------------------------------

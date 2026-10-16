@@ -41,13 +41,11 @@ export interface NamecheapClientOptions {
   apiKey: string;
   /** The account the commands act on; defaults to `apiUser`. */
   userName?: string;
-  /** Public IPv4 of this computer (`NAMECHEAP_CLIENT_IP`); must be on the API whitelist. */
-  clientIp?: string;
   /**
-   * Finds this computer's public IPv4 when `clientIp` is not set; called once per client
-   * (default: the `ip=` line of Cloudflare's trace page, read with `fetch`).
+   * Public IPv4 of this computer (`NAMECHEAP_CLIENT_IP`); must be on the API whitelist. When it
+   * is not set, the client reads it once from the `ip=` line of Cloudflare's trace page.
    */
-  detectClientIp?: () => Promise<string>;
+  clientIp?: string;
   /** Use Namecheap's sandbox (`NAMECHEAP_SANDBOX=1`). */
   sandbox?: boolean;
   fetch?: FetchLike;
@@ -210,7 +208,6 @@ export class NamecheapClient {
   readonly #apiKey: string;
   readonly #userName: string;
   readonly #fixedIp: string | undefined;
-  readonly #detect: () => Promise<string>;
   readonly #endpoint: string;
   readonly #fetch: FetchLike;
   readonly #sleep: (ms: number) => Promise<void>;
@@ -222,7 +219,6 @@ export class NamecheapClient {
     this.#apiKey = options.apiKey.trim();
     this.#userName = options.userName?.trim() || this.#apiUser;
     this.#fixedIp = options.clientIp?.trim() || undefined;
-    this.#detect = options.detectClientIp ?? (() => tracedIp(this.#fetch, this.#timeoutMs));
     this.sandbox = options.sandbox ?? false;
     this.#endpoint = this.sandbox ? NAMECHEAP_SANDBOX_API : NAMECHEAP_API;
     this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -236,8 +232,8 @@ export class NamecheapClient {
   }
 
   /**
-   * The `ClientIp` sent with every call: the configured address, else the detected one (detected
-   * once per client, see `detectClientIp`). Namecheap accepts IPv4 only.
+   * The `ClientIp` sent with every call: the configured address, else the one Cloudflare's trace
+   * page reports (read once per client). Namecheap accepts IPv4 only.
    */
   async clientIp(): Promise<string> {
     const setIt = `Set NAMECHEAP_CLIENT_IP to this computer's public IPv4 address and add that address to the API whitelist at ${this.dashboard.apiAccess}.`;
@@ -254,7 +250,7 @@ export class NamecheapClient {
     if (this.#detected) return this.#detected;
     let ip: string;
     try {
-      ip = (await this.#detect()).trim();
+      ip = await tracedIp(this.#fetch, this.#timeoutMs);
     } catch (error) {
       throw new OpsCrewError(
         "PROVIDER_ERROR",

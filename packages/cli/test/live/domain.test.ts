@@ -4,25 +4,16 @@
  * set; see docs/e2e.md. It never buys a real domain: OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1 sends
  * every registrar call to the sandbox and skips the zone and DNSSEC setup.
  */
-import { existsSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { NodeCommandRunner } from "@opscrew/core";
-import { materializeFixture } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { CLOUDFLARE_API, minutes } from "./cloud";
+import { plannedProject } from "./harness";
 
 const E2E = {
   token: process.env.OPSCREW_E2E_CLOUDFLARE_REGISTRAR_TOKEN,
   account: process.env.OPSCREW_E2E_CLOUDFLARE_ACCOUNT_ID,
 };
-const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
-const CLI = join(REPO_ROOT, "packages/cli/dist/opscrew.js");
-const EXAMPLE = join(REPO_ROOT, "examples/nextjs-postgres");
-const API = "https://api.cloudflare.com/client/v4";
-const runner = new NodeCommandRunner();
 
 interface SearchRow {
   domain: string;
@@ -32,50 +23,13 @@ interface SearchRow {
 
 describe.skipIf(!(E2E.token && E2E.account))("live domain purchase (Cloudflare sandbox)", () => {
   it("checks, buys and confirms a .com without buying a real domain", {
-    timeout: 15 * 60_000,
+    timeout: minutes(15),
   }, async () => {
-    expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
-    const work = await mkdtemp(join(tmpdir(), "opscrew-e2e-domain-"));
-    const repo = join(work, "repo");
-    const env: Record<string, string | undefined> = {
-      ...process.env,
-      CI: "1",
-      OPSCREW_HOME: join(work, "home"),
+    // A planned project (no domain yet), so the purchase is recorded in opscrew/plan.yaml.
+    const { repo, opscrew } = await plannedProject({
       CLOUDFLARE_API_TOKEN: E2E.token,
       OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX: "1",
-    };
-    for (const name of Object.keys(env)) if (name.startsWith("OPSCREW_E2E_")) delete env[name];
-    for (const name of ["HCLOUD_TOKEN", "DIGITALOCEAN_TOKEN", "DIGITALOCEAN_ACCESS_TOKEN"]) {
-      delete env[name];
-    }
-    // A planned project (no domain yet), so the purchase is recorded in opscrew/plan.yaml.
-    await materializeFixture(EXAMPLE, repo);
-    await runner.run("git", ["-C", repo, "init", "-q"], { env });
-    const opscrew = async (...args: string[]) => {
-      const result = await runner.run(process.execPath, [CLI, ...args], {
-        cwd: repo,
-        env,
-        timeoutMs: 10 * 60_000,
-      });
-      return { ...result, output: `${result.stdout}\n${result.stderr}` };
-    };
-
-    expect((await opscrew("analyze", "--no-ai")).exitCode).toBe(0);
-    await writeFile(
-      join(work, "answers.json"),
-      JSON.stringify({
-        expectedMonthlyUsers: "<1k",
-        budgetMonthly: 20,
-        provider: "hetzner",
-        region: "eu-central",
-        uptime: "best-effort",
-        dataCriticality: "important",
-        dnsProvider: "none",
-        keepExternalServices: [],
-      }),
-    );
-    expect((await opscrew("interview", "--answers", join(work, "answers.json"))).exitCode).toBe(0);
-    expect((await opscrew("design")).exitCode).toBe(0);
+    });
 
     const name = `opscrew-e2e-${Date.now().toString(36)}`;
     const search = await opscrew(
@@ -117,7 +71,7 @@ describe.skipIf(!(E2E.token && E2E.account))("live domain purchase (Cloudflare s
     expect(bought.output).not.toContain(E2E.token as string);
 
     const status = await fetch(
-      `${API}/accounts/${E2E.account}/registrar-sandbox/registrations/${domain}/registration-status`,
+      `${CLOUDFLARE_API}/accounts/${E2E.account}/registrar-sandbox/registrations/${domain}/registration-status`,
       { headers: { Authorization: `Bearer ${E2E.token}` } },
     );
     const body = (await status.json()) as { result?: { state?: string; status?: string } };

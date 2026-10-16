@@ -1,13 +1,14 @@
 /**
- * Pure helpers of the Portainer live test (`portainer-target.test.ts`, feature 010): its variables,
- * Portainer's setup token in `docker logs`, the openssl fingerprint the user guide prints, plan
- * hashes and DNS notes in CLI output, the image version the deploy workflow writes, a short host
- * name in text, value shapes without values, snapshot differences, and the DNS preload that lets
- * the CLI reach Portainer by a short host name. No network, no processes; unit-tested in
- * `portainer-target.test.ts`.
+ * Pure helpers of the Portainer live test (`portainer-target.test.ts`, feature 010): its steps and
+ * which of them a run takes, Portainer's setup token in `docker logs`, the openssl fingerprint the
+ * user guide prints, the image version the deploy workflow writes, the firewall, a short host name
+ * in text, value shapes without values, snapshot differences, the rollback's outcome and the DNS
+ * preload that lets the CLI reach Portainer by a short host name. No network, no processes; the
+ * safety and leak helpers and the step selection are unit-tested in `support.test.ts`.
  */
 import { randomBytes } from "node:crypto";
 import { normalizeCertFingerprint } from "@opscrew/connector-portainer";
+import type { FirewallRule } from "./cloud";
 
 /** The Portainer CE release the live test installs as "the user's existing Portainer" (R1). */
 export const PORTAINER_VERSION = "2.45.2";
@@ -27,23 +28,78 @@ export const DECOY_STACK = "e2e-decoy-stack";
 export const PROBE_STACK = "e2e-probe-env";
 /** A small pinned image for the decoys and the probe. */
 export const BUSYBOX_IMAGE = "busybox:1.37";
+/** A merged change must be live within this time of the deploy workflow writing it (quickstart 3). */
+export const SELF_DEPLOY_TARGET_MS = 5 * 60_000;
 
-/** The variables the Portainer live test needs; each missing one is named in the skip message. */
-export const PORTAINER_E2E_VARIABLES = [
-  "OPSCREW_E2E_PORTAINER",
-  "OPSCREW_E2E_HCLOUD_TOKEN",
-  "OPSCREW_E2E_GITHUB_REPO",
-  "OPSCREW_E2E_GITHUB_TOKEN",
-  "OPSCREW_E2E_CLOUDFLARE_TOKEN",
-  "OPSCREW_E2E_DOMAIN",
-  "OPSCREW_E2E_GHCR_READ_TOKEN",
-] as const;
+/**
+ * The live test's steps in order, each with the steps it needs (`OPSCREW_E2E_PORTAINER_STEPS`).
+ * Every run takes 1 (the server with Portainer), 1b (the optional pause) and 12 (the leak search).
+ */
+export const PORTAINER_STEPS: readonly { id: string; needs: readonly string[] }[] = [
+  { id: "1", needs: [] },
+  { id: "1b", needs: ["1"] },
+  { id: "2a", needs: ["1"] },
+  { id: "2", needs: ["2a"] },
+  { id: "3", needs: ["2"] },
+  { id: "3b", needs: ["2"] },
+  { id: "4", needs: ["2"] },
+  { id: "5", needs: ["2"] },
+  { id: "6", needs: ["2"] },
+  { id: "7", needs: ["2"] },
+  { id: "8", needs: ["2"] },
+  { id: "9", needs: ["8"] },
+  { id: "10", needs: ["2a"] },
+  { id: "11", needs: ["2a"] },
+  { id: "12", needs: ["1"] },
+];
 
-/** The variables of {@link PORTAINER_E2E_VARIABLES} that are not set (`OPSCREW_E2E_PORTAINER` must be `1`). */
-export function missingPortainerVariables(env: Record<string, string | undefined>): string[] {
-  return PORTAINER_E2E_VARIABLES.filter((name) =>
-    name === "OPSCREW_E2E_PORTAINER" ? env[name] !== "1" : (env[name] ?? "").trim() === "",
-  ).map((name) => (name === "OPSCREW_E2E_PORTAINER" ? `${name}=1` : name));
+/** The steps of the core pass (the default). */
+export const CORE_STEPS = ["1", "1b", "2a", "2", "3", "8", "9", "12"] as const;
+
+/**
+ * The steps `OPSCREW_E2E_PORTAINER_STEPS` selects, in order: `core` (or unset), `full` (every
+ * step) or a comma-separated list such as `11,12`, to which every step a chosen one needs is
+ * added (steps 1, 1b and 12 are always taken). OpsCrew refuses another Portainer address while its
+ * record lists anything, so when step 2 sets the app up, the fresh setups of steps 10 and 11 also
+ * take steps 8 and 9, which empty that record. `undefined` for anything else (an unknown step).
+ */
+export function portainerSteps(value: string | undefined): string[] | undefined {
+  const text = (value ?? "").trim().toLowerCase() || "core";
+  const ids = PORTAINER_STEPS.map((step) => step.id);
+  if (text === "full") return ids;
+  const chosen =
+    text === "core"
+      ? [...CORE_STEPS]
+      : text.split(",").map((part) => part.trim().replace(/\.$/, ""));
+  if (chosen.some((id) => !ids.includes(id))) return undefined;
+  const selected = new Set<string>();
+  const take = (id: string) => {
+    if (selected.has(id)) return;
+    selected.add(id);
+    for (const need of PORTAINER_STEPS.find((step) => step.id === id)?.needs ?? []) take(need);
+  };
+  for (const id of ["1", "1b", "12", ...chosen]) take(id);
+  if (selected.has("2") && (selected.has("10") || selected.has("11"))) take("9");
+  return ids.filter((id) => selected.has(id));
+}
+
+/**
+ * The labels the leak search must have a value for after the `selected` steps: the tokens always,
+ * the webhook id only when a selected step set the app up (2, 10 or 11), and the repository's
+ * read token when the repository is private.
+ */
+export function requiredLeakLabels(selected: readonly string[], repoPrivate: boolean): string[] {
+  return [
+    "PORTAINER_API_KEY",
+    "OPSCREW_GHCR_READ_TOKEN",
+    ...(["2", "10", "11"].some((id) => selected.includes(id)) ? ["portainer-webhook"] : []),
+    ...(repoPrivate ? ["OPSCREW_REPO_READ_TOKEN"] : []),
+  ];
+}
+
+/** The step number a step title starts with (`"8. destroy …"` → `"8"`, `"1b. …"` → `"1b"`). */
+export function stepNumber(title: string): string {
+  return /^(\d+[a-z]?)\./.exec(title)?.[1] ?? "";
 }
 
 /**
@@ -53,7 +109,9 @@ export function missingPortainerVariables(env: Record<string, string | undefined
  * default `nas` and five random letters or digits (`nasq7v2k`): still one short label, but never a
  * word an app or an encoded value contains by chance. Throws a plain message for anything else.
  */
-export function shortHostName(value: string | undefined, suffix = randomLabel(5)): string {
+export function shortHostName(value: string | undefined): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const suffix = [...randomBytes(5)].map((byte) => alphabet[byte % alphabet.length]).join("");
   const host = (value ?? "").trim() || `nas${suffix}`;
   if (!/^[a-z][a-z0-9-]{1,14}$/.test(host) || host.endsWith("-") || host === "localhost") {
     throw new Error(
@@ -68,45 +126,13 @@ export function shortHostName(value: string | undefined, suffix = randomLabel(5)
   return host;
 }
 
-/** `length` random lower-case letters and digits. */
-function randomLabel(length: number): string {
-  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
-  return [...randomBytes(length)].map((byte) => alphabet[byte % alphabet.length]).join("");
-}
-
-/** A token-like value: 8 or more characters with at least one digit or upper-case letter. */
-const tokenLike = (value: string) => value.length >= 8 && /[0-9A-Z]/.test(value);
-
 /**
  * Portainer's one-time setup token from `docker logs portainer` (research R10: admin
- * initialisation needs it as `X-Setup-Token`). Looks only at lines that mention a setup token and
- * takes `token=<value>`, `token: <value>` or `"token":"<value>"`, or else the longest token-like
- * run on the line that is not a path or a time. `undefined` when no such line has one.
+ * initialisation needs it as `X-Setup-Token`): Portainer 2.45 prints it on a line of its own as
+ * `setup_token=<hex>`.
  */
 export function setupTokenFromLogs(logs: string): string | undefined {
-  for (const line of logs.split(/\r?\n/)) {
-    if (!/setup[ _-]?token/i.test(line)) continue;
-    const keyed = /\btoken["']?\s*[=:]\s*["']?([A-Za-z0-9._~+=-]+)/i.exec(line)?.[1];
-    if (keyed !== undefined && tokenLike(keyed)) return keyed;
-    const runs = [...line.matchAll(/[A-Za-z0-9_-]{16,}/g)]
-      .map((match) => match[0])
-      .filter((run) => tokenLike(run) && !/^[\d_-]+$/.test(run));
-    const longest = runs.sort((a, b) => b.length - a.length)[0];
-    if (longest !== undefined) return longest;
-  }
-  return undefined;
-}
-
-/**
- * The shape of a log line with every value-like run masked (`<value>`), so a line that should
- * have held the setup token can be described without showing a token.
- */
-export function logLineShape(line: string): string {
-  return line
-    .replace(/[A-Za-z0-9._~+/=-]{8,}/g, (run) =>
-      tokenLike(run) || run.length >= 20 ? "<value>" : run,
-    )
-    .slice(0, 200);
+  return /^\s*setup_token=([0-9a-f]{16,})\b/m.exec(logs)?.[1];
 }
 
 /**
@@ -117,27 +143,6 @@ export function logLineShape(line: string): string {
 export function opensslFingerprint(output: string): string | undefined {
   const value = /\bsha256 Fingerprint=([0-9A-Fa-f:]{95})\b/i.exec(output)?.[1];
   return value === undefined ? undefined : normalizeCertFingerprint(`SHA256:${value}`);
-}
-
-/** The last stack plan hash a run showed (`Stack plan hash: <hash>`). */
-export function stackPlanHashOf(output: string): string | undefined {
-  return [...output.matchAll(/Stack plan hash: ([0-9a-f]{64})\b/g)].at(-1)?.[1];
-}
-
-/** The stack plan hash a run applied (`Applied the stack plan <hash> to your Portainer.`). */
-export function appliedStackPlan(output: string): string | undefined {
-  return /Applied the stack plan ([0-9a-f]{64}) to your Portainer\./.exec(output)?.[1];
-}
-
-/** The sentence `provision --plan-only` prints when the stack plan follows the infrastructure apply. */
-export const THREE_RUNS_SENTENCE = "In a script that takes three runs";
-
-/**
- * True when the output names the DNS record the user creates for `host` in web mode `proxy` or
- * `caddy` ("OpsCrew creates no DNS record for <host>…").
- */
-export function namesDnsRecord(output: string, host: string): boolean {
-  return output.includes(`OpsCrew creates no DNS record for ${host}`);
 }
 
 /** The app image the deploy branch's `compose.yaml` runs, and the version Caddy reports for it. */
@@ -158,22 +163,6 @@ export function deployedImage(compose: string): DeployedImage | undefined {
   const match = /\b(ghcr\.io\/[a-z0-9._/-]+)@sha256:([0-9a-f]{64})\b/.exec(compose);
   if (match?.[1] === undefined || match[2] === undefined) return undefined;
   return { repository: match[1], digest: match[2], version: match[2].slice(0, 12) };
-}
-
-/** The test computer's public IPv4 address in Cloudflare's trace (`ip=<address>`). */
-export function ipv4FromTrace(trace: string): string | undefined {
-  const ip = /^ip=(\d{1,3}(?:\.\d{1,3}){3})$/m.exec(trace)?.[1];
-  if (ip === undefined) return undefined;
-  return ip.split(".").every((part) => Number(part) <= 255) ? ip : undefined;
-}
-
-/** One inbound rule of a Hetzner Cloud firewall. */
-export interface FirewallRule {
-  direction: "in";
-  protocol: "tcp" | "udp";
-  port: string;
-  source_ips: string[];
-  description: string;
 }
 
 /**
@@ -281,21 +270,6 @@ export function changedKeys(
     .sort();
 }
 
-/** How many lines of the updater's log say that asking Portainer to redeploy failed. */
-export function updaterFailures(logs: string): number {
-  return logs
-    .split(/\r?\n/)
-    .filter((line) => line.includes("asking Portainer to redeploy the app failed")).length;
-}
-
-/**
- * The Dockerfile of a deliberately failing change: the same image with a last `CMD` that exits at
- * once, so the new version never answers and the deploy workflow must roll back.
- */
-export function failingDockerfile(dockerfile: string): string {
-  return `${dockerfile.trimEnd()}\n\n# opscrew-e2e: a deliberately failing version; the deploy must roll back.\nCMD ["/bin/sh", "-c", "echo 'opscrew-e2e: failing on purpose'; exit 1"]\n`;
-}
-
 /**
  * The messages of the `##[error]` lines of a GitHub Actions job log (each line may start with a
  * timestamp), in order. The rest of the log is never returned: it may hold masked values.
@@ -373,18 +347,12 @@ export function dnsPreloadSource(hosts: Readonly<Record<string, string>>): strin
   ].join("\n");
 }
 
-/** `NODE_OPTIONS` that loads the preload module at `fileUrl` (quoted: the path may have spaces). */
-export function preloadNodeOptions(fileUrl: string, existing?: string): string {
-  return [existing?.trim(), `--import="${fileUrl}"`].filter(Boolean).join(" ");
-}
-
 /** The interview answers for a Portainer target (written to a file for `interview --answers`). */
 export interface PortainerAnswers {
   domain: string;
   url: string;
   redeploy: "updater" | "cloudflare";
   web: "tunnel" | "proxy" | "caddy";
-  port?: number;
 }
 
 /** The answers file's contents: the usual answers plus the `portainer.*` ones. */
@@ -402,7 +370,7 @@ export function portainerAnswers(answers: PortainerAnswers): Record<string, unkn
     "portainer.environment": ENVIRONMENT_NAME,
     "portainer.redeploy": answers.redeploy,
     "portainer.web": answers.web,
-    ...(answers.web === "proxy" ? { "portainer.port": answers.port ?? PROXY_PORT } : {}),
+    ...(answers.web === "proxy" ? { "portainer.port": PROXY_PORT } : {}),
   };
 }
 
@@ -422,51 +390,4 @@ export function envNames(inspectJson: string, prefix: string): { name: string; e
       return { name, empty: value === "" };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-/** Minutes and seconds in words (`3 min 5 s`). */
-export function duration(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  return `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
-}
-
-/** A merged change must be live within this time of the deploy workflow writing it (quickstart 3). */
-export const SELF_DEPLOY_TARGET_MS = 5 * 60_000;
-
-/**
- * Which steps a live run takes (`OPSCREW_E2E_PORTAINER_STEPS`): `core` (the default) takes the
- * setup, updater + tunnel, one change deploying by itself with the unchanged-branch check, both
- * destroys and the leak check; `full` takes every step.
- */
-export type PortainerPass = "core" | "full";
-
-/** The steps of the core pass, by the number their title starts with (1b is the optional pause). */
-export const CORE_STEPS: readonly string[] = ["1", "1b", "2", "3", "8", "9", "12"];
-
-/** Why a step, or a part of one, does not run in the core pass. */
-export const NOT_IN_CORE = "not in the core pass; set OPSCREW_E2E_PORTAINER_STEPS=full";
-
-/**
- * How long each pass takes, roughly (on 2026-10-15 the full matrix took about 2 hours and the
- * first core pass 14½ minutes).
- */
-export const PASS_ESTIMATE: Readonly<Record<PortainerPass, string>> = {
-  core: "about 15 minutes",
-  full: "about 1–1½ hours",
-};
-
-/** The pass `OPSCREW_E2E_PORTAINER_STEPS` selects (`core` when unset); undefined for anything else. */
-export function portainerPass(value: string | undefined): PortainerPass | undefined {
-  const pass = (value ?? "").trim().toLowerCase() || "core";
-  return pass === "core" || pass === "full" ? pass : undefined;
-}
-
-/** The step number a step title starts with (`"8. destroy …"` → `"8"`, `"1b. …"` → `"1b"`). */
-export function stepNumber(title: string): string {
-  return /^(\d+[a-z]?)\./.exec(title)?.[1] ?? "";
-}
-
-/** Whether a step, by its title or its number, runs in `pass`. */
-export function inPass(pass: PortainerPass, step: string): boolean {
-  return pass === "full" || CORE_STEPS.includes(stepNumber(step) || step);
 }

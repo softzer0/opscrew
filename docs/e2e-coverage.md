@@ -34,14 +34,16 @@ Run in development, not tracked by date:
 
 ## Your existing Portainer, step by step
 
-Tick a step once it has passed live.
+Tick a step once it has passed live. Since the simplification (T1031) any steps can be rerun on their own with
+`OPSCREW_E2E_PORTAINER_STEPS=<list>`, for example `11,12` (see [e2e.md](e2e.md#running-chosen-steps)).
 
 | Step | Pass | Passed live |
 |---|---|---|
 | 1. A throwaway server with Portainer CE, an admin, a limited user and the decoys | core | [x] 2026-10-15 |
-| 2. Updater + tunnel: init, interview, design, adapt, the limited token's registry steps, three provision runs, deploy, verify, secure, drift | core | [x] 2026-10-15; `init` 2026-10-16 |
+| 2a. Preparing the project: init, analyze, interview, design, adapt (since the simplification, its own step) | core | [x] 2026-10-15 (as part of step 2); `init` 2026-10-16 |
+| 2. Updater + tunnel: the limited token's registry steps, three provision runs, deploy, verify, secure, drift | core | [x] 2026-10-15 |
 | 3. A merged change deploys by itself; a webhook call on an unchanged branch does not redeploy | core | [x] 2026-10-15 |
-| 3. A failing change rolls back | full | [x] 2026-10-16 |
+| 3b. A failing change rolls back (step 3 until the simplification) | full | [x] 2026-10-16 |
 | 4. An apply through MCP that replaces the registry token | full | [x] 2026-10-16 |
 | 5. Caddy: the app stack updated in place, the DNS record OpsCrew prints, certificates on 80/443 | full | [x] 2026-10-16 |
 | 6. Your own proxy: the app on a host port, `verify --url` | full | [x] 2026-10-16 |
