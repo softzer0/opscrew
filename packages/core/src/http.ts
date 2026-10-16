@@ -18,6 +18,10 @@ export interface RetryRules {
 
 /** What a JSON API client shares between its requests. */
 export interface JsonClient {
+  /**
+   * The per-attempt timeout relies on this fetch honouring its `AbortSignal` (for the request and
+   * for reading the body), as Node's `fetch` does.
+   */
   fetch: FetchLike;
   /** Every attempt of every request gets its own timeout of this many milliseconds. */
   timeoutMs: number;

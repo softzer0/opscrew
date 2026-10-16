@@ -6,6 +6,7 @@ import type {
   ResourceMove,
 } from "@opscrew/contracts";
 import { isRecord, OpsCrewError } from "@opscrew/core";
+import { z } from "zod";
 
 /** What `parsePlanJson` extracts from a machine-readable plan (`show -json`). */
 export interface ParsedPlan {
@@ -87,39 +88,58 @@ function changedAttributes(before: unknown, after: unknown): string[] {
   return [...keys].filter((key) => !sameJson(from[key], to[key])).sort();
 }
 
+/** One resource entry of `resource_changes` or `resource_drift`: only the fields read here. */
+const ResourceEntrySchema = z.looseObject({
+  address: z.string(),
+  type: z.string(),
+  name: z.string(),
+  provider_name: z.string().optional(),
+  /** Set when a `moved` block renames the resource in the state. */
+  previous_address: z.string().nullish(),
+  change: z.looseObject({
+    actions: z.array(z.string()),
+    before: z.unknown().optional(),
+    after: z.unknown().optional(),
+  }),
+});
+
+/** The parts of `show -json` read here; every other field passes through unread. */
+const PlanJsonSchema = z.looseObject({
+  resource_changes: z.array(ResourceEntrySchema).nullish(),
+  /** Drift of data sources is skipped unread; managed entries are read as resource entries. */
+  resource_drift: z.array(z.looseObject({ mode: z.string().optional() })).nullish(),
+});
+
+/** The first problems of engine output that does not match its schema, by field path. */
+export function problems(error: z.ZodError, at: readonly PropertyKey[] = []): string {
+  return error.issues
+    .slice(0, 3)
+    .map((issue) => `${[...at, ...issue.path].join(".") || "(root)"}: ${issue.message}`)
+    .join("; ");
+}
+
 /**
  * Maps `resource_drift[]` to `ResourceDrift`. Only managed resources count; `no-op` entries are
  * skipped. A deleted resource lists no attributes (every attribute is gone).
  */
-function parseDrift(raw: unknown): ResourceDrift[] {
-  if (raw === undefined || raw === null) return [];
-  if (!Array.isArray(raw)) throw invalid("resource_drift is not a list");
+function toDrift(entries: readonly { mode?: string | undefined }[]): ResourceDrift[] {
   const drift: ResourceDrift[] = [];
-  for (const entry of raw) {
-    if (!isRecord(entry)) throw invalid("malformed resource drift");
-    if (entry.mode !== undefined && entry.mode !== "managed") continue;
-    const { address, type, name, provider_name: provider, change } = entry;
-    const actions = isRecord(change) ? change.actions : undefined;
-    if (
-      !isRecord(change) ||
-      typeof address !== "string" ||
-      typeof type !== "string" ||
-      typeof name !== "string" ||
-      !Array.isArray(actions) ||
-      !actions.every((a): a is string => typeof a === "string")
-    ) {
-      throw invalid("malformed resource drift");
-    }
-    const key = actions.join(",");
+  for (const [index, raw] of entries.entries()) {
+    if (raw.mode !== undefined && raw.mode !== "managed") continue;
+    const parsed = ResourceEntrySchema.safeParse(raw);
+    if (!parsed.success) throw invalid(problems(parsed.error, ["resource_drift", index]));
+    const entry = parsed.data;
+    const key = entry.change.actions.join(",");
     if (key === "no-op" || key === "read" || key === "") continue;
     const action = key === "delete" ? "delete" : "update";
     drift.push({
-      address,
-      type,
-      name,
-      provider: typeof provider === "string" ? provider : "",
+      address: entry.address,
+      type: entry.type,
+      name: entry.name,
+      provider: entry.provider_name ?? "",
       action,
-      attributes: action === "delete" ? [] : changedAttributes(change.before, change.after),
+      attributes:
+        action === "delete" ? [] : changedAttributes(entry.change.before, entry.change.after),
     });
   }
   return drift;
@@ -128,55 +148,37 @@ function parseDrift(raw: unknown): ResourceDrift[] {
 /**
  * Summarises a plan produced by `tofu show -json` / `terraform show -json`, including any drift
  * the engine found while refreshing (`resource_drift`) and resources it moves in the state
- * (`previous_address`). Accepts the parsed
- * object or the raw JSON text. Throws `OpsCrewError` (`ENGINE_FAILED`) when the input is not a
- * plan or contains an action it does not understand.
+ * (`previous_address`). Accepts the parsed object or the raw JSON text. Throws `OpsCrewError`
+ * (`ENGINE_FAILED`) when the input is not a plan or contains an action it does not understand.
  */
 export function parsePlanJson(json: unknown): ParsedPlan {
-  let plan: unknown = json;
+  let raw: unknown = json;
   if (typeof json === "string") {
     try {
-      plan = JSON.parse(json);
+      raw = JSON.parse(json);
     } catch {
       throw invalid("it is not valid JSON");
     }
   }
-  if (!isRecord(plan)) throw invalid("expected a JSON object");
-  const rawChanges = plan.resource_changes ?? [];
-  if (!Array.isArray(rawChanges)) throw invalid("resource_changes is not a list");
+  const parsed = PlanJsonSchema.safeParse(raw);
+  if (!parsed.success) throw invalid(problems(parsed.error));
+  const plan = parsed.data;
 
   const changes: ResourceChange[] = [];
   const counts = { create: 0, update: 0, delete: 0, replace: 0 };
   const moves: ResourceMove[] = [];
-  for (const entry of rawChanges) {
-    if (!isRecord(entry) || !isRecord(entry.change)) throw invalid("malformed resource change");
-    const { address, type, name, provider_name: provider, previous_address: previous } = entry;
-    const actions = entry.change.actions;
-    if (
-      typeof address !== "string" ||
-      typeof type !== "string" ||
-      typeof name !== "string" ||
-      !Array.isArray(actions) ||
-      !actions.every((a): a is string => typeof a === "string") ||
-      (previous !== undefined && previous !== null && typeof previous !== "string")
-    ) {
-      throw invalid("malformed resource change");
-    }
-    const action = toAction(actions);
+  for (const entry of plan.resource_changes ?? []) {
+    const { address, type, name } = entry;
+    const action = toAction(entry.change.actions);
+    const previous = entry.previous_address;
     if (typeof previous === "string" && previous !== address) {
       moves.push({ from: previous, to: address, type });
     }
     if (action === "no-op" || action === "read") continue;
     counts[action]++;
-    changes.push({
-      address,
-      type,
-      name,
-      provider: typeof provider === "string" ? provider : "",
-      action,
-    });
+    changes.push({ address, type, name, provider: entry.provider_name ?? "", action });
   }
-  const drift = parseDrift(plan.resource_drift);
+  const drift = toDrift(plan.resource_drift ?? []);
   return {
     changes,
     counts,

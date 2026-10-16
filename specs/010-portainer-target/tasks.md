@@ -173,7 +173,7 @@ behaviour, tests and rendered output unchanged unless a line says otherwise; the
 weakened; DECIDED items done as decided; KEEP items kept. Each task fixes its area's bugs first,
 each with a test that fails without the fix.
 
-- [ ] T1020 Core, contracts, plan-schema, runtime, engine and detect (Area 11), plus the shared helpers later tasks use
+- [X] T1020 Core, contracts, plan-schema, runtime, engine and detect (Area 11), plus the shared helpers later tasks use
   - Owns: `packages/{core,contracts,plan-schema,runtime-claude,iac-engine,detect}/src/**` (+ tests, regenerated `schemas/*.json`); the contract removals and the two new dependencies (plan-schema and detect on core) are lead-approved here; the lead edits `package.json` files and the lockfile
   - Reads: `simplification.md` Area 11, Totals, and the KEEP lists of every area; `docs/adr/` for the ADR format
   - Depends: T1009

@@ -1,3 +1,4 @@
+import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { fixture } from "./__fixtures__/fake-runner";
@@ -192,6 +193,71 @@ describe("parsePlanJson drift", () => {
     expect(() => parsePlanJson({ resource_drift: [{ address: "a.b", mode: "managed" }] })).toThrow(
       expect.objectContaining({ code: "ENGINE_FAILED" }),
     );
+  });
+});
+
+describe("parsePlanJson malformed plans", () => {
+  function rejection(plan: unknown): OpsCrewError {
+    try {
+      parsePlanJson(plan);
+    } catch (error) {
+      expect(error).toBeInstanceOf(OpsCrewError);
+      return error as OpsCrewError;
+    }
+    throw new Error("expected the plan to be rejected");
+  }
+
+  it("names the field that does not match and says what to do next", () => {
+    const error = rejection({
+      format_version: "1.2",
+      resource_changes: [
+        {
+          address: "hcloud_server.app",
+          type: "hcloud_server",
+          name: 7,
+          change: { actions: "create" },
+        },
+      ],
+    });
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.message).toContain("The engine's plan output could not be read");
+    expect(error.message).toContain("resource_changes.0.name");
+    expect(error.message).toContain("resource_changes.0.change.actions");
+    expect(error.hint).toBe(
+      "Check that the installed OpenTofu or Terraform version is 1.6 or newer, then create the plan again.",
+    );
+  });
+
+  it("names a malformed managed drift entry by its place, and skips data sources unread", () => {
+    const error = rejection({
+      resource_drift: [
+        { mode: "data", address: 1 },
+        { mode: "managed", address: "a.b" },
+      ],
+    });
+    expect(error.message).toContain("resource_drift.1.type");
+  });
+
+  it("lets the fields it does not read pass through", () => {
+    const parsed = parsePlanJson({
+      format_version: "1.2",
+      terraform_version: "1.13.1",
+      planned_values: { root_module: {} },
+      resource_changes: [
+        {
+          address: "a.b",
+          mode: "managed",
+          type: "a",
+          name: "b",
+          provider_name: "p",
+          index: 0,
+          change: { actions: ["create"], after_unknown: {}, before_sensitive: false },
+        },
+      ],
+    });
+    expect(parsed.changes).toEqual([
+      { address: "a.b", type: "a", name: "b", provider: "p", action: "create" },
+    ]);
   });
 });
 

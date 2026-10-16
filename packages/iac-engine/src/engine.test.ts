@@ -170,6 +170,18 @@ describe("validate", () => {
     expect(error.code).toBe("ENGINE_FAILED");
     expect(error.message).toContain("Error: crashed");
   });
+
+  it("names the field when the JSON does not have the expected shape", async () => {
+    const runner = new ScriptedRunner().on("validate", {
+      exitCode: 1,
+      stdout: JSON.stringify({ valid: false, diagnostics: [{ severity: "error" }] }),
+    });
+    const error = await failure(makeEngine(runner).validate(dir));
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.message).toContain("OpenTofu printed validation results that could not be read");
+    expect(error.message).toContain("diagnostics.0.summary");
+    expect(error.hint).toBe("Check that OpenTofu is version 1.6 or newer, then try again.");
+  });
 });
 
 describe("plan", () => {
@@ -230,6 +242,20 @@ describe("plan", () => {
     expect(error.message).toContain("OpenTofu plan failed (exit code 1)");
     expect(error.message).toContain("Error: Invalid reference");
     expect(existsSync(stale)).toBe(false);
+  });
+
+  it("refuses a saved plan whose show -json has an unexpected shape, saying what to do", async () => {
+    const malformed = JSON.stringify({
+      format_version: "1.2",
+      resource_changes: [{ address: "hcloud_server.app", type: "hcloud_server", change: {} }],
+    });
+    const runner = new ScriptedRunner()
+      .on("plan", writesPlan("PLAN-BYTES"))
+      .on("show", { stdout: malformed });
+    const error = await failure(makeEngine(runner).plan(dir, "p.tfplan"));
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.message).toContain("resource_changes.0.name");
+    expect(error.hint).toMatch(/create the plan again/);
   });
 
   it("passes -refresh-only and reports drift with no changes", async () => {
@@ -473,6 +499,13 @@ describe("output and hashFile", () => {
     expect(await engine.output(dir)).toEqual({ a: "x", b: [1, 2] });
     expect(await engine.output(dir)).toEqual({});
     expect(runner.calls[0]?.args).toEqual(["output", "-json", "-no-color"]);
+  });
+
+  it("names the output whose JSON does not have the expected shape", async () => {
+    const runner = new ScriptedRunner().on("output", { stdout: JSON.stringify({ a: "x" }) });
+    const error = await failure(makeEngine(runner).output(dir));
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.message).toContain("OpenTofu printed outputs that could not be read (a: ");
   });
 
   it("hashFile returns the lowercase SHA-256 hex of the file bytes", async () => {

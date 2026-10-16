@@ -23,8 +23,9 @@ import {
   registerEnvSecrets,
   sha256Hex,
 } from "@opscrew/core";
+import { z } from "zod";
 import { encryptionSecrets } from "./encryption";
-import { parsePlanJson } from "./plan-json";
+import { parsePlanJson, problems } from "./plan-json";
 import type { ProviderSchemaReader } from "./provider-schemas";
 import { managedAddresses, type StateResourceReader } from "./state-resources";
 
@@ -71,6 +72,24 @@ function minutes(ms: number): string {
   const m = Math.round(ms / 60_000);
   return m >= 1 ? plural(m, "minute") : `${Math.round(ms / 1000)} seconds`;
 }
+
+/** The parts of `validate -json` read here; every other field passes through unread. */
+const ValidateJsonSchema = z.looseObject({
+  valid: z.boolean(),
+  diagnostics: z.array(
+    z.looseObject({
+      severity: z.string(),
+      summary: z.string(),
+      detail: z.string().optional(),
+      range: z
+        .looseObject({ filename: z.string(), start: z.looseObject({ line: z.number() }) })
+        .optional(),
+    }),
+  ),
+});
+
+/** The part of `output -json` read here: each output's value. */
+const OutputJsonSchema = z.record(z.string(), z.looseObject({ value: z.unknown().optional() }));
 
 const HINTS: Record<string, string> = {
   init: "Check the module sources and backend settings in the infrastructure folder, and your network connection for provider downloads, then try again.",
@@ -121,35 +140,28 @@ class Engine implements IacEngine, ProviderSchemaReader, StateResourceReader {
       options,
     );
     if (result.timedOut) throw this.failure("validate", result, options.timeoutMs);
-    let parsed: unknown;
+    let json: unknown;
     try {
       // validate prints JSON (exit code 1) even when the configuration is invalid.
-      parsed = JSON.parse(result.stdout);
+      json = JSON.parse(result.stdout);
     } catch {
       throw this.failure("validate", result, options.timeoutMs);
     }
-    const record = (parsed ?? {}) as { valid?: unknown; diagnostics?: unknown };
-    const diagnostics: IacDiagnostic[] = [];
-    for (const raw of Array.isArray(record.diagnostics) ? record.diagnostics : []) {
-      const d = (raw ?? {}) as {
-        severity?: unknown;
-        summary?: unknown;
-        detail?: unknown;
-        range?: { filename?: unknown; start?: { line?: unknown } };
-      };
+    const parsed = ValidateJsonSchema.safeParse(json);
+    if (!parsed.success) throw this.unreadable("validation results", parsed.error);
+    const diagnostics = parsed.data.diagnostics.map((d) => {
       const diagnostic: IacDiagnostic = {
         severity: d.severity === "warning" ? "warning" : "error",
-        summary: this.redactor.redact(
-          typeof d.summary === "string" ? d.summary : "Unknown problem",
-        ),
+        summary: this.redactor.redact(d.summary),
       };
-      if (typeof d.detail === "string" && d.detail !== "")
-        diagnostic.detail = this.redactor.redact(d.detail);
-      if (typeof d.range?.filename === "string") diagnostic.file = d.range.filename;
-      if (typeof d.range?.start?.line === "number") diagnostic.line = d.range.start.line;
-      diagnostics.push(diagnostic);
-    }
-    const valid = record.valid === true && !diagnostics.some((d) => d.severity === "error");
+      if (d.detail) diagnostic.detail = this.redactor.redact(d.detail);
+      if (d.range) {
+        diagnostic.file = d.range.filename;
+        diagnostic.line = d.range.start.line;
+      }
+      return diagnostic;
+    });
+    const valid = parsed.data.valid && !diagnostics.some((d) => d.severity === "error");
     return { valid, diagnostics };
   }
 
@@ -291,25 +303,21 @@ class Engine implements IacEngine, ProviderSchemaReader, StateResourceReader {
       options,
     );
     this.assertOk("output", result, options.timeoutMs);
-    let parsed: unknown;
+    let json: unknown;
     try {
-      parsed = JSON.parse(result.stdout.trim() === "" ? "{}" : result.stdout);
+      json = JSON.parse(result.stdout.trim() === "" ? "{}" : result.stdout);
     } catch {
       throw new OpsCrewError(
         "ENGINE_FAILED",
         `${this.label} printed outputs that could not be read.`,
-        {
-          hint: HINTS.output,
-        },
+        { hint: HINTS.output },
       );
     }
-    const outputs: Record<string, unknown> = {};
-    if (typeof parsed === "object" && parsed !== null) {
-      for (const [name, entry] of Object.entries(parsed)) {
-        outputs[name] = (entry as { value?: unknown } | null)?.value;
-      }
-    }
-    return outputs;
+    const parsed = OutputJsonSchema.safeParse(json);
+    if (!parsed.success) throw this.unreadable("outputs", parsed.error);
+    return Object.fromEntries(
+      Object.entries(parsed.data).map(([name, entry]) => [name, entry.value]),
+    );
   }
 
   async providerSchemas(dir: string, options: IacRunOptions = {}): Promise<unknown> {
@@ -366,6 +374,15 @@ class Engine implements IacEngine, ProviderSchemaReader, StateResourceReader {
         },
       );
     }
+  }
+
+  /** The error for JSON from the engine that does not have the expected shape. */
+  private unreadable(what: string, error: z.ZodError): OpsCrewError {
+    return new OpsCrewError(
+      "ENGINE_FAILED",
+      `${this.label} printed ${what} that could not be read (${problems(error)}).`,
+      { hint: `Check that ${this.label} is version 1.6 or newer, then try again.` },
+    );
   }
 
   private varArgs(vars: Record<string, string> | undefined): string[] {
