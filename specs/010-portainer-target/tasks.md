@@ -132,6 +132,14 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: medium
 
+- [ ] T1016 [US2] Caddy starts only once the domain resolves, in `packages/agents/src/provision/portainer.ts`; the live test and the guide follow
+  - Owns: `packages/agents/src/provision/portainer.ts` (the caddy precondition) (+ tests), `packages/cli/test/live/portainer-target.test.ts` (step 5), `docs/guide/portainer-target.md` (the caddy paragraph)
+  - Reads: the sixth full live run (2026-10-16): after the switch from the tunnel to Caddy, provision applied the Caddy stack before the user's A record existed (the test creates it afterwards, and in a switch it cannot exist earlier: the removal deletes the tunnel's record at that name); Caddy asked Let's Encrypt at once, got no record, and the negative answer stayed cached (Cloudflare's SOA allows up to 30 minutes), so for 10 minutes the site answered with a TLS alert and the deploy rolled back; run 5 passed only by timing
+  - Depends: T1005, T1014
+  - Accept: in web mode `caddy`, after the Cloudflare removal (when there is one) and before the stack change that starts or moves Caddy, provision checks through a public DNS-over-HTTPS resolver (read-only; an injected fetch in tests) that the domain (and `www.` when planned) has an A, AAAA or CNAME record; if not, it stops before the stack change with the record to create and says that the next `opscrew provision` continues from there (nothing else changed after what it reports as applied); `--plan-only` says the record must exist first; with the record in place it proceeds as today. The live test's step 5 provisions until that stop, creates the record, waits until it resolves publicly, provisions again and deploys. The guide's caddy paragraph says OpsCrew waits for the record before it starts Caddy (so the certificate is issued at once). Other modes and targets unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
 - [ ] T1009 Live run, core pass (founder, 2026-10-15: the full matrix took about 2 hours): setup, updater + tunnel, one merged change deploying by itself with the unchanged-branch webhook check, destroy keeping data, `--delete-data`, the leak check; results in `docs/e2e.md` (lead). The other steps (caddy, proxy, cloudflare redeploy, rollback wait, loopback, short host, MCP) stay in the test behind `OPSCREW_E2E_PORTAINER_STEPS=full`
 
 ## Dependencies
