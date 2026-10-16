@@ -156,6 +156,14 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
+- [ ] T1019 [US2] `verify --url` never shows the route's address; the live test's short-host check allows `server.json`
+  - Owns: `packages/agents/src/verify/**` (the route's host) (+ tests), `packages/cli/test/live/portainer-target.test.ts` (the short-host leak check only)
+  - Reads: the ninth full live run (2026-10-16): every step passed but the leak check found (1) the server's IPv4 in the output of `opscrew verify --url http://<ip>:8080` in step 10, where Portainer is reached at `localhost`, so OpsCrew did not know that address and printed the route as given, and (2) the short Portainer host name in `.opscrew/server.json`, the one local file meant to hold Portainer's address (the check already allows it for the main address)
+  - Depends: T1018
+  - Accept: `verify --url` registers the route's host with the redactor as a name before any check, so neither the output, the runbook nor any result shows it (shown as the user's route); a test with an IP route and a hostname route; the live test's short-host search allows `.opscrew/server.json` exactly as the main address check does; other targets and modes unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: medium
+
 - [ ] T1009 Live run, core pass (founder, 2026-10-15: the full matrix took about 2 hours): setup, updater + tunnel, one merged change deploying by itself with the unchanged-branch webhook check, destroy keeping data, `--delete-data`, the leak check; results in `docs/e2e.md` (lead). The other steps (caddy, proxy, cloudflare redeploy, rollback wait, loopback, short host, MCP) stay in the test behind `OPSCREW_E2E_PORTAINER_STEPS=full`
 
 ## Dependencies
