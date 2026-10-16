@@ -449,6 +449,30 @@ describe("runVerify", () => {
     expect(byId(result.checks, "health-endpoint").message).toContain("HTTP 503");
   });
 
+  it("asks no public resolver about a missing record outside the user's Portainer", async () => {
+    const deps = await setup();
+    const site = fakeSite();
+    const result = await runVerify(deps, {
+      resolver: resolver([], []),
+      fetch: async (input, init) => {
+        if (String(input).includes("cloudflare-dns.com")) throw new Error("no public lookup here");
+        if (String(input).includes("api.github.com")) return site.fetch(input, init);
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("getaddrinfo ENOTFOUND shop.example.com"), {
+            code: "ENOTFOUND",
+          }),
+        });
+      },
+      tlsConnect: cert(),
+      tcpConnect: closed,
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    expect(byId(result.checks, "dns-records").message).toBe(
+      "shop.example.com has no A or AAAA record.",
+    );
+    expect(JSON.stringify(result.checks)).not.toContain("older answer");
+  });
+
   it("fails when the site cannot be reached", async () => {
     const deps = await setup();
     const result = await runVerify(deps, {

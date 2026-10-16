@@ -140,7 +140,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T1017 [US2] `verify` explains a stale local DNS answer; the live test waits for this computer's resolver, in `packages/agents/src/verify/` and the live test
+- [X] T1017 [US2] `verify` explains a stale local DNS answer; the live test waits for this computer's resolver, in `packages/agents/src/verify/` and the live test
   - Owns: `packages/agents/src/verify/**` (the DNS check's local-cache case) (+ tests), `packages/cli/test/live/portainer-target.test.ts` (waiting for local resolution before `verify` after a DNS change)
   - Reads: the seventh full live run (2026-10-16): step 6's `verify` (proxy mode, no record yet) made this computer cache "no such name" for the domain; step 7 created the tunnel's record and ran `verify` about 4 minutes later, which failed with ENOTFOUND everywhere (Windows caches negative answers up to 15 minutes); T1016's `lookupAddressRecord` (public DNS-over-HTTPS)
   - Depends: T1015, T1016

@@ -21,6 +21,7 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
+import { promises as dnsPromises } from "node:dns";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -948,6 +949,32 @@ describe.skipIf(MISSING.length > 0)(
             throw new Error(`it runs version ${seen || "(none)"}`);
           return true;
         },
+      );
+    }
+
+    /**
+     * Before a `verify` that follows a DNS change: waits (about 16 minutes at most) until this
+     * computer's own resolver finds the app's hosts, since Windows keeps a "no such name" answer
+     * for up to 15 minutes (run 7: step 6's verify cached it, step 7's verify then failed
+     * everywhere with ENOTFOUND). Records how long it took; never the addresses.
+     */
+    async function waitForLocalResolution(what: string) {
+      if (appHost === "") return;
+      const hosts = (await readPlan()).dns.www ? [appHost, `www.${appHost}`] : [appHost];
+      const started = Date.now();
+      for (const host of hosts) {
+        await waitFor(
+          `${host} resolving through this computer's resolver`,
+          minutes(16),
+          async () => {
+            await dnsPromises.lookup(host);
+            return true;
+          },
+          15_000,
+        );
+      }
+      observe(
+        `${what}: this computer resolved ${hosts.join(" and ")} ${duration(Date.now() - started)} after the wait began`,
       );
     }
 
@@ -2137,6 +2164,8 @@ describe.skipIf(MISSING.length > 0)(
 
         await ghcrFacts(image);
 
+        // provision created the tunnel's record.
+        await waitForLocalResolution("step 2 (the tunnel's record)");
         await opscrewOk("verify");
         const secure = await opscrewOk("secure");
         expect(secure.output.includes("SECURITY_REPORT.md"), "secure wrote its report").toBe(true);
@@ -2601,6 +2630,8 @@ describe.skipIf(MISSING.length > 0)(
           "the app stack was updated in place (POST /api/stacks/{id}/git, then PUT …/git/redeploy)",
         );
         expect(await canConnect(ipv4(), 443), "Caddy serves 443 on the host").toBe(true);
+        // The tunnel's records went and the user's A record came.
+        await waitForLocalResolution("step 5 (the A record to the host)");
         await opscrewOk("verify");
         await opscrewOk("drift");
         const left = await portainerAppResources(cloudflare, z, app(), hostnames);
@@ -2705,6 +2736,9 @@ describe.skipIf(MISSING.length > 0)(
           "with the service token, Portainer's hostname answers 404 outside /api/stacks/webhooks/",
         );
 
+        // Step 6's verify looked the domain up while it had no record, so this computer may still
+        // hold "no such name" for the tunnel's new record.
+        await waitForLocalResolution("step 7 (the tunnel's record after step 6 had none)");
         await opscrewOk("verify");
         await opscrewOk("secure");
         await opscrewOk("drift");

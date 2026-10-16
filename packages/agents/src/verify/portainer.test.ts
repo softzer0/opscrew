@@ -302,6 +302,117 @@ describe("opscrew verify for the user's Portainer", () => {
     expect(result.passed).toBe(false);
   });
 
+  describe("a stale answer in this computer's DNS cache", () => {
+    /** Node's fetch error for a host the system resolver does not know. */
+    const notFound = (host: string) =>
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" }),
+      });
+
+    /** Cloudflare's public resolver (`found`: the record exists), and a site this computer cannot find. */
+    function staleInternet(found: boolean) {
+      const dohQueries: string[] = [];
+      const site = fakeSite("https://shop.example.com");
+      const fetch: FetchLike = async (input, init) => {
+        const url = new URL(String(input));
+        if (url.host === "cloudflare-dns.com") {
+          const name = url.searchParams.get("name") ?? "";
+          dohQueries.push(`${name} ${url.searchParams.get("type")}`);
+          return found
+            ? Response.json({
+                Status: 0,
+                Answer: [{ name: `${name}.`, type: 5, data: "abc.cfargotunnel.com." }],
+              })
+            : Response.json({ Status: 3 });
+        }
+        if (url.host === "api.github.com") return site(input, init);
+        throw notFound(url.hostname);
+      };
+      return { fetch, dohQueries };
+    }
+
+    const tlsNotFound: TlsConnect = async (host) => {
+      throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
+    };
+
+    it("says the record exists publicly and how to clear the cache; verify still fails", async () => {
+      const deps = await setup();
+      const internet = staleInternet(true);
+      const result = await runVerify(deps, {
+        resolver: resolver([]),
+        fetch: internet.fetch,
+        tlsConnect: tlsNotFound,
+        tcpConnect: async () => false,
+        cloudflareRanges: CLOUDFLARE_RANGES,
+      });
+      expect(result.passed).toBe(false);
+      const dns = result.checks.find((c) => c.id === "dns-records");
+      expect(dns?.status).toBe("fail");
+      expect(dns?.message).toContain("exists publicly");
+      expect(dns?.message).toContain("this computer still holds an older answer");
+      expect(dns?.message).toContain("about 15 minutes");
+      expect(dns?.remediation).toContain("ipconfig /flushdns");
+      expect(dns?.remediation).not.toContain("opscrew dns");
+      for (const id of [
+        "site-reachable",
+        "tls-certificate",
+        "http-redirect",
+        "health-endpoint",
+        "env-file-not-served",
+        "git-config-not-served",
+      ]) {
+        const check = result.checks.find((c) => c.id === id);
+        expect(check?.status, id).not.toBe("pass");
+        expect(check?.message, id).toContain("ENOTFOUND");
+        expect(check?.message, id).toContain("this computer still holds an older answer");
+        expect(check?.message, id).toContain("ipconfig /flushdns");
+      }
+      // One public lookup per host, however many checks fail.
+      expect(new Set(internet.dohQueries.map((q) => q.split(" ")[0]))).toEqual(
+        new Set(["shop.example.com"]),
+      );
+      expect(internet.dohQueries.length).toBeLessThanOrEqual(3);
+    });
+
+    it("without a public record: the usual messages, no cache note", async () => {
+      const deps = await setup();
+      const internet = staleInternet(false);
+      const result = await runVerify(deps, {
+        resolver: resolver([]),
+        fetch: internet.fetch,
+        tlsConnect: tlsNotFound,
+        tcpConnect: async () => false,
+        cloudflareRanges: CLOUDFLARE_RANGES,
+      });
+      expect(result.passed).toBe(false);
+      const dns = result.checks.find((c) => c.id === "dns-records");
+      expect(dns?.message).toBe("shop.example.com has no A or AAAA record.");
+      expect(dns?.remediation).toContain("opscrew dns");
+      expect(JSON.stringify(result.checks)).not.toContain("older answer");
+    });
+
+    it("proxy mode: the DNS warning keeps the cache advice", async () => {
+      const deps = await setup({ web: { mode: "proxy", port: 8080 } });
+      const route = "https://proxy.example.net";
+      const routeSite = fakeSite(route);
+      const internet = staleInternet(true);
+      const result = await runVerify(deps, {
+        url: route,
+        resolver: resolver([]),
+        fetch: (input, init) =>
+          String(input).startsWith(route) ? routeSite(input, init) : internet.fetch(input, init),
+        tlsConnect: async (host, options) =>
+          host === "shop.example.com" ? tlsNotFound(host, options) : cert(host)(host, options),
+        tcpConnect: async () => false,
+      });
+      const dns = result.checks.find((c) => c.id === "dns-records");
+      expect(dns?.status).toBe("warn");
+      expect(dns?.message).toContain("this computer still holds an older answer");
+      expect(dns?.remediation).toContain("ipconfig /flushdns");
+      expect(result.checks.find((c) => c.id === "site-reachable")?.status).toBe("pass");
+    });
+  });
+
   it("refuses a route outside web mode proxy, before checking anything", async () => {
     for (const web of [{ mode: "tunnel" as const }, { mode: "caddy" as const }]) {
       const deps = await setup({ web });

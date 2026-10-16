@@ -13,6 +13,7 @@ import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-sche
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { readOwnServerRecord } from "../provision";
+import { lookupAddressRecord } from "../provision/portainer";
 import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
 import { withoutOwnServer } from "../secure/own";
 import {
@@ -159,6 +160,9 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     now: deps.clock.now(),
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(portainer && url !== undefined ? { url } : {}),
+    // The user's Portainer: a record this computer cannot find yet is looked up publicly
+    // (read-only DNS over HTTPS), so a stale local answer is named as such.
+    ...(portainer ? { publicDns: (host: string) => lookupAddressRecord(fetch, host) } : {}),
     ...(await cloudflareRanges(deps, plan, fetch, options)),
     deployRuns: async () => {
       if (!github.client || !github.repo) return undefined;

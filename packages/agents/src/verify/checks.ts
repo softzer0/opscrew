@@ -4,6 +4,7 @@ import { tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
+import type { AddressRecordLookup } from "../provision/portainer";
 import { providerConsole, type ServerAddress } from "../shared";
 import { type DnsResolver, hasIpv6Route, type TlsCertificateInfo, type TlsConnect } from "./net";
 
@@ -50,6 +51,13 @@ export interface VerifyCheckContext {
    * without it the IPv6 probe of a server the user owns is skipped with a note.
    */
   ipv6Route?: () => Promise<boolean>;
+  /**
+   * Asks a public resolver whether a host has a record (for the user's Portainer: Cloudflare's DNS
+   * over HTTPS). When this computer finds none but the public resolver does, the DNS check and the
+   * site checks that fail with ENOTFOUND say this computer still holds an older answer. Absent:
+   * no public lookup and no such note.
+   */
+  publicDns?: (host: string) => Promise<AddressRecordLookup>;
 }
 
 /**
@@ -131,6 +139,64 @@ function errorText(error: unknown): string {
     return `${error.message}${detail}`;
   }
   return String(error);
+}
+
+/** Why this computer cannot find a record that exists publicly (a cached negative answer). */
+const STALE_LOCAL_DNS =
+  "The record exists publicly (a public resolver has it), but this computer still holds an older answer that says there is none; it clears within about 15 minutes.";
+
+/** How to clear a cached negative answer on this computer. */
+const FLUSH_DNS =
+  "Wait about 15 minutes, or flush this computer's DNS cache (`ipconfig /flushdns` on Windows, `sudo resolvectl flush-caches` on Linux, `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder` on macOS), then run `opscrew verify` again.";
+
+/** True when `error` (or its cause) says the host name was not found (`ENOTFOUND`). */
+function isNotFound(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; current instanceof Error && depth < 3; depth++) {
+    const code = (current as NodeJS.ErrnoException).code;
+    if (code === "ENOTFOUND" || /\bENOTFOUND\b/.test(current.message)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** Whether the public resolver (when injected) has a record for `host`; any failure is "no". */
+async function publiclyFound(host: string, ctx: VerifyCheckContext): Promise<boolean> {
+  if (!ctx.publicDns) return false;
+  try {
+    return (await ctx.publicDns(host)).state === "found";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The note a site check adds when it failed with ENOTFOUND although `host` has a public record
+ * (with a leading space), or an empty string.
+ */
+async function staleNote(error: unknown, host: string, ctx: VerifyCheckContext): Promise<string> {
+  return isNotFound(error) && (await publiclyFound(host, ctx))
+    ? ` ${STALE_LOCAL_DNS} ${FLUSH_DNS}`
+    : "";
+}
+
+/** Asks the public resolver at most once per host during one verify run. */
+function oncePerHost(ctx: VerifyCheckContext): VerifyCheckContext {
+  const lookup = ctx.publicDns;
+  if (!lookup) return ctx;
+  const answers = new Map<string, Promise<AddressRecordLookup>>();
+  return {
+    ...ctx,
+    publicDns: (host) => {
+      const key = host.toLowerCase();
+      let answer = answers.get(key);
+      if (!answer) {
+        answer = lookup(host);
+        answers.set(key, answer);
+      }
+      return answer;
+    },
+  };
 }
 
 function day(iso: string): string {
@@ -221,6 +287,46 @@ export function certificateCoversHost(host: string, names: readonly string[]): b
 
 /** DNS A/AAAA records for `host`: Cloudflare edge addresses when proxied, the server otherwise. */
 export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<CheckResult> {
+  return (await dnsCheck(host, ctx)).check;
+}
+
+/** {@link checkDns}, and whether this computer holds an older answer than the public resolver. */
+async function dnsCheck(
+  host: string,
+  ctx: VerifyCheckContext,
+): Promise<{ check: CheckResult; stale: boolean }> {
+  const check = await dnsRecords(host, ctx);
+  if (check !== "none") return { check, stale: false };
+  const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
+  const title = `DNS for ${host} points to the right place`;
+  if (await publiclyFound(host, ctx)) {
+    return {
+      check: result(
+        id,
+        title,
+        "high",
+        "fail",
+        `${host} has no A or AAAA record through this computer's DNS resolver. ${STALE_LOCAL_DNS}`,
+        { remediation: FLUSH_DNS, target: host },
+      ),
+      stale: true,
+    };
+  }
+  const tunnel = tunnelMode(ctx.plan) || portainerWeb(ctx.plan) === "tunnel";
+  return {
+    check: result(id, title, "high", "fail", `${host} has no A or AAAA record.`, {
+      remediation:
+        ctx.plan.target.provider === "portainer" && !tunnel
+          ? `OpsCrew creates no DNS record for ${host} in this setup: create one that points it at your Portainer host (an A record, and AAAA for IPv6, to its public address, or a CNAME to its dynamic-DNS name).`
+          : "Run `opscrew dns` to create the records, and check that the domain's nameservers point to Cloudflare.",
+      target: host,
+    }),
+    stale: false,
+  };
+}
+
+/** The DNS check's result, or `none` when this computer's resolver finds no A or AAAA record. */
+async function dnsRecords(host: string, ctx: VerifyCheckContext): Promise<CheckResult | "none"> {
   const id = host.startsWith("www.") ? "dns-records-www" : "dns-records";
   const title = `DNS for ${host} points to the right place`;
   const { plan } = ctx;
@@ -243,15 +349,7 @@ export async function checkDns(host: string, ctx: VerifyCheckContext): Promise<C
       target: host,
     });
   }
-  if (a.length === 0 && aaaa.length === 0) {
-    return result(id, title, "high", "fail", `${host} has no A or AAAA record.`, {
-      remediation:
-        portainer && !tunnel
-          ? `OpsCrew creates no DNS record for ${host} in this setup: create one that points it at your Portainer host (an A record, and AAAA for IPv6, to its public address, or a CNAME to its dynamic-DNS name).`
-          : "Run `opscrew dns` to create the records, and check that the domain's nameservers point to Cloudflare.",
-      target: host,
-    });
-  }
+  if (a.length === 0 && aaaa.length === 0) return "none";
   const addresses = [...a, ...aaaa];
   if (portainer && !tunnel && !plan.dns.proxied) {
     // The host's public address is the user's (often a home connection): never printed.
@@ -425,7 +523,7 @@ export async function checkSiteReachable(
         title,
         "high",
         "fail",
-        `Could not reach ${target}: ${errorText(error)}.`,
+        `Could not reach ${target}: ${errorText(error)}.${await staleNote(error, new URL(target).hostname, ctx)}`,
         {
           remediation: `Check that the latest deploy run succeeded and ${serverRunningHint(ctx.plan)}.`,
           target,
@@ -452,7 +550,7 @@ export async function checkTls(
       title,
       "high",
       "fail",
-      `Could not open an HTTPS connection to ${host}: ${errorText(error)}.`,
+      `Could not open an HTTPS connection to ${host}: ${errorText(error)}.${await staleNote(error, host, ctx)}`,
       {
         remediation:
           tunnelMode(ctx.plan) || portainerWeb(ctx.plan) === "tunnel"
@@ -573,10 +671,18 @@ export async function checkHttpRedirect(
       },
     );
   } catch (error) {
-    return result(id, title, "medium", "fail", `Could not reach ${target}: ${errorText(error)}.`, {
-      remediation: "Make sure port 80 is open in the firewall; Caddy needs it for redirects.",
-      target,
-    });
+    const note = await staleNote(error, host, ctx);
+    return result(
+      id,
+      title,
+      "medium",
+      "fail",
+      `Could not reach ${target}: ${errorText(error)}.${note}`,
+      {
+        remediation: "Make sure port 80 is open in the firewall; Caddy needs it for redirects.",
+        target,
+      },
+    );
   }
 }
 
@@ -603,10 +709,18 @@ export async function checkHealth(url: string, ctx: VerifyCheckContext): Promise
           target,
         });
   } catch (error) {
-    return result(id, title, "high", "fail", `Could not reach ${target}: ${errorText(error)}.`, {
-      remediation,
-      target,
-    });
+    const note = await staleNote(error, new URL(target).hostname, ctx);
+    return result(
+      id,
+      title,
+      "high",
+      "fail",
+      `Could not reach ${target}: ${errorText(error)}.${note}`,
+      {
+        remediation,
+        target,
+      },
+    );
   }
 }
 
@@ -706,7 +820,7 @@ export async function checkSensitiveFile(
       title,
       "critical",
       "warn",
-      `Could not request ${target}: ${errorText(error)}.`,
+      `Could not request ${target}: ${errorText(error)}.${await staleNote(error, new URL(target).hostname, ctx)}`,
       {
         target,
       },
@@ -918,13 +1032,21 @@ export interface VerifyChecksOutcome {
  * domain (it prints the one the user creates) and the proxy manages its certificate and redirect,
  * so a failed domain check is a warning that says so. Other targets and modes are unchanged.
  */
-function userDomain(check: CheckResult, host: string, plan: DeployPlan): CheckResult {
+function userDomain(
+  check: CheckResult,
+  host: string,
+  plan: DeployPlan,
+  stale = false,
+): CheckResult {
   if (portainerWeb(plan) !== "proxy" || check.status !== "fail") return check;
   return {
     ...check,
     status: "warn",
     message: `${check.message} Behind your own reverse proxy the DNS record and the certificate for ${host} are yours, so this is a warning.`,
-    remediation: `The record and the certificate are yours: create the record OpsCrew printed and route ${host} in your proxy (it serves HTTPS and redirects HTTP), then run \`opscrew verify\` again.`,
+    // This computer holds an older answer for a record that exists: clearing it is what helps.
+    remediation: stale
+      ? FLUSH_DNS
+      : `The record and the certificate are yours: create the record OpsCrew printed and route ${host} in your proxy (it serves HTTPS and redirects HTTP), then run \`opscrew verify\` again.`,
   };
 }
 
@@ -932,8 +1054,11 @@ function userDomain(check: CheckResult, host: string, plan: DeployPlan): CheckRe
  * Runs every verify check from plan.md in report order. Without a domain the DNS and TLS checks
  * warn (the site is served over plain HTTP on the server IP) instead of failing.
  */
-export async function runVerifyChecks(ctx: VerifyCheckContext): Promise<VerifyChecksOutcome> {
+export async function runVerifyChecks(context: VerifyCheckContext): Promise<VerifyChecksOutcome> {
+  const ctx = oncePerHost(context);
   const { plan } = ctx;
+  // Hosts this computer cannot find although a public resolver has their record.
+  const stale = new Set<string>();
   const hosts = verifyHosts(plan);
   const url = ctx.url ?? siteUrl(plan, ctx.server);
   const checks: CheckResult[] = [];
@@ -966,7 +1091,11 @@ export async function runVerifyChecks(ctx: VerifyCheckContext): Promise<VerifyCh
       ),
     );
   } else {
-    for (const host of hosts) checks.push(userDomain(await checkDns(host, ctx), host, plan));
+    for (const host of hosts) {
+      const dns = await dnsCheck(host, ctx);
+      if (dns.stale) stale.add(host);
+      checks.push(userDomain(dns.check, host, plan, dns.stale));
+    }
   }
 
   if (url === undefined) {
@@ -1034,8 +1163,9 @@ export async function runVerifyChecks(ctx: VerifyCheckContext): Promise<VerifyCh
       ),
     );
   } else {
-    checks.push(userDomain(await checkTls(domain, ctx), domain, plan));
-    checks.push(userDomain(await checkHttpRedirect(domain, ctx), domain, plan));
+    const domainStale = stale.has(domain);
+    checks.push(userDomain(await checkTls(domain, ctx), domain, plan, domainStale));
+    checks.push(userDomain(await checkHttpRedirect(domain, ctx), domain, plan, domainStale));
   }
 
   checks.push(await checkHealth(url, ctx));
