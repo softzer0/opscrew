@@ -227,6 +227,21 @@ export function shortHostMentions(text: string, host: string): number {
   return [...text.matchAll(pattern)].length;
 }
 
+/** Whether a saved plan file is OpenTofu's encrypted form: JSON with `meta` and `encrypted_data`. */
+export function isEncryptedPlan(content: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "meta" in parsed &&
+      typeof (parsed as { encrypted_data?: unknown }).encrypted_data === "string"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The shape of a value without its contents: types for scalars (`string`, `number`, …), keys with
  * their shapes for objects (sorted), and the first element's shape for arrays. Used to log what

@@ -105,6 +105,7 @@ import {
   firewallRules,
   inPass,
   ipv4FromTrace,
+  isEncryptedPlan,
   logErrors,
   logLineShape,
   missingPortainerVariables,
@@ -298,6 +299,13 @@ describe("Portainer live test helpers", () => {
     expect(shortHostMentions("portainer.url, portainer.web", "portainer")).toBe(0);
     expect(shortHostMentions("opscrew-shop-portainer-tunnel", "portainer")).toBe(0);
     expect(shortHostMentions("https://portainer:9443/api", "portainer")).toBe(1);
+  });
+
+  it("tells OpenTofu's encrypted plan files from plain ones", () => {
+    const meta = { "key_provider.pbkdf2.opscrew": "eyJ9" };
+    expect(isEncryptedPlan(JSON.stringify({ meta, encrypted_data: "+nas/" }))).toBe(true);
+    expect(isEncryptedPlan("PK\u0003\u0004 tfplan https://nas:9443")).toBe(false);
+    expect(isEncryptedPlan(JSON.stringify({ meta }))).toBe(false);
   });
 
   it("describes the shape of a value without any of its contents", () => {
@@ -3116,7 +3124,12 @@ describe.skipIf(MISSING.length > 0)(
           search(`pull request #${pull.number}`, pull.text);
         for (const [label, output] of outputs) search(label, output);
         search("the MCP results", mcpTexts.join("\n"));
-        for (const [file, content] of planFiles) search(`.opscrew/plans/${file}`, content);
+        for (const [file, content] of planFiles) {
+          // OpenTofu encrypts saved plans: a search in the ciphertext finds only chance matches
+          // of the short host (a 3-letter word in run 10).
+          if (file.endsWith(".tfplan") && isEncryptedPlan(content)) continue;
+          search(`.opscrew/plans/${file}`, content);
+        }
         const tracked = (await git("ls-files", "-co", "--exclude-standard"))
           .split("\n")
           .filter(Boolean);
