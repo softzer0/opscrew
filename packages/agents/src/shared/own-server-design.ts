@@ -1,0 +1,29 @@
+import type { OwnServerDesignInput } from "../design";
+import type { OwnServerServices } from "../provision";
+import { connectOwnServer, inspectOwnServer, type OwnServerDeps } from "./own-server";
+
+/**
+ * What design needs from the user's own server: connects with the login the interview recorded
+ * (confirming and pinning the host key on the first connection, see {@link connectOwnServer}) and
+ * inspects the server read-only. Design itself never connects.
+ */
+export async function inspectOwnServerForDesign(
+  deps: OwnServerDeps,
+  options: { hostKey?: string; services?: OwnServerServices } = {},
+): Promise<OwnServerDesignInput> {
+  const { remote, homeDir, host } = options.services ?? {};
+  deps.reporter.step("Connecting to your server to read its size (read-only)");
+  const session = await connectOwnServer(deps, {
+    ...(options.hostKey === undefined ? {} : { hostKey: options.hostKey }),
+    ...(remote === undefined ? {} : { remote }),
+    ...(homeDir === undefined ? {} : { homeDir }),
+  });
+  if (session.pinned) {
+    deps.reporter.success(`Pinned your server's SSH host key ${session.hostKey.fingerprint}.`);
+  }
+  const inspected = await inspectOwnServer(
+    session,
+    host === undefined ? {} : { inspect: (shell) => host.inspect(shell) },
+  );
+  return { facts: inspected.server };
+}
