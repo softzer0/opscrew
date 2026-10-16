@@ -190,6 +190,30 @@ describe("opscrew domain buy in scripts", () => {
     expect(t.cf.registerCalls).toEqual([]);
   });
 
+  it("quotes --account in the command it prints, as connect and auto-renew do", async () => {
+    const t = await setup();
+    t.cf.accounts = [
+      { id: "acc-1", name: "Shop Team" },
+      { id: "acc-2", name: "Personal" },
+    ];
+    const buy = t.context();
+    const args = ["domain", "buy", "shopapp.com", "--account", "Shop Team", "--max-price", "12USD"];
+    expect(await run(buy, ...args)).toBe(1);
+    expect(buy.errors).toContain(
+      "`opscrew domain buy shopapp.com --account 'Shop Team' --confirm shopapp.com --max-price 12USD`",
+    );
+    expect(t.cf.registerCalls).toEqual([]);
+
+    await writeRequirements(t, "shopapp.com");
+    t.cf.own("shopapp.com", { autoRenew: false });
+    const renew = t.context();
+    expect(await run(renew, "domain", "auto-renew", "on", "--account", "Shop Team")).toBe(1);
+    expect(renew.errors).toContain(
+      "`opscrew domain auto-renew on --account 'Shop Team' --confirm shopapp.com`",
+    );
+    expect(t.cf.autoRenewCalls).toEqual([]);
+  });
+
   it("buys with --confirm and --max-price at or above the price", async () => {
     const t = await setup();
     const ctx = t.context();

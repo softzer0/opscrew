@@ -693,7 +693,7 @@ export function register(program: Command, ctx: CliContext): void {
         const parts = [buy];
         if (flags.years !== undefined) parts.push(`--years ${flags.years.trim()}`);
         if (autoRenew === false) parts.push("--no-auto-renew");
-        if (account !== undefined) parts.push(`--account ${account}`);
+        if (account !== undefined) parts.push(`--account ${shellArg(account)}`);
         parts.push(`--confirm ${phrase}`);
         if (refused.kind === "domain-purchase") {
           parts.push(`--max-price ${flags.maxPrice?.trim().replace(/\s+/g, "") || "<amount>"}`);
@@ -879,7 +879,7 @@ export function register(program: Command, ctx: CliContext): void {
         [
           `opscrew domain auto-renew ${state}`,
           ...(registrar === undefined ? [] : [`--registrar ${registrar}`]),
-          ...(account === undefined ? [] : [`--account ${account}`]),
+          ...(account === undefined ? [] : [`--account ${shellArg(account)}`]),
           `--confirm ${phrase}`,
         ].join(" ");
       const result = await runPhaseCommand(
