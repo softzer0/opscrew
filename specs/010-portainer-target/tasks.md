@@ -148,6 +148,14 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: medium
 
+- [ ] T1018 [US2] `verify` checks the site as the world sees it when this computer's DNS is stale, in `packages/agents/src/verify/`; the live test's wait only observes
+  - Owns: `packages/agents/src/verify/**` (+ tests), `packages/cli/test/live/portainer-target.test.ts` (`waitForLocalResolution` only)
+  - Reads: the eighth full live run (2026-10-16): after step 7 created the tunnel's record, the site answered through public DNS (the test's own checks) but this computer's resolver still said ENOTFOUND after 16 minutes (a cache beyond Windows, such as the router's or the ISP's, may keep a negative answer up to Cloudflare's 30-minute SOA minimum); T1017's notes and `lookupAddressRecord`
+  - Depends: T1017
+  - Accept: for a Portainer target, when a host fails to resolve through this computer's resolver but the public DNS-over-HTTPS resolver has its record, `verify` resolves that host through the public answer for its DNS and site checks (the connection keeps the real hostname for TLS SNI and certificate checks; only the address lookup changes), says this computer's DNS still holds an older answer (with how to flush it), and passes when the site answers; when the public resolver has no record, behaviour is as today; no address is printed; other targets unchanged. The live test's `waitForLocalResolution` only records how long this computer took (bounded, never failing the step).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
 - [ ] T1009 Live run, core pass (founder, 2026-10-15: the full matrix took about 2 hours): setup, updater + tunnel, one merged change deploying by itself with the unchanged-branch webhook check, destroy keeping data, `--delete-data`, the leak check; results in `docs/e2e.md` (lead). The other steps (caddy, proxy, cloudflare redeploy, rollback wait, loopback, short host, MCP) stay in the test behind `OPSCREW_E2E_PORTAINER_STEPS=full`
 
 ## Dependencies
