@@ -40,20 +40,24 @@ for (const [name, server] of Object.entries(servers ?? {})) {
   }
 }
 
-// The MCP server version must match the plugin version (no floating `@latest`).
+// The MCP server runs `opscrew@<version>`, the plugin's version (FR-111: no floating `@latest`).
 const pinned = JSON.stringify(mcp ?? {}).match(/opscrew@([^"\s]+)/);
-if (manifest && pinned && pinned[1] !== manifest.version) {
+if (mcp && pinned === null) {
+  errors.push(".mcp.json: must run opscrew@<version>, pinned to the plugin's version");
+} else if (manifest && pinned && pinned[1] !== manifest.version) {
   errors.push(
     `.mcp.json: runs opscrew@${pinned[1]}, but the plugin version is ${manifest.version}; pin the same version`,
   );
 }
 
-// skills/<name>/SKILL.md
+// skills/<name>/SKILL.md, among them the three FR-111 names
 const skillsDir = join(pluginDir, "skills");
 const skills = existsSync(skillsDir)
   ? readdirSync(skillsDir).filter((d) => statSync(join(skillsDir, d)).isDirectory())
   : [];
-if (skills.length === 0) errors.push("skills/: no skills found");
+for (const required of ["opscrew-deploy", "opscrew-scan", "opscrew-adapt"]) {
+  if (!skills.includes(required)) errors.push(`skills/${required}: missing (FR-111)`);
+}
 for (const skill of skills) {
   const file = join(skillsDir, skill, "SKILL.md");
   if (!existsSync(file)) {
@@ -89,6 +93,8 @@ if (marketplace) {
   for (const entry of entries) {
     if (typeof entry.name !== "string" || entry.source === undefined) {
       errors.push("marketplace.json: every plugin needs `name` and `source`");
+    } else if (typeof entry.source === "string" && !entry.source.startsWith("./")) {
+      errors.push(`marketplace.json: relative source for ${entry.name} must start with ./`);
     } else if (
       typeof entry.source === "string" &&
       !existsSync(join(repoRoot, entry.source, ".claude-plugin", "plugin.json"))
