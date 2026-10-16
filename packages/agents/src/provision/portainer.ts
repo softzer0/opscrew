@@ -26,7 +26,13 @@ import {
   stackPlanHash,
   valueFingerprints,
 } from "@opscrew/connector-portainer";
-import type { ApprovalRecord, IacEngine, PhaseName, ResourceChange } from "@opscrew/contracts";
+import type {
+  ApprovalRecord,
+  FetchLike,
+  IacEngine,
+  PhaseName,
+  ResourceChange,
+} from "@opscrew/contracts";
 import {
   isUserFacingError,
   OpsCrewError,
@@ -44,6 +50,7 @@ import {
   renderPlaceholderStack,
   renderPortainerConnectorStack,
   renderUpdaterStack,
+  siteHosts,
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -53,8 +60,10 @@ import {
   type Requirements,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { DNS_OVER_HTTPS_URL } from "../domain/connect-dns";
 import { stateContents } from "../drift/infra";
 import { hidePortainerAddress } from "../interview/portainer-access";
 import { PORTAINER_TOKEN_VAR } from "../providers";
@@ -96,7 +105,7 @@ import {
   portainerDeploySecrets,
   setDeploySecrets,
 } from "./secrets";
-import type { ProvisionOptions, ProvisionResult } from "./types";
+import type { ProvisionOptions, ProvisionResult, SavedPlan } from "./types";
 import { cloudflareZeroTrust, createZeroTrustOrganization } from "./zero-trust";
 
 /** The read-only token for a private repository, which Portainer fetches the deploy branch with. */
@@ -1002,6 +1011,14 @@ export async function provisionPortainer(
         `Approve both plans to apply them (\`${command} --approve ${iac.planHash} --approve ${stackHash}\`, typing ${plan.app.name} to confirm): the change in your Portainer goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`,
       );
     }
+    if (target.web.mode === "caddy") {
+      const note = caddyRecordNote(
+        plan,
+        command,
+        deletedRecordHosts(iac.plan, siteHosts(plan), plan.dns.zone),
+      );
+      if (note !== undefined) deps.reporter.info(note);
+    }
     if (zoneLearned) await writeArtifact("plan", deps.paths.files.plan, plan);
     return {
       ...(iac.planHash ? { planHash: iac.planHash } : {}),
@@ -1011,8 +1028,15 @@ export async function provisionPortainer(
     };
   }
 
-  // The configuration the removal applied is no longer used: its files leave the repository.
-  const removedFiles = removal && iac.applied ? await removeStaleRoot(deps, plan) : [];
+  // The configuration the removal applied is no longer used: its files leave the repository. A
+  // run that removed them and stopped before its commit (for example at Caddy's DNS check below)
+  // left their deletion in the working copy: it is committed now.
+  const removedFiles =
+    removal && iac.applied
+      ? await removeStaleRoot(deps, plan)
+      : !hasRoot
+        ? await uncommittedRemovals(deps, plan)
+        : [];
 
   // 5. Record the infrastructure apply in the plan (never Portainer's address).
   const now = deps.clock.now().toISOString();
@@ -1039,6 +1063,37 @@ export async function provisionPortainer(
   const earlyApplied = firstChange.result?.applied === true;
   plan = record(earlyApplied);
   await writeArtifact("plan", deps.paths.files.plan, plan);
+
+  // 5b. Caddy asks Let's Encrypt for its certificates as soon as it starts, and a failed request
+  // stays cached: in web mode caddy the domain's records must resolve publicly before the deploy
+  // branch, the stack change and the deploy pull request (after the Cloudflare changes, which may
+  // delete the Cloudflare Tunnel's records at those names).
+  if (target.web.mode === "caddy") {
+    const done: string[] = [];
+    if (iac.applied) {
+      done.push(
+        removal
+          ? "The earlier setup's Cloudflare resources (its Cloudflare Tunnel, DNS records and Access) are removed."
+          : "The Cloudflare changes are applied.",
+      );
+    }
+    if (removedFiles.length > 0) {
+      done.push(
+        `The earlier Cloudflare configuration is removed from ${plan.infra.dir}/ in this working copy; the next run commits that with the deployment files.`,
+      );
+    }
+    done.push(
+      earlyApplied
+        ? "The change in your Portainer that goes first is applied (it stopped the Cloudflare Tunnel's connector); nothing else in Portainer was changed."
+        : "Nothing in Portainer was changed.",
+    );
+    await requireCaddyRecords(deps, {
+      plan,
+      command,
+      deleted: iac.applied ? deletedRecordHosts(iac.plan, siteHosts(plan), plan.dns.zone) : [],
+      done: done.join(" "),
+    });
+  }
 
   // 6. The deploy branch Portainer builds the app stack from, with a placeholder (research R11).
   if (createsAppStack) await placeholderBranch.start(iac.applied);
@@ -1430,14 +1485,241 @@ async function startDeployBranch(
   );
 }
 
+/** DNS record types that point a host name at a server, by their type code. */
+const ADDRESS_RECORD_TYPES = [
+  ["A", 1],
+  ["AAAA", 28],
+  ["CNAME", 5],
+] as const;
+const ADDRESS_TYPE_CODES = new Set<number>(ADDRESS_RECORD_TYPES.map(([, code]) => code));
+/** NOERROR and NXDOMAIN; any other status (SERVFAIL, REFUSED …) is a failed lookup. */
+const DNS_NOERROR = 0;
+const DNS_NXDOMAIN = 3;
+const DNS_LOOKUP_TIMEOUT_MS = 15_000;
+
+const DnsJsonResponse = z.looseObject({
+  Status: z.number().int(),
+  Answer: z
+    .array(z.looseObject({ name: z.string(), type: z.number().int(), data: z.string() }))
+    .nullish(),
+});
+
+function hostName(name: string): string {
+  return name.trim().toLowerCase().replace(/\.$/, "");
+}
+
+/** What a public resolver says about a host name's A, AAAA and CNAME records right now. */
+export type AddressRecordLookup =
+  | { state: "found" }
+  | { state: "missing" }
+  | { state: "unknown"; problem: string };
+
+/**
+ * Whether `host` has an A, AAAA or CNAME record, asked read-only of Cloudflare's public resolver
+ * over DNS over HTTPS (`application/dns-json`), one type after the other. NXDOMAIN means no record
+ * of any type. A failed or unreadable lookup is `unknown`, never taken as an answer.
+ */
+export async function lookupAddressRecord(
+  fetch: FetchLike,
+  host: string,
+): Promise<AddressRecordLookup> {
+  const name = hostName(host);
+  for (const [type] of ADDRESS_RECORD_TYPES) {
+    const url = `${DNS_OVER_HTTPS_URL}?${new URLSearchParams({ name, type })}`;
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "GET",
+        headers: { accept: "application/dns-json" },
+        signal: AbortSignal.timeout(DNS_LOOKUP_TIMEOUT_MS),
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { state: "unknown", problem: `the request failed: ${reason}` };
+    }
+    if (!response.ok) return { state: "unknown", problem: `HTTP ${response.status}` };
+    const parsed = DnsJsonResponse.safeParse(await response.json().catch(() => undefined));
+    if (!parsed.success) return { state: "unknown", problem: "an unexpected answer" };
+    const { Status, Answer } = parsed.data;
+    if (Status === DNS_NXDOMAIN) return { state: "missing" };
+    if (Status !== DNS_NOERROR) {
+      return { state: "unknown", problem: `the resolver answered with DNS status ${Status}` };
+    }
+    const found = (Answer ?? []).some(
+      (answer) => ADDRESS_TYPE_CODES.has(answer.type) && hostName(answer.name) === name,
+    );
+    if (found) return { state: "found" };
+  }
+  return { state: "missing" };
+}
+
+const DeletedRecordJson = z.looseObject({
+  type: z.literal("cloudflare_dns_record"),
+  change: z.looseObject({
+    actions: z.array(z.string()),
+    before: z.looseObject({ name: z.string().optional() }).nullish(),
+  }),
+});
+
+/**
+ * The site's host names whose DNS records the Cloudflare plan deletes (the Cloudflare Tunnel's
+ * routes): by the host name their addresses are keyed with (`…route["shop.example.com"]`), or by
+ * the record's name in the plan JSON. Right after such a deletion a public resolver may still
+ * answer from its cache, so these names count as without a record.
+ */
+function deletedRecordHosts(
+  saved: Pick<SavedPlan, "changes" | "planJson"> | undefined,
+  hosts: readonly string[],
+  zone: string | undefined,
+): string[] {
+  if (saved === undefined) return [];
+  const names = new Set<string>();
+  const apex = zone === undefined ? undefined : hostName(zone);
+  // A record's name is its full host name, or one relative to the zone (`@` for the apex).
+  const add = (name: string) => {
+    const host = hostName(name);
+    if (host === "@") {
+      if (apex !== undefined) names.add(apex);
+      return;
+    }
+    names.add(host);
+    if (apex !== undefined && host !== apex && !host.endsWith(`.${apex}`)) {
+      names.add(`${host}.${apex}`);
+    }
+  };
+  for (const change of saved.changes) {
+    if (change.type !== "cloudflare_dns_record" || change.action !== "delete") continue;
+    const key = /\["([^"]+)"\]$/.exec(change.address)?.[1];
+    if (key !== undefined) add(key);
+  }
+  const list = (saved.planJson as { resource_changes?: unknown } | null | undefined)
+    ?.resource_changes;
+  for (const entry of Array.isArray(list) ? list : []) {
+    const parsed = DeletedRecordJson.safeParse(entry);
+    if (!parsed.success) continue;
+    const { actions, before } = parsed.data.change;
+    if (!actions.includes("delete") || actions.includes("create")) continue;
+    if (before?.name !== undefined) add(before.name);
+  }
+  return hosts.filter((host) => names.has(hostName(host)));
+}
+
+const RECORD_TO_CREATE =
+  "an A record (and AAAA for IPv6) for {hosts} to your Portainer host's public address, or a CNAME to its dynamic-DNS name";
+
+/**
+ * Said by `--plan-only` in web mode `caddy`: the record must exist before Caddy starts, and when
+ * the plan deletes the Cloudflare Tunnel's records there, the user creates it once it is applied.
+ */
+function caddyRecordNote(
+  plan: DeployPlan,
+  command: string,
+  deleted: readonly string[],
+): string | undefined {
+  const hosts = siteHosts(plan);
+  if (hosts.length === 0) return undefined;
+  const one = hosts.length === 1;
+  const note = [
+    `Before Caddy starts, ${hosts.join(" and ")} must have a DNS record that points at your Portainer host (an A record, and AAAA for IPv6, to its public address, or a CNAME to its dynamic-DNS name): applying checks ${one ? "it" : "them"} through a public resolver and stops before ${deleted.length > 0 ? "Caddy can start" : "the app's stack changes"} until ${one ? "it resolves" : "they resolve"}, so Caddy gets ${one ? "its certificate" : "their certificates"} at once.`,
+  ];
+  if (deleted.length > 0) {
+    note.push(
+      `This plan deletes the Cloudflare Tunnel's record${deleted.length === 1 ? "" : "s"} for ${deleted.join(" and ")}, so create yours once it is applied; the next \`${command}\` then continues.`,
+    );
+  }
+  return note.join(" ");
+}
+
+/**
+ * Web mode `caddy`: stops unless every host of the site has an A, AAAA or CNAME record that a
+ * public resolver sees (`deleted` hosts lost theirs in this run and count as without one), before
+ * anything starts Caddy. `done` says what this run already applied.
+ */
+async function requireCaddyRecords(
+  deps: Pick<PhaseDeps, "fetch" | "reporter" | "redactor">,
+  input: { plan: DeployPlan; command: string; deleted: readonly string[]; done: string },
+): Promise<void> {
+  const hosts = siteHosts(input.plan);
+  if (hosts.length === 0) return;
+  const { command, deleted, done } = input;
+  deps.reporter.step(
+    `Checking that ${hosts.join(" and ")} ${hosts.length === 1 ? "has a DNS record" : "have DNS records"} before Caddy starts (a public resolver, read-only)`,
+  );
+  const missing: string[] = [];
+  for (const host of hosts) {
+    if (deleted.includes(host)) {
+      missing.push(host);
+      continue;
+    }
+    const lookup = await lookupAddressRecord(deps.fetch, host);
+    if (lookup.state === "found") continue;
+    if (lookup.state === "missing") {
+      missing.push(host);
+      continue;
+    }
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      deps.redactor.redact(
+        `OpsCrew could not check through a public resolver whether ${host} has a DNS record (${lookup.problem}), so it stopped here, before Caddy can start. ${done}`,
+      ),
+      {
+        hint: `Check that this computer can reach ${DNS_OVER_HTTPS_URL}, then run \`${command}\` again: it continues from there.`,
+      },
+    );
+  }
+  if (missing.length === 0) {
+    deps.reporter.success(
+      `${hosts.join(" and ")} ${hosts.length === 1 ? "has a DNS record" : "have DNS records"}; Caddy can get ${hosts.length === 1 ? "its certificate" : "their certificates"}.`,
+    );
+    return;
+  }
+  const one = missing.length === 1;
+  const names = missing.join(" and ");
+  const why = missing.some((host) => deleted.includes(host))
+    ? ` (the Cloudflare changes above deleted the Cloudflare Tunnel's record${one ? "" : "s"} there)`
+    : " (a public resolver finds no A, AAAA or CNAME record)";
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${names} ${one ? "has" : "have"} no DNS record that points at your Portainer host yet${why}. Caddy asks Let's Encrypt for ${one ? "its certificate" : "their certificates"} as soon as it starts; without the record that request fails, and the failure can stay cached for up to 30 minutes. So OpsCrew stopped here, before Caddy can start. ${done}`,
+    {
+      hint: `Create ${RECORD_TO_CREATE.replace("{hosts}", names)}, then run \`${command}\` again: it continues from there. A new record can take a few minutes to show in public resolvers.`,
+    },
+  );
+}
+
+/** The committed Cloudflare configuration of a Portainer root: its directory and the modules. */
+function staleRootDirs(plan: DeployPlan): [string, string] {
+  const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
+  return [dir, `${posix.dirname(dir)}/modules`];
+}
+
+/**
+ * Files of the earlier Cloudflare configuration that are deleted in the working copy but still
+ * committed: an earlier run removed them (after its approval) and stopped before its commit.
+ */
+async function uncommittedRemovals(deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
+  const listed = await deps.runner.run("git", [
+    "-C",
+    deps.paths.root,
+    "ls-files",
+    "--deleted",
+    "--",
+    ...staleRootDirs(plan),
+  ]);
+  if (listed.exitCode !== 0) return [];
+  return listed.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
 /**
  * After the removal of an earlier Cloudflare setup: takes its committed configuration (the root
  * module under `plan.infra.dir` and the vendored modules beside it) out of the repository, after a
  * `repo-write` approval that lists the files. Returns the removed paths (relative, for the commit).
  */
 async function removeStaleRoot(deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
-  const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const modules = `${posix.dirname(dir)}/modules`;
+  const [dir, modules] = staleRootDirs(plan);
   const listed = await deps.runner.run("git", [
     "-C",
     deps.paths.root,

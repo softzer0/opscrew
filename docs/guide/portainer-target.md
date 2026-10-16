@@ -191,7 +191,13 @@ fails, revert the change: merging the revert deploys the previous version.
   own proxy) and manage its certificate there.
 - **`caddy`**: Caddy serves the app on ports 80 and 443 of the host with automatic certificates.
   OpsCrew checks that the ports are free first. Your NAS's own web interface often uses them, and
-  only one app on the host can have them.
+  only one app on the host can have them. OpsCrew also waits for your DNS record before it starts
+  Caddy, so Let's Encrypt issues the certificate at once. Without the record,
+  `npx opscrew provision` stops before Caddy can start and names the record to create: Caddy asks
+  for the certificate as soon as it starts, and DNS resolvers can remember a missing record for up
+  to 30 minutes. Create the record, then run `npx opscrew provision` again: it continues from
+  there. When you switch from the tunnel, that run first deletes the tunnel's record at the same
+  name, so you create yours after it.
 
 With `proxy` and `caddy`, OpsCrew creates no DNS record, because your home address can change and
 OpsCrew never stores it. It prints the record to create instead: an A record (and AAAA for IPv6) to

@@ -132,7 +132,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: medium
 
-- [ ] T1016 [US2] Caddy starts only once the domain resolves, in `packages/agents/src/provision/portainer.ts`; the live test and the guide follow
+- [X] T1016 [US2] Caddy starts only once the domain resolves, in `packages/agents/src/provision/portainer.ts`; the live test and the guide follow
   - Owns: `packages/agents/src/provision/portainer.ts` (the caddy precondition) (+ tests), `packages/cli/test/live/portainer-target.test.ts` (step 5), `docs/guide/portainer-target.md` (the caddy paragraph)
   - Reads: the sixth full live run (2026-10-16): after the switch from the tunnel to Caddy, provision applied the Caddy stack before the user's A record existed (the test creates it afterwards, and in a switch it cannot exist earlier: the removal deletes the tunnel's record at that name); Caddy asked Let's Encrypt at once, got no record, and the negative answer stayed cached (Cloudflare's SOA allows up to 30 minutes), so for 10 minutes the site answered with a TLS alert and the deploy rolled back; run 5 passed only by timing
   - Depends: T1005, T1014

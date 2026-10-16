@@ -17,7 +17,7 @@
  * variables in docs/e2e.md ("Your existing Portainer"); costs a few cents of server time.
  *
  * `OPSCREW_E2E_PORTAINER_STEPS` selects the steps: `core` (the default, about 15 minutes) runs steps 1,
- * 2, 3 without its rollback, 8, 9 and 12; `full` (about 2 hours) runs every step and check above.
+ * 2, 3 without its rollback, 8, 9 and 12; `full` (about 1–1½ hours) runs every step and check above.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -2398,7 +2398,7 @@ describe.skipIf(MISSING.length > 0)(
 
     step(
       "5. caddy: the app stack updated in place, the DNS record OpsCrew prints, certificates on 80/443",
-      minutes(75),
+      minutes(120),
       async () => {
         // From here on OpsCrew uses the full Cloudflare token (removing the tunnel needs it anyway).
         env.CLOUDFLARE_API_TOKEN = E2E.cloudflareToken;
@@ -2413,14 +2413,118 @@ describe.skipIf(MISSING.length > 0)(
             ((stack?.Env as { name?: string }[] | undefined) ?? []).map((item) => item.name).sort(),
           );
         const stackBefore = await stackByName(names().app);
-        const provisioned = await provisionUntilDone("caddy");
+
+        /** What the public resolver answers for `name` now: record types only, never an address. */
+        const publicAnswer = async (name: string, type: "A" | "AAAA" | "CNAME") => {
+          const response = await fetch(
+            `https://cloudflare-dns.com/dns-query?${new URLSearchParams({ name, type })}`,
+            { headers: { accept: "application/dns-json" }, signal: AbortSignal.timeout(15_000) },
+          );
+          if (!response.ok) return `HTTP ${response.status}`;
+          const body = (await response.json()) as {
+            Status?: number;
+            Answer?: { type?: number; data?: string; TTL?: number }[];
+          };
+          const types: Record<number, string> = { 1: "A", 5: "CNAME", 28: "AAAA" };
+          const answers = (body.Answer ?? []).map((answer) => {
+            const kind = types[answer.type ?? 0] ?? `type ${answer.type}`;
+            const to =
+              answer.type === 1
+                ? answer.data === ipv4()
+                  ? "the server's address"
+                  : "another address"
+                : answer.type === 28
+                  ? "an IPv6 address"
+                  : "a name";
+            return `${kind} to ${to} (TTL ${answer.TTL ?? "?"})`;
+          });
+          return `status ${body.Status ?? "?"}${answers.length > 0 ? `: ${answers.join(", ")}` : ", no answer"}`;
+        };
+        /**
+         * After a failed caddy deploy: the last lines of the Caddy container's log about certificates
+         * (read through the test's Portainer client) and the public resolver's answers, scrubbed.
+         */
+        const caddyDiagnostics = async (checked: readonly string[]) => {
+          for (const name of checked) {
+            for (const type of ["A", "AAAA", "CNAME"] as const) {
+              observe(
+                `diagnostics: cloudflare-dns.com answers ${name} ${type} with ${await publicAnswer(name, type)}`,
+              );
+            }
+          }
+          const project = opscrewNames(app()).app;
+          const filters = JSON.stringify({
+            label: [`com.docker.compose.project=${project}`, "com.docker.compose.service=caddy"],
+          });
+          const listed = await portainer().ok<{ Id: string; State?: string }[]>(
+            "GET",
+            `/api/endpoints/${environmentId}/docker/containers/json?all=1&filters=${encodeURIComponent(filters)}`,
+            "list the Caddy container",
+          );
+          const container = listed[0];
+          if (container === undefined) {
+            observe("diagnostics: the app stack has no Caddy container");
+            return;
+          }
+          const logs = await portainer().call(
+            "GET",
+            `/api/endpoints/${environmentId}/docker/containers/${container.Id}/logs?stdout=1&stderr=1&tail=2000`,
+            { headers: { Accept: "*/*" } },
+          );
+          if (logs.status !== 200) {
+            observe(`diagnostics: Portainer answered HTTP ${logs.status} for Caddy's log`);
+            return;
+          }
+          // Without a TTY Docker frames each chunk with an 8-byte header (stream, 0, 0, 0, size).
+          const raw = logs.text;
+          let text = "";
+          for (let i = 0; i < raw.length; i++) {
+            const code = raw.charCodeAt(i);
+            if (
+              (code === 1 || code === 2) &&
+              raw.charCodeAt(i + 1) === 0 &&
+              raw.charCodeAt(i + 2) === 0 &&
+              raw.charCodeAt(i + 3) === 0
+            ) {
+              text += "\n";
+              i += 7;
+            } else {
+              text += raw[i];
+            }
+          }
+          const lines = text
+            .split(/\r?\n/)
+            .filter((line) => /certificate|acme|challenge|tls|error/i.test(line))
+            .slice(-40);
+          observe(
+            `diagnostics: Caddy (${container.State ?? "unknown state"}) logged ${lines.length} line(s) about certificates or errors`,
+          );
+          for (const line of lines) observe(`diagnostics: caddy: ${line.trim().slice(0, 500)}`);
+        };
+
+        // The removal deletes the tunnel's records, so the user's record cannot exist yet: provision
+        // stops before Caddy can start (Let's Encrypt would cache the missing record) and names it.
+        const CADDY_WAITS = "no DNS record that points at your Portainer host yet";
+        let stop: string | undefined;
+        try {
+          await provisionUntilDone("caddy");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!message.includes(CADDY_WAITS)) throw error;
+          stop = message;
+        }
         expect(
-          namesDnsRecord(provisioned.output, appHost),
-          "provision names the DNS record to create",
-        ).toBe(true);
+          stop,
+          "provision stops before Caddy starts while the domain has no record",
+        ).toContain(`${appHost} has ${CADDY_WAITS}`);
+        expect(stop, "the stop says the next provision continues").toContain(
+          "it continues from there",
+        );
+        log("provision stopped before Caddy starts: the domain has no DNS record yet");
         const plan = await readPlan();
         const z = zone as CloudflareZone;
-        for (const name of plan.dns.www ? [appHost, `www.${appHost}`] : [appHost]) {
+        const hosts = plan.dns.www ? [appHost, `www.${appHost}`] : [appHost];
+        for (const name of hosts) {
           await waitFor(`the tunnel's record on ${name} gone`, minutes(5), async () => {
             const left = await cloudflare.list<{ name: string }>(
               `/zones/${z.id}/dns_records?name=${encodeURIComponent(name)}`,
@@ -2431,10 +2535,52 @@ describe.skipIf(MISSING.length > 0)(
             await createDnsRecord(cloudflare, z, { type: "A", name, content: ipv4() }),
           );
         }
-        log("created the DNS record OpsCrew printed (DNS only, to the server)");
-        await deploy("caddy");
-        web = "caddy";
-        await waitForSite((await deployBranchImage()).version, minutes(15));
+        log("created the DNS record OpsCrew named (DNS only, to the server)");
+        // OpsCrew checks through Cloudflare's public resolver, which may remember the missing
+        // record for up to 30 minutes (the zone's SOA): wait there until it answers with the server.
+        for (const name of hosts) {
+          await waitFor(
+            `${name} resolving to the server through the public resolver`,
+            minutes(35),
+            async () => {
+              const response = await fetch(
+                `https://cloudflare-dns.com/dns-query?${new URLSearchParams({ name, type: "A" })}`,
+                {
+                  headers: { accept: "application/dns-json" },
+                  signal: AbortSignal.timeout(15_000),
+                },
+              );
+              if (!response.ok) throw new Error(`the resolver answered HTTP ${response.status}`);
+              const body = (await response.json()) as {
+                Answer?: { type?: number; data?: string }[];
+              };
+              const found = (body.Answer ?? []).some(
+                (answer) => answer.type === 1 && answer.data === ipv4(),
+              );
+              return found ? true : undefined;
+            },
+            30_000,
+          );
+        }
+        observe("provision waited for the domain's record before Caddy started");
+        const provisioned = await provisionUntilDone("caddy");
+        expect(
+          namesDnsRecord(provisioned.output, appHost),
+          "provision names the DNS record to create",
+        ).toBe(true);
+        try {
+          await deploy("caddy");
+          web = "caddy";
+          await waitForSite((await deployBranchImage()).version, minutes(15));
+        } catch (error) {
+          // Run 6 could not tell whether Caddy or a DNS cache was at fault: record both (scrubbed).
+          await caddyDiagnostics(hosts).catch((problem: unknown) => {
+            observe(
+              `step 5 diagnostics failed: ${problem instanceof Error ? problem.message : String(problem)}`,
+            );
+          });
+          throw error;
+        }
         const stack = await stackByName(names().app);
         const keys = ((stack?.Env as { name?: string }[] | undefined) ?? []).map(
           (item) => item.name,

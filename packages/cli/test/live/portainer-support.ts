@@ -430,7 +430,7 @@ export const NOT_IN_CORE = "not in the core pass; set OPSCREW_E2E_PORTAINER_STEP
  */
 export const PASS_ESTIMATE: Readonly<Record<PortainerPass, string>> = {
   core: "about 15 minutes",
-  full: "about 2 hours",
+  full: "about 1–1½ hours",
 };
 
 /** The pass `OPSCREW_E2E_PORTAINER_STEPS` selects (`core` when unset); undefined for anything else. */

@@ -54,6 +54,7 @@ import {
   portainerPlanJson,
 } from "./__fixtures__/portainer";
 import {
+  lookupAddressRecord,
   portainerContainerUrl,
   portainerValueKeyFile,
   portainerWebhookFile,
@@ -110,7 +111,72 @@ interface SetupOptions {
   env?: Record<string, string | undefined>;
   connection?: Partial<PortainerConnectionInput>;
   changes?: ResourceChange[];
+  /** What the public resolver answers, by host name (default: the app's domain has an A record). */
+  dns?: Map<string, FakeDnsRecords>;
 }
+
+/** The address records a host name has in the fake public resolver. */
+interface FakeDnsRecords {
+  A?: string;
+  AAAA?: string;
+  CNAME?: string;
+}
+
+/** Documentation addresses (RFC 5737 and RFC 3849) for the user's Portainer host. */
+const HOST_IPV4 = "203.0.113.10";
+const HOST_IPV6 = "2001:db8::10";
+
+const DOH_URL = "https://cloudflare-dns.com/dns-query";
+const DNS_TYPES: Record<string, number> = { A: 1, AAAA: 28, CNAME: 5 };
+
+/**
+ * Cloudflare's public DNS over HTTPS (`application/dns-json`) as a fake: NXDOMAIN for a host
+ * without records, else the records of the asked type (a CNAME answers every type). Each query is
+ * logged in `queries` as `<name> <type>`; any other request goes to `other`. `failure` makes every
+ * query fail with that HTTP status.
+ */
+function fakeDoh(
+  records: Map<string, FakeDnsRecords>,
+  queries: string[],
+  other: (url: string | URL, init?: RequestInit) => Promise<Response>,
+  failure?: { status?: number },
+) {
+  return async (url: string | URL, init?: RequestInit): Promise<Response> => {
+    const parsed = new URL(String(url));
+    if (`${parsed.origin}${parsed.pathname}` !== DOH_URL) return other(url, init);
+    const accept = new Headers(init?.headers).get("accept");
+    if (accept !== "application/dns-json") throw new Error(`unexpected accept header ${accept}`);
+    if ((init?.method ?? "GET") !== "GET") throw new Error("DNS lookups are read-only");
+    const name = parsed.searchParams.get("name") ?? "";
+    const type = parsed.searchParams.get("type") ?? "";
+    queries.push(`${name} ${type}`);
+    if (failure !== undefined)
+      return new Response("unavailable", { status: failure.status ?? 503 });
+    const held = records.get(name);
+    const answer = (status: number, list?: unknown[]) =>
+      new Response(JSON.stringify({ Status: status, ...(list ? { Answer: list } : {}) }), {
+        headers: { "content-type": "application/dns-json" },
+      });
+    if (held === undefined) return answer(3);
+    if (held.CNAME !== undefined) {
+      return answer(0, [
+        { name: `${name}.`, type: DNS_TYPES.CNAME, TTL: 300, data: `${held.CNAME}.` },
+      ]);
+    }
+    const data = held[type as "A" | "AAAA"];
+    return answer(
+      0,
+      data ? [{ name: `${name}.`, type: DNS_TYPES[type], TTL: 300, data }] : undefined,
+    );
+  };
+}
+
+/** The app's domain resolves to the user's Portainer host. */
+const resolving = () =>
+  new Map<string, FakeDnsRecords>([
+    ["shop.example.com", { A: HOST_IPV4 }],
+    ["www.shop.example.com", { A: HOST_IPV4 }],
+  ]);
 
 /** A GitHub fake that also creates the deploy branch (in the bare repository pushes go to). */
 class PortainerGitHub extends FakeGitHub {
@@ -174,6 +240,12 @@ async function setup(options: SetupOptions = {}) {
     runner: projectRunner(),
     approvalHandler: handler,
   });
+  const dns = options.dns ?? resolving();
+  const dnsQueries: string[] = [];
+  /** `fetch` answering the public resolver from `dns`, every other request with `other`. */
+  const withDns = (other: (url: string | URL, init?: RequestInit) => Promise<Response>) =>
+    fakeDoh(dns, dnsQueries, other);
+  deps.fetch = withDns(deps.fetch);
   const target = plan.target.provider === "portainer" ? plan.target : undefined;
   await recordPortainerConnection(deps.paths, {
     url: PORTAINER_URL,
@@ -218,7 +290,20 @@ async function setup(options: SetupOptions = {}) {
     },
   };
   const run = (extra: ProvisionOptions = {}) => runProvision(deps, { services, ...extra });
-  return { ...project, deps, fake, github, handler, engine, services, run, clients };
+  return {
+    ...project,
+    deps,
+    fake,
+    github,
+    handler,
+    engine,
+    services,
+    run,
+    clients,
+    dns,
+    dnsQueries,
+    withDns,
+  };
 }
 
 type Setup = Awaited<ReturnType<typeof setup>>;
@@ -651,7 +736,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     deleteTunnelIn(s.engine, events, () => true);
     const connectorRunning = () =>
       s.fake.stacks.some((stack) => stack.Name === "opscrew-shop-portainer-tunnel");
-    s.deps.fetch = fakeTunnelApi({ events, connectorRunning }).fetch;
+    s.deps.fetch = s.withDns(fakeTunnelApi({ events, connectorRunning }).fetch);
     const answered: string[] = [];
     s.handler.requests.length = 0;
     const handler = s.handler as unknown as { request: (r: ApprovalRequest) => Promise<unknown> };
@@ -911,7 +996,7 @@ describe.skipIf(!findExecutable("git"))(
       deleteTunnelIn(s.engine, events, () => true);
       const connectorRunning = () =>
         s.fake.stacks.some((stack) => stack.Name === "opscrew-shop-portainer-tunnel");
-      const fetch = fakeTunnelApi({ events, connectorRunning }).fetch;
+      const fetch = s.withDns(fakeTunnelApi({ events, connectorRunning }).fetch);
       s.deps.fetch = fetch;
       s.handler.requests.length = 0;
       s.deps.reporter.lines.length = 0;
@@ -1150,6 +1235,310 @@ describe.skipIf(!findExecutable("git"))(
     });
   },
 );
+
+describe.skipIf(!findExecutable("git"))(
+  "opscrew provision for the user's Portainer: Caddy waits for the domain's DNS record",
+  () => {
+    const caddyPlan = (options: { www?: boolean } = {}) =>
+      portainerPlan({ web: { mode: "caddy" }, ...options });
+    const MISSING = "has no DNS record that points at your Portainer host yet";
+    const CONTINUES = "then run `opscrew provision` again: it continues from there";
+
+    it("stops before the deploy branch and the stack change while the domain has no record, then continues", async () => {
+      const s = await setup({ plan: caddyPlan(), dns: new Map() });
+      const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain(`shop.example.com ${MISSING}`);
+      expect(error.message).toContain("Caddy asks Let's Encrypt");
+      expect(error.message).toContain("Nothing in Portainer was changed.");
+      expect(error.hint).toContain(
+        "an A record (and AAAA for IPv6) for shop.example.com to your Portainer host's public address, or a CNAME to its dynamic-DNS name",
+      );
+      expect(error.hint).toContain(CONTINUES);
+      // A read-only lookup through the public resolver; NXDOMAIN answers for every type.
+      expect(s.dnsQueries).toEqual(["shop.example.com A"]);
+      expect(s.fake.mutations()).toEqual([]);
+      expect(kinds(s)).toEqual(["repo-write"]);
+      expect(s.github.branches).toEqual([]);
+      expect(s.github.pulls).toEqual([]);
+      expectNoSecrets(`${error.message} ${error.hint}`);
+
+      // The user creates the record (an AAAA record counts): the next run continues from there.
+      s.dns.set("shop.example.com", { AAAA: HOST_IPV6 });
+      s.handler.requests.length = 0;
+      s.dnsQueries.length = 0;
+      const result = await s.run();
+      expect(s.dnsQueries).toEqual(["shop.example.com A", "shop.example.com AAAA"]);
+      expect(result.stackApplied).toBe(true);
+      expect(kinds(s)).toEqual([
+        "git-push",
+        "stack-apply",
+        "github-secrets",
+        "git-push",
+        "pull-request",
+      ]);
+      expect(s.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop");
+    });
+
+    it("checks www. too when planned and names only the missing record; a CNAME counts", async () => {
+      const dns = new Map<string, FakeDnsRecords>([["shop.example.com", { A: HOST_IPV4 }]]);
+      const s = await setup({ plan: caddyPlan({ www: true }), dns });
+      const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain(`www.shop.example.com ${MISSING}`);
+      expect(error.message).not.toContain("shop.example.com and");
+      expect(error.hint).toContain("for www.shop.example.com to");
+      expect(s.fake.mutations()).toEqual([]);
+
+      dns.set("www.shop.example.com", { CNAME: "nas.dyndns.example.net" });
+      const result = await s.run();
+      expect(result.stackApplied).toBe(true);
+      expect(s.dnsQueries).toContain("www.shop.example.com A");
+    });
+
+    it("--plan-only says the record must exist first and looks nothing up", async () => {
+      const s = await setup({ plan: caddyPlan(), dns: new Map() });
+      const planned = await s.run({ planOnly: true });
+      expect(planned.stackPlanHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(s.deps.reporter.text()).toContain(
+        "Before Caddy starts, shop.example.com must have a DNS record that points at your Portainer host",
+      );
+      expect(s.deps.reporter.text()).toContain(
+        "applying checks it through a public resolver and stops before the app's stack changes until it resolves",
+      );
+      expect(s.dnsQueries).toEqual([]);
+      expect(s.fake.mutations()).toEqual([]);
+    });
+
+    it("a lookup that fails stops plainly before anything changes in Portainer", async () => {
+      const s = await setup({ plan: caddyPlan() });
+      const queries: string[] = [];
+      s.deps.fetch = fakeDoh(s.dns, queries, s.deps.fetch, { status: 503 });
+      const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+      expect(error.code).toBe("PROVIDER_ERROR");
+      expect(error.message).toContain(
+        "OpsCrew could not check through a public resolver whether shop.example.com has a DNS record (HTTP 503)",
+      );
+      expect(error.message).toContain("Nothing in Portainer was changed.");
+      expect(error.hint).toContain("it continues from there");
+      expect(queries).toEqual(["shop.example.com A"]);
+      expect(s.fake.mutations()).toEqual([]);
+    });
+
+    it("other web modes look nothing up", async () => {
+      const proxy = await setup({
+        plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }),
+        dns: new Map(),
+      });
+      await proxy.run();
+      expect(proxy.dnsQueries).toEqual([]);
+      const tunnel = await setup({ changes: APP_TUNNEL, dns: new Map() });
+      await tunnel.run();
+      expect(tunnel.dnsQueries).toEqual([]);
+      expect(tunnel.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop");
+    });
+
+    /** A deployed tunnel + updater setup whose plan now serves the app with Caddy (no root). */
+    async function tunnelToCaddy() {
+      const s = await setup({
+        changes: APP_TUNNEL,
+        env: { CLOUDFLARE_API_TOKEN: fakeSecret("cloudflare-token") },
+      });
+      await s.run();
+      await writeFakeState(s.deps.paths);
+      s.github.openPull = OPEN_PULL;
+      const current = await readArtifact("plan", s.deps.paths.files.plan);
+      if (current.target.provider !== "portainer") throw new Error("expected a Portainer plan");
+      await writeArtifact("plan", s.deps.paths.files.plan, {
+        ...current,
+        target: { ...current.target, web: { mode: "caddy" } },
+        dns: { ...current.dns, proxied: false },
+      });
+      const events: string[] = [];
+      deleteTunnelIn(s.engine, events, () => true);
+      // As OpenTofu names them: the tunnel's records are keyed by their host name.
+      const plan = s.engine.plan.bind(s.engine);
+      s.engine.plan = async (dir: string, planFile: string) => {
+        const summary = await plan(dir, planFile);
+        return {
+          ...summary,
+          changes: summary.changes.map((change) =>
+            change.type === "cloudflare_dns_record"
+              ? { ...change, address: `${change.address}["shop.example.com"]` }
+              : change,
+          ),
+        };
+      };
+      const connectorRunning = () =>
+        s.fake.stacks.some(
+          (stack) =>
+            stack.Name === "opscrew-shop" &&
+            stack.Env.some((pair) => pair.name === "OPSCREW_TUNNEL_TOKEN"),
+        );
+      s.deps.fetch = s.withDns(fakeTunnelApi({ events, connectorRunning }).fetch);
+      // The public resolver may still remember the tunnel's record for a few minutes.
+      s.dns.set("shop.example.com", { CNAME: "shop.example.com.cdn.cloudflare.net" });
+      s.handler.requests.length = 0;
+      s.deps.reporter.lines.length = 0;
+      return { ...s, events };
+    }
+
+    it("a switch from the tunnel stops after the removal deleted the tunnel's record, says what is applied, and continues once the record exists", async () => {
+      const s = await tunnelToCaddy();
+      const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain(`shop.example.com ${MISSING}`);
+      expect(error.message).toContain("deleted the Cloudflare Tunnel's record");
+      expect(error.message).toContain(
+        "The earlier setup's Cloudflare resources (its Cloudflare Tunnel, DNS records and Access) are removed.",
+      );
+      expect(error.message).toContain("The change in your Portainer that goes first is applied");
+      expect(error.message).toContain("nothing else in Portainer was changed");
+      expect(error.hint).toContain(CONTINUES);
+      // The record was just deleted: an answer now could only be the tunnel's, still cached.
+      expect(s.dnsQueries.filter((query) => query.startsWith("shop.example.com"))).toEqual([]);
+      expect(kinds(s)).toEqual(["repo-write", "iac-apply", "stack-apply", "repo-write"]);
+      expect(s.events.indexOf("iac-apply")).toBeGreaterThan(-1);
+      const stack = s.fake.stacks.find((item) => item.Name === "opscrew-shop");
+      expect(stack?.Env.map((pair) => pair.name)).not.toContain("OPSCREW_TUNNEL_TOKEN");
+      expectNoSecrets(`${error.message} ${error.hint}`);
+
+      // A real removal leaves an empty state; the user creates the record OpsCrew named.
+      await writeFile(join(s.deps.paths.files.tfstateDir, "prod.tfstate"), plainState([]));
+      s.dns.set("shop.example.com", { A: HOST_IPV4 });
+      s.handler.requests.length = 0;
+      const result = await s.run();
+      expect(s.dnsQueries).toContain("shop.example.com A");
+      expect(kinds(s)).not.toContain("iac-apply");
+      expect(kinds(s)).toContain("git-push");
+      expect(result.branch).toBeDefined();
+      // The earlier configuration the first run removed is committed with the deployment files.
+      expect(await s.git(s.root, "ls-files", "--", "opscrew/infra")).toBe("");
+      expect(await s.git(s.root, "status", "--porcelain", "--", "opscrew/infra")).toBe("");
+    });
+
+    it("--plan-only in a switch from the tunnel: create the record once the removal is applied", async () => {
+      const s = await tunnelToCaddy();
+      await s.run({ planOnly: true });
+      const text = s.deps.reporter.text();
+      expect(text).toContain("Before Caddy starts, shop.example.com must have a DNS record");
+      expect(text).toContain(
+        "This plan deletes the Cloudflare Tunnel's record for shop.example.com, so create yours once it is applied; the next `opscrew provision` then continues.",
+      );
+      expect(s.dnsQueries).toEqual([]);
+    });
+  },
+);
+
+describe("lookupAddressRecord", () => {
+  const answer = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/dns-json" },
+    });
+  const scripted = (answers: Record<string, () => Response>, urls: string[]) => {
+    return async (url: string | URL, init?: RequestInit) => {
+      urls.push(String(url));
+      expect(new Headers(init?.headers).get("accept")).toBe("application/dns-json");
+      const type = new URL(String(url)).searchParams.get("type") ?? "";
+      const make = answers[type];
+      if (make === undefined) throw new Error(`unexpected query ${String(url)}`);
+      return make();
+    };
+  };
+
+  it("finds an A record with one query to Cloudflare's public resolver", async () => {
+    const urls: string[] = [];
+    const fetch = scripted(
+      {
+        A: () =>
+          answer({
+            Status: 0,
+            Answer: [{ name: "shop.example.com.", type: 1, TTL: 60, data: HOST_IPV4 }],
+          }),
+      },
+      urls,
+    );
+    expect(await lookupAddressRecord(fetch, "Shop.Example.com.")).toEqual({ state: "found" });
+    expect(urls).toEqual(["https://cloudflare-dns.com/dns-query?name=shop.example.com&type=A"]);
+  });
+
+  it("finds an AAAA record or a CNAME after an empty answer", async () => {
+    const empty = () => answer({ Status: 0 });
+    const aaaa = scripted(
+      {
+        A: empty,
+        AAAA: () =>
+          answer({
+            Status: 0,
+            Answer: [{ name: "shop.example.com", type: 28, TTL: 60, data: HOST_IPV6 }],
+          }),
+      },
+      [],
+    );
+    expect(await lookupAddressRecord(aaaa, "shop.example.com")).toEqual({ state: "found" });
+    const cname = scripted(
+      {
+        A: empty,
+        AAAA: empty,
+        CNAME: () =>
+          answer({
+            Status: 0,
+            Answer: [
+              { name: "shop.example.com.", type: 5, TTL: 60, data: "nas.dyndns.example.net." },
+            ],
+          }),
+      },
+      [],
+    );
+    expect(await lookupAddressRecord(cname, "shop.example.com")).toEqual({ state: "found" });
+  });
+
+  it("reports a missing record: NXDOMAIN at once, or no record of the three types", async () => {
+    const urls: string[] = [];
+    const nx = scripted({ A: () => answer({ Status: 3 }) }, urls);
+    expect(await lookupAddressRecord(nx, "shop.example.com")).toEqual({ state: "missing" });
+    expect(urls).toHaveLength(1);
+    // A record of another name or type (for example the zone's SOA) is no address record.
+    const other = () =>
+      answer({
+        Status: 0,
+        Answer: [
+          { name: "example.com.", type: 1, TTL: 60, data: HOST_IPV4 },
+          { name: "shop.example.com.", type: 16, TTL: 60, data: '"txt"' },
+        ],
+      });
+    const none = scripted({ A: other, AAAA: other, CNAME: other }, []);
+    expect(await lookupAddressRecord(none, "shop.example.com")).toEqual({ state: "missing" });
+  });
+
+  it("a failed lookup says why and is never taken as an answer", async () => {
+    const failing = async () => {
+      throw new Error("getaddrinfo ENOTFOUND cloudflare-dns.com");
+    };
+    expect(await lookupAddressRecord(failing, "shop.example.com")).toEqual({
+      state: "unknown",
+      problem: "the request failed: getaddrinfo ENOTFOUND cloudflare-dns.com",
+    });
+    const servfail = scripted({ A: () => answer({ Status: 2 }) }, []);
+    expect(await lookupAddressRecord(servfail, "shop.example.com")).toEqual({
+      state: "unknown",
+      problem: "the resolver answered with DNS status 2",
+    });
+    const http = scripted({ A: () => answer({}, 500) }, []);
+    expect(await lookupAddressRecord(http, "shop.example.com")).toEqual({
+      state: "unknown",
+      problem: "HTTP 500",
+    });
+    const garbage = scripted({ A: () => new Response("<html>") }, []);
+    expect(await lookupAddressRecord(garbage, "shop.example.com")).toEqual({
+      state: "unknown",
+      problem: "an unexpected answer",
+    });
+  });
+});
 
 describe("switchesWebRoute", () => {
   const app = "shop";
