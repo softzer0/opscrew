@@ -4,7 +4,7 @@ import { listText, OpsCrewError, plural } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requireNoMoveInProgress } from "../provision/guard";
-import { shellWord } from "../shared/apply-command";
+import { pathWord, shellWord } from "../shared/apply-command";
 import {
   auditDomain,
   errorText,
@@ -146,7 +146,7 @@ function commandOf(
   const parts = [`opscrew domain connect ${domain}`];
   if (options.registrar !== undefined) parts.push(`--registrar ${options.registrar}`);
   if (options.recordsFile !== undefined) {
-    parts.push(`--records-file ${shellWord(options.recordsFile.replaceAll("\\", "/"))}`);
+    parts.push(`--records-file ${pathWord(options.recordsFile)}`);
   }
   if (options.account !== undefined) parts.push(`--account ${shellWord(options.account)}`);
   return parts.join(" ");

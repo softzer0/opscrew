@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { type DomainTestProject, domainTestProject } from "../ui/__fixtures__/domain";
 import { CANCEL, run } from "../ui/__fixtures__/harness";
 import type { UiPrompts } from "../ui/prompts";
-import { DomainApprovalHandler, localAndUtc, parseMaxPriceFlag, pathArg } from "./domain";
+import { DomainApprovalHandler, localAndUtc, parseMaxPriceFlag } from "./domain";
 
 /** The zone's DS record as a registrar holds it (without the zone-file line). */
 const { ds: _line, ...ZONE_DS_RECORD } = ZONE_DS;
@@ -1070,15 +1070,7 @@ describe("DomainApprovalHandler", () => {
   });
 });
 
-describe("pathArg and localAndUtc", () => {
-  it("prints paths with / and single-quotes anything a shell would change", () => {
-    expect(pathArg("zone.txt")).toBe("zone.txt");
-    expect(pathArg("dns\\zones\\example.com.txt")).toBe("dns/zones/example.com.txt");
-    expect(pathArg("my zones/example.txt")).toBe("'my zones/example.txt'");
-    expect(pathArg("zones/$HOME.txt")).toBe("'zones/$HOME.txt'");
-    expect(pathArg("it's.txt")).toBe("'it'\\''s.txt'");
-  });
-
+describe("localAndUtc", () => {
   it("shows a time in the local time zone and in UTC", () => {
     const iso = "2026-10-12T13:05:00.000Z";
     const local = new Date(iso);

@@ -11,6 +11,7 @@ import {
   type MaxPrice,
   type PhaseDeps,
   parseRegistrarId,
+  pathWord,
   REGISTRAR_IDS,
   REGISTRAR_NAMES,
   type SearchDomainsResult,
@@ -514,11 +515,6 @@ function registrarArg(registrar: RegistrarId | undefined): string {
   return usesCloudflare(registrar) ? "" : ` --registrar ${registrar}`;
 }
 
-/** A file path for a suggested command: `/` separators, quoted like any word (`shellWord`). */
-export function pathArg(value: string): string {
-  return shellWord(value.replaceAll("\\", "/"));
-}
-
 /**
  * `error` with the exact command of this run (its flags included) as the next step when the
  * typed-domain handler refused a request without a prompt, so copying the command approves the
@@ -748,7 +744,7 @@ export function register(program: Command, ctx: CliContext): void {
         [
           `opscrew domain connect ${name}`,
           ...(registrar === undefined ? [] : [`--registrar ${registrar}`]),
-          ...(recordsFile === undefined ? [] : [`--records-file ${pathArg(recordsFile)}`]),
+          ...(recordsFile === undefined ? [] : [`--records-file ${pathWord(recordsFile)}`]),
           ...(account === undefined ? [] : [`--account ${shellWord(account)}`]),
         ].join(" ");
       const scripted = (_refused: ApprovalRequest, phrase: string) =>

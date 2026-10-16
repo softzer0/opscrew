@@ -23,10 +23,16 @@ export interface ApplyCommandFlags {
 
 /**
  * `value` as one word of a command OpsCrew suggests, for a POSIX shell: as it is when it holds only
- * plain characters, otherwise in single quotes (a `'` inside written as `'\''`).
+ * plain characters, otherwise in single quotes (a `'` inside written as `'\''`). `%`, `=` and `,`
+ * are quoted too: PowerShell splits `a,b` into two words.
  */
 export function shellWord(value: string): string {
-  return /^[\w./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+  return /^[\w./:@+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** A file path as one word of a suggested command: `/` separators, quoted like {@link shellWord}. */
+export function pathWord(path: string): string {
+  return shellWord(path.replaceAll("\\", "/"));
 }
 
 /**
