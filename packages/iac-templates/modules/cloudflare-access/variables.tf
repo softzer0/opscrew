@@ -8,14 +8,14 @@ variable "app_name" {
   type        = string
 }
 
-variable "ssh_hostname" {
-  description = "Hostname the deploy workflow reaches SSH on through the tunnel (or another service it reaches with the service token, such as Portainer's webhook); null for none. Only the service token gets through."
+variable "service_hostname" {
+  description = "Hostname of the service the deploy workflow reaches with the service token through the tunnel (SSH, or Portainer's webhook); null for none. Only the service token gets through."
   type        = string
   default     = null
 }
 
-variable "ssh_hostname_label" {
-  description = "What ssh_hostname serves, in the name of its Access application: OpsCrew <label> (<app_name>), for example SSH or Portainer webhook."
+variable "service_label" {
+  description = "What service_hostname serves, in the name of its Access application: OpsCrew <label> (<app_name>), for example SSH or Portainer webhook."
   type        = string
   default     = "SSH"
 }

@@ -2,7 +2,7 @@
 import { checkDialect } from "@opscrew/iac-engine";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { moveLayout, testTarget } from "../__fixtures__/layouts";
+import { testTarget } from "../__fixtures__/layouts";
 import {
   ACCOUNT_ID,
   testCloudflare,
@@ -12,7 +12,7 @@ import {
 } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
-import { renderInfra, tfvars } from "./index";
+import { moveLayout, renderInfra, tfvars } from "./index";
 
 // Documentation addresses (RFC 5737 / RFC 3849): what the CLI would pass as TF_VAR_*.
 const SERVER_IPV4 = "203.0.113.10";
@@ -66,6 +66,10 @@ describe("renderInfra for a server the user owns (public)", () => {
       "opscrew/infra/modules/cloudflare-dns/outputs.tf",
       "opscrew/infra/modules/cloudflare-dns/variables.tf",
       "opscrew/infra/modules/cloudflare-dns/versions.tf",
+      "opscrew/infra/modules/cloudflare-waf/main.tf",
+      "opscrew/infra/modules/cloudflare-waf/outputs.tf",
+      "opscrew/infra/modules/cloudflare-waf/variables.tf",
+      "opscrew/infra/modules/cloudflare-waf/versions.tf",
     ]);
     const main = file(files, "prod/main.tf");
     expect(main).not.toMatch(/module "server|hcloud|digitalocean/);
@@ -170,6 +174,10 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
       "opscrew/infra/modules/cloudflare-tunnel/outputs.tf",
       "opscrew/infra/modules/cloudflare-tunnel/variables.tf",
       "opscrew/infra/modules/cloudflare-tunnel/versions.tf",
+      "opscrew/infra/modules/cloudflare-waf/main.tf",
+      "opscrew/infra/modules/cloudflare-waf/outputs.tf",
+      "opscrew/infra/modules/cloudflare-waf/variables.tf",
+      "opscrew/infra/modules/cloudflare-waf/versions.tf",
     ]);
     const main = file(files, "prod/main.tf");
     expect(main).not.toMatch(/module "dns"|module "server|server_ipv/);
@@ -226,7 +234,7 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
     );
     expect(outputs.match(/output "cloudflare_rulesets"/g)).toHaveLength(1);
     expect(MODULE_FILES["cloudflare-tunnel/outputs.tf"]).toContain(
-      "value       = one(cloudflare_ruleset.waf[*].id)",
+      "value       = one(module.waf[*].ruleset_id)",
     );
   });
 
@@ -399,17 +407,21 @@ describe("renderInfra with Portainer on an OpsCrew-created server", () => {
 describe("renderInfra move layouts", () => {
   it("refuses a move that involves a server the user owns", () => {
     const own = testPlan({ provider: "own" }).target;
-    const layout = moveLayout("both", testTarget("hetzner"), own);
-    expect(() =>
-      renderInfra(
-        testPlan({ provider: "hetzner" }),
-        testContext({ layout: { ...layout, providers: ["hetzner", "own"] } }),
-      ),
-    ).toThrow(
-      expect.objectContaining({
-        code: "PHASE_PRECONDITION",
-        message: expect.stringContaining("server you already own"),
-      }),
+    const refusal = expect.objectContaining({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("not to a server you already own"),
+    });
+    expect(() => moveLayout("both", testTarget("hetzner"), own)).toThrow(refusal);
+    const hetzner = testPlan({ provider: "hetzner" });
+    for (const layout of [
+      { server: hetzner.target, live: "server", providers: ["hetzner", "own"] },
+      { server: hetzner.target, previous: own, live: "server", providers: ["hetzner", "own"] },
+    ] as const) {
+      expect(() => renderInfra(hetzner, testContext({ layout }))).toThrow(refusal);
+    }
+    const layout = moveLayout("finish", testTarget("digitalocean"), hetzner.target);
+    expect(() => renderInfra(testPlan({ provider: "own" }), testContext({ layout }))).toThrow(
+      refusal,
     );
   });
 });

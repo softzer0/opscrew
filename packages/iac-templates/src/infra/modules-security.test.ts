@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
-import { renderTunnelConnectorCompose } from "../tunnel";
+import { renderTunnelConnectorCompose } from "../runtime";
 
 /** The body of `resource "<type>" "<name>"` (up to its closing brace at column 0). */
 function resource(source: string, type: string, name: string): string {
@@ -57,7 +57,7 @@ describe("cloudflare-access module security", () => {
   const main = MODULE_FILES["cloudflare-access/main.tf"] ?? "";
   const outputs = MODULE_FILES["cloudflare-access/outputs.tf"] ?? "";
 
-  it("lets only the deploy service token through to SSH", () => {
+  it("lets only the deploy service token through to its service (SSH or Portainer's webhook)", () => {
     const policy = resource(main, "cloudflare_zero_trust_access_policy", "ssh");
     expect(policy).toMatch(/^ {2}decision {3}= "non_identity"$/m);
     const include = /include = \[([\s\S]*?)\n {2}\]/.exec(policy)?.[1] ?? "";
@@ -70,16 +70,16 @@ describe("cloudflare-access module security", () => {
     expect(policies.trim()).toBe(
       "{ id = cloudflare_zero_trust_access_policy.ssh[0].id, precedence = 1 },",
     );
-    expect(app).toMatch(/domain\s+= var\.ssh_hostname/);
+    expect(app).toMatch(/domain\s+= var\.service_hostname/);
   });
 
   it("names the service-token application by its label, SSH unless the root says otherwise", () => {
     const app = resource(main, "cloudflare_zero_trust_access_application", "ssh");
     expect(app).toMatch(
-      /^ {2}name {22}= "OpsCrew \$\{var\.ssh_hostname_label\} \(\$\{var\.app_name\}\)"$/m,
+      /^ {2}name {22}= "OpsCrew \$\{var\.service_label\} \(\$\{var\.app_name\}\)"$/m,
     );
     const variables = MODULE_FILES["cloudflare-access/variables.tf"] ?? "";
-    expect(variables).toMatch(/variable "ssh_hostname_label" \{[^}]*default {5}= "SSH"\n\}/);
+    expect(variables).toMatch(/variable "service_label" \{[^}]*default {5}= "SSH"\n\}/);
   });
 
   it("lets only the listed emails through to Portainer, with the one-time PIN login", () => {

@@ -1,5 +1,4 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
-import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import {
   PORTAINER_PORT,
@@ -10,7 +9,16 @@ import {
   usesTunnel,
 } from "../tunnel";
 import type { RenderContext } from "../types";
-import { alignedArguments, output, sensitiveOutput, type VariableSpec } from "./hcl";
+import {
+  accessArguments,
+  accountId,
+  DEPLOY_TOKEN_OUTPUTS,
+  TUNNEL_RULESETS_OUTPUT,
+  tunnelArguments,
+  ZERO_TRUST_VARIABLES,
+  zeroTrustTfvars,
+} from "./cloudflare";
+import { moduleBlock, output, sensitiveOutput, type VariableSpec } from "./hcl";
 
 /** What the Cloudflare Tunnel and Access add to a root module (own server or cloud server). */
 export interface TunnelPieces {
@@ -20,25 +28,6 @@ export interface TunnelPieces {
   tfvars: Record<string, unknown>;
   /** Vendored module directories. */
   modules: string[];
-}
-
-/** Team domain OpsCrew gives a Zero Trust organization it creates: `<zone>-opscrew.cloudflareaccess.com`. */
-export function zeroTrustAuthDomain(zone: string): string {
-  return `${zone.replaceAll(".", "-")}-opscrew.cloudflareaccess.com`;
-}
-
-function accountId(ctx: RenderContext): string {
-  const id = ctx.cloudflare?.accountId;
-  if (!id) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "A Cloudflare account id is required to render the Cloudflare Tunnel and Access for this plan.",
-      {
-        hint: "Check that your Cloudflare token can read the account that owns the domain's zone, then run the command again.",
-      },
-    );
-  }
-  return id;
 }
 
 /**
@@ -78,26 +67,10 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
     );
   }
 
-  const tunnelArgs: [string, string][] = [
-    ["account_id", "var.cloudflare_account_id"],
-    ["zone_id", "var.cloudflare_zone_id"],
-    ["name", '"opscrew-${var.app_name}"'],
-  ];
-  if (tunnel) {
-    tunnelArgs.push(
-      ["manage_waf_rules", "var.manage_waf_rules"],
-      ["waf_hostnames", `[${wafHostnames.join(", ")}]`],
-    );
-  }
-  const accessArgs: [string, string][] = [
-    ["account_id", "var.cloudflare_account_id"],
-    ["app_name", "var.app_name"],
-    ["create_organization", "var.create_zero_trust_organization"],
-    ["organization_auth_domain", "var.zero_trust_auth_domain"],
-  ];
-  if (ssh !== undefined) accessArgs.push(["ssh_hostname", "var.ssh_hostname"]);
+  const accessHostnames: [string, string][] = [];
+  if (ssh !== undefined) accessHostnames.push(["service_hostname", "var.ssh_hostname"]);
   if (portainer !== undefined) {
-    accessArgs.push(
+    accessHostnames.push(
       ["portainer_hostname", "var.portainer_hostname"],
       ["portainer_allowed_emails", "var.portainer_allowed_emails"],
       ["one_time_pin_identity_provider_id", "var.one_time_pin_identity_provider_id"],
@@ -105,29 +78,33 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
   }
 
   const main = [
-    "# A Cloudflare Tunnel: the connector on the server dials out to Cloudflare, so these hostnames",
-    "# need no open port. Its token is the sensitive output tunnel_token.",
-    'module "tunnel" {',
-    '  source = "../modules/cloudflare-tunnel"',
-    "",
-    ...alignedArguments(tunnelArgs),
-    "",
-    "  routes = [",
-    ...routes,
-    "  ]",
-    "",
-    "  # Every hostname gets its Access application before its route and DNS record, and loses it",
-    "  # only after them, so nothing is reachable without Access in front of it.",
-    "  depends_on = [module.access]",
-    "}",
-    "",
-    "# Cloudflare Access in front of the tunnel's SSH and Portainer hostnames.",
-    'module "access" {',
-    '  source = "../modules/cloudflare-access"',
-    "",
-    ...alignedArguments(accessArgs),
-    "}",
-    "",
+    ...moduleBlock({
+      comment: [
+        "# A Cloudflare Tunnel: the connector on the server dials out to Cloudflare, so these hostnames",
+        "# need no open port. Its token is the sensitive output tunnel_token.",
+      ],
+      name: "tunnel",
+      source: "cloudflare-tunnel",
+      args: tunnelArguments(
+        '"opscrew-${var.app_name}"',
+        tunnel ? `[${wafHostnames.join(", ")}]` : undefined,
+      ),
+      body: [
+        "  routes = [",
+        ...routes,
+        "  ]",
+        "",
+        "  # Every hostname gets its Access application before its route and DNS record, and loses it",
+        "  # only after them, so nothing is reachable without Access in front of it.",
+        "  depends_on = [module.access]",
+      ],
+    }),
+    ...moduleBlock({
+      comment: ["# Cloudflare Access in front of the tunnel's SSH and Portainer hostnames."],
+      name: "access",
+      source: "cloudflare-access",
+      args: accessArguments(accessHostnames),
+    }),
   ];
 
   const variables: VariableSpec[] = [
@@ -136,28 +113,13 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
       type: "string",
       description: "Cloudflare account id (the tunnel and Access belong to it).",
     },
-    {
-      name: "create_zero_trust_organization",
-      type: "bool",
-      description:
-        "Create the account's Zero Trust organization (only when the account has none, or this configuration created it).",
-    },
-    {
-      name: "zero_trust_auth_domain",
-      type: "string",
-      description: "Team domain of the Zero Trust organization OpsCrew creates.",
-      default: "null",
-    },
+    ...ZERO_TRUST_VARIABLES,
   ];
   // Access (SSH and Portainer alike) needs the account's Zero Trust organization.
-  const create = ctx.cloudflare?.createZeroTrustOrganization ?? false;
   const tfvars: Record<string, unknown> = {
     cloudflare_account_id: account,
-    create_zero_trust_organization: create,
+    ...zeroTrustTfvars(plan, ctx),
   };
-  if (create && plan.dns.zone !== undefined) {
-    tfvars.zero_trust_auth_domain = zeroTrustAuthDomain(plan.dns.zone);
-  }
   if (ssh !== undefined) {
     variables.push(
       {
@@ -202,36 +164,12 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
     ...sensitiveOutput("tunnel_token", "module.tunnel.token"),
   ];
   if (ssh !== undefined) {
-    outputs.push(
-      ...output("ssh_hostname", "var.ssh_hostname"),
-      "# The deploy workflow's Access service token: it goes only into the deploy secrets.",
-      ...sensitiveOutput(
-        "deploy_service_token_client_id",
-        "module.access.ssh_service_token_client_id",
-      ),
-      ...sensitiveOutput(
-        "deploy_service_token_client_secret",
-        "module.access.ssh_service_token_client_secret",
-      ),
-    );
+    outputs.push(...output("ssh_hostname", "var.ssh_hostname"), ...DEPLOY_TOKEN_OUTPUTS);
   }
   if (portainer !== undefined) {
     outputs.push(...output("portainer_url", '"https://${var.portainer_hostname}"'));
   }
-  if (tunnel) {
-    // Same shape as the DNS module's `ruleset_ids` in public mode: one id (or null) per phase.
-    outputs.push(
-      "# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones",
-      "# another deployment holds alone. Tunnel mode has no configuration rule.",
-      'output "cloudflare_rulesets" {',
-      "  value = {",
-      "    http_config_settings         = null",
-      "    http_request_firewall_custom = module.tunnel.waf_ruleset_id",
-      "  }",
-      "}",
-      "",
-    );
-  }
+  if (tunnel) outputs.push(...TUNNEL_RULESETS_OUTPUT);
 
   return {
     main,

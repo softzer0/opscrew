@@ -343,12 +343,4 @@ describe("renderWorkflow", () => {
       expect(content).toMatchSnapshot();
     });
   });
-
-  it("refuses a Trivy image that is not pinned by digest", () => {
-    expect(() => renderWorkflow(plan(), { ...ctx, trivyImage: "aquasec/trivy:latest" })).toThrow(
-      /pinned by digest/,
-    );
-    const custom = `aquasec/trivy:0.76.0@sha256:${"a".repeat(64)}`;
-    expect(renderWorkflow(plan(), { ...ctx, trivyImage: custom }).content).toContain(custom);
-  });
 });

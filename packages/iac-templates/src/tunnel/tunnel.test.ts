@@ -2,14 +2,17 @@ import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { renderCaddyfile, renderCompose, webFilterMode } from "../runtime";
+import {
+  renderCaddyfile,
+  renderCompose,
+  renderTunnelConnectorCompose,
+  webFilterMode,
+} from "../runtime";
 import {
   CLOUDFLARED_IMAGE,
   CLOUDFLARED_METRICS,
-  renderTunnelConnectorCompose,
   sshHostname,
   TUNNEL_ORIGIN_PORT,
-  tunnelHostnames,
   usesTunnel,
 } from "./index";
 
@@ -27,20 +30,6 @@ describe("tunnel hostnames", () => {
     expect(sshHostname(tunnelPlan({ domain: "app.example.com" }))).toBe("ssh-shop.example.com");
     expect(sshHostname(testPlan({ provider: "own", domain: "shop.example.com" }))).toBeUndefined();
     expect(sshHostname(testPlan({ domain: "shop.example.com" }))).toBeUndefined();
-  });
-
-  it("lists the app, SSH and Portainer hostnames the tunnel serves", () => {
-    expect(
-      tunnelHostnames(tunnelPlan({ domain: "example.com", www: true, portainer: PORTAINER })),
-    ).toEqual({
-      app: ["example.com", "www.example.com"],
-      ssh: "ssh-shop.example.com",
-      portainer: "portainer.example.com",
-    });
-    expect(tunnelHostnames(testPlan({ domain: "shop.example.com", portainer: PORTAINER }))).toEqual(
-      { app: [], portainer: "portainer.example.com" },
-    );
-    expect(tunnelHostnames(testPlan({ domain: "shop.example.com" }))).toEqual({ app: [] });
   });
 
   it("uses a tunnel only in tunnel mode or for a Portainer subdomain", () => {

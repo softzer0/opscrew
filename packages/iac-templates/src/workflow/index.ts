@@ -9,6 +9,7 @@ import {
   CHECKOUT_ACTION,
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
+  healthPath,
   secret,
   workflowStart,
 } from "./shared";
@@ -53,12 +54,9 @@ function checkSshPort(port: number | undefined): void {
 
 /** URL the deploy job polls after starting the new version. */
 export function healthUrl(plan: DeployPlan): string {
-  const path = plan.app.healthPath.startsWith("/")
-    ? plan.app.healthPath
-    : `/${plan.app.healthPath}`;
   return plan.dns.domain
-    ? `https://${plan.dns.domain}${path}`
-    : `http://${secret(DEPLOY_SECRETS.host)}${path}`;
+    ? `https://${plan.dns.domain}${healthPath(plan)}`
+    : `http://${secret(DEPLOY_SECRETS.host)}${healthPath(plan)}`;
 }
 
 /**
@@ -82,38 +80,33 @@ function caddyServesTls(plan: DeployPlan, tunnelHost: string | undefined): boole
  * yet; otherwise, and without `tlsHint`, it says only that the new version did not answer.
  */
 function healthScript(tlsHint: boolean): string[] {
-  if (!tlsHint) {
-    return [
-      "    set -euo pipefail",
-      "    for attempt in $(seq 1 30); do",
-      '      if curl -fsS --max-time 10 -o /dev/null "$URL"; then',
-      '        echo "Healthy after $attempt attempt(s)."',
-      "        exit 0",
-      "      fi",
-      "      sleep 6",
-      "    done",
-      '    echo "::error::The new version did not answer at $URL."',
-      "    exit 1",
-    ];
-  }
+  const failed = 'echo "::error::The new version did not answer at $URL."';
   return [
     "    set -euo pipefail",
-    "    tls_only=1",
+    ...(tlsHint ? ["    tls_only=1"] : []),
     "    for attempt in $(seq 1 30); do",
-    "      code=0",
-    '      curl -fsS --max-time 10 -o /dev/null "$URL" || code=$?',
-    '      if [ "$code" -eq 0 ]; then',
+    ...(tlsHint
+      ? [
+          "      code=0",
+          '      curl -fsS --max-time 10 -o /dev/null "$URL" || code=$?',
+          '      if [ "$code" -eq 0 ]; then',
+        ]
+      : ['      if curl -fsS --max-time 10 -o /dev/null "$URL"; then']),
     '        echo "Healthy after $attempt attempt(s)."',
     "        exit 0",
     "      fi",
-    '      if [ "$code" -ne 35 ] && [ "$code" -ne 60 ]; then tls_only=0; fi',
+    ...(tlsHint ? ['      if [ "$code" -ne 35 ] && [ "$code" -ne 60 ]; then tls_only=0; fi'] : []),
     "      sleep 6",
     "    done",
-    '    if [ "$tls_only" -eq 1 ]; then',
-    `      echo "::error::The new version did not answer at $URL: every attempt failed the TLS handshake, so the server has no certificate for this domain yet. Let's Encrypt issues at most ${LETS_ENCRYPT_SAME_NAMES_PER_WEEK} certificates per week for the same set of names, so a server rebuilt many times can reach that limit. Wait (one more becomes available about every 34 hours) or use another hostname, then deploy again."`,
-    "    else",
-    '      echo "::error::The new version did not answer at $URL."',
-    "    fi",
+    ...(tlsHint
+      ? [
+          '    if [ "$tls_only" -eq 1 ]; then',
+          `      echo "::error::The new version did not answer at $URL: every attempt failed the TLS handshake, so the server has no certificate for this domain yet. Let's Encrypt issues at most ${LETS_ENCRYPT_SAME_NAMES_PER_WEEK} certificates per week for the same set of names, so a server rebuilt many times can reach that limit. Wait (one more becomes available about every 34 hours) or use another hostname, then deploy again."`,
+          "    else",
+          `      ${failed}`,
+          "    fi",
+        ]
+      : [`    ${failed}`]),
     "    exit 1",
   ];
 }
@@ -191,8 +184,8 @@ function installCloudflaredStep(): string[] {
  * the new version on the site and, when it does not come up, writes the previous version back.
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFile {
-  if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan, ctx);
-  const build = buildJob(plan, ctx);
+  if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan);
+  const build = buildJob(plan);
   const hasDb = plan.services.postgres;
   checkSshPort(ctx.sshPort);
 

@@ -1,17 +1,17 @@
 import { checkDialect } from "@opscrew/iac-engine";
 import type { CloudProvider } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import {
-  DIRECTIONS,
-  LAYOUT_NAMES,
-  type LayoutName,
-  moveLayout,
-  testTarget,
-} from "../__fixtures__/layouts";
+import { DIRECTIONS, testTarget } from "../__fixtures__/layouts";
 import { testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { renderDeployment } from "../render";
 import type { InfraLayout, RenderedFile, ServerModule } from "../types";
-import { renderInfra, tfvars } from "./index";
+import {
+  MOVE_LAYOUTS as LAYOUT_NAMES,
+  type MoveLayoutName as LayoutName,
+  moveLayout,
+  renderInfra,
+  tfvars,
+} from "./index";
 
 const MODULE_DIRS: Record<CloudProvider, string> = {
   hetzner: "hetzner-vps",
@@ -263,7 +263,7 @@ describe("renderInfra move layouts", () => {
             .map((f) => f.path.split("/")[3]),
         );
         expect(vendored, label).toEqual(
-          new Set(["cloudflare-dns", "digitalocean-droplet", "hetzner-vps"]),
+          new Set(["cloudflare-dns", "cloudflare-waf", "digitalocean-droplet", "hetzner-vps"]),
         );
       }
     }

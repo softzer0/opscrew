@@ -8,7 +8,8 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { renderCaddyfile } from "../runtime";
-import { CLOUDFLARED_IMAGE, serviceLogging } from "../tunnel";
+import { serviceLogging } from "../runtime/services";
+import { CLOUDFLARED_IMAGE } from "../tunnel";
 import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
 import {
   CURL_IMAGE,
@@ -332,8 +333,7 @@ describe("renderPortainerStack", () => {
     expect(fullStack.configs?.caddyfile?.content).toContain(
       '\t\tX-OpsCrew-Image "{$$OPSCREW_APP_VERSION}"',
     );
-    const filled = renderPortainerStack(full, ctx, { image: IMAGE }).content;
-    expect(filled).toBe(fillPortainerStack(fullFile.content, IMAGE));
+    const filled = fillPortainerStack(fullFile.content, IMAGE);
     expect(filled).not.toContain("__OPSCREW_");
     const doc = stack(filled);
     expect(doc.services.app?.image).toBe(IMAGE);
@@ -346,7 +346,7 @@ describe("renderPortainerStack", () => {
 
   it("refuses an image that is not a GHCR reference pinned by digest", () => {
     for (const image of ["ghcr.io/acme/shop:latest", `${IMAGE}\nservices: {}`, "", "x@sha256:1"]) {
-      expect(() => renderPortainerStack(full, ctx, { image })).toThrow(/pinned by digest/);
+      expect(() => fillPortainerStack(fullFile.content, image)).toThrow(/pinned by digest/);
     }
   });
 

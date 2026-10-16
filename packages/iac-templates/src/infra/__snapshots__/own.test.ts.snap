@@ -175,7 +175,7 @@ module "access" {
   app_name                          = var.app_name
   create_organization               = var.create_zero_trust_organization
   organization_auth_domain          = var.zero_trust_auth_domain
-  ssh_hostname                      = var.ssh_hostname
+  service_hostname                  = var.ssh_hostname
   portainer_hostname                = var.portainer_hostname
   portainer_allowed_emails          = var.portainer_allowed_emails
   one_time_pin_identity_provider_id = var.one_time_pin_identity_provider_id
@@ -222,7 +222,7 @@ module "access" {
   app_name                 = var.app_name
   create_organization      = var.create_zero_trust_organization
   organization_auth_domain = var.zero_trust_auth_domain
-  ssh_hostname             = var.ssh_hostname
+  service_hostname         = var.ssh_hostname
 }
 "
 `;

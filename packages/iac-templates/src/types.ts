@@ -69,18 +69,20 @@ export interface RenderContext {
    */
   serverIpv4?: string;
   serverIpv6?: string;
-  /** Digest-pinned image for the optional Trivy scan step, e.g. `aquasec/trivy:0.75.0@sha256:…`. */
-  trivyImage?: string;
   /** OpsCrew project id (names `~/.opscrew/projects/<id>/` in the runbook; never an absolute path). */
   projectId?: string;
   /**
    * Which server modules the root module contains during a move to another provider
-   * (`opscrew retarget`). Without it the root module deploys `plan.target` as `module "server"`.
+   * (`opscrew retarget`), from `moveLayout`. Without it the root module deploys `plan.target` as
+   * `module "server"`.
    */
   layout?: InfraLayout;
 }
 
-/** Server modules of the root module while a deployment moves to another provider. */
+/**
+ * Server modules of the root module while a deployment moves to another provider. Only servers
+ * OpsCrew creates move: the renderers refuse a server the user owns or a Portainer target here.
+ */
 export interface InfraLayout {
   /** `module "server"` and the target it deploys; absent when the configuration has none. */
   server?: DeployTarget;

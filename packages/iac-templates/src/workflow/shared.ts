@@ -1,6 +1,5 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
-import type { RenderContext } from "../types";
 
 /** actions/checkout v7.0.1 (lightweight tag → commit), pinned by SHA. */
 export const CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
@@ -35,6 +34,12 @@ export function buildRunner(plan: DeployPlan): string {
   return (target.provider === "own" || target.provider === "portainer") && target.arch === "arm64"
     ? "ubuntu-24.04-arm"
     : "ubuntu-latest";
+}
+
+/** The plan's health path with a leading `/`. */
+export function healthPath(plan: DeployPlan): string {
+  const path = plan.app.healthPath;
+  return path.startsWith("/") ? path : `/${path}`;
 }
 
 export function secret(name: string): string {
@@ -73,16 +78,9 @@ export function workflowStart(plan: DeployPlan, about: readonly string[]): strin
  * The `build` job: build the image on a runner of the target's architecture, push it to GHCR, and
  * report the pushed digest (`image`) and the SHA tag (`tag`); then the optional report-only scan.
  */
-export function buildJob(plan: DeployPlan, ctx: RenderContext): string[] {
+export function buildJob(plan: DeployPlan): string[] {
   const context = plan.app.buildContext || ".";
   const dockerfile = plan.app.dockerfile || "Dockerfile";
-  const scanImage = ctx.trivyImage ?? DEFAULT_TRIVY_IMAGE;
-  if (!/@sha256:[0-9a-f]{64}$/.test(scanImage)) {
-    throw new Error(
-      `The Trivy image "${scanImage}" must be pinned by digest (name:tag@sha256:...) because the scan runs with the Docker socket. Use a digest-pinned reference or leave trivyImage unset.`,
-    );
-  }
-
   const buildSteps = [
     `- uses: ${CHECKOUT_ACTION}`,
     "- id: image",
@@ -126,7 +124,7 @@ export function buildJob(plan: DeployPlan, ctx: RenderContext): string[] {
       "- name: Scan the image (report only)",
       "  env:",
       "    IMAGE: ${{ steps.image.outputs.image }}",
-      `  run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${scanImage} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"`,
+      `  run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${DEFAULT_TRIVY_IMAGE} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"`,
     );
   }
 

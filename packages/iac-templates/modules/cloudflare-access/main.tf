@@ -1,9 +1,9 @@
 # Cloudflare Access in front of the hostnames the tunnel serves:
-# - SSH for the deploy workflow (or Portainer's webhook): a Service Auth policy that lets exactly
-#   one service token through.
+# - The service the deploy workflow reaches (SSH, or Portainer's webhook): a Service Auth policy
+#   that lets exactly one service token through.
 # - Portainer (opt-in): the listed email addresses, after a one-time PIN sent to that address.
 locals {
-  ssh       = var.ssh_hostname != null
+  service   = var.service_hostname != null
   portainer = var.portainer_hostname != null
   one_time_pin_id = (
     var.one_time_pin_identity_provider_id != null
@@ -20,7 +20,7 @@ resource "cloudflare_zero_trust_organization" "this" {
 }
 
 resource "cloudflare_zero_trust_access_service_token" "ssh" {
-  count      = local.ssh ? 1 : 0
+  count      = local.service ? 1 : 0
   account_id = var.account_id
   name       = "OpsCrew deploy (${var.app_name})"
   # Deploys must not stop working when a token expires; rotate it by re-running provision.
@@ -30,7 +30,7 @@ resource "cloudflare_zero_trust_access_service_token" "ssh" {
 }
 
 resource "cloudflare_zero_trust_access_policy" "ssh" {
-  count      = local.ssh ? 1 : 0
+  count      = local.service ? 1 : 0
   account_id = var.account_id
   name       = "OpsCrew deploy (${var.app_name})"
   decision   = "non_identity"
@@ -42,12 +42,12 @@ resource "cloudflare_zero_trust_access_policy" "ssh" {
 }
 
 resource "cloudflare_zero_trust_access_application" "ssh" {
-  count                     = local.ssh ? 1 : 0
+  count                     = local.service ? 1 : 0
   account_id                = var.account_id
-  name                      = "OpsCrew ${var.ssh_hostname_label} (${var.app_name})"
+  name                      = "OpsCrew ${var.service_label} (${var.app_name})"
   type                      = "self_hosted"
-  domain                    = var.ssh_hostname
-  destinations              = [{ type = "public", uri = var.ssh_hostname }]
+  domain                    = var.service_hostname
+  destinations              = [{ type = "public", uri = var.service_hostname }]
   app_launcher_visible      = false
   service_auth_401_redirect = true
   session_duration          = "24h"

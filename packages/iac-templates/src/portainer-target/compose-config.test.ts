@@ -7,6 +7,7 @@ import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
 import {
+  fillPortainerStack,
   portainerStackEnvKeys,
   renderPlaceholderStack,
   renderPortainerConnectorStack,
@@ -84,7 +85,7 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
         releaseCommand: "npx prisma migrate deploy",
         env: TEST_ENV,
       });
-      const content = renderPortainerStack(plan, ctx, { image: IMAGE }).content;
+      const content = fillPortainerStack(renderPortainerStack(plan, ctx).content, IMAGE);
       const run = composeConfig(content, valuesFor(portainerStackEnvKeys(plan)));
       expect(run.status, run.stderr).toBe(0);
       expect(run.stderr).not.toMatch(/variable is not set/);
@@ -110,7 +111,7 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
     // Pulls Caddy's image: the inline Caddyfile is what Caddy accepts, with the variable set.
     it(`gives Caddy a valid configuration in ${web.mode} mode`, () => {
       const plan = portainerTestPlan({ web });
-      const doc = parse(renderPortainerStack(plan, ctx, { image: IMAGE }).content);
+      const doc = parse(fillPortainerStack(renderPortainerStack(plan, ctx).content, IMAGE));
       const caddyfile = (doc.configs.caddyfile.content as string).replaceAll("$$", "$");
       const run = spawnSync(
         "docker",

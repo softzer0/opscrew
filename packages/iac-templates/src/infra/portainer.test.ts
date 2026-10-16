@@ -5,11 +5,17 @@ import { dirname, join } from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
 import { checkDialect, detectEngines } from "@opscrew/iac-engine";
 import { describe, expect, it, type TestContext } from "vitest";
-import { moveLayout, testTarget } from "../__fixtures__/layouts";
+import { testTarget } from "../__fixtures__/layouts";
 import { testCloudflare, testCloudflareAccount, testContext } from "../__fixtures__/plans";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import type { RenderContext, RenderedFile } from "../types";
-import { PORTAINER_WEBHOOK_PATH, portainerWebhookHostname, renderInfra, tfvars } from "./index";
+import {
+  moveLayout,
+  PORTAINER_WEBHOOK_PATH,
+  portainerWebhookHostname,
+  renderInfra,
+  tfvars,
+} from "./index";
 
 // A documentation address (RFC 5737): what the CLI would pass as TF_VAR_portainer_origin.
 const PORTAINER_ORIGIN = "https://192.0.2.44:9443";
@@ -51,6 +57,10 @@ describe("renderInfra for a Portainer target, web mode tunnel", () => {
       "opscrew/infra/modules/cloudflare-tunnel/outputs.tf",
       "opscrew/infra/modules/cloudflare-tunnel/variables.tf",
       "opscrew/infra/modules/cloudflare-tunnel/versions.tf",
+      "opscrew/infra/modules/cloudflare-waf/main.tf",
+      "opscrew/infra/modules/cloudflare-waf/outputs.tf",
+      "opscrew/infra/modules/cloudflare-waf/variables.tf",
+      "opscrew/infra/modules/cloudflare-waf/versions.tf",
     ]);
     expect(main).toContain('module "tunnel" {');
     expect(main).toContain('  name             = "opscrew-${var.app_name}"');
@@ -157,14 +167,18 @@ describe("renderInfra for a Portainer target, redeploy mode cloudflare", () => {
       "opscrew/infra/modules/cloudflare-tunnel/outputs.tf",
       "opscrew/infra/modules/cloudflare-tunnel/variables.tf",
       "opscrew/infra/modules/cloudflare-tunnel/versions.tf",
+      "opscrew/infra/modules/cloudflare-waf/main.tf",
+      "opscrew/infra/modules/cloudflare-waf/outputs.tf",
+      "opscrew/infra/modules/cloudflare-waf/variables.tf",
+      "opscrew/infra/modules/cloudflare-waf/versions.tf",
     ]);
   });
 
   it("puts Access on the whole hostname, named as Portainer's webhook", () => {
     expect(main).toContain('module "access" {');
     // The module's service-token slot: only the deploy workflow's service token gets through.
-    expect(main).toContain("  ssh_hostname             = var.portainer_hostname");
-    expect(main).toContain('  ssh_hostname_label       = "Portainer webhook"');
+    expect(main).toContain("  service_hostname         = var.portainer_hostname");
+    expect(main).toContain('  service_label            = "Portainer webhook"');
     expect(main).toContain("  app_name                 = var.app_name");
     expect(main).not.toContain("portainer_allowed_emails");
   });
@@ -222,19 +236,15 @@ describe("renderInfra for a Portainer target, redeploy mode cloudflare", () => {
 
 describe("renderInfra for a Portainer target refuses", () => {
   it("a move layout (a Portainer target never moves)", () => {
-    expect(() =>
-      renderInfra(
-        portainerTestPlan(),
-        accountCtx({
-          layout: moveLayout("rename", testTarget("hetzner"), testTarget("digitalocean")),
-        }),
-      ),
-    ).toThrow(
-      expect.objectContaining({
-        code: "PHASE_PRECONDITION",
-        message: expect.stringMatching(/^Moving an app to or from a Portainer target/),
-      }),
-    );
+    const refusal = expect.objectContaining({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("not to an app in your existing Portainer"),
+      hint: expect.stringContaining("bug in OpsCrew"),
+    });
+    const plan = portainerTestPlan();
+    const layout = moveLayout("rename", testTarget("hetzner"), testTarget("digitalocean"));
+    expect(() => renderInfra(plan, accountCtx({ layout }))).toThrow(refusal);
+    expect(() => moveLayout("both", testTarget("hetzner"), plan.target)).toThrow(refusal);
   });
 
   it("a tunnel without the Cloudflare zone or account id", () => {

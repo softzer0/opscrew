@@ -1,14 +1,6 @@
 locals {
   hosts           = var.www ? [var.domain, "www.${var.domain}"] : [var.domain]
   host_expression = "(http.host in {${join(" ", [for host in local.hosts : "\"${host}\""])}})"
-  probe_paths = join(" or ", [
-    "http.request.uri.path contains \"/.env\"",
-    "starts_with(http.request.uri.path, \"/.git\")",
-    "http.request.uri.path contains \"/wp-admin\"",
-    "http.request.uri.path contains \"/wp-login.php\"",
-    "http.request.uri.path contains \"/xmlrpc.php\"",
-    "http.request.uri.path contains \"/phpmyadmin\"",
-  ])
 }
 
 resource "cloudflare_dns_record" "a" {
@@ -30,12 +22,6 @@ resource "cloudflare_dns_record" "aaaa" {
   ttl     = 1
   proxied = var.proxied
   comment = "Managed by OpsCrew"
-}
-
-# The AAAA record became optional (servers without IPv6); keeps the record already in the state.
-moved {
-  from = cloudflare_dns_record.aaaa
-  to   = cloudflare_dns_record.aaaa[0]
 }
 
 resource "cloudflare_dns_record" "www" {
@@ -68,20 +54,10 @@ resource "cloudflare_ruleset" "config" {
   ]
 }
 
-resource "cloudflare_ruleset" "waf" {
-  count       = var.manage_waf_rules ? 1 : 0
-  zone_id     = var.zone_id
-  name        = "OpsCrew custom rules"
-  description = "Managed by OpsCrew"
-  kind        = "zone"
-  phase       = "http_request_firewall_custom"
+module "waf" {
+  source = "../cloudflare-waf"
+  count  = var.manage_waf_rules ? 1 : 0
 
-  rules = [
-    {
-      description = "OpsCrew: block probes for secrets and admin panels on ${var.domain}"
-      expression  = "${local.host_expression} and (${local.probe_paths})"
-      action      = "block"
-      enabled     = true
-    },
-  ]
+  zone_id   = var.zone_id
+  hostnames = local.hosts
 }

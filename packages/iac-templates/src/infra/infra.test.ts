@@ -6,11 +6,11 @@ import { checkDialect, detectEngines } from "@opscrew/iac-engine";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it, type TestContext } from "vitest";
 import { collectModuleFiles, renderGeneratedModule } from "../../scripts/gen-modules";
-import { DIRECTIONS, LAYOUT_NAMES, moveLayout, testTarget } from "../__fixtures__/layouts";
+import { DIRECTIONS, testTarget } from "../__fixtures__/layouts";
 import { testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
-import { httpAllowedCidrs, renderInfra, tfvars } from "./index";
+import { MOVE_LAYOUTS, moveLayout, renderInfra, tfvars } from "./index";
 
 describe("renderInfra on a Portainer target", () => {
   it("renders the Portainer root (portainer.test.ts), never a server root: none here", () => {
@@ -173,9 +173,7 @@ describe("renderInfra", () => {
     expect(moduleOutputs).toContain(
       "http_config_settings         = one(cloudflare_ruleset.config[*].id)",
     );
-    expect(moduleOutputs).toContain(
-      "http_request_firewall_custom = one(cloudflare_ruleset.waf[*].id)",
-    );
+    expect(moduleOutputs).toContain("http_request_firewall_custom = one(module.waf[*].ruleset_id)");
   });
 
   it("leaves existing Cloudflare rulesets alone", () => {
@@ -196,10 +194,10 @@ describe("renderInfra", () => {
 
   it("keeps web ports open when Cloudflare ranges are unknown", () => {
     expect(
-      httpAllowedCidrs(
+      tfvars(
         plan({ domain: "shop.example.com" }),
         ctx({ cloudflare: { ...cloudflare(), ipRanges: { ipv4: [], ipv6: [] } } }),
-      ),
+      ).http_allowed_cidrs,
     ).toEqual(["0.0.0.0/0", "::/0"]);
   });
 
@@ -359,7 +357,7 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
     // engine: the providers are downloaded once, and each layout re-runs init for its modules.
     let layoutRoot: Promise<string> | undefined;
     for (const [from, to] of DIRECTIONS) {
-      for (const layout of LAYOUT_NAMES) {
+      for (const layout of MOVE_LAYOUTS) {
         it.skipIf(!engine)(
           `validates the ${layout} layout from ${from} to ${to} with ${name}`,
           async (test) => {

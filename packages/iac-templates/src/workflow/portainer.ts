@@ -9,12 +9,13 @@ import {
   portainerStackName,
 } from "../portainer-target/stack";
 import { portainerTarget } from "../providers";
-import type { RenderContext, RenderedFile } from "../types";
+import type { RenderedFile } from "../types";
 import {
   block,
   buildJob,
   CHECKOUT_ACTION,
   DIGEST_REF_PATTERN,
+  healthPath,
   secret,
   workflowStart,
 } from "./shared";
@@ -47,10 +48,7 @@ const HEALTH_ATTEMPTS = { updater: 60, cloudflare: 30 } as const;
  */
 export function portainerHealthUrl(plan: DeployPlan): string | undefined {
   if (plan.dns.domain === undefined) return undefined;
-  const path = plan.app.healthPath.startsWith("/")
-    ? plan.app.healthPath
-    : `/${plan.app.healthPath}`;
-  return `https://${plan.dns.domain}${path}`;
+  return `https://${plan.dns.domain}${healthPath(plan)}`;
 }
 
 /** The commit identity of the deploy job's commits to the deploy branch. */
@@ -227,16 +225,28 @@ function run(script: readonly string[]): string[] {
  * does not answer GitHub at all before the deploy (a domain only the user's network resolves),
  * there is no site to check: the job writes the branch and says so.
  */
-export function renderPortainerWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFile {
+export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
   const target = portainerTarget(plan.target);
-  const build = buildJob(plan, ctx);
+  const build = buildJob(plan);
   const branch = PORTAINER_DEPLOY_BRANCH;
   const cloudflare = target.redeploy === "cloudflare";
   const url = portainerHealthUrl(plan);
   const image = "    IMAGE: ${{ needs.build.outputs.image }}";
+  // Behind the user's own proxy the domain may resolve only on the user's network: then nothing
+  // here can check the app, and a health check would roll back every deploy.
+  const probe = target.web.mode === "proxy" && url !== undefined;
 
   const steps = [
     `- uses: ${CHECKOUT_ACTION}`,
+    ...(probe
+      ? [
+          "- id: probe",
+          "  name: Check that GitHub can reach the app",
+          "  env:",
+          `    URL: ${url}`,
+          ...run(PROBE_SCRIPT),
+        ]
+      : []),
     "- id: write",
     `  name: Write the new version to the ${branch} branch`,
     "  env:",
@@ -273,20 +283,6 @@ export function renderPortainerWorkflow(plan: DeployPlan, ctx: RenderContext): R
     "  run: |",
     `    echo "::notice::OpsCrew wrote the new version to the ${branch} branch; Portainer deploys it${cloudflare ? "" : " within about a minute"}. GitHub cannot reach the app (opscrew/plan.yaml has no domain, or the domain answers only on your network), so this run does not check it: open the address your proxy serves it on."`,
   ];
-  // Behind the user's own proxy the domain may resolve only on the user's network: then nothing
-  // here can check the app, and a health check would roll back every deploy.
-  const probe = target.web.mode === "proxy" && url !== undefined;
-  if (probe) {
-    steps.splice(
-      1,
-      0,
-      "- id: probe",
-      "  name: Check that GitHub can reach the app",
-      "  env:",
-      `    URL: ${url}`,
-      ...run(PROBE_SCRIPT),
-    );
-  }
   if (url === undefined) {
     steps.push(...notice());
   } else {

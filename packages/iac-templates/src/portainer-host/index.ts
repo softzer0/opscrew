@@ -1,6 +1,7 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
-import { PORTAINER_PORT, serviceLogging } from "../tunnel";
+import { hardened } from "../runtime/services";
+import { PORTAINER_PORT } from "../tunnel";
 import type { RenderedFile } from "../types";
 
 /** Portainer CE image repository; the tag is `plan.portainer.version`. */
@@ -48,8 +49,7 @@ export function renderPortainerCompose(
     ],
     ports: [`127.0.0.1:${PORTAINER_PORT}:${PORTAINER_PORT}`],
     volumes: ["/var/run/docker.sock:/var/run/docker.sock", "portainer_data:/data"],
-    security_opt: ["no-new-privileges:true"],
-    logging: serviceLogging(),
+    ...hardened(),
   };
   if (options.initialAdmin) {
     // Mounted read-only at /run/secrets/portainer_admin_password.

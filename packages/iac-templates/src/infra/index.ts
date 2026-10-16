@@ -1,31 +1,27 @@
-import { OpsCrewError } from "@opscrew/core";
-import type { CloudDeployTarget, DeployPlan, DeployTarget } from "@opscrew/plan-schema";
+import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { MODULE_FILES } from "../generated/modules";
-import {
-  type ProviderText,
-  portainerTargetNoMove,
-  providerText,
-  type VariablePrefix,
-  vpsTarget,
-} from "../providers";
-import type { InfraLayout, RenderContext, RenderedFile, ServerModule } from "../types";
+import { usesCloudflare, webOnlyFromCloudflare } from "../predicates";
+import { cloudTarget, PROVIDER_TEXT, type ProviderText, type VariablePrefix } from "../providers";
+import type { RenderContext, RenderedFile, ServerModule } from "../types";
+import { DNS_RULESETS_OUTPUT, dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
   alignedArguments,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   output,
   ROOT_HEADER,
-  usesCloudflare,
+  type RootFiles,
   type VariableSpec,
   variablesTf,
   versionsTf,
 } from "./hcl";
-import { ownRoot, RULESETS_OUTPUT } from "./own";
+import { ownRoot } from "./own";
 import { portainerRoot } from "./portainer";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
+export { zeroTrustAuthDomain } from "./cloudflare";
+export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
 export { PORTAINER_WEBHOOK_PATH, portainerWebhookHostname } from "./portainer";
-export { zeroTrustAuthDomain } from "./tunnel";
 
 const OPEN_TO_ALL = ["0.0.0.0/0", "::/0"];
 
@@ -35,22 +31,16 @@ const MOVE_NOTE = [
   "# move is finished (`opscrew retarget --finish`) or aborted (`opscrew retarget --abort`).",
 ].join("\n");
 
-/** Directory of the vendored modules, next to the root module directory. */
-export function modulesDirFor(infraDir: string): string {
-  const parts = infraDir.replace(/\\/g, "/").replace(/\/+$/, "").split("/");
-  parts.pop();
-  return [...parts, "modules"].join("/");
-}
+/** Modules the vendored modules call themselves, vendored with them. */
+const NESTED_MODULES: Readonly<Record<string, readonly string[]>> = {
+  "cloudflare-dns": ["cloudflare-waf"],
+  "cloudflare-tunnel": ["cloudflare-waf"],
+};
 
 /** CIDRs allowed to reach ports 80/443: Cloudflare's ranges when proxied and restricted. */
-export function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[] {
+function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[] {
   const ranges = ctx.cloudflare?.ipRanges;
-  if (
-    usesCloudflare(plan) &&
-    plan.dns.proxied &&
-    plan.security.httpAllowedFrom === "cloudflare" &&
-    ranges
-  ) {
+  if (webOnlyFromCloudflare(plan) && ranges) {
     const all = [...ranges.ipv4, ...ranges.ipv6];
     if (all.length > 0) return all;
   }
@@ -79,49 +69,20 @@ interface RootShape {
   moving: boolean;
 }
 
-/** Moves are only between OpsCrew-created servers; the plan schema refuses the rest too. */
-function noOwnServerMove(): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    "Moving an app to or from a server you already own is not available.",
-    {
-      hint: "Deploy to your own server with a fresh `opscrew design` and `opscrew provision` instead of `opscrew retarget`.",
-    },
-  );
-}
-
-/** A server module's target: OpsCrew creates it (a server of a cloud root module). */
-function serverTarget(target: DeployTarget): CloudDeployTarget {
-  if (target.provider === "own") throw noOwnServerMove();
-  if (target.provider === "portainer") throw portainerTargetNoMove();
-  return target;
-}
-
 /**
  * Resolves the root module's layout. Without `ctx.layout` this is `module "server"` for
- * `plan.target` and its provider only. Throws for layouts the engines would reject.
+ * `plan.target` and its provider only. Only servers OpsCrew creates have a cloud root or move:
+ * throws for a server the user owns and a Portainer target, and for layouts the engines would
+ * reject.
  */
 function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
-  const layout: InfraLayout = ctx.layout ?? {
-    server: plan.target,
-    live: "server",
-    providers: [vpsTarget(plan.target).provider],
-  };
-  if (layout.providers.includes("own")) throw noOwnServerMove();
+  const target = cloudTarget(plan.target);
+  const layout = ctx.layout ?? { server: target, live: "server", providers: [target.provider] };
   const servers: ServerCall[] = [];
-  if (layout.server) {
-    const target = serverTarget(layout.server);
-    servers.push({ module: "server", target, prefix: "", provider: providerText(target) });
-  }
-  if (layout.previous) {
-    const target = serverTarget(layout.previous);
-    servers.push({
-      module: "server_previous",
-      target,
-      prefix: "previous_",
-      provider: providerText(target),
-    });
-  }
+  const call = (module: ServerModule, server: CloudDeployTarget, prefix: VariablePrefix) =>
+    servers.push({ module, target: server, prefix, provider: PROVIDER_TEXT[server.provider] });
+  if (layout.server) call("server", cloudTarget(layout.server), "");
+  if (layout.previous) call("server_previous", cloudTarget(layout.previous), "previous_");
   if (servers.length === 0) {
     throw new Error("The infrastructure layout has no server module to render.");
   }
@@ -146,11 +107,13 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
       `The infrastructure layout renders two ${layout.server.provider} servers; a move needs two different providers.`,
     );
   }
-  const providers = [...new Set(layout.providers)];
-  for (const { target } of servers) {
-    if (!providers.includes(target.provider)) {
+  const providers = [...new Set(layout.providers)].map(
+    (provider) => cloudTarget({ provider }).provider,
+  );
+  for (const { target: server } of servers) {
+    if (!providers.includes(server.provider)) {
       throw new Error(
-        `The infrastructure layout renders a ${target.provider} server but does not list the ${target.provider} provider.`,
+        `The infrastructure layout renders a ${server.provider} server but does not list the ${server.provider} provider.`,
       );
     }
   }
@@ -158,16 +121,9 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
     servers,
     live,
     moved,
-    providers: providers.map((provider) => providerText({ provider })),
+    providers: providers.map((provider) => PROVIDER_TEXT[provider]),
     moving: ctx.layout !== undefined,
   };
-}
-
-function cloudVersionsTf(plan: DeployPlan, shape: RootShape): string {
-  return versionsTf([
-    ...shape.providers.map((provider) => provider.terraformProvider),
-    ...(usesCloudflare(plan) ? [CLOUDFLARE_PROVIDER] : []),
-  ]);
 }
 
 function mainTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undefined): string {
@@ -209,21 +165,7 @@ function mainTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undef
   }
   if (usesCloudflare(plan)) {
     const live = shape.live.module;
-    lines.push(
-      'module "dns" {',
-      '  source = "../modules/cloudflare-dns"',
-      "",
-      "  zone_id            = var.cloudflare_zone_id",
-      "  domain             = var.domain",
-      `  ipv4               = module.${live}.ipv4_address`,
-      `  ipv6               = module.${live}.ipv6_address`,
-      "  proxied            = var.proxied",
-      "  www                = var.www",
-      "  manage_config_rule = var.manage_config_rule",
-      "  manage_waf_rules   = var.manage_waf_rules",
-      "}",
-      "",
-    );
+    lines.push(...dnsModule(`module.${live}.ipv4_address`, `module.${live}.ipv6_address`));
   }
   if (pieces) lines.push(...pieces.main);
   return lines.join("\n");
@@ -285,16 +227,7 @@ function variables(
     },
   ];
   if (!usesCloudflare(plan)) return base;
-  return [
-    ...base,
-    { name: "domain", type: "string", description: "Hostname of the app." },
-    { name: "cloudflare_zone_id", type: "string", description: "Cloudflare zone id." },
-    { name: "proxied", type: "bool", description: "Proxy traffic through Cloudflare." },
-    { name: "www", type: "bool", description: "Also serve www.<domain>." },
-    { name: "manage_config_rule", type: "bool", description: "Manage the TLS configuration rule." },
-    { name: "manage_waf_rules", type: "bool", description: "Manage the WAF custom rule." },
-    ...(pieces?.variables ?? []),
-  ];
+  return [...base, ...zoneVariables("records"), ...(pieces?.variables ?? [])];
 }
 
 /**
@@ -333,21 +266,59 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
     ...output("server_name", `module.${live}.server_name`),
     ...output("url", url),
     ...serversOutput(shape),
-    ...(usesCloudflare(plan) ? RULESETS_OUTPUT : []),
+    ...(usesCloudflare(plan) ? DNS_RULESETS_OUTPUT : []),
     ...(pieces?.outputs ?? []),
   ].join("\n");
 }
 
-/** A server the user owns and no move layout: the own-server root module. */
-function isOwnRoot(plan: DeployPlan, ctx: RenderContext): boolean {
-  return plan.target.provider === "own" && ctx.layout === undefined;
+/**
+ * The root module of servers OpsCrew creates: `plan.target` as `module "server"`, or the servers
+ * of `ctx.layout` during a move.
+ */
+function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
+  const shape = rootShape(plan, ctx);
+  const pieces = tunnelPieces(plan, ctx);
+  const values: Record<string, unknown> = { app_name: plan.app.name };
+  for (const { prefix, target } of shape.servers) {
+    values[`${prefix}location`] = target.location;
+    values[`${prefix}server_type`] = target.serverType;
+    values[`${prefix}image`] = target.image;
+    values[`${prefix}backups`] = target.backups;
+  }
+  values.deploy_ssh_public_key = ctx.deploySshPublicKey.trim();
+  values.ssh_allowed_cidrs = plan.security.sshAllowedCidrs;
+  values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
+  return {
+    versions: versionsTf([
+      ...shape.providers.map((provider) => provider.terraformProvider),
+      ...(usesCloudflare(plan) ? [CLOUDFLARE_PROVIDER] : []),
+    ]),
+    main: mainTf(plan, shape, pieces),
+    variables: variablesTf(variables(plan, shape, pieces)),
+    outputs: outputsTf(plan, shape, pieces),
+    tfvars: {
+      ...values,
+      ...(usesCloudflare(plan) ? zoneTfvars(plan, ctx, "records") : {}),
+      ...(pieces?.tfvars ?? {}),
+    },
+    modules: [
+      ...shape.providers.map((provider) => provider.module),
+      ...(usesCloudflare(plan) ? ["cloudflare-dns"] : []),
+      ...(pieces?.modules ?? []),
+    ],
+  };
 }
 
-/** A Portainer target: its own root module. It never moves, so a move layout is refused. */
-function isPortainerRoot(plan: DeployPlan, ctx: RenderContext): boolean {
-  if (plan.target.provider !== "portainer") return false;
-  if (ctx.layout !== undefined) throw portainerTargetNoMove();
-  return true;
+/**
+ * The root module for the plan: a Portainer target's (none when it needs no Cloudflare Tunnel), a
+ * server the user owns, or servers OpsCrew creates (with a move layout, always this one).
+ */
+function rootModule(plan: DeployPlan, ctx: RenderContext): RootFiles | undefined {
+  if (ctx.layout === undefined && plan.target.provider === "portainer") {
+    return portainerRoot(plan, ctx);
+  }
+  if (ctx.layout === undefined && plan.target.provider === "own") return ownRoot(plan, ctx);
+  return cloudRoot(plan, ctx);
 }
 
 /**
@@ -361,58 +332,7 @@ function isPortainerRoot(plan: DeployPlan, ctx: RenderContext): boolean {
  * writes Portainer's address (`TF_VAR_portainer_origin`) and has `{}` when it has no root module.
  */
 export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unknown> {
-  if (isPortainerRoot(plan, ctx)) return portainerRoot(plan, ctx)?.tfvars ?? {};
-  if (isOwnRoot(plan, ctx)) return ownRoot(plan, ctx).tfvars;
-  const values: Record<string, unknown> = { app_name: plan.app.name };
-  for (const { prefix, target } of rootShape(plan, ctx).servers) {
-    values[`${prefix}location`] = target.location;
-    values[`${prefix}server_type`] = target.serverType;
-    values[`${prefix}image`] = target.image;
-    values[`${prefix}backups`] = target.backups;
-  }
-  values.deploy_ssh_public_key = ctx.deploySshPublicKey.trim();
-  values.ssh_allowed_cidrs = plan.security.sshAllowedCidrs;
-  values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
-  if (usesCloudflare(plan)) {
-    values.domain = plan.dns.domain;
-    values.cloudflare_zone_id = ctx.cloudflare?.zoneId ?? "";
-    values.proxied = plan.dns.proxied;
-    values.www = plan.dns.www;
-    values.manage_config_rule = ctx.cloudflare?.manageConfigRule ?? false;
-    values.manage_waf_rules =
-      (ctx.cloudflare?.manageWafRules ?? false) && plan.security.wafCustomRules;
-  }
-  return { ...values, ...(tunnelPieces(plan, ctx)?.tfvars ?? {}) };
-}
-
-/** The root-module files and the vendored copies of `modules` under `plan.infra.dir`. */
-function rootFiles(
-  plan: DeployPlan,
-  root: { versions: string; main: string; variables: string; outputs: string },
-  values: Record<string, unknown>,
-  modules: readonly string[],
-): RenderedFile[] {
-  const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const modulesDir = modulesDirFor(dir);
-  const files: RenderedFile[] = [
-    { path: `${dir}/versions.tf`, content: root.versions, kind: "infra" },
-    { path: `${dir}/main.tf`, content: root.main, kind: "infra" },
-    { path: `${dir}/variables.tf`, content: root.variables, kind: "infra" },
-    { path: `${dir}/outputs.tf`, content: root.outputs, kind: "infra" },
-    {
-      path: `${dir}/terraform.tfvars.json`,
-      content: `${JSON.stringify(values, null, 2)}\n`,
-      kind: "infra",
-    },
-  ];
-  for (const [path, content] of Object.entries(MODULE_FILES).sort(([a], [b]) =>
-    a.localeCompare(b),
-  )) {
-    if (modules.some((m) => path.startsWith(`${m}/`))) {
-      files.push({ path: `${modulesDir}/${path}`, content, kind: "infra" });
-    }
-  }
-  return files;
+  return rootModule(plan, ctx)?.tfvars ?? {};
 }
 
 /**
@@ -448,35 +368,36 @@ function rootFiles(
  * Tunnels: the app's for web mode `tunnel`, and in redeploy mode `cloudflare` one and Access for
  * Portainer's webhook hostname (Portainer's address from `TF_VAR_portainer_origin`). OpsCrew
  * creates no DNS record for web modes `proxy` and `caddy`, so a plan that needs neither tunnel
- * renders no files at all. A move layout is refused: a Portainer target never moves.
+ * renders no files at all. Only servers OpsCrew creates move: a move layout for a server the user
+ * owns or a Portainer target throws.
  */
 export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
-  if (isPortainerRoot(plan, ctx)) {
-    const root = portainerRoot(plan, ctx);
-    return root === undefined ? [] : rootFiles(plan, root, root.tfvars, root.modules);
-  }
-  if (usesCloudflare(plan) && !ctx.cloudflare?.zoneId) {
+  const portainer = ctx.layout === undefined && plan.target.provider === "portainer";
+  if (!portainer && usesCloudflare(plan) && !ctx.cloudflare?.zoneId) {
     throw new Error("A Cloudflare zone id is required to render DNS for this plan.");
   }
-  if (isOwnRoot(plan, ctx)) {
-    const root = ownRoot(plan, ctx);
-    return rootFiles(plan, root, root.tfvars, root.modules);
-  }
-  const shape = rootShape(plan, ctx);
-  const pieces = tunnelPieces(plan, ctx);
-  return rootFiles(
-    plan,
+  const root = rootModule(plan, ctx);
+  if (root === undefined) return [];
+  const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
+  const modulesDir = `${dir.slice(0, dir.lastIndexOf("/") + 1)}modules`;
+  const modules = root.modules.flatMap((module) => [module, ...(NESTED_MODULES[module] ?? [])]);
+  const files: RenderedFile[] = [
+    { path: `${dir}/versions.tf`, content: root.versions, kind: "infra" },
+    { path: `${dir}/main.tf`, content: root.main, kind: "infra" },
+    { path: `${dir}/variables.tf`, content: root.variables, kind: "infra" },
+    { path: `${dir}/outputs.tf`, content: root.outputs, kind: "infra" },
     {
-      versions: cloudVersionsTf(plan, shape),
-      main: mainTf(plan, shape, pieces),
-      variables: variablesTf(variables(plan, shape, pieces)),
-      outputs: outputsTf(plan, shape, pieces),
+      path: `${dir}/terraform.tfvars.json`,
+      content: `${JSON.stringify(root.tfvars, null, 2)}\n`,
+      kind: "infra",
     },
-    tfvars(plan, ctx),
-    [
-      ...shape.providers.map((provider) => provider.module),
-      ...(usesCloudflare(plan) ? ["cloudflare-dns"] : []),
-      ...(pieces?.modules ?? []),
-    ],
-  );
+  ];
+  for (const [path, content] of Object.entries(MODULE_FILES).sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    if (modules.some((m) => path.startsWith(`${m}/`))) {
+      files.push({ path: `${modulesDir}/${path}`, content, kind: "infra" });
+    }
+  }
+  return files;
 }

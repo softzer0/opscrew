@@ -1,17 +1,5 @@
 # A remotely managed Cloudflare Tunnel: its routes live in Cloudflare (config_src = "cloudflare"),
 # and the connector on the server only needs the tunnel token (output "token").
-locals {
-  host_expression = "(http.host in {${join(" ", [for host in var.waf_hostnames : "\"${host}\""])}})"
-  probe_paths = join(" or ", [
-    "http.request.uri.path contains \"/.env\"",
-    "starts_with(http.request.uri.path, \"/.git\")",
-    "http.request.uri.path contains \"/wp-admin\"",
-    "http.request.uri.path contains \"/wp-login.php\"",
-    "http.request.uri.path contains \"/xmlrpc.php\"",
-    "http.request.uri.path contains \"/phpmyadmin\"",
-  ])
-}
-
 resource "cloudflare_zero_trust_tunnel_cloudflared" "this" {
   account_id = var.account_id
   name       = var.name
@@ -63,20 +51,10 @@ data "cloudflare_zero_trust_tunnel_cloudflared_token" "this" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.this.id
 }
 
-resource "cloudflare_ruleset" "waf" {
-  count       = var.manage_waf_rules && length(var.waf_hostnames) > 0 ? 1 : 0
-  zone_id     = var.zone_id
-  name        = "OpsCrew custom rules"
-  description = "Managed by OpsCrew"
-  kind        = "zone"
-  phase       = "http_request_firewall_custom"
+module "waf" {
+  source = "../cloudflare-waf"
+  count  = var.manage_waf_rules && length(var.waf_hostnames) > 0 ? 1 : 0
 
-  rules = [
-    {
-      description = "OpsCrew: block probes for secrets and admin panels on ${var.waf_hostnames[0]}"
-      expression  = "${local.host_expression} and (${local.probe_paths})"
-      action      = "block"
-      enabled     = true
-    },
-  ]
+  zone_id   = var.zone_id
+  hostnames = var.waf_hostnames
 }

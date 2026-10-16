@@ -1,97 +1,40 @@
 import { OpsCrewError } from "@opscrew/core";
-import {
-  type CloudDeployTarget,
-  type CloudProvider,
-  type DeployPlan,
-  type DeployTarget,
-  isVpsTarget,
-  PORTAINER_TARGET_NO_MOVE,
-  PORTAINER_TARGET_NOT_YET,
-  type PortainerDeployTarget,
-  type VpsDeployTarget,
-  type VpsProvider,
-} from "@opscrew/plan-schema";
-
-/** VPS provider a plan deploys to. */
-export type PlanProvider = DeployPlan["target"]["provider"];
+import type { CloudProvider, DeployTarget, PortainerDeployTarget } from "@opscrew/plan-schema";
+import type { ProviderRequirement } from "./infra/hcl";
 
 /**
- * The plain error when code that only knows servers OpsCrew creates (provider wording, server
- * modules) is reached with a server the user owns. The renderers handle own servers before that.
+ * The plain error for code reached with a target it does not handle. Every renderer is called
+ * for the targets it knows, so this is a bug in OpsCrew.
  */
-export function ownServerNotYet(): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    "This step only applies to servers OpsCrew creates on Hetzner Cloud or DigitalOcean, not to a server you already own.",
-    {
-      hint: "This is a bug in OpsCrew: please report it with the command you ran.",
-    },
-  );
-}
-
-/**
- * The plain error when code that only knows single servers is reached with a Portainer target.
- * The Portainer templates of feature 010 handle that target before.
- */
-export function portainerTargetNotYet(): OpsCrewError {
-  return new OpsCrewError("PHASE_PRECONDITION", PORTAINER_TARGET_NOT_YET.message, {
-    hint: PORTAINER_TARGET_NOT_YET.hint,
-  });
-}
-
-/** The plain error for a move layout that involves a Portainer target, which never moves. */
-export function portainerTargetNoMove(): OpsCrewError {
-  return new OpsCrewError("PHASE_PRECONDITION", PORTAINER_TARGET_NO_MOVE.message, {
-    hint: PORTAINER_TARGET_NO_MOVE.hint,
+export function wrongTarget(message: string): OpsCrewError {
+  return new OpsCrewError("PHASE_PRECONDITION", message, {
+    hint: "This is a bug in OpsCrew: please report it with the command you ran.",
   });
 }
 
 /**
- * `target` when the app runs in the user's existing Portainer; the Portainer renderers call it
- * first, so reaching them with another target is a bug in OpsCrew.
+ * `target` when OpsCrew creates the server (Hetzner Cloud, DigitalOcean): a plan's target, a
+ * server of a move layout, or just `{ provider }`. Throws {@link wrongTarget} for a server the
+ * user owns and a Portainer target.
  */
-export function portainerTarget(target: DeployTarget): PortainerDeployTarget {
-  if (target.provider !== "portainer") {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "This step only applies to an app OpsCrew deploys into your existing Portainer.",
-      { hint: "This is a bug in OpsCrew: please report it with the command you ran." },
+export function cloudTarget<T extends Pick<DeployTarget, "provider">>(
+  target: T,
+): T & { provider: CloudProvider } {
+  if (target.provider === "own" || target.provider === "portainer") {
+    throw wrongTarget(
+      `This step only applies to servers OpsCrew creates on Hetzner Cloud or DigitalOcean, not to ${target.provider === "own" ? "a server you already own" : "an app in your existing Portainer"}.`,
     );
   }
-  return target;
+  return target as T & { provider: CloudProvider };
 }
 
-/**
- * The plain error when a server's runtime files (Compose file, Caddyfile) are asked for a Portainer
- * target: its stack file holds both, so reaching here is a bug in OpsCrew.
- */
-export function serverRuntimeNotForPortainer(): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    "An app in your existing Portainer has no server Compose file or Caddyfile: OpsCrew writes its Portainer stack (opscrew/runtime/compose.yaml) instead.",
-    { hint: "This is a bug in OpsCrew: please report it with the command you ran." },
-  );
-}
-
-/** `target` when the app runs on one server; throws {@link portainerTargetNotYet} for Portainer. */
-export function vpsTarget(target: DeployTarget): VpsDeployTarget {
-  if (!isVpsTarget(target)) throw portainerTargetNotYet();
-  return target;
-}
-
-/** The provider of a server in a move layout; throws {@link portainerTargetNoMove} for Portainer. */
-export function moveProvider(target: Pick<DeployTarget, "provider">): VpsProvider {
-  if (target.provider === "portainer") throw portainerTargetNoMove();
-  return target.provider;
-}
-
-/**
- * `target` when OpsCrew creates the server (Hetzner, DigitalOcean); throws for an own server and
- * a Portainer target.
- */
-export function cloudTarget(target: DeployTarget): CloudDeployTarget {
-  if (target.provider === "own") throw ownServerNotYet();
-  if (target.provider === "portainer") throw portainerTargetNotYet();
+/** `target` when the app runs in the user's existing Portainer; throws {@link wrongTarget} otherwise. */
+export function portainerTarget(target: DeployTarget): PortainerDeployTarget {
+  if (target.provider !== "portainer") {
+    throw wrongTarget(
+      "This step only applies to an app OpsCrew deploys into your existing Portainer.",
+    );
+  }
   return target;
 }
 
@@ -111,7 +54,7 @@ export interface ProviderText {
   /** Vendored module directory of the server module. */
   module: string;
   /** Terraform provider local name, registry source and version constraint. */
-  terraformProvider: { name: string; source: string; version: string };
+  terraformProvider: ProviderRequirement;
   /** Environment variable the Terraform provider reads its token from. */
   tokenVar: string;
   /** Whether the server module has a `delete_protection` switch. */
@@ -154,7 +97,8 @@ const COMMON_ARGUMENTS = {
   httpCidrs: ["http_allowed_cidrs", "var.http_allowed_cidrs"],
 } as const;
 
-const PROVIDERS: Record<CloudProvider, ProviderText> = {
+/** Wording and HCL pieces of each provider OpsCrew creates servers on. */
+export const PROVIDER_TEXT: Record<CloudProvider, ProviderText> = {
   hetzner: {
     name: "Hetzner",
     serverNoun: "server",
@@ -280,14 +224,3 @@ const PROVIDERS: Record<CloudProvider, ProviderText> = {
     },
   },
 };
-
-/**
- * Wording and HCL pieces for a target's provider: a plan's `target`, a server of a move layout,
- * or just `{ provider }`. Throws for a server the user owns ({@link ownServerNotYet}) and a
- * Portainer target ({@link portainerTargetNotYet}).
- */
-export function providerText(target: { provider: PlanProvider }): ProviderText {
-  if (target.provider === "own") throw ownServerNotYet();
-  if (target.provider === "portainer") throw portainerTargetNotYet();
-  return PROVIDERS[target.provider];
-}

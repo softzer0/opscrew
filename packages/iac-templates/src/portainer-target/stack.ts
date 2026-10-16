@@ -1,13 +1,20 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose and shell syntax, not JavaScript templates.
-import { createHash } from "node:crypto";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import type { DeployPlan, PortainerWeb } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { isClientExposedEnvName } from "../docker";
 import { portainerTarget } from "../providers";
-import { CADDY_IMAGE, POSTGRES_IMAGE, siteHosts, VALKEY_IMAGE } from "../runtime";
-import { CLOUDFLARED_IMAGE, CLOUDFLARED_METRICS, serviceLogging } from "../tunnel";
+import { siteHosts } from "../runtime";
+import {
+  CADDY_IMAGE,
+  cacheService,
+  caddyfile,
+  cloudflaredService,
+  dbService,
+  hardened,
+} from "../runtime/services";
 import type { RenderContext, RenderedFile } from "../types";
+import { DIGEST_REF_PATTERN } from "../workflow/shared";
 
 /**
  * The official curl image of the updater stack and the placeholder stack, pinned by the digest of
@@ -39,7 +46,7 @@ export const PORTAINER_VERSION_PLACEHOLDER = "__OPSCREW_APP_VERSION__";
 export const PORTAINER_VERSION_HEADER = "X-OpsCrew-Image";
 
 /** A GHCR image pinned by digest, `ghcr.io/<owner>/<repo>@sha256:<hex>`. */
-const GHCR_DIGEST_REF = /^ghcr\.io\/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$/;
+const GHCR_DIGEST_REF = new RegExp(DIGEST_REF_PATTERN);
 
 /**
  * OpsCrew's own variables in the app stack's environment in Portainer (`Env`), by what each holds.
@@ -211,64 +218,6 @@ export function portainerStackVolumes(plan: DeployPlan): string[] {
   return volumeNames(plan, web).map((volume) => `${portainerStackName(plan)}_${volume}`);
 }
 
-/**
- * Caddy's configuration for the web mode. `tunnel`: plain HTTP behind the connector, HTTPS
- * redirect by the `Cf-Visitor` header (as on own servers in tunnel mode; only the connector in the
- * stack reaches Caddy). `proxy`: plain HTTP on any host name behind the user's proxy, whose
- * `X-Forwarded-*` headers Caddy keeps when it comes from a private address. `caddy`: automatic
- * certificates for the domain.
- */
-function caddyfile(plan: DeployPlan, web: PortainerWeb, ctx: RenderContext): string {
-  const hosts = siteHosts(plan);
-  const lines: string[] = [];
-  if (web.mode === "tunnel") {
-    lines.push(
-      "# Served through a Cloudflare Tunnel: Cloudflare terminates TLS, Caddy serves plain HTTP.",
-    );
-  } else if (web.mode === "proxy") {
-    lines.push(
-      "# Behind your own reverse proxy: it terminates TLS and forwards to Caddy over plain HTTP.",
-      "{",
-      "\tservers {",
-      "\t\ttrusted_proxies static private_ranges",
-      "\t}",
-      "}",
-      "",
-    );
-  } else if (ctx.acmeEmail && hosts.length > 0) {
-    lines.push("{", `\temail ${ctx.acmeEmail}`, "}", "");
-  }
-  const sites =
-    web.mode === "tunnel"
-      ? hosts.map((host) => `http://${host}`)
-      : web.mode === "proxy"
-        ? [":80"]
-        : hosts;
-  lines.push(`${sites.join(", ")} {`);
-  if (web.mode === "tunnel") {
-    // Caddy orders `redir` before `reverse_proxy`, so plain-HTTP visitors are redirected first.
-    lines.push(
-      '\t@http_visitor header Cf-Visitor `*"http"*`',
-      "\tredir @http_visitor https://{host}{uri} 308",
-    );
-  }
-  lines.push("\tencode zstd gzip", `\treverse_proxy app:${plan.app.port}`, "\theader {");
-  if (hosts.length > 0)
-    lines.push('\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"');
-  lines.push(
-    '\t\tX-Content-Type-Options "nosniff"',
-    '\t\tX-Frame-Options "SAMEORIGIN"',
-    '\t\tReferrer-Policy "strict-origin-when-cross-origin"',
-    // Caddy reads the variable when it starts: the version of the image the stack runs.
-    `\t\t${PORTAINER_VERSION_HEADER} "{$OPSCREW_APP_VERSION}"`,
-    "\t\t-Server",
-    "\t}",
-    "}",
-    "",
-  );
-  return lines.join("\n");
-}
-
 /** Caddy's published ports: none behind the tunnel, the chosen port for a proxy, else 80/443. */
 function caddyPorts(web: PortainerWeb): string[] | undefined {
   if (web.mode === "tunnel") return undefined;
@@ -292,17 +241,10 @@ const STACK_HEADER = [
   "# in the stack's environment in Portainer.",
 ].join("\n");
 
-/** Options of {@link renderPortainerStack}. */
-export interface PortainerStackOptions {
-  /** The image (GHCR, pinned by digest) to fill in, as the deploy workflow does; default none. */
-  image?: string;
-}
-
 /**
  * The app's stack (`opscrew-<app>`) for a Portainer target: the template committed at
  * {@link PORTAINER_STACK_TEMPLATE_PATH}, which the deploy workflow fills in
- * ({@link fillPortainerStack}) and writes to {@link PORTAINER_DEPLOY_BRANCH}; with
- * `options.image`, the filled-in file.
+ * ({@link fillPortainerStack}) and writes to {@link PORTAINER_DEPLOY_BRANCH}.
  *
  * Every app variable is an explicit `${VAR}` in `environment:` (values only in the stack's `Env`,
  * see {@link portainerStackEnvKeys}; OpsCrew's own values are `OPSCREW_*` variables, see
@@ -313,14 +255,9 @@ export interface PortainerStackOptions {
  * 80/443 (`caddy`); every service rotates its logs and runs with `no-new-privileges`.
  * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`.
  */
-export function renderPortainerStack(
-  plan: DeployPlan,
-  ctx: RenderContext,
-  options: PortainerStackOptions = {},
-): RenderedFile {
+export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   const { web } = portainerTarget(plan.target);
   checkAppEnvNames(plan);
-  const hardening = () => ({ security_opt: ["no-new-privileges:true"] });
   const environment = () => ({
     PORT: String(plan.app.port),
     ...Object.fromEntries(appEnvKeys(plan).map((name) => [name, `\${${name}}`])),
@@ -334,10 +271,7 @@ export function renderPortainerStack(
     image: PORTAINER_IMAGE_PLACEHOLDER,
     restart: "unless-stopped",
     environment: environment(),
-    ...hardening(),
-    logging: serviceLogging(),
-    cap_drop: ["ALL"],
-    networks: ["internal"],
+    ...hardened({ noCapabilities: true, internal: true }),
   };
   const services: Record<string, unknown> = { app };
   const release = plan.app.releaseCommand;
@@ -351,45 +285,25 @@ export function renderPortainerStack(
       // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
       command: ["sh", "-c", composeLiteral(release)],
       ...(Object.keys(releaseDependsOn).length > 0 ? { depends_on: releaseDependsOn } : {}),
-      ...hardening(),
-      logging: serviceLogging(),
-      cap_drop: ["ALL"],
-      networks: ["internal"],
+      ...hardened({ noCapabilities: true, internal: true }),
     };
     appDependsOn.release = { condition: "service_completed_successfully" };
   }
   if (Object.keys(appDependsOn).length > 0) app.depends_on = appDependsOn;
-
   if (plan.services.postgres) {
-    services.db = {
-      image: POSTGRES_IMAGE,
-      restart: "unless-stopped",
-      environment: Object.fromEntries(DB_ENV.map(([name, variable]) => [name, `\${${variable}}`])),
-      volumes: ["postgres_data:/var/lib/postgresql/data"],
-      healthcheck: {
-        test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"],
-        interval: "10s",
-        timeout: "5s",
-        retries: 6,
-      },
-      ...hardening(),
-      logging: serviceLogging(),
-      networks: ["internal"],
-    };
+    const credentials = DB_ENV.map(([name, variable]) => [name, `\${${variable}}`]);
+    services.db = dbService({ environment: Object.fromEntries(credentials) }, "postgres_data");
   }
-  if (plan.services.redis) {
-    services.cache = {
-      image: VALKEY_IMAGE,
-      restart: "unless-stopped",
-      command: ["valkey-server", "--appendonly", "yes"],
-      volumes: ["valkey_data:/data"],
-      ...hardening(),
-      logging: serviceLogging(),
-      networks: ["internal"],
-    };
-  }
+  if (plan.services.redis) services.cache = cacheService("valkey_data");
 
-  const config = caddyfile(plan, web, ctx);
+  const config = caddyfile({
+    mode: web.mode === "caddy" ? "direct" : web.mode,
+    hosts: siteHosts(plan),
+    port: plan.app.port,
+    acmeEmail: ctx.acmeEmail,
+    // Caddy reads the variable when it starts: the version of the image the stack runs.
+    headers: [`\t\t${PORTAINER_VERSION_HEADER} "{$OPSCREW_APP_VERSION}"`],
+  }).join("\n");
   const ports = caddyPorts(web);
   services.caddy = {
     image: CADDY_IMAGE,
@@ -397,30 +311,21 @@ export function renderPortainerStack(
     ...(ports === undefined ? {} : { ports }),
     environment: { OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER },
     // A changed Caddyfile changes this label, so Compose recreates Caddy with the new configuration.
-    labels: {
-      "dev.opscrew.caddyfile-sha256": createHash("sha256").update(config).digest("hex"),
-    },
+    labels: { "dev.opscrew.caddyfile-sha256": sha256Hex(config) },
     configs: [{ source: "caddyfile", target: "/etc/caddy/Caddyfile" }],
     ...(web.mode === "caddy" ? { volumes: ["caddy_data:/data", "caddy_config:/config"] } : {}),
     depends_on: ["app"],
-    ...hardening(),
-    logging: serviceLogging(),
-    networks: ["internal"],
+    ...hardened({ internal: true }),
   };
   if (web.mode === "tunnel") {
-    services.cloudflared = {
-      image: CLOUDFLARED_IMAGE,
-      restart: "unless-stopped",
-      // The connector reaches Caddy on the stack's network (http://caddy:80); metrics stay inside.
-      command: ["tunnel", "--no-autoupdate", "--metrics", CLOUDFLARED_METRICS, "run"],
-      environment: { [TUNNEL_TOKEN]: `\${${PORTAINER_STACK_VARIABLES.tunnelToken}}` },
-      depends_on: ["caddy"],
-      read_only: true,
-      ...hardening(),
-      logging: serviceLogging(),
-      cap_drop: ["ALL"],
-      networks: ["internal"],
-    };
+    // The connector reaches Caddy on the stack's network (http://caddy:80).
+    services.cloudflared = cloudflaredService(
+      {
+        environment: { [TUNNEL_TOKEN]: `\${${PORTAINER_STACK_VARIABLES.tunnelToken}}` },
+        depends_on: ["caddy"],
+      },
+      true,
+    );
   }
 
   const volumes = volumeNames(plan, web);
@@ -435,10 +340,9 @@ export function renderPortainerStack(
     release === undefined
       ? STACK_HEADER
       : `${STACK_HEADER}\n# \`release\` runs app.releaseCommand from opscrew/plan.yaml before each new version starts.`;
-  const template = yamlDocument(header, document);
   return {
     path: PORTAINER_STACK_TEMPLATE_PATH,
-    content: options.image === undefined ? template : fillPortainerStack(template, options.image),
+    content: yamlDocument(header, document),
     kind: "runtime",
   };
 }
@@ -459,10 +363,7 @@ export function renderPlaceholderStack(plan: DeployPlan): RenderedFile {
         entrypoint: ["/bin/sh", "-c", "while true; do sleep 3600; done"],
         init: true,
         read_only: true,
-        security_opt: ["no-new-privileges:true"],
-        logging: serviceLogging(),
-        cap_drop: ["ALL"],
-        networks: ["internal"],
+        ...hardened({ noCapabilities: true, internal: true }),
       },
     },
     networks: { internal: {} },
@@ -502,7 +403,7 @@ const UPDATER_LOOP = [
  * authority signed, or plain HTTP). `host.docker.internal` reaches the host when Portainer's
  * address is not reachable from containers. Its own stack, so a failed app update cannot stop it.
  */
-export function renderUpdaterStack(plan: DeployPlan, _ctx?: RenderContext): PortainerStackFile {
+export function renderUpdaterStack(plan: DeployPlan): PortainerStackFile {
   const name = portainerUpdaterStackName(plan);
   const document = {
     name,
@@ -518,9 +419,7 @@ export function renderUpdaterStack(plan: DeployPlan, _ctx?: RenderContext): Port
         extra_hosts: ["host.docker.internal:host-gateway"],
         init: true,
         read_only: true,
-        security_opt: ["no-new-privileges:true"],
-        logging: serviceLogging(),
-        cap_drop: ["ALL"],
+        ...hardened({ noCapabilities: true }),
       },
     },
   };
@@ -539,25 +438,15 @@ export function renderUpdaterStack(plan: DeployPlan, _ctx?: RenderContext): Port
  * stack's environment; `host.docker.internal` reaches the host when Portainer's address is not
  * reachable from containers.
  */
-export function renderPortainerConnectorStack(
-  plan: DeployPlan,
-  _ctx?: RenderContext,
-): PortainerStackFile {
+export function renderPortainerConnectorStack(plan: DeployPlan): PortainerStackFile {
   const name = portainerConnectorStackName(plan);
   const document = {
     name,
     services: {
-      cloudflared: {
-        image: CLOUDFLARED_IMAGE,
-        restart: "unless-stopped",
-        command: ["tunnel", "--no-autoupdate", "--metrics", CLOUDFLARED_METRICS, "run"],
+      cloudflared: cloudflaredService({
         environment: { [TUNNEL_TOKEN]: `\${${TUNNEL_TOKEN}}` },
         extra_hosts: ["host.docker.internal:host-gateway"],
-        read_only: true,
-        security_opt: ["no-new-privileges:true"],
-        logging: serviceLogging(),
-        cap_drop: ["ALL"],
-      },
+      }),
     },
   };
   const header = [

@@ -11,7 +11,6 @@ export {
   PORTAINER_VERSION_PLACEHOLDER,
   type PortainerStackEnvKeys,
   type PortainerStackFile,
-  type PortainerStackOptions,
   portainerConnectorStackName,
   portainerImageVersion,
   portainerStackEnvKeys,

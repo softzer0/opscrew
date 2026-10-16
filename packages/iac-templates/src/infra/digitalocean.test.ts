@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { checkDialect } from "@opscrew/iac-engine";
 import { describe, expect, it } from "vitest";
 import {
@@ -13,7 +10,6 @@ import {
 import { MODULE_FILES } from "../generated/modules";
 import { renderInfra } from "./index";
 
-const modulesDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "modules");
 const doPlan = (o: Parameters<typeof testPlan>[0] = {}) =>
   testPlan({ provider: "digitalocean", ...o });
 const content = (files: { path: string; content: string }[], suffix: string) =>
@@ -69,7 +65,7 @@ describe("renderInfra for DigitalOcean", () => {
     );
     const vendored = files.filter((f) => f.path.startsWith("opscrew/infra/modules/"));
     expect(new Set(vendored.map((f) => f.path.split("/")[3]))).toEqual(
-      new Set(["cloudflare-dns", "digitalocean-droplet"]),
+      new Set(["cloudflare-dns", "cloudflare-waf", "digitalocean-droplet"]),
     );
     expect(content(files, "prod/main.tf")).toMatchSnapshot("main.tf");
     expect(content(files, "prod/versions.tf")).toMatchSnapshot("versions.tf");
@@ -131,9 +127,6 @@ describe("digitalocean-droplet module", () => {
   const main = MODULE_FILES["digitalocean-droplet/main.tf"] ?? "";
 
   it("uses the shared cloud-init template, byte for byte", () => {
-    const read = (module: string) =>
-      readFileSync(join(modulesDir, module, "cloud-init.yaml.tftpl"), "utf8");
-    expect(read("digitalocean-droplet")).toBe(read("hetzner-vps"));
     expect(MODULE_FILES["digitalocean-droplet/cloud-init.yaml.tftpl"]).toBe(
       MODULE_FILES["hetzner-vps/cloud-init.yaml.tftpl"],
     );
