@@ -62,17 +62,20 @@ export interface Offer extends Charge {
   quote?: RegistrationQuote;
 }
 
-/** The domain's zone after the setup, and whether DNSSEC is in force for it. */
+/**
+ * The domain's zone after the setup, and whether DNSSEC is in force for it (`skipped` when the zone
+ * calls set no DNSSEC up: the stand-in zones of a registrar sandbox).
+ */
 export interface DnsSetup {
   zoneId: string;
-  dnssec: boolean;
+  dnssec: boolean | "skipped";
 }
 
 /** A domain set up for the project, for the summary. */
-export interface SetUp<S extends DnsSetup> {
+export interface SetUp {
   files: ProjectFiles;
   hostname: string;
-  dns: S;
+  dns: DnsSetup;
   info: RegisteredDomain;
   recorded: { plan: boolean; requirements: boolean };
   /** A next step about auto-renew, which the registrar's API could not change. */
@@ -90,7 +93,7 @@ export interface SetUp<S extends DnsSetup> {
  * check, the price bound, the typed approval, the record before the one `register` call, the wait
  * and the project files) is the same flow (`buyDomain`).
  */
-export interface RegistrarFlow<S extends DnsSetup> {
+export interface RegistrarFlow {
   /** Stops before any wait or approval when OpsCrew may not set up the domain already there. */
   takeOver(files: ProjectFiles): Promise<void>;
   /** The checks before the price, then the live price for `years`. */
@@ -98,9 +101,9 @@ export interface RegistrarFlow<S extends DnsSetup> {
   /** For a domain already in the account: the approval's first lines and whether to publish DS. */
   owned(): Promise<{ lines: string[]; publishDs: boolean }>;
   /** The zone and DNSSEC (and, at another registrar, the move of the DNS to Cloudflare). */
-  setUp(publishDs: boolean): Promise<S>;
+  setUp(publishDs: boolean): Promise<DnsSetup>;
   /** Audit, success line and next steps. */
-  summary(result: SetUp<S>): Promise<DomainSetUpResult>;
+  summary(result: SetUp): Promise<DomainSetUpResult>;
 }
 
 /** `on your Cloudflare account`, `in your Porkbun account`: where the registration is. */

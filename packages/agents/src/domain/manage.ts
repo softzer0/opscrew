@@ -184,8 +184,11 @@ async function fillPlanRegistration(
   return [];
 }
 
-/** Whether DNSSEC is on for the zone of `name` (off without a zone). */
-async function zoneDnssec(services: ResolvedDomainServices, name: string): Promise<boolean> {
+/** Whether DNSSEC is on for the zone of `name` (off without a zone; see `dnssecEnabled`). */
+async function zoneDnssec(
+  services: ResolvedDomainServices,
+  name: string,
+): Promise<boolean | "skipped"> {
   const zone = await services.zones.findZone(name);
   return zone === undefined ? false : services.zones.dnssecEnabled(zone.id);
 }
@@ -265,7 +268,9 @@ export async function domainStatus(
     };
   }
   const registered = info.domain;
-  const dnssec = await zoneDnssec(target.services, registered);
+  const live = await zoneDnssec(target.services, registered);
+  // Zone calls that set no DNSSEC up (stand-in zones): the plan's value stands.
+  const dnssec = live === "skipped" ? files.plan?.dns.registration?.dnssec : live;
   const notRecorded = await fillPlanRegistration(deps, files.plan, info, dnssec);
   return {
     domain: info,
@@ -274,11 +279,11 @@ export async function domainStatus(
     next: [
       ...finishPending,
       renewalNote(info),
-      ...(dnssec
-        ? []
-        : [
+      ...(live === false
+        ? [
             `DNSSEC is off for ${registered}. Run \`opscrew domain buy ${registered}\` to turn it on: OpsCrew does not buy the domain again, and it lists every change and asks before making it.`,
-          ]),
+          ]
+        : []),
       ...notRecorded,
     ],
   };

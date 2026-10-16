@@ -58,15 +58,22 @@ export interface DomainZoneApi {
   /** Creates the zone on the account; returns the existing one only when it is in that account. */
   createZone(accountId: string, name: string): Promise<DomainZone>;
   enableDnssec(zoneId: string): Promise<void>;
-  /** Whether DNSSEC is on for the zone (Cloudflare `GET /zones/{id}/dnssec`: `active` or `pending`). */
-  dnssecEnabled(zoneId: string): Promise<boolean>;
+  /**
+   * Whether DNSSEC is on for the zone (Cloudflare `GET /zones/{id}/dnssec`: `active` or
+   * `pending`), or `skipped` when these zone calls set no DNSSEC up at all (the stand-ins of a
+   * registrar sandbox), so every DNSSEC step is skipped.
+   */
+  dnssecEnabled(zoneId: string): Promise<boolean | "skipped">;
   /** The zone's DS record once DNSSEC is on (active or pending); undefined before. */
   dsRecord(zoneId: string): Promise<ZoneDsRecord | undefined>;
   /**
    * Asks Cloudflare to re-check the zone's nameservers now. `requested: false` (with the reason)
-   * when Cloudflare says it is too soon; it keeps checking on its own.
+   * when Cloudflare says it is too soon; it keeps checking on its own. `skipped` when the zone is
+   * never activated (the stand-ins of a registrar sandbox), so nothing waits for it.
    */
-  activationCheck(zoneId: string): Promise<{ requested: boolean; reason?: string }>;
+  activationCheck(
+    zoneId: string,
+  ): Promise<{ requested: boolean; reason?: string; skipped?: boolean }>;
   /** The records in the zone. */
   listRecords(zoneId: string): Promise<ZoneRecord[]>;
   /** Creates records in one batch per call (all or none of a call); returns how many. */

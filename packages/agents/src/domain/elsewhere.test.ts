@@ -17,6 +17,7 @@ import {
 import { DEFAULT_NAMESERVERS, MASKED_CONTACT, SEEDED_CONTACT } from "./__fixtures__/registrars";
 import { buyDomain } from "./buy";
 import { registrarLinks } from "./registrars";
+import { SANDBOX_NAMESERVERS, SANDBOX_ZONES } from "./services";
 import type { BuyDomainResult, DomainSetUpResult } from "./types";
 
 const DOMAIN = "shopapp.com";
@@ -104,6 +105,35 @@ function planAt(registrar: "porkbun" | "namecheap" | "godaddy"): DeployPlan {
 function expectNoContact(text: string): void {
   for (const value of Object.values(SEEDED_CONTACT)) expect(text).not.toContain(value);
 }
+
+describe("buyDomain at another registrar: the registrar sandbox", () => {
+  it("points the domain at the stand-in nameservers and says DNSSEC was skipped, with no step that cannot finish", async () => {
+    const { project, pb } = await porkbunProject({ plan: domainTestPlan() });
+    const { deps, services } = await project.run();
+
+    const result = setUp(
+      await buyDomain(deps, {
+        domain: DOMAIN,
+        registrar: "porkbun",
+        services: { ...services, zones: SANDBOX_ZONES },
+      }),
+    );
+
+    expect(pb.nameservers.get(DOMAIN)).toEqual(SANDBOX_NAMESERVERS);
+    expect(pb.count("addDsRecord")).toBe(0);
+    expect(project.cf.count("createZone")).toBe(0);
+    const next = result.next.join("\n");
+    expect(next).not.toContain("publish the DS record");
+    expect(next).not.toContain("Cloudflare activates the zone");
+    expect(deps.reporter.text()).toContain("DNSSEC skipped");
+    expect(deps.reporter.text()).not.toContain("DNSSEC not published yet");
+    const actions = deps.audit.entries.map((e) => e.action);
+    expect(actions).not.toContain("enable DNSSEC");
+    expect(actions).not.toContain("zone activation check");
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    expect(plan.dns.registration).toMatchObject({ registrar: "porkbun", dnssec: false });
+  });
+});
 
 describe("buyDomain at another registrar: the purchase (US1)", () => {
   it("buys at Porkbun once with the approved quote and a key, then zone, nameservers, DS, activation check", async () => {

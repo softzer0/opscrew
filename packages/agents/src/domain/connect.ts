@@ -425,28 +425,33 @@ function publicGoneAt(ds: DsReading, after: Date): number {
   return Math.max(after.getTime(), expires);
 }
 
+/** The wait for these DS records: their TTL within 24 and 48 hours, never shorter than noted. */
+function waitFor(ctx: ConnectContext, ds: DsReading): number {
+  return Math.max(dsWaitSeconds(ds.ttlSeconds), ctx.state?.waitSeconds ?? 0);
+}
+
 /**
  * The switch time once the old DS records were removed through the API (or are no longer listed
  * there) at `at`: the wait after the public DNS's copy expires, plus an hour in case the registry
  * publishes them a little longer, never earlier than the note says.
  */
 function switchAfterRemoval(ctx: ConnectContext, ds: DsReading, at: Date): string {
-  const wait = dsWaitSeconds(ds.ttlSeconds) + REMOVAL_MARGIN_SECONDS;
+  const wait = waitFor(ctx, ds) + REMOVAL_MARGIN_SECONDS;
   return laterSwitch(ctx.state, publicGoneAt(ds, at) + wait * 1000);
 }
 
 /**
- * The note while old DS records OpsCrew did not remove are published: when they were first seen,
- * and a switch time at least the wait after that (moved out when a run sees them gone).
+ * The note while old DS records OpsCrew did not remove are published: when they were first seen
+ * and the wait that starts once a run sees them gone.
  */
 function seenState(ctx: ConnectContext, zone: DomainZone | undefined, ds: DsReading): ConnectState {
-  const dsSeen = ctx.state?.dsSeen ?? ctx.deps.clock.now().toISOString();
   return {
     domain: ctx.domain,
     registrar: ctx.registrarId,
     zoneId: zone?.id,
-    dsSeen,
-    switchAfter: laterSwitch(ctx.state, Date.parse(dsSeen) + dsWaitSeconds(ds.ttlSeconds) * 1000),
+    dsSeen: ctx.state?.dsSeen ?? ctx.deps.clock.now().toISOString(),
+    switchAfter: ctx.state?.switchAfter,
+    waitSeconds: waitFor(ctx, ds),
   };
 }
 
@@ -482,8 +487,8 @@ async function dsMustGoFirst(
 ): Promise<ConnectDomainResult> {
   const { deps, domain } = ctx;
   const name = nameOf(ctx);
-  const wait = dsWaitSeconds(ds.ttlSeconds);
-  await writeConnectState(ctx.stateFile, seenState(ctx, zone, ds));
+  const seen = seenState(ctx, zone, ds);
+  await writeConnectState(ctx.stateFile, seen);
   const why =
     (ds.api ?? []).length > 0
       ? `${name}'s API cannot remove them`
@@ -498,7 +503,7 @@ async function dsMustGoFirst(
     ...zoneFields(zone),
     next: [
       `Remove the DS records of ${domain} in ${name}'s dashboard (${linkOf(ctx)}): ${ds.records.map(dsRecordText).join("; ")}. This turns DNSSEC off at the current DNS provider; ${domain} keeps working without it.`,
-      `Then run \`${ctx.command}\` again: it notes when the records are gone and tells you when to run it again to switch the nameservers (${hoursText(wait)} later, once resolvers have forgotten them). It asks before changing anything.`,
+      `Then run \`${ctx.command}\` again: it notes when the records are gone and tells you when to run it again to switch the nameservers (${hoursText(seen.waitSeconds)} later, once resolvers have forgotten them). It asks before changing anything.`,
     ],
   });
 }
@@ -515,7 +520,11 @@ async function stillPublished(
 ): Promise<ConnectDomainResult> {
   const { deps, domain } = ctx;
   const name = nameOf(ctx);
-  const state = { ...(ctx.state as ConnectState), switchAfter: switchAfterRemoval(ctx, ds, ds.at) };
+  const state = {
+    ...(ctx.state as ConnectState),
+    switchAfter: switchAfterRemoval(ctx, ds, ds.at),
+    waitSeconds: waitFor(ctx, ds),
+  };
   await writeConnectState(ctx.stateFile, state);
   deps.reporter.warn(
     `The public DNS still shows old DNSSEC (DS) records of ${domain} (${ds.public.map(dsRecordText).join("; ")}), so OpsCrew does not switch the nameservers yet. Nothing was changed.`,
@@ -533,39 +542,34 @@ async function stillPublished(
 /**
  * Neither the registrar's API nor the public DNS shows an old DS record. When earlier runs saw or
  * removed some, the switch waits until the note's switch time (the first run that sees records
- * OpsCrew did not remove gone moves it out by the time since they were first seen); returns the
- * `waiting-for-ds` result until then, undefined once nothing has to wait.
+ * OpsCrew did not remove gone sets it to the noted wait from then); returns the `waiting-for-ds`
+ * result until then, undefined once nothing has to wait.
  */
 async function waitForOldDs(
   ctx: ConnectContext,
   zone: DomainZone | undefined,
 ): Promise<ConnectDomainResult | undefined> {
-  const { deps, domain } = ctx;
-  let state = ctx.state;
+  const { deps, domain, state } = ctx;
   if (state === undefined) return undefined;
   const now = deps.clock.now();
-  if (state.dsSeen !== undefined) {
+  let switchAfter = state.switchAfter;
+  if (state.dsSeen !== undefined || switchAfter === undefined) {
     // Gone since the last run: resolvers may hold them for the whole wait from now on.
-    const since = now.getTime() - Date.parse(state.dsSeen);
-    state = {
-      ...state,
-      dsSeen: undefined,
-      switchAfter: laterSwitch(state, Date.parse(state.switchAfter) + since),
-    };
-    await writeConnectState(ctx.stateFile, state);
+    switchAfter = laterSwitch(state, now.getTime() + state.waitSeconds * 1000);
+    await writeConnectState(ctx.stateFile, { ...state, dsSeen: undefined, switchAfter });
     deps.reporter.info(
       `The old DNSSEC (DS) records of ${domain} are gone from the registry and the public DNS.`,
     );
   }
-  if (now.getTime() >= Date.parse(state.switchAfter)) return undefined;
-  const until = formatTime(state.switchAfter);
+  if (now.getTime() >= Date.parse(switchAfter)) return undefined;
+  const until = formatTime(switchAfter);
   deps.reporter.warn(
     `OpsCrew waits before it switches the nameservers of ${domain}: resolvers may remember its old DNSSEC records until about ${until}, and switching earlier could take ${domain} offline for visitors whose resolver checks DNSSEC. Nothing was changed.`,
   );
   return result(ctx, {
     outcome: "waiting-for-ds",
     ...zoneFields(zone),
-    waitUntil: state.switchAfter,
+    waitUntil: switchAfter,
     next: [
       `Run \`${ctx.command}\` again after ${until} to switch the nameservers to Cloudflare; it shows what changes and asks first. Until then ${domain} keeps working on its current DNS.`,
     ],
@@ -800,9 +804,12 @@ async function applyConnect(
   );
   // No success line here: the result (outcome, records copied, nameservers) is the summary the
   // CLI prints, so the user reads it once.
-  const next = [
-    `Cloudflare activates the zone for ${domain} once the registry publishes the new nameservers, usually within an hour and sometimes up to 48 hours; it re-checks the nameservers on its own. Until then some visitors still reach the old DNS, which serves the same records.`,
-  ];
+  const next: string[] = [];
+  if (!activation.skipped) {
+    next.push(
+      `Cloudflare activates the zone for ${domain} once the registry publishes the new nameservers, usually within an hour and sometimes up to 48 hours; it re-checks the nameservers on its own. Until then some visitors still reach the old DNS, which serves the same records.`,
+    );
+  }
   if (plan.skipped.length > 0) {
     next.push(
       `Recreate in Cloudflare what OpsCrew did not copy, if you still need it: ${plan.skipped.map((s) => s.reason).join(" ")}`,
@@ -813,7 +820,9 @@ async function applyConnect(
       `Cloudflare proxies ${plan.proxied.map(zoneRecordText).join(", ")}: only web traffic reaches these names. Turn proxying off for them in Cloudflare if mail, SSH or other services use them.`,
     );
   }
-  next.push(dnssecLater(ctx), projectStep(ctx, files, project));
+  // A zone that is never activated (stand-in zones) never gets DNSSEC either.
+  if (!activation.skipped) next.push(dnssecLater(ctx));
+  next.push(projectStep(ctx, files, project));
   return result(ctx, {
     outcome: "connected",
     zoneId: zone.id,
@@ -898,7 +907,7 @@ function approvalDetails(
       `Old DNSSEC (DS) records at ${name} (${listed.length}), removed through ${name}'s API in this run:`,
       ...listed.map((record) => `  - ${dsRecordText(record)}`),
       `Switching nameservers while resolvers still remember these records would take ${domain} offline, so this run removes them and does not switch the nameservers. Removing them turns DNSSEC off at the current DNS provider; ${domain} keeps working without it.`,
-      `Nameservers at ${name}: not changed in this run. Run \`${ctx.command}\` again after ${formatTime(switchAfter)} (at least ${hoursText(dsWaitSeconds(ds.ttlSeconds))} after the public DNS stops showing the old records, plus an hour in case the registry publishes them a little longer) to switch them from ${listText(current) || "none"} to ${to}; it checks that neither ${name}'s API nor the public DNS shows them and asks again first.`,
+      `Nameservers at ${name}: not changed in this run. Run \`${ctx.command}\` again after ${formatTime(switchAfter)} (at least ${hoursText(waitFor(ctx, ds))} after the public DNS stops showing the old records, plus an hour in case the registry publishes them a little longer) to switch them from ${listText(current) || "none"} to ${to}; it checks that neither ${name}'s API nor the public DNS shows them and asks again first.`,
     );
     return lines.join("\n");
   }
@@ -933,14 +942,16 @@ async function removeOldDs(
   const seen = seenState(ctx, zone, ds);
   await writeConnectState(ctx.stateFile, seen);
   await removeDsRecords(ctx, ds.api ?? [], `before switching to zone ${zone.id}`);
+  const switchAfter = laterSwitch(seen, Date.parse(switchAfterRemoval(ctx, ds, deps.clock.now())));
   const removed: ConnectState = {
     domain,
     registrar: ctx.registrarId,
     zoneId: zone.id,
-    switchAfter: laterSwitch(seen, Date.parse(switchAfterRemoval(ctx, ds, deps.clock.now()))),
+    switchAfter,
+    waitSeconds: seen.waitSeconds,
   };
   await writeConnectState(ctx.stateFile, removed);
-  const until = formatTime(removed.switchAfter);
+  const until = formatTime(switchAfter);
   deps.reporter.success(
     `OpsCrew copied ${plural(copied, "record")} into the Cloudflare zone of ${domain} and removed its old DNSSEC records at ${name}.`,
   );
@@ -951,7 +962,7 @@ async function removeOldDs(
     outcome: "waiting-for-ds",
     ...zoneFields(zone),
     copied,
-    waitUntil: removed.switchAfter,
+    waitUntil: switchAfter,
     next: [
       `Run \`${ctx.command}\` again after ${until} to switch the nameservers to Cloudflare; it checks that the old DNSSEC records are gone, shows what changes and asks first. Until then ${domain} keeps working on its current DNS, without DNSSEC.`,
     ],
@@ -987,8 +998,7 @@ async function alreadyConnected(
   if (ctx.state !== undefined) await removeConnectState(ctx.stateFile);
   const next: string[] = [];
   const active = zone.status === "active";
-  if (!active) {
-    await requestActivation(ctx, zone);
+  if (!active && !(await requestActivation(ctx, zone)).skipped) {
     next.push(
       `Cloudflare activates the zone for ${domain} once the registry publishes its nameservers, usually within an hour and sometimes up to 48 hours; it re-checks them on its own.`,
       dnssecLater(ctx),
@@ -1032,11 +1042,16 @@ interface DnssecState {
 /**
  * The zone's DNSSEC and the published DS records (registrar API and public DNS). With DNSSEC off
  * for the zone, every published DS record is stale; with DNSSEC on but the zone's DS record
- * unreadable, none is called stale and a warning says it could not be checked.
+ * unreadable, none is called stale and a warning says it could not be checked. Undefined when
+ * the zone calls set no DNSSEC up (stand-in zones).
  */
-async function dnssecState(ctx: ConnectContext, zone: DomainZone): Promise<DnssecState> {
+async function dnssecState(
+  ctx: ConnectContext,
+  zone: DomainZone,
+): Promise<DnssecState | undefined> {
   const { deps, domain, zones, registrar } = ctx;
   const on = await zones.dnssecEnabled(zone.id);
+  if (on === "skipped") return undefined;
   const zoneDs = on ? await zones.dsRecord(zone.id) : undefined;
   const warnings: string[] = [];
   const unread = (where: string, error: unknown) =>
@@ -1090,7 +1105,9 @@ async function dnssecStep(
   const { deps, domain, registrar } = ctx;
   const name = nameOf(ctx);
   const link = linkOf(ctx);
-  const { on, zoneDs, published, stale, warnings } = await dnssecState(ctx, zone);
+  const state = await dnssecState(ctx, zone);
+  if (state === undefined) return { changed: false, next: [] };
+  const { on, zoneDs, published, stale, warnings } = state;
   const zonePublished =
     published === undefined
       ? undefined
@@ -1157,6 +1174,9 @@ async function dnssecStep(
         `Run \`${ctx.command}\` again in a few minutes to publish the DS record of ${domain}.`,
       );
       return { changed: true, published: false, next };
+    default:
+      // `skipped` or `later`: nothing was published.
+      return unchanged;
   }
 }
 

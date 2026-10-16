@@ -24,7 +24,7 @@ import type { PurchaseContext } from "./wait";
  * the price is the live check's (an upper bound for several years), and the setup is the zone in
  * the purchase account with DNSSEC on, which Cloudflare Registrar publishes itself.
  */
-export function cloudflareFlow(ctx: PurchaseContext): RegistrarFlow<DnsSetup> {
+export function cloudflareFlow(ctx: PurchaseContext): RegistrarFlow {
   const { domain, account } = ctx;
   return {
     takeOver: async () => {},
@@ -190,14 +190,16 @@ function purchaseLines(
 
 /**
  * The domain's zone in the purchase account (`createZone` reuses an existing zone only in that
- * account), with DNSSEC turned on unless it already is. Cloudflare Registrar publishes the DS
- * record itself.
+ * account), with DNSSEC turned on unless it already is (or the zone calls set no DNSSEC up).
+ * Cloudflare Registrar publishes the DS record itself.
  */
 async function ensureZoneAndDnssec(ctx: PurchaseContext): Promise<DnsSetup> {
   const { deps, domain, account, zones } = ctx;
   const zone = await zones.createZone(account.id, domain);
   await auditDomain(deps, "ensure zone", domain, `zone ${zone.id} in account ${account.id}`);
-  if (!(await zones.dnssecEnabled(zone.id))) {
+  const on = await zones.dnssecEnabled(zone.id);
+  if (on === "skipped") return { zoneId: zone.id, dnssec: "skipped" };
+  if (!on) {
     await zones.enableDnssec(zone.id);
     await auditDomain(deps, "enable DNSSEC", domain, `zone ${zone.id}`);
   }
@@ -218,23 +220,21 @@ function zoneLines(ctx: PurchaseContext, purchase: boolean): string[] {
 }
 
 /** Audit, success message and next steps after a purchase or a setup. */
-async function completed(
-  ctx: PurchaseContext,
-  result: SetUp<DnsSetup>,
-): Promise<DomainSetUpResult> {
+async function completed(ctx: PurchaseContext, result: SetUp): Promise<DomainSetUpResult> {
   const { deps, domain } = ctx;
   const { files, hostname, info, keptDomain, dns } = result;
   const what = result.alreadyRegistered
     ? "already registered; set up"
     : `bought${result.total === undefined ? "" : ` (approved price ${formatMoney(result.total)})`}`;
+  const dnssec = dns.dnssec === "skipped" ? "skipped" : dns.dnssec ? "on" : "off";
   await auditDomain(
     deps,
     "domain purchase",
     domain,
-    `${what}; expires ${formatDate(info.expiresAt)}; auto-renew ${info.autoRenew ? "on" : "off"}; DNSSEC ${dns.dnssec ? "on" : "off"}; zone ${dns.zoneId}`,
+    `${what}; expires ${formatDate(info.expiresAt)}; auto-renew ${info.autoRenew ? "on" : "off"}; DNSSEC ${dnssec}; zone ${dns.zoneId}`,
   );
   deps.reporter.success(
-    `${domain} is ${result.alreadyRegistered ? "set up" : "yours"}: registered with Cloudflare until ${formatDate(info.expiresAt)}, auto-renew ${info.autoRenew ? "on" : "off"}, WHOIS privacy ${info.privacy === false ? "off" : "on"}, DNSSEC ${dns.dnssec ? "on" : "off"}.`,
+    `${domain} is ${result.alreadyRegistered ? "set up" : "yours"}: registered with Cloudflare until ${formatDate(info.expiresAt)}, auto-renew ${info.autoRenew ? "on" : "off"}, WHOIS privacy ${info.privacy === false ? "off" : "on"}, DNSSEC ${dnssec}.`,
   );
   return {
     outcome: "set-up",

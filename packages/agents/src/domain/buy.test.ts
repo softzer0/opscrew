@@ -236,7 +236,7 @@ describe("buyDomain: the purchase", () => {
     expect(deps.audit.entries.some((e) => e.action === "enable DNSSEC")).toBe(false);
   });
 
-  it("sets the domain up on the registrar sandbox's stand-in zones, without Cloudflare zone calls", async () => {
+  it("never claims DNSSEC with the registrar sandbox's stand-in zones, and still records the domain", async () => {
     const project = await domainProject({ plan: domainTestPlan() });
     const { deps, services } = await project.run();
 
@@ -248,9 +248,18 @@ describe("buyDomain: the purchase", () => {
     expect(project.cf.count("createZone")).toBe(0);
     expect(project.cf.count("enableDnssec")).toBe(0);
     expect(project.cf.registerCalls).toHaveLength(1);
+    expect(deps.reporter.text()).not.toContain("DNSSEC on");
+    expect(deps.reporter.text()).toContain("DNSSEC skipped");
+    expect(deps.audit.entries.some((e) => e.action === "enable DNSSEC")).toBe(false);
+    expect(deps.audit.entries.find((e) => e.action === "domain purchase")?.detail).toContain(
+      "DNSSEC skipped",
+    );
     expect(result.recorded.plan).toBe(true);
     const plan = await readArtifact("plan", deps.paths.files.plan);
-    expect(plan.dns).toMatchObject({ zone: DOMAIN, registration: { registrar: "cloudflare" } });
+    expect(plan.dns).toMatchObject({
+      zone: DOMAIN,
+      registration: { registrar: "cloudflare", dnssec: false },
+    });
   });
 
   it("records the registration in a plan written after the purchase on the next setup run", async () => {

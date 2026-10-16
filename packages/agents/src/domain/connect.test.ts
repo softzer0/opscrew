@@ -334,11 +334,17 @@ describe("connectDomain: copy, then switch (US2)", () => {
       "Cloudflare zone: sandbox, already in this account (pending); OpsCrew uses it.",
     );
     expect(cp.project.cf.zones.size).toBe(0);
+    // The stand-in zone is never activated, so no step waits for that or for DNSSEC.
+    expect(result.next.join("\n")).not.toContain("Cloudflare activates the zone");
+    expect(result.next.join("\n")).not.toContain("to turn DNSSEC on");
+    expect(first.deps.audit.entries.map((e) => e.action)).not.toContain("zone activation check");
 
     const second = await cp.run();
     second.services.zones = SANDBOX_ZONES;
     const again = await connectDomain(second.deps, { domain: DOMAIN, services: second.services });
     expect(again.outcome).toBe("already-connected");
+    expect(again.next.join("\n")).not.toContain("Cloudflare activates the zone");
+    expect(again.next.join("\n")).not.toContain("to turn DNSSEC on");
     expect(second.handler.requests).toEqual([]);
   });
 
@@ -690,6 +696,7 @@ describe("connectDomain: old DNSSEC records", () => {
       registrar: "porkbun",
       zoneId: ZONE,
       switchAfter: "2026-10-12T14:00:00.000Z",
+      waitSeconds: 86400,
     });
     expect(pb.dsRecords.get(DOMAIN)).toEqual([]);
     expect(pb.nameservers.get(DOMAIN)).toEqual(DEFAULT_NAMESERVERS.porkbun);
@@ -789,6 +796,31 @@ describe("connectDomain: old DNSSEC records", () => {
     expect(pb.nameservers.get(DOMAIN)).toEqual(DEFAULT_NAMESERVERS.porkbun);
   });
 
+  it("keeps the longest TTL an earlier run saw: a fresher copy with a shorter TTL still waits 48 hours", async () => {
+    const { cp, pb } = await porkbunHosted();
+    pb.dsRecords.set(DOMAIN, [{ ...OLD_DS }]);
+    // A TLD with 48-hour DS records: the public copy has all of them left at the removal.
+    cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 172800 });
+    const first = await cp.run();
+    const removed = await connectDomain(first.deps, { domain: DOMAIN, services: first.services });
+    // 48 hours after the public copy expires (13 October 12:00), plus an hour.
+    expect(removed.waitUntil).toBe("2026-10-15T13:00:00.000Z");
+    expect((await readState(first.deps)).waitSeconds).toBe(172800);
+
+    // 40 hours later a fresher copy has 24 hours left: the wait after it stays 48 hours.
+    cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 86400 });
+    const second = await cp.run({ now: "2026-10-13T04:00:00.000Z" });
+    const still = await connectDomain(second.deps, { domain: DOMAIN, services: second.services });
+    expect(still).toMatchObject({
+      outcome: "waiting-for-ds",
+      waitUntil: "2026-10-16T05:00:00.000Z",
+    });
+    expect(await readState(second.deps)).toMatchObject({
+      switchAfter: "2026-10-16T05:00:00.000Z",
+      waitSeconds: 172800,
+    });
+  });
+
   it("counts a DS record the public DNS shows but Porkbun's API does not list as old: stops before any change", async () => {
     const { cp, pb } = await porkbunHosted();
     cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 86400 });
@@ -818,6 +850,7 @@ describe("connectDomain: old DNSSEC records", () => {
         domain: DOMAIN,
         registrar: "porkbun",
         switchAfter: "2026-10-02T13:00:00.000Z",
+        waitSeconds: 86400,
       }),
     );
     cp.dns.status = 2;
@@ -863,7 +896,7 @@ describe("connectDomain: old DNSSEC records", () => {
       domain: DOMAIN,
       registrar: "namecheap",
       dsSeen: RUN_NOW,
-      switchAfter: "2026-10-12T12:00:00.000Z",
+      waitSeconds: 86400,
     });
 
     // Run 2, still published an hour later: still stopped, first sighting kept.
@@ -890,6 +923,7 @@ describe("connectDomain: old DNSSEC records", () => {
       domain: DOMAIN,
       registrar: "namecheap",
       switchAfter: "2026-10-12T14:00:00.000Z",
+      waitSeconds: 86400,
     });
     expect(gone.handler.requests).toEqual([]);
     expect(events()).toEqual([
@@ -953,7 +987,7 @@ describe("connectDomain: old DNSSEC records", () => {
         domain: "oldshop.com",
         registrar: "namecheap",
         dsSeen: RUN_NOW,
-        switchAfter: "2026-10-12T12:00:00.000Z",
+        waitSeconds: 86400,
       }),
     );
 
@@ -1421,7 +1455,16 @@ describe("connectDomain: an unreadable note about an earlier run", () => {
     ],
     [
       "an unreadable switch time",
-      JSON.stringify({ domain: DOMAIN, registrar: "porkbun", switchAfter: "tomorrow" }),
+      JSON.stringify({
+        domain: DOMAIN,
+        registrar: "porkbun",
+        switchAfter: "tomorrow",
+        waitSeconds: 86400,
+      }),
+    ],
+    [
+      "a wait below 24 hours",
+      JSON.stringify({ domain: DOMAIN, registrar: "porkbun", dsSeen: RUN_NOW, waitSeconds: 3600 }),
     ],
   ])("stops on %s before any registrar or Cloudflare call", async (_case, content) => {
     const { cp } = await porkbunHosted();

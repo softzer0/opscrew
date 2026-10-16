@@ -388,7 +388,7 @@ describe("buyDomain through the Cloudflare adapter: refusals (fake API, no netwo
     expect(error?.hint).not.toMatch(/payment method|registrant contact/);
   });
 
-  it("sets the domain up on the stand-in zones in the registrar sandbox and says the project files are updated", async () => {
+  it("records DNSSEC as off in the registrar sandbox and says the project files are updated", async () => {
     const SANDBOX = "/accounts/acc-1/registrar-sandbox";
     const { result, error, api, deps, project } = await runWith(
       {
@@ -413,11 +413,14 @@ describe("buyDomain through the Cloudflare adapter: refusals (fake API, no netwo
     expect(result?.outcome).toBe("set-up");
     expect(api.calls.some((c) => c.path.startsWith("/zones"))).toBe(false);
     expect(result).toMatchObject({ zoneId: "sandbox" });
-    expect(deps.reporter.text()).toContain("OpsCrew still records the domain in the project files");
+    const text = deps.reporter.text();
+    expect(text).toContain("OpsCrew still records the domain in the project files");
+    expect(text).not.toContain("DNSSEC on");
+    expect(deps.audit.entries.some((e) => e.action === "enable DNSSEC")).toBe(false);
     const plan = await readArtifact("plan", join(project.root, "opscrew", "plan.yaml"));
     expect(plan.dns).toMatchObject({
       zone: "shopapp.com",
-      registration: { registrar: "cloudflare" },
+      registration: { registrar: "cloudflare", dnssec: false },
     });
   });
 });

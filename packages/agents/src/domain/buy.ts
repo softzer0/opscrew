@@ -151,7 +151,7 @@ export async function buyDomain(
 }
 
 /** The flow of the registrar a purchase is made with. */
-function flowOf(ctx: PurchaseContext): RegistrarFlow<DnsSetup> {
+function flowOf(ctx: PurchaseContext): RegistrarFlow {
   return ctx.registrarId === "cloudflare" ? cloudflareFlow(ctx) : elsewhereFlow(ctx);
 }
 
@@ -409,7 +409,7 @@ async function buyOrSetUp(
 /** A new purchase: quote, bound, approve, re-check, record, register once, wait, set up. */
 async function purchase(
   ctx: PurchaseContext,
-  flow: RegistrarFlow<DnsSetup>,
+  flow: RegistrarFlow,
   files: ProjectFiles,
   options: PurchaseOptions,
 ): Promise<BuyDomainResult> {
@@ -487,7 +487,7 @@ async function purchase(
  */
 async function finish(
   ctx: PurchaseContext,
-  flow: RegistrarFlow<DnsSetup>,
+  flow: RegistrarFlow,
   options: { autoRenew: boolean; total: Money | undefined },
 ): Promise<BuyDomainResult> {
   const { deps, domain } = ctx;
@@ -518,7 +518,7 @@ async function finish(
         domain,
         hostname,
         info: applied.info,
-        dnssec: dns.dnssec,
+        dnssec: dns.dnssec === true,
       });
     }
   } catch (error) {
@@ -545,7 +545,7 @@ async function finish(
  */
 async function setUpOwned(
   ctx: PurchaseContext,
-  flow: RegistrarFlow<DnsSetup>,
+  flow: RegistrarFlow,
   autoRenew: boolean | undefined,
 ): Promise<BuyDomainResult> {
   const { deps, domain } = ctx;
@@ -594,7 +594,7 @@ async function setUpOwned(
       domain,
       hostname: changes.hostname,
       info: applied.info,
-      dnssec: dns.dnssec,
+      dnssec: dns.dnssec === true,
     });
   } catch (error) {
     throw setupFailed(ctx, error);

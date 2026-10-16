@@ -55,16 +55,20 @@ function standInZone(name: string): DomainZone {
 
 /**
  * Stand-in zone calls for registrar sandboxes: every domain has a pending zone with the stand-in
- * nameservers, nothing is created at Cloudflare, DNSSEC stays off without a DS record, and records
- * are counted but not stored.
+ * nameservers, nothing is created at Cloudflare, the DNSSEC steps and the activation check answer
+ * that they are skipped, and records are counted but not stored.
  */
 export const SANDBOX_ZONES: DomainZoneApi = {
   findZone: async (name) => standInZone(name),
   createZone: async (_accountId, name) => standInZone(name),
   enableDnssec: async () => {},
-  dnssecEnabled: async () => false,
+  dnssecEnabled: async () => "skipped",
   dsRecord: async () => undefined,
-  activationCheck: async () => ({ requested: false, reason: "sandbox: no Cloudflare zone exists" }),
+  activationCheck: async () => ({
+    requested: false,
+    reason: "a registrar sandbox has no Cloudflare zone",
+    skipped: true,
+  }),
   listRecords: async () => [],
   createRecords: async (_zoneId, records) => records.length,
   scanRecords: async () => [],

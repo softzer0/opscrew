@@ -11,7 +11,7 @@ import {
 } from "./common";
 import { buyCommandOf, registrarDashboard } from "./links";
 import { nextProjectStep, type ProjectFiles, registeredName } from "./project";
-import { type DnsSetup, formatTime, type Offer, type RegistrarFlow, type SetUp } from "./purchase";
+import { formatTime, type Offer, type RegistrarFlow, type SetUp } from "./purchase";
 import {
   capabilitiesOf,
   type OtherRegistrarId,
@@ -28,8 +28,10 @@ import type { PurchaseContext } from "./wait";
  * (`switchToCloudflare`: zone → nameservers → DS record → activation check); the plan records the
  * registrar. A domain already in the account is only set up when OpsCrew may move its DNS.
  */
-export function elsewhereFlow(ctx: PurchaseContext): RegistrarFlow<SwitchSetup> {
+export function elsewhereFlow(ctx: PurchaseContext): RegistrarFlow {
   const name = REGISTRAR_NAMES[ctx.registrarId];
+  // What the switch did, for the summary (`setUp` always runs before it).
+  let switched: SwitchResult | undefined;
   return {
     takeOver: async (files) => {
       if (!(await mayTakeOverOwned(ctx, files))) throw notOursToSwitch(ctx);
@@ -48,16 +50,12 @@ export function elsewhereFlow(ctx: PurchaseContext): RegistrarFlow<SwitchSetup> 
       };
     },
     setUp: async (publishDs) => {
-      const switched = await switchToCloudflare(ctx, { publishDs });
-      return { zoneId: switched.zone.id, dnssec: switched.dnssec, switched };
+      switched = await switchToCloudflare(ctx, { publishDs });
+      const dnssec = switched.ds.outcome === "skipped" ? "skipped" : switched.dnssec;
+      return { zoneId: switched.zone.id, dnssec };
     },
-    summary: (result) => completedElsewhere(ctx, result),
+    summary: (result) => completedElsewhere(ctx, result, switched as SwitchResult),
   };
-}
-
-/** The setup at another registrar: the zone, DNSSEC and what the switch did. */
-interface SwitchSetup extends DnsSetup {
-  switched: SwitchResult;
 }
 
 /**
@@ -352,13 +350,14 @@ async function zoneIsActive(ctx: PurchaseContext): Promise<boolean> {
 /** Audit, success message and next steps after a purchase or a setup at another registrar. */
 async function completedElsewhere(
   ctx: PurchaseContext,
-  result: SetUp<SwitchSetup>,
+  result: SetUp,
+  switched: SwitchResult,
 ): Promise<DomainSetUpResult> {
   const { deps, domain } = ctx;
   const { files, hostname, info, keptDomain } = result;
   const name = REGISTRAR_NAMES[ctx.registrarId];
   const page = registrarLinks(ctx.registrarId, deps.env).domains;
-  const { zone, nameservers, ds } = result.dns.switched;
+  const { zone, nameservers, ds, activation } = switched;
   const what = result.alreadyRegistered
     ? "already registered; set up"
     : `bought${result.total === undefined ? "" : ` (approved price ${formatMoney(result.total)})`}`;
@@ -379,6 +378,7 @@ async function completedElsewhere(
     manual: "DNSSEC still needs the DS record added (see below)",
     pending: "DNSSEC not published yet",
     later: "DNSSEC added once the zone is active (see below)",
+    skipped: "DNSSEC skipped",
   }[ds.outcome];
   deps.reporter.success(
     `${domain} is ${result.alreadyRegistered ? "set up" : "yours"}: registered with ${name} until ${formatDate(info.expiresAt)}, auto-renew ${info.autoRenew ? "on" : "off"}, WHOIS privacy ${info.privacy === false ? "off" : "on"}; ${nsText}, ${dnssecText}.`,
@@ -404,8 +404,12 @@ async function completedElsewhere(
     );
   }
   if (result.renewNext !== undefined) next.push(result.renewNext);
+  if (!activation.skipped) {
+    next.push(
+      `Cloudflare activates the zone for ${domain} once the registry publishes the new nameservers, usually within an hour and sometimes up to a day.`,
+    );
+  }
   next.push(
-    `Cloudflare activates the zone for ${domain} once the registry publishes the new nameservers, usually within an hour and sometimes up to a day.`,
     nextProjectStep(deps, files, {
       domain,
       hostname,

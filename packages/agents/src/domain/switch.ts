@@ -42,9 +42,10 @@ export interface DsPublication {
   ds?: ZoneDsRecord;
   /**
    * `added` through the registrar's API now; `already` published there; `manual` shown with the
-   * dashboard link (the API cannot publish it); `pending` Cloudflare has no DS record yet.
+   * dashboard link (the API cannot publish it); `pending` Cloudflare has no DS record yet;
+   * `skipped` the zone calls set no DNSSEC up (the stand-in zones of a registrar sandbox).
    */
-  outcome: "added" | "already" | "manual" | "pending";
+  outcome: "added" | "already" | "manual" | "pending" | "skipped";
 }
 
 /** DNSSEC left for later: the zone is not active yet (`opscrew domain connect` adds it then). */
@@ -55,6 +56,8 @@ export interface DsLater {
 export interface ActivationResult {
   requested: boolean;
   reason?: string;
+  /** The zone is never activated (the stand-in zones of a registrar sandbox). */
+  skipped?: boolean;
 }
 
 export interface SwitchResult {
@@ -151,12 +154,20 @@ export async function pointToZone(ctx: SwitchContext, zone: DomainZone): Promise
  * Turns DNSSEC on for the zone (unless it is on) and publishes the zone's DS record at the
  * registry through the registrar's API (skipped when it is there already). Where the API cannot
  * publish DS records, returns the values (`manual`) for the caller to show with the dashboard
- * link.
+ * link. `now: false` leaves DNSSEC alone (`later`). Zone calls that set no DNSSEC up give
+ * `skipped`.
  */
-export async function publishDs(ctx: SwitchContext, zone: DomainZone): Promise<DsPublication> {
+export async function publishDs(
+  ctx: SwitchContext,
+  zone: DomainZone,
+  now = true,
+): Promise<DsPublication | DsLater> {
   const { deps, zones, domain, registrar, registrarId } = ctx;
   const name = REGISTRAR_NAMES[registrarId];
-  if (!(await zones.dnssecEnabled(zone.id))) {
+  const on = await zones.dnssecEnabled(zone.id);
+  if (on === "skipped") return { outcome: "skipped" };
+  if (!now) return { outcome: "later" };
+  if (!on) {
     await zones.enableDnssec(zone.id);
     await auditDomain(deps, "enable DNSSEC", domain, `zone ${zone.id} (domain at ${name})`);
   }
@@ -187,7 +198,7 @@ export async function publishDs(ctx: SwitchContext, zone: DomainZone): Promise<D
 
 /**
  * Asks Cloudflare to check the zone's nameservers now (not for an active zone). Too soon or
- * failing is fine: Cloudflare keeps checking on its own.
+ * failing is fine: Cloudflare keeps checking on its own. A skipped check is not audited.
  */
 export async function requestActivation(
   ctx: SwitchContext,
@@ -197,6 +208,7 @@ export async function requestActivation(
   if (zone.status === "active") return { requested: false, reason: "the zone is already active" };
   try {
     const result = await zones.activationCheck(zone.id);
+    if (result.skipped) return result;
     await auditDomain(
       deps,
       "zone activation check",
@@ -225,9 +237,7 @@ export async function switchToCloudflare(
 ): Promise<SwitchResult> {
   const zone = await ensureZone(ctx);
   const nameservers = await pointToZone(ctx, zone);
-  const ds: DsPublication | DsLater = options.publishDs
-    ? await publishDs(ctx, zone)
-    : { outcome: "later" };
+  const ds = await publishDs(ctx, zone, options.publishDs);
   const activation = await requestActivation(ctx, zone);
   return {
     zone,

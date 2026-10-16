@@ -145,15 +145,19 @@ describe("switchToCloudflare", () => {
     expect(deps.reporter.text()).toContain("checks the nameservers on its own");
   });
 
-  it("with stand-in zones (registrar sandbox) sets the stand-in nameservers, and DNSSEC waits for a DS record that never comes", async () => {
-    const { project, fake, ctx } = await setup();
+  it("with stand-in zones (registrar sandbox) sets the stand-in nameservers and says DNSSEC and the activation check were skipped", async () => {
+    const { project, deps, fake, ctx } = await setup();
 
     const result = await switchToCloudflare({ ...ctx, zones: SANDBOX_ZONES }, PUBLISH);
 
     expect(result.nameservers.outcome).toBe("set");
     expect(fake.nameservers.get(DOMAIN)).toEqual(SANDBOX_NAMESERVERS);
-    expect(result.ds.outcome).toBe("pending");
+    expect(result.ds.outcome).toBe("skipped");
+    expect(result.activation.skipped).toBe(true);
     expect(result.dnssec).toBe(false);
+    const actions = deps.audit.entries.map((e) => e.action);
+    expect(actions).not.toContain("enable DNSSEC");
+    expect(actions).not.toContain("zone activation check");
     expect(fake.count("addDsRecord")).toBe(0);
     expect(project.cf.events).toEqual([
       `porkbun getNameservers ${DOMAIN}`,

@@ -5,6 +5,13 @@ import { z } from "zod";
 import { readIfExists } from "../shared";
 import { OTHER_REGISTRAR_IDS } from "./registrars";
 
+/**
+ * Shortest and longest wait (seconds) once old DS records are gone. Never less than 24 hours: a
+ * lookup through a caching resolver reports the TTL that is left, not the TTL other resolvers
+ * cached the record with.
+ */
+const DS_WAIT_SECONDS = { min: 86_400, max: 172_800 } as const;
+
 const IsoSchema = z.string().refine((v) => !Number.isNaN(Date.parse(v)));
 
 const ConnectStateSchema = z.strictObject({
@@ -14,15 +21,17 @@ const ConnectStateSchema = z.strictObject({
   zoneId: z.string().min(1).optional(),
   /**
    * When a run first saw old DS records that OpsCrew did not remove itself. Set until a run sees
-   * them gone: that run moves `switchAfter` out by the time since then, so the whole wait counts
-   * from when they were gone.
+   * them gone: from then on the switch waits `waitSeconds`.
    */
   dsSeen: IsoSchema.optional(),
   /**
    * The earliest time the nameservers may switch: when resolvers have forgotten the old DS
-   * records. Every run only ever moves it later.
+   * records. Every run only ever moves it later. Absent until the records are removed through the
+   * API or a run sees them gone.
    */
-  switchAfter: IsoSchema,
+  switchAfter: IsoSchema.optional(),
+  /** The longest wait (seconds) for the DS records' TTL that any run saw (see `dsWaitSeconds`). */
+  waitSeconds: z.number().int().min(DS_WAIT_SECONDS.min).max(DS_WAIT_SECONDS.max),
 });
 
 /**
@@ -34,13 +43,6 @@ const ConnectStateSchema = z.strictObject({
  * between runs. Holds no contact data or secrets.
  */
 export type ConnectState = z.infer<typeof ConnectStateSchema>;
-
-/**
- * Shortest and longest wait (seconds) once old DS records are gone. Never less than 24 hours: a
- * lookup through a caching resolver reports the TTL that is left, not the TTL other resolvers
- * cached the record with.
- */
-const DS_WAIT_SECONDS = { min: 86_400, max: 172_800 } as const;
 
 /**
  * Extra wait after a removal through the registrar's API: the registry may keep publishing the DS
@@ -64,7 +66,7 @@ export function dsWaitSeconds(ttl: number | undefined): number {
  * switch time only ever moves later.
  */
 export function laterSwitch(state: ConnectState | undefined, at: number): string {
-  const noted = state === undefined ? at : Date.parse(state.switchAfter);
+  const noted = state?.switchAfter === undefined ? at : Date.parse(state.switchAfter);
   return new Date(Math.max(noted, at)).toISOString();
 }
 

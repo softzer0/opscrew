@@ -20,6 +20,7 @@ describe("laterSwitch", () => {
     domain: "example.com",
     registrar: "porkbun" as const,
     switchAfter: "2026-10-12T14:00:00.000Z",
+    waitSeconds: 86_400,
   };
 
   it("only ever moves the switch time later", () => {
@@ -30,6 +31,10 @@ describe("laterSwitch", () => {
       "2026-10-12T14:00:00.000Z",
     );
     expect(laterSwitch(undefined, Date.parse("2026-10-12T13:00:00.000Z"))).toBe(
+      "2026-10-12T13:00:00.000Z",
+    );
+    const seen = { ...state, switchAfter: undefined, dsSeen: "2026-10-11T12:00:00.000Z" };
+    expect(laterSwitch(seen, Date.parse("2026-10-12T13:00:00.000Z"))).toBe(
       "2026-10-12T13:00:00.000Z",
     );
   });
