@@ -188,6 +188,14 @@ describe("ProjectFacts", () => {
     expect(pathsOf(ProjectFactsSchema.safeParse(value))).toEqual(["envVars.0.urlScheme"]);
   });
 
+  it("needs the app directory: an architecture.json without facts.appDir is refused", async () => {
+    const architecture = JSON.parse(await fixture("architecture.json"));
+    const { appDir: _appDir, ...noAppDir } = architecture.facts;
+    expect(pathsOf(ArchitectureSchema.safeParse({ ...architecture, facts: noAppDir }))).toEqual([
+      "facts.appDir",
+    ]);
+  });
+
   it("records an optional one-line release command", async () => {
     const f = await facts();
     expect(ProjectFactsSchema.parse(f).build.releaseCommand).toBeUndefined();
