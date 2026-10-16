@@ -688,4 +688,24 @@ describe("several app objects", () => {
     );
     expect(edit).toMatchObject({ action: "write", path: "src/app.ts" });
   });
+
+  it("resolves an import without extension to the TypeScript file before the JavaScript one", async () => {
+    const app = lines(
+      'const express = require("express");',
+      "",
+      "const app = express();",
+      "",
+      "module.exports = app;",
+    );
+    const server = lines('const app = require("./app");', "", "app.listen(3000);");
+    const edit = await healthRouteEdit(
+      healthInput("node-server", node, {
+        "src/app.ts": app,
+        "src/app.js": app,
+        "src/server.ts": server,
+        "src/server.js": server,
+      }),
+    );
+    expect(edit).toMatchObject({ action: "write", path: "src/app.ts" });
+  });
 });

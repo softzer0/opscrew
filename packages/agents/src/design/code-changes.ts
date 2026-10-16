@@ -71,11 +71,11 @@ export interface HealthRoute {
   file?: string;
 }
 
-/** The Next.js config file names, in the order OpsCrew looks for them. */
+/** The Next.js config file names, in the order Next.js loads them. */
 export const NEXT_CONFIG_NAMES = [
-  "next.config.ts",
-  "next.config.mjs",
   "next.config.js",
+  "next.config.mjs",
+  "next.config.ts",
   "next.config.cjs",
 ];
 const STANDALONE = /\boutput\s*:\s*["'`]standalone["'`]/;

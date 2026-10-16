@@ -175,6 +175,21 @@ describe("the Next.js health route with a basePath", () => {
     });
   });
 
+  it("reads the config Next.js loads first: next.config.js before next.config.ts", async () => {
+    const edit = await nextRoute(APP_ROUTE, {
+      "app/page.tsx": "",
+      "tsconfig.json": "{}",
+      "next.config.js": 'module.exports = { basePath: "/js" };\n',
+      "next.config.ts": 'export default { basePath: "/ts" };\n',
+    });
+    expect(edit).toMatchObject({
+      action: "write",
+      healthPath: "/js/api/health",
+      pathNote:
+        'next.config.js sets basePath "/js", so the health route answers at /js/api/health; OpsCrew set app.healthPath in `opscrew/plan.yaml` to /js/api/health to match.',
+    });
+  });
+
   it("names a basePath it cannot read, for an existing route too", async () => {
     const edit = await nextRoute(APP_ROUTE, {
       "app/api/health/route.ts": "",

@@ -46,7 +46,6 @@ const KEYWORDS_BEFORE_REGEX = new Set([
   "instanceof",
 ]);
 
-/** Scans a JavaScript or TypeScript file. */
 /**
  * The files a relative import specifier from `from` may name, in the order OpsCrew tries them
  * (`./app.module`, or `./app.module.js` for the TypeScript source of an ESM build); none for a
@@ -64,6 +63,7 @@ export function moduleCandidates(from: string, specifier: string): string[] {
   ];
 }
 
+/** Scans a JavaScript or TypeScript file. */
 export function scanJs(text: string): JsSource {
   const out = text.split("");
   const strings: JsString[] = [];

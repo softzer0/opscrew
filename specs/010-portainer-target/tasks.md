@@ -221,7 +221,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: xhigh
 
-- [ ] T1026 [P] Agents adapt, analyze and design (Area 3)
+- [X] T1026 [P] Agents adapt, analyze and design (Area 3)
   - Owns: `packages/agents/src/{adapt,analyze,design}/**` (+ tests)
   - Reads: Area 3; `packages/agents/src/shared/` after T1024
   - Depends: T1024
