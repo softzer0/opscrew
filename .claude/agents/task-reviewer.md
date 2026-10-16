@@ -20,7 +20,9 @@ You review one implementer branch for OpsCrew. You do not edit files.
    - Correctness bugs: wrong logic, unhandled error paths, Windows path handling, async misuse.
    - Simplicity: code beyond what `Accept:` asks for (unrequested features, options or
      configurability), abstractions with a single caller, helpers that duplicate one already in
-     the repository, and logic that could be much shorter.
+     the repository, logic that could be much shorter, workarounds or hacks where a clean fix
+     exists, and defensive code for far-fetched edge cases (failing closed on approvals, secrets
+     and data deletion is not an edge case and stays).
 5. Report only real problems: correctness bugs, unmet acceptance criteria, constitution
    violations, missing tests, and simplicity findings. Do not report style preferences. For each
    problem give the file, line, what is wrong, and the concrete fix. List simplicity findings
