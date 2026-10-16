@@ -13,15 +13,9 @@ import {
 import { describe, expect, it } from "vitest";
 import { runAnalyze } from "../analyze";
 import { createTestPhaseDeps } from "../testing";
-import {
-  answersToRequirements,
-  buildQuestions,
-  type InterviewAnswers,
-  inferredAnswers,
-  normaliseDomain,
-  parseMoney,
-  runInterview,
-} from "./index";
+import { answersToRequirements, normaliseDomain, parseMoney } from "./answers";
+import { buildQuestions, type InterviewAnswers, inferredAnswers } from "./questions";
+import { runInterview } from "./run";
 
 const examples = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 const now = new Date("2026-10-11T12:00:00.000Z");

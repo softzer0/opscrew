@@ -10,6 +10,7 @@ import {
   type Requirements,
   RequirementsSchema,
 } from "@opscrew/plan-schema";
+import { isBlank } from "./follow-ups";
 import {
   defaultProvider,
   describesRoot,
@@ -72,9 +73,6 @@ const ENUM_FIELDS: ReadonlySet<QuestionId> = new Set([
 const IGNORED_KEYS: ReadonlySet<string> = new Set(["schemaVersion", "answeredAt"]);
 
 const QUESTION_IDS: readonly QuestionId[] = QuestionIdSchema.options;
-
-const isBlank = (value: unknown) =>
-  value === undefined || value === null || (typeof value === "string" && value.trim() === "");
 
 /**
  * Normalises a domain answer: trims, lower-cases and removes a scheme (`https://`), any path,

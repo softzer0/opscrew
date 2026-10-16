@@ -1,4 +1,5 @@
 import type { VpsProviderId } from "@opscrew/contracts";
+import { listText } from "@opscrew/core";
 import {
   type DeployProvider,
   type ProjectFacts,
@@ -8,7 +9,8 @@ import {
   type Requirements,
   type ServiceKind,
 } from "@opscrew/plan-schema";
-import { frameworkName, listText } from "../analyze/summary";
+import { frameworkName } from "../analyze/summary";
+import { withDefault } from "./follow-ups";
 
 /** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
 export type InterviewAnswers = Record<string, unknown>;
@@ -76,8 +78,6 @@ function candidateHint(facts: ProjectFacts, dir: string): string | undefined {
   ];
   return names.length > 0 ? listText(names) : undefined;
 }
-
-const withDefault = <T>(value: T | undefined) => (value === undefined ? {} : { default: value });
 
 /**
  * The interview questions for a project: only those that cannot be inferred from the facts, with

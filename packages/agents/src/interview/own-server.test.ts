@@ -13,15 +13,19 @@ import {
   serverAddressesFile,
 } from "../shared";
 import { createTestPhaseDeps } from "../testing";
+import { answersToRequirements } from "./answers";
+import { splitFollowUps } from "./follow-ups";
 import {
   answersToOwnServer,
-  answersToRequirements,
   buildServerQuestions,
-  type InterviewAnswers,
-  runInterview,
-  splitServerAnswers,
+  SERVER_FIELDS,
   suggestReachable,
-} from "./index";
+} from "./own-server";
+import type { InterviewAnswers } from "./questions";
+import { runInterview } from "./run";
+
+const splitServerAnswers = (answers: InterviewAnswers) =>
+  splitFollowUps(answers, "server", SERVER_FIELDS);
 
 const examples = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 const now = new Date("2026-10-14T12:00:00.000Z");

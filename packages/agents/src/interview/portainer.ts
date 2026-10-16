@@ -1,5 +1,5 @@
 import { normalizeCertFingerprint, sameCertFingerprint } from "@opscrew/connector-portainer";
-import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
+import { listText, OpsCrewError, type ProjectPaths } from "@opscrew/core";
 import type { PortainerWeb, Question } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { PORTAINER_TOKEN_VAR } from "../providers";
@@ -9,7 +9,7 @@ import {
   recordPortainerConnection,
 } from "../shared";
 import { deepDomainProblem } from "./answers";
-import type { InterviewAnswers } from "./questions";
+import { type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
 
 /** The follow-up answers for an existing Portainer (`portainer.<field>` in answers files). */
 export const PORTAINER_FIELDS = ["url", "environment", "redeploy", "web", "port"] as const;
@@ -123,15 +123,8 @@ export interface PortainerAnswers {
   web: PortainerWeb;
 }
 
-/** The answers split into the Portainer follow-ups and everything else. */
-export interface SplitPortainerAnswers {
-  /** `portainer.<field>` answers, from flat keys or a nested `portainer:` mapping. */
-  portainer: Partial<Record<PortainerField, unknown>>;
-  /** Portainer keys OpsCrew does not know (`portainer.token`, `portainer.password`). */
-  unknown: string[];
-  /** The remaining answers. */
-  rest: InterviewAnswers;
-}
+/** The Portainer follow-ups (`portainer.<field>`), split from the other answers. */
+export type PortainerAnswersGiven = FollowUps<PortainerField>;
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 /** Keys that would hold a secret OpsCrew never takes as an answer. */
@@ -139,54 +132,8 @@ const SECRET_KEYS = /token|key|pass(word|phrase)?|secret/i;
 
 const NEVER_A_TOKEN = `OpsCrew never takes Portainer's access token or a password as an answer: set ${PORTAINER_TOKEN_VAR} in the environment instead, and OpsCrew reads it from there without saving it.`;
 
-const isBlank = (value: unknown) =>
-  value === undefined || value === null || (typeof value === "string" && value.trim() === "");
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-/**
- * Takes the follow-up answers for an existing Portainer out of `answers`: flat `portainer.url`
- * keys (as in `--answers` files and the MCP tool) or a nested `portainer:` mapping.
- */
-export function splitPortainerAnswers(answers: InterviewAnswers): SplitPortainerAnswers {
-  const portainer: Partial<Record<PortainerField, unknown>> = {};
-  const unknown: string[] = [];
-  const rest: InterviewAnswers = {};
-  const take = (field: string, value: unknown) => {
-    if ((PORTAINER_FIELDS as readonly string[]).includes(field)) {
-      portainer[field as PortainerField] = value;
-    } else {
-      unknown.push(`portainer.${field}`);
-    }
-  };
-  for (const [key, value] of Object.entries(answers)) {
-    if (key === "portainer") {
-      if (isRecord(value)) {
-        for (const [field, inner] of Object.entries(value)) take(field, inner);
-      } else if (!isBlank(value)) {
-        unknown.push("portainer");
-      }
-    } else if (key.startsWith("portainer.")) {
-      take(key.slice("portainer.".length), value);
-    } else {
-      rest[key] = value;
-    }
-  }
-  return { portainer, unknown, rest };
-}
-
-/** True when any Portainer follow-up was answered. */
-export function hasPortainerAnswers(
-  split: Pick<SplitPortainerAnswers, "portainer" | "unknown">,
-): boolean {
-  return split.unknown.length > 0 || Object.keys(split.portainer).length > 0;
-}
-
 /** True when an environment can run the app (see `unusableReason`). */
-function usable(environment: PortainerEnvironment): boolean {
-  return unusableReason(environment) === undefined;
-}
+const usable = (environment: PortainerEnvironment) => unusableReason(environment) === undefined;
 
 /**
  * The earlier answers' environment, only for the same Portainer address (or while it is not
@@ -276,7 +223,6 @@ const KIND_TEXT: Record<PortainerEnvironment["kind"], string> = {
  */
 export function buildPortainerQuestions(context: PortainerContext = {}): PortainerQuestion[] {
   const { previous } = context;
-  const withDefault = <T>(value: T | undefined) => (value === undefined ? {} : { default: value });
   const listed = (context.environments ?? []).filter(usable);
   const earlier = previousEnvironment(context);
   const environmentDefault =
@@ -363,7 +309,7 @@ function invalid(problems: readonly string[]): OpsCrewError {
 }
 
 /** Refuses a token, password or key given as an answer, never echoing it. */
-function refuseSecrets(split: Pick<SplitPortainerAnswers, "unknown">): void {
+function refuseSecrets(split: Pick<PortainerAnswersGiven, "unknown">): void {
   const secret = split.unknown.filter((key) => SECRET_KEYS.test(key.replace(/^portainer\.?/, "")));
   if (secret.length > 0) {
     throw new OpsCrewError("INVALID_INPUT", `${secret.join(", ")}: ${NEVER_A_TOKEN}`, {
@@ -399,11 +345,11 @@ function sameUrl(a: string, b: string): boolean {
  * @throws OpsCrewError `INVALID_INPUT` naming the problem.
  */
 export function portainerUrlAnswer(
-  split: Pick<SplitPortainerAnswers, "portainer" | "unknown">,
+  split: Pick<PortainerAnswersGiven, "values" | "unknown">,
   context: Pick<PortainerContext, "previous"> = {},
 ): string {
   refuseSecrets(split);
-  const raw = split.portainer.url;
+  const raw = split.values.url;
   if (isBlank(raw)) {
     if (context.previous !== undefined) return context.previous.url;
     throw invalid(["portainer.url (your Portainer's address) is missing"]);
@@ -419,18 +365,6 @@ export function portainerUrlAnswer(
   throw invalid([
     "portainer.url: write Portainer's full address without a login or query, such as https://nas.local:9443",
   ]);
-}
-
-/**
- * A SHA-256 certificate fingerprint in the connector's one spelling, `SHA256:` and colon-separated
- * upper-case hex pairs (as browsers and `openssl x509 -fingerprint -sha256` show it), from any form
- * it accepts; `undefined` for anything else.
- */
-export { normalizeCertFingerprint };
-
-/** True when both name the same certificate, whatever the spelling (hex, colons or base64). */
-export function sameCertificate(a: string, b: string): boolean {
-  return sameCertFingerprint(a, b);
 }
 
 /** What {@link reachPortainer} found: the pinned certificate and the environments. */
@@ -497,7 +431,7 @@ export async function reachPortainer(
         ? context.previous.certFingerprint
         : undefined;
     if (given !== undefined) {
-      if (!sameCertificate(given, fingerprint)) {
+      if (!sameCertFingerprint(given, fingerprint)) {
         throw new OpsCrewError(
           "PHASE_PRECONDITION",
           `Portainer answers with the certificate ${fingerprint}, not the ${given} you gave, so OpsCrew sent nothing and saved nothing.`,
@@ -506,7 +440,7 @@ export async function reachPortainer(
           },
         );
       }
-    } else if (pinned === undefined || !sameCertificate(pinned, fingerprint)) {
+    } else if (pinned === undefined || !sameCertFingerprint(pinned, fingerprint)) {
       const certificate = { fingerprint, ...(pinned !== undefined ? { previous: pinned } : {}) };
       if (options.confirmCertificate === undefined) {
         throw new OpsCrewError(
@@ -531,7 +465,7 @@ export async function reachPortainer(
     }
     // The same certificate keeps the spelling pinned before.
     certFingerprint =
-      pinned !== undefined && sameCertificate(pinned, fingerprint) ? pinned : fingerprint;
+      pinned !== undefined && sameCertFingerprint(pinned, fingerprint) ? pinned : fingerprint;
   }
   const listed = await options.access.listEnvironments(url, token, certFingerprint);
   const environments = z.array(PortainerEnvironmentSchema).safeParse(listed);
@@ -585,7 +519,7 @@ function environmentList(environments: readonly PortainerEnvironment[]): string 
  * given as an answer is refused, and never echoed.
  */
 export function answersToPortainer(
-  split: Pick<SplitPortainerAnswers, "portainer" | "unknown">,
+  split: Pick<PortainerAnswersGiven, "values" | "unknown">,
   context: PortainerContext & {
     url: string;
     certFingerprint?: string;
@@ -599,8 +533,8 @@ export function answersToPortainer(
       `${split.unknown.join(", ")}: not a known answer (use ${PORTAINER_FIELDS.map((f) => `portainer.${f}`).join(", ")})`,
     );
   }
-  const given = (field: PortainerField) => !isBlank(split.portainer[field]);
-  const text = (field: PortainerField) => String(split.portainer[field]).trim();
+  const given = (field: PortainerField) => !isBlank(split.values[field]);
+  const text = (field: PortainerField) => String(split.values[field]).trim();
   const { previous, environments } = context;
 
   let environment: PortainerEnvironment | undefined;
@@ -666,11 +600,10 @@ export function answersToPortainer(
   if (mode === "proxy") {
     const previousPort = previous?.web?.mode === "proxy" ? previous.web.port : undefined;
     if (given("port")) {
-      const raw = split.portainer.port;
-      const value =
-        typeof raw === "number" ? raw : /^\d{1,5}$/.test(text("port")) ? Number(text("port")) : NaN;
-      if (Number.isInteger(value) && value >= 1 && value <= 65535) port = value;
-      else problems.push("portainer.port: write a port number from 1 to 65535, such as 8080");
+      port = portAnswer(split.values.port);
+      if (port === undefined) {
+        problems.push("portainer.port: write a port number from 1 to 65535, such as 8080");
+      }
     } else if (previousPort !== undefined) {
       port = previousPort;
     } else {
@@ -704,13 +637,11 @@ export function answersToPortainer(
 /** What OpsCrew's record lists as created, in words: only what is there, never "0 stacks". */
 function recordedText(created: PortainerConnection["created"]): string {
   const count = (n: number, one: string, many: string) => (n === 1 ? one : `${n} ${many}`);
-  const items = [
+  return listText([
     ...(created.stacks.length > 0 ? [count(created.stacks.length, "a stack", "stacks")] : []),
     ...(created.registryId !== undefined ? ["a registry entry"] : []),
     ...(created.volumes.length > 0 ? [count(created.volumes.length, "a volume", "volumes")] : []),
-  ];
-  if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+  ]);
 }
 
 /**

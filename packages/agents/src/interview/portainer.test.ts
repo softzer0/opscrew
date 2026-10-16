@@ -8,18 +8,22 @@ import { QuestionSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { readPortainerConnection, recordPortainerConnection, serverAddressesFile } from "../shared";
 import { createTestPhaseDeps } from "../testing";
+import { splitFollowUps } from "./follow-ups";
 import {
   answersToPortainer,
   buildPortainerQuestions,
-  type InterviewAnswers,
+  PORTAINER_FIELDS,
   type PortainerAccess,
   type PortainerCertificate,
   type PortainerEnvironment,
   type PortainerQuestion,
-  runInterview,
-  splitPortainerAnswers,
-} from "./index";
-import { normalizeCertFingerprint, recordPortainerAnswers, sameCertificate } from "./portainer";
+  recordPortainerAnswers,
+} from "./portainer";
+import type { InterviewAnswers } from "./questions";
+import { runInterview } from "./run";
+
+const splitPortainerAnswers = (answers: InterviewAnswers) =>
+  splitFollowUps(answers, "portainer", PORTAINER_FIELDS);
 
 const examples = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 const URL_ = "https://nas.home.example.com:9443";
@@ -266,19 +270,6 @@ describe("answersToPortainer", () => {
       expect(String((error as Error).message)).toContain("PORTAINER_API_KEY");
       expect(String((error as Error).message)).not.toContain(TOKEN);
     }
-  });
-
-  it("compares certificate fingerprints in every spelling", () => {
-    expect(sameCertificate(CERT, CERT_HEX)).toBe(true);
-    expect(sameCertificate(CERT_B64, CERT)).toBe(true);
-    expect(sameCertificate(CERT, OTHER_CERT)).toBe(false);
-    expect(sameCertificate(CERT, "SHA256:nope")).toBe(false);
-    // Lower-case prefix, padded base64: one spelling.
-    expect(normalizeCertFingerprint(CERT_HEX.replace("SHA256:", "sha256:"))).toBe(
-      CERT.toUpperCase(),
-    );
-    expect(normalizeCertFingerprint(`${CERT_B64}=`)).toBe(CERT.toUpperCase());
-    expect(normalizeCertFingerprint("MD5:aa:bb")).toBeUndefined();
   });
 
   it("reuses the earlier environment only for the same Portainer address", () => {

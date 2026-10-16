@@ -2,6 +2,7 @@ import {
   type PortainerEnvironment as AdapterEnvironment,
   environmentKind as adapterKind,
   type DockerInfo,
+  dockerArchitecture,
   fetchCertificateFingerprint,
   PortainerApiError,
   type PortainerClient,
@@ -9,8 +10,9 @@ import {
   type PortainerEndpoint,
   portainerClient,
 } from "@opscrew/connector-portainer";
-import { OpsCrewError, type Redactor } from "@opscrew/core";
+import { normalizeHostName, OpsCrewError, type Redactor } from "@opscrew/core";
 import { PORTAINER_TOKEN_VAR } from "../providers";
+import { addressNames } from "../shared";
 import type { PortainerAccess, PortainerEnvironment } from "./portainer";
 
 /**
@@ -22,40 +24,18 @@ const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1", "host.docker
 const PRODUCT_NAME = "portainer";
 
 /**
- * The names under which Portainer's address can appear in text: the URL as given, its origin and,
- * unless it is this computer, its host (with the port) and host name, also without a trailing dot
- * (`nas.lan.` → `nas.lan`) and an IPv6 address also without brackets (`[fd00::5]` → `fd00::5`). A
- * host name that is just `portainer` is left out alone (every message names Portainer; with the
- * port it is still listed). Invalid addresses give none (the interview refuses them with its own
- * message).
+ * The names under which Portainer's address can appear in text (`addressNames`): the URL as given
+ * and its origin always, its host and host name forms only when it is not this computer. A host
+ * name that is just `portainer` is left out alone (every message names Portainer; with the port it
+ * is still listed). Invalid addresses give none (the interview refuses them with its own message).
  */
 export function portainerAddressNames(url: string): string[] {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return [];
-  }
-  const names = [url, parsed.origin];
-  const hostname = parsed.hostname.replace(/\.$/, "");
-  if (!LOOPBACK.has(parsed.hostname) && !LOOPBACK.has(hostname)) {
-    const port = parsed.port === "" ? "" : `:${parsed.port}`;
-    const bare = /^\[(.+)\]$/.exec(hostname)?.[1];
-    const hosts = [parsed.host, `${hostname}${port}`, parsed.hostname, hostname];
-    if (bare !== undefined) hosts.push(bare);
-    for (const name of hosts) {
-      if (name.toLowerCase().replace(/\.$/, "") !== PRODUCT_NAME) names.push(name);
-    }
-  }
-  const seen = new Set<string>();
-  return names
-    .map((name) => name.trim())
-    .filter((name) => {
-      const key = name.toLowerCase();
-      if (name === "" || name === "null" || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  const names = addressNames(url);
+  if (names.length === 0) return [];
+  const local = LOOPBACK.has(new URL(url).hostname.replace(/\.$/, ""));
+  return names.filter(
+    (name) => name.includes("://") || (!local && normalizeHostName(name) !== PRODUCT_NAME),
+  );
 }
 
 /**
@@ -100,21 +80,10 @@ function environmentKind(
   }
 }
 
-/** Docker's architecture name as OpsCrew builds images for it. */
+/** Docker's architecture as OpsCrew builds images for it; `other` for one it does not. */
 function architecture(text: string | undefined): PortainerEnvironment["arch"] {
-  switch (text?.trim().toLowerCase()) {
-    case undefined:
-    case "":
-      return undefined;
-    case "x86_64":
-    case "amd64":
-      return "amd64";
-    case "aarch64":
-    case "arm64":
-      return "arm64";
-    default:
-      return "other";
-  }
+  const name = text?.trim();
+  return name === undefined || name === "" ? undefined : (dockerArchitecture(name) ?? "other");
 }
 
 /** A name the interview can show on one line (Portainer allows almost anything). */

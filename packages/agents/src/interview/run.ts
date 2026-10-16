@@ -17,28 +17,27 @@ import {
   setAsideServerAddresses,
 } from "../shared";
 import { answersToRequirements } from "./answers";
+import { hasFollowUps, splitFollowUps } from "./follow-ups";
 import {
   answersToOwnServer,
   buildServerQuestions,
-  hasServerAnswers,
   type OwnServerAnswers,
   recordOwnServerAnswers,
+  SERVER_FIELDS,
   type ServerQuestion,
-  splitServerAnswers,
 } from "./own-server";
 import {
   answersToPortainer,
   buildPortainerQuestions,
-  hasPortainerAnswers,
+  PORTAINER_FIELDS,
   type PortainerAnswers,
+  type PortainerAnswersGiven,
   type PortainerContext,
   type PortainerInterviewOptions,
   type PortainerQuestion,
   portainerUrlAnswer,
   reachPortainer,
   recordPortainerAnswers,
-  type SplitPortainerAnswers,
-  splitPortainerAnswers,
 } from "./portainer";
 import { buildQuestions, describesRoot, type InterviewAnswers } from "./questions";
 
@@ -172,15 +171,15 @@ async function loadPreviousServer(
 async function portainerAnswers(
   deps: PhaseDeps,
   options: InterviewOptions,
-  given: SplitPortainerAnswers,
+  given: PortainerAnswersGiven,
   context: PortainerContext,
 ): Promise<PortainerAnswers> {
   let split = given;
-  const ask = hasPortainerAnswers(split) ? undefined : options.askPortainer;
+  const ask = hasFollowUps(split) ? undefined : options.askPortainer;
   const merge = (answers: InterviewAnswers) => {
-    const more = splitPortainerAnswers(answers);
+    const more = splitFollowUps(answers, "portainer", PORTAINER_FIELDS);
     split = {
-      portainer: { ...split.portainer, ...more.portainer },
+      values: { ...split.values, ...more.values },
       unknown: [...split.unknown, ...more.unknown],
       rest: split.rest,
     };
@@ -235,8 +234,8 @@ export async function runInterview(
     let answers: InterviewAnswers = {};
     if (options.answers !== undefined) answers = options.answers;
     else if (options.ask !== undefined) answers = await options.ask(questions);
-    let split = splitServerAnswers(answers);
-    const portainerSplit = splitPortainerAnswers(split.rest);
+    let split = splitFollowUps(answers, "server", SERVER_FIELDS);
+    const portainerSplit = splitFollowUps(split.rest, "portainer", PORTAINER_FIELDS);
 
     const requirements = answersToRequirements(portainerSplit.rest, {
       now: deps.clock.now(),
@@ -266,11 +265,15 @@ export async function runInterview(
         // Served through the tunnel or the proxy it must fit Cloudflare's free certificate.
         ...(requirements.domain !== undefined ? { domain: requirements.domain } : {}),
       };
-      if (!hasServerAnswers(split) && options.askServer !== undefined) {
-        split = splitServerAnswers(await options.askServer(buildServerQuestions(serverContext)));
+      if (!hasFollowUps(split) && options.askServer !== undefined) {
+        split = splitFollowUps(
+          await options.askServer(buildServerQuestions(serverContext)),
+          "server",
+          SERVER_FIELDS,
+        );
       }
       ownServer = answersToOwnServer(split, serverContext);
-    } else if (hasServerAnswers(split)) {
+    } else if (hasFollowUps(split)) {
       reporter.warn(
         "The answers about a server you already have (server.*) were ignored, because the app does not run on your own server.",
       );
@@ -285,7 +288,7 @@ export async function runInterview(
           requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined,
         ...(requirements.domain !== undefined ? { domain: requirements.domain } : {}),
       });
-    } else if (hasPortainerAnswers(portainerSplit)) {
+    } else if (hasFollowUps(portainerSplit)) {
       reporter.warn(
         "The answers about an existing Portainer (portainer.*) were ignored, because the app does not run in your Portainer.",
       );

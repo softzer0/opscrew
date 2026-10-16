@@ -1,9 +1,9 @@
-import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
+import { normalizeHostName, OpsCrewError, type ProjectPaths } from "@opscrew/core";
 import type { Question } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { type OwnServerConnection, readOwnServer, recordOwnServer } from "../shared";
 import { deepDomainProblem } from "./answers";
-import type { InterviewAnswers } from "./questions";
+import { type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
 
 /** The follow-up answers for a server the user already has (`server.<field>` in answers files). */
 export const SERVER_FIELDS = ["host", "port", "user", "key", "reachable", "serve"] as const;
@@ -78,63 +78,14 @@ function looksLikeKeyMaterial(text: string): boolean {
   return text.includes("-----BEGIN") || text.includes("PRIVATE KEY");
 }
 
-const isBlank = (value: unknown) =>
-  value === undefined || value === null || (typeof value === "string" && value.trim() === "");
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
 /** Keys that would hold a secret OpsCrew never takes. */
 const SECRET_KEYS = /pass(word|phrase)?$|^secret$|^private_?key$/i;
 
 const NEVER_A_PASSWORD =
   "OpsCrew never asks for or stores a password or passphrase: give the path to your SSH key, or `agent` to use the SSH agent (which also handles a key with a passphrase).";
 
-/** The answers split into the server follow-ups and everything else (requirements answers). */
-export interface SplitAnswers {
-  /** `server.<field>` answers, from flat `server.host` keys or a nested `server:` mapping. */
-  server: Partial<Record<ServerField, unknown>>;
-  /** Server keys OpsCrew does not know (`server.password`, `server.address`). */
-  unknown: string[];
-  /** The remaining answers, for `answersToRequirements`. */
-  rest: InterviewAnswers;
-}
-
-/**
- * Takes the follow-up answers for a server the user already has out of `answers`: flat
- * `server.host` keys (as in `--answers` files and the MCP tool) or a nested `server:` mapping.
- */
-export function splitServerAnswers(answers: InterviewAnswers): SplitAnswers {
-  const server: Partial<Record<ServerField, unknown>> = {};
-  const unknown: string[] = [];
-  const rest: InterviewAnswers = {};
-  const take = (field: string, value: unknown) => {
-    if ((SERVER_FIELDS as readonly string[]).includes(field)) {
-      server[field as ServerField] = value;
-    } else {
-      unknown.push(`server.${field}`);
-    }
-  };
-  for (const [key, value] of Object.entries(answers)) {
-    if (key === "server") {
-      if (isRecord(value)) {
-        for (const [field, inner] of Object.entries(value)) take(field, inner);
-      } else if (!isBlank(value)) {
-        unknown.push("server");
-      }
-    } else if (key.startsWith("server.")) {
-      take(key.slice("server.".length), value);
-    } else {
-      rest[key] = value;
-    }
-  }
-  return { server, unknown, rest };
-}
-
-/** True when any server follow-up was answered. */
-export function hasServerAnswers(split: Pick<SplitAnswers, "server" | "unknown">): boolean {
-  return split.unknown.length > 0 || Object.keys(split.server).length > 0;
-}
+/** The server follow-ups (`server.<field>`), split from the requirements answers. */
+export type ServerAnswers = FollowUps<ServerField>;
 
 const PRIVATE_V4 = [
   /^10\./,
@@ -218,8 +169,7 @@ function reachableDefault(context: OwnServerContext, host?: string): boolean {
   return (host === undefined ? undefined : suggestReachable(host)) ?? true;
 }
 
-const sameHost = (a: string, b: string) =>
-  a.toLowerCase().replace(/\.$/, "") === b.toLowerCase().replace(/\.$/, "");
+const sameHost = (a: string, b: string) => normalizeHostName(a) === normalizeHostName(b);
 
 /**
  * The follow-up questions for a server the user already has: address, SSH port (22), SSH user,
@@ -228,7 +178,6 @@ const sameHost = (a: string, b: string) =>
  */
 export function buildServerQuestions(context: OwnServerContext = {}): ServerQuestion[] {
   const { previous } = context;
-  const withDefault = <T>(value: T | undefined) => (value === undefined ? {} : { default: value });
   return [
     {
       id: "server.host",
@@ -309,7 +258,7 @@ function boolean(value: unknown): boolean | undefined {
  * a password or passphrase is always refused, and never echoed.
  */
 export function answersToOwnServer(
-  split: Pick<SplitAnswers, "server" | "unknown">,
+  split: Pick<ServerAnswers, "values" | "unknown">,
   context: OwnServerContext = {},
 ): OwnServerAnswers {
   const problems: string[] = [];
@@ -325,8 +274,8 @@ export function answersToOwnServer(
     );
   }
   const { previous } = context;
-  const given = (field: ServerField) => !isBlank(split.server[field]);
-  const text = (field: ServerField) => String(split.server[field]).trim();
+  const given = (field: ServerField) => !isBlank(split.values[field]);
+  const text = (field: ServerField) => String(split.values[field]).trim();
 
   let host = previous?.host;
   if (given("host")) {
@@ -344,10 +293,8 @@ export function answersToOwnServer(
 
   let port = previous?.port ?? 22;
   if (given("port")) {
-    const raw = split.server.port;
-    const value =
-      typeof raw === "number" ? raw : /^\d{1,5}$/.test(text("port")) ? Number(text("port")) : NaN;
-    if (Number.isInteger(value) && value >= 1 && value <= 65535) port = value;
+    const value = portAnswer(split.values.port);
+    if (value !== undefined) port = value;
     else problems.push("server.port: write a port number from 1 to 65535, usually 22");
   }
 
@@ -388,7 +335,7 @@ export function answersToOwnServer(
 
   let reachable: boolean | undefined;
   if (given("reachable")) {
-    reachable = boolean(split.server.reachable);
+    reachable = boolean(split.values.reachable);
     if (reachable === undefined) problems.push("server.reachable: answer yes or no");
   }
 
