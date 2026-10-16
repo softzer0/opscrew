@@ -44,7 +44,7 @@ describe("tunnel hostnames", () => {
 
 describe("runtime files in tunnel mode", () => {
   it("publishes Caddy only on the loopback port the connector reaches", () => {
-    const compose = parse(renderCompose(tunnelPlan(), testContext()).content);
+    const compose = parse(renderCompose(tunnelPlan()).content);
     expect(compose.services.caddy.ports).toEqual([`127.0.0.1:${TUNNEL_ORIGIN_PORT}:80`]);
     for (const [name, service] of Object.entries(compose.services)) {
       if (name !== "caddy") expect((service as { ports?: unknown }).ports).toBeUndefined();
@@ -83,7 +83,7 @@ describe("runtime files in tunnel mode", () => {
     });
     const hetzner = testPlan({ domain: "shop.example.com" });
     const context = testContext({ acmeEmail: "ops@example.com" });
-    expect(renderCompose(own, context)).toEqual(renderCompose(hetzner, context));
+    expect(renderCompose(own)).toEqual(renderCompose(hetzner));
     expect(renderCaddyfile(own, context)).toEqual(renderCaddyfile(hetzner, context));
   });
 
@@ -94,14 +94,14 @@ describe("runtime files in tunnel mode", () => {
     expect(webFilterMode(filtered)).toBe(true);
     expect(webFilterMode(hetzner)).toBe(false);
     expect(webFilterMode(tunnelPlan())).toBe(false);
-    const compose = parse(renderCompose(filtered, context).content);
+    const compose = parse(renderCompose(filtered).content);
     expect(compose.services.caddy.ports).toEqual([
       "0.0.0.0:80:80",
       "0.0.0.0:443:443",
       "0.0.0.0:443:443/udp",
     ]);
     // Hetzner and DigitalOcean (their cloud firewall filters both families) are unchanged.
-    expect(parse(renderCompose(hetzner, context).content).services.caddy.ports).toEqual([
+    expect(parse(renderCompose(hetzner).content).services.caddy.ports).toEqual([
       "80:80",
       "443:443",
       "443:443/udp",

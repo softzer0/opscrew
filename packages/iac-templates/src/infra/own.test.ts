@@ -412,14 +412,7 @@ describe("renderInfra move layouts", () => {
       message: expect.stringContaining("not to a server you already own"),
     });
     expect(() => moveLayout("both", testTarget("hetzner"), own)).toThrow(refusal);
-    const hetzner = testPlan({ provider: "hetzner" });
-    for (const layout of [
-      { server: hetzner.target, live: "server", providers: ["hetzner", "own"] },
-      { server: hetzner.target, previous: own, live: "server", providers: ["hetzner", "own"] },
-    ] as const) {
-      expect(() => renderInfra(hetzner, testContext({ layout }))).toThrow(refusal);
-    }
-    const layout = moveLayout("finish", testTarget("digitalocean"), hetzner.target);
+    const layout = moveLayout("finish", testTarget("digitalocean"), testTarget("hetzner"));
     expect(() => renderInfra(testPlan({ provider: "own" }), testContext({ layout }))).toThrow(
       refusal,
     );

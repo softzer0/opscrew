@@ -16,7 +16,7 @@ export function renderDeployment(plan: DeployPlan, ctx: RenderContext): Rendered
   if (plan.target.provider === "portainer") return renderPortainerDeployment(plan, ctx);
   return [
     ...renderInfra(plan, ctx),
-    renderCompose(plan, ctx),
+    renderCompose(plan),
     renderCaddyfile(plan, ctx),
     renderWorkflow(plan, ctx),
   ];

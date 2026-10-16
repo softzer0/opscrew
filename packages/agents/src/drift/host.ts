@@ -363,8 +363,8 @@ export function expectedRuntimeFiles(
   plan: DeployPlan,
   ctx: Pick<RenderContext, "opscrewVersion" | "acmeEmail">,
 ): ExpectedRuntimeFiles {
-  // Neither renderer reads the repository or the deploy key (a test checks they match the full
-  // render), so these stay empty here.
+  // The Caddyfile does not depend on the repository or the deploy key (a test checks both files
+  // match the full render), so these stay empty here.
   const full: RenderContext = {
     opscrewVersion: ctx.opscrewVersion,
     github: { owner: "", repo: "" },
@@ -373,7 +373,7 @@ export function expectedRuntimeFiles(
   };
   return {
     rendered: {
-      "compose.yaml": sha256Hex(renderCompose(plan, full).content),
+      "compose.yaml": sha256Hex(renderCompose(plan).content),
       Caddyfile: sha256Hex(renderCaddyfile(plan, full).content),
     },
     dbEnv: plan.services.postgres,

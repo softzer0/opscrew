@@ -1,4 +1,4 @@
-import { cloudTarget, type InfraLayout, type ServerModule } from "@opscrew/iac-templates";
+import type { InfraLayout, ServerModule } from "@opscrew/iac-templates";
 import type { CloudDeployTarget, Retarget } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 
@@ -16,7 +16,7 @@ export function previousTarget(move: Pick<Retarget, "from">): CloudDeployTarget 
  */
 export function protectionVariable(layout: InfraLayout, module: ServerModule): string | undefined {
   const target = module === "server" ? layout.server : layout.previous;
-  if (target === undefined || !providerProfile(cloudTarget(target).provider).deleteProtection) {
+  if (target === undefined || !providerProfile(target.provider).deleteProtection) {
     return undefined;
   }
   return module === "server" ? "delete_protection" : "previous_delete_protection";

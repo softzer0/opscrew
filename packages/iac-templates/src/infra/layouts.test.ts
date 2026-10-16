@@ -414,7 +414,7 @@ describe("renderInfra move layouts", () => {
         plan,
         testContext({
           cloudflare: testCloudflare(),
-          layout: { server: plan.target, live: "server", providers: [provider] },
+          layout: { server: testTarget(provider), live: "server", providers: [provider] },
         }),
       );
       expect(withLayout.map((f) => f.path)).toEqual(plain.map((f) => f.path));

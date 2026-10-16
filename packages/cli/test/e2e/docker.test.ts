@@ -140,11 +140,7 @@ const DATABASE_ROUTES: Readonly<Record<string, string>> = {
  * Caddy is left out (TLS and the proxy are not under test). The `release` service is unchanged.
  */
 function localCompose(plan: DeployPlan): string {
-  const rendered = renderCompose(plan, {
-    opscrewVersion: "0.0.0-test",
-    github: { owner: "opscrew-test", repo: "app" },
-    deploySshPublicKey: "ssh-ed25519 AAAA opscrew-test",
-  });
+  const rendered = renderCompose(plan);
   const doc = parse(rendered.content) as {
     services: Record<string, { volumes?: string[]; ports?: string[] }>;
     volumes: Record<string, unknown>;

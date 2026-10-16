@@ -1,4 +1,4 @@
-import type { DeployTarget, VpsProvider } from "@opscrew/plan-schema";
+import type { CloudDeployTarget, CloudProvider } from "@opscrew/plan-schema";
 
 /** Category of a rendered file, used for diff summaries and approvals. */
 export type RenderedFileKind = "infra" | "runtime" | "workflow" | "docker" | "doc";
@@ -81,19 +81,19 @@ export interface RenderContext {
 
 /**
  * Server modules of the root module while a deployment moves to another provider. Only servers
- * OpsCrew creates move: the renderers refuse a server the user owns or a Portainer target here.
+ * OpsCrew creates move, so its servers and providers are cloud ones.
  */
 export interface InfraLayout {
   /** `module "server"` and the target it deploys; absent when the configuration has none. */
-  server?: DeployTarget;
+  server?: CloudDeployTarget;
   /** `module "server_previous"`: the server being replaced. */
-  previous?: DeployTarget;
+  previous?: CloudDeployTarget;
   /** A `moved` block for the moves-only plans (rename before creating, rename back on abort). */
   moved?: { from: ServerModule; to: ServerModule };
   /** The module the DNS module and the `server_*` outputs follow (the one that gets traffic). */
   live: ServerModule;
   /** Every provider whose `required_providers` entry, provider block and module are rendered. */
-  providers: readonly VpsProvider[];
+  providers: readonly CloudProvider[];
 }
 
 /** The two server module names a root module can contain. */

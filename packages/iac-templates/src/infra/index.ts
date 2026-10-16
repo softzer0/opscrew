@@ -71,8 +71,8 @@ interface RootShape {
 
 /**
  * Resolves the root module's layout. Without `ctx.layout` this is `module "server"` for
- * `plan.target` and its provider only. Only servers OpsCrew creates have a cloud root or move:
- * throws for a server the user owns and a Portainer target, and for layouts the engines would
+ * `plan.target` and its provider only. Only servers OpsCrew creates have a cloud root: throws for
+ * a plan for a server the user owns or a Portainer target, and for layouts the engines would
  * reject.
  */
 function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
@@ -81,8 +81,8 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   const servers: ServerCall[] = [];
   const call = (module: ServerModule, server: CloudDeployTarget, prefix: VariablePrefix) =>
     servers.push({ module, target: server, prefix, provider: PROVIDER_TEXT[server.provider] });
-  if (layout.server) call("server", cloudTarget(layout.server), "");
-  if (layout.previous) call("server_previous", cloudTarget(layout.previous), "previous_");
+  if (layout.server) call("server", layout.server, "");
+  if (layout.previous) call("server_previous", layout.previous, "previous_");
   if (servers.length === 0) {
     throw new Error("The infrastructure layout has no server module to render.");
   }
@@ -107,9 +107,7 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
       `The infrastructure layout renders two ${layout.server.provider} servers; a move needs two different providers.`,
     );
   }
-  const providers = [...new Set(layout.providers)].map(
-    (provider) => cloudTarget({ provider }).provider,
-  );
+  const providers = [...new Set(layout.providers)];
   for (const { target: server } of servers) {
     if (!providers.includes(server.provider)) {
       throw new Error(

@@ -57,7 +57,7 @@ export function siteHosts(plan: DeployPlan): string[] {
  * `opscrew/runtime/compose.yaml`: app, optional Postgres and Valkey, and Caddy in front. Throws for
  * a Portainer target, whose stack `renderPortainerStack` renders.
  */
-export function renderCompose(plan: DeployPlan, _ctx: RenderContext): RenderedFile {
+export function renderCompose(plan: DeployPlan): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();
   const image = "${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}";
   const app: Record<string, unknown> = {
@@ -151,10 +151,7 @@ const CONNECTOR_HEADER = [
  * (`opscrew-tunnel`). The token comes from `tunnel.env` in the same directory on the server
  * (`TUNNEL_TOKEN=<terraform output tunnel_token>`, mode 0600), which this file never contains.
  */
-export function renderTunnelConnectorCompose(
-  _plan: DeployPlan,
-  _ctx?: RenderContext,
-): RenderedFile {
+export function renderTunnelConnectorCompose(_plan: DeployPlan): RenderedFile {
   const document = {
     name: "opscrew-tunnel",
     services: {

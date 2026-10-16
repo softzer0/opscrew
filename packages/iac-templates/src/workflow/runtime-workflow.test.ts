@@ -78,7 +78,7 @@ const ctx: RenderContext = {
 
 describe("renderCompose", () => {
   it("runs the app, Postgres, Valkey and Caddy with only Caddy publishing ports", () => {
-    const file = renderCompose(plan(), ctx);
+    const file = renderCompose(plan());
     expect(file.path).toBe("opscrew/runtime/compose.yaml");
     const doc = parse(file.content);
     expect(Object.keys(doc.services)).toEqual(["app", "db", "cache", "caddy"]);
@@ -96,14 +96,14 @@ describe("renderCompose", () => {
   });
 
   it("omits the database and cache when the plan does not self-host them", () => {
-    const doc = parse(renderCompose(plan({ postgres: false, redis: false }), ctx).content);
+    const doc = parse(renderCompose(plan({ postgres: false, redis: false })).content);
     expect(Object.keys(doc.services)).toEqual(["app", "caddy"]);
     expect(doc.services.app.depends_on).toBeUndefined();
   });
 
   it("rotates every service's logs itself and keeps no-new-privileges (Docker's daemon settings stay as they are)", () => {
     const release = "python manage.py migrate --noinput";
-    const doc = parse(renderCompose(plan({ release }), ctx).content);
+    const doc = parse(renderCompose(plan({ release })).content);
     expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache", "caddy"]);
     for (const service of Object.values<Record<string, unknown>>(doc.services)) {
       expect(service.logging).toEqual({
@@ -115,13 +115,13 @@ describe("renderCompose", () => {
   });
 
   it("adds no release service without a release command", () => {
-    const content = renderCompose(plan(), ctx).content;
+    const content = renderCompose(plan()).content;
     expect(content).not.toContain("release");
   });
 
   it("runs the release command as a one-off service of the app image, environment and network", () => {
     const command = "python manage.py migrate --noinput && echo $HOME ${X}";
-    const file = renderCompose(plan({ release: command }), ctx);
+    const file = renderCompose(plan({ release: command }));
     const doc = parse(file.content);
     expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache", "caddy"]);
     const { app, release } = doc.services;

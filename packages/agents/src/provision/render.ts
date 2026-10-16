@@ -110,7 +110,7 @@ export function deploymentRenderContext(
  */
 export function deploymentFiles(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
   const files = renderDeployment(plan, ctx);
-  return usesTunnel(plan) ? [...files, renderTunnelConnectorCompose(plan, ctx)] : files;
+  return usesTunnel(plan) ? [...files, renderTunnelConnectorCompose(plan)] : files;
 }
 
 /**
