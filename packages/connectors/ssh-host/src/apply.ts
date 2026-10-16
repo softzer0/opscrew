@@ -7,7 +7,7 @@ import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
 import { DEFAULT_DEAD_MAN_SECONDS } from "./constants";
 import { AppMarkerSchema, HOST_ADAPTER_VERSION, type HostRecord, HostRecordSchema } from "./facts";
-import { hostFindings } from "./findings";
+import { type HostFindings, hostFindings } from "./findings";
 import { hostPlanHash } from "./hash";
 import { probePrivilege } from "./inspect";
 import { asLogin, asRoot, type Privilege } from "./shell";
@@ -60,6 +60,8 @@ interface Context {
   now: () => Date;
   /** What the user runs again once a problem is fixed, for example `opscrew provision`. */
   command: string;
+  /** The findings that name `command`. */
+  findings: HostFindings;
 }
 
 function nextStep(command: string): string {
@@ -161,7 +163,7 @@ class Recorder {
       try {
         record = HostRecordSchema.parse(JSON.parse(text));
       } catch {
-        const finding = hostFindings(ctx.command).recordDamaged();
+        const finding = ctx.findings.recordDamaged();
         throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
       }
     }
@@ -179,7 +181,7 @@ class Recorder {
       (record.app !== plan.app ||
         (projectId !== "" && record.projectId !== "" && record.projectId !== projectId))
     ) {
-      const finding = hostFindings(ctx.command).hostRecordOtherApp(record.app);
+      const finding = ctx.findings.hostRecordOtherApp(record.app);
       throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
     }
     if (record === undefined) {
@@ -401,16 +403,15 @@ async function claimCheck(ctx: Context): Promise<void> {
   try {
     marker = AppMarkerSchema.parse(JSON.parse(text));
   } catch {
-    const finding = hostFindings(ctx.command).markerDamaged();
+    const finding = ctx.findings.markerDamaged();
     throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
   }
   const projectId = planProjectId(ctx.plan);
   if (marker.app === ctx.plan.app && (projectId === "" || marker.projectId === projectId)) return;
-  const findings = hostFindings(ctx.command);
   const finding =
     marker.app === ctx.plan.app
-      ? findings.sameAppOtherProject(marker.app, marker.projectId)
-      : findings.anotherApp(marker.app);
+      ? ctx.findings.sameAppOtherProject(marker.app, marker.projectId)
+      : ctx.findings.anotherApp(marker.app);
   throw new OpsCrewError("PHASE_PRECONDITION", finding.message, { hint: finding.hint });
 }
 
@@ -563,6 +564,7 @@ export async function applyHostPlan(
     version: opts.version ?? HOST_ADAPTER_VERSION,
     now: opts.now ?? (() => new Date()),
     command: opts.command,
+    findings: hostFindings(opts.command),
   };
   const needsRoot = changes.some(({ step }) => runAsOf(step) === "root");
   if (needsRoot) {
@@ -570,8 +572,8 @@ export async function applyHostPlan(
     if (privilege === "sudo-password" || privilege === "none") {
       const finding =
         privilege === "sudo-password"
-          ? hostFindings(ctx.command).sudoNeedsPassword("this login")
-          : hostFindings(ctx.command).noRoot("");
+          ? ctx.findings.sudoNeedsPassword("this login")
+          : ctx.findings.noRoot("");
       throw refuse(finding.message, finding.hint);
     }
     ctx.privilege = privilege;
