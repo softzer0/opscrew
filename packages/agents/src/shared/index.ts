@@ -2,6 +2,7 @@ export * from "./app-env";
 export * from "./files";
 export * from "./provider-text";
 export * from "./remote";
+export * from "./secret-files";
 export * from "./server-address";
 export * from "./ssh-keys";
 export * from "./vps-target";

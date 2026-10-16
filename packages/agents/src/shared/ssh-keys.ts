@@ -1,7 +1,8 @@
 import { createHash, generateKeyPairSync, randomBytes, randomInt } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ProjectPaths } from "@opscrew/core";
+import { readIfExists } from "./files";
 
 export interface Ed25519KeyPair {
   /** `-----BEGIN OPENSSH PRIVATE KEY-----` … (unencrypted openssh-key-v1). */
@@ -73,15 +74,6 @@ export function generateEd25519KeyPair(
   };
 }
 
-async function readIfExists(file: string): Promise<string | undefined> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
 async function writePrivate(file: string, content: string): Promise<void> {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await writeFile(file, content, { mode: 0o600 });
@@ -116,15 +108,6 @@ export async function ensureDeployKey(paths: ProjectPaths): Promise<DeployKey> {
     privateKeyFile: paths.files.deployKey,
     created: true,
   };
-}
-
-/** The OpenTofu state passphrase for this project, created once (32 random bytes, base64url). */
-export async function ensureStatePassphrase(paths: ProjectPaths): Promise<string> {
-  const existing = (await readIfExists(paths.files.statePassphrase))?.trim();
-  if (existing && existing.length >= 16) return existing;
-  const passphrase = randomBytes(32).toString("base64url");
-  await writePrivate(paths.files.statePassphrase, `${passphrase}\n`);
-  return passphrase;
 }
 
 const PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

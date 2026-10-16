@@ -11,6 +11,16 @@ export interface RenderedFileDiff {
 
 const normalise = (text: string) => text.replace(/\r\n/g, "\n");
 
+/** The file's text, or `undefined` when it does not exist; any other read error is thrown. */
+export async function readIfExists(file: string): Promise<string | undefined> {
+  try {
+    return await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 /** Compares rendered files with what is on disk under `root` (line endings ignored). */
 export async function diffRenderedFiles(
   root: string,
@@ -18,12 +28,7 @@ export async function diffRenderedFiles(
 ): Promise<RenderedFileDiff> {
   const diff: RenderedFileDiff = { created: [], changed: [], unchanged: [] };
   for (const file of files) {
-    let current: string | undefined;
-    try {
-      current = await readFile(join(root, file.path), "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    const current = await readIfExists(join(root, file.path));
     if (current === undefined) diff.created.push(file);
     else if (normalise(current) === normalise(file.content)) diff.unchanged.push(file);
     else diff.changed.push(file);

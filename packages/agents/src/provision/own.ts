@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import {
@@ -23,10 +22,13 @@ import type { DeployPlan, OwnDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   addressFromOutputs,
+  ensureSecretFile,
   infrastructureOutputs,
   knownHostsName,
   randomPassword,
+  readSecretFile,
   readServerAddresses,
+  type SecretFile,
   type ServerAddress,
 } from "../shared";
 import {
@@ -86,17 +88,28 @@ export function portainerPasswordFile(paths: Pick<ProjectPaths, "projectHomeDir"
   return join(paths.projectHomeDir, "portainer_password");
 }
 
+/** Portainer's admin password: at least 12 characters (OpsCrew writes 32). */
+function portainerPassword(paths: Pick<ProjectPaths, "projectHomeDir">): SecretFile {
+  const file = portainerPasswordFile(paths);
+  return {
+    file,
+    valid: (value) => value.length >= 12,
+    damaged: {
+      message: `The Portainer admin password OpsCrew keeps for this project (${file}) is damaged, so OpsCrew stopped instead of making a new one: Portainer's admin account may already use it. Nothing was changed.`,
+      hint: "Put the password back from a backup of that file, then run the command again. If Portainer has no admin account yet, delete the file instead: OpsCrew then makes a new password.",
+    },
+  };
+}
+
 /**
  * Portainer's admin password from {@link portainerPasswordFile}, generated on this computer (32
- * random letters and digits, mode 0600) when the file does not exist yet. Never printed.
+ * random letters and digits, mode 0600) when the file does not exist yet; a damaged one stops and
+ * is never replaced. Never printed.
  */
 export async function ensurePortainerPassword(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
 ): Promise<string> {
-  const file = portainerPasswordFile(deps.paths);
-  const existing = (await readFile(file, "utf8").catch(() => "")).trim();
-  const password = existing.length >= 12 ? existing : randomPassword(32);
-  if (password !== existing) await writeFileAtomic(file, `${password}\n`, { mode: 0o600 });
+  const password = await ensureSecretFile(portainerPassword(deps.paths), () => randomPassword(32));
   deps.redactor.addLiteral(password, "portainer-password");
   return password;
 }
@@ -106,18 +119,15 @@ export async function ensurePortainerPassword(
  * (`required`), else the one in {@link portainerPasswordFile} when it is on this computer. Sending
  * it whenever it exists means the first-start Compose file is used, so a Portainer whose earlier
  * first start stopped before the admin existed still gets its admin; Portainer ignores it when an
- * admin exists. `undefined` when it is not required and not on this computer.
+ * admin exists. `undefined` when it is not required and not on this computer; a damaged one stops.
  */
 export async function portainerPasswordToSend(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
   required: boolean,
 ): Promise<string | undefined> {
   if (required) return ensurePortainerPassword(deps);
-  const existing = (
-    await readFile(portainerPasswordFile(deps.paths), "utf8").catch(() => "")
-  ).trim();
-  if (existing.length < 12) return undefined;
-  deps.redactor.addLiteral(existing, "portainer-password");
+  const existing = await readSecretFile(portainerPassword(deps.paths));
+  if (existing !== undefined) deps.redactor.addLiteral(existing, "portainer-password");
   return existing;
 }
 

@@ -1,5 +1,5 @@
 import { randomBytes as nodeRandomBytes, randomUUID as nodeRandomUUID } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import {
@@ -71,13 +71,16 @@ import {
   type AppEnvironment,
   describeDiff,
   diffRenderedFiles,
+  ensureSecretFile,
   ensureStatePassphrase,
   hostListKind,
   infrastructureOutputs,
   type PortainerConnection,
   parseDotenv,
   readPortainerConnection,
+  readSecretFile,
   recordPortainerConnection,
+  type SecretFile,
   STATE_FILE,
   writeRenderedFiles,
 } from "../shared";
@@ -143,27 +146,21 @@ export async function ensurePortainerValueKey(
   randomBytes: (size: number) => Uint8Array = nodeRandomBytes,
 ): Promise<Uint8Array> {
   const file = portainerValueKeyFile(deps.paths);
-  const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  });
-  if (text !== undefined) {
-    const key = Buffer.from(text.trim(), "base64");
-    if (key.length !== 32 || key.toString("base64") !== text.trim()) {
-      throw new OpsCrewError(
-        "ARTIFACT_INVALID",
-        `OpsCrew's value key for your Portainer (${file}) is damaged, so it cannot compare the values in Portainer with this computer's. Nothing was changed.`,
-        {
-          hint: "Delete the file and run `opscrew provision` again: OpsCrew makes a new key and then sends every value to Portainer once more (you approve that plan as usual).",
-        },
-      );
-    }
-    return new Uint8Array(key);
-  }
-  const key = Buffer.from(randomBytes(32));
-  if (key.length !== 32) throw new OpsCrewError("INTERNAL", "The value key must be 32 bytes.");
-  await writeFileAtomic(file, `${key.toString("base64")}\n`, { mode: 0o600 });
-  return new Uint8Array(key);
+  const key = await ensureSecretFile(
+    {
+      file,
+      valid: (text) => {
+        const bytes = Buffer.from(text, "base64");
+        return bytes.length === 32 && bytes.toString("base64") === text;
+      },
+      damaged: {
+        message: `OpsCrew's value key for your Portainer (${file}) is damaged, so it cannot compare the values in Portainer with this computer's. Nothing was changed.`,
+        hint: "Delete the file and run `opscrew provision` again: OpsCrew makes a new key and then sends every value to Portainer once more (you approve that plan as usual).",
+      },
+    },
+    () => Buffer.from(randomBytes(32)).toString("base64"),
+  );
+  return new Uint8Array(Buffer.from(key, "base64"));
 }
 
 /**
@@ -176,27 +173,18 @@ export async function portainerWebhookId(
   options: { create: boolean; randomUUID?: () => string },
 ): Promise<string | undefined> {
   const file = portainerWebhookFile(deps.paths);
-  const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  });
-  let id = text?.trim();
-  if (id !== undefined && !UUID.test(id)) {
-    throw new OpsCrewError(
-      "ARTIFACT_INVALID",
-      `OpsCrew's record of the app stack's webhook (${file}) is damaged. Nothing was changed.`,
-      {
-        hint: "Delete the file and run `opscrew provision` again: OpsCrew makes a new webhook and sets it on the app's stack (you approve that plan as usual).",
-      },
-    );
-  }
-  if (id === undefined) {
-    if (!options.create) return undefined;
-    id = (options.randomUUID ?? nodeRandomUUID)().toLowerCase();
-    if (!UUID.test(id)) throw new OpsCrewError("INTERNAL", "A webhook id must be a UUID.");
-    await writeFileAtomic(file, `${id}\n`, { mode: 0o600 });
-  }
-  deps.redactor.addLiteral(id, "portainer-webhook");
+  const secret: SecretFile = {
+    file,
+    valid: (text) => UUID.test(text),
+    damaged: {
+      message: `OpsCrew's record of the app stack's webhook (${file}) is damaged. Nothing was changed.`,
+      hint: "Delete the file and run `opscrew provision` again: OpsCrew makes a new webhook and sets it on the app's stack (you approve that plan as usual).",
+    },
+  };
+  const id = options.create
+    ? await ensureSecretFile(secret, () => (options.randomUUID ?? nodeRandomUUID)().toLowerCase())
+    : await readSecretFile(secret);
+  if (id !== undefined) deps.redactor.addLiteral(id, "portainer-webhook");
   return id;
 }
 
