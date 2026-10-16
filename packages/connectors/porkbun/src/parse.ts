@@ -126,8 +126,6 @@ export const AvailabilitySchema = z.looseObject({
     .optional(),
 });
 
-export const SingleCheckSchema = z.looseObject({ response: AvailabilitySchema });
-
 /** An empty PHP object arrives as `[]`. */
 const EmptyAsRecord = z.array(z.never()).transform((): Record<string, never> => ({}));
 
@@ -189,10 +187,6 @@ export const DomainSchema = z.looseObject({
 });
 
 export const GetDomainSchema = z.looseObject({ domain: DomainSchema });
-
-export const ListAllSchema = z.looseObject({
-  domains: z.array(DomainSchema).optional(),
-});
 
 export const AutoRenewSchema = z.looseObject({
   results: z

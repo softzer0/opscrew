@@ -73,22 +73,26 @@ describe("PorkbunClient requests", () => {
     expect(fake.calls).toHaveLength(0);
   });
 
-  it("checks one domain and reads its prices", async () => {
+  it("checks a domain and reads its prices", async () => {
     const { porkbun, calls } = client({
-      "POST /domain/checkDomain/shopapp.dev": ok({ response: availability({ minDuration: 2 }) }),
+      "POST /domain/checkDomain": ok({
+        domains: { "shopapp.dev": availability({ minDuration: 2 }) },
+      }),
     });
-    const result = await porkbun.checkDomain("ShopApp.DEV.");
-    expect(calls[0]?.path).toBe("/domain/checkDomain/shopapp.dev");
-    expect(result).toEqual({
-      domain: "shopapp.dev",
-      available: true,
-      premium: false,
-      inYourAccount: false,
-      idnLanguageRequired: false,
-      priceCents: 973,
-      renewalCents: 1037,
-      minYears: 2,
-    });
+    const { results } = await porkbun.checkDomains(["ShopApp.DEV."]);
+    expect(calls[0]?.body).toEqual({ domains: ["shopapp.dev"] });
+    expect(results).toEqual([
+      {
+        domain: "shopapp.dev",
+        available: true,
+        premium: false,
+        inYourAccount: false,
+        idnLanguageRequired: false,
+        priceCents: 973,
+        renewalCents: 1037,
+        minYears: 2,
+      },
+    ]);
   });
 
   it("checks in batches of at most 25, lower case and without duplicates", async () => {
@@ -159,7 +163,7 @@ describe("PorkbunClient requests", () => {
         err(500, "DNSSEC_INFO_UNAVAILABLE", "Registry did not answer.", {
           next_action: { type: "retry", hint: "Retry.", retryable: true },
         }),
-        { throws: new TypeError("fetch failed") },
+        { error: new TypeError("fetch failed") },
         ok({ records: [] }),
       ],
     });
@@ -267,7 +271,6 @@ describe("PorkbunClient.createDomain", () => {
     });
     const created = await porkbun.createDomain("ShopApp.dev", options);
     expect(created).toEqual({
-      dryRun: false,
       domain: "shopapp.dev",
       costCents: 973,
       orderId: "12345678",
@@ -294,9 +297,8 @@ describe("PorkbunClient.createDomain", () => {
         message: "Not enough credit.",
       }),
     });
-    const preview = await porkbun.createDomain("shopapp.dev", { costCents: 0, dryRun: true });
+    const preview = await porkbun.previewDomain("shopapp.dev");
     expect(preview).toEqual({
-      dryRun: true,
       domain: "shopapp.dev",
       costCents: 973,
       years: 1,
@@ -424,8 +426,8 @@ describe("PorkbunClient.createDomain", () => {
   });
 
   const ambiguous: [string, FakeRoute][] = [
-    ["a network failure", { throws: new TypeError("fetch failed") }],
-    ["a timeout", { throws: new DOMException("The operation timed out.", "TimeoutError") }],
+    ["a network failure", { error: new TypeError("fetch failed") }],
+    ["a timeout", { error: new DOMException("The operation timed out.", "TimeoutError") }],
     ["a server error", err(500, "ORDER_FAILED", "Internal error.")],
     ["a bare 502", { status: 502, text: "<html>Bad gateway</html>" }],
     ["an unreadable success", { status: 200, text: "not json" }],
@@ -486,20 +488,6 @@ describe("PorkbunClient domains", () => {
     expect(await porkbun.getDomain("absent.com")).toBeUndefined();
     const error = await failure(porkbun.getDomain("broken.com"));
     expect(error.code).toBe("PROVIDER_ERROR");
-  });
-
-  it("lists every domain page by page", async () => {
-    const page = (n: number, from: number) =>
-      Array.from({ length: n }, (_, i) => ({ domain: `d${from + i}.com`, autoRenew: 1 }));
-    const { porkbun, calls } = client({
-      "POST /domain/listAll": [
-        ok({ count: 1000, domains: page(1000, 0) }),
-        ok({ count: 2, domains: page(2, 1000) }),
-      ],
-    });
-    const all = await porkbun.listAll();
-    expect(all).toHaveLength(1002);
-    expect(calls.map((c) => c.body?.start)).toEqual([0, 1000]);
   });
 
   it("updates auto-renew with an idempotency key and reports a per-domain failure", async () => {

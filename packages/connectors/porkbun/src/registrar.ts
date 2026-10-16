@@ -12,7 +12,7 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, listText, OpsCrewError } from "@opscrew/core";
 import type {
   PorkbunAvailability,
   PorkbunClient,
@@ -34,9 +34,9 @@ export type PorkbunRegistrarApi = Pick<
   | "sandbox"
   | "ping"
   | "balance"
-  | "checkDomain"
   | "checkDomains"
   | "registrationRequirements"
+  | "previewDomain"
   | "createDomain"
   | "getDomain"
   | "updateAutoRenew"
@@ -81,12 +81,6 @@ function websiteThenConnect(domain: string): string {
 
 function isPorkbunNameserver(host: string): boolean {
   return host === "porkbun.com" || host.endsWith(".porkbun.com");
-}
-
-/** Joins phrases as "a, b and c". */
-function list(items: readonly string[]): string {
-  if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }
 
 /**
@@ -218,53 +212,57 @@ export class PorkbunRegistrar implements Registrar {
     return pending;
   }
 
-  /** Live availability and prices; unanswered names are checked once more. */
+  /** Live availability and prices, in one bulk check per 25 names. */
   async check(domains: readonly string[]): Promise<DomainCheck[]> {
+    return (await this.#check(domains)).map((c) => c.check);
+  }
+
+  /** {@link check}, with Porkbun's availability item for each name it answered. */
+  async #check(
+    domains: readonly string[],
+  ): Promise<{ check: DomainCheck; item?: PorkbunAvailability }[]> {
     const names: string[] = [];
-    const invalidNames: DomainCheck[] = [];
+    const invalidNames: { check: DomainCheck }[] = [];
     for (const raw of domains) {
       const name = raw.trim().toLowerCase().replace(/\.$/, "");
       if (isDomainName(name)) names.push(name);
-      else
+      else {
         invalidNames.push({
-          domain: name,
-          registrable: false,
-          reason: "This is not a domain name.",
+          check: { domain: name, registrable: false, reason: "This is not a domain name." },
         });
+      }
     }
     const unique = [...new Set(names)];
     if (unique.length === 0) return invalidNames;
-    const first = await this.#client.checkDomains(unique);
-    const results = new Map(first.results.map((r) => [r.domain, r]));
-    const reasons = new Map(first.invalid.map((i) => [i.domain, i.reason]));
-    let missing = unique.filter((n) => !results.has(n) && !reasons.has(n));
-    if (missing.length > 0) {
-      const again = await this.#client.checkDomains(missing);
-      for (const r of again.results) results.set(r.domain, r);
-      for (const i of again.invalid) reasons.set(i.domain, i.reason);
-      missing = missing.filter((n) => !results.has(n) && !reasons.has(n));
-    }
-    const out: DomainCheck[] = [];
+    const answer = await this.#client.checkDomains(unique);
+    const results = new Map(answer.results.map((r) => [r.domain, r]));
+    const reasons = new Map(answer.invalid.map((i) => [i.domain, i.reason]));
+    const out: { check: DomainCheck; item?: PorkbunAvailability }[] = [];
     for (const name of unique) {
       const item = results.get(name);
+      const reason = reasons.get(name);
       if (item) {
         let requirements: PorkbunTldRequirements | undefined;
         if (item.available && !item.premium) {
           requirements = await this.#requirementsFor(tldOf(name)).catch(() => undefined);
         }
-        out.push(toDomainCheck(item, requirements));
-      } else if (reasons.has(name)) {
-        const why = (reasons.get(name) ?? "").trim().replace(/\.$/, "");
+        out.push({ check: toDomainCheck(item, requirements), item });
+      } else if (reason !== undefined) {
+        const why = reason.trim().replace(/\.$/, "");
         out.push({
-          domain: name,
-          registrable: false,
-          reason: `Porkbun cannot check this name: ${why}.`,
+          check: {
+            domain: name,
+            registrable: false,
+            reason: `Porkbun cannot check this name: ${why}.`,
+          },
         });
       } else {
         out.push({
-          domain: name,
-          registrable: false,
-          reason: "The registry did not answer in time; try again in a minute.",
+          check: {
+            domain: name,
+            registrable: false,
+            reason: "The registry did not answer in time; try again in a minute.",
+          },
         });
       }
     }
@@ -288,9 +286,9 @@ export class PorkbunRegistrar implements Registrar {
 
   /**
    * The exact price of registering `domain` now, for the registry-minimum term (Porkbun cannot
-   * register more years at once), from a live check and a dry run that charges nothing. Refuses
-   * premium, taken and website-only names, and stops when the account's credit or monthly API
-   * spend limit would refuse the purchase.
+   * register more years at once), from a live {@link check} and a dry run that charges nothing. A
+   * domain the check cannot sell (premium, taken, website-only …) stops with its reason, and so
+   * does a purchase the account's credit or monthly API spend limit would refuse.
    */
   async quote(domain: string, years: number): Promise<RegistrationQuote> {
     const name = normalizeDomain(domain);
@@ -303,39 +301,16 @@ export class PorkbunRegistrar implements Registrar {
         },
       );
     }
-    const item = await this.#client.checkDomain(name);
-    if (!item.available) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `${name} is not available for registration at Porkbun. ${unavailableReason(item, undefined) ?? ""}`.trim(),
-        { hint: "Pick another name (`opscrew domain search <name>`)." },
-      );
-    }
-    if (item.premium) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `${name} is a premium domain; Porkbun sells premium names only on its website.`,
-        { hint: websiteThenConnect(name) },
-      );
-    }
-    const requirements = await this.#requirementsFor(tldOf(name));
-    if (!requirements.apiRegisterable) {
-      const why = requirements.reason?.trim().replace(/\.$/, "");
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `Porkbun does not register .${requirements.tld} domains through its API${why ? ` (${why})` : ""}.`,
-        { hint: websiteThenConnect(name) },
-      );
-    }
-    const reason = unavailableReason(item, requirements);
-    if (reason !== undefined) {
+    const [checked] = await this.#check([name]);
+    if (!checked?.check.registrable || !checked.item) {
       throw new OpsCrewError("PHASE_PRECONDITION", `Porkbun cannot sell ${name} through its API.`, {
-        hint: reason,
+        hint: checked?.check.reason ?? "Porkbun did not check the domain.",
       });
     }
-    requireTerm(name, years, Math.max(item.minYears, requirements.termYears ?? 1));
+    const requirements = await this.#requirementsFor(tldOf(name));
+    requireTerm(name, years, Math.max(checked.item.minYears, requirements.termYears ?? 1));
     await this.#paceCreate();
-    const preview = await this.#client.createDomain(name, { costCents: 0, dryRun: true });
+    const preview = await this.#client.previewDomain(name);
     if (preview.years !== undefined) requireTerm(name, years, preview.years);
     if (!(preview.costCents > 0)) {
       throw new OpsCrewError(
@@ -371,10 +346,8 @@ export class PorkbunRegistrar implements Registrar {
         { hint: `Look at the account at ${PORKBUN_DASHBOARD_URL}.` },
       );
     }
-    return {
-      price: usd(preview.costCents),
-      ...(item.renewalCents !== undefined ? { renewal: usd(item.renewalCents) } : {}),
-    };
+    const { renewal } = checked.check;
+    return { price: usd(preview.costCents), ...(renewal ? { renewal } : {}) };
   }
 
   /** Registration is synchronous: a domain in the account is registered. */
@@ -519,7 +492,7 @@ export class PorkbunRegistrar implements Registrar {
     const sandbox = this.#client.sandbox
       ? " These are sandbox keys: nothing is really bought."
       : "";
-    const can = list([
+    const can = listText([
       "checking domains and prices, and reading DNS records and DNSSEC",
       ...allowed.map((f) => f.feature),
     ]);
@@ -529,8 +502,8 @@ export class PorkbunRegistrar implements Registrar {
       message = `The Porkbun API keys work${who}, but Porkbun did not say which permissions they have, so buying domains (the purchase permission) and changing nameservers, auto-renew and DNSSEC (the domains permission) may be refused.${sandbox}`;
       fix = `Check the key's permissions at ${PORKBUN_API_SETTINGS_URL} (the gear icon next to the key): OpsCrew needs purchase and domains.`;
     } else if (missing.length > 0) {
-      const names = list(missing.map((f) => f.scope));
-      message += ` They do not allow ${list(missing.map((f) => `${f.feature} (the ${f.scope} permission)`))}.`;
+      const names = listText(missing.map((f) => f.scope));
+      message += ` They do not allow ${listText(missing.map((f) => `${f.feature} (the ${f.scope} permission)`))}.`;
       fix = `Give the key the ${names} ${missing.length === 1 ? "permission" : "permissions"} at ${PORKBUN_API_SETTINGS_URL} (the gear icon next to the key), or create a key that has ${missing.length === 1 ? "it" : "them"}.`;
     }
     // Without `domains` the key cannot switch nameservers, set auto-renew or change DNSSEC, which

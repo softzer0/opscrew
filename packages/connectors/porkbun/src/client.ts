@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DsRecord, FetchLike } from "@opscrew/contracts";
-import { type ErrorCode, OpsCrewError } from "@opscrew/core";
+import { type ErrorCode, maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import type { z } from "zod";
 import {
   AutoRenewSchema,
@@ -13,14 +13,12 @@ import {
   type Envelope,
   EnvelopeSchema,
   GetDomainSchema,
-  ListAllSchema,
   NsSchema,
   normalizeDomain,
   PingSchema,
   PreviewSchema,
   RecordsSchema,
   RequirementsSchema,
-  SingleCheckSchema,
   toCents,
   toDsRecords,
   toFlag,
@@ -48,8 +46,6 @@ const MAX_RETRIES = 2;
 const MAX_WAIT_MS = 30_000;
 const READ_TIMEOUT_MS = 30_000;
 const CREATE_TIMEOUT_MS = 120_000;
-const LIST_PAGE_SIZE = 1000;
-const MAX_LIST_PAGES = 100;
 
 /** True for Porkbun sandbox API keys (`pk1_sb_…`): nothing real is bought or changed. */
 export function isPorkbunSandboxKey(apiKey: string): boolean {
@@ -109,16 +105,16 @@ export interface PorkbunTldRequirements {
 }
 
 /**
- * A registration. `costCents` must equal Porkbun's current price for the minimum term. A real
- * purchase needs an `idempotencyKey` (stable for one purchase); a dry run sends none, so it never
- * claims the purchase's key with a different body.
+ * A registration. `costCents` must equal Porkbun's current price for the minimum term, and the
+ * `idempotencyKey` is stable for one purchase.
  */
-export type PorkbunCreateOptions =
-  | { costCents: number; idempotencyKey: string; whoisPrivacy?: boolean; dryRun?: false }
-  | { costCents: number; idempotencyKey?: string; whoisPrivacy?: boolean; dryRun: true };
+export interface PorkbunCreateOptions {
+  costCents: number;
+  idempotencyKey: string;
+  whoisPrivacy?: boolean;
+}
 
 export interface PorkbunCreated {
-  dryRun: false;
   domain: string;
   costCents?: number;
   orderId: string;
@@ -126,7 +122,6 @@ export interface PorkbunCreated {
 }
 
 export interface PorkbunCreatePreview {
-  dryRun: true;
   domain: string;
   /** The exact charge in cents. */
   costCents: number;
@@ -174,19 +169,11 @@ interface CallOptions {
   /** Settings change: sent with an idempotency key, so retrying it is safe. */
   write?: boolean;
   domain?: string;
-  /** A 404 `DOMAIN_NOT_FOUND` throws {@link NotFound} instead of a user-facing error. */
-  notFoundIsAbsent?: boolean;
+  /** A 404 `DOMAIN_NOT_FOUND` (the domain is not in the account) answers `undefined`. */
+  absentOnNotFound?: boolean;
 }
 
 class NetworkFailure extends Error {}
-
-function ensureInteger(value: number, what: string, min: number): void {
-  if (!Number.isInteger(value) || value < min) {
-    throw new OpsCrewError("INVALID_INPUT", `${what} must be a whole number of cents.`, {
-      hint: "Take the price from a fresh Porkbun quote.",
-    });
-  }
-}
 
 /**
  * Typed client for the Porkbun API v3. Authenticates with the `X-API-Key` and `X-Secret-API-Key`
@@ -296,7 +283,8 @@ export class PorkbunClient {
   /**
    * A read or a settings change: retried after a rate limit, a 5xx answer, a network failure or an
    * error Porkbun marks `retryable` (settings changes carry one idempotency key across retries).
-   * Returns the JSON of a `SUCCESS` answer; anything else becomes a plain {@link OpsCrewError}.
+   * Returns the JSON of a `SUCCESS` answer (`undefined` for an absent domain when
+   * `absentOnNotFound` is set); anything else becomes a plain {@link OpsCrewError}.
    */
   async #call(what: string, path: string, options: CallOptions = {}): Promise<unknown> {
     const method = options.method ?? "POST";
@@ -341,11 +329,11 @@ export class PorkbunClient {
         );
       }
       if (
-        options.notFoundIsAbsent &&
+        options.absentOnNotFound &&
         answer.status === 404 &&
         answer.envelope.code === "DOMAIN_NOT_FOUND"
       ) {
-        throw new NotFound();
+        return undefined;
       }
       throw this.#problem(porkbunProblem(answer.status, answer.envelope, ctx));
     }
@@ -392,19 +380,6 @@ export class PorkbunClient {
       throw this.#error("PROVIDER_ERROR", "Porkbun returned an unreadable account balance.");
     }
     return cents;
-  }
-
-  /** Live availability and prices of one domain (10 checks per 10 seconds per account). */
-  async checkDomain(domain: string): Promise<PorkbunAvailability> {
-    const name = normalizeDomain(domain);
-    const what = `check ${name}`;
-    const raw = await this.#get(
-      what,
-      `/domain/checkDomain/${encodeURIComponent(name)}`,
-      SingleCheckSchema,
-      { domain: name },
-    );
-    return toAvailability(name, raw.response);
   }
 
   /** Live availability of many domains, in batches of at most 25 (duplicates removed). */
@@ -459,48 +434,45 @@ export class PorkbunClient {
   }
 
   /**
-   * Registers `domain` for the registry-minimum term (billable, non-refundable), or previews it
-   * with `dryRun`. Sends `agreeToTerms: "yes"` and `cost` in cents. A real purchase sends its
-   * `Idempotency-Key` and is never retried. Only a clear refusal (a Porkbun error answer with a
-   * 4xx status and a code from {@link PURCHASE_REJECTION_CODES}) is reported as such:
-   * `CREDENTIALS_INVALID` or `PHASE_PRECONDITION`, saying nothing was bought. Every other unusable
-   * answer — no connection, a timeout, a 5xx, an unreadable body, an idempotency conflict, an
-   * unknown code — is `PROVIDER_ERROR` saying the purchase may still have started.
+   * Previews registering `domain` for the registry-minimum term with a dry run that charges
+   * nothing: the exact cost, the term and whether the account's credit and spend limit cover it.
+   * Sends no idempotency key, so it never claims a purchase's key with a different body.
    */
-  createDomain(
-    domain: string,
-    options: PorkbunCreateOptions & { dryRun: true },
-  ): Promise<PorkbunCreatePreview>;
-  createDomain(
-    domain: string,
-    options: PorkbunCreateOptions & { dryRun?: false },
-  ): Promise<PorkbunCreated>;
-  async createDomain(
-    domain: string,
-    options: PorkbunCreateOptions,
-  ): Promise<PorkbunCreated | PorkbunCreatePreview> {
+  async previewDomain(domain: string): Promise<PorkbunCreatePreview> {
     const name = normalizeDomain(domain);
-    const body: Record<string, unknown> = { cost: options.costCents, agreeToTerms: "yes" };
-    if (options.whoisPrivacy !== undefined) body.whoisPrivacy = options.whoisPrivacy;
-    if (options.dryRun === true) {
-      ensureInteger(options.costCents, "The cost", 0);
-      body.dryRun = true;
-      const what = `preview the registration of ${name}`;
-      const raw = await this.#get(
-        what,
-        `/domain/create/${encodeURIComponent(name)}`,
-        PreviewSchema,
-        { body, domain: name },
-      );
-      return toPreview(name, raw);
+    const raw = await this.#get(
+      `preview the registration of ${name}`,
+      `/domain/create/${encodeURIComponent(name)}`,
+      PreviewSchema,
+      { body: { cost: 0, agreeToTerms: "yes", dryRun: true }, domain: name },
+    );
+    return toPreview(name, raw);
+  }
+
+  /**
+   * Registers `domain` for the registry-minimum term (billable, non-refundable). Sends
+   * `agreeToTerms: "yes"`, `cost` in cents and the purchase's `Idempotency-Key`, and is never
+   * retried. Only a clear refusal (a Porkbun error answer with a 4xx status and a code from
+   * {@link PURCHASE_REJECTION_CODES}) is reported as such: `CREDENTIALS_INVALID` or
+   * `PHASE_PRECONDITION`, saying nothing was bought. Every other unusable answer — no connection,
+   * a timeout, a 5xx, an unreadable body, an idempotency conflict, an unknown code — is
+   * `PROVIDER_ERROR` saying the purchase may still have started.
+   */
+  async createDomain(domain: string, options: PorkbunCreateOptions): Promise<PorkbunCreated> {
+    const name = normalizeDomain(domain);
+    if (!Number.isInteger(options.costCents) || options.costCents < 1) {
+      throw new OpsCrewError("INVALID_INPUT", "The cost must be a whole number of cents.", {
+        hint: "Take the price from a fresh Porkbun quote.",
+      });
     }
-    ensureInteger(options.costCents, "The cost", 1);
-    if (!options.idempotencyKey?.trim()) {
+    if (!options.idempotencyKey.trim()) {
       throw new OpsCrewError(
         "INVALID_INPUT",
         "A Porkbun purchase needs an idempotency key, so it can never be bought twice.",
       );
     }
+    const body: Record<string, unknown> = { cost: options.costCents, agreeToTerms: "yes" };
+    if (options.whoisPrivacy !== undefined) body.whoisPrivacy = options.whoisPrivacy;
     return this.#purchase(name, body, options.idempotencyKey.trim());
   }
 
@@ -510,11 +482,12 @@ export class PorkbunClient {
     idempotencyKey: string,
   ): Promise<PorkbunCreated> {
     const uncertain = (detail: string) =>
-      this.#error(
-        "PROVIDER_ERROR",
-        `Porkbun gave no clear answer while registering ${domain} (${detail}). The purchase may still have started; check before trying again.`,
-        `Look for ${domain} in your Porkbun account at ${PORKBUN_DASHBOARD_URL} (or run \`opscrew domain status\`) before buying it again.`,
-      );
+      maybeStarted({
+        registrar: "Porkbun",
+        domain,
+        detail: this.#scrub(detail),
+        dashboard: PORKBUN_DASHBOARD_URL,
+      });
     let answer: Answer;
     try {
       answer = await this.#send(
@@ -554,7 +527,6 @@ export class PorkbunClient {
     const costCents = toNumber(raw.data.cost);
     const balanceCents = toNumber(raw.data.balance);
     return {
-      dryRun: false,
       domain: raw.data.domain?.toLowerCase() ?? domain,
       ...(costCents !== undefined ? { costCents } : {}),
       orderId: String(raw.data.orderId),
@@ -565,32 +537,15 @@ export class PorkbunClient {
   /** The account's domain; undefined only when Porkbun says it is not in the account. */
   async getDomain(domain: string): Promise<PorkbunDomain | undefined> {
     const name = normalizeDomain(domain);
-    try {
-      const raw = await this.#get(
-        `read ${name}`,
-        `/domain/get/${encodeURIComponent(name)}`,
-        GetDomainSchema,
-        { method: "GET", domain: name, notFoundIsAbsent: true },
-      );
-      return toDomain(raw.domain);
-    } catch (error) {
-      if (error instanceof NotFound) return undefined;
-      throw error;
-    }
-  }
-
-  /** Every domain in the account (pages of 1000). */
-  async listAll(): Promise<PorkbunDomain[]> {
-    const out: PorkbunDomain[] = [];
-    for (let page = 0; page < MAX_LIST_PAGES; page++) {
-      const raw = await this.#get("list the account's domains", "/domain/listAll", ListAllSchema, {
-        body: { start: page * LIST_PAGE_SIZE },
-      });
-      const domains = raw.domains ?? [];
-      out.push(...domains.map(toDomain));
-      if (domains.length < LIST_PAGE_SIZE) break;
-    }
-    return out;
+    const what = `read ${name}`;
+    const json = await this.#call(what, `/domain/get/${encodeURIComponent(name)}`, {
+      method: "GET",
+      domain: name,
+      absentOnNotFound: true,
+    });
+    return json === undefined
+      ? undefined
+      : toDomain(this.#parse(GetDomainSchema, json, what).domain);
   }
 
   /** Turns auto-renew on or off for one domain. */
@@ -623,13 +578,13 @@ export class PorkbunClient {
       NsSchema,
       { domain: name },
     );
-    return (raw.ns ?? []).map(normalizeHost);
+    return (raw.ns ?? []).map(normalizeHostName);
   }
 
   /** Sets the domain's nameservers at the registry. */
   async updateNs(domain: string, nameservers: readonly string[]): Promise<void> {
     const name = normalizeDomain(domain);
-    const ns = [...new Set(nameservers.map(normalizeHost))].filter(Boolean);
+    const ns = [...new Set(nameservers.map(normalizeHostName))].filter(Boolean);
     if (ns.length === 0) {
       throw new OpsCrewError("INVALID_INPUT", `No nameservers were given for ${name}.`, {
         hint: "Pass the nameservers of the DNS provider, for example the two Cloudflare names.",
@@ -714,13 +669,6 @@ export class PorkbunClient {
   }
 }
 
-/** A 404 `DOMAIN_NOT_FOUND`: the domain is not in the account. */
-class NotFound extends Error {}
-
-function normalizeHost(host: string): string {
-  return host.trim().toLowerCase().replace(/\.$/, "");
-}
-
 function toAvailability(
   domain: string,
   item: z.infer<typeof AvailabilitySchema>,
@@ -746,7 +694,6 @@ function toPreview(domain: string, raw: z.infer<typeof PreviewSchema>): PorkbunC
   const balanceCents = toNumber(raw.balance);
   const shortfallCents = toNumber(raw.shortfall);
   return {
-    dryRun: true,
     domain: raw.domain?.toLowerCase() ?? domain,
     costCents,
     ...(years !== undefined ? { years } : {}),

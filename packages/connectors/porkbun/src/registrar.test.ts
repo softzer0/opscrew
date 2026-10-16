@@ -77,20 +77,17 @@ describe("PorkbunRegistrar", () => {
 
   it("checks names live: available, premium, taken, unresolved and not via the API", async () => {
     const { registrar, calls } = setup({
-      "POST /domain/checkDomain": [
-        ok({
-          domains: {
-            "shopapp.dev": availability(),
-            "rich.dev": availability({ premium: "yes", price: "1200.00" }),
-            "taken.dev": availability({ avail: "no" }),
-            "mine.dev": availability({ avail: "no", inYourAccount: true }),
-            "shopapp.us": availability(),
-          },
-          unresolved: ["slow.dev"],
-          invalid: [{ domain: "shopapp.notatld", reason: "Invalid domain name." }],
-        }),
-        ok({ domains: {}, unresolved: ["slow.dev"], invalid: [] }),
-      ],
+      "POST /domain/checkDomain": ok({
+        domains: {
+          "shopapp.dev": availability(),
+          "rich.dev": availability({ premium: "yes", price: "1200.00" }),
+          "taken.dev": availability({ avail: "no" }),
+          "mine.dev": availability({ avail: "no", inYourAccount: true }),
+          "shopapp.us": availability(),
+        },
+        unresolved: ["slow.dev"],
+        invalid: [{ domain: "shopapp.notatld", reason: "Invalid domain name." }],
+      }),
       "GET /domain/getRegistrationRequirements/dev": comRequirements,
       "GET /domain/getRegistrationRequirements/us": ok({
         tld: "us",
@@ -124,8 +121,8 @@ describe("PorkbunRegistrar", () => {
     expect(by["slow.dev"]).toMatchObject({ registrable: false });
     expect(by["slow.dev"]?.reason).toContain("try again");
     expect(by["shopapp.notatld"]?.reason).toContain("Invalid domain name");
-    // The unresolved name is checked once more; requirements are fetched once per extension.
-    expect(calls.filter((c) => c.path === "/domain/checkDomain")).toHaveLength(2);
+    // One bulk check; requirements are fetched once per extension.
+    expect(calls.filter((c) => c.path === "/domain/checkDomain")).toHaveLength(1);
     expect(calls.filter((c) => c.path.includes("Requirements/dev"))).toHaveLength(1);
   });
 
@@ -157,7 +154,7 @@ describe("PorkbunRegistrar", () => {
   describe("quote", () => {
     it("returns the exact price of the minimum term and the renewal", async () => {
       const { registrar, calls } = setup({
-        "POST /domain/checkDomain/shopapp.dev": ok({ response: availability() }),
+        "POST /domain/checkDomain": ok({ domains: { "shopapp.dev": availability() } }),
         "GET /domain/getRegistrationRequirements/dev": comRequirements,
         "POST /domain/create/shopapp.dev": ok({
           dryRun: true,
@@ -177,7 +174,7 @@ describe("PorkbunRegistrar", () => {
 
     it("refuses more years than the registry minimum", async () => {
       const { registrar } = setup({
-        "POST /domain/checkDomain/shopapp.dev": ok({ response: availability() }),
+        "POST /domain/checkDomain": ok({ domains: { "shopapp.dev": availability() } }),
         "GET /domain/getRegistrationRequirements/dev": comRequirements,
       });
       const error = await failure(registrar.quote("shopapp.dev", 2));
@@ -188,8 +185,8 @@ describe("PorkbunRegistrar", () => {
 
     it("quotes the whole minimum term of a two-year extension", async () => {
       const { registrar } = setup({
-        "POST /domain/checkDomain/shopapp.ai": ok({
-          response: availability({ price: "70.00", minDuration: 2 }),
+        "POST /domain/checkDomain": ok({
+          domains: { "shopapp.ai": availability({ price: "70.00", minDuration: 2 }) },
         }),
         "GET /domain/getRegistrationRequirements/ai": ok({
           tld: "ai",
@@ -216,9 +213,13 @@ describe("PorkbunRegistrar", () => {
 
     it("refuses premium, taken and website-only names plainly", async () => {
       const { registrar } = setup({
-        "POST /domain/checkDomain/rich.dev": ok({ response: availability({ premium: "yes" }) }),
-        "POST /domain/checkDomain/taken.dev": ok({ response: availability({ avail: "no" }) }),
-        "POST /domain/checkDomain/shopapp.us": ok({ response: availability() }),
+        "POST /domain/checkDomain": ok({
+          domains: {
+            "rich.dev": availability({ premium: "yes" }),
+            "taken.dev": availability({ avail: "no" }),
+            "shopapp.us": availability(),
+          },
+        }),
         "GET /domain/getRegistrationRequirements/dev": comRequirements,
         "GET /domain/getRegistrationRequirements/us": ok({
           tld: "us",
@@ -228,18 +229,20 @@ describe("PorkbunRegistrar", () => {
       });
       const premium = await failure(registrar.quote("rich.dev", 1));
       expect(premium.code).toBe("PHASE_PRECONDITION");
-      expect(premium.message).toContain("premium");
+      expect(premium.message).toBe("Porkbun cannot sell rich.dev through its API.");
+      expect(premium.hint).toContain("premium");
       expect(premium.hint).toContain("opscrew domain connect rich.dev");
       const taken = await failure(registrar.quote("taken.dev", 1));
-      expect(taken.message).toContain("not available");
+      expect(taken.code).toBe("PHASE_PRECONDITION");
+      expect(taken.hint).toContain("already registered by someone else");
       const us = await failure(registrar.quote("shopapp.us", 1));
-      expect(us.message).toContain("nexus");
+      expect(us.hint).toContain("nexus");
       expect(us.hint).toContain("opscrew domain connect shopapp.us");
     });
 
     it("stops before the approval when the credit or the spend limit does not cover it", async () => {
       const { registrar } = setup({
-        "POST /domain/checkDomain/shopapp.dev": ok({ response: availability() }),
+        "POST /domain/checkDomain": ok({ domains: { "shopapp.dev": availability() } }),
         "GET /domain/getRegistrationRequirements/dev": comRequirements,
         "POST /domain/create/shopapp.dev": ok({
           dryRun: true,
@@ -297,7 +300,7 @@ describe("PorkbunRegistrar", () => {
 
     it("waits out Porkbun's one-create-per-second limit after a fresh quote", async () => {
       const { registrar, calls, clock } = setup({
-        "POST /domain/checkDomain/shopapp.dev": ok({ response: availability() }),
+        "POST /domain/checkDomain": ok({ domains: { "shopapp.dev": availability() } }),
         "GET /domain/getRegistrationRequirements/dev": comRequirements,
         "POST /domain/create/shopapp.dev": [
           ok({ dryRun: true, wouldSucceed: true, domain: "shopapp.dev", duration: 1, cost: 973 }),
@@ -316,7 +319,7 @@ describe("PorkbunRegistrar", () => {
 
     it("does not wait when a second has passed since the quote", async () => {
       const { registrar, clock } = setup({
-        "POST /domain/checkDomain/shopapp.dev": ok({ response: availability() }),
+        "POST /domain/checkDomain": ok({ domains: { "shopapp.dev": availability() } }),
         "GET /domain/getRegistrationRequirements/dev": comRequirements,
         "POST /domain/create/shopapp.dev": [
           ok({ dryRun: true, wouldSucceed: true, domain: "shopapp.dev", duration: 1, cost: 973 }),
