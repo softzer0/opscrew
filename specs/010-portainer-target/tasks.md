@@ -166,9 +166,116 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
 
 - [ ] T1009 Live run, core pass (founder, 2026-10-15: the full matrix took about 2 hours): setup, updater + tunnel, one merged change deploying by itself with the unchanged-branch webhook check, destroy keeping data, `--delete-data`, the leak check; results in `docs/e2e.md` (lead). The other steps (caddy, proxy, cloudflare redeploy, rollback wait, loopback, short host, MCP) stay in the test behind `OPSCREW_E2E_PORTAINER_STEPS=full`
 
+## Phase 6: Simplification of features 000–010 (founder, 2026-10-16)
+
+From the whole-codebase review in `simplification.md`. Every task follows the rules at its top:
+behaviour, tests and rendered output unchanged unless a line says otherwise; the safety core not
+weakened; DECIDED items done as decided; KEEP items kept. Each task fixes its area's bugs first,
+each with a test that fails without the fix.
+
+- [ ] T1020 Core, contracts, plan-schema, runtime, engine and detect (Area 11), plus the shared helpers later tasks use
+  - Owns: `packages/{core,contracts,plan-schema,runtime-claude,iac-engine,detect}/src/**` (+ tests, regenerated `schemas/*.json`); the contract removals and the two new dependencies (plan-schema and detect on core) are lead-approved here; the lead edits `package.json` files and the lockfile
+  - Reads: `simplification.md` Area 11, Totals, and the KEEP lists of every area; `docs/adr/` for the ADR format
+  - Depends: T1009
+  - Accept: the redaction gap first: one `isSecretEnvName` used by `env.ts` and `redact.ts`, so values of names such as `DJANGO_SECRET_KEY` and `MINIO_ACCESS_KEY` are masked in engine logs (test). Then Area 11: the in-process tool path and `Connector.tools()` removed from the contracts and runtime (the policy denies every `mcp__` tool); one approval-check table in core with the same messages; the stale "Portainer not yet" constants; `requirements.provider` required; plan-schema refinements typed from the object schema; plan-schema and detect use core's `writeFileAtomic` and `OpsCrewError`; zod for the engine's plan JSON; the unused fields, provider ids, exports and options. Added to core for later tasks: `canonicalJson`, `sha256Hex`, `isRecord`, `listText`/`plural`, `normalizeHostName`, one `redactDeep`, `maybeStarted`, the token pattern list secops can reuse, `requestJson` + `pollAction` (a timeout on every request; only idempotent requests retried after a 5xx, a timeout or a lost connection; the 429 rule as Hetzner and DigitalOcean have it today), and `fakeFetch` in `@opscrew/core/testing`. ADR 0013 records the removed surfaces.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/contracts --filter=@opscrew/plan-schema --filter=@opscrew/runtime-claude --filter=@opscrew/iac-engine --filter=@opscrew/detect --filter=@opscrew/agents --filter=@opscrew/secops`
+  - Effort: xhigh
+
+- [ ] T1021 [P] Connectors ssh-host and portainer (Area 6)
+  - Owns: `packages/connectors/{ssh-host,portainer}/src/**` (+ tests)
+  - Reads: Area 6; core's root exports
+  - Depends: T1020
+  - Accept: Area 6, with the KEEP list untouched: one `scripts({...})` factory in `steps.ts`; core's `canonicalJson`/`sha256Hex`; IPv4-only CIDR handling; required `HostFacts` fields; types from the zod schemas; one roles table; teardown's `app` required; `HostApplyError` (like `StackApplyError`) instead of `withApplied`; `redactError` returns a new error; no checks the types rule out; unused exports and fact fields removed; the sshd drop-in passed like fail2ban's; one dead-man preamble; one `write_file`; the small copies merged; `isPublicAddress` (with 0.0.0.0/8) and the Docker architecture mapping exported for agents. Rendered scripts byte-identical unless Area 6 says otherwise.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/connector-portainer --filter=@opscrew/agents`
+  - Effort: xhigh
+
+- [ ] T1022 [P] The other connectors (Area 7)
+  - Owns: `packages/connectors/{cloudflare,digitalocean,github,godaddy,hetzner,namecheap,porkbun}/src/**` (+ tests)
+  - Reads: Area 7; Area 1 and Area 5 (the hand-written Cloudflare clients agents will drop); core's root exports
+  - Depends: T1020
+  - Accept: the GoDaddy bug first: `check()` matches results by domain name only (test). Then Area 7: Hetzner and DigitalOcean on core's `requestJson`/`pollAction`, and Cloudflare, GoDaddy and GitHub gain the request timeout; `tools()` and its definitions removed; the abort-race wrappers removed (the fakes honour the signal); dead methods and exports removed; tests on core's `fakeFetch`; one Cloudflare `#get`; DECIDED: only the live-confirmed Cloudflare not-found answers (anything else fails closed); only documented and live-seen Registrar fields; core's domain helpers and `maybeStarted`; Porkbun `previewDomain`; `quote()` reusing `check()`; the agreement types carried in the quote; `detectPublicIpv4` moved to Namecheap; the smaller items. New Cloudflare client methods agents need: Access organizations, Access identity providers and tunnels with their connections.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/connector-digitalocean --filter=@opscrew/connector-github --filter=@opscrew/connector-godaddy --filter=@opscrew/connector-hetzner --filter=@opscrew/connector-namecheap --filter=@opscrew/connector-porkbun --filter=@opscrew/agents`
+  - Effort: xhigh
+
+- [ ] T1023 [P] iac-templates and secops (Area 10)
+  - Owns: `packages/{iac-templates,secops}/**` except `package.json` (+ tests; snapshots unchanged except the renames Area 10 lists)
+  - Reads: Area 10; Area 1 and Area 4 (the guards and move layouts agents will import)
+  - Depends: T1020
+  - Accept: Area 10, with the KEEP list untouched: shared runtime pieces for the server and Portainer renderers; shared Cloudflare root pieces and `sensitive` on `VariableSpec`; one set of target guards (`cloudTarget`, `portainerTarget`) and the move layouts exported from the root for agents; the Access module's `service_hostname`/`service_label`; one cloud-init source; one WAF module; the `moved` shim and unused module outputs removed; the secops rules on the shared scan helpers (finding ids unchanged); one provider table in the plan policies (ids, severities and messages unchanged); one external-scanner factory; core's token patterns; `mapConcurrent`; shared predicates and runbook sections; dead exports and options removed; `facts.appDir` required; an explicit secops export list; `src/portainer/` renamed `portainer-host/`. Both engines validate every root.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/secops --filter=@opscrew/agents`, then `OPSCREW_IT=1 OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=@opscrew/iac-templates` with `.tools/bin` on `PATH`
+  - Effort: xhigh
+
+- [ ] T1024 Agents shared, provision and providers (Area 1), plus the agents helpers later tasks use
+  - Owns: `packages/agents/src/{shared,provision,providers}/**` (+ tests)
+  - Reads: Area 1; the agents parts of Areas 2, 4 and 5 that name a shared helper
+  - Depends: T1021, T1022, T1023
+  - Accept: the bugs first: one `ensureSecretFile` that fails closed (a short or damaged state passphrase or Portainer password stops with a plain error instead of being replaced; test), and refusals built by `connectorFirst` say for every target what was and was not changed, including "nothing in Cloudflare was deleted" for Portainer (test). Then Area 1: one `projectEngine` for engine and state-encryption setup; provision's shared steps used by both flows; one repo-write helper; the connector's Cloudflare methods instead of the hand-written clients; one public DNS lookup; iac-templates' target guards; one `approveHashes` list in `ProvisionOptions`; the shims removed; shared adapter-plan text; `HostApplyError`; required API methods; `readIfExists`, `stateFile`/`hasState`, `tunnelChange`, one zero-trust service; ssh-host's `isPublicAddress`; the smaller items; `provision/portainer.ts` and `shared/server-address.ts` split. Shared helpers for T1025–T1028, in `shared/`: `replaceNames`/`addressNames`, `pollUntil`, `approvalEntry`, `approveAndApplyHostPlan` (every gate step kept). The CLI and MCP keep compiling with the smallest call-site changes (T1029 tidies them).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: xhigh
+
+- [ ] T1025 [P] Agents domain, dns and init (Area 2)
+  - Owns: `packages/agents/src/{domain,dns,init}/**` (+ tests)
+  - Reads: Area 2; `packages/agents/src/shared/` after T1024
+  - Depends: T1024
+  - Accept: the bug first: the domain-connect DNS lookup has a timeout (the shared lookup; test). Then Area 2: the two purchase flows as one (typed approval, price bound, record before register and one send kept); values passed through instead of rebuilt; one Cloudflare token check; the sandbox zones as a quiet implementation; required zone methods; the DS wait as `{dsSeen, switchAfter}` with the SC-703 order tests; core and shared helpers; DECIDED: the MX/SPF clash rules kept, and the stale DS removal after the switch removed (the warning and dashboard link kept); the purchase record's registrar required; `init` reading the plan and requirements once and using error codes instead of message text.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: xhigh
+
+- [ ] T1026 [P] Agents adapt, analyze and design (Area 3)
+  - Owns: `packages/agents/src/{adapt,analyze,design}/**` (+ tests)
+  - Reads: Area 3; `packages/agents/src/shared/` after T1024
+  - Depends: T1024
+  - Accept: Area 3: the Next.js health route folded into the registry as a handler; core and shared helpers; DECIDED: Node's multi-app disambiguation kept; dead code and exports removed; one scan-report reader without the fallback; the health catch-all only for `OpsCrewError` and file-system errors; the smaller items. Generated files byte-identical.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: high
+
+- [ ] T1027 [P] Agents retarget and destroy (Area 4)
+  - Owns: `packages/agents/src/{retarget,destroy}/**` (+ tests)
+  - Reads: Area 4; `packages/agents/src/shared/` after T1024; iac-templates' move layouts
+  - Depends: T1024
+  - Accept: Area 4, with the KEEP list untouched: one Cloudflare removal for own server and Portainer; `assertDeletionPlan` and `confirmDeletion` everywhere; finish and abort sharing the lift and removal steps; the shims removed; literal module prefixes; `deletedTunnels()`; reason tags instead of hint-text matching; `DeletionScope.provider` accepting Portainer; the move layouts from iac-templates; `pollUntil`, `approvalEntry`, `projectEngine`; the smaller items. Every typed confirmation and bounded-deletion check stays.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: xhigh
+
+- [ ] T1028 [P] Agents drift, verify, secure, interview and portainer (Area 5)
+  - Owns: `packages/agents/src/{drift,verify,secure,interview,portainer}/**` (+ tests)
+  - Reads: Area 5; `packages/agents/src/shared/` after T1024
+  - Depends: T1024
+  - Accept: the bug first: `drift` and `portainer enable/disable` audit their own phase, not "provision" (test). Then Area 5, with the KEEP list untouched: DECIDED: verify's stale-DNS handling as one step (look each unresolved host up once through public DNS, use those addresses for the fetch and TLS checks, register them with the redactor; T1017's explain layer removed, the live-tested behaviour kept); `replaceNames`; `approveAndApplyHostPlan`; no string surgery on errors; barrels trimmed; the Portainer desired-state and client helpers; one interview follow-up splitter; the drift shims and the double sort removed; the smaller items.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: xhigh
+
+- [ ] T1029 CLI, MCP server and plugin (Area 8)
+  - Owns: `packages/cli/src/**` except fixtures, `packages/mcp-server/src/**` except test fakes, `plugin/**`, new helpers in `packages/agents/src/shared/**`
+  - Reads: Area 8
+  - Depends: T1025, T1026, T1027, T1028
+  - Accept: the bugs first: the MCP approval dialog labels a cost change as a change, and `--account` is quoted the same way everywhere (tests). Then Area 8, with the KEEP list untouched: one saved-plan reader in agents (a missing or damaged file fails closed as today); commander's inherited exit handling; one error printer; one flag-confirmation handler on the injected clock; one `buildPhaseDeps`; one approval-hash list; one apply-command builder; no test seams in production branches (a secret prompt never falls back to plain text); shared own-server inspection, elicitation plumbing, scan phase, name hiding, reason codes instead of message matching, `quietReporter`, approval-request text and status table; dead files and exports removed; the plugin validator trimmed to the plugin spec; the MCP instructions trimmed to the hard rules.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server --filter=@opscrew/agents` and `node plugin/validate.mjs`
+  - Effort: xhigh
+
+- [ ] T1030 [P] Shared test fakes and the two contract tightenings
+  - Owns: `packages/agents/src/testing/**`, `packages/agents/src/**/__fixtures__/**`, `packages/cli/src/**/__fixtures__/**`, test files in `packages/cli/src/**` and `packages/mcp-server/src/**`, `packages/contracts/src/{iac,registrar}.ts` and the fakes and fallbacks they touch (lead-approved, in ADR 0013)
+  - Reads: Areas 8 and 11
+  - Depends: T1029
+  - Accept: the agents fakes exported from `@opscrew/agents/testing` and used by the CLI and MCP tests (the forked copies deleted, every test kept); `IacEngine`'s provider-schema and state-resource reads and the registrar's `capabilities` required, the fakes implementing them and the fallbacks removed.
+  - Verify: `pnpm turbo run typecheck test`
+  - Effort: high
+
+- [ ] T1031 [P] Live and e2e test harness, and rerunning chosen steps (Area 9)
+  - Owns: `packages/cli/test/**`, `docs/e2e.md` (how to run chosen steps)
+  - Reads: Area 9
+  - Depends: T1029
+  - Accept: Area 9: one shared live harness and step-1 bootstrap for own server and Portainer; the Portainer test's server helpers on own-cloud's; `live.test.ts` on own-cloud's GitHub helpers; one `provisionUntilDone` and `deploy`; product exports instead of copies; `OPSCREW_E2E_PORTAINER_STEPS=core|full|<list>` where each step names what it needs (step 2 split into 2a "prepare the project", the rollback its own step 3b), so one step reruns against a fresh setup in about 15 minutes; unit tests kept only for the safety and leak helpers; the e2e helpers shared. Every safety and leak check stays; no server is kept between runs.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
+  - Effort: high
+
+- [ ] T1032 Live check after the simplification (lead): the Hetzner live test, the own-server live test and the Portainer core pass, results in `docs/e2e.md` and `docs/e2e-coverage.md`
+
 ## Dependencies
 
 T1001 → {T1002, T1003, T1004} (parallel) → T1010 → T1005 → T1006 → T1007 → {T1008, T1011} (parallel) → T1012 → T1009 (core run 1) → T1013 → T1009 (core run 2).
+
+Phase 6: T1020 → {T1021, T1022, T1023} → T1024 → {T1025, T1026, T1027, T1028} → T1029 → {T1030, T1031} → T1032.
 
 ## Parallel execution
 
