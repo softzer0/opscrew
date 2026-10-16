@@ -190,11 +190,7 @@ describe("registrarFor", () => {
 });
 
 describe("resolveDomainServices: other registrars and sandbox zones", () => {
-  const zones: DomainZoneApi = {
-    findZone: async () => undefined,
-    createZone: async (_a, name) => ({ id: "z1", name }),
-    enableDnssec: async () => {},
-  };
+  const zones: DomainZoneApi = { ...SANDBOX_ZONES };
   const cloudflare = {
     accounts: async () => [{ id: "acc-1", name: "Main" }],
     registrar: () => fakeRegistrar("cloudflare"),

@@ -24,11 +24,10 @@ export interface ConnectDomainOptions {
  *   and resolvers may still remember them until `waitUntil` (at least 24 hours after the
  *   removal), or they must be removed in the registrar's dashboard first (no `waitUntil`); the
  *   nameservers were not switched;
- * - `dnssec-published`: already connected; this run changed DNSSEC after a typed approval: turned
- *   it on for the active zone and published its DS record (or showed it to add by hand), and/or
- *   removed stale DS records that do not match the zone;
+ * - `dnssec-published`: already connected; this run turned DNSSEC on for the active zone after a
+ *   typed approval and published its DS record (or showed it to add by hand);
  * - `already-connected`: the nameservers already pointed at the zone; nothing was switched (stale
- *   DS records the API cannot remove are reported in `next`).
+ *   DS records that do not match the zone are reported in `next`, with the registrar's dashboard).
  */
 export type ConnectDomainOutcome =
   | "connected"

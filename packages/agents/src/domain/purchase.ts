@@ -1,4 +1,3 @@
-import { CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import type {
   Money,
   RegisteredDomain,
@@ -6,7 +5,7 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { type ErrorCode, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { type ErrorCode, isUserFacingError, OpsCrewError, plural } from "@opscrew/core";
 import {
   auditDomain,
   cents,
@@ -14,19 +13,14 @@ import {
   formatMoney,
   formatMoneyCode,
   providerText,
-  TOKEN_PAGE,
-  yearsText,
+  unfinished,
 } from "./common";
 import { buyCommandOf, registrarDashboard } from "./links";
-import { isDeployed, type ProjectChanges, type ProjectFiles } from "./project";
-import {
-  markPurchaseAccepted,
-  markPurchaseUncertain,
-  type PurchaseRecord,
-  removePurchaseRecord,
-} from "./record";
-import { REGISTRAR_NAMES } from "./registrars";
-import type { MaxPrice } from "./types";
+import { auditAutoRenew, autoRenewApproval, renewalPrice } from "./manage";
+import type { ProjectFiles } from "./project";
+import { markPurchase, type PurchaseRecord, removePurchaseRecord } from "./record";
+import { capabilitiesOf, REGISTRAR_NAMES, registrarLinks } from "./registrars";
+import type { DomainSetUpResult, MaxPrice } from "./types";
 import type { PurchaseContext } from "./wait";
 
 /**
@@ -58,6 +52,64 @@ export interface Charge {
   exact: boolean;
 }
 
+/** A live price, checked and ready for the `domain-purchase` approval. */
+export interface Offer extends Charge {
+  /** The approval's lines about the domain, its price, registration, payment and DNS, in order. */
+  approvalLines(): Promise<string[]>;
+  /** Right before buying: stops when the approved price no longer holds (it rose or expired). */
+  recheck(): Promise<void>;
+  /** The quote a registrar other than Cloudflare binds the purchase to. */
+  quote?: RegistrationQuote;
+}
+
+/** The domain's zone after the setup, and whether DNSSEC is in force for it. */
+export interface DnsSetup {
+  zoneId: string;
+  dnssec: boolean;
+}
+
+/** A domain set up for the project, for the summary. */
+export interface SetUp<S extends DnsSetup> {
+  files: ProjectFiles;
+  hostname: string;
+  dns: S;
+  info: RegisteredDomain;
+  recorded: { plan: boolean; requirements: boolean };
+  /** A next step about auto-renew, which the registrar's API could not change. */
+  renewNext?: string;
+  /** Another domain the project keeps (the user refused to replace it). */
+  keptDomain?: string;
+  /** The approved price, when OpsCrew bought the domain. */
+  total?: Money;
+  /** True when the domain was in the account already, so OpsCrew only set it up. */
+  alreadyRegistered: boolean;
+}
+
+/**
+ * What buying differs in between Cloudflare and the other registrars: everything else (the owned
+ * check, the price bound, the typed approval, the record before the one `register` call, the wait
+ * and the project files) is the same flow (`buyDomain`).
+ */
+export interface RegistrarFlow<S extends DnsSetup> {
+  /** Stops before any wait or approval when OpsCrew may not set up the domain already there. */
+  takeOver(files: ProjectFiles): Promise<void>;
+  /** The checks before the price, then the live price for `years`. */
+  quote(years: number, autoRenew: boolean): Promise<Offer>;
+  /** For a domain already in the account: the approval's first lines and whether to publish DS. */
+  owned(): Promise<{ lines: string[]; publishDs: boolean }>;
+  /** The zone and DNSSEC (and, at another registrar, the move of the DNS to Cloudflare). */
+  setUp(publishDs: boolean): Promise<S>;
+  /** Audit, success line and next steps. */
+  summary(result: SetUp<S>): Promise<DomainSetUpResult>;
+}
+
+/** `on your Cloudflare account`, `in your Porkbun account`: where the registration is. */
+export function registeredWhere(ctx: Pick<PurchaseContext, "registrarId">): string {
+  return ctx.registrarId === "cloudflare"
+    ? "on your Cloudflare account"
+    : `in your ${REGISTRAR_NAMES[ctx.registrarId]} account`;
+}
+
 /** `10.44 USD`, or `up to 25.00 USD` for an upper bound. */
 export function chargeCode(quote: Charge): string {
   return `${quote.exact ? "" : "up to "}${formatMoneyCode(quote.charge)}`;
@@ -72,7 +124,7 @@ export function checkMaxPrice(
   quote: Charge,
   years: number,
   maxPrice: MaxPrice,
-  quotedBy = "Cloudflare",
+  quotedBy: string,
 ): void {
   const currency = quote.charge.currency;
   if (maxPrice.currency !== undefined && maxPrice.currency !== currency) {
@@ -88,7 +140,7 @@ export function checkMaxPrice(
     const max = formatMoneyCode({ amount: maxPrice.amount, currency });
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
-      `${domain} costs ${chargeCode(quote)} now (${yearsText(years)}), more than your maximum of ${max}. Nothing was bought.`,
+      `${domain} costs ${chargeCode(quote)} now (${plural(years, "year")}), more than your maximum of ${max}. Nothing was bought.`,
       {
         hint: `Raise --max-price to at least ${(cents(quote.charge.amount) / 100).toFixed(2)}${currency} if you agree to pay ${chargeCode(quote)}, or pick another name with \`opscrew domain search\`.`,
       },
@@ -141,13 +193,13 @@ function chargeText(ctx: PurchaseContext, years: number, total: Money): string {
 /**
  * Sends the purchase, exactly once. A clear rejection clears the record once the registrar
  * confirms there is no registration; a failure without a clear answer marks it `uncertain`; a
- * first answer of `pending`/`in_progress` marks it `accepted`. Other registrars than Cloudflare get
- * the approved quote and the record's idempotency key.
+ * first answer of `pending`/`in_progress` marks it `accepted`. The approved quote and the record's
+ * idempotency key go with the request when there are any (registrars other than Cloudflare).
  */
 export async function sendPurchase(
   ctx: PurchaseContext,
   record: PurchaseRecord,
-  quote?: RegistrationQuote,
+  quote: RegistrationQuote | undefined,
 ): Promise<RegistrationStatus> {
   const { deps, domain, registrarId } = ctx;
   const name = REGISTRAR_NAMES[registrarId];
@@ -159,12 +211,10 @@ export async function sendPurchase(
     registrarId === "cloudflare"
       ? `account ${ctx.account.id}`
       : `at ${name}, zone in Cloudflare account ${ctx.account.id}`;
-  const summary = `${yearsText(years)}, ${record.total === undefined ? "price unknown" : chargeText(ctx, years, record.total)}, auto-renew ${autoRenew ? "on" : "off"}, WHOIS privacy on, ${where}`;
+  const summary = `${plural(years, "year")}, ${record.total === undefined ? "price unknown" : chargeText(ctx, years, record.total)}, auto-renew ${autoRenew ? "on" : "off"}, WHOIS privacy on, ${where}`;
   const request: RegistrationRequest = { domain, years, autoRenew, privacy: true };
-  if (registrarId !== "cloudflare") {
-    if (quote !== undefined) request.quote = quote;
-    if (record.idempotencyKey !== undefined) request.idempotencyKey = record.idempotencyKey;
-  }
+  if (quote !== undefined) request.quote = quote;
+  if (record.idempotencyKey !== undefined) request.idempotencyKey = record.idempotencyKey;
   let first: RegistrationStatus;
   try {
     first = await ctx.registrar.register(request);
@@ -207,7 +257,7 @@ export async function sendPurchase(
       }
     }
     // Without the mark, the note could later be cleared as "never sent": say so loudly instead.
-    const marked = await markPurchaseUncertain(ctx.recordFile, record).then(
+    const marked = await markPurchase(ctx.recordFile, record, "uncertain").then(
       () => true,
       () => false,
     );
@@ -226,7 +276,7 @@ export async function sendPurchase(
   await auditDomain(deps, "register domain", domain, `${summary}; ${name} reported ${first.state}`);
   if (first.state === "pending" || first.state === "in_progress") {
     // Accepted: never cleared on its own, even when the registrar lists it only hours later.
-    const marked = await markPurchaseAccepted(ctx.recordFile, record).then(
+    const marked = await markPurchase(ctx.recordFile, record, "accepted").then(
       () => true,
       () => false,
     );
@@ -254,72 +304,53 @@ export async function registeredDetails(ctx: PurchaseContext): Promise<Registere
       { hint: "Wait a minute." },
     );
   }
-  return details;
+  return { ...details, registrar: ctx.registrarId };
 }
 
 /** The domain is registered, but the setup after it failed: the next run finishes it. */
 export function setupFailed(ctx: PurchaseContext, error: unknown): OpsCrewError {
-  const { deps, domain } = ctx;
-  const code: ErrorCode = isUserFacingError(error) ? (error.code as ErrorCode) : "INTERNAL";
-  const hint = isUserFacingError(error) && error.hint ? `${error.hint.trim()} Then run` : "Run";
-  return new OpsCrewError(
-    code,
-    `${domain} is registered, but OpsCrew could not finish setting it up: ${providerText(deps, errorText(deps, error))}.`,
-    {
-      hint: `${hint} \`${buyCommandOf(domain, ctx.registrarId)}\` again to finish the setup; it does not buy the domain again.`,
-      cause: error,
-    },
+  return unfinished(
+    ctx.deps,
+    error,
+    `${ctx.domain} is registered, but OpsCrew could not finish setting it up`,
+    `\`${buyCommandOf(ctx.domain, ctx.registrarId)}\` again to finish the setup; it does not buy the domain again.`,
   );
 }
 
-/** Asks before the bought domain replaces another one in the project files. */
-export async function approveDomainSwitch(
+/** The approval line about changing auto-renew of a domain already in the account. */
+export async function autoRenewLine(
   ctx: PurchaseContext,
-  files: ProjectFiles,
-  changes: ProjectChanges,
-): Promise<boolean> {
-  const { deps, domain } = ctx;
-  const current = changes.replaces ?? "";
-  const file = files.plan !== undefined ? "opscrew/plan.yaml" : "opscrew/requirements.yaml";
-  const decision = await deps.approvals.request({
-    kind: "repo-write",
-    title: `Use ${domain} instead of ${current} in ${file}`,
-    details: [
-      `OpsCrew bought ${domain}, but the project serves the app at ${current}.`,
-      ...changes.lines,
-      `The DNS records of ${current} stay until \`opscrew dns\` or \`opscrew provision\` updates them.`,
-      `Refuse to keep ${current}; ${domain} stays bought and you can switch later with \`opscrew dns --domain ${domain}\`.`,
-    ].join("\n"),
-  });
-  return decision.approved;
-}
-
-/** The project's next step after the domain is set up (from the project files). */
-export function projectNextStep(
-  files: ProjectFiles,
-  domain: string,
-  hostname: string,
-  keptDomain: string | undefined,
-): string {
-  if (keptDomain !== undefined) {
-    return `To serve the app at ${domain} later, run \`opscrew dns --domain ${domain}\`. It shows the change and asks before applying it.`;
+  details: RegisteredDomain,
+  on: boolean,
+): Promise<string> {
+  const { domain, registrar, registrarId } = ctx;
+  if (capabilitiesOf(registrar).autoRenew) {
+    const price = await renewalPrice(registrar, domain);
+    return autoRenewApproval(domain, details, on, price, registrarId).details;
   }
-  if (isDeployed(files.plan)) {
-    return `Run \`opscrew dns\` to point ${hostname} at your server. It shows the change and asks before applying it.`;
-  }
-  if (files.plan !== undefined) {
-    return `Run \`opscrew provision\` to deploy the app at https://${hostname}.`;
-  }
-  if (files.requirements !== undefined) {
-    return `Run \`opscrew design\` to plan the deployment for ${hostname}.`;
-  }
-  return `Run \`opscrew interview\` and give ${domain} as the domain, then \`opscrew design\`.`;
+  const name = REGISTRAR_NAMES[registrarId];
+  return `Auto-renew: ${name}'s API cannot change it, so it stays ${details.autoRenew ? "on" : "off"}; turn it ${on ? "on" : "off"} at ${registrarLinks(registrarId, ctx.deps.env).domains}.`;
 }
 
 /**
- * A token limited to the zones that existed before does not cover this (possibly new) zone; said
- * within the project's next step, before the user runs it.
+ * Applies the auto-renew choice (approved with the purchase or the setup) where the API can;
+ * otherwise returns a next step with the dashboard link when the registrar's setting differs.
  */
-export function zoneTokenNote(domain: string): string {
-  return `If your Cloudflare token is limited to specific zones, first add the zone ${domain} to it at ${TOKEN_PAGE} (or set it to all zones of the account): \`opscrew dns\` and \`opscrew provision\` need the token's zone permissions (${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}) on ${domain} too.`;
+export async function applyAutoRenew(
+  ctx: PurchaseContext,
+  info: RegisteredDomain,
+  wanted: boolean | undefined,
+): Promise<{ info: RegisteredDomain; next?: string }> {
+  if (wanted === undefined || info.autoRenew === wanted) return { info };
+  const { deps, domain, registrar, registrarId } = ctx;
+  if (!capabilitiesOf(registrar).autoRenew) {
+    const name = REGISTRAR_NAMES[registrarId];
+    return {
+      info,
+      next: `Turn auto-renew ${wanted ? "on" : "off"} for ${domain} at ${registrarLinks(registrarId, deps.env).domains}: ${name}'s API cannot change it, and it is ${info.autoRenew ? "on" : "off"} there now.`,
+    };
+  }
+  const updated = await registrar.setAutoRenew(domain, wanted);
+  await auditAutoRenew(deps, registrarId, domain, wanted);
+  return { info: { ...updated, registrar: registrarId } };
 }

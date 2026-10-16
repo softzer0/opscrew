@@ -96,6 +96,22 @@ export function autoRenewApproval(
   };
 }
 
+/** Audits an auto-renew change, naming the registrar unless it is Cloudflare. */
+export async function auditAutoRenew(
+  deps: PhaseDeps,
+  registrarId: RegistrarId,
+  domain: string,
+  on: boolean,
+): Promise<void> {
+  const what = `auto-renew ${on ? "on" : "off"}`;
+  await auditDomain(
+    deps,
+    "set auto-renew",
+    domain,
+    registrarId === "cloudflare" ? what : `${REGISTRAR_NAMES[registrarId]}: ${what}`,
+  );
+}
+
 interface Target {
   name: string;
   services: ResolvedDomainServices;
@@ -168,14 +184,10 @@ async function fillPlanRegistration(
   return [];
 }
 
-/** Whether DNSSEC is on for the zone, when the zone calls can tell; else undefined. */
-async function dnssecState(services: ResolvedDomainServices, name: string) {
-  if (services.zones.dnssecEnabled === undefined || services.zones.simulated === true) {
-    return undefined;
-  }
+/** Whether DNSSEC is on for the zone of `name` (off without a zone). */
+async function zoneDnssec(services: ResolvedDomainServices, name: string): Promise<boolean> {
   const zone = await services.zones.findZone(name);
-  if (zone === undefined || zone.name.toLowerCase() !== name) return false;
-  return services.zones.dnssecEnabled(zone.id);
+  return zone === undefined ? false : services.zones.dnssecEnabled(zone.id);
 }
 
 function renewalNote(info: RegisteredDomain): string {
@@ -211,10 +223,8 @@ export async function domainStatus(
       return undefined;
     },
   );
-  const pending =
-    record === undefined
-      ? {}
-      : { pendingPurchase: { domain: record.domain, requestedAt: record.requestedAt } };
+  const pendingPurchase =
+    record === undefined ? undefined : { domain: record.domain, requestedAt: record.requestedAt };
   const finishPending =
     record === undefined
       ? []
@@ -224,7 +234,7 @@ export async function domainStatus(
   const name = registeredName(files);
   if (name === undefined) {
     return {
-      ...pending,
+      pendingPurchase,
       next: [
         ...finishPending,
         "This project has no domain yet. Find one with `opscrew domain search <name>`, or use one you own with `opscrew dns --domain <domain>`.",
@@ -238,7 +248,7 @@ export async function domainStatus(
       name,
       registrarId,
       options,
-      pending,
+      pendingPurchase,
       finishPending,
     });
   }
@@ -247,7 +257,7 @@ export async function domainStatus(
   const info = await findRegistration(target.registrar, files, name);
   if (info === undefined) {
     return {
-      ...pending,
+      pendingPurchase,
       next: [
         ...finishPending,
         `${name} is not registered with Cloudflare Registrar on this account, so OpsCrew cannot show its registration. Manage it where you bought it.`,
@@ -255,21 +265,20 @@ export async function domainStatus(
     };
   }
   const registered = info.domain;
-  const live = await dnssecState(target.services, registered);
-  const dnssec = live ?? files.plan?.dns.registration?.dnssec;
-  const notRecorded = await fillPlanRegistration(deps, files.plan, info, live);
+  const dnssec = await zoneDnssec(target.services, registered);
+  const notRecorded = await fillPlanRegistration(deps, files.plan, info, dnssec);
   return {
     domain: info,
-    ...(dnssec === undefined ? {} : { dnssec }),
-    ...pending,
+    dnssec,
+    pendingPurchase,
     next: [
       ...finishPending,
       renewalNote(info),
-      ...(dnssec === false
-        ? [
+      ...(dnssec
+        ? []
+        : [
             `DNSSEC is off for ${registered}. Run \`opscrew domain buy ${registered}\` to turn it on: OpsCrew does not buy the domain again, and it lists every change and asks before making it.`,
-          ]
-        : []),
+          ]),
       ...notRecorded,
     ],
   };
@@ -308,11 +317,9 @@ function renewalNoteElsewhere(
 
 /** The zone's DS record from Cloudflare, when the token can read it; else undefined. */
 async function zoneDs(services: ResolvedDomainServices, name: string) {
-  if (services.zones.simulated === true || services.zones.dsRecord === undefined) return undefined;
   try {
     const zone = await services.zones.findZone(name);
-    if (zone === undefined || zone.name.toLowerCase() !== name) return undefined;
-    return await services.zones.dsRecord(zone.id);
+    return zone === undefined ? undefined : await services.zones.dsRecord(zone.id);
   } catch {
     return undefined;
   }
@@ -325,18 +332,18 @@ async function statusElsewhere(
     name: string;
     registrarId: OtherRegistrarId;
     options: DomainStatusOptions;
-    pending: Partial<Pick<DomainStatusResult, "pendingPurchase">>;
+    pendingPurchase: DomainStatusResult["pendingPurchase"];
     finishPending: string[];
   },
 ): Promise<DomainStatusResult> {
-  const { name, registrarId, options, pending, finishPending } = context;
+  const { name, registrarId, options, pendingPurchase, finishPending } = context;
   const registrarName = REGISTRAR_NAMES[registrarId];
   const page = registrarLinks(registrarId, deps.env).domains;
   const { services, registrar } = otherRegistrarTarget(deps, registrarId, options.services);
   const found = await findRegistration(registrar, files, name);
   if (found === undefined) {
     return {
-      ...pending,
+      pendingPurchase,
       next: [
         ...finishPending,
         `${name} is not registered in this ${registrarName} account, so OpsCrew cannot show its registration. Check ${page}, or set the ${registrarName} API keys of the account that holds it.`,
@@ -365,7 +372,7 @@ async function statusElsewhere(
       );
     }
   }
-  return { domain: info, ...(dnssec === undefined ? {} : { dnssec }), ...pending, next };
+  return { domain: info, dnssec, pendingPurchase, next };
 }
 
 /**
@@ -420,12 +427,11 @@ export async function setDomainAutoRenew(
           },
         );
   }
-  const current = registrarId === "cloudflare" ? found : { ...found, registrar: registrarId };
+  const current = { ...found, registrar: registrarId };
   const name = current.domain;
-  const dnssec = files.plan?.dns.registration?.dnssec;
   const result = (info: RegisteredDomain): DomainStatusResult => ({
     domain: info,
-    ...(dnssec === undefined ? {} : { dnssec }),
+    dnssec: files.plan?.dns.registration?.dnssec,
     next: [
       registrarId === "cloudflare"
         ? renewalNote(info)
@@ -457,13 +463,8 @@ export async function setDomainAutoRenew(
     );
   }
   const changed = await target.registrar.setAutoRenew(name, options.on);
-  const updated = registrarId === "cloudflare" ? changed : { ...changed, registrar: registrarId };
-  await auditDomain(
-    deps,
-    "set auto-renew",
-    name,
-    registrarId === "cloudflare" ? `auto-renew ${onOff}` : `${registrarName}: auto-renew ${onOff}`,
-  );
+  const updated = { ...changed, registrar: registrarId };
+  await auditAutoRenew(deps, registrarId, name, options.on);
   await syncPlanRegistration(deps, files.plan, updated);
   deps.reporter.success(`Auto-renew is now ${updated.autoRenew ? "on" : "off"} for ${name}.`);
   return result(updated);

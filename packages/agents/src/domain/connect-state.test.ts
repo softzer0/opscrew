@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dsWaitSeconds, switchSafeAt } from "./connect-state";
+import { dsWaitSeconds, laterSwitch } from "./connect-state";
 
 describe("dsWaitSeconds", () => {
   it.each([
@@ -15,23 +15,22 @@ describe("dsWaitSeconds", () => {
   });
 });
 
-describe("switchSafeAt", () => {
-  const base = { domain: "example.com", registrar: "porkbun" as const, dsTtlSeconds: 86_400 };
+describe("laterSwitch", () => {
+  const state = {
+    domain: "example.com",
+    registrar: "porkbun" as const,
+    switchAfter: "2026-10-12T14:00:00.000Z",
+  };
 
-  it("counts from the later of the removal and the public gone time; a removal adds an hour", () => {
-    expect(switchSafeAt({ ...base, dsRemovedAt: "2026-10-11T12:00:00.000Z" })?.toISOString()).toBe(
+  it("only ever moves the switch time later", () => {
+    expect(laterSwitch(state, Date.parse("2026-10-13T15:00:00.000Z"))).toBe(
+      "2026-10-13T15:00:00.000Z",
+    );
+    expect(laterSwitch(state, Date.parse("2026-10-12T13:00:00.000Z"))).toBe(
+      "2026-10-12T14:00:00.000Z",
+    );
+    expect(laterSwitch(undefined, Date.parse("2026-10-12T13:00:00.000Z"))).toBe(
       "2026-10-12T13:00:00.000Z",
     );
-    expect(
-      switchSafeAt({
-        ...base,
-        dsRemovedAt: "2026-10-11T12:00:00.000Z",
-        dsGoneSeenAt: "2026-10-11T13:00:00.000Z",
-      })?.toISOString(),
-    ).toBe("2026-10-12T14:00:00.000Z");
-    expect(switchSafeAt({ ...base, dsGoneSeenAt: "2026-10-11T15:00:00.000Z" })?.toISOString()).toBe(
-      "2026-10-12T15:00:00.000Z",
-    );
-    expect(switchSafeAt({ ...base, dsSeenAt: "2026-10-11T12:00:00.000Z" })).toBeUndefined();
   });
 });

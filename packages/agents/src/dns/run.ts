@@ -1,12 +1,8 @@
 import { OpsCrewError } from "@opscrew/core";
-import {
-  type DeployPlan,
-  FqdnSchema,
-  type Requirements,
-  readArtifact,
-  writeArtifact,
-} from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { parseHostName } from "../domain/common";
+import { insideDomain, readOptionalArtifact, recordRequirements } from "../domain/project";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { runPhaseFlow } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
@@ -28,19 +24,13 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
   const { domain: requested, ...rest } = options;
   let plan = await readArtifact("plan", deps.paths.files.plan);
   requireNoMoveInProgress(plan);
-  const raw = (requested ?? plan.dns.domain)?.trim().toLowerCase();
-  if (!raw) {
+  const raw = requested ?? plan.dns.domain;
+  if (!raw?.trim()) {
     throw new OpsCrewError("INVALID_INPUT", "No domain to set up.", {
       hint: "Pass the hostname the app should use, for example `opscrew dns --domain app.example.com`.",
     });
   }
-  const parsed = FqdnSchema.safeParse(raw.replace(/\.$/, ""));
-  if (!parsed.success) {
-    throw new OpsCrewError("INVALID_INPUT", `"${raw}" is not a valid domain name.`, {
-      hint: "Use a full hostname such as app.example.com (no https:// and no path).",
-    });
-  }
-  const domain = parsed.data;
+  const domain = parseHostName(raw, "app.example.com");
 
   // A running deployment served on its address, or on a domain without the proxy: the address
   // may already be known, which the flow says once the proxy goes on.
@@ -50,10 +40,7 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
     const { zone, registration, ...rest } = plan.dns;
     // A recorded registration (and its zone) stays only while the new name is inside the
     // registered domain; otherwise both would describe another domain.
-    const keep =
-      registration !== undefined &&
-      zone !== undefined &&
-      (domain === zone || domain.endsWith(`.${zone}`));
+    const keep = registration !== undefined && zone !== undefined && insideDomain(domain, zone);
     const dns = keep ? { ...rest, zone, registration } : rest;
     plan = {
       ...plan,
@@ -71,19 +58,11 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
     if (changed) {
       await writeArtifact("plan", deps.paths.files.plan, updated);
       deps.reporter.info(`The plan now serves the app at https://${domain} through Cloudflare.`);
-      let requirements: Requirements | undefined;
-      try {
-        requirements = await readArtifact("requirements", deps.paths.files.requirements);
-      } catch (error) {
-        if ((error as { code?: string }).code !== "ARTIFACT_MISSING") throw error;
-      }
-      if (requirements) {
-        await writeArtifact("requirements", deps.paths.files.requirements, {
-          ...requirements,
-          domain,
-          dnsProvider: "cloudflare",
-        });
-      }
+      const requirements = await readOptionalArtifact(
+        "requirements",
+        deps.paths.files.requirements,
+      );
+      if (requirements) await recordRequirements(deps, requirements, domain);
     }
     if (switching) deps.reporter.warn(runningServerNote(domain));
   };

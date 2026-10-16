@@ -1,5 +1,5 @@
 import type { DomainCheck, Registrar, RegistrarId } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import {
   cents,
@@ -71,7 +71,7 @@ export async function searchDomains(
   const names: string[] = [];
   for (const name of [
     ...(isDomainName(query) ? [query] : []),
-    ...suggestions.map((s) => s.domain.trim().toLowerCase()),
+    ...suggestions.map((s) => normalizeHostName(s.domain)),
   ]) {
     if (name !== "" && !names.includes(name)) names.push(name);
   }
@@ -94,20 +94,9 @@ async function cloudflareChecks(
   services: ResolvedDomainServices,
   account: DomainAccount,
   names: readonly string[],
-  registrar = services.registrar(account.id),
+  registrar: Registrar,
 ): Promise<DomainCheck[]> {
-  const live = new Map(
-    (await registrar.check(names)).map((c) => [c.domain.trim().toLowerCase(), c] as const),
-  );
-  const normalised = names.map((name) =>
-    normaliseCheck(
-      live.get(name) ?? {
-        domain: name,
-        registrable: false,
-        reason: "Cloudflare did not confirm it in a live check; search again in a minute",
-      },
-    ),
-  );
+  const normalised = await liveChecks(registrar, "Cloudflare", names);
   // Extensions that need registrant data OpsCrew does not collect are bought in the dashboard.
   const contact = await contactExtensionsNeeded(
     services,
@@ -149,42 +138,27 @@ function candidateNames(query: string, exact: boolean): string[] {
 }
 
 /**
- * Another registrar's live answer made consistent: premium names and names without a price are
- * not registrable here, names it did not answer for get a plain reason.
+ * A registrar's live answers for `names`, in order, made consistent (see `normaliseCheck`); names
+ * it did not answer for get a plain reason.
  */
-function normaliseOffer(
-  check: DomainCheck | undefined,
-  name: string,
+async function liveChecks(
+  registrar: Registrar,
   registrarName: string,
-): DomainCheck {
-  if (check === undefined) {
-    return {
-      domain: name,
-      registrable: false,
-      reason: `${registrarName} did not confirm it in a live check; search again in a minute`,
-    };
-  }
-  const domain = check.domain.trim().toLowerCase();
-  if (check.registrable && check.tier === "premium") {
-    return {
-      ...check,
-      domain,
-      registrable: false,
-      reason: `premium name; ${registrarName} sells premium names only in its dashboard`,
-    };
-  }
-  if (check.registrable && check.firstYear === undefined) {
-    return {
-      ...check,
-      domain,
-      registrable: false,
-      reason: `${registrarName} did not return a price for it`,
-    };
-  }
-  if (!check.registrable) {
-    return { ...check, domain, reason: check.reason ?? "not available to buy through the API" };
-  }
-  return { ...check, domain };
+  names: readonly string[],
+): Promise<DomainCheck[]> {
+  const live = new Map(
+    (await registrar.check(names)).map((c) => [normalizeHostName(c.domain), c] as const),
+  );
+  return names.map((name) =>
+    normaliseCheck(
+      live.get(name) ?? {
+        domain: name,
+        registrable: false,
+        reason: `${registrarName} did not confirm it in a live check; search again in a minute`,
+      },
+      registrarName,
+    ),
+  );
 }
 
 /** One registrar's answers for `names`, in order. */
@@ -194,13 +168,10 @@ async function otherChecks(
   names: readonly string[],
 ): Promise<DomainCheck[]> {
   const registrar = services.otherRegistrar(registrarId);
-  const live = new Map(
-    (await registrar.check(names)).map((c) => [c.domain.trim().toLowerCase(), c] as const),
-  );
   return markOwned(
     registrar,
     registrarId,
-    names.map((name) => normaliseOffer(live.get(name), name, REGISTRAR_NAMES[registrarId])),
+    await liveChecks(registrar, REGISTRAR_NAMES[registrarId], names),
   );
 }
 
@@ -312,7 +283,7 @@ async function compareDomains(
     ),
   }));
   const account = answers.find((a) => a.account !== undefined)?.account;
-  return { ...(account === undefined ? {} : { account }), results: [], comparison };
+  return { account, results: [], comparison };
 }
 
 /** Compares two numbers that may be infinite. */

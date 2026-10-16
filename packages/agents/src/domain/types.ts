@@ -45,13 +45,11 @@ export interface ZoneRecord {
   priority?: number;
 }
 
-/** Zone calls the domain commands need (a Cloudflare client or a test fake). */
+/**
+ * Zone calls the domain commands need: a Cloudflare client, the stand-ins of a registrar sandbox
+ * (`SANDBOX_ZONES`) or a test fake.
+ */
 export interface DomainZoneApi {
-  /**
-   * True when these zone calls are stand-ins (Cloudflare's registrar sandbox): no zone exists and
-   * DNSSEC is never turned on, so the setup skips them and records DNSSEC as off.
-   */
-  readonly simulated?: boolean;
   /**
    * The zone named exactly `name` that the token can see. Read-only and not scoped to an account,
    * so only status reads and resumed runs use it; setting up uses `createZone`.
@@ -60,24 +58,21 @@ export interface DomainZoneApi {
   /** Creates the zone on the account; returns the existing one only when it is in that account. */
   createZone(accountId: string, name: string): Promise<DomainZone>;
   enableDnssec(zoneId: string): Promise<void>;
-  /**
-   * Whether DNSSEC is on for the zone (Cloudflare `GET /zones/{id}/dnssec`: `active` or
-   * `pending`). Without it, the setup always turns DNSSEC on and status reads the plan.
-   */
-  dnssecEnabled?(zoneId: string): Promise<boolean>;
+  /** Whether DNSSEC is on for the zone (Cloudflare `GET /zones/{id}/dnssec`: `active` or `pending`). */
+  dnssecEnabled(zoneId: string): Promise<boolean>;
   /** The zone's DS record once DNSSEC is on (active or pending); undefined before. */
-  dsRecord?(zoneId: string): Promise<ZoneDsRecord | undefined>;
+  dsRecord(zoneId: string): Promise<ZoneDsRecord | undefined>;
   /**
    * Asks Cloudflare to re-check the zone's nameservers now. `requested: false` (with the reason)
    * when Cloudflare says it is too soon; it keeps checking on its own.
    */
-  activationCheck?(zoneId: string): Promise<{ requested: boolean; reason?: string }>;
+  activationCheck(zoneId: string): Promise<{ requested: boolean; reason?: string }>;
   /** The records in the zone. */
-  listRecords?(zoneId: string): Promise<ZoneRecord[]>;
+  listRecords(zoneId: string): Promise<ZoneRecord[]>;
   /** Creates records in one batch per call (all or none of a call); returns how many. */
-  createRecords?(zoneId: string, records: readonly CloudflareRecordInput[]): Promise<number>;
+  createRecords(zoneId: string, records: readonly CloudflareRecordInput[]): Promise<number>;
   /** Cloudflare's scan of the domain's current public DNS (shown for review, never accepted). */
-  scanRecords?(zoneId: string): Promise<RegistrarDnsRecord[]>;
+  scanRecords(zoneId: string): Promise<RegistrarDnsRecord[]>;
 }
 
 /** Registrar settings of an extension that matter to OpsCrew. */

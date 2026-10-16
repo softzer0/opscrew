@@ -1,11 +1,18 @@
 import { isAbsolute, resolve } from "node:path";
-import { CLOUDFLARE_REGISTRAR_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import type { DsRecord, RegisteredDomain, Registrar, RegistrarDnsRecord } from "@opscrew/contracts";
-import { type ErrorCode, isUserFacingError, OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, FqdnSchema } from "@opscrew/plan-schema";
+import { listText, OpsCrewError, plural } from "@opscrew/core";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requireNoMoveInProgress } from "../provision/guard";
-import { auditDomain, errorText, resolveAccount, TOKEN_PAGE, toIsoDateTime } from "./common";
+import {
+  auditDomain,
+  errorText,
+  parseHostName,
+  requireCloudflareToken,
+  resolveAccount,
+  toIsoDateTime,
+  unfinished,
+} from "./common";
 import { readBindFile } from "./connect-bind";
 import { lookupPublishedDs } from "./connect-dns";
 import {
@@ -21,22 +28,26 @@ import {
   type ConnectState,
   connectStatePath,
   dsWaitSeconds,
+  laterSwitch,
+  REMOVAL_MARGIN_SECONDS,
   readConnectState,
   removeConnectState,
-  switchSafeAt,
   writeConnectState,
 } from "./connect-state";
 import type { ConnectDomainOptions, ConnectDomainResult } from "./connect-types";
 import {
-  type ProjectChanges,
+  approveDomainSwitch,
+  nextProjectStep,
   type ProjectFiles,
   projectChanges,
+  projectLines,
   readProjectFiles,
   recordDomain,
 } from "./project";
-import { formatTime, projectNextStep, zoneTokenNote } from "./purchase";
+import { formatTime } from "./purchase";
 import {
   capabilitiesOf,
+  OTHER_REGISTRAR_IDS,
   type OtherRegistrarId,
   parseRegistrarId,
   REGISTRAR_ENV,
@@ -52,10 +63,10 @@ import {
   publishDs,
   requestActivation,
   type SwitchContext,
-  type SwitchTarget,
+  sameDs,
   sameHosts,
 } from "./switch";
-import type { DomainAccount, DomainZone, DomainZoneApi, ZoneDsRecord } from "./types";
+import type { DomainZone, ZoneDsRecord } from "./types";
 
 /**
  * `opscrew domain connect` (feature 007, US2): moves a domain the user already owns at Porkbun,
@@ -63,10 +74,10 @@ import type { DomainAccount, DomainZone, DomainZoneApi, ZoneDsRecord } from "./t
  *
  * Each run reads the current state and does only what is missing, so it is resumable:
  * 1. Finds the registrar (`--registrar`, else the one configured account that owns the domain).
- * 2. Reads the nameservers (already on the zone: stale DS records, DNSSEC and the project files are
- *    left), the old DS records (the registrar's API and a public lookup; both must show none
- *    before a switch) and the current records (registrar DNS, else a BIND file or Cloudflare's
- *    scan, whose pending zone is approved on its own first).
+ * 2. Reads the nameservers (already on the zone: DNSSEC and the project files are left), the old
+ *    DS records (the registrar's API and a public lookup; both must show none before a switch)
+ *    and the current records (registrar DNS, else a BIND file or Cloudflare's scan, whose pending
+ *    zone is approved on its own first).
  * 3. Builds the copy plan (records already in the zone are left out; zone records the current DNS
  *    lacks are listed, and clashing ones stop the run) and asks one typed `domain-settings`
  *    approval listing the zone, the records (and those not copied), the old DS removal and the
@@ -75,20 +86,14 @@ import type { DomainAccount, DomainZone, DomainZoneApi, ZoneDsRecord } from "./t
  * 4. In order (SC-703): zone → records → old DS removal (then stops and waits for the DS TTL) →
  *    nameservers → activation check → project files. Old DS records the API cannot remove stop
  *    the run before any change.
- * 5. Later runs on a connected domain whose zone is active turn DNSSEC on after a typed approval.
+ * 5. Later runs on a connected domain whose zone is active turn DNSSEC on after a typed approval;
+ *    stale DS records there are reported with the registrar's dashboard link.
  */
 
-/** Everything one connect run needs. */
-interface ConnectContext {
-  deps: PhaseDeps;
+/** Everything one connect run needs (and what moving the DNS needs, `SwitchContext`). */
+interface ConnectContext extends SwitchContext {
   services: ResolvedDomainServices;
-  domain: string;
   registrarId: OtherRegistrarId;
-  registrar: Registrar;
-  /** The Cloudflare account the zone lives in. */
-  account: DomainAccount;
-  /** `services.zonesFor(registrarId)`. */
-  zones: DomainZoneApi;
   stateFile: string;
   state: ConnectState | undefined;
   /** This run's command with the options that matter on a later run (for hints). */
@@ -126,22 +131,6 @@ interface RecordSource {
 
 const NOT_RECORDED = { plan: false, requirements: false };
 
-/** Cloudflare permissions for the zone of a domain registered elsewhere (no Registrar access). */
-const ZONE_PERMISSIONS = CLOUDFLARE_REGISTRAR_PERMISSIONS.filter(
-  (p) => !p.startsWith("Account → Registrar"),
-).join("; ");
-
-/** `a`, `a and b`, `a, b and c`. */
-function listText(items: readonly string[]): string {
-  return items.length <= 1
-    ? items.join("")
-    : `${items.slice(0, -1).join(", ")} and ${items.at(-1) ?? ""}`;
-}
-
-function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
 function hoursText(seconds: number): string {
   return plural(Math.ceil(seconds / 3600), "hour");
 }
@@ -177,53 +166,14 @@ function linkOf(ctx: Pick<ConnectContext, "deps" | "registrarId">): string {
   return registrarLinks(ctx.registrarId, ctx.deps.env).domains;
 }
 
-function switchContext(ctx: ConnectContext): SwitchContext {
-  return { deps: ctx.deps, account: ctx.account, zones: ctx.zones };
-}
-
-function switchTarget(ctx: ConnectContext): SwitchTarget {
-  return { domain: ctx.domain, registrarId: ctx.registrarId, registrar: ctx.registrar };
-}
-
-function sameDs(a: DsRecord, b: DsRecord): boolean {
-  const digest = (d: DsRecord) => d.digest.replace(/\s+/g, "").toLowerCase();
-  return (
-    a.keyTag === b.keyTag &&
-    a.algorithm === b.algorithm &&
-    a.digestType === b.digestType &&
-    digest(a) === digest(b)
-  );
-}
-
 /** Lower-case, validated domain name (ASCII; internationalized names in their `xn--` form). */
 function parseConnectDomain(input: string): string {
-  const raw = input.trim().toLowerCase().replace(/\.$/, "");
-  if ([...raw].some((c) => c.charCodeAt(0) > 127)) {
+  if ([...input.trim()].some((c) => c.charCodeAt(0) > 127)) {
     throw new OpsCrewError("INVALID_INPUT", `"${input.trim()}" has letters outside a to z.`, {
       hint: "Give the name in its ASCII form (starting with xn--), as your registrar shows it.",
     });
   }
-  if (!FqdnSchema.safeParse(raw).success) {
-    throw new OpsCrewError("INVALID_INPUT", `"${input.trim()}" is not a valid domain name.`, {
-      hint: "Give the full name with its extension, for example shopapp.com (no https:// and no path).",
-    });
-  }
-  return raw;
-}
-
-/** The domain's zone lives at Cloudflare, so the token is needed; registered with the redactor. */
-function requireZoneToken(deps: PhaseDeps, domain: string): void {
-  const token = deps.env.CLOUDFLARE_API_TOKEN?.trim();
-  if (!token) {
-    throw new OpsCrewError(
-      "CREDENTIALS_MISSING",
-      `No Cloudflare API token found. OpsCrew moves the DNS of ${domain} into a Cloudflare zone, so set CLOUDFLARE_API_TOKEN to a token that can create zones and edit their DNS.`,
-      {
-        hint: `Create one at ${TOKEN_PAGE} with these permissions: ${ZONE_PERMISSIONS}. Then try again; nothing was changed.`,
-      },
-    );
-  }
-  deps.redactor.addLiteral(token, "cloudflare-token");
+  return parseHostName(input);
 }
 
 /**
@@ -246,7 +196,8 @@ export async function connectDomain(
       },
     );
   }
-  requireZoneToken(deps, domain);
+  // The domain's zone lives at Cloudflare.
+  requireCloudflareToken(deps, `OpsCrew moves the DNS of ${domain} into a Cloudflare zone`);
   const services = resolveDomainServices(deps, options.services);
   const files = await readProjectFiles(deps);
   if (files.plan !== undefined) requireNoMoveInProgress(files.plan);
@@ -308,9 +259,10 @@ export async function connectDomain(
   const listed = ds.api ?? [];
   if (listed.length > 0 && !canRemoveDs(ctx)) return dsMustGoFirst(ctx, ds, existing);
   if (listed.length === 0 && ds.public.length > 0) {
-    // The registry still publishes them (or resolvers still cache them): after a removal, wait;
-    // otherwise they are old DS records the API does not list, removed in the dashboard.
-    const removed = ctx.state?.dsRemovedAt !== undefined || ctx.state?.dsGoneSeenAt !== undefined;
+    // The registry still publishes them (or resolvers still cache them): after a removal (or once
+    // a run saw them gone), wait; otherwise they are old DS records the API does not list, removed
+    // in the dashboard.
+    const removed = ctx.state !== undefined && ctx.state.dsSeen === undefined;
     return removed ? stillPublished(ctx, ds, existing) : dsMustGoFirst(ctx, ds, existing);
   }
   if (ds.records.length === 0) {
@@ -336,9 +288,9 @@ async function findRegistrar(
   const ids = services
     .configuredRegistrars()
     .filter((id): id is OtherRegistrarId => id !== "cloudflare");
-  const envHelp = (["porkbun", "namecheap", "godaddy"] as const)
-    .map((id) => `${REGISTRAR_ENV[id].join(" and ")} for ${REGISTRAR_NAMES[id]}`)
-    .join(", ");
+  const envHelp = OTHER_REGISTRAR_IDS.map(
+    (id) => `${REGISTRAR_ENV[id].join(" and ")} for ${REGISTRAR_NAMES[id]}`,
+  ).join(", ");
   if (ids.length === 0) {
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
@@ -412,13 +364,9 @@ function requireNameserverApi(ctx: ConnectContext): (domain: string) => Promise<
   return getNameservers;
 }
 
-/**
- * The domain's zone in this account, if there is one (stand-ins in a registrar sandbox). A zone
- * in another Cloudflare account stops the run.
- */
+/** The domain's zone in this account, if there is one. A zone in another account stops the run. */
 async function ownZone(ctx: ConnectContext): Promise<DomainZone | undefined> {
   const { zones, account, domain } = ctx;
-  if (zones.simulated === true) return zones.createZone(account.id, domain);
   const zone = await zones.findZone(domain);
   if (zone?.accountId !== undefined && zone.accountId !== account.id) {
     throw new OpsCrewError(
@@ -446,44 +394,60 @@ function unionDs(list: readonly DsRecord[], extra: readonly DsRecord[]): DsRecor
 /**
  * The DS records published now: what the registrar's API lists (registrars with DNSSEC in their
  * API) and what the public DNS shows, combined. A failed public lookup stops the run: OpsCrew
- * never switches nameservers on a guess. Registrar sandboxes skip the public lookup (their domain
- * is not live).
+ * never switches nameservers on a guess.
  */
 async function readDs(ctx: ConnectContext): Promise<DsReading> {
-  const { registrar, domain, deps, zones } = ctx;
+  const { registrar, domain, deps } = ctx;
   const at = deps.clock.now();
   const api =
     capabilitiesOf(registrar).dnssec && registrar.listDsRecords !== undefined
       ? await registrar.listDsRecords(domain)
       : undefined;
-  const published =
-    zones.simulated === true ? { records: [] } : await lookupPublishedDs(deps.fetch, domain);
+  const published = await lookupPublishedDs(deps.fetch, domain);
   return {
-    ...(api === undefined ? {} : { api }),
+    api,
     public: published.records,
     records: unionDs(api ?? [], published.records),
-    ...("ttlSeconds" in published && published.ttlSeconds !== undefined
-      ? { ttlSeconds: published.ttlSeconds }
-      : {}),
+    ttlSeconds: published.ttlSeconds,
     at,
   };
 }
 
-/** The wait for these DS records: their TTL within 24 and 48 hours, never shorter than noted. */
-function waitFor(ctx: ConnectContext, ds: DsReading): number {
-  return Math.max(dsWaitSeconds(ds.ttlSeconds), ctx.state?.dsTtlSeconds ?? 0);
-}
-
 /**
- * When the old DS records are gone from the public DNS at the earliest: when the copy the public
- * answer showed expires, and never before `after`.
+ * When the old DS records are gone from the public DNS at the earliest (milliseconds): when the
+ * copy the public answer showed expires, and never before `after`.
  */
-function publicGoneAt(ds: DsReading, after: Date): Date {
+function publicGoneAt(ds: DsReading, after: Date): number {
   const expires =
     ds.public.length > 0 && ds.ttlSeconds !== undefined
       ? ds.at.getTime() + ds.ttlSeconds * 1000
       : after.getTime();
-  return new Date(Math.max(after.getTime(), expires));
+  return Math.max(after.getTime(), expires);
+}
+
+/**
+ * The switch time once the old DS records were removed through the API (or are no longer listed
+ * there) at `at`: the wait after the public DNS's copy expires, plus an hour in case the registry
+ * publishes them a little longer, never earlier than the note says.
+ */
+function switchAfterRemoval(ctx: ConnectContext, ds: DsReading, at: Date): string {
+  const wait = dsWaitSeconds(ds.ttlSeconds) + REMOVAL_MARGIN_SECONDS;
+  return laterSwitch(ctx.state, publicGoneAt(ds, at) + wait * 1000);
+}
+
+/**
+ * The note while old DS records OpsCrew did not remove are published: when they were first seen,
+ * and a switch time at least the wait after that (moved out when a run sees them gone).
+ */
+function seenState(ctx: ConnectContext, zone: DomainZone | undefined, ds: DsReading): ConnectState {
+  const dsSeen = ctx.state?.dsSeen ?? ctx.deps.clock.now().toISOString();
+  return {
+    domain: ctx.domain,
+    registrar: ctx.registrarId,
+    zoneId: zone?.id,
+    dsSeen,
+    switchAfter: laterSwitch(ctx.state, Date.parse(dsSeen) + dsWaitSeconds(ds.ttlSeconds) * 1000),
+  };
 }
 
 function result(
@@ -504,9 +468,7 @@ function result(
 function zoneFields(
   zone: DomainZone | undefined,
 ): Pick<ConnectDomainResult, "zoneId" | "nameservers"> {
-  return zone === undefined
-    ? { nameservers: [] }
-    : { zoneId: zone.id, nameservers: hosts(zone.nameServers ?? []) };
+  return { zoneId: zone?.id, nameservers: hosts(zone?.nameServers ?? []) };
 }
 
 /**
@@ -518,16 +480,10 @@ async function dsMustGoFirst(
   ds: DsReading,
   zone: DomainZone | undefined,
 ): Promise<ConnectDomainResult> {
-  const { deps, domain, state } = ctx;
+  const { deps, domain } = ctx;
   const name = nameOf(ctx);
-  const ttl = waitFor(ctx, ds);
-  await writeConnectState(ctx.stateFile, {
-    domain,
-    registrar: ctx.registrarId,
-    ...(zone === undefined || ctx.zones.simulated === true ? {} : { zoneId: zone.id }),
-    dsSeenAt: state?.dsSeenAt ?? deps.clock.now().toISOString(),
-    dsTtlSeconds: ttl,
-  });
+  const wait = dsWaitSeconds(ds.ttlSeconds);
+  await writeConnectState(ctx.stateFile, seenState(ctx, zone, ds));
   const why =
     (ds.api ?? []).length > 0
       ? `${name}'s API cannot remove them`
@@ -542,15 +498,15 @@ async function dsMustGoFirst(
     ...zoneFields(zone),
     next: [
       `Remove the DS records of ${domain} in ${name}'s dashboard (${linkOf(ctx)}): ${ds.records.map(dsRecordText).join("; ")}. This turns DNSSEC off at the current DNS provider; ${domain} keeps working without it.`,
-      `Then run \`${ctx.command}\` again: it notes when the records are gone and tells you when to run it again to switch the nameservers (${hoursText(ttl)} later, once resolvers have forgotten them). It asks before changing anything.`,
+      `Then run \`${ctx.command}\` again: it notes when the records are gone and tells you when to run it again to switch the nameservers (${hoursText(wait)} later, once resolvers have forgotten them). It asks before changing anything.`,
     ],
   });
 }
 
 /**
  * After a removal, the registrar's API lists no old DS record but the public DNS still shows one
- * (the registry still publishes it, or resolvers still cache it): the public "gone" time moves to
- * when that copy expires, and the run waits.
+ * (the registry still publishes it, or resolvers still cache it): the switch time moves out to
+ * the wait after that copy expires, and the run waits.
  */
 async function stillPublished(
   ctx: ConnectContext,
@@ -559,59 +515,57 @@ async function stillPublished(
 ): Promise<ConnectDomainResult> {
   const { deps, domain } = ctx;
   const name = nameOf(ctx);
-  const state = ctx.state as ConnectState;
-  const known = state.dsGoneSeenAt === undefined ? 0 : Date.parse(state.dsGoneSeenAt);
-  const gone = new Date(Math.max(known, publicGoneAt(ds, ds.at).getTime()));
-  ctx.state = { ...state, dsGoneSeenAt: gone.toISOString(), dsTtlSeconds: waitFor(ctx, ds) };
-  await writeConnectState(ctx.stateFile, ctx.state);
-  const safeAt = switchSafeAt(ctx.state) as Date;
-  const until = formatTime(safeAt.toISOString());
+  const state = { ...(ctx.state as ConnectState), switchAfter: switchAfterRemoval(ctx, ds, ds.at) };
+  await writeConnectState(ctx.stateFile, state);
   deps.reporter.warn(
     `The public DNS still shows old DNSSEC (DS) records of ${domain} (${ds.public.map(dsRecordText).join("; ")}), so OpsCrew does not switch the nameservers yet. Nothing was changed.`,
   );
   return result(ctx, {
     outcome: "waiting-for-ds",
     ...zoneFields(zone),
-    waitUntil: safeAt.toISOString(),
+    waitUntil: state.switchAfter,
     next: [
-      `Run \`${ctx.command}\` again after ${until}; it switches the nameservers once neither ${name}'s API nor the public DNS shows an old DS record and resolvers have had time to forget them. If the public DNS still shows them then, remove them in ${name}'s dashboard (${linkOf(ctx)}).`,
+      `Run \`${ctx.command}\` again after ${formatTime(state.switchAfter)}; it switches the nameservers once neither ${name}'s API nor the public DNS shows an old DS record and resolvers have had time to forget them. If the public DNS still shows them then, remove them in ${name}'s dashboard (${linkOf(ctx)}).`,
     ],
   });
 }
 
 /**
  * Neither the registrar's API nor the public DNS shows an old DS record. When earlier runs saw or
- * removed some, the switch waits until the later of the removal and the public "gone" time (the
- * first run that saw them gone, unless an earlier run noted when the public copy expires) is older
- * than the wait; returns the `waiting-for-ds` result until then, undefined once nothing has to
- * wait.
+ * removed some, the switch waits until the note's switch time (the first run that sees records
+ * OpsCrew did not remove gone moves it out by the time since they were first seen); returns the
+ * `waiting-for-ds` result until then, undefined once nothing has to wait.
  */
 async function waitForOldDs(
   ctx: ConnectContext,
   zone: DomainZone | undefined,
 ): Promise<ConnectDomainResult | undefined> {
-  const { deps, domain, state } = ctx;
+  const { deps, domain } = ctx;
+  let state = ctx.state;
   if (state === undefined) return undefined;
   const now = deps.clock.now();
-  if (state.dsGoneSeenAt === undefined) {
-    if (state.dsSeenAt === undefined && state.dsRemovedAt === undefined) return undefined;
-    // Gone since the last run: resolvers may hold them for the wait from now on.
-    ctx.state = { ...state, dsGoneSeenAt: now.toISOString() };
-    await writeConnectState(ctx.stateFile, ctx.state);
+  if (state.dsSeen !== undefined) {
+    // Gone since the last run: resolvers may hold them for the whole wait from now on.
+    const since = now.getTime() - Date.parse(state.dsSeen);
+    state = {
+      ...state,
+      dsSeen: undefined,
+      switchAfter: laterSwitch(state, Date.parse(state.switchAfter) + since),
+    };
+    await writeConnectState(ctx.stateFile, state);
     deps.reporter.info(
       `The old DNSSEC (DS) records of ${domain} are gone from the registry and the public DNS.`,
     );
   }
-  const safeAt = switchSafeAt(ctx.state as ConnectState) as Date;
-  if (now.getTime() >= safeAt.getTime()) return undefined;
-  const until = formatTime(safeAt.toISOString());
+  if (now.getTime() >= Date.parse(state.switchAfter)) return undefined;
+  const until = formatTime(state.switchAfter);
   deps.reporter.warn(
     `OpsCrew waits before it switches the nameservers of ${domain}: resolvers may remember its old DNSSEC records until about ${until}, and switching earlier could take ${domain} offline for visitors whose resolver checks DNSSEC. Nothing was changed.`,
   );
   return result(ctx, {
     outcome: "waiting-for-ds",
     ...zoneFields(zone),
-    waitUntil: safeAt.toISOString(),
+    waitUntil: state.switchAfter,
     next: [
       `Run \`${ctx.command}\` again after ${until} to switch the nameservers to Cloudflare; it shows what changes and asks first. Until then ${domain} keeps working on its current DNS.`,
     ],
@@ -625,7 +579,7 @@ async function currentRecords(
   current: readonly string[],
   zone: DomainZone | undefined,
 ): Promise<RecordSource> {
-  const { deps, domain, registrar, zones } = ctx;
+  const { deps, domain, registrar } = ctx;
   const name = nameOf(ctx);
   if (recordsFile !== undefined && recordsFile.trim() !== "") {
     const label = recordsFile.trim();
@@ -642,12 +596,12 @@ async function currentRecords(
     }
   }
   const where = `${name} does not serve the DNS records of ${domain} (its nameservers are ${listText([...current]) || "not set"})`;
-  if (!deps.interactive || zones.scanRecords === undefined) {
+  if (!deps.interactive) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${where}, so OpsCrew cannot read them through ${name}${deps.interactive ? "" : ", and without a terminal it cannot ask before it creates a zone for Cloudflare's record scan"}. Nothing was changed.`,
+      `${where}, so OpsCrew cannot read them through ${name}, and without a terminal it cannot ask before it creates a zone for Cloudflare's record scan. Nothing was changed.`,
       {
-        hint: `Export the records from your current DNS provider as a BIND zone file and run \`${ctx.command} --records-file <file>\`${deps.interactive ? "" : ", or run the command in an interactive terminal to review Cloudflare's scan"}.`,
+        hint: `Export the records from your current DNS provider as a BIND zone file and run \`${ctx.command} --records-file <file>\`, or run the command in an interactive terminal to review Cloudflare's scan.`,
       },
     );
   }
@@ -687,11 +641,10 @@ async function scanRecords(
       );
     }
   }
-  const scan = zones.scanRecords?.bind(zones);
   const scanned = await afterApproval(ctx, async () => {
-    const found = zone ?? (await ensureZone(switchContext(ctx), switchTarget(ctx)));
+    const found = zone ?? (await ensureZone(ctx));
     deps.reporter.step(`Cloudflare is scanning the public DNS records of ${domain}…`);
-    return { zone: found, records: (await scan?.(found.id)) ?? [] };
+    return { zone: found, records: await zones.scanRecords(found.id) };
   });
   return {
     records: scanned.records,
@@ -720,8 +673,7 @@ async function copyAndSwitch(
   const { deps, domain, zones } = ctx;
   const { source, ds } = input;
   const known = source.zone ?? input.existing;
-  const inZone =
-    known === undefined || zones.listRecords === undefined ? [] : await zones.listRecords(known.id);
+  const inZone = known === undefined ? [] : await zones.listRecords(known.id);
   const plan = copyPlan(source.records, domain, inZone);
   if (plan.clashes.length > 0) {
     throw new OpsCrewError(
@@ -732,23 +684,13 @@ async function copyAndSwitch(
       },
     );
   }
-  if (plan.create.length > 0 && zones.createRecords === undefined) {
-    throw new OpsCrewError(
-      "INTERNAL",
-      "This OpsCrew build cannot copy DNS records to Cloudflare.",
-      {
-        hint: "Update OpsCrew, then run the command again; nothing was changed.",
-      },
-    );
-  }
   const removeDs = (ds.api ?? []).length > 0;
-  const ttl = waitFor(ctx, ds);
   const decision = await deps.approvals.request({
     kind: "domain-settings",
     title: removeDs
       ? `Copy the DNS records of ${domain} to Cloudflare and remove its old DNSSEC records`
       : `Move the DNS of ${domain} to Cloudflare`,
-    details: approvalDetails(ctx, { ...input, zone: known, plan, removeDs, ttl }),
+    details: approvalDetails(ctx, { ...input, zone: known, plan, removeDs }),
     // Typed in a terminal, `--confirm <domain>` in scripts; `--yes` never grants it.
     confirmPhrase: domain,
   });
@@ -761,7 +703,7 @@ async function copyAndSwitch(
       { hint: refusedHint(ctx, decision.reason, "move it") },
     );
   }
-  return afterApproval(ctx, () => applyConnect(ctx, { source, ds, plan, ttl, removeDs }));
+  return afterApproval(ctx, () => applyConnect(ctx, { source, ds, plan, removeDs }));
 }
 
 /** What to do after a refused typed approval (mistyped, or no terminal and no `--confirm`). */
@@ -787,13 +729,12 @@ async function afterApproval<T>(
   try {
     return await apply();
   } catch (error) {
-    const { deps } = ctx;
-    const code: ErrorCode = isUserFacingError(error) ? (error.code as ErrorCode) : "INTERNAL";
-    const hint = isUserFacingError(error) && error.hint ? `${error.hint.trim()} Then run` : "Run";
-    throw new OpsCrewError(code, `OpsCrew could not finish ${what}: ${errorText(deps, error)}.`, {
-      hint: `${hint} \`${ctx.command}\` again: it checks what is done and continues from there.`,
-      cause: error,
-    });
+    throw unfinished(
+      ctx.deps,
+      error,
+      `OpsCrew could not finish ${what}`,
+      `\`${ctx.command}\` again: it checks what is done and continues from there.`,
+    );
   }
 }
 
@@ -809,23 +750,20 @@ async function copyRecords(
   source: RecordSource,
 ): Promise<number> {
   const { deps, domain, zones } = ctx;
-  if (plan.create.length === 0 || zones.createRecords === undefined) return 0;
+  if (plan.create.length === 0) return 0;
   deps.reporter.step(
     `Copying ${plural(plan.create.length, "record")} into the Cloudflare zone of ${domain}…`,
   );
   const copied = await zones.createRecords(zone.id, plan.create);
-  if (zones.simulated !== true) {
-    const types = [...new Set(plan.create.map((r) => r.type))].join(", ");
-    await auditDomain(
-      deps,
-      "copy DNS records",
-      domain,
-      `${plural(copied, "record")} (${types}) from ${source.audit} into zone ${zone.id}`,
-    );
-  }
+  const types = [...new Set(plan.create.map((r) => r.type))].join(", ");
+  await auditDomain(
+    deps,
+    "copy DNS records",
+    domain,
+    `${plural(copied, "record")} (${types}) from ${source.audit} into zone ${zone.id}`,
+  );
   if (copied === plan.create.length) return copied;
-  const listed = zones.listRecords === undefined ? [] : await zones.listRecords(zone.id);
-  const missing = missingFromZone(plan.create, listed);
+  const missing = missingFromZone(plan.create, await zones.listRecords(zone.id));
   if (missing.length > 0) {
     throw new OpsCrewError(
       "PROVIDER_ERROR",
@@ -839,21 +777,17 @@ async function copyRecords(
 /** The approved changes, in order: zone → records → (old DS removal, stop) → switch → files. */
 async function applyConnect(
   ctx: ConnectContext,
-  input: { source: RecordSource; ds: DsReading; plan: CopyPlan; ttl: number; removeDs: boolean },
+  input: { source: RecordSource; ds: DsReading; plan: CopyPlan; removeDs: boolean },
 ): Promise<ConnectDomainResult> {
-  const { deps, domain, zones } = ctx;
-  const { source, ds, plan, ttl, removeDs } = input;
-  const sctx = switchContext(ctx);
-  const target = switchTarget(ctx);
+  const { deps, domain } = ctx;
+  const { source, ds, plan, removeDs } = input;
   const zone =
-    source.zoneCreated === true && source.zone !== undefined
-      ? source.zone
-      : await ensureZone(sctx, target);
+    source.zoneCreated === true && source.zone !== undefined ? source.zone : await ensureZone(ctx);
   const copied = await copyRecords(ctx, zone, plan, source);
-  if (removeDs) return removeOldDs(ctx, { zone, ds, copied, ttl });
+  if (removeDs) return removeOldDs(ctx, { zone, ds, copied });
 
-  const switched = await pointToZone(sctx, { ...target, zone });
-  const activation = await requestActivation(sctx, { ...target, zone });
+  const switched = await pointToZone(ctx, zone);
+  const activation = await requestActivation(ctx, zone);
   if (ctx.state !== undefined) await removeConnectState(ctx.stateFile);
   const files = await readProjectFiles(deps);
   const project = await recordProject(ctx, files, false);
@@ -866,12 +800,9 @@ async function applyConnect(
   );
   // No success line here: the result (outcome, records copied, nameservers) is the summary the
   // CLI prints, so the user reads it once.
-  const next: string[] = [];
-  if (zones.simulated !== true) {
-    next.push(
-      `Cloudflare activates the zone for ${domain} once the registry publishes the new nameservers, usually within an hour and sometimes up to 48 hours; it re-checks the nameservers on its own. Until then some visitors still reach the old DNS, which serves the same records.`,
-    );
-  }
+  const next = [
+    `Cloudflare activates the zone for ${domain} once the registry publishes the new nameservers, usually within an hour and sometimes up to 48 hours; it re-checks the nameservers on its own. Until then some visitors still reach the old DNS, which serves the same records.`,
+  ];
   if (plan.skipped.length > 0) {
     next.push(
       `Recreate in Cloudflare what OpsCrew did not copy, if you still need it: ${plan.skipped.map((s) => s.reason).join(" ")}`,
@@ -882,8 +813,7 @@ async function applyConnect(
       `Cloudflare proxies ${plan.proxied.map(zoneRecordText).join(", ")}: only web traffic reaches these names. Turn proxying off for them in Cloudflare if mail, SSH or other services use them.`,
     );
   }
-  if (zones.simulated !== true) next.push(dnssecLater(ctx));
-  next.push(...projectSteps(ctx, files, project));
+  next.push(dnssecLater(ctx), projectStep(ctx, files, project));
   return result(ctx, {
     outcome: "connected",
     zoneId: zone.id,
@@ -905,22 +835,19 @@ function approvalDetails(
     source: RecordSource;
     plan: CopyPlan;
     removeDs: boolean;
-    ttl: number;
   },
 ): string {
-  const { deps, domain, account, zones } = ctx;
-  const { zone, current, ds, source, plan, removeDs, ttl } = input;
+  const { deps, domain, account } = ctx;
+  const { zone, current, ds, source, plan, removeDs } = input;
   const name = nameOf(ctx);
   const lines = [
     `Domain: ${domain} (registered at ${name})`,
     `Cloudflare account: ${account.name} (${account.id})`,
-    zones.simulated === true
-      ? `Cloudflare zone: a stand-in (the ${name} sandbox domain does not exist at Cloudflare); nothing is created at Cloudflare.`
-      : source.zoneCreated === true && zone !== undefined
-        ? `Cloudflare zone: ${zone.id}, created for the scan (pending; nothing live uses it until the nameservers point at it).`
-        : zone !== undefined
-          ? `Cloudflare zone: ${zone.id}, already in this account (${zone.status ?? "pending"}); OpsCrew uses it.`
-          : `Cloudflare zone: OpsCrew creates one for ${domain} in this account. It stays pending, and nothing live uses it, until the nameservers point at it.`,
+    source.zoneCreated === true && zone !== undefined
+      ? `Cloudflare zone: ${zone.id}, created for the scan (pending; nothing live uses it until the nameservers point at it).`
+      : zone !== undefined
+        ? `Cloudflare zone: ${zone.id}, already in this account (${zone.status ?? "pending"}); OpsCrew uses it.`
+        : `Cloudflare zone: OpsCrew creates one for ${domain} in this account. It stays pending, and nothing live uses it, until the nameservers point at it.`,
     `Current records: ${plural(source.records.length, "record")} read from ${source.from}.`,
   ];
   const create = createLines(plan, source.records, domain);
@@ -966,19 +893,12 @@ function approvalDetails(
   const to = zoneNs.length > 0 ? listText(zoneNs) : "the zone's Cloudflare nameservers";
   if (removeDs) {
     const listed = ds.api ?? [];
-    const now = deps.clock.now();
-    const safeAt = switchSafeAt({
-      domain,
-      registrar: ctx.registrarId,
-      dsRemovedAt: now.toISOString(),
-      dsGoneSeenAt: publicGoneAt(ds, now).toISOString(),
-      dsTtlSeconds: ttl,
-    }) as Date;
+    const switchAfter = switchAfterRemoval(ctx, ds, deps.clock.now());
     lines.push(
       `Old DNSSEC (DS) records at ${name} (${listed.length}), removed through ${name}'s API in this run:`,
       ...listed.map((record) => `  - ${dsRecordText(record)}`),
       `Switching nameservers while resolvers still remember these records would take ${domain} offline, so this run removes them and does not switch the nameservers. Removing them turns DNSSEC off at the current DNS provider; ${domain} keeps working without it.`,
-      `Nameservers at ${name}: not changed in this run. Run \`${ctx.command}\` again after ${formatTime(safeAt.toISOString())} (at least ${hoursText(ttl)} after the public DNS stops showing the old records, plus an hour in case the registry publishes them a little longer) to switch them from ${listText(current) || "none"} to ${to}; it checks that neither ${name}'s API nor the public DNS shows them and asks again first.`,
+      `Nameservers at ${name}: not changed in this run. Run \`${ctx.command}\` again after ${formatTime(switchAfter)} (at least ${hoursText(dsWaitSeconds(ds.ttlSeconds))} after the public DNS stops showing the old records, plus an hour in case the registry publishes them a little longer) to switch them from ${listText(current) || "none"} to ${to}; it checks that neither ${name}'s API nor the public DNS shows them and asks again first.`,
     );
     return lines.join("\n");
   }
@@ -993,49 +913,34 @@ function approvalDetails(
   lines.push(
     "Then OpsCrew asks Cloudflare to check the nameservers. The switch reaches most resolvers within an hour or two and all of them within 48 hours; meanwhile some visitors still reach the old DNS, which keeps serving the same records.",
     `DNSSEC: turned on in a later run, once Cloudflare has activated the zone (run \`${ctx.command}\` again then).`,
+    ...projectLines(input.files, domain, "switch"),
   );
-  const changes = projectChanges(input.files, domain);
-  if (changes.replaces !== undefined) {
-    lines.push(
-      `The project uses ${changes.replaces} today; after the switch OpsCrew asks before it records ${domain} instead:`,
-    );
-  } else if (changes.lines.length > 0) {
-    lines.push("After the switch, OpsCrew records the domain in the project files:");
-  }
-  lines.push(...changes.lines.map((line) => `  ${line}`));
   return lines.join("\n");
 }
 
 /**
- * After the approval: removes the old DS records the registrar's API lists, notes when (and when
- * the public DNS's copy expires), and stops before the switch. The note is written before the
- * first removal, so an interrupted run still waits.
+ * After the approval: removes the old DS records the registrar's API lists, notes the switch time
+ * (the wait after the public DNS's copy expires), and stops before the switch. A note is written
+ * before the first removal, so an interrupted run still waits.
  */
 async function removeOldDs(
   ctx: ConnectContext,
-  input: { zone: DomainZone; ds: DsReading; copied: number; ttl: number },
+  input: { zone: DomainZone; ds: DsReading; copied: number },
 ): Promise<ConnectDomainResult> {
   const { deps, domain } = ctx;
-  const { zone, ds, copied, ttl } = input;
+  const { zone, ds, copied } = input;
   const name = nameOf(ctx);
-  const noted: ConnectState = {
+  const seen = seenState(ctx, zone, ds);
+  await writeConnectState(ctx.stateFile, seen);
+  await removeDsRecords(ctx, ds.api ?? [], `before switching to zone ${zone.id}`);
+  const removed: ConnectState = {
     domain,
     registrar: ctx.registrarId,
-    ...(ctx.zones.simulated === true ? {} : { zoneId: zone.id }),
-    dsSeenAt: ctx.state?.dsSeenAt ?? deps.clock.now().toISOString(),
-    dsTtlSeconds: ttl,
-  };
-  await writeConnectState(ctx.stateFile, noted);
-  await removeDsRecords(ctx, ds.api ?? [], `before switching to zone ${zone.id}`);
-  const removedAt = deps.clock.now();
-  const removed: ConnectState = {
-    ...noted,
-    dsRemovedAt: removedAt.toISOString(),
-    dsGoneSeenAt: publicGoneAt(ds, removedAt).toISOString(),
+    zoneId: zone.id,
+    switchAfter: laterSwitch(seen, Date.parse(switchAfterRemoval(ctx, ds, deps.clock.now()))),
   };
   await writeConnectState(ctx.stateFile, removed);
-  const safeAt = switchSafeAt(removed) as Date;
-  const until = formatTime(safeAt.toISOString());
+  const until = formatTime(removed.switchAfter);
   deps.reporter.success(
     `OpsCrew copied ${plural(copied, "record")} into the Cloudflare zone of ${domain} and removed its old DNSSEC records at ${name}.`,
   );
@@ -1046,7 +951,7 @@ async function removeOldDs(
     outcome: "waiting-for-ds",
     ...zoneFields(zone),
     copied,
-    waitUntil: safeAt.toISOString(),
+    waitUntil: removed.switchAfter,
     next: [
       `Run \`${ctx.command}\` again after ${until} to switch the nameservers to Cloudflare; it checks that the old DNSSEC records are gone, shows what changes and asks first. Until then ${domain} keeps working on its current DNS, without DNSSEC.`,
     ],
@@ -1067,36 +972,33 @@ function dnssecLater(ctx: ConnectContext): string {
 /**
  * The nameservers already point at the zone: nothing to copy or switch. Requests the activation
  * check while the zone is pending; checks the published DS records against the zone's (stale ones
- * break DNSSEC); once the zone is active, turns DNSSEC on (typed approval); records the project
- * files.
+ * break DNSSEC and are reported); once the zone is active, turns DNSSEC on (typed approval);
+ * records the project files.
  */
 async function alreadyConnected(
   ctx: ConnectContext,
   zone: DomainZone,
 ): Promise<ConnectDomainResult> {
-  const { deps, domain, zones } = ctx;
+  const { deps, domain } = ctx;
   const name = nameOf(ctx);
   deps.reporter.info(
     `The nameservers of ${domain} at ${name} already point at its Cloudflare zone, so there is nothing to copy or switch.`,
   );
   if (ctx.state !== undefined) await removeConnectState(ctx.stateFile);
   const next: string[] = [];
-  let step: DnssecStep = { changed: false, next: [] };
-  if (zones.simulated !== true) {
-    const active = zone.status === "active";
-    if (!active) {
-      await requestActivation(switchContext(ctx), { ...switchTarget(ctx), zone });
-      next.push(
-        `Cloudflare activates the zone for ${domain} once the registry publishes its nameservers, usually within an hour and sometimes up to 48 hours; it re-checks them on its own.`,
-        dnssecLater(ctx),
-      );
-    }
-    step = await dnssecStep(ctx, zone, active);
+  const active = zone.status === "active";
+  if (!active) {
+    await requestActivation(ctx, zone);
+    next.push(
+      `Cloudflare activates the zone for ${domain} once the registry publishes its nameservers, usually within an hour and sometimes up to 48 hours; it re-checks them on its own.`,
+      dnssecLater(ctx),
+    );
   }
+  const step = await dnssecStep(ctx, zone, active);
   next.push(...step.next);
   const files = await readProjectFiles(deps);
   const project = await recordProject(ctx, files, step.published);
-  next.push(...projectSteps(ctx, files, project));
+  next.push(projectStep(ctx, files, project));
   return result(ctx, {
     outcome: step.changed ? "dnssec-published" : "already-connected",
     ...zoneFields(zone),
@@ -1108,7 +1010,7 @@ async function alreadyConnected(
 
 /** What the DNSSEC step did. */
 interface DnssecStep {
-  /** True when this run changed DNSSEC (turned it on, published the DS, removed stale DS). */
+  /** True when this run turned DNSSEC on (and published the DS record or showed it). */
   changed: boolean;
   /** Whether the zone's DS record is published at the registry; undefined when unknown. */
   published?: boolean;
@@ -1119,8 +1021,6 @@ interface DnssecStep {
 interface DnssecState {
   on: boolean;
   zoneDs?: ZoneDsRecord;
-  /** What the registrar's API lists; undefined without that API or when it could not be read. */
-  api?: DsRecord[];
   /** The API's and the public DNS's DS records combined; undefined when neither could be read. */
   published?: DsRecord[];
   /** Published DS records that do not match the zone's: they break validating resolvers. */
@@ -1136,8 +1036,8 @@ interface DnssecState {
  */
 async function dnssecState(ctx: ConnectContext, zone: DomainZone): Promise<DnssecState> {
   const { deps, domain, zones, registrar } = ctx;
-  const on = zones.dnssecEnabled === undefined ? false : await zones.dnssecEnabled(zone.id);
-  const zoneDs = on && zones.dsRecord !== undefined ? await zones.dsRecord(zone.id) : undefined;
+  const on = await zones.dnssecEnabled(zone.id);
+  const zoneDs = on ? await zones.dsRecord(zone.id) : undefined;
   const warnings: string[] = [];
   const unread = (where: string, error: unknown) =>
     warnings.push(
@@ -1172,29 +1072,15 @@ async function dnssecState(ctx: ConnectContext, zone: DomainZone): Promise<Dnsse
     }
   }
   for (const warning of warnings) deps.reporter.warn(warning);
-  return {
-    on,
-    ...(zoneDs === undefined ? {} : { zoneDs }),
-    ...(api === undefined ? {} : { api }),
-    ...(published === undefined ? {} : { published }),
-    stale,
-    warnings,
-  };
-}
-
-/** The plain warning about stale DS records that are left in place. */
-function staleWarning(ctx: ConnectContext, stale: readonly DsRecord[]): string {
-  const { domain } = ctx;
-  const name = nameOf(ctx);
-  return `${domain} has DNSSEC (DS) records at ${name} that do not match its Cloudflare zone: ${stale.map(dsRecordText).join("; ")}. Until they are removed in ${name}'s dashboard (${linkOf(ctx)}), ${domain} may fail to resolve for visitors whose resolver checks DNSSEC.`;
+  return { on, zoneDs, published, stale, warnings };
 }
 
 /**
- * DNSSEC for a domain that points at the zone. Stale DS records (not the zone's) are removed
- * through the registrar's API after a typed approval, or reported with the dashboard link. For an
- * active zone: nothing when the zone's DS record is published; the DS values to add by hand when
- * DNSSEC is on and the API cannot publish them; otherwise turning DNSSEC on is part of the same
- * typed approval, then `publishDs` (turns DNSSEC on, adds the DS record or shows it).
+ * DNSSEC for a domain that points at the zone. Stale DS records (not the zone's) are reported
+ * with the registrar's dashboard link. For an active zone: nothing when the zone's DS record is
+ * published; the DS values to add by hand when DNSSEC is on and the API cannot publish them;
+ * otherwise, after a typed approval, `publishDs` (turns DNSSEC on, adds the DS record or shows
+ * it).
  */
 async function dnssecStep(
   ctx: ConnectContext,
@@ -1204,63 +1090,39 @@ async function dnssecStep(
   const { deps, domain, registrar } = ctx;
   const name = nameOf(ctx);
   const link = linkOf(ctx);
-  const { on, zoneDs, api: listed, published, stale, warnings } = await dnssecState(ctx, zone);
+  const { on, zoneDs, published, stale, warnings } = await dnssecState(ctx, zone);
   const zonePublished =
     published === undefined
       ? undefined
       : zoneDs !== undefined && published.some((r) => sameDs(r, zoneDs));
   const api = capabilitiesOf(registrar).dnssec && registrar.addDsRecord !== undefined;
   const next: string[] = [...warnings];
-
-  // Stale DS records the API lists: removed through it (one key tag at a time, so never one the
-  // zone's own DS record shares); the rest get a warning with the dashboard link.
-  const removable =
-    canRemoveDs(ctx) && listed !== undefined
-      ? stale.filter(
-          (r) =>
-            listed.some((l) => sameDs(l, r)) &&
-            (zoneDs === undefined || r.keyTag !== zoneDs.keyTag),
-        )
-      : [];
-  const leftStale = stale.filter((r) => !removable.includes(r));
-  if (leftStale.length > 0) {
-    const warning = staleWarning(ctx, leftStale);
+  if (stale.length > 0) {
+    const warning = `${domain} has DNSSEC (DS) records at ${name} that do not match its Cloudflare zone: ${stale.map(dsRecordText).join("; ")}. Until they are removed in ${name}'s dashboard (${link}), ${domain} may fail to resolve for visitors whose resolver checks DNSSEC.`;
     deps.reporter.warn(warning);
     next.push(warning);
   }
-
-  let turnOn = false;
-  if (active && zonePublished !== true) {
-    if (on && zoneDs === undefined) {
-      next.push(
-        `Cloudflare has not produced the DS record of ${domain} yet; run \`${ctx.command}\` again in a few minutes.`,
-      );
-    } else if (on && !api) {
-      // Nothing to change at Cloudflare; the registry gets the DS record by hand.
-      next.push(
-        `Add this DS record for ${domain} at ${link} to turn DNSSEC on: ${dsRecordText(zoneDs as ZoneDsRecord)}. Then run \`${ctx.command}\` again to record it in the plan.`,
-      );
-    } else {
-      turnOn = true;
-    }
-  }
-  const unchanged = {
-    changed: false,
-    ...(zonePublished === undefined ? {} : { published: zonePublished }),
-  };
-  if (!turnOn && removable.length === 0) return { ...unchanged, next };
-
-  const details = [
-    `Domain: ${domain} (registered at ${name}; its DNS is served by the ${active ? "active" : "pending"} Cloudflare zone ${zone.id})`,
-  ];
-  if (removable.length > 0) {
-    details.push(
-      `Stale DNSSEC (DS) records at ${name} (${removable.length}), removed through ${name}'s API: they do not match the zone's DNSSEC key, so resolvers that check DNSSEC cannot resolve ${domain} while they are published.`,
-      ...removable.map((ds) => `  - ${dsRecordText(ds)}`),
+  const unchanged = { changed: false, published: zonePublished, next };
+  if (!active || zonePublished === true) return unchanged;
+  if (on && zoneDs === undefined) {
+    next.push(
+      `Cloudflare has not produced the DS record of ${domain} yet; run \`${ctx.command}\` again in a few minutes.`,
     );
+    return unchanged;
   }
-  if (turnOn) {
-    details.push(
+  if (on && !api) {
+    // Nothing to change at Cloudflare; the registry gets the DS record by hand.
+    next.push(
+      `Add this DS record for ${domain} at ${link} to turn DNSSEC on: ${dsRecordText(zoneDs as ZoneDsRecord)}. Then run \`${ctx.command}\` again to record it in the plan.`,
+    );
+    return unchanged;
+  }
+
+  const decision = await deps.approvals.request({
+    kind: "domain-settings",
+    title: `Turn on DNSSEC for ${domain}`,
+    details: [
+      `Domain: ${domain} (registered at ${name}; its DNS is served by the active Cloudflare zone ${zone.id})`,
       on
         ? "Cloudflare zone: DNSSEC is on already."
         : `Cloudflare zone: OpsCrew turns DNSSEC on, so Cloudflare signs the records of ${domain}.`,
@@ -1268,49 +1130,17 @@ async function dnssecStep(
         ? `${name}: OpsCrew adds the zone's DS record at the registry through ${name}'s API, so resolvers check the signatures.`
         : `${name}'s API cannot publish DS records, so OpsCrew shows the zone's DS record to add at ${link}; DNSSEC is in force once you add it.`,
       `Should the zone ever be deleted or moved while the DS record stays at ${name}, resolvers that check DNSSEC cannot resolve ${domain} until the DS record is removed there.`,
-    );
-  }
-  const decision = await deps.approvals.request({
-    kind: "domain-settings",
-    title: turnOn ? `Turn on DNSSEC for ${domain}` : `Remove the stale DNSSEC records of ${domain}`,
-    details: details.join("\n"),
+    ].join("\n"),
     // Typed in a terminal, `--confirm <domain>` in scripts; `--yes` never grants it.
     confirmPhrase: domain,
   });
   if (!decision.approved) {
-    if (removable.length > 0) {
-      const warning = staleWarning(ctx, removable);
-      deps.reporter.warn(warning);
-      next.push(
-        `${warning} ${refusedHint(ctx, decision.reason, `remove them through ${name}'s API`)}`,
-      );
-    }
-    if (turnOn) {
-      next.push(
-        `DNSSEC stays off for ${domain}. ${refusedHint(ctx, decision.reason, "turn it on")}`,
-      );
-    }
-    return { ...unchanged, next };
+    next.push(`DNSSEC stays off for ${domain}. ${refusedHint(ctx, decision.reason, "turn it on")}`);
+    return unchanged;
   }
 
-  const ds = await afterApproval(
-    ctx,
-    async () => {
-      await removeDsRecords(ctx, removable, `stale: not the DS record of zone ${zone.id}`);
-      return turnOn ? publishDs(switchContext(ctx), { ...switchTarget(ctx), zone }) : undefined;
-    },
-    `updating DNSSEC for ${domain}`,
-  );
-  if (removable.length > 0) {
-    deps.reporter.success(`OpsCrew removed the stale DNSSEC records of ${domain} at ${name}.`);
-  }
-  switch (ds?.outcome) {
-    case undefined:
-      return {
-        changed: true,
-        ...(zonePublished === undefined ? {} : { published: zonePublished }),
-        next,
-      };
+  const ds = await afterApproval(ctx, () => publishDs(ctx, zone), `updating DNSSEC for ${domain}`);
+  switch (ds.outcome) {
     case "added":
     case "already":
       deps.reporter.success(`DNSSEC is on for ${domain}: its DS record is published at ${name}.`);
@@ -1327,8 +1157,6 @@ async function dnssecStep(
         `Run \`${ctx.command}\` again in a few minutes to publish the DS record of ${domain}.`,
       );
       return { changed: true, published: false, next };
-    case "skipped":
-      return { changed: removable.length > 0, next };
   }
 }
 
@@ -1442,15 +1270,18 @@ async function recordProject(
   if (plan === undefined && requirements === undefined) {
     return { recorded: already, hostname, dnssec };
   }
-  if (changes.replaces !== undefined && !(await approveReplace(ctx, files, changes))) {
+  if (
+    changes.replaces !== undefined &&
+    !(await approveDomainSwitch(deps, files, domain, changes, {
+      done: `${domain} now uses Cloudflare DNS`,
+      stays: "stays on Cloudflare",
+    }))
+  ) {
     return { recorded: NOT_RECORDED, hostname, dnssec, keptDomain: changes.replaces };
   }
   const written = await recordDomain(
     deps,
-    {
-      ...(plan === undefined ? {} : { plan }),
-      ...(requirements === undefined ? {} : { requirements }),
-    },
+    { plan, requirements },
     { domain, hostname, info, dnssec },
   );
   return {
@@ -1463,36 +1294,12 @@ async function recordProject(
   };
 }
 
-/** Asks before the connected domain replaces another one in the project files. */
-async function approveReplace(
-  ctx: ConnectContext,
-  files: ProjectFiles,
-  changes: ProjectChanges,
-): Promise<boolean> {
-  const { deps, domain } = ctx;
-  const current = changes.replaces ?? "";
-  const file = files.plan !== undefined ? "opscrew/plan.yaml" : "opscrew/requirements.yaml";
-  const decision = await deps.approvals.request({
-    kind: "repo-write",
-    title: `Use ${domain} instead of ${current} in ${file}`,
-    details: [
-      `${domain} now uses Cloudflare DNS, but the project serves the app at ${current}.`,
-      ...changes.lines,
-      `The DNS records of ${current} stay until \`opscrew dns\` or \`opscrew provision\` updates them.`,
-      `Refuse to keep ${current}; ${domain} stays on Cloudflare and you can switch later with \`opscrew dns --domain ${domain}\`.`,
-    ].join("\n"),
-  });
-  return decision.approved;
-}
-
 /** The project's next step after connecting (and a warning when another domain was kept). */
-function projectSteps(ctx: ConnectContext, files: ProjectFiles, project: ProjectRecord): string[] {
-  const { deps, domain, zones } = ctx;
-  if (project.keptDomain !== undefined) {
-    deps.reporter.warn(
-      `${files.plan === undefined ? "opscrew/requirements.yaml" : "The plan"} still uses ${project.keptDomain}. ${domain} stays on Cloudflare DNS.`,
-    );
-  }
-  const step = projectNextStep(files, domain, project.hostname, project.keptDomain);
-  return [zones.simulated === true ? step : `${step} ${zoneTokenNote(domain)}`];
+function projectStep(ctx: ConnectContext, files: ProjectFiles, project: ProjectRecord): string {
+  return nextProjectStep(ctx.deps, files, {
+    domain: ctx.domain,
+    hostname: project.hostname,
+    keptDomain: project.keptDomain,
+    stays: "stays on Cloudflare DNS",
+  });
 }

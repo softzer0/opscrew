@@ -1,32 +1,28 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Money, RegistrarId } from "@opscrew/contracts";
+import type { RegistrarId } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
 import { z } from "zod";
+import { readIfExists } from "../shared";
 import { DASHBOARD, formatDate } from "./common";
 import { buyCommandOf, registrarDashboard } from "./links";
+import { REGISTRAR_IDS } from "./registrars";
 
-/**
- * Local note that a purchase was sent (or is about to be), written before `register` and removed
- * once the domain is set up. Together with the live registration status (and, where the registrar
- * takes one, the idempotency key) it makes sure a purchase is never sent twice. Holds no contact
- * data.
- */
-export interface PurchaseRecord {
-  domain: string;
+const PurchaseRecordSchema = z.object({
+  domain: z.string().min(1),
   /** The Cloudflare account the domain's zone lives in. */
-  accountId: string;
-  requestedAt: string;
-  years?: number;
-  autoRenew?: boolean;
-  total?: Money;
+  accountId: z.string().min(1),
+  requestedAt: z.string().min(1),
+  years: z.number().int().min(1).max(10).optional(),
+  autoRenew: z.boolean().optional(),
+  total: z.object({ amount: z.number(), currency: z.enum(["EUR", "USD"]) }).optional(),
   /** Where the domain is bought; absent means Cloudflare (records written before feature 007). */
-  registrar?: RegistrarId;
+  registrar: z.enum(REGISTRAR_IDS).optional(),
   /**
    * Created once, with the record, and sent with the purchase by registrars that take one
    * (Porkbun, GoDaddy); kept unchanged on every resumed run.
    */
-  idempotencyKey?: string;
+  idempotencyKey: z.string().min(1).max(200).optional(),
   /**
    * `uncertain` once `register` failed without a clear answer: the purchase may have started, so
    * the note is only cleared by the user (`forgetPendingPurchase`). `accepted` once the registrar
@@ -34,23 +30,19 @@ export interface PurchaseRecord {
    * either, because a registrar may list such an order only hours later (Namecheap). Absent while
    * the request is being sent (or when the run stopped before or during it).
    */
-  outcome?: "uncertain" | "accepted";
-}
+  outcome: z.enum(["uncertain", "accepted"]).optional(),
+});
+
+/**
+ * Local note that a purchase was sent (or is about to be), written before `register` and removed
+ * once the domain is set up. Together with the live registration status (and, where the registrar
+ * takes one, the idempotency key) it makes sure a purchase is never sent twice. Holds no contact
+ * data.
+ */
+export type PurchaseRecord = z.infer<typeof PurchaseRecordSchema>;
 
 /** Wall-clock age after which a note without an outcome may be cleared (see `buyDomain`). */
 export const UNSENT_PURCHASE_AGE_MS = 30 * 60_000;
-
-const PurchaseRecordSchema = z.object({
-  domain: z.string().min(1),
-  accountId: z.string().min(1),
-  requestedAt: z.string().min(1),
-  years: z.number().int().min(1).max(10).optional(),
-  autoRenew: z.boolean().optional(),
-  total: z.object({ amount: z.number(), currency: z.enum(["EUR", "USD"]) }).optional(),
-  registrar: z.enum(["cloudflare", "porkbun", "namecheap", "godaddy"]).optional(),
-  idempotencyKey: z.string().min(1).max(200).optional(),
-  outcome: z.enum(["uncertain", "accepted"]).optional(),
-});
 
 /** `<projectHome>/domain-purchase.json`. */
 export function purchaseRecordPath(paths: ProjectPaths): string {
@@ -67,13 +59,8 @@ export function recordRegistrar(record: PurchaseRecord): RegistrarId {
  * tell whether a purchase is under way.
  */
 export async function readPurchaseRecord(file: string): Promise<PurchaseRecord | undefined> {
-  let text: string;
-  try {
-    text = await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
+  const text = await readIfExists(file);
+  if (text === undefined) return undefined;
   let data: unknown;
   try {
     data = JSON.parse(text);
@@ -90,16 +77,7 @@ export async function readPurchaseRecord(file: string): Promise<PurchaseRecord |
       },
     );
   }
-  const { years, autoRenew, total, registrar, idempotencyKey, outcome, ...required } = parsed.data;
-  return {
-    ...required,
-    ...(years === undefined ? {} : { years }),
-    ...(autoRenew === undefined ? {} : { autoRenew }),
-    ...(total === undefined ? {} : { total }),
-    ...(registrar === undefined ? {} : { registrar }),
-    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
-    ...(outcome === undefined ? {} : { outcome }),
-  };
+  return parsed.data;
 }
 
 /**
@@ -126,14 +104,13 @@ export async function createPurchaseRecord(file: string, record: PurchaseRecord)
   }
 }
 
-/** Marks the record `uncertain`: only the user may clear it from now on. */
-export async function markPurchaseUncertain(file: string, record: PurchaseRecord): Promise<void> {
-  await writeFileAtomic(file, `${JSON.stringify({ ...record, outcome: "uncertain" }, null, 2)}\n`);
-}
-
-/** Marks the record `accepted` (the registrar is working on the order): never cleared on its own. */
-export async function markPurchaseAccepted(file: string, record: PurchaseRecord): Promise<void> {
-  await writeFileAtomic(file, `${JSON.stringify({ ...record, outcome: "accepted" }, null, 2)}\n`);
+/** Notes the purchase's outcome (see `PurchaseRecord.outcome`): only the user clears it then. */
+export async function markPurchase(
+  file: string,
+  record: PurchaseRecord,
+  outcome: NonNullable<PurchaseRecord["outcome"]>,
+): Promise<void> {
+  await writeFileAtomic(file, `${JSON.stringify({ ...record, outcome }, null, 2)}\n`);
 }
 
 export async function removePurchaseRecord(file: string): Promise<void> {

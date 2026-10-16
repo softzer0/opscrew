@@ -1,3 +1,4 @@
+import { CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import type { RegisteredDomain } from "@opscrew/contracts";
 import {
   type ArtifactKind,
@@ -9,7 +10,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { hasDeployment } from "../shared";
-import { toIsoDateTime } from "./common";
+import { TOKEN_PAGE, toIsoDateTime } from "./common";
 
 /** The project's requirements and plan, when present (validated). */
 export interface ProjectFiles {
@@ -17,7 +18,8 @@ export interface ProjectFiles {
   requirements?: Requirements;
 }
 
-async function readOptional<K extends ArtifactKind>(
+/** The artefact, or undefined when the file does not exist; an invalid file stops the run. */
+export async function readOptionalArtifact<K extends ArtifactKind>(
   kind: K,
   file: string,
 ): Promise<ArtifactOf<K> | undefined> {
@@ -31,16 +33,14 @@ async function readOptional<K extends ArtifactKind>(
 
 /** Reads `opscrew/plan.yaml` and `opscrew/requirements.yaml`; an invalid file stops the run. */
 export async function readProjectFiles(deps: PhaseDeps): Promise<ProjectFiles> {
-  const files: ProjectFiles = {};
-  const plan = await readOptional("plan", deps.paths.files.plan);
-  const requirements = await readOptional("requirements", deps.paths.files.requirements);
-  if (plan !== undefined) files.plan = plan;
-  if (requirements !== undefined) files.requirements = requirements;
-  return files;
+  return {
+    plan: await readOptionalArtifact("plan", deps.paths.files.plan),
+    requirements: await readOptionalArtifact("requirements", deps.paths.files.requirements),
+  };
 }
 
 /** The domain the project currently uses: the plan's, else the requirements'. */
-export function currentDomain(files: ProjectFiles): string | undefined {
+function currentDomain(files: ProjectFiles): string | undefined {
   if (files.plan !== undefined) return files.plan.dns.domain;
   return files.requirements?.domain;
 }
@@ -96,7 +96,56 @@ export function projectChanges(files: ProjectFiles, domain: string): ProjectChan
   if (files.requirements !== undefined) {
     lines.push(`opscrew/requirements.yaml: domain ${hostname}, dnsProvider cloudflare.`);
   }
-  return { hostname, ...(replaces === undefined ? {} : { replaces }), lines };
+  return { hostname, replaces, lines };
+}
+
+/**
+ * The approval lines about the project files after the `step` (`purchase`, `switch`): what
+ * recording `domain` changes, and that OpsCrew asks first when it replaces another domain.
+ */
+export function projectLines(files: ProjectFiles, domain: string, step: string): string[] {
+  const changes = projectChanges(files, domain);
+  const lines: string[] = [];
+  if (changes.replaces !== undefined) {
+    lines.push(
+      `The project uses ${changes.replaces} today; after the ${step} OpsCrew asks before it records ${domain} instead:`,
+    );
+  } else if (changes.lines.length > 0) {
+    lines.push(`After the ${step}, OpsCrew records the domain in the project files:`);
+  }
+  lines.push(...changes.lines.map((line) => `  ${line}`));
+  return lines;
+}
+
+/** How the domain came to the user, for {@link approveDomainSwitch}. */
+export interface SwitchWording {
+  /** What happened: `OpsCrew bought x.com`, `x.com now uses Cloudflare DNS`. */
+  done: string;
+  /** What stays when the user refuses: `stays bought`, `stays on Cloudflare`. */
+  stays: string;
+}
+
+/** Asks (`repo-write`) before `domain` replaces another domain in the project files. */
+export async function approveDomainSwitch(
+  deps: PhaseDeps,
+  files: ProjectFiles,
+  domain: string,
+  changes: ProjectChanges,
+  wording: SwitchWording,
+): Promise<boolean> {
+  const current = changes.replaces ?? "";
+  const file = files.plan !== undefined ? "opscrew/plan.yaml" : "opscrew/requirements.yaml";
+  const decision = await deps.approvals.request({
+    kind: "repo-write",
+    title: `Use ${domain} instead of ${current} in ${file}`,
+    details: [
+      `${wording.done}, but the project serves the app at ${current}.`,
+      ...changes.lines,
+      `The DNS records of ${current} stay until \`opscrew dns\` or \`opscrew provision\` updates them.`,
+      `Refuse to keep ${current}; ${domain} ${wording.stays} and you can switch later with \`opscrew dns --domain ${domain}\`.`,
+    ].join("\n"),
+  });
+  return decision.approved;
 }
 
 export interface RecordOptions {
@@ -120,11 +169,10 @@ export async function recordDomain(
   options: RecordOptions,
 ): Promise<{ plan: boolean; requirements: boolean }> {
   const { domain, hostname, info } = options;
-  const recorded = { plan: false, requirements: false };
   if (files.plan !== undefined) {
     const plan = files.plan;
     const switching = plan.dns.provider !== "cloudflare" || plan.dns.domain !== hostname;
-    const next: DeployPlan = {
+    await writeArtifact("plan", deps.paths.files.plan, {
       ...plan,
       updatedAt: deps.clock.now().toISOString(),
       dns: {
@@ -136,31 +184,34 @@ export async function recordDomain(
         registration: registrationOf(info, options.dnssec),
       },
       security: switching ? { ...plan.security, httpAllowedFrom: "cloudflare" } : plan.security,
-    };
-    await writeArtifact("plan", deps.paths.files.plan, next);
-    recorded.plan = true;
-  }
-  if (files.requirements !== undefined) {
-    await writeArtifact("requirements", deps.paths.files.requirements, {
-      ...files.requirements,
-      domain: hostname,
-      dnsProvider: "cloudflare",
     });
-    recorded.requirements = true;
   }
-  return recorded;
+  if (files.requirements !== undefined)
+    await recordRequirements(deps, files.requirements, hostname);
+  return { plan: files.plan !== undefined, requirements: files.requirements !== undefined };
+}
+
+/** Points `opscrew/requirements.yaml` at `hostname` on Cloudflare DNS. */
+export async function recordRequirements(
+  deps: PhaseDeps,
+  requirements: Requirements,
+  hostname: string,
+): Promise<void> {
+  await writeArtifact("requirements", deps.paths.files.requirements, {
+    ...requirements,
+    domain: hostname,
+    dnsProvider: "cloudflare",
+  });
 }
 
 type Registration = NonNullable<DeployPlan["dns"]["registration"]>;
 
 /** `plan.dns.registration` from the registrar's details. */
 function registrationOf(info: RegisteredDomain, dnssec: boolean): Registration {
-  const registeredAt = toIsoDateTime(info.createdAt);
-  const expiresAt = toIsoDateTime(info.expiresAt);
   return {
     registrar: info.registrar,
-    ...(registeredAt === undefined ? {} : { registeredAt }),
-    ...(expiresAt === undefined ? {} : { expiresAt }),
+    registeredAt: toIsoDateTime(info.createdAt),
+    expiresAt: toIsoDateTime(info.expiresAt),
     autoRenew: info.autoRenew,
     privacy: info.privacy ?? true,
     dnssec,
@@ -215,17 +266,70 @@ export async function syncPlanRegistration(
     updatedAt: deps.clock.now().toISOString(),
     dns: {
       ...plan.dns,
-      registration: {
-        ...registration,
-        autoRenew: info.autoRenew,
-        ...(expiresAt === undefined ? {} : { expiresAt }),
-      },
+      registration: { ...registration, autoRenew: info.autoRenew, expiresAt },
     },
   });
   return true;
 }
 
 /** True when the plan's server is running (created and not destroyed). */
-export function isDeployed(plan: DeployPlan | undefined): boolean {
+function isDeployed(plan: DeployPlan | undefined): boolean {
   return plan !== undefined && hasDeployment(plan);
+}
+
+/** What the project does next once the domain is set up. */
+export interface NextStepOptions {
+  domain: string;
+  hostname: string;
+  /** Another domain the project keeps (the user refused to replace it). */
+  keptDomain?: string;
+  /** What is true of `domain` even so: `stays on Cloudflare DNS`. */
+  stays: string;
+}
+
+/**
+ * The project's next step after the domain is set up (from the project files), with what a token
+ * limited to some zones needs. Warns first when the project keeps another domain.
+ */
+export function nextProjectStep(
+  deps: PhaseDeps,
+  files: ProjectFiles,
+  options: NextStepOptions,
+): string {
+  const { domain, hostname, keptDomain } = options;
+  if (keptDomain !== undefined) {
+    deps.reporter.warn(
+      `${files.plan === undefined ? "opscrew/requirements.yaml" : "The plan"} still uses ${keptDomain}. ${domain} ${options.stays}.`,
+    );
+  }
+  return `${projectStep(files, domain, hostname, keptDomain)} ${zoneTokenNote(domain)}`;
+}
+
+function projectStep(
+  files: ProjectFiles,
+  domain: string,
+  hostname: string,
+  keptDomain: string | undefined,
+): string {
+  if (keptDomain !== undefined) {
+    return `To serve the app at ${domain} later, run \`opscrew dns --domain ${domain}\`. It shows the change and asks before applying it.`;
+  }
+  if (isDeployed(files.plan)) {
+    return `Run \`opscrew dns\` to point ${hostname} at your server. It shows the change and asks before applying it.`;
+  }
+  if (files.plan !== undefined) {
+    return `Run \`opscrew provision\` to deploy the app at https://${hostname}.`;
+  }
+  if (files.requirements !== undefined) {
+    return `Run \`opscrew design\` to plan the deployment for ${hostname}.`;
+  }
+  return `Run \`opscrew interview\` and give ${domain} as the domain, then \`opscrew design\`.`;
+}
+
+/**
+ * A token limited to the zones that existed before does not cover this (possibly new) zone; said
+ * within the project's next step, before the user runs it.
+ */
+function zoneTokenNote(domain: string): string {
+  return `If your Cloudflare token is limited to specific zones, first add the zone ${domain} to it at ${TOKEN_PAGE} (or set it to all zones of the account): \`opscrew dns\` and \`opscrew provision\` need the token's zone permissions (${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}) on ${domain} too.`;
 }

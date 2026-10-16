@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
 import { domainProject, domainTestPlan, TOKEN, visibleText } from "./__fixtures__/fakes";
 import { buyDomain } from "./buy";
-import { defaultDomainServices, resolveDomainServices } from "./services";
+import { defaultDomainServices, resolveDomainServices, SANDBOX_ZONES } from "./services";
 
 const API = "https://api.cloudflare.com/client/v4";
 const REG = "/accounts/acc-1/registrar";
@@ -129,9 +129,9 @@ describe("defaultDomainServices", () => {
       account: { id: "acc-1" },
       type: "full",
     });
-    expect(await services.zones.dnssecEnabled?.("z1")).toBe(false);
-    expect(await services.zones.dnssecEnabled?.("z1")).toBe(true);
-    expect(await services.zones.dsRecord?.("z1")).toEqual({
+    expect(await services.zones.dnssecEnabled("z1")).toBe(false);
+    expect(await services.zones.dnssecEnabled("z1")).toBe(true);
+    expect(await services.zones.dsRecord("z1")).toEqual({
       keyTag: 2371,
       algorithm: 13,
       digestType: 2,
@@ -144,10 +144,10 @@ describe("defaultDomainServices", () => {
       status: "active",
       nameServers: [],
     });
-    expect(await services.zones.activationCheck?.("z1")).toEqual({ requested: true });
+    expect(await services.zones.activationCheck("z1")).toEqual({ requested: true });
     const mx = { type: "MX", name: "shopapp.com", content: "mx.mail.example", priority: 10 };
-    expect(await services.zones.createRecords?.("z1", [{ ...mx, ttl: 1, proxied: false }])).toBe(1);
-    expect(await services.zones.listRecords?.("z1")).toEqual([
+    expect(await services.zones.createRecords("z1", [{ ...mx, ttl: 1, proxied: false }])).toBe(1);
+    expect(await services.zones.listRecords("z1")).toMatchObject([
       { type: "MX", name: "shopapp.com", content: "mx.mail.example", priority: 10 },
       { type: "A", name: "shopapp.com", content: "203.0.113.5", proxied: true },
     ]);
@@ -196,11 +196,7 @@ describe("defaultDomainServices", () => {
         throw new Error("unused");
       },
       extension: async () => undefined,
-      zones: {
-        findZone: async () => undefined,
-        createZone: async () => ({ id: "z", name: "z" }),
-        enableDnssec: async () => undefined,
-      },
+      zones: { ...SANDBOX_ZONES },
     });
     expect(await injected.accounts()).toEqual([]);
   });
@@ -392,7 +388,7 @@ describe("buyDomain through the Cloudflare adapter: refusals (fake API, no netwo
     expect(error?.hint).not.toMatch(/payment method|registrant contact/);
   });
 
-  it("records DNSSEC as off in the registrar sandbox and says the project files are updated", async () => {
+  it("sets the domain up on the stand-in zones in the registrar sandbox and says the project files are updated", async () => {
     const SANDBOX = "/accounts/acc-1/registrar-sandbox";
     const { result, error, api, deps, project } = await runWith(
       {
@@ -416,11 +412,12 @@ describe("buyDomain through the Cloudflare adapter: refusals (fake API, no netwo
     expect(error).toBeUndefined();
     expect(result?.outcome).toBe("set-up");
     expect(api.calls.some((c) => c.path.startsWith("/zones"))).toBe(false);
-    const text = deps.reporter.text();
-    expect(text).toContain("OpsCrew still records the domain in the project files");
-    expect(text).not.toContain("DNSSEC on");
-    expect(deps.audit.entries.some((e) => e.action === "enable DNSSEC")).toBe(false);
+    expect(result).toMatchObject({ zoneId: "sandbox" });
+    expect(deps.reporter.text()).toContain("OpsCrew still records the domain in the project files");
     const plan = await readArtifact("plan", join(project.root, "opscrew", "plan.yaml"));
-    expect(plan.dns.registration).toMatchObject({ registrar: "cloudflare", dnssec: false });
+    expect(plan.dns).toMatchObject({
+      zone: "shopapp.com",
+      registration: { registrar: "cloudflare" },
+    });
   });
 });

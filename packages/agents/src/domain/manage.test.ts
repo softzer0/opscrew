@@ -51,16 +51,6 @@ describe("domainStatus", () => {
     expect(visibleText(deps)).not.toContain(TOKEN);
   });
 
-  it("falls back to the plan's DNSSEC state when the zone calls cannot tell", async () => {
-    const project = await boughtProject();
-    const { deps, services } = await project.run();
-    const { dnssecEnabled: _unused, ...zones } = project.cf.zoneApi;
-
-    const result = await domainStatus(deps, { services: { ...services, zones } });
-
-    expect(result.dnssec).toBe(true);
-  });
-
   it("reports an unfinished purchase", async () => {
     const project = await domainProject();
     const { deps, services } = await project.run();

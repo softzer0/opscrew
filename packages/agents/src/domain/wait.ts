@@ -6,16 +6,16 @@ import { buyCommandOf, registrarDashboard } from "./links";
 import { removePurchaseRecord } from "./record";
 import { REGISTRAR_NAMES } from "./registrars";
 import type { ResolvedDomainServices } from "./services";
-import type { DomainAccount } from "./types";
+import type { DomainAccount, DomainZoneApi } from "./types";
 
 /** How long OpsCrew waits for the registrar to finish a purchase before it stops (the rerun continues). */
-export const REGISTRATION_TIMEOUT_MS = 10 * 60_000;
+const REGISTRATION_TIMEOUT_MS = 10 * 60_000;
 const FIRST_POLL_MS = 2_000;
 const MAX_POLL_MS = 30_000;
 /** Consecutive failed status checks tolerated while waiting (network hiccups). */
 const MAX_CHECK_FAILURES = 3;
 
-/** Everything one purchase needs. */
+/** Everything one purchase needs (and what moving its DNS to Cloudflare needs, `SwitchContext`). */
 export interface PurchaseContext {
   deps: PhaseDeps;
   services: ResolvedDomainServices;
@@ -25,6 +25,8 @@ export interface PurchaseContext {
   registrarId: RegistrarId;
   /** The Cloudflare account the domain's zone lives in. */
   account: DomainAccount;
+  /** `services.zonesFor(registrarId)`: stand-ins when the registrar runs in its sandbox. */
+  zones: DomainZoneApi;
   domain: string;
   recordFile: string;
 }

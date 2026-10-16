@@ -4,6 +4,7 @@ import {
   mapRegistrarRecords,
 } from "@opscrew/connector-cloudflare";
 import type { RegistrarDnsRecord } from "@opscrew/contracts";
+import { normalizeHostName } from "@opscrew/core";
 import type { ZoneRecord } from "./types";
 
 /**
@@ -40,10 +41,6 @@ const HOST_TYPES = new Set(["CNAME", "NS", "MX", "PTR"]);
 const ADDRESS_TYPES = new Set(["A", "AAAA"]);
 /** DNSSEC data of the current provider, found in exported zone files. */
 const DNSSEC_TYPES = new Set(["RRSIG", "NSEC", "NSEC3", "NSEC3PARAM", "DNSKEY", "CDS", "CDNSKEY"]);
-
-function hostText(value: string): string {
-  return value.trim().toLowerCase().replace(/\.$/, "");
-}
 
 /** An IPv6 address in its canonical form (`2001:0db8:0:0::1` → `2001:db8::1`); else lower case. */
 export function canonicalIpv6(value: string): string {
@@ -99,7 +96,7 @@ interface Comparable {
 
 function comparable(type: string, name: string, content: string, priority?: number): Comparable {
   const upper = type.toUpperCase();
-  const host = hostText(name);
+  const host = normalizeHostName(name);
   return {
     type: upper,
     name: host,
@@ -136,7 +133,7 @@ function inputComparable(record: CloudflareRecordInput): Comparable {
   const type = record.type.toUpperCase();
   const data = record.data ?? {};
   if (type === "SRV") {
-    const content = `${data.weight} ${data.port} ${hostText(String(data.target ?? ""))}`;
+    const content = `${data.weight} ${data.port} ${normalizeHostName(String(data.target ?? ""))}`;
     return comparable(type, record.name, content, numberOf(data.priority));
   }
   if (type === "CAA") {
@@ -146,7 +143,7 @@ function inputComparable(record: CloudflareRecordInput): Comparable {
   if (type === "TXT") return comparable(type, record.name, txtContent(record.content ?? ""));
   if (type === "AAAA") return comparable(type, record.name, canonicalIpv6(record.content ?? ""));
   if (HOST_TYPES.has(type)) {
-    return comparable(type, record.name, hostText(record.content ?? ""), record.priority);
+    return comparable(type, record.name, normalizeHostName(record.content ?? ""), record.priority);
   }
   return comparable(type, record.name, (record.content ?? "").trim().toLowerCase());
 }
@@ -160,7 +157,12 @@ function zoneComparable(record: ZoneRecord): Comparable {
     const parts = raw.split(/\s+/);
     const [weight, port, target] = parts.slice(-3);
     const priority = given ?? (parts.length === 4 ? numberOf(parts[0]) : undefined);
-    return comparable(type, record.name, `${weight} ${port} ${hostText(target ?? "")}`, priority);
+    return comparable(
+      type,
+      record.name,
+      `${weight} ${port} ${normalizeHostName(target ?? "")}`,
+      priority,
+    );
   }
   if (type === "CAA") {
     const match = /^(\d+)\s+(\S+)\s+(.*)$/s.exec(raw);
@@ -175,9 +177,13 @@ function zoneComparable(record: ZoneRecord): Comparable {
   if (type === "MX") {
     const parts = raw.split(/\s+/);
     const priority = given ?? (parts.length === 2 ? numberOf(parts[0]) : undefined);
-    return comparable(type, record.name, hostText(parts.at(-1) ?? ""), priority);
+    return comparable(type, record.name, normalizeHostName(parts.at(-1) ?? ""), priority);
   }
-  return comparable(type, record.name, HOST_TYPES.has(type) ? hostText(raw) : raw.toLowerCase());
+  return comparable(
+    type,
+    record.name,
+    HOST_TYPES.has(type) ? normalizeHostName(raw) : raw.toLowerCase(),
+  );
 }
 
 /** Same record: same type, name and content, and the same priority when both sides know it. */
@@ -191,7 +197,7 @@ function sameRecord(a: Comparable, b: Comparable): boolean {
 /** The reason a record is not copied: the mapping's, or a clearer one for some types. */
 function skipReason(record: RegistrarDnsRecord, reason: string): string {
   const type = record.type.trim().toUpperCase();
-  const name = hostText(record.name);
+  const name = normalizeHostName(record.name);
   if (type === "EMAIL-FORWARDING") {
     // Namecheap's mail pseudo-record: its content says what to do.
     return `Mail for ${name}: ${record.content.trim().replace(/\.+$/, "")}.`;
@@ -204,7 +210,7 @@ function skipReason(record: RegistrarDnsRecord, reason: string): string {
 
 /** `A shopapp.com 198.51.100.7`: a zone record as the approval shows it. */
 export function zoneRecordText(record: ZoneRecord): string {
-  return `${record.type.toUpperCase()} ${hostText(record.name)} ${record.content.trim()}`;
+  return `${record.type.toUpperCase()} ${normalizeHostName(record.name)} ${record.content.trim()}`;
 }
 
 /**
@@ -316,7 +322,7 @@ export function copyPlan(
   const skipped: CopyPlan["skipped"] = [];
   for (const { record, reason } of mapped.skipped) {
     const type = record.type.trim().toUpperCase();
-    if (type === "SOA" || (type === "NS" && hostText(record.name) === domain)) {
+    if (type === "SOA" || (type === "NS" && normalizeHostName(record.name) === domain)) {
       managed.push(record);
     } else {
       skipped.push({ record, reason: skipReason(record, reason) });

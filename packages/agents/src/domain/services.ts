@@ -2,15 +2,23 @@ import { CloudflareClient, CloudflareRegistrar } from "@opscrew/connector-cloudf
 import type { Registrar, RegistrarId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
+import { cloudflareTokenMissing, requireCloudflareToken } from "./common";
 import {
   configuredRegistrars,
+  hasEnv,
   type OtherRegistrarId,
   REGISTRAR_IDS,
   REGISTRAR_NAMES,
   registrarFor,
   registrarSandbox,
 } from "./registrars";
-import type { DomainAccount, DomainExtension, DomainServices, DomainZoneApi } from "./types";
+import type {
+  DomainAccount,
+  DomainExtension,
+  DomainServices,
+  DomainZone,
+  DomainZoneApi,
+} from "./types";
 
 /** The collaborators of a domain command with every default filled in. */
 export interface ResolvedDomainServices {
@@ -40,19 +48,19 @@ export const SANDBOX_NAMESERVERS: readonly string[] = [
   "bob.ns.cloudflare.com",
 ];
 
+/** The stand-in zone of `name`: pending, with the stand-in nameservers. */
+function standInZone(name: string): DomainZone {
+  return { id: "sandbox", name, status: "pending", nameServers: [...SANDBOX_NAMESERVERS] };
+}
+
 /**
- * Stand-in zone calls for registrar sandboxes: nothing is created at Cloudflare, DNSSEC stays off,
- * records are counted but not stored.
+ * Stand-in zone calls for registrar sandboxes: every domain has a pending zone with the stand-in
+ * nameservers, nothing is created at Cloudflare, DNSSEC stays off without a DS record, and records
+ * are counted but not stored.
  */
 export const SANDBOX_ZONES: DomainZoneApi = {
-  simulated: true,
-  findZone: async () => undefined,
-  createZone: async (_accountId, name) => ({
-    id: "sandbox",
-    name,
-    status: "pending",
-    nameServers: [...SANDBOX_NAMESERVERS],
-  }),
+  findZone: async (name) => standInZone(name),
+  createZone: async (_accountId, name) => standInZone(name),
   enableDnssec: async () => {},
   dnssecEnabled: async () => false,
   dsRecord: async () => undefined,
@@ -69,29 +77,20 @@ export type CloudflareDomainServices = Pick<
 >;
 
 /**
- * The real Cloudflare collaborators, built from `CLOUDFLARE_API_TOKEN` with the run's `fetch`
- * (the token is registered with the redactor, as the connector does). Zones are created only in
- * the given account (`createZone` reuses an existing zone only when it belongs to that account).
- * `OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1` (tests only) sends registrar calls to Cloudflare's
- * sandbox and skips the zone and DNSSEC setup, which the sandbox does not cover (`zones.simulated`);
- * the project files are still updated.
+ * The real Cloudflare collaborators, built from `CLOUDFLARE_API_TOKEN` with the run's `fetch`.
+ * Zones are created only in the given account (`createZone` reuses an existing zone only when it
+ * belongs to that account). `OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX=1` (tests only) sends registrar
+ * calls to Cloudflare's sandbox and uses the stand-in zones, as the sandbox has no zones; the
+ * project files are still updated.
  */
 export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices {
-  const token = deps.env.CLOUDFLARE_API_TOKEN?.trim();
-  if (!token) {
-    throw new OpsCrewError(
-      "CREDENTIALS_MISSING",
-      "No Cloudflare API token found. Set CLOUDFLARE_API_TOKEN to a token that can buy domains.",
-      { hint: "Create one at https://dash.cloudflare.com/profile/api-tokens, then try again." },
-    );
-  }
-  deps.redactor.addLiteral(token, "cloudflare-token");
-  const sandbox = deps.env.OPSCREW_CLOUDFLARE_REGISTRAR_SANDBOX === "1";
+  const token = requireCloudflareToken(deps);
+  const sandbox = registrarSandbox("cloudflare", deps.env);
   const client = new CloudflareClient({
     token,
     fetch: deps.fetch,
     version: deps.version,
-    ...(sandbox ? { registrarSandbox: true } : {}),
+    registrarSandbox: sandbox,
   });
   if (sandbox) {
     deps.reporter.warn(
@@ -132,24 +131,10 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
             ) {
               return undefined;
             }
-            return { keyTag, algorithm, digestType, digest, ...(ds ? { ds } : {}) };
+            return { keyTag, algorithm, digestType, digest, ds };
           },
-          activationCheck: async (zoneId) => {
-            const result = await client.activationCheck(zoneId);
-            return result.requested
-              ? { requested: true }
-              : { requested: false, reason: result.reason };
-          },
-          listRecords: async (zoneId) =>
-            (await client.listDnsRecords(zoneId)).map(
-              ({ type, name, content, proxied, priority }) => ({
-                type,
-                name,
-                content,
-                ...(proxied === undefined ? {} : { proxied }),
-                ...(priority === undefined ? {} : { priority }),
-              }),
-            ),
+          activationCheck: (zoneId) => client.activationCheck(zoneId),
+          listRecords: (zoneId) => client.listDnsRecords(zoneId),
           createRecords: async (zoneId, records) =>
             (await client.batchCreateRecords(zoneId, records)).length,
           scanRecords: (zoneId) => client.scanDnsRecords(zoneId),
@@ -157,60 +142,35 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
   };
 }
 
-const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const noToken = async (): Promise<never> => {
+  throw cloudflareTokenMissing();
+};
 
-/** Other registrars: the given ones (tests), else built from the environment once per run. */
-function otherRegistrarServices(
-  deps: PhaseDeps,
-  given: DomainServices,
-): Pick<ResolvedDomainServices, "otherRegistrar" | "configuredRegistrars"> {
-  const built = new Map<OtherRegistrarId, Registrar>();
-  return {
-    otherRegistrar: (id) => {
-      if (given.registrars !== undefined) {
-        const registrar = given.registrars[id];
-        if (registrar !== undefined) return registrar;
-        throw new OpsCrewError("CREDENTIALS_MISSING", `${REGISTRAR_NAMES[id]} is not set up.`);
-      }
-      let registrar = built.get(id);
-      if (registrar === undefined) {
-        registrar = registrarFor(id, deps);
-        built.set(id, registrar);
-      }
-      return registrar;
-    },
-    configuredRegistrars: () => {
-      if (given.registrars === undefined) return configuredRegistrars(deps.env);
-      const cloudflare =
-        given.registrar !== undefined || (deps.env.CLOUDFLARE_API_TOKEN?.trim() ?? "") !== "";
-      return REGISTRAR_IDS.filter((id) =>
-        id === "cloudflare" ? cloudflare : given.registrars?.[id] !== undefined,
-      );
-    },
-  };
-}
-
-/** Says that a Cloudflare call needs `CLOUDFLARE_API_TOKEN` (calls made without the token). */
-function cloudflareTokenMissing(): OpsCrewError {
-  return new OpsCrewError(
-    "CREDENTIALS_MISSING",
-    "No Cloudflare API token found. Set CLOUDFLARE_API_TOKEN to a token for your Cloudflare account.",
-    { hint: "Create one at https://dash.cloudflare.com/profile/api-tokens, then try again." },
-  );
-}
-
-/** Zone calls without a Cloudflare token: each one stops with what to set. */
-const NO_CLOUDFLARE_ZONES: DomainZoneApi = {
-  findZone: async () => {
+/**
+ * Cloudflare collaborators for a command that may run without Cloudflare (search, status and
+ * auto-renew at another registrar) when `CLOUDFLARE_API_TOKEN` is not set: each call stops with
+ * what to set.
+ */
+const WITHOUT_CLOUDFLARE: CloudflareDomainServices = {
+  accounts: noToken,
+  registrar: () => {
     throw cloudflareTokenMissing();
   },
-  createZone: async () => {
-    throw cloudflareTokenMissing();
-  },
-  enableDnssec: async () => {
-    throw cloudflareTokenMissing();
+  extension: async () => undefined,
+  zones: {
+    findZone: noToken,
+    createZone: noToken,
+    enableDnssec: noToken,
+    dnssecEnabled: noToken,
+    dsRecord: noToken,
+    activationCheck: noToken,
+    listRecords: noToken,
+    createRecords: noToken,
+    scanRecords: noToken,
   },
 };
+
+const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface ResolveOptions {
   /**
@@ -221,61 +181,55 @@ export interface ResolveOptions {
   requireCloudflare?: boolean;
 }
 
-/** Fills the missing collaborators with the Cloudflare defaults (built only when needed). */
+/**
+ * Fills the missing collaborators with the Cloudflare defaults (built only when one is missing).
+ * Other registrars are the given ones (tests), else built from the environment once per run.
+ */
 export function resolveDomainServices(
   deps: PhaseDeps,
   given: DomainServices = {},
   options: ResolveOptions = {},
 ): ResolvedDomainServices {
-  const sleep = given.sleep ?? realSleep;
-  const now = given.now ?? (() => performance.now());
-  const randomUUID = given.randomUUID ?? (() => globalThis.crypto.randomUUID());
-  const others = { ...otherRegistrarServices(deps, given), sleep, now, randomUUID };
-  const zonesFor =
-    (zones: DomainZoneApi) =>
-    (registrar: RegistrarId): DomainZoneApi =>
-      given.zones === undefined &&
-      registrar !== "cloudflare" &&
-      registrarSandbox(registrar, deps.env)
-        ? SANDBOX_ZONES
-        : zones;
-  if (given.accounts && given.registrar && given.extension && given.zones) {
-    return {
-      accounts: given.accounts,
-      registrar: given.registrar,
-      extension: given.extension,
-      zones: given.zones,
-      zonesFor: zonesFor(given.zones),
-      ...others,
-    };
-  }
-  if (options.requireCloudflare === false && !deps.env.CLOUDFLARE_API_TOKEN?.trim()) {
-    const zones = given.zones ?? NO_CLOUDFLARE_ZONES;
-    return {
-      accounts:
-        given.accounts ??
-        (async () => {
-          throw cloudflareTokenMissing();
-        }),
-      registrar:
-        given.registrar ??
-        (() => {
-          throw cloudflareTokenMissing();
-        }),
-      extension: given.extension ?? (async () => undefined),
-      zones,
-      zonesFor: zonesFor(zones),
-      ...others,
-    };
-  }
-  const defaults = defaultDomainServices(deps);
-  const zones = given.zones ?? defaults.zones;
+  const { accounts, registrar, extension, zones } = given;
+  const cloudflare: CloudflareDomainServices =
+    accounts && registrar && extension && zones
+      ? { accounts, registrar, extension, zones }
+      : options.requireCloudflare === false && !hasEnv(deps.env, "CLOUDFLARE_API_TOKEN")
+        ? WITHOUT_CLOUDFLARE
+        : defaultDomainServices(deps);
+  const resolvedZones = zones ?? cloudflare.zones;
+  const built = new Map<OtherRegistrarId, Registrar>();
   return {
-    accounts: given.accounts ?? defaults.accounts,
-    registrar: given.registrar ?? defaults.registrar,
-    extension: given.extension ?? defaults.extension,
-    zones,
-    zonesFor: zonesFor(zones),
-    ...others,
+    accounts: accounts ?? cloudflare.accounts,
+    registrar: registrar ?? cloudflare.registrar,
+    extension: extension ?? cloudflare.extension,
+    zones: resolvedZones,
+    zonesFor: (id) =>
+      zones === undefined && id !== "cloudflare" && registrarSandbox(id, deps.env)
+        ? SANDBOX_ZONES
+        : resolvedZones,
+    otherRegistrar: (id) => {
+      if (given.registrars !== undefined) {
+        const other = given.registrars[id];
+        if (other !== undefined) return other;
+        throw new OpsCrewError("CREDENTIALS_MISSING", `${REGISTRAR_NAMES[id]} is not set up.`);
+      }
+      let other = built.get(id);
+      if (other === undefined) {
+        other = registrarFor(id, deps);
+        built.set(id, other);
+      }
+      return other;
+    },
+    configuredRegistrars: () => {
+      if (given.registrars === undefined) return configuredRegistrars(deps.env);
+      const withCloudflare = registrar !== undefined || hasEnv(deps.env, "CLOUDFLARE_API_TOKEN");
+      return REGISTRAR_IDS.filter((id) =>
+        id === "cloudflare" ? withCloudflare : given.registrars?.[id] !== undefined,
+      );
+    },
+    sleep: given.sleep ?? realSleep,
+    now: given.now ?? (() => performance.now()),
+    randomUUID: given.randomUUID ?? (() => globalThis.crypto.randomUUID()),
   };
 }

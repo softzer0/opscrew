@@ -249,6 +249,10 @@ export class FakeCloudflare {
       this.enter("activationCheck", `activationCheck ${zoneId}`);
       return { ...this.activation };
     },
+    // Buying never copies records; `connectProject` replaces these with a recording fake.
+    listRecords: async () => [],
+    createRecords: async (_zoneId, records) => records.length,
+    scanRecords: async () => [],
   };
 
   services(): DomainServices {

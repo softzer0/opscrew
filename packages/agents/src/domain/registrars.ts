@@ -29,13 +29,11 @@ import { DASHBOARD, TOKEN_PAGE } from "./common";
 /** Registrars other than Cloudflare: one account each, set up from environment variables. */
 export type OtherRegistrarId = Exclude<RegistrarId, "cloudflare">;
 
+/** The registrars other than Cloudflare, in the order OpsCrew lists them. */
+export const OTHER_REGISTRAR_IDS: readonly OtherRegistrarId[] = ["porkbun", "namecheap", "godaddy"];
+
 /** Every registrar, in the order OpsCrew lists them. */
-export const REGISTRAR_IDS: readonly RegistrarId[] = [
-  "cloudflare",
-  "porkbun",
-  "namecheap",
-  "godaddy",
-];
+export const REGISTRAR_IDS: readonly RegistrarId[] = ["cloudflare", ...OTHER_REGISTRAR_IDS];
 
 /** Display names. */
 export const REGISTRAR_NAMES: Readonly<Record<RegistrarId, string>> = {
@@ -72,7 +70,8 @@ export function parseRegistrarId(input: string): RegistrarId {
   });
 }
 
-function hasEnv(env: Record<string, string | undefined>, name: string): boolean {
+/** True when the environment variable is set to something other than blanks. */
+export function hasEnv(env: Record<string, string | undefined>, name: string): boolean {
   return (env[name]?.trim() ?? "") !== "";
 }
 
@@ -117,8 +116,9 @@ export function registrarLinks(
     case "porkbun":
       return { domains: PORKBUN_DASHBOARD_URL, api: PORKBUN_API_SETTINGS_URL };
     case "namecheap": {
-      const urls =
-        env.NAMECHEAP_SANDBOX === "1" ? NAMECHEAP_SANDBOX_DASHBOARD_URLS : NAMECHEAP_DASHBOARD_URLS;
+      const urls = registrarSandbox("namecheap", env)
+        ? NAMECHEAP_SANDBOX_DASHBOARD_URLS
+        : NAMECHEAP_DASHBOARD_URLS;
       return { domains: urls.domainList, api: urls.apiAccess, contacts: urls.addressBook };
     }
     case "godaddy":
@@ -176,20 +176,18 @@ export function registrarFor(id: OtherRegistrarId, deps: PhaseDeps): Registrar {
     case "namecheap": {
       const apiKey = env.NAMECHEAP_API_KEY as string;
       deps.redactor.addLiteral(apiKey, "namecheap-api-key");
-      const sandbox = deps.env.NAMECHEAP_SANDBOX === "1";
+      const sandbox = registrarSandbox("namecheap", deps.env);
       if (sandbox) {
         deps.reporter.warn(
           "Using Namecheap's sandbox (NAMECHEAP_SANDBOX=1) with a sandbox account: purchases are simulated. Unset it to buy real domains.",
         );
       }
-      const userName = deps.env.NAMECHEAP_USERNAME?.trim();
-      const clientIp = deps.env.NAMECHEAP_CLIENT_IP?.trim();
       return new NamecheapRegistrar(
         new NamecheapClient({
           apiUser: env.NAMECHEAP_API_USER as string,
           apiKey,
-          ...(userName ? { userName } : {}),
-          ...(clientIp ? { clientIp } : {}),
+          userName: deps.env.NAMECHEAP_USERNAME,
+          clientIp: deps.env.NAMECHEAP_CLIENT_IP,
           sandbox,
           fetch: deps.fetch,
         }),

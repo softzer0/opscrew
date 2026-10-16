@@ -1,5 +1,5 @@
 import type { DsRecord, Registrar, RegistrarId } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { listText, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import { auditDomain, errorText } from "./common";
 import { capabilitiesOf, REGISTRAR_NAMES, registrarLinks } from "./registrars";
@@ -13,17 +13,13 @@ import type { DomainAccount, DomainZone, DomainZoneApi, ZoneDsRecord } from "./t
  * caller asks for the approval first; these functions change things right away.
  */
 
-/** What the switch needs: the run, the Cloudflare account of the zone and the zone calls. */
+/** What the switch needs: the run, the domain, the registrar holding it and the zone calls. */
 export interface SwitchContext {
   deps: PhaseDeps;
   /** The Cloudflare account the zone lives in. */
   account: DomainAccount;
   /** `services.zonesFor(registrarId)`: stand-ins when the registrar runs in its sandbox. */
   zones: DomainZoneApi;
-}
-
-/** The domain and the registrar that holds it. */
-export interface SwitchTarget {
   domain: string;
   registrarId: RegistrarId;
   registrar: Registrar;
@@ -46,10 +42,9 @@ export interface DsPublication {
   ds?: ZoneDsRecord;
   /**
    * `added` through the registrar's API now; `already` published there; `manual` shown with the
-   * dashboard link (the API cannot publish it); `pending` Cloudflare has no DS record yet;
-   * `skipped` stand-in zones (registrar sandbox).
+   * dashboard link (the API cannot publish it); `pending` Cloudflare has no DS record yet.
    */
-  outcome: "added" | "already" | "manual" | "pending" | "skipped";
+  outcome: "added" | "already" | "manual" | "pending";
 }
 
 /** DNSSEC left for later: the zone is not active yet (`opscrew domain connect` adds it then). */
@@ -76,16 +71,9 @@ export function dsRecordText(ds: DsRecord): string {
   return `key tag ${ds.keyTag}, algorithm ${ds.algorithm}, digest type ${ds.digestType}, digest ${ds.digest}`;
 }
 
-/** `a and b`, `a, b and c`. */
-function listText(items: readonly string[]): string {
-  return items.length <= 1
-    ? items.join("")
-    : `${items.slice(0, -1).join(", ")} and ${items.at(-1) ?? ""}`;
-}
-
-/** Hostnames normalised for comparison: trimmed, lower case, without a trailing dot. */
+/** Hostnames normalised for comparison (see `normalizeHostName`), blanks dropped. */
 export function hosts(names: readonly string[]): string[] {
-  return names.map((n) => n.trim().toLowerCase().replace(/\.$/, "")).filter((n) => n !== "");
+  return names.map(normalizeHostName).filter((n) => n !== "");
 }
 
 /** True when both lists hold the same (normalised) hostnames, in any order. */
@@ -95,30 +83,27 @@ export function sameHosts(a: readonly string[], b: readonly string[]): boolean {
   return left.size === right.size && [...left].every((n) => right.has(n));
 }
 
-function sameDs(a: DsRecord, b: DsRecord): boolean {
+/** True when both are the same DS record (the digest compared without spaces or case). */
+export function sameDs(a: DsRecord, b: DsRecord): boolean {
+  const digest = (d: DsRecord) => d.digest.replace(/\s+/g, "").toLowerCase();
   return (
     a.keyTag === b.keyTag &&
     a.algorithm === b.algorithm &&
     a.digestType === b.digestType &&
-    a.digest.replace(/\s+/g, "").toLowerCase() === b.digest.replace(/\s+/g, "").toLowerCase()
+    digest(a) === digest(b)
   );
 }
 
 /** The domain's zone in the account (`createZone` reuses an existing zone in that account). */
-export async function ensureZone(
-  ctx: SwitchContext,
-  target: Pick<SwitchTarget, "domain" | "registrarId">,
-): Promise<DomainZone> {
-  const { deps, account, zones } = ctx;
-  const zone = await zones.createZone(account.id, target.domain);
-  if (zones.simulated !== true) {
-    await auditDomain(
-      deps,
-      "ensure zone",
-      target.domain,
-      `zone ${zone.id} in account ${account.id} (domain at ${REGISTRAR_NAMES[target.registrarId]})`,
-    );
-  }
+export async function ensureZone(ctx: SwitchContext): Promise<DomainZone> {
+  const { deps, account, zones, domain } = ctx;
+  const zone = await zones.createZone(account.id, domain);
+  await auditDomain(
+    deps,
+    "ensure zone",
+    domain,
+    `zone ${zone.id} in account ${account.id} (domain at ${REGISTRAR_NAMES[ctx.registrarId]})`,
+  );
   return zone;
 }
 
@@ -126,12 +111,8 @@ export async function ensureZone(
  * Points the domain's nameservers at the zone through the registrar's API (skipped when they
  * already do). Where the API cannot change nameservers, shows them with the dashboard link.
  */
-export async function pointToZone(
-  ctx: SwitchContext,
-  target: SwitchTarget & { zone: DomainZone },
-): Promise<NameserverSwitch> {
-  const { deps } = ctx;
-  const { domain, registrar, registrarId, zone } = target;
+export async function pointToZone(ctx: SwitchContext, zone: DomainZone): Promise<NameserverSwitch> {
+  const { deps, domain, registrar, registrarId } = ctx;
   const name = REGISTRAR_NAMES[registrarId];
   const nameservers = hosts(zone.nameServers ?? []);
   if (nameservers.length === 0) {
@@ -170,22 +151,16 @@ export async function pointToZone(
  * Turns DNSSEC on for the zone (unless it is on) and publishes the zone's DS record at the
  * registry through the registrar's API (skipped when it is there already). Where the API cannot
  * publish DS records, returns the values (`manual`) for the caller to show with the dashboard
- * link. Stand-in zones skip it all.
+ * link.
  */
-export async function publishDs(
-  ctx: SwitchContext,
-  target: SwitchTarget & { zone: DomainZone },
-): Promise<DsPublication> {
-  const { deps, zones } = ctx;
-  const { domain, registrar, registrarId, zone } = target;
-  if (zones.simulated === true) return { outcome: "skipped" };
+export async function publishDs(ctx: SwitchContext, zone: DomainZone): Promise<DsPublication> {
+  const { deps, zones, domain, registrar, registrarId } = ctx;
   const name = REGISTRAR_NAMES[registrarId];
-  const on = zones.dnssecEnabled === undefined ? false : await zones.dnssecEnabled(zone.id);
-  if (!on) {
+  if (!(await zones.dnssecEnabled(zone.id))) {
     await zones.enableDnssec(zone.id);
     await auditDomain(deps, "enable DNSSEC", domain, `zone ${zone.id} (domain at ${name})`);
   }
-  const ds = zones.dsRecord === undefined ? undefined : await zones.dsRecord(zone.id);
+  const ds = await zones.dsRecord(zone.id);
   if (ds === undefined) {
     deps.reporter.warn(
       `Cloudflare has not produced the DS record of ${domain} yet, so DNSSEC is not published at ${name} yet.`,
@@ -211,18 +186,14 @@ export async function publishDs(
 }
 
 /**
- * Asks Cloudflare to check the zone's nameservers now (not for an active zone or stand-ins). Too
- * soon or failing is fine: Cloudflare keeps checking on its own.
+ * Asks Cloudflare to check the zone's nameservers now (not for an active zone). Too soon or
+ * failing is fine: Cloudflare keeps checking on its own.
  */
 export async function requestActivation(
   ctx: SwitchContext,
-  target: Pick<SwitchTarget, "domain" | "registrarId"> & { zone: DomainZone },
+  zone: DomainZone,
 ): Promise<ActivationResult> {
-  const { deps, zones } = ctx;
-  const { domain, zone } = target;
-  if (zones.simulated === true || zones.activationCheck === undefined) {
-    return { requested: false, reason: "no activation check for these zones" };
-  }
+  const { deps, zones, domain } = ctx;
   if (zone.status === "active") return { requested: false, reason: "the zone is already active" };
   try {
     const result = await zones.activationCheck(zone.id);
@@ -230,7 +201,7 @@ export async function requestActivation(
       deps,
       "zone activation check",
       domain,
-      `zone ${zone.id} (domain at ${REGISTRAR_NAMES[target.registrarId]}): ${result.requested ? "requested" : "not requested now"}`,
+      `zone ${zone.id} (domain at ${REGISTRAR_NAMES[ctx.registrarId]}): ${result.requested ? "requested" : "not requested now"}`,
     );
     return result;
   } catch (error) {
@@ -250,16 +221,14 @@ export async function requestActivation(
  */
 export async function switchToCloudflare(
   ctx: SwitchContext,
-  target: SwitchTarget,
-  options: { publishDs?: boolean } = {},
+  options: { publishDs: boolean },
 ): Promise<SwitchResult> {
-  const zone = await ensureZone(ctx, target);
-  const nameservers = await pointToZone(ctx, { ...target, zone });
-  const ds: DsPublication | DsLater =
-    options.publishDs === false && ctx.zones.simulated !== true
-      ? { outcome: "later" }
-      : await publishDs(ctx, { ...target, zone });
-  const activation = await requestActivation(ctx, { ...target, zone });
+  const zone = await ensureZone(ctx);
+  const nameservers = await pointToZone(ctx, zone);
+  const ds: DsPublication | DsLater = options.publishDs
+    ? await publishDs(ctx, zone)
+    : { outcome: "later" };
+  const activation = await requestActivation(ctx, zone);
   return {
     zone,
     nameservers,

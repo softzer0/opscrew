@@ -1,6 +1,6 @@
 import { CLOUDFLARE_REGISTRAR_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import type { DomainCheck, Money } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { type ErrorCode, isUserFacingError, normalizeHostName, OpsCrewError } from "@opscrew/core";
 import { FqdnSchema } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { ResolvedDomainServices } from "./services";
@@ -13,6 +13,10 @@ export const DASHBOARD =
 export const TOKEN_PAGE = "https://dash.cloudflare.com/profile/api-tokens";
 /** Permissions a token needs to buy and set up domains (the connector's list, in one sentence). */
 export const REGISTRAR_PERMISSIONS = CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ");
+/** Permissions for the zone of a domain registered elsewhere (no Registrar access). */
+const ZONE_PERMISSIONS = CLOUDFLARE_REGISTRAR_PERMISSIONS.filter(
+  (p) => !p.startsWith("Account → Registrar"),
+).join("; ");
 
 /**
  * Fallback when Cloudflare's extension lookup fails or does not know the extension: extensions
@@ -21,19 +25,32 @@ export const REGISTRAR_PERMISSIONS = CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")
  */
 const FALLBACK_CONTACT_EXTENSION_TLDS = new Set(["us", "uk", "ca"]);
 
-/** Stops unless `CLOUDFLARE_API_TOKEN` is set; registers the token with the redactor. */
-export function requireCloudflareToken(deps: PhaseDeps): void {
+/**
+ * The stop when `CLOUDFLARE_API_TOKEN` is not set. `zoneFor` says why a domain registered
+ * elsewhere needs a zone ("OpsCrew moves the DNS of x.com into a Cloudflare zone"), so it asks for
+ * the zone permissions only; without it, for a token that can buy domains.
+ */
+export function cloudflareTokenMissing(zoneFor?: string): OpsCrewError {
+  return new OpsCrewError(
+    "CREDENTIALS_MISSING",
+    zoneFor === undefined
+      ? "No Cloudflare API token found. Set CLOUDFLARE_API_TOKEN to a token that can buy domains."
+      : `No Cloudflare API token found. ${zoneFor}. Set CLOUDFLARE_API_TOKEN to a token that can create zones and edit their DNS.`,
+    {
+      hint: `Create one at ${TOKEN_PAGE} with these permissions: ${zoneFor === undefined ? REGISTRAR_PERMISSIONS : ZONE_PERMISSIONS}. Then try again; nothing was changed.`,
+    },
+  );
+}
+
+/**
+ * `CLOUDFLARE_API_TOKEN`, registered with the redactor; stops when it is not set (see
+ * {@link cloudflareTokenMissing} for `zoneFor`).
+ */
+export function requireCloudflareToken(deps: PhaseDeps, zoneFor?: string): string {
   const token = deps.env.CLOUDFLARE_API_TOKEN?.trim();
-  if (!token) {
-    throw new OpsCrewError(
-      "CREDENTIALS_MISSING",
-      "No Cloudflare API token found. Set CLOUDFLARE_API_TOKEN to a token that can buy domains.",
-      {
-        hint: `Create one at ${TOKEN_PAGE} with these permissions: ${REGISTRAR_PERMISSIONS}. Then try again.`,
-      },
-    );
-  }
+  if (!token) throw cloudflareTokenMissing(zoneFor);
   deps.redactor.addLiteral(token, "cloudflare-token");
+  return token;
 }
 
 const IDN_REASON =
@@ -80,21 +97,29 @@ export async function contactExtensionsNeeded(
   return new Map(unique.map((tld, i) => [tld, answers[i] ?? true]));
 }
 
+/**
+ * A host or domain name, lower case and without a trailing dot; stops when it is not one.
+ * `example` is the name the hint suggests.
+ */
+export function parseHostName(input: string, example = "shopapp.com"): string {
+  const name = normalizeHostName(input);
+  if (!FqdnSchema.safeParse(name).success) {
+    throw new OpsCrewError("INVALID_INPUT", `"${input.trim()}" is not a valid domain name.`, {
+      hint: `Give the full name with its extension, for example ${example} (no https:// and no path).`,
+    });
+  }
+  return name;
+}
+
 /** Lower-case, validated domain name to buy; rejects internationalized names. */
 export function parseDomainName(input: string): string {
-  const raw = input.trim().toLowerCase().replace(/\.$/, "");
-  const idn = idnReason(raw);
+  const idn = idnReason(normalizeHostName(input));
   if (idn !== undefined) {
     throw new OpsCrewError("INVALID_INPUT", `OpsCrew cannot buy "${input.trim()}": ${idn}.`, {
       hint: "Pick a name with letters a to z, digits and hyphens, for example shopapp.com.",
     });
   }
-  if (!FqdnSchema.safeParse(raw).success) {
-    throw new OpsCrewError("INVALID_INPUT", `"${input.trim()}" is not a valid domain name.`, {
-      hint: "Give the full name with its extension, for example shopapp.com (no https:// and no path).",
-    });
-  }
-  return raw;
+  return parseHostName(input);
 }
 
 /** Lower-case search text: a keyword or a domain name. */
@@ -215,11 +240,6 @@ export function formatMoneyCode(money: Money): string {
   return `${money.amount.toFixed(2)} ${money.currency}`;
 }
 
-/** `1 year`, `2 years`. */
-export function yearsText(years: number): string {
-  return `${years} year${years === 1 ? "" : "s"}`;
-}
-
 /** `2027-10-13` from an ISO timestamp, or the fallback. */
 export function formatDate(iso: string | undefined, fallback = "an unknown date"): string {
   const date = toIsoDateTime(iso);
@@ -275,19 +295,39 @@ export function errorText(deps: PhaseDeps, error: unknown): string {
 }
 
 /**
- * A check made consistent for display and buying: premium names, missing prices and
- * internationalized names are not registrable here, each with a plain reason. Contact
- * extensions are decided separately (`contactExtensionsNeeded`), because that needs a lookup.
+ * The stop when a step after an approval failed: `what` could not be finished (with the cause's
+ * message, made safe to show), and running the command again continues (`rerun`, after "Run").
+ * Keeps the cause's code and puts its hint first.
  */
-export function normaliseCheck(check: DomainCheck): DomainCheck {
-  const domain = check.domain.trim().toLowerCase();
+export function unfinished(
+  deps: PhaseDeps,
+  error: unknown,
+  what: string,
+  rerun: string,
+): OpsCrewError {
+  const code: ErrorCode = isUserFacingError(error) ? (error.code as ErrorCode) : "INTERNAL";
+  const hint = isUserFacingError(error) && error.hint ? `${error.hint.trim()} Then run` : "Run";
+  return new OpsCrewError(code, `${what}: ${errorText(deps, error)}.`, {
+    hint: `${hint} ${rerun}`,
+    cause: error,
+  });
+}
+
+/**
+ * A registrar's check made consistent for display and buying: premium names, missing prices and
+ * internationalized names are not registrable here, each with a plain reason naming `registrar`.
+ * Contact extensions are decided separately (`contactExtensionsNeeded`), because that needs a
+ * lookup.
+ */
+export function normaliseCheck(check: DomainCheck, registrar = "Cloudflare"): DomainCheck {
+  const domain = normalizeHostName(check.domain);
   const blocked =
     idnReason(domain) ??
     (check.registrable && check.tier === "premium"
-      ? "premium name; Cloudflare sells premium names only in its dashboard"
+      ? `premium name; ${registrar} sells premium names only in its dashboard`
       : undefined) ??
     (check.registrable && check.firstYear === undefined
-      ? "Cloudflare did not return a price for it"
+      ? `${registrar} did not return a price for it`
       : undefined);
   if (blocked !== undefined) return { ...check, domain, registrable: false, reason: blocked };
   if (!check.registrable) {

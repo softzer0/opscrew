@@ -330,9 +330,10 @@ describe("connectDomain: copy, then switch (US2)", () => {
 
     expect(result).toMatchObject({ outcome: "connected", copied: 2, zoneId: "sandbox" });
     expect(pb.nameservers.get(DOMAIN)).toEqual(SANDBOX_NAMESERVERS);
-    expect(first.handler.requests[0]?.details).toContain("Cloudflare zone: a stand-in");
-    expect(first.deps.audit.entries.map((e) => e.action)).not.toContain("ensure zone");
-    expect(result.next.join("\n")).not.toContain("Cloudflare activates the zone");
+    expect(first.handler.requests[0]?.details).toContain(
+      "Cloudflare zone: sandbox, already in this account (pending); OpsCrew uses it.",
+    );
+    expect(cp.project.cf.zones.size).toBe(0);
 
     const second = await cp.run();
     second.services.zones = SANDBOX_ZONES;
@@ -348,7 +349,9 @@ describe("connectDomain: copy, then switch (US2)", () => {
     const error = await caught(connectDomain(deps, { domain: DOMAIN, services }));
 
     expect(error.code).toBe("CREDENTIALS_MISSING");
-    expect(error.message).toContain("set CLOUDFLARE_API_TOKEN to a token that can create zones");
+    expect(error.message).toContain(
+      "OpsCrew moves the DNS of shopapp.com into a Cloudflare zone. Set CLOUDFLARE_API_TOKEN to a token that can create zones",
+    );
     expect(cp.project.cf.events).toEqual([]);
   });
 
@@ -686,10 +689,7 @@ describe("connectDomain: old DNSSEC records", () => {
       domain: DOMAIN,
       registrar: "porkbun",
       zoneId: ZONE,
-      dsSeenAt: RUN_NOW,
-      dsTtlSeconds: 86400,
-      dsRemovedAt: RUN_NOW,
-      dsGoneSeenAt: "2026-10-11T13:00:00.000Z",
+      switchAfter: "2026-10-12T14:00:00.000Z",
     });
     expect(pb.dsRecords.get(DOMAIN)).toEqual([]);
     expect(pb.nameservers.get(DOMAIN)).toEqual(DEFAULT_NAMESERVERS.porkbun);
@@ -698,7 +698,7 @@ describe("connectDomain: old DNSSEC records", () => {
     );
 
     // Run 2: the API lists none, but the public DNS still shows it with a full day left (the
-    // registry still publishes it): no switch, and the "gone" time moves out.
+    // registry still publishes it): no switch, and the switch time moves out.
     cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 86400 });
     const second = await cp.run({ now: "2026-10-11T14:00:00.000Z" });
     const still = await connectDomain(second.deps, { domain: DOMAIN, services: second.services });
@@ -711,7 +711,7 @@ describe("connectDomain: old DNSSEC records", () => {
       `If the public DNS still shows them then, remove them in Porkbun's dashboard (${registrarLinks("porkbun").domains}).`,
     );
     expect(second.deps.reporter.text()).toContain("The public DNS still shows old DNSSEC");
-    expect((await readState(second.deps)).dsGoneSeenAt).toBe("2026-10-12T14:00:00.000Z");
+    expect((await readState(second.deps)).switchAfter).toBe("2026-10-13T15:00:00.000Z");
     expect(events()).toEqual([
       "accounts",
       `findZone ${DOMAIN}`,
@@ -759,6 +759,36 @@ describe("connectDomain: old DNSSEC records", () => {
     expect(await exists(stateFile(fourth.deps))).toBe(false);
   });
 
+  it("never moves the switch earlier when a later run sees a shorter-lived copy", async () => {
+    const { cp, pb } = await porkbunHosted();
+    pb.dsRecords.set(DOMAIN, [{ ...OLD_DS }]);
+    // The public resolver's copy has a full day left: 24 hours after it expires, plus an hour.
+    cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 86400 });
+    const first = await cp.run();
+    const removed = await connectDomain(first.deps, { domain: DOMAIN, services: first.services });
+    expect(removed.waitUntil).toBe("2026-10-13T13:00:00.000Z");
+
+    // An hour later another resolver's copy has 10 minutes left: the switch time stays.
+    cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 600 });
+    const second = await cp.run({ now: "2026-10-11T13:00:00.000Z" });
+    const still = await connectDomain(second.deps, { domain: DOMAIN, services: second.services });
+    expect(still).toMatchObject({
+      outcome: "waiting-for-ds",
+      waitUntil: "2026-10-13T13:00:00.000Z",
+    });
+
+    // Gone everywhere a day later: still not before the noted time, and nothing switched.
+    cp.dns.ds.delete(DOMAIN);
+    const third = await cp.run({ now: "2026-10-12T15:00:00.000Z" });
+    const early = await connectDomain(third.deps, { domain: DOMAIN, services: third.services });
+    expect(early).toMatchObject({
+      outcome: "waiting-for-ds",
+      waitUntil: "2026-10-13T13:00:00.000Z",
+    });
+    expect(third.handler.requests).toEqual([]);
+    expect(pb.nameservers.get(DOMAIN)).toEqual(DEFAULT_NAMESERVERS.porkbun);
+  });
+
   it("counts a DS record the public DNS shows but Porkbun's API does not list as old: stops before any change", async () => {
     const { cp, pb } = await porkbunHosted();
     cp.dns.ds.set(DOMAIN, { records: [{ ...OLD_DS }], ttl: 86400 });
@@ -787,10 +817,7 @@ describe("connectDomain: old DNSSEC records", () => {
       JSON.stringify({
         domain: DOMAIN,
         registrar: "porkbun",
-        dsSeenAt: "2026-10-01T12:00:00.000Z",
-        dsRemovedAt: "2026-10-01T12:00:00.000Z",
-        dsGoneSeenAt: "2026-10-01T12:00:00.000Z",
-        dsTtlSeconds: 86400,
+        switchAfter: "2026-10-02T13:00:00.000Z",
       }),
     );
     cp.dns.status = 2;
@@ -835,8 +862,8 @@ describe("connectDomain: old DNSSEC records", () => {
     expect(await readState(first.deps)).toEqual({
       domain: DOMAIN,
       registrar: "namecheap",
-      dsSeenAt: RUN_NOW,
-      dsTtlSeconds: 86400,
+      dsSeen: RUN_NOW,
+      switchAfter: "2026-10-12T12:00:00.000Z",
     });
 
     // Run 2, still published an hour later: still stopped, first sighting kept.
@@ -844,7 +871,7 @@ describe("connectDomain: old DNSSEC records", () => {
     expect(
       (await connectDomain(again.deps, { domain: DOMAIN, services: again.services })).outcome,
     ).toBe("waiting-for-ds");
-    expect((await readState(again.deps)).dsSeenAt).toBe(RUN_NOW);
+    expect((await readState(again.deps)).dsSeen).toBe(RUN_NOW);
     events();
 
     // The user removes them at Namecheap. Run 3 notes that they are gone and waits 24 hours.
@@ -859,7 +886,11 @@ describe("connectDomain: old DNSSEC records", () => {
     expect(waiting.next).toEqual([
       "Run `opscrew domain connect shopapp.com` again after 2026-10-12 14:00 UTC to switch the nameservers to Cloudflare; it shows what changes and asks first. Until then shopapp.com keeps working on its current DNS.",
     ]);
-    expect((await readState(gone.deps)).dsGoneSeenAt).toBe("2026-10-11T14:00:00.000Z");
+    expect(await readState(gone.deps)).toEqual({
+      domain: DOMAIN,
+      registrar: "namecheap",
+      switchAfter: "2026-10-12T14:00:00.000Z",
+    });
     expect(gone.handler.requests).toEqual([]);
     expect(events()).toEqual([
       "accounts",
@@ -921,8 +952,8 @@ describe("connectDomain: old DNSSEC records", () => {
       JSON.stringify({
         domain: "oldshop.com",
         registrar: "namecheap",
-        dsSeenAt: RUN_NOW,
-        dsTtlSeconds: 86400,
+        dsSeen: RUN_NOW,
+        switchAfter: "2026-10-12T12:00:00.000Z",
       }),
     );
 
@@ -1103,7 +1134,7 @@ describe("connectDomain: stale DS records on a connected domain", () => {
     return { cp, pb };
   }
 
-  it("removes them through Porkbun's API after a typed approval; the zone's own DS stays", async () => {
+  it("warns about them with Porkbun's dashboard link and changes nothing; the zone's own DS stays", async () => {
     const { cp, pb } = await connectedAt("active", true);
     // the zone's DS (digest in lower case: still the same record) and an old one
     const own = { ...ZONE_DS_RECORD, digest: ZONE_DS_RECORD.digest.toLowerCase() };
@@ -1122,29 +1153,18 @@ describe("connectDomain: stale DS records on a connected domain", () => {
       `dsRecord ${ZONE}`,
       `porkbun listDsRecords ${DOMAIN}`,
       `dns DS ${DOMAIN}`,
-      "approval domain-settings",
-      `porkbun removeDsRecord ${DOMAIN} 4012`,
       `porkbun getDomain ${DOMAIN}`,
     ]);
-    expect(handler.requests).toHaveLength(1);
-    expect(handler.requests[0]).toMatchObject({
-      kind: "domain-settings",
-      title: "Remove the stale DNSSEC records of shopapp.com",
-      confirmPhrase: DOMAIN,
-    });
-    const details = handler.requests[0]?.details ?? "";
-    expect(details).toContain(
-      `Stale DNSSEC (DS) records at Porkbun (1), removed through Porkbun's API: they do not match the zone's DNSSEC key, so resolvers that check DNSSEC cannot resolve shopapp.com while they are published.\n  - ${dsRecordText(OLD_DS)}`,
-    );
-    expect(details).not.toContain("key tag 2371");
-    expect(pb.dsRecords.get(DOMAIN)).toEqual([own]);
-    expect(result).toMatchObject({ outcome: "dnssec-published", dnssec: true });
-    expect(deps.audit.entries.find((e) => e.action === "remove DS record")?.detail).toBe(
-      `Porkbun: key tag 4012 (algorithm 8, digest type 2), stale: not the DS record of zone ${ZONE}`,
-    );
+    expect(handler.requests).toEqual([]);
+    expect(pb.dsRecords.get(DOMAIN)).toEqual([own, OLD_DS]);
+    const warning = `shopapp.com has DNSSEC (DS) records at Porkbun that do not match its Cloudflare zone: ${dsRecordText(OLD_DS)}. Until they are removed in Porkbun's dashboard (${registrarLinks("porkbun").domains}), shopapp.com may fail to resolve for visitors whose resolver checks DNSSEC.`;
+    expect(result.next).toContain(warning);
+    expect(deps.reporter.text()).toContain(`warn: ${warning}`);
+    expect(result).toMatchObject({ outcome: "already-connected", dnssec: true });
+    expect(deps.audit.entries.some((e) => e.action === "remove DS record")).toBe(false);
   });
 
-  it("removes them in the same approval that turns DNSSEC on, before the new DS is added", async () => {
+  it("turns DNSSEC on after its typed approval and leaves stale ones with a warning", async () => {
     const { cp, pb } = await connectedAt("active", false);
     pb.dsRecords.set(DOMAIN, [{ ...OLD_DS }]);
     const events = eventsOf(cp);
@@ -1157,7 +1177,6 @@ describe("connectDomain: stale DS records on a connected domain", () => {
       `porkbun listDsRecords ${DOMAIN}`,
       `dns DS ${DOMAIN}`,
       "approval domain-settings",
-      `porkbun removeDsRecord ${DOMAIN} 4012`,
       `dnssecEnabled ${ZONE}`,
       `enableDnssec ${ZONE}`,
       `dsRecord ${ZONE}`,
@@ -1166,22 +1185,23 @@ describe("connectDomain: stale DS records on a connected domain", () => {
       `porkbun getDomain ${DOMAIN}`,
     ]);
     expect(handler.requests.map((r) => r.title)).toEqual(["Turn on DNSSEC for shopapp.com"]);
-    expect(handler.requests[0]?.details).toContain(dsRecordText(OLD_DS));
     expect(handler.requests[0]?.details).toContain("OpsCrew turns DNSSEC on");
-    expect(pb.dsRecords.get(DOMAIN)).toEqual([ZONE_DS_RECORD]);
+    expect(handler.requests[0]?.details).not.toContain(dsRecordText(OLD_DS));
+    expect(pb.dsRecords.get(DOMAIN)).toEqual([OLD_DS, ZONE_DS_RECORD]);
+    expect(result.next.join("\n")).toContain(
+      `do not match its Cloudflare zone: ${dsRecordText(OLD_DS)}.`,
+    );
     expect(result).toMatchObject({ outcome: "dnssec-published", dnssec: true });
   });
 
-  it("asks while the zone is still pending, and keeps them (with a warning) when refused", async () => {
+  it("only warns while the zone is still pending: nothing is asked or removed", async () => {
     const { cp, pb } = await connectedAt("pending", false);
     pb.dsRecords.set(DOMAIN, [{ ...OLD_DS }]);
-    const { deps, handler, services } = await cp.run({ answer: () => false });
+    const { deps, handler, services } = await cp.run();
 
     const result = await connectDomain(deps, { domain: DOMAIN, services });
 
-    expect(handler.requests.map((r) => r.title)).toEqual([
-      "Remove the stale DNSSEC records of shopapp.com",
-    ]);
+    expect(handler.requests).toEqual([]);
     expect(pb.dsRecords.get(DOMAIN)).toEqual([OLD_DS]);
     expect(result.outcome).toBe("already-connected");
     const next = result.next.join("\n");
@@ -1391,13 +1411,17 @@ describe("connectDomain: an unreadable note about an earlier run", () => {
     ["garbage", "{not json"],
     ["the wrong shape", JSON.stringify({ domain: DOMAIN, registrar: "somewhere" })],
     [
-      "a wait below 24 hours",
+      "a note in an older format",
       JSON.stringify({
         domain: DOMAIN,
         registrar: "porkbun",
         dsRemovedAt: RUN_NOW,
-        dsTtlSeconds: 3600,
+        dsTtlSeconds: 86400,
       }),
+    ],
+    [
+      "an unreadable switch time",
+      JSON.stringify({ domain: DOMAIN, registrar: "porkbun", switchAfter: "tomorrow" }),
     ],
   ])("stops on %s before any registrar or Cloudflare call", async (_case, content) => {
     const { cp } = await porkbunHosted();
