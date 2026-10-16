@@ -1,4 +1,6 @@
-import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
@@ -15,6 +17,13 @@ import {
   provisionPortainerProject,
   writeBranch,
 } from "./__fixtures__/portainer-project";
+import {
+  DATA_ZONE,
+  encryptedState,
+  MANAGED_TUNNEL,
+  plainState,
+  withStateList,
+} from "./__fixtures__/state";
 import { renderDriftReport } from "./render";
 import { runDrift } from "./run";
 
@@ -218,6 +227,49 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     report = await drift(s);
     expect(report.portainer?.differences).toEqual([
       expect.objectContaining({ area: "cloudflare" }),
+    ]);
+  });
+
+  it("an earlier setup's state counts only while the engine lists managed resources, encrypted or not", async () => {
+    const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    const statePath = join(s.deps.paths.files.tfstateDir, "prod.tfstate");
+    await mkdir(s.deps.paths.files.tfstateDir, { recursive: true });
+    const passphrase = randomBytes(24).toString("base64url");
+    await mkdir(dirname(s.deps.paths.files.statePassphrase), { recursive: true });
+    await writeFile(
+      s.deps.paths.files.statePassphrase,
+      `${passphrase}
+`,
+    );
+    let inside: string[] = [];
+    const engine = withStateList(s.engine, () => inside);
+    const tunnel = "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this";
+    const cases: [string, string, string[], boolean][] = [
+      ["removed (outputs only)", plainState([]), [], false],
+      ["only a data source", plainState([DATA_ZONE]), [], false],
+      ["removed, encrypted", encryptedState(), [], false],
+      ["a tunnel", plainState([MANAGED_TUNNEL]), [], true],
+      ["a tunnel, encrypted", encryptedState(), [tunnel], true],
+    ];
+    for (const [what, content, listed, leftover] of cases) {
+      await writeFile(statePath, content);
+      inside = listed;
+      const report = await drift(s);
+      expect(
+        report.portainer?.differences.map((d) => d.area),
+        what,
+      ).toEqual(leftover ? ["cloudflare"] : []);
+      expect(report.clean, what).toBe(!leftover);
+      expect(`${JSON.stringify(report)}${await everythingShown(s)}`, what).not.toContain(
+        passphrase,
+      );
+    }
+    expect(engine.stateCalls.map((call) => call.encryption !== undefined)).toEqual([
+      false,
+      false,
+      true,
+      false,
+      true,
     ]);
   });
 

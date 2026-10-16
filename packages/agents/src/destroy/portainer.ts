@@ -20,7 +20,7 @@ import { DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS } from "@opscrew/iac-templates
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
-import { stateHoldsNothing } from "../drift/infra";
+import { stateContents, stateEngine } from "../drift/infra";
 import { hidePortainerAddress } from "../interview/portainer-access";
 import { portainerCloudflare } from "../provision/credentials";
 import {
@@ -589,8 +589,12 @@ export async function destroyPortainer(
   const deleteData = options.deleteData === true;
   const statePath = join(deps.paths.files.tfstateDir, "prod.tfstate");
   // A state an earlier removal emptied (provision removes what a former setup created in
-  // Cloudflare) holds nothing to delete.
-  const hasState = (await nonEmpty(statePath)) && !(await stateHoldsNothing(statePath));
+  // Cloudflare) holds nothing to delete, encrypted or not; one the engine cannot list still counts.
+  const hasState =
+    (await nonEmpty(statePath)) &&
+    (await stateContents(deps, statePath, () =>
+      stateEngine(deps, options.engine ?? plan.infra.engine, options.services),
+    )) !== "nothing";
   const dir = join(deps.paths.root, plan.infra.dir);
 
   // 1. Preconditions: OpsCrew's record of what it created in Portainer, and the state of the

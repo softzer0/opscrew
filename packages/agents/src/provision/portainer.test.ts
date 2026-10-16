@@ -20,6 +20,12 @@ import {
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
 import {
+  encryptedState,
+  MANAGED_TUNNEL,
+  plainState,
+  withStateList,
+} from "../drift/__fixtures__/state";
+import {
   type PortainerConnection,
   type PortainerConnectionInput,
   readPortainerConnection,
@@ -954,6 +960,44 @@ describe.skipIf(!findExecutable("git"))(
       expect(error.hint).toContain("Cloudflare Tunnel");
       expect(kinds(s)).toEqual([]);
       expect(s.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop-portainer-tunnel");
+    });
+
+    it("an earlier setup counts only while the engine lists managed resources, not its outputs, encrypted or not", async () => {
+      const s = await switched();
+      // Without the token a removal stops before anything changes, so it shows plainly.
+      delete s.deps.env.CLOUDFLARE_API_TOKEN;
+      const statePath = join(s.deps.paths.files.tfstateDir, "prod.tfstate");
+      let inside: string[] = [];
+      const engine = withStateList(s.engine, () => inside);
+      const tunnel = "module.portainer_tunnel.cloudflare_zero_trust_tunnel_cloudflared.this";
+
+      for (const [held, listed] of [
+        [plainState([MANAGED_TUNNEL]), []],
+        [encryptedState(), [tunnel]],
+      ] as const) {
+        await writeFile(statePath, held);
+        inside = [...listed];
+        const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
+        expect(error.code).toBe("CREDENTIALS_MISSING");
+        expect(kinds(s)).toEqual([]);
+      }
+      // The encrypted state was read with the project's passphrase (OpenTofu's TF_ENCRYPTION).
+      expect(engine.stateCalls.map((call) => call.encryption !== undefined)).toEqual([false, true]);
+
+      // What a removal leaves: no resource, encrypted or not. The engine would still read outputs
+      // (the fake's from its earlier apply); they are no infrastructure.
+      expect(Object.keys(await s.engine.output())).not.toEqual([]);
+      for (const emptied of [plainState([]), encryptedState()]) {
+        await writeFile(statePath, emptied);
+        inside = [];
+        s.engine.calls.length = 0;
+        s.handler.requests.length = 0;
+        s.deps.reporter.lines.length = 0;
+        await s.run();
+        expect(kinds(s)).not.toContain("iac-apply");
+        expect(s.engine.calls).not.toContain("plan");
+        expect(s.deps.reporter.text()).not.toContain("an earlier setup");
+      }
     });
 
     it("opscrew dns with a Portainer plan runs the same flow for the new domain", async () => {

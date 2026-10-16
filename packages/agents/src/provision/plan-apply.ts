@@ -12,7 +12,7 @@ import {
   SEVERITIES,
   type VpsProviderId,
 } from "@opscrew/contracts";
-import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, type Redactor, writeFileAtomic } from "@opscrew/core";
 import { checkDialect, engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import { usesTunnel } from "@opscrew/iac-templates";
@@ -269,13 +269,38 @@ export function describePlan(
   return lines.join("\n");
 }
 
+const SIDECAR_SUFFIX = ".json";
+
 function sidecarFor(planFile: string): string {
-  return `${planFile}.json`;
+  return `${planFile}${SIDECAR_SUFFIX}`;
 }
 
-/** Writes the sidecar; the plan JSON never holds the prior state or a sensitive value there. */
-async function saveSidecar(saved: SavedPlan): Promise<void> {
-  const safe: SavedPlan = { ...saved, planJson: maskSensitivePlanJson(saved.planJson) };
+/** `value` with every string and every object key passed through `redact` (a copy). */
+function redactJson(value: unknown, redact: (text: string) => string): unknown {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map((item) => redactJson(item, redact));
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [redact(key), redactJson(item, redact)]),
+  );
+}
+
+/**
+ * Writes the sidecar of a saved plan (`<plan file>.json`). Its plan JSON never holds the prior
+ * state or a value the plan marks sensitive, and every string and key in it passes through the
+ * redactor, so registered secrets and names (Portainer's address and host, server addresses) are
+ * masked also where the engine does not mark them (a refreshed tunnel's `connections[].origin_ip`
+ * is the address of the host running its connector). Only the plan hash is kept as it is: it is
+ * what an approval binds to, and {@link findSavedPlan} takes the plan file from the sidecar's own
+ * location, so a masked path cannot misdirect it.
+ */
+export async function writePlanSidecar(
+  redactor: Pick<Redactor, "redact">,
+  saved: SavedPlan,
+): Promise<void> {
+  const masked: SavedPlan = { ...saved, planJson: maskSensitivePlanJson(saved.planJson) };
+  const redacted = redactJson(masked, (text) => redactor.redact(text)) as SavedPlan;
+  const safe: SavedPlan = { ...redacted, planHash: saved.planHash };
   await writeFileAtomic(sidecarFor(saved.planFile), `${JSON.stringify(safe, null, 2)}\n`);
 }
 
@@ -342,7 +367,9 @@ function firstIssue(error: z.ZodError): string {
  * plans that cannot be read are ignored; the matching sidecar is validated in full (changes,
  * moves, counts, policies, engine, plan JSON, hash) and an incomplete or damaged one stops with a
  * plain `PLAN_HASH_MISMATCH` error (fail closed: it is never applied or shown as the plan) whose
- * hint is `options.hint` (default: plan again and approve the new hash).
+ * hint is `options.hint` (default: plan again and approve the new hash). The returned `planFile`
+ * is the file beside the sidecar (`<plan file>.json`), not the path stored in it (the redactor may
+ * have masked part of that); callers still check that file's hash before applying it.
  */
 export async function findSavedPlan(
   plansDir: string,
@@ -381,7 +408,8 @@ export async function findSavedPlan(
       );
     }
     const { moves, planJson, ...rest } = saved.data;
-    return { ...rest, ...(moves !== undefined ? { moves } : {}), planJson };
+    const planFile = join(plansDir, name.slice(0, -SIDECAR_SUFFIX.length));
+    return { ...rest, planFile, ...(moves !== undefined ? { moves } : {}), planJson };
   }
   return undefined;
 }
@@ -568,7 +596,7 @@ export async function planAndApply(
     return { planHash: saved.planHash, applied: false, outputs, plan: saved };
   }
 
-  if (options.approvePlanHash === undefined) await saveSidecar(saved);
+  if (options.approvePlanHash === undefined) await writePlanSidecar(deps.redactor, saved);
   if (options.planOnly) {
     deps.reporter.info(`Saved the plan (hash ${saved.planHash}); nothing was changed.`);
     return { planHash: saved.planHash, applied: false, outputs: {}, plan: saved };

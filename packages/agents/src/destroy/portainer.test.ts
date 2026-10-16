@@ -1,4 +1,6 @@
-import { readdir } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { ApprovalRequest, IacEngine } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -14,6 +16,7 @@ import {
   portainerProject,
   provisionPortainerProject,
 } from "../drift/__fixtures__/portainer-project";
+import { encryptedState, withStateList } from "../drift/__fixtures__/state";
 import { writeFakeState } from "../provision/__fixtures__/fakes";
 import { readPortainerConnection } from "../shared";
 import {
@@ -346,6 +349,32 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(s.fake.volumes.map((volume) => volume.Name)).toEqual(["media_data"]);
 
     await expectError(destroy(s, { deleteData: true }), "PHASE_PRECONDITION");
+  });
+
+  it("a state an earlier removal emptied holds nothing to delete, also encrypted", async () => {
+    const s = await deployed({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    await mkdir(s.deps.paths.files.tfstateDir, { recursive: true });
+    await mkdir(dirname(s.deps.paths.files.statePassphrase), { recursive: true });
+    await writeFile(
+      s.deps.paths.files.statePassphrase,
+      `${randomBytes(24).toString("base64url")}\n`,
+    );
+    await writeFile(join(s.deps.paths.files.tfstateDir, "prod.tfstate"), encryptedState());
+    let inside = ["module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this"];
+    const engine = withStateList(s.engine, () => inside);
+
+    // Still holding a tunnel: its removal needs the infrastructure code, which a proxy setup lacks.
+    const mutations = s.fake.mutations().length;
+    const error = await expectError(destroy(s), "PHASE_PRECONDITION");
+    expect(error.message).toContain("infrastructure code");
+    expect(s.fake.mutations()).toHaveLength(mutations);
+
+    inside = [];
+    await destroy(s);
+    expect(s.events).not.toContain("approve:iac-apply");
+    expect(s.engine.calls).not.toContain("init");
+    expect(s.fake.stacks.map((stack) => stack.Name)).toEqual(["media"]);
+    expect(engine.stateCalls.map((call) => call.encryption !== undefined)).toEqual([true, true]);
   });
 
   it("stops before any change when the state for the Cloudflare resources is missing", async () => {

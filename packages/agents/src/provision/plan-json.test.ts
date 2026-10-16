@@ -150,3 +150,90 @@ describe("maskSensitivePlanJson", () => {
     expect(`${deps.reporter.text()}`).not.toContain(SECRET);
   });
 });
+
+describe("a Cloudflare Tunnel's connections", () => {
+  // A documentation address (RFC 5737): the public address of a host running the connector.
+  const ORIGIN_IP = "198.51.100.23";
+  const TUNNEL = "cloudflare_zero_trust_tunnel_cloudflared";
+  const tunnel = (connections: unknown) => ({
+    name: "opscrew-shop",
+    connections,
+    status: "healthy",
+  });
+  const connected = [{ colo_name: "fra08", origin_ip: ORIGIN_IP, client_version: "2026.9.0" }];
+
+  it("are always masked, before and after, in resource changes, drift and planned values", () => {
+    const plan = {
+      format_version: "1.2",
+      resource_changes: [
+        {
+          address: `module.tunnel.${TUNNEL}.this`,
+          type: TUNNEL,
+          change: {
+            actions: ["update"],
+            before: tunnel(connected),
+            after: tunnel(connected),
+            before_sensitive: { connections: [{}] },
+            after_sensitive: {},
+          },
+        },
+      ],
+      resource_drift: [
+        {
+          address: `module.tunnel.${TUNNEL}.this`,
+          type: TUNNEL,
+          change: { before: tunnel([]), after: tunnel(connected) },
+        },
+      ],
+      planned_values: {
+        root_module: {
+          child_modules: [
+            {
+              address: "module.tunnel",
+              resources: [
+                {
+                  address: `module.tunnel.${TUNNEL}.this`,
+                  type: TUNNEL,
+                  values: tunnel(connected),
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const masked = maskSensitivePlanJson(plan) as typeof plan;
+    expect(JSON.stringify(masked)).not.toContain(ORIGIN_IP);
+    const change = masked.resource_changes[0]?.change;
+    expect(change?.before).toEqual(tunnel(SENSITIVE_VALUE));
+    expect(change?.after).toEqual(tunnel(SENSITIVE_VALUE));
+    expect(masked.resource_drift[0]?.change.before).toEqual(tunnel(SENSITIVE_VALUE));
+    expect(masked.resource_drift[0]?.change.after).toEqual(tunnel(SENSITIVE_VALUE));
+    expect(masked.planned_values.root_module.child_modules[0]?.resources[0]?.values).toEqual(
+      tunnel(SENSITIVE_VALUE),
+    );
+    // Idempotent; other resource types keep an attribute of that name.
+    expect(maskSensitivePlanJson(masked)).toEqual(masked);
+    const other = {
+      resource_changes: [
+        { type: "cloudflare_dns_record", change: { after: { connections: "x" } } },
+      ],
+    };
+    expect(maskSensitivePlanJson(other)).toEqual(other);
+  });
+
+  it("stay null where a tunnel is created or deleted", () => {
+    const plan = {
+      resource_changes: [
+        { type: TUNNEL, change: { actions: ["delete"], before: tunnel(connected), after: null } },
+        { type: TUNNEL, change: { actions: ["create"], before: null, after: tunnel(null) } },
+      ],
+    };
+    const masked = maskSensitivePlanJson(plan) as typeof plan;
+    expect(masked.resource_changes[0]?.change).toMatchObject({
+      before: tunnel(SENSITIVE_VALUE),
+      after: null,
+    });
+    expect(masked.resource_changes[1]?.change.after).toEqual(tunnel(null));
+  });
+});

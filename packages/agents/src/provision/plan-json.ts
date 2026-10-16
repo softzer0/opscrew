@@ -33,12 +33,37 @@ export function maskBySensitivity(value: unknown, sensitive: unknown): unknown {
   return value;
 }
 
-/** A `change` object (`before`/`after` with their sensitivity marks). */
-function maskChange(change: unknown): unknown {
+/**
+ * Attributes masked whatever the plan marks, per resource type: the provider does not mark them
+ * sensitive, but they reveal what must stay private. A Cloudflare Tunnel's `connections` list the
+ * public address (`origin_ip`) of every host running its connector, such as the user's Portainer
+ * host or a server behind the tunnel.
+ */
+const ALWAYS_MASKED: Readonly<Record<string, readonly string[]>> = {
+  cloudflare_zero_trust_tunnel_cloudflared: ["connections"],
+};
+
+/** `values` (a resource object) with the attributes {@link ALWAYS_MASKED} for `type` replaced. */
+function maskAlways(values: unknown, type: unknown): unknown {
+  const attributes = typeof type === "string" ? ALWAYS_MASKED[type] : undefined;
+  if (attributes === undefined || !isRecord(values)) return values;
+  const out: Json = { ...values };
+  for (const name of attributes) {
+    if (out[name] !== undefined && out[name] !== null) out[name] = SENSITIVE_VALUE;
+  }
+  return out;
+}
+
+/** A `change` object (`before`/`after` with their sensitivity marks) of a resource of `type`. */
+function maskChange(change: unknown, type?: unknown): unknown {
   if (!isRecord(change)) return change;
   const out: Json = { ...change };
-  if ("before" in change) out.before = maskBySensitivity(change.before, change.before_sensitive);
-  if ("after" in change) out.after = maskBySensitivity(change.after, change.after_sensitive);
+  if ("before" in change) {
+    out.before = maskAlways(maskBySensitivity(change.before, change.before_sensitive), type);
+  }
+  if ("after" in change) {
+    out.after = maskAlways(maskBySensitivity(change.after, change.after_sensitive), type);
+  }
   return out;
 }
 
@@ -46,7 +71,7 @@ function maskChange(change: unknown): unknown {
 function maskResourceChanges(list: unknown): unknown {
   if (!Array.isArray(list)) return list;
   return list.map((entry) =>
-    isRecord(entry) ? { ...entry, change: maskChange(entry.change) } : entry,
+    isRecord(entry) ? { ...entry, change: maskChange(entry.change, entry.type) } : entry,
   );
 }
 
@@ -57,7 +82,13 @@ function maskModule(module: unknown): unknown {
   if (Array.isArray(module.resources)) {
     out.resources = module.resources.map((resource) =>
       isRecord(resource)
-        ? { ...resource, values: maskBySensitivity(resource.values, resource.sensitive_values) }
+        ? {
+            ...resource,
+            values: maskAlways(
+              maskBySensitivity(resource.values, resource.sensitive_values),
+              resource.type,
+            ),
+          }
         : resource,
     );
   }
@@ -94,7 +125,9 @@ function sensitiveVariables(plan: Json): Set<string> {
  * The plan JSON without the prior state and with every sensitive value replaced by
  * {@link SENSITIVE_VALUE}, for every provider: resource changes and drift (`before`/`after` by
  * `before_sensitive`/`after_sensitive`), planned resources (`values` by `sensitive_values`),
- * sensitive outputs, output changes, and the values and defaults of sensitive variables. Anything
+ * sensitive outputs, output changes, and the values and defaults of sensitive variables; and,
+ * whatever the plan marks, the attributes of {@link ALWAYS_MASKED} (a Cloudflare Tunnel's
+ * `connections`, which hold the public address of every host running its connector). Anything
  * else is kept as it is, so policies and summaries see every non-sensitive value. Idempotent.
  */
 export function maskSensitivePlanJson(planJson: unknown): unknown {

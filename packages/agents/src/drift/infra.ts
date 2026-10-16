@@ -2,10 +2,17 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { IacEngine, ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { OpsCrewError, toPosixRelative } from "@opscrew/core";
-import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
+import {
+  type EnginePreference,
+  engineLabel,
+  readsStateResources,
+  selectEngine,
+  tofuEncryptionEnv,
+} from "@opscrew/iac-engine";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import type { ProvisionServices } from "../provision/types";
 import {
   type AttributesByType,
   mergeAttributes,
@@ -87,6 +94,109 @@ export async function stateHoldsNothing(statePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * What the infrastructure state holds: `resources` when it has at least one managed resource,
+ * `nothing` when the file is missing or blank or has none (outputs and data sources do not count:
+ * they are no infrastructure), `unknown` when it cannot be read.
+ */
+export type StateContents = "resources" | "nothing" | "unknown";
+
+/** Just enough of a plain state file (format 4) to count its managed resource instances. */
+const PlainStateSchema = z.looseObject({
+  resources: z.array(
+    z.looseObject({
+      mode: z.string().optional(),
+      instances: z.array(z.unknown()).optional(),
+    }),
+  ),
+});
+
+/** Managed resources in a plain state file parsed here (an engine without `stateResources`). */
+function plainContents(raw: unknown): StateContents {
+  const state = PlainStateSchema.safeParse(raw);
+  if (!state.success) return "unknown";
+  // Data sources (`mode: "data"`) are only read; anything else counts unless it has no instance.
+  const managed = state.data.resources.some(
+    (resource) =>
+      resource.mode !== "data" &&
+      (resource.instances === undefined || resource.instances.length > 0),
+  );
+  return managed ? "resources" : "nothing";
+}
+
+/**
+ * Whether the state file at `statePath` holds managed resources ({@link StateContents}). The engine
+ * `engine()` returns (asked for only when the file has content) lists them with `state list` from
+ * no root module, so neither the infrastructure code nor a credential is needed; an
+ * OpenTofu-encrypted state opens with `TF_ENCRYPTION` from the passphrase on this computer (read,
+ * never created), exactly as for every other engine command. A destroy empties the state, encrypted
+ * or not, so after a removal it holds `nothing`. `unknown` when the engine cannot read it (no
+ * passphrase, Terraform on encrypted state, a damaged file) or no engine is available. An engine
+ * without that capability (a test fake) gets a plain state counted here and `unknown` for an
+ * encrypted one.
+ */
+export async function stateContents(
+  deps: Pick<PhaseDeps, "env" | "paths" | "redactor">,
+  statePath: string,
+  engine: () => Promise<IacEngine>,
+): Promise<StateContents> {
+  const text = await readOptional(statePath);
+  if (text === undefined || text.trim() === "") return "nothing";
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return "unknown";
+  }
+  const envelope = StateFileSchema.safeParse(raw);
+  const encrypted =
+    envelope.success &&
+    (envelope.data.encrypted_data !== undefined || envelope.data.encryption_version !== undefined);
+  let reader: IacEngine;
+  try {
+    reader = await engine();
+  } catch {
+    return "unknown"; // no usable engine here: the command's own engine setup says so plainly
+  }
+  if (!readsStateResources(reader)) return encrypted ? "unknown" : plainContents(raw);
+  const env: Record<string, string | undefined> = { ...deps.env };
+  if (encrypted) {
+    if (reader.info.name !== "tofu") return "unknown";
+    const passphrase = (await readOptional(deps.paths.files.statePassphrase))?.trim();
+    if (!passphrase) return "unknown";
+    deps.redactor.addLiteral(passphrase, "state-passphrase");
+    try {
+      env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
+    } catch {
+      return "unknown"; // a passphrase too short for OpenTofu cannot have encrypted it
+    }
+  }
+  try {
+    return (await reader.stateResources(statePath, { env })).length > 0 ? "resources" : "nothing";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * The engine for reading a state file: the services' fake, or `selectEngine` for `preference`.
+ * Prints nothing (the command's own engine setup says which engine it uses).
+ */
+export async function stateEngine(
+  deps: Pick<PhaseDeps, "runner" | "env" | "redactor" | "clock">,
+  preference: EnginePreference,
+  services: Pick<ProvisionServices, "engine"> = {},
+): Promise<IacEngine> {
+  return services.engine
+    ? services.engine(preference)
+    : selectEngine(preference, {
+        runner: deps.runner,
+        env: deps.env,
+        redactor: deps.redactor,
+        now: () => deps.clock.now(),
+      });
 }
 
 /** `TF_ENCRYPTION` for OpenTofu from the existing passphrase; never creates a new one. */

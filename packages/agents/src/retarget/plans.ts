@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import type { ApprovalRecord, ApprovalRequest, Money, PlanSummary } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, writeFileAtomic } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -14,6 +14,7 @@ import {
   planAndApply,
   type SavedPlan,
 } from "../provision";
+import { writePlanSidecar } from "../provision/plan-apply";
 import {
   clearPending,
   type MoveAction,
@@ -301,10 +302,7 @@ export async function deletionStep(
       await discardSaved(summary.planFile);
       throw error;
     }
-    await writeFileAtomic(
-      `${summary.planFile}.json`,
-      `${JSON.stringify(savedOf(summary), null, 2)}\n`,
-    );
+    await writePlanSidecar(deps.redactor, savedOf(summary));
     await writePending(deps, input.action, summary.planHash);
     if (!deps.interactive) {
       const request = input.request(summary);

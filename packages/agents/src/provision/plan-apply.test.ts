@@ -3,10 +3,17 @@ import { join } from "node:path";
 import type { ResourceChange, ResourceMove } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
+import { hidePortainerAddress } from "../interview/portainer-access";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { FakeEngine, type FakeEngineScenario, testPlan } from "./__fixtures__/fakes";
 import { portainerPlan } from "./__fixtures__/portainer";
-import { describePlan, findSavedPlan, isMovesOnly, planAndApply } from "./plan-apply";
+import {
+  describePlan,
+  findSavedPlan,
+  isMovesOnly,
+  planAndApply,
+  REMOVAL_PLAN_SUFFIX,
+} from "./plan-apply";
 import type { SavedPlan } from "./types";
 
 const MOVES: ResourceMove[] = [
@@ -472,5 +479,133 @@ describe("planAndApply for the user's Portainer", () => {
     expect(error.hint).toBe(
       "Fix the cause shown above, then run `opscrew provision` again; it plans the remaining changes.",
     );
+  });
+});
+
+describe("saved plan sidecars pass through the redactor", () => {
+  // A documentation address (RFC 5737) standing in for the Portainer host's IPv4.
+  const ADDRESS = "203.0.113.9";
+  const TUNNEL = "module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this";
+  const TUNNEL_DELETE: ResourceChange[] = [
+    {
+      address: TUNNEL,
+      type: "cloudflare_zero_trust_tunnel_cloudflared",
+      name: "this",
+      provider: "registry.opentofu.org/cloudflare/cloudflare",
+      action: "delete",
+    },
+  ];
+  /**
+   * A removal plan holding the registered address where the plan marks nothing sensitive: a
+   * tunnel route's origin (as if the value had not come from the sensitive variable) and an
+   * untyped drift entry. A tunnel's own `connections` are masked by `maskSensitivePlanJson`.
+   */
+  const removalPlanJson = () => ({
+    format_version: "1.2",
+    resource_changes: [
+      {
+        address: TUNNEL,
+        type: "cloudflare_zero_trust_tunnel_cloudflared",
+        change: {
+          actions: ["delete"],
+          before: {
+            name: "opscrew-shop",
+            connections: [{ colo_name: "fra08", origin_ip: ADDRESS }],
+          },
+          after: null,
+          before_sensitive: { connections: [{}] },
+          after_sensitive: false,
+        },
+      },
+      {
+        address: "module.portainer_tunnel.cloudflare_zero_trust_tunnel_cloudflared_config.this",
+        type: "cloudflare_zero_trust_tunnel_cloudflared_config",
+        change: {
+          actions: ["delete"],
+          before: { config: { ingress: [{ service: `https://${ADDRESS}:9443` }] } },
+          after: null,
+          before_sensitive: { config: { ingress: [{}] } },
+          after_sensitive: false,
+        },
+      },
+    ],
+    resource_drift: [
+      {
+        address: TUNNEL,
+        change: {
+          before: { connections: [] },
+          after: { connections: [{ origin_ip: ADDRESS }] },
+          before_sensitive: {},
+          after_sensitive: {},
+        },
+      },
+    ],
+    // A key can name the address too (a map keyed by host).
+    checks: { [`https://${ADDRESS}:9443`]: { status: "unknown" } },
+  });
+
+  async function removalSetup() {
+    const base = await setup({ changes: TUNNEL_DELETE, planJson: removalPlanJson() });
+    hidePortainerAddress(base.deps.redactor, `https://${ADDRESS}:9443`);
+    return {
+      ...base,
+      options: { ...base.options, deployPlan: portainerPlan(), destroy: true },
+    };
+  }
+
+  it("masks a registered address held in a value the plan does not mark sensitive, and --approve still applies that plan", async () => {
+    const { deps, engine, handler, options } = await removalSetup();
+    const planned = await planAndApply(deps, { ...options, planOnly: true });
+    const planFile = planned.plan?.planFile as string;
+    expect(planFile.endsWith(REMOVAL_PLAN_SUFFIX)).toBe(true);
+    const text = await readFile(`${planFile}.json`, "utf8");
+    expect(text).not.toContain(ADDRESS);
+    expect(text).toContain('"origin_ip": "[REDACTED:portainer-address]"');
+    expect(text).toContain('"service": "[REDACTED:portainer-address]"');
+    expect(text).toContain('"connections": "(sensitive value)"');
+    expect(text).toContain('"[REDACTED:portainer-address]": {');
+    expect(JSON.parse(text).planHash).toBe(planned.planHash);
+
+    const saved = await findSavedPlan(deps.paths.files.plansDir, planned.planHash as string);
+    expect(saved?.planFile).toBe(planFile);
+    expect(saved?.changes).toEqual(TUNNEL_DELETE);
+    const applied = await planAndApply(deps, {
+      ...options,
+      approvePlanHash: planned.planHash as string,
+    });
+    expect(applied).toMatchObject({ applied: true, planHash: planned.planHash });
+    expect(engine.applied).toEqual([
+      { planFile, approval: { approvedPlanHash: planned.planHash, allowDestroy: true } },
+    ]);
+    expect(handler.requests.map((r) => r.kind)).toEqual(["iac-apply"]);
+    expect(handler.requests[0]?.details).not.toContain(ADDRESS);
+  });
+
+  it("finds the plan file beside its sidecar even when a registered name masked the stored path", async () => {
+    const { deps, engine, options } = await removalSetup();
+    // A name that is also a folder of the project path (`…/.opscrew/plans/…`).
+    deps.redactor.addName("plans", "host");
+    const planned = await planAndApply(deps, { ...options, planOnly: true });
+    const planFile = planned.plan?.planFile as string;
+    const stored = JSON.parse(await readFile(`${planFile}.json`, "utf8")) as { planFile: string };
+    expect(stored.planFile).not.toBe(planFile);
+    expect(stored.planFile).toContain("[REDACTED:host]");
+
+    const saved = await findSavedPlan(deps.paths.files.plansDir, planned.planHash as string);
+    expect(saved?.planFile).toBe(planFile);
+    await planAndApply(deps, { ...options, approvePlanHash: planned.planHash as string });
+    expect(engine.applied.map((a) => a.planFile)).toEqual([planFile]);
+  });
+
+  it("keeps the hash binding: a changed plan file beside the sidecar is not applied", async () => {
+    const { deps, engine, options } = await removalSetup();
+    const planned = await planAndApply(deps, { ...options, planOnly: true });
+    await writeFile(planned.plan?.planFile as string, "a different plan");
+    const error = await planAndApply(deps, {
+      ...options,
+      approvePlanHash: planned.planHash as string,
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PLAN_HASH_MISMATCH" });
+    expect(engine.calls).not.toContain("apply");
   });
 });

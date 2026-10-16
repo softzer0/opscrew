@@ -116,7 +116,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T1014 [US1] [US5] No address in saved plans; a removed Cloudflare setup is really gone, in `packages/agents/src/{provision,drift}/`
+- [X] T1014 [US1] [US5] No address in saved plans; a removed Cloudflare setup is really gone, in `packages/agents/src/{provision,drift}/`
   - Owns: `packages/agents/src/provision/{plan-apply,plan-json}.ts` (saving and masking sidecars), `packages/agents/src/provision/portainer.ts` (detecting an earlier Cloudflare setup), `packages/agents/src/drift/{portainer,infra}.ts`, `packages/agents/src/destroy/portainer.ts` and `packages/agents/src/retarget/plans.ts` (the same checks and sidecars), `packages/iac-engine/src/**` (one optional read-only method listing a state's resources; encryption stays in the engine) (+ tests)
   - Reads: the fourth full live run (2026-10-16): after the switch from the tunnel to Caddy, the leak check found the server's IPv4 (Portainer's address) in `.opscrew/plans/<stamp>-removal.tfplan.json`, although `maskSensitivePlanJson` masks marked values and sensitive variables; and `opscrew drift` right after that switch reported "The infrastructure state still holds what an earlier setup of this app created in Cloudflare" although provision had applied the removal
   - Depends: T1005, T1006

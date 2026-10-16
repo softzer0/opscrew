@@ -20,6 +20,7 @@ import { encryptionSecrets } from "./encryption";
 import { hashBytes } from "./hash";
 import { parsePlanJson } from "./plan-json";
 import type { ProviderSchemaReader } from "./provider-schemas";
+import { managedAddresses, type StateResourceReader } from "./state-resources";
 
 /** Default timeout for `apply`: 30 minutes. */
 export const APPLY_TIMEOUT_MS = 30 * 60_000;
@@ -74,9 +75,11 @@ const HINTS: Record<string, string> = {
   output: "Run the apply first; outputs exist only after a successful apply.",
   "providers schema":
     "Run init again in the infrastructure folder so the providers are installed, then try again.",
+  "state list":
+    "Check that the state file exists and, for OpenTofu state encryption, that the state passphrase on this computer is the one that encrypted it.",
 };
 
-class Engine implements IacEngine, ProviderSchemaReader {
+class Engine implements IacEngine, ProviderSchemaReader, StateResourceReader {
   readonly info: IacEngineInfo;
   private readonly runner: CommandRunner;
   private readonly baseEnv: Record<string, string | undefined>;
@@ -324,6 +327,25 @@ class Engine implements IacEngine, ProviderSchemaReader {
     return parsed;
   }
 
+  async stateResources(stateFile: string, options: IacRunOptions = {}): Promise<string[]> {
+    const file = path.resolve(stateFile);
+    // An empty folder: no configuration, `.terraform` or lock file of a project can interfere.
+    const scratch = await mkdtemp(path.join(tmpdir(), "opscrew-state-"));
+    try {
+      const step = "state list";
+      const result = await this.exec(
+        step,
+        scratch,
+        ["state", "list", "-no-color", `-state=${file}`],
+        options,
+      );
+      this.assertOk(step, result, options.timeoutMs);
+      return managedAddresses(result.stdout);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+
   /** Runs `show -json <planFile>` and returns the parsed plan. */
   private async show(cwd: string, file: string, options: IacRunOptions): Promise<unknown> {
     const result = await this.exec("show", cwd, ["show", "-json", "-no-color", file], options);
@@ -441,12 +463,12 @@ class Engine implements IacEngine, ProviderSchemaReader {
 }
 
 /**
- * Creates the `IacEngine` for a detected binary, which can also read provider schemas. All engine
- * commands run through `runner`.
+ * Creates the `IacEngine` for a detected binary, which can also read provider schemas and list a
+ * state file's resources. All engine commands run through `runner`.
  */
 export function createEngine(
   info: IacEngineInfo,
   options: EngineOptions,
-): IacEngine & ProviderSchemaReader {
+): IacEngine & ProviderSchemaReader & StateResourceReader {
   return new Engine(info, options);
 }

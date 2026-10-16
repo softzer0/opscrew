@@ -1,5 +1,5 @@
 import { randomBytes as nodeRandomBytes, randomUUID as nodeRandomUUID } from "node:crypto";
-import { readFile, rm, stat } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join, posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import {
@@ -55,6 +55,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { stateContents } from "../drift/infra";
 import { hidePortainerAddress } from "../interview/portainer-access";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import {
@@ -517,15 +518,27 @@ export async function provisionPortainer(
   const dir = join(root, plan.infra.dir);
   const engineEnv: Record<string, string | undefined> = { ...deps.env };
   delete engineEnv.TF_VAR_portainer_origin;
+  // An earlier setup counts only while the state holds managed resources (a removal leaves an
+  // empty state, encrypted or not); outputs alone are no infrastructure.
   let removal = false;
-  if (!hasRoot && (await nonEmptyFile(join(deps.paths.files.tfstateDir, STATE_FILE)))) {
-    engine = await portainerEngine(deps, options, plan, engineEnv);
-    const iacEngine = engine;
-    const held = await infrastructureOutputs(deps, plan, {
-      engine: async () => iacEngine,
-      engineEnv,
+  if (!hasRoot) {
+    const statePath = join(deps.paths.files.tfstateDir, STATE_FILE);
+    const contents = await stateContents(deps, statePath, async () => {
+      engine ??= await portainerEngine(deps, options, plan, engineEnv);
+      return engine;
     });
-    removal = held !== undefined && Object.keys(held).length > 0;
+    if (contents === "unknown") {
+      // A state the engine cannot list: its outputs, if it can read them (an apply writes them).
+      engine ??= await portainerEngine(deps, options, plan, engineEnv);
+      const iacEngine = engine;
+      const held = await infrastructureOutputs(deps, plan, {
+        engine: async () => iacEngine,
+        engineEnv,
+      });
+      removal = held !== undefined && Object.keys(held).length > 0;
+    } else {
+      removal = contents === "resources";
+    }
     if (removal && !deps.env.CLOUDFLARE_API_TOKEN?.trim()) throw cloudflareTokenMissing(deps);
   }
 
@@ -1415,15 +1428,6 @@ async function startDeployBranch(
       ? `Replaced the branch ${DEPLOY_BRANCH} with a placeholder ${DEPLOY_COMPOSE_FILE}; the deploy workflow's next run writes the app there.`
       : `Created the branch ${DEPLOY_BRANCH} with a placeholder ${DEPLOY_COMPOSE_FILE}.`,
   );
-}
-
-/** True when `file` exists and is not empty. */
-async function nonEmptyFile(file: string): Promise<boolean> {
-  try {
-    return (await stat(file)).size > 0;
-  } catch {
-    return false;
-  }
 }
 
 /**

@@ -265,3 +265,66 @@ describe.skipIf(!tofu)("tofu state encryption via TF_ENCRYPTION (real binary)", 
     TIMEOUT,
   );
 });
+
+// `state list` on a state file from no root module; only with OPSCREW_IT=1, like the agents' check.
+describe.skipIf(!runDriftIt)("stateResources on a state file (real binaries)", () => {
+  const cases = [
+    { name: "tofu" as const, encrypted: false },
+    { name: "tofu" as const, encrypted: true },
+    { name: "terraform" as const, encrypted: false },
+  ];
+  for (const { name, encrypted } of cases) {
+    const found = detected.find((d) => d.name === name && d.supported);
+    it.skipIf(!found)(
+      `lists the managed resources, then none after a full destroy (${name}${encrypted ? ", encrypted" : ""})`,
+      async () => {
+        const dir = await mkdtemp(path.join(tmpdir(), `opscrew-it-${name}-list-`));
+        try {
+          await writeFile(path.join(dir, "main.tf"), MODULE);
+          const passphrase = `it-${randomBytes(16).toString("hex")}`;
+          const env = encrypted ? { TF_ENCRYPTION: tofuEncryptionEnv(passphrase) } : {};
+          const engine = await selectEngine(name);
+          const state = path.join(dir, "terraform.tfstate");
+          await engine.init(dir, { env });
+          const created = await engine.plan(dir, "infra.tfplan", { env });
+          const applied = await engine.apply(
+            dir,
+            created.planFile,
+            { approvedPlanHash: created.planHash },
+            { env },
+          );
+          expect(applied.ok).toBe(true);
+          expect(await engine.stateResources(state, { env })).toEqual([
+            "terraform_data.a",
+            "terraform_data.b",
+          ]);
+
+          const removal = await engine.plan(dir, "removal.tfplan", { env, destroy: true });
+          const removed = await engine.apply(
+            dir,
+            removal.planFile,
+            { approvedPlanHash: removal.planHash, allowDestroy: true },
+            { env },
+          );
+          expect(removed.ok).toBe(true);
+          if (encrypted) expect(await readFile(state, "utf8")).toContain("encrypted_data");
+          expect(await engine.stateResources(state, { env })).toEqual([]);
+
+          if (encrypted) {
+            // Without the encryption settings the engine cannot read it; the error never shows them.
+            const error = await engine.stateResources(state).catch((e: unknown) => e);
+            expect(error).toMatchObject({ code: "ENGINE_FAILED" });
+            expect(String((error as Error).message)).not.toContain(passphrase);
+          }
+          const missing = await engine
+            .stateResources(path.join(dir, "missing.tfstate"), { env })
+            .catch((e: unknown) => e);
+          expect(missing).toMatchObject({ code: "ENGINE_FAILED" });
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      },
+      TIMEOUT,
+    );
+  }
+});

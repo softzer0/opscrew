@@ -68,7 +68,7 @@ import {
   inspectState,
   readOptional,
   STATE_FILE,
-  stateHoldsNothing,
+  stateContents,
 } from "./infra";
 import type { DriftOptions, DriftReport, PortainerDifference } from "./types";
 
@@ -491,7 +491,6 @@ export async function portainerDrift(
   const hasRoot = root.appTunnel || root.webhook;
   const statePath = join(deps.paths.files.tfstateDir, STATE_FILE);
   const stateKind = hasRoot ? await inspectState(deps, statePath) : "unknown";
-  const leftovers = !hasRoot && !(await stateHoldsNothing(statePath));
 
   // 1. Credentials: Portainer's token and connection, GitHub, Cloudflare when the plan has a tunnel.
   deps.reporter.step(
@@ -543,6 +542,10 @@ export async function portainerDrift(
   const engine = await driftEngine(deps, current, options);
   const engineEnv: Record<string, string | undefined> = { ...deps.env };
   delete engineEnv.TF_VAR_portainer_origin;
+  // An earlier setup's Cloudflare resources count only while the state holds managed resources: a
+  // removal leaves an empty state (encrypted or not). A state the engine cannot read counts too.
+  const leftovers =
+    !hasRoot && (await stateContents(deps, statePath, async () => engine)) !== "nothing";
   let drift: ResourceDrift[] = [];
   let pending: ResourceChange[] = [];
   let outputs: Record<string, unknown> | undefined;
