@@ -545,6 +545,48 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
   });
 
   it.each([
+    { what: "finish's lift also changes the new server", side: "finish", other: "server" },
+    { what: "abort's lift also changes the old server", side: "abort", other: "server_previous" },
+  ])("stops before any approval when $what", async ({ side, other }) => {
+    const h = await moveHarness(side === "finish" ? {} : { from: "digitalocean" });
+    if (side === "finish") {
+      await run(h);
+    } else {
+      crashAfter(h, "created");
+      await expect(run(h)).rejects.toThrow("interrupted");
+    }
+    const address = `module.${other}.hcloud_server.this`;
+    h.engine.tamper = (effect) => {
+      if (effect.unprotects.length === 0) return;
+      // Only the other server's protection: allowed on its own, but outside the removal's module.
+      effect.changes.push({
+        address,
+        type: "hcloud_server",
+        name: "this",
+        provider: "registry.opentofu.org/hetznercloud/hcloud",
+        action: "update",
+      });
+      const before = { id: "1", name: APP, delete_protection: true, rebuild_protection: true };
+      const after = { ...before, delete_protection: false, rebuild_protection: false };
+      (effect.planJson as { resource_changes: unknown[] }).resource_changes.push({
+        address,
+        type: "hcloud_server",
+        change: { actions: ["update"], before, after, after_unknown: {} },
+      });
+    };
+    const mark = h.events.length;
+    const error = await caught(side === "finish" ? finish(h) : abort(h));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("would also change other things");
+    expect(error.message).toContain(`update ${address}`);
+    expect(error.message).toContain("Nothing was deleted.");
+    const gated = trail(since(h, mark)).filter(
+      (line) => line.startsWith("approve iac-apply") || line.startsWith("apply"),
+    );
+    expect(gated).toEqual([]);
+  });
+
+  it.each([
     {
       what: "a resource outside the new server's module",
       address: "module.server_previous.hcloud_firewall.this",

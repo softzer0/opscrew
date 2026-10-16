@@ -391,7 +391,9 @@ export async function approveCloudflareRemoval(
         planHeading(summary, "destroy plan"),
         ...describeChanges(summary.changes),
         !tunnel
-          ? `${place} is not part of this plan; the app is removed from it in the next step.`
+          ? input.appChanges
+            ? `${place} is not part of this plan; the app is removed from it in the next step.`
+            : `${place} is not part of this plan.`
           : input.appChanges
             ? `${place} is not part of this plan. ${words.tunnelAfter} so OpsCrew removes the app from ${words.place} first (the next approval) and applies this plan after that.`
             : `${place} is not part of this plan. ${words.tunnelAfter} so OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel.`,

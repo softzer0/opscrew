@@ -229,7 +229,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
-- [ ] T1027 [P] Agents retarget and destroy (Area 4)
+- [X] T1027 [P] Agents retarget and destroy (Area 4)
   - Owns: `packages/agents/src/{retarget,destroy}/**` (+ tests)
   - Reads: Area 4; `packages/agents/src/shared/` after T1024; iac-templates' move layouts
   - Depends: T1024

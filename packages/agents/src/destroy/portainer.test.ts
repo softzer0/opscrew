@@ -549,6 +549,29 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(s.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop");
   });
 
+  it("with the app's stacks gone, the Cloudflare approval promises no next step", async () => {
+    const s = await deployed();
+    for (const name of ["opscrew-shop", "opscrew-shop-updater"]) {
+      const index = s.fake.stacks.findIndex((stack) => stack.Name === name);
+      s.fake.stacks.splice(index, 1);
+    }
+    s.fake.registries.splice(0);
+    const records = tunnelDeletes().filter((change) => change.type === "cloudflare_dns_record");
+    const engine: IacEngine = s.engine;
+    const plan = engine.plan.bind(engine);
+    engine.plan = async (dir, file, options) => {
+      const summary = await plan(dir, file, options);
+      return options?.destroy === true
+        ? { ...summary, changes: records, planJson: tunnelDeletePlanJson(records) }
+        : summary;
+    };
+    await destroy(s);
+    const cloudflare = s.handler.requests.find((request) => request.kind === "iac-apply");
+    expect(cloudflare?.details).toContain("Your Portainer is not part of this plan.\n");
+    expect(cloudflare?.details).not.toContain("next step");
+    expect(s.handler.requests.some((request) => request.kind === "stack-apply")).toBe(false);
+  });
+
   it("a failed Cloudflare plan that goes first never says the app is out of Portainer", async () => {
     const s = await deployed();
     const records = tunnelDeletes().filter((change) => change.type === "cloudflare_dns_record");

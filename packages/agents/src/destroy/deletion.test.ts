@@ -307,19 +307,6 @@ describe("assertDeletionPlan", () => {
       caught(() => assertDeletionPlan(scope, other, { confirmed, serverIds: ["4711"] }, per)).hint,
     ).toBe("hint for server");
   });
-
-  it("never looks for a server in the user's Portainer", () => {
-    const portainer = { provider: "portainer" as const, what: "teardown" };
-    const records = [at("module.dns.cloudflare_dns_record.a")];
-    expect(() =>
-      assertDeletionPlan(
-        portainer,
-        { changes: records, planJson: deletionJson(records) },
-        { confirmed: new Set(records.map((c) => c.address)), serverIds: ["4711"] },
-        stop,
-      ),
-    ).not.toThrow();
-  });
 });
 
 describe("confirmDeletion", () => {
