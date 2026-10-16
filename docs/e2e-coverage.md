@@ -23,7 +23,7 @@ tests that need real accounts, Docker or the infrastructure engines.
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
 | Your own server (`own-server.test.ts`) | `OPSCREW_E2E_OWN_SERVER=1` | Passed | 2026-10-15 (run 11) | — |
 | Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | **Partly passed** (run 1, 2026-10-15: steps 1–3 and the leak search; step 8 failed on a test check, step 9 not reached) | — | A rerun after T1013 |
-| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Partly passed** (run 4, 2026-10-16: steps 1–4; stopped in step 5, fixed in T1014) | — | A rerun (about 45–60 minutes) |
+| Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | **Partly passed** (run 5, 2026-10-16: steps 1–5; stopped in step 6, fixed in T1015) | — | A rerun (about 45–60 minutes) |
 
 Run in development, not tracked by date:
 
@@ -43,7 +43,7 @@ Tick a step once it has passed live.
 | 3. A merged change deploys by itself; a webhook call on an unchanged branch does not redeploy | core | [x] 2026-10-15 |
 | 3. A failing change rolls back | full | [x] 2026-10-16 |
 | 4. An apply through MCP that replaces the registry token | full | [x] 2026-10-16 |
-| 5. Caddy: the app stack updated in place, the DNS record OpsCrew prints, certificates on 80/443 | full | [ ] |
+| 5. Caddy: the app stack updated in place, the DNS record OpsCrew prints, certificates on 80/443 | full | [x] 2026-10-16 |
 | 6. Your own proxy: the app on a host port, `verify --url` | full | [ ] |
 | 7. Cloudflare redeploys with the tunnel: a deploy through Access, 404 outside the webhook, a token replace | full | [ ] |
 | 8. Destroy keeps the data volumes; Portainer, its settings and the decoys stay | core | [ ] |
@@ -61,7 +61,7 @@ live test records each one as an `observed:` line.
 |---|---|---|
 | A webhook call for an unchanged branch does not redeploy | core (step 3) | [x] 2026-10-15 |
 | `GET /api/stacks/{id}` returns `GitConfig`, `AutoUpdate` and `DeploymentStatus` with `Time` | core | [x] 2026-10-15 |
-| A Git stack is updated with `POST /api/stacks/{id}/git`, then `PUT …/git/redeploy` | full (step 5) | [ ] |
+| A Git stack is updated with `POST /api/stacks/{id}/git`, then `PUT …/git/redeploy` | full (step 5) | [x] 2026-10-16 |
 | `GET /api/stacks/{id}/file` returns a Git stack's deployed file (secure and drift rely on it) | core | [x] 2026-10-15 |
 | GHCR accepts the GitHub owner as the registry user name | core | [x] 2026-10-15 (any user name works; the token decides) |
 | A bare `NAME:` entry stays unset when the stack has no value for it | core | [x] 2026-10-15: **no**, it arrives as an empty value, like `${NAME}`; the guide already says so |

@@ -124,6 +124,14 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
+- [ ] T1015 [US2] `verify` behind the user's own proxy: the domain's DNS and certificate are the user's, in `packages/agents/src/verify/`
+  - Owns: `packages/agents/src/verify/**` (the Portainer proxy mode only) (+ tests)
+  - Reads: the fifth full live run (2026-10-16): `opscrew verify --url <route>` in web mode `proxy` passed every check on the route but failed three on the domain (DNS has no A/AAAA record, no HTTPS connection, no redirect), although in that mode OpsCrew creates no DNS record (it prints the one the user creates) and does not manage TLS
+  - Depends: T1006
+  - Accept: for a Portainer target in web mode `proxy`, the domain's DNS, certificate and HTTP-to-HTTPS checks are warnings, never failures, each saying the record and the certificate are the user's (create the record OpsCrew printed and route the domain in your proxy); with `--url` the route's checks decide the result; the domain checks still pass when the user's proxy is set up; tunnel and caddy modes and other targets unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: medium
+
 - [ ] T1009 Live run, core pass (founder, 2026-10-15: the full matrix took about 2 hours): setup, updater + tunnel, one merged change deploying by itself with the unchanged-branch webhook check, destroy keeping data, `--delete-data`, the leak check; results in `docs/e2e.md` (lead). The other steps (caddy, proxy, cloudflare redeploy, rollback wait, loopback, short host, MCP) stay in the test behind `OPSCREW_E2E_PORTAINER_STEPS=full`
 
 ## Dependencies
