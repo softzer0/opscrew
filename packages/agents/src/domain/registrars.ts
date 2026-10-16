@@ -1,4 +1,3 @@
-import { detectPublicIpv4 } from "@opscrew/connector-cloudflare";
 import {
   GODADDY_DASHBOARD_URLS,
   GoDaddyClient,
@@ -156,7 +155,7 @@ function requireEnv(deps: PhaseDeps, id: OtherRegistrarId): Record<string, strin
  * The registrar adapter for `id`, built from its environment variables with the run's `fetch`.
  * Secrets are registered with the redactor first. Porkbun sandbox keys (`pk1_sb_`) and
  * `NAMECHEAP_SANDBOX=1` select the registrars' test systems (with a warning). Namecheap's
- * `ClientIp` comes from `NAMECHEAP_CLIENT_IP` or is detected once through Cloudflare's trace page;
+ * `ClientIp` comes from `NAMECHEAP_CLIENT_IP`, else Namecheap's client detects it once;
  * GoDaddy uses `GODADDY_PROFILE_ID` when set. Missing credentials stop with what to set.
  */
 export function registrarFor(id: OtherRegistrarId, deps: PhaseDeps): Registrar {
@@ -190,7 +189,7 @@ export function registrarFor(id: OtherRegistrarId, deps: PhaseDeps): Registrar {
           apiUser: env.NAMECHEAP_API_USER as string,
           apiKey,
           ...(userName ? { userName } : {}),
-          ...(clientIp ? { clientIp } : { detectClientIp: () => detectPublicIpv4(deps.fetch) }),
+          ...(clientIp ? { clientIp } : {}),
           sandbox,
           fetch: deps.fetch,
         }),

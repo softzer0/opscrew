@@ -42,6 +42,8 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
   return error as OpsCrewError;
 }
 
+const TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace";
+
 const errorXml = (command: string, number: string, text: string) =>
   `<?xml version="1.0" encoding="utf-8"?><ApiResponse Status="ERROR" xmlns="http://api.namecheap.com/xml.response"><Errors><Error Number="${number}">${text}</Error></Errors><RequestedCommand>namecheap.${command}</RequestedCommand></ApiResponse>`;
 
@@ -132,15 +134,49 @@ describe("NamecheapClient requests", () => {
     expect(await client.clientIp()).toBe("198.51.100.23");
   });
 
-  it("says to set NAMECHEAP_CLIENT_IP when there is neither an address nor a detector", async () => {
-    const { fetch, calls } = fakeNamecheap({});
-    const client = new NamecheapClient({ apiUser: "u", apiKey: API_KEY, fetch });
-    const error = await failure(client.getBalances());
-    expect(error.code).toBe("CREDENTIALS_MISSING");
-    expect(error.hint).toContain("Set NAMECHEAP_CLIENT_IP to");
-    expect(error.hint).toContain(NAMECHEAP_DASHBOARD_URLS.apiAccess);
-    expect(`${error.message} ${error.hint}`).not.toMatch(/NAMECHEAP_CLIENT_IP:/);
-    expect(calls).toHaveLength(0);
+  it("reads its own public IPv4 from Cloudflare's trace page by default, once per client", async () => {
+    const { fetch, calls } = fakeNamecheap({ "users.getBalances": fixture("users-getBalances") });
+    const traced: (RequestInit | undefined)[] = [];
+    const client = new NamecheapClient({
+      apiUser: "opscrew-sandbox",
+      apiKey: API_KEY,
+      fetch: async (input, init) => {
+        if (String(input) !== TRACE_URL) return fetch(input, init);
+        traced.push(init);
+        return new Response("fl=1\nh=www.cloudflare.com\nip=198.51.100.23\nts=1\n");
+      },
+      sleep: noSleep,
+    });
+    await client.getBalances();
+    await client.getBalances();
+    expect(traced).toHaveLength(1);
+    expect(traced[0]?.signal).toBeInstanceOf(AbortSignal);
+    expect(calls.map((c) => c.params.get("ClientIp"))).toEqual(["198.51.100.23", "198.51.100.23"]);
+  });
+
+  it("says to set NAMECHEAP_CLIENT_IP when the trace page gives no IPv4 address", async () => {
+    for (const trace of [
+      () => new Response("ip=2001:db8::1\n"),
+      () => new Response("nothing here"),
+      () => new Response("ip=198.51.100.7\n", { status: 500 }),
+      () => {
+        throw new TypeError("fetch failed");
+      },
+    ]) {
+      const { fetch, calls } = fakeNamecheap({});
+      const client = new NamecheapClient({
+        apiUser: "u",
+        apiKey: API_KEY,
+        fetch: async (input, init) => (String(input) === TRACE_URL ? trace() : fetch(input, init)),
+      });
+      const error = await failure(client.getBalances());
+      expect(error.code).toBe("PROVIDER_ERROR");
+      expect(error.message).toMatch(/IPv4/);
+      expect(error.hint).toContain("Set NAMECHEAP_CLIENT_IP to");
+      expect(error.hint).toContain(NAMECHEAP_DASHBOARD_URLS.apiAccess);
+      expect(`${error.message} ${error.hint}`).not.toMatch(/NAMECHEAP_CLIENT_IP:/);
+      expect(calls).toHaveLength(0);
+    }
   });
 
   it("refuses an IPv6 or malformed ClientIp with a plain fix", async () => {

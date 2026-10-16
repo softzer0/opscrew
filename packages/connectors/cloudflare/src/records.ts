@@ -1,5 +1,5 @@
-import type { FetchLike, RegistrarDnsRecord } from "@opscrew/contracts";
-import { normalizeHostName, OpsCrewError } from "@opscrew/core";
+import type { RegistrarDnsRecord } from "@opscrew/contracts";
+import { normalizeHostName } from "@opscrew/core";
 
 /** A DNS record to create in a Cloudflare zone, named as in the Cloudflare API. */
 export interface CloudflareRecordInput {
@@ -245,36 +245,4 @@ export function mapRegistrarRecords(
     create.push(record);
   }
   return { create, skipped };
-}
-
-/** Where Cloudflare reports the caller's public IP address. */
-export const CLOUDFLARE_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace";
-
-/**
- * This computer's public IPv4 address, read from Cloudflare's trace endpoint (the `ip=` line).
- * Throws an `OpsCrewError` when it cannot be read or is not IPv4 (for example on an IPv6-only
- * connection).
- */
-export async function detectPublicIpv4(fetch: FetchLike): Promise<string> {
-  const failure = (cause?: unknown) =>
-    new OpsCrewError(
-      "PROVIDER_ERROR",
-      "The public IPv4 address of this computer could not be detected.",
-      {
-        hint: "Set NAMECHEAP_CLIENT_IP to this computer's public IPv4 address (the one whitelisted in Namecheap's API settings) and try again.",
-        ...(cause === undefined ? {} : { cause }),
-      },
-    );
-  let text: string;
-  try {
-    const response = await fetch(CLOUDFLARE_TRACE_URL, { headers: { Accept: "text/plain" } });
-    if (!response.ok) throw failure();
-    text = await response.text();
-  } catch (error) {
-    if (error instanceof OpsCrewError) throw error;
-    throw failure(error);
-  }
-  const ip = /^ip=(.*)$/m.exec(text)?.[1]?.trim() ?? "";
-  if (!IPV4.test(ip)) throw failure();
-  return ip;
 }

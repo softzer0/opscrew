@@ -13,7 +13,6 @@ export {
 export { type CloudflareConnector, cloudflareConnector } from "./connector";
 export {
   type CloudflareRecordInput,
-  detectPublicIpv4,
   mapRegistrarRecord,
   mapRegistrarRecords,
 } from "./records";

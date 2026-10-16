@@ -1,9 +1,9 @@
-import type { FetchLike, RegistrarDnsRecord } from "@opscrew/contracts";
+import type { RegistrarDnsRecord } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { type FakeReply, fakeFetch, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { type ActivationCheckResult, CLOUDFLARE_API, CloudflareClient } from "./client";
-import { detectPublicIpv4, mapRegistrarRecord, mapRegistrarRecords, quoteTxt } from "./records";
+import { mapRegistrarRecord, mapRegistrarRecords, quoteTxt } from "./records";
 
 const TOKEN = fakeSecret("cloudflare-token");
 const ZONE = "example.com";
@@ -398,37 +398,5 @@ describe("CloudflareClient zone records", () => {
       digest: "ABCDEF",
     });
     expect(await cf.getDnssec("z1")).toEqual({ status: "disabled" });
-  });
-});
-
-describe("detectPublicIpv4", () => {
-  const trace =
-    (body: string, status = 200): FetchLike =>
-    async (input) => {
-      expect(String(input)).toBe("https://www.cloudflare.com/cdn-cgi/trace");
-      return new Response(body, { status });
-    };
-
-  it("reads the ip= line", async () => {
-    expect(
-      await detectPublicIpv4(trace("fl=1\nh=www.cloudflare.com\nip=198.51.100.7\nts=1\n")),
-    ).toBe("198.51.100.7");
-  });
-
-  it("refuses IPv6, garbage, errors and network failures with a plain message", async () => {
-    const offline: FetchLike = async () => {
-      throw new TypeError("fetch failed");
-    };
-    for (const fetch of [
-      trace("ip=2001:db8::1\n"),
-      trace("nothing here"),
-      trace("ip=198.51.100.7\n", 500),
-      offline,
-    ]) {
-      const error = await rejection(detectPublicIpv4(fetch));
-      expect(error.message).toMatch(/public IPv4 address of this computer could not be detected/);
-      expect(error.hint).toContain("Set NAMECHEAP_CLIENT_IP to");
-      expect(error.hint).not.toMatch(/NAMECHEAP_CLIENT_IP:/);
-    }
   });
 });

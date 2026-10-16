@@ -43,7 +43,10 @@ export interface NamecheapClientOptions {
   userName?: string;
   /** Public IPv4 of this computer (`NAMECHEAP_CLIENT_IP`); must be on the API whitelist. */
   clientIp?: string;
-  /** Finds this computer's public IPv4 when `clientIp` is not set; called once per client. */
+  /**
+   * Finds this computer's public IPv4 when `clientIp` is not set; called once per client
+   * (default: the `ip=` line of Cloudflare's trace page, read with `fetch`).
+   */
   detectClientIp?: () => Promise<string>;
   /** Use Namecheap's sandbox (`NAMECHEAP_SANDBOX=1`). */
   sandbox?: boolean;
@@ -170,6 +173,24 @@ export function namecheapDate(value: string | undefined): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
+/** Where Cloudflare reports the caller's public IP address (its `ip=` line). */
+const CLOUDFLARE_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace";
+
+/**
+ * This computer's public address as Cloudflare's trace page reports it. Throws when the page
+ * cannot be read or names no address; the caller checks that it is IPv4.
+ */
+async function tracedIp(fetch: FetchLike, timeoutMs: number): Promise<string> {
+  const response = await fetch(CLOUDFLARE_TRACE_URL, {
+    headers: { Accept: "text/plain" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const ip = /^ip=(.*)$/m.exec(await response.text())?.[1]?.trim();
+  if (!ip) throw new Error("the trace page names no address");
+  return ip;
+}
+
 /** No answer to a POST; the message says why, in a phrase (`the request timed out`). */
 class Unreachable extends Error {}
 
@@ -189,7 +210,7 @@ export class NamecheapClient {
   readonly #apiKey: string;
   readonly #userName: string;
   readonly #fixedIp: string | undefined;
-  readonly #detect: (() => Promise<string>) | undefined;
+  readonly #detect: () => Promise<string>;
   readonly #endpoint: string;
   readonly #fetch: FetchLike;
   readonly #sleep: (ms: number) => Promise<void>;
@@ -201,7 +222,7 @@ export class NamecheapClient {
     this.#apiKey = options.apiKey.trim();
     this.#userName = options.userName?.trim() || this.#apiUser;
     this.#fixedIp = options.clientIp?.trim() || undefined;
-    this.#detect = options.detectClientIp;
+    this.#detect = options.detectClientIp ?? (() => tracedIp(this.#fetch, this.#timeoutMs));
     this.sandbox = options.sandbox ?? false;
     this.#endpoint = this.sandbox ? NAMECHEAP_SANDBOX_API : NAMECHEAP_API;
     this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -216,7 +237,7 @@ export class NamecheapClient {
 
   /**
    * The `ClientIp` sent with every call: the configured address, else the detected one (detected
-   * once per client). Namecheap accepts IPv4 only.
+   * once per client, see `detectClientIp`). Namecheap accepts IPv4 only.
    */
   async clientIp(): Promise<string> {
     const setIt = `Set NAMECHEAP_CLIENT_IP to this computer's public IPv4 address and add that address to the API whitelist at ${this.dashboard.apiAccess}.`;
@@ -231,13 +252,6 @@ export class NamecheapClient {
       return this.#fixedIp;
     }
     if (this.#detected) return this.#detected;
-    if (!this.#detect) {
-      throw new OpsCrewError(
-        "CREDENTIALS_MISSING",
-        "Namecheap needs this computer's public IPv4 address with every API call, and it is not set.",
-        { hint: setIt },
-      );
-    }
     let ip: string;
     try {
       ip = (await this.#detect()).trim();
