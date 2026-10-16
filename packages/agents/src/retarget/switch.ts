@@ -4,11 +4,17 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { SavedPlan } from "../provision";
-import { committableUrl, pollUntil, recordServerAddress, type ServerAddress } from "../shared";
+import {
+  committableUrl,
+  pollUntil,
+  recordServerAddress,
+  type ServerAddress,
+  sameIp,
+} from "../shared";
 import { moveProvider } from "../shared/vps-target";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { startService, stopService } from "./server-ops";
-import { oldServer, sameIp } from "./servers";
+import { oldServer } from "./servers";
 import {
   auditMove,
   auditStep,

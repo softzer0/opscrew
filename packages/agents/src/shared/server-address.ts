@@ -1,8 +1,22 @@
+import { BlockList, isIP } from "node:net";
 import type { VpsProviderId } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { type EngineDeps, infrastructureOutputs, type OutputsOptions } from "./engine";
 import { readServerAddresses, recordServerAddress, type ServerAddress } from "./server-record";
+
+/**
+ * True when `a` and `b` are the same IP address, however each is written (`2001:DB8:0::1` is
+ * `2001:db8::1`); false when either is not an IP address or they are of different families.
+ */
+export function sameIp(a: string, b: string): boolean {
+  const family = isIP(a);
+  if (family === 0 || isIP(b) !== family) return false;
+  const type = family === 4 ? "ipv4" : "ipv6";
+  const list = new BlockList();
+  list.addAddress(a, type);
+  return list.check(b, type);
+}
 
 /** `{ ipv4, ipv6 }` when `ipv4` is a valid address (an invalid `ipv6` is left out). */
 function addressOf(ipv4: unknown, ipv6: unknown): ServerAddress | undefined {

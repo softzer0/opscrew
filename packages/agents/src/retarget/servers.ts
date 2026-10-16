@@ -1,10 +1,10 @@
-import { BlockList, isIP } from "node:net";
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   readServerAddresses,
   type ServerAddress,
+  sameIp,
   serverOfProvider,
   updateServerAddresses,
 } from "../shared";
@@ -44,19 +44,6 @@ export function indistinctServers(command: string): OpsCrewError {
     "OpsCrew cannot tell which server is which on this computer: the server being replaced and the new server have the same address in .opscrew/server.json or in the infrastructure state, so it cannot continue the move. Nothing was changed.",
     { hint: hintFor(command) },
   );
-}
-
-/**
- * True when `a` and `b` are the same IP address, however each is written (`2001:DB8:0::1` is
- * `2001:db8::1`); false when either is not an IP address or they are of different families.
- */
-export function sameIp(a: string, b: string): boolean {
-  const family = isIP(a);
-  if (family === 0 || isIP(b) !== family) return false;
-  const type = family === 4 ? "ipv4" : "ipv6";
-  const list = new BlockList();
-  list.addAddress(a, type);
-  return list.check(b, type);
 }
 
 /** True when two servers share their IPv4 or their IPv6 address. */

@@ -103,8 +103,26 @@ export function portainerContainerUrl(url: string): string {
 }
 
 /**
+ * The stop when the interview on this computer chose another Portainer environment than
+ * `opscrew/plan.yaml` deploys to (`PHASE_PRECONDITION`, nothing changed). `mismatch` names both
+ * without what stayed as it was, for a command that changes nothing anyway (`opscrew secure`).
+ */
+export class PortainerEnvironmentError extends OpsCrewError {
+  readonly mismatch: string;
+
+  constructor(mismatch: string) {
+    super("PHASE_PRECONDITION", `${mismatch} Nothing was changed.`, {
+      hint: "Run `opscrew design` again so the plan uses the environment you chose, then run `opscrew provision` again.",
+    });
+    this.name = "PortainerEnvironmentError";
+    this.mismatch = mismatch;
+  }
+}
+
+/**
  * How OpsCrew reaches the user's Portainer, from `.opscrew/server.json`, checked against the plan:
- * the interview must have recorded it, for the environment the plan names.
+ * the interview must have recorded it, for the environment the plan names (else
+ * {@link PortainerEnvironmentError}).
  */
 export async function requirePortainerConnection(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
@@ -122,12 +140,8 @@ export async function requirePortainerConnection(
     );
   }
   if (connection.environmentId !== target.environmentId) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `opscrew/plan.yaml deploys to Portainer environment ${target.environmentId}, but the interview on this computer chose environment ${connection.environmentId} (${connection.environmentName}). Nothing was changed.`,
-      {
-        hint: "Run `opscrew design` again so the plan uses the environment you chose, then run `opscrew provision` again.",
-      },
+    throw new PortainerEnvironmentError(
+      `opscrew/plan.yaml deploys to Portainer environment ${target.environmentId}, but the interview on this computer chose environment ${connection.environmentId} (${connection.environmentName}).`,
     );
   }
   // Portainer's address (and its host name) is never printed.

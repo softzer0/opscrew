@@ -5,7 +5,7 @@ import { tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
-import { providerConsole, type ServerAddress } from "../shared";
+import { providerConsole, type ServerAddress, sameIp } from "../shared";
 import type { PublicAddressLookup } from "../shared/public-dns";
 import {
   type DnsResolver,
@@ -300,14 +300,6 @@ function rangeList(ranges: CloudflareRanges): BlockList {
   return list;
 }
 
-function sameAddress(a: string, b: string): boolean {
-  const type = isIPv6(a) ? "ipv6" : "ipv4";
-  if ((isIPv6(b) ? "ipv6" : "ipv4") !== type) return false;
-  const list = new BlockList();
-  list.addAddress(b, type);
-  return list.check(a, type);
-}
-
 /** Certificate name matching with single-label wildcards (`*.example.com`). */
 export function certificateCoversHost(host: string, names: readonly string[]): boolean {
   const wanted = normalizeHostName(host);
@@ -418,8 +410,8 @@ async function dnsRecords(
   if (plan.dns.proxied || tunnel) {
     const exposed = addresses.filter(
       (address) =>
-        (ipv4 !== undefined && sameAddress(address, ipv4)) ||
-        (ipv6 !== undefined && sameAddress(address, ipv6)),
+        (ipv4 !== undefined && sameIp(address, ipv4)) ||
+        (ipv6 !== undefined && sameIp(address, ipv6)),
     );
     if (exposed.length > 0) {
       return checkResult(
@@ -489,8 +481,8 @@ async function dnsRecords(
     );
   }
   const wrong = [
-    ...a.filter((address) => !sameAddress(address, ipv4)),
-    ...aaaa.filter((address) => ipv6 === undefined || !sameAddress(address, ipv6)),
+    ...a.filter((address) => !sameIp(address, ipv4)),
+    ...aaaa.filter((address) => ipv6 === undefined || !sameIp(address, ipv6)),
   ];
   if (wrong.length > 0 || a.length === 0) {
     const expected = [ipv4, ipv6].filter((x): x is string => x !== undefined).join(" / ");

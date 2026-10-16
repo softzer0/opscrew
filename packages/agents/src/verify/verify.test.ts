@@ -309,6 +309,20 @@ describe("runVerify", () => {
     expect(dns.message).toContain("resolves to the server itself");
   });
 
+  it("fails proxied DNS that names the server's IPv6 address written another way", async () => {
+    const deps = await setup();
+    const result = await runVerify(deps, {
+      resolver: resolver([CLOUDFLARE_IPV4], ["2001:DB8:0:0::10"]),
+      fetch: fakeSite().fetch,
+      tlsConnect: cert(),
+      tcpConnect: closed,
+      cloudflareRanges: CLOUDFLARE_RANGES,
+    });
+    const dns = byId(result.checks, "dns-records");
+    expect(dns.status).toBe("fail");
+    expect(dns.message).toContain("resolves to the server itself");
+  });
+
   it("fails proxied DNS that points outside Cloudflare", async () => {
     const deps = await setup();
     const result = await runVerify(deps, {

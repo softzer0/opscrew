@@ -4,7 +4,6 @@ import {
   type PortainerStackFacts,
 } from "@opscrew/connector-portainer";
 import type { CheckResult, Severity } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
 import { portainerTarget } from "@opscrew/iac-templates";
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { parse } from "yaml";
@@ -12,7 +11,11 @@ import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { inspectRecordedPortainer, publishedPorts, recordedStack } from "../drift/portainer";
 import { PORTAINER_TOKEN_VAR } from "../providers";
-import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
+import {
+  PortainerEnvironmentError,
+  requirePortainerConnection,
+  requirePortainerToken,
+} from "../provision/portainer";
 import type { PortainerServices } from "../provision/types";
 import { type PortainerConnection, readPortainerConnection } from "../shared";
 import { checkResult, editCheckText } from "../verify/checks";
@@ -341,11 +344,8 @@ export async function portainerSecurityChecks(
   try {
     connection = await requirePortainerConnection(deps, plan);
   } catch (error) {
-    if (!(error instanceof OpsCrewError) || error.code !== "PHASE_PRECONDITION") throw error;
-    return {
-      checks: [],
-      skipped: deps.redactor.redact(`${error.message}${error.hint ? ` ${error.hint}` : ""}`),
-    };
+    if (!(error instanceof PortainerEnvironmentError)) throw error;
+    return { checks: [], skipped: deps.redactor.redact(`${error.mismatch} ${error.hint}`) };
   }
   const { client, facts } = await inspectRecordedPortainer(deps, {
     plan,

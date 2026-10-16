@@ -9,7 +9,7 @@ import {
   portainerProject,
   provisionPortainerProject,
 } from "../drift/__fixtures__/portainer-project";
-import { recordPortainerConnection } from "../shared";
+import { readPortainerConnection, recordPortainerConnection } from "../shared";
 import { runSecure } from "./run";
 
 async function deployed() {
@@ -53,6 +53,26 @@ describe.skipIf(!findExecutable("git"))("opscrew secure for the user's Portainer
     expect(result.hostChecks).toEqual([]);
     report = await readFile(s.deps.paths.files.securityReport, "utf8");
     expect(report).toContain("Skipped: OpsCrew does not know how to reach your Portainer");
+    expect(s.fake.calls).toEqual([]);
+  });
+
+  it("skips the checks for another environment than the plan's, saying so without a change claim", async () => {
+    const s = await portainerProject();
+    const connection = await readPortainerConnection(s.deps.paths);
+    if (connection === undefined) throw new Error("no recorded connection");
+    await recordPortainerConnection(s.deps.paths, {
+      ...connection,
+      environmentId: 4,
+      environmentName: "edge",
+    });
+    const result = await secure(s);
+    expect(result.hostChecks).toEqual([]);
+    const reason =
+      "opscrew/plan.yaml deploys to Portainer environment 3, but the interview on this computer chose environment 4 (edge). Run `opscrew design` again so the plan uses the environment you chose, then run `opscrew provision` again.";
+    const report = await readFile(s.deps.paths.files.securityReport, "utf8");
+    expect(report).toContain(`Skipped: ${reason}`);
+    expect(s.deps.reporter.text()).toContain(`Portainer checks skipped: ${reason}`);
+    expect(`${report}\n${s.deps.reporter.text()}`).not.toContain("Nothing was changed.");
     expect(s.fake.calls).toEqual([]);
   });
 

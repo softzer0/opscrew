@@ -11,7 +11,11 @@ import { OpsCrewError, Redactor } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { fakeCertificate, portainerPlan } from "../provision/__fixtures__/portainer";
-import { portainerContainerUrl, requirePortainerConnection } from "../provision/portainer";
+import {
+  PortainerEnvironmentError,
+  portainerContainerUrl,
+  requirePortainerConnection,
+} from "../provision/portainer";
 import { recordPortainerConnection } from "../shared";
 import { createTestPhaseDeps } from "../testing";
 import { hideRecordedPortainerAddress } from "../verify/portainer";
@@ -315,6 +319,22 @@ describe("the phases hide Portainer's address with the same helper", () => {
     const deps = await recorded("https://nas:9443");
     await requirePortainerConnection(deps, portainerPlan());
     expect(deps.redactor.redact(TEXT)).toBe(HIDDEN);
+  });
+
+  it("another environment than the plan's stops, with the mismatch readable on its own", async () => {
+    const deps = await recorded("https://nas:9443");
+    const error = await requirePortainerConnection(deps, portainerPlan({ environmentId: 4 })).catch(
+      (e: unknown) => e,
+    );
+    const mismatch =
+      "opscrew/plan.yaml deploys to Portainer environment 4, but the interview on this computer chose environment 3 (local).";
+    expect(error).toBeInstanceOf(PortainerEnvironmentError);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: `${mismatch} Nothing was changed.`,
+      hint: "Run `opscrew design` again so the plan uses the environment you chose, then run `opscrew provision` again.",
+      mismatch,
+    });
   });
 
   it("verify: the recorded connection, with the host `nas`", async () => {

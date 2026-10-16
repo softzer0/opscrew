@@ -24,6 +24,7 @@ import {
   recordOwnServer,
   recordPortainerConnection,
   recordServerAddress,
+  sameIp,
   serverAddress,
   serverAddressesFile,
   serverOfProvider,
@@ -34,6 +35,16 @@ import {
 
 const IPV4 = "203.0.113.10";
 const IPV6 = "2001:db8::10";
+
+describe("sameIp", () => {
+  it("compares addresses however they are written", () => {
+    expect(sameIp("2001:DB8:0::1", "2001:db8::1")).toBe(true);
+    expect(sameIp("203.0.113.10", "203.0.113.10")).toBe(true);
+    expect(sameIp("203.0.113.10", "203.0.113.11")).toBe(false);
+    expect(sameIp("203.0.113.10", "2001:db8::1")).toBe(false);
+    expect(sameIp("example.com", "example.com")).toBe(false);
+  });
+});
 
 /** Engine fake that only answers `output`. */
 class OutputEngine implements IacEngine {
