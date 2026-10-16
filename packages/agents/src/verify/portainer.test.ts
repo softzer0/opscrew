@@ -219,8 +219,87 @@ describe("opscrew verify for the user's Portainer", () => {
     });
     expect(result.passed).toBe(true);
     expect(result.url).toBe(route);
+    // The user's proxy is set up for the domain: its checks pass as before.
+    expect(statuses(result.checks).slice(0, 4)).toEqual([
+      ["dns-records", "pass"],
+      ["site-reachable", "pass"],
+      ["tls-certificate", "pass"],
+      ["http-redirect", "pass"],
+    ]);
     const plan = await readArtifact("plan", deps.paths.files.plan);
     expect(plan.deployment.url).toBe("https://shop.example.com");
+  });
+
+  it("proxy with a domain the user has not set up yet: its checks warn, the route decides", async () => {
+    const deps = await setup({ web: { mode: "proxy", port: 8080 } });
+    const route = "https://proxy.example.net";
+    const routeSite = fakeSite(route);
+    const result = await runVerify(deps, {
+      url: route,
+      resolver: resolver([]),
+      fetch: (input, init) => {
+        if (String(input).startsWith("http://shop.example.com")) {
+          throw new Error("getaddrinfo ENOTFOUND");
+        }
+        return routeSite(input, init);
+      },
+      tlsConnect: async (host, options) => {
+        if (host === "shop.example.com") throw new Error("getaddrinfo ENOTFOUND");
+        return cert(host)(host, options);
+      },
+      tcpConnect: async () => false,
+    });
+    expect(statuses(result.checks).slice(0, 4)).toEqual([
+      ["dns-records", "warn"],
+      ["site-reachable", "pass"],
+      ["tls-certificate", "warn"],
+      ["http-redirect", "warn"],
+    ]);
+    expect(result.passed).toBe(true);
+    for (const id of ["dns-records", "tls-certificate", "http-redirect"]) {
+      const check = result.checks.find((c) => c.id === id);
+      expect(check?.message).toContain("are yours");
+      expect(check?.remediation).toContain("create the record OpsCrew printed");
+      expect(check?.remediation).toContain("route shop.example.com in your proxy");
+    }
+    expect(result.checks.find((c) => c.id === "dns-records")?.message).toContain(
+      "has no A or AAAA record",
+    );
+
+    // A domain that answers without a redirect, with another name's certificate: still warnings.
+    const answers = await runVerify(deps, {
+      url: route,
+      resolver: resolver([HOME_IPV4]),
+      fetch: async (input, init) =>
+        String(input).startsWith("http://shop.example.com")
+          ? new Response("plain", { status: 200 })
+          : routeSite(input, init),
+      tlsConnect: cert("other.example.org"),
+      tcpConnect: async () => false,
+    });
+    expect(statuses(answers.checks).slice(0, 4)).toEqual([
+      ["dns-records", "pass"],
+      ["site-reachable", "pass"],
+      ["tls-certificate", "warn"],
+      ["http-redirect", "warn"],
+    ]);
+    expect(answers.passed).toBe(true);
+    expect(JSON.stringify(answers.checks)).not.toContain(HOME_IPV4);
+  });
+
+  it("caddy: a domain without a record still fails", async () => {
+    const deps = await setup({ web: { mode: "caddy" } });
+    const result = await runVerify(deps, {
+      resolver: resolver([]),
+      fetch: fakeSite("https://shop.example.com"),
+      tlsConnect: async () => {
+        throw new Error("getaddrinfo ENOTFOUND");
+      },
+      tcpConnect: async () => false,
+    });
+    expect(result.checks.find((c) => c.id === "dns-records")?.status).toBe("fail");
+    expect(result.checks.find((c) => c.id === "tls-certificate")?.status).toBe("fail");
+    expect(result.passed).toBe(false);
   });
 
   it("refuses a route outside web mode proxy, before checking anything", async () => {

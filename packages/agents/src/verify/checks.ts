@@ -914,6 +914,21 @@ export interface VerifyChecksOutcome {
 }
 
 /**
+ * The user's Portainer behind their own reverse proxy: OpsCrew creates no DNS record for the
+ * domain (it prints the one the user creates) and the proxy manages its certificate and redirect,
+ * so a failed domain check is a warning that says so. Other targets and modes are unchanged.
+ */
+function userDomain(check: CheckResult, host: string, plan: DeployPlan): CheckResult {
+  if (portainerWeb(plan) !== "proxy" || check.status !== "fail") return check;
+  return {
+    ...check,
+    status: "warn",
+    message: `${check.message} Behind your own reverse proxy the DNS record and the certificate for ${host} are yours, so this is a warning.`,
+    remediation: `The record and the certificate are yours: create the record OpsCrew printed and route ${host} in your proxy (it serves HTTPS and redirects HTTP), then run \`opscrew verify\` again.`,
+  };
+}
+
+/**
  * Runs every verify check from plan.md in report order. Without a domain the DNS and TLS checks
  * warn (the site is served over plain HTTP on the server IP) instead of failing.
  */
@@ -951,7 +966,7 @@ export async function runVerifyChecks(ctx: VerifyCheckContext): Promise<VerifyCh
       ),
     );
   } else {
-    for (const host of hosts) checks.push(await checkDns(host, ctx));
+    for (const host of hosts) checks.push(userDomain(await checkDns(host, ctx), host, plan));
   }
 
   if (url === undefined) {
@@ -1019,8 +1034,8 @@ export async function runVerifyChecks(ctx: VerifyCheckContext): Promise<VerifyCh
       ),
     );
   } else {
-    checks.push(await checkTls(domain, ctx));
-    checks.push(await checkHttpRedirect(domain, ctx));
+    checks.push(userDomain(await checkTls(domain, ctx), domain, plan));
+    checks.push(userDomain(await checkHttpRedirect(domain, ctx), domain, plan));
   }
 
   checks.push(await checkHealth(url, ctx));

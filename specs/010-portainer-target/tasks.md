@@ -124,7 +124,7 @@ Fixtures never contain secret-shaped literals (`fakeSecret()` / `{{FAKE:…}}` +
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T1015 [US2] `verify` behind the user's own proxy: the domain's DNS and certificate are the user's, in `packages/agents/src/verify/`
+- [X] T1015 [US2] `verify` behind the user's own proxy: the domain's DNS and certificate are the user's, in `packages/agents/src/verify/`
   - Owns: `packages/agents/src/verify/**` (the Portainer proxy mode only) (+ tests)
   - Reads: the fifth full live run (2026-10-16): `opscrew verify --url <route>` in web mode `proxy` passed every check on the route but failed three on the domain (DNS has no A/AAAA record, no HTTPS connection, no redirect), although in that mode OpsCrew creates no DNS record (it prints the one the user creates) and does not manage TLS
   - Depends: T1006
