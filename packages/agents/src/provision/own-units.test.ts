@@ -49,45 +49,36 @@ async function zeroTrustDeps(answer: (url: string) => Response) {
 }
 
 describe("Zero Trust organization", () => {
-  it("reads the account's organization with the token, read-only", async () => {
-    const { deps, calls } = await zeroTrustDeps(() =>
-      json(200, {
-        success: true,
-        errors: [],
-        result: { auth_domain: "team.cloudflareaccess.com" },
-      }),
+  it("reads the account's organization and login methods through Cloudflare's client, read-only", async () => {
+    const { deps, calls } = await zeroTrustDeps((url) =>
+      url.endsWith("/access/organizations")
+        ? json(200, {
+            success: true,
+            errors: [],
+            result: { auth_domain: "team.cloudflareaccess.com" },
+          })
+        : json(200, { success: true, errors: [], result: [{ id: "pin-9", type: "onetimepin" }] }),
     );
-    const org = await cloudflareZeroTrust(deps).organization(ACCOUNT_ID);
-    expect(org).toEqual({ authDomain: "team.cloudflareaccess.com" });
+    const api = cloudflareZeroTrust(deps);
+    expect(await api.accessOrganization(ACCOUNT_ID)).toEqual({
+      authDomain: "team.cloudflareaccess.com",
+    });
+    expect(await api.accessIdentityProviders(ACCOUNT_ID)).toEqual([
+      { id: "pin-9", type: "onetimepin" },
+    ]);
     expect(calls).toEqual([
       {
         url: `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/access/organizations`,
         auth: `Bearer ${TOKEN}`,
       },
+      {
+        url: `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/access/identity_providers`,
+        auth: `Bearer ${TOKEN}`,
+      },
     ]);
   });
 
-  it("reads no organization from a 404 or Cloudflare's not-found answer", async () => {
-    const missing = await zeroTrustDeps(() => json(404, { success: false, errors: [] }));
-    expect(await cloudflareZeroTrust(missing.deps).organization(ACCOUNT_ID)).toBeUndefined();
-    const notFound = await zeroTrustDeps(() =>
-      json(400, { success: false, errors: [{ code: 12106, message: "organization not found" }] }),
-    );
-    expect(await cloudflareZeroTrust(notFound.deps).organization(ACCOUNT_ID)).toBeUndefined();
-    const empty = await zeroTrustDeps(() => json(200, { success: true, errors: [], result: null }));
-    expect(await cloudflareZeroTrust(empty.deps).organization(ACCOUNT_ID)).toBeUndefined();
-  });
-
-  it("fails closed on an organization without a team domain", async () => {
-    const { deps } = await zeroTrustDeps(() =>
-      json(200, { success: true, errors: [], result: { name: "Somebody's team" } }),
-    );
-    await expect(cloudflareZeroTrust(deps).organization(ACCOUNT_ID)).rejects.toMatchObject({
-      code: "PROVIDER_ERROR",
-    });
-  });
-
-  it("names the missing permissions on a refusal and never shows the token", async () => {
+  it("names the missing permission on a refusal, never shows the token, and needs the token", async () => {
     const { deps } = await zeroTrustDeps(() =>
       json(403, {
         success: false,
@@ -95,11 +86,16 @@ describe("Zero Trust organization", () => {
       }),
     );
     const error = (await cloudflareZeroTrust(deps)
-      .organization(ACCOUNT_ID)
+      .accessOrganization(ACCOUNT_ID)
       .catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("CREDENTIALS_INVALID");
-    expect(error.hint).toContain("Access: Organizations, Identity Providers, and Groups → Edit");
-    expect(`${error.message} ${error.hint}`).not.toContain(TOKEN);
+    expect(error.hint).toContain("Access: Organizations, Identity Providers, and Groups");
+    // The token is registered with the redactor, which every shown message passes through.
+    expect(deps.redactor.redact(`${error.message} ${error.hint}`)).not.toContain(TOKEN);
+    const none = await createTestPhaseDeps();
+    expect(() => cloudflareZeroTrust(none)).toThrow(
+      expect.objectContaining({ code: "CREDENTIALS_MISSING" }),
+    );
   });
 
   it("creates the organization when there is none, keeps OpsCrew's own and leaves the user's alone", async () => {
@@ -299,7 +295,8 @@ describe.skipIf(!findExecutable("git"))("previewDeploymentFiles for a server the
         ),
       github: new FakeGitHub(),
       cloudflare: ownCloudflare(),
-      own: { host, zeroTrust: fakeZeroTrust() },
+      own: { host },
+      zeroTrust: fakeZeroTrust(),
     };
     await runProvision(deps, { services, hostKey: ED25519_FINGERPRINT, push: false });
 

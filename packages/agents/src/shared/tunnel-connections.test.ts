@@ -11,14 +11,13 @@ import { PlanRefusedError } from "./approvals";
 import {
   connectorFirst,
   deletedTunnel,
-  deletesTunnel,
   isTunnelBusyText,
   onlyTunnelBusy,
-  readTunnelConnections,
   requireTunnelClosed,
   SERVER_GOES_FIRST,
   TUNNEL_RESOURCE_TYPE,
   tunnelBusyError,
+  tunnelChange,
   tunnelSafeEngine,
   waitForTunnelToClose,
 } from "./tunnel-connections";
@@ -76,16 +75,18 @@ function sleeper() {
 
 describe("tunnel deletion in a plan", () => {
   it("finds a deleted tunnel by its type and action, and its id and account in the plan JSON", () => {
+    const changes = [
+      { type: TUNNEL_RESOURCE_TYPE, action: "delete" },
+      { type: "x", action: "create" },
+    ] as const;
+    expect(tunnelChange(changes, "delete")).toBe(true);
+    expect(tunnelChange(changes, "create", "replace")).toBe(false);
+    expect(tunnelChange(changes)).toBe(true);
+    expect(tunnelChange([{ type: TUNNEL_RESOURCE_TYPE, action: "create" }], "delete")).toBe(false);
     expect(
-      deletesTunnel([
-        { type: TUNNEL_RESOURCE_TYPE, action: "delete" },
-        { type: "x", action: "create" },
-      ]),
-    ).toBe(true);
-    expect(deletesTunnel([{ type: TUNNEL_RESOURCE_TYPE, action: "create" }])).toBe(false);
-    expect(deletesTunnel([{ type: `${TUNNEL_RESOURCE_TYPE}_config`, action: "delete" }])).toBe(
-      false,
-    );
+      tunnelChange([{ type: `${TUNNEL_RESOURCE_TYPE}_config`, action: "delete" }], "delete"),
+    ).toBe(false);
+    expect(tunnelChange([{ type: "cloudflare_dns_record", action: "update" }])).toBe(false);
     const planJson = {
       resource_changes: [
         {
@@ -118,49 +119,20 @@ describe("tunnel deletion in a plan", () => {
   });
 });
 
-describe("readTunnelConnections", () => {
-  it("asks Cloudflare read-only for the tunnel and keeps only the state", async () => {
-    const f = scriptedFetch([json(tunnelBody("healthy", 2))]);
+describe("waitForTunnelToClose", () => {
+  it("asks Cloudflare's client read-only for the tunnel, with the token", async () => {
+    const f = scriptedFetch([json(tunnelBody("down"))]);
     const d = await deps(f.fetch);
-    expect(await readTunnelConnections(d, TUNNEL, d.token)).toEqual({ state: "active" });
+    expect(await waitForTunnelToClose(d, TUNNEL, { sleep: async () => undefined })).toEqual({
+      closed: true,
+    });
     expect(f.calls[0]?.url).toBe(
       `https://api.cloudflare.com/client/v4/accounts/${TUNNEL.accountId}/cfd_tunnel/${TUNNEL.tunnelId}`,
     );
-    expect(f.calls[0]?.init?.method).toBe("GET");
+    expect(f.calls[0]?.init?.method ?? "GET").toBe("GET");
     expect(f.calls[0]?.init?.headers).toMatchObject({ Authorization: `Bearer ${d.token}` });
   });
 
-  it("tells active, closed, gone and unknown apart", async () => {
-    const cases: [() => Response, string][] = [
-      [json(tunnelBody("degraded")), "active"],
-      [json(tunnelBody("down", 1)), "active"],
-      [json(tunnelBody("down")), "closed"],
-      [json(tunnelBody("inactive")), "closed"],
-      [json({ result: { conns_active_at: null } }), "closed"],
-      [json({ result: { conns_active_at: "2026-10-14T10:00:00Z" } }), "active"],
-      [json({ result: { deleted_at: "2026-10-14T10:00:00Z", status: "down" } }), "gone"],
-      [json({ success: false, errors: [{ code: 1003, message: "not found" }] }, 404), "gone"],
-      [
-        json({ success: false, errors: [{ code: 10000, message: "Authentication error" }] }, 403),
-        "unknown",
-      ],
-      [() => new Response("<html>", { status: 200 }), "unknown"],
-    ];
-    for (const [answer, state] of cases) {
-      const d = await deps(scriptedFetch([answer]).fetch);
-      expect((await readTunnelConnections(d, TUNNEL, d.token)).state).toBe(state);
-    }
-    const d = await deps(async () => {
-      throw new Error("network down");
-    });
-    expect(await readTunnelConnections(d, TUNNEL, d.token)).toEqual({
-      state: "unknown",
-      problem: "the request failed: network down",
-    });
-  });
-});
-
-describe("waitForTunnelToClose", () => {
   it("returns once the connections close after a delay, with progress about every 20 seconds", async () => {
     // Active for 9 reads (45 s), then down.
     const answers = [
@@ -201,13 +173,15 @@ describe("waitForTunnelToClose", () => {
 
   it("says why when no read worked, and needs no fetch without a token", async () => {
     const d = await deps(
-      scriptedFetch([json({ errors: [{ message: "Authentication error" }] }, 403)]).fetch,
+      scriptedFetch([
+        json({ success: false, errors: [{ code: 10000, message: "Authentication error" }] }, 403),
+      ]).fetch,
     );
     expect(
       await waitForTunnelToClose(d, TUNNEL, { sleep: async () => undefined, timeoutMs: 10_000 }),
     ).toEqual({
       closed: false,
-      problem: "HTTP 403: Authentication error",
+      problem: "Cloudflare refused the request to read the tunnel: Authentication error.",
     });
     const none = await createTestPhaseDeps();
     expect(await waitForTunnelToClose(none, TUNNEL)).toEqual({ closed: true });

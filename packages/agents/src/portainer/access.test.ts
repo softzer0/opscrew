@@ -1,16 +1,17 @@
-import { OpsCrewError } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { createTestPhaseDeps } from "../testing";
-import { cloudflareAccessLoginMethods, oneTimePinIdentityProvider } from "./access";
+import { oneTimePinIdentityProvider } from "./access";
 
+/** Cloudflare's Access login methods: a GitHub login and, when given, a one-time PIN. */
 const api = (id: string | undefined) => {
   const asked: string[] = [];
   return {
     asked,
-    oneTimePin: async (accountId: string) => {
+    accessIdentityProviders: async (accountId: string) => {
       asked.push(accountId);
-      return id;
+      return [
+        { id: "gh-1", type: "github" },
+        ...(id === undefined ? [] : [{ id, type: "onetimepin" }]),
+      ];
     },
   };
 };
@@ -44,9 +45,11 @@ describe("oneTimePinIdentityProvider", () => {
   });
 
   it("reuses the account's existing one the first time, or lets OpsCrew create one", async () => {
-    expect(
-      await oneTimePinIdentityProvider({ previous: {}, accountId: "acct", api: api("pin-2") }),
-    ).toBe("pin-2");
+    const lookup = api("pin-2");
+    expect(await oneTimePinIdentityProvider({ previous: {}, accountId: "acct", api: lookup })).toBe(
+      "pin-2",
+    );
+    expect(lookup.asked).toEqual(["acct"]);
     expect(
       await oneTimePinIdentityProvider({
         previous: undefined,
@@ -54,46 +57,5 @@ describe("oneTimePinIdentityProvider", () => {
         api: api(undefined),
       }),
     ).toBeUndefined();
-  });
-});
-
-describe("cloudflareAccessLoginMethods", () => {
-  it("finds the one-time PIN method and never puts the token in errors", async () => {
-    const token = fakeSecret("cloudflare-token");
-    const calls: string[] = [];
-    let status = 200;
-    const deps = await createTestPhaseDeps({
-      env: { CLOUDFLARE_API_TOKEN: token },
-      fetch: async (url) => {
-        calls.push(String(url));
-        return new Response(
-          JSON.stringify(
-            status === 200
-              ? {
-                  success: true,
-                  result: [
-                    { id: "gh-1", type: "github" },
-                    { id: "pin-9", type: "onetimepin" },
-                  ],
-                }
-              : { success: false, errors: [{ message: `bad token ${token}` }] },
-          ),
-          { status },
-        );
-      },
-    });
-    const methods = cloudflareAccessLoginMethods(deps);
-    expect(await methods.oneTimePin("acct 1")).toBe("pin-9");
-    expect(calls[0]).toContain("/accounts/acct%201/access/identity_providers");
-
-    status = 500;
-    const error = await methods.oneTimePin("acct").catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(OpsCrewError);
-    expect((error as OpsCrewError).message).not.toContain(token);
-
-    status = 403;
-    expect(((await methods.oneTimePin("acct").catch((e) => e)) as OpsCrewError).code).toBe(
-      "CREDENTIALS_INVALID",
-    );
   });
 });

@@ -110,8 +110,8 @@ async function switchToPublic(o: { closeAfter?: number; never?: boolean } = {}) 
     cloudflare: ownCloudflare(),
     tcpConnect: async () => true,
     sleep: async () => undefined,
-    own: { host: adapter, zeroTrust: fakeZeroTrust(), homeDir: home },
-    accessLoginMethods: { oneTimePin: async () => undefined },
+    own: { host: adapter, homeDir: home },
+    zeroTrust: fakeZeroTrust(),
   };
   return {
     ...project,

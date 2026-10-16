@@ -27,7 +27,6 @@ import {
   portainerContainerUrl,
   portainerValueKeyFile,
   portainerWebhookFile,
-  requireDeployBranch,
   requirePortainerConnection,
   requirePortainerToken,
   stackPlanFile,
@@ -39,10 +38,10 @@ import {
   recordPortainerConnection,
 } from "../shared";
 import {
-  deletesTunnel,
   requireTunnelClosed,
   TUNNEL_RESOURCE_TYPE,
   tunnelBusyError,
+  tunnelChange,
   tunnelSafeEngine,
 } from "../shared/tunnel-connections";
 import { deletionPlanProblems, describeChanges } from "./checks";
@@ -177,7 +176,7 @@ async function approveCloudflareRemoval(
       );
     }
     cloudflareOnly(summary.changes, "Nothing was deleted.");
-    const tunnel = deletesTunnel(summary.changes);
+    const tunnel = tunnelChange(summary.changes, "delete");
     const count = summary.changes.length;
     const approval = await deps.approvals.request({
       kind: "iac-apply",
@@ -491,7 +490,7 @@ async function deleteDeployBranch(deps: PhaseDeps, github: GitHubTarget): Promis
   if (api?.deleteBranch === undefined || !owner || !repo) return false;
   const where = `${owner}/${repo}`;
   try {
-    const result = await api.deleteBranch(owner, repo, requireDeployBranch(DEPLOY_BRANCH));
+    const result = await api.deleteBranch(owner, repo, DEPLOY_BRANCH);
     await deps.audit.append({
       kind: "git",
       actor: "opscrew",
@@ -726,7 +725,7 @@ export async function destroyPortainer(
       "OpsCrew recorded no data volumes of this app in your Portainer, so `--delete-data` has nothing to delete.",
     );
   }
-  const stacksFirst = deletesTunnel(resources) && stackWork.length > 0;
+  const stacksFirst = tunnelChange(resources, "delete") && stackWork.length > 0;
   // Said where the user confirms and in the approval that covers it (the teardown's, or the
   // Cloudflare removal's when nothing changes in Portainer).
   const branchNote =

@@ -56,8 +56,8 @@ import {
   SshRemoteExec,
   writeRenderedFiles,
 } from "../shared";
-import { connectorFirst, deletesTunnel, type HostChangeResult } from "../shared/tunnel-connections";
-import { cloudflareAccessLoginMethods, oneTimePinIdentityProvider } from "./access";
+import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
+import { oneTimePinIdentityProvider } from "./access";
 import {
   clearPendingPortainer,
   optionsDiffer,
@@ -225,7 +225,7 @@ async function renderChange(
   const own: OwnRenderInput = input.ownRun ? { sshPort: input.ownRun.sshPort } : {};
   if (usesTunnel(plan) && cloudflare?.accountId !== undefined) {
     own.createZeroTrustOrganization = await createZeroTrustOrganization({
-      api: input.services.own?.zeroTrust ?? cloudflareZeroTrust(deps),
+      api: input.services.zeroTrust ?? cloudflareZeroTrust(deps),
       accountId: cloudflare.accountId,
       zone: cloudflare.zoneName,
       previous: previous?.create_zero_trust_organization === true,
@@ -234,7 +234,7 @@ async function renderChange(
       const pin = await oneTimePinIdentityProvider({
         previous,
         accountId: cloudflare.accountId,
-        api: input.services.accessLoginMethods ?? cloudflareAccessLoginMethods(deps),
+        api: input.services.zeroTrust ?? cloudflareZeroTrust(deps),
       });
       if (pin !== undefined) own.oneTimePinIdentityProviderId = pin;
     }
@@ -581,7 +581,7 @@ async function runChange(
     if (planOnly && pending) {
       await planned();
       // A plan that deletes the tunnel is applied after the host plan: both are shown now.
-      const shownFirst = deletesTunnel(result.plan?.changes ?? [])
+      const shownFirst = tunnelChange(result.plan?.changes ?? [], "delete")
         ? await hostChange({}, true)
         : undefined;
       deps.reporter.info(

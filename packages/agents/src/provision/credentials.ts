@@ -384,7 +384,7 @@ async function tunnelAccount(
   zone: { name: string; accountId?: string },
 ): Promise<string> {
   if (zone.accountId !== undefined && zone.accountId !== "") return zone.accountId;
-  const accounts = (await api.listAccounts?.()) ?? [];
+  const accounts = await api.listAccounts();
   const only = accounts.length === 1 ? accounts[0] : undefined;
   if (only !== undefined) return only.id;
   throw new OpsCrewError(

@@ -86,9 +86,9 @@ async function setup(o: OwnSetup = {}) {
     cloudflare: ownCloudflare(),
     tcpConnect: async () => true,
     sleep: async () => undefined,
-    own: { host, zeroTrust, homeDir: home },
+    own: { host, homeDir: home },
     // The account has no one-time PIN login method yet (a Portainer subdomain creates one).
-    accessLoginMethods: { oneTimePin: async () => undefined },
+    zeroTrust,
   };
   return { ...project, deps, engine, host, github, handler, services, runner, home, zeroTrust };
 }

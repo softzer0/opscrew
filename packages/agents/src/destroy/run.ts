@@ -11,9 +11,9 @@ import { checkProvider } from "../provision";
 import { hasDeployment, recordServerAddress, serverAddress } from "../shared";
 import {
   deletedTunnel,
-  deletesTunnel,
   requireTunnelClosed,
   tunnelBusyError,
+  tunnelChange,
   tunnelSafeEngine,
   waitForTunnelToClose,
 } from "../shared/tunnel-connections";
@@ -233,7 +233,7 @@ async function destroyInfrastructure(
         ...describeChanges(summary.changes),
         ...(warning ? [warning] : []),
         snapshotLine,
-        ...(deletesTunnel(summary.changes) && !serverDeleted
+        ...(tunnelChange(summary.changes, "delete") && !serverDeleted
           ? [
               "OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel (Cloudflare deletes a tunnel only after its connector has stopped).",
             ]
@@ -261,7 +261,7 @@ async function destroyInfrastructure(
     // connections may outlast it and Cloudflare refuses the tunnel (1022); then this run waits
     // until Cloudflare reports no active connections and deletes the tunnel with a plan of its own
     // (see deleteTunnelLeft). A rerun that deletes only the tunnel waits first, too.
-    const tunnel = deletesTunnel(summary.changes);
+    const tunnel = tunnelChange(summary.changes, "delete");
     const tunnelLeft = `The ${texts.noun} is deleted; the Cloudflare Tunnel is still there.`;
     if (tunnel && !serverDeleted) {
       await requireTunnelClosed(deps, summary, {

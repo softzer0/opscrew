@@ -13,7 +13,7 @@ import {
 } from "@opscrew/plan-schema";
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import { cloudflareAccessLoginMethods, oneTimePinIdentityProvider } from "../portainer/access";
+import { oneTimePinIdentityProvider } from "../portainer/access";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
 import {
@@ -37,7 +37,7 @@ import {
   waitForPort,
   writeRenderedFiles,
 } from "../shared";
-import { connectorFirst, deletesTunnel, type HostChangeResult } from "../shared/tunnel-connections";
+import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import { type CloudflareSetup, checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { requireNoMoveInProgress } from "./guard";
 import {
@@ -66,7 +66,7 @@ import {
   deploySecretsStoredFor,
   setDeploySecrets,
 } from "./secrets";
-import type { ProvisionOptions, ProvisionResult, ProvisionServices, SavedPlan } from "./types";
+import type { ProvisionOptions, ProvisionResult, ProvisionServices } from "./types";
 import { cloudflareZeroTrust, createZeroTrustOrganization } from "./zero-trust";
 
 const SSH_WAIT_MS = 5 * 60_000;
@@ -234,7 +234,7 @@ async function savedInfrastructureHashes(
  * existing one). Without them a re-run would plan to delete the organization or to create a
  * second PIN login method. `undefined` when the plan has no tunnel.
  *
- * The lookup of login methods is `services.accessLoginMethods` (default: Cloudflare's API).
+ * The lookups are `services.zeroTrust` (default: Cloudflare's client).
  */
 async function accessRenderInput(
   deps: PhaseDeps,
@@ -244,9 +244,10 @@ async function accessRenderInput(
 ): Promise<OwnRenderInput | undefined> {
   if (!usesTunnel(plan) || cloudflare?.accountId === undefined) return undefined;
   const previous = await committedTfvars(deps.paths.root, plan);
+  const zeroTrust = services.zeroTrust ?? cloudflareZeroTrust(deps);
   const input: OwnRenderInput = {
     createZeroTrustOrganization: await createZeroTrustOrganization({
-      api: services.own?.zeroTrust ?? cloudflareZeroTrust(deps),
+      api: zeroTrust,
       accountId: cloudflare.accountId,
       zone: cloudflare.zoneName,
       previous: previous?.create_zero_trust_organization === true,
@@ -256,18 +257,11 @@ async function accessRenderInput(
     const pin = await oneTimePinIdentityProvider({
       previous,
       accountId: cloudflare.accountId,
-      api: services.accessLoginMethods ?? cloudflareAccessLoginMethods(deps),
+      api: zeroTrust,
     });
     if (pin !== undefined) input.oneTimePinIdentityProviderId = pin;
   }
   return input;
-}
-
-/** True when the infrastructure plan creates, replaces or deletes the Cloudflare Tunnel itself. */
-function changesTunnel(saved: SavedPlan | undefined): boolean {
-  return (saved?.changes ?? []).some(
-    (change) => change.type === "cloudflare_zero_trust_tunnel_cloudflared",
-  );
 }
 
 /** An approval as `opscrew/plan.yaml` keeps it (informational; the approval store is authoritative). */
@@ -561,7 +555,7 @@ async function provisionFlow(
   if (options.planOnly && approveHash === undefined) {
     let hostPlanHash: string | undefined;
     const pending = (applied.plan?.changes.length ?? 0) > 0;
-    if (!ownRun && pending && deletesTunnel(applied.plan?.changes ?? [])) {
+    if (!ownRun && pending && tunnelChange(applied.plan?.changes ?? [], "delete")) {
       // The connector's removal goes before this plan: show it now, so both can be approved.
       hostPlanHash = (await cloudConnector(true)).hash;
       deps.reporter.info(
@@ -576,7 +570,8 @@ async function provisionFlow(
           : await engine.output(dir, { env: engineEnv }).catch(() => ({}));
       const tunnelKnown =
         !usesTunnel(plan) ||
-        (stringOutput(outputs, "tunnel_id") !== undefined && !changesTunnel(applied.plan));
+        (stringOutput(outputs, "tunnel_id") !== undefined &&
+          !tunnelChange(applied.plan?.changes ?? []));
       if (tunnelKnown) {
         const host = await applyOwnHostPlan(deps, ownRun, {
           plan,

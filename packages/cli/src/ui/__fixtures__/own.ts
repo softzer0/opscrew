@@ -335,7 +335,6 @@ export function ownServices(host: FakeHost, home: string): OwnServerServices {
     remote: () => fakeAdminShell(),
     verifyLogin: async () => true,
     homeDir: home,
-    zeroTrust: { organization: async () => undefined },
   };
 }
 
@@ -362,7 +361,10 @@ export function ownProvisionServices(
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own,
-    accessLoginMethods: { oneTimePin: async () => undefined },
+    zeroTrust: {
+      accessOrganization: async () => undefined,
+      accessIdentityProviders: async () => [],
+    },
   };
 }
 

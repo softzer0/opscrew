@@ -111,8 +111,7 @@ async function cloudOnSubdomain(o: { closeAfter?: number; never?: boolean } = {}
     cloudflare: ownCloudflare(),
     engine: async () => engine,
     sleep: async () => undefined,
-    own: { zeroTrust: fakeZeroTrust("someone-else.cloudflareaccess.com") },
-    accessLoginMethods: { oneTimePin: async () => "pin-existing" },
+    zeroTrust: fakeZeroTrust("someone-else.cloudflareaccess.com", "pin-existing"),
   };
   await portainerEnable(deps, { ...SUBDOMAIN, services });
   expect(connector).toBe(true);
@@ -406,8 +405,8 @@ async function ownOnSubdomain(o: { never?: boolean } = {}) {
     cloudflare: ownCloudflare(),
     tcpConnect: async () => true,
     sleep: async () => undefined,
-    own: { host: adapter, zeroTrust: fakeZeroTrust(), homeDir: home },
-    accessLoginMethods: { oneTimePin: async () => undefined },
+    own: { host: adapter, homeDir: home },
+    zeroTrust: fakeZeroTrust(),
   };
   await runProvision(deps, { services, hostKey: ED25519_FINGERPRINT });
   engine.changes = tunnelCreate;

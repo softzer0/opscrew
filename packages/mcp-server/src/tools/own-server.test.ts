@@ -259,6 +259,15 @@ class FakeGitHub {
   async createPullRequest() {
     return { number: 7, url: "https://github.com/acme/shop/pull/7" };
   }
+  async createOrphanBranch() {
+    return { commit: "c".repeat(40) };
+  }
+  async replaceOrphanBranch() {
+    return { commit: "d".repeat(40), previous: "e".repeat(40) };
+  }
+  async branchHoldsOnly() {
+    return false;
+  }
 }
 
 /** Real git; `ssh-keyscan` answers with the host key; `ssh` succeeds. */
@@ -379,6 +388,7 @@ const fakeCloudflare: NonNullable<ProvisionServices["cloudflare"]> = {
   listDnsRecords: async () => [],
   inspectEntrypointRuleset: async () => ({ exists: false, ownedByOpsCrew: false, ruleCount: 0 }),
   getIpRanges: async () => ({ ipv4: ["173.245.48.0/20"], ipv6: ["2400:cb00::/32"] }),
+  listAccounts: async () => [],
 };
 
 async function connect(options: Options = {}) {

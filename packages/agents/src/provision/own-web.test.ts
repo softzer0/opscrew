@@ -160,8 +160,8 @@ async function setup(o: Setup = {}) {
     cloudflare: o.cloudflare === undefined ? ownCloudflare() : o.cloudflare,
     tcpConnect: async () => true,
     sleep: async () => undefined,
-    own: { host, zeroTrust: fakeZeroTrust(), homeDir: home },
-    accessLoginMethods: { oneTimePin: async () => undefined },
+    own: { host, homeDir: home },
+    zeroTrust: fakeZeroTrust(),
   };
   return { deps, engine, host, handler, services };
 }

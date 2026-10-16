@@ -1,9 +1,10 @@
-import { CLOUDFLARE_API } from "@opscrew/connector-cloudflare";
-import type { ApprovalRecord, IacEngine, ResourceChange } from "@opscrew/contracts";
+import { CloudflareClient } from "@opscrew/connector-cloudflare";
+import type { ApprovalRecord, IacEngine, ResourceAction, ResourceChange } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { PlanRefusedError } from "./approvals";
+import { pollUntil } from "./wait";
 
 /**
  * Cloudflare refuses to delete a tunnel while its connector (`cloudflared`) is still connected
@@ -20,17 +21,22 @@ export const TUNNEL_RESOURCE_TYPE = "cloudflare_zero_trust_tunnel_cloudflared";
 export const TUNNEL_CLOSE_TIMEOUT_MS = 180_000;
 const POLL_INTERVAL_MS = 5_000;
 const PROGRESS_EVERY_MS = 20_000;
-const REQUEST_TIMEOUT_MS = 15_000;
 
 type Sleep = (ms: number) => Promise<void>;
 const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** True when the plan deletes the Cloudflare Tunnel itself (not only its routes or records). */
-export function deletesTunnel(
+/**
+ * True when the plan changes a Cloudflare Tunnel itself (not only its routes or records) with one
+ * of `actions`, or with any action when none are given.
+ */
+export function tunnelChange(
   changes: readonly Pick<ResourceChange, "type" | "action">[],
+  ...actions: ResourceAction[]
 ): boolean {
   return changes.some(
-    (change) => change.type === TUNNEL_RESOURCE_TYPE && change.action === "delete",
+    (change) =>
+      change.type === TUNNEL_RESOURCE_TYPE &&
+      (actions.length === 0 || actions.includes(change.action)),
   );
 }
 
@@ -69,92 +75,10 @@ export function deletedTunnel(planJson: unknown): TunnelRef | undefined {
   return undefined;
 }
 
-const TunnelResponse = z.looseObject({
-  result: z
-    .looseObject({
-      status: z.string().nullish(),
-      connections: z.array(z.unknown()).nullish(),
-      conns_active_at: z.string().nullish(),
-      conns_inactive_at: z.string().nullish(),
-      deleted_at: z.string().nullish(),
-    })
-    .nullish(),
-});
-
-const ErrorResponse = z.looseObject({
-  errors: z.array(z.looseObject({ code: z.number().optional(), message: z.string() })).optional(),
-});
-
-/** What Cloudflare reports about a tunnel's connections right now. */
-export type TunnelConnections =
-  | { state: "active" | "closed" | "gone" }
-  | { state: "unknown"; problem: string };
-
-/**
- * Reads the tunnel's connections with one read-only call
- * (`GET /accounts/{account}/cfd_tunnel/{id}`). Active while Cloudflare lists a connection or the
- * status is `healthy` or `degraded`; closed once the status is `down` or `inactive` (or, without a
- * status, once the tunnel has no connection since it was last active); gone when the tunnel is
- * deleted already. Only the state is kept: the response also holds the server's address.
- */
-export async function readTunnelConnections(
-  deps: Pick<PhaseDeps, "fetch" | "redactor" | "version">,
-  tunnel: TunnelRef,
-  token: string,
-  baseUrl = CLOUDFLARE_API,
-): Promise<TunnelConnections> {
-  const url = `${baseUrl.replace(/\/$/, "")}/accounts/${encodeURIComponent(tunnel.accountId)}/cfd_tunnel/${encodeURIComponent(tunnel.tunnelId)}`;
-  let response: Response;
-  try {
-    response = await deps.fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/json",
-        "User-Agent": `opscrew/${deps.version}`,
-      },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return { state: "unknown", problem: deps.redactor.redact(`the request failed: ${reason}`) };
-  }
-  if (response.status === 404) return { state: "gone" };
-  const body: unknown = await response.json().catch(() => undefined);
-  if (!response.ok) {
-    const errors = ErrorResponse.safeParse(body);
-    const message = errors.success ? errors.data.errors?.[0]?.message : undefined;
-    return {
-      state: "unknown",
-      problem: deps.redactor.redact(
-        `HTTP ${response.status}${message !== undefined ? `: ${message.slice(0, 200)}` : ""}`,
-      ),
-    };
-  }
-  const parsed = TunnelResponse.safeParse(body);
-  if (!parsed.success || parsed.data.result == null) {
-    return { state: "unknown", problem: "Cloudflare's answer did not describe the tunnel" };
-  }
-  const result = parsed.data.result;
-  if (result.deleted_at != null) return { state: "gone" };
-  const status = result.status ?? undefined;
-  if (status === "healthy" || status === "degraded" || (result.connections ?? []).length > 0) {
-    return { state: "active" };
-  }
-  if (status === "down" || status === "inactive") return { state: "closed" };
-  if (result.conns_active_at == null || result.conns_inactive_at != null) {
-    return { state: "closed" };
-  }
-  return { state: "active" };
-}
-
 /** Options of {@link waitForTunnelToClose}; the defaults are the real ones. */
 export interface TunnelWaitOptions {
   sleep?: Sleep;
   timeoutMs?: number;
-  intervalMs?: number;
-  progressEveryMs?: number;
-  baseUrl?: string;
 }
 
 /** Outcome of {@link waitForTunnelToClose}. */
@@ -165,10 +89,11 @@ export interface TunnelWaitResult {
 }
 
 /**
- * Polls the tunnel's connections (read-only, with `CLOUDFLARE_API_TOKEN`, which is registered
- * with the redactor) until Cloudflare reports none, for at most {@link TUNNEL_CLOSE_TIMEOUT_MS},
- * with a progress line about every 20 seconds. Without a token there is nothing to ask, so it
- * returns at once (the engine needs the token as well and says so).
+ * Polls the tunnel's connections (read-only, through Cloudflare's client with
+ * `CLOUDFLARE_API_TOKEN`, which is registered with the redactor) until Cloudflare reports none,
+ * for at most {@link TUNNEL_CLOSE_TIMEOUT_MS}, with a progress line about every 20 seconds.
+ * Without a token there is nothing to ask, so it returns at once (the engine needs the token as
+ * well and says so).
  */
 export async function waitForTunnelToClose(
   deps: Pick<PhaseDeps, "fetch" | "redactor" | "version" | "env" | "clock" | "reporter">,
@@ -180,35 +105,49 @@ export async function waitForTunnelToClose(
   deps.redactor.addLiteral(token, "cloudflare-token");
   const sleep = options.sleep ?? realSleep;
   const timeoutMs = options.timeoutMs ?? TUNNEL_CLOSE_TIMEOUT_MS;
-  const intervalMs = options.intervalMs ?? POLL_INTERVAL_MS;
-  const progressEveryMs = options.progressEveryMs ?? PROGRESS_EVERY_MS;
   const start = deps.clock.now().getTime();
   let slept = 0;
   // Slept time counts even when the clock stands still (a fixed clock in tests).
   const elapsed = () => Math.max(slept, deps.clock.now().getTime() - start);
+  const counted: Sleep = async (ms) => {
+    await sleep(ms);
+    slept += ms;
+  };
+  const client = new CloudflareClient({
+    token,
+    fetch: deps.fetch,
+    version: deps.version,
+    sleep: counted,
+  });
+  let problem: string | undefined;
   let lastProgress = 0;
   deps.reporter.step(
     `Waiting until Cloudflare reports no active connections for the app's Cloudflare Tunnel (up to ${minutes(timeoutMs)})`,
   );
-  for (;;) {
-    const read = await readTunnelConnections(deps, tunnel, token, options.baseUrl);
-    if (read.state === "closed" || read.state === "gone") {
-      deps.reporter.success("Cloudflare reports no active connections for the tunnel.");
-      return { closed: true };
-    }
-    const problem = read.state === "unknown" ? read.problem : undefined;
-    if (elapsed() >= timeoutMs)
-      return problem !== undefined ? { closed: false, problem } : { closed: false };
-    if (elapsed() - lastProgress >= progressEveryMs) {
-      lastProgress = elapsed();
-      deps.reporter.info(
-        `Still waiting for Cloudflare to close the tunnel's connections (${Math.round(elapsed() / 1000)} s so far, up to ${minutes(timeoutMs)}).`,
-      );
-    }
-    const wait = Math.max(1, Math.min(intervalMs, timeoutMs - elapsed()));
-    await sleep(wait);
-    slept += wait;
+  const closed = await pollUntil(
+    async () => {
+      try {
+        const state = await client.tunnelConnections(tunnel.accountId, tunnel.tunnelId);
+        problem = undefined;
+        if (state !== "active") return true;
+      } catch (error) {
+        problem = deps.redactor.redact(error instanceof Error ? error.message : String(error));
+      }
+      if (elapsed() < timeoutMs && elapsed() - lastProgress >= PROGRESS_EVERY_MS) {
+        lastProgress = elapsed();
+        deps.reporter.info(
+          `Still waiting for Cloudflare to close the tunnel's connections (${Math.round(elapsed() / 1000)} s so far, up to ${minutes(timeoutMs)}).`,
+        );
+      }
+      return undefined;
+    },
+    { timeoutMs, intervalMs: POLL_INTERVAL_MS, sleep: counted, now: () => start + elapsed() },
+  );
+  if (closed) {
+    deps.reporter.success("Cloudflare reports no active connections for the tunnel.");
+    return { closed: true };
   }
+  return problem !== undefined ? { closed: false, problem } : { closed: false };
 }
 
 function minutes(ms: number): string {
@@ -330,13 +269,22 @@ export async function requireTunnelClosed(
   });
 }
 
-/** True when every error block of an engine log is Cloudflare's 1022 (nothing else failed). */
-export function onlyTunnelBusy(log: string): boolean {
+/**
+ * The error blocks of an engine log, each from its `Error:` line (optionally inside the `│` box)
+ * up to the next one; none when the log has no `Error:` line.
+ */
+export function engineErrorBlocks(log: string): string[] {
   const blocks: string[] = [];
   for (const line of log.split(/\r?\n/)) {
     if (/^[\s│╷]*Error:/.test(line)) blocks.push(line);
     else if (blocks.length > 0) blocks[blocks.length - 1] += `\n${line}`;
   }
+  return blocks;
+}
+
+/** True when every error block of an engine log is Cloudflare's 1022 (nothing else failed). */
+export function onlyTunnelBusy(log: string): boolean {
+  const blocks = engineErrorBlocks(log);
   return blocks.length > 0 && blocks.every((block) => isTunnelBusyText(block));
 }
 
@@ -424,9 +372,9 @@ export function connectorFirst(
   };
   const hooks: TunnelPlanHooks = {
     approvalNotes: (plan) =>
-      deletesTunnel(plan.changes) && !notes.includes(note) ? [...notes, note] : notes,
+      tunnelChange(plan.changes, "delete") && !notes.includes(note) ? [...notes, note] : notes,
     beforeApply: async (plan) => {
-      if (!deletesTunnel(plan.changes)) return;
+      if (!tunnelChange(plan.changes, "delete")) return;
       deps.reporter.info(SERVER_GOES_FIRST);
       try {
         host = await input.hostChange();

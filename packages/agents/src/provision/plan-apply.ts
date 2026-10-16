@@ -21,6 +21,7 @@ import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
+import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { maskSensitivePlanJson } from "./plan-json";
 import type { SavedPlan } from "./types";
 import { tunnelTokenPermissions } from "./zero-trust";
@@ -88,20 +89,10 @@ const CLOUDFLARE_API = /api\.cloudflare\.com|cloudflare_/i;
 /** A provider outage (HTTP 502/503), not a size that is unavailable in the location. */
 const SERVICE_DOWN = /service (?:temporarily )?unavailable|\b50[23]\b/i;
 
-/** A line that starts an engine error block (`Error: …`, optionally inside the `│` box). */
-const ERROR_LINE = /^[\s│╷]*Error:/;
-
-/**
- * The error blocks of an engine log, each from its `Error:` line up to the next one. The whole log
- * is one block when it has no `Error:` line.
- */
+/** The error blocks of an engine log; the whole log is one block when it has no `Error:` line. */
 function errorBlocks(log: string): string[] {
-  const blocks: string[][] = [];
-  for (const line of log.split(/\r?\n/)) {
-    if (ERROR_LINE.test(line)) blocks.push([line]);
-    else blocks.at(-1)?.push(line);
-  }
-  return blocks.length > 0 ? blocks.map((lines) => lines.join("\n")) : [log];
+  const blocks = engineErrorBlocks(log);
+  return blocks.length > 0 ? blocks : [log];
 }
 
 /**

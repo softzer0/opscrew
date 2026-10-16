@@ -238,6 +238,15 @@ class FakeGitHub {
     this.pulls.push(input);
     return { number: 7, url: PR_URL };
   }
+  async createOrphanBranch() {
+    return { commit: "c".repeat(40) };
+  }
+  async replaceOrphanBranch() {
+    return { commit: "d".repeat(40), previous: "e".repeat(40) };
+  }
+  async branchHoldsOnly() {
+    return false;
+  }
 }
 
 const readyRemote = (host: string): RemoteExec => ({

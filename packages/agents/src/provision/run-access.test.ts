@@ -56,7 +56,7 @@ async function setup(o: { organization?: string; pin?: string }) {
     runner: projectRunner(),
     approvalHandler: handler,
   });
-  const zeroTrust = { authDomain: o.organization };
+  const zeroTrust = { authDomain: o.organization, pin: o.pin };
   const lookups: string[] = [];
   const services: PortainerServices = {
     engine: async () => new FakeEngine(),
@@ -66,16 +66,12 @@ async function setup(o: { organization?: string; pin?: string }) {
     tcpConnect: async () => true,
     remote: readyRemote,
     sleep: async () => undefined,
-    own: {
-      zeroTrust: {
-        organization: async (accountId) =>
-          fakeZeroTrust(zeroTrust.authDomain).organization(accountId),
-      },
-    },
-    accessLoginMethods: {
-      oneTimePin: async (accountId) => {
+    zeroTrust: {
+      accessOrganization: async (accountId) =>
+        fakeZeroTrust(zeroTrust.authDomain).accessOrganization(accountId),
+      accessIdentityProviders: async (accountId) => {
         lookups.push(accountId);
-        return o.pin;
+        return fakeZeroTrust(undefined, zeroTrust.pin).accessIdentityProviders(accountId);
       },
     },
   };
@@ -120,7 +116,7 @@ describe.skipIf(!findExecutable("git"))(
       expect(first).not.toHaveProperty("one_time_pin_identity_provider_id");
 
       // Cloudflare now lists OpsCrew's own PIN method; naming it would make the plan destroy it.
-      s.services.accessLoginMethods = { oneTimePin: async () => "pin-created-by-opscrew" };
+      s.zeroTrust.pin = "pin-created-by-opscrew";
       s.github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
       await runProvision(s.deps, { services: s.services });
       expect(await s.tfvars()).toEqual(first);

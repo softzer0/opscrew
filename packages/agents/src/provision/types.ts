@@ -3,6 +3,7 @@ import type { GitHubClient } from "@opscrew/connector-github";
 import type {
   ApplyStackOptions,
   CertificateDetails,
+  DEPLOY_BRANCH,
   PortainerClient,
   PortainerClientDeps,
   PortainerEndpoint,
@@ -18,7 +19,6 @@ import type {
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
-import type { AccessLoginMethodsApi } from "../portainer/access";
 import type { EnvAnswer, EnvQuestion, OwnServerConnection } from "../shared";
 import type { ZeroTrustApi } from "./zero-trust";
 
@@ -28,14 +28,22 @@ import type { ZeroTrustApi } from "./zero-trust";
  */
 export type CloudflareApi = Pick<
   CloudflareClient,
-  "verifyToken" | "findZone" | "listDnsRecords" | "inspectEntrypointRuleset" | "getIpRanges"
-> &
-  Partial<Pick<CloudflareClient, "listAccounts">>;
+  | "verifyToken"
+  | "findZone"
+  | "listDnsRecords"
+  | "inspectEntrypointRuleset"
+  | "getIpRanges"
+  | "listAccounts"
+>;
+
+/** A one-file branch OpsCrew writes: only ever `opscrew-deploy` (the type allows no other name). */
+type DeployBranchInput = Parameters<GitHubClient["createOrphanBranch"]>[0] & {
+  branch: typeof DEPLOY_BRANCH;
+};
 
 /**
- * The GitHub calls provisioning needs (a `GitHubClient` or a test fake). `createOrphanBranch`,
- * `replaceOrphanBranch` and `branchHoldsOnly` are needed only for the user's Portainer (its
- * `opscrew-deploy` branch; without `branchHoldsOnly` an existing branch is always replaced).
+ * The GitHub calls provisioning needs (a `GitHubClient` or a test fake). The branch calls are
+ * used only for the user's Portainer, and only on its `opscrew-deploy` branch.
  */
 export type GitHubApi = Pick<
   GitHubClient,
@@ -44,8 +52,16 @@ export type GitHubApi = Pick<
   | "setActionsSecret"
   | "findOpenPullRequest"
   | "createPullRequest"
-> &
-  Partial<Pick<GitHubClient, "createOrphanBranch" | "replaceOrphanBranch" | "branchHoldsOnly">>;
+> & {
+  createOrphanBranch(input: DeployBranchInput): Promise<{ commit: string }>;
+  replaceOrphanBranch(input: DeployBranchInput): Promise<{ commit: string; previous: string }>;
+  branchHoldsOnly(
+    owner: string,
+    repo: string,
+    branch: typeof DEPLOY_BRANCH,
+    file: { path: string; content: string },
+  ): Promise<boolean>;
+};
 
 /**
  * Collaborators that talk to the outside world. Each defaults to the real implementation built
@@ -68,13 +84,13 @@ export interface ProvisionServices {
   now?: () => number;
   /** Interactive question for each production environment value (CLI prompt). */
   askEnv?: (question: EnvQuestion) => Promise<EnvAnswer>;
-  /** A server the user owns: its shell, the host adapter and the Zero Trust lookup (fakes in tests). */
+  /** A server the user owns: its shell and the host adapter (fakes in tests). */
   own?: OwnServerServices;
   /**
-   * The account's Cloudflare Access login methods, read for a Portainer subdomain (default:
-   * Cloudflare's API with `CLOUDFLARE_API_TOKEN`).
+   * The Cloudflare account's Zero Trust organization and Access login methods, read before Access
+   * is rendered (default: Cloudflare's client with `CLOUDFLARE_API_TOKEN`).
    */
-  accessLoginMethods?: AccessLoginMethodsApi;
+  zeroTrust?: ZeroTrustApi;
   /** The user's Portainer (`target.provider: portainer`): its client and local randomness (fakes in tests). */
   portainer?: PortainerServices;
 }
@@ -99,8 +115,6 @@ export interface PortainerServices {
   randomUUID?: () => string;
   /** The stack apply's bounded wait (clock and sleep). */
   wait?: ApplyStackOptions["wait"];
-  /** The Cloudflare account's Zero Trust organization (default: Cloudflare's API). */
-  zeroTrust?: ZeroTrustApi;
 }
 
 /** The host adapter calls provision makes on a server the user owns. */
@@ -111,8 +125,7 @@ export interface HostAdapterApi {
 
 /**
  * Collaborators for a server the user owns (`target.provider: own`). Each defaults to the real
- * implementation: an SSH shell with the recorded admin login, `@opscrew/connector-ssh-host`, and
- * Cloudflare's API with `CLOUDFLARE_API_TOKEN`.
+ * implementation: an SSH shell with the recorded admin login and `@opscrew/connector-ssh-host`.
  */
 export interface OwnServerServices {
   /** The admin login's shell (default: `SshRemoteExec` with the login from `.opscrew/server.json`). */
@@ -124,8 +137,6 @@ export interface OwnServerServices {
    * connections as the deploy user and the admin login, see `ownServerLoginCheck`).
    */
   verifyLogin?: () => Promise<boolean>;
-  /** The Cloudflare account's Zero Trust organization (default: Cloudflare's API). */
-  zeroTrust?: ZeroTrustApi;
   /** Home directory for `~/` key paths (default: `HOME`, `USERPROFILE`, then the OS's). */
   homeDir?: string;
 }

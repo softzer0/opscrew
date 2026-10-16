@@ -61,7 +61,6 @@ import {
   REGISTRY_TOKEN_VAR,
   REPOSITORY_TOKEN_VAR,
   ROUTE_CHANGE_NOTE,
-  requireDeployBranch,
   stackPlanFile,
   switchesWebRoute,
 } from "./portainer";
@@ -184,29 +183,17 @@ class PortainerGitHub extends FakeGitHub {
   constructor(private readonly createRef: (branch: string) => Promise<void>) {
     super();
   }
-  /** What OpsCrew wrote as a branch's only file (the branch holds nothing else then). */
-  readonly holds = new Map<string, { path: string; content: string }>();
-  async createOrphanBranch(input: { branch: string; path: string; content: string }) {
+  override async createOrphanBranch(input: { branch: string; path: string; content: string }) {
     this.branches.push({ branch: input.branch, path: input.path, content: input.content });
-    this.holds.set(input.branch, { path: input.path, content: input.content });
+    const created = await super.createOrphanBranch(input);
     await this.createRef(input.branch);
-    return { commit: "c".repeat(40) };
+    return created;
   }
   /** Branches pointed at a new placeholder commit (`replaceOrphanBranch`). */
   readonly replaced: { branch: string; path: string; content: string }[] = [];
-  async replaceOrphanBranch(input: { branch: string; path: string; content: string }) {
+  override async replaceOrphanBranch(input: { branch: string; path: string; content: string }) {
     this.replaced.push({ branch: input.branch, path: input.path, content: input.content });
-    this.holds.set(input.branch, { path: input.path, content: input.content });
-    return { commit: "d".repeat(40), previous: "e".repeat(40) };
-  }
-  async branchHoldsOnly(
-    _owner: string,
-    _repo: string,
-    branch: string,
-    file: { path: string; content: string },
-  ) {
-    const only = this.holds.get(branch);
-    return only?.path === file.path && only.content === file.content;
+    return super.replaceOrphanBranch(input);
   }
 }
 
@@ -285,9 +272,9 @@ async function setup(options: SetupOptions = {}) {
       },
       inspectCertificate: async () => CERT,
       randomUUID: () => UUIDS[uuid++ % UUIDS.length] as string,
-      zeroTrust: fakeZeroTrust(),
       wait: { now: () => 0, sleep: async () => undefined },
     },
+    zeroTrust: fakeZeroTrust(),
   };
   const run = (extra: ProvisionOptions = {}) => runProvision(deps, { services, ...extra });
   return {
@@ -1650,22 +1637,5 @@ describe("switchesWebRoute", () => {
       created: { stacks: [], volumes: [] },
     };
     expect(switchesWebRoute(facts([]), target({ mode: "caddy" }), app, none)).toBe(false);
-  });
-});
-
-describe("requireDeployBranch", () => {
-  it("lets the flows change only opscrew-deploy (refs/heads/opscrew-deploy)", () => {
-    expect(requireDeployBranch("opscrew-deploy")).toBe("opscrew-deploy");
-    for (const other of [
-      "main",
-      "refs/heads/opscrew-deploy",
-      "opscrew-deploy-2",
-      "opscrew/deploy-setup",
-      "",
-    ]) {
-      expect(() => requireDeployBranch(other), other).toThrow(
-        expect.objectContaining({ code: "INTERNAL" }),
-      );
-    }
   });
 });

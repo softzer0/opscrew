@@ -26,13 +26,7 @@ import {
   stackPlanHash,
   valueFingerprints,
 } from "@opscrew/connector-portainer";
-import type {
-  ApprovalRecord,
-  FetchLike,
-  IacEngine,
-  PhaseName,
-  ResourceChange,
-} from "@opscrew/contracts";
+import type { ApprovalRecord, FetchLike, IacEngine, PhaseName } from "@opscrew/contracts";
 import {
   isUserFacingError,
   OpsCrewError,
@@ -86,7 +80,7 @@ import {
   STATE_FILE,
   writeRenderedFiles,
 } from "../shared";
-import { connectorFirst, deletesTunnel } from "../shared/tunnel-connections";
+import { connectorFirst, tunnelChange } from "../shared/tunnel-connections";
 import {
   type CloudflareSetup,
   cloudflareTokenMissing,
@@ -410,15 +404,6 @@ function stringOutput(outputs: Record<string, unknown>, name: string): string | 
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
-/** True when the infrastructure plan creates or replaces a Cloudflare Tunnel (a new token). */
-function makesTunnel(changes: readonly Pick<ResourceChange, "type" | "action">[]): boolean {
-  return changes.some(
-    (change) =>
-      change.type === "cloudflare_zero_trust_tunnel_cloudflared" &&
-      (change.action === "create" || change.action === "replace"),
-  );
-}
-
 /** An approval as `opscrew/plan.yaml` keeps it (informational; the approval store is authoritative). */
 function planApproval(record: ApprovalRecord, kind: "iac-apply" | "stack-apply") {
   return {
@@ -639,7 +624,7 @@ export async function provisionPortainer(
   const access = cloudflareRoot.webhook
     ? {
         createZeroTrustOrganization: await createZeroTrustOrganization({
-          api: portainerServices.zeroTrust ?? cloudflareZeroTrust(deps),
+          api: services.zeroTrust ?? cloudflareZeroTrust(deps),
           accountId: (cloudflare as CloudflareSetup).accountId as string,
           zone: (cloudflare as CloudflareSetup).zoneName,
           previous: (await committedTfvars(root, plan))?.create_zero_trust_organization === true,
@@ -982,14 +967,14 @@ export async function provisionPortainer(
         );
       }
     }
-    if (tokensKnown && !makesTunnel(changes)) {
+    if (tokensKnown && !tunnelChange(changes, "create", "replace")) {
       stackHash = (await stackStep(outputs, true)).hash;
     } else {
       deps.reporter.info(
         "The stack plan for your Portainer follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token. Applying it shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and this hash, then again with `--approve` and the stack plan's hash).",
       );
     }
-    if (changes.length > 0 && deletesTunnel(changes) && stackHash !== undefined) {
+    if (changes.length > 0 && tunnelChange(changes, "delete") && stackHash !== undefined) {
       deps.reporter.info(
         `Approve both plans to apply them (\`${command} --approve ${iac.planHash} --approve ${stackHash}\`, typing ${plan.app.name} to confirm): the change in your Portainer goes first, because Cloudflare deletes a tunnel only after its connector has stopped.`,
       );
@@ -1337,24 +1322,9 @@ async function deployBranchExists(git: GitClient): Promise<boolean> {
 }
 
 /**
- * The only branch the Portainer flows create, replace or delete: `opscrew-deploy`
- * (`refs/heads/opscrew-deploy`). Any other name is refused before GitHub is called.
- */
-export function requireDeployBranch(branch: string): typeof DEPLOY_BRANCH {
-  if (branch !== DEPLOY_BRANCH) {
-    throw new OpsCrewError(
-      "INTERNAL",
-      `OpsCrew changes only the branch ${DEPLOY_BRANCH} of the app's repository here, never ${JSON.stringify(branch)}.`,
-      { hint: "This is a bug in OpsCrew: please report it with the command you ran." },
-    );
-  }
-  return DEPLOY_BRANCH;
-}
-
-/**
  * Where the deploy branch stands: `absent`, holding exactly the placeholder (`placeholder`: one
- * commit without parents and only its file, read through the GitHub client; without that read an
- * existing branch counts as `other`), or holding anything else (`other`).
+ * commit without parents and only its file, read through the GitHub client), or holding anything
+ * else (`other`).
  */
 async function deployBranchState(
   git: GitClient,
@@ -1362,15 +1332,11 @@ async function deployBranchState(
   plan: DeployPlan,
 ): Promise<"absent" | "placeholder" | "other"> {
   if (!(await deployBranchExists(git))) return "absent";
-  const { api } = github;
-  if (api.branchHoldsOnly === undefined) return "other";
   const placeholder = renderPlaceholderStack(plan);
-  const only = await api.branchHoldsOnly(
-    github.owner,
-    github.repo,
-    requireDeployBranch(DEPLOY_BRANCH),
-    { path: placeholder.path, content: placeholder.content },
-  );
+  const only = await github.api.branchHoldsOnly(github.owner, github.repo, DEPLOY_BRANCH, {
+    path: placeholder.path,
+    content: placeholder.content,
+  });
   return only ? "placeholder" : "other";
 }
 
@@ -1431,25 +1397,19 @@ async function startDeployBranch(
       { hint: `Run \`opscrew ${input.phase}\` again when you are ready; it continues from here.` },
     );
   }
-  const change = {
+  const change: Parameters<GitHubSetup["api"]["createOrphanBranch"]>[0] = {
     owner: github.owner,
     repo: github.repo,
-    branch: requireDeployBranch(DEPLOY_BRANCH),
+    branch: DEPLOY_BRANCH,
     path: placeholder.path,
     content: placeholder.content,
     message: "OpsCrew: placeholder until the first deploy",
   };
   let detail: string;
   if (replace) {
-    if (api.replaceOrphanBranch === undefined) {
-      throw new OpsCrewError("INTERNAL", "The GitHub client cannot replace a branch.");
-    }
     const replaced = await api.replaceOrphanBranch(change);
     detail = `placeholder ${replaced.commit}, replacing ${replaced.previous}`;
   } else {
-    if (api.createOrphanBranch === undefined) {
-      throw new OpsCrewError("INTERNAL", "The GitHub client cannot create a branch.");
-    }
     detail = `placeholder ${(await api.createOrphanBranch(change)).commit}`;
   }
   await deps.audit.append({

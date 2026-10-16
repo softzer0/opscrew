@@ -502,6 +502,25 @@ export class FakeGitHub implements GitHubApi {
     this.pulls.push(input);
     return { number: 7, url: "https://github.com/acme/shop/pull/7" };
   }
+  /** What OpsCrew wrote as a branch's only file (the branch holds nothing else then). */
+  readonly holds = new Map<string, { path: string; content: string }>();
+  async createOrphanBranch(input: { branch: string; path: string; content: string }) {
+    this.holds.set(input.branch, { path: input.path, content: input.content });
+    return { commit: "c".repeat(40) };
+  }
+  async replaceOrphanBranch(input: { branch: string; path: string; content: string }) {
+    this.holds.set(input.branch, { path: input.path, content: input.content });
+    return { commit: "d".repeat(40), previous: "e".repeat(40) };
+  }
+  async branchHoldsOnly(
+    _owner: string,
+    _repo: string,
+    branch: string,
+    file: { path: string; content: string },
+  ) {
+    const only = this.holds.get(branch);
+    return only?.path === file.path && only.content === file.content;
+  }
 }
 
 /**
@@ -584,6 +603,7 @@ export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudfl
       };
     },
     getIpRanges: async () => ({ ipv4: CF_V4, ipv6: CF_V6 }),
+    listAccounts: async () => [],
   };
 }
 

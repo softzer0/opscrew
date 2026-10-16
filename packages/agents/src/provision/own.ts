@@ -42,8 +42,8 @@ import {
 import {
   type ConnectorFirst,
   connectorFirst,
-  deletesTunnel,
   type HostChangeResult,
+  tunnelChange,
 } from "../shared/tunnel-connections";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import type { CloudflareApi, HostAdapterApi, ProvisionOptions, ProvisionServices } from "./types";
@@ -553,7 +553,7 @@ export async function removeOldAccessMode(
     first !== undefined &&
     input.planOnly &&
     pending &&
-    deletesTunnel(result.plan?.changes ?? [])
+    tunnelChange(result.plan?.changes ?? [], "delete")
   ) {
     return { ...result, host: await first.show() };
   }

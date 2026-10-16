@@ -607,15 +607,22 @@ export function ownCloudflare() {
   };
 }
 
-/** Zero Trust fake: the account's organization (none by default) and the accounts asked for. */
-export function fakeZeroTrust(authDomain?: string): ZeroTrustApi & { asked: string[] } {
+/**
+ * Zero Trust fake: the account's organization (none by default), its one-time PIN login method
+ * (none by default) and the accounts whose organization was asked for.
+ */
+export function fakeZeroTrust(
+  authDomain?: string,
+  pin?: string,
+): ZeroTrustApi & { asked: string[] } {
   const asked: string[] = [];
   return {
     asked,
-    organization: async (accountId) => {
+    accessOrganization: async (accountId) => {
       asked.push(accountId);
       return authDomain === undefined ? undefined : { authDomain };
     },
+    accessIdentityProviders: async () => (pin === undefined ? [] : [{ id: pin, type: "onetimepin" }]),
   };
 }
 

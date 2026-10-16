@@ -131,11 +131,11 @@ async function cloudSetup(
     applyHost: host.apply,
     cloudflare: ownCloudflare(),
     ...(o.engine !== undefined ? { engine: async () => o.engine as FakeEngine } : {}),
-    own: { zeroTrust: fakeZeroTrust("someone-else.cloudflareaccess.com") },
-    accessLoginMethods: {
-      oneTimePin: async (accountId) => {
+    zeroTrust: {
+      ...fakeZeroTrust("someone-else.cloudflareaccess.com"),
+      accessIdentityProviders: async (accountId) => {
         pins.push(accountId);
-        return "pin-existing";
+        return [{ id: "pin-existing", type: "onetimepin" }];
       },
     },
   };
@@ -688,8 +688,8 @@ async function ownSetup(o: { engine?: OwnEngine; port?: number } = {}) {
     cloudflare: ownCloudflare(),
     tcpConnect: async () => true,
     sleep: async () => undefined,
-    own: { host: adapter, zeroTrust: fakeZeroTrust(), homeDir: home },
-    accessLoginMethods: { oneTimePin: async () => undefined },
+    own: { host: adapter, homeDir: home },
+    zeroTrust: fakeZeroTrust(),
   };
   await runProvision(deps, { services, hostKey: ED25519_FINGERPRINT });
   handler.requests.length = 0;

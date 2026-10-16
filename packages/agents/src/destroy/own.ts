@@ -31,9 +31,9 @@ import {
 import { withoutOwnServer } from "../secure/own";
 import { hasDeployment, recordServerAddress } from "../shared";
 import {
-  deletesTunnel,
   requireTunnelClosed,
   tunnelBusyError,
+  tunnelChange,
   tunnelSafeEngine,
 } from "../shared/tunnel-connections";
 import { deletionPlanProblems, describeChanges } from "./checks";
@@ -215,7 +215,7 @@ async function approveCloudflareRemoval(
       );
     }
     cloudflareOnly(summary.changes, "Nothing was deleted.");
-    const tunnel = deletesTunnel(summary.changes);
+    const tunnel = tunnelChange(summary.changes, "delete");
     const count = summary.changes.length;
     const approval = await deps.approvals.request({
       kind: "iac-apply",
@@ -698,7 +698,7 @@ export async function destroyOwnServer(
   const dataWarning = deleteData && hasAppData(facts, name) ? dataLoss(plan, facts) : undefined;
   if (removeApp) {
     // Cloudflare deletes a tunnel only once its connector is gone: then the server goes first.
-    const serverFirst = deletesTunnel(resources) && hostSteps.length > 0;
+    const serverFirst = tunnelChange(resources, "delete") && hostSteps.length > 0;
     const cloudflareLines =
       resources.length > 0
         ? [

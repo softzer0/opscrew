@@ -401,6 +401,15 @@ export class FakeGitHub implements GitHubApi {
     this.pulls.push({ head: input.head, base: input.base, title: input.title });
     return { number: 7, url: "https://github.com/acme/shop/pull/7" };
   }
+  async createOrphanBranch() {
+    return { commit: "c".repeat(40) };
+  }
+  async replaceOrphanBranch() {
+    return { commit: "d".repeat(40), previous: "e".repeat(40) };
+  }
+  async branchHoldsOnly() {
+    return false;
+  }
 }
 
 /** Cloudflare fake: the token works, `example.com` is visible and has no rules of its own. */
@@ -416,6 +425,7 @@ export function fakeCloudflare(): CloudflareApi {
     listDnsRecords: async () => [],
     inspectEntrypointRuleset: async () => ({ exists: false, ownedByOpsCrew: false, ruleCount: 0 }),
     getIpRanges: async () => ({ ipv4: CF_V4, ipv6: CF_V6 }),
+    listAccounts: async () => [],
   };
 }
 

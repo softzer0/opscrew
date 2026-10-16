@@ -1,18 +1,40 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { TcpConnect } from "@opscrew/secops";
+import { readIfExists } from "./files";
 
 type Sleep = (ms: number) => Promise<void>;
 const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** How long to poll and how often; tests inject `sleep` and `now` (monotonic milliseconds). */
 export interface WaitOptions {
   timeoutMs: number;
   intervalMs: number;
   sleep?: Sleep;
   now?: () => number;
+}
+
+/**
+ * Calls `check` until it returns something other than `undefined` and returns that, or returns
+ * `undefined` once `timeoutMs` passed. `check` runs at once and every `intervalMs` (never sleeping
+ * past the deadline), and once more when the time is up.
+ */
+export async function pollUntil<T>(
+  check: () => Promise<T | undefined>,
+  options: WaitOptions,
+): Promise<T | undefined> {
+  const sleep = options.sleep ?? realSleep;
+  const now = options.now ?? Date.now;
+  const deadline = now() + options.timeoutMs;
+  for (;;) {
+    const result = await check();
+    if (result !== undefined) return result;
+    if (now() >= deadline) return undefined;
+    await sleep(Math.max(1, Math.min(options.intervalMs, deadline - now())));
+  }
 }
 
 /** Polls until `host:port` accepts TCP connections. Resolves false on timeout. */
@@ -21,36 +43,28 @@ export async function waitForPort(
   port: number,
   options: WaitOptions & { connect: TcpConnect },
 ): Promise<boolean> {
-  const sleep = options.sleep ?? realSleep;
-  const now = options.now ?? Date.now;
-  const deadline = now() + options.timeoutMs;
-  for (;;) {
-    if (await options.connect(host, port, Math.min(5000, options.intervalMs))) return true;
-    if (now() >= deadline) return false;
-    await sleep(options.intervalMs);
-  }
+  const open = await pollUntil(
+    async () =>
+      (await options.connect(host, port, Math.min(5000, options.intervalMs))) ? true : undefined,
+    options,
+  );
+  return open === true;
 }
 
 /** Polls the server until cloud-init wrote `/var/lib/opscrew-ready`. Connection errors are retried. */
 export async function waitForCloudInit(remote: RemoteExec, options: WaitOptions): Promise<boolean> {
-  const sleep = options.sleep ?? realSleep;
-  const now = options.now ?? Date.now;
-  const deadline = now() + options.timeoutMs;
-  for (;;) {
+  const ready = await pollUntil(async () => {
     try {
       const result = await remote.run(
         "test -f /var/lib/opscrew-ready && echo ready || echo waiting",
-        {
-          timeoutMs: 20_000,
-        },
+        { timeoutMs: 20_000 },
       );
-      if (result.exitCode === 0 && result.stdout.trim() === "ready") return true;
+      return result.exitCode === 0 && result.stdout.trim() === "ready" ? true : undefined;
     } catch {
-      // The server may still be booting; try again.
+      return undefined; // The server may still be booting; try again.
     }
-    if (now() >= deadline) return false;
-    await sleep(options.intervalMs);
-  }
+  }, options);
+  return ready === true;
 }
 
 /** `host keytype key` lines from `ssh-keyscan`, without comments. */
@@ -112,12 +126,7 @@ export async function pinHostKey(options: PinHostKeyOptions): Promise<PinnedHost
       },
     );
   }
-  let existing = "";
-  try {
-    existing = await readFile(options.knownHostsFile, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  const existing = (await readIfExists(options.knownHostsFile)) ?? "";
   const previous = keysFor(existing, options.host);
   const current = lines.map((line) => line.split(/\s+/).slice(1, 3).join(" "));
   const same = previous.length > 0 && current.every((key) => previous.includes(key));
@@ -218,12 +227,7 @@ export async function writeKnownHost(
   name: string,
   keys: readonly Pick<ScannedHostKey, "type" | "key">[],
 ): Promise<string> {
-  let existing = "";
-  try {
-    existing = await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  const existing = (await readIfExists(file)) ?? "";
   const others = parseKeyscan(existing).filter(
     (line) => !(line.split(/\s+/)[0] ?? "").split(",").includes(name),
   );

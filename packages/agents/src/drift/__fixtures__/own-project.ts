@@ -188,7 +188,8 @@ export async function ownProject(o: OwnProjectOptions = {}) {
     cloudflare: ownCloudflare(),
     tcpConnect: async () => true,
     sleep: async () => undefined,
-    own: { host, zeroTrust: fakeZeroTrust(), homeDir: home },
+    own: { host, homeDir: home },
+    zeroTrust: fakeZeroTrust(),
   };
   return { ...project, deps, engine, host, github, handler, services, runner, home, secrets };
 }

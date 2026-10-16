@@ -102,7 +102,7 @@ export class PortainerLifecycleGitHub extends FakeGitHub {
   constructor(private readonly bare: string) {
     super();
   }
-  async createOrphanBranch(input: { branch: string; path: string; content: string }) {
+  override async createOrphanBranch(input: { branch: string; path: string; content: string }) {
     this.branches.push({ branch: input.branch, path: input.path, content: input.content });
     return { commit: await writeBranch(this.bare, input.branch, input.content) };
   }
@@ -203,9 +203,9 @@ export async function portainerProject(o: PortainerProjectOptions = {}) {
       },
       inspectCertificate: async () => CERT,
       randomUUID: () => WEBHOOK_UUID,
-      zeroTrust: fakeZeroTrust(),
       wait: { now: () => 0, sleep: async () => undefined },
     },
+    zeroTrust: fakeZeroTrust(),
   };
   return { ...project, plan, deps, fake, github, handler, engine, services, secrets, clients };
 }

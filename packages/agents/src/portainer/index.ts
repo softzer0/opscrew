@@ -1,8 +1,4 @@
-export {
-  type AccessLoginMethodsApi,
-  cloudflareAccessLoginMethods,
-  oneTimePinIdentityProvider,
-} from "./access";
+export { oneTimePinIdentityProvider } from "./access";
 export {
   type PortainerDisableOptions,
   type PortainerEnableOptions,
