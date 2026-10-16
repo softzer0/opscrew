@@ -4,7 +4,7 @@
  * the planner treats conservatively.
  */
 import { HASHED_RUNTIME_FILES, RUNTIME_FILE_NAMES, type RuntimeFileName } from "./constants";
-import type { DirFact, Listener, RuntimeFileFact } from "./facts";
+import type { DirFact, HostFacts, Listener, RuntimeFileFact, WebFilterRules } from "./facts";
 
 /** Output of one inspection section: its text and the exit code of its command. */
 export interface Section {
@@ -48,13 +48,7 @@ export function linesOf(text: string): string[] {
 }
 
 /** `/etc/os-release` key/value pairs (quotes removed). */
-export function parseOsRelease(text: string): {
-  id: string;
-  idLike: string;
-  versionId: string;
-  codename: string;
-  prettyName: string;
-} {
+export function parseOsRelease(text: string): HostFacts["os"] {
   const values = new Map<string, string>();
   for (const line of linesOf(text)) {
     const match = /^([A-Z_]+)=(.*)$/.exec(line);
@@ -95,23 +89,13 @@ export function parseDf(text: string): { size: number; available: number } {
   return { size: toNumber(cols[1]), available: toNumber(cols[3]) };
 }
 
-export interface SshdSettings {
-  ports: number[];
-  passwordAuthentication: boolean;
-  kbdInteractiveAuthentication: boolean;
-  permitRootLogin: string;
-  authenticationMethods: string;
-  allowUsers: string[];
-  allowGroups: string[];
-  denyUsers: string[];
-  denyGroups: string[];
-  authorizedKeysCommand: boolean;
-  /** `yes`, `all`, `local`, `remote` or `no` (global value, without Match blocks). */
-  allowTcpForwarding: string;
-}
-
-/** `sshd -T`: the effective settings OpsCrew cares about; null when the output is unusable. */
-export function parseSshdT(text: string): SshdSettings | null {
+/**
+ * `sshd -T`: the effective settings OpsCrew cares about (`allowTcpForwarding` is the global value,
+ * without Match blocks); null when the output is unusable.
+ */
+export function parseSshdT(
+  text: string,
+): Omit<NonNullable<HostFacts["sshd"]>, "dropInIncluded" | "dropIn"> | null {
   const values = new Map<string, string[]>();
   for (const line of linesOf(text)) {
     const space = line.indexOf(" ");
@@ -185,8 +169,8 @@ export function parsePairs(text: string): Map<string, string> {
 }
 
 /** `ufw show added`: rules without the leading `ufw `, with their comment when present. */
-export function parseUfwAdded(text: string): { rule: string; comment: string | null }[] {
-  const rules: { rule: string; comment: string | null }[] = [];
+export function parseUfwAdded(text: string): HostFacts["firewall"]["ufwRules"] {
+  const rules: HostFacts["firewall"]["ufwRules"] = [];
   for (const line of linesOf(text)) {
     if (!line.startsWith("ufw ")) continue;
     const match = /^ufw (.*?)(?: comment '((?:[^'\\]|\\.)*)')?$/.exec(line);
@@ -206,7 +190,10 @@ export function parseDpkg(text: string): Map<string, string> {
   return installed;
 }
 
-/** Docker Engine version from a Debian package version (`5:28.5.1-1~ubuntu.24.04~noble`). */
+/**
+ * Docker Engine version from a Debian package version (`5:28.5.1-1~ubuntu.24.04~noble`) or the
+ * version the daemon reports (`28.5.1`).
+ */
 export function engineVersion(packageVersion: string): string | null {
   const match = /^(?:\d+:)?(\d+\.\d+\.\d+)/.exec(packageVersion.trim());
   return match?.[1] ?? null;
@@ -222,9 +209,7 @@ export function majorOf(version: string | null): number {
  * `docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}|{{.State}}'`
  * (all containers, running or not).
  */
-export function parseContainers(
-  text: string,
-): { name: string; project: string; ports: string; running: boolean }[] {
+export function parseContainers(text: string): HostFacts["containers"] {
   return linesOf(text).flatMap((line) => {
     const fields = line.split("|");
     const [name, project] = fields;
@@ -253,9 +238,7 @@ const UFW_POLICY: Readonly<Record<string, string>> = {
 };
 
 /** `/etc/default/ufw` policies as ufw words (`allow`, `deny`, `reject`); null when unreadable. */
-export function parseUfwDefaults(
-  text: string,
-): { incoming: string; outgoing: string; routed: string } | null {
+export function parseUfwDefaults(text: string): HostFacts["firewall"]["ufwDefaults"] {
   const value = (key: string) => {
     const match = new RegExp(`^DEFAULT_${key}_POLICY="?([A-Z]+)"?`, "m").exec(text);
     return match?.[1] ? UFW_POLICY[match[1]] : undefined;
@@ -360,9 +343,7 @@ export function publishesPort(ports: string, port: number, anyAddress = false): 
 }
 
 /** Lines `name:uid:pw|nopw:keys|nokeys` from the users snippet. */
-export function parseUsers(
-  text: string,
-): { name: string; uid: number; password: boolean; keys: boolean }[] {
+export function parseUsers(text: string): HostFacts["loginUsers"] {
   return linesOf(text).flatMap((line) => {
     const [name, uid, pw, keys] = line.split(":");
     const id = Number.parseInt(uid ?? "", 10);
@@ -444,7 +425,10 @@ export function parseAptPeriodic(text: string): boolean {
 const VIRTUAL_INTERFACE =
   /^(docker\d*|br-|veth|cni|flannel|cali|virbr|lxcbr|lxdbr|tailscale|wg|zt)/;
 
-/** True for an address other machines on the internet can reach (not private or link-local). */
+/**
+ * True for an IPv4 or IPv6 address other machines on the internet can reach: not private,
+ * loopback, link-local, shared (100.64.0.0/10) or in 0.0.0.0/8.
+ */
 export function isPublicAddress(address: string): boolean {
   if (address.includes(":")) {
     const lower = address.toLowerCase();
@@ -456,6 +440,7 @@ export function isPublicAddress(address: string): boolean {
   }
   const [a = 0, b = 0] = address.split(".").map(Number);
   return !(
+    a === 0 ||
     a === 10 ||
     a === 127 ||
     (a === 172 && b >= 16 && b <= 31) ||
@@ -466,11 +451,8 @@ export function isPublicAddress(address: string): boolean {
 }
 
 /** `ip -o addr show scope global`: global addresses of real interfaces. */
-export function parseAddresses(
-  text: string,
-): { interface: string; family: "ipv4" | "ipv6"; address: string; public: boolean }[] {
-  const found: { interface: string; family: "ipv4" | "ipv6"; address: string; public: boolean }[] =
-    [];
+export function parseAddresses(text: string): HostFacts["addresses"] {
+  const found: HostFacts["addresses"] = [];
   for (const line of linesOf(text)) {
     const match = /^\d+:\s+(\S+?)(?:@\S+)?\s+(inet6?)\s+([0-9a-fA-F.:]+)\//.exec(line);
     if (!match?.[1] || !match[2] || !match[3]) continue;
@@ -521,18 +503,12 @@ function filterTable(save: string): string[] {
   return lines;
 }
 
-/** OpsCrew's web filter chain (`OPSCREW-WEB`) as `iptables-save` shows it. */
-export interface WebFilterChain {
-  /** Networks that pass (`-s <net> -j RETURN`), in the form `canonicalCidr` gives. */
-  sources: string[];
-  /** The last rule drops everything else. */
-  dropsRest: boolean;
-  /** Rules that are neither (someone edited the chain). */
-  other: number;
-}
-
-/** OpsCrew's chain from `iptables-save` output; null when the chain does not exist. */
-export function parseWebFilterChain(save: string): WebFilterChain | null {
+/**
+ * OpsCrew's chain (`OPSCREW-WEB`) from `iptables-save` output: the networks that pass
+ * (`-s <net> -j RETURN`, as {@link canonicalIpv4Cidr} gives them), whether the last rule drops
+ * the rest, and how many other rules it has; null when the chain does not exist.
+ */
+export function parseWebFilterChain(save: string): WebFilterRules["chain"] {
   const lines = filterTable(save);
   if (!lines.some((line) => line.startsWith(":OPSCREW-WEB "))) return null;
   const rules = lines.filter((line) => line.startsWith("-A OPSCREW-WEB "));
@@ -540,8 +516,8 @@ export function parseWebFilterChain(save: string): WebFilterChain | null {
   let other = 0;
   rules.forEach((line, index) => {
     const pass = /^-A OPSCREW-WEB -s (\S+) -j RETURN$/.exec(line);
-    const network = pass?.[1] ? canonicalCidr(pass[1]) : null;
-    if (network !== null) sources.push(network.cidr);
+    const network = pass?.[1] ? canonicalIpv4Cidr(pass[1]) : null;
+    if (network !== null) sources.push(network);
     else if (!(index === rules.length - 1 && line === "-A OPSCREW-WEB -j DROP")) other += 1;
   });
   return { sources, dropsRest: rules.at(-1) === "-A OPSCREW-WEB -j DROP", other };
@@ -549,15 +525,6 @@ export function parseWebFilterChain(save: string): WebFilterChain | null {
 
 /** The connections the web filter guards, as `<proto>/<port>`. */
 export const WEB_FILTER_PORTS = ["tcp/80", "tcp/443", "udp/443"] as const;
-
-/** `DOCKER-USER` as `iptables-save` shows it: whether it exists and where OpsCrew's jumps are. */
-export interface DockerUserChain {
-  exists: boolean;
-  /** `<proto>/<port>` of OpsCrew's jumps that come before any other rule of the chain. */
-  leading: string[];
-  /** All of OpsCrew's jumps, wherever they are. */
-  jumps: number;
-}
 
 /** A `DOCKER-USER` rule that sends new connections to a published port to OpsCrew's chain. */
 function webFilterJump(line: string): string | null {
@@ -568,8 +535,11 @@ function webFilterJump(line: string): string | null {
   return proto && port ? `${proto}/${port}` : null;
 }
 
-/** `DOCKER-USER` from `iptables-save` output. */
-export function parseDockerUserChain(save: string): DockerUserChain {
+/**
+ * `DOCKER-USER` from `iptables-save` output: whether it exists, the `<proto>/<port>` of OpsCrew's
+ * jumps that come before any other rule, and how many of OpsCrew's jumps it has.
+ */
+export function parseDockerUserChain(save: string): WebFilterRules["dockerUser"] {
   const lines = filterTable(save);
   if (!lines.some((line) => line.startsWith(":DOCKER-USER "))) {
     return { exists: false, leading: [], jumps: 0 };
@@ -599,66 +569,19 @@ function ipv4Value(address: string): number | null {
   return value;
 }
 
-function ipv6Groups(address: string): number[] | null {
-  const lower = address.toLowerCase();
-  if (!/^[0-9a-f:]+$/.test(lower)) return null;
-  const halves = lower.split("::");
-  if (halves.length > 2) return null;
-  const split = (text: string) => (text === "" ? [] : text.split(":"));
-  const front = split(halves[0] ?? "");
-  const back = halves.length === 2 ? split(halves[1] ?? "") : [];
-  const missing = 8 - front.length - back.length;
-  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
-  const groups = [...front, ...Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...back];
-  if (groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) return null;
-  return groups.map((group) => Number.parseInt(group, 16));
-}
-
-/** RFC 5952 text of eight 16-bit groups: lower case, the longest run of 2+ zero groups as `::`. */
-function ipv6Text(groups: readonly number[]): string {
-  let best = { start: -1, length: 0 };
-  let i = 0;
-  while (i < groups.length) {
-    if (groups[i] !== 0) {
-      i++;
-      continue;
-    }
-    let j = i;
-    while (j < groups.length && groups[j] === 0) j++;
-    if (j - i > best.length) best = { start: i, length: j - i };
-    i = j;
-  }
-  const hex = groups.map((group) => group.toString(16));
-  if (best.length < 2) return hex.join(":");
-  return `${hex.slice(0, best.start).join(":")}::${hex.slice(best.start + best.length).join(":")}`;
-}
-
 /**
- * A network in the form ufw itself prints it, so OpsCrew finds its rules again: host bits
- * cleared, IPv6 in lower case and compressed (RFC 5952), and no `/32` (IPv4) or `/128` (IPv6)
- * suffix. Null when `text` is not an IPv4 or IPv6 address or network.
+ * An IPv4 network in the form iptables prints it, so OpsCrew finds its rules again: host bits
+ * cleared and no `/32` suffix. Null when `text` is not an IPv4 address or network.
  */
-export function canonicalCidr(text: string): { family: "ipv4" | "ipv6"; cidr: string } | null {
+export function canonicalIpv4Cidr(text: string): string | null {
   const [address = "", prefixText, extra] = text.trim().split("/");
   if (extra !== undefined) return null;
   if (prefixText !== undefined && !/^\d{1,3}$/.test(prefixText)) return null;
-  const v4 = ipv4Value(address);
-  if (v4 !== null) {
-    const prefix = prefixText === undefined ? 32 : Number(prefixText);
-    if (prefix > 32) return null;
-    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-    const network = (v4 & mask) >>> 0;
-    const dotted = [24, 16, 8, 0].map((shift) => (network >>> shift) & 255).join(".");
-    return { family: "ipv4", cidr: prefix === 32 ? dotted : `${dotted}/${prefix}` };
-  }
-  const groups = ipv6Groups(address);
-  if (groups === null) return null;
-  const prefix = prefixText === undefined ? 128 : Number(prefixText);
-  if (prefix > 128) return null;
-  const network = groups.map((group, index) => {
-    const bits = Math.min(16, Math.max(0, prefix - index * 16));
-    return bits === 0 ? 0 : group & ((0xffff << (16 - bits)) & 0xffff);
-  });
-  const compact = ipv6Text(network);
-  return { family: "ipv6", cidr: prefix === 128 ? compact : `${compact}/${prefix}` };
+  const value = ipv4Value(address);
+  const prefix = prefixText === undefined ? 32 : Number(prefixText);
+  if (value === null || prefix > 32) return null;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  const network = (value & mask) >>> 0;
+  const dotted = [24, 16, 8, 0].map((shift) => (network >>> shift) & 255).join(".");
+  return prefix === 32 ? dotted : `${dotted}/${prefix}`;
 }

@@ -560,7 +560,10 @@ describe("applyStackPlan: teardown", () => {
     const w = world();
     const { result } = await setupApplied(w);
     const decoyBefore = structuredClone(w.decoy);
-    const plan = planStackTeardown(await w.inspect(), result.record, { deleteData: false });
+    const plan = planStackTeardown(await w.inspect(), result.record, {
+      deleteData: false,
+      app: "shop",
+    });
     const start = w.fake.calls.length;
     const done = await apply(w.client(), plan, {
       approvedHash: stackPlanHash(plan),
@@ -583,7 +586,10 @@ describe("applyStackPlan: teardown", () => {
   it("with deleteData, stops the app, deletes only its recorded volumes, then removes it", async () => {
     const w = world();
     const { result } = await setupApplied(w);
-    const plan = planStackTeardown(await w.inspect(), result.record, { deleteData: true });
+    const plan = planStackTeardown(await w.inspect(), result.record, {
+      deleteData: true,
+      app: "shop",
+    });
     const start = w.fake.calls.length;
     const done = await apply(w.client(), plan, {
       approvedHash: stackPlanHash(plan),
@@ -603,7 +609,10 @@ describe("applyStackPlan: teardown", () => {
   it("works for a limited token: the volumes go while the stack still grants access (R9)", async () => {
     const w = world();
     const { result } = await setupApplied(w, { registry: undefined }, "limited");
-    const plan = planStackTeardown(await w.inspect("limited"), result.record, { deleteData: true });
+    const plan = planStackTeardown(await w.inspect("limited"), result.record, {
+      deleteData: true,
+      app: "shop",
+    });
     expect(plan.findings).toEqual([]);
     const done = await apply(w.client("limited"), plan, {
       approvedHash: stackPlanHash(plan),
@@ -617,7 +626,10 @@ describe("applyStackPlan: teardown", () => {
     const w = world();
     const { result } = await setupApplied(w);
     w.fake.state.stacks = w.fake.state.stacks.filter((stack) => stack.Id !== 102);
-    const plan = planStackTeardown(await w.inspect(), result.record, { deleteData: false });
+    const plan = planStackTeardown(await w.inspect(), result.record, {
+      deleteData: false,
+      app: "shop",
+    });
     const start = w.fake.calls.length;
     const done = await apply(w.client(), plan, {
       approvedHash: stackPlanHash(plan),
@@ -638,7 +650,10 @@ describe("applyStackPlan: teardown", () => {
           : undefined,
     });
     const { result } = await setupApplied(w);
-    const plan = planStackTeardown(await w.inspect(), result.record, { deleteData: true });
+    const plan = planStackTeardown(await w.inspect(), result.record, {
+      deleteData: true,
+      app: "shop",
+    });
     const error = (await failure(
       apply(w.client(), plan, { approvedHash: stackPlanHash(plan), secrets: { env: {} } }),
     )) as StackApplyError;
@@ -866,8 +881,8 @@ describe("applyStackPlan: volumes only in a teardown that deletes data", () => {
     const w = world();
     const { result } = await setupApplied(w);
     const facts = await w.inspect();
-    const keep = planStackTeardown(facts, result.record, { deleteData: false });
-    const withData = planStackTeardown(facts, result.record, { deleteData: true });
+    const keep = planStackTeardown(facts, result.record, { deleteData: false, app: "shop" });
+    const withData = planStackTeardown(facts, result.record, { deleteData: true, app: "shop" });
     const volumes = withData.changes.find((change) => change.id === "volumes");
     if (volumes === undefined) throw new Error("no volumes change");
     const smuggled: StackPlan[] = [

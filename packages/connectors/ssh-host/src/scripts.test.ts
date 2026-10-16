@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { deployApp, FakeHost } from "./__fixtures__/fake-host";
+import { deployApp, FakeHost, scriptParams } from "./__fixtures__/fake-host";
 import {
   applyApproved,
   desiredFor,
@@ -12,14 +13,14 @@ import {
   tunnelDesired,
   tunnelToken,
 } from "./__fixtures__/helpers";
+import { ShellHarness } from "./__fixtures__/shell-harness";
 import { sshdDropIn } from "./constants";
 import { inspectHost, inspectScript, privilegeProbeScript } from "./inspect";
-import { planHost, planTeardown, planUndo } from "./plan";
-import { asLogin, asRoot, shellQuote } from "./shell";
+import { planHost, planPortainer, planTeardown, planUndo } from "./plan";
+import { asLogin, asRoot } from "./shell";
 import {
   armScript,
   cancelScript,
-  planPortainer,
   readRecordScript,
   stepScripts,
   triggerScript,
@@ -67,8 +68,11 @@ async function everyPlan(): Promise<HostPlan[]> {
   deployApp(used, "shop", "tunnel");
   // Switching to public mode removes the tunnel connector and Portainer.
   plans.push(planHost(await inspectHost(used), desiredFor(used)));
-  plans.push(planTeardown(await inspectHost(used), { deleteData: true }));
-  await applyApproved(used, planTeardown(await inspectHost(used), { deleteData: false }));
+  plans.push(planTeardown(await inspectHost(used), { deleteData: true, app: "shop" }));
+  await applyApproved(
+    used,
+    planTeardown(await inspectHost(used), { deleteData: false, app: "shop" }),
+  );
   plans.push(planUndo(await inspectHost(used)));
 
   // Behind Cloudflare's proxy: the web filter, its removal and its undo.
@@ -204,16 +208,22 @@ describe("sshd scripts", () => {
       apply.lastIndexOf("try-reload-or-restart ssh.service"),
     );
     // The Portainer tunnel (ssh -L as deploy) and the Cloudflare Tunnel (ssh://localhost) keep working:
-    // the drop-in sets only these three settings.
-    const written = apply.slice(
-      apply.indexOf("{\n  printf '%s\\n' \"$HEADER\""),
-      apply.indexOf('} > "$tmp"'),
+    // the drop-in sets only these three settings, and is written exactly as rendered.
+    const p = scriptParams(apply);
+    const written = Buffer.from(p.DROPIN_B64 ?? "", "base64").toString("utf8");
+    expect(written).toBe(
+      sshdDropIn({
+        permitRootLogin: "prohibit-password",
+        disablePasswords: true,
+        kbdInteractiveOff: true,
+      }),
     );
-    const settings = [
-      ...written.matchAll(/printf '([A-Z]\w+) /g),
-      ...written.matchAll(/'([A-Z]\w+) no'/g),
-    ]
-      .map((match) => match[1])
+    expect(p.DROPIN_SHA256).toBe(sha256Hex(written));
+    const settings = written
+      .split("\n")
+      .slice(1)
+      .filter(Boolean)
+      .map((line) => line.split(" ")[0])
       .sort();
     expect(settings).toEqual([
       "KbdInteractiveAuthentication",
@@ -330,23 +340,29 @@ ufw() {
       disablePasswords: true,
       kbdInteractiveOff: true,
     });
-    const catStub = (content: string) =>
-      `cat() { if [ "$1" = /etc/ssh/sshd_config.d/10-opscrew.conf ]; then printf '%s' ${shellQuote(content)}; else command cat "$@"; fi; }`;
-    const stubs = (
-      password: string,
-      content: string,
-    ) => `sshd() { printf '%s\\n' 'port 22' 'permitrootlogin without-password' 'passwordauthentication ${password}' 'kbdinteractiveauthentication no'; }
-systemctl() { return 3; }
-${catStub(content)}`;
-    expect(runWithStubs(stubs("no", dropIn), check).stdout).toContain("state=in-place");
-    // Effective settings already right, but no OpsCrew drop-in: still a change (secure reads it).
-    expect(runWithStubs(stubs("no", "PermitRootLogin no\n"), check).stdout).toContain(
-      "state=change",
-    );
-    const changed = runWithStubs(stubs("yes", dropIn), check).stdout;
-    expect(changed).toContain("state=change");
-    expect(changed).toContain("prev.permitRootLogin=without-password");
-    expect(changed).toContain("prev.passwordAuthentication=yes");
+    const h = new ShellHarness();
+    try {
+      const run = (password: string, content: string) => {
+        h.stub(
+          "sshd",
+          `printf '%s\\n' 'port 22' 'permitrootlogin without-password' 'passwordauthentication ${password}' 'kbdinteractiveauthentication no'`,
+        );
+        h.stub("systemctl", "exit 3");
+        h.write("/etc/ssh/sshd_config.d/10-opscrew.conf", content);
+        return h.run(check).stdout;
+      };
+      expect(run("no", dropIn)).toContain("state=in-place");
+      // Effective settings already right, but no OpsCrew drop-in: still a change (secure reads it).
+      expect(run("no", "PermitRootLogin no\n")).toContain("state=change");
+      // OpsCrew's drop-in byte for byte: an edited copy is a change too.
+      expect(run("no", `${dropIn}\n`)).toContain("state=change");
+      const changed = run("yes", dropIn);
+      expect(changed).toContain("state=change");
+      expect(changed).toContain("prev.permitRootLogin=without-password");
+      expect(changed).toContain("prev.passwordAuthentication=yes");
+    } finally {
+      h.dispose();
+    }
   });
 
   it("fail2ban: the jail covers every real SSH port and reads the systemd journal", async () => {
@@ -430,13 +446,13 @@ describe("secret handling in scripts", () => {
       expect(secret?.required).toBe(true);
       expect(apply).toMatch(/umask 077/);
       expect(apply).toMatch(/IFS= read -r (token|pw) \|\| true/);
-      expect(apply).toMatch(/chmod 0600 "\$tmp"/);
-      // The secret variable is only ever written to a file with printf (a shell builtin).
+      // The secret variable is only ever written to a root-only file with printf (a shell builtin).
       const uses = apply.split("\n").filter((line) => /\$(token|pw)\b|\$\{(token|pw)/.test(line));
       for (const line of uses)
         expect(line).toMatch(
-          /^\s*(printf '[^']*' "\$(token|pw)" > "\$tmp"|case "\$token" in|if \[ -n "\$(token|pw)" \]; then)$/,
+          /^\s*(printf '[^']*' "\$(token|pw)" \| write_file "\$DIR\/(tunnel\.env|admin_password)" 0600|case "\$token" in|if \[ -n "\$(token|pw)" \]; then)$/,
         );
+      expect(uses.some((line) => line.includes("| write_file"))).toBe(true);
     }
   });
 });

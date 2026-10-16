@@ -181,7 +181,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/contracts --filter=@opscrew/plan-schema --filter=@opscrew/runtime-claude --filter=@opscrew/iac-engine --filter=@opscrew/detect --filter=@opscrew/agents --filter=@opscrew/secops`
   - Effort: xhigh
 
-- [ ] T1021 [P] Connectors ssh-host and portainer (Area 6)
+- [X] T1021 [P] Connectors ssh-host and portainer (Area 6)
   - Owns: `packages/connectors/{ssh-host,portainer}/src/**` (+ tests)
   - Reads: Area 6; core's root exports
   - Depends: T1020

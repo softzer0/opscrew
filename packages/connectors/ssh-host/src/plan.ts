@@ -2,9 +2,10 @@
  * Pure planning: from inspected facts to a host plan of fixed steps, each in place, to change or
  * blocked, plus blocking findings. No I/O; the plan holds no secrets.
  */
-import { createHash } from "node:crypto";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, plural, sha256Hex } from "@opscrew/core";
 import {
+  APP_DIR,
+  DATA_DIR,
   FAIL2BAN_JAIL_PATH,
   fail2banJail,
   MIN_DOCKER_MAJOR,
@@ -12,6 +13,7 @@ import {
   PORTAINER_PORT,
   PORTAINER_PROJECT,
   PORTAINER_REPOSITORY,
+  RUNTIME_DIRS,
   SUPPORTED_ARCH,
   SUPPORTED_OS,
   sshdDropIn,
@@ -25,13 +27,14 @@ import {
   type HostFacts,
   HostFactsSchema,
   type HostRecordEntry,
-  RUNTIME_DIRS,
   type WebFilterRules,
   webFilterFacts,
 } from "./facts";
-import { findings } from "./findings";
+import { findings, privilegeFindings } from "./findings";
 import { isLoopback, majorOf, publishesPort, ufwRuleCovers, WEB_FILTER_PORTS } from "./parse";
+import { type RunAs, stepScripts } from "./steps";
 import {
+  AppNameSchema,
   type DesiredHost,
   DesiredHostSchema,
   HOST_PLAN_SCHEMA_VERSION,
@@ -41,11 +44,6 @@ import {
   type HostStepId,
 } from "./types";
 import { sortedNetworks, WEB_FILTER_SERVICE, webFilterFileHashes } from "./web-filter";
-
-type Mutable<T> = { -readonly [K in keyof T]: T[K] };
-
-/** An OpsCrew app name (as in `DesiredHost.app`). */
-const APP_NAME_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 function parseFacts(facts: HostFacts): HostFacts {
   const parsed = HostFactsSchema.safeParse(facts);
@@ -87,9 +85,7 @@ function step(
 
 /** Plain findings that make the rest of the facts unreliable; every step is blocked. */
 function fatalFindings(facts: HostFacts): HostFinding[] {
-  const found: HostFinding[] = [];
-  if (facts.privilege === "sudo-password") found.push(findings.sudoNeedsPassword(facts.user));
-  else if (facts.privilege === "none") found.push(findings.noRoot(facts.user));
+  const found = privilegeFindings(facts);
   if (found.length > 0) return found;
   const versions = SUPPORTED_OS[facts.os.id];
   if (!versions?.includes(facts.os.versionId)) {
@@ -142,16 +138,13 @@ function webPortUsers(facts: HostFacts, app: string): string[] {
  */
 function localPortUsers(facts: HostFacts, port: number, ownProject: string | null): string[] {
   const users = new Set<string>();
-  const ownContainer = facts.containers.some(
-    (container) => container.project === ownProject && publishesPort(container.ports, port, true),
-  );
   const anyContainer = facts.containers.some((container) =>
     publishesPort(container.ports, port, true),
   );
   for (const listener of facts.listeners) {
     if (listener.proto !== "tcp" || listener.port !== port) continue;
     if (listener.process === "docker-proxy") {
-      if (!ownContainer && !anyContainer) users.add("a Docker container");
+      if (!anyContainer) users.add("a Docker container");
       continue;
     }
     users.add(listener.process || "another program");
@@ -161,10 +154,6 @@ function localPortUsers(facts: HostFacts, port: number, ownProject: string | nul
     if (publishesPort(container.ports, port, true)) users.add(`the container ${container.name}`);
   }
   return [...users];
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 /** UDP client sockets that a firewall with stateful rules does not break. */
@@ -721,7 +710,7 @@ function webFilterStep({ facts, desired, found }: SetupContext): HostStep | unde
       "The site is no longer served directly behind Cloudflare's proxy. Docker first stops requiring the filter (it keeps running), then OpsCrew's rules in DOCKER-USER, its unit and its script are removed; your own rules stay.",
     );
   }
-  const ranges = { ipv4: sortedNetworks(desired.webFilter.ipv4, "ipv4") };
+  const ranges = { ipv4: sortedNetworks(desired.webFilter.ipv4) };
   const params = { ipv4: ranges.ipv4.join(" ") };
   const blocker =
     wf.backend === "nftables"
@@ -754,7 +743,7 @@ function webFilterStep({ facts, desired, found }: SetupContext): HostStep | unde
     const removed = [...known].filter((net) => !wanted.has(net)).length;
     if (added > 0 || removed > 0) {
       lines.push(
-        `Cloudflare's list changed since the filter was set up: ${added} new range${added === 1 ? "" : "s"}, ${removed} no longer listed. The chain is replaced in one step, so nothing is unfiltered in between.`,
+        `Cloudflare's list changed since the filter was set up: ${plural(added, "new range")}, ${removed} no longer listed. The chain is replaced in one step, so nothing is unfiltered in between.`,
       );
     }
   }
@@ -838,9 +827,10 @@ function markerStep({ facts, desired, found }: SetupContext): HostStep {
   return step("app-marker", title, "blocked", params, `The server belongs to "${marker.app}".`);
 }
 
-/** The image a rendered Compose file names first (for the step title), if any. */
-function imageOf(compose: string): string | undefined {
-  return /^\s*image:\s*["']?([^"'\s]+)/m.exec(compose)?.[1];
+/** ` (<image>)` for the image a rendered Compose file names first, for a step title. */
+function imageIn(compose: string): string {
+  const image = /^\s*image:\s*["']?([^"'\s]+)/m.exec(compose)?.[1];
+  return image === undefined ? "" : ` (${image})`;
 }
 
 /**
@@ -887,11 +877,10 @@ function tunnelStep({ facts, desired, found }: SetupContext): HostStep | undefin
   // A different tunnel id means a new tunnel: its token must be written and the connector restarted.
   const sameTunnel = tunnel.tunnelId === tunnelId;
   const params = { compose, tunnelId, needsToken: !tunnel.secretFile || !sameTunnel };
-  const image = imageOf(compose);
-  const title = `${TITLES.tunnel}${image ? ` (${image})` : ""}`;
+  const title = `${TITLES.tunnel}${imageIn(compose)}`;
   if (
     tunnel.installed &&
-    tunnel.composeSha256 === sha256(compose) &&
+    tunnel.composeSha256 === sha256Hex(compose) &&
     tunnel.running &&
     tunnel.secretFile &&
     sameTunnel
@@ -954,7 +943,7 @@ function portainerStep({ facts, desired, found }: SetupContext): HostStep | unde
   }
   if (
     portainer.installed &&
-    portainer.composeSha256 === sha256(compose.final) &&
+    portainer.composeSha256 === sha256Hex(compose.final) &&
     portainer.running &&
     !portainer.secretFile
   ) {
@@ -1019,19 +1008,15 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
       );
     }
   }
-  const fatal = fatalFindings(f);
-  const plan: Mutable<HostPlan> = {
+  const setup = (steps: HostStep[], found: HostFinding[]): HostPlan => ({
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
     purpose: "setup",
     app: d.app,
-    steps: [],
-    findings: [],
-  };
-  if (fatal.length > 0) {
-    plan.steps = allBlocked(d);
-    plan.findings = fatal;
-    return plan;
-  }
+    steps,
+    findings: found,
+  });
+  const fatal = fatalFindings(f);
+  if (fatal.length > 0) return setup(allBlocked(d), fatal);
   const ctx: SetupContext = { facts: f, desired: d, found: [] };
   const sameApp = (owner: { app: string; projectId: string } | null | undefined) =>
     owner?.app === d.app && (owner.projectId === "" || owner.projectId === d.projectId);
@@ -1074,9 +1059,7 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
     tunnelStep(ctx),
     portainerStep(ctx),
   ].filter((item): item is HostStep => item !== undefined);
-  plan.steps = steps;
-  plan.findings = ctx.found;
-  return plan;
+  return setup(steps, ctx.found);
 }
 
 /**
@@ -1084,33 +1067,28 @@ export function planHost(facts: HostFacts, desired: DesiredHost): HostPlan {
  * tunnel connector and Portainer, and the app marker. App data (/srv/data, Compose volumes,
  * Portainer's data) is deleted only with `deleteData`. The server itself is never touched.
  *
- * The app is the one the marker (`/etc/opscrew/app.json`) names; when the marker is missing, the
- * one OpsCrew's host record names, else `opts.app` (the deploy plan's app name), so the app's
- * containers (by their Compose project label) and /srv/app still go. When the marker or the record
- * names another app than `opts.app`, the plan removes nothing and says why.
+ * The app is `opts.app` (the deploy plan's app name), the one the marker (`/etc/opscrew/app.json`)
+ * names, or when the marker is missing the one OpsCrew's host record names; so without a marker
+ * the app's containers (by their Compose project label) and /srv/app still go. When the marker or
+ * the record names another app, the plan removes nothing and says why.
  */
 export function planTeardown(
   facts: HostFacts,
-  opts: { deleteData: boolean; app?: string },
+  opts: { deleteData: boolean; app: string },
 ): HostPlan {
   const f = parseFacts(facts);
-  if (typeof opts?.deleteData !== "boolean") {
-    throw new OpsCrewError("INVALID_INPUT", "deleteData must be true or false.");
-  }
-  if (opts.app !== undefined && !APP_NAME_RE.test(opts.app)) {
+  if (!AppNameSchema.safeParse(opts.app).success) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       "The app name must be lower-case letters, digits and dashes.",
     );
   }
   const deleteData = opts.deleteData;
-  const found: HostFinding[] = [];
-  if (f.privilege === "sudo-password") found.push(findings.sudoNeedsPassword(f.user));
-  else if (f.privilege === "none") found.push(findings.noRoot(f.user));
+  const found = privilegeFindings(f);
   if (f.markerDamaged) found.push(findings.markerDamaged());
   // Who the server belongs to: the marker, else the host record (both empty when unknown).
   const owner = f.marker?.app || (f.marker === null ? (f.record?.app ?? "") : "");
-  if (opts.app !== undefined && owner !== "" && owner !== opts.app) {
+  if (owner !== "" && owner !== opts.app) {
     found.push(findings.teardownOtherApp(owner, opts.app));
     return {
       schemaVersion: HOST_PLAN_SCHEMA_VERSION,
@@ -1121,11 +1099,11 @@ export function planTeardown(
       deleteData,
     };
   }
-  const app = owner || (f.markerDamaged ? "" : (opts.app ?? ""));
+  const app = owner || (f.markerDamaged ? "" : opts.app);
   const steps: HostStep[] = [];
   if (app !== "") {
-    const appDir = f.dirs.find((dir) => dir.path === "/srv/app");
-    const dataDir = f.dirs.find((dir) => dir.path === "/srv/data");
+    const appDir = f.dirs.find((dir) => dir.path === APP_DIR);
+    const dataDir = f.dirs.find((dir) => dir.path === DATA_DIR);
     const containers = f.containers.filter((container) => container.project === app);
     const busy =
       containers.length > 0 ||
@@ -1140,7 +1118,7 @@ export function planTeardown(
         busy ? "change" : "in-place",
         { app, deleteData },
         busy
-          ? `${containers.length} container${containers.length === 1 ? "" : "s"} of the app; runtime files in /srv/app.`
+          ? `${plural(containers.length, "container")} of the app; runtime files in /srv/app.`
           : "Nothing of the app is left.",
       ),
     );
@@ -1212,9 +1190,7 @@ function rulesToRemove(
  */
 export function planUndo(facts: HostFacts): HostPlan {
   const f = parseFacts(facts);
-  const found: HostFinding[] = [];
-  if (f.privilege === "sudo-password") found.push(findings.sudoNeedsPassword(f.user));
-  else if (f.privilege === "none") found.push(findings.noRoot(f.user));
+  const found = privilegeFindings(f);
   if (f.recordDamaged) found.push(findings.recordDamaged());
   if (f.markerDamaged) found.push(findings.markerDamaged());
   if (f.marker !== null) found.push(findings.appStillDeployed(f.marker.app));
@@ -1424,4 +1400,88 @@ export function planUndo(facts: HostFacts): HostPlan {
     step("app-marker", "Remove OpsCrew's record of its changes (/etc/opscrew)", "change", {}),
   );
   return { schemaVersion: HOST_PLAN_SCHEMA_VERSION, purpose: "undo", app, steps, findings: found };
+}
+
+/**
+ * A one-step host plan that turns Portainer on or off in `dir`. On servers OpsCrew created
+ * (Hetzner, DigitalOcean) it runs as the SSH login (`runAs: "login"`, the default: the deploy user
+ * in its home directory), needs no root and writes no host record. On a server the user owns use
+ * `runAs: "root"` with `dir` = `PORTAINER_DIR` (for example to turn it off and delete its data;
+ * turning it on there is part of `planHost`). Apply it with `applyHostPlan` like any host plan.
+ *
+ * `connector` adds the Cloudflare Tunnel connector that serves Portainer's subdomain, run the same
+ * way in its own `dir` (its token is supplied at apply as `tunnelToken`), or `{ dir, remove: true }`
+ * removes one an earlier subdomain left behind. It comes before the Portainer step.
+ */
+export function planPortainer(options: {
+  app: string;
+  dir: string;
+  runAs?: RunAs;
+  enable?: { version: string; compose: { initial: string; final: string }; needsPassword: boolean };
+  disable?: { deleteData: boolean };
+  connector?:
+    | { dir: string; compose: string; tunnelId: string; needsToken: boolean }
+    | { dir: string; remove: true };
+}): HostPlan {
+  const { app, dir, enable, disable, connector } = options;
+  const runAs = options.runAs ?? "login";
+  if ((enable === undefined) === (disable === undefined)) {
+    throw new OpsCrewError("INVALID_INPUT", "Turn Portainer either on or off, not both.");
+  }
+  const connectorStep: HostStep | undefined =
+    connector === undefined
+      ? undefined
+      : "remove" in connector
+        ? {
+            id: "tunnel-connector",
+            title: "Remove the Cloudflare Tunnel connector that served Portainer's subdomain",
+            state: "change",
+            params: { remove: true, dir: connector.dir, runAs },
+          }
+        : {
+            id: "tunnel-connector",
+            title: `Run the Cloudflare Tunnel connector for Portainer's subdomain${imageIn(connector.compose)}`,
+            state: "change",
+            reason:
+              "cloudflared runs as its own Compose project and connects out to Cloudflare; no inbound port is opened. Its token is written to a file only its owner can read at apply time and is never part of this plan.",
+            params: {
+              compose: connector.compose,
+              tunnelId: connector.tunnelId,
+              needsToken: connector.needsToken,
+              dir: connector.dir,
+              runAs,
+            },
+          };
+  const params: HostStep["params"] = enable
+    ? {
+        version: enable.version,
+        dir,
+        runAs,
+        composeInitial: enable.compose.initial,
+        composeFinal: enable.compose.final,
+        needsPassword: enable.needsPassword,
+      }
+    : { remove: true, deleteData: disable?.deleteData === true, dir, runAs };
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app,
+    steps: [
+      ...(connectorStep === undefined ? [] : [connectorStep]),
+      {
+        id: "portainer",
+        title: enable
+          ? `Run Portainer CE ${enable.version}, reachable only from the server itself (127.0.0.1:${PORTAINER_PORT})`
+          : disable?.deleteData
+            ? "Remove Portainer and its data"
+            : "Remove Portainer (its data volume stays)",
+        state: "change",
+        params,
+      },
+    ],
+    findings: [],
+  };
+  // Validate now so a bad directory or version fails before anything is approved.
+  for (const item of plan.steps) stepScripts(plan, item);
+  return plan;
 }

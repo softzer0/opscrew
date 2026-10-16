@@ -249,14 +249,17 @@ async function trigger(ctx: Context, step: HostStep, guarded: "sshd" | "ufw"): P
   }
 }
 
+/**
+ * Runs a step's apply under the dead-man switch: the undo is scheduled first, and cancelled only
+ * once new logins work (`verifyLogin`); otherwise it runs now, or on the server on its own.
+ */
 async function guardedApply(
   ctx: Context,
   step: HostStep,
   scripts: StepScripts,
-  input: string | undefined,
+  deadMan: NonNullable<StepScripts["deadMan"]>,
+  options: RunOptions,
 ): Promise<void> {
-  const deadMan = scripts.deadMan;
-  if (deadMan === undefined) throw new Error("guardedApply needs a dead-man step");
   const seconds = ctx.deadManSeconds;
   const what = deadMan.step === "sshd" ? "SSH settings" : "firewall settings";
   await runOk(
@@ -266,14 +269,7 @@ async function guardedApply(
     `scheduling the automatic undo for the ${what}`,
   );
   try {
-    await runOk(
-      ctx,
-      wrap(ctx, step, scripts.apply),
-      input === undefined
-        ? { timeoutMs: scripts.timeoutMs }
-        : { timeoutMs: scripts.timeoutMs, input },
-      scripts.doing,
-    );
+    await runOk(ctx, wrap(ctx, step, scripts.apply), options, scripts.doing);
   } catch (error) {
     const restored = await trigger(ctx, step, deadMan.step);
     if (error instanceof OpsCrewError) {
@@ -288,9 +284,9 @@ async function guardedApply(
     throw error;
   }
 
-  let loginsWork = false;
+  let loginsWork: boolean;
   try {
-    loginsWork = (await ctx.verifyLogin()) === true;
+    loginsWork = await ctx.verifyLogin();
   } catch {
     loginsWork = false;
   }
@@ -355,18 +351,14 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
     );
   }
   const secret = scripts.secret ? ctx.secrets[scripts.secret.name] : undefined;
-  const input = secret === undefined ? undefined : `${secret}\n`;
+  const options: RunOptions =
+    secret === undefined
+      ? { timeoutMs: scripts.timeoutMs }
+      : { timeoutMs: scripts.timeoutMs, input: `${secret}\n` };
   if (scripts.deadMan !== undefined) {
-    await guardedApply(ctx, step, scripts, input);
+    await guardedApply(ctx, step, scripts, scripts.deadMan, options);
   } else {
-    await runOk(
-      ctx,
-      wrap(ctx, step, scripts.apply),
-      input === undefined
-        ? { timeoutMs: scripts.timeoutMs }
-        : { timeoutMs: scripts.timeoutMs, input },
-      scripts.doing,
-    );
+    await runOk(ctx, wrap(ctx, step, scripts.apply), options, scripts.doing);
   }
   if (scripts.postApply !== undefined) {
     await runOk(
@@ -422,19 +414,44 @@ async function claimCheck(ctx: Context): Promise<void> {
 }
 
 /**
- * The error of a failed step with `applied`: the steps of this plan that changed the server before
- * it (in order), so callers can audit them. Step ids only; never a secret.
+ * A host apply that stopped at a failed step: `applied` lists the steps of the plan that changed
+ * the server before it, in order, so callers can audit them (step ids only, never a secret).
  */
-function withApplied(error: unknown, applied: readonly HostStepId[]): unknown {
-  if (typeof error === "object" && error !== null) {
-    Object.defineProperty(error, "applied", {
-      value: [...applied],
-      enumerable: true,
-      configurable: true,
-      writable: true,
+export class HostApplyError extends OpsCrewError {
+  readonly applied: HostStepId[];
+
+  constructor(
+    code: OpsCrewError["code"],
+    message: string,
+    applied: HostStepId[],
+    options?: { hint?: string; cause?: unknown },
+  ) {
+    super(code, message, options);
+    this.name = "HostApplyError";
+    this.applied = applied;
+  }
+}
+
+/**
+ * The error of a failed step as a {@link HostApplyError} with the steps applied before it. Its
+ * cause is the failed command's (never set for a command that carried a secret on stdin).
+ */
+function failure(error: unknown, applied: readonly HostStepId[]): HostApplyError {
+  if (error instanceof OpsCrewError) {
+    return new HostApplyError(error.code, error.message, [...applied], {
+      ...(error.hint !== undefined && { hint: error.hint }),
+      cause: error.cause,
     });
   }
-  return error;
+  return new HostApplyError(
+    "INTERNAL",
+    "OpsCrew stopped on an error it did not expect while changing the server.",
+    [...applied],
+    {
+      hint: "Run the command again: steps that are already done are skipped. If it keeps failing, please report it to OpsCrew.",
+      cause: error,
+    },
+  );
 }
 
 function refuse(message: string, hint: string): OpsCrewError {
@@ -444,8 +461,8 @@ function refuse(message: string, hint: string): OpsCrewError {
 /**
  * Applies an approved host plan. Refuses with PLAN_HASH_MISMATCH when the plan's hash is not
  * `approvedHash`, and with PHASE_PRECONDITION when it has findings or blocked steps or a secret
- * it needs is missing. When a step fails, the error carries `applied: HostStepId[]`, the steps
- * that changed the server before it.
+ * it needs is missing. When a step fails, it throws a {@link HostApplyError} whose `applied` lists
+ * the steps that changed the server before it.
  * Secrets go to the server only on stdin, into root-only files; they never appear in commands,
  * records or errors. Every change is recorded in `/etc/opscrew/host.json` before it is made.
  */
@@ -462,7 +479,7 @@ export async function applyHostPlan(
   }
   const valid = parsed.data;
   const hash = hostPlanHash(valid);
-  if (!isPlanHash(opts?.approvedHash) || opts.approvedHash.toLowerCase() !== hash) {
+  if (!isPlanHash(opts.approvedHash) || opts.approvedHash.toLowerCase() !== hash) {
     // Same code as the IaC engine's hash-bound apply.
     throw new OpsCrewError(
       "PLAN_HASH_MISMATCH",
@@ -485,9 +502,6 @@ export async function applyHostPlan(
       `The host plan has blocked steps (${blocked.map((step) => step.id).join(", ")}), so OpsCrew changes nothing.`,
       "Resolve what blocks them, then make and approve a fresh host plan.",
     );
-  }
-  if (typeof opts.verifyLogin !== "function") {
-    throw new OpsCrewError("INVALID_INPUT", "verifyLogin is required to apply a host plan.");
   }
   const deadManSeconds = opts.deadManSeconds ?? DEFAULT_DEAD_MAN_SECONDS;
   if (!Number.isInteger(deadManSeconds) || deadManSeconds < 30 || deadManSeconds > 3600) {
@@ -575,7 +589,7 @@ export async function applyHostPlan(
     try {
       changed = await runStep(ctx, step, work.scripts);
     } catch (error) {
-      throw withApplied(error, applied);
+      throw failure(error, applied);
     }
     if (changed) applied.push(step.id);
     else skipped.push(step.id);

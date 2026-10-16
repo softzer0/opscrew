@@ -1,14 +1,13 @@
 import { createHmac } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
 
-/** The name the webhook's fingerprint is computed under: `valueFingerprints(key, { webhook })`. */
+/** The name the webhook's fingerprint is computed under: `valueFingerprint(key, "webhook", id)`. */
 export const WEBHOOK_FINGERPRINT_NAME = "webhook";
 
 /**
  * Keyed fingerprints of values: `HMAC-SHA256(key, name + "\0" + value)` as hex, per entry. The
  * key stays on the user's computer (0600), so a fingerprint tells whether a value changed without
- * revealing it; values never leave memory. The webhook's fingerprint is
- * `valueFingerprints(key, { webhook: webhookId }).webhook`.
+ * revealing it; values never leave memory.
  */
 export function valueFingerprints(
   key: Uint8Array,
@@ -21,6 +20,15 @@ export function valueFingerprints(
     if (typeof value === "string") out[name] = fingerprint(key, name, value);
   }
   return out;
+}
+
+/**
+ * The keyed fingerprint of one value, as {@link valueFingerprints} gives it under `name`. The
+ * webhook's is `valueFingerprint(key, "webhook", webhookId)`.
+ */
+export function valueFingerprint(key: Uint8Array, name: string, value: string): string {
+  checkKey(key);
+  return fingerprint(key, name, value);
 }
 
 /** One keyed fingerprint (the key is checked by the caller). */

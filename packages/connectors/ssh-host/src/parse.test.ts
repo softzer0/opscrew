@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { foreignFirewalls, foreignIptables, foreignNft } from "./firewall";
 import {
-  canonicalCidr,
+  canonicalIpv4Cidr,
   dockerdFlags,
   engineVersion,
   isLoopback,
@@ -91,26 +91,16 @@ describe("parseWebFilterChain and parseDockerUserChain (iptables-save)", () => {
   });
 });
 
-describe("canonicalCidr", () => {
-  it("writes networks the way ufw and iptables print them", () => {
-    expect(canonicalCidr("173.245.48.0/20")).toEqual({ family: "ipv4", cidr: "173.245.48.0/20" });
-    expect(canonicalCidr("173.245.48.9/20")).toEqual({ family: "ipv4", cidr: "173.245.48.0/20" });
-    expect(canonicalCidr("198.51.100.4/32")).toEqual({ family: "ipv4", cidr: "198.51.100.4" });
-    expect(canonicalCidr("2400:CB00::/32")).toEqual({ family: "ipv6", cidr: "2400:cb00::/32" });
-    expect(canonicalCidr("2400:cb00:0:0:0:0:0:0/32")).toEqual({
-      family: "ipv6",
-      cidr: "2400:cb00::/32",
-    });
-    expect(canonicalCidr("2a06:98c7::/29")).toEqual({ family: "ipv6", cidr: "2a06:98c0::/29" });
-    expect(canonicalCidr("2001:db8:0:1:0:0:0:1/128")).toEqual({
-      family: "ipv6",
-      cidr: "2001:db8:0:1::1",
-    });
-    // A single zero group is never compressed (RFC 5952).
-    expect(canonicalCidr("2001:db8:0:1:1:1:1:1/128")?.cidr).toBe("2001:db8:0:1:1:1:1:1");
+describe("canonicalIpv4Cidr", () => {
+  it("writes IPv4 networks the way iptables prints them", () => {
+    expect(canonicalIpv4Cidr("173.245.48.0/20")).toBe("173.245.48.0/20");
+    expect(canonicalIpv4Cidr("173.245.48.9/20")).toBe("173.245.48.0/20");
+    expect(canonicalIpv4Cidr("198.51.100.4/32")).toBe("198.51.100.4");
+    expect(canonicalIpv4Cidr(" 198.51.100.4 ")).toBe("198.51.100.4");
+    expect(canonicalIpv4Cidr("10.1.2.3/0")).toBe("0.0.0.0/0");
   });
 
-  it("refuses anything that is not a network", () => {
+  it("refuses anything that is not an IPv4 network, IPv6 included", () => {
     for (const text of [
       "",
       "any",
@@ -118,14 +108,12 @@ describe("canonicalCidr", () => {
       "256.1.1.1/8",
       "01.2.3.4/8",
       "1.2.3/8",
-      "2400:cb00::/129",
-      "2400::cb00::/32",
-      "2400:cb00/32",
       "1.2.3.4/8/8",
       "1.2.3.4/x",
+      "2400:cb00::/32",
       "fe80::1%eth0/64",
     ]) {
-      expect(canonicalCidr(text)).toBeNull();
+      expect(canonicalIpv4Cidr(text)).toBeNull();
     }
   });
 });
@@ -260,6 +248,12 @@ describe("parsers", () => {
     expect(isPublicAddress("100.64.0.1")).toBe(false);
     expect(isPublicAddress("172.32.0.1")).toBe(true);
     expect(isPublicAddress("fe80::1")).toBe(false);
+  });
+
+  it("does not count 0.0.0.0/8 as public (as the agents' own check never did)", () => {
+    expect(isPublicAddress("0.0.0.0")).toBe(false);
+    expect(isPublicAddress("0.1.2.3")).toBe(false);
+    expect(isPublicAddress("1.0.0.1")).toBe(true);
   });
 
   it("finds directory services in nsswitch, ufw's default policies and dockerd flags", () => {

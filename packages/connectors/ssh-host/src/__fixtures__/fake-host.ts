@@ -4,25 +4,28 @@
  * their `# opscrew-host: <name>` header and quoted parameters. Every call is recorded so tests can
  * check which commands ran, what reached stdin, and that each script passes `sh -n`.
  */
-import { createHash } from "node:crypto";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
+import { sha256Hex as sha256 } from "@opscrew/core";
 import {
+  AUTO_UPGRADES_FILE,
+  BACKUP_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   FAIL2BAN_JAIL_PATH,
   HASHED_RUNTIME_FILES,
+  MARKER_PATH,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
   READY_FLAG,
+  RECORD_PATH,
   RUNTIME_FILE_NAMES,
+  SSHD_BACKUP,
+  SSHD_DROP_IN,
   SSHD_HEADER,
-  sshdDropIn,
   TUNNEL_DIR,
   TUNNEL_PROJECT,
 } from "../constants";
-import { AUTO_UPGRADES_FILE, MARKER_PATH, RECORD_PATH, SSHD_DROP_IN } from "../facts";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
-import { BACKUP_DIR, SSHD_BACKUP } from "../steps";
 import { WEB_FILTER_DROP_IN, WEB_FILTER_SCRIPT, WEB_FILTER_UNIT } from "../web-filter";
 
 /** One address family's filter state: OpsCrew's chain (null when absent) and DOCKER-USER. */
@@ -132,10 +135,6 @@ export interface FakeHostOptions {
 }
 
 const MACHINE = { amd64: "x86_64", arm64: "aarch64", armhf: "armv7l" } as const;
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
 
 /** Reverses `shellQuote`: the text between the outer quotes, with `'\''` turned back into `'`. */
 function unquote(quoted: string): string {
@@ -412,16 +411,9 @@ export class FakeHost implements RemoteExec {
     return this.ufwRules.some((existing) => existing.rule === `allow ${rule}`);
   }
 
-  private expectedDropIn(p: Record<string, string>): string {
-    return sshdDropIn({
-      permitRootLogin: p.ROOT_LOGIN ?? "",
-      disablePasswords: p.PASSWORDS_OFF === "true",
-      kbdInteractiveOff: p.KBD_OFF === "true",
-    });
-  }
-
   private dropInOk(p: Record<string, string>): boolean {
-    return this.files.get(SSHD_DROP_IN) === this.expectedDropIn(p);
+    const dropIn = this.files.get(SSHD_DROP_IN);
+    return dropIn !== undefined && sha256(dropIn) === p.DROPIN_SHA256;
   }
 
   private autoUpgradesOn(): boolean {
@@ -897,7 +889,7 @@ export class FakeHost implements RemoteExec {
         if (current !== undefined && !this.files.has(SSHD_BACKUP) && !current.startsWith(SSHD_HEADER)) {
           this.files.set(SSHD_BACKUP, current);
         }
-        this.files.set(SSHD_DROP_IN, this.expectedDropIn(p));
+        this.files.set(SSHD_DROP_IN, Buffer.from(p.DROPIN_B64 ?? "", "base64").toString("utf8"));
         if (this.sshdTestFails) {
           this.timers.get("sshd")?.();
           return fail("The new SSH settings did not pass sshd -t, so OpsCrew put the previous ones back.", 4);

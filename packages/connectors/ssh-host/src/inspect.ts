@@ -1,16 +1,20 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell and Go templates, not JavaScript templates.
 import type { RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { canonicalJson, isRecord, OpsCrewError } from "@opscrew/core";
 import {
   APP_DIR,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   FAIL2BAN_JAIL_PATH,
   HASHED_RUNTIME_FILES,
+  MARKER_PATH,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
   READY_FLAG,
+  RECORD_PATH,
+  RUNTIME_DIRS,
   RUNTIME_FILE_NAMES,
+  SSHD_DROP_IN,
   TUNNEL_DIR,
   TUNNEL_PROJECT,
 } from "./constants";
@@ -19,14 +23,9 @@ import {
   type HostFacts,
   HostFactsSchema,
   HostRecordSchema,
-  MARKER_PATH,
-  RECORD_PATH,
-  RUNTIME_DIRS,
-  SSHD_DROP_IN,
   type WebFilterFacts,
 } from "./facts";
 import { foreignFirewalls } from "./firewall";
-import { canonicalJson } from "./hash";
 import {
   dockerdFlags,
   EXIT_MARK,
@@ -349,11 +348,7 @@ export function dockerFirewall(input: { daemonJson: Section; execStart: string; 
 } {
   const settings =
     input.daemonJson.exit === 0
-      ? (parseJson(input.daemonJson.text, (value) =>
-          typeof value === "object" && value !== null
-            ? (value as Record<string, unknown>)
-            : undefined,
-        ) ?? {})
+      ? (parseJson(input.daemonJson.text, (value) => (isRecord(value) ? value : undefined)) ?? {})
       : {};
   const flags = input.execStart;
   const driver = /"Driver"\s*:\s*"([a-z+]+)"/.exec(input.info)?.[1] ?? "";
@@ -448,13 +443,10 @@ export function factsFromOutput(
   else if (repoVersion !== undefined) kind = "docker-repo";
   else if (packages.has("docker.io")) kind = "distro";
   else if (section(sections, "docker-cli").exit === 0) kind = "other";
-  const serverVersion = ok(sections, "docker-server").trim();
-  const version =
-    kind === "docker-repo"
-      ? engineVersion(repoVersion ?? "")
-      : /^\d+\.\d+\.\d+/.test(serverVersion)
-        ? (/^\d+\.\d+\.\d+/.exec(serverVersion)?.[0] ?? null)
-        : null;
+  // The package version (`5:28.5.1-1~ubuntu.24.04~noble`), else what the daemon reports.
+  const version = engineVersion(
+    kind === "docker-repo" ? (repoVersion ?? "") : ok(sections, "docker-server"),
+  );
 
   const marker = section(sections, "marker");
   const markerValue =

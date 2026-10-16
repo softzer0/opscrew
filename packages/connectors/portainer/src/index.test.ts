@@ -2,7 +2,6 @@ import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import {
   applyStackPlan,
-  composeVariables,
   fetchCertificateFingerprint,
   inspectPortainer,
   opscrewNames,
@@ -11,14 +10,17 @@ import {
   planStackTeardown,
   portainerClient,
   stackPlanHash,
+  valueFingerprint,
   valueFingerprints,
 } from "./index";
+import { composeVariables } from "./plan";
 
 describe("@opscrew/connector-portainer", () => {
   it("exports the contract's functions from the package root", () => {
     for (const fn of [
       fetchCertificateFingerprint,
       portainerClient,
+      valueFingerprint,
       valueFingerprints,
       inspectPortainer,
       planStacks,

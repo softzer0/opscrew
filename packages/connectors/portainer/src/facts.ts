@@ -66,7 +66,6 @@ export interface PortainerStackFacts extends StackDetails {
 /** The read-only inspection result (data-model "Portainer facts"). */
 export interface PortainerFacts {
   version: string;
-  edition?: string;
   composeVersion?: string;
   dockerVersion?: string;
   /** The token's user; absent when the token was rejected. */
@@ -115,52 +114,3 @@ export function atLeast(version: string | undefined, minimum: string): boolean {
   }
   return true;
 }
-
-/** Plain-English findings; never a secret or Portainer's address. */
-export const findings = {
-  tokenRejected: (): PortainerFinding => ({
-    code: "token-rejected",
-    message: "Portainer rejected the access token (HTTP 401).",
-    hint: "Create an access token in Portainer (your user menu → My account → Access tokens) for a user who may manage stacks on the environment, set it as PORTAINER_API_KEY and run the command again.",
-  }),
-  accessDenied: (what: string): PortainerFinding => ({
-    code: "access-denied",
-    message: `Portainer refused (HTTP 403): the token's user may not ${what}.`,
-    hint: "In Portainer, give the token's user access to the environment (Environments → the environment → Manage access), or use an administrator's token, then run the command again.",
-  }),
-  portainerVersion: (version: string): PortainerFinding => ({
-    code: "portainer-version",
-    message: `Portainer ${version} is older than ${MIN_PORTAINER_VERSION}, the oldest version OpsCrew supports.`,
-    hint: "Update Portainer to the current LTS release (2.45 or newer), then run the command again.",
-  }),
-  composeVersion: (version: string): PortainerFinding => ({
-    code: "compose-version",
-    message: `Portainer deploys stacks with Docker Compose ${version}; OpsCrew needs ${MIN_COMPOSE_VERSION} or newer (for inline configuration).`,
-    hint: "Update Portainer (newer releases bundle a newer Compose), then run the command again.",
-  }),
-  composeVersionUnknown: (): PortainerFinding => ({
-    code: "compose-version",
-    message: `OpsCrew could not read the Compose version Portainer deploys stacks with, so it cannot check that it is ${MIN_COMPOSE_VERSION} or newer.`,
-    hint: "Update Portainer to the current LTS release (it reports its Compose version), then run the command again.",
-  }),
-  environmentMissing: (id: number): PortainerFinding => ({
-    code: "environment-missing",
-    message: `The token's user cannot see environment ${id} in Portainer.`,
-    hint: "Pick an environment the user may use, or in Portainer give the user access to it (Environments → the environment → Manage access); then run `opscrew interview` again.",
-  }),
-  environmentType: (name: string, kind: string): PortainerFinding => ({
-    code: "environment-type",
-    message: `Environment "${name}" is ${kind}; OpsCrew deploys only to a single Docker host for now.`,
-    hint: "Pick a single Docker host environment (Docker Standalone, directly or through the Portainer agent), then run `opscrew interview` again.",
-  }),
-  environmentDown: (name: string): PortainerFinding => ({
-    code: "environment-down",
-    message: `Portainer reports environment "${name}" as down.`,
-    hint: "Check that Docker and (if used) the Portainer agent run on that host, then run the command again.",
-  }),
-  architecture: (name: string, arch: string): PortainerFinding => ({
-    code: "architecture",
-    message: `Environment "${name}" runs on ${arch}; OpsCrew builds images for amd64 and arm64 only.`,
-    hint: "Pick an environment on a 64-bit Intel/AMD or ARM host.",
-  }),
-} as const;

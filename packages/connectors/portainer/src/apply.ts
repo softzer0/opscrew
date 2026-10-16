@@ -1,6 +1,14 @@
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import type { EnvPair, PortainerClient, StackDetails } from "./client";
-import { DEPLOY_COMPOSE_FILE, DEPLOY_REFERENCE, opscrewNames } from "./names";
+import {
+  DEPLOY_COMPOSE_FILE,
+  DEPLOY_REFERENCE,
+  opscrewNames,
+  ROLE_NAMES,
+  ROLES,
+  type Role,
+  stackName,
+} from "./names";
 import {
   type CreatedRecord,
   type DesiredValueFingerprints,
@@ -11,10 +19,11 @@ import {
   StackPlanSchema,
   sendsNothing,
   sentValues,
+  sortByRole,
   stackPlanHash,
   valuesDigestOf,
 } from "./plan";
-import { valueFingerprints, WEBHOOK_FINGERPRINT_NAME } from "./values";
+import { valueFingerprint, valueFingerprints, WEBHOOK_FINGERPRINT_NAME } from "./values";
 
 /** Secrets supplied at apply; never part of the plan, its hash, the record or an error. */
 export interface ApplySecrets {
@@ -117,7 +126,7 @@ export async function applyStackPlan(
     });
   }
   const valid = parsed.data;
-  if (!isPlanHash(opts?.approvedHash) || opts.approvedHash.toLowerCase() !== stackPlanHash(valid)) {
+  if (!isPlanHash(opts.approvedHash) || opts.approvedHash.toLowerCase() !== stackPlanHash(valid)) {
     throw new OpsCrewError(
       "PLAN_HASH_MISMATCH",
       "This stack plan is not the one that was approved, so OpsCrew changes nothing in Portainer.",
@@ -140,7 +149,7 @@ export async function applyStackPlan(
     );
   }
 
-  const secrets = opts.secrets ?? { env: {} };
+  const secrets = opts.secrets;
   registerSecrets(client, secrets);
   const work = valid.changes.filter(
     (change) => change.state === "change" || change.params.action === "forget",
@@ -219,19 +228,17 @@ function checkValuesDigest(
     );
   }
   if (sent.webhook) {
-    parts.webhook = valueFingerprints(valueKey, {
-      [WEBHOOK_FINGERPRINT_NAME]: secrets.webhookId ?? "",
-    })[WEBHOOK_FINGERPRINT_NAME];
+    parts.webhook = valueFingerprint(valueKey, WEBHOOK_FINGERPRINT_NAME, secrets.webhookId ?? "");
   }
   if (sent.repositoryToken) {
-    parts.repositoryToken = valueFingerprints(valueKey, {
-      repositoryToken: secrets.repositoryToken ?? "",
-    }).repositoryToken;
+    parts.repositoryToken = valueFingerprint(
+      valueKey,
+      "repositoryToken",
+      secrets.repositoryToken ?? "",
+    );
   }
   if (sent.registryToken) {
-    parts.registryToken = valueFingerprints(valueKey, {
-      registryToken: secrets.registryToken ?? "",
-    }).registryToken;
+    parts.registryToken = valueFingerprint(valueKey, "registryToken", secrets.registryToken ?? "");
   }
   if (valuesDigestOf(parts) !== plan.valuesDigest) {
     throw new OpsCrewError(
@@ -263,30 +270,24 @@ interface Context {
   done: (text: string) => void;
 }
 
-type Role = CreatedRecord["stacks"][number]["role"];
-
-const ROLE_OF: Partial<Record<StackChangeId, Role>> = {
-  "app-stack": "app",
-  "updater-stack": "updater",
-  "tunnel-connector-stack": "tunnel-connector",
-};
+/** The role of the stack a change manages; `undefined` for the registry and volume changes. */
+function roleOf(id: StackChangeId): Role | undefined {
+  return ROLE_NAMES.find((role) => ROLES[role].change === id);
+}
 
 function registerSecrets(client: PortainerClient, secrets: ApplySecrets): void {
-  for (const [key, value] of Object.entries(secrets.env ?? {})) {
-    if (typeof value === "string") client.registerSecret(value, key);
-  }
+  for (const [key, value] of Object.entries(secrets.env)) client.registerSecret(value, key);
   for (const [key, value] of Object.entries(secrets.updaterEnv ?? {})) {
-    if (typeof value === "string") client.registerSecret(value, key);
+    client.registerSecret(value, key);
   }
-  if (typeof secrets.webhookId === "string") client.registerSecret(secrets.webhookId, "webhook-id");
-  if (typeof secrets.repositoryToken === "string") {
+  if (secrets.webhookId !== undefined) client.registerSecret(secrets.webhookId, "webhook-id");
+  if (secrets.repositoryToken !== undefined) {
     client.registerSecret(secrets.repositoryToken, "repository-token");
   }
-  if (typeof secrets.registryToken === "string") {
+  if (secrets.registryToken !== undefined) {
     client.registerSecret(secrets.registryToken, "OPSCREW_GHCR_READ_TOKEN");
   }
-  if (typeof secrets.tunnelToken === "string")
-    client.registerSecret(secrets.tunnelToken, "tunnel-token");
+  if (secrets.tunnelToken !== undefined) client.registerSecret(secrets.tunnelToken, "tunnel-token");
 }
 
 function invalid(message: string, hint?: string): OpsCrewError {
@@ -297,7 +298,7 @@ function invalid(message: string, hint?: string): OpsCrewError {
 function check(plan: StackPlan, change: StackChange, secrets: ApplySecrets, pinned: boolean): void {
   const names = opscrewNames(plan.app);
   const action = str(change.params, "action");
-  const role = ROLE_OF[change.id];
+  const role = roleOf(change.id);
   const recordedStack = (id: number) =>
     plan.record.stacks.find((stack) => stack.id === id && stack.role === role);
   const notOurs = () =>
@@ -308,10 +309,7 @@ function check(plan: StackPlan, change: StackChange, secrets: ApplySecrets, pinn
 
   if (plan.purpose === "teardown" && action !== "remove" && action !== "forget") throw notOurs();
   if (role !== undefined) {
-    const name = str(change.params, "name");
-    const expected =
-      role === "app" ? names.app : role === "updater" ? names.updater : names.tunnelConnector;
-    if (name !== expected) throw notOurs();
+    if (str(change.params, "name") !== stackName(names, role)) throw notOurs();
     if (action !== "create" && recordedStack(num(change.params, "stackId")) === undefined) {
       throw notOurs();
     }
@@ -565,7 +563,7 @@ async function run(ctx: Context, change: StackChange): Promise<boolean> {
     return true;
   }
 
-  const role = ROLE_OF[change.id];
+  const role = roleOf(change.id);
   if (role === undefined) throw new OpsCrewError("INTERNAL", `Unknown stack change ${change.id}.`);
   const name = str(params, "name");
 
@@ -660,18 +658,16 @@ async function run(ctx: Context, change: StackChange): Promise<boolean> {
 }
 
 function remember(record: CreatedRecord, id: number, name: string, role: Role): void {
-  record.stacks = [
+  record.stacks = sortByRole([
     ...record.stacks.filter((stack) => stack.role !== role),
     { id, name, role },
-  ].sort((a, b) => ORDER[a.role] - ORDER[b.role]);
+  ]);
 }
 
 /** The app stack's volumes go into the record as soon as the stack is OpsCrew's. */
 function recordVolumes(record: CreatedRecord, params: Readonly<Record<string, StackParamValue>>) {
   record.volumes = [...new Set([...record.volumes, ...list(params, "volumes")])].sort();
 }
-
-const ORDER: Record<Role, number> = { app: 0, updater: 1, "tunnel-connector": 2 };
 
 /**
  * Which deploy to wait for: any (a new stack), a start (the stack leaves Status 2), or one after

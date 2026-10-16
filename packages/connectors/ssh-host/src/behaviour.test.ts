@@ -6,16 +6,10 @@ import { readdirSync, rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { portainerDesired, portainerPassword } from "./__fixtures__/helpers";
 import { BASH_AVAILABLE, ShellHarness } from "./__fixtures__/shell-harness";
-import { DOCKER_DAEMON_JSON } from "./constants";
+import { DOCKER_DAEMON_JSON, sshdDropIn } from "./constants";
 import { inspectScript, privilegeProbeScript } from "./inspect";
-import {
-  armScript,
-  cancelScript,
-  planPortainer,
-  type StepScripts,
-  stepScripts,
-  triggerScript,
-} from "./steps";
+import { planPortainer } from "./plan";
+import { armScript, cancelScript, type StepScripts, stepScripts, triggerScript } from "./steps";
 import type { HostPlan, HostStep } from "./types";
 
 const KEY =
@@ -814,6 +808,29 @@ esac`;
       h.write("/state/active.docker", "");
       expect(h.run(marker(false).apply).status).toBe(0);
       expect(h.exists("/etc/opscrew/app.json")).toBe(true);
+    });
+  });
+
+  describe("sshd", () => {
+    it("writes the planned drop-in byte for byte, keeps the user's own file once, and reloads ssh", () => {
+      const h = harness();
+      h.stub(
+        "sshd",
+        `case "$1" in
+  -T) printf '%s\\n' 'port 22' 'permitrootlogin no' 'passwordauthentication no' 'kbdinteractiveauthentication no' ;;
+esac`,
+      );
+      const settings = { permitRootLogin: "no", disablePasswords: true, kbdInteractiveOff: true };
+      h.write("/etc/ssh/sshd_config.d/10-opscrew.conf", "X11Forwarding no\n");
+      const { apply, verify } = scriptsFor("setup", "sshd", settings);
+      const run = h.run(apply);
+      expect(run.status, run.stderr).toBe(0);
+      expect(h.read("/etc/ssh/sshd_config.d/10-opscrew.conf")).toBe(sshdDropIn(settings));
+      expect(h.read("/etc/opscrew/backup/10-opscrew.conf")).toBe("X11Forwarding no\n");
+      // Written beside the file and renamed over it: no temporary file is left behind.
+      expect(readdirSync(h.native("/etc/ssh/sshd_config.d"))).toEqual(["10-opscrew.conf"]);
+      expect(h.calls()).toContain("systemctl try-reload-or-restart ssh.service");
+      expect(h.run(verify).status).toBe(0);
     });
   });
 

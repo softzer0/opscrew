@@ -5,53 +5,30 @@
  * See `specs/009-own-server/contracts/host-adapter.md`.
  */
 
-export { applyHostPlan } from "./apply";
+export { applyHostPlan, HostApplyError } from "./apply";
 export {
   APP_DIR,
-  DEFAULT_DEAD_MAN_SECONDS,
   HASHED_RUNTIME_FILES,
   MIN_DOCKER_MAJOR,
   PORTAINER_DIR,
-  PORTAINER_PORT,
   PORTAINER_PROJECT,
   type RuntimeFileName,
   SECRET_RUNTIME_FILES,
-  TUNNEL_APP_PORT,
-  TUNNEL_DIR,
-  TUNNEL_PROJECT,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
 } from "./constants";
-export {
-  HOST_ADAPTER_VERSION,
-  type HostFacts,
-  HostFactsSchema,
-  type HostRecord,
-  HostRecordSchema,
-  MARKER_PATH,
-  NO_WEB_FILTER,
-  RECORD_PATH,
-  type WebFilterFacts,
-  webFilterFacts,
-} from "./facts";
-export { canonicalJson, hostPlanHash } from "./hash";
+export { type HostFacts, HostFactsSchema, webFilterFacts } from "./facts";
+export { hostPlanHash } from "./hash";
 export { inspectHost } from "./inspect";
-export { planHost, planTeardown, planUndo } from "./plan";
-export { planPortainer } from "./steps";
+export { isPublicAddress } from "./parse";
+export { planHost, planPortainer, planTeardown, planUndo } from "./plan";
 export {
   type ApplyOptions,
   type ApplyResult,
   type DesiredHost,
-  HOST_PLAN_SCHEMA_VERSION,
-  type HostFinding,
   type HostPlan,
   HostPlanSchema,
   type HostStep,
   type HostStepId,
 } from "./types";
-export {
-  WEB_FILTER_CHAIN,
-  WEB_FILTER_SERVICE,
-  type WebFilterRanges,
-  webFilterFileHashes,
-} from "./web-filter";
+export { webFilterFileHashes } from "./web-filter";

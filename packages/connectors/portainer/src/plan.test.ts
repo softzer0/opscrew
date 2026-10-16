@@ -22,7 +22,7 @@ import {
   StackPlanSchema,
   stackPlanHash,
 } from "./plan";
-import { valueFingerprints } from "./values";
+import { valueFingerprint, valueFingerprints } from "./values";
 
 const ids = (plan: StackPlan) => plan.changes.map((change) => `${change.id}:${change.state}`);
 const codes = (plan: StackPlan) => plan.findings.map((finding) => finding.code);
@@ -386,7 +386,7 @@ describe("planStacks", () => {
 describe("planStackTeardown", () => {
   it("removes exactly the recorded stacks and registry entry, keeping data by default", async () => {
     const facts = setUp(await world().inspect());
-    const plan = planStackTeardown(facts, record, { deleteData: false });
+    const plan = planStackTeardown(facts, record, { deleteData: false, app: "shop" });
     expect(plan.purpose).toBe("teardown");
     expect(plan.deleteData).toBe(false);
     expect(ids(plan)).toEqual(["updater-stack:change", "app-stack:change", "registry:change"]);
@@ -398,7 +398,7 @@ describe("planStackTeardown", () => {
 
   it("with deleteData, deletes the recorded volumes after stopping the app, before removing it", async () => {
     const facts = setUp(await world().inspect());
-    const plan = planStackTeardown(facts, record, { deleteData: true });
+    const plan = planStackTeardown(facts, record, { deleteData: true, app: "shop" });
     expect(ids(plan)).toEqual([
       "updater-stack:change",
       "volumes:change",
@@ -419,7 +419,7 @@ describe("planStackTeardown", () => {
       { name: "opscrew-shop_db-data", project: "opscrew-shop" },
       { name: "opscrew-shop_cache", project: "opscrew-shop" },
     ];
-    const plan = planStackTeardown(facts, record, { deleteData: true });
+    const plan = planStackTeardown(facts, record, { deleteData: true, app: "shop" });
     expect(plan.changes[1]?.params.names).toEqual(["opscrew-shop_db-data"]);
     expect(plan.changes[1]?.reason).toMatch(/not record are kept: opscrew-shop_cache/);
   });
@@ -427,14 +427,14 @@ describe("planStackTeardown", () => {
   it("says what is already gone, and never removes a stack OpsCrew did not create", async () => {
     const facts = setUp(await world().inspect());
     facts.stacks = facts.stacks.filter((stack) => stack.id !== 102);
-    const plan = planStackTeardown(facts, record, { deleteData: false });
+    const plan = planStackTeardown(facts, record, { deleteData: false, app: "shop" });
     expect(plan.changes[0]).toMatchObject({ id: "updater-stack", state: "in-place" });
     expect(plan.changes[0]?.reason).toMatch(/does not show/);
 
     const replaced = setUp(await world().inspect());
     const app = replaced.stacks[0];
     if (app) app.id = 555;
-    const other = planStackTeardown(replaced, record, { deleteData: false });
+    const other = planStackTeardown(replaced, record, { deleteData: false, app: "shop" });
     expect(other.changes[1]).toMatchObject({ id: "app-stack", state: "in-place" });
     expect(other.changes[1]?.reason).toMatch(/did not create.*leaves it alone/);
   });
@@ -442,15 +442,15 @@ describe("planStackTeardown", () => {
   it("blocks removing the registry entry with a limited token", async () => {
     const facts = setUp(await world().inspect("limited"));
     facts.registryEntries = undefined;
-    const plan = planStackTeardown(facts, record, { deleteData: false });
+    const plan = planStackTeardown(facts, record, { deleteData: false, app: "shop" });
     expect(plan.changes.at(-1)).toMatchObject({ id: "registry", state: "blocked" });
   });
 
-  it("needs the app's name when the record is empty", async () => {
+  it("plans nothing for an empty record, and refuses an app name OpsCrew cannot use", async () => {
     const facts = await world().inspect();
     expect(() =>
-      planStackTeardown(facts, { stacks: [], volumes: [] }, { deleteData: false }),
-    ).toThrow(/app/);
+      planStackTeardown(facts, { stacks: [], volumes: [] }, { deleteData: false, app: "Shop!" }),
+    ).toThrow(/app name/);
     const plan = planStackTeardown(
       facts,
       { stacks: [], volumes: [] },
@@ -462,7 +462,7 @@ describe("planStackTeardown", () => {
   it("blocks a recorded volume whose Compose project is not the app's stack", async () => {
     const facts = setUp(await world().inspect());
     facts.volumes = [{ name: "opscrew-shop_db-data", project: "jellyfin" }];
-    const plan = planStackTeardown(facts, record, { deleteData: true });
+    const plan = planStackTeardown(facts, record, { deleteData: true, app: "shop" });
     expect(plan.changes.find((change) => change.id === "volumes")).toMatchObject({
       state: "blocked",
     });
@@ -472,7 +472,7 @@ describe("planStackTeardown", () => {
     const unlabelled = setUp(await world().inspect());
     unlabelled.volumes = [{ name: "opscrew-shop_db-data" }];
     expect(
-      planStackTeardown(unlabelled, record, { deleteData: true }).changes.find(
+      planStackTeardown(unlabelled, record, { deleteData: true, app: "shop" }).changes.find(
         (change) => change.id === "volumes",
       )?.state,
     ).toBe("blocked");
@@ -480,7 +480,7 @@ describe("planStackTeardown", () => {
     const unseen = setUp(await world().inspect());
     unseen.volumes = [];
     expect(
-      planStackTeardown(unseen, record, { deleteData: true }).changes.find(
+      planStackTeardown(unseen, record, { deleteData: true, app: "shop" }).changes.find(
         (change) => change.id === "volumes",
       )?.state,
     ).toBe("change");
@@ -489,7 +489,11 @@ describe("planStackTeardown", () => {
   it("refuses a record with volumes that are not the app stack's", async () => {
     const facts = setUp(await world().inspect());
     expect(() =>
-      planStackTeardown(facts, { ...record, volumes: ["jellyfin_config"] }, { deleteData: true }),
+      planStackTeardown(
+        facts,
+        { ...record, volumes: ["jellyfin_config"] },
+        { deleteData: true, app: "shop" },
+      ),
     ).toThrow(/not the app stack's/);
   });
 });
@@ -623,7 +627,7 @@ describe("planStacks: recovery, ownership and values", () => {
     // Only the webhook differs; the updater's fingerprints are the ones Portainer holds.
     const fingerprints = {
       ...fingerprintsFor(key, s),
-      webhook: valueFingerprints(key, { webhook: next.webhookId }).webhook as string,
+      webhook: valueFingerprint(key, "webhook", next.webhookId),
     };
     const plan = planStacks(
       withFingerprints(key, s),
@@ -966,7 +970,6 @@ describe("planStacks: replacing the repository and registry tokens", () => {
 function withFingerprints(key: Uint8Array, s: ReturnType<typeof secrets>): PortainerFacts {
   const base = setUp({
     version: "2.45.2",
-    edition: "CE",
     composeVersion: "2.39.1",
     user: { id: 1, username: "admin", role: "admin" },
     environments: [{ id: 3, name: "nas", kind: "docker", type: 1, swarm: false, status: "up" }],
@@ -977,7 +980,7 @@ function withFingerprints(key: Uint8Array, s: ReturnType<typeof secrets>): Porta
   const [app, updater] = base.stacks;
   if (app?.autoUpdate === undefined || updater === undefined) throw new Error("setUp");
   app.envFingerprints = valueFingerprints(key, s.env);
-  app.autoUpdate.webhookFingerprint = valueFingerprints(key, { webhook: s.webhookId }).webhook;
+  app.autoUpdate.webhookFingerprint = valueFingerprint(key, "webhook", s.webhookId);
   updater.envFingerprints = valueFingerprints(key, s.updaterEnv);
   return base;
 }

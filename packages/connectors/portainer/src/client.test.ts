@@ -1,10 +1,11 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import { type OpsCrewError, Redactor } from "@opscrew/core";
+import { OpsCrewError, Redactor } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { fakePortainer } from "./__fixtures__/fake-portainer";
 import { PortainerApiError, portainerClient } from "./client";
-import { valueFingerprints } from "./values";
+import { PortainerCertificateError } from "./pinned";
+import { valueFingerprint, valueFingerprints } from "./values";
 
 describe("valueFingerprints", () => {
   it("is HMAC-SHA256(key, name NUL value) in hex, per entry", () => {
@@ -14,6 +15,9 @@ describe("valueFingerprints", () => {
     expect(valueFingerprints(key, { DB_PASSWORD: value })).toEqual({ DB_PASSWORD: expected });
     // The name is part of it: the same value under another name differs.
     expect(valueFingerprints(key, { OTHER: value }).OTHER).not.toBe(expected);
+    // One value alone gives the same fingerprint, and needs the same key.
+    expect(valueFingerprint(key, "DB_PASSWORD", value)).toBe(expected);
+    expect(() => valueFingerprint(randomBytes(8), "DB_PASSWORD", value)).toThrow(/16 bytes/);
   });
 });
 
@@ -63,8 +67,6 @@ describe("portainerClient", () => {
     const version = await client.systemVersion();
     expect(version).toEqual({
       version: "2.45.2",
-      edition: "CE",
-      support: "LTS",
       composeVersion: "2.39.1",
       dockerVersion: "29.0.0",
     });
@@ -75,7 +77,6 @@ describe("portainerClient", () => {
     ]);
     expect(await client.dockerInfo(3)).toEqual({
       architecture: "x86_64",
-      osType: "linux",
       serverVersion: "29.9.1",
       swarmActive: false,
     });
@@ -268,6 +269,37 @@ describe("portainerClient", () => {
     expect(error.message).not.toContain(repoToken);
     expect(error.message).not.toContain(fake.tokens.admin);
     expect(client.redact(repoToken)).toBe("[REDACTED:repository-token]");
+  });
+
+  it("masks the token in a failed request's error, and passes a changed certificate on as it is", async () => {
+    const token = fakePortainer().tokens.admin;
+    const thrown = new OpsCrewError("PROVIDER_ERROR", `The proxy refused ${token}.`, {
+      hint: `Retry without ${token}.`,
+    });
+    const leaky = portainerClient(endpoint, token, {
+      request: async () => {
+        throw thrown;
+      },
+    });
+    const error = (await leaky.currentUser().catch((caught: unknown) => caught)) as OpsCrewError;
+    // A new error: the one the request threw is left as it was.
+    expect(error).not.toBe(thrown);
+    expect(thrown.hint).toContain(token);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe("The proxy refused [REDACTED:PORTAINER_API_KEY].");
+    expect(error.hint).toBe("Retry without [REDACTED:PORTAINER_API_KEY].");
+
+    const changed = new PortainerCertificateError(
+      `SHA256:${"AB".repeat(32)}`,
+      `SHA256:${"CD".repeat(32)}`,
+    );
+    const pinned = portainerClient(endpoint, token, {
+      request: async () => {
+        throw changed;
+      },
+    });
+    await expect(pinned.currentUser()).rejects.toBe(changed);
   });
 
   it("refuses ids and volume names that are not valid, before sending anything", async () => {

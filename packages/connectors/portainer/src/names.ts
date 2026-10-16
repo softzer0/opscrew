@@ -27,6 +27,19 @@ export const VolumeNameSchema = z
   .max(255)
   .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/, { message: "must be a Docker volume name" });
 
+/**
+ * The stacks OpsCrew creates for one app, by role, in the order its record lists them: the stack
+ * plan change that manages each, and what its name adds to `opscrew-<app>` (research R6).
+ */
+export const ROLES = {
+  app: { change: "app-stack", suffix: "" },
+  updater: { change: "updater-stack", suffix: "-updater" },
+  "tunnel-connector": { change: "tunnel-connector-stack", suffix: "-portainer-tunnel" },
+} as const;
+export type Role = keyof typeof ROLES;
+/** The roles in record order. */
+export const ROLE_NAMES = Object.keys(ROLES) as [Role, ...Role[]];
+
 /** The names of everything OpsCrew creates in Portainer for one app (research R6). */
 export interface OpsCrewNames {
   /** The app's Git stack (and its Compose project): `opscrew-<app>`. */
@@ -54,14 +67,19 @@ export function opscrewNames(app: string): OpsCrewNames {
   const base = `opscrew-${valid.data}`;
   return {
     app: base,
-    updater: `${base}-updater`,
-    tunnelConnector: `${base}-portainer-tunnel`,
+    updater: stackName({ app: base }, "updater"),
+    tunnelConnector: stackName({ app: base }, "tunnel-connector"),
     registry: base,
   };
+}
+
+/** The name of the app's stack of `role`. */
+export function stackName(names: Pick<OpsCrewNames, "app">, role: Role): string {
+  return `${names.app}${ROLES[role].suffix}`;
 }
 
 /** The stack names `inspectPortainer` should look for, for one app. */
 export function opscrewStackNames(app: string): string[] {
   const names = opscrewNames(app);
-  return [names.app, names.updater, names.tunnelConnector];
+  return ROLE_NAMES.map((role) => stackName(names, role));
 }

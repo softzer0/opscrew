@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import { OpsCrewError } from "@opscrew/core";
+import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { z } from "zod";
 import type { PortainerFacts, PortainerFinding, PortainerStackFacts } from "./facts";
+import { findings as finding } from "./findings";
 import {
   AppNameSchema,
   DEPLOY_BRANCH,
@@ -10,6 +10,10 @@ import {
   OpsCrewNameSchema,
   type OpsCrewNames,
   opscrewNames,
+  ROLE_NAMES,
+  ROLES,
+  type Role,
+  stackName,
   VolumeNameSchema,
 } from "./names";
 
@@ -25,121 +29,6 @@ export const STACK_CHANGE_IDS = [
   "volumes",
 ] as const;
 export type StackChangeId = (typeof STACK_CHANGE_IDS)[number];
-
-/** A non-secret parameter of a change (names, ids, hashes, env keys, the stack file of a string stack). */
-export type StackParamValue = string | number | boolean | readonly string[];
-
-/** One Portainer change, shown to the user and bound by the plan hash. */
-export interface StackChange {
-  id: StackChangeId;
-  /** Plain English, e.g. "Create the Git stack opscrew-shop from the branch opscrew-deploy". */
-  title: string;
-  state: "in-place" | "change" | "blocked";
-  /** Why it is blocked, what is already there, or what to know before applying. */
-  reason?: string;
-  /** Non-secret parameters only; secrets are supplied at apply. */
-  params: Readonly<Record<string, StackParamValue>>;
-}
-
-/** What OpsCrew created in Portainer (`.opscrew/server.json` → `portainer.created`). */
-export interface CreatedRecord {
-  stacks: { id: number; name: string; role: "app" | "updater" | "tunnel-connector" }[];
-  /** The registry entry OpsCrew added (administrator token only). */
-  registryId?: number;
-  /** The app stack's named volumes (deleted only with data deletion). */
-  volumes: string[];
-}
-
-/** The hashed plan approved as `stack-apply` (data-model "Stack plan"). */
-export interface StackPlan {
-  schemaVersion: 1;
-  purpose: "setup" | "teardown";
-  app: string;
-  environmentId: number;
-  changes: StackChange[];
-  findings: PortainerFinding[];
-  /** What OpsCrew had created before this plan; apply returns the record after it. */
-  record: CreatedRecord;
-  /** Teardown only: whether the recorded volumes are deleted. */
-  deleteData?: boolean;
-  /**
-   * SHA-256 over the keyed fingerprints of the values this plan sends (`valueFingerprints`), when
-   * the desired stacks gave them; apply recomputes it from the secrets and refuses a mismatch.
-   */
-  valuesDigest?: string;
-}
-
-/** `valueFingerprints()` of the values on this computer, per stack, and of the webhook id. */
-export interface DesiredValueFingerprints {
-  /** The app stack's `Env` (every key in `envKeys`). */
-  app?: Record<string, string>;
-  /** The updater stack's `Env` (every `${VAR}` of its stack file). */
-  updater?: Record<string, string>;
-  /** The connector stack's `Env` (`TUNNEL_TOKEN`). */
-  connector?: Record<string, string>;
-  /** `valueFingerprints(key, { webhook: webhookId }).webhook`. */
-  webhook?: string;
-  /**
-   * `valueFingerprints(key, { repositoryToken }).repositoryToken`: needed when a change sends the
-   * repository token (the app stack created, updated or redeployed from a private repository).
-   */
-  repositoryToken?: string;
-  /**
-   * `valueFingerprints(key, { registryToken }).registryToken`: needed when a change sends the
-   * registry token (the registry entry added, or its token replaced).
-   */
-  registryToken?: string;
-}
-
-/** What OpsCrew wants in Portainer for one app (see contracts/portainer-adapter.md). */
-export interface DesiredStacks {
-  /** OpsCrew stack names derive from it: `opscrew-<app>`, `opscrew-<app>-updater`, … */
-  app: string;
-  environmentId: number;
-  repository: {
-    /** `https://` without a login (the token is supplied at apply). */
-    url: string;
-    branch: "opscrew-deploy";
-    composeFile: "compose.yaml";
-    private: boolean;
-    /** User name sent with the read-only token (default `x-access-token`). */
-    username?: string;
-  };
-  /** The app's variables (values supplied at apply). */
-  envKeys: readonly string[];
-  /** The image's registry; with `private`, Portainer needs a registry entry to pull it. */
-  registry?: {
-    url: "ghcr.io";
-    private: boolean;
-    /** User name of the registry entry's login (default `opscrew`; GHCR checks only the token). */
-    username?: string;
-  };
-  redeploy: "updater" | "cloudflare";
-  /** Rendered by `@opscrew/iac-templates`; its `${VARS}` are supplied at apply (`updaterEnv`). */
-  updater?: { compose: string };
-  /** Rendered by `@opscrew/iac-templates`; it may only use `${TUNNEL_TOKEN}`. */
-  tunnelConnector?: { compose: string };
-  /** Host ports the app stack publishes (80 and 443 for Caddy, or the proxy port); checked free. */
-  ports?: readonly number[];
-  /** Docker names of the app stack's named volumes (`opscrew-<app>_<volume>`), recorded at apply. */
-  volumes?: readonly string[];
-  /** What OpsCrew created before (`server.json` → `portainer.created`); absent on the first run. */
-  record?: CreatedRecord;
-  /**
-   * Keyed fingerprints of the local values, so a changed value (or webhook) plans an update naming
-   * the keys only, and the plan is bound to them (`valuesDigest`; apply refuses a plan that sends
-   * values without it). When given: `app`, `webhook`, and `updater` (updater mode) or `connector`
-   * (cloudflare mode). Compare them with a client made with the same `valueKey`.
-   */
-  valueFingerprints?: DesiredValueFingerprints;
-  /**
-   * Tokens to send again (rotation; Portainer never shows them back, so this is explicit):
-   * `repository` plans a Git update of the app stack (private repository only), `registry` a
-   * token update of the registry entry OpsCrew added (private image, administrator token). Each
-   * needs the token's fingerprint in `valueFingerprints`.
-   */
-  replaceTokens?: { repository?: boolean; registry?: boolean };
-}
 
 // --- Schemas --------------------------------------------------------------------------------------
 
@@ -181,7 +70,10 @@ const RepositoryUrlSchema = z
 
 const PortSchema = z.int().min(1).max(65535);
 
-/** zod schema for {@link CreatedRecord} (the same rules as `server.json`). */
+/**
+ * What OpsCrew created in Portainer (`.opscrew/server.json` → `portainer.created`), with the
+ * same rules as `server.json`.
+ */
 export const CreatedRecordSchema = z
   .strictObject({
     stacks: z
@@ -189,11 +81,13 @@ export const CreatedRecordSchema = z
         z.strictObject({
           id: z.int().positive(),
           name: OpsCrewNameSchema,
-          role: z.enum(["app", "updater", "tunnel-connector"]),
+          role: z.enum(ROLE_NAMES),
         }),
       )
       .max(3),
+    /** The registry entry OpsCrew added (administrator token only). */
     registryId: z.int().positive().optional(),
+    /** The app stack's named volumes (deleted only with data deletion). */
     volumes: z.array(VolumeNameSchema).max(64),
   })
   .superRefine((record, ctx) => {
@@ -207,8 +101,24 @@ export const CreatedRecordSchema = z
       seen.roles.add(stack.role);
     });
   });
+export type CreatedRecord = z.infer<typeof CreatedRecordSchema>;
 
+/** A non-secret parameter of a change (names, ids, hashes, env keys, the stack file of a string stack). */
 const ParamValueSchema = z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]);
+export type StackParamValue = z.infer<typeof ParamValueSchema>;
+
+/** One Portainer change, shown to the user and bound by the plan hash. */
+const StackChangeSchema = z.strictObject({
+  id: z.enum(STACK_CHANGE_IDS),
+  /** Plain English, e.g. "Create the Git stack opscrew-shop from the branch opscrew-deploy". */
+  title: z.string().min(1),
+  state: z.enum(["in-place", "change", "blocked"]),
+  /** Why it is blocked, what is already there, or what to know before applying. */
+  reason: z.string().optional(),
+  /** Non-secret parameters only; secrets are supplied at apply. */
+  params: z.record(z.string(), ParamValueSchema),
+});
+export type StackChange = z.infer<typeof StackChangeSchema>;
 
 const FindingSchema = z.strictObject({
   code: z.string().min(1),
@@ -216,61 +126,93 @@ const FindingSchema = z.strictObject({
   hint: z.string(),
 });
 
-/** zod schema for a saved stack plan (unknown keys are refused so the hash covers everything). */
+/**
+ * The hashed plan approved as `stack-apply` (data-model "Stack plan"); unknown keys are refused
+ * so the hash covers everything.
+ */
 export const StackPlanSchema = z.strictObject({
   schemaVersion: z.literal(STACK_PLAN_SCHEMA_VERSION),
   purpose: z.enum(["setup", "teardown"]),
   app: AppNameSchema,
   environmentId: z.int().positive(),
-  changes: z
-    .array(
-      z.strictObject({
-        id: z.enum(STACK_CHANGE_IDS),
-        title: z.string().min(1),
-        state: z.enum(["in-place", "change", "blocked"]),
-        reason: z.string().optional(),
-        params: z.record(z.string(), ParamValueSchema),
-      }),
-    )
-    .max(8),
+  changes: z.array(StackChangeSchema).max(8),
   findings: z.array(FindingSchema),
+  /** What OpsCrew had created before this plan; apply returns the record after it. */
   record: CreatedRecordSchema,
+  /** Teardown only: whether the recorded volumes are deleted. */
   deleteData: z.boolean().optional(),
+  /**
+   * SHA-256 over the keyed fingerprints of the values this plan sends (`valueFingerprints`), when
+   * the desired stacks gave them; apply recomputes it from the secrets and refuses a mismatch.
+   */
   valuesDigest: z
     .string()
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
-}) as z.ZodType<StackPlan>;
+});
+export type StackPlan = z.infer<typeof StackPlanSchema>;
 
 const FingerprintSchema = z.string().regex(/^[0-9a-f]{64}$/, {
   message: "must be a valueFingerprints() result",
 });
 const FingerprintsSchema = z.record(EnvKeySchema, FingerprintSchema);
 
+/** `valueFingerprints()` of the values on this computer, per stack, and of the webhook id. */
+const DesiredValueFingerprintsSchema = z.strictObject({
+  /** The app stack's `Env` (every key in `envKeys`). */
+  app: FingerprintsSchema.optional(),
+  /** The updater stack's `Env` (every `${VAR}` of its stack file). */
+  updater: FingerprintsSchema.optional(),
+  /** The connector stack's `Env` (`TUNNEL_TOKEN`). */
+  connector: FingerprintsSchema.optional(),
+  /** `valueFingerprint(key, "webhook", webhookId)`. */
+  webhook: FingerprintSchema.optional(),
+  /**
+   * `valueFingerprint(key, "repositoryToken", token)`: needed when a change sends the repository
+   * token (the app stack created, updated or redeployed from a private repository).
+   */
+  repositoryToken: FingerprintSchema.optional(),
+  /**
+   * `valueFingerprint(key, "registryToken", token)`: needed when a change sends the registry
+   * token (the registry entry added, or its token replaced).
+   */
+  registryToken: FingerprintSchema.optional(),
+});
+export type DesiredValueFingerprints = z.infer<typeof DesiredValueFingerprintsSchema>;
+
+/** What OpsCrew wants in Portainer for one app (see contracts/portainer-adapter.md). */
 const DesiredStacksSchema = z
   .strictObject({
+    /** OpsCrew stack names derive from it: `opscrew-<app>`, `opscrew-<app>-updater`, … */
     app: AppNameSchema,
     environmentId: z.int().positive(),
     repository: z.strictObject({
+      /** `https://` without a login (the token is supplied at apply). */
       url: RepositoryUrlSchema,
       branch: z.literal(DEPLOY_BRANCH),
       composeFile: z.literal(DEPLOY_COMPOSE_FILE),
       private: z.boolean(),
+      /** User name sent with the read-only token (default `x-access-token`). */
       username: LoginNameSchema.optional(),
     }),
+    /** The app's variables (values supplied at apply). */
     envKeys: z
       .array(EnvKeySchema)
       .max(500)
       .refine((keys) => new Set(keys).size === keys.length, { message: "lists a variable twice" }),
+    /** The image's registry; with `private`, Portainer needs a registry entry to pull it. */
     registry: z
       .strictObject({
         url: z.literal("ghcr.io"),
         private: z.boolean(),
+        /** User name of the registry entry's login (default `opscrew`; GHCR checks only the token). */
         username: LoginNameSchema.optional(),
       })
       .optional(),
     redeploy: z.enum(["updater", "cloudflare"]),
+    /** Rendered by `@opscrew/iac-templates`; its `${VARS}` are supplied at apply (`updaterEnv`). */
     updater: z.strictObject({ compose: ComposeTextSchema }).optional(),
+    /** Rendered by `@opscrew/iac-templates`; it may only use `${TUNNEL_TOKEN}`. */
     tunnelConnector: z
       .strictObject({
         compose: ComposeTextSchema.refine(
@@ -280,19 +222,25 @@ const DesiredStacksSchema = z
         ),
       })
       .optional(),
+    /** Host ports the app stack publishes (80 and 443 for Caddy, or the proxy port); checked free. */
     ports: z.array(PortSchema).max(16).optional(),
+    /** Docker names of the app stack's named volumes (`opscrew-<app>_<volume>`), recorded at apply. */
     volumes: z.array(VolumeNameSchema).max(64).optional(),
+    /** What OpsCrew created before (`server.json` → `portainer.created`); absent on the first run. */
     record: CreatedRecordSchema.optional(),
-    valueFingerprints: z
-      .strictObject({
-        app: FingerprintsSchema.optional(),
-        updater: FingerprintsSchema.optional(),
-        connector: FingerprintsSchema.optional(),
-        webhook: FingerprintSchema.optional(),
-        repositoryToken: FingerprintSchema.optional(),
-        registryToken: FingerprintSchema.optional(),
-      })
-      .optional(),
+    /**
+     * Keyed fingerprints of the local values, so a changed value (or webhook) plans an update
+     * naming the keys only, and the plan is bound to them (`valuesDigest`; apply refuses a plan
+     * that sends values without it). When given: `app`, `webhook`, and `updater` (updater mode) or
+     * `connector` (cloudflare mode). Compare them with a client made with the same `valueKey`.
+     */
+    valueFingerprints: DesiredValueFingerprintsSchema.optional(),
+    /**
+     * Tokens to send again (rotation; Portainer never shows them back, so this is explicit):
+     * `repository` plans a Git update of the app stack (private repository only), `registry` a
+     * token update of the registry entry OpsCrew added (private image, administrator token). Each
+     * needs the token's fingerprint in `valueFingerprints`.
+     */
     replaceTokens: z
       .strictObject({ repository: z.boolean().optional(), registry: z.boolean().optional() })
       .optional(),
@@ -375,29 +323,13 @@ const DesiredStacksSchema = z
       path: ["valueFingerprints", "registryToken"],
     },
   );
-
-type ValidDesired = z.output<typeof DesiredStacksSchema>;
-type Role = CreatedRecord["stacks"][number]["role"];
+export type DesiredStacks = z.infer<typeof DesiredStacksSchema>;
 
 // --- Hash ----------------------------------------------------------------------------------------
 
-/** Canonical JSON: object keys sorted, no whitespace, `undefined` members dropped. */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => (item === undefined ? "null" : canonicalJson(item))).join(",")}]`;
-  }
-  const record = value as Record<string, unknown>;
-  const members = Object.keys(record)
-    .filter((key) => record[key] !== undefined)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
-  return `{${members.join(",")}}`;
-}
-
 /** SHA-256 (lower-case hex) of the canonical JSON of the plan: the hash `stack-apply` binds. */
 export function stackPlanHash(plan: StackPlan): string {
-  return createHash("sha256").update(canonicalJson(plan), "utf8").digest("hex");
+  return sha256Hex(canonicalJson(plan));
 }
 
 /** The `${VARS}` (and `$VARS`) a Compose file interpolates, sorted; `$$` escapes are skipped. */
@@ -411,10 +343,6 @@ export function composeVariables(compose: string): string[] {
     if (name !== undefined) found.add(name);
   }
   return [...found].sort();
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 /**
@@ -464,7 +392,7 @@ export function sentValues(changes: readonly StackChange[]): SentValues {
 
 /** SHA-256 over the canonical JSON (sorted keys) of the fingerprints of the values sent. */
 export function valuesDigestOf(fingerprints: DesiredValueFingerprints): string {
-  return sha256(canonicalJson(fingerprints));
+  return sha256Hex(canonicalJson(fingerprints));
 }
 
 /** True when the plan sends no value at all. */
@@ -580,11 +508,18 @@ export function planStacks(facts: PortainerFacts, desired: DesiredStacks): Stack
         });
       }
       const usable = (facts.registries ?? []).find((entry) => isGhcr(entry.url));
-      if (usable === undefined) found.push(registryMissing(facts));
-      else
+      if (usable === undefined) {
+        found.push(
+          finding.registryMissing(
+            facts.user?.username ?? "the token's user",
+            facts.environment?.name ?? "the environment",
+          ),
+        );
+      } else {
         notes.push(
           `Portainer pulls the private image with the registry entry ${usable.name} (${usable.url}).`,
         );
+      }
     }
   }
 
@@ -594,7 +529,7 @@ export function planStacks(facts: PortainerFacts, desired: DesiredStacks): Stack
       const taken = facts.publishedPorts.filter(
         (item) => wanted.has(item.port) && item.project?.toLowerCase() !== names.app,
       );
-      if (taken.length > 0) found.push(portsTaken(env.name, taken));
+      if (taken.length > 0) found.push(finding.portsTaken(env.name, taken));
     } else {
       notes.push(
         `This token cannot see other users' containers: make sure host port${d.ports.length === 1 ? "" : "s"} ${[...d.ports].sort((a, b) => a - b).join(", ")} ${d.ports.length === 1 ? "is" : "are"} free on the host.`,
@@ -642,10 +577,10 @@ export function planStacks(facts: PortainerFacts, desired: DesiredStacks): Stack
   }
 
   // Any of the app's names on a stack OpsCrew's record does not list blocks, whatever the mode.
-  for (const name of [names.app, names.updater, names.tunnelConnector]) {
+  for (const name of ROLE_NAMES.map((role) => stackName(names, role))) {
     const visible = facts.stacks.find((stack) => stack.name.toLowerCase() === name);
     if (visible !== undefined && !record.stacks.some((stack) => stack.id === visible.id)) {
-      found.push(stackNameTaken(name, visible.id));
+      found.push(finding.stackNameTaken(name, visible.id));
     }
   }
 
@@ -662,7 +597,7 @@ export function planStacks(facts: PortainerFacts, desired: DesiredStacks): Stack
   };
 }
 
-function parseDesired(desired: DesiredStacks): ValidDesired {
+function parseDesired(desired: DesiredStacks): DesiredStacks {
   const parsed = DesiredStacksSchema.safeParse(desired);
   if (!parsed.success) {
     throw new OpsCrewError(
@@ -680,10 +615,10 @@ function parseDesired(desired: DesiredStacks): ValidDesired {
 function recordFor(record: CreatedRecord | undefined, names: OpsCrewNames): CreatedRecord {
   const valid = CreatedRecordSchema.parse(record ?? { stacks: [], volumes: [] });
   for (const stack of valid.stacks) {
-    if (stack.name !== nameFor(names, stack.role)) {
+    if (stack.name !== stackName(names, stack.role)) {
       throw new OpsCrewError(
         "INVALID_INPUT",
-        `OpsCrew's record lists the stack ${stack.name} as the ${stack.role} stack, which is not this app's (${nameFor(names, stack.role)}).`,
+        `OpsCrew's record lists the stack ${stack.name} as the ${stack.role} stack, which is not this app's (${stackName(names, stack.role)}).`,
         {
           hint: "Check .opscrew/server.json: it must be this project's record of what OpsCrew created in Portainer.",
         },
@@ -701,16 +636,15 @@ function recordFor(record: CreatedRecord | undefined, names: OpsCrewNames): Crea
     );
   }
   return {
-    stacks: [...valid.stacks].sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role]),
+    stacks: sortByRole(valid.stacks),
     ...(valid.registryId !== undefined && { registryId: valid.registryId }),
     volumes: [...new Set(valid.volumes)].sort(),
   };
 }
 
-const ROLE_ORDER: Record<Role, number> = { app: 0, updater: 1, "tunnel-connector": 2 };
-
-function nameFor(names: OpsCrewNames, role: Role): string {
-  return role === "app" ? names.app : role === "updater" ? names.updater : names.tunnelConnector;
+/** Recorded stacks in record order (app, updater, connector). */
+export function sortByRole(stacks: CreatedRecord["stacks"]): CreatedRecord["stacks"] {
+  return [...stacks].sort((a, b) => ROLE_NAMES.indexOf(a.role) - ROLE_NAMES.indexOf(b.role));
 }
 
 type Located =
@@ -737,20 +671,18 @@ function conflict(
   name: string,
   found: PortainerFinding[],
 ): string | undefined {
-  if (located.kind === "taken") {
-    const finding = stackNameTaken(name, located.stack.id);
-    found.push(finding);
-    return finding.message;
-  }
-  if (located.kind === "absent") {
-    const project = facts.projects?.find((item) => item.name === name && item.containers > 0);
-    if (project !== undefined) {
-      const finding = projectNameTaken(name, project.containers);
-      found.push(finding);
-      return finding.message;
-    }
-  }
-  return undefined;
+  const project =
+    located.kind === "absent"
+      ? facts.projects?.find((item) => item.name === name && item.containers > 0)
+      : undefined;
+  const blocker =
+    located.kind === "taken"
+      ? finding.stackNameTaken(name, located.stack.id)
+      : project !== undefined
+        ? finding.projectNameTaken(name, project.containers)
+        : undefined;
+  if (blocker !== undefined) found.push(blocker);
+  return blocker?.message;
 }
 
 function recreatedNote(located: Located): string | undefined {
@@ -761,7 +693,7 @@ function recreatedNote(located: Located): string | undefined {
 
 function registryChange(
   facts: PortainerFacts,
-  d: ValidDesired,
+  d: DesiredStacks,
   names: OpsCrewNames,
   record: CreatedRecord,
   found: PortainerFinding[],
@@ -840,17 +772,13 @@ function registryChange(
   }
   const taken = facts.registryEntries.find((entry) => entry.name === names.registry);
   if (taken !== undefined) {
-    const finding: PortainerFinding = {
-      code: "registry-name-taken",
-      message: `Portainer already has a registry entry named "${taken.name}" (id ${taken.id}) that OpsCrew did not add.`,
-      hint: "OpsCrew never changes a registry entry it did not add. Rename or remove that entry in Portainer (Registries), or choose another app name, then run the command again.",
-    };
-    found.push(finding);
+    const blocker = finding.registryNameTaken(taken.name, taken.id);
+    found.push(blocker);
     return {
       id: "registry",
       title: `Add the registry entry ${names.registry} for ghcr.io`,
       state: "blocked",
-      reason: finding.message,
+      reason: blocker.message,
       params: base,
     };
   }
@@ -877,7 +805,7 @@ function registryChange(
 
 function appChange(
   facts: PortainerFacts,
-  d: ValidDesired,
+  d: DesiredStacks,
   names: OpsCrewNames,
   record: CreatedRecord,
   found: PortainerFinding[],
@@ -1067,13 +995,13 @@ function stringStackChange(
   fingerprints: Record<string, string> | undefined,
   appWebhookChanges = false,
 ): StackChange {
-  const id: StackChangeId = role === "updater" ? "updater-stack" : "tunnel-connector-stack";
+  const id = ROLES[role].change;
   const label = role === "updater" ? "updater stack" : "Cloudflare connector stack";
   const located = locate(facts, record, role, name);
   const params: Record<string, StackParamValue> = {
     name,
     compose,
-    composeSha256: sha256(compose),
+    composeSha256: sha256Hex(compose),
     envKeys: composeVariables(compose),
   };
   const blocked = conflict(facts, located, name, found);
@@ -1096,7 +1024,7 @@ function stringStackChange(
   const stack = located.stack;
   const differences: string[] = [];
   const keys = composeVariables(compose);
-  if (stack.fileSha256 !== sha256(compose)) differences.push("its stack file");
+  if (stack.fileSha256 !== sha256Hex(compose)) differences.push("its stack file");
   if (!sameList(stack.envKeys, keys)) differences.push("its environment variables");
   const values = changedValues(stack.envFingerprints, keys, fingerprints);
   if (values.text !== undefined) differences.push(values.text);
@@ -1145,7 +1073,7 @@ function removeOtherMode(
 ): StackChange | undefined {
   const recorded = record.stacks.find((stack) => stack.role === role);
   if (recorded === undefined) return undefined;
-  const id: StackChangeId = role === "updater" ? "updater-stack" : "tunnel-connector-stack";
+  const id = ROLES[role].change;
   const visible = facts.stacks.find((stack) => stack.id === recorded.id);
   if (visible === undefined || visible.name.toLowerCase() !== name) {
     return {
@@ -1170,15 +1098,15 @@ function removeOtherMode(
 const TEARDOWN_BLOCKERS = new Set(["token-rejected", "access-denied", "environment-missing"]);
 
 /**
- * The plan that removes exactly what `record` lists, in order: the updater and connector stacks,
- * (with `deleteData`) the recorded volumes after stopping the app stack, the app stack, then the
- * registry entry. Stacks, volumes and entries OpsCrew did not create are never part of it, nor is
- * Portainer itself.
+ * The plan that removes exactly what `record` lists for `opts.app`, in order: the updater and
+ * connector stacks, (with `deleteData`) the recorded volumes after stopping the app stack, the
+ * app stack, then the registry entry. Stacks, volumes and entries OpsCrew did not create are never
+ * part of it, nor is Portainer itself.
  */
 export function planStackTeardown(
   facts: PortainerFacts,
   record: CreatedRecord,
-  opts: { deleteData: boolean; app?: string },
+  opts: { deleteData: boolean; app: string },
 ): StackPlan {
   const env = facts.environment;
   if (env === undefined) {
@@ -1193,13 +1121,7 @@ export function planStackTeardown(
       hint: "Check .opscrew/server.json → portainer.created.",
     });
   }
-  const app = opts.app ?? appFromRecord(parsedRecord.data);
-  if (app === undefined) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "Name the app: OpsCrew's record lists no stack to derive it from.",
-    );
-  }
+  const app = opts.app;
   const names = opscrewNames(app);
   const valid = recordFor(parsedRecord.data, names);
   const changes: StackChange[] = [];
@@ -1287,26 +1209,10 @@ export function planStackTeardown(
     app,
     environmentId: env.id,
     changes,
-    findings: unique(facts.findings.filter((finding) => TEARDOWN_BLOCKERS.has(finding.code))),
+    findings: unique(facts.findings.filter((item) => TEARDOWN_BLOCKERS.has(item.code))),
     record: valid,
     deleteData: opts.deleteData,
   };
-}
-
-const ROLE_SUFFIX: Record<Role, string> = {
-  app: "",
-  updater: "-updater",
-  "tunnel-connector": "-portainer-tunnel",
-};
-
-function appFromRecord(record: CreatedRecord): string | undefined {
-  for (const stack of record.stacks) {
-    const suffix = ROLE_SUFFIX[stack.role];
-    if (!stack.name.endsWith(suffix)) continue;
-    const base = stack.name.slice("opscrew-".length, stack.name.length - suffix.length);
-    if (AppNameSchema.safeParse(base).success) return base;
-  }
-  return undefined;
 }
 
 function removeStackChange(
@@ -1314,8 +1220,7 @@ function removeStackChange(
   recorded: CreatedRecord["stacks"][number],
   role: Role,
 ): StackChange {
-  const id: StackChangeId =
-    role === "app" ? "app-stack" : role === "updater" ? "updater-stack" : "tunnel-connector-stack";
+  const id = ROLES[role].change;
   const params = { action: "remove", name: recorded.name, stackId: recorded.id };
   const visible = facts.stacks.find((stack) => stack.id === recorded.id);
   if (visible !== undefined && visible.name.toLowerCase() === recorded.name) {
@@ -1378,50 +1283,7 @@ function removeRegistryChange(
   };
 }
 
-// --- Findings and helpers ------------------------------------------------------------------------
-
-function stackNameTaken(name: string, id: number): PortainerFinding {
-  return {
-    code: "stack-name-taken",
-    message: `Portainer already has a stack named "${name}" (id ${id}) that OpsCrew did not create.`,
-    hint: "OpsCrew never changes a stack it did not create. Choose another app name in `opscrew interview`, or remove or rename that stack in Portainer yourself, then run the command again.",
-  };
-}
-
-function projectNameTaken(name: string, containers: number): PortainerFinding {
-  return {
-    code: "project-name-taken",
-    message: `${containers} container${containers === 1 ? "" : "s"} on the environment belong${containers === 1 ? "s" : ""} to a Compose project named "${name}" that was started outside Portainer; a new stack with that name would take ${containers === 1 ? "it" : "them"} over.`,
-    hint: `Choose another app name in \`opscrew interview\`, or stop that project yourself (docker compose -p ${name} down), then run the command again.`,
-  };
-}
-
-function registryMissing(facts: PortainerFacts): PortainerFinding {
-  const user = facts.user?.username ?? "the token's user";
-  const env = facts.environment?.name ?? "the environment";
-  return {
-    code: "registry-missing",
-    message: `The app's image is private, and Portainer has no ghcr.io registry entry that ${user} may use on environment "${env}"; only an administrator can add one.`,
-    hint: [
-      "Do one of these once, then run `opscrew provision` again:",
-      `1) As a Portainer administrator: Registries → Add registry → Custom registry; name it (for example ghcr), Registry URL ghcr.io, turn on Authentication, user name: your GitHub user name, password: a GitHub classic token with only the read:packages scope (https://github.com/settings/tokens/new?scopes=read:packages). Then open environment "${env}" → Registries, choose Manage access next to the entry and add ${user}.`,
-      "2) Or make the image public: on GitHub open the package (your profile or organisation → Packages → the package) → Package settings → Change visibility → Public.",
-    ].join(" "),
-  };
-}
-
-function portsTaken(
-  envName: string,
-  taken: { port: number; project?: string }[],
-): PortainerFinding {
-  const ports = [...new Set(taken.map((item) => item.port))].sort((a, b) => a - b);
-  const owners = [...new Set(taken.map((item) => item.project ?? "a container outside Compose"))];
-  return {
-    code: "ports-taken",
-    message: `Host port${ports.length === 1 ? "" : "s"} ${ports.join(", ")} ${ports.length === 1 ? "is" : "are"} already in use on environment "${envName}" (by ${owners.join(", ")}), and the app stack needs ${ports.length === 1 ? "it" : "them"}.`,
-    hint: "Free the ports, or choose the Cloudflare Tunnel or your own reverse proxy (with another port) in `opscrew interview`, then run the command again.",
-  };
-}
+// --- Helpers -------------------------------------------------------------------------------------
 
 function reason(parts: readonly string[]): { reason?: string } {
   return parts.length === 0 ? {} : { reason: parts.join(" ") };

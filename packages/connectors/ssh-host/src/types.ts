@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { MAX_COMPOSE_BYTES } from "./constants";
-import { canonicalCidr } from "./parse";
+import { canonicalIpv4Cidr } from "./parse";
 
 /** Version of the host plan format (`HostPlan.schemaVersion`). */
 export const HOST_PLAN_SCHEMA_VERSION = 1;
@@ -26,89 +26,48 @@ export type HostStepId = (typeof HOST_STEP_IDS)[number];
 
 export const HostStepIdSchema = z.enum(HOST_STEP_IDS);
 
-const ParamValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+/** An OpsCrew app name, as plan-schema allows it. */
+export const AppNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
+  message: "must be lower-case letters, digits and dashes",
+});
 
-export interface HostStep {
-  id: HostStepId;
+/** The id of the project folder a server is bound to (`/etc/opscrew/app.json`). */
+export const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/);
+
+/** A pinned Portainer CE version. */
+export const PortainerVersionSchema = z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, {
+  message: "must be a pinned version such as 2.33.1",
+});
+
+const HostStepSchema = z.strictObject({
+  id: HostStepIdSchema,
   /** Plain English, e.g. "Install Docker Engine 28.x from Docker's repository". */
-  title: string;
-  state: "in-place" | "change" | "blocked";
+  title: z.string().min(1),
+  state: z.enum(["in-place", "change", "blocked"]),
   /** Why it is blocked, or what is already there. */
-  reason?: string;
+  reason: z.string().optional(),
   /** Non-secret parameters the step's script uses (ports, user names, versions). */
-  params: Readonly<Record<string, string | number | boolean>>;
-}
+  params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
+});
+export type HostStep = z.infer<typeof HostStepSchema>;
 
-export interface HostFinding {
-  code: string;
-  message: string;
-  hint: string;
-}
-
-export interface HostPlan {
-  schemaVersion: 1;
-  purpose: "setup" | "teardown" | "undo";
-  app: string;
-  steps: readonly HostStep[];
-  findings: readonly HostFinding[];
-  deleteData?: boolean;
-}
+const HostFindingSchema = z.strictObject({
+  code: z.string().min(1),
+  message: z.string().min(1),
+  hint: z.string(),
+});
+export type HostFinding = z.infer<typeof HostFindingSchema>;
 
 /** zod schema for a saved host plan (unknown keys are refused so the hash covers everything). */
 export const HostPlanSchema = z.strictObject({
   schemaVersion: z.literal(HOST_PLAN_SCHEMA_VERSION),
   purpose: z.enum(["setup", "teardown", "undo"]),
   app: z.string().max(64),
-  steps: z.array(
-    z.strictObject({
-      id: HostStepIdSchema,
-      title: z.string().min(1),
-      state: z.enum(["in-place", "change", "blocked"]),
-      reason: z.string().optional(),
-      params: z.record(z.string(), ParamValueSchema),
-    }),
-  ),
-  findings: z.array(
-    z.strictObject({ code: z.string().min(1), message: z.string().min(1), hint: z.string() }),
-  ),
+  steps: z.array(HostStepSchema),
+  findings: z.array(HostFindingSchema),
   deleteData: z.boolean().optional(),
 });
-
-export interface DesiredHost {
-  app: string;
-  projectId: string;
-  admin: { user: string; isRoot: boolean };
-  deploy: { user: "deploy"; publicKey: string };
-  sshPort: number;
-  access: "public" | "tunnel";
-  /**
-   * Tunnel mode: the connector's Compose file as rendered by `@opscrew/iac-templates`
-   * (`renderTunnelConnectorCompose`). It reads `TUNNEL_TOKEN` from `tunnel.env` beside it, which
-   * the adapter writes from the token supplied at apply. `tunnelId` (not secret) is recorded next
-   * to the connector: a different id means a new tunnel, so its token is written again and the
-   * connector restarted. Required when `access` is `tunnel`.
-   */
-  tunnel?: { compose: string; tunnelId: string };
-  /**
-   * Portainer CE, when on: the pinned version and its Compose files as rendered by
-   * `renderPortainerCompose` (`initial` reads the one-time `./admin_password`, `final` does not).
-   */
-  portainer?: { version: string; compose: { initial: string; final: string } };
-  /**
-   * Only when the site is served directly behind Cloudflare's proxy (the user's explicit choice):
-   * Cloudflare's current IPv4 ranges for the `web-filter` step, which lets only them reach the web
-   * ports (80 and 443) Docker publishes. The site is published on IPv4 only in this mode (nothing
-   * listens on IPv6 80/443). The plan stores them sorted and without duplicates, so the same ranges
-   * in any order give the same plan hash.
-   */
-  webFilter?: { ipv4: readonly string[] };
-  /**
-   * Explicit choice for password logins, needed only when some login user has a password and no
-   * SSH key (turning passwords off would lock them out). `true` turns them off anyway, `false`
-   * leaves the server's password setting alone. Ignored when every password user has a key.
-   */
-  disablePasswords?: boolean;
-}
+export type HostPlan = z.infer<typeof HostPlanSchema>;
 
 /** Single-line OpenSSH public key (`type base64 [comment]`); never a private key. */
 const PUBLIC_KEY_RE =
@@ -130,16 +89,14 @@ export const TunnelIdSchema = z.string().regex(/^[0-9A-Fa-f-]{8,64}$/, {
 export const MAX_WEB_FILTER_RANGES = 100;
 
 /** An IPv4 network (Cloudflare's ranges). */
-const Ipv4NetworkSchema = z.string().refine((text) => canonicalCidr(text)?.family === "ipv4", {
+const Ipv4NetworkSchema = z.string().refine((text) => canonicalIpv4Cidr(text) !== null, {
   message: "must be an IPv4 network such as 173.245.48.0/20",
 });
 
 export const DesiredHostSchema = z
   .strictObject({
-    app: z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
-      message: "must be lower-case letters, digits and dashes",
-    }),
-    projectId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/),
+    app: AppNameSchema,
+    projectId: ProjectIdSchema,
     admin: z.strictObject({
       user: z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$/),
       isRoot: z.boolean(),
@@ -152,6 +109,13 @@ export const DesiredHostSchema = z
     }),
     sshPort: z.number().int().min(1).max(65535),
     access: z.enum(["public", "tunnel"]),
+    /**
+     * Tunnel mode: the connector's Compose file as rendered by `@opscrew/iac-templates`
+     * (`renderTunnelConnectorCompose`). It reads `TUNNEL_TOKEN` from `tunnel.env` beside it, which
+     * the adapter writes from the token supplied at apply. `tunnelId` (not secret) is recorded next
+     * to the connector: a different id means a new tunnel, so its token is written again and the
+     * connector restarted. Required when `access` is `tunnel`.
+     */
     tunnel: z
       .strictObject({
         compose: ComposeTextSchema.refine((text) => text.includes("tunnel.env"), {
@@ -160,11 +124,13 @@ export const DesiredHostSchema = z
         tunnelId: TunnelIdSchema,
       })
       .optional(),
+    /**
+     * Portainer CE, when on: the pinned version and its Compose files as rendered by
+     * `renderPortainerCompose` (`initial` reads the one-time `./admin_password`, `final` does not).
+     */
     portainer: z
       .strictObject({
-        version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, {
-          message: "must be a pinned version such as 2.33.1",
-        }),
+        version: PortainerVersionSchema,
         compose: z.strictObject({
           initial: ComposeTextSchema.refine((text) => text.includes("admin_password"), {
             message: "must read the one-time admin_password file",
@@ -173,11 +139,23 @@ export const DesiredHostSchema = z
         }),
       })
       .optional(),
+    /**
+     * Only when the site is served directly behind Cloudflare's proxy (the user's explicit choice):
+     * Cloudflare's current IPv4 ranges for the `web-filter` step, which lets only them reach the web
+     * ports (80 and 443) Docker publishes. The site is published on IPv4 only in this mode (nothing
+     * listens on IPv6 80/443). The plan stores them sorted and without duplicates, so the same ranges
+     * in any order give the same plan hash.
+     */
     webFilter: z
       .strictObject({
         ipv4: z.array(Ipv4NetworkSchema).min(1).max(MAX_WEB_FILTER_RANGES),
       })
       .optional(),
+    /**
+     * Explicit choice for password logins, needed only when some login user has a password and no
+     * SSH key (turning passwords off would lock them out). `true` turns them off anyway, `false`
+     * leaves the server's password setting alone. Ignored when every password user has a key.
+     */
     disablePasswords: z.boolean().optional(),
   })
   .refine((desired) => desired.access !== "tunnel" || desired.tunnel !== undefined, {
@@ -188,6 +166,7 @@ export const DesiredHostSchema = z
     message: "the web filter is only for a site served directly (public mode)",
     path: ["webFilter"],
   });
+export type DesiredHost = z.infer<typeof DesiredHostSchema>;
 
 export interface ApplyOptions {
   /** The hash the user approved; apply refuses any other plan. */

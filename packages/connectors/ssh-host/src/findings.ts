@@ -1,12 +1,16 @@
 /** Blocking findings: what OpsCrew found and what the user can do. Plain English, no secrets. */
+import { listText } from "@opscrew/core";
 import { MIN_DOCKER_MAJOR, PORTAINER_PORT, TUNNEL_APP_PORT } from "./constants";
+import type { HostFacts } from "./facts";
 import type { HostFinding } from "./types";
 
 const RERUN = "then run opscrew provision again";
 
-function list(items: readonly string[]): string {
-  if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+/** Why the login cannot change the server: it needs a password for sudo, or cannot become root. */
+export function privilegeFindings(facts: Pick<HostFacts, "privilege" | "user">): HostFinding[] {
+  if (facts.privilege === "sudo-password") return [findings.sudoNeedsPassword(facts.user)];
+  if (facts.privilege === "none") return [findings.noRoot(facts.user)];
+  return [];
 }
 
 export const findings = {
@@ -65,12 +69,12 @@ export const findings = {
   }),
   passwordUsersWithoutKeys: (users: readonly string[]): HostFinding => ({
     code: "password-users-without-keys",
-    message: `${list(users)} ${users.length === 1 ? "logs" : "log"} in with a password and ${users.length === 1 ? "has" : "have"} no SSH key. Turning password logins off would lock ${users.length === 1 ? "that user" : "them"} out.`,
+    message: `${listText(users)} ${users.length === 1 ? "logs" : "log"} in with a password and ${users.length === 1 ? "has" : "have"} no SSH key. Turning password logins off would lock ${users.length === 1 ? "that user" : "them"} out.`,
     hint: "Give each of them an SSH key first, or decide explicitly: turn password logins off anyway, or leave password logins as they are.",
   }),
   directoryLogins: (what: readonly string[]): HostFinding => ({
     code: "directory-logins",
-    message: `Users on this server may come from a directory service (${list(what)}). OpsCrew cannot see whether they log in with passwords, so turning password logins off could lock them out.`,
+    message: `Users on this server may come from a directory service (${listText(what)}). OpsCrew cannot see whether they log in with passwords, so turning password logins off could lock them out.`,
     hint: "Make sure those users log in with SSH keys, then decide explicitly: turn password logins off anyway, or leave password logins as they are.",
   }),
   hostRecordOtherApp: (app: string): HostFinding => ({
@@ -85,12 +89,12 @@ export const findings = {
   }),
   portsInUse: (what: readonly string[]): HostFinding => ({
     code: "web-ports-in-use",
-    message: `Ports 80 or 443 are already in use on this server: ${list(what)}. OpsCrew's web server needs them to serve the app directly.`,
+    message: `Ports 80 or 443 are already in use on this server: ${listText(what)}. OpsCrew's web server needs them to serve the app directly.`,
     hint: `Use the Cloudflare Tunnel instead (the app is served without these ports), or stop what uses them first, ${RERUN}.`,
   }),
   otherFirewall: (what: readonly string[]): HostFinding => ({
     code: "other-firewall",
-    message: `This server already uses another firewall: ${list(what)}. OpsCrew does not add a second one.`,
+    message: `This server already uses another firewall: ${listText(what)}. OpsCrew does not add a second one.`,
     hint: `Either turn that firewall off and let OpsCrew manage ufw (it allows only SSH and web traffic), or keep yours and do not use OpsCrew on this server for now. ${RERUN.charAt(0).toUpperCase()}${RERUN.slice(1)} after the change.`,
   }),
   dockerNftables: (): HostFinding => ({
@@ -110,12 +114,12 @@ export const findings = {
     lettingAllIn
       ? {
           code: "firewall-would-block",
-          message: `ufw is on but lets every incoming connection in. Once OpsCrew sets it to deny incoming traffic except SSH (and web traffic when the server serves the web), other machines could no longer reach ${list(what)}.`,
+          message: `ufw is on but lets every incoming connection in. Once OpsCrew sets it to deny incoming traffic except SSH (and web traffic when the server serves the web), other machines could no longer reach ${listText(what)}.`,
           hint: `Stop those services or make them listen on 127.0.0.1 only, or add ufw rules that allow them (for example "sudo ufw allow 8080/tcp"; OpsCrew keeps them), ${RERUN}.`,
         }
       : {
           code: "firewall-would-block",
-          message: `The firewall OpsCrew turns on allows only SSH and web traffic, so other machines could no longer reach ${list(what)}.`,
+          message: `The firewall OpsCrew turns on allows only SSH and web traffic, so other machines could no longer reach ${listText(what)}.`,
           hint: `Stop those services or make them listen on 127.0.0.1 only, or turn on ufw yourself with rules for them (OpsCrew then only adds its own rules), ${RERUN}.`,
         },
   dockerSnap: (): HostFinding => ({
@@ -132,7 +136,7 @@ export const findings = {
   }),
   dockerDistro: (packages: readonly string[]): HostFinding => ({
     code: "docker-distro",
-    message: `Docker on this server comes from the distribution's packages (${list(packages)}), which OpsCrew cannot upgrade to Docker Engine ${MIN_DOCKER_MAJOR} from Docker's repository without replacing them.`,
+    message: `Docker on this server comes from the distribution's packages (${listText(packages)}), which OpsCrew cannot upgrade to Docker Engine ${MIN_DOCKER_MAJOR} from Docker's repository without replacing them.`,
     hint: `Replacing them restarts your containers and is your decision: remove them with "sudo apt-get remove ${packages.join(" ")}" (images and volumes stay in /var/lib/docker), ${RERUN}.`,
   }),
   dockerOther: (): HostFinding => ({
@@ -143,7 +147,7 @@ export const findings = {
   }),
   dockerConflicts: (packages: readonly string[]): HostFinding => ({
     code: "docker-conflicting-packages",
-    message: `This server has packages that conflict with Docker Engine: ${list(packages)}. Installing Docker would remove them.`,
+    message: `This server has packages that conflict with Docker Engine: ${listText(packages)}. Installing Docker would remove them.`,
     hint: `Remove them yourself if nothing needs them ("sudo apt-get remove ${packages.join(" ")}"), ${RERUN}.`,
   }),
   anotherApp: (app: string): HostFinding => ({
@@ -176,22 +180,22 @@ export const findings = {
   }),
   runtimeDirExists: (paths: readonly string[]): HostFinding => ({
     code: "runtime-dir-exists",
-    message: `${list(paths)} already ${paths.length === 1 ? "exists" : "exist"} on this server and OpsCrew did not create ${paths.length === 1 ? "it" : "them"}. OpsCrew keeps the app's files there.`,
+    message: `${listText(paths)} already ${paths.length === 1 ? "exists" : "exist"} on this server and OpsCrew did not create ${paths.length === 1 ? "it" : "them"}. OpsCrew keeps the app's files there.`,
     hint: `Move or rename ${paths.length === 1 ? "it" : "them"}, ${RERUN}.`,
   }),
   portainerPortInUse: (what: readonly string[]): HostFinding => ({
     code: "portainer-port-in-use",
-    message: `Port ${PORTAINER_PORT}, which Portainer uses on the server itself, is already taken by ${list(what)}.`,
+    message: `Port ${PORTAINER_PORT}, which Portainer uses on the server itself, is already taken by ${listText(what)}.`,
     hint: `Stop what uses port ${PORTAINER_PORT}, or leave Portainer off, ${RERUN}.`,
   }),
   tunnelPortInUse: (what: readonly string[]): HostFinding => ({
     code: "tunnel-port-in-use",
-    message: `Port ${TUNNEL_APP_PORT}, where the app listens on the server itself for the Cloudflare Tunnel, is already taken by ${list(what)}.`,
+    message: `Port ${TUNNEL_APP_PORT}, where the app listens on the server itself for the Cloudflare Tunnel, is already taken by ${listText(what)}.`,
     hint: `Stop what uses port ${TUNNEL_APP_PORT}, or serve the app directly on ports 80 and 443 instead of through the tunnel, ${RERUN}.`,
   }),
   sshdNotLocal: (addresses: readonly string[]): HostFinding => ({
     code: "sshd-not-local",
-    message: `SSH listens only on ${list(addresses)}, but the Cloudflare Tunnel reaches SSH on the server itself (localhost) so that GitHub Actions can deploy.`,
+    message: `SSH listens only on ${listText(addresses)}, but the Cloudflare Tunnel reaches SSH on the server itself (localhost) so that GitHub Actions can deploy.`,
     hint: `Let sshd also listen on 127.0.0.1 (or on all addresses) with a ListenAddress line in your SSH configuration, ${RERUN}.`,
   }),
   sshForwardingOff: (setting: string): HostFinding => ({

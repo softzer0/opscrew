@@ -4,6 +4,7 @@ import { COMPOSE_PROJECT_LABEL, VolumeNameSchema } from "./names";
 import {
   type PinnedRequest,
   type PinnedRequestInit,
+  PortainerCertificateError,
   type PortainerEndpoint,
   parsePortainerEndpoint,
   pinnedRequest,
@@ -21,10 +22,6 @@ const TOKEN_HINT =
 /** `GET /api/system/version`. */
 export interface PortainerVersionInfo {
   version: string;
-  /** `CE` or `BE`. */
-  edition?: string;
-  /** `LTS` or `STS`. */
-  support?: string;
   /** The Compose version Portainer deploys stacks with. */
   composeVersion?: string;
   /** The Docker client version bundled with Portainer. */
@@ -54,7 +51,6 @@ export interface PortainerEnvironment {
 /** The parts of Docker's `/info` OpsCrew reads. */
 export interface DockerInfo {
   architecture?: string;
-  osType?: string;
   serverVersion?: string;
   swarmActive: boolean;
 }
@@ -391,8 +387,6 @@ export function portainerClient(
       );
       return {
         version: body.ServerVersion,
-        ...(body.ServerEdition && { edition: body.ServerEdition }),
-        ...(body.VersionSupport && { support: body.VersionSupport }),
         ...(body.Dependencies?.ComposeVersion && {
           composeVersion: body.Dependencies.ComposeVersion,
         }),
@@ -428,7 +422,6 @@ export function portainerClient(
       );
       return {
         ...(info.Architecture && { architecture: info.Architecture }),
-        ...(info.OSType && { osType: info.OSType }),
         ...(info.ServerVersion && { serverVersion: info.ServerVersion }),
         swarmActive: info.Swarm?.LocalNodeState === "active",
       };
@@ -734,14 +727,17 @@ function gitAuthentication(auth: GitStackInput["authentication"]) {
       };
 }
 
+/**
+ * A failed request's error with the token and registered secrets masked: a new error when
+ * masking changes its text, else the error itself. A changed certificate is passed on as it is
+ * (its text is fixed and its two fingerprints), so callers can still tell it apart.
+ */
 function redactError(error: unknown, redactor: Redactor): unknown {
-  if (error instanceof OpsCrewError) {
-    error.message = redactor.redact(error.message);
-    if (error.hint !== undefined) {
-      Object.defineProperty(error, "hint", { value: redactor.redact(error.hint) });
-    }
-  }
-  return error;
+  if (!(error instanceof OpsCrewError) || error instanceof PortainerCertificateError) return error;
+  const message = redactor.redact(error.message);
+  const hint = error.hint === undefined ? undefined : redactor.redact(error.hint);
+  if (message === error.message && hint === error.hint) return error;
+  return new OpsCrewError(error.code, message, hint === undefined ? undefined : { hint });
 }
 
 function apiError(
@@ -811,8 +807,6 @@ const errorBodySchema = z.object({
 const statusSchema = z.object({ Version: z.string().min(1) });
 const versionSchema = z.object({
   ServerVersion: z.string().min(1),
-  ServerEdition: z.string().optional(),
-  VersionSupport: z.string().optional(),
   Dependencies: z
     .object({ ComposeVersion: z.string().optional(), DockerVersion: z.string().optional() })
     .nullable()
@@ -831,7 +825,6 @@ const endpointSchema = z.object({
 });
 const dockerInfoSchema = z.object({
   Architecture: z.string().optional(),
-  OSType: z.string().optional(),
   ServerVersion: z.string().optional(),
   Swarm: z.object({ LocalNodeState: z.string().optional() }).nullable().optional(),
 });
@@ -882,86 +875,59 @@ function safeGitUrl(text: string | undefined): string | undefined {
   }
 }
 
+/** A stack as Portainer returns it, values and webhook id included (they never leave the parse). */
+const rawStackSchema = z.object({
+  Id: idSchema,
+  Name: z.string(),
+  Type: z.int().optional(),
+  EndpointId: z.int().nonnegative().optional(),
+  Status: z.int().optional(),
+  Env: z
+    .array(z.object({ name: z.string(), value: z.string().optional() }))
+    .nullable()
+    .optional(),
+  AutoUpdate: z
+    .object({
+      Webhook: z.string().optional(),
+      Interval: z.string().optional(),
+      ForceUpdate: z.boolean().optional(),
+      ForcePullImage: z.boolean().optional(),
+    })
+    .nullable()
+    .optional(),
+  GitConfig: z
+    .object({
+      URL: z.string().optional(),
+      ReferenceName: z.string().optional(),
+      ConfigFilePath: z.string().optional(),
+      Authentication: z.unknown().optional(),
+    })
+    .nullable()
+    .optional(),
+  DeploymentStatus: z
+    .array(
+      z.object({
+        Status: z.int(),
+        Message: z.string().optional(),
+        Time: z.number().optional(),
+      }),
+    )
+    .nullable()
+    .optional(),
+});
+
 /**
  * A stack as OpsCrew keeps it. Portainer returns `Env` values and the webhook id in plain text
  * (research R7): with a value key they become keyed fingerprints here, and are dropped either way.
  */
 function stackSchemaFor(valueKey: Uint8Array | undefined) {
-  return z
-    .object({
-      Id: idSchema,
-      Name: z.string(),
-      Type: z.int().optional(),
-      EndpointId: z.int().nonnegative().optional(),
-      Status: z.int().optional(),
-      Env: z
-        .array(z.object({ name: z.string(), value: z.string().optional() }))
-        .nullable()
-        .optional(),
-      AutoUpdate: z
-        .object({
-          Webhook: z.string().optional(),
-          Interval: z.string().optional(),
-          ForceUpdate: z.boolean().optional(),
-          ForcePullImage: z.boolean().optional(),
-        })
-        .nullable()
-        .optional(),
-      GitConfig: z
-        .object({
-          URL: z.string().optional(),
-          ReferenceName: z.string().optional(),
-          ConfigFilePath: z.string().optional(),
-          Authentication: z.unknown().optional(),
-        })
-        .nullable()
-        .optional(),
-      DeploymentStatus: z
-        .array(
-          z.object({
-            Status: z.int(),
-            Message: z.string().optional(),
-            Time: z.number().optional(),
-          }),
-        )
-        .nullable()
-        .optional(),
-    })
-    .transform((stack): StackDetails => toStackDetails(stack, valueKey));
+  return rawStackSchema.transform((stack): StackDetails => toStackDetails(stack, valueKey));
 }
 
-type RawStack = {
-  Id: number;
-  Name: string;
-  Type?: number | undefined;
-  EndpointId?: number | undefined;
-  Status?: number | undefined;
-  Env?: { name: string; value?: string | undefined }[] | null | undefined;
-  AutoUpdate?:
-    | {
-        Webhook?: string | undefined;
-        Interval?: string | undefined;
-        ForceUpdate?: boolean | undefined;
-        ForcePullImage?: boolean | undefined;
-      }
-    | null
-    | undefined;
-  GitConfig?:
-    | {
-        URL?: string | undefined;
-        ReferenceName?: string | undefined;
-        ConfigFilePath?: string | undefined;
-        Authentication?: unknown;
-      }
-    | null
-    | undefined;
-  DeploymentStatus?:
-    | { Status: number; Message?: string | undefined; Time?: number | undefined }[]
-    | null
-    | undefined;
-};
-
-function toStackDetails(stack: RawStack, valueKey: Uint8Array | undefined): StackDetails {
+function toStackDetails(
+  stack: z.output<typeof rawStackSchema>,
+  valueKey: Uint8Array | undefined,
+): StackDetails {
   const git = stack.GitConfig;
   const auto = stack.AutoUpdate;
   const url = safeGitUrl(git?.URL);

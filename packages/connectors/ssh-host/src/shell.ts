@@ -3,7 +3,7 @@
  * shell-quoted, at the top. No command text ever comes from a model or from the server's output.
  */
 
-import { MAX_SCRIPT_BYTES } from "./constants";
+import { APT_LOG, MAX_SCRIPT_BYTES } from "./constants";
 
 /** How the admin login becomes root: it is root, or it uses passwordless `sudo -n`. */
 export type Privilege = "root" | "sudo";
@@ -66,13 +66,12 @@ export function asLogin(script: string): string {
   return `sh -c ${shellQuote(script)}`;
 }
 
-/** Where package steps write apt's output (root only; no secrets ever reach apt). */
-export const APT_LOG = "/var/log/opscrew/apt.log";
-
 /**
  * Shell lines shared by the scripts. apt waits for other apt runs, writes its output to
  * {@link APT_LOG} (so a dropped SSH session cannot break it with a closed pipe) and, when it
- * fails, prints the last lines of that log for the error message.
+ * fails, prints the last lines of that log for the error message. `write_file <path> <mode>
+ * [<owner>]` writes its standard input to a temporary file beside `<path>` and renames it over
+ * `<path>` in one step, so a file is never seen half-written.
  */
 export const APT_FUNCTIONS = `apt_get() {
   install -d -m 0700 "$(dirname '${APT_LOG}')"
@@ -86,4 +85,11 @@ is_installed() {
 fail() {
   printf 'opscrew: %s\\n' "$1" >&2
   exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
 }`;

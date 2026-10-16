@@ -3,7 +3,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { type FakeStack, fakePortainer } from "./__fixtures__/fake-portainer";
 import { portainerClient } from "./client";
-import { inspectPortainer } from "./inspect";
+import { dockerArchitecture, inspectPortainer } from "./inspect";
 import { opscrewStackNames } from "./names";
 
 const endpoint = { url: "https://nas.lan:9443", certFingerprint: `SHA256:${"AB".repeat(32)}` };
@@ -41,7 +41,6 @@ describe("inspectPortainer", () => {
     const facts = await inspectPortainer(connect(fake), { names });
     expect(facts).toMatchObject({
       version: "2.45.2",
-      edition: "CE",
       composeVersion: "2.39.1",
       user: { id: 1, username: "admin", role: "admin" },
       environments: [{ id: 3, name: "nas", kind: "docker", swarm: false, status: "up" }],
@@ -284,5 +283,16 @@ describe("inspectPortainer", () => {
     const client = connect(fakePortainer());
     await expect(inspectPortainer(client, { names: ["jellyfin"] })).rejects.toThrow(/opscrew-/);
     await expect(inspectPortainer(client, { names, environmentId: 0 })).rejects.toThrow();
+  });
+});
+
+describe("dockerArchitecture", () => {
+  it("maps Docker's names to the architectures OpsCrew builds images for", () => {
+    expect(dockerArchitecture("x86_64")).toBe("amd64");
+    expect(dockerArchitecture("AMD64")).toBe("amd64");
+    expect(dockerArchitecture("aarch64")).toBe("arm64");
+    expect(dockerArchitecture("arm64")).toBe("arm64");
+    expect(dockerArchitecture("armv7l")).toBeUndefined();
+    expect(dockerArchitecture(undefined)).toBeUndefined();
   });
 });

@@ -1,5 +1,9 @@
 /** The app's directory, where the deploy workflow keeps OpsCrew's runtime files. */
 export const APP_DIR = "/srv/app";
+/** Where the app's databases keep their data. */
+export const DATA_DIR = "/srv/data";
+/** The runtime directories the `runtime-dirs` step creates for the deploy user. */
+export const RUNTIME_DIRS = [APP_DIR, DATA_DIR] as const;
 
 /**
  * Runtime files OpsCrew renders into the repository and the deploy workflow copies to
@@ -18,6 +22,27 @@ export const SECRET_RUNTIME_FILES = [".env", "app.env", "db.env"] as const;
 /** Every runtime file inspection looks at in {@link APP_DIR}. */
 export const RUNTIME_FILE_NAMES = [...HASHED_RUNTIME_FILES, ...SECRET_RUNTIME_FILES] as const;
 export type RuntimeFileName = (typeof RUNTIME_FILE_NAMES)[number];
+
+/** Where OpsCrew keeps its marker, host record and backups on the server (root only). */
+export const OPSCREW_DIR = "/etc/opscrew";
+/** The app the server belongs to (`{ app, projectId }`). */
+export const MARKER_PATH = `${OPSCREW_DIR}/app.json`;
+/** What OpsCrew changed on the server and the values it replaced. */
+export const RECORD_PATH = `${OPSCREW_DIR}/host.json`;
+/** The dead-man switch's undo scripts, saved state, locks and marks. */
+export const DEAD_MAN_DIR = `${OPSCREW_DIR}/deadman`;
+/** Files OpsCrew replaced, kept for `opscrew destroy --undo-host`. */
+export const BACKUP_DIR = `${OPSCREW_DIR}/backup`;
+
+/** OpsCrew's sshd drop-in, and the user's own file of that name from before OpsCrew. */
+export const SSHD_DROP_IN = "/etc/ssh/sshd_config.d/10-opscrew.conf";
+export const SSHD_BACKUP = `${BACKUP_DIR}/10-opscrew.conf`;
+
+/** OpsCrew's apt settings for automatic security updates. */
+export const AUTO_UPGRADES_FILE = "/etc/apt/apt.conf.d/21opscrew-auto-upgrades";
+
+/** Where package steps write apt's output (root only; no secrets ever reach apt). */
+export const APT_LOG = "/var/log/opscrew/apt.log";
 
 /** Docker Engine 28.0.0 keeps ports published on 127.0.0.1 unreachable from the local network. */
 export const MIN_DOCKER_MAJOR = 28;

@@ -17,8 +17,8 @@
  * the filter can be installed before Docker. Docker's nftables backend has no `DOCKER-USER` chain:
  * the filter refuses it.
  */
-import { createHash } from "node:crypto";
-import { canonicalCidr } from "./parse";
+import { sha256Hex } from "@opscrew/core";
+import { canonicalIpv4Cidr } from "./parse";
 
 /** The script that installs the rules (run by the unit at boot, and by the step's apply). */
 export const WEB_FILTER_SCRIPT = "/usr/local/sbin/opscrew-web-filter";
@@ -35,15 +35,13 @@ export interface WebFilterRanges {
   ipv4: string[];
 }
 
-/** Networks in the form ufw and iptables print them, sorted and without duplicates. */
-export function sortedNetworks(list: readonly string[], family: "ipv4" | "ipv6"): string[] {
+/** IPv4 networks in the form iptables prints them, sorted and without duplicates. */
+export function sortedNetworks(list: readonly string[]): string[] {
   const networks = new Set<string>();
   for (const text of list) {
-    const network = canonicalCidr(text);
-    if (network === null || network.family !== family) {
-      throw new Error(`not an ${family} network: ${text.slice(0, 60)}`);
-    }
-    networks.add(network.cidr);
+    const network = canonicalIpv4Cidr(text);
+    if (network === null) throw new Error(`not an IPv4 network: ${text.slice(0, 60)}`);
+    networks.add(network);
   }
   return [...networks].sort();
 }
@@ -53,7 +51,7 @@ export function sortedNetworks(list: readonly string[], family: "ipv4" | "ipv6")
  * its unit's command line and environment (`systemctl show docker`), name the nftables backend or
  * turn iptables off.
  */
-const BACKEND_CHECK = `if [ -f /etc/docker/daemon.json ] && grep -Eq '"firewall-backend"[[:space:]]*:[[:space:]]*"nftables"' /etc/docker/daemon.json; then
+export const WEB_FILTER_BACKEND_CHECK = `if [ -f /etc/docker/daemon.json ] && grep -Eq '"firewall-backend"[[:space:]]*:[[:space:]]*"nftables"' /etc/docker/daemon.json; then
   fail "Docker is set to its nftables firewall backend (/etc/docker/daemon.json), which has no DOCKER-USER chain, so OpsCrew's web filter cannot work."
 fi
 if [ -f /etc/docker/daemon.json ] && grep -Eq '"iptables"[[:space:]]*:[[:space:]]*false' /etc/docker/daemon.json; then
@@ -106,7 +104,7 @@ fail() {
   echo "opscrew-web-filter: $1" >&2
   exit 1
 }
-${BACKEND_CHECK}
+${WEB_FILTER_BACKEND_CHECK}
 ${WEB_FILTER_FUNCTIONS}
 command -v iptables >/dev/null 2>&1 || fail "iptables is not installed."
 command -v iptables-restore >/dev/null 2>&1 || fail "iptables-restore is not installed."
@@ -165,12 +163,6 @@ export const WEB_FILTER_DROP_IN_TEXT = `# Managed by OpsCrew: Docker starts only
 Requires=${WEB_FILTER_SERVICE}
 After=${WEB_FILTER_SERVICE}
 `;
-
-export { BACKEND_CHECK as WEB_FILTER_BACKEND_CHECK };
-
-export function sha256Hex(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
 
 /** SHA-256 of the three files the step writes for these ranges. */
 export function webFilterFileHashes(ranges: WebFilterRanges): {

@@ -1,11 +1,9 @@
-import { createHash } from "node:crypto";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { z } from "zod";
 import { PortainerApiError, type PortainerClient, type PortainerEnvironment } from "./client";
 import {
   atLeast,
   type EnvironmentKind,
-  findings as finding,
   MIN_COMPOSE_VERSION,
   MIN_PORTAINER_VERSION,
   type PortainerEnvironmentFacts,
@@ -13,6 +11,7 @@ import {
   type PortainerFinding,
   type PortainerStackFacts,
 } from "./facts";
+import { findings as finding } from "./findings";
 import { OpsCrewNameSchema } from "./names";
 
 const OptionsSchema = z.strictObject({
@@ -35,7 +34,7 @@ export async function inspectPortainer(
   client: PortainerClient,
   opts: { environmentId?: number; names: readonly string[] },
 ): Promise<PortainerFacts> {
-  const parsed = OptionsSchema.safeParse({ ...opts, names: [...(opts?.names ?? [])] });
+  const parsed = OptionsSchema.safeParse({ ...opts, names: [...opts.names] });
   if (!parsed.success) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -48,8 +47,11 @@ export async function inspectPortainer(
   const names = new Set(parsed.data.names.map((name) => name.toLowerCase()));
   const found: PortainerFinding[] = [];
 
-  /** 401 stops the inspection with a finding; 403 is a finding naming the access. */
-  async function read<T>(produce: () => Promise<T>, access: string): Promise<T | undefined> {
+  /**
+   * 401 stops the inspection with a finding; 403 is a finding naming `access`, or without
+   * `access` a read that is fine to miss (the planner explains what that means).
+   */
+  async function read<T>(produce: () => Promise<T>, access?: string): Promise<T | undefined> {
     try {
       return await produce();
     } catch (error) {
@@ -58,21 +60,8 @@ export async function inspectPortainer(
         throw new TokenRejected();
       }
       if (error instanceof PortainerApiError && error.status === 403) {
-        found.push(finding.accessDenied(access));
+        if (access !== undefined) found.push(finding.accessDenied(access));
         return undefined;
-      }
-      throw error;
-    }
-  }
-  /** Reads that are fine to miss (the planner explains what that means). */
-  async function optional<T>(produce: () => Promise<T>): Promise<T | undefined> {
-    try {
-      return await produce();
-    } catch (error) {
-      if (error instanceof PortainerApiError && error.status === 403) return undefined;
-      if (error instanceof PortainerApiError && error.status === 401) {
-        found.push(finding.tokenRejected());
-        throw new TokenRejected();
       }
       throw error;
     }
@@ -97,7 +86,6 @@ export async function inspectPortainer(
     const version = await read(() => client.systemVersion(), "read Portainer's version");
     if (version !== undefined) {
       out.version = version.version;
-      if (version.edition !== undefined) out.edition = version.edition;
       if (version.composeVersion !== undefined) out.composeVersion = version.composeVersion;
       if (version.dockerVersion !== undefined) out.dockerVersion = version.dockerVersion;
     }
@@ -138,7 +126,7 @@ export async function inspectPortainer(
         found.push(finding.environmentType(env.name, "a Docker Swarm"));
         return;
       }
-      const arch = architecture(info.architecture);
+      const arch = dockerArchitecture(info.architecture);
       if (arch === undefined) {
         found.push(finding.architecture(env.name, info.architecture ?? "an unknown architecture"));
       } else {
@@ -151,20 +139,20 @@ export async function inspectPortainer(
     for (const stack of stacks ?? []) {
       if (!names.has(stack.name.toLowerCase())) continue;
       const item: PortainerStackFacts = { ...stack };
-      const file = await optional(() => client.getStackFile(stack.id)).catch((error: unknown) => {
+      const file = await read(() => client.getStackFile(stack.id)).catch((error: unknown) => {
         if (error instanceof PortainerApiError) return undefined;
         throw error;
       });
       if (file !== undefined) {
         item.file = file;
-        item.fileSha256 = createHash("sha256").update(file, "utf8").digest("hex");
+        item.fileSha256 = sha256Hex(file);
       }
       out.stacks.push(item);
     }
 
-    const registries = await optional(() => client.listEnvironmentRegistries(env.id));
+    const registries = await read(() => client.listEnvironmentRegistries(env.id));
     if (registries !== undefined) out.registries = registries;
-    const volumes = await optional(() => client.listVolumes(env.id));
+    const volumes = await read(() => client.listVolumes(env.id));
     if (volumes !== undefined) {
       // OpsCrew's projects' volumes, and any volume named like them (`opscrew-<app>_…`) whatever
       // its label says, so a teardown can refuse one that is not the app stack's.
@@ -264,7 +252,11 @@ function unsupportedKind(env: PortainerEnvironmentFacts): string | undefined {
   }
 }
 
-function architecture(text: string | undefined): "amd64" | "arm64" | undefined {
+/**
+ * The architecture OpsCrew builds images for, from Docker's name for it (`x86_64` or `amd64`,
+ * `aarch64` or `arm64`); `undefined` for any other.
+ */
+export function dockerArchitecture(text: string | undefined): "amd64" | "arm64" | undefined {
   switch (text?.toLowerCase()) {
     case "x86_64":
     case "amd64":

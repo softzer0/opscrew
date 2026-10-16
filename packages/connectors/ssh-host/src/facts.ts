@@ -2,14 +2,6 @@ import { z } from "zod";
 import { RUNTIME_FILE_NAMES } from "./constants";
 import { HostStepIdSchema } from "./types";
 
-/** Where OpsCrew keeps its marker, host record and backups on the server (root only). */
-export const OPSCREW_DIR = "/etc/opscrew";
-export const MARKER_PATH = `${OPSCREW_DIR}/app.json`;
-export const RECORD_PATH = `${OPSCREW_DIR}/host.json`;
-export const SSHD_DROP_IN = "/etc/ssh/sshd_config.d/10-opscrew.conf";
-export const AUTO_UPGRADES_FILE = "/etc/apt/apt.conf.d/21opscrew-auto-upgrades";
-export const RUNTIME_DIRS = ["/srv/app", "/srv/data"] as const;
-
 /** Version written to the host record (`opscrewVersion`). */
 export const HOST_ADAPTER_VERSION = "0.1.0";
 

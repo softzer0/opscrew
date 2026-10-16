@@ -32,12 +32,6 @@ export function sameCertFingerprint(a: string, b: string): boolean {
   return left !== undefined && left === normalizeCertFingerprint(b);
 }
 
-/** The canonical form of a 32-byte SHA-256 digest. */
-export function formatCertFingerprint(digest: Uint8Array): string {
-  if (digest.length !== 32) throw new Error("A SHA-256 digest has 32 bytes.");
-  return format(Buffer.from(digest));
-}
-
 function format(digest: Buffer): string {
   const pairs = digest.toString("hex").toUpperCase().match(/../g) ?? [];
   return `SHA256:${pairs.join(":")}`;

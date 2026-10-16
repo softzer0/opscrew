@@ -15,13 +15,12 @@ import {
   tunnelDesired,
   tunnelToken,
 } from "./__fixtures__/helpers";
-import { applyHostPlan } from "./apply";
+import { applyHostPlan, HostApplyError } from "./apply";
 import { DOCKER_DAEMON_JSON } from "./constants";
 import { HostRecordSchema } from "./facts";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
-import { planHost, planTeardown, planUndo } from "./plan";
-import { planPortainer } from "./steps";
+import { planHost, planPortainer, planTeardown, planUndo } from "./plan";
 import type { HostPlan } from "./types";
 
 const STEP_SCRIPTS = /\.(check|apply|verify)$|^deadman\./;
@@ -701,7 +700,7 @@ describe("teardown", () => {
 
   it("removes the app but keeps its data without deleteData, and never touches other containers", async () => {
     const fake = await deployed(true);
-    const plan = planTeardown(await inspectHost(fake), { deleteData: false });
+    const plan = planTeardown(await inspectHost(fake), { deleteData: false, app: "shop" });
     const result = await applyApproved(fake, plan);
     expect(result.applied).toEqual(["runtime-dirs", "portainer", "app-marker"]);
     expect(fake.containers.map((container) => container.name)).toEqual(["grafana"]);
@@ -721,7 +720,7 @@ describe("teardown", () => {
 
   it("deletes the data only with deleteData", async () => {
     const fake = await deployed(true);
-    const plan = planTeardown(await inspectHost(fake), { deleteData: true });
+    const plan = planTeardown(await inspectHost(fake), { deleteData: true, app: "shop" });
     await applyApproved(fake, plan);
     expect(fake.dirs.get("/srv/data")?.entries).toBe(0);
     expect(fake.volumes.has("opscrew-portainer")).toBe(false);
@@ -740,7 +739,10 @@ describe("undo", () => {
     });
     await provision(fake);
     deployApp(fake, "shop");
-    await applyApproved(fake, planTeardown(await inspectHost(fake), { deleteData: true }));
+    await applyApproved(
+      fake,
+      planTeardown(await inspectHost(fake), { deleteData: true, app: "shop" }),
+    );
 
     const undo = planUndo(await inspectHost(fake));
     expect(undo.findings).toEqual([]);
@@ -789,7 +791,7 @@ describe("undo", () => {
 });
 
 describe("apply errors name the steps applied before the failure", () => {
-  it("a failing step's error carries `applied`, in order, without the failed step", async () => {
+  it("a failing step throws a HostApplyError with `applied`, in order, without the failed step", async () => {
     const fake = new FakeHost();
     const plan = await planFor(fake);
     fake.failScripts.set("fail2ban.apply", "fail2ban did not start");
@@ -802,8 +804,11 @@ describe("apply errors name the steps applied before the failure", () => {
       .filter((step) => step.state === "change")
       .map((step) => step.id);
     expect(before).toContain("ufw");
-    expect((error as OpsCrewError & { applied?: unknown }).applied).toEqual(before);
+    expect(error).toBeInstanceOf(HostApplyError);
+    expect((error as HostApplyError).applied).toEqual(before);
+    expect(error.code).toBe("COMMAND_FAILED");
     expect(error.message).toContain("fail2ban did not start");
+    expect(error.hint).toMatch(/Nothing after this step was changed/);
   });
 
   it("is empty when the first change fails", async () => {
@@ -812,7 +817,25 @@ describe("apply errors name the steps applied before the failure", () => {
     const first = plan.steps.find((step) => step.state === "change")?.id as string;
     fake.failScripts.set(`${first}.apply`, "nope");
     const error = await rejection(applyApproved(fake, plan));
-    expect((error as OpsCrewError & { applied?: unknown }).applied).toEqual([]);
+    expect((error as HostApplyError).applied).toEqual([]);
+  });
+
+  it("turns an unexpected error into a plain INTERNAL HostApplyError that keeps it as the cause", async () => {
+    const fake = new FakeHost();
+    const plan = await planFor(fake);
+    const bug = new TypeError("not a function");
+    const error = await rejection(
+      applyApproved(fake, plan, {
+        now: () => {
+          throw bug;
+        },
+      }),
+    );
+    expect(error).toBeInstanceOf(HostApplyError);
+    expect(error.code).toBe("INTERNAL");
+    expect(error.message).toMatch(/did not expect/);
+    expect(error.cause).toBe(bug);
+    expect((error as HostApplyError).applied).toEqual([]);
   });
 });
 

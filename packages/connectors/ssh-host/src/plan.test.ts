@@ -1,3 +1,4 @@
+import { canonicalJson, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost } from "./__fixtures__/fake-host";
@@ -14,7 +15,7 @@ import {
   tunnelDesired,
   tunnelToken,
 } from "./__fixtures__/helpers";
-import { canonicalJson, hostPlanHash } from "./hash";
+import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
 import { planHost, planTeardown, planUndo } from "./plan";
 import type { HostPlan } from "./types";
@@ -31,7 +32,7 @@ describe("hostPlanHash", () => {
     expect(Object.keys(reordered)[0]).toBe("findings");
     expect(hostPlanHash(reordered)).toBe(hostPlanHash(plan));
     expect(hostPlanHash(plan)).toMatch(/^[0-9a-f]{64}$/);
-    expect(canonicalJson({ b: 1, a: [true, null], c: undefined })).toBe('{"a":[true,null],"b":1}');
+    expect(hostPlanHash(plan)).toBe(sha256Hex(canonicalJson(plan)));
   });
 
   it("changes when any parameter changes", async () => {
@@ -517,7 +518,10 @@ describe("planHost: conflicts block with a plain message and a hint", () => {
     await provision(fake);
     deployApp(fake, "shop");
     fake.volumes.set("shop", 2);
-    await applyApproved(fake, planTeardown(await inspectHost(fake), { deleteData: false }));
+    await applyApproved(
+      fake,
+      planTeardown(await inspectHost(fake), { deleteData: false, app: "shop" }),
+    );
     expect(fake.volumes.get("shop")).toBe(2);
     const plan = await planFor(fake);
     expect(codes(plan)).toEqual([]);
@@ -701,7 +705,7 @@ describe("planTeardown and planUndo", () => {
     });
     deployApp(fake, "shop");
     const facts = await inspectHost(fake);
-    const keep = planTeardown(facts, { deleteData: false });
+    const keep = planTeardown(facts, { deleteData: false, app: "shop" });
     expect(keep.purpose).toBe("teardown");
     expect(keep.deleteData).toBe(false);
     expect(keep.steps.map((step) => [step.id, step.state])).toEqual([
@@ -710,7 +714,7 @@ describe("planTeardown and planUndo", () => {
       ["app-marker", "change"],
     ]);
     expect(keep.steps[0]?.title).toMatch(/data in \/srv\/data and Compose volumes stay/);
-    const wipe = planTeardown(facts, { deleteData: true });
+    const wipe = planTeardown(facts, { deleteData: true, app: "shop" });
     expect(wipe.steps[0]?.params).toEqual({ app: "shop", deleteData: true });
     expect(hostPlanHash(wipe)).not.toBe(hostPlanHash(keep));
     expect(JSON.stringify(keep)).not.toMatch(/docker|deploy-user|sshd|ufw/);
@@ -725,17 +729,13 @@ describe("planTeardown and planUndo", () => {
     const facts = await inspectHost(fake);
     expect(facts.marker).toBeNull();
 
-    // The host record names the app; without the plan's name the teardown still finds it.
-    for (const plan of [
-      planTeardown(facts, { deleteData: false }),
-      planTeardown(facts, { deleteData: false, app: "shop" }),
-    ]) {
-      expect(plan.app).toBe("shop");
-      expect(codes(plan)).toEqual([]);
-      expect(plan.steps.map((step) => [step.id, step.state])).toEqual([["runtime-dirs", "change"]]);
-      expect(paramsOf(plan, "runtime-dirs")).toEqual({ app: "shop", deleteData: false });
-    }
-    await applyApproved(fake, planTeardown(facts, { deleteData: false, app: "shop" }));
+    // The host record names the same app, so the teardown goes ahead.
+    const plan = planTeardown(facts, { deleteData: false, app: "shop" });
+    expect(plan.app).toBe("shop");
+    expect(codes(plan)).toEqual([]);
+    expect(plan.steps.map((step) => [step.id, step.state])).toEqual([["runtime-dirs", "change"]]);
+    expect(paramsOf(plan, "runtime-dirs")).toEqual({ app: "shop", deleteData: false });
+    await applyApproved(fake, plan);
     expect(fake.containers.map((container) => container.name)).toEqual(["grafana"]);
     expect(fake.dirs.get("/srv/app")?.entries).toBe(0);
     expect(fake.appFiles.size).toBe(0);
@@ -748,7 +748,6 @@ describe("planTeardown and planUndo", () => {
     fake.files.delete("/etc/opscrew/app.json");
     fake.files.delete("/etc/opscrew/host.json");
     const facts = await inspectHost(fake);
-    expect(planTeardown(facts, { deleteData: false }).steps).toEqual([]);
     const plan = planTeardown(facts, { deleteData: true, app: "shop" });
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([["runtime-dirs", "change"]]);
     expect(plan.steps[0]?.title).toMatch(/Remove the app "shop".*its data/);
