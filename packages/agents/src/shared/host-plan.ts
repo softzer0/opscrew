@@ -44,12 +44,17 @@ const PASSWORD_CHOICE = new Set(["password-users-without-keys", "directory-login
 /**
  * Stops (`PHASE_PRECONDITION`, nothing changed) when the host plan has blocking findings or
  * blocked steps: each named with what was found and what to do (the host plan's policy check).
+ * `server` names the server (`your server`, `the server`) and `command` what to run again; the
+ * choice about password logins is only offered by `opscrew provision`.
  */
-export function requireNoBlockers(plan: HostPlan): void {
+export function requireNoBlockers(
+  plan: HostPlan,
+  where: Pick<HostPlanStep, "server" | "command">,
+): void {
   const blocked = plan.steps.filter((step) => step.state === "blocked");
   if (plan.findings.length === 0 && blocked.length === 0) return;
   throw adapterBlocked({
-    cannot: "OpsCrew cannot prepare your server",
+    cannot: `OpsCrew cannot prepare ${where.server}`,
     findings: plan.findings,
     blocked,
     ...(plan.findings.some((finding) => PASSWORD_CHOICE.has(finding.code))
@@ -58,7 +63,7 @@ export function requireNoBlockers(plan: HostPlan): void {
             "To decide, run `opscrew provision --password-logins off` (turn password logins off anyway) or `opscrew provision --password-logins keep` (leave them as they are).",
         }
       : {}),
-    fallbackHint: "Fix what blocks these steps on the server, then run `opscrew provision` again.",
+    fallbackHint: `Fix what blocks these steps on the server, then run \`${where.command}\` again.`,
   });
 }
 
@@ -117,7 +122,7 @@ export async function approveAndApplyHostPlan(
   await writeFileAtomic(hostPlanFile(deps.paths, hash), `${JSON.stringify(plan, null, 2)}\n`);
   const details = describeHostPlan(plan, hash);
   deps.reporter.info(details);
-  requireNoBlockers(plan);
+  requireNoBlockers(plan, step);
   const changes = plan.steps.filter((item) => item.state === "change");
   if (changes.length === 0) {
     deps.reporter.success(

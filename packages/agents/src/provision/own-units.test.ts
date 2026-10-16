@@ -236,12 +236,18 @@ describe("own-server texts", () => {
     expect(text).toContain("Docker is not installed.");
     expect(text).toContain("✓ Automatic updates (already in place)");
     expect(text).toContain(`Host plan hash: ${"a".repeat(64)}`);
-    expect(() => requireNoBlockers(plan)).not.toThrow();
+    const where = { server: "your server", command: "opscrew provision" };
+    expect(() => requireNoBlockers(plan, where)).not.toThrow();
     expect(() =>
-      requireNoBlockers({
-        ...plan,
-        findings: [{ code: "other-firewall", message: "Another firewall.", hint: "Turn it off." }],
-      }),
+      requireNoBlockers(
+        {
+          ...plan,
+          findings: [
+            { code: "other-firewall", message: "Another firewall.", hint: "Turn it off." },
+          ],
+        },
+        where,
+      ),
     ).toThrow(/cannot prepare your server/);
   });
 });

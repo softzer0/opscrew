@@ -349,6 +349,7 @@ export async function prepareOwnServer(
           : {}),
       }),
     ),
+    { server: "your server", command: "opscrew provision" },
   );
   if (target.access === "public") {
     const address = ownServerPublicAddress(session.connection, facts);

@@ -123,13 +123,37 @@ describe("approveAndApplyHostPlan", () => {
     expect(s.deps.reporter.text()).toContain(
       "The server is already prepared; nothing on it changes.",
     );
-    const blocked: HostPlan = {
+    const found: HostPlan = {
       ...PLAN,
       findings: [{ code: "other-firewall", message: "Another firewall.", hint: "Turn it off." }],
     };
-    await expect(approveAndApplyHostPlan(s.deps, s.step({ plan: blocked }))).rejects.toThrow(
-      /cannot prepare your server/,
-    );
+    await expect(approveAndApplyHostPlan(s.deps, s.step({ plan: found }))).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: "OpsCrew cannot prepare the server, so it changed nothing:\n  - Another firewall.",
+      hint: "Turn it off.",
+    });
+    expect(s.handler.requests).toHaveLength(0);
+  });
+
+  it("names the step's server and command when a step is blocked", async () => {
+    const s = await setup();
+    const blocked: HostPlan = {
+      ...PLAN,
+      steps: [
+        {
+          id: "docker",
+          title: "Install Docker",
+          state: "blocked",
+          reason: "apt is busy.",
+          params: {},
+        },
+      ],
+    };
+    await expect(approveAndApplyHostPlan(s.deps, s.step({ plan: blocked }))).rejects.toMatchObject({
+      message:
+        "OpsCrew cannot prepare the server, so it changed nothing:\n  - Install Docker: apt is busy.",
+      hint: "Fix what blocks these steps on the server, then run `opscrew portainer enable` again.",
+    });
     expect(s.handler.requests).toHaveLength(0);
   });
 
