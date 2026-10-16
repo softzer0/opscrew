@@ -14,9 +14,9 @@ is nothing to stay compatible with.
 ## Decision
 
 - The in-process tool path goes: `ToolDefinition`, `ToolContext`, `ToolResult`, `mutates`,
-  `PhaseRequest.builtinTools` and `tools`, and `Connector.tools()`. Phases reach providers through
-  the typed connectors and the deterministic MCP server; the runtime's policy denies every `mcp__`
-  tool.
+  `PhaseRequest.tools` and `Connector.tools()`. Phases reach providers through the typed connectors
+  and the deterministic MCP server; the runtime's policy denies every `mcp__` tool.
+  `PhaseRequest.builtinTools` stays: it gives the Analyst its read-only Read, Glob and Grep.
 - `findApprovedPlan` leaves the approvals contract; core keeps one table of approval checks.
 - `IacEngine`'s provider-schema and state-resource reads and the registrar's `capabilities` become
   required; fakes implement them and the fallbacks go.
