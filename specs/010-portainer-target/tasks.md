@@ -205,7 +205,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/secops --filter=@opscrew/agents`, then `OPSCREW_IT=1 OPSCREW_DOCKER_TESTS=1 pnpm turbo run test --filter=@opscrew/iac-templates` with `.tools/bin` on `PATH`
   - Effort: xhigh
 
-- [ ] T1024 Agents shared, provision and providers (Area 1), plus the agents helpers later tasks use
+- [X] T1024 Agents shared, provision and providers (Area 1), plus the agents helpers later tasks use
   - Owns: `packages/agents/src/{shared,provision,providers}/**` (+ tests); plan-schema's "Portainer not yet" constants (removal only); the export of iac-templates' "bug in OpsCrew" error (one line); `packages/agents/src/portainer/access.ts` (the Cloudflare identity-provider call only); the import lines in `packages/cli/src/ui/{retarget.ts,__fixtures__/deploy.ts}` and `packages/mcp-server/src/tools/status.ts` that follow
   - Reads: Area 1; the agents parts of Areas 2, 4 and 5 that name a shared helper
   - Depends: T1021, T1022, T1023

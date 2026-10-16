@@ -21,6 +21,7 @@ import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
+import { stateFile } from "../shared";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { maskSensitivePlanJson } from "./plan-json";
 import type { SavedPlan } from "./types";
@@ -432,7 +433,7 @@ function lastLines(text: string, count = 8): string {
 
 async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise<SavedPlan> {
   const { engine, dir, env } = options;
-  const statePath = join(deps.paths.files.tfstateDir, "prod.tfstate");
+  const statePath = stateFile(deps.paths);
   await mkdir(deps.paths.files.tfstateDir, { recursive: true });
   await mkdir(deps.paths.files.plansDir, { recursive: true });
 
