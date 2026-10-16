@@ -83,6 +83,20 @@ export function portainerSteps(value: string | undefined): string[] | undefined 
   return ids.filter((id) => selected.has(id));
 }
 
+/**
+ * The labels the leak search must have a value for after the `selected` steps: the tokens always,
+ * the webhook id only when a selected step set the app up (2, 10 or 11), and the repository's
+ * read token when the repository is private.
+ */
+export function requiredLeakLabels(selected: readonly string[], repoPrivate: boolean): string[] {
+  return [
+    "PORTAINER_API_KEY",
+    "OPSCREW_GHCR_READ_TOKEN",
+    ...(["2", "10", "11"].some((id) => selected.includes(id)) ? ["portainer-webhook"] : []),
+    ...(repoPrivate ? ["OPSCREW_REPO_READ_TOKEN"] : []),
+  ];
+}
+
 /** The step number a step title starts with (`"8. destroy …"` → `"8"`, `"1b. …"` → `"1b"`). */
 export function stepNumber(title: string): string {
   return /^(\d+[a-z]?)\./.exec(title)?.[1] ?? "";

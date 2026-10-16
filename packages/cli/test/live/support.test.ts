@@ -16,6 +16,7 @@ import {
   PORTAINER_STEPS,
   PROXY_PORT,
   portainerSteps,
+  requiredLeakLabels,
   rollbackOutcome,
   shortHostMentions,
   stepNumber,
@@ -351,6 +352,24 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
     expect(stepNumber("3b. a failing change rolls back")).toBe("3b");
     expect(stepNumber("12. no token")).toBe("12");
     expect(stepNumber("no number")).toBe("");
+  });
+
+  it("requires the webhook id in the leak search only after a step that set the app up", () => {
+    const tokens = ["PORTAINER_API_KEY", "OPSCREW_GHCR_READ_TOKEN"];
+    for (const value of ["11,12", "core", "full", "10", "3b"]) {
+      expect(requiredLeakLabels(portainerSteps(value) ?? [], false), value).toEqual([
+        ...tokens,
+        "portainer-webhook",
+      ]);
+    }
+    for (const value of ["2a", "1", "12", "1b"]) {
+      expect(requiredLeakLabels(portainerSteps(value) ?? [], false), value).toEqual(tokens);
+    }
+    expect(requiredLeakLabels(portainerSteps("11,12") ?? [], true)).toEqual([
+      ...tokens,
+      "portainer-webhook",
+      "OPSCREW_REPO_READ_TOKEN",
+    ]);
   });
 
   it("refuses an unknown step", () => {

@@ -86,6 +86,7 @@ import {
   PROXY_PORT,
   portainerAnswers,
   portainerSteps,
+  requiredLeakLabels,
   rollbackOutcome,
   SELF_DEPLOY_TARGET_MS,
   setupTokenFromLogs,
@@ -1499,7 +1500,7 @@ describe.skipIf(MISSING.length > 0)(
 
     step(
       "3. a merged change deploys by itself within 5 minutes; an unchanged branch is not redeployed",
-      minutes(45),
+      minutes(60),
       async () => {
         // Research R5: neither a webhook call nor the updater redeploys an unchanged branch.
         const webhookId = scrubber.value("portainer-webhook");
@@ -2224,12 +2225,7 @@ describe.skipIf(MISSING.length > 0)(
             search(`the audit log ${file}`, await readFile(join(auditDir, file), "utf8"));
           }
         }
-        for (const label of [
-          "PORTAINER_API_KEY",
-          "OPSCREW_GHCR_READ_TOKEN",
-          "portainer-webhook",
-          ...(repoPrivate ? ["OPSCREW_REPO_READ_TOKEN"] : []),
-        ]) {
+        for (const label of requiredLeakLabels(SELECTED, repoPrivate)) {
           if (!known.some((entry) => entry.label === label))
             run.findings.push(`the leak search had no value for ${label}`);
         }

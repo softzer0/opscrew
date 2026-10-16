@@ -57,6 +57,22 @@ export function isExample(name: string): boolean {
 }
 
 /**
+ * The built CLI's environment in a live test: this process's environment with `base` on top,
+ * without any `OPSCREW_E2E_*` variable, cloud provider token or name in `drop`.
+ */
+function cliEnv(
+  base: Record<string, string | undefined>,
+  drop: readonly string[] = [],
+): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, ...base };
+  for (const name of ["HCLOUD_TOKEN", "DIGITALOCEAN_TOKEN", "DIGITALOCEAN_ACCESS_TOKEN", ...drop]) {
+    delete env[name];
+  }
+  for (const name of Object.keys(env)) if (name.startsWith("OPSCREW_E2E_")) delete env[name];
+  return env;
+}
+
+/**
  * A planned project for the domain purchase tests: `examples/nextjs-postgres` in a new git
  * repository, through `analyze --no-ai`, `interview --answers` (Hetzner, no domain yet) and
  * `design`, and a runner of the built CLI in it (`CI=1`, `env` added; never a cloud token or an
@@ -70,22 +86,13 @@ export async function plannedProject(env: Record<string, string | undefined>): P
   const runner = new NodeCommandRunner();
   const work = await mkdtemp(join(tmpdir(), "opscrew-e2e-domain-"));
   const repo = join(work, "repo");
-  const cliEnv: Record<string, string | undefined> = {
-    ...process.env,
-    CI: "1",
-    OPSCREW_HOME: join(work, "home"),
-    ...env,
-  };
-  for (const name of Object.keys(cliEnv)) if (name.startsWith("OPSCREW_E2E_")) delete cliEnv[name];
-  for (const name of ["HCLOUD_TOKEN", "DIGITALOCEAN_TOKEN", "DIGITALOCEAN_ACCESS_TOKEN"]) {
-    delete cliEnv[name];
-  }
+  const projectEnv = cliEnv({ CI: "1", OPSCREW_HOME: join(work, "home"), ...env });
   await materializeFixture(join(EXAMPLES, "nextjs-postgres"), repo);
-  await runner.run("git", ["-C", repo, "init", "-q"], { env: cliEnv });
+  await runner.run("git", ["-C", repo, "init", "-q"], { env: projectEnv });
   const opscrew = async (...args: string[]) => {
     const result = await runner.run(process.execPath, [CLI, ...args], {
       cwd: repo,
-      env: cliEnv,
+      env: projectEnv,
       timeoutMs: minutes(10),
     });
     return { ...result, output: `${result.stdout}\n${result.stderr}` };
@@ -384,28 +391,18 @@ export class LiveRun {
     this.knownHostsFile = join(keys, "known_hosts");
     const basic = Buffer.from(`x-access-token:${settings.githubToken}`).toString("base64");
     this.scrubber.add(basic, "github-basic-auth");
-    this.env = {
-      ...process.env,
-      CI: "1",
-      OPSCREW_HOME: join(this.work, "home"),
-      GITHUB_TOKEN: settings.githubToken,
-      OPSCREW_APP_ENV_FILE: join(this.work, "production.env"),
-      ...options.env,
-    };
-    // OpsCrew never gets a cloud token or an SSH agent here: the server is the user's own, and
-    // the test key (by path) is the only key OpsCrew may use.
-    for (const name of [
-      "HCLOUD_TOKEN",
-      "DIGITALOCEAN_TOKEN",
-      "DIGITALOCEAN_ACCESS_TOKEN",
-      "SSH_AUTH_SOCK",
-      ...(options.drop ?? []),
-    ]) {
-      delete this.env[name];
-    }
-    for (const name of Object.keys(this.env)) {
-      if (name.startsWith("OPSCREW_E2E_")) delete this.env[name];
-    }
+    // OpsCrew never gets an SSH agent here: the server is the user's own, and the test key (by
+    // path) is the only key OpsCrew may use.
+    this.env = cliEnv(
+      {
+        CI: "1",
+        OPSCREW_HOME: join(this.work, "home"),
+        GITHUB_TOKEN: settings.githubToken,
+        OPSCREW_APP_ENV_FILE: join(this.work, "production.env"),
+        ...options.env,
+      },
+      ["SSH_AUTH_SOCK", ...(options.drop ?? [])],
+    );
 
     const keygen = await this.runner.run(
       "ssh-keygen",
