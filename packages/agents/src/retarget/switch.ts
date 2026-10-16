@@ -4,19 +4,17 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { SavedPlan } from "../provision";
-import { committableUrl, recordServerAddress, type ServerAddress } from "../shared";
+import { committableUrl, pollUntil, recordServerAddress, type ServerAddress } from "../shared";
 import { moveProvider } from "../shared/vps-target";
-import { moveLayout, previousTarget } from "./layouts";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { startService, stopService } from "./server-ops";
-import { oldServer } from "./servers";
+import { oldServer, sameIp } from "./servers";
 import {
   auditMove,
   auditStep,
   type MoveSession,
   moveOf,
   newServer,
-  redactWith,
   saveMove,
   useLayout,
   waitsOf,
@@ -199,11 +197,7 @@ async function switchManagedDns(
   const fresh = providerWords(moveProvider(plan.target));
   const old = providerWords(move.from.target.provider);
   deps.reporter.step(`Planning the switch of ${plan.dns.domain} to the new ${fresh.noun}`);
-  const files = await useLayout(
-    session,
-    "switched",
-    moveLayout("switched", previousTarget(move), plan.target),
-  );
+  const files = await useLayout(session, "switched");
   const input: InfraPlanInput = {
     action: "switch",
     files,
@@ -359,40 +353,29 @@ async function waitForUrl(
   url: string,
   waits: { sleep?: (ms: number) => Promise<void>; now?: () => number },
 ): Promise<{ ok: boolean; last?: string }> {
-  const sleep = waits.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const now = waits.now ?? Date.now;
-  const deadline = now() + URL_WAIT_MS;
   let last: string | undefined;
-  for (;;) {
-    try {
-      const response = await fetch(url, {
-        redirect: "follow",
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (response.ok) return { ok: true };
-      last = `HTTP ${response.status}`;
-    } catch (error) {
-      last = reasonOf(error);
-    }
-    if (now() >= deadline) return { ok: false, ...(last !== undefined ? { last } : {}) };
-    await sleep(URL_INTERVAL_MS);
-  }
+  const ok = await pollUntil(
+    async () => {
+      try {
+        const response = await fetch(url, {
+          redirect: "follow",
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (response.ok) return true;
+        last = `HTTP ${response.status}`;
+      } catch (error) {
+        last = reasonOf(error);
+      }
+      return undefined;
+    },
+    { timeoutMs: URL_WAIT_MS, intervalMs: URL_INTERVAL_MS, ...waits },
+  );
+  return ok ? { ok: true } : { ok: false, ...(last !== undefined ? { last } : {}) };
 }
 
 /** The system resolver: every address `hostname` resolves to from this computer. */
 async function systemResolve(hostname: string): Promise<string[]> {
   return (await lookup(hostname, { all: true })).map((entry) => entry.address);
-}
-
-/** Canonical form of an address, so `2001:DB8:0::1` matches `2001:db8::1`. */
-function canonicalAddress(value: string): string {
-  const text = value.trim().toLowerCase();
-  if (!text.includes(":")) return text;
-  try {
-    return new URL(`http://[${text}]/`).hostname.replace(/^\[|\]$/g, "");
-  } catch {
-    return text;
-  }
 }
 
 /**
@@ -404,27 +387,28 @@ async function waitForDns(
   hostname: string,
   addresses: { fresh: readonly (string | undefined)[]; old: readonly (string | undefined)[] },
 ): Promise<string | undefined> {
-  const { services } = session;
-  const resolve = services.resolve ?? systemResolve;
-  const sleep = services.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const now = services.now ?? Date.now;
+  const resolve = session.services.resolve ?? systemResolve;
   const known = (list: readonly (string | undefined)[]) =>
-    new Set(list.filter((a): a is string => a !== undefined).map(canonicalAddress));
+    list.filter((a): a is string => a !== undefined);
   const fresh = known(addresses.fresh);
   const old = known(addresses.old);
-  const deadline = now() + URL_WAIT_MS;
-  let problem: string;
-  for (;;) {
-    try {
-      const seen = (await resolve(hostname)).map(canonicalAddress);
-      if (seen.some((a) => fresh.has(a)) && !seen.some((a) => old.has(a))) return undefined;
-      problem = `${hostname} resolves to ${seen.length > 0 ? seen.join(", ") : "no address"} from this computer, not only to the new server (${[...fresh].join(", ")})`;
-    } catch (error) {
-      problem = `${hostname} could not be resolved from this computer (${reasonOf(error)})`;
-    }
-    if (now() >= deadline) return problem;
-    await sleep(URL_INTERVAL_MS);
-  }
+  const among = (list: readonly string[], address: string) =>
+    list.some((item) => sameIp(item, address));
+  let problem = "";
+  const settled = await pollUntil(
+    async () => {
+      try {
+        const seen = await resolve(hostname);
+        if (seen.some((a) => among(fresh, a)) && !seen.some((a) => among(old, a))) return true;
+        problem = `${hostname} resolves to ${seen.length > 0 ? seen.join(", ") : "no address"} from this computer, not only to the new server (${fresh.join(", ")})`;
+      } catch (error) {
+        problem = `${hostname} could not be resolved from this computer (${reasonOf(error)})`;
+      }
+      return undefined;
+    },
+    { timeoutMs: URL_WAIT_MS, intervalMs: URL_INTERVAL_MS, ...waitsOf(session.services) },
+  );
+  return settled ? undefined : problem;
 }
 
 /** Why the new server is not settled yet, and what to do about it. */
@@ -451,7 +435,7 @@ async function settleSwitch(
   const next = newServer(session);
   const fresh = providerWords(moveProvider(plan.target));
   const old = providerWords(move.from.target.provider);
-  const ops = redactWith(deps);
+  const ops = deps.redactor;
   const remote = newRemote(session);
   const site = publicUrl(plan, next.ipv4);
   const check = `${site}${plan.app.healthPath}`;

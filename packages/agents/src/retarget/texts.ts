@@ -1,6 +1,7 @@
 import type { ApprovalRequest, VpsProviderId } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
+import { HUNDRED_MB } from "./server-ops";
 
 /** Continues a move. */
 export const RUN_COMMAND = "opscrew retarget";
@@ -78,23 +79,17 @@ export function manualSwitchDowntime(plan: Pick<DeployPlan, "dns" | "services">)
 
 /** Rough maintenance window: two minutes plus one per started 100 MB copied through this computer. */
 export function downtimeMinutes(databaseBytes: number): number {
-  const hundredMb = 100 * 1024 * 1024;
-  return 2 + Math.ceil(Math.max(0, databaseBytes) / hundredMb);
+  return 2 + Math.ceil(Math.max(0, databaseBytes) / HUNDRED_MB);
 }
 
-/** `52.4 MB`, `1.2 GB`: a database size in plain words. */
+/** `52.4 MB`, `1.2 GB`: a database size in plain words (1 MB is 1024 KB, as for the estimates). */
 export function sizeText(bytes: number): string {
   const units = ["bytes", "KB", "MB", "GB", "TB"];
   let value = bytes;
   let unit = 0;
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1000;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
     unit++;
   }
   return unit === 0 ? `${bytes} bytes` : `${value.toFixed(1)} ${units[unit]}`;
-}
-
-/** `1 resource` / `3 resources`. */
-export function resourcesText(count: number): string {
-  return `${count} resource${count === 1 ? "" : "s"}`;
 }

@@ -1,6 +1,6 @@
 import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { sshArgs } from "../shared";
+import { pollUntil, sshArgs } from "../shared";
 
 /**
  * Typed server operations for moving a deployment between servers (feature 005). Every command is
@@ -23,9 +23,9 @@ export interface ServerOpOptions {
 }
 
 const MINUTE = 60_000;
-const MB = 1024 * 1024;
+/** 100 MB (binary, as database sizes are shown): the unit the move's time estimates count in. */
+export const HUNDRED_MB = 100 * 1024 * 1024;
 const STDERR_LIMIT = 500;
-const SERVICES: readonly MoveService[] = ["app", "caddy"];
 const SERVICE_LABEL: Record<MoveService, string> = { app: "the app", caddy: "Caddy" };
 
 /**
@@ -36,7 +36,7 @@ export function moveTimeoutMs(sizeBytes: number): number {
   const floor = 5 * MINUTE;
   const ceiling = 6 * 60 * MINUTE;
   if (!Number.isFinite(sizeBytes)) return ceiling;
-  const extra = Math.ceil(Math.max(0, sizeBytes) / (100 * MB)) * MINUTE;
+  const extra = Math.ceil(Math.max(0, sizeBytes) / HUNDRED_MB) * MINUTE;
   return Math.min(ceiling, floor + extra);
 }
 
@@ -124,22 +124,12 @@ async function runStep(
 const composePsHint = (host: string) =>
   `Connect to the server (\`ssh deploy@${host}\`), run \`docker compose ps\` in /srv/app to see what is running, then run \`opscrew retarget\` again.`;
 
-function assertService(service: MoveService): void {
-  if (!SERVICES.includes(service)) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `OpsCrew can only stop or start ${SERVICES.join(" and ")}.`,
-    );
-  }
-}
-
 /** Stops a Compose service (`app` or `caddy`) in `/srv/app`. */
 export async function stopService(
   remote: RemoteExec,
   service: MoveService,
   options: ServerOpOptions,
 ): Promise<void> {
-  assertService(service);
   await runStep(
     remote,
     `cd /srv/app && docker compose stop ${service}`,
@@ -155,7 +145,6 @@ export async function startService(
   service: MoveService,
   options: ServerOpOptions,
 ): Promise<void> {
-  assertService(service);
   await runStep(
     remote,
     `cd /srv/app && docker compose up -d ${service}`,
@@ -165,12 +154,8 @@ export async function startService(
   );
 }
 
+/** The health check; `port` is the plan's (`app.port`, a validated TCP port). */
 function healthCommand(port: number, healthPath: string): string {
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new OpsCrewError("INVALID_INPUT", `The app port ${port} is not a valid TCP port.`, {
-      hint: "Set `app.port` in opscrew/plan.yaml to a number between 1 and 65535.",
-    });
-  }
   // Single-quoted in the remote shell; quotes, whitespace, `$`, backticks and backslashes refused.
   if (!/^\/[^\s'"`$\\]*$/.test(healthPath)) {
     throw new OpsCrewError(
@@ -230,25 +215,29 @@ export async function waitAppHealthy(
 ): Promise<void> {
   const command = healthCommand(port, healthPath);
   const timeoutMs = options.timeoutMs ?? 5 * MINUTE;
-  const intervalMs = options.intervalMs ?? 5000;
-  const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const now = options.now ?? Date.now;
-  const deadline = now() + timeoutMs;
-  for (;;) {
-    const { healthy, detail } = await probe(remote, command);
-    if (healthy) return;
-    if (now() >= deadline) {
-      const last = excerpt(detail, options.redact);
-      throw new OpsCrewError(
-        "COMMAND_FAILED",
-        `The app on ${remote.host} did not answer on http://app:${port}${healthPath} within ${duration(timeoutMs)}${last ? ` (last check: ${last})` : ""}.`,
-        {
-          hint: `See why on the server: \`ssh deploy@${remote.host}\`, then \`cd /srv/app && docker compose logs --tail 200 app\`.`,
-        },
-      );
-    }
-    await sleep(intervalMs);
-  }
+  let detail = "";
+  const healthy = await pollUntil(
+    async () => {
+      const probed = await probe(remote, command);
+      detail = probed.detail;
+      return probed.healthy ? true : undefined;
+    },
+    {
+      timeoutMs,
+      intervalMs: options.intervalMs ?? 5000,
+      ...(options.sleep ? { sleep: options.sleep } : {}),
+      ...(options.now ? { now: options.now } : {}),
+    },
+  );
+  if (healthy) return;
+  const last = excerpt(detail, options.redact);
+  throw new OpsCrewError(
+    "COMMAND_FAILED",
+    `The app on ${remote.host} did not answer on http://app:${port}${healthPath} within ${duration(timeoutMs)}${last ? ` (last check: ${last})` : ""}.`,
+    {
+      hint: `See why on the server: \`ssh deploy@${remote.host}\`, then \`cd /srv/app && docker compose logs --tail 200 app\`.`,
+    },
+  );
 }
 
 const dbHint = (host: string) =>
@@ -439,8 +428,6 @@ export interface CopyDumpOptions extends ServerOpOptions {
   /** OpsCrew's known_hosts file with both servers' pinned host keys. */
   knownHostsFile: string;
   sizeBytes: number;
-  /** SSH port on both servers; default 22. */
-  port?: number;
 }
 
 function scpTarget(host: string): string {
@@ -461,7 +448,6 @@ export async function copyDump(runner: CommandRunner, options: CopyDumpOptions):
     host: options.from,
     keyFile: options.keyFile,
     knownHostsFile: options.knownHostsFile,
-    ...(options.port !== undefined ? { port: options.port } : {}),
   });
   // sshArgs ends with `-p <port> user@host`; scp takes the port as `-P` and the hosts in paths.
   const portAt = ssh.indexOf("-p");

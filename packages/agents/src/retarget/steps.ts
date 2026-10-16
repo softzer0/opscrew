@@ -12,7 +12,6 @@ import {
 } from "../provision";
 import { providerConsole, serverOfProvider, waitForCloudInit, waitForPort } from "../shared";
 import { moveProvider } from "../shared/vps-target";
-import { moveLayout, previousTarget } from "./layouts";
 import { planThenApply } from "./plans";
 import { stopService, waitAppHealthy } from "./server-ops";
 import {
@@ -22,7 +21,6 @@ import {
   moveOf,
   pinHost,
   recordNewServer,
-  redactWith,
   saveMove,
   savePlan,
   useLayout,
@@ -97,11 +95,7 @@ export async function renameStep(session: MoveSession): Promise<RetargetResult |
   deps.reporter.step(
     `Renaming the current ${old.noun} in the infrastructure state (nothing changes in your cloud)`,
   );
-  const files = await useLayout(
-    session,
-    "rename",
-    moveLayout("rename", previousTarget(move), session.plan.target),
-  );
+  const files = await useLayout(session, "rename");
   const outcome = await planThenApply(session, {
     action: "rename",
     files,
@@ -201,11 +195,7 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
   const fresh = providerWords(moveProvider(session.plan.target));
   const old = providerWords(move.from.target.provider);
   deps.reporter.step(`Creating the new ${fresh.noun} on ${fresh.name}`);
-  const files = await useLayout(
-    session,
-    "both",
-    moveLayout("both", previousTarget(move), session.plan.target),
-  );
+  const files = await useLayout(session, "both");
   const outcome = await planThenApply(session, {
     action: "create",
     files,
@@ -374,7 +364,6 @@ export async function deployStep(session: MoveSession): Promise<RetargetResult |
     return { step: "renamed", done: false, next: [`Run \`${RUN_COMMAND}\` again.`] };
   }
   const fresh = providerWords(moveProvider(plan.target));
-  const ops = redactWith(deps);
   const where = { host: next.ipv4, owner: session.github.owner, repo: session.github.repo };
   if (await deploySecretsStoredFor(deps, where)) {
     deps.reporter.info("The GitHub deploy secrets already point to the new server.");
@@ -385,11 +374,11 @@ export async function deployStep(session: MoveSession): Promise<RetargetResult |
   const remote = newRemote(session);
   deps.reporter.step(`Checking the app on the new ${fresh.noun} over SSH`);
   await waitAppHealthy(remote, plan.app.port, plan.app.healthPath, {
-    ...ops,
+    redact: deps.redactor.redact,
     ...waitsOf(session.services),
   });
   deps.reporter.step(`Stopping Caddy on the new ${fresh.noun} until traffic is switched to it`);
-  await stopService(remote, "caddy", ops);
+  await stopService(remote, "caddy", deps.redactor);
   await auditMove(session, {
     kind: "remote-exec",
     action: "stop caddy",
@@ -402,9 +391,4 @@ export async function deployStep(session: MoveSession): Promise<RetargetResult |
   );
   await auditStep(session, "deployed", `app deployed and healthy on ${next.ipv4}`);
   return undefined;
-}
-
-/** `opscrew retarget --approve <hash>` for a pending plan of the main flow. */
-export function continueCommand(planHash: string, flags: readonly string[] = []): string {
-  return approveCommand(RUN_COMMAND, planHash, flags);
 }

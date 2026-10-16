@@ -544,6 +544,44 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     expect(plan.cost.monthly.currency).toBe("USD");
   });
 
+  it.each([
+    {
+      what: "a resource outside the new server's module",
+      address: "module.server_previous.hcloud_firewall.this",
+      says: "would do more than delete resources under module.server.",
+    },
+    {
+      what: "a new-server resource that was not in the confirmed list",
+      address: "module.server.digitalocean_volume.data",
+      says: "now deletes resources that were not in the list you confirmed",
+    },
+  ])("FR-509: stops when the abort's removal plan deletes $what", async ({ address, says }) => {
+    const h = await moveHarness();
+    crashAfter(h, "created");
+    await expect(run(h)).rejects.toThrow("interrupted");
+    let removals = 0;
+    h.engine.tamper = (effect) => {
+      // The first plan without the new module is the preview; the second one is applied.
+      if (!effect.destroys.includes("server") || ++removals < 2) return;
+      effect.changes.push({
+        address,
+        type: address.split(".").at(-2) as string,
+        name: address.split(".").at(-1) as string,
+        provider: "registry.opentofu.org/digitalocean/digitalocean",
+        action: "delete",
+      });
+    };
+    const mark = h.events.length;
+    const error = await caught(abort(h, { confirm: async () => true }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain(says);
+    expect(error.message).toContain("Nothing was deleted.");
+    expect(error.hint).toContain("opscrew retarget --abort");
+    expect(trail(since(h, mark)).filter((line) => line.startsWith("apply"))).toEqual([]);
+    expect(h.engine.state.servers.server).toBeDefined();
+    expect(await exists(join(h.paths.stateDir, "retarget-pending.json"))).toBe(false);
+  });
+
   it("US2-3: refuses after the switch and says the way back is another move", async () => {
     const h = await moveHarness();
     await run(h);

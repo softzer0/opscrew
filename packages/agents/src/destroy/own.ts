@@ -1,4 +1,4 @@
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   applyHostPlan,
@@ -11,9 +11,8 @@ import {
   planTeardown,
   planUndo,
 } from "@opscrew/connector-ssh-host";
-import type { ApprovalRecord, PlanSummary, RemoteExec, ResourceChange } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, writeFileAtomic } from "@opscrew/core";
-import { engineLabel } from "@opscrew/iac-engine";
+import type { ApprovalRecord, RemoteExec, ResourceChange } from "@opscrew/contracts";
+import { listText, OpsCrewError, plural, replaceNames, writeFileAtomic } from "@opscrew/core";
 import { DEPLOY_SECRETS, TUNNEL_DEPLOY_SECRETS, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -25,42 +24,41 @@ import {
   ownServerLoginCheck,
   ownTarget,
 } from "../provision";
-import { withoutOwnServer } from "../secure/own";
 import {
+  approvalEntry,
   describeHostPlan,
   type HostAdapterApi,
   hasDeployment,
+  hasState,
   hostPlanFile,
   recordServerAddress,
 } from "../shared";
 import {
-  requireTunnelClosed,
-  tunnelBusyError,
-  tunnelChange,
-  tunnelSafeEngine,
-} from "../shared/tunnel-connections";
-import { deletionPlanProblems, describeChanges } from "./checks";
-import {
+  applyCloudflareRemoval,
+  approveCloudflareRemoval,
+  type CloudflareRemoval,
+  type CloudflareRemovalWords,
   COMMAND,
   checkCloudflare,
+  containerImagesLeft,
+  deploySecretsLeft,
   destroyedPlan,
   type GitHubTarget,
   nothingDeployed,
+  previewCloudflareRemoval,
   removeDeploySecrets,
+  requireInfraCode,
   resolveGitHub,
   secretsPage,
   setupEngine,
   stateNotHere,
+  stoppedPartWay,
+  teardownScope,
+  teardownSummary,
 } from "./common";
-import {
-  applyApprovedPlan,
-  type DeletionSession,
-  discardPlan,
-  previewDeletion,
-  savePlan,
-} from "./deletion";
+import { confirmDeletion, type DeletionSession, deletionSession, discardPlan } from "./deletion";
 import { destroyConfirmPrompt } from "./texts";
-import type { DestroyOptions, DestroyPreview, DestroyResult } from "./types";
+import type { DestroyOptions, DestroyResult } from "./types";
 
 /** Said wherever the teardown of a server the user owns is described (FR-912, FR-913). */
 const SERVER_STAYS =
@@ -71,18 +69,6 @@ interface OwnHost {
   session: OwnServerSession;
   adapter: HostAdapterApi;
   verifyLogin: () => Promise<boolean>;
-}
-
-async function nonEmpty(file: string): Promise<boolean> {
-  try {
-    return (await stat(file)).size > 0;
-  } catch {
-    return false;
-  }
-}
-
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
 
 /**
@@ -129,177 +115,9 @@ function requireNoHostBlockers(plan: HostPlan, what: string, already = ""): void
   );
 }
 
-/** Cloudflare is the only provider in an own server's infrastructure; anything else stops. */
-function notCloudflare(changes: readonly ResourceChange[]): string[] {
-  return changes
-    .filter((change) => !change.type.startsWith("cloudflare_"))
-    .map((change) => change.address);
-}
-
-function cloudflareOnly(changes: readonly ResourceChange[], note: string): void {
-  const others = notCloudflare(changes);
-  if (others.length === 0) return;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    [
-      `The teardown plan would delete resources other than the app's Cloudflare DNS records, tunnel and Access, so OpsCrew stopped. ${note}`,
-      ...others.map((address) => `  ${address}`),
-    ].join("\n"),
-    {
-      hint: "Run `opscrew drift` to see what changed in the infrastructure code, then run `opscrew destroy` again.",
-    },
-  );
-}
-
-/** What the Cloudflare part deletes, in words: DNS records, or the tunnel with its records and Access. */
-function cloudflareWhat(plan: DeployPlan): string {
-  return usesTunnel(plan)
-    ? "Cloudflare Tunnel, its DNS records and Access"
-    : "DNS records on Cloudflare";
-}
-
-/** The Cloudflare part of the teardown, planned and approved but not applied yet. */
-interface CloudflareRemoval {
-  summary: PlanSummary;
-  approval: ApprovalRecord;
-  /** The plan deletes the app's Cloudflare Tunnel: it is applied after the app is off the server. */
-  tunnel: boolean;
-}
-
 /** Why the tunnel goes last, said in the approval and the summary. */
 const TUNNEL_AFTER_SERVER =
   "Cloudflare deletes a tunnel only after its connector on your server has stopped,";
-
-/** Said when the app is off the server and its Cloudflare resources are not deleted yet. */
-const SERVER_DONE_CLOUDFLARE_LEFT =
-  "The app is removed from your server; its Cloudflare resources are still there.";
-
-/**
- * The Cloudflare part of the teardown, up to its approval: a destroy plan that may only delete
- * Cloudflare resources the user confirmed, approved with `allowDestroy` and the typed app name.
- * `undefined` (its plan file deleted) when nothing is left to delete; on any stop the plan file is
- * deleted too. {@link applyCloudflareRemoval} applies it and always deletes the plan file.
- */
-async function approveCloudflareRemoval(
-  session: DeletionSession,
-  plan: DeployPlan,
-  confirmed: ReadonlySet<string>,
-  hostChanges: boolean,
-): Promise<CloudflareRemoval | undefined> {
-  const { deps } = session;
-  const name = plan.app.name;
-  deps.reporter.step(`Planning the removal of the app's ${cloudflareWhat(plan)}`);
-  const summary = await savePlan(session, "destroy", { destroy: true });
-  try {
-    if (summary.changes.length === 0) {
-      deps.reporter.info("Nothing is left to delete on Cloudflare.");
-      await discardPlan(summary);
-      return undefined;
-    }
-    const problems = deletionPlanProblems(summary.changes, { confirmed });
-    if (problems.notDeletes.length > 0) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        [
-          "The teardown plan would do more than delete, so OpsCrew stopped. Nothing was changed.",
-          ...problems.notDeletes.map((p) => `  ${p}`),
-        ].join("\n"),
-        { hint: "Run `opscrew drift` to see what changed, then run `opscrew destroy` again." },
-      );
-    }
-    if (problems.unconfirmed.length > 0) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        [
-          "The teardown plan now deletes resources that were not in the list you confirmed, so OpsCrew stopped. Nothing was deleted.",
-          ...problems.unconfirmed.map((address) => `  ${address}`),
-        ].join("\n"),
-        { hint: "Run `opscrew destroy` again to see the current list and confirm it." },
-      );
-    }
-    cloudflareOnly(summary.changes, "Nothing was deleted.");
-    const tunnel = tunnelChange(summary.changes, "delete");
-    const count = summary.changes.length;
-    const approval = await deps.approvals.request({
-      kind: "iac-apply",
-      title: `Delete the ${cloudflareWhat(plan)} of ${name} (${plural(count, "resource")} to delete)`,
-      details: [
-        `${engineLabel(summary.engine.name)} ${summary.engine.version} destroy plan:`,
-        ...describeChanges(summary.changes),
-        !tunnel
-          ? "Your server is not part of this plan; the app is removed from it in the next step."
-          : hostChanges
-            ? `Your server is not part of this plan. ${TUNNEL_AFTER_SERVER} so OpsCrew removes the app from your server first (the next approval) and applies this plan after that.`
-            : `Your server is not part of this plan. ${TUNNEL_AFTER_SERVER} so OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel.`,
-        SERVER_STAYS,
-        `Plan hash: ${summary.planHash}`,
-      ].join("\n"),
-      planHash: summary.planHash,
-      allowDestroy: true,
-      confirmPhrase: name,
-    });
-    if (!approval.approved) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The teardown was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.`,
-        { hint: `Run \`opscrew destroy\` again and type ${name} when you are ready.` },
-      );
-    }
-    await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
-    return { summary, approval: approval as ApprovalRecord, tunnel };
-  } catch (error) {
-    await discardPlan(summary);
-    throw error;
-  }
-}
-
-/**
- * Applies the approved Cloudflare part of the teardown and deletes its plan file. A plan that
- * deletes the tunnel runs after the app is off the server, and only once Cloudflare reports no
- * active connections for the tunnel (read-only polls, up to 3 minutes); if they stay open it stops
- * before the apply, and Cloudflare's error 1022 during the apply becomes the same plain message.
- */
-async function applyCloudflareRemoval(
-  session: DeletionSession,
-  plan: DeployPlan,
-  removal: CloudflareRemoval,
-  sleep: ((ms: number) => Promise<void>) | undefined,
-): Promise<ResourceChange[]> {
-  const { deps } = session;
-  const { summary } = removal;
-  try {
-    const engine = tunnelSafeEngine(session.engine);
-    if (removal.tunnel) {
-      await requireTunnelClosed(deps, summary, {
-        command: COMMAND,
-        already: SERVER_DONE_CLOUDFLARE_LEFT,
-        ...(sleep !== undefined ? { options: { sleep } } : {}),
-      });
-    }
-    deps.reporter.step(`Deleting the ${cloudflareWhat(plan)}`);
-    try {
-      await applyApprovedPlan(removal.tunnel ? { ...session, engine } : session, summary, {
-        allowDestroy: true,
-        what: "deleting the Cloudflare resources",
-        hint: removal.tunnel
-          ? `${SERVER_DONE_CLOUDFLARE_LEFT} Fix the cause shown above, then run \`opscrew destroy\` again to finish; it continues with what is left.`
-          : "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
-      });
-    } catch (error) {
-      if (!engine.refusedBusyTunnel) throw error;
-      throw tunnelBusyError({
-        command: COMMAND,
-        reason: "refused",
-        already: SERVER_DONE_CLOUDFLARE_LEFT,
-        cause: error,
-      });
-    }
-    deps.reporter.success(`Deleted ${plural(summary.changes.length, "Cloudflare resource")}.`);
-    return summary.changes;
-  } finally {
-    await discardPlan(summary);
-  }
-}
 
 /**
  * Saves a teardown or undo host plan as `.opscrew/plans/host-<hash>.json`, asks for its own
@@ -356,7 +174,7 @@ async function applyHostPlanApproved(
     const result = await host.adapter.apply(host.session.remote, plan, {
       approvedHash: hash,
       verifyLogin: host.verifyLogin,
-      ...(/^[0-9A-Za-z.+-]{1,64}$/.test(deps.version) ? { version: deps.version } : {}),
+      version: deps.version,
       now: () => deps.clock.now(),
     });
     applied = result.applied;
@@ -373,21 +191,12 @@ async function applyHostPlanApproved(
     });
     if (request.afterFailure === undefined) throw error;
     // Say what already happened (redacted, and never the server's address).
-    const say = (text: string) =>
-      withoutOwnServer(deps.redactor.redact(text), ownServerNames(host.session));
-    const facing = isUserFacingError(error);
-    const message = facing
-      ? error.message
-      : `Changing your server stopped: ${error instanceof Error ? error.message : String(error)}`;
-    const earlier = facing ? error.hint : undefined;
-    throw new OpsCrewError(
-      error instanceof OpsCrewError ? error.code : "COMMAND_FAILED",
-      say(message),
-      {
-        hint: say(earlier ? `${earlier} ${request.afterFailure}` : request.afterFailure),
-        cause: error,
-      },
-    );
+    throw stoppedPartWay(error, {
+      place: "your server",
+      afterFailure: request.afterFailure,
+      say: (text) =>
+        replaceNames(deps.redactor.redact(text), ownServerNames(host.session), "your server"),
+    });
   }
   for (const id of applied) {
     const step = plan.steps.find((item) => item.id === id);
@@ -401,7 +210,7 @@ async function applyHostPlanApproved(
       ...(step !== undefined ? { detail: step.title } : {}),
     });
   }
-  return { hash, approval: approval as ApprovalRecord, applied };
+  return { hash, approval, applied };
 }
 
 /**
@@ -447,9 +256,7 @@ function dataLoss(plan: DeployPlan, facts: HostFacts): string {
   if (plan.services.redis) lost.push("the Redis data");
   lost.push("everything the app stored in /srv/data and in its Docker volumes");
   if (facts.portainer.dataVolume) lost.push("Portainer's data");
-  const list =
-    lost.length <= 1 ? lost.join("") : `${lost.slice(0, -1).join(", ")} and ${lost.at(-1)}`;
-  return `Removing the app also deletes its data on your server: ${list}. OpsCrew takes no snapshot of your own server, so this cannot be undone unless you have your own backup.`;
+  return `Removing the app also deletes its data on your server: ${listText(lost)}. OpsCrew takes no snapshot of your own server, so this cannot be undone unless you have your own backup.`;
 }
 
 /** `docker volume rm` for every volume of the Compose project `project`. */
@@ -527,17 +334,9 @@ function remainingOnOwnServer(input: {
   );
   if (input.keptData !== undefined) items.push(input.keptData);
   if (!input.removedApp) return items;
-  if (input.secretsRemoved.length === 0 && github.skipReason) {
-    items.push(
-      `The deploy secrets in GitHub Actions (${[...input.secretNames].sort().join(", ")}): OpsCrew did not remove them because ${github.skipReason}. Delete them at ${secretsPage(github)}.`,
-    );
-  }
-  const image =
-    github.owner && github.repo
-      ? `ghcr.io/${github.owner}/${github.repo}`.toLowerCase()
-      : "ghcr.io/<owner>/<repo>";
   items.push(
-    `The app's container images in GitHub's container registry (${image}). Delete them in the package settings on GitHub if you no longer need them.`,
+    ...deploySecretsLeft(github, { names: input.secretNames, removed: input.secretsRemoved }),
+    containerImagesLeft(github),
     `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy step fails until \`opscrew provision\` prepares your server again from these files.`,
     "How OpsCrew reaches your server (.opscrew/server.json) with its confirmed host key, and the project's SSH deploy key on this computer, kept so a new deployment can reuse them.",
   );
@@ -570,34 +369,31 @@ export async function destroyOwnServer(
   const own = services.own ?? {};
   const name = plan.app.name;
   const deleteData = options.deleteData === true;
-  const statePath = join(deps.paths.files.tfstateDir, "prod.tfstate");
-  const hasState = await nonEmpty(statePath);
+  const stateHere = await hasState(deps.paths);
   // A finished teardown records `destroyedAt`; an interrupted one does not, so it continues.
-  const removeApp = hasDeployment(plan) || (hasState && plan.deployment.destroyedAt === undefined);
+  const removeApp = hasDeployment(plan) || (stateHere && plan.deployment.destroyedAt === undefined);
   if (!removeApp && options.undoHost !== true) throw nothingDeployed(plan);
-  const dir = join(deps.paths.root, plan.infra.dir);
+  const scope = teardownScope(deps, plan, "own");
+  const words: CloudflareRemovalWords = {
+    what: usesTunnel(plan)
+      ? "Cloudflare Tunnel, its DNS records and Access"
+      : "DNS records on Cloudflare",
+    place: "your server",
+    tunnelAfter: TUNNEL_AFTER_SERVER,
+    stays: SERVER_STAYS,
+  };
 
   // 1. Preconditions: the state of the Cloudflare resources (when the plan has any) and the
   // infrastructure code that matches it. Without the state OpsCrew cannot remove the DNS records or
   // the tunnel, so it changes nothing, not even on the server.
   const managesCloudflare = plan.dns.provider === "cloudflare" || usesTunnel(plan);
-  if (removeApp && managesCloudflare && !hasState) throw stateNotHere(plan);
-  if (removeApp && hasState) {
-    try {
-      await readdir(dir);
-    } catch {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `The infrastructure code (${plan.infra.dir}) is missing, so OpsCrew cannot plan the removal of the app's Cloudflare resources. Nothing was changed.`,
-        {
-          hint: `Check out the branch that contains ${plan.infra.dir} (OpsCrew added it with the pull request \`opscrew provision\` opened), then run \`opscrew destroy\` again.`,
-        },
-      );
-    }
+  if (removeApp && managesCloudflare && !stateHere) throw stateNotHere(plan);
+  if (removeApp && stateHere) {
+    await requireInfraCode(deps, plan, "the removal of the app's Cloudflare resources");
   }
 
   // 2. Credentials
-  const cloudflare = removeApp && hasState && plan.dns.provider === "cloudflare";
+  const cloudflare = removeApp && stateHere && plan.dns.provider === "cloudflare";
   deps.reporter.step(
     `Checking the login to your server${cloudflare ? ", your Cloudflare access" : ""}${removeApp ? " and GitHub access" : ""}`,
   );
@@ -656,29 +452,15 @@ export async function destroyOwnServer(
   let iac: DeletionSession | undefined;
   let resources: ResourceChange[] = [];
   let confirmed: ReadonlySet<string> = new Set();
-  if (removeApp && hasState) {
-    const { engine, env } = await setupEngine(deps, plan, options, statePath);
+  if (removeApp && stateHere) {
+    const setup = await setupEngine(deps, plan, options);
+    const dir = join(deps.paths.root, plan.infra.dir);
     // The server's address reaches the engine only as TF_VAR_* (FR-902).
-    await ownEngineEnv(deps, { target: ownTarget(plan) }, env, () =>
-      engine.output(dir, { env }).catch(() => undefined),
+    await ownEngineEnv(deps, { target: ownTarget(plan) }, setup.env, () =>
+      setup.engine.output(dir, { env: setup.env }).catch(() => undefined),
     );
-    iac = {
-      deps,
-      provider: "own",
-      app: name,
-      command: COMMAND,
-      what: "teardown",
-      phase: "provision",
-      engine,
-      env,
-      dir,
-      stamp: deps.clock.now().toISOString().replace(/[:.]/g, "-"),
-    };
-    deps.reporter.step(`Planning the removal of the app's ${cloudflareWhat(plan)}`);
-    const preview = await previewDeletion(iac, { suffix: "destroy-preview", destroy: true });
-    cloudflareOnly(preview.changes, "Nothing was changed.");
-    resources = preview.changes;
-    confirmed = preview.addresses;
+    iac = deletionSession(scope, { ...setup, dir });
+    ({ resources, confirmed } = await previewCloudflareRemoval(iac, words));
   }
   // Without the marker (deleted on the server) the record or the plan names the app (T931).
   const teardown = removeApp ? planTeardown(facts, { deleteData, app: name }) : undefined;
@@ -700,37 +482,8 @@ export async function destroyOwnServer(
   }
   const dataWarning = deleteData && hasAppData(facts, name) ? dataLoss(plan, facts) : undefined;
   if (removeApp) {
-    // Cloudflare deletes a tunnel only once its connector is gone: then the server goes first.
-    const serverFirst = tunnelChange(resources, "delete") && hostSteps.length > 0;
-    const cloudflareLines =
-      resources.length > 0
-        ? [
-            serverFirst
-              ? `and then deletes these Cloudflare resources (${TUNNEL_AFTER_SERVER} so they go last):`
-              : "The teardown deletes these Cloudflare resources:",
-            ...describeChanges(resources),
-          ]
-        : [];
-    const hostLines =
-      hostSteps.length > 0
-        ? [
-            serverFirst
-              ? "The teardown removes from your server:"
-              : "and removes from your server:",
-            ...hostSteps.map((step) => `  - ${step.title}`),
-          ]
-        : [];
-    deps.reporter.info(
-      [
-        ...(serverFirst ? [...hostLines, ...cloudflareLines] : [...cloudflareLines, ...hostLines]),
-        ...(resources.length === 0 && hostSteps.length === 0
-          ? [
-              "Nothing of the app is left on Cloudflare or your server; OpsCrew finishes the cleanup.",
-            ]
-          : []),
-        SERVER_STAYS,
-      ].join("\n"),
-    );
+    const removed = hostSteps.map((step) => step.title);
+    deps.reporter.info(teardownSummary({ resources, removed, words }));
     if (dataWarning !== undefined) deps.reporter.warn(dataWarning);
     else if (hasAppData(facts, name)) {
       // `--delete-data` works only while the teardown still removes the app's runtime (its marker
@@ -744,8 +497,9 @@ export async function destroyOwnServer(
           : "The app's data on your server (/srv/data and its Docker volumes) is kept.",
       );
     }
-    if (options.confirm !== undefined && (resources.length > 0 || hostSteps.length > 0)) {
-      const preview: DestroyPreview = {
+    await confirmDeletion(
+      scope,
+      {
         name,
         confirmPrompt: destroyConfirmPrompt(name, "own"),
         provider: "own",
@@ -753,26 +507,10 @@ export async function destroyOwnServer(
         resources,
         snapshot: false,
         ...(dataWarning !== undefined ? { dataWarning } : {}),
-        hostSteps: hostSteps.map((step) => step.title),
-      };
-      const ok = await options.confirm(preview);
-      await deps.audit.append({
-        kind: "approval",
-        actor: "user",
-        action: "destroy-confirm",
-        phase: "provision",
-        target: name,
-        decision: ok ? "approved" : "refused",
-        detail: `typed confirmation for deleting ${plural(resources.length, "resource")} and ${plural(hostSteps.length, "change")} on your server`,
-      });
-      if (!ok) {
-        throw new OpsCrewError(
-          "APPROVAL_REFUSED",
-          "The app name was not confirmed, so nothing was deleted and nothing was changed.",
-          { hint: `Run \`${COMMAND}\` again and type ${name} when asked.` },
-        );
-      }
-    }
+        hostSteps: removed,
+      },
+      options.confirm,
+    );
   }
 
   // 5–6. The Cloudflare resources (DNS records, tunnel, Access) and the app on the server (teardown
@@ -782,14 +520,18 @@ export async function destroyOwnServer(
   let destroyed: ResourceChange[] = [];
   let removal: CloudflareRemoval | undefined;
   if (iac !== undefined && resources.length > 0) {
-    removal = await approveCloudflareRemoval(iac, plan, confirmed, hostSteps.length > 0);
+    removal = await approveCloudflareRemoval(iac, {
+      confirmed,
+      appChanges: hostSteps.length > 0,
+      words,
+    });
   }
   const iacApproval = removal?.approval;
   const hostPlans: { teardown?: string; undo?: string } = {};
   let teardownApproval: ApprovalRecord | undefined;
   try {
     if (iac !== undefined && removal !== undefined && !removal.tunnel) {
-      destroyed = await applyCloudflareRemoval(iac, plan, removal, services.sleep);
+      destroyed = await applyCloudflareRemoval(iac, removal, services.sleep);
     }
     if (teardown !== undefined && hostSteps.length > 0) {
       const serverFirst = removal?.tunnel === true;
@@ -829,7 +571,7 @@ export async function destroyOwnServer(
       );
     }
     if (iac !== undefined && removal?.tunnel === true) {
-      destroyed = await applyCloudflareRemoval(iac, plan, removal, services.sleep);
+      destroyed = await applyCloudflareRemoval(iac, removal, services.sleep);
     }
   } finally {
     // Never left behind for a later apply (applyCloudflareRemoval deletes it, too).
@@ -847,10 +589,7 @@ export async function destroyOwnServer(
       reach: "your server",
     });
     const at = deps.clock.now().toISOString();
-    current = destroyedPlan(plan, at, [
-      { record: iacApproval, kind: "iac-apply" },
-      { record: teardownApproval, kind: "host-apply" },
-    ]);
+    current = destroyedPlan(plan, at, [iacApproval, teardownApproval]);
     await writeArtifact("plan", deps.paths.files.plan, current);
     // The address DNS pointed at; the login and the confirmed host key stay (the server stays).
     await recordServerAddress(deps.paths, undefined);
@@ -912,18 +651,7 @@ export async function destroyOwnServer(
           : "Undoing OpsCrew's changes to your server was not approved, so nothing on your server was changed.",
       });
       hostPlans.undo = result.hash;
-      current = {
-        ...current,
-        approvals: [
-          ...current.approvals,
-          {
-            planHash: result.hash,
-            approver: result.approval.approver,
-            at: result.approval.decidedAt,
-            kind: "host-apply",
-          },
-        ],
-      };
+      current = { ...current, approvals: [...current.approvals, approvalEntry(result.approval)] };
       await writeArtifact("plan", deps.paths.files.plan, current);
       undone = true;
       deps.reporter.success(

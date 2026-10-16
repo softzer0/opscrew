@@ -1,3 +1,4 @@
+import { BlockList, isIP } from "node:net";
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -45,10 +46,25 @@ export function indistinctServers(command: string): OpsCrewError {
   );
 }
 
+/**
+ * True when `a` and `b` are the same IP address, however each is written (`2001:DB8:0::1` is
+ * `2001:db8::1`); false when either is not an IP address or they are of different families.
+ */
+export function sameIp(a: string, b: string): boolean {
+  const family = isIP(a);
+  if (family === 0 || isIP(b) !== family) return false;
+  const type = family === 4 ? "ipv4" : "ipv6";
+  const list = new BlockList();
+  list.addAddress(a, type);
+  return list.check(b, type);
+}
+
 /** True when two servers share their IPv4 or their IPv6 address. */
 export function sameAddress(a: ServerAddress, b: ServerAddress): boolean {
-  const v6 = (address: ServerAddress) => address.ipv6?.toLowerCase();
-  return a.ipv4 === b.ipv4 || (v6(a) !== undefined && v6(a) === v6(b));
+  return (
+    sameIp(a.ipv4, b.ipv4) ||
+    (a.ipv6 !== undefined && b.ipv6 !== undefined && sameIp(a.ipv6, b.ipv6))
+  );
 }
 
 /**

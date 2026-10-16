@@ -2,15 +2,13 @@ import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
-import { infrastructureOutputs } from "../shared";
 import { moveProvider } from "../shared/vps-target";
-import { loadMoveServers } from "./servers";
 import {
   type MoveSession,
   markFailed,
+  moveBase,
   moveOf,
   openSession,
-  readDeployKey,
   warnUnusedApproval,
 } from "./session";
 import { startMove } from "./start";
@@ -60,19 +58,11 @@ async function continueMove(
   // missing token cannot keep the app offline.
   let current = plan;
   if (move.oldAppStoppedAt !== undefined && stepBefore(move.step, "migrated")) {
-    const base = {
-      deps,
-      plan,
-      services,
+    const base = await moveBase(deps, plan, {
       command: RUN_COMMAND,
-      deployKey: await readDeployKey(deps, RUN_COMMAND),
-      servers: await loadMoveServers(deps, plan, RUN_COMMAND, () =>
-        infrastructureOutputs(deps, plan, {
-          ...(services.engine ? { engine: services.engine } : {}),
-          ...(options.engine !== undefined ? { preference: options.engine } : {}),
-        }),
-      ),
-    };
+      services,
+      ...(options.engine !== undefined ? { engine: options.engine } : {}),
+    });
     await recoverInterruptedWindow(base);
     current = base.plan;
   }

@@ -1,50 +1,40 @@
 import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { dataWarning, describeChanges } from "../destroy/checks";
 import {
-  assertDeletionPlan,
   confirmDeletion,
-  type DeletionSession,
-  dataWarning,
-  describeChanges,
-  destroyTexts,
   forgetHostKeys,
-  previewDeletion,
   remainingAfterDeletion,
   removeSnapshotRecord,
   snapshotKeptNote,
   snapshotWanted,
   takeSnapshotBeforeDelete,
-  unprotectPlanProblems,
-} from "../destroy";
+} from "../destroy/deletion";
 import { providerProfile } from "../providers";
 import { publishDeploySetup } from "../provision";
 import { moveProvider } from "../shared/vps-target";
-import { moveLayout, previousTarget, protectionVariable } from "./layouts";
+import { previousTarget } from "./layouts";
 import { clearPending } from "./pending";
-import { deletionStep, planHeading } from "./plans";
+import { liftMoveProtection, moveRemoval, previewMoveRemoval, removeMoveServer } from "./removal";
 import { endMoveServers, unknownOldServer } from "./servers";
 import {
   auditStep,
+  layoutOf,
   type MoveSession,
   markFailed,
   moveOf,
   openSession,
   planFilePath,
-  recordApply,
   savePlan,
-  useLayout,
   waitsOf,
   warnUnusedApproval,
   writeFinalFiles,
 } from "./session";
-import { pendingStop, reasonOf } from "./steps";
+import { reasonOf } from "./steps";
 import { requireSwitchSettled } from "./switch";
-import { ABORT_COMMAND, FINISH_COMMAND, providerWords, RUN_COMMAND, resourcesText } from "./texts";
+import { ABORT_COMMAND, FINISH_COMMAND, providerWords, RUN_COMMAND } from "./texts";
 import type { FinishRetargetOptions, RetargetResult } from "./types";
-
-/** Every resource of the old server lives under this prefix during a move. */
-const PREVIOUS = "module.server_previous.";
 
 /** The flags a scripted finish repeats with each `--approve <hash>`. */
 function finishFlags(app: string, snapshot: FinishRetargetOptions["snapshot"]): string[] {
@@ -79,34 +69,15 @@ async function finish(
   const app = session.plan.app.name;
   const old = previousTarget(move);
   const fresh = session.plan.target;
-  const words = providerWords(old.provider);
-  const texts = destroyTexts(old.provider);
-  const profile = providerProfile(old.provider);
-  const flags = finishFlags(app, options.snapshot);
-  const del: DeletionSession = {
-    deps,
-    provider: old.provider,
-    app,
-    command: FINISH_COMMAND,
-    what: "removal of the old server",
-    phase: "retarget",
-    engine: session.engine,
-    env: session.env,
-    dir: session.dir,
-    stamp: deps.clock.now().toISOString().replace(/[:.]/g, "-"),
-  };
+  const removal = moveRemoval(session, "old", old.provider, finishFlags(app, options.snapshot));
+  const { del, words, texts } = removal;
 
   // 0. The new server must answer through the app's URL (Caddy started, URL checked); else the
   // old server is kept. `switched` is recorded right after the DNS switch, before this check.
   await requireSwitchSettled(session);
 
   // 1. Preview: only the old server's resources (the plan is discarded, never applied).
-  deps.reporter.step(`Planning the removal of the old ${words.noun} to see what it deletes`);
-  await useLayout(session, "finish", moveLayout("finish", old, fresh));
-  const preview = await previewDeletion(del, {
-    suffix: "retarget-finish-preview",
-    prefix: PREVIOUS,
-  });
+  const preview = await previewMoveRemoval(removal);
   const { serverInState, serverIds } = preview;
   // Only finishing up after the old server is gone may go on without its address.
   if (session.servers.from === undefined && preview.changes.length > 0) {
@@ -136,7 +107,7 @@ async function finish(
     {
       name: app,
       provider: old.provider,
-      deleteProtection: profile.deleteProtection,
+      deleteProtection: providerProfile(old.provider).deleteProtection,
       resources: preview.changes,
       snapshot: snapshotFirst,
       ...(warning ? { dataWarning: warning } : {}),
@@ -157,118 +128,26 @@ async function finish(
   const kept = snapshotKeptNote(texts, snapshotId);
 
   // 3. Delete protection (Hetzner): a plan that may only turn it off, in the switched layout.
-  const switched = moveLayout("switched", old, fresh);
-  const variable = protectionVariable(switched, "server_previous");
+  const lift = await liftMoveProtection(removal, { serverInState, kept });
+  if ("stop" in lift) return lift.stop;
   /** Said with every later stop: the old server is no longer protected against deletion. */
-  let unprotected = "";
-  if (variable !== undefined && serverInState) {
-    deps.reporter.step(`Planning to lift delete protection on the old ${words.noun}`);
-    await useLayout(session, "switched", switched);
-    const lifted = await deletionStep(session, del, {
-      action: "finish-unprotect",
-      suffix: "retarget-unprotect",
-      vars: { [variable]: "false" },
-      check: (summary) => {
-        const problems = unprotectPlanProblems(summary.changes, summary.planJson, {
-          prefix: PREVIOUS,
-        });
-        if (problems.length === 0) return;
-        throw new OpsCrewError(
-          "PHASE_PRECONDITION",
-          [
-            `Lifting the delete protection on the old ${words.noun} would also change other things, so OpsCrew stopped. Nothing was deleted.${kept}`,
-            ...problems.map((problem) => `  ${problem}`),
-          ].join("\n"),
-          {
-            hint: `The infrastructure no longer matches what OpsCrew applied. Check the ${words.noun}s in ${texts.console}, then run \`${FINISH_COMMAND}\` again.`,
-          },
-        );
-      },
-      request: (summary) => ({
-        kind: "iac-apply",
-        title: `Lift delete protection on the old ${words.noun} ${app}`,
-        details: [
-          planHeading(summary),
-          ...describeChanges(summary.changes),
-          `This only turns off the old ${words.noun}'s delete and rebuild protection so that the next plan can delete it. Nothing is deleted yet.`,
-          `Plan hash: ${summary.planHash}`,
-        ].join("\n"),
-        planHash: summary.planHash,
-      }),
-      refused: (approval, planHash) =>
-        new OpsCrewError(
-          "APPROVAL_REFUSED",
-          `Delete protection on the old ${words.noun} was not lifted${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${kept}`,
-          {
-            hint: `Run \`${FINISH_COMMAND}\` again when you are ready (in scripts: \`${FINISH_COMMAND} ${flags.join(" ")} --approve ${planHash}\`).`,
-          },
-        ),
-      allowDestroy: false,
-      what: "lifting delete protection on the old server",
-      hint: `Fix the cause shown above, then run \`${FINISH_COMMAND}\` again. Nothing was deleted.`,
-    });
-    if (lifted.kind === "pending") return pendingStop(session, lifted.planHash, flags);
-    if (lifted.kind === "applied") {
-      await recordApply(session, lifted);
-      deps.reporter.success(`Delete protection on the old ${words.noun} is off.`);
-    } else {
-      deps.reporter.info(`Delete protection on the old ${words.noun} is already off.`);
-    }
-    unprotected = ` Delete protection on the old ${words.noun} is already off; \`${FINISH_COMMAND}\` deletes it once you confirm again.`;
-    await useLayout(session, "finish", moveLayout("finish", old, fresh));
-  }
+  const unprotected = lift.lifted
+    ? ` Delete protection on the old ${words.noun} is already off; \`${FINISH_COMMAND}\` deletes it once you confirm again.`
+    : "";
 
   // 4. The removal: a plan of the root without the old module, bounded to the confirmed preview.
   if (preview.changes.length > 0) {
-    deps.reporter.step(`Planning the removal of the old ${words.noun}`);
-    const removed = await deletionStep(session, del, {
-      action: "finish-destroy",
-      suffix: "retarget-finish",
-      check: (summary) =>
-        assertDeletionPlan(
-          del,
-          summary,
-          { prefix: PREVIOUS, confirmed: preview.addresses, serverIds },
-          {
-            note: `Nothing was deleted.${unprotected}${kept}`,
-            hint: `Run \`${FINISH_COMMAND}\` again to see the current list and confirm it.`,
-          },
-        ),
-      request: (summary) => ({
-        kind: "iac-apply",
-        title: `Delete the old ${words.noun} ${app} on ${words.name} (${resourcesText(summary.changes.length)} to delete)`,
-        details: [
-          planHeading(summary),
-          ...describeChanges(summary.changes),
-          ...(warning ? [warning] : []),
-          snapshotId !== undefined
-            ? `Snapshot: ${texts.snapshotRef(snapshotId)} keeps a copy of the old ${words.noun} (${texts.snapshotBilled}; OpsCrew never deletes it).`
-            : "Snapshot: none.",
-          `Plan hash: ${summary.planHash}`,
-        ].join("\n"),
-        planHash: summary.planHash,
-        allowDestroy: true,
-        confirmPhrase: app,
-      }),
-      refused: (approval, planHash) =>
-        new OpsCrewError(
-          "APPROVAL_REFUSED",
-          `The removal of the old ${words.noun} was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${unprotected}${kept}`,
-          {
-            hint: `Run \`${FINISH_COMMAND}\` again and type ${app} when you are ready (in scripts: \`${FINISH_COMMAND} ${flags.join(" ")} --approve ${planHash}\`).`,
-          },
-        ),
-      allowDestroy: true,
-      what: "deleting the old server",
-      hint: `Fix the cause shown above, then run \`${FINISH_COMMAND}\` again; it continues with what is left.`,
+    const stop = await removeMoveServer(removal, {
+      preview,
+      notes: [
+        ...(warning ? [warning] : []),
+        snapshotId !== undefined
+          ? `Snapshot: ${texts.snapshotRef(snapshotId)} keeps a copy of the old ${words.noun} (${texts.snapshotBilled}; OpsCrew never deletes it).`
+          : "Snapshot: none.",
+      ],
+      note: `${unprotected}${kept}`,
     });
-    if (removed.kind === "pending") return pendingStop(session, removed.planHash, flags);
-    if (removed.kind === "applied") {
-      await recordApply(session, removed);
-      deps.reporter.success(
-        `Deleted the old ${words.noun} (${resourcesText(preview.changes.length)}).`,
-      );
-    }
+    if (stop !== undefined) return stop;
   }
 
   // 5. Cleanup: host keys, final files, plan, snapshot record, phase.
@@ -282,7 +161,7 @@ async function finish(
     deps.reporter.info(`Removed the old ${words.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
   const { retarget: _finished, ...finalPlan } = session.plan;
-  const written = await writeFinalFiles(session, finalPlan, switched, "all");
+  const written = await writeFinalFiles(session, finalPlan, layoutOf(session, "switched"), "all");
   await savePlan(session, finalPlan);
   await removeSnapshotRecord(deps, "retarget");
   await clearPending(deps);

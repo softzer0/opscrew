@@ -1,4 +1,4 @@
-import { access, mkdir, readFile } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { cloudflareConnector } from "@opscrew/connector-cloudflare";
 import {
@@ -7,13 +7,38 @@ import {
   githubConnector,
   resolveGitHubToken,
 } from "@opscrew/connector-github";
-import type { ApprovalRecord, IacEngine } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
-import { engineLabel, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
+import type { ApprovalRecord, PlanSummary, ResourceChange } from "@opscrew/contracts";
+import { isUserFacingError, OpsCrewError, plural } from "@opscrew/core";
+import { type EnginePreference, engineLabel } from "@opscrew/iac-engine";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { githubCoordinates } from "../provision";
-import type { DestroyGitHubApi, DestroyOptions, DestroyServices } from "./types";
+import {
+  approvalEntry,
+  type EngineFactory,
+  type ProjectEngine,
+  projectEngine,
+  stateFile,
+} from "../shared";
+import {
+  deletedTunnel,
+  type TunnelRef,
+  tunnelBusyError,
+  tunnelChange,
+  tunnelSafeEngine,
+  waitForTunnelToClose,
+} from "../shared/tunnel-connections";
+import { describeChanges, planHeading } from "./checks";
+import {
+  applyApprovedPlan,
+  assertDeletionPlan,
+  type DeletionScope,
+  type DeletionSession,
+  discardPlan,
+  previewDeletion,
+  savePlan,
+} from "./deletion";
+import type { DeletionProvider, DestroyGitHubApi, DestroyOptions, DestroyServices } from "./types";
 
 /** The command every hint of a stopped teardown tells the user to run again. */
 export const COMMAND = "opscrew destroy";
@@ -26,13 +51,20 @@ export interface GitHubTarget {
   skipReason?: string;
 }
 
-export async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
+/** The teardown's deletion scope (`opscrew destroy`) where the app runs. */
+export function teardownScope<P extends DeletionProvider>(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  provider: P,
+): DeletionScope & { provider: P } {
+  return {
+    deps,
+    provider,
+    app: plan.app.name,
+    command: COMMAND,
+    what: "teardown",
+    phase: "provision",
+  };
 }
 
 export function nothingDeployed(plan: DeployPlan): OpsCrewError {
@@ -57,6 +89,28 @@ export function stateNotHere(plan: DeployPlan): OpsCrewError {
       hint: "Run `opscrew destroy` on the computer that ran `opscrew provision`, or copy its .opscrew/tfstate folder (and, with OpenTofu, its state passphrase from ~/.opscrew/projects/<project>/state_passphrase) here, then try again.",
     },
   );
+}
+
+/**
+ * 1. Stops (nothing changed) unless the infrastructure code is in the working tree: without it
+ * OpsCrew cannot plan `what` (`the teardown`).
+ */
+export async function requireInfraCode(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: DeployPlan,
+  what: string,
+): Promise<void> {
+  try {
+    await readdir(join(deps.paths.root, plan.infra.dir));
+  } catch {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The infrastructure code (${plan.infra.dir}) is missing, so OpsCrew cannot plan ${what}. Nothing was changed.`,
+      {
+        hint: `Check out the branch that contains ${plan.infra.dir} (OpsCrew added it with the pull request \`opscrew provision\` opened), then run \`opscrew destroy\` again.`,
+      },
+    );
+  }
 }
 
 /** 2. Cloudflare token (only when the plan manages DNS there); stops when it is missing or broken. */
@@ -140,55 +194,309 @@ export function secretsPage(github: GitHubTarget): string {
     : "your repository's Settings → Secrets and variables → Actions";
 }
 
+/**
+ * The project's engine for the state that is already there ({@link projectEngine}: its passphrase
+ * is only read, since a new one could not decrypt that state), saying which engine is used and,
+ * with Terraform, that it cannot read a state OpenTofu encrypted (`command --engine tofu` can).
+ * `.opscrew/plans` is created for the plans to come.
+ */
+export async function existingStateEngine(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: { engine?: EnginePreference; services?: { engine?: EngineFactory }; command: string },
+): Promise<ProjectEngine> {
+  const setup = await projectEngine(deps, plan, {
+    preference: options.engine,
+    services: options.services,
+    passphrase: "require",
+  });
+  deps.reporter.info(`Using ${engineLabel(setup.engine.info.name)} ${setup.engine.info.version}.`);
+  if (plan.infra.stateEncryption && setup.engine.info.name !== "tofu") {
+    deps.reporter.warn(
+      `Terraform cannot read state that OpenTofu encrypted. If OpenTofu provisioned this deployment, run \`${options.command} --engine tofu\` instead.`,
+    );
+  }
+  await mkdir(deps.paths.files.plansDir, { recursive: true });
+  return setup;
+}
+
 /** 3. Engine, state encryption and `init` with the same backend path as provisioning. */
 export async function setupEngine(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: Pick<DestroyOptions, "engine" | "services">,
-  statePath: string,
-): Promise<{ engine: IacEngine; env: Record<string, string | undefined> }> {
-  const services = options.services ?? {};
-  const preference = options.engine ?? plan.infra.engine;
-  const engine = services.engine
-    ? await services.engine(preference)
-    : await selectEngine(preference, {
-        runner: deps.runner,
-        env: deps.env,
-        redactor: deps.redactor,
-        now: () => deps.clock.now(),
-      });
-  deps.reporter.info(`Using ${engineLabel(engine.info.name)} ${engine.info.version}.`);
-  const env: Record<string, string | undefined> = { ...deps.env };
-  if (plan.infra.stateEncryption) {
-    if (engine.info.name === "tofu") {
-      // Read, never create: a new passphrase could not decrypt the existing state.
-      const passphrase = (
-        await readFile(deps.paths.files.statePassphrase, "utf8").catch(() => undefined)
-      )?.trim();
-      if (!passphrase) {
-        throw new OpsCrewError(
-          "PHASE_PRECONDITION",
-          "The OpenTofu state is encrypted, but this computer does not have its passphrase. Nothing was changed.",
-          {
-            hint: `Copy the state passphrase file from the computer that ran \`opscrew provision\` to ${deps.paths.files.statePassphrase}, then run \`opscrew destroy\` again.`,
+): Promise<ProjectEngine> {
+  const setup = await existingStateEngine(deps, plan, {
+    ...(options.engine !== undefined ? { engine: options.engine } : {}),
+    ...(options.services !== undefined ? { services: options.services } : {}),
+    command: COMMAND,
+  });
+  deps.reporter.step(`Initialising ${engineLabel(setup.engine.info.name)} in ${plan.infra.dir}`);
+  await setup.engine.init(join(deps.paths.root, plan.infra.dir), {
+    env: setup.env,
+    backendConfig: { path: stateFile(deps.paths) },
+  });
+  return setup;
+}
+
+/**
+ * How the Cloudflare part of a teardown on a server the user owns or in their Portainer is worded:
+ * what it deletes, where the app runs and why the tunnel goes last there.
+ */
+export interface CloudflareRemovalWords {
+  /** What the plan deletes, e.g. `DNS records on Cloudflare`. */
+  what: string;
+  /** Where the app runs, as in "removed from your server": `your server` or `your Portainer`. */
+  place: string;
+  /**
+   * Why the tunnel goes last, ending with a comma: `Cloudflare deletes a tunnel only after its
+   * connector on your server has stopped,`.
+   */
+  tunnelAfter: string;
+  /** What always stays, said with the approval. */
+  stays: string;
+}
+
+/** The Cloudflare part of the teardown, planned and approved but not applied yet. */
+export interface CloudflareRemoval {
+  summary: PlanSummary;
+  approval: ApprovalRecord;
+  /** The plan deletes the app's Cloudflare Tunnel: it is applied after the app is gone. */
+  tunnel: boolean;
+  words: CloudflareRemovalWords;
+}
+
+/** The Cloudflare resources are the only ones in such a root module: anything else stops. */
+function cloudflareOnly(changes: readonly ResourceChange[], note: string): void {
+  const others = changes
+    .filter((change) => !change.type.startsWith("cloudflare_"))
+    .map((change) => change.address);
+  if (others.length === 0) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    [
+      `The teardown plan would delete resources other than the app's Cloudflare DNS records, tunnel and Access, so OpsCrew stopped. ${note}`,
+      ...others.map((address) => `  ${address}`),
+    ].join("\n"),
+    {
+      hint: "Run `opscrew drift` to see what changed in the infrastructure code, then run `opscrew destroy` again.",
+    },
+  );
+}
+
+/**
+ * 4. What the Cloudflare part of the teardown deletes, from a preview plan that is discarded (it
+ * may only delete Cloudflare resources): the changes and their addresses to confirm.
+ */
+export async function previewCloudflareRemoval(
+  session: DeletionSession,
+  words: Pick<CloudflareRemovalWords, "what">,
+): Promise<{ resources: ResourceChange[]; confirmed: ReadonlySet<string> }> {
+  session.deps.reporter.step(
+    `Planning the removal of the app's ${words.what} to see what it deletes`,
+  );
+  const preview = await previewDeletion(session, { suffix: "destroy-preview", destroy: true });
+  cloudflareOnly(preview.changes, "Nothing was changed.");
+  return { resources: preview.changes, confirmed: preview.addresses };
+}
+
+/**
+ * 4. The teardown in words, shown before the typed confirmation: the Cloudflare resources and what
+ * is `removed` where the app runs (step or change titles), in the order they go (the app first
+ * when the Cloudflare plan deletes its tunnel), then `notes` and what stays.
+ */
+export function teardownSummary(input: {
+  resources: readonly ResourceChange[];
+  removed: readonly string[];
+  words: CloudflareRemovalWords;
+  notes?: readonly string[];
+}): string {
+  const { resources, removed, words } = input;
+  const appFirst = tunnelChange(resources, "delete") && removed.length > 0;
+  const cloudflare =
+    resources.length > 0
+      ? [
+          appFirst
+            ? `and then deletes these Cloudflare resources (${words.tunnelAfter} so they go last):`
+            : "The teardown deletes these Cloudflare resources:",
+          ...describeChanges(resources),
+        ]
+      : [];
+  const app =
+    removed.length > 0
+      ? [
+          appFirst || resources.length === 0
+            ? `The teardown removes from ${words.place}:`
+            : `and removes from ${words.place}:`,
+          ...removed.map((title) => `  - ${title}`),
+        ]
+      : [];
+  return [
+    ...(appFirst ? [...app, ...cloudflare] : [...cloudflare, ...app]),
+    ...(resources.length === 0 && removed.length === 0
+      ? [
+          `Nothing of the app is left to remove from Cloudflare or ${words.place}; OpsCrew finishes the cleanup.`,
+        ]
+      : []),
+    ...(input.notes ?? []),
+    words.stays,
+  ].join("\n");
+}
+
+/**
+ * 5. The Cloudflare part of the teardown, up to its approval: a destroy plan that may only delete
+ * Cloudflare resources the user confirmed, approved with `allowDestroy` and the typed app name.
+ * `appChanges` says whether the app is removed from where it runs (the next approval). `undefined`
+ * (its plan file deleted) when nothing is left to delete; on any stop the plan file is deleted
+ * too. {@link applyCloudflareRemoval} applies it and always deletes the plan file.
+ */
+export async function approveCloudflareRemoval(
+  session: DeletionSession,
+  input: {
+    confirmed: ReadonlySet<string>;
+    appChanges: boolean;
+    words: CloudflareRemovalWords;
+    notes?: readonly string[];
+  },
+): Promise<CloudflareRemoval | undefined> {
+  const { deps, app: name } = session;
+  const { words } = input;
+  deps.reporter.step(`Planning the removal of the app's ${words.what}`);
+  const summary = await savePlan(session, "destroy", { destroy: true });
+  try {
+    if (summary.changes.length === 0) {
+      deps.reporter.info("Nothing is left to delete on Cloudflare.");
+      await discardPlan(summary);
+      return undefined;
+    }
+    assertDeletionPlan(session, summary, { confirmed: input.confirmed }, (problem) =>
+      problem === "unconfirmed"
+        ? {
+            note: "Nothing was deleted.",
+            hint: "Run `opscrew destroy` again to see the current list and confirm it.",
+          }
+        : {
+            note: "Nothing was changed.",
+            hint: "Run `opscrew drift` to see what changed, then run `opscrew destroy` again.",
           },
-        );
-      }
-      deps.redactor.addLiteral(passphrase, "state-passphrase");
-      env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
-    } else {
-      deps.reporter.warn(
-        "Terraform cannot read state that OpenTofu encrypted. If OpenTofu provisioned this deployment, run `opscrew destroy --engine tofu` instead.",
+    );
+    cloudflareOnly(summary.changes, "Nothing was deleted.");
+    const tunnel = tunnelChange(summary.changes, "delete");
+    const count = summary.changes.length;
+    const place = `${words.place.charAt(0).toUpperCase()}${words.place.slice(1)}`;
+    const approval = await deps.approvals.request({
+      kind: "iac-apply",
+      title: `Delete the ${words.what} of ${name} (${plural(count, "resource")} to delete)`,
+      details: [
+        planHeading(summary, "destroy plan"),
+        ...describeChanges(summary.changes),
+        !tunnel
+          ? `${place} is not part of this plan; the app is removed from it in the next step.`
+          : input.appChanges
+            ? `${place} is not part of this plan. ${words.tunnelAfter} so OpsCrew removes the app from ${words.place} first (the next approval) and applies this plan after that.`
+            : `${place} is not part of this plan. ${words.tunnelAfter} so OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel.`,
+        ...(input.notes ?? []),
+        words.stays,
+        `Plan hash: ${summary.planHash}`,
+      ].join("\n"),
+      planHash: summary.planHash,
+      allowDestroy: true,
+      confirmPhrase: name,
+    });
+    if (!approval.approved) {
+      throw new OpsCrewError(
+        "APPROVAL_REFUSED",
+        `The teardown was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.`,
+        { hint: `Run \`opscrew destroy\` again and type ${name} when you are ready.` },
       );
     }
+    await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
+    return { summary, approval, tunnel, words };
+  } catch (error) {
+    await discardPlan(summary);
+    throw error;
   }
-  await mkdir(deps.paths.files.plansDir, { recursive: true });
-  deps.reporter.step(`Initialising ${engineLabel(engine.info.name)} in ${plan.infra.dir}`);
-  await engine.init(join(deps.paths.root, plan.infra.dir), {
-    env,
-    backendConfig: { path: statePath },
-  });
-  return { engine, env };
+}
+
+/**
+ * Every Cloudflare Tunnel the plan deletes (a Portainer root can delete two: the app's and the one
+ * in front of Portainer's webhook), each entry read as `deletedTunnel` reads one.
+ */
+function deletedTunnels(planJson: unknown): TunnelRef[] {
+  const list = (planJson as { resource_changes?: unknown } | null)?.resource_changes;
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((entry) => deletedTunnel({ resource_changes: [entry] }) ?? []);
+}
+
+/**
+ * 6. Applies the approved Cloudflare part of the teardown and deletes its plan file. A plan that
+ * deletes a tunnel runs after the app is gone, and only once Cloudflare reports no active
+ * connections for every tunnel it deletes (read-only polls, up to 3 minutes each); if they stay
+ * open it stops before the apply, and Cloudflare's error 1022 during the apply becomes the same
+ * plain message.
+ */
+export async function applyCloudflareRemoval(
+  session: DeletionSession,
+  removal: CloudflareRemoval,
+  sleep: ((ms: number) => Promise<void>) | undefined,
+): Promise<ResourceChange[]> {
+  const { deps } = session;
+  const { summary, words } = removal;
+  const left = `The app is removed from ${words.place}; its Cloudflare resources are still there.`;
+  try {
+    const engine = tunnelSafeEngine(session.engine);
+    if (removal.tunnel) {
+      for (const tunnel of deletedTunnels(summary.planJson)) {
+        const wait = await waitForTunnelToClose(deps, tunnel, sleep !== undefined ? { sleep } : {});
+        if (wait.closed) continue;
+        throw tunnelBusyError({
+          command: COMMAND,
+          reason: "timeout",
+          already: left,
+          ...(wait.problem !== undefined ? { problem: wait.problem } : {}),
+        });
+      }
+    }
+    deps.reporter.step(`Deleting the ${words.what}`);
+    try {
+      await applyApprovedPlan(removal.tunnel ? { ...session, engine } : session, summary, {
+        allowDestroy: true,
+        what: "deleting the Cloudflare resources",
+        hint: removal.tunnel
+          ? `${left} Fix the cause shown above, then run \`opscrew destroy\` again to finish; it continues with what is left.`
+          : "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
+      });
+    } catch (error) {
+      if (!engine.refusedBusyTunnel) throw error;
+      throw tunnelBusyError({ command: COMMAND, reason: "refused", already: left, cause: error });
+    }
+    deps.reporter.success(`Deleted ${plural(summary.changes.length, "Cloudflare resource")}.`);
+    return summary.changes;
+  } finally {
+    await discardPlan(summary);
+  }
+}
+
+/**
+ * The error when a change on the user's server or in their Portainer stopped part-way: its own
+ * words (an unexpected error as `Changing <place> stopped: …`), with `afterFailure` (what already
+ * happened, and how to finish) after its hint, all passed through `say` (the redactor, and on a
+ * server the user owns the server's names).
+ */
+export function stoppedPartWay(
+  error: unknown,
+  input: { place: string; afterFailure: string; say: (text: string) => string },
+): OpsCrewError {
+  const facing = isUserFacingError(error);
+  const message = facing
+    ? error.message
+    : `Changing ${input.place} stopped: ${error instanceof Error ? error.message : String(error)}`;
+  const hint = facing && error.hint ? `${error.hint} ${input.afterFailure}` : input.afterFailure;
+  return new OpsCrewError(
+    error instanceof OpsCrewError ? error.code : "COMMAND_FAILED",
+    input.say(message),
+    { hint: input.say(hint), cause: error },
+  );
 }
 
 /**
@@ -254,27 +562,15 @@ export async function removeDeploySecrets(
   return removed;
 }
 
-/** 8. The plan without the app's URL, with `destroyedAt` and the approvals recorded. */
+/** 8. The plan without the app's URL, with `destroyedAt` and this run's approvals recorded. */
 export function destroyedPlan(
   plan: DeployPlan,
   at: string,
-  approvals: readonly (
-    | { record: ApprovalRecord | undefined; kind: "iac-apply" | "host-apply" | "stack-apply" }
-    | undefined
-  )[],
+  approvals: readonly (ApprovalRecord | undefined)[],
 ): DeployPlan {
   const { url, lastCompletedPhase, ...kept } = plan.deployment;
-  const recorded = approvals.flatMap((entry) =>
-    entry?.record?.planHash === undefined
-      ? []
-      : [
-          {
-            planHash: entry.record.planHash,
-            approver: entry.record.approver,
-            at: entry.record.decidedAt,
-            kind: entry.kind,
-          },
-        ],
+  const recorded = approvals.flatMap((record) =>
+    record?.planHash === undefined ? [] : [approvalEntry(record)],
   );
   return {
     ...plan,
@@ -282,4 +578,24 @@ export function destroyedPlan(
     approvals: [...plan.approvals, ...recorded],
     deployment: { ...kept, destroyedAt: at },
   };
+}
+
+/** 9. "What remains": the deploy secrets OpsCrew could not remove (none when it could). */
+export function deploySecretsLeft(
+  github: GitHubTarget,
+  input: { names: readonly string[]; removed: readonly string[] },
+): string[] {
+  if (input.removed.length > 0 || github.skipReason === undefined) return [];
+  return [
+    `The deploy secrets in GitHub Actions (${[...input.names].sort().join(", ")}): OpsCrew did not remove them because ${github.skipReason}. Delete them at ${secretsPage(github)}.`,
+  ];
+}
+
+/** 9. "What remains": the app's container images in GitHub's container registry. */
+export function containerImagesLeft(github: GitHubTarget): string {
+  const image =
+    github.owner && github.repo
+      ? `ghcr.io/${github.owner}/${github.repo}`.toLowerCase()
+      : "ghcr.io/<owner>/<repo>";
+  return `The app's container images in GitHub's container registry (${image}). Delete them in the package settings on GitHub if you no longer need them.`;
 }

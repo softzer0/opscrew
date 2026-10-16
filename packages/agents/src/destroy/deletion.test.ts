@@ -23,7 +23,6 @@ import {
   confirmDeletion,
   type DeletionSession,
   forgetHostKeys,
-  infraDeclaresVariable,
   liftProtection,
   previewDeletion,
   remainingAfterDeletion,
@@ -157,7 +156,7 @@ async function setup(
   const engine = new MoveEngine(
     options.next ?? (() => ({ changes: PREVIOUS, planJson: deletionJson(PREVIOUS) })),
   );
-  const session: DeletionSession = {
+  const session: DeletionSession & { provider: VpsProviderId } = {
     deps,
     provider: options.provider ?? "hetzner",
     app: "shop",
@@ -188,9 +187,14 @@ function preview(overrides: Partial<DestroyPreview> = {}): DestroyPreview {
 }
 
 describe("previewDeletion", () => {
+  const bounded = {
+    prefix: PREFIX,
+    hint: `Check the servers, then run \`${FINISH}\` again.`,
+  } as const;
+
   it("previews a normal plan bounded to a prefix and discards it", async () => {
     const { session, engine } = await setup();
-    const result = await previewDeletion(session, { suffix: "finish-preview", prefix: PREFIX });
+    const result = await previewDeletion(session, { suffix: "finish-preview", bounded });
     expect(result.changes).toEqual(PREVIOUS);
     expect([...result.addresses]).toEqual(PREVIOUS.map((c) => c.address));
     expect(result.serverInState).toBe(true);
@@ -205,9 +209,7 @@ describe("previewDeletion", () => {
     const { session, engine } = await setup({
       next: () => ({ changes, planJson: deletionJson(changes) }),
     });
-    const error = await previewDeletion(session, { suffix: "p", prefix: PREFIX }).catch(
-      (e: unknown) => e,
-    );
+    const error = await previewDeletion(session, { suffix: "p", bounded }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(OpsCrewError);
     expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
     const { message, hint } = error as OpsCrewError;
@@ -217,7 +219,7 @@ describe("previewDeletion", () => {
         "  delete module.server.hcloud_server.this",
       ].join("\n"),
     );
-    expect(hint).toContain(`run \`${FINISH}\` again`);
+    expect(hint).toBe(bounded.hint);
     expect(engine.applied).toEqual([]);
     expect(await plansLeft(session)).toEqual([]);
   });
@@ -236,38 +238,6 @@ describe("previewDeletion", () => {
     expect(engine.planOptions).toEqual([
       { env: {}, vars: { delete_protection: "false" }, destroy: true },
     ]);
-  });
-});
-
-describe("invalid prefixes", () => {
-  it("are refused before anything is planned or applied", async () => {
-    for (const prefix of ["module.server", ""]) {
-      const { session, engine, handler } = await setup({
-        next: () => unprotectAt(PREVIOUS_SERVER),
-      });
-      await expect(previewDeletion(session, { suffix: "p", prefix })).rejects.toMatchObject({
-        code: "INTERNAL",
-      });
-      await expect(
-        liftProtection(session, {
-          variable: "previous_delete_protection",
-          prefix,
-          serverInState: true,
-          mismatchHint: "x",
-        }),
-      ).rejects.toMatchObject({ code: "INTERNAL" });
-      expect(() =>
-        assertDeletionPlan(
-          { provider: "hetzner", what: "x" },
-          { changes: PREVIOUS },
-          { prefix },
-          { note: "", hint: "" },
-        ),
-      ).toThrow(expect.objectContaining({ code: "INTERNAL" }));
-      expect(engine.planOptions).toEqual([]);
-      expect(engine.applied).toEqual([]);
-      expect(handler.requests).toEqual([]);
-    }
   });
 });
 
@@ -311,6 +281,44 @@ describe("assertDeletionPlan", () => {
     expect(() => assertDeletionPlan(scope, { changes }, { prefix: PREFIX }, stop)).toThrow(
       `  update ${PREVIOUS_SERVER}`,
     );
+  });
+
+  it("words each stop as the caller says for that problem", () => {
+    const per = (problem: string) => ({ note: `(${problem})`, hint: `hint for ${problem}` });
+    const caught = (run: () => void) => {
+      try {
+        run();
+      } catch (error) {
+        return error as OpsCrewError;
+      }
+      throw new Error("expected a stop");
+    };
+    const unbounded = caught(() =>
+      assertDeletionPlan(scope, { changes: [at(PREVIOUS_SERVER, "update")] }, {}, per),
+    );
+    expect(unbounded.message).toContain("so OpsCrew stopped. (unbounded)");
+    expect(unbounded.hint).toBe("hint for unbounded");
+    const volume = [...PREVIOUS, at("module.server_previous.hcloud_volume.data")];
+    expect(
+      caught(() => assertDeletionPlan(scope, { changes: volume }, { confirmed }, per)).hint,
+    ).toBe("hint for unconfirmed");
+    const other = { changes: PREVIOUS, planJson: deletionJson(PREVIOUS, "4712") };
+    expect(
+      caught(() => assertDeletionPlan(scope, other, { confirmed, serverIds: ["4711"] }, per)).hint,
+    ).toBe("hint for server");
+  });
+
+  it("never looks for a server in the user's Portainer", () => {
+    const portainer = { provider: "portainer" as const, what: "teardown" };
+    const records = [at("module.dns.cloudflare_dns_record.a")];
+    expect(() =>
+      assertDeletionPlan(
+        portainer,
+        { changes: records, planJson: deletionJson(records) },
+        { confirmed: new Set(records.map((c) => c.address)), serverIds: ["4711"] },
+        stop,
+      ),
+    ).not.toThrow();
   });
 });
 
@@ -360,6 +368,44 @@ describe("confirmDeletion", () => {
       confirmDeletion(session, preview({ provider: "digitalocean" }), async () => false),
     ).rejects.toThrow("The Droplet name was not confirmed");
   });
+
+  const removals: [string, Partial<DestroyPreview>, Partial<DestroyPreview>, string][] = [
+    [
+      "own",
+      { provider: "own", hostSteps: ["Remove the app"] },
+      { hostSteps: [] },
+      "on your server",
+    ],
+    [
+      "portainer",
+      { provider: "portainer", stackChanges: ["Remove the stack opscrew-shop"] },
+      { stackChanges: [] },
+      "in your Portainer",
+    ],
+  ];
+  it.each(removals)(
+    "%s: asks for the app's name when only the app is removed, and counts its changes",
+    async (_where, changes, none, where) => {
+      const { session, deps } = await setup();
+      const asked: DestroyPreview[] = [];
+      const answer = async (p: DestroyPreview) => {
+        asked.push(p);
+        return false;
+      };
+      const removal = preview({ deleteProtection: false, resources: [], ...changes });
+      await expect(confirmDeletion(session, removal, answer)).rejects.toMatchObject({
+        code: "APPROVAL_REFUSED",
+        message: "The app name was not confirmed, so nothing was deleted and nothing was changed.",
+      });
+      expect(asked).toHaveLength(1);
+      expect(deps.audit.entries.find((e) => e.action === "destroy-confirm")?.detail).toBe(
+        `typed confirmation for deleting 0 resources and 1 change ${where}`,
+      );
+      // Nothing to delete and nothing to change: nothing to confirm either.
+      await confirmDeletion(session, { ...removal, ...none }, answer);
+      expect(asked).toHaveLength(1);
+    },
+  );
 });
 
 describe("takeSnapshotBeforeDelete", () => {
@@ -461,7 +507,6 @@ describe("takeSnapshotBeforeDelete", () => {
 describe("liftProtection", () => {
   const lift = {
     variable: "previous_delete_protection",
-    prefix: PREFIX,
     serverInState: true,
     mismatchHint: "Check the old server.",
   };
@@ -493,10 +538,10 @@ describe("liftProtection", () => {
     expect(await plansLeft(session)).toEqual([]);
   });
 
-  it("stops before the approval when the plan changes the new server or anything else", async () => {
+  it("stops before the approval when the plan changes anything but the protection", async () => {
     for (const scripted of [
-      unprotectAt("module.server.hcloud_server.this"),
       unprotectAt(PREVIOUS_SERVER, { server_type: "cx53" }),
+      { changes: [at("module.server_previous.hcloud_firewall.this", "update")], planJson: {} },
     ]) {
       const { session, engine, handler } = await setup({ next: () => scripted });
       const error = await liftProtection(session, lift).catch((e: unknown) => e);
@@ -589,21 +634,5 @@ describe("remainingAfterDeletion", () => {
     expect(remainingAfterDeletion({ provider: "hetzner", app: "shop", backups: false })).toEqual(
       [],
     );
-  });
-});
-
-describe("infraDeclaresVariable", () => {
-  it("finds a variable declared in any .tf file of the root module", async () => {
-    const { session } = await setup();
-    await mkdir(session.dir, { recursive: true });
-    await writeFile(join(session.dir, "notes.md"), 'variable "previous_delete_protection"\n');
-    expect(await infraDeclaresVariable(session.dir, "previous_delete_protection")).toBe(false);
-    await writeFile(
-      join(session.dir, "variables.tf"),
-      'variable "previous_delete_protection" {\n  type = bool\n}\n',
-    );
-    expect(await infraDeclaresVariable(session.dir, "previous_delete_protection")).toBe(true);
-    expect(await infraDeclaresVariable(session.dir, "delete_protection")).toBe(false);
-    expect(await infraDeclaresVariable(join(session.dir, "missing"), "x")).toBe(false);
   });
 });

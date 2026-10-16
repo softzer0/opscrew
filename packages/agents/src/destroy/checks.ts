@@ -1,10 +1,12 @@
-import type { ResourceAction, ResourceChange, VpsProviderId } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
-import { cloudTarget } from "@opscrew/iac-templates";
+import type { PlanSummary, ResourceAction, ResourceChange } from "@opscrew/contracts";
+import { isRecord, listText } from "@opscrew/core";
+import { engineLabel } from "@opscrew/iac-engine";
+import { cloudTarget, type ServerModule } from "@opscrew/iac-templates";
 import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { providerProfile } from "../providers";
 import { destroyTexts } from "./texts";
+import type { DeletionProvider } from "./types";
 
 /**
  * Terraform type of the Hetzner server, the only resource the protection-lifting plan may change.
@@ -29,20 +31,37 @@ export function describeChanges(changes: readonly ResourceChange[]): string[] {
   return changes.map((c) => `  ${SYMBOL[c.action]} ${c.action.padEnd(7)} ${c.address}`);
 }
 
+/** `OpenTofu 1.13.1 plan:` (or `… destroy plan:`): the first line of a plan's details. */
+export function planHeading(
+  summary: Pick<PlanSummary, "engine">,
+  kind: "plan" | "destroy plan" = "plan",
+): string {
+  return `${engineLabel(summary.engine.name)} ${summary.engine.version} ${kind}:`;
+}
+
+/**
+ * The Terraform type of the provider's server (`hcloud_server`, `digitalocean_droplet`); none on a
+ * server the user owns or in their Portainer, whose infrastructure code holds no server.
+ */
+function serverType(provider: DeletionProvider): string | undefined {
+  if (provider === "portainer") return undefined;
+  return providerProfile(provider).serverResourceType || undefined;
+}
+
 /**
  * True when the changes delete (or replace) the provider's server, for example an `hcloud_server`
  * on Hetzner or a `digitalocean_droplet` on DigitalOcean.
  */
 export function deletesServer(
   changes: readonly ResourceChange[],
-  provider: VpsProviderId,
+  provider: DeletionProvider,
 ): boolean {
-  const type = providerProfile(provider).serverResourceType;
+  const type = serverType(provider);
   return changes.some((c) => c.type === type && (c.action === "delete" || c.action === "replace"));
 }
 
 /** A provider resource id: a string, or a number (written as a string). */
-export const ProviderIdSchema = z.union([
+const ProviderIdSchema = z.union([
   z.string().trim().min(1),
   z.number().int().nonnegative().transform(String),
 ]);
@@ -66,10 +85,10 @@ const BeforeIdSchema = z.looseObject({ id: ProviderIdSchema });
  * infrastructure state knows them, without duplicates. Empty when the plan JSON does not say.
  * These ids, not the names (names need not be unique), say which server the teardown deletes.
  */
-export function serverIdsInPlan(planJson: unknown, provider: VpsProviderId): string[] {
+export function serverIdsInPlan(planJson: unknown, provider: DeletionProvider): string[] {
   const parsed = PlanServerIdsSchema.safeParse(planJson);
-  if (!parsed.success) return [];
-  const type = providerProfile(provider).serverResourceType;
+  const type = serverType(provider);
+  if (!parsed.success || type === undefined) return [];
   const ids = new Set<string>();
   for (const rc of parsed.data.resource_changes ?? []) {
     if (rc.type !== type || rc.change?.actions.includes("delete") !== true) continue;
@@ -94,10 +113,6 @@ const PlanChangesSchema = z.looseObject({
     )
     .optional(),
 });
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** True when an `after_unknown` entry marks any part of the attribute as unknown. */
 function containsUnknown(value: unknown): boolean {
@@ -148,9 +163,8 @@ function changedAttributes(
 export function unprotectPlanProblems(
   changes: readonly ResourceChange[],
   planJson: unknown,
-  options: { prefix?: string } = {},
+  options: { prefix?: ModulePrefix } = {},
 ): string[] {
-  if (options.prefix !== undefined) assertModulePrefix(options.prefix);
   const parsed = PlanChangesSchema.safeParse(planJson);
   const details = new Map(
     parsed.success ? (parsed.data.resource_changes ?? []).map((rc) => [rc.address, rc.change]) : [],
@@ -190,29 +204,17 @@ export function destroyPlanProblems(changes: readonly ResourceChange[]): string[
   return changes.filter((c) => c.action !== "delete").map((c) => `${c.action} ${c.address}`);
 }
 
-/** True when `address` starts with `prefix`, or there is no prefix. */
-function underPrefix(address: string, prefix: string | undefined): boolean {
-  if (prefix === undefined) return true;
-  assertModulePrefix(prefix);
-  return address.startsWith(prefix);
-}
-
-const MODULE_PREFIX = /^module\.[A-Za-z0-9_-]+\.$/;
-
 /**
- * Throws `INTERNAL` unless `prefix` is exactly one module's address prefix with its trailing dot
- * (`module.server.`, `module.server_previous.`). Without the dot `module.server` would also match
- * `module.server_previous.…`, and `""` would match everything while looking bounded. Every
- * prefix-bounded check goes through this; callers that plan first call it before planning.
+ * The address prefix of a move's server module, with its trailing dot: `module.server.` or
+ * `module.server_previous.`. Without the dot `module.server` would also match
+ * `module.server_previous.…`, and `""` would match everything while looking bounded, so no other
+ * string is one.
  */
-export function assertModulePrefix(prefix: string): void {
-  if (!MODULE_PREFIX.test(prefix)) {
-    throw new OpsCrewError(
-      "INTERNAL",
-      `OpsCrew refused an invalid module address prefix ${JSON.stringify(prefix)}; it must look like module.<name>. with the trailing dot. Nothing was changed.`,
-      { hint: "This is a bug in OpsCrew; please report it." },
-    );
-  }
+export type ModulePrefix = `module.${ServerModule}.`;
+
+/** True when `address` starts with `prefix`, or there is no prefix. */
+function underPrefix(address: string, prefix: ModulePrefix | undefined): boolean {
+  return prefix === undefined || address.startsWith(prefix);
 }
 
 /** What a deletion plan may delete. */
@@ -222,7 +224,7 @@ export interface DeletionBounds {
    * `module.server_previous.`, so that `module.server_previous_x.…` does not match). Omitted for
    * a teardown of the whole root module.
    */
-  prefix?: string;
+  prefix?: ModulePrefix;
   /** The addresses the user confirmed in the preview; omitted before the confirmation. */
   confirmed?: ReadonlySet<string>;
 }
@@ -247,7 +249,6 @@ export function deletionPlanProblems(
   bounds: DeletionBounds = {},
 ): DeletionPlanProblems {
   const { prefix, confirmed } = bounds;
-  if (prefix !== undefined) assertModulePrefix(prefix);
   return {
     notDeletes: destroyPlanProblems(changes),
     outsidePrefix: changes
@@ -267,15 +268,6 @@ export function deletionPlanProblems(
   };
 }
 
-/** True when {@link deletionPlanProblems} found nothing. */
-export function deletionPlanIsBounded(problems: DeletionPlanProblems): boolean {
-  return (
-    problems.notDeletes.length === 0 &&
-    problems.outsidePrefix.length === 0 &&
-    problems.unconfirmed.length === 0
-  );
-}
-
 /**
  * True when a deletion plan deletes a provider server other than the confirmed ones: its plan JSON
  * names another id, or none while the confirmed preview did. False when the preview named no id
@@ -283,7 +275,7 @@ export function deletionPlanIsBounded(problems: DeletionPlanProblems): boolean {
  */
 export function deletesUnconfirmedServer(
   summary: { changes: readonly ResourceChange[]; planJson?: unknown },
-  provider: VpsProviderId,
+  provider: DeletionProvider,
   confirmedServerIds: readonly string[],
 ): boolean {
   const confirmed = new Set(confirmedServerIds);
@@ -324,11 +316,6 @@ export function removeHostKeys(
   return { text: kept.length > 0 ? `${kept.join("\n")}\n` : "", removed };
 }
 
-function joinList(items: readonly string[]): string {
-  if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
-}
-
 /**
  * Plain-English warning about data that exists only on the server, or `undefined` when the plan
  * does not delete the server. Automatic backups are lost with a Hetzner server but kept for a
@@ -347,7 +334,7 @@ export function dataWarning(
   if (plan.services.redis) lost.push("the Redis data");
   lost.push(`any files the app stored on the ${texts.noun}`);
   if (target.backups && texts.deletedBackups) lost.push(texts.deletedBackups);
-  const deleted = `Deleting the ${texts.noun} also deletes ${joinList(lost)}.`;
+  const deleted = `Deleting the ${texts.noun} also deletes ${listText(lost)}.`;
   if (target.backups && texts.keptBackups) {
     return `${deleted} ${texts.keptBackups}; only a snapshot keeps a copy for longer.`;
   }

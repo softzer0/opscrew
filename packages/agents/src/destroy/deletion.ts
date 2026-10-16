@@ -1,4 +1,4 @@
-import { readdir, readFile, rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   ApprovalRecord,
@@ -11,25 +11,25 @@ import type {
   SnapshotRequest,
   VpsProviderId,
 } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, writeFileAtomic } from "@opscrew/core";
-import { engineLabel } from "@opscrew/iac-engine";
+import { isUserFacingError, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { providerProfile, type VpsConnectorOptions, vpsConnector } from "../providers";
+import type { ProjectEngine } from "../shared";
 import {
-  assertModulePrefix,
   type DeletionBounds,
   deletesServer,
   deletesUnconfirmedServer,
   deletionPlanProblems,
   describeChanges,
-  ProviderIdSchema,
+  type ModulePrefix,
+  planHeading,
   removeHostKeys,
   serverIdsInPlan,
   unprotectPlanProblems,
 } from "./checks";
 import { type DestroyTexts, destroyTexts } from "./texts";
-import type { DestroyPreview } from "./types";
+import type { DeletionProvider, DestroyPreview } from "./types";
 
 const SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
 
@@ -39,8 +39,11 @@ const SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
  */
 export interface DeletionScope {
   deps: PhaseDeps;
-  /** Provider of the server being deleted (during a move: the old or the new server's). */
-  provider: VpsProviderId;
+  /**
+   * Where the deletion happens: the provider of the server being deleted (during a move: the old
+   * or the new server's), a server the user owns, or the user's Portainer.
+   */
+  provider: DeletionProvider;
   /** The app name: typed to confirm, used to find the server and to name its snapshot. */
   app: string;
   /** The command that continues after a stop, e.g. `opscrew destroy` or `opscrew retarget --finish`. */
@@ -50,6 +53,9 @@ export interface DeletionScope {
   /** Phase recorded in audit entries. */
   phase: PhaseName;
 }
+
+/** A deletion of a provider's server, which may have snapshots and delete protection. */
+type ServerScope = DeletionScope & { provider: VpsProviderId };
 
 /** A deletion scope with an initialised engine for one root module. */
 export interface DeletionSession extends DeletionScope {
@@ -62,15 +68,16 @@ export interface DeletionSession extends DeletionScope {
   stamp: string;
 }
 
-/** True when a `.tf` file in `dir` declares `variable "<name>"`. */
-export async function infraDeclaresVariable(dir: string, name: string): Promise<boolean> {
-  const names = await readdir(dir).catch(() => [] as string[]);
-  const pattern = new RegExp(`variable\\s+"${name.replace(/[^A-Za-z0-9_-]/g, "")}"`);
-  for (const file of names.filter((n) => n.endsWith(".tf")).sort()) {
-    const text = await readFile(join(dir, file), "utf8").catch(() => "");
-    if (pattern.test(text)) return true;
-  }
-  return false;
+/** The session of `scope` with the root module `dir` and its engine, stamped with this run's time. */
+export function deletionSession<S extends DeletionScope>(
+  scope: S,
+  setup: ProjectEngine & { dir: string },
+): S & DeletionSession {
+  return {
+    ...scope,
+    ...setup,
+    stamp: scope.deps.clock.now().toISOString().replace(/[:.]/g, "-"),
+  };
 }
 
 /** Saves a plan under `.opscrew/plans/<stamp>-<suffix>.tfplan`; removes the file on failure. */
@@ -107,7 +114,7 @@ function lastLines(text: string, count = 8): string {
  */
 export async function applyApprovedPlan(
   session: DeletionSession,
-  summary: PlanSummary,
+  summary: Pick<PlanSummary, "planFile" | "planHash">,
   options: { allowDestroy: boolean; what: string; hint: string },
 ): Promise<void> {
   const { deps } = session;
@@ -155,8 +162,9 @@ export interface DeletionPreview {
 
 /**
  * Plans the deletion to show what it deletes, then discards the plan file (a preview is never
- * applied). With `prefix`, the plan may only delete resources under it (else it stops with nothing
- * changed); without, it is not checked here (a whole-root `destroy` plan only deletes).
+ * applied). With `bounded`, the plan may only delete resources under its prefix (else it stops
+ * with nothing changed and its hint); without, it is not checked here (a whole-root `destroy` plan
+ * only deletes).
  */
 export async function previewDeletion(
   session: DeletionSession,
@@ -164,30 +172,20 @@ export async function previewDeletion(
     suffix: string;
     vars?: Readonly<Record<string, string>>;
     destroy?: boolean;
-    prefix?: string;
-    /** Hint when the plan is out of bounds (default: check the console, then run again). */
-    hint?: string;
+    bounded?: { prefix: ModulePrefix; hint: string };
   },
 ): Promise<DeletionPreview> {
-  // A bad prefix is refused before anything is planned.
-  if (options.prefix !== undefined) assertModulePrefix(options.prefix);
   const summary = await savePlan(session, options.suffix, {
     ...(options.vars ? { vars: options.vars } : {}),
     ...(options.destroy ? { destroy: true } : {}),
   });
   await discardPlan(summary);
-  if (options.prefix !== undefined) {
-    const texts = destroyTexts(session.provider);
+  if (options.bounded !== undefined) {
     assertDeletionPlan(
       session,
       summary,
-      { prefix: options.prefix },
-      {
-        note: "Nothing was changed.",
-        hint:
-          options.hint ??
-          `Check the ${texts.noun}s in ${texts.console} and the infrastructure files, then run \`${session.command}\` again.`,
-      },
+      { prefix: options.bounded.prefix },
+      { note: "Nothing was changed.", hint: options.bounded.hint },
     );
   }
   const serverInState = deletesServer(summary.changes, session.provider);
@@ -199,27 +197,40 @@ export async function previewDeletion(
   };
 }
 
+/** Which bound a deletion plan broke (see {@link assertDeletionPlan}). */
+export type DeletionProblem = "unbounded" | "unconfirmed" | "server";
+
+/** What a stop of {@link assertDeletionPlan} says after its first sentence, and its hint. */
+export interface DeletionStop {
+  /** Follows the first sentence, for example `Nothing was deleted.` */
+  note: string;
+  hint: string;
+}
+
 /**
  * Stops with `PHASE_PRECONDITION` unless the deletion plan only deletes, only under
  * `bounds.prefix`, only addresses in `bounds.confirmed` and (when `serverIds` is non-empty) no
- * server other than those. `note` follows the first sentence (e.g. `Nothing was deleted.`).
+ * server other than those. `stop` words the stop: the same for every problem, or per problem.
  */
 export function assertDeletionPlan(
   scope: Pick<DeletionScope, "provider" | "what">,
   summary: { changes: readonly ResourceChange[]; planJson?: unknown },
   bounds: DeletionBounds & { serverIds?: readonly string[] },
-  stop: { note: string; hint: string },
+  stop: DeletionStop | ((problem: DeletionProblem) => DeletionStop),
 ): void {
   const problems = deletionPlanProblems(summary.changes, bounds);
-  const fail = (lead: string, lines: readonly string[] = []) =>
-    new OpsCrewError(
+  const fail = (problem: DeletionProblem, lead: string, lines: readonly string[] = []) => {
+    const { note, hint } = typeof stop === "function" ? stop(problem) : stop;
+    return new OpsCrewError(
       "PHASE_PRECONDITION",
-      [`${lead}, so OpsCrew stopped. ${stop.note}`, ...lines.map((l) => `  ${l}`)].join("\n"),
-      { hint: stop.hint },
+      [`${lead}, so OpsCrew stopped. ${note}`, ...lines.map((l) => `  ${l}`)].join("\n"),
+      { hint },
     );
+  };
   const unbounded = [...new Set([...problems.notDeletes, ...problems.outsidePrefix])];
   if (unbounded.length > 0) {
     throw fail(
+      "unbounded",
       bounds.prefix === undefined
         ? `The ${scope.what} plan would do more than delete`
         : `The ${scope.what} plan would do more than delete resources under ${bounds.prefix}`,
@@ -228,14 +239,17 @@ export function assertDeletionPlan(
   }
   if (problems.unconfirmed.length > 0) {
     throw fail(
+      "unconfirmed",
       `The ${scope.what} plan now deletes resources that were not in the list you confirmed`,
       problems.unconfirmed,
     );
   }
   const ids = bounds.serverIds ?? [];
-  if (deletesUnconfirmedServer(summary, scope.provider, ids)) {
+  // A Portainer root holds no server to compare.
+  if (scope.provider !== "portainer" && deletesUnconfirmedServer(summary, scope.provider, ids)) {
     const noun = destroyTexts(scope.provider).noun;
     throw fail(
+      "server",
       `The ${scope.what} plan now deletes a ${noun} other than the one you confirmed (id ${ids.join(", ")})`,
     );
   }
@@ -243,16 +257,25 @@ export function assertDeletionPlan(
 
 /**
  * The typed confirmation: asks `confirm` once with the preview (skipped without a hook or when
- * nothing would be deleted), audits the answer and stops with `APPROVAL_REFUSED` (nothing changed)
- * when it is not given.
+ * nothing would be deleted or changed), audits the answer and stops with `APPROVAL_REFUSED`
+ * (nothing changed) when it is not given. On a server the user owns and in their Portainer the
+ * app's name is typed, and the changes there (`hostSteps`, `stackChanges`) count as well.
  */
 export async function confirmDeletion(
   scope: DeletionScope,
   preview: DestroyPreview,
   confirm: ((preview: DestroyPreview) => Promise<boolean>) | undefined,
 ): Promise<void> {
-  if (confirm === undefined || preview.resources.length === 0) return;
+  const elsewhere =
+    preview.hostSteps !== undefined
+      ? { changes: preview.hostSteps, where: "on your server" }
+      : preview.stackChanges !== undefined
+        ? { changes: preview.stackChanges, where: "in your Portainer" }
+        : undefined;
+  const changes = elsewhere?.changes.length ?? 0;
+  if (confirm === undefined || (preview.resources.length === 0 && changes === 0)) return;
   const confirmed = await confirm(preview);
+  const resources = plural(preview.resources.length, "resource");
   await scope.deps.audit.append({
     kind: "approval",
     actor: "user",
@@ -260,12 +283,19 @@ export async function confirmDeletion(
     phase: scope.phase,
     target: preview.name,
     decision: confirmed ? "approved" : "refused",
-    detail: `typed confirmation for deleting ${preview.resources.length} resources`,
+    detail:
+      elsewhere === undefined
+        ? `typed confirmation for deleting ${resources}`
+        : `typed confirmation for deleting ${resources} and ${plural(changes, "change")} ${elsewhere.where}`,
   });
   if (!confirmed) {
+    const noun =
+      preview.provider === "own" || preview.provider === "portainer"
+        ? "app"
+        : destroyTexts(preview.provider).noun;
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
-      `The ${preview.provider === "portainer" ? "app" : destroyTexts(preview.provider).noun} name was not confirmed, so nothing was deleted and nothing was changed.`,
+      `The ${noun} name was not confirmed, so nothing was deleted and nothing was changed.`,
       { hint: `Run \`${scope.command}\` again and type ${preview.name} when asked.` },
     );
   }
@@ -291,28 +321,18 @@ export async function removeSnapshotRecord(
   await rm(snapshotRecordPath(deps, purpose), { force: true });
 }
 
-/**
- * The snapshot record, `{ provider, serverId, snapshotId, takenAt }` with string ids. Records of
- * OpsCrew 003 have no provider (they are Hetzner's) and numeric `serverId` and `imageId`.
- */
+/** The snapshot record, `{ provider, serverId, snapshotId, takenAt }`. */
 const SnapshotRecordSchema = z.looseObject({
-  provider: z.string().optional(),
-  serverId: ProviderIdSchema,
-  snapshotId: ProviderIdSchema.optional(),
-  imageId: ProviderIdSchema.optional(),
+  provider: z.string(),
+  serverId: z.string().min(1),
+  snapshotId: z.string().min(1),
 });
-
-interface SnapshotRecord {
-  provider: string;
-  serverId: string;
-  snapshotId: string;
-}
 
 /** The snapshot an earlier run recorded, or `undefined` when there is none or it is unreadable. */
 async function readSnapshotRecord(
   deps: PhaseDeps,
   purpose: SnapshotPurpose,
-): Promise<SnapshotRecord | undefined> {
+): Promise<z.infer<typeof SnapshotRecordSchema> | undefined> {
   let json: unknown;
   try {
     json = JSON.parse(await readFile(snapshotRecordPath(deps, purpose), "utf8"));
@@ -320,14 +340,7 @@ async function readSnapshotRecord(
     return undefined;
   }
   const parsed = SnapshotRecordSchema.safeParse(json);
-  if (!parsed.success) return undefined;
-  const snapshotId = parsed.data.snapshotId ?? parsed.data.imageId;
-  if (snapshotId === undefined) return undefined;
-  return {
-    provider: parsed.data.provider ?? "hetzner",
-    serverId: parsed.data.serverId,
-    snapshotId,
-  };
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** Whether a snapshot is taken first (`auto`: when data lives only on the server). */
@@ -347,8 +360,8 @@ function labelTime(date: Date): string {
     .replace(/\.\d+Z$/, "Z");
 }
 
-/** Plain-English reason of a failed provider call, without a trailing full stop. */
-function failureReason(error: unknown): string {
+/** Plain-English reason of a failed call (`unexpected error` for a bug), without a trailing full stop. */
+export function failureReason(error: unknown): string {
   return (isUserFacingError(error) ? error.message : "unexpected error").replace(/[.\s]+$/, "");
 }
 
@@ -382,7 +395,7 @@ export interface SnapshotBeforeDeleteInput {
  * provider had already started the snapshot is unknown (the connector starts and waits in one
  * call), so the hint covers both; `started` is false when the step failed before that call.
  */
-function snapshotFailed(scope: DeletionScope, error: unknown, started = true): OpsCrewError {
+function snapshotFailed(scope: ServerScope, error: unknown, started = true): OpsCrewError {
   const texts = destroyTexts(scope.provider);
   const { command } = scope;
   return new OpsCrewError(
@@ -400,7 +413,7 @@ function snapshotFailed(scope: DeletionScope, error: unknown, started = true): O
 
 /** The provider's server API and the app's servers as it reports them; a failed lookup stops. */
 async function findServers(
-  scope: DeletionScope,
+  scope: ServerScope,
   input: SnapshotBeforeDeleteInput,
 ): Promise<{ api: ServerSnapshotApi; found: AppServer[] }> {
   const { deps, provider } = scope;
@@ -431,7 +444,7 @@ async function findServers(
  * it. Anything else stops the run before anything is changed.
  */
 function serverToSnapshot(
-  scope: DeletionScope,
+  scope: ServerScope,
   found: readonly AppServer[],
   stateId: string | undefined,
 ): AppServer {
@@ -479,7 +492,7 @@ function serverToSnapshot(
  * any failure stops the run before anything is deleted. Returns the snapshot id.
  */
 export async function takeSnapshotBeforeDelete(
-  scope: DeletionScope,
+  scope: ServerScope,
   input: SnapshotBeforeDeleteInput,
 ): Promise<string | undefined> {
   const { deps, provider, app: name, what } = scope;
@@ -585,36 +598,28 @@ export async function takeSnapshotBeforeDelete(
 
 /** Input of {@link liftProtection}. */
 export interface LiftProtectionInput {
-  /**
-   * Root module variable that turns the protection off when set to `false`: `delete_protection`
-   * (destroy) or `previous_delete_protection` (a move's finish).
-   */
+  /** Root module variable that turns the protection off when set to `false` (`delete_protection`). */
   variable: string;
-  /** Only resources under this address prefix may change (e.g. `module.server_previous.`). */
-  prefix?: string;
   /** False when the server is no longer in the state: nothing to lift, no plan. */
   serverInState: boolean;
   /** The snapshot taken first, mentioned when the user refuses. */
   snapshotId?: string;
   /** Hint when the plan would change more than the protection. */
   mismatchHint: string;
-  /** Plan file name suffix (default `unprotect`). */
-  suffix?: string;
 }
 
 /**
  * Lifts delete protection with a normal plan that sets `<variable>=false` and may only turn off
- * `delete_protection`/`rebuild_protection` of `hcloud_server` resources (under `prefix`; values
- * known only after apply count as changes), after an `iac-apply` approval bound to its hash.
+ * `delete_protection`/`rebuild_protection` of `hcloud_server` resources (values known only after
+ * apply count as changes), after an `iac-apply` approval bound to its hash.
  * Returns whether protection is off now and the approval, when one was given. Providers without
  * delete protection (DigitalOcean) have nothing to lift: no plan, no approval.
  */
 export async function liftProtection(
-  session: DeletionSession,
+  session: DeletionSession & ServerScope,
   input: LiftProtectionInput,
 ): Promise<{ off: boolean; approval?: ApprovalRecord }> {
   const { deps, app: name, command } = session;
-  if (input.prefix !== undefined) assertModulePrefix(input.prefix);
   if (!providerProfile(session.provider).deleteProtection) return { off: false };
   if (!input.serverInState) {
     deps.reporter.info(
@@ -623,19 +628,13 @@ export async function liftProtection(
     return { off: false };
   }
   deps.reporter.step(`Planning to lift delete protection on ${name}`);
-  const summary = await savePlan(session, input.suffix ?? "unprotect", {
-    vars: { [input.variable]: "false" },
-  });
+  const summary = await savePlan(session, "unprotect", { vars: { [input.variable]: "false" } });
   try {
     if (summary.changes.length === 0) {
       deps.reporter.info(`Delete protection on ${name} is already off.`);
       return { off: true };
     }
-    const problems = unprotectPlanProblems(
-      summary.changes,
-      summary.planJson,
-      input.prefix === undefined ? {} : { prefix: input.prefix },
-    );
+    const problems = unprotectPlanProblems(summary.changes, summary.planJson);
     if (problems.length > 0) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
@@ -650,7 +649,7 @@ export async function liftProtection(
       kind: "iac-apply",
       title: `Lift delete protection on ${name}`,
       details: [
-        `${engineLabel(summary.engine.name)} ${summary.engine.version} plan:`,
+        planHeading(summary),
         ...describeChanges(summary.changes),
         "This only turns off the server's delete and rebuild protection so that the next plan can delete it. Nothing is deleted yet.",
         `Plan hash: ${summary.planHash}`,

@@ -1,7 +1,7 @@
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { HostFactsSchema, HostPlanSchema, hostPlanHash } from "@opscrew/connector-ssh-host";
-import type { ApprovalRequest } from "@opscrew/contracts";
+import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -498,5 +498,102 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     const everything = `${everythingPrinted(s)}\n${JSON.stringify(result)}\n${JSON.stringify(s.handler.requests)}`;
     expect(everything).not.toContain(LAN_IPV4);
     for (const secret of Object.values(s.secrets)) expect(everything).not.toContain(secret);
+  });
+
+  /** Adds `extra` to the destroy plans after the first `from` ones (the preview is the first). */
+  function tamper(s: OwnProject, extra: ResourceChange, from = 1) {
+    const plan = s.engine.plan.bind(s.engine);
+    let destroys = 0;
+    s.engine.plan = async (dir, file, options) => {
+      const summary = await plan(dir, file, options);
+      if (options?.destroy !== true || ++destroys <= from) return summary;
+      return { ...summary, changes: [...summary.changes, extra] };
+    };
+  }
+
+  const record = (name: string, action: ResourceChange["action"] = "delete"): ResourceChange => ({
+    address: `module.dns.cloudflare_dns_record.${name}`,
+    type: "cloudflare_dns_record",
+    name,
+    provider: "registry.opentofu.org/cloudflare/cloudflare",
+    action,
+  });
+
+  it.each([
+    {
+      what: "deletes a resource that was not in the confirmed list",
+      extra: record("extra"),
+      message:
+        "The teardown plan now deletes resources that were not in the list you confirmed, so OpsCrew stopped. Nothing was deleted.\n  module.dns.cloudflare_dns_record.extra",
+      hint: "Run `opscrew destroy` again to see the current list and confirm it.",
+    },
+    {
+      what: "does more than delete",
+      extra: record("a", "update"),
+      message:
+        "The teardown plan would do more than delete, so OpsCrew stopped. Nothing was changed.\n  update module.dns.cloudflare_dns_record.a",
+      hint: "Run `opscrew drift` to see what changed, then run `opscrew destroy` again.",
+    },
+  ])(
+    "stops before any approval when the Cloudflare plan $what",
+    async ({ extra, message, hint }) => {
+      const s = await deployed();
+      tamper(s, extra);
+      const before = { host: s.host.applies.length, engine: s.engine.applies.length };
+      const error = await expectError(
+        runDestroy(s.deps, { services: services(s), confirm: async () => true }),
+        "PHASE_PRECONDITION",
+      );
+      expect(error.message).toBe(message);
+      expect(error.hint).toBe(hint);
+      expect(s.handler.requests).toEqual([]);
+      expect(s.host.applies).toHaveLength(before.host);
+      expect(s.engine.applies).toHaveLength(before.engine);
+    },
+  );
+
+  it("stops at the preview when the plan would delete anything but the app's Cloudflare resources", async () => {
+    const s = await deployed();
+    tamper(
+      s,
+      {
+        address: "hcloud_server.other",
+        type: "hcloud_server",
+        name: "other",
+        provider: "registry.opentofu.org/hetznercloud/hcloud",
+        action: "delete",
+      },
+      0,
+    );
+    const asked: DestroyPreview[] = [];
+    const error = await expectError(
+      runDestroy(s.deps, {
+        services: services(s),
+        confirm: async (preview) => {
+          asked.push(preview);
+          return true;
+        },
+      }),
+      "PHASE_PRECONDITION",
+    );
+    expect(error.message).toBe(
+      "The teardown plan would delete resources other than the app's Cloudflare DNS records, tunnel and Access, so OpsCrew stopped. Nothing was changed.\n  hcloud_server.other",
+    );
+    expect(asked).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
+  });
+
+  it("with nothing left on Cloudflare, the summary starts with what is removed from the server", async () => {
+    const s = await deployed();
+    s.host.fail = new OpsCrewError("COMMAND_FAILED", "Removing the app's containers failed.");
+    await expectError(runDestroy(s.deps, { services: services(s) }), "COMMAND_FAILED");
+    const start = s.deps.reporter.lines.length;
+    await runDestroy(s.deps, { services: services(s) });
+    const said = s.deps.reporter.lines
+      .slice(start)
+      .map((line) => line.message)
+      .join("\n");
+    expect(said).toContain("The teardown removes from your server:\n  - ");
+    expect(said).not.toContain("and removes from your server:");
   });
 });

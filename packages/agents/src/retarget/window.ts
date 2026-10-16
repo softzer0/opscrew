@@ -1,6 +1,7 @@
 import type { RemoteExec } from "@opscrew/contracts";
 import { type ErrorCode, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import type { Retarget } from "@opscrew/plan-schema";
+import { failureReason } from "../destroy/deletion";
 import {
   copyDump,
   DUMP_PATH,
@@ -24,7 +25,6 @@ import {
   type MoveSession,
   moveOf,
   newServer,
-  redactWith,
   remoteFor,
   saveMove,
   waitsOf,
@@ -82,14 +82,10 @@ export function newRemote(session: MoveBase): RemoteExec {
   );
 }
 
-function reason(error: unknown): string {
-  return (isUserFacingError(error) ? error.message : "unexpected error").replace(/[.\s]+$/, "");
-}
-
 /** Removes the dump file from a server; a failure is only a warning (best effort on rollback). */
 async function removeDumpQuietly(session: MoveBase, remote: RemoteExec): Promise<void> {
   try {
-    await removeDump(remote, redactWith(session.deps));
+    await removeDump(remote, session.deps.redactor);
   } catch {
     session.deps.reporter.warn(
       `OpsCrew could not delete the database dump on ${remote.host}. Delete it yourself: \`ssh deploy@${remote.host} rm -f ${DUMP_PATH}\`.`,
@@ -125,18 +121,18 @@ export async function restartOldApp(session: MoveBase, before = ""): Promise<voi
   }
   deps.reporter.step(`Starting the app on the old server (${host}) again`);
   try {
-    await startService(oldRemote(session), "app", redactWith(deps));
+    await startService(oldRemote(session), "app", deps.redactor);
   } catch (error) {
     await auditMove(session, {
       kind: "remote-exec",
       action: "start app",
       target: host,
       decision: "refused",
-      detail: `starting the app on the old server failed: ${reason(error)}`,
+      detail: `starting the app on the old server failed: ${failureReason(error)}`,
     });
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `${before}OpsCrew could not start the app on the old server (${host}) again: ${reason(error)}. Your app is offline until it runs again.`,
+      `${before}OpsCrew could not start the app on the old server (${host}) again: ${failureReason(error)}. Your app is offline until it runs again.`,
       {
         hint: `Start it yourself with \`ssh deploy@${host} 'cd /srv/app && docker compose up -d app'\`, then run \`${RUN_COMMAND}\` (or \`${ABORT_COMMAND}\`); OpsCrew checks it again first.`,
       },
@@ -238,7 +234,7 @@ export async function maintenanceWindow(
   if (next === undefined) return stopped(session, [`Run \`${RUN_COMMAND}\` again.`]);
   const old = oldRemote(session);
   const fresh = newRemote(session);
-  const ops = redactWith(deps);
+  const ops = deps.redactor;
 
   deps.reporter.step("Measuring the database on the old server");
   const size = await databaseSize(old, ops);
@@ -317,7 +313,7 @@ export async function maintenanceWindow(
     const dumped = await verifyDump(old, size, ops);
     await audited("copy database dump", `${old.host} -> ${fresh.host}`, () =>
       copyDump(session.services.runner ?? deps.runner, {
-        ...ops,
+        redact: ops.redact,
         from: old.host,
         to: fresh.host,
         keyFile: session.deployKey.privateKeyFile,
@@ -364,7 +360,7 @@ export async function maintenanceWindow(
     await audited("start app", fresh.host, () => startService(fresh, "app", ops));
     newAppStopped = false;
     await waitAppHealthy(fresh, plan.app.port, plan.app.healthPath, {
-      ...ops,
+      redact: ops.redact,
       ...waitsOf(session.services),
     });
   } catch (error) {
@@ -390,24 +386,24 @@ async function rollBackWindow(
     action: "maintenance window",
     target: ctx.old.host,
     decision: "refused",
-    detail: `maintenance window failed: ${reason(cause)}`,
+    detail: `maintenance window failed: ${failureReason(cause)}`,
   });
   deps.reporter.warn(
-    `The maintenance window failed: ${reason(cause)}. OpsCrew deletes the dump files and starts the app on the old server again.`,
+    `The maintenance window failed: ${failureReason(cause)}. OpsCrew deletes the dump files and starts the app on the old server again.`,
   );
   await removeDumpQuietly(session, ctx.old);
   await removeDumpQuietly(session, ctx.fresh);
   if (ctx.newAppStopped) {
-    await startService(ctx.fresh, "app", redactWith(deps)).catch(() => undefined);
+    await startService(ctx.fresh, "app", deps.redactor).catch(() => undefined);
   }
   try {
-    await restartOldApp(session, `The maintenance window failed (${reason(cause)}), and `);
+    await restartOldApp(session, `The maintenance window failed (${failureReason(cause)}), and `);
   } catch (error) {
     return asOpsCrewError(error);
   }
   return new OpsCrewError(
     codeOf(cause),
-    `The maintenance window failed: ${reason(cause)}. The app on the old server runs again and nothing else changed.`,
+    `The maintenance window failed: ${failureReason(cause)}. The app on the old server runs again and nothing else changed.`,
     {
       hint: `${hintOf(cause)}Then run \`${RUN_COMMAND}\` again (it repeats the maintenance window), or \`${ABORT_COMMAND}\` to undo the move.`,
     },

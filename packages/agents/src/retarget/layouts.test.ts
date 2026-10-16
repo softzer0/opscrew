@@ -1,8 +1,8 @@
-import { cloudTarget, renderDeployment } from "@opscrew/iac-templates";
+import { cloudTarget, MOVE_LAYOUTS, moveLayout, renderDeployment } from "@opscrew/iac-templates";
 import type { CloudProvider } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testPlan } from "../provision/__fixtures__/fakes";
-import { MOVE_LAYOUTS, moveLayout, previousTarget, protectionVariable } from "./layouts";
+import { previousTarget, protectionVariable } from "./layouts";
 
 const DIRECTIONS: [CloudProvider, CloudProvider][] = [
   ["hetzner", "digitalocean"],

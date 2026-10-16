@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, rm, rmdir, stat } from "node:fs/promises";
+import { access, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { GitClient, GitHubClient, resolveGitHubToken } from "@opscrew/connector-github";
 import type {
@@ -9,13 +9,14 @@ import type {
   VpsProviderId,
 } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import type { EnginePreference } from "@opscrew/iac-engine";
 import {
-  type EnginePreference,
-  engineLabel,
-  selectEngine,
-  tofuEncryptionEnv,
-} from "@opscrew/iac-engine";
-import { type InfraLayout, type RenderedFile, renderDeployment } from "@opscrew/iac-templates";
+  type InfraLayout,
+  type MoveLayoutName,
+  moveLayout,
+  type RenderedFile,
+  renderDeployment,
+} from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   type Requirements,
@@ -23,6 +24,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { existingStateEngine } from "../destroy/common";
 import { providerProfile } from "../providers";
 import {
   type CloudflareSetup,
@@ -34,18 +36,21 @@ import {
   setupGitHub,
 } from "../provision";
 import {
+  approvalEntry,
   type DeployKey,
   diffRenderedFiles,
   ensureDeployKey,
+  hasState,
+  infrastructureOutputs,
   pinHostKey,
   providerConsole,
   readOutputsAfterInit,
   type ServerAddress,
   SshRemoteExec,
+  stateFile,
   writeRenderedFiles,
 } from "../shared";
-import type { MoveLayoutName } from "./layouts";
-import type { RedactText } from "./server-ops";
+import { previousTarget } from "./layouts";
 import { loadMoveServers, type MoveServers, recordMoveServers, unknownNewServer } from "./servers";
 import type { RetargetGitHubApi, RetargetServices } from "./types";
 
@@ -66,8 +71,6 @@ export interface MoveSession {
   deployKey: DeployKey;
   /** Absolute root module directory. */
   dir: string;
-  /** The local state file every engine call uses (`-backend-config=path=…`). */
-  statePath: string;
   /** The command that continues after a stop (`opscrew retarget`, `… --finish`, `… --abort`). */
   command: string;
   /** `--approve <hash>` until a step used it. */
@@ -85,23 +88,34 @@ export type MoveBase = Pick<
   "deps" | "plan" | "services" | "deployKey" | "servers" | "command"
 >;
 
-/** `.opscrew/tfstate/prod.tfstate`, as provision, destroy and drift use it. */
-export function statePathOf(deps: Pick<PhaseDeps, "paths">): string {
-  return join(deps.paths.files.tfstateDir, "prod.tfstate");
-}
-
-/** True when the infrastructure state file exists and is not empty. */
-export async function stateExists(deps: Pick<PhaseDeps, "paths">): Promise<boolean> {
-  try {
-    return (await stat(statePathOf(deps))).size > 0;
-  } catch {
-    return false;
-  }
+/**
+ * The {@link MoveBase} of a recorded move, before its session opens (no provider token needed):
+ * the deploy key, and the servers from the local record, else from the infrastructure state.
+ */
+export async function moveBase(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: { command: string; services: RetargetServices; engine?: EnginePreference },
+): Promise<MoveBase> {
+  const { command, services } = input;
+  return {
+    deps,
+    plan,
+    services,
+    command,
+    deployKey: await readDeployKey(deps, command),
+    servers: await loadMoveServers(deps, plan, command, () =>
+      infrastructureOutputs(deps, plan, {
+        ...(services.engine ? { engine: services.engine } : {}),
+        ...(input.engine !== undefined ? { preference: input.engine } : {}),
+      }),
+    ),
+  };
 }
 
 /** Stops unless the infrastructure state is on this computer. */
 export async function requireState(deps: PhaseDeps, plan: DeployPlan): Promise<void> {
-  if (await stateExists(deps)) return;
+  if (await hasState(deps.paths)) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     `The infrastructure state of ${plan.app.name} is not on this computer (.opscrew/tfstate/prod.tfstate), so OpsCrew cannot move the deployment. Nothing was changed.`,
@@ -112,7 +126,7 @@ export async function requireState(deps: PhaseDeps, plan: DeployPlan): Promise<v
 }
 
 /** The project's deploy key; stops when it is not on this computer (it is never created here). */
-export async function readDeployKey(deps: PhaseDeps, command: string): Promise<DeployKey> {
+async function readDeployKey(deps: PhaseDeps, command: string): Promise<DeployKey> {
   try {
     await access(deps.paths.files.deployKey);
     await access(deps.paths.files.deployKeyPub);
@@ -148,11 +162,6 @@ export function remoteFor(
   );
 }
 
-/** The redactor as server operations need it. */
-export function redactWith(deps: PhaseDeps): { redact: RedactText } {
-  return { redact: (text) => deps.redactor.redact(text) };
-}
-
 /** The injected sleep and monotonic clock for wait loops, when given. */
 export function waitsOf(services: RetargetServices): {
   sleep?: (ms: number) => Promise<void>;
@@ -162,38 +171,6 @@ export function waitsOf(services: RetargetServices): {
     ...(services.sleep ? { sleep: services.sleep } : {}),
     ...(services.now ? { now: services.now } : {}),
   };
-}
-
-/** The OpenTofu state passphrase as `TF_ENCRYPTION`; read, never created (it decrypts the state). */
-async function engineEnvironment(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  engine: IacEngine,
-  command: string,
-): Promise<Record<string, string | undefined>> {
-  const env: Record<string, string | undefined> = { ...deps.env };
-  if (!plan.infra.stateEncryption) return env;
-  if (engine.info.name !== "tofu") {
-    deps.reporter.warn(
-      `Terraform cannot read state that OpenTofu encrypted. If OpenTofu provisioned this deployment, run \`${command} --engine tofu\` instead.`,
-    );
-    return env;
-  }
-  const passphrase = (
-    await readFile(deps.paths.files.statePassphrase, "utf8").catch(() => undefined)
-  )?.trim();
-  if (!passphrase) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "The OpenTofu state is encrypted, but this computer does not have its passphrase. Nothing was changed.",
-      {
-        hint: `Copy the state passphrase file from the computer that ran \`opscrew provision\` to ${deps.paths.files.statePassphrase}, then run \`${command}\` again.`,
-      },
-    );
-  }
-  deps.redactor.addLiteral(passphrase, "state-passphrase");
-  env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
-  return env;
 }
 
 /** The GitHub API: the injected one, else a client from the user's token (`null`: none found). */
@@ -267,18 +244,11 @@ export async function openSession(
   }
   const deployKey = await readDeployKey(deps, command);
 
-  const preference = input.engine ?? plan.infra.engine;
-  const engine = services.engine
-    ? await services.engine(preference)
-    : await selectEngine(preference, {
-        runner: deps.runner,
-        env: deps.env,
-        redactor: deps.redactor,
-        now: () => deps.clock.now(),
-      });
-  deps.reporter.info(`Using ${engineLabel(engine.info.name)} ${engine.info.version}.`);
-  const env = await engineEnvironment(deps, plan, engine, command);
-  await mkdir(deps.paths.files.plansDir, { recursive: true });
+  const { engine, env } = await existingStateEngine(deps, plan, {
+    ...(input.engine !== undefined ? { engine: input.engine } : {}),
+    services,
+    command,
+  });
   const dir = join(deps.paths.root, plan.infra.dir);
   // Read only when the local record lacks an address; `init` first where the state was copied.
   const servers =
@@ -287,7 +257,7 @@ export async function openSession(
       deps,
       plan,
       command,
-      () => readOutputsAfterInit(engine, dir, statePathOf(deps), env),
+      () => readOutputsAfterInit(engine, dir, stateFile(deps.paths), env),
       { oldServerOptional: input.oldServerOptional === true },
     ));
   return {
@@ -303,7 +273,6 @@ export async function openSession(
     env,
     deployKey,
     dir,
-    statePath: statePathOf(deps),
     command,
     approve: input.approvePlanHash?.trim() || undefined,
     servers,
@@ -345,17 +314,24 @@ export function renderFiles(
   return renderDeployment(plan, layout ? { ...ctx, layout } : ctx);
 }
 
+/** The move's layout `name`, from the old server (`plan.retarget.from`) to the new one (`plan.target`). */
+export function layoutOf(session: Pick<MoveSession, "plan">, name: MoveLayoutName): InfraLayout {
+  return moveLayout(name, previousTarget(moveOf(session)), session.plan.target);
+}
+
 /**
- * Writes the infrastructure files of a move layout into the working tree and initialises the
- * engine again (a new module call or provider needs `init` before any plan or output).
+ * Writes the infrastructure files of the move's layout `name` into the working tree and
+ * initialises the engine again (a new module call or provider needs `init` before any plan or
+ * output).
  */
 export async function useLayout(
   session: MoveSession,
   name: MoveLayoutName,
-  layout: InfraLayout,
 ): Promise<RenderedFile[]> {
   const { deps } = session;
-  const files = renderFiles(session, layout).filter((file) => file.kind === "infra");
+  const files = renderFiles(session, layoutOf(session, name)).filter(
+    (file) => file.kind === "infra",
+  );
   const diff = await diffRenderedFiles(deps.paths.root, files);
   const toWrite = [...diff.created, ...diff.changed];
   if (toWrite.length > 0) {
@@ -366,7 +342,7 @@ export async function useLayout(
   }
   await session.engine.init(session.dir, {
     env: session.env,
-    backendConfig: { path: session.statePath },
+    backendConfig: { path: stateFile(deps.paths) },
   });
   return files;
 }
@@ -449,17 +425,7 @@ export function withApply(
 ): Pick<DeployPlan, "approvals" | "deployment"> {
   const { approval } = applied;
   return {
-    approvals: approval
-      ? [
-          ...plan.approvals,
-          {
-            planHash: approval.planHash ?? applied.planHash,
-            approver: approval.approver,
-            at: approval.decidedAt,
-            kind: "iac-apply",
-          },
-        ]
-      : plan.approvals,
+    approvals: approval ? [...plan.approvals, approvalEntry(approval)] : plan.approvals,
     deployment: { ...plan.deployment, lastPlanHash: applied.planHash, lastApplyAt: at },
   };
 }

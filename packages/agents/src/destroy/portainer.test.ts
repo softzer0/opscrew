@@ -518,4 +518,54 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(asked).toEqual([]);
     expect(await s.git(s.bare, "branch", "--list", "opscrew-deploy")).toContain("opscrew-deploy");
   });
+
+  it("stops before any approval when the Cloudflare plan deletes what was not confirmed", async () => {
+    const s = await deployed();
+    const engine: IacEngine = s.engine;
+    const plan = engine.plan.bind(engine);
+    let destroys = 0;
+    const extra = {
+      address: "module.dns.cloudflare_dns_record.extra",
+      type: "cloudflare_dns_record",
+      name: "extra",
+      provider: "registry.opentofu.org/cloudflare/cloudflare",
+      action: "delete" as const,
+    };
+    engine.plan = async (dir, file, options) => {
+      const summary = await plan(dir, file, options);
+      // The first destroy plan is the preview the user confirms.
+      if (options?.destroy !== true || ++destroys < 2) return summary;
+      return { ...summary, changes: [...summary.changes, extra] };
+    };
+    const error = await expectError(
+      destroy(s, { confirm: async () => true }),
+      "PHASE_PRECONDITION",
+    );
+    expect(error.message).toBe(
+      "The teardown plan now deletes resources that were not in the list you confirmed, so OpsCrew stopped. Nothing was deleted.\n  module.dns.cloudflare_dns_record.extra",
+    );
+    expect(error.hint).toBe("Run `opscrew destroy` again to see the current list and confirm it.");
+    expect(s.events).toEqual([]);
+    expect(s.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop");
+  });
+
+  it("a failed Cloudflare plan that goes first never says the app is out of Portainer", async () => {
+    const s = await deployed();
+    const records = tunnelDeletes().filter((change) => change.type === "cloudflare_dns_record");
+    const engine: IacEngine = s.engine;
+    const plan = engine.plan.bind(engine);
+    engine.plan = async (dir, file, options) => {
+      const summary = await plan(dir, file, options);
+      return options?.destroy === true
+        ? { ...summary, changes: records, planJson: tunnelDeletePlanJson(records) }
+        : summary;
+    };
+    engine.apply = async () => ({ ok: false, outputs: {}, log: "Error: Cloudflare is down" });
+    const error = await expectError(destroy(s), "ENGINE_FAILED");
+    expect(error.hint).toBe(
+      "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
+    );
+    expect(s.events.some((event) => event.startsWith("portainer:DELETE"))).toBe(false);
+    expect(s.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop");
+  });
 });

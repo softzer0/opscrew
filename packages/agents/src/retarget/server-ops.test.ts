@@ -85,13 +85,6 @@ describe("services", () => {
     ]);
   });
 
-  it("refuses services other than app and caddy", async () => {
-    const remote = new FakeRemote("h");
-    const error = await caught(stopService(remote, "db; rm -rf /" as "app", { redact: identity }));
-    expect(error.code).toBe("INVALID_INPUT");
-    expect(remote.calls).toEqual([]);
-  });
-
   it("names the step and host and passes stderr through the redactor", async () => {
     const token = fakeSecret("github-token");
     const redactor = new Redactor();
@@ -171,19 +164,10 @@ describe("app health", () => {
     ).toBe(false);
   });
 
-  it("refuses ports and paths that are not safe to put in the command", async () => {
+  it("refuses paths that are not safe to put in the command", async () => {
     const remote = new FakeRemote("h");
-    for (const [port, path] of [
-      [0, "/"],
-      [70000, "/"],
-      [3.5, "/"],
-      [3000, "health"],
-      [3000, "/'; reboot; '"],
-      [3000, "/a b"],
-      [3000, "/$(id)"],
-      [3000, "/`id`"],
-    ] as const) {
-      const error = await caught(isAppHealthy(remote, port, path));
+    for (const path of ["health", "/'; reboot; '", "/a b", "/$(id)", "/`id`"]) {
+      const error = await caught(isAppHealthy(remote, 3000, path));
       expect(error.code).toBe("INVALID_INPUT");
     }
     expect(remote.calls).toEqual([]);

@@ -11,20 +11,11 @@ import type { PhaseDeps } from "../context";
 import { buildDesignOptions, formatMoney, priceLabel } from "../design";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { readRequirements } from "../provision";
-import { serverAddress } from "../shared";
+import { hasState, serverAddress } from "../shared";
 import { ownServerNoMove, portainerTargetNoMove } from "../shared/vps-target";
 import { databaseSize } from "./server-ops";
 import { recordMoveServers } from "./servers";
-import {
-  auditStep,
-  type MoveSession,
-  openSession,
-  pinHost,
-  redactWith,
-  remoteFor,
-  saveMove,
-  stateExists,
-} from "./session";
+import { auditStep, type MoveSession, openSession, pinHost, remoteFor, saveMove } from "./session";
 import {
   ABORT_COMMAND,
   downtimeMinutes,
@@ -171,7 +162,7 @@ export async function startMove(
   // A Portainer target never moves (feature 010): it is destroyed and provisioned again instead.
   if (plan.target.provider === "portainer") throw portainerTargetNoMove();
   const address =
-    plan.deployment.destroyedAt === undefined && (await stateExists(deps))
+    plan.deployment.destroyedAt === undefined && (await hasState(deps.paths))
       ? await serverAddress(deps, plan, {
           engine: options.services?.engine,
           ...(options.engine !== undefined ? { preference: options.engine } : {}),
@@ -247,7 +238,7 @@ export async function startMove(
     await pinHost(session, oldHost, from.provider);
     deps.reporter.step("Measuring the database on the old server");
     const old = remoteFor(deps, services, session.deployKey.privateKeyFile, oldHost);
-    databaseBytes = await databaseSize(old, redactWith(deps));
+    databaseBytes = await databaseSize(old, deps.redactor);
   }
   const summary = moveSummary(plan, target, chosen, databaseBytes);
   deps.reporter.info(summaryText(summary, plan));

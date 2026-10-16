@@ -78,6 +78,9 @@ export interface DestroyOptions {
   hostKey?: string;
 }
 
+/** Where a deletion happens: a provider's server, a server the user owns, or the user's Portainer. */
+export type DeletionProvider = VpsProviderId | "portainer";
+
 /** What the teardown would delete, shown before the user confirms. */
 export interface DestroyPreview {
   /** The name the user types to confirm: the server's (the app's name) or, on their own server, the app's. */
@@ -88,7 +91,7 @@ export interface DestroyPreview {
    */
   confirmPrompt?: string;
   /** The planned provider (`portainer` for the user's Portainer). */
-  provider: VpsProviderId | "portainer";
+  provider: DeletionProvider;
   /**
    * False when the provider has no delete protection (DigitalOcean): the server is deleted as soon
    * as the approved destroy plan is applied, with no protection-lifting step before it.

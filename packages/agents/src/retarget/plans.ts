@@ -5,7 +5,11 @@ import { engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { applyApprovedPlan, type DeletionSession, savePlan as saveDeletionPlan } from "../destroy";
+import {
+  applyApprovedPlan,
+  type DeletionSession,
+  savePlan as saveDeletionPlan,
+} from "../destroy/deletion";
 import {
   findSavedPlan,
   isMovesOnly,
@@ -133,6 +137,31 @@ async function approvedSavedPlan(session: MoveSession, planHash: string): Promis
 }
 
 /**
+ * The saved plan of `action` that `--approve <hash>` names, re-checked with `check` (a plan that
+ * fails it is deleted and forgotten), or `undefined` when `--approve` names no plan this step
+ * waits for. The approval is used up either way.
+ */
+async function approvedPending(
+  session: MoveSession,
+  action: MoveAction,
+  check: (saved: SavedPlan) => void,
+): Promise<SavedPlan | undefined> {
+  const { deps } = session;
+  const pending = await readPending(deps);
+  if (!pendingMatches(pending, action, session.approve)) return undefined;
+  session.approve = undefined;
+  const saved = await approvedSavedPlan(session, pending.planHash);
+  try {
+    check(saved);
+  } catch (error) {
+    await discardSaved(saved.planFile);
+    await clearPending(deps);
+    throw error;
+  }
+  return saved;
+}
+
+/**
  * Plans an infrastructure step through `planAndApply` (validation, policies, saved plan), or, with
  * `--approve <hash>` naming the plan this step saved earlier, takes that saved plan. `check` runs
  * before any approval. Interactive runs get a plan ready to apply; non-interactive runs stop with
@@ -143,19 +172,8 @@ export async function prepareInfraPlan(
   input: InfraPlanInput,
 ): Promise<PreparedPlan> {
   const { deps } = session;
-  const pending = await readPending(deps);
-  if (pendingMatches(pending, input.action, session.approve)) {
-    session.approve = undefined;
-    const saved = await approvedSavedPlan(session, pending.planHash);
-    try {
-      input.check(saved);
-    } catch (error) {
-      await discardSaved(saved.planFile);
-      await clearPending(deps);
-      throw error;
-    }
-    return { kind: "ready", planHash: saved.planHash };
-  }
+  const approved = await approvedPending(session, input.action, input.check);
+  if (approved !== undefined) return { kind: "ready", planHash: approved.planHash };
   const planned = await planAndApply(deps.interactive ? quietly(deps) : deps, {
     ...planAndApplyOptions(session, input),
     planOnly: true,
@@ -212,6 +230,11 @@ export async function planThenApply(
   return { kind: "applied", planHash: prepared.planHash, ...applied };
 }
 
+/** What a deletion step checks and shows of its plan: one just made, or the saved one. */
+export type DeletionPlan = Pick<PlanSummary, "engine" | "planFile" | "planHash" | "changes"> & {
+  planJson?: unknown;
+};
+
 export interface DeletionStepInput {
   action: MoveAction;
   /** Plan file name suffix under `.opscrew/plans/`. */
@@ -219,9 +242,9 @@ export interface DeletionStepInput {
   /** `-var`s of the plan (only variables the layout declares). */
   vars?: Readonly<Record<string, string>>;
   /** Stops (throws) when the plan does more than this step may do. */
-  check: (summary: Pick<PlanSummary, "changes" | "planJson">) => void;
+  check: (plan: DeletionPlan) => void;
   /** The `iac-apply` approval for the plan (with `allowDestroy` and the app name for deletes). */
-  request: (summary: PlanSummary) => ApprovalRequest;
+  request: (plan: DeletionPlan) => ApprovalRequest;
   /** The error when the approval is refused. */
   refused: (approval: ApprovalRecord, planHash: string) => OpsCrewError;
   allowDestroy: boolean;
@@ -231,20 +254,6 @@ export interface DeletionStepInput {
   hint: string;
   /** Runs after the approval, right before the apply (the step's first change). */
   beforeApply?: () => Promise<void>;
-}
-
-function summaryOf(saved: SavedPlan): PlanSummary {
-  return {
-    engine: saved.engine,
-    dir: saved.dir,
-    planFile: saved.planFile,
-    planHash: saved.planHash,
-    createdAt: saved.createdAt,
-    changes: saved.changes,
-    counts: saved.counts,
-    hasDestroy: saved.hasDestroy,
-    planJson: saved.planJson,
-  };
 }
 
 /** The sidecar saved next to a move's plan file (exported for tests). */
@@ -278,39 +287,29 @@ export async function deletionStep(
   input: DeletionStepInput,
 ): Promise<PlanStep> {
   const { deps } = session;
-  let summary: PlanSummary;
-  const pending = await readPending(deps);
-  if (pendingMatches(pending, input.action, session.approve)) {
-    session.approve = undefined;
-    summary = summaryOf(await approvedSavedPlan(session, pending.planHash));
-    try {
-      input.check(summary);
-    } catch (error) {
-      await discardSaved(summary.planFile);
-      await clearPending(deps);
-      throw error;
-    }
-  } else {
-    summary = await saveDeletionPlan(del, input.suffix, input.vars ? { vars: input.vars } : {});
-    if (summary.changes.length === 0) {
-      await discardSaved(summary.planFile);
+  let summary: DeletionPlan | undefined = await approvedPending(session, input.action, input.check);
+  if (summary === undefined) {
+    const fresh = await saveDeletionPlan(del, input.suffix, input.vars ? { vars: input.vars } : {});
+    if (fresh.changes.length === 0) {
+      await discardSaved(fresh.planFile);
       return { kind: "unchanged", outputs: {} };
     }
     try {
-      input.check(summary);
+      input.check(fresh);
     } catch (error) {
-      await discardSaved(summary.planFile);
+      await discardSaved(fresh.planFile);
       throw error;
     }
-    await writePlanSidecar(deps.redactor, savedOf(summary));
-    await writePending(deps, input.action, summary.planHash);
+    await writePlanSidecar(deps.redactor, savedOf(fresh));
+    await writePending(deps, input.action, fresh.planHash);
     if (!deps.interactive) {
-      const request = input.request(summary);
+      const request = input.request(fresh);
       deps.reporter.info(
-        `${request.title}\n${request.details}\nSaved the plan (hash ${summary.planHash}); nothing was changed.`,
+        `${request.title}\n${request.details}\nSaved the plan (hash ${fresh.planHash}); nothing was changed.`,
       );
-      return { kind: "pending", planHash: summary.planHash };
+      return { kind: "pending", planHash: fresh.planHash };
     }
+    summary = fresh;
   }
   const approval = await deps.approvals.request(input.request(summary));
   if (!approval.approved) throw input.refused(approval, summary.planHash);
@@ -330,9 +329,4 @@ export async function deletionStep(
     await clearPending(deps);
   }
   return { kind: "applied", outputs: {}, planHash: summary.planHash, approval };
-}
-
-/** `OpenTofu 1.13.1 plan:` — the first line of a plan's details. */
-export function planHeading(summary: Pick<PlanSummary, "engine">): string {
-  return `${engineLabel(summary.engine.name)} ${summary.engine.version} plan:`;
 }

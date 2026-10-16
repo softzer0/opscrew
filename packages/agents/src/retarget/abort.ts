@@ -8,37 +8,24 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { costFor } from "../design";
-import {
-  assertDeletionPlan,
-  confirmDeletion,
-  type DeletionSession,
-  describeChanges,
-  destroyTexts,
-  forgetHostKeys,
-  previewDeletion,
-  unprotectPlanProblems,
-} from "../destroy";
+import { describeChanges } from "../destroy/checks";
+import { confirmDeletion, forgetHostKeys } from "../destroy/deletion";
 import { providerProfile, vpsConnector } from "../providers";
-import { infrastructureOutputs } from "../shared";
 import { moveProvider } from "../shared/vps-target";
-import { moveLayout, previousTarget, protectionVariable } from "./layouts";
+import { previousTarget } from "./layouts";
 import { clearPending } from "./pending";
-import {
-  applyInfraPlan,
-  deletionStep,
-  type InfraPlanInput,
-  planHeading,
-  prepareInfraPlan,
-} from "./plans";
+import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
+import { liftMoveProtection, moveRemoval, previewMoveRemoval, removeMoveServer } from "./removal";
 import { isAppHealthy } from "./server-ops";
-import { endMoveServers, loadMoveServers, oldServer } from "./servers";
+import { endMoveServers, oldServer } from "./servers";
 import {
   auditStep,
+  layoutOf,
   type MoveSession,
   markFailed,
+  moveBase,
   moveOf,
   openSession,
-  readDeployKey,
   recordApply,
   remoteFor,
   saveMove,
@@ -49,19 +36,9 @@ import {
 } from "./session";
 import { assertRenameOnly, pendingStop, storeDeploySecrets } from "./steps";
 import { assertDnsUpdatesOnly } from "./switch";
-import {
-  ABORT_COMMAND,
-  FINISH_COMMAND,
-  managedDns,
-  providerWords,
-  RUN_COMMAND,
-  resourcesText,
-} from "./texts";
+import { ABORT_COMMAND, FINISH_COMMAND, managedDns, providerWords, RUN_COMMAND } from "./texts";
 import type { AbortRetargetOptions, RetargetResult } from "./types";
 import { recoverInterruptedWindow, restartOldApp, stepBefore } from "./window";
-
-/** Every resource of the new server lives under this prefix during a move. */
-const NEW = "module.server.";
 
 /**
  * The old server's monthly cost, priced again from its provider's catalogue (the injected one,
@@ -108,29 +85,11 @@ async function removeNewServer(
   flags: readonly string[],
 ): Promise<RetargetResult | undefined> {
   const { deps } = session;
-  const move = moveOf(session);
-  const from = previousTarget(move);
-  const to = session.plan.target;
   const app = session.plan.app.name;
-  const words = providerWords(moveProvider(to));
-  const texts = destroyTexts(moveProvider(to));
-  const profile = providerProfile(moveProvider(to));
-  const del: DeletionSession = {
-    deps,
-    provider: moveProvider(to),
-    app,
-    command: ABORT_COMMAND,
-    what: "removal of the new server",
-    phase: "retarget",
-    engine: session.engine,
-    env: session.env,
-    dir: session.dir,
-    stamp: deps.clock.now().toISOString().replace(/[:.]/g, "-"),
-  };
-  deps.reporter.step(`Planning the removal of the new ${words.noun} to see what it deletes`);
-  const removal = moveLayout("abort-remove", from, to);
-  await useLayout(session, "abort-remove", removal);
-  const preview = await previewDeletion(del, { suffix: "retarget-abort-preview", prefix: NEW });
+  const provider = moveProvider(session.plan.target);
+  const removal = moveRemoval(session, "new", provider, flags);
+  const { del, words } = removal;
+  const preview = await previewMoveRemoval(removal);
   if (preview.changes.length === 0) {
     deps.reporter.info(`There is no new ${words.noun} to delete.`);
     return undefined;
@@ -145,8 +104,8 @@ async function removeNewServer(
     del,
     {
       name: app,
-      provider: moveProvider(to),
-      deleteProtection: profile.deleteProtection,
+      provider,
+      deleteProtection: providerProfile(provider).deleteProtection,
       resources: preview.changes,
       snapshot: false,
     },
@@ -155,110 +114,25 @@ async function removeNewServer(
   // The typed name commits to the abort; without a confirmation hook, the first apply does.
   if (options.confirm !== undefined) await recordAbort(session);
 
-  const both = moveLayout("both", from, to);
-  const variable = protectionVariable(both, "server");
-  if (variable !== undefined && preview.serverInState) {
-    deps.reporter.step(`Planning to lift delete protection on the new ${words.noun}`);
-    await useLayout(session, "both", both);
-    const lifted = await deletionStep(session, del, {
-      action: "abort-unprotect",
-      suffix: "retarget-abort-unprotect",
-      vars: { [variable]: "false" },
-      check: (summary) => {
-        const problems = unprotectPlanProblems(summary.changes, summary.planJson, { prefix: NEW });
-        if (problems.length === 0) return;
-        throw new OpsCrewError(
-          "PHASE_PRECONDITION",
-          [
-            `Lifting the delete protection on the new ${words.noun} would also change other things, so OpsCrew stopped. Nothing was deleted.`,
-            ...problems.map((problem) => `  ${problem}`),
-          ].join("\n"),
-          {
-            hint: `Check the ${words.noun}s in ${texts.console}, then run \`${ABORT_COMMAND}\` again.`,
-          },
-        );
-      },
-      request: (summary) => ({
-        kind: "iac-apply",
-        title: `Lift delete protection on the new ${words.noun} ${app}`,
-        details: [
-          planHeading(summary),
-          ...describeChanges(summary.changes),
-          `This only turns off the new ${words.noun}'s delete and rebuild protection so that the next plan can delete it. Nothing is deleted yet.`,
-          `Plan hash: ${summary.planHash}`,
-        ].join("\n"),
-        planHash: summary.planHash,
-      }),
-      refused: (approval, planHash) =>
-        new OpsCrewError(
-          "APPROVAL_REFUSED",
-          `Delete protection on the new ${words.noun} was not lifted${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.`,
-          {
-            hint: `Run \`${ABORT_COMMAND}\` again when you are ready (in scripts: \`${ABORT_COMMAND} ${flags.join(" ")} --approve ${planHash}\`).`,
-          },
-        ),
-      allowDestroy: false,
-      what: "lifting delete protection on the new server",
-      hint: `Fix the cause shown above, then run \`${ABORT_COMMAND}\` again. Nothing was deleted.`,
-      beforeApply: () => recordAbort(session),
-    });
-    if (lifted.kind === "pending") return pendingStop(session, lifted.planHash, flags);
-    if (lifted.kind === "applied") await recordApply(session, lifted);
-    await useLayout(session, "abort-remove", removal);
-  }
-
-  deps.reporter.step(`Planning the removal of the new ${words.noun}`);
-  const removed = await deletionStep(session, del, {
-    action: "abort-remove",
-    suffix: "retarget-abort",
-    check: (summary) =>
-      assertDeletionPlan(
-        del,
-        summary,
-        { prefix: NEW, confirmed: preview.addresses, serverIds: preview.serverIds },
-        {
-          note: "Nothing was deleted.",
-          hint: `Run \`${ABORT_COMMAND}\` again to see the current list and confirm it.`,
-        },
-      ),
-    request: (summary) => ({
-      kind: "iac-apply",
-      title: `Delete the new ${words.noun} ${app} on ${words.name} (${resourcesText(summary.changes.length)} to delete)`,
-      details: [
-        planHeading(summary),
-        ...describeChanges(summary.changes),
-        `The app keeps running on the old server; the new ${words.noun} and what it holds are deleted.`,
-        `Plan hash: ${summary.planHash}`,
-      ].join("\n"),
-      planHash: summary.planHash,
-      allowDestroy: true,
-      confirmPhrase: app,
-      costDelta: {
-        amount: -session.plan.cost.monthly.amount,
-        currency: session.plan.cost.monthly.currency,
-      },
-    }),
-    refused: (approval, planHash) =>
-      new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The removal of the new ${words.noun} was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.`,
-        {
-          hint: `Run \`${ABORT_COMMAND}\` again and type ${app} when you are ready (in scripts: \`${ABORT_COMMAND} ${flags.join(" ")} --approve ${planHash}\`).`,
-        },
-      ),
-    allowDestroy: true,
-    what: "deleting the new server",
-    hint: `Fix the cause shown above, then run \`${ABORT_COMMAND}\` again; it continues with what is left.`,
-    beforeApply: () => recordAbort(session),
+  const beforeApply = () => recordAbort(session);
+  const lift = await liftMoveProtection(removal, {
+    serverInState: preview.serverInState,
+    kept: "",
+    beforeApply,
   });
-  if (removed.kind === "pending") return pendingStop(session, removed.planHash, flags);
-  if (removed.kind === "applied") {
-    await recordApply(session, removed);
-    deps.reporter.success(
-      `Deleted the new ${words.noun} (${resourcesText(preview.changes.length)}).`,
-    );
-  }
-  return undefined;
+  if ("stop" in lift) return lift.stop;
+  return removeMoveServer(removal, {
+    preview,
+    notes: [
+      `The app keeps running on the old server; the new ${words.noun} and what it holds are deleted.`,
+    ],
+    note: "",
+    costDelta: {
+      amount: -session.plan.cost.monthly.amount,
+      currency: session.plan.cost.monthly.currency,
+    },
+    beforeApply,
+  });
 }
 
 /** Progress of an abort: nothing done (no record yet), new server removed, secrets restored. */
@@ -303,11 +177,7 @@ async function pointDnsBack(
   if (!managedDns(plan) || stepBefore(move.step, "deployed")) return undefined;
   const old = providerWords(move.from.target.provider);
   deps.reporter.step(`Checking that the DNS records of ${plan.dns.domain} point to the old server`);
-  const files = await useLayout(
-    session,
-    "both",
-    moveLayout("both", previousTarget(move), plan.target),
-  );
+  const files = await useLayout(session, "both");
   const input: InfraPlanInput = {
     action: "abort-dns",
     files,
@@ -368,7 +238,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
 
   // 3. The moves-only plan that renames the old server back to `module.server`.
   deps.reporter.step(`Renaming the old ${old.noun} back in the infrastructure state`);
-  const files = await useLayout(session, "abort-rename", moveLayout("abort-rename", from, to));
+  const files = await useLayout(session, "abort-rename");
   const renameBack: InfraPlanInput = {
     action: "abort-rename",
     files,
@@ -403,7 +273,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   }
   const { retarget: _aborted, ...rest } = session.plan;
   const restored: DeployPlan = { ...rest, target: from, ...(cost !== undefined ? { cost } : {}) };
-  await writeFinalFiles(session, restored, moveLayout("both", from, to), "infra");
+  await writeFinalFiles(session, restored, layoutOf(session, "both"), "infra");
   const oldAddress = oldServer(session);
   const oldHost = oldAddress.ipv4;
   await savePlan(session, restored);
@@ -475,19 +345,11 @@ export async function abortRetarget(
     // Users first: the old app runs again before anything else is checked (no provider token
     // needed; the infrastructure state names the servers when the local record is gone).
     if (move.oldAppStoppedAt !== undefined) {
-      const base = {
-        deps,
-        plan,
-        services,
+      const base = await moveBase(deps, plan, {
         command: ABORT_COMMAND,
-        deployKey: await readDeployKey(deps, ABORT_COMMAND),
-        servers: await loadMoveServers(deps, plan, ABORT_COMMAND, () =>
-          infrastructureOutputs(deps, plan, {
-            ...(services.engine ? { engine: services.engine } : {}),
-            ...(options.engine !== undefined ? { preference: options.engine } : {}),
-          }),
-        ),
-      };
+        services,
+        ...(options.engine !== undefined ? { engine: options.engine } : {}),
+      });
       if (stepBefore(move.step, "migrated")) await recoverInterruptedWindow(base);
       else await restartOldApp(base);
       plan = base.plan;

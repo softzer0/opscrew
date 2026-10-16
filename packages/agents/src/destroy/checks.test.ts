@@ -10,19 +10,21 @@ import {
   unprotectPlan,
 } from "./__fixtures__/fakes";
 import {
-  assertModulePrefix,
   dataWarning,
   deletesServer,
   deletesUnconfirmedServer,
-  deletionPlanIsBounded,
   deletionPlanProblems,
   destroyPlanProblems,
+  type ModulePrefix,
   removeHostKeys,
   serverIdsInPlan,
   unprotectPlanProblems,
 } from "./checks";
 
 const HCLOUD_PROVIDER = "registry.opentofu.org/hetznercloud/hcloud";
+
+/** What {@link deletionPlanProblems} returns for a plan it may apply. */
+const BOUNDED = { notDeletes: [], outsidePrefix: [], unconfirmed: [] };
 
 /** A change at `address` (type and name from its last two parts). */
 function at(address: string, action: ResourceChange["action"] = "delete"): ResourceChange {
@@ -296,11 +298,9 @@ describe("deletionPlanProblems (prefix-bounded deletions of a move)", () => {
   const confirmed = new Set(PREVIOUS.map((c) => c.address));
 
   it("accepts a plan that only deletes confirmed resources under the prefix", () => {
-    const problems = deletionPlanProblems(PREVIOUS, { prefix, confirmed });
-    expect(problems).toEqual({ notDeletes: [], outsidePrefix: [], unconfirmed: [] });
-    expect(deletionPlanIsBounded(problems)).toBe(true);
+    expect(deletionPlanProblems(PREVIOUS, { prefix, confirmed })).toEqual(BOUNDED);
     // before the confirmation (the preview) only the prefix and the action are checked
-    expect(deletionPlanIsBounded(deletionPlanProblems(PREVIOUS, { prefix }))).toBe(true);
+    expect(deletionPlanProblems(PREVIOUS, { prefix })).toEqual(BOUNDED);
   });
 
   it("refuses anything that is not a delete, even under the prefix", () => {
@@ -317,7 +317,6 @@ describe("deletionPlanProblems (prefix-bounded deletions of a move)", () => {
       "replace module.server_previous.hcloud_server.other",
     ]);
     expect(problems.outsidePrefix).toEqual([]);
-    expect(deletionPlanIsBounded(problems)).toBe(false);
   });
 
   it("refuses deletes outside the prefix: the new server, DNS, a look-alike module", () => {
@@ -336,7 +335,6 @@ describe("deletionPlanProblems (prefix-bounded deletions of a move)", () => {
       "update hcloud_server.loose",
     ]);
     expect(problems.unconfirmed).toEqual([]);
-    expect(deletionPlanIsBounded(problems)).toBe(false);
   });
 
   it("refuses deletes under the prefix that were not in the confirmed preview", () => {
@@ -354,17 +352,13 @@ describe("deletionPlanProblems (prefix-bounded deletions of a move)", () => {
       prefix: "module.server.",
     });
     expect(abort.outsidePrefix).toEqual(["delete module.server_previous.hcloud_server.this"]);
-    expect(deletionPlanIsBounded(deletionPlanProblems(fresh, { prefix: "module.server." }))).toBe(
-      true,
-    );
+    expect(deletionPlanProblems(fresh, { prefix: "module.server." })).toEqual(BOUNDED);
   });
 
   it("without a prefix checks the whole root (opscrew destroy)", () => {
     const all = deployedResources({ dns: true });
     const confirmedAll = new Set(all.map((c) => c.address));
-    expect(deletionPlanIsBounded(deletionPlanProblems(all, { confirmed: confirmedAll }))).toBe(
-      true,
-    );
+    expect(deletionPlanProblems(all, { confirmed: confirmedAll })).toEqual(BOUNDED);
     expect(deletionPlanProblems([firewallCreate]).notDeletes).toEqual([
       "create module.server.hcloud_firewall.this",
     ]);
@@ -372,34 +366,15 @@ describe("deletionPlanProblems (prefix-bounded deletions of a move)", () => {
 });
 
 describe("module address prefixes", () => {
-  const invalid = ["module.server", "", "module.", "module.server.x.", "server.", "module.a b."];
-
-  it("accepts exactly one module with its trailing dot", () => {
-    expect(() => assertModulePrefix("module.server.")).not.toThrow();
-    expect(() => assertModulePrefix("module.server_previous.")).not.toThrow();
-    for (const prefix of invalid) {
-      expect(() => assertModulePrefix(prefix)).toThrow(
-        expect.objectContaining({ code: "INTERNAL" }),
-      );
-    }
-  });
-
-  it("refuses an invalid prefix in every bounded check, even with no changes", () => {
-    const { changes, planJson } = unprotectPlan();
-    for (const prefix of ["module.server", ""]) {
-      expect(() => deletionPlanProblems(PREVIOUS, { prefix })).toThrow(
-        expect.objectContaining({ code: "INTERNAL" }),
-      );
-      expect(() => deletionPlanProblems([], { prefix })).toThrow(
-        expect.objectContaining({ code: "INTERNAL" }),
-      );
-      expect(() => unprotectPlanProblems(changes, planJson, { prefix })).toThrow(
-        expect.objectContaining({ code: "INTERNAL" }),
-      );
-      expect(() => unprotectPlanProblems([], {}, { prefix })).toThrow(
-        expect.objectContaining({ code: "INTERNAL" }),
-      );
-    }
+  it("are exactly the two server modules with their trailing dot (checked when compiling)", () => {
+    const valid: ModulePrefix[] = ["module.server.", "module.server_previous."];
+    // @ts-expect-error without the dot, module.server would also match module.server_previous.…
+    const noDot: ModulePrefix = "module.server";
+    // @ts-expect-error "" would match every address while looking bounded
+    const empty: ModulePrefix = "";
+    // @ts-expect-error only the move's server modules are prefixes
+    const other: ModulePrefix = "module.dns.";
+    expect([...valid, noDot, empty, other]).toHaveLength(5);
   });
 
   it("module.server. and module.server_previous. never match each other", () => {
@@ -411,9 +386,7 @@ describe("module address prefixes", () => {
     expect(
       deletionPlanProblems(current, { prefix: "module.server_previous." }).outsidePrefix,
     ).toEqual(["delete module.server.hcloud_server.x"]);
-    expect(deletionPlanIsBounded(deletionPlanProblems(current, { prefix: "module.server." }))).toBe(
-      true,
-    );
+    expect(deletionPlanProblems(current, { prefix: "module.server." })).toEqual(BOUNDED);
   });
 });
 
