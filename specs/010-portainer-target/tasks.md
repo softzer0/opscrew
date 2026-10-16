@@ -189,7 +189,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/connector-portainer --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T1022 [P] The other connectors (Area 7)
+- [X] T1022 [P] The other connectors (Area 7)
   - Owns: `packages/connectors/{cloudflare,digitalocean,github,godaddy,hetzner,namecheap,porkbun}/src/**` (+ tests); `packages/contracts/src/**` for the tool types and catalog fields only; `packages/agents/src/providers/{own.ts,connector.test.ts}` for `tools()` only
   - Reads: Area 7; Area 1 and Area 5 (the hand-written Cloudflare clients agents will drop); core's root exports
   - Depends: T1020

@@ -425,6 +425,38 @@ describe("NamecheapClient commands", () => {
     ).rejects.toThrow(/did not set the nameservers/);
   });
 
+  it("sends a nameserver change once after a 5xx, a lost connection or a timeout", async () => {
+    for (const route of [
+      { status: 502, body: "<html>bad gateway</html>" },
+      new TypeError("fetch failed"),
+      { hang: true as const },
+    ]) {
+      const { fetch, of } = fakeNamecheap({ "domains.dns.setCustom": route });
+      const sleep = vi.fn(noSleep);
+      const error = await failure(
+        makeClient(fetch, { sleep, timeoutMs: 5 }).setCustomNameservers("shopapp.com", [
+          "a.ns.cloudflare.com",
+          "b.ns.cloudflare.com",
+        ]),
+      );
+      expect(error.code).toBe("PROVIDER_ERROR");
+      expect(error.hint).toContain("may still have reached Namecheap");
+      expect(of("domains.dns.setCustom")).toHaveLength(1);
+      expect(sleep).not.toHaveBeenCalled();
+    }
+  });
+
+  it("sends a rate-limited nameserver change again (Namecheap did not take it)", async () => {
+    const { fetch, of } = fakeNamecheap({
+      "domains.dns.setCustom": [
+        { status: 429, body: "<html>slow down</html>" },
+        fixture("domains-dns-setCustom"),
+      ],
+    });
+    await makeClient(fetch).setCustomNameservers("shopapp.com", ["a.ns.x", "b.ns.x"]);
+    expect(of("domains.dns.setCustom")).toHaveLength(2);
+  });
+
   it("reads host records, and nothing when Namecheap does not host the DNS", async () => {
     const { fetch } = fakeNamecheap({ "domains.dns.getHosts": fixture("domains-dns-getHosts") });
     const list = await makeClient(fetch).getHosts("shopapp.com");

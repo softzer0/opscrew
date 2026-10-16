@@ -141,6 +141,9 @@ export interface NamecheapHost {
 const MAX_RETRIES = 2;
 /** Default time one request may take before it counts as failed. */
 const REQUEST_TIMEOUT_MS = 30_000;
+/** Hint after a write without a clear answer: sending it again could repeat it. */
+const MAYBE_DONE_HINT =
+  "The request may still have reached Namecheap; check the current state before trying again.";
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 
@@ -321,10 +324,16 @@ export class NamecheapClient {
   }
 
   /**
-   * A read-only (or idempotent) command's answer, retried after network errors, timeouts, 5xx and
-   * 429.
+   * A command's answer. A read is retried after network errors, timeouts, 5xx and 429; a `write`
+   * (a command that changes something) only after a 429 without errors, because Namecheap did not
+   * accept it: after anything else it may already have been carried out.
    */
-  async #send(command: string, params: Record<string, string>, what: string): Promise<Answer> {
+  async #send(
+    command: string,
+    params: Record<string, string>,
+    what: string,
+    write = false,
+  ): Promise<Answer> {
     const body = await this.#body(command, params);
     for (let attempt = 0; ; attempt++) {
       let answer: Answer;
@@ -332,18 +341,18 @@ export class NamecheapClient {
         answer = await this.#post(body);
       } catch (error) {
         if (!(error instanceof Unreachable)) throw error;
-        if (attempt < MAX_RETRIES) {
+        if (!write && attempt < MAX_RETRIES) {
           await this.#sleep(1000 * 2 ** attempt);
           continue;
         }
         throw new OpsCrewError(
           "PROVIDER_ERROR",
           `Could not reach the Namecheap API to ${what} (${error.message}).`,
-          { hint: "Check your internet connection and try again." },
+          { hint: write ? MAYBE_DONE_HINT : "Check your internet connection and try again." },
         );
       }
       const { status, envelope } = answer;
-      const retryable = status === 429 || status >= 500;
+      const retryable = status === 429 || (!write && status >= 500);
       if (retryable && !envelope?.errors.length && attempt < MAX_RETRIES) {
         await this.#sleep((status === 429 ? 10_000 : 1000) * 2 ** attempt);
         continue;
@@ -353,14 +362,16 @@ export class NamecheapClient {
   }
 
   /** The answer's `CommandResponse` validated by `schema`; Namecheap's errors in plain English. */
-  #read<T>({ status, envelope }: Answer, schema: z.ZodType<T>, what: string): T {
+  #read<T>({ status, envelope }: Answer, schema: z.ZodType<T>, what: string, write = false): T {
     if (envelope && !envelope.ok) throw this.#error(envelope.errors, what);
     if (!envelope || status < 200 || status >= 300) {
       throw new OpsCrewError(
         "PROVIDER_ERROR",
         `Namecheap returned an unreadable answer (HTTP ${status}) when trying to ${what}.`,
         {
-          hint: "Try again in a minute; if it keeps failing, check https://www.namecheap.com/status-updates/.",
+          hint: write
+            ? MAYBE_DONE_HINT
+            : "Try again in a minute; if it keeps failing, check https://www.namecheap.com/status-updates/.",
         },
       );
     }
@@ -374,14 +385,15 @@ export class NamecheapClient {
     return parsed.data;
   }
 
-  /** A read-only (or idempotent) command; returns its `CommandResponse` validated by `schema`. */
+  /** A command; returns its `CommandResponse` validated by `schema` (see {@link #send}). */
   async #call<T>(
     command: string,
     params: Record<string, string>,
     schema: z.ZodType<T>,
     what: string,
+    write = false,
   ): Promise<T> {
-    return this.#read(await this.#send(command, params, what), schema, what);
+    return this.#read(await this.#send(command, params, what, write), schema, what, write);
   }
 
   /** `domains.check`: live availability, in batches of 50. */
@@ -654,7 +666,10 @@ export class NamecheapClient {
     };
   }
 
-  /** `domains.dns.setCustom`: points the domain at other nameservers (Cloudflare's). */
+  /**
+   * `domains.dns.setCustom`: points the domain at other nameservers (Cloudflare's). A write: only a
+   * rate-limited answer is sent again.
+   */
   async setCustomNameservers(domain: string, nameservers: readonly string[]): Promise<void> {
     const name = normalizeHostName(domain);
     const { sld, tld } = splitDomain(name);
@@ -671,6 +686,7 @@ export class NamecheapClient {
       { SLD: sld, TLD: tld, Nameservers: list.join(",") },
       SetCustomResponse,
       what,
+      true,
     );
     if (!answer.DomainDNSSetCustomResult["@_Updated"]) {
       throw new OpsCrewError("PROVIDER_ERROR", `Namecheap did not ${what}.`, {

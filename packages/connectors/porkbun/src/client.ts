@@ -288,6 +288,7 @@ export class PorkbunClient {
    */
   async #call(what: string, path: string, options: CallOptions = {}): Promise<unknown> {
     const method = options.method ?? "POST";
+    // Allowed exception to "never retry a write": one Idempotency-Key on every retry makes it safe.
     const headers: Record<string, string> = options.write
       ? { "Idempotency-Key": this.#randomUUID() }
       : {};
