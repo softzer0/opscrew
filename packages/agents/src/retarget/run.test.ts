@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CommandResult } from "@opscrew/contracts";
@@ -969,6 +970,17 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(error.hint).toBeTruthy();
     expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
     expect(await move(h)).toBeUndefined();
+  });
+
+  it("stops before any plan without the state passphrase, naming the move's command", async () => {
+    const h = await moveHarness();
+    await rm(h.deps.paths.files.statePassphrase);
+    const error = await caught(run(h));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("does not have its passphrase");
+    expect(error.hint).toMatch(/then run `opscrew retarget[^`]*` again\.$/);
+    expect(existsSync(h.deps.paths.files.statePassphrase)).toBe(false);
+    expect(h.engine.plans).toHaveLength(0);
   });
 
   it("stops before anything when the deploy key is not on this computer", async () => {
