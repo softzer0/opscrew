@@ -1,10 +1,8 @@
 import { runSecure } from "@opscrew/agents";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
-import { createPhaseDeps } from "../deps";
+import { createPhaseDeps, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
-import { runPhaseCommand, usageErrorsExit2 } from "../ui/deploy";
-import { deployServicesOf } from "../ui/deploy-services";
 import { printNextSteps } from "../ui/output";
 
 /**
@@ -16,10 +14,10 @@ export function register(program: Command, ctx: CliContext): void {
   program
     .command("secure")
     .description("Check the server's hardening and write the security report")
-    .exitOverride(usageErrorsExit2)
     .action(async () => {
-      const result = await runPhaseCommand(ctx, () =>
-        runSecure(createPhaseDeps(ctx, { ai: false }), deployServicesOf(ctx).secure ?? {}),
+      const result = await runSecure(
+        createPhaseDeps(ctx, { ai: false }),
+        servicesOf(ctx).secure ?? {},
       );
       if (result.passed) {
         printNextSteps(ctx, [

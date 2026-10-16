@@ -6,6 +6,7 @@ import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import {
   type DeployProject,
   DeployRunner,
@@ -18,7 +19,6 @@ import {
   testPlan,
 } from "../ui/__fixtures__/deploy";
 import { GIT, git, projectContext, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -60,7 +60,7 @@ function context(p: DeployProject, options: Setup = {}) {
       ...(options.prompts === undefined ? {} : { prompts: options.prompts }),
     },
   });
-  withDeployServices(ctx, { provision: provisionServices(engine, github) });
+  withServices(ctx, { provision: provisionServices(engine, github) });
   return { ctx, engine, github, runner };
 }
 

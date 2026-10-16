@@ -25,27 +25,29 @@ import type {
   Clock,
   Money,
   RegistrarId,
-  Reporter,
 } from "@opscrew/contracts";
-import { type ErrorCode, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import {
+  type ErrorCode,
+  isUserFacingError,
+  listText,
+  normalizeHostName,
+  OpsCrewError,
+} from "@opscrew/core";
 import { Argument, type Command, Option } from "commander";
-import { formatRequest } from "../approval";
+import { formatRequest, systemClock } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
-import { runPhaseCommand, usageErrorsExit2 } from "../ui/deploy";
-import { deployServicesOf } from "../ui/deploy-services";
+import { quietReporter } from "../reporter";
 import { printNextSteps } from "../ui/output";
 import type { UiPrompts } from "../ui/prompts";
 
 /** Approval kinds that need the domain typed (at the prompt or with `--confirm`). */
 const TYPED_KINDS: readonly ApprovalRequest["kind"][] = ["domain-purchase", "domain-settings"];
 
-const systemClock: Clock = { now: () => new Date() };
-
 /** Why the typed-domain handler refused a request without asking anyone. */
-export type DomainRefusal = "not-interactive" | "confirm-mismatch";
+type DomainRefusal = "not-interactive" | "confirm-mismatch";
 
-export interface DomainApprovalOptions {
+interface DomainApprovalOptions {
   /** True when a person answers the prompts. */
   interactive: boolean;
   /** `--confirm <domain>`. */
@@ -152,8 +154,7 @@ export class DomainApprovalHandler implements ApprovalHandler {
 
 /** Domain names compare without case and without a trailing dot. */
 function sameDomain(a: string, b: string): boolean {
-  const norm = (s: string) => s.trim().toLowerCase().replace(/\.$/, "");
-  return norm(a) === norm(b);
+  return normalizeHostName(a) === normalizeHostName(b);
 }
 
 /**
@@ -224,7 +225,7 @@ function registrarName(id: string): string {
 }
 
 /** The search results as a table: domain, available, first year, renewal, note. */
-export function renderSearchTable(result: SearchDomainsResult): string {
+function renderSearchTable(result: SearchDomainsResult): string {
   return table(
     ["DOMAIN", "AVAILABLE", "FIRST YEAR", "RENEWAL", "NOTE"],
     result.results.map((c) => [
@@ -242,7 +243,7 @@ export function renderSearchTable(result: SearchDomainsResult): string {
  * in the order the comparison gives (by price only), with the note or the reason it cannot be
  * bought there.
  */
-export function renderComparison(comparison: readonly DomainComparison[]): string {
+function renderComparison(comparison: readonly DomainComparison[]): string {
   return comparison
     .map((c) =>
       [
@@ -287,7 +288,7 @@ export function localAndUtc(iso: string): string {
  * What `opscrew domain connect` did, in plain words, then its details. The command to run again
  * is in the result's next steps (with the run's flags), so it is not repeated here.
  */
-export function renderConnectResult(result: ConnectDomainResult): string {
+function renderConnectResult(result: ConnectDomainResult): string {
   const { domain } = result;
   const name = registrarName(result.registrar);
   let summary: string;
@@ -317,13 +318,6 @@ export function renderConnectResult(result: ConnectDomainResult): string {
   if (result.nameservers.length > 0) rows.push(["Nameservers", result.nameservers.join(", ")]);
   rows.push(["DNSSEC", result.dnssec ? "on" : "off"]);
   return `${summary}\n${fields(rows)}`;
-}
-
-/** `a`, `a and b`, `a, b and c`. */
-function listText(items: readonly string[]): string {
-  return items.length <= 1
-    ? items.join("")
-    : `${items.slice(0, -1).join(", ")} and ${items.at(-1) ?? ""}`;
 }
 
 /** Prints a `--compare` result: the registrars asked, one block per name, then how to buy. */
@@ -358,7 +352,7 @@ function renderBuyResult(result: BuyDomainResult): string {
 }
 
 /** The registration of the project's domain, one setting per line. */
-export function renderDomainStatus(result: DomainStatusResult): string {
+function renderDomainStatus(result: DomainStatusResult): string {
   const info = result.domain;
   if (info === undefined) return "";
   const rows: [string, string][] = [
@@ -370,21 +364,26 @@ export function renderDomainStatus(result: DomainStatusResult): string {
     ["WHOIS privacy", onOff(info.privacy)],
     ["DNSSEC", onOff(result.dnssec)],
   ];
-  const width = Math.max(...rows.map(([label]) => label.length));
-  return [info.domain, ...rows.map(([label, value]) => `  ${label.padEnd(width)}  ${value}`)].join(
-    "\n",
-  );
+  return `${info.domain}\n${fields(rows)}`;
 }
 
-/** Progress is dropped for `--json` so stdout holds only the JSON; problems go to stderr. */
-function quietReporter(ctx: CliContext): Reporter {
-  return {
-    step: () => {},
-    info: () => {},
-    success: () => {},
-    warn: (message) => ctx.reporter.warn(message),
-    error: (message) => ctx.reporter.error(message),
-  };
+/**
+ * The Cloudflare accounts the token can use, from the run's domain services when they list them;
+ * the token is registered with the redactor first.
+ */
+async function listAccounts(
+  deps: PhaseDeps,
+  given: DomainServices | undefined,
+  token: string,
+): Promise<DomainAccount[]> {
+  deps.redactor.addLiteral(token, "cloudflare-token");
+  if (given?.accounts !== undefined) return given.accounts();
+  const accounts = await new CloudflareClient({
+    token,
+    fetch: deps.fetch,
+    version: deps.version,
+  }).listAccounts();
+  return accounts.map((a) => ({ id: a.id, name: a.name }));
 }
 
 /**
@@ -399,20 +398,14 @@ async function servicesFor(
   account: string | undefined,
   cloudflare = true,
 ): Promise<{ services?: DomainServices; account?: string }> {
-  const given = deployServicesOf(ctx).domain;
+  const given = servicesOf(ctx).domain;
   const keep = {
     ...(given === undefined ? {} : { services: given }),
     ...(account === undefined ? {} : { account }),
   };
   const token = ctx.env.CLOUDFLARE_API_TOKEN?.trim();
   if (!cloudflare || !ctx.isInteractive || account !== undefined || !token) return keep;
-  deps.redactor.addLiteral(token, "cloudflare-token");
-  const list: DomainAccount[] =
-    given?.accounts !== undefined
-      ? await given.accounts()
-      : await new CloudflareClient({ token, fetch: deps.fetch, version: deps.version })
-          .listAccounts()
-          .then((accounts) => accounts.map((a) => ({ id: a.id, name: a.name })));
+  const list = await listAccounts(deps, given, token);
   const services: DomainServices = { ...given, accounts: async () => list };
   if (list.length < 2) return { services };
   return { services, account: await chooseAccount(ctx, list) };
@@ -447,7 +440,7 @@ function lazyServicesFor(
   deps: PhaseDeps,
   account: string | undefined,
 ): { services?: DomainServices; account?: string } {
-  const given = deployServicesOf(ctx).domain;
+  const given = servicesOf(ctx).domain;
   const keep = {
     ...(given === undefined ? {} : { services: given }),
     ...(account === undefined ? {} : { account }),
@@ -457,13 +450,7 @@ function lazyServicesFor(
   let chosen: Promise<DomainAccount[]> | undefined;
   const accounts = (): Promise<DomainAccount[]> => {
     chosen ??= (async () => {
-      deps.redactor.addLiteral(token, "cloudflare-token");
-      const list: DomainAccount[] =
-        given?.accounts !== undefined
-          ? await given.accounts()
-          : await new CloudflareClient({ token, fetch: deps.fetch, version: deps.version })
-              .listAccounts()
-              .then((found) => found.map((a) => ({ id: a.id, name: a.name })));
+      const list = await listAccounts(deps, given, token);
       if (list.length < 2) return list;
       const id = await chooseAccount(ctx, list);
       return list.filter((a) => a.id === id);
@@ -536,26 +523,26 @@ export function pathArg(value: string): string {
   return shellArg(value.replaceAll("\\", "/"));
 }
 
-/** Lower-case domain without a trailing dot, for the commands OpsCrew suggests. */
-function shownDomain(input: string): string {
-  return input.trim().toLowerCase().replace(/\.$/, "");
-}
-
-/** Hint for a typed-domain request refused without a prompt: the exact command to run. */
-function refusalHint(
-  handler: DomainApprovalHandler,
+/**
+ * `error` with the exact command of this run (its flags included) as the next step when the
+ * typed-domain handler refused a request without a prompt, so copying the command approves the
+ * same request; any other error as it is.
+ */
+function withScriptedHint(
+  error: unknown,
+  handler: DomainApprovalHandler | undefined,
   command: (refused: ApprovalRequest, phrase: string) => string,
-): (error: unknown) => string | undefined {
-  return (error) => {
-    const refused = handler.refused;
-    if (refused === undefined || !isUserFacingError(error) || error.code !== "APPROVAL_REFUSED") {
-      return undefined;
-    }
-    const run = `\`${command(refused.request, refused.phrase)}\``;
-    return refused.why === "confirm-mismatch"
+): unknown {
+  const refused = handler?.refused;
+  if (refused === undefined || !isUserFacingError(error) || error.code !== "APPROVAL_REFUSED") {
+    return error;
+  }
+  const run = `\`${command(refused.request, refused.phrase)}\``;
+  const hint =
+    refused.why === "confirm-mismatch"
       ? `--confirm does not match ${refused.phrase}. To approve it, run ${run}.`
       : `This run is not interactive, so OpsCrew needs the domain typed again: run ${run}, or run the command in a terminal.`;
-  };
+  return new OpsCrewError(error.code as ErrorCode, error.message, { hint, cause: error });
 }
 
 /**
@@ -571,8 +558,7 @@ export function register(program: Command, ctx: CliContext): void {
     .command("domain")
     .description(
       "Find, buy, connect and manage a domain (Cloudflare, Porkbun, Namecheap or GoDaddy) with its DNS on Cloudflare",
-    )
-    .exitOverride(usageErrorsExit2);
+    );
 
   domain
     .command("search")
@@ -590,29 +576,26 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option("--account <id or name>", ACCOUNT_DESCRIPTION)
     .option("--json", "Print the results as JSON")
-    .exitOverride(usageErrorsExit2)
     .action(async (name: string, flags: SearchFlags) => {
       const json = flags.json === true;
       const compare = flags.compare === true;
-      let registrar: RegistrarId | undefined;
-      const result = await runPhaseCommand(ctx, async () => {
-        registrar = registrarFlag(flags.registrar);
-        const deps = createPhaseDeps(ctx, {
-          ai: false,
-          ...(json ? { reporter: quietReporter(ctx) } : {}),
-        });
-        const chosen = await servicesFor(
-          ctx,
-          deps,
-          flags.account?.trim() || undefined,
-          usesCloudflare(registrar),
-        );
-        return searchDomains(deps, {
-          query: name,
-          ...(registrar === undefined ? {} : { registrar }),
-          ...(compare ? { compare: true } : {}),
-          ...chosen,
-        });
+      const registrar = registrarFlag(flags.registrar);
+      // Progress is dropped for `--json` so stdout holds only the JSON; problems go to stderr.
+      const deps = createPhaseDeps(ctx, {
+        ai: false,
+        ...(json ? { reporter: quietReporter(ctx.reporter) } : {}),
+      });
+      const chosen = await servicesFor(
+        ctx,
+        deps,
+        flags.account?.trim() || undefined,
+        usesCloudflare(registrar),
+      );
+      const result = await searchDomains(deps, {
+        query: name,
+        ...(registrar === undefined ? {} : { registrar }),
+        ...(compare ? { compare: true } : {}),
+        ...chosen,
       });
       if (json) {
         ctx.stdout(`${JSON.stringify(result, null, 2)}\n`);
@@ -672,16 +655,17 @@ export function register(program: Command, ctx: CliContext): void {
       "--yes",
       "In a run without a terminal, approve updating the project files (never a purchase or a domain setting)",
     )
-    .exitOverride(usageErrorsExit2)
     .action(async (input: string, flags: BuyFlags, command: Command) => {
-      const name = shownDomain(input);
+      const name = normalizeHostName(input);
       // --no-auto-renew only when given: for a domain already on the account, auto-renew then
       // changes only after an approval.
       const autoRenew =
         command.getOptionValueSource("autoRenew") === "cli" ? flags.autoRenew : undefined;
       const account = flags.account?.trim() || undefined;
       const forget = flags.forgetPendingPurchase === true;
-      let registrar: RegistrarId | undefined;
+      const registrar = registrarFlag(flags.registrar);
+      const maxPrice = flags.maxPrice === undefined ? undefined : parseMaxPriceFlag(flags.maxPrice);
+      const years = flags.years === undefined ? undefined : Number(flags.years.trim());
       let handler: DomainApprovalHandler | undefined;
       // The command that approves the refused request: forgetting the note needs only the
       // typed domain, setting up an owned domain no price, a purchase the price limit too.
@@ -700,41 +684,33 @@ export function register(program: Command, ctx: CliContext): void {
         }
         return parts.join(" ");
       };
-      const result = await runPhaseCommand(
-        ctx,
-        async () => {
-          registrar = registrarFlag(flags.registrar);
-          const maxPrice =
-            flags.maxPrice === undefined ? undefined : parseMaxPriceFlag(flags.maxPrice);
-          const years = flags.years === undefined ? undefined : Number(flags.years.trim());
-          const deps = createPhaseDeps(ctx, {
-            ai: false,
-            ...(flags.yes === true ? { assumeYes: true } : {}),
-            wrapApprovals: (base) => {
-              handler = new DomainApprovalHandler(base, {
-                interactive: ctx.isInteractive,
-                ...(flags.confirm === undefined ? {} : { confirm: flags.confirm }),
-                priceBound: maxPrice !== undefined,
-                prompts: promptsOf(ctx),
-                print: ctx.stdout,
-                ...clockOf(ctx),
-              });
-              return handler;
-            },
+      const deps = createPhaseDeps(ctx, {
+        ai: false,
+        ...(flags.yes === true ? { assumeYes: true } : {}),
+        wrapApprovals: (base, clock) => {
+          handler = new DomainApprovalHandler(base, {
+            interactive: ctx.isInteractive,
+            ...(flags.confirm === undefined ? {} : { confirm: flags.confirm }),
+            priceBound: maxPrice !== undefined,
+            prompts: promptsOf(ctx),
+            print: ctx.stdout,
+            clock,
           });
-          const chosen = await servicesFor(ctx, deps, account);
-          return buyDomain(deps, {
-            domain: input,
-            ...(registrar === undefined ? {} : { registrar }),
-            ...(years === undefined ? {} : { years }),
-            ...(autoRenew === undefined ? {} : { autoRenew }),
-            ...(maxPrice === undefined ? {} : { maxPrice }),
-            ...(forget ? { forgetPendingPurchase: true } : {}),
-            ...chosen,
-          });
+          return handler;
         },
-        (error) => (handler === undefined ? undefined : refusalHint(handler, scripted)(error)),
-      );
+      });
+      const chosen = await servicesFor(ctx, deps, account);
+      const result = await buyDomain(deps, {
+        domain: input,
+        ...(registrar === undefined ? {} : { registrar }),
+        ...(years === undefined ? {} : { years }),
+        ...(autoRenew === undefined ? {} : { autoRenew }),
+        ...(maxPrice === undefined ? {} : { maxPrice }),
+        ...(forget ? { forgetPendingPurchase: true } : {}),
+        ...chosen,
+      }).catch((error: unknown) => {
+        throw withScriptedHint(error, handler, scripted);
+      });
       const details = renderBuyResult(result);
       if (details !== "") ctx.stdout(`${details}\n`);
       printNextSteps(ctx, result.next);
@@ -764,13 +740,12 @@ export function register(program: Command, ctx: CliContext): void {
       "In a run without a terminal, approve updating the project files (never a DNS, nameserver or DNSSEC change)",
     )
     .option("--json", "Print the result as JSON")
-    .exitOverride(usageErrorsExit2)
     .action(async (input: string, flags: ConnectFlags) => {
-      const name = shownDomain(input);
+      const name = normalizeHostName(input);
       const json = flags.json === true;
       const account = flags.account?.trim() || undefined;
       const recordsFile = flags.recordsFile?.trim() || undefined;
-      let registrar: RegistrarId | undefined;
+      const registrar = registrarFlag(flags.registrar);
       let handler: DomainApprovalHandler | undefined;
       // `opscrew domain connect <domain>` with the flags of this run that change what it does.
       const again = () =>
@@ -782,43 +757,31 @@ export function register(program: Command, ctx: CliContext): void {
         ].join(" ");
       const scripted = (_refused: ApprovalRequest, phrase: string) =>
         `${again()} --confirm ${phrase}`;
-      const result = await runPhaseCommand(ctx, async () => {
-        try {
-          registrar = registrarFlag(flags.registrar);
-          const deps = createPhaseDeps(ctx, {
-            ai: false,
-            ...(json ? { reporter: quietReporter(ctx) } : {}),
-            ...(flags.yes === true ? { assumeYes: true } : {}),
-            wrapApprovals: (base) => {
-              handler = new DomainApprovalHandler(base, {
-                interactive: ctx.isInteractive,
-                ...(flags.confirm === undefined ? {} : { confirm: flags.confirm }),
-                priceBound: false,
-                prompts: promptsOf(ctx),
-                // With --json, stdout holds only the result.
-                print: json ? ctx.stderr : ctx.stdout,
-                ...clockOf(ctx),
-              });
-              return handler;
-            },
+      const deps = createPhaseDeps(ctx, {
+        ai: false,
+        ...(json ? { reporter: quietReporter(ctx.reporter) } : {}),
+        ...(flags.yes === true ? { assumeYes: true } : {}),
+        wrapApprovals: (base, clock) => {
+          handler = new DomainApprovalHandler(base, {
+            interactive: ctx.isInteractive,
+            ...(flags.confirm === undefined ? {} : { confirm: flags.confirm }),
+            priceBound: false,
+            prompts: promptsOf(ctx),
+            // With --json, stdout holds only the result.
+            print: json ? ctx.stderr : ctx.stdout,
+            clock,
           });
-          const chosen = await servicesFor(ctx, deps, account);
-          return await connectDomain(deps, {
-            domain: input,
-            ...(registrar === undefined ? {} : { registrar }),
-            ...(recordsFile === undefined ? {} : { recordsFile }),
-            ...chosen,
-          });
-        } catch (error) {
-          // A typed approval refused without a prompt: only the exact command of this run (with
-          // its --registrar, --records-file and --account) is shown, so copying it approves the
-          // same copy plan.
-          const hint = handler === undefined ? undefined : refusalHint(handler, scripted)(error);
-          if (hint !== undefined && isUserFacingError(error)) {
-            throw new OpsCrewError(error.code as ErrorCode, error.message, { hint, cause: error });
-          }
-          throw error;
-        }
+          return handler;
+        },
+      });
+      const chosen = await servicesFor(ctx, deps, account);
+      const result = await connectDomain(deps, {
+        domain: input,
+        ...(registrar === undefined ? {} : { registrar }),
+        ...(recordsFile === undefined ? {} : { recordsFile }),
+        ...chosen,
+      }).catch((error: unknown) => {
+        throw withScriptedHint(error, handler, scripted);
       });
       if (json) {
         ctx.stdout(`${JSON.stringify(result, null, 2)}\n`);
@@ -840,20 +803,17 @@ export function register(program: Command, ctx: CliContext): void {
       "--yes",
       "In a run without a terminal, approve recording the registration in opscrew/plan.yaml",
     )
-    .exitOverride(usageErrorsExit2)
     .action(async (flags: AccountFlag & { yes?: boolean }) => {
-      const result = await runPhaseCommand(ctx, async () => {
-        const registrar = registrarFlag(flags.registrar);
-        const deps = createPhaseDeps(ctx, {
-          ai: false,
-          ...(flags.yes === true ? { assumeYes: true } : {}),
-        });
-        // The agents decide whether Cloudflare is needed (the plan may name another registrar).
-        const chosen = lazyServicesFor(ctx, deps, flags.account?.trim() || undefined);
-        return domainStatus(deps, {
-          ...(registrar === undefined ? {} : { registrar }),
-          ...chosen,
-        });
+      const registrar = registrarFlag(flags.registrar);
+      const deps = createPhaseDeps(ctx, {
+        ai: false,
+        ...(flags.yes === true ? { assumeYes: true } : {}),
+      });
+      // The agents decide whether Cloudflare is needed (the plan may name another registrar).
+      const chosen = lazyServicesFor(ctx, deps, flags.account?.trim() || undefined);
+      const result = await domainStatus(deps, {
+        ...(registrar === undefined ? {} : { registrar }),
+        ...chosen,
       });
       const text = renderDomainStatus(result);
       if (text !== "") ctx.stdout(`${text}\n`);
@@ -870,10 +830,9 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option("--account <id or name>", ACCOUNT_DESCRIPTION)
     .option("--confirm <domain>", "The project's domain, to approve without a prompt (for scripts)")
-    .exitOverride(usageErrorsExit2)
     .action(async (state: "on" | "off", flags: AutoRenewFlags) => {
       const account = flags.account?.trim() || undefined;
-      let registrar: RegistrarId | undefined;
+      const registrar = registrarFlag(flags.registrar);
       let handler: DomainApprovalHandler | undefined;
       const scripted = (_refused: ApprovalRequest, phrase: string) =>
         [
@@ -882,38 +841,27 @@ export function register(program: Command, ctx: CliContext): void {
           ...(account === undefined ? [] : [`--account ${shellArg(account)}`]),
           `--confirm ${phrase}`,
         ].join(" ");
-      const result = await runPhaseCommand(
-        ctx,
-        async () => {
-          registrar = registrarFlag(flags.registrar);
-          const deps = createPhaseDeps(ctx, {
-            ai: false,
-            wrapApprovals: (base) => {
-              handler = new DomainApprovalHandler(base, {
-                interactive: ctx.isInteractive,
-                ...(flags.confirm === undefined ? {} : { confirm: flags.confirm }),
-                priceBound: false,
-                prompts: promptsOf(ctx),
-                print: ctx.stdout,
-                ...clockOf(ctx),
-              });
-              return handler;
-            },
+      const deps = createPhaseDeps(ctx, {
+        ai: false,
+        wrapApprovals: (base, clock) => {
+          handler = new DomainApprovalHandler(base, {
+            interactive: ctx.isInteractive,
+            ...(flags.confirm === undefined ? {} : { confirm: flags.confirm }),
+            priceBound: false,
+            prompts: promptsOf(ctx),
+            print: ctx.stdout,
+            clock,
           });
-          const chosen = lazyServicesFor(ctx, deps, account);
-          return setDomainAutoRenew(deps, {
-            on: state === "on",
-            ...(registrar === undefined ? {} : { registrar }),
-            ...chosen,
-          });
+          return handler;
         },
-        (error) => (handler === undefined ? undefined : refusalHint(handler, scripted)(error)),
-      );
+      });
+      const result = await setDomainAutoRenew(deps, {
+        on: state === "on",
+        ...(registrar === undefined ? {} : { registrar }),
+        ...lazyServicesFor(ctx, deps, account),
+      }).catch((error: unknown) => {
+        throw withScriptedHint(error, handler, scripted);
+      });
       printNextSteps(ctx, result.next);
     });
-}
-
-function clockOf(ctx: CliContext): { clock?: Clock } {
-  const clock = servicesOf(ctx).clock;
-  return clock === undefined ? {} : { clock };
 }

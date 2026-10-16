@@ -1,16 +1,9 @@
 import { isUserFacingError } from "@opscrew/core";
-import { CommanderError } from "commander";
 import type { CliContext } from "../context";
-import { CliExit, ERROR_EXIT_CODE, exitCodeFor } from "../exit";
-
-/** Commander `exitOverride` for deploy commands: usage errors exit 2, help and version exit 0. */
-export function usageErrorsExit2(error: CommanderError): never {
-  if (error.exitCode === 0) throw error;
-  throw new CommanderError(ERROR_EXIT_CODE, error.code, error.message);
-}
+import { CliExit, exitCodeFor, printError } from "../exit";
 
 /**
- * Runs a phase and turns any error into plain-English output (message, then the hint) and a
+ * Runs a phase and turns any error into plain-English output (see `printError`) and a
  * {@link CliExit} with the code from {@link exitCodeFor}. `extraHint` may add advice for an error.
  */
 export async function runPhaseCommand<T>(
@@ -22,20 +15,8 @@ export async function runPhaseCommand<T>(
     return await run();
   } catch (error) {
     if (error instanceof CliExit) throw error;
-    if (isUserFacingError(error)) {
-      ctx.reporter.error(error.message);
-      if (error.hint && !error.message.includes(error.hint)) ctx.stderr(`  ${error.hint}\n`);
-    } else {
-      const message = error instanceof Error ? error.message : String(error);
-      ctx.reporter.error(`Something went wrong: ${message}`);
-      if (ctx.env.OPSCREW_DEBUG === "1" && error instanceof Error && error.stack !== undefined) {
-        ctx.stderr(`${error.stack}\n`);
-      } else {
-        ctx.stderr("  Re-run with OPSCREW_DEBUG=1 to see the details.\n");
-      }
-    }
     const extra = extraHint?.(error);
-    if (extra !== undefined && extra !== "") ctx.stderr(`  ${extra}\n`);
+    printError(ctx, error, extra === undefined ? {} : { extraHint: extra });
     throw new CliExit(exitCodeFor(error));
   }
 }
@@ -75,54 +56,33 @@ export interface PlannedHash {
 }
 
 /**
- * Prints the hashes of a `--plan-only` run that made several plans (a server the user owns: the
- * infrastructure plan and the host plan), each labelled, with the exact command that applies
- * exactly these plans (one `--approve` per plan) and nothing else.
+ * Prints the hashes of a `--plan-only` run, with the exact command that applies exactly these
+ * plans (one `--approve` per plan) and nothing else: one plan's hash on its own line, several
+ * labelled (a server the user owns: the infrastructure plan and the host plan).
  */
 export function printPlanHashes(
   ctx: CliContext,
   plans: readonly PlannedHash[],
   approveCommand: string,
 ): void {
-  if (plans.length === 1 && plans[0] !== undefined) {
-    printPlanHash(ctx, plans[0].hash, approveCommand);
-    return;
-  }
+  const one = plans.length === 1 ? plans[0] : undefined;
   const width = Math.max(...plans.map((plan) => plan.label.length));
   ctx.stdout(
     [
       "",
-      "Plan hashes (SHA-256), one approval each:",
+      one === undefined ? "Plan hashes (SHA-256), one approval each:" : "Plan hash (SHA-256):",
       "",
-      ...plans.map((plan) => `    ${`${plan.label}:`.padEnd(width + 1)}  ${plan.hash}`),
+      ...(one === undefined
+        ? plans.map((plan) => `    ${`${plan.label}:`.padEnd(width + 1)}  ${plan.hash}`)
+        : [`    ${one.hash}`]),
       "",
-      "Review the plans above. To apply exactly these plans, run:",
-      "",
-      `    ${approveCommand}`,
-      "",
-      "Only saved plans with these hashes are applied; if one no longer matches, OpsCrew refuses it and you plan again.",
-      "",
-    ].join("\n"),
-  );
-}
-
-/**
- * Prints the plan hash of a `--plan-only` run on its own line, with the exact command that applies
- * that plan and nothing else.
- */
-export function printPlanHash(ctx: CliContext, planHash: string, approveCommand: string): void {
-  ctx.stdout(
-    [
-      "",
-      "Plan hash (SHA-256):",
-      "",
-      `    ${planHash}`,
-      "",
-      "Review the plan above. To apply exactly this plan, run:",
+      `Review the ${one === undefined ? "plans" : "plan"} above. To apply exactly ${one === undefined ? "these plans" : "this plan"}, run:`,
       "",
       `    ${approveCommand}`,
       "",
-      "Only the saved plan with this hash is applied; if it no longer matches, OpsCrew refuses and you plan again.",
+      one === undefined
+        ? "Only saved plans with these hashes are applied; if one no longer matches, OpsCrew refuses it and you plan again."
+        : "Only the saved plan with this hash is applied; if it no longer matches, OpsCrew refuses and you plan again.",
       "",
     ].join("\n"),
   );

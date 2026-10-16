@@ -4,6 +4,7 @@ import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
+import { type CliServices, withServices } from "../deps";
 import {
   DeployRunner,
   fakeServer,
@@ -12,7 +13,6 @@ import {
   writeProjectPlan,
 } from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
-import { type DeployServices, withDeployServices } from "../ui/deploy-services";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -25,13 +25,13 @@ function ports(open: number[] = []): TcpConnect {
   return async (_host, port) => [22, 80, 443, ...open].includes(port);
 }
 
-async function setup(plan: DeployPlan | undefined, secure: DeployServices["secure"] = {}) {
+async function setup(plan: DeployPlan | undefined, secure: CliServices["secure"] = {}) {
   project = await tempProject();
   if (plan !== undefined) {
     await writeProjectPlan(project, plan);
   }
   const ctx = projectContext(project, { services: { runner: new DeployRunner() } });
-  withDeployServices(ctx, {
+  withServices(ctx, {
     secure: { remote: fakeServer(), tcpConnect: ports(), scanners: [], offline: true, ...secure },
   });
   return { ctx, root: project.root };

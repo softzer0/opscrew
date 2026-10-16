@@ -1,17 +1,19 @@
 import { userInfo } from "node:os";
 import { confirm, isCancel, text } from "@clack/prompts";
+import { approvalRequestLines } from "@opscrew/agents";
 import type {
   ApprovalDecision,
   ApprovalHandler,
+  ApprovalKind,
   ApprovalRequest,
   Clock,
   CommandRunner,
-  Money,
 } from "@opscrew/contracts";
-import { isPlanHash, NodeCommandRunner } from "@opscrew/core";
+import { isPlanHash, NodeCommandRunner, OpsCrewError } from "@opscrew/core";
 import type { CliContext } from "./context";
 
-const systemClock: Clock = { now: () => new Date() };
+/** The real time, for every CLI run without an injected clock. */
+export const systemClock: Clock = { now: () => new Date() };
 
 /** The terminal prompts the interactive handler uses; replaced by fakes in tests. */
 export interface ApprovalPrompts {
@@ -110,35 +112,9 @@ function osUserName(): string {
   }
 }
 
-/** The text shown before asking: title, details, failed policy checks and monthly cost change. */
+/** The text shown before asking: the title, then what `approvalRequestLines` shows. */
 export function formatRequest(request: ApprovalRequest): string {
-  const lines = ["", request.title, ""];
-  if (request.details.trim() !== "") lines.push(request.details.trimEnd(), "");
-  const failures = (request.policy ?? []).filter((result) => !result.passed);
-  if (failures.length > 0) {
-    lines.push("Policy checks that did not pass:");
-    for (const f of failures) {
-      const where = f.resource === undefined ? "" : ` (${f.resource})`;
-      lines.push(`  ✗ [${f.severity}] ${f.title}${where}: ${f.message}`);
-    }
-    lines.push("");
-  }
-  if (request.costDelta !== undefined) {
-    lines.push(`Monthly cost change: ${formatMoneyDelta(request.costDelta)}`, "");
-  }
-  if (request.allowDestroy === true) {
-    lines.push("This change deletes or replaces resources.", "");
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-/** Signed amount with currency, for example `+€4.51` or `-$2.00`. */
-export function formatMoneyDelta(money: Money): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: money.currency,
-    signDisplay: "always",
-  }).format(money.amount);
+  return `${["", request.title, "", ...approvalRequestLines(request)].join("\n")}\n`;
 }
 
 export interface NonInteractiveApprovalHandlerOptions {
@@ -161,7 +137,7 @@ export interface NonInteractiveApprovalHandlerOptions {
 }
 
 /** Request kinds `--yes` may approve without a human. */
-export const ASSUME_YES_KINDS: readonly ApprovalRequest["kind"][] = [
+const ASSUME_YES_KINDS: readonly ApprovalRequest["kind"][] = [
   "repo-write",
   "github-secrets",
   "git-push",
@@ -251,25 +227,109 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
 
 /**
  * Picks the interactive handler on a TTY (it shows each plan with its hash and asks; a plan that
- * deletes something needs the name typed), otherwise the `--approve <hash>` handler.
+ * deletes something needs the name typed), otherwise the `--approve <hash>` handler, which grants
+ * exactly the plans `approveHashes` names.
  */
 export function createApprovalHandler(
   ctx: CliContext,
-  options: {
-    approvePlanHash?: string;
-    approvePlanHashes?: readonly string[];
-    assumeYes?: boolean;
-  } = {},
+  options: { approveHashes: readonly string[]; assumeYes?: boolean },
+  clock: Clock,
 ): ApprovalHandler {
   if (ctx.isInteractive) {
-    return new InteractiveApprovalHandler({ stdout: ctx.stdout, cwd: ctx.cwd });
+    return new InteractiveApprovalHandler({ stdout: ctx.stdout, cwd: ctx.cwd, clock });
   }
   return new NonInteractiveApprovalHandler({
-    ...(options.approvePlanHash === undefined ? {} : { approvePlanHash: options.approvePlanHash }),
-    ...(options.approvePlanHashes === undefined || options.approvePlanHashes.length === 0
-      ? {}
-      : { approvePlanHashes: options.approvePlanHashes }),
+    ...(options.approveHashes.length === 0 ? {} : { approvePlanHashes: options.approveHashes }),
     ...(options.assumeYes === true ? { assumeYes: true } : {}),
     approver: options.assumeYes === true ? "--yes flag" : "--approve flag",
+    clock,
   });
+}
+
+/** True when `planHash` is a plan hash and one of the `--approve` values names it (any case). */
+export function hashListed(hashes: readonly string[], planHash: string | undefined): boolean {
+  if (!isPlanHash(planHash)) return false;
+  const wanted = planHash.toLowerCase();
+  return hashes.some((hash) => hash.toLowerCase() === wanted);
+}
+
+/**
+ * Stops before anything runs when `--confirm <name>` (`given`) is not `expected` (`what`: `the
+ * app's name`); `hint` says how to run it. Nothing to check without `--confirm`.
+ */
+export function checkConfirmName(
+  given: string | undefined,
+  expected: string,
+  what: string,
+  hint: string,
+): void {
+  if (given === undefined || given.trim() === expected) return;
+  throw new OpsCrewError(
+    "APPROVAL_REFUSED",
+    `--confirm ${given} does not match ${what}, so nothing was changed.`,
+    { hint },
+  );
+}
+
+/** Which requests a {@link FlagConfirmation} answers, and what it knows of the run. */
+export interface FlagConfirmationOptions {
+  /** The kinds of the deleting requests it answers. */
+  kinds: readonly ApprovalKind[];
+  /** What those requests do, for its refusals: `a plan that deletes or replaces resources`. */
+  what: string;
+  /** The app's name, which the deleting requests ask to have typed. */
+  app: string;
+  /** `--confirm <app>` was given (and matched {@link FlagConfirmationOptions.app}). */
+  confirmed: boolean;
+  /** Every `--approve` value. */
+  hashes: readonly string[];
+  /** A person can answer the prompt that asks for the name (a terminal). */
+  interactive: boolean;
+  /** Where approved requests are shown (`ctx.stdout`, which redacts). */
+  print: (text: string) => void;
+  clock: Clock;
+}
+
+/**
+ * The typed app name for a request of `kinds` that deletes something (`allowDestroy` and the
+ * app's name as `confirmPhrase`): in a script `--confirm <app>` approves it only when one of the
+ * `--approve` values is its plan's hash; without `--confirm`, a run nobody can answer is refused
+ * with the flag to add, and in a terminal `base` asks for the name. `--yes` never approves it;
+ * every other request goes to `base`.
+ */
+export class FlagConfirmation implements ApprovalHandler {
+  constructor(
+    private readonly base: ApprovalHandler,
+    private readonly options: FlagConfirmationOptions,
+  ) {}
+
+  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    const { kinds, what, app, confirmed, hashes, interactive, print, clock } = this.options;
+    const deletion =
+      kinds.includes(request.kind) &&
+      request.allowDestroy === true &&
+      request.confirmPhrase !== undefined;
+    if (!deletion) return this.base.request(request);
+    const decide = (approved: boolean, extra: Partial<ApprovalDecision>): ApprovalDecision => ({
+      approved,
+      approver: "--approve and --confirm flags",
+      decidedAt: clock.now().toISOString(),
+      ...extra,
+    });
+    if (confirmed) {
+      if (request.confirmPhrase === app && hashListed(hashes, request.planHash)) {
+        print(`  ✓ ${request.title} (confirmed with --confirm ${app})\n`);
+        return decide(true, { confirmation: app });
+      }
+      return decide(false, {
+        reason: `--confirm ${app} approves ${what} only together with --approve and that plan's hash ${request.planHash ?? ""}`,
+      });
+    }
+    if (!interactive) {
+      return decide(false, {
+        reason: `${what} needs the app's name: add --confirm ${request.confirmPhrase} (with --approve and the plan's hash), or run the command in a terminal`,
+      });
+    }
+    return this.base.request(request);
+  }
 }

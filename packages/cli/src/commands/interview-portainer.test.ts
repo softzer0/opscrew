@@ -5,6 +5,7 @@ import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { withServices } from "../deps";
 import {
   projectContext,
   run,
@@ -12,7 +13,6 @@ import {
   type TempProject,
   tempProject,
 } from "../ui/__fixtures__/harness";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -82,7 +82,7 @@ describe("opscrew interview for an existing Portainer", () => {
     const { project: p, answers } = await setup(token);
     const ctx = projectContext(p);
     const { access, calls } = fakeAccess();
-    withDeployServices(ctx, { portainerAccess: access });
+    withServices(ctx, { portainerAccess: access });
     // Any spelling of the fingerprint works (here: hex without colons).
     const spelled = FINGERPRINT.replace(/:/g, "").replace("SHA256", "SHA256:").toLowerCase();
     expect(
@@ -116,7 +116,7 @@ describe("opscrew interview for an existing Portainer", () => {
     const { project: p, answers } = await setup(fakeSecret("generic-password", "portainer-token"));
     const ctx = projectContext(p);
     const { access, calls } = fakeAccess();
-    withDeployServices(ctx, { portainerAccess: access });
+    withServices(ctx, { portainerAccess: access });
     expect(await run(ctx, "interview", "--answers", answers)).not.toBe(0);
     expect(calls.listed).toEqual([]);
     expect(ctx.errors).toContain(FINGERPRINT);
@@ -128,7 +128,7 @@ describe("opscrew interview for an existing Portainer", () => {
     const { project: p, answers } = await setup(fakeSecret("generic-password", "portainer-token"));
     const ctx = projectContext(p);
     const { access, calls } = fakeAccess();
-    withDeployServices(ctx, { portainerAccess: access });
+    withServices(ctx, { portainerAccess: access });
     expect(
       await run(ctx, "interview", "--answers", answers, "--portainer-cert", OTHER_FINGERPRINT),
     ).not.toBe(0);
@@ -136,7 +136,7 @@ describe("opscrew interview for an existing Portainer", () => {
     expect(ctx.errors).toContain("not the");
 
     const bad = projectContext(p);
-    withDeployServices(bad, { portainerAccess: access });
+    withServices(bad, { portainerAccess: access });
     expect(await run(bad, "interview", "--answers", answers, "--portainer-cert", "abc")).toBe(2);
     expect(bad.errors).toContain("--portainer-cert expects");
   });
@@ -162,6 +162,7 @@ describe("opscrew interview for an existing Portainer", () => {
     const fake = {
       ...prompts,
       isCancel: prompts.isCancel.bind(prompts),
+      password: prompts.password.bind(prompts),
       select: async (o: { message: string; options: { value: string }[]; initialValue?: string }) =>
         answer(
           "select",
@@ -178,7 +179,7 @@ describe("opscrew interview for an existing Portainer", () => {
     };
     const ctx = projectContext(project, { interactive: true, services: { prompts: fake } });
     const { access, calls } = fakeAccess();
-    withDeployServices(ctx, { portainerAccess: access });
+    withServices(ctx, { portainerAccess: access });
     expect(await run(ctx, "interview"), ctx.errors).toBe(0);
 
     const messages = asked.map((item) => item.message);
@@ -208,7 +209,7 @@ describe("opscrew interview for an existing Portainer", () => {
     const prompts = new ScriptedPrompts([false]);
     const ctx = projectContext(project, { interactive: true, services: { prompts } });
     const { access, calls } = fakeAccess();
-    withDeployServices(ctx, { portainerAccess: access });
+    withServices(ctx, { portainerAccess: access });
     expect(
       await run(ctx, "interview", "--answers", path.join(project.dir, "answers.yaml")),
     ).not.toBe(0);

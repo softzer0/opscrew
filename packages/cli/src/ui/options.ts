@@ -1,4 +1,10 @@
-import { convertMoney, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "@opscrew/agents";
+import {
+  convertMoney,
+  EXCHANGE_RATE_NOTE,
+  formatMoney,
+  isUnpriced,
+  priceLabel,
+} from "@opscrew/agents";
 import type { DesignOption, Money } from "@opscrew/plan-schema";
 import { cancelled, clackPrompts, type UiPrompts } from "./prompts";
 
@@ -39,7 +45,7 @@ export function renderOptionsTable(options: readonly DesignOption[], budget?: Mo
       const { target } = option;
       const unpriced = isUnpriced(option);
       // The user's Portainer: OpsCrew does not size the host, so its sizes are placeholders.
-      const portainer = isPortainer(option);
+      const portainer = option.target.provider === "portainer";
       let monthly = unpriced ? "no server price" : formatMoney(option.cost.monthly);
       if (!unpriced && budget !== undefined && budget.currency !== option.cost.monthly.currency) {
         monthly += ` (≈ ${formatMoney(convertMoney(option.cost.monthly, budget.currency))})`;
@@ -81,21 +87,6 @@ export function renderOptionsTable(options: readonly DesignOption[], budget?: Mo
   return `${lines.join("\n")}\n`;
 }
 
-/** True for the option on a server the user already owns, which has no price. */
-export function isOwnServer(option: DesignOption): boolean {
-  return option.target.provider === "own";
-}
-
-/** True for the option in the user's existing Portainer, which has no price and no sizes. */
-export function isPortainer(option: DesignOption): boolean {
-  return option.target.provider === "portainer";
-}
-
-/** True for an option without a server price: the user's own server or their Portainer. */
-export function isUnpriced(option: DesignOption): boolean {
-  return isOwnServer(option) || isPortainer(option);
-}
-
 /**
  * Prints the cost table and asks which option to use, starting on the recommended one. Returns the
  * chosen option id. Cancelling throws a user-facing error.
@@ -113,7 +104,7 @@ export async function chooseOption(
       isUnpriced(option)
         ? {
             value: option.id,
-            label: `${option.title}: no server price (${isPortainer(option) ? "you already run it" : "you already pay for it"})`,
+            label: `${option.title}: no server price (${option.target.provider === "portainer" ? "you already run it" : "you already pay for it"})`,
             hint: option.recommended ? RECOMMENDED_MARKER : "",
           }
         : {

@@ -9,17 +9,17 @@ import type {
   ApprovalDecision,
   ApprovalHandler,
   ApprovalRequest,
+  Clock,
   VpsProviderId,
 } from "@opscrew/contracts";
 import { isPlanHash, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { type Money, readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
-import { formatRequest } from "../approval";
+import { checkConfirmName, formatRequest, hashListed, systemClock } from "../approval";
 import type { CliContext } from "../context";
-import { createPhaseDeps, promptsOf } from "../deps";
+import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
-import { runPhaseCommand, usageErrorsExit2 } from "../ui/deploy";
-import { deployServicesOf } from "../ui/deploy-services";
+import { runPhaseCommand } from "../ui/deploy";
 import { chooseOption } from "../ui/options";
 import { printNextSteps } from "../ui/output";
 import { startQuestion } from "../ui/retarget";
@@ -54,6 +54,8 @@ export interface RetargetApprovalOptions {
   typed: () => string | undefined;
   /** Where approved requests are shown (`ctx.stdout`, which redacts). */
   print: (text: string) => void;
+  /** The run's clock (default: the real time). */
+  clock?: Clock;
 }
 
 /**
@@ -75,7 +77,7 @@ export class RetargetApprovalHandler implements ApprovalHandler {
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
     const { interactive, appName, approve, allowDowntime, typed, print } = this.options;
-    const decidedAt = new Date().toISOString();
+    const decidedAt = (this.options.clock ?? systemClock).now().toISOString();
     if (!interactive && allowDowntime === true && isMaintenanceWindowRequest(request)) {
       print(`  ✓ ${request.title} (allowed with --allow-downtime)\n`);
       return { approved: true, approver: "--allow-downtime flag", decidedAt };
@@ -86,11 +88,7 @@ export class RetargetApprovalHandler implements ApprovalHandler {
       appName !== undefined &&
       request.confirmPhrase === appName;
     if (deletion && !interactive) {
-      const named =
-        approve !== undefined &&
-        isPlanHash(approve) &&
-        isPlanHash(request.planHash) &&
-        request.planHash.toLowerCase() === approve.toLowerCase();
+      const named = approve !== undefined && hashListed([approve], request.planHash);
       if (named && typed() === appName) {
         print(`  ✓ ${request.title} (approved with --approve and --confirm)\n`);
         return {
@@ -185,7 +183,7 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
   const approve = flags.approve?.trim() || undefined;
   const mode = flags.finish ? "finish" : flags.abort ? "abort" : "run";
   const deps0 = createPhaseDeps(ctx, { ai: false });
-  const services = deployServicesOf(ctx).retarget;
+  const services = servicesOf(ctx).retarget;
   const common = {
     ...(approve !== undefined ? { approvePlanHash: approve } : {}),
     ...(flags.engine !== undefined ? { engine: flags.engine } : {}),
@@ -196,15 +194,16 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
   if (mode === "run") {
     const deps = createPhaseDeps(ctx, {
       ai: false,
-      ...(approve !== undefined ? { approvePlanHash: approve } : {}),
+      approveHashes: approve === undefined ? [] : [approve],
       ...(flags.yes === true ? { assumeYes: true } : {}),
-      wrapApprovals: (base) =>
+      wrapApprovals: (base, clock) =>
         new RetargetApprovalHandler(base, {
           interactive: ctx.isInteractive,
           ...(approve !== undefined ? { approve } : {}),
           ...(flags.allowDowntime === true ? { allowDowntime: true } : {}),
           typed: () => undefined,
           print: ctx.stdout,
+          clock,
         }),
     });
     const option = flags.option?.trim() || undefined;
@@ -248,13 +247,12 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
   const name = (await readArtifact("plan", deps0.paths.files.plan)).app.name;
   const command = `opscrew retarget --${mode}`;
   const scripted = flags.confirm !== undefined;
-  if (scripted && flags.confirm?.trim() !== name) {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      `--confirm ${flags.confirm ?? ""} does not match the app name, so nothing was changed.`,
-      { hint: `Run \`${command} --confirm ${name}\` with the app name.` },
-    );
-  }
+  checkConfirmName(
+    flags.confirm,
+    name,
+    "the app name",
+    `Run \`${command} --confirm ${name}\` with the app name.`,
+  );
   if (!scripted && !ctx.isInteractive) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
@@ -267,15 +265,16 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
   let typed = scripted ? name : undefined;
   const deps = createPhaseDeps(ctx, {
     ai: false,
-    ...(approve !== undefined ? { approvePlanHash: approve } : {}),
+    approveHashes: approve === undefined ? [] : [approve],
     ...(flags.yes === true ? { assumeYes: true } : {}),
-    wrapApprovals: (base) =>
+    wrapApprovals: (base, clock) =>
       new RetargetApprovalHandler(base, {
         interactive: ctx.isInteractive,
         appName: name,
         ...(approve !== undefined ? { approve } : {}),
         typed: () => typed,
         print: ctx.stdout,
+        clock,
       }),
   });
   const confirm = async (preview: { name: string }) => {
@@ -368,7 +367,6 @@ export function register(program: Command, ctx: CliContext): void {
         "`opscrew status` shows where a move stands.",
       ].join("\n"),
     )
-    .exitOverride(usageErrorsExit2)
     .action(async (flags: RetargetFlags) => {
       const result = await runPhaseCommand(
         ctx,

@@ -1,4 +1,5 @@
 import { type ErrorCode, isUserFacingError } from "@opscrew/core";
+import type { CliContext } from "./context";
 
 /** Thrown by a command to end the process with `exitCode` after it has printed its own output. */
 export class CliExit extends Error {
@@ -33,4 +34,31 @@ export function exitCodeFor(error: unknown): number {
   return isUserFacingError(error) && REFUSED_CODES.has(error.code as ErrorCode)
     ? REFUSED_EXIT_CODE
     : ERROR_EXIT_CODE;
+}
+
+/**
+ * Prints `error` for the user on standard error: a user-facing error's message, then its hint
+ * (once); anything else as `<unexpected>: <message>` with how to see the details. The stack
+ * follows only with `OPSCREW_DEBUG=1`, and `extraHint` (advice for this run) comes last.
+ */
+export function printError(
+  ctx: CliContext,
+  error: unknown,
+  options: { unexpected?: string; extraHint?: string } = {},
+): void {
+  const debug = ctx.env.OPSCREW_DEBUG === "1";
+  if (isUserFacingError(error)) {
+    ctx.reporter.error(error.message);
+    if (error.hint && !error.message.includes(error.hint)) ctx.stderr(`  ${error.hint}\n`);
+  } else {
+    const message = error instanceof Error ? error.message : String(error);
+    ctx.reporter.error(`${options.unexpected ?? "Something went wrong"}: ${message}`);
+    if (!debug) ctx.stderr("  Re-run with OPSCREW_DEBUG=1 to see the details.\n");
+  }
+  if (debug && error instanceof Error && error.stack !== undefined) {
+    ctx.stderr(`${error.stack}\n`);
+  }
+  if (options.extraHint !== undefined && options.extraHint !== "") {
+    ctx.stderr(`  ${options.extraHint}\n`);
+  }
 }

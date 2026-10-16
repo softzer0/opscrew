@@ -1,8 +1,8 @@
 import { PassThrough } from "node:stream";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -43,7 +43,7 @@ describe("opscrew mcp", () => {
     const stdout = new PassThrough();
     const out = messages(stdout);
     const ctx = projectContext(project);
-    withDeployServices(ctx, { mcp: { stdin, stdout } });
+    withServices(ctx, { mcp: { stdin, stdout } });
 
     const exit = run(ctx, "mcp");
     const send = (message: unknown) => stdin.write(`${JSON.stringify(message)}\n`);

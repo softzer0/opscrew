@@ -40,8 +40,7 @@ import {
   DeployPlanSchema,
   writeArtifact,
 } from "@opscrew/plan-schema";
-import type { CliServices } from "../../deps";
-import { withDeployServices } from "../deploy-services";
+import { type CliServices, withServices } from "../../deps";
 import {
   type DeployProject,
   deployProject,
@@ -743,7 +742,7 @@ export async function moveProject() {
         services: { runner, fetch, clock, ...options.services },
       },
     );
-    withDeployServices(ctx, { retarget: services });
+    withServices(ctx, { retarget: services });
     return ctx;
   };
 

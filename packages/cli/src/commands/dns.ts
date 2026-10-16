@@ -1,7 +1,6 @@
 import { runDns } from "@opscrew/agents";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
-import { usageErrorsExit2 } from "../ui/deploy";
 import {
   addHostKeyOption,
   addPlanApproveOptions,
@@ -30,7 +29,6 @@ export function register(program: Command, ctx: CliContext): void {
   addPlanApproveOptions(command);
   addHostKeyOption(command)
     .option("--yes", YES_DESCRIPTION)
-    .exitOverride(usageErrorsExit2)
     .action(({ domain, ...flags }: DnsFlags) => {
       const fqdn = domain?.trim();
       return runInfraCommand(ctx, "dns", flags, (deps, options) =>

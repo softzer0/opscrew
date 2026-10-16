@@ -1,6 +1,7 @@
 import { ensureDeployKey } from "@opscrew/agents";
 import { resolveProjectPaths } from "@opscrew/core";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import {
   type DeployProject,
   deployProject,
@@ -19,7 +20,6 @@ import {
   preparedFacts,
   recordOwnLogin,
 } from "../ui/__fixtures__/own";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -35,7 +35,7 @@ async function setup(hostKey?: string) {
   const host = new FakeHost(preparedFacts(paths.projectId));
   const ctx = projectContext(project, { services: { runner: new OwnRunner() } });
   const own = ownServices(host, await fakeHome(project));
-  withDeployServices(ctx, {
+  withServices(ctx, {
     provision: ownProvisionServices(new FakeEngine(), new FakeGitHub(), own),
   });
   return { ctx, host };

@@ -1,4 +1,5 @@
 import {
+  applyCommand,
   findSavedPlan,
   type PhaseDeps,
   type PortainerResult,
@@ -7,32 +8,25 @@ import {
   portainerEnable,
   portainerStatus,
 } from "@opscrew/agents";
-import type {
-  ApprovalDecision,
-  ApprovalHandler,
-  ApprovalRequest,
-  Reporter,
-} from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
+import { checkConfirmName, FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
+import { quietReporter } from "../reporter";
 import {
   assumeYesHint,
   collect,
   type PlannedHash,
   printPlanHashes,
   runPhaseCommand,
-  usageErrorsExit2,
 } from "../ui/deploy";
-import { deployServicesOf } from "../ui/deploy-services";
 import { printNextSteps } from "../ui/output";
 import {
   APPROVE_DESCRIPTION,
   addHostKeyOption,
   checkApproveFlags,
-  hostPlanChanges,
+  planChanges,
   YES_DESCRIPTION,
 } from "./provision";
 
@@ -67,23 +61,7 @@ function addChangeOptions(command: Command): Command {
         "terraform",
       ]),
     )
-    .option("--yes", YES_DESCRIPTION)
-    .exitOverride(usageErrorsExit2);
-}
-
-/** The command that applies what a `--plan-only` run planned (no options: the saved ones apply). */
-function approveCommand(
-  sub: "enable" | "disable",
-  hashes: readonly string[],
-  flags: ChangeFlags,
-): string {
-  return [
-    `opscrew portainer ${sub}`,
-    ...hashes.map((hash) => `--approve ${hash}`),
-    ...(flags.engine === undefined ? [] : [`--engine ${flags.engine}`]),
-    ...(flags.hostKey === undefined ? [] : [`--host-key ${flags.hostKey.trim()}`]),
-    ...(flags.yes === true ? ["--yes"] : []),
-  ].join(" ");
+    .option("--yes", YES_DESCRIPTION);
 }
 
 /** The plans of a `--plan-only` run that need approving, each labelled. */
@@ -95,62 +73,13 @@ async function plannedHashes(deps: PhaseDeps, result: PortainerResult): Promise<
   ) {
     planned.push({ label: "infrastructure (Cloudflare Tunnel and Access)", hash: result.planHash });
   }
-  if (result.hostPlanHash !== undefined && (await hostPlanChanges(deps, result.hostPlanHash))) {
+  if (result.hostPlanHash !== undefined && (await planChanges(deps, "host", result.hostPlanHash))) {
     planned.push({ label: "host plan for the server", hash: result.hostPlanHash });
   }
   if (result.dataPlanHash !== undefined) {
     planned.push({ label: "deletion of Portainer's data", hash: result.dataPlanHash });
   }
   return planned;
-}
-
-/**
- * The typed confirmation for deleting Portainer's data (a `host-apply` with `allowDestroy` that asks
- * for the app's name). With `--confirm <app>` it approves exactly that plan when its hash is also
- * one of the `--approve` values; without `--confirm`, a run nobody can answer is refused with the
- * flag to add. Every other request goes to `base`.
- */
-class DataDeletionConfirmation implements ApprovalHandler {
-  constructor(
-    private readonly base: ApprovalHandler,
-    private readonly app: string,
-    private readonly confirmed: boolean,
-    private readonly hashes: readonly string[],
-    private readonly interactive: boolean,
-    private readonly print: (text: string) => void,
-  ) {}
-
-  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
-    const deletion =
-      request.kind === "host-apply" &&
-      request.allowDestroy === true &&
-      request.confirmPhrase !== undefined;
-    if (!deletion) return this.base.request(request);
-    const decide = (approved: boolean, extra: Partial<ApprovalDecision>): ApprovalDecision => ({
-      approved,
-      approver: "--confirm flag",
-      decidedAt: new Date().toISOString(),
-      ...extra,
-    });
-    if (this.confirmed) {
-      const listed = this.hashes.some(
-        (hash) => hash.toLowerCase() === request.planHash?.toLowerCase(),
-      );
-      if (request.confirmPhrase === this.app && listed) {
-        this.print(`  ✓ ${request.title} (confirmed with --confirm ${this.app})\n`);
-        return decide(true, { confirmation: this.app });
-      }
-      return decide(false, {
-        reason: `--confirm ${this.app} approves deleting Portainer's data only together with --approve and the hash of that plan, which was not given`,
-      });
-    }
-    if (!this.interactive) {
-      return decide(false, {
-        reason: `deleting Portainer's data needs the app's name: add --confirm ${request.confirmPhrase} (with --approve and the plan's hash), or run the command in a terminal`,
-      });
-    }
-    return this.base.request(request);
-  }
 }
 
 /**
@@ -176,36 +105,34 @@ async function runChange(
       if (confirm !== undefined) {
         const paths = createPhaseDeps(ctx, { ai: false }).paths;
         app = (await readArtifact("plan", paths.files.plan)).app.name;
-        if (confirm !== app) {
-          throw new OpsCrewError(
-            "APPROVAL_REFUSED",
-            `--confirm ${confirm} does not match the app's name, so nothing was changed.`,
-            {
-              hint: `To delete Portainer's data in a script, run \`opscrew portainer disable --approve <hash> … --confirm ${app}\`.`,
-            },
-          );
-        }
+        checkConfirmName(
+          confirm,
+          app,
+          "the app's name",
+          `To delete Portainer's data in a script, run \`opscrew portainer disable --approve <hash> … --confirm ${app}\`.`,
+        );
       }
       const deps = createPhaseDeps(ctx, {
         ai: false,
-        ...(hashes.length === 0 ? {} : { approvePlanHashes: hashes }),
+        approveHashes: hashes,
         ...(flags.yes === true ? { assumeYes: true } : {}),
         ...(sub === "disable"
           ? {
-              wrapApprovals: (base: ApprovalHandler) =>
-                new DataDeletionConfirmation(
-                  base,
+              wrapApprovals: (base, clock) =>
+                new FlagConfirmation(base, {
+                  kinds: ["host-apply"],
+                  what: "deleting Portainer's data",
                   app,
-                  confirm !== undefined,
+                  confirmed: confirm !== undefined,
                   hashes,
-                  // A person can answer: a terminal, or (in tests) an attached approval handler.
-                  ctx.isInteractive || servicesOf(ctx).approvalHandler !== undefined,
-                  ctx.stdout,
-                ),
+                  interactive: ctx.isInteractive,
+                  print: ctx.stdout,
+                  clock,
+                }),
             }
           : {}),
       });
-      const services = deployServicesOf(ctx).portainer;
+      const services = servicesOf(ctx).portainer;
       const result = await run(deps, {
         ...(planOnly ? { planOnly: true } : {}),
         ...(hashes.length === 0 ? {} : { approvePlanHashes: hashes }),
@@ -223,13 +150,18 @@ async function runChange(
       ctx.stdout("\nNothing to apply: the server and Cloudflare already match.\n");
       return;
     }
+    // No change options: `--approve` applies what the `--plan-only` run saved.
     printPlanHashes(
       ctx,
       planned,
-      approveCommand(
-        sub,
+      applyCommand(
+        `portainer ${sub}`,
         planned.map((plan) => plan.hash),
-        flags,
+        {
+          ...(flags.engine === undefined ? {} : { engine: flags.engine }),
+          ...(flags.hostKey === undefined ? {} : { hostKey: flags.hostKey.trim() }),
+          ...(flags.yes === true ? { yes: true } : {}),
+        },
       ),
     );
     if (outcome.result.dataPlanHash !== undefined) {
@@ -250,17 +182,6 @@ async function runChange(
   ]);
 }
 
-/** Progress is dropped for `--json` so stdout holds only the status; problems go to stderr. */
-function quietReporter(ctx: CliContext): Reporter {
-  return {
-    step: () => {},
-    info: () => {},
-    success: () => {},
-    warn: (message) => ctx.reporter.warn(message),
-    error: (message) => ctx.reporter.error(message),
-  };
-}
-
 /**
  * `opscrew portainer enable|disable|status` (FR-914–FR-916): Portainer CE, off by default, on any
  * server OpsCrew deploys to. `enable` installs a pinned version that listens only on the server
@@ -273,8 +194,7 @@ function quietReporter(ctx: CliContext): Reporter {
 export function register(program: Command, ctx: CliContext): void {
   const portainer = program
     .command("portainer")
-    .description("Turn Portainer (a web UI for your containers) on or off, or show how to open it")
-    .exitOverride(usageErrorsExit2);
+    .description("Turn Portainer (a web UI for your containers) on or off, or show how to open it");
 
   addChangeOptions(
     portainer
@@ -330,14 +250,11 @@ export function register(program: Command, ctx: CliContext): void {
       "Show whether Portainer is on, the SSH tunnel command, the local address and where the password is (changes nothing)",
     )
     .option("--json", "Print the status as JSON")
-    .exitOverride(usageErrorsExit2)
     .action(async (flags: { json?: boolean }) => {
       const json = flags.json === true;
-      const status = await runPhaseCommand(ctx, () =>
-        portainerStatus(
-          createPhaseDeps(ctx, { ai: false, ...(json ? { reporter: quietReporter(ctx) } : {}) }),
-        ),
-      );
+      // Progress is dropped for `--json` so stdout holds only the status; problems go to stderr.
+      const reporter = json ? { reporter: quietReporter(ctx.reporter) } : {};
+      const status = await portainerStatus(createPhaseDeps(ctx, { ai: false, ...reporter }));
       if (json) ctx.stdout(`${JSON.stringify(status, null, 2)}\n`);
     });
 }

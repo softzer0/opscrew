@@ -15,6 +15,7 @@ import { FakeAgentRuntime, fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, RequirementsSchema } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { withServices } from "../../src/deps";
 import {
   DeployRunner,
   DIGITALOCEAN_CREATE,
@@ -34,7 +35,6 @@ import {
   type TempProject,
   tempProject,
 } from "../../src/ui/__fixtures__/harness";
-import { withDeployServices } from "../../src/ui/deploy-services";
 import { findLeaks, listFiles, plantedSecrets, ScriptedApprovals, snapshotFiles } from "./support";
 
 const EXAMPLE = "nextjs-postgres";
@@ -85,7 +85,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
       },
     });
     if (deploy !== undefined) {
-      withDeployServices(ctx, { provision: provisionServices(deploy.engine, deploy.github) });
+      withServices(ctx, { provision: provisionServices(deploy.engine, deploy.github) });
     }
     const code = await run(ctx, ...args);
     outputs.set(`${args.join(" ")} (stdout)`, ctx.output);

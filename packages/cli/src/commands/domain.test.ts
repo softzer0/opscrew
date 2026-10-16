@@ -1000,6 +1000,7 @@ describe("DomainApprovalHandler", () => {
     multiselect: vi.fn(),
     text: vi.fn(async () => answer as string),
     confirm: vi.fn(),
+    password: vi.fn(),
     isCancel: (value: unknown): value is symbol => value === CANCEL,
   });
   // A base handler that approves everything, as `--yes` or a careless fake would.

@@ -25,7 +25,7 @@ interface InterviewFlags {
  * Reads an answers file (YAML or JSON, keyed by question id; a previous `requirements.yaml` works
  * too). Throws a user-facing error when it cannot be read or is not a mapping.
  */
-export async function readAnswersFile(file: string): Promise<InterviewAnswers> {
+async function readAnswersFile(file: string): Promise<InterviewAnswers> {
   let text: string;
   try {
     text = await readFile(file, "utf8");

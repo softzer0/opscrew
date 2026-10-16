@@ -1,10 +1,9 @@
 import path from "node:path";
-import { isUserFacingError } from "@opscrew/core";
 import { Command, CommanderError } from "commander";
 import { description } from "../package.json";
 import { ALL_COMMANDS } from "./commands/index";
 import { type CliContext, createDefaultContext } from "./context";
-import { CliExit, ERROR_EXIT_CODE, exitCodeFor } from "./exit";
+import { CliExit, ERROR_EXIT_CODE, exitCodeFor, printError } from "./exit";
 
 /** Builds the `opscrew` program with every command registered. Errors are thrown, not exited. */
 export function createProgram(ctx: CliContext): Command {
@@ -51,21 +50,10 @@ export async function runProgram(
 }
 
 function handleError(error: unknown, ctx: CliContext): number {
-  // Commander has already printed its own message (or the help / version text); usage errors exit 2.
+  // Commander has already printed its own message (or the help / version text). Every command
+  // inherits the program's exit override, so usage errors of every command exit 2 here.
   if (error instanceof CommanderError) return error.exitCode === 0 ? 0 : ERROR_EXIT_CODE;
   if (error instanceof CliExit) return error.exitCode;
-
-  const debug = ctx.env.OPSCREW_DEBUG === "1";
-  if (isUserFacingError(error)) {
-    ctx.reporter.error(error.message);
-    if (error.hint && !error.message.includes(error.hint)) ctx.stderr(`  ${error.hint}\n`);
-  } else {
-    const message = error instanceof Error ? error.message : String(error);
-    ctx.reporter.error(`Something went wrong: ${message}`);
-    if (!debug) ctx.stderr("  Re-run with OPSCREW_DEBUG=1 to see the details.\n");
-  }
-  if (debug && error instanceof Error && error.stack !== undefined) {
-    ctx.stderr(`${error.stack}\n`);
-  }
+  printError(ctx, error);
   return exitCodeFor(error);
 }

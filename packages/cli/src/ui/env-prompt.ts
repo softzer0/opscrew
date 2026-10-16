@@ -1,13 +1,6 @@
-import { password } from "@clack/prompts";
 import type { EnvAnswer, EnvQuestion } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
 import type { UiPrompts } from "./prompts";
-
-/** Masked text prompt for secret values; returns a symbol when the user cancels. */
-export type SecretPrompt = (options: { message: string }) => Promise<string | symbol>;
-
-/** The real masked prompt, from `@clack/prompts`. */
-export const clackSecretPrompt: SecretPrompt = (options) => password(options);
 
 const USE_LOCAL = "use-local";
 const TYPE = "type";
@@ -25,13 +18,10 @@ function cancelledEnv(): OpsCrewError {
 
 /**
  * The interactive question `provision` asks for each production environment value: reuse the
- * local `.env` value (only when there is one and the user picks it), type a value (masked for
- * secrets) or leave it unset. Values are returned to the phase and never printed.
+ * local `.env` value (only when there is one and the user picks it), type a value (always masked
+ * for a secret) or leave it unset. Values are returned to the phase and never printed.
  */
-export function createEnvPrompt(
-  prompts: UiPrompts,
-  secretPrompt?: SecretPrompt,
-): (question: EnvQuestion) => Promise<EnvAnswer> {
+export function createEnvPrompt(prompts: UiPrompts): (question: EnvQuestion) => Promise<EnvAnswer> {
   return async (question) => {
     if (question.localValueAvailable) {
       const choice = await prompts.select({
@@ -55,10 +45,9 @@ export function createEnvPrompt(
     const message = question.optional
       ? `Production value for ${question.name} (optional: leave empty to keep the app's default)`
       : `Production value for ${question.name} (leave empty to skip)`;
-    const answer =
-      question.secret && secretPrompt !== undefined
-        ? await secretPrompt({ message })
-        : await prompts.text({ message });
+    const answer = question.secret
+      ? await prompts.password({ message })
+      : await prompts.text({ message });
     if (prompts.isCancel(answer)) throw cancelledEnv();
     const value = typeof answer === "string" ? answer : "";
     return value.trim() === "" ? { skip: true } : { value };

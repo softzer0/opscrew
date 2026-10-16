@@ -1,10 +1,8 @@
 import { runVerify } from "@opscrew/agents";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
-import { createPhaseDeps } from "../deps";
+import { createPhaseDeps, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
-import { runPhaseCommand, usageErrorsExit2 } from "../ui/deploy";
-import { deployServicesOf } from "../ui/deploy-services";
 import { printNextSteps } from "../ui/output";
 
 interface VerifyFlags {
@@ -29,15 +27,12 @@ export function register(program: Command, ctx: CliContext): void {
       "--url <route>",
       "Your Portainer behind your own reverse proxy: check this address (where your proxy serves the app) instead of the domain",
     )
-    .exitOverride(usageErrorsExit2)
     .action(async (flags: VerifyFlags) => {
       const url = flags.url?.trim();
-      const result = await runPhaseCommand(ctx, () =>
-        runVerify(createPhaseDeps(ctx, { ai: false }), {
-          ...deployServicesOf(ctx).verify,
-          ...(url === undefined || url === "" ? {} : { url }),
-        }),
-      );
+      const result = await runVerify(createPhaseDeps(ctx, { ai: false }), {
+        ...servicesOf(ctx).verify,
+        ...(url === undefined || url === "" ? {} : { url }),
+      });
       if (result.passed) {
         const portainer = result.plan.target.provider === "portainer";
         printNextSteps(ctx, [

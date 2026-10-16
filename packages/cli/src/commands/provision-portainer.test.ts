@@ -9,7 +9,7 @@ import {
   portainerTestPlan,
   recordPortainer,
 } from "../ui/__fixtures__/portainer";
-import { type InfraFlags, portainerProvisionOptions, runInfraCommand } from "./provision";
+import { type InfraFlags, runInfraCommand } from "./provision";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -153,13 +153,11 @@ describe("opscrew provision for the user's Portainer", () => {
   });
 
   it("refuses --public-image together with --private-image before anything runs", async () => {
-    expect(() => portainerProvisionOptions({ publicImage: true, privateImage: true })).toThrow(
-      "Use either --public-image or --private-image.",
-    );
     const p = await portainerProject();
     const ctx = projectContext(p);
     const fake = fakePortainerProvision();
     expect(await provision(ctx, { publicImage: true, privateImage: true }, fake)).toBe(2);
+    expect(ctx.errors).toContain("Use either --public-image or --private-image.");
     expect(fake.options).toEqual([]);
   });
 

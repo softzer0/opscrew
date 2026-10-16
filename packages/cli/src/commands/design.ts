@@ -1,15 +1,8 @@
-import {
-  connectOwnServer,
-  inspectOwnServer,
-  type OwnServerDesignInput,
-  type PhaseDeps,
-  runDesign,
-} from "@opscrew/agents";
+import { inspectOwnServerForDesign, type OwnServerDesignInput, runDesign } from "@opscrew/agents";
 import { type Money, type Requirements, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
-import { deployServicesOf } from "../ui/deploy-services";
 import { chooseOption } from "../ui/options";
 import { addHostKeyOption, checkApproveFlags } from "./provision";
 
@@ -19,43 +12,12 @@ interface DesignFlags {
 }
 
 /**
- * A server the user owns: connects with the login the interview recorded (the host key confirmed
- * in the terminal, or `--host-key`, and pinned), inspects it read-only and returns what design
- * needs (architecture, CPUs, memory, free disk, operating system). Design itself never connects.
- */
-export async function inspectForDesign(
-  ctx: CliContext,
-  deps: PhaseDeps,
-  hostKey: string | undefined,
-): Promise<OwnServerDesignInput> {
-  const own = deployServicesOf(ctx).provision?.own ?? {};
-  deps.reporter.step("Connecting to your server to read its size (read-only)");
-  const session = await connectOwnServer(deps, {
-    ...(hostKey === undefined ? {} : { hostKey }),
-    ...(own.remote === undefined ? {} : { remote: own.remote }),
-    ...(own.homeDir === undefined ? {} : { homeDir: own.homeDir }),
-  });
-  if (session.pinned) {
-    deps.reporter.success(`Pinned your server's SSH host key ${session.hostKey.fingerprint}.`);
-  }
-  const host = own.host;
-  const inspect =
-    host?.inspect === undefined
-      ? undefined
-      : (remote: Parameters<NonNullable<typeof host.inspect>>[0]) => {
-          const fake = host as Required<typeof host>;
-          return fake.inspect(remote);
-        };
-  const { server } = await inspectOwnServer(session, inspect === undefined ? {} : { inspect });
-  return { facts: server };
-}
-
-/**
  * `opscrew design`: prices 2–3 options on the provider chosen in the interview (live when its API
  * token is set, otherwise its dated static price table), lets the user pick one in the terminal (or takes `--option <id>`, or the
  * recommendation when no terminal is available) and writes `opscrew/plan.yaml` (FR-107). For a
- * server the user already owns it first connects and inspects the server (read-only) and offers it
- * as the one option, without a price (FR-913).
+ * server the user already owns it first connects (the host key confirmed in the terminal, or
+ * `--host-key`, and pinned) and inspects the server read-only, then offers it as the one option,
+ * without a price (FR-913).
  */
 export function register(program: Command, ctx: CliContext): void {
   const command = program
@@ -65,7 +27,6 @@ export function register(program: Command, ctx: CliContext): void {
   addHostKeyOption(command).action(async (flags: DesignFlags) => {
     checkApproveFlags("design", flags);
     const deps = createPhaseDeps(ctx, { ai: false });
-    const { catalog } = servicesOf(ctx);
     const optionId = flags.option?.trim() || undefined;
     const interactive = optionId === undefined && ctx.isInteractive;
 
@@ -74,14 +35,18 @@ export function register(program: Command, ctx: CliContext): void {
       deps.paths.files.requirements,
     ).catch(() => undefined);
     const budget: Money | undefined = interactive ? requirements?.budgetMonthly : undefined;
-    const ownServer =
-      requirements?.provider === "own" && catalog === undefined
-        ? await inspectForDesign(ctx, deps, flags.hostKey?.trim())
-        : undefined;
+    let ownServer: OwnServerDesignInput | undefined;
+    if (requirements?.provider === "own") {
+      const hostKey = flags.hostKey?.trim();
+      const own = servicesOf(ctx).provision?.own;
+      ownServer = await inspectOwnServerForDesign(deps, {
+        ...(hostKey === undefined ? {} : { hostKey }),
+        ...(own === undefined ? {} : { services: own }),
+      });
+    }
     const prompts = promptsOf(ctx);
     const result = await runDesign(deps, {
       ...(optionId === undefined ? {} : { optionId }),
-      ...(catalog === undefined ? {} : { catalog }),
       ...(ownServer === undefined ? {} : { ownServer }),
       ...(interactive
         ? {

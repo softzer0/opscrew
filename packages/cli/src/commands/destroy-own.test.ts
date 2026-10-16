@@ -4,6 +4,7 @@ import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscre
 import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import { type DeployProject, deployProject } from "../ui/__fixtures__/deploy";
 import { CANCEL, GIT, projectContext, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
 import {
@@ -16,7 +17,6 @@ import {
   preparedFacts,
   recordOwnLogin,
 } from "../ui/__fixtures__/own";
-import { withDeployServices } from "../ui/deploy-services";
 import { TypedConfirmationHandler } from "./destroy";
 
 let project: DeployProject | undefined;
@@ -73,7 +73,7 @@ async function setup(options: Options = {}) {
         ...(options.approvals === undefined ? {} : { approvalHandler: options.approvals }),
       },
     });
-    withDeployServices(ctx, { destroy: services });
+    withServices(ctx, { destroy: services });
     return ctx;
   };
   return { context, host, prompts, deletedSecrets, paths };

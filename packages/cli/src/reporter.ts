@@ -44,3 +44,17 @@ export class TerminalReporter implements Reporter {
     return this.options.redactor.redact(message);
   }
 }
+
+/**
+ * `reporter` without the progress (step, info, success), for `--json` output: stdout then holds
+ * only the JSON, while warnings and errors still reach stderr.
+ */
+export function quietReporter(reporter: Reporter): Reporter {
+  return {
+    step: () => {},
+    info: () => {},
+    success: () => {},
+    warn: (message) => reporter.warn(message),
+    error: (message) => reporter.error(message),
+  };
+}

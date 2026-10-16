@@ -7,14 +7,14 @@ import {
   runDestroy,
   savedHostPlanPurpose,
 } from "@opscrew/agents";
-import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
+import type { ApprovalDecision, ApprovalHandler, ApprovalRequest, Clock } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
+import { checkConfirmName, hashListed, systemClock } from "../approval";
 import type { CliContext } from "../context";
-import { createPhaseDeps, promptsOf } from "../deps";
-import { collect, runPhaseCommand, usageErrorsExit2 } from "../ui/deploy";
-import { deployServicesOf } from "../ui/deploy-services";
+import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
+import { collect, runPhaseCommand } from "../ui/deploy";
 import { printNextSteps } from "../ui/output";
 import { addHostKeyOption, checkApproveFlags } from "./provision";
 
@@ -67,6 +67,7 @@ export class TypedConfirmationHandler implements ApprovalHandler {
     private readonly print: (text: string) => void,
     private readonly what: string,
     private readonly undo: UndoApproval,
+    private readonly clock: Clock = systemClock,
   ) {}
 
   /**
@@ -93,12 +94,10 @@ export class TypedConfirmationHandler implements ApprovalHandler {
     const decide = (approved: boolean, extra: Partial<ApprovalDecision>): ApprovalDecision => ({
       approved,
       approver: "--confirm and --approve flags",
-      decidedAt: new Date().toISOString(),
+      decidedAt: this.clock.now().toISOString(),
       ...extra,
     });
-    const listed = this.undo.hashes.some(
-      (hash) => hash.toLowerCase() === request.planHash?.toLowerCase(),
-    );
+    const listed = hashListed(this.undo.hashes, request.planHash);
     if (request.confirmPhrase === this.name && this.typed() === this.name && listed) {
       this.print(`  ✓ ${request.title} (confirmed with --confirm ${this.name} and --approve)\n`);
       return decide(true, { confirmation: this.name });
@@ -119,7 +118,7 @@ export class TypedConfirmationHandler implements ApprovalHandler {
       return {
         approved: true,
         approver: `typed ${this.what.replace(/^the /, "").replace("'s", "")}`,
-        decidedAt: new Date().toISOString(),
+        decidedAt: this.clock.now().toISOString(),
         ...(request.confirmPhrase !== undefined ? { confirmation: this.name } : {}),
       };
     }
@@ -172,9 +171,7 @@ export function register(program: Command, ctx: CliContext): void {
       "With --undo-host and --confirm <app> in a script: apply the undo host plan with this hash (printed by an earlier run)",
       collect,
     );
-  addHostKeyOption(command)
-    .exitOverride(usageErrorsExit2)
-    .action((flags: DestroyFlags) => runDestroyCommand(ctx, flags));
+  addHostKeyOption(command).action((flags: DestroyFlags) => runDestroyCommand(ctx, flags));
 }
 
 /**
@@ -211,15 +208,12 @@ export async function runDestroyCommand(
     const portainer = provider === "portainer";
     const what = own || portainer ? "the app's name" : "the server name";
     const scripted = flags.confirm !== undefined;
-    if (scripted && flags.confirm?.trim() !== name) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `--confirm ${flags.confirm ?? ""} does not match ${what}, so nothing was changed.`,
-        {
-          hint: `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : "delete the deployment"}, run \`opscrew destroy --confirm ${name}\`.`,
-        },
-      );
-    }
+    checkConfirmName(
+      flags.confirm,
+      name,
+      what,
+      `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : "delete the deployment"}, run \`opscrew destroy --confirm ${name}\`.`,
+    );
     if (portainer && flags.undoHost === true) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -246,16 +240,21 @@ export async function runDestroyCommand(
     if (scripted) typed = name;
     const deps = createPhaseDeps(ctx, {
       ai: false,
-      ...(hashes.length === 0 ? {} : { approvePlanHashes: hashes }),
-      wrapApprovals: (base) =>
-        new TypedConfirmationHandler(base, name, () => typed, scripted, ctx.stdout, what, {
-          purposeOf: (hash) => savedHostPlanPurpose(deps0.paths, hash),
+      approveHashes: hashes,
+      wrapApprovals: (base, clock) =>
+        new TypedConfirmationHandler(
+          base,
+          name,
+          () => typed,
           scripted,
-          hashes,
-        }),
+          ctx.stdout,
+          what,
+          { purposeOf: (hash) => savedHostPlanPurpose(deps0.paths, hash), scripted, hashes },
+          clock,
+        ),
     });
     // `--approve` can grant only the undo host plan here (with `--confirm`), never the rest.
-    const services = deployServicesOf(ctx).destroy;
+    const services = servicesOf(ctx).destroy;
     return destroy(deps, {
       // default: a snapshot when data lives only on the server (database, backups on)
       snapshot: flags.snapshot === undefined ? "auto" : flags.snapshot,

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import {
   type DeployProject,
   DeployRunner,
@@ -11,7 +12,6 @@ import {
   provisionServices,
 } from "../ui/__fixtures__/deploy";
 import { GIT, projectContext, run } from "../ui/__fixtures__/harness";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -21,7 +21,7 @@ afterEach(async () => {
 
 function context(p: DeployProject, engine = new FakeEngine()) {
   const ctx = projectContext(p, { services: { runner: new DeployRunner() } });
-  withDeployServices(ctx, { provision: provisionServices(engine, new FakeGitHub()) });
+  withServices(ctx, { provision: provisionServices(engine, new FakeGitHub()) });
   return { ctx, engine };
 }
 

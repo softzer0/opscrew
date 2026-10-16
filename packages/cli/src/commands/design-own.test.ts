@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import {
   projectContext,
   run,
@@ -18,7 +19,6 @@ import {
   OwnRunner,
   ownServices,
 } from "../ui/__fixtures__/own";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -54,7 +54,7 @@ async function setup(
         ...(options.prompts === undefined ? {} : { prompts: options.prompts }),
       },
     });
-    withDeployServices(ctx, { provision: { own: ownServices(host, home) } });
+    withServices(ctx, { provision: { own: ownServices(host, home) } });
     return ctx;
   };
   const prep = context();

@@ -8,7 +8,7 @@ import {
 import { normalizeCertFingerprint } from "@opscrew/connector-portainer";
 import { OpsCrewError } from "@opscrew/core";
 import type { CliContext } from "../context";
-import { deployServicesOf } from "./deploy-services";
+import { servicesOf } from "../deps";
 import type { UiPrompts } from "./prompts";
 
 /** Help text of `--portainer-cert <fingerprint>`. */
@@ -16,7 +16,7 @@ export const PORTAINER_CERT_DESCRIPTION =
   "Your existing Portainer: trust this certificate fingerprint (SHA256:…) on the first connection, for scripts; check it first";
 
 /** How to check a certificate fingerprint before trusting it (no address in it). */
-export const CHECK_CERTIFICATE =
+const CHECK_CERTIFICATE =
   "Check it before you trust it: in your browser open Portainer, click the padlock and view the certificate's SHA-256 fingerprint, or run `openssl s_client -connect <host>:<port> </dev/null | openssl x509 -noout -fingerprint -sha256` on the Portainer host itself.";
 
 /**
@@ -43,8 +43,7 @@ export function checkPortainerCert(value: string | undefined): string | undefine
  * terminal never shows it.
  */
 export function portainerAccessFor(ctx: CliContext): PortainerAccess {
-  const base =
-    deployServicesOf(ctx).portainerAccess ?? createPortainerAccess({ redactor: ctx.redactor });
+  const base = servicesOf(ctx).portainerAccess ?? createPortainerAccess({ redactor: ctx.redactor });
   return {
     fetchCertificateFingerprint: async (url) => {
       hidePortainerAddress(ctx.redactor, url);
@@ -61,7 +60,7 @@ export function portainerAccessFor(ctx: CliContext): PortainerAccess {
  * Asks the user in the terminal to trust Portainer's certificate: shows its fingerprint (and the
  * one pinned before, when it changed) and how to check it. Declining or cancelling trusts nothing.
  */
-export function terminalCertificateConfirmation(
+function terminalCertificateConfirmation(
   ctx: CliContext,
   prompts: UiPrompts,
 ): ConfirmPortainerCertificate {

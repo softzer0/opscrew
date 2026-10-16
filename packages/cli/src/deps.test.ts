@@ -64,7 +64,7 @@ describe("createPhaseDeps", () => {
         cwd: path.join(dir, "app"),
         env: { OPSCREW_HOME: path.join(dir, "home") },
       });
-      const deps = createPhaseDeps(ctx, { approvePlanHash: "a".repeat(64) });
+      const deps = createPhaseDeps(ctx, { approveHashes: ["a".repeat(64)] });
       const record = await deps.approvals.request({
         kind: "repo-write",
         title: "Commit 2 files",

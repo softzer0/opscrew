@@ -7,10 +7,8 @@ import {
 } from "@opscrew/agents";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
-import { createPhaseDeps } from "../deps";
+import { createPhaseDeps, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
-import { runPhaseCommand, usageErrorsExit2 } from "../ui/deploy";
-import { deployServicesOf } from "../ui/deploy-services";
 import { printNextSteps } from "../ui/output";
 
 interface InitFlags {
@@ -43,21 +41,18 @@ export function register(program: Command, ctx: CliContext): void {
     .description("Check that everything OpsCrew needs is installed and configured")
     .option("--fix", "Add .opscrew/ and .terraform/ to .gitignore without asking")
     .option("--offline", "Do not verify tokens over the network (only check they are set)")
-    .exitOverride(usageErrorsExit2)
     .action(async (flags: InitFlags) => {
       const deps = createPhaseDeps(ctx, { ai: false });
-      const services = deployServicesOf(ctx).init;
-      let checks = await runPhaseCommand(ctx, () =>
-        runInitChecks(deps, {
-          ...(flags.offline === true ? { offline: true } : {}),
-          ...(services === undefined ? {} : { services }),
-        }),
-      );
+      const services = servicesOf(ctx).init;
+      let checks = await runInitChecks(deps, {
+        ...(flags.offline === true ? { offline: true } : {}),
+        ...(services === undefined ? {} : { services }),
+      });
       const gitignore = checks.find((check) => check.id === "gitignore");
       const offerGitignore = gitignore !== undefined && gitignore.status !== "pass";
       // --fix asks nothing, so the checklist can already show the result.
       if (offerGitignore && flags.fix === true) {
-        const added = await runPhaseCommand(ctx, () => ensureGitignore(deps, { fix: true }));
+        const added = await ensureGitignore(deps, { fix: true });
         if (added.length > 0) {
           const message = `added ${describeGitignoreEntries(added)} to .gitignore`;
           checks = checks.map((check) =>
@@ -68,7 +63,7 @@ export function register(program: Command, ctx: CliContext): void {
       ctx.stdout(checklist(checks));
       // Without --fix the question comes after the checklist, so the user sees why it is asked.
       if (offerGitignore && flags.fix !== true) {
-        await runPhaseCommand(ctx, () => ensureGitignore(deps));
+        await ensureGitignore(deps);
       }
       if (!initPassed(checks)) {
         printNextSteps(ctx, [

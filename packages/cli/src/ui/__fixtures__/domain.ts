@@ -26,7 +26,7 @@ import type {
 } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { withDeployServices } from "../deploy-services";
+import { withServices } from "../../deps";
 import { projectContext, ScriptedPrompts, type TempProject, tempProject } from "./harness";
 
 /** The Cloudflare token of the domain tests (generated, never a real one). */
@@ -439,7 +439,7 @@ export async function domainTestProject(): Promise<DomainTestProject> {
         },
         { interactive: options.interactive ?? false, services: { prompts, fetch: cf.fetch } },
       );
-      withDeployServices(ctx, { domain: cf.services() });
+      withServices(ctx, { domain: cf.services() });
       return Object.assign(ctx, { prompts });
     },
     async writePurchaseRecord(record) {

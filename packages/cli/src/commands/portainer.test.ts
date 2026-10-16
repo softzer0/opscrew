@@ -5,6 +5,7 @@ import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscre
 import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import {
   type DeployProject,
   deployProject,
@@ -23,7 +24,6 @@ import {
   preparedFacts,
   recordOwnLogin,
 } from "../ui/__fixtures__/own";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -66,14 +66,16 @@ async function setup(options: { enabled?: boolean } = {}) {
   const host = new FakeHost(facts);
   const own = ownServices(host, await fakeHome(project));
   const services = ownProvisionServices(new FakeEngine(), new FakeGitHub(), own);
+  // A person answering (`approvals`) sits at a terminal.
   const context = (approvals?: ApprovalHandler) => {
     const ctx = projectContext(project as DeployProject, {
+      interactive: approvals !== undefined,
       services: {
         runner: new OwnRunner(),
         ...(approvals === undefined ? {} : { approvalHandler: approvals }),
       },
     });
-    withDeployServices(ctx, { portainer: services });
+    withServices(ctx, { portainer: services });
     return ctx;
   };
   return { context, host, paths };

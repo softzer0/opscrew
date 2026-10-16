@@ -5,7 +5,7 @@ import {
   type ServerAddress,
   serverAddress,
 } from "@opscrew/agents";
-import { isUserFacingError, OpsCrewError, ProjectStateStore } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
@@ -79,7 +79,7 @@ export function register(program: Command, ctx: CliContext): void {
         ctx.stdout(`${address.ipv4}\n`);
         return;
       }
-      const state = await new ProjectStateStore(paths.files.state).read();
+      const state = await deps.state.read();
       const move = plan === undefined ? undefined : retargetStatusLine(plan);
       const moveLines = move === undefined ? [] : ["", "Move in progress:", move];
       const serverLines = await addressLines(deps, plan);

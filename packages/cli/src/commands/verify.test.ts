@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import {
   CF_V4,
   CF_V6,
@@ -14,7 +15,6 @@ import {
   writeProjectPlan,
 } from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -28,7 +28,7 @@ async function setup(plan: DeployPlan, options: { healthStatus?: number } = {}) 
   const ctx = projectContext(project, {
     services: { runner: new DeployRunner(), fetch: fakeSite(options) },
   });
-  withDeployServices(ctx, {
+  withServices(ctx, {
     verify: {
       resolver: {
         resolve4: async () => [CLOUDFLARE_IPV4],

@@ -6,6 +6,7 @@ import { resolveProjectPaths } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import {
   type DeployProject,
   DeployRunner,
@@ -14,7 +15,6 @@ import {
 } from "../ui/__fixtures__/deploy";
 import { DestroyEngine, destroyServices } from "../ui/__fixtures__/destroy";
 import { CANCEL, GIT, projectContext, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -58,7 +58,7 @@ async function setup(options: { interactive?: boolean; typed?: unknown } = {}) {
   );
   const engine = new DestroyEngine();
   const fakes = destroyServices(engine);
-  withDeployServices(ctx, { destroy: fakes.services });
+  withServices(ctx, { destroy: fakes.services });
   return { ctx, engine, fakes, approvals, prompts, paths };
 }
 

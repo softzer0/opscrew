@@ -105,6 +105,7 @@ describe("opscrew interview", () => {
     const fake = {
       ...prompts,
       isCancel: prompts.isCancel.bind(prompts),
+      password: prompts.password.bind(prompts),
       select: async (o: { message: string; options: { value: string }[]; initialValue?: string }) =>
         answer(o.message, o.initialValue ?? o.options[0]?.value) as string,
       multiselect: async (o: { message: string; initialValues?: string[] }) =>

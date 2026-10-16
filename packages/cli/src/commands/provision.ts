@@ -1,22 +1,23 @@
-import { readFile } from "node:fs/promises";
 import {
+  applyCommand,
   findSavedPlan,
   HOST_KEY_FINGERPRINT,
-  hostPlanFile,
   type PhaseDeps,
   type ProvisionOptions,
   type ProvisionResult,
+  portainerImageOptions,
   REGISTRY_TOKEN_VAR,
+  REPLACEABLE_TOKENS,
   REPOSITORY_TOKEN_VAR,
+  type ReplaceableToken,
+  readSavedPlanChanges,
   runProvision,
-  stackPlanFile,
+  type SavedPlanKind,
 } from "@opscrew/agents";
-import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { type Command, InvalidArgumentError, Option } from "commander";
-import { z } from "zod";
-import { APPROVE_BY_HASH_KINDS } from "../approval";
+import { APPROVE_BY_HASH_KINDS, checkConfirmName, FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import {
@@ -25,10 +26,8 @@ import {
   type PlannedHash,
   printPlanHashes,
   runPhaseCommand,
-  usageErrorsExit2,
 } from "../ui/deploy";
-import { deployServicesOf } from "../ui/deploy-services";
-import { clackSecretPrompt, createEnvPrompt } from "../ui/env-prompt";
+import { createEnvPrompt } from "../ui/env-prompt";
 import { printNextSteps } from "../ui/output";
 
 /** Flags shared by `provision` and `dns`. */
@@ -54,11 +53,6 @@ export interface InfraFlags {
   replaceToken?: ReplaceableToken[];
 }
 
-/** The tokens the user's Portainer keeps that `--replace-token` sends again. */
-export const REPLACEABLE_TOKENS = ["repository", "registry"] as const;
-/** One value of `--replace-token`. */
-export type ReplaceableToken = (typeof REPLACEABLE_TOKENS)[number];
-
 /** Commander parser of the repeatable `--replace-token repository|registry`. */
 function collectToken(value: string, previous: ReplaceableToken[] | undefined): ReplaceableToken[] {
   const token = value.trim().toLowerCase();
@@ -72,31 +66,17 @@ function collectToken(value: string, previous: ReplaceableToken[] | undefined): 
 }
 
 /**
- * The Portainer options of `provision` from its flags: `publicImage` (true with `--public-image`,
- * false with `--private-image`, absent otherwise so the remembered choice applies) and
- * `replaceTokens`. Both image flags together are refused.
+ * `--public-image` (true) or `--private-image` (false), absent when neither was given so the
+ * remembered choice applies. Both together are refused.
  */
-export function portainerProvisionOptions(
-  flags: Pick<InfraFlags, "publicImage" | "privateImage" | "replaceToken">,
-): Pick<ProvisionOptions, "publicImage" | "replaceTokens"> {
+function imageChoice(flags: Pick<InfraFlags, "publicImage" | "privateImage">): boolean | undefined {
   if (flags.publicImage === true && flags.privateImage === true) {
     throw new OpsCrewError("INVALID_INPUT", "Use either --public-image or --private-image.", {
       hint: "--public-image says the app's image on GitHub Container Registry is public (Portainer pulls it without a registry entry); --private-image switches back to a registry entry with a read-only token.",
     });
   }
-  const tokens = flags.replaceToken ?? [];
-  return {
-    ...(flags.publicImage === true ? { publicImage: true } : {}),
-    ...(flags.privateImage === true ? { publicImage: false } : {}),
-    ...(tokens.length === 0
-      ? {}
-      : {
-          replaceTokens: {
-            ...(tokens.includes("repository") ? { repository: true } : {}),
-            ...(tokens.includes("registry") ? { registry: true } : {}),
-          },
-        }),
-  };
+  if (flags.publicImage === true) return true;
+  return flags.privateImage === true ? false : undefined;
 }
 
 /** Help text of `--yes` for the commands that write files, secrets and pull requests. */
@@ -107,10 +87,6 @@ export const YES_DESCRIPTION =
 export const APPROVE_DESCRIPTION =
   "Apply exactly the saved plan with this hash (from an earlier --plan-only run); give it once per plan (on your own server: the infrastructure plan and the host plan; in your Portainer: the infrastructure plan and the stack plan)";
 
-/** Help text of `--host-key <fingerprint>`. */
-export const HOST_KEY_DESCRIPTION =
-  "Your own server: trust this SSH host key fingerprint (SHA256:…) on the first connection, for scripts; check it on the server first";
-
 /** Adds `--plan-only` and the repeatable `--approve <hash>` to `command`. */
 export function addPlanApproveOptions(command: Command): Command {
   return command
@@ -120,7 +96,10 @@ export function addPlanApproveOptions(command: Command): Command {
 
 /** Adds `--host-key <fingerprint>` (a server the user owns) to `command`. */
 export function addHostKeyOption(command: Command): Command {
-  return command.option("--host-key <fingerprint>", HOST_KEY_DESCRIPTION);
+  return command.option(
+    "--host-key <fingerprint>",
+    "Your own server: trust this SSH host key fingerprint (SHA256:…) on the first connection, for scripts; check it on the server first",
+  );
 }
 
 /**
@@ -157,153 +136,28 @@ export function checkApproveFlags(
   return hashes;
 }
 
-/** `approveHashes` for a phase from the `--approve` values. */
-export function approveOptions(hashes: readonly string[]): Pick<ProvisionOptions, "approveHashes"> {
-  return hashes.length === 0 ? {} : { approveHashes: hashes };
-}
+/** What to do about a damaged saved host or stack plan in the terminal. */
+const DAMAGED_PLAN_HINT: Record<SavedPlanKind, string> = {
+  host: "Run the command with --plan-only again to save a new host plan, then approve its hash.",
+  stack:
+    "Run `opscrew provision --plan-only` again to save a new stack plan, then approve its hash.",
+};
 
-/** The command that applies the plans a `--plan-only` run saved, with the flags that matter. */
-function approveCommand(
-  command: string,
-  hashes: readonly string[],
-  flags: InfraFlags,
-  confirm?: string,
-): string {
-  return [
-    `opscrew ${command}`,
-    ...hashes.map((hash) => `--approve ${hash}`),
-    ...(flags.engine === undefined ? [] : [`--engine ${flags.engine}`]),
-    ...(flags.hostKey === undefined ? [] : [`--host-key ${flags.hostKey.trim()}`]),
-    ...(flags.passwordLogins === undefined ? [] : [`--password-logins ${flags.passwordLogins}`]),
-    // The stack plan's hash depends on these, so the approving run repeats them.
-    ...(flags.publicImage === true ? ["--public-image"] : []),
-    ...(flags.privateImage === true ? ["--private-image"] : []),
-    ...(flags.replaceToken ?? []).map((token) => `--replace-token ${token}`),
-    ...(flags.push === false ? ["--no-push"] : []),
-    ...(flags.yes === true ? ["--yes"] : []),
-    ...(confirm === undefined ? [] : [`--confirm ${confirm}`]),
-  ].join(" ");
+/**
+ * True when the saved host or stack plan `hash` changes something (so it needs its own approval);
+ * false when no such plan was saved. A damaged one stops (see `readSavedPlanChanges`).
+ */
+export async function planChanges(
+  deps: Pick<PhaseDeps, "paths">,
+  kind: SavedPlanKind,
+  hash: string,
+): Promise<boolean> {
+  return (await readSavedPlanChanges(deps.paths, kind, hash, DAMAGED_PLAN_HINT[kind])) === true;
 }
 
 function stringOutput(outputs: Record<string, unknown>, name: string): string | undefined {
   const value = outputs[name];
   return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-const SavedHostPlanSchema = z.looseObject({
-  steps: z.array(z.looseObject({ state: z.string() })),
-});
-
-/** True when the saved host plan `hash` changes something on the server (needs an approval). */
-export async function hostPlanChanges(
-  deps: Pick<PhaseDeps, "paths">,
-  hash: string,
-): Promise<boolean> {
-  const file = hostPlanFile(deps.paths, hash);
-  let text: string;
-  try {
-    text = await readFile(file, "utf8");
-  } catch (error) {
-    // No saved host plan: nothing to approve. Any other problem must not hide a plan.
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return false;
-    throw error;
-  }
-  let parsed: z.infer<typeof SavedHostPlanSchema>;
-  try {
-    parsed = SavedHostPlanSchema.parse(JSON.parse(text));
-  } catch {
-    throw new OpsCrewError(
-      "ARTIFACT_INVALID",
-      `The saved host plan ${hash} (.opscrew/plans/host-${hash}.json) is damaged, so OpsCrew cannot tell what it changes.`,
-      {
-        hint: "Run the command with --plan-only again to save a new host plan, then approve its hash.",
-      },
-    );
-  }
-  return parsed.steps.some((step) => step.state === "change");
-}
-
-const SavedStackPlanSchema = z.looseObject({
-  changes: z.array(z.looseObject({ state: z.string() })),
-});
-
-/**
- * The user's Portainer: true when the saved stack plan `hash` (`.opscrew/plans/stack-<hash>.json`)
- * changes something in Portainer (needs an approval). A missing file means no such plan.
- */
-export async function stackPlanChanges(
-  deps: Pick<PhaseDeps, "paths">,
-  hash: string,
-): Promise<boolean> {
-  let text: string;
-  try {
-    text = await readFile(stackPlanFile(deps.paths, hash), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return false;
-    throw error;
-  }
-  let parsed: z.infer<typeof SavedStackPlanSchema>;
-  try {
-    parsed = SavedStackPlanSchema.parse(JSON.parse(text));
-  } catch {
-    throw new OpsCrewError(
-      "ARTIFACT_INVALID",
-      `The saved stack plan ${hash} (.opscrew/plans/stack-${hash}.json) is damaged, so OpsCrew cannot tell what it changes in your Portainer.`,
-      {
-        hint: "Run `opscrew provision --plan-only` again to save a new stack plan, then approve its hash.",
-      },
-    );
-  }
-  return parsed.changes.some((change) => change.state === "change");
-}
-
-/**
- * The typed confirmation for a plan that removes something (an `iac-apply` or `host-apply` that
- * asks for the app's name, for example the switch between serving an own server directly and
- * through the tunnel, which deletes the old DNS records). With `--confirm <app>` it approves
- * exactly that plan when its hash is also one of the `--approve` values; without `--confirm`, a run
- * nobody can answer is refused with the flag to add, and `--yes` never approves it. Every other
- * request (and this one in a terminal without `--confirm`, which asks for the name) goes to `base`.
- */
-export class RemovalConfirmation implements ApprovalHandler {
-  constructor(
-    private readonly base: ApprovalHandler,
-    private readonly app: string,
-    private readonly confirmed: boolean,
-    private readonly hashes: readonly string[],
-    private readonly interactive: boolean,
-    private readonly print: (text: string) => void,
-  ) {}
-
-  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
-    const removal =
-      APPROVE_BY_HASH_KINDS.includes(request.kind) && request.confirmPhrase !== undefined;
-    if (!removal) return this.base.request(request);
-    const decide = (approved: boolean, extra: Partial<ApprovalDecision>): ApprovalDecision => ({
-      approved,
-      approver: "--approve and --confirm flags",
-      decidedAt: new Date().toISOString(),
-      ...extra,
-    });
-    if (this.confirmed) {
-      const wanted = request.planHash?.toLowerCase();
-      const listed =
-        isPlanHash(request.planHash) && this.hashes.some((hash) => hash.toLowerCase() === wanted);
-      if (request.confirmPhrase === this.app && listed) {
-        this.print(`  ✓ ${request.title} (confirmed with --confirm ${this.app})\n`);
-        return decide(true, { confirmation: this.app });
-      }
-      return decide(false, {
-        reason: `--confirm ${this.app} approves a plan that deletes or replaces resources only together with --approve and that plan's hash ${request.planHash ?? ""}`,
-      });
-    }
-    if (!this.interactive) {
-      return decide(false, {
-        reason: `this plan deletes or replaces resources, which needs the app's name: add --confirm ${request.confirmPhrase} (with --approve and the plan's hash), or run the command in a terminal`,
-      });
-    }
-    return this.base.request(request);
-  }
 }
 
 /**
@@ -327,7 +181,7 @@ export async function runInfraCommand(
     ctx,
     async () => {
       const hashes = checkApproveFlags(command, flags);
-      const portainerOptions = portainerProvisionOptions(flags);
+      const publicImage = imageChoice(flags);
       const hostKey = flags.hostKey?.trim();
       const confirm = flags.confirm?.trim();
       // `--confirm` exists on `provision` only; without a plan the phase explains what to run.
@@ -340,48 +194,46 @@ export async function runInfraCommand(
                 return undefined;
               })
           : undefined;
-      if (confirm !== undefined && confirm !== app) {
-        wrongName = true;
-        throw new OpsCrewError(
-          "APPROVAL_REFUSED",
-          `--confirm ${confirm} does not match the app's name, so nothing was changed.`,
-          {
-            hint: `To apply a plan that deletes or replaces resources in a script, run \`opscrew ${command} --approve <hash> … --confirm ${app}\`.`,
-          },
+      if (app !== undefined) {
+        wrongName = confirm !== undefined && confirm !== app;
+        checkConfirmName(
+          confirm,
+          app,
+          "the app's name",
+          `To apply a plan that deletes or replaces resources in a script, run \`opscrew ${command} --approve <hash> … --confirm ${app}\`.`,
         );
       }
       const deps = createPhaseDeps(ctx, {
         ai: false,
-        ...(hashes.length === 0 ? {} : { approvePlanHashes: hashes }),
+        approveHashes: hashes,
         ...(flags.yes === true ? { assumeYes: true } : {}),
         ...(app === undefined
           ? {}
           : {
-              wrapApprovals: (base: ApprovalHandler) =>
-                new RemovalConfirmation(
-                  base,
+              wrapApprovals: (base, clock) =>
+                new FlagConfirmation(base, {
+                  kinds: APPROVE_BY_HASH_KINDS,
+                  what: "a plan that deletes or replaces resources",
                   app,
-                  confirm !== undefined,
+                  confirmed: confirm !== undefined,
                   hashes,
-                  // A person can answer: a terminal, or (in tests) an attached approval handler.
-                  ctx.isInteractive || servicesOf(ctx).approvalHandler !== undefined,
-                  ctx.stdout,
-                ),
+                  interactive: ctx.isInteractive,
+                  print: ctx.stdout,
+                  clock,
+                }),
             }),
       });
-      const prompts = promptsOf(ctx);
-      const secretPrompt = servicesOf(ctx).prompts === undefined ? clackSecretPrompt : undefined;
       const result = await run(deps, {
         ...(planOnly ? { planOnly: true } : {}),
-        ...approveOptions(hashes),
+        ...(hashes.length === 0 ? {} : { approveHashes: hashes }),
         ...(flags.engine === undefined ? {} : { engine: flags.engine }),
         ...(flags.push === false ? { push: false } : {}),
         ...(hostKey === undefined ? {} : { hostKey }),
         ...(flags.passwordLogins === undefined ? {} : { passwordLogins: flags.passwordLogins }),
-        ...portainerOptions,
+        ...portainerImageOptions(publicImage, flags.replaceToken),
         services: {
-          ...(ctx.isInteractive ? { askEnv: createEnvPrompt(prompts, secretPrompt) } : {}),
-          ...deployServicesOf(ctx).provision,
+          ...(ctx.isInteractive ? { askEnv: createEnvPrompt(promptsOf(ctx)) } : {}),
+          ...servicesOf(ctx).provision,
         },
       });
       const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
@@ -404,13 +256,13 @@ export async function runInfraCommand(
         }
         if (
           result.hostPlanHash !== undefined &&
-          (await hostPlanChanges(deps, result.hostPlanHash))
+          (await planChanges(deps, "host", result.hostPlanHash))
         ) {
           planned.push({ label: "host plan for your server", hash: result.hostPlanHash });
         }
         if (
           result.stackPlanHash !== undefined &&
-          (await stackPlanChanges(deps, result.stackPlanHash))
+          (await planChanges(deps, "stack", result.stackPlanHash))
         ) {
           planned.push({ label: "stack plan for your Portainer", hash: result.stackPlanHash });
         }
@@ -424,6 +276,7 @@ export async function runInfraCommand(
         portainer,
         plan,
         stackFollows,
+        publicImage,
         confirmApp: removes ? app : undefined,
       };
     },
@@ -436,11 +289,20 @@ export async function runInfraCommand(
       printPlanHashes(
         ctx,
         result.planned,
-        approveCommand(
+        applyCommand(
           command,
           result.planned.map((plan) => plan.hash),
-          flags,
-          result.confirmApp,
+          {
+            ...(flags.engine === undefined ? {} : { engine: flags.engine }),
+            ...(flags.hostKey === undefined ? {} : { hostKey: flags.hostKey.trim() }),
+            ...(flags.passwordLogins === undefined ? {} : { passwordLogins: flags.passwordLogins }),
+            // The stack plan's hash depends on these, so the approving run repeats them.
+            ...(result.publicImage === undefined ? {} : { publicImage: result.publicImage }),
+            ...(flags.replaceToken === undefined ? {} : { replaceTokens: flags.replaceToken }),
+            ...(flags.push === false ? { push: false } : {}),
+            ...(flags.yes === true ? { yes: true } : {}),
+            ...(result.confirmApp === undefined ? {} : { confirm: result.confirmApp }),
+          },
         ),
       );
       if (result.confirmApp !== undefined) {
@@ -455,13 +317,12 @@ export async function runInfraCommand(
       }
       return;
     }
-    ctx.stdout(
-      result.own
-        ? "\nNothing to apply: Cloudflare and your server already match the plans.\n"
-        : result.portainer
-          ? "\nNothing to apply: Cloudflare and your Portainer already match the plans.\n"
-          : "\nNothing to apply: the infrastructure already matches the plan.\n",
-    );
+    const matched = result.own
+      ? "Cloudflare and your server already match the plans"
+      : result.portainer
+        ? "Cloudflare and your Portainer already match the plans"
+        : "the infrastructure already matches the plan";
+    ctx.stdout(`\nNothing to apply: ${matched}.\n`);
     printNextSteps(ctx, [
       `run \`opscrew ${command}${flags.yes === true ? " --yes" : ""}\` to finish the remaining steps (${result.portainer ? "the deploy branch, GitHub secrets and the pull request" : "server readiness, GitHub secrets and the pull request"}).`,
     ]);
@@ -575,6 +436,5 @@ export function register(program: Command, ctx: CliContext): void {
       `Your existing Portainer: send a rotated token again, "repository" (${REPOSITORY_TOKEN_VAR}) or "registry" (${REGISTRY_TOKEN_VAR}); repeat for both`,
       collectToken,
     )
-    .exitOverride(usageErrorsExit2)
     .action((flags: InfraFlags) => runInfraCommand(ctx, "provision", flags, runProvision));
 }

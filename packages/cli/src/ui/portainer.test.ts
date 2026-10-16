@@ -1,7 +1,7 @@
 import type { PortainerAccess } from "@opscrew/agents";
 import { describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import { createTestContext } from "../test-context";
-import { withDeployServices } from "./deploy-services";
 import { portainerAccessFor } from "./portainer";
 
 const FINGERPRINT = `SHA256:${Array.from({ length: 32 }, () => "AB").join(":")}`;
@@ -19,7 +19,7 @@ function context() {
       return [];
     },
   };
-  return withDeployServices(ctx, { portainerAccess: access });
+  return withServices(ctx, { portainerAccess: access });
 }
 
 describe("portainerAccessFor", () => {

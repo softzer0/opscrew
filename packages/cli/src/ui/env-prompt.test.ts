@@ -18,16 +18,16 @@ describe("createEnvPrompt", () => {
   });
 
   it("asks secrets with the masked prompt and plain values with text; empty skips", async () => {
-    const masked: string[] = [];
-    const prompts = new ScriptedPrompts(["type", "plain-value", ""]);
-    const ask = createEnvPrompt(prompts, async ({ message }) => {
-      masked.push(message);
-      return "typed-secret";
-    });
+    const prompts = new ScriptedPrompts(["type", "typed-secret", "plain-value", ""]);
+    const ask = createEnvPrompt(prompts);
     expect(await ask(question(true))).toEqual({ value: "typed-secret" });
-    expect(masked).toEqual(["Production value for STRIPE_SECRET_KEY (leave empty to skip)"]);
+    expect(prompts.calls[1]).toEqual({
+      kind: "password",
+      message: "Production value for STRIPE_SECRET_KEY (leave empty to skip)",
+    });
     expect(await ask(question(false, false))).toEqual({ value: "plain-value" });
     expect(await ask(question(false, false))).toEqual({ skip: true });
+    expect(prompts.calls.map((call) => call.kind)).toEqual(["select", "password", "text", "text"]);
   });
 
   it("says a variable with a default in the code is optional and keeps the default on empty", async () => {

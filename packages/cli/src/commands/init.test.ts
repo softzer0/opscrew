@@ -11,6 +11,7 @@ import type {
 import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import {
   GIT,
   git,
@@ -19,7 +20,6 @@ import {
   type TempProject,
   tempProject,
 } from "../ui/__fixtures__/harness";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -63,7 +63,7 @@ async function setup(
       ...(options.approvals === undefined ? {} : { approvalHandler: options.approvals }),
     },
   });
-  withDeployServices(ctx, {
+  withServices(ctx, {
     init: {
       which: (name) =>
         tools.has(name) ? (name === "git" ? (GIT as string) : `/usr/bin/${name}`) : undefined,

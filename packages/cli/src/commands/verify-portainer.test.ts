@@ -1,5 +1,6 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import { CF_V4, CF_V6, DeployRunner, fakeSite, writeProjectPlan } from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
 import {
@@ -8,7 +9,6 @@ import {
   portainerTestPlan,
   recordPortainer,
 } from "../ui/__fixtures__/portainer";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -23,7 +23,7 @@ async function setup(plan: DeployPlan) {
   const ctx = projectContext(project, {
     services: { runner: new DeployRunner(), fetch: fakeSite() },
   });
-  withDeployServices(ctx, {
+  withServices(ctx, {
     verify: {
       resolver: {
         resolve4: async () => ["198.51.100.7"],

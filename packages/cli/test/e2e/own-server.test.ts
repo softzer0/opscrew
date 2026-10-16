@@ -16,6 +16,7 @@ import { FakeAgentRuntime } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, RequirementsSchema } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { withServices } from "../../src/deps";
 import { FakeEngine, FakeGitHub } from "../../src/ui/__fixtures__/deploy";
 import {
   EXAMPLES_DIR,
@@ -36,7 +37,6 @@ import {
   ownProvisionServices,
   ownServices,
 } from "../../src/ui/__fixtures__/own";
-import { withDeployServices } from "../../src/ui/deploy-services";
 import { findLeaks, listFiles, plantedSecrets, ScriptedApprovals, snapshotFiles } from "./support";
 
 const EXAMPLE = "nextjs-postgres";
@@ -91,7 +91,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
         ...(approvals === undefined ? {} : { approvalHandler: approvals }),
       },
     });
-    withDeployServices(ctx, {
+    withServices(ctx, {
       provision: ownProvisionServices(engine, github, ownServices(host, home)),
     });
     const code = await run(ctx, ...args);

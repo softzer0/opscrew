@@ -1,4 +1,4 @@
-import { confirm, isCancel, multiselect, select, text } from "@clack/prompts";
+import { confirm, isCancel, multiselect, password, select, text } from "@clack/prompts";
 import { OpsCrewError } from "@opscrew/core";
 
 /** One choice of a select prompt. */
@@ -31,6 +31,8 @@ export interface UiPrompts {
     validate?: (value: string | undefined) => string | undefined;
   }): Promise<string | symbol>;
   confirm(options: { message: string; initialValue?: boolean }): Promise<boolean | symbol>;
+  /** A masked text prompt for a secret value: what is typed is never shown. */
+  password(options: { message: string }): Promise<string | symbol>;
   isCancel(value: unknown): value is symbol;
 }
 
@@ -40,6 +42,7 @@ export const clackPrompts: UiPrompts = {
   multiselect: (options) => multiselect<string>(options),
   text: (options) => text(options),
   confirm: (options) => confirm(options),
+  password: (options) => password(options),
   isCancel,
 };
 

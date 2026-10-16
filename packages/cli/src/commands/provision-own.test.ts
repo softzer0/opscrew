@@ -4,6 +4,7 @@ import type { ApprovalHandler } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import {
   type DeployProject,
   deployProject,
@@ -24,7 +25,6 @@ import {
   ownServices,
   recordOwnLogin,
 } from "../ui/__fixtures__/own";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -49,7 +49,7 @@ async function context(p: DeployProject, options: Setup = {}) {
     },
   });
   const own = ownServices(host, await fakeHome(p));
-  withDeployServices(ctx, { provision: ownProvisionServices(engine, github, own) });
+  withServices(ctx, { provision: ownProvisionServices(engine, github, own) });
   return { ctx, engine, github, host };
 }
 

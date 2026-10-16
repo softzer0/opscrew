@@ -5,7 +5,7 @@ import type { PlanSummary, ResourceChange, ResourceDrift } from "@opscrew/contra
 import { resolveProjectPaths } from "@opscrew/core";
 import { renderDeployment } from "@opscrew/iac-templates";
 import { afterEach, describe, expect, it } from "vitest";
-import { createPhaseDeps } from "../deps";
+import { createPhaseDeps, withServices } from "../deps";
 import {
   type DeployProject,
   DeployRunner,
@@ -16,7 +16,6 @@ import {
   testPlan,
 } from "../ui/__fixtures__/deploy";
 import { GIT, projectContext, run } from "../ui/__fixtures__/harness";
-import { withDeployServices } from "../ui/deploy-services";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -71,7 +70,7 @@ async function setup(engine: DriftEngine) {
   await writeFile(paths.files.statePassphrase, `${"p".repeat(43)}\n`);
   // A deployed project has its deploy key; drift reads it and never creates one.
   await ensureDeployKey(paths);
-  withDeployServices(ctx, {
+  withServices(ctx, {
     provision: provisionServices(engine, new FakeGitHub(), { cloudflare: null }),
   });
   return ctx;

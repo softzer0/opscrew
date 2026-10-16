@@ -104,7 +104,7 @@ export function recordingFetch(): FetchLike & { urls: string[] } {
 
 /** One recorded prompt. */
 export interface PromptCall {
-  kind: "select" | "multiselect" | "text" | "confirm";
+  kind: "select" | "multiselect" | "text" | "confirm" | "password";
   message: string;
   options?: UiChoice[];
   initial?: unknown;
@@ -172,6 +172,10 @@ export class ScriptedPrompts implements UiPrompts {
       message: options.message,
       initial: options.initialValue,
     }) as boolean | symbol;
+  }
+
+  async password(options: { message: string }) {
+    return this.#next({ kind: "password", message: options.message }) as string | symbol;
   }
 
   isCancel(value: unknown): value is symbol {
