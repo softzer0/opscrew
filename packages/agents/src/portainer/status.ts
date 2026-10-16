@@ -1,9 +1,8 @@
-import { access } from "node:fs/promises";
 import { PORTAINER_PORT, portainerHostname } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { portainerPasswordFile } from "../provision/own";
-import { readServerAddresses } from "../shared";
+import { exists, readServerAddresses } from "../shared";
 import { readOwnServerRecord } from "../shared/own-server";
 import { PORTAINER_LOCAL_URL } from "./settings";
 
@@ -38,7 +37,7 @@ function quotePath(path: string): string {
  * computer: as the deploy user with the project's deploy key and pinned host key, on the server's
  * SSH port (`-p` only when it is not 22).
  */
-export function portainerTunnelCommand(
+function portainerTunnelCommand(
   deps: Pick<PhaseDeps, "paths">,
   server: { host: string; port: number },
 ): string {
@@ -66,10 +65,7 @@ export async function portainerStatusOf(
   plan: DeployPlan,
 ): Promise<PortainerStatus> {
   const passwordFile = portainerPasswordFile(deps.paths);
-  const passwordFileExists = await access(passwordFile).then(
-    () => true,
-    () => false,
-  );
+  const passwordFileExists = await exists(passwordFile);
   const portainer = plan.portainer?.enabled ? plan.portainer : undefined;
   if (portainer === undefined) {
     return { enabled: false, localUrl: PORTAINER_LOCAL_URL, passwordFile, passwordFileExists };

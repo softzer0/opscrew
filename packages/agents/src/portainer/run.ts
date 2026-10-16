@@ -1,17 +1,15 @@
-import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { GitClient } from "@opscrew/connector-github";
 import {
   applyHostPlan,
   type HostPlan,
-  hostPlanHash,
+  MIN_DOCKER_MAJOR,
   PORTAINER_DIR,
-  planHost,
   planPortainer,
 } from "@opscrew/connector-ssh-host";
-import type { ApprovalRecord, IacEngine, PhaseName, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
-import { type EnginePreference, selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
+import type { ApprovalRecord, RemoteExec } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
+import type { EnginePreference } from "@opscrew/iac-engine";
 import {
   portainerHostname,
   renderPortainerCompose,
@@ -24,7 +22,6 @@ import { githubCoordinates, setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import {
   applyOwnHostPlan,
-  desiredHost,
   type OwnServerRun,
   ownEngineEnv,
   portainerPasswordFile,
@@ -39,23 +36,26 @@ import {
   type OwnRenderInput,
   readRequirements,
 } from "../provision/render";
+import { currentOutputs } from "../provision/steps";
 import type { ProvisionServices } from "../provision/types";
 import { cloudflareZeroTrust, createZeroTrustOrganization } from "../provision/zero-trust";
 import {
-  describeDiff,
-  describeHostPlan,
+  approvalEntry,
+  approveAndApplyHostPlan,
+  approveAndWriteRenderedFiles,
   diffRenderedFiles,
   ensureDeployKey,
-  ensureStatePassphrase,
+  exists,
   type HostAdapterApi,
+  type HostPlanOutcome,
   hasDeployment,
   hidesServerAddress,
-  hostPlanFile,
   infrastructureOutputs,
   PlanRefusedError,
+  projectEngine,
   readServerAddresses,
   SshRemoteExec,
-  writeRenderedFiles,
+  stringOutput,
 } from "../shared";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import { oneTimePinIdentityProvider } from "./access";
@@ -159,36 +159,6 @@ async function savedInfrastructureHash(
   return undefined;
 }
 
-function stringOutput(outputs: Record<string, unknown>, name: string): string | undefined {
-  const value = outputs[name];
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-/** The engine and its environment, as provision sets them up (state encryption with OpenTofu). */
-async function engineFor(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  options: PortainerRunOptions,
-): Promise<{ engine: IacEngine; env: Record<string, string | undefined> }> {
-  const services = options.services ?? {};
-  const preference = options.engine ?? plan.infra.engine;
-  const engine = services.engine
-    ? await services.engine(preference)
-    : await selectEngine(preference, {
-        runner: deps.runner,
-        env: deps.env,
-        redactor: deps.redactor,
-        now: () => deps.clock.now(),
-      });
-  const env: Record<string, string | undefined> = { ...deps.env };
-  if (plan.infra.stateEncryption && engine.info.name === "tofu") {
-    const passphrase = await ensureStatePassphrase(deps.paths);
-    deps.redactor.addLiteral(passphrase, "state-passphrase");
-    env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
-  }
-  return { engine, env };
-}
-
 /**
  * Renders the deployment files for the changed plan (the runbook's Portainer section, and the
  * tunnel and Access modules for a subdomain) with the same inputs provision uses, plus the
@@ -225,8 +195,9 @@ async function renderChange(
   const previous = await committedTfvars(root, plan);
   const own: OwnRenderInput = input.ownRun ? { sshPort: input.ownRun.sshPort } : {};
   if (usesTunnel(plan) && cloudflare?.accountId !== undefined) {
+    const zeroTrust = input.services.zeroTrust ?? cloudflareZeroTrust(deps);
     own.createZeroTrustOrganization = await createZeroTrustOrganization({
-      api: input.services.zeroTrust ?? cloudflareZeroTrust(deps),
+      api: zeroTrust,
       accountId: cloudflare.accountId,
       zone: cloudflare.zoneName,
       previous: previous?.create_zero_trust_organization === true,
@@ -235,7 +206,7 @@ async function renderChange(
       const pin = await oneTimePinIdentityProvider({
         previous,
         accountId: cloudflare.accountId,
-        api: input.services.zeroTrust ?? cloudflareZeroTrust(deps),
+        api: zeroTrust,
       });
       if (pin !== undefined) own.oneTimePinIdentityProviderId = pin;
     }
@@ -254,160 +225,37 @@ async function renderChange(
     own,
   });
   const files = deploymentFiles(plan, ctx);
-  const written: string[] = [];
   if (!input.write) {
     // Applying a saved plan: the files its --plan-only run wrote must be what these options render.
     const diff = await diffRenderedFiles(root, files);
     if (diff.created.length + diff.changed.length > 0) throw optionsDiffer();
-  } else {
-    const diff = await diffRenderedFiles(root, files);
-    const toWrite = [...diff.created, ...diff.changed];
-    if (toWrite.length > 0) {
-      const approval = await deps.approvals.request({
-        kind: "repo-write",
-        title: `Write the deployment files for Portainer to the repository (${describeDiff(diff)})`,
-        details: [
-          ...diff.created.map((f) => `  new      ${f.path}`),
-          ...diff.changed.map((f) => `  changed  ${f.path}`),
-        ].join("\n"),
-      });
-      if (!approval.approved) {
-        throw new OpsCrewError("APPROVAL_REFUSED", "Nothing was written and nothing was changed.");
-      }
-      await writeRenderedFiles(root, toWrite);
-      written.push(...toWrite.map((f) => f.path));
-      deps.reporter.success(`Wrote ${describeDiff(diff)}.`);
-    }
+    return { plan, files, written: [] };
   }
-  return { plan, files, written };
+  const written = await approveAndWriteRenderedFiles(deps, root, files, {
+    what: "the deployment files for Portainer",
+    refused: "Nothing was written and nothing was changed.",
+  });
+  return { plan, files, written: written.map((file) => file.path) };
 }
 
 /** Records the run's approvals and applies in `opscrew/plan.yaml` (informational copies). */
 function recorded(
   deps: PhaseDeps,
   plan: DeployPlan,
-  approvals: { record: ApprovalRecord; kind: "iac-apply" | "host-apply" }[],
+  approvals: readonly ApprovalRecord[],
   applied: { iacHash?: string; any: boolean },
 ): DeployPlan {
   const now = deps.clock.now().toISOString();
   return {
     ...plan,
     updatedAt: now,
-    approvals: [
-      ...plan.approvals,
-      ...approvals.map(({ record, kind }) => ({
-        planHash: record.planHash as string,
-        approver: record.approver,
-        at: record.decidedAt,
-        kind,
-      })),
-    ],
+    approvals: [...plan.approvals, ...approvals.map(approvalEntry)],
     deployment: {
       ...plan.deployment,
       ...(applied.iacHash !== undefined ? { lastPlanHash: applied.iacHash } : {}),
       ...(applied.any ? { lastApplyAt: now } : {}),
     },
   };
-}
-
-/**
- * Saves, shows, approves (`host-apply`, by its hash) and applies a host plan of add-on steps
- * (Portainer, its tunnel connector, or the deletion of Portainer's data) through the host
- * adapter, which refuses any other plan. Secrets are read only after the approval and go only to
- * the adapter. Every step is audited by the plan's hash. With `planOnly` it stops after showing.
- */
-async function applyAddonPlan(
-  deps: PhaseDeps,
-  input: {
-    plan: HostPlan;
-    remote: RemoteExec;
-    apply: HostAdapterApi["apply"];
-    verifyLogin: () => Promise<boolean>;
-    title: string;
-    allowDestroy: boolean;
-    planOnly: boolean;
-    secrets: () => Promise<{ tunnelToken?: string; portainerPassword?: string }>;
-    command: string;
-    /** The phase the audit entries name: `portainer`, or `provision` for its connector removal. */
-    phase: Extract<PhaseName, "portainer" | "provision">;
-    /** Receives the plan's hash as soon as it is shown (for an error after it). */
-    shown?: { hostHash?: string };
-  },
-): Promise<{ hash: string; applied: boolean; approval?: ApprovalRecord }> {
-  const { plan } = input;
-  const hash = hostPlanHash(plan);
-  if (input.shown !== undefined) input.shown.hostHash = hash;
-  await writeFileAtomic(hostPlanFile(deps.paths, hash), `${JSON.stringify(plan, null, 2)}\n`);
-  const details = describeHostPlan(plan, hash);
-  deps.reporter.info(details);
-  if (input.planOnly) {
-    deps.reporter.info(`Saved the host plan (hash ${hash}); nothing on the server was changed.`);
-    return { hash, applied: false };
-  }
-  const approval = await deps.approvals.request({
-    kind: "host-apply",
-    title: input.title,
-    details,
-    planHash: hash,
-    ...(input.allowDestroy ? { allowDestroy: true, confirmPhrase: plan.app } : {}),
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
-      plan: "host plan",
-      ...(approval.reason ? { reason: approval.reason } : {}),
-      unchanged: "Nothing on the server was changed.",
-      hint: `To apply it later without prompts, run: ${input.command} --approve ${hash}`,
-    });
-  }
-  await deps.approvals.assertApprovedHostPlan(hash, { allowDestroy: input.allowDestroy });
-  const secrets = await input.secrets();
-  const changeIds = plan.steps.filter((step) => step.state === "change").map((step) => step.id);
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "host apply started",
-    phase: input.phase,
-    target: hash,
-    decision: "approved",
-    detail: `steps to change: ${changeIds.join(", ")}`,
-  });
-  let result: Awaited<ReturnType<HostAdapterApi["apply"]>>;
-  try {
-    result = await input.apply(input.remote, plan, {
-      approvedHash: hash,
-      secrets,
-      verifyLogin: input.verifyLogin,
-      ...(/^[0-9A-Za-z.+-]{1,64}$/.test(deps.version) ? { version: deps.version } : {}),
-      now: () => deps.clock.now(),
-    });
-  } catch (error) {
-    const reported = (error as { applied?: unknown } | null)?.applied;
-    await deps.audit.append({
-      kind: "remote-exec",
-      actor: "opscrew",
-      action: "host apply failed",
-      phase: input.phase,
-      target: hash,
-      decision: "refused",
-      detail: Array.isArray(reported)
-        ? `steps applied before the failure: ${reported.filter((id) => changeIds.includes(id)).join(", ") || "none"}`
-        : "the host adapter did not report which steps were applied before the failure",
-    });
-    throw error;
-  }
-  for (const id of result.applied) {
-    const step = plan.steps.find((item) => item.id === id);
-    await deps.audit.append({
-      kind: "remote-exec",
-      actor: "opscrew",
-      action: `host step ${id}`,
-      phase: input.phase,
-      target: hash,
-      decision: "approved",
-      ...(step !== undefined ? { detail: step.title } : {}),
-    });
-  }
-  return { hash, applied: result.applied.length > 0, approval };
 }
 
 /**
@@ -431,7 +279,7 @@ async function runChange(
   const subdomainInvolved =
     portainerHostname(change.before) !== undefined || portainerHostname(change.after) !== undefined;
   const tunnelInvolved = usesTunnel(change.before) || usesTunnel(change.after);
-  const approvals: { record: ApprovalRecord; kind: "iac-apply" | "host-apply" }[] = [];
+  const approvals: ApprovalRecord[] = [];
 
   const deployKey = await ensureDeployKey(deps.paths);
   deps.redactor.addLiteral(deployKey.privateKeyOpenSsh, "deploy-key");
@@ -490,44 +338,29 @@ async function runChange(
   // infrastructure plan deletes the tunnel it goes first, because Cloudflare refuses to delete a
   // tunnel whose connector still runs.
   const shown: { hostHash?: string } = {};
-  const hostChange = async (
+  const hostChange = (
     outputs: Record<string, unknown>,
     hostPlanOnly: boolean,
-  ): Promise<{ hash: string; applied: boolean; approval?: ApprovalRecord }> => {
-    if (ownRun) {
-      // The same host plan applyOwnHostPlan makes, so its hash can be named if it stops.
-      const tunnelId = usesTunnel(plan) ? stringOutput(outputs, "tunnel_id") : undefined;
-      if (!usesTunnel(plan) || tunnelId !== undefined) {
-        shown.hostHash = hostPlanHash(
-          planHost(
-            ownRun.facts,
-            desiredHost(deps, ownRun, {
-              plan,
-              deployPublicKey: deployKey.publicKeyOpenSsh,
-              ...(tunnelId !== undefined ? { tunnelId } : {}),
-            }),
-          ),
-        );
-      }
-      return applyOwnHostPlan(deps, ownRun, {
-        plan,
-        outputs,
-        deployPublicKey: deployKey.publicKeyOpenSsh,
-        planOnly: hostPlanOnly,
-        phase: "provision",
-      });
-    }
-    return cloudHostChange(deps, change, {
-      plan,
-      outputs,
-      services,
-      remote: cloudRemote as RemoteExec,
-      facts: cloudFacts,
-      planOnly: hostPlanOnly,
-      command,
-      shown,
-    });
-  };
+  ): Promise<HostChangeResult> =>
+    ownRun
+      ? ownHostChange(deps, ownRun, {
+          plan,
+          outputs,
+          deployPublicKey: deployKey.publicKeyOpenSsh,
+          planOnly: hostPlanOnly,
+          command,
+          shown,
+        })
+      : cloudHostChange(deps, change, {
+          plan,
+          outputs,
+          services,
+          remote: cloudRemote as RemoteExec,
+          facts: cloudFacts,
+          planOnly: hostPlanOnly,
+          command,
+          shown,
+        });
   /** The host change that went before the tunnel's deletion (see {@link hostChange}). */
   let early: HostChangeResult | undefined;
 
@@ -536,7 +369,10 @@ async function runChange(
   let planHash: string | undefined;
   let iacApplied = false;
   if (tunnelInvolved) {
-    const { engine: inner, env } = await engineFor(deps, plan, options);
+    const { engine: inner, env } = await projectEngine(deps, plan, {
+      ...(options.engine !== undefined ? { preference: options.engine } : {}),
+      services,
+    });
     // Applying a plan that deletes the tunnel: the server first, then the wait, then the deletion.
     const first = connectorFirst(deps, {
       command,
@@ -574,12 +410,12 @@ async function runChange(
     } catch (error) {
       // `--approve <infrastructure plan hash>` without options then applies exactly this change.
       await planned();
-      throw infrastructureStopped(deps, first.stopped(forThisCommand(error, command)), written);
+      throw infrastructureStopped(deps, first.stopped(error), written);
     }
     early = first.host;
     planHash = result.planHash;
     iacApplied = result.applied;
-    if (result.approval) approvals.push({ record: result.approval, kind: "iac-apply" });
+    if (result.approval) approvals.push(result.approval);
     const pending = (result.plan?.changes.length ?? 0) > 0 && !result.applied;
     if (planOnly && pending) {
       await planned();
@@ -601,10 +437,7 @@ async function runChange(
         status: await portainerStatusOf(deps, change.before),
       };
     }
-    outputs =
-      Object.keys(result.outputs).length > 0
-        ? result.outputs
-        : await inner.output(join(deps.paths.root, plan.infra.dir), { env }).catch(() => ({}));
+    outputs = await currentOutputs(result, inner, join(deps.paths.root, plan.infra.dir), env);
   }
 
   // The server (unless its change went first, before the tunnel's deletion).
@@ -615,9 +448,9 @@ async function runChange(
     const host = early ?? (await hostChange(outputs, planOnly));
     hostPlanHashValue = host.hash;
     hostApplied = host.applied;
-    if (host.approval) approvals.push({ record: host.approval, kind: "host-apply" });
+    if (host.approval) approvals.push(host.approval);
     if (ownRun && change.deleteData) {
-      const data = await applyAddonPlan(deps, {
+      const data = await approveAndApplyHostPlan(deps, {
         plan: planPortainer({
           app: plan.app.name,
           dir: PORTAINER_DIR,
@@ -628,15 +461,16 @@ async function runChange(
         apply: ownRun.host.apply,
         verifyLogin: ownRun.verifyLogin,
         title: `Delete Portainer's data on your server (its admin account and settings)`,
+        server: "your server",
+        command,
+        phase: "portainer",
         allowDestroy: true,
         planOnly,
         secrets: async () => ({}),
-        phase: "portainer",
-        command,
       });
       dataPlanHash = data.hash;
       hostApplied ||= data.applied;
-      if (data.approval) approvals.push({ record: data.approval, kind: "host-apply" });
+      if (data.approval) approvals.push(data.approval);
     }
   } catch (error) {
     // The server did not get the change: plan.yaml keeps the earlier settings, and only an
@@ -659,7 +493,7 @@ async function runChange(
     }
     // A host plan was shown: `--approve <its hash>` without options applies exactly this change.
     if (shown.hostHash !== undefined) await planned();
-    throw forThisCommand(error, command);
+    throw error;
   }
 
   if (planOnly) {
@@ -712,27 +546,50 @@ const CONNECTOR_GONE =
   "The change on the server is applied (its Cloudflare Tunnel connector is removed); the Cloudflare Tunnel and Access for Portainer are still there.";
 
 /**
- * A host step's error for this command: `applyOwnHostPlan` names `opscrew provision` in its hint,
- * but this change is finished by this command.
+ * A server the user owns: the host plan provision applies there, now with Portainer as the plan
+ * describes it (`applyOwnHostPlan`); `shown.hostHash` names its hash as soon as it is shown. A
+ * refusal says to approve it later with this command, which finishes the change.
  */
-function forThisCommand(error: unknown, command: string): unknown {
-  if (!(error instanceof OpsCrewError)) return error;
-  const hint = error.hint?.replace("opscrew provision --approve", `${command} --approve`);
-  if (hint === error.hint) return error;
-  return new OpsCrewError(error.code, error.message, {
-    ...(hint !== undefined ? { hint } : {}),
-    cause: error,
-  });
+async function ownHostChange(
+  deps: PhaseDeps,
+  run: OwnServerRun,
+  input: {
+    plan: DeployPlan;
+    outputs: Record<string, unknown>;
+    deployPublicKey: string;
+    planOnly: boolean;
+    command: string;
+    shown: { hostHash?: string };
+  },
+): Promise<HostPlanOutcome> {
+  try {
+    return await applyOwnHostPlan(deps, run, {
+      plan: input.plan,
+      outputs: input.outputs,
+      deployPublicKey: input.deployPublicKey,
+      planOnly: input.planOnly,
+      phase: "provision",
+      shown: (hash) => {
+        input.shown.hostHash = hash;
+      },
+    });
+  } catch (error) {
+    const hash = input.shown.hostHash;
+    if (!(error instanceof PlanRefusedError) || hash === undefined) throw error;
+    throw new PlanRefusedError(
+      {
+        ...error.refusal,
+        hint: `To apply it later without prompts, run: ${input.command} --approve ${hash}`,
+      },
+      error,
+    );
+  }
 }
-
-/** How a refusal says that nothing changed (replaced by one sentence after the files written). */
-const REFUSAL_ENDING =
-  / Nothing (?:was changed|on (?:your|the) server was changed and nothing in Cloudflare was deleted)\.$/;
 
 /**
  * The error of an infrastructure plan that was refused or failed after this run wrote repository
- * files: it lists them. A refusal changed nothing in Cloudflare or on the server; a failed apply
- * keeps the engine's own words about what happened.
+ * files: it lists them. A refusal changed nothing in Cloudflare or on the server and says so once,
+ * after the files; a failed apply keeps the engine's own words about what happened.
  */
 function infrastructureStopped(
   deps: Pick<PhaseDeps, "redactor">,
@@ -741,11 +598,14 @@ function infrastructureStopped(
 ): unknown {
   if (!(error instanceof OpsCrewError) || written.length === 0) return error;
   const files = `The repository files were written (${written.join(", ")})`;
-  // The refusal's own ending ("Nothing was changed.", or "Nothing on the server was changed and
-  // nothing in Cloudflare was deleted." when the host change went first) is said once, at the end.
+  const unchanged = `${files}; nothing in Cloudflare or on the server changed.`;
+  if (error instanceof PlanRefusedError) {
+    return new PlanRefusedError({ ...error.refusal, unchanged }, error);
+  }
+  // The infrastructure plan's own refusal ends with "Nothing was changed.", said once at the end.
   const message =
     error.code === "APPROVAL_REFUSED"
-      ? `${error.message.replace(REFUSAL_ENDING, "")} ${files}; nothing in Cloudflare or on the server changed.`
+      ? `${error.message.replace(/ Nothing was changed\.$/, "")} ${unchanged}`
       : `${error.message}\n${files}.`;
   return new OpsCrewError(error.code, deps.redactor.redact(message), {
     ...(error.hint !== undefined ? { hint: error.hint } : {}),
@@ -819,9 +679,6 @@ async function deployRemote(deps: PhaseDeps, services: PortainerServices): Promi
     })
   );
 }
-
-/** Docker Engine 28.0.0 keeps ports published on 127.0.0.1 unreachable from the local network. */
-const MIN_DOCKER_MAJOR = 28;
 
 /**
  * Read-only, before anything changes: Portainer needs Docker Engine 28 or newer on Hetzner and
@@ -911,12 +768,66 @@ async function requireDocker28(deps: PhaseDeps, remote: RemoteExec): Promise<voi
   if (Number(match[1]) < MIN_DOCKER_MAJOR) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `This server runs Docker ${deps.redactor.redact(version.slice(0, 40))}; Portainer needs Docker 28 or newer, which keeps its local-only port truly local. Nothing was changed.`,
+      `This server runs Docker ${deps.redactor.redact(version.slice(0, 40))}; Portainer needs Docker ${MIN_DOCKER_MAJOR} or newer, which keeps its local-only port truly local. Nothing was changed.`,
       {
         hint: "Upgrade Docker (OpsCrew-created servers get it from Docker's repository from now on), then run the command again.",
       },
     );
   }
+}
+
+/**
+ * Hetzner and DigitalOcean: the deploy user's add-on plan, with Portainer on (pinned to the plan's
+ * version; `needsPassword` when it has no admin account yet) or off, and the tunnel connector of
+ * its subdomain when there is one to run or remove.
+ */
+function cloudPortainerPlan(
+  plan: DeployPlan,
+  portainer: { enabled: true; needsPassword: boolean } | { enabled: false; deleteData: boolean },
+  connector?: Parameters<typeof planPortainer>[0]["connector"],
+): HostPlan {
+  return planPortainer({
+    app: plan.app.name,
+    dir: CLOUD_PORTAINER_DIR,
+    runAs: "login",
+    ...(portainer.enabled
+      ? {
+          enable: {
+            version: plan.portainer?.version ?? PORTAINER_VERSION,
+            compose: {
+              initial: renderPortainerCompose(plan, { initialAdmin: true }).content,
+              final: renderPortainerCompose(plan, { initialAdmin: false }).content,
+            },
+            needsPassword: portainer.needsPassword,
+          },
+        }
+      : { disable: { deleteData: portainer.deleteData } }),
+    ...(connector !== undefined ? { connector } : {}),
+  });
+}
+
+/** Hetzner and DigitalOcean: approves (by its hash) and applies an add-on plan as the deploy user. */
+function applyCloudAddon(
+  deps: PhaseDeps,
+  remote: RemoteExec,
+  services: PortainerServices,
+  step: Pick<
+    Parameters<typeof approveAndApplyHostPlan>[1],
+    "plan" | "title" | "command" | "phase" | "allowDestroy" | "planOnly" | "secrets"
+  > & { shown: { hostHash?: string } },
+): Promise<HostPlanOutcome> {
+  const { shown, ...rest } = step;
+  return approveAndApplyHostPlan(deps, {
+    ...rest,
+    remote,
+    apply: services.applyHost ?? applyHostPlan,
+    // Add-on steps never touch SSH or the firewall, so the adapter never needs a login check.
+    verifyLogin: async () => true,
+    server: "the server",
+    shown: (hash) => {
+      shown.hostHash = hash;
+    },
+  });
 }
 
 /**
@@ -936,21 +847,17 @@ async function cloudHostChange(
     facts: CloudFacts | undefined;
     planOnly: boolean;
     command: string;
-    shown?: { hostHash?: string };
+    shown: { hostHash?: string };
   },
-): Promise<{ hash: string; applied: boolean; approval?: ApprovalRecord }> {
-  const { plan, outputs, remote } = input;
+): Promise<HostPlanOutcome> {
+  const { plan, outputs } = input;
   const enabling = change.command === "enable";
   // With Portainer's data on the server a password is not required (an admin may exist); the
   // local one is still sent when it is here, so an admin missing after a stopped first start is made.
   const needsPassword = enabling && input.facts?.dataVolume !== true;
   if (enabling && !needsPassword) {
     const file = portainerPasswordFile(deps.paths);
-    const local = await access(file).then(
-      () => true,
-      () => false,
-    );
-    if (!local) {
+    if (!(await exists(file))) {
       deps.reporter.warn(
         `Portainer's data is already on the server, so its admin account keeps the password it was created with, and that password is not on this computer (${file}). Copy the file from the computer that turned Portainer on, or run \`opscrew portainer disable --delete-data\` and then \`opscrew portainer enable\` again for a new admin account.`,
       );
@@ -978,35 +885,21 @@ async function cloudHostChange(
   } else if (portainerHostname(change.before) !== undefined) {
     connector = { dir: CLOUD_TUNNEL_DIR, remove: true };
   }
-  const hostPlan = planPortainer({
-    app: plan.app.name,
-    dir: CLOUD_PORTAINER_DIR,
-    runAs: "login",
-    ...(enabling
-      ? {
-          enable: {
-            version: plan.portainer?.version ?? PORTAINER_VERSION,
-            compose: {
-              initial: renderPortainerCompose(plan, { initialAdmin: true }).content,
-              final: renderPortainerCompose(plan, { initialAdmin: false }).content,
-            },
-            needsPassword,
-          },
-        }
-      : { disable: { deleteData: change.deleteData } }),
-    ...(connector !== undefined ? { connector } : {}),
-  });
-  return applyAddonPlan(deps, {
-    plan: hostPlan,
-    remote,
-    apply: input.services.applyHost ?? applyHostPlan,
-    // Add-on steps never touch SSH or the firewall, so the adapter never needs a login check.
-    verifyLogin: async () => true,
+  return applyCloudAddon(deps, input.remote, input.services, {
+    plan: cloudPortainerPlan(
+      plan,
+      enabling
+        ? { enabled: true, needsPassword }
+        : { enabled: false, deleteData: change.deleteData },
+      connector,
+    ),
     title: enabling
       ? "Run Portainer on the server as the deploy user"
       : change.deleteData
         ? "Remove Portainer and delete its data on the server"
         : "Remove Portainer from the server (its data stays)",
+    command: input.command,
+    phase: "portainer",
     allowDestroy: !enabling && change.deleteData,
     planOnly: input.planOnly,
     secrets: async () => {
@@ -1019,9 +912,7 @@ async function cloudHostChange(
         ...(portainerPassword !== undefined ? { portainerPassword } : {}),
       };
     },
-    command: input.command,
-    phase: "portainer",
-    ...(input.shown !== undefined ? { shown: input.shown } : {}),
+    shown: input.shown,
   });
 }
 
@@ -1045,40 +936,22 @@ export async function cloudConnectorRemoval(
   const { plan, services } = input;
   const remote = await deployRemote(deps, services);
   const enabled = plan.portainer?.enabled === true;
-  const hostPlan = planPortainer({
-    app: plan.app.name,
-    dir: CLOUD_PORTAINER_DIR,
-    runAs: "login",
-    ...(enabled
-      ? {
-          enable: {
-            version: plan.portainer?.version ?? PORTAINER_VERSION,
-            compose: {
-              initial: renderPortainerCompose(plan, { initialAdmin: true }).content,
-              final: renderPortainerCompose(plan, { initialAdmin: false }).content,
-            },
-            // Portainer runs already: its admin account exists.
-            needsPassword: false,
-          },
-        }
-      : { disable: { deleteData: false } }),
-    connector: { dir: CLOUD_TUNNEL_DIR, remove: true },
-  });
-  return applyAddonPlan(deps, {
-    plan: hostPlan,
-    remote,
-    apply: services.applyHost ?? applyHostPlan,
-    verifyLogin: async () => true,
+  return applyCloudAddon(deps, remote, services, {
+    plan: cloudPortainerPlan(
+      plan,
+      // Portainer runs already: its admin account exists.
+      enabled ? { enabled: true, needsPassword: false } : { enabled: false, deleteData: false },
+      { dir: CLOUD_TUNNEL_DIR, remove: true },
+    ),
     title:
       "Remove the Cloudflare Tunnel connector from the server (Portainer's subdomain is no longer planned)",
-    allowDestroy: false,
+    command: input.command,
+    phase: "provision",
     planOnly: input.planOnly,
     secrets: async () => {
       const portainerPassword = enabled ? await portainerPasswordToSend(deps, false) : undefined;
       return portainerPassword !== undefined ? { portainerPassword } : {};
     },
-    command: input.command,
-    phase: "provision",
     shown: input.shown,
   });
 }

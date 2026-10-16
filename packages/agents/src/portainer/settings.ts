@@ -1,4 +1,4 @@
-import { OpsCrewError } from "@opscrew/core";
+import { normalizeHostName, OpsCrewError } from "@opscrew/core";
 import { PORTAINER_PORT } from "@opscrew/iac-templates";
 import {
   cloudflareEdgeCoverage,
@@ -46,7 +46,8 @@ export function portainerSettings(
   request: PortainerEnableRequest,
   zone: string | undefined,
 ): PortainerSettings {
-  const subdomain = request.subdomain?.trim().toLowerCase().replace(/\.$/, "");
+  const subdomain =
+    request.subdomain === undefined ? undefined : normalizeHostName(request.subdomain);
   const emails = [...new Set((request.allowEmails ?? []).map((email) => email.trim()))].filter(
     (email) => email !== "",
   );
