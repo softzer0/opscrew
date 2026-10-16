@@ -213,7 +213,7 @@ each with a test that fails without the fix.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: xhigh
 
-- [ ] T1025 [P] Agents domain, dns and init (Area 2)
+- [X] T1025 [P] Agents domain, dns and init (Area 2)
   - Owns: `packages/agents/src/{domain,dns,init}/**` (+ tests); `detectPublicIpv4` in `packages/connectors/{cloudflare,namecheap}/src/**` (the move only)
   - Reads: Area 2; `packages/agents/src/shared/` after T1024
   - Depends: T1024

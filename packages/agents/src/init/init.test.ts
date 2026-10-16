@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   AgentRuntime,
@@ -359,6 +359,31 @@ describe("runInitChecks", () => {
     expect(slow.message).toContain("did not answer");
     expect(slow.fix).toContain("--offline");
     expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("falls back to the interview answers when opscrew/plan.yaml is invalid, without a failure of its own", async () => {
+    const { deps } = await setup();
+    await writeRequirements(deps, { dnsProvider: "cloudflare", domain: "shop.example.com" });
+    await writeFile(deps.paths.files.plan, "schemaVersion: [not a plan\n");
+
+    const checks = await runInitChecks(deps, { services: services() });
+
+    const cf = checks.find((c) => c.id === "cloudflare");
+    expect(cf?.status).toBe("pass");
+    expect(cf?.message).toContain("example.com");
+    expect(checks.find((c) => c.id === "provider")?.status).toBe("pass");
+    expect(checks.every((c) => !c.message.includes("plan.yaml"))).toBe(true);
+    expect(initPassed(checks)).toBe(true);
+  });
+
+  it("stops when opscrew/plan.yaml cannot be read for another reason", async () => {
+    const { deps } = await setup();
+    // A folder where the plan file should be: reading it fails with EISDIR, not ENOENT.
+    await mkdir(deps.paths.files.plan, { recursive: true });
+
+    await expect(runInitChecks(deps, { services: services() })).rejects.toMatchObject({
+      code: "EISDIR",
+    });
   });
 
   describe("cloud provider token", () => {
