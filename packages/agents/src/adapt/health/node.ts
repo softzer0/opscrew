@@ -4,16 +4,14 @@
  * with its Express or Koa transport), so it comes before any middleware the app adds later.
  * Feathers without one of those transports stays with the Code-change agent.
  */
-import { posix } from "node:path";
+import { appDirOf, under } from "../../design/code-changes";
 import {
   appCodeFiles,
-  appFolder,
   type PathUse,
   pathTaken,
   pathVariants,
   readSource,
   routeUses,
-  under,
 } from "./common";
 import {
   creationOf,
@@ -23,6 +21,7 @@ import {
   type JsSource,
   jsImports,
   jsStyle,
+  moduleCandidates,
   scanJs,
 } from "./js";
 import {
@@ -33,11 +32,19 @@ import {
   indentOf,
   isBlank,
   lineStarts,
-  listing,
+  linesAfter,
   partsOf,
   splitLines,
 } from "./text";
-import { addedNote, type HealthEdit, type HealthRouteInput, manual } from "./types";
+import {
+  addedNote,
+  appInClass,
+  type HealthEdit,
+  type HealthRouteInput,
+  manual,
+  severalApps,
+  unassignedApp,
+} from "./types";
 
 /** What a snippet gets: the app variable and the file's style. */
 interface Snippet {
@@ -254,24 +261,6 @@ function exportNames(src: JsSource, name: string, declaredExported: boolean): Se
   return names;
 }
 
-/** The file a relative import specifier from `from` names, among `files`. */
-function resolveIn(
-  files: ReadonlySet<string>,
-  from: string,
-  specifier: string,
-): string | undefined {
-  if (!specifier.startsWith(".")) return undefined;
-  const base = posix.normalize(posix.join(posix.dirname(from), specifier));
-  const stem = base.replace(/\.[cm]?js$/, "");
-  const candidates = [
-    base,
-    ...["js", "ts", "mjs", "cjs", "mts", "cts"].map((ext) => `${stem}.${ext}`),
-    `${stem}/index.js`,
-    `${stem}/index.ts`,
-  ];
-  return candidates.find((candidate) => files.has(candidate));
-}
-
 /**
  * The files that serve an app object: its own file (`app.listen(…)`, `app.fetch`, `serve(app)`,
  * `.listen(…)` at the end of its creation chain) and files that import its export and serve it.
@@ -292,7 +281,8 @@ function servedBy(found: Found, servers: readonly Server[], files: ReadonlySet<s
   for (const server of servers) {
     if (server.file === found.file) continue;
     for (const entry of server.imports) {
-      if (resolveIn(files, server.file, entry.module) !== found.file) continue;
+      const resolved = moduleCandidates(server.file, entry.module).find((c) => files.has(c));
+      if (resolved !== found.file) continue;
       for (const [local, imported] of entry.bindings) {
         if (names.has(imported) && servesName(server.src.code, local)) by.push(server.file);
       }
@@ -309,7 +299,7 @@ async function entryFile(
   input: HealthRouteInput,
   files: ReadonlySet<string>,
 ): Promise<string | undefined> {
-  const dir = appFolder(input.facts);
+  const dir = appDirOf(input.facts);
   let manifest: { scripts?: Record<string, string>; main?: string } = {};
   try {
     manifest = JSON.parse((await input.repo.read(under(dir, "package.json"))) ?? "{}");
@@ -349,19 +339,12 @@ async function entryFile(
 /** Lines inserted after `line`, with one blank line on each side where there is none. */
 export function jsBlockAfter(text: string, line: number, block: readonly string[]): Insertion {
   const lines = splitLines(text);
-  const starts = lineStarts(text);
-  const eol = eolOf(text);
-  const rest = lines.slice(line + 1);
-  const atEnd = rest.every((l) => isBlank(l));
-  const body = [
+  const atEnd = lines.slice(line + 1).every((l) => isBlank(l));
+  return linesAfter(text, line, [
     ...(isBlank(lines[line]) ? [] : [""]),
     ...block,
     ...(atEnd || isBlank(lines[line + 1]) ? [] : [""]),
-  ];
-  const next = starts[line + 1];
-  if (next === undefined)
-    return { offset: text.length, text: body.map((l) => `${eol}${l}`).join("") };
-  return { offset: next, text: body.map((l) => `${l}${eol}`).join("") };
+  ]);
 }
 
 /**
@@ -432,26 +415,15 @@ export async function nodeHealthRoute(input: HealthRouteInput): Promise<HealthEd
     }
   }
   if (chosen.length !== 1) {
-    const where = found.map((f) => `${f.spec.name} in ${f.file} line ${lineOf(f)}`);
-    return manual(
-      `OpsCrew found ${found.length} app objects (${listing(where)}), so it cannot tell which one serves the app.`,
-    );
+    return severalApps(found.map((f) => `${f.spec.name} in ${f.file} line ${lineOf(f)}`));
   }
   const only = chosen[0] as Found;
   const { file, src, imports, call, spec } = only;
   const line = lineOf(only);
   if (spec.pending !== undefined) return manual(`${spec.pending}.`);
   const creation = creationOf(src, call);
-  if (creation === undefined) {
-    return manual(
-      `the ${spec.name} app in ${file} (line ${line}) is not assigned to a variable OpsCrew can add a route to.`,
-    );
-  }
-  if (creation.inClass) {
-    return manual(
-      `the ${spec.name} app in ${file} (line ${line}) is created inside a class, so OpsCrew cannot tell where a route belongs.`,
-    );
-  }
+  if (creation === undefined) return unassignedApp(spec.name, file, line);
+  if (creation.inClass) return appInClass(spec.name, file, line);
   if (creation.crowded) {
     return manual(
       `more code follows the ${spec.name} app on line ${creation.lastLine + 1} of ${file}, so OpsCrew did not edit it.`,

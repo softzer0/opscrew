@@ -1,6 +1,6 @@
 import { SEVERITIES, type Severity } from "@opscrew/contracts";
 import type { CodeChangeKind } from "@opscrew/plan-schema";
-import type { CodeChange } from "../design";
+import type { CodeChange } from "../design/code-changes";
 
 /** Title of the pull request opened by `opscrew adapt`. */
 export const PULL_REQUEST_TITLE = "OpsCrew: prepare the app for deployment";
@@ -23,25 +23,25 @@ export interface PullRequestBodyInput {
   /** The plan's code changes with their final statuses. */
   changes: readonly CodeChange[];
   /** Notes per change id (from the Code-change agent or OpsCrew). */
-  notes?: Readonly<Record<string, string>>;
+  notes: Readonly<Record<string, string>>;
   /** Finding counts from the last `opscrew scan`, when one exists. */
   scanCounts?: Partial<Record<Severity, number>>;
   /** Repo-relative report and artefact files included in the branch. */
   reports: readonly string[];
   /** GitHub repository and branch, used to link the reports. */
-  repo?: { owner: string; repo: string };
-  branch?: string;
+  repo: { owner: string; repo: string };
+  branch: string;
   /** App name, container port and health path from the plan, for the review checklist. */
-  app?: { name: string; port: number; healthPath: string };
+  app: { name: string; port: number; healthPath: string };
   /** Packages the Code-change agent added. */
-  addedDependencies?: readonly string[];
+  addedDependencies: readonly string[];
   /** Ids of the changes OpsCrew made itself (templates and deterministic edits). */
-  byOpsCrew?: readonly string[];
+  byOpsCrew: readonly string[];
   /**
    * The file a change was really made in, by change id, when it differs from the plan's path
    * (for example `route.js` where the plan says `route.ts`).
    */
-  paths?: Readonly<Record<string, string>>;
+  paths: Readonly<Record<string, string>>;
   /** The background-jobs note (FR-812) when the app also runs jobs that are not deployed yet. */
   backgroundJobs?: string;
   /** What detection noted about the app, such as parts OpsCrew does not deploy yet. */
@@ -56,7 +56,6 @@ export function healthCheckWarning(healthPath: string): string {
 }
 
 function link(path: string, input: PullRequestBodyInput): string {
-  if (input.repo === undefined || input.branch === undefined) return `\`${path}\``;
   const url = `https://github.com/${input.repo.owner}/${input.repo.repo}/blob/${encodeURI(input.branch)}/${encodeURI(path)}`;
   return `[\`${path}\`](${url})`;
 }
@@ -95,24 +94,24 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
     "",
   ];
   if (input.changes.length === 0) lines.push("No code changes were needed.");
-  const byOpsCrew = new Set(input.byOpsCrew ?? []);
+  const byOpsCrew = new Set(input.byOpsCrew);
   for (const change of input.changes) {
     lines.push(
       ...changeLine(
         change,
-        input.notes?.[change.id],
+        input.notes[change.id],
         byOpsCrew.has(change.id),
-        input.paths?.[change.id],
+        input.paths[change.id],
       ),
     );
   }
-  const health = input.app?.healthPath ?? "/health";
+  const health = input.app.healthPath;
   if (input.changes.some((c) => c.kind === "health-endpoint" && c.status === "pending")) {
     lines.push("", `**${healthCheckWarning(health)}**`);
   }
-  if ((input.addedDependencies ?? []).length > 0) {
+  if (input.addedDependencies.length > 0) {
     lines.push("", "New dependencies added by the Code-change agent:");
-    for (const dependency of input.addedDependencies ?? []) lines.push(`- \`${dependency}\``);
+    for (const dependency of input.addedDependencies) lines.push(`- \`${dependency}\``);
   }
 
   if (input.backgroundJobs !== undefined) {
@@ -144,8 +143,7 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
     );
   }
 
-  const name = input.app?.name ?? "app";
-  const port = input.app?.port ?? 3000;
+  const { name, port } = input.app;
   lines.push(
     "",
     "## Review checklist",
@@ -160,7 +158,7 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
       "- [ ] Rotate every secret that was hard-coded: the old values stay in the git history.",
     );
   }
-  if ((input.addedDependencies ?? []).length > 0) {
+  if (input.addedDependencies.length > 0) {
     lines.push("- [ ] The new dependencies are needed and trustworthy.");
   }
   if (input.changes.some((c) => c.status === "pending")) {

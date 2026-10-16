@@ -5,22 +5,24 @@
  */
 import { posix } from "node:path";
 import { nestGlobalPrefix, nestRoutePath } from "@opscrew/detect";
+import { appDirOf, under } from "../../design/code-changes";
+import { appCodeFiles, pathTaken, pathVariants, readSource, routeUses } from "./common";
 import {
-  appCodeFiles,
-  appFolder,
-  pathTaken,
-  pathVariants,
-  readSource,
-  routeUses,
-  under,
-} from "./common";
-import { findCalls, type JsSource, jsImports, jsStyle, scanJs, usesSemicolons } from "./js";
+  findCalls,
+  type JsSource,
+  jsImports,
+  jsStyle,
+  moduleCandidates,
+  scanJs,
+  usesSemicolons,
+} from "./js";
 import { jsBlockAfter } from "./node";
 import {
   applyInsertions,
   type Insertion,
   lineAt,
   lineStarts,
+  linesAfter,
   partsOf,
   prependElement,
 } from "./text";
@@ -46,16 +48,7 @@ async function resolveModule(
   from: string,
   specifier: string,
 ): Promise<string | undefined> {
-  if (!specifier.startsWith(".")) return undefined;
-  const base = posix.normalize(posix.join(posix.dirname(from), specifier));
-  const stem = base.replace(/\.[cm]?js$/, "");
-  const candidates = [
-    ...(/\.[cm]?[jt]s$/.test(base) ? [base] : []),
-    ...["ts", "mts", "js", "mjs"].map((ext) => `${stem}.${ext}`),
-    `${stem}/index.ts`,
-    `${stem}/index.js`,
-  ];
-  for (const candidate of candidates) {
+  for (const candidate of moduleCandidates(from, specifier)) {
     if ((await input.repo.read(candidate)) !== undefined) return candidate;
   }
   return undefined;
@@ -219,7 +212,7 @@ export async function nestHealthRoute(input: HealthRouteInput): Promise<HealthEd
     insertions.push({ offset: 0, text: `${importLine}${style.eol}${style.eol}` });
   } else {
     const line = lineAt(lineStarts(moduleText), last.end - 1);
-    insertions.push(afterLineInsertion(moduleText, line, importLine, style.eol));
+    insertions.push(linesAfter(moduleText, line, [importLine]));
   }
   // Global guards: the project's own "public" decorator when it has exactly one, else a check.
   const checks: string[] = [];
@@ -275,19 +268,11 @@ function unknownPrefixNote(main: string, route: string): string {
   return `${main} sets a global prefix OpsCrew cannot read: the health route answers at /<prefix>${route}, and the plan's health check path must be that (${PLAN_PATH_FIX}), or every deploy fails its health check.`;
 }
 
-/** One line inserted after line `line`. */
-function afterLineInsertion(text: string, line: number, added: string, eol: string): Insertion {
-  const next = lineStarts(text)[line + 1];
-  return next === undefined
-    ? { offset: text.length, text: `${eol}${added}` }
-    : { offset: next, text: `${added}${eol}` };
-}
-
 const ADONIS_ROUTERS = new Set(["@adonisjs/core/services/router", "@ioc:Adonis/Core/Route"]);
 
 /** AdonisJS: a route first in `start/routes.ts`, right after the imports. */
 export async function adonisHealthRoute(input: HealthRouteInput): Promise<HealthEdit> {
-  const dir = appFolder(input.facts);
+  const dir = appDirOf(input.facts);
   let file: string | undefined;
   let text: string | undefined;
   for (const name of ["start/routes.ts", "start/routes.js"]) {

@@ -1,5 +1,5 @@
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join, posix } from "node:path";
+import { readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
 import {
   GitClient,
   GitHubClient,
@@ -8,12 +8,13 @@ import {
   parseGitHubRepo,
   resolveGitHubToken,
 } from "@opscrew/connector-github";
-import { type AuditInput, SEVERITIES, type Severity } from "@opscrew/contracts";
+import type { AgentRuntime, AuditInput } from "@opscrew/contracts";
 import {
   findExecutable,
   isSecretPath,
   isUserFacingError,
   OpsCrewError,
+  plural,
   toPosixRelative,
   writeFileAtomic,
 } from "@opscrew/core";
@@ -23,15 +24,17 @@ import {
   type CodeChangeKind,
   type CodeChangeStatus,
   type DeployPlan,
+  type ProjectFacts,
   readArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
-import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { backgroundJobsWarning, type CodeChange, releaseCommandNote } from "../design";
-import { writeRenderedFiles } from "../shared";
+import { backgroundJobsWarning } from "../design/background-jobs";
+import { type CodeChange, readScanReport } from "../design/code-changes";
+import { releaseCommandNote } from "../design/release";
+import { exists, readIfExists, writeRenderedFiles } from "../shared";
 import { healthRouteEdit } from "./health";
-import { isNextConfigPath, type StandaloneEdit, standaloneConfigEdit } from "./next-config";
+import { isNextConfigPath, nextConfigEdit } from "./next-config";
 import { playbookFor } from "./playbooks";
 import { healthCheckWarning, PULL_REQUEST_TITLE, renderPullRequestBody } from "./pr";
 import {
@@ -138,13 +141,6 @@ function templateFor(
   );
 }
 
-const ScanFileSchema = z.looseObject({
-  counts: z.partialRecord(z.enum(SEVERITIES), z.number().int().nonnegative()).optional(),
-  findings: z.array(z.looseObject({ severity: z.enum(SEVERITIES) })).optional(),
-});
-
-const PLURAL = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-
 /**
  * The adapt phase (plan.md "Adapt"): requires a clean working tree, creates the
  * `opscrew/prepare-deploy` branch (the next free `-2`, `-3`, … when this clone or origin already has
@@ -182,10 +178,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   const ai = options.ai ?? true;
   const push = options.push ?? true;
   const model = options.model ?? CODE_CHANGE_MODEL;
-  const say = (text: string) => deps.redactor.redact(text);
-  const warn = (text: string) => reporter.warn(say(text));
-  const audit = (entry: Omit<AuditInput, "phase">) =>
-    deps.audit.append({ ...entry, phase: "adapt", detail: entry.detail && say(entry.detail) });
+  const { say, warn, audit } = voice(deps);
 
   reporter.step("Preparing the code for deployment");
   let plan = await readArtifact("plan", paths.files.plan);
@@ -294,18 +287,15 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
       );
     }
     return pushAndOpen({
-      backgroundJobs: backgroundJobsWarning(facts),
-      migrations: releaseCommandNote(plan, facts)?.text,
-      appNotes: facts.notes,
       deps,
       git,
       plan,
+      facts,
       sha: unpushed,
       remote,
       repo,
       gitHub,
       originChecked: picked.originChecked,
-      artefacts: artefactPaths(deps),
       byOpsCrew: [],
       paths: {},
       result: {
@@ -485,13 +475,13 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   let costUsd = 0;
   let addedDependencies: string[] = [];
   if (forAgent.length > 0) {
-    const skipReason = await agentSkipReason(deps, ai);
-    if (skipReason === undefined && deps.runtime !== undefined) {
+    const runtime = await codeChangeRuntime(deps, ai);
+    if (typeof runtime !== "string") {
       aiRan = true;
       reporter.step(
-        `Running the Code-change agent (${model}) on ${PLURAL(forAgent.length, "change")}`,
+        `Running the Code-change agent (${model}) on ${plural(forAgent.length, "change")}`,
       );
-      const result = await deps.runtime.runPhase({
+      const result = await runtime.runPhase({
         phase: "adapt",
         systemPrompt: CODE_CHANGE_SYSTEM_PROMPT,
         prompt: say(buildCodeChangePrompt({ facts, plan, changes: forAgent, playbook })),
@@ -521,7 +511,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
         );
       }
     } else {
-      reporter.info(skipReason ?? "The Code-change agent did not run.");
+      reporter.info(runtime);
     }
   }
   const manual: ManualChange[] = forAgent
@@ -535,7 +525,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
       };
     });
   if (manual.length > 0) {
-    reporter.info(`${PLURAL(manual.length, "change")} still to make by hand:`);
+    reporter.info(`${plural(manual.length, "change")} still to make by hand:`);
     for (const item of manual) reporter.info(`- ${item.instructions}`);
   }
   if (manual.some((item) => item.change.kind === "health-endpoint")) {
@@ -604,7 +594,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   reporter.info(say(details));
   const commitApproval = await deps.approvals.request({
     kind: "repo-write",
-    title: `Commit ${PLURAL(toCommit.length, "file")} to branch ${branch}`,
+    title: `Commit ${plural(toCommit.length, "file")} to branch ${branch}`,
     details: say(details),
   });
   if (!commitApproval.approved) {
@@ -630,22 +620,30 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     return result;
   }
   return pushAndOpen({
-    backgroundJobs: backgroundJobsWarning(facts),
-    migrations: releaseCommandNote(plan, facts)?.text,
-    appNotes: facts.notes,
     deps,
     git,
     plan,
+    facts,
     sha,
     remote,
     repo,
     gitHub,
     originChecked,
-    artefacts: [...artefacts],
     byOpsCrew: [...byOpsCrew],
     paths: madeIn,
     result,
   });
+}
+
+/** Adapt's reporting: `say` redacts, `warn` reports redacted, `audit` records redacted. */
+function voice(deps: PhaseDeps) {
+  const say = (text: string) => deps.redactor.redact(text);
+  return {
+    say,
+    warn: (text: string) => deps.reporter.warn(say(text)),
+    audit: (entry: Omit<AuditInput, "phase">) =>
+      deps.audit.append({ ...entry, phase: "adapt", detail: entry.detail && say(entry.detail) }),
+  };
 }
 
 /** What {@link pushAndOpen} needs: the commit, the branch it is on and where it goes. */
@@ -653,6 +651,8 @@ interface PushContext {
   deps: PhaseDeps;
   git: GitClient;
   plan: DeployPlan;
+  /** The app the facts describe: its background jobs, migrations and notes go into the PR. */
+  facts: ProjectFacts;
   /** The OpsCrew commit on `result.branch`. */
   sha: string;
   /** origin's URL; undefined without an `origin` remote. */
@@ -662,20 +662,12 @@ interface PushContext {
   gitHub: () => Promise<AdaptGitHub | undefined>;
   /** False when origin could not be checked before the branch name was picked. */
   originChecked: boolean;
-  /** Project-relative OpsCrew artefacts linked from the pull request when they exist. */
-  artefacts: readonly string[];
   /** Ids of the changes OpsCrew made itself. */
   byOpsCrew: readonly string[];
   /** The file a change was really made in, when it is not the plan's path. */
   paths: Readonly<Record<string, string>>;
   /** The result so far: its branch, base, changes, notes and dependencies go into the PR. */
   result: AdaptResult;
-  /** The background-jobs note for the pull request, when the app runs jobs (FR-812). */
-  backgroundJobs: string | undefined;
-  /** The database-migrations note for the pull request (FR-813). */
-  migrations: string | undefined;
-  /** What detection noted about the app, for the pull request. */
-  appNotes: readonly string[] | undefined;
 }
 
 /**
@@ -684,13 +676,10 @@ interface PushContext {
  * failed push throws `COMMAND_FAILED` with what to do (nothing is ever force-pushed).
  */
 async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
-  const { deps, git, plan, sha, remote, repo, gitHub, result } = ctx;
+  const { deps, git, plan, facts, sha, remote, repo, gitHub, result } = ctx;
   const { branch, baseBranch, changes, notes, addedDependencies } = result;
   const { paths, reporter } = deps;
-  const say = (text: string) => deps.redactor.redact(text);
-  const warn = (text: string) => reporter.warn(say(text));
-  const audit = (entry: Omit<AuditInput, "phase">) =>
-    deps.audit.append({ ...entry, phase: "adapt", detail: entry.detail && say(entry.detail) });
+  const { say, warn, audit } = voice(deps);
   const done = async (summary: string) => {
     await deps.state.markPhase("adapt", "ok", say(summary));
     return result;
@@ -756,22 +745,23 @@ async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
       reporter.success(`A pull request for ${branch} is already open: ${existing.url}`);
       return done(`pull request #${existing.number}`);
     }
-    const { migrations } = ctx;
+    const backgroundJobs = backgroundJobsWarning(facts);
+    const migrations = releaseCommandNote(plan, facts)?.text;
     const body = say(
       renderPullRequestBody({
         changes,
         notes,
-        scanCounts: await readScanCounts(paths.files.scanReportJson),
-        reports: await existingFiles(paths.root, ctx.artefacts),
+        scanCounts: (await readScanReport(paths.files.scanReportJson))?.counts,
+        reports: await existingFiles(paths.root, artefactPaths(deps)),
         repo,
         branch,
         app: { name: plan.app.name, port: plan.app.port, healthPath: plan.app.healthPath },
         addedDependencies,
-        byOpsCrew: [...ctx.byOpsCrew],
+        byOpsCrew: ctx.byOpsCrew,
         paths: ctx.paths,
-        ...(ctx.backgroundJobs === undefined ? {} : { backgroundJobs: ctx.backgroundJobs }),
+        ...(backgroundJobs === undefined ? {} : { backgroundJobs }),
         ...(migrations === undefined ? {} : { migrations }),
-        ...(ctx.appNotes === undefined ? {} : { appNotes: ctx.appNotes }),
+        ...(facts.notes === undefined ? {} : { appNotes: facts.notes }),
       }),
     );
     const prApproval = await deps.approvals.request({
@@ -828,10 +818,11 @@ interface OriginCheck {
   warn(text: string): void;
 }
 
-/** `opscrew/prepare-deploy`, then `-2`, `-3`, … */
-function adaptBranchName(i: number): string {
-  return i === 1 ? ADAPT_BRANCH : `${ADAPT_BRANCH}-${i}`;
-}
+/** The branch names adapt uses: `opscrew/prepare-deploy`, then `-2`, `-3`, … `-100`. */
+const ADAPT_BRANCH_NAMES = [
+  ADAPT_BRANCH,
+  ...Array.from({ length: 99 }, (_, i) => `${ADAPT_BRANCH}-${i + 2}`),
+];
 
 /** A branch adapt creates. */
 const ADAPT_BRANCH_NAME = /^opscrew\/prepare-deploy(?:-[1-9][0-9]*)?$/;
@@ -850,8 +841,7 @@ async function pickBranch(
   current?: string,
 ): Promise<{ branch: string; originChecked: boolean }> {
   let check = origin;
-  for (let i = 1; i <= 100; i++) {
-    const name = adaptBranchName(i);
+  for (const name of ADAPT_BRANCH_NAMES) {
     if (check !== undefined) {
       let sha: string | undefined;
       try {
@@ -933,8 +923,7 @@ async function pushAdvice(
     if ((await git.remoteBranchSha(branch)) === undefined) {
       return { command: plain, text: `When you are ready: \`${plain}\`.` };
     }
-    for (let i = 1; i <= 100; i++) {
-      const name = adaptBranchName(i);
+    for (const name of ADAPT_BRANCH_NAMES) {
       if (name === branch || (await git.branchExists(name))) continue;
       if ((await git.remoteBranchSha(name)) !== undefined) continue;
       const command = `git push -u origin ${branch}:${name}`;
@@ -962,16 +951,6 @@ function artefactPaths(deps: PhaseDeps): string[] {
 }
 
 /** Names of the sub-folders of `dir` (`[]` when it is missing or unreadable). */
-/** A file's text, or undefined when it does not exist. */
-async function readIfExists(file: string): Promise<string | undefined> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
 async function subfolders(dir: string): Promise<string[]> {
   try {
     const entries = await readdir(dir, { withFileTypes: true });
@@ -981,14 +960,14 @@ async function subfolders(dir: string): Promise<string[]> {
   }
 }
 
-/** Why the Code-change agent will not run, or undefined when it will. */
-async function agentSkipReason(deps: PhaseDeps, ai: boolean): Promise<string | undefined> {
+/** The runtime the Code-change agent runs on, or why it will not run. */
+async function codeChangeRuntime(deps: PhaseDeps, ai: boolean): Promise<AgentRuntime | string> {
   if (!ai) return "The Code-change agent was turned off (--no-ai).";
   if (deps.runtime === undefined) {
     return "No model is configured, so the Code-change agent did not run.";
   }
   const availability = await deps.runtime.isConfigured();
-  if (availability.ok) return undefined;
+  if (availability.ok) return deps.runtime;
   const why = availability.reason ?? "the model is not available";
   return `The Code-change agent did not run: ${why}${availability.hint ? ` ${availability.hint}` : ""}`;
 }
@@ -1039,83 +1018,6 @@ async function existingFiles(root: string, files: readonly string[]): Promise<st
   const found: string[] = [];
   for (const file of files) if (await exists(join(root, file))) found.push(file);
   return found;
-}
-
-const NEXT_CONFIG_NAMES = [
-  "next.config.ts",
-  "next.config.mjs",
-  "next.config.js",
-  "next.config.cjs",
-];
-
-/**
- * The deterministic standalone edit for the Next.js config at `path` (repo-relative). A config in
- * a subfolder also gets `outputFileTracingRoot` pointing back at the project root. OpsCrew edits
- * (or creates) the config only when no other `next.config.*` sits next to it: Next.js reads just
- * one of them, so editing the planned one could change nothing.
- */
-async function nextConfigEdit(root: string, path: string): Promise<StandaloneEdit> {
-  const folders = posix
-    .dirname(posix.normalize(path.replace(/\\/g, "/")))
-    .split("/")
-    .filter((segment) => segment !== "" && segment !== ".");
-  const dir = folders.join("/");
-  const planned = dir === "" ? posix.basename(path) : `${dir}/${posix.basename(path)}`;
-  let content: string | undefined;
-  try {
-    content = await readFile(join(root, path), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  const others: string[] = [];
-  for (const name of NEXT_CONFIG_NAMES) {
-    const other = dir === "" ? name : `${dir}/${name}`;
-    if (other !== planned && (await exists(join(root, other)))) others.push(other);
-  }
-  if (others.length > 0) {
-    return {
-      action: "manual",
-      reason:
-        content === undefined
-          ? `the plan expects ${path} but the app has ${others.join(" and ")}; run \`opscrew design\` again.`
-          : `the app has ${[planned, ...others].join(" and ")}, and Next.js reads only one of them; delete the ones you do not use, then run \`opscrew design\` again.`,
-    };
-  }
-  const tracingRoot = folders.length === 0 ? undefined : "../".repeat(folders.length);
-  return standaloneConfigEdit({
-    path,
-    content,
-    ...(tracingRoot === undefined ? {} : { tracingRoot }),
-  });
-}
-
-async function exists(file: string): Promise<boolean> {
-  try {
-    await stat(file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function readScanCounts(
-  file: string,
-): Promise<Partial<Record<Severity, number>> | undefined> {
-  let parsed: z.infer<typeof ScanFileSchema>;
-  try {
-    const result = ScanFileSchema.safeParse(JSON.parse(await readFile(file, "utf8")));
-    if (!result.success) return undefined;
-    parsed = result.data;
-  } catch {
-    return undefined;
-  }
-  if (parsed.counts !== undefined) return parsed.counts;
-  if (parsed.findings === undefined) return undefined;
-  const counts: Partial<Record<Severity, number>> = {};
-  for (const finding of parsed.findings) {
-    counts[finding.severity] = (counts[finding.severity] ?? 0) + 1;
-  }
-  return counts;
 }
 
 async function defaultGitHub(deps: PhaseDeps): Promise<AdaptGitHub | undefined> {

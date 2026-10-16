@@ -1,4 +1,8 @@
+import { listText, plural } from "@opscrew/core";
 import type { AppKind, PlatformExport, ProjectFacts, ServiceKind } from "@opscrew/plan-schema";
+
+// interview/questions.ts still imports it from here.
+export { listText };
 
 /** Plain-English summary and deployment risks of a project. */
 export interface FactsSummary {
@@ -50,15 +54,6 @@ const LANGUAGE_NAMES: Record<string, string> = {
   other: "other languages",
 };
 
-const APP_KIND_TEXT: Record<AppKind, string> = {
-  "static-spa": "a static single-page app",
-  ssr: "a server-rendered web app",
-  api: "an API server",
-  fullstack: "a full-stack web app",
-  worker: "a background worker",
-  unknown: "an app of unknown type",
-};
-
 /** Short label for each app kind, used in reports. */
 export const APP_KIND_LABELS: Record<AppKind, string> = {
   "static-spa": "static single-page app",
@@ -105,13 +100,12 @@ export function languageName(name: string): string {
   return LANGUAGE_NAMES[name] ?? name;
 }
 
-/** Joins items as plain English: `a`, `a and b`, `a, b and c`. */
-export function listText(items: readonly string[]): string {
-  if (items.length <= 1) return items[0] ?? "";
-  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+/** The app kind in a sentence: `an API server`, `an app of unknown type`. */
+function appKindText(kind: AppKind): string {
+  if (kind === "unknown") return "an app of unknown type";
+  const label = APP_KIND_LABELS[kind];
+  return `${/^[aeiou]/i.test(label) ? "an" : "a"} ${label}`;
 }
-
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** App kinds that serve HTTP from their own process and so need a health endpoint. */
 const SERVER_KINDS: ReadonlySet<AppKind> = new Set(["ssr", "api", "fullstack"]);
@@ -156,7 +150,7 @@ function summaryText(facts: ProjectFacts, options: SummarizeOptions): string {
     first = `${facts.name} is a monorepo with ${candidates.length} deployable apps: ${appCandidatesText(facts, candidates)}`;
     if (languages.length > 0) first += `, written in ${listText(languages)}`;
   } else {
-    first = `${facts.name} is ${APP_KIND_TEXT[facts.appKind]}`;
+    first = `${facts.name} is ${appKindText(facts.appKind)}`;
     if (frameworks.length > 0) first += ` built with ${listText(frameworks)}`;
     if (languages.length > 0) {
       first +=

@@ -49,17 +49,23 @@ export interface RateSource {
   asOf?: string;
 }
 
+/** The rates of an estimate that were not read from the provider's API, by line. */
+export interface NonLiveRates {
+  ipv4?: RateSource;
+  backups?: RateSource;
+}
+
 /**
  * The rates in an estimate for a live `offer` that were not read from the provider's API in this
  * run: the IPv4 price and backup percentage from static extras (DigitalOcean's published price
  * page) and a backup percentage that is the provider profile's or OpsCrew's default because the
  * extras have none. Empty for a static offer: the whole estimate is then dated as one.
  */
-export function nonLiveRates(
+function nonLiveRates(
   offer: Pick<ComputeOffer, "provider" | "source">,
   extras: ProviderExtras,
   options: { backups: boolean },
-): { ipv4?: RateSource; backups?: RateSource } {
+): NonLiveRates {
   if (offer.source !== "live") return {};
   const name =
     offer.provider === "hetzner" || offer.provider === "digitalocean"
@@ -72,7 +78,7 @@ export function nonLiveRates(
     item: `${name}'s published rate as of ${date}`,
     asOf: extras.asOf,
   };
-  const out: { ipv4?: RateSource; backups?: RateSource } = {};
+  const out: NonLiveRates = {};
   if (extras.ipv4Monthly !== undefined && extras.source !== "live") out.ipv4 = published;
   if (options.backups) {
     if (extras.backupPercent === undefined) {
@@ -104,6 +110,15 @@ export function costFor(
   extras: ProviderExtras,
   options: { backups: boolean; backupPercent?: number },
 ): CostEstimate {
+  return pricedOffer(offer, extras, options).cost;
+}
+
+/** {@link costFor}, with the rates in it that were not read from the provider's API. */
+export function pricedOffer(
+  offer: ComputeOffer,
+  extras: ProviderExtras,
+  options: { backups: boolean; backupPercent?: number },
+): { cost: CostEstimate; rates: NonLiveRates } {
   const currency = offer.monthly.currency;
   const server = roundCents(offer.monthly.amount);
   const breakdown: CostEstimate["breakdown"] = [
@@ -131,11 +146,12 @@ export function costFor(
   const live = offer.source === "live" && rates.ipv4 === undefined && rates.backups === undefined;
   // A mixed estimate is only as fresh as its published price list; without one, as the offer.
   const asOf = rates.ipv4?.asOf ?? rates.backups?.asOf ?? offer.asOf;
-  return CostEstimateSchema.parse({
+  const cost = CostEstimateSchema.parse({
     monthly: { amount: total, currency },
     breakdown,
     pricesIncludeVat: offer.pricesIncludeVat,
     source: live ? "live" : "static",
     asOf,
   });
+  return { cost, rates };
 }

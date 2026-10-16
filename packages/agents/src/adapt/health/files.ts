@@ -1,10 +1,11 @@
 /**
  * Health routes for file-routed frameworks: one new file in the framework's routing folder
- * (Nuxt, SvelteKit, Astro, Remix, React Router, SolidStart), plus the entry in `app/routes.ts`
- * for React Router's config routes. Next.js keeps its own module (`../health-route`).
+ * (Next.js, Nuxt, SvelteKit, Astro, Remix, React Router, SolidStart), plus the entry in
+ * `app/routes.ts` for React Router's config routes.
  */
-import { NEXT_HEALTH_PATH, nextHealthRoute, nextLiteralBasePath } from "../health-route";
-import { appFolder, packageDependencies, under } from "./common";
+import { appDirOf, NEXT_CONFIG_NAMES, under } from "../../design/code-changes";
+import { nextBasePath } from "../next-config";
+import { packageDependencies } from "./common";
 import { jsImports, jsStyle, scanJs, usesSemicolons } from "./js";
 import { appendElement, applyInsertions, escapeRegExp, type Insertion } from "./text";
 import {
@@ -32,7 +33,6 @@ interface FileStyle {
 /** Context shared by the file-routed frameworks. */
 interface FileContext {
   input: HealthRouteInput;
-  dir: string;
   /** `health` for `/health`, `api/health` for `/api/health`. */
   route: string;
   segments: string[];
@@ -495,42 +495,151 @@ async function solidStart(ctx: FileContext): Promise<HealthEdit> {
   return created(ctx, "SolidStart", `${base}.${style.ext}`, jsonResponse(style, "GET"));
 }
 
-/** Next.js: the existing deterministic route (`../health-route`), unchanged. */
-async function next(input: HealthRouteInput): Promise<HealthEdit> {
-  // A literal basePath: the route answers under it, and the plan's path follows (a plan that
-  // already names `<basePath>/api/health` is the same route).
-  const base = await nextLiteralBasePath(input.path, (path) => input.repo.read(path));
-  const prefix = base?.value.replace(/\/+$/, "");
-  const moved = prefix === undefined ? undefined : `${prefix}${NEXT_HEALTH_PATH}`;
-  const edit = await nextHealthRoute({
-    path: input.path,
-    healthPath:
-      moved !== undefined && input.healthPath === moved ? NEXT_HEALTH_PATH : input.healthPath,
-    exists: (path) => input.repo.exists(path),
-    folders: (path) => input.repo.folders(path),
-    read: (path) => input.repo.read(path),
-  });
-  if (edit.action === "manual") return edit;
-  const pathNote =
-    base !== undefined && moved !== undefined
-      ? {
-          ...(moved === input.healthPath
-            ? {}
-            : { pathNote: planPathNote(`${base.file} sets basePath "${base.value}"`, moved) }),
-          healthPath: moved,
-        }
-      : edit.basePathNote === undefined
-        ? {}
-        : { pathNote: edit.basePathNote };
-  if (edit.action === "none") return { action: "none", reason: edit.reason, ...pathNote };
+/** Health path OpsCrew's plans use for Next.js apps (`healthRouteFor` in design). */
+const NEXT_HEALTH_PATH = "/api/health";
+
+/** `<dir>/` + optional `src/` + router + the route file for `/api/health`. */
+const NEXT_ROUTE_PATH =
+  /^(?:(?<dir>.+)\/)?(?<src>src\/)?(?:(?<app>app)\/api\/health\/route|(?<pages>pages)\/api\/health)\.[cm]?[jt]sx?$/;
+
+const NEXT_EXTENSIONS = ["ts", "tsx", "js", "jsx"];
+
+/**
+ * The app router route, the same in TypeScript and JavaScript. `NextResponse.json` type-checks on
+ * every TypeScript version `next build` accepts (`Response.json` needs TypeScript 5.2), and no
+ * `dynamic` export: it is a build error with `cacheComponents` (Next.js 16), and a static 200 from
+ * the running server is all the health check needs.
+ */
+const NEXT_APP_ROUTE = `import { NextResponse } from "next/server";
+
+${DOC}
+export function GET() {
+  return NextResponse.json({ status: "ok" });
+}
+`;
+
+const NEXT_PAGES_ROUTE_TS = `import type { NextApiRequest, NextApiResponse } from "next";
+
+${DOC}
+export default function handler(_req: NextApiRequest, res: NextApiResponse) {
+  res.status(200).json({ status: "ok" });
+}
+`;
+
+const NEXT_PAGES_ROUTE_JS = `${DOC}
+export default function handler(_req, res) {
+  res.status(200).json({ status: "ok" });
+}
+`;
+
+/**
+ * What the Next.js config of the app sets as `basePath`: a literal one moves the route under it,
+ * and the plan's path follows (a plan that already names `<basePath>/api/health` is the same
+ * route); one OpsCrew cannot read is only named.
+ */
+async function nextBasePathNote(
+  ctx: FileContext,
+): Promise<{ pathNote?: string; healthPath?: string }> {
+  for (const name of NEXT_CONFIG_NAMES) {
+    const text = await ctx.read(name);
+    if (text === undefined) continue;
+    const file = ctx.at(name);
+    const scan = nextBasePath(file, text);
+    if (scan.kind === "none") continue;
+    if (scan.kind === "unknown") {
+      return {
+        pathNote: `${file} mentions basePath in a way OpsCrew cannot read: if it sets one, the health route answers at <basePath>${NEXT_HEALTH_PATH} and the plan's health check path must be that (${PLAN_PATH_FIX}), or every deploy fails its health check.`,
+      };
+    }
+    const moved = `${scan.value.replace(/\/+$/, "")}${NEXT_HEALTH_PATH}`;
+    if (moved === ctx.input.healthPath) return { healthPath: moved };
+    return {
+      pathNote: planPathNote(`${file} sets basePath "${scan.value}"`, moved),
+      healthPath: moved,
+    };
+  }
+  return {};
+}
+
+/**
+ * Next.js: a new file (never an edit) at the plan's path, created only when the plan checks
+ * `/api/health` (under the config's `basePath`), no route for that path exists in either router
+ * (nor inside app router route groups), and the router the plan names is the one Next.js uses (its
+ * folder exists, and `src/` is not shadowed by a root `app/` or `pages/`). TypeScript when the app
+ * has `tsconfig.json`, JavaScript otherwise. The app's folder is the one the plan's path names (the
+ * Next.js framework's folder), not the context's.
+ */
+async function next({ input }: FileContext): Promise<HealthEdit> {
+  const match = NEXT_ROUTE_PATH.exec(input.path);
+  if (match?.groups === undefined) {
+    return manual(
+      input.healthPath !== NEXT_HEALTH_PATH
+        ? `the plan checks ${input.healthPath}, and OpsCrew only creates ${NEXT_HEALTH_PATH} itself.`
+        : `OpsCrew only creates the route as app/api/health/route.ts or pages/api/health.ts, not ${input.path}.`,
+    );
+  }
+  // `src/` belongs to the app (the Next.js src layout), never to the folder the app lives in.
+  let { dir = ".", src = "" } = match.groups;
+  if (src === "" && (dir === "src" || dir.endsWith("/src"))) {
+    src = "src/";
+    dir = dir === "src" ? "." : dir.slice(0, -"/src".length);
+  }
+  const ctx = fileContext(input, dir);
+  const extras = await nextBasePathNote(ctx);
+  const healthPath = extras.healthPath === input.healthPath ? NEXT_HEALTH_PATH : input.healthPath;
+  if (healthPath !== NEXT_HEALTH_PATH) {
+    return manual(
+      `the plan checks ${healthPath}, and OpsCrew only creates ${NEXT_HEALTH_PATH} itself.`,
+    );
+  }
+
+  const leaves = ["route", "page"].flatMap((name) => withExtensions(name, NEXT_EXTENSIONS));
+  for (const base of ["", "src/"]) {
+    const existing = await ctx.first(
+      NEXT_EXTENSIONS.flatMap((ext) => [
+        `${base}app/api/health/route.${ext}`,
+        `${base}app/api/health/page.${ext}`,
+        `${base}pages/api/health.${ext}`,
+        `${base}pages/api/health/index.${ext}`,
+      ]),
+    );
+    const found = existing ?? (await inGroups(ctx, `${base}app`, ["api", "health"], leaves));
+    if (found !== undefined) {
+      return { action: "none", reason: existsReason(ctx.at(found), NEXT_HEALTH_PATH), ...extras };
+    }
+  }
+
+  const router = match.groups.app === undefined ? "pages" : "app";
+  if (src !== "" && (await ctx.first(["app", "pages"])) !== undefined) {
+    return manual(
+      `the app has an app/ or pages/ folder next to src/, so Next.js ignores src/${router}/ and OpsCrew cannot tell where the route belongs.`,
+    );
+  }
+  if ((await ctx.first([`${src}${router}`])) === undefined) {
+    return manual(
+      `the app has no ${src}${router}/ folder, so OpsCrew cannot tell which Next.js router it uses.`,
+    );
+  }
+  const ts = (await ctx.first(["tsconfig.json"])) !== undefined;
+  const ext = ts ? "ts" : "js";
+  const route =
+    router === "app" ? `${src}app/api/health/route.${ext}` : `${src}pages/api/health.${ext}`;
+  const content =
+    router === "app" ? NEXT_APP_ROUTE : ts ? NEXT_PAGES_ROUTE_TS : NEXT_PAGES_ROUTE_JS;
+  const path = ctx.at(route);
   return {
     action: "write",
     framework: "Next.js",
-    files: [{ path: edit.path, content: edit.content, created: true }],
-    path: edit.path,
-    note: edit.note,
-    checks: edit.middleware === undefined ? [] : [protectCheck(edit.middleware, input.healthPath)],
-    ...pathNote,
+    files: [{ path, content, created: true }],
+    path,
+    note: createdNote(path, NEXT_HEALTH_PATH),
+    checks: await protectChecks(
+      ctx,
+      ["middleware", "proxy"].flatMap((name) =>
+        withExtensions(`${src}${name}`, ["ts", "js", "mjs"]),
+      ),
+    ),
+    ...extras,
   };
 }
 
@@ -544,7 +653,8 @@ export type FileRouted =
   | "remix"
   | "solid-start";
 
-const HANDLERS: Record<Exclude<FileRouted, "next">, (ctx: FileContext) => Promise<HealthEdit>> = {
+const HANDLERS: Record<FileRouted, (ctx: FileContext) => Promise<HealthEdit>> = {
+  next,
   nuxt,
   sveltekit,
   astro,
@@ -576,18 +686,21 @@ export async function fileHealthRoute(
   input: HealthRouteInput,
   framework: FileRouted,
 ): Promise<HealthEdit> {
-  if (framework === "next") return next(input);
-  const route = input.healthPath.replace(/^\/+|\/+$/g, "");
-  if (input.healthPath.endsWith("/") && input.healthPath !== "/") {
+  // Next.js only creates `/api/health` and says so itself.
+  if (framework !== "next" && input.healthPath.endsWith("/") && input.healthPath !== "/") {
     return manual(
       `the plan checks ${input.healthPath} with a trailing slash, and OpsCrew only creates routes without one.`,
     );
   }
-  const dir = appFolder(input.facts);
+  return HANDLERS[framework](fileContext(input, appDirOf(input.facts)));
+}
+
+/** The context for the app in the repo-relative folder `dir`. */
+function fileContext(input: HealthRouteInput, dir: string): FileContext {
+  const route = input.healthPath.replace(/^\/+|\/+$/g, "");
   const at = (path: string) => under(dir, path);
-  const ctx: FileContext = {
+  return {
     input,
-    dir,
     route,
     segments: route.split("/"),
     at,
@@ -597,5 +710,4 @@ export async function fileHealthRoute(
       return undefined;
     },
   };
-  return HANDLERS[framework](ctx);
 }

@@ -5,7 +5,7 @@ import {
   nextPostgresFacts,
   staticSpaFacts,
 } from "./__fixtures__/catalog";
-import { regionLocations, sizeFor } from "./index";
+import { regionLocations, sizeFor } from "./sizing";
 
 describe("regionLocations", () => {
   it("maps regions to Hetzner locations in preference order", () => {

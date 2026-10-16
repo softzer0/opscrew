@@ -166,27 +166,19 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   // A server the user owns serves directly behind Cloudflare's proxy only with OpsCrew's web
   // filter (the explicit `proxy` choice); otherwise a public server is DNS only.
   const ownDirect = option.target.provider === "own" && input.access === "public";
+  const webFilter = ownDirect && input.serving === "proxy";
   // In a Portainer only the tunnel goes through Cloudflare: OpsCrew cannot keep visitors from
   // going around Cloudflare's proxy on a host it does not manage, so the other modes are DNS only.
-  const portainerDirect =
-    option.target.provider === "portainer" && input.portainer?.web.mode !== "tunnel";
-  if (
-    requirements.dnsProvider === "cloudflare" &&
-    requirements.domain !== undefined &&
-    (!ownDirect || input.serving === "proxy") &&
-    !portainerDirect
-  ) {
-    refuseDeepDomain(requirements.domain, option.target.provider, input.access);
+  const dnsOnly =
+    (ownDirect && !webFilter) ||
+    (option.target.provider === "portainer" && input.portainer?.web.mode !== "tunnel");
+  const onCloudflare = requirements.dnsProvider === "cloudflare" ? requirements.domain : undefined;
+  if (onCloudflare !== undefined && !dnsOnly) {
+    refuseDeepDomain(onCloudflare, option.target.provider, input.access);
   }
   const dns: Record<string, unknown> =
-    requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined
-      ? {
-          provider: "cloudflare",
-          domain: requirements.domain,
-          ...((ownDirect && input.serving !== "proxy") || portainerDirect
-            ? { proxied: false }
-            : {}),
-        }
+    onCloudflare !== undefined
+      ? { provider: "cloudflare", domain: onCloudflare, ...(dnsOnly ? { proxied: false } : {}) }
       : {
           // Without Cloudflare nothing proxies the traffic, so HTTP must stay open to everyone.
           provider: "none",
@@ -216,9 +208,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     cost: option.cost,
     codeChanges: input.codeChanges,
     dns,
-    ...(ownDirect && input.serving === "proxy"
-      ? { security: { httpAllowedFrom: "cloudflare" } }
-      : {}),
+    ...(webFilter ? { security: { httpAllowedFrom: "cloudflare" } } : {}),
     cicd: {
       provider: "github-actions",
       registry: "ghcr",

@@ -1,17 +1,7 @@
 import type { ProjectFacts } from "@opscrew/plan-schema";
+import { appDirOf, under } from "../../design/code-changes";
 import { escapeRegExp, lineAt, lineStarts } from "./text";
 import type { HealthEdit, HealthRepo } from "./types";
-
-/** Repo-relative folder of the app (`.` for the repository root). */
-export function appFolder(facts: ProjectFacts): string {
-  const dir = (facts.appDir ?? ".").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
-  return dir === "" || dir === "." ? "." : dir;
-}
-
-/** `<dir>/<path>`, or `path` for the root. */
-export function under(dir: string, path: string): string {
-  return dir === "." ? path : `${dir}/${path}`;
-}
 
 /** Folders and files that never hold the app's own server code. */
 const NOT_APP_CODE =
@@ -25,7 +15,7 @@ export async function appCodeFiles(
   facts: ProjectFacts,
   extensions: RegExp,
 ): Promise<string[]> {
-  const dir = appFolder(facts);
+  const dir = appDirOf(facts);
   const prefix = dir === "." ? "" : `${dir}/`;
   return (await repo.files())
     .filter((file) => file.startsWith(prefix))
@@ -128,7 +118,7 @@ export async function packageDependencies(
   facts: ProjectFacts,
 ): Promise<Map<string, string>> {
   const found = new Map<string, string>();
-  const text = await repo.read(under(appFolder(facts), "package.json"));
+  const text = await repo.read(under(appDirOf(facts), "package.json"));
   if (text === undefined) return found;
   try {
     const json = JSON.parse(text) as Record<string, unknown>;

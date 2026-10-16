@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { euCatalog, makeFacts, makeRequirements, nextPostgresFacts } from "./__fixtures__/catalog";
-import { buildDesignOptions, optionToPlan, releaseCommandNote } from "./index";
+import { buildDesignOptions } from "./options";
+import { optionToPlan } from "./plan";
+import { releaseCommandNote } from "./release";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
 

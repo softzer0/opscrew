@@ -1,56 +1,12 @@
 /** Architect: sizing, provider options and costs, code-change derivation and the design phase. */
-export { backgroundJobLibraries, backgroundJobsWarning } from "./background-jobs";
+export { convertMoney, costFor, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
+export { type BuildDesignOptionsInput, buildDesignOptions } from "./options";
 export {
-  type CodeChange,
-  type CodeChangeSignals,
-  collectCodeChangeSignals,
-  deriveCodeChanges,
-  type HealthRoute,
-  healthRouteFor,
-  type ScanFindings,
-} from "./code-changes";
-export {
-  convertMoney,
-  costFor,
-  EXCHANGE_RATE_NOTE,
-  formatMoney,
-  priceLabel,
-  roundCents,
-  USD_PER_EUR,
-} from "./cost";
-export {
-  type BuildDesignOptionsInput,
-  buildDesignOptions,
-  type DesignTier,
-  minimumMonthlyCost,
-} from "./options";
-export {
-  buildOwnServerOption,
-  OWN_SERVER_BACKUPS_NOTE,
-  OWN_SERVER_LOCATION,
-  OWN_SERVER_OPTION_ID,
-  OWN_SERVER_PRICE_NOTE,
-  OWN_SERVER_TYPE,
-  type OwnServerAccess,
-  type OwnServerDesign,
-  type OwnServerOptionInput,
-  tunnelNeedsCloudflareDomain,
-} from "./own";
-export { appNameFor, appPortFor, type OptionToPlanInput, optionToPlan } from "./plan";
-export {
-  buildPortainerOption,
   PORTAINER_BACKUPS_NOTE,
   PORTAINER_HOST_NOTE,
   PORTAINER_LOCATION,
-  PORTAINER_OPTION_ID,
-  PORTAINER_PRICE_NOTE,
   PORTAINER_SERVER_TYPE,
-  type PortainerDesignChoice,
-  type PortainerOptionInput,
-  portainerChoiceProblem,
-  portainerDesignChoice,
 } from "./portainer";
-export { type ReleaseCommandNote, releaseCommandNote } from "./release";
 export {
   type DesignPreview,
   type DesignResult,
@@ -60,11 +16,3 @@ export {
   type RunDesignOptions,
   runDesign,
 } from "./run";
-export {
-  LOCATION_NAMES,
-  OWN_SERVER_MEMORY_TOLERANCE,
-  ownServerFreeDiskGb,
-  regionLocations,
-  type Sizing,
-  sizeFor,
-} from "./sizing";

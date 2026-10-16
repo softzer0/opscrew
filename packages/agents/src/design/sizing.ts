@@ -1,4 +1,5 @@
 import type { VpsProviderId } from "@opscrew/contracts";
+import { listText } from "@opscrew/core";
 import type {
   ProjectFacts,
   Region,
@@ -8,10 +9,6 @@ import type {
 } from "@opscrew/plan-schema";
 import { ServiceKindSchema } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
-
-/** Display names of the Hetzner locations OpsCrew offers (see `providerProfile` for others). */
-export const LOCATION_NAMES: Readonly<Record<string, string>> =
-  providerProfile("hetzner").locationNames;
 
 /**
  * A provider's locations for a region, in order of preference (Hetzner by default); none for a
@@ -33,6 +30,15 @@ export interface Sizing {
   services: { postgres: boolean; redis: boolean };
   /** Services the app keeps using outside the server (sorted in schema order). */
   externalServices: ServiceKind[];
+}
+
+/** What runs on the server, in a sentence: `the app`, `the app, Postgres and Redis`. */
+export function containersText(sizing: Pick<Sizing, "services">): string {
+  return listText([
+    "the app",
+    ...(sizing.services.postgres ? ["Postgres"] : []),
+    ...(sizing.services.redis ? ["Redis"] : []),
+  ]);
 }
 
 /** Base (vCPU, GB RAM) for the app by expected monthly users. */

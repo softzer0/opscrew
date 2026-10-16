@@ -69,12 +69,25 @@ describe("healthRouteEdit (the registry)", () => {
       "main.py": FASTAPI,
     });
     input.repo.read = async () => {
-      throw new Error("EACCES: permission denied, open 'main.py'");
+      throw Object.assign(new Error("EACCES: permission denied, open 'main.py'"), {
+        code: "EACCES",
+        syscall: "open",
+      });
     };
     expect(await healthRouteEdit(input)).toEqual({
       action: "manual",
       reason:
         "OpsCrew could not read the app's code to add the route (EACCES: permission denied, open 'main.py').",
     });
+  });
+
+  it("does not hide a bug as an unreadable file", async () => {
+    const input = healthInput("fastapi", appFacts({ languages: ["python"] }), {
+      "main.py": FASTAPI,
+    });
+    input.repo.read = async () => {
+      throw new TypeError("text.split is not a function");
+    };
+    await expect(healthRouteEdit(input)).rejects.toThrow(TypeError);
   });
 });

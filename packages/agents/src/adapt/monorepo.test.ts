@@ -11,8 +11,9 @@ import { euCatalog } from "../design/__fixtures__/catalog";
 import { runInterview } from "../interview";
 import { createTestPhaseDeps, ScriptedApprovalHandler } from "../testing";
 import { GIT, GitOnlyRunner, git, testEnv } from "./__fixtures__/repo";
-import { buildCodeChangePrompt, runAdapt } from "./index";
 import { playbookFor } from "./playbooks";
+import { buildCodeChangePrompt } from "./prompts";
+import { runAdapt } from "./run";
 
 /** The detect fixture with an Express API in `apps/api` and a Next.js app in `apps/web`. */
 const TWO_APPS = fileURLToPath(

@@ -1,9 +1,9 @@
+import { listText } from "@opscrew/core";
 import type { Architecture, PlatformExport } from "@opscrew/plan-schema";
 import {
   APP_KIND_LABELS,
   frameworkName,
   languageName,
-  listText,
   PLATFORM_NAMES,
   SERVICE_NAMES,
 } from "./summary";

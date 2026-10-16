@@ -18,15 +18,16 @@ import {
   staticSpaFacts,
 } from "./__fixtures__/catalog";
 import {
-  buildDesignOptions,
+  buildOwnServerOption,
+  distinctAmounts,
   OWN_SERVER_BACKUPS_NOTE,
   OWN_SERVER_LOCATION,
   OWN_SERVER_TYPE,
-  optionToPlan,
-  previewDesignOptions,
-  runDesign,
-} from "./index";
-import { buildOwnServerOption, distinctAmounts } from "./own";
+  type OwnServerAccess,
+  type OwnServerOptionInput,
+} from "./own";
+import { optionToPlan } from "./plan";
+import { previewDesignOptions, runDesign } from "./run";
 
 const IPV4 = "203.0.113.10";
 const NOW = new Date("2026-10-14T12:00:00.000Z");
@@ -43,13 +44,18 @@ const ownRequirements = (overrides: Partial<Requirements> = {}): Requirements =>
   return { ...base, provider: "own", ...overrides };
 };
 
+/** The single own-server option, served directly unless `access` says otherwise. */
+const ownOptions = async (
+  input: Omit<OwnServerOptionInput, "access"> & { access?: OwnServerAccess },
+) => [(await buildOwnServerOption({ access: "public", ...input })).option];
+
 const catalogOf = (facts: OwnServerFacts) =>
   ownServerConnector({ facts, now: () => NOW }).catalog();
 
-describe("buildDesignOptions for a server the user owns", () => {
+describe("buildOwnServerOption", () => {
   it("offers the inspected server as one recommended option without a price", async () => {
     const requirements = ownRequirements({ budgetMonthly: { amount: 20, currency: "USD" } });
-    const options = await buildDesignOptions({
+    const options = await ownOptions({
       facts: staticSpaFacts(),
       requirements,
       catalog: catalogOf(BIG),
@@ -88,7 +94,7 @@ describe("buildDesignOptions for a server the user owns", () => {
   });
 
   it("never shows the schema placeholders in what the user reads", async () => {
-    const [option] = await buildDesignOptions({
+    const [option] = await ownOptions({
       facts: nextPostgresFacts(),
       requirements: ownRequirements(),
       catalog: catalogOf(BIG),
@@ -115,7 +121,7 @@ describe("buildDesignOptions for a server the user owns", () => {
   });
 
   it("warns when the server's memory or free disk are below the app's needs", async () => {
-    const options = await buildDesignOptions({
+    const options = await ownOptions({
       facts: nextPostgresFacts(),
       requirements: ownRequirements(),
       catalog: catalogOf({ arch: "amd64", vcpus: 1, memoryGb: 1.95, diskFreeGb: 25 }),
@@ -194,7 +200,7 @@ describe("buildDesignOptions for a server the user owns", () => {
 
   it("explains the tunnel and that it needs a domain on Cloudflare", async () => {
     const build = (requirements: Requirements) =>
-      buildDesignOptions({
+      ownOptions({
         facts: staticSpaFacts(),
         requirements,
         catalog: catalogOf(BIG),
@@ -212,7 +218,7 @@ describe("buildDesignOptions for a server the user owns", () => {
   });
 
   it("stops plainly before the server is inspected and refuses another provider's catalogue", async () => {
-    const error = await buildDesignOptions({
+    const error = await ownOptions({
       facts: staticSpaFacts(),
       requirements: ownRequirements(),
       catalog: ownServerConnector().catalog(),
@@ -222,19 +228,19 @@ describe("buildDesignOptions for a server the user owns", () => {
       message: expect.stringMatching(/has not inspected your server yet/),
     });
     await expect(
-      buildDesignOptions({
+      ownOptions({
         facts: staticSpaFacts(),
         requirements: ownRequirements(),
         catalog: euCatalog(),
       }),
-    ).rejects.toThrow(/own catalogue but got the hetzner one/);
+    ).rejects.toThrow(/own-server catalogue but got the hetzner one/);
   });
 
   it("turns the option into an own-server target and needs the access mode", async () => {
     const facts = staticSpaFacts();
     // A tunnel serves the app on a Cloudflare domain.
     const requirements = ownRequirements({ domain: "app.example.com", dnsProvider: "cloudflare" });
-    const [option] = await buildDesignOptions({ facts, requirements, catalog: catalogOf(BIG) });
+    const [option] = await ownOptions({ facts, requirements, catalog: catalogOf(BIG) });
     if (option === undefined) throw new Error("no option");
     const plan = optionToPlan(option, {
       facts,
@@ -260,7 +266,7 @@ describe("buildDesignOptions for a server the user owns", () => {
       domain: "api.shop.example.com",
       dnsProvider: "cloudflare",
     });
-    const [option] = await buildDesignOptions({ facts, requirements, catalog: catalogOf(BIG) });
+    const [option] = await ownOptions({ facts, requirements, catalog: catalogOf(BIG) });
     if (option === undefined) throw new Error("no option");
     const input = { facts, requirements, now: NOW, codeChanges: [] };
     const reason =

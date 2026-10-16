@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Finding } from "@opscrew/contracts";
+import { type Finding, SEVERITIES } from "@opscrew/contracts";
+import { plural } from "@opscrew/core";
 import { listProjectFiles } from "@opscrew/detect";
 import {
   type CodeChangeKind,
@@ -8,6 +9,7 @@ import {
   type ProjectFacts,
   RepoPathSchema,
 } from "@opscrew/plan-schema";
+import { z } from "zod";
 
 /** One entry of `plan.codeChanges`. */
 export type CodeChange = DeployPlan["codeChanges"][number];
@@ -41,6 +43,27 @@ export interface ScanFindings {
   findings: readonly Pick<Finding, "ruleId" | "file" | "title">[];
 }
 
+/** What design and adapt read from `.opscrew/scan.json`. */
+const ScanReportSchema = z.looseObject({
+  counts: z.partialRecord(z.enum(SEVERITIES), z.number().int().nonnegative()),
+  findings: z.array(
+    z.looseObject({ ruleId: z.string(), title: z.string(), file: z.string().optional() }),
+  ),
+});
+
+/** The finding counts and findings of the last `opscrew scan`. */
+export type ScanReportSummary = z.infer<typeof ScanReportSchema>;
+
+/** The last `opscrew scan` report (`.opscrew/scan.json`); undefined when missing or damaged. */
+export async function readScanReport(file: string): Promise<ScanReportSummary | undefined> {
+  try {
+    const parsed = ScanReportSchema.safeParse(JSON.parse(await readFile(file, "utf8")));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Health check path and, when one must be added, where the endpoint lives. */
 export interface HealthRoute {
   path: string;
@@ -48,7 +71,8 @@ export interface HealthRoute {
   file?: string;
 }
 
-const NEXT_CONFIG_NAMES = [
+/** The Next.js config file names, in the order OpsCrew looks for them. */
+export const NEXT_CONFIG_NAMES = [
   "next.config.ts",
   "next.config.mjs",
   "next.config.js",
@@ -78,8 +102,9 @@ function isRootDir(dir: string): boolean {
   return dir === "." || dir === "" || dir === "./";
 }
 
-function joinRel(dir: string, file: string): string {
-  return isRootDir(dir) ? file : `${dir.replace(/\/+$/, "")}/${file}`;
+/** `<dir>/<path>` for a repo-relative folder, or `path` for the repository root. */
+export function under(dir: string, path: string): string {
+  return isRootDir(dir) ? path : `${dir.replace(/\/+$/, "")}/${path}`;
 }
 
 /** Repo-relative folder of the app the facts describe (`.` for the repository root). */
@@ -103,7 +128,7 @@ export function appDockerfile(facts: ProjectFacts): { path: string; exists: bool
   const found = facts.docker.dockerfile;
   if (dir === ".") return { path: "Dockerfile", exists: found !== undefined };
   if (found !== undefined && isInDir(dir, found)) return { path: found, exists: true };
-  return { path: joinRel(dir, "Dockerfile"), exists: false };
+  return { path: under(dir, "Dockerfile"), exists: false };
 }
 
 function nextDir(facts: ProjectFacts): string | undefined {
@@ -136,7 +161,7 @@ export async function collectCodeChangeSignals(
   const next = nextDir(facts);
   if (next !== undefined) {
     const fileSet = new Set(files);
-    const config = NEXT_CONFIG_NAMES.map((name) => joinRel(next, name)).find((f) => fileSet.has(f));
+    const config = NEXT_CONFIG_NAMES.map((name) => under(next, name)).find((f) => fileSet.has(f));
     if (config !== undefined) {
       const text = await read(config);
       signals.nextConfig = {
@@ -196,11 +221,11 @@ export function healthRouteFor(facts: ProjectFacts, signals: CodeChangeSignals =
   const next = nextDir(facts);
   if (next !== undefined) {
     const files = signals.files ?? [];
-    const has = (prefix: string) => files.some((f) => f.startsWith(joinRel(next, prefix)));
+    const has = (prefix: string) => files.some((f) => f.startsWith(under(next, prefix)));
     const router = (["app/", "src/app/", "pages/", "src/pages/"] as const).find(has) ?? "app/";
     const file = router.endsWith("pages/")
-      ? joinRel(next, `${router}api/health.${ext}`)
-      : joinRel(next, `${router}api/health/route.${ext}`);
+      ? under(next, `${router}api/health.${ext}`)
+      : under(next, `${router}api/health/route.${ext}`);
     return { path: "/api/health", file };
   }
   const entry = signals.serverEntry ?? facts.frameworks[0]?.path ?? ".";
@@ -285,7 +310,7 @@ export function deriveCodeChanges(
       "env-example",
       "env-example",
       ".env.example",
-      `The app reads ${facts.envVars.length} environment variable${facts.envVars.length === 1 ? "" : "s"} but has no .env.example; OpsCrew lists their names (never values).`,
+      `The app reads ${plural(facts.envVars.length, "environment variable")} but has no .env.example; OpsCrew lists their names (never values).`,
     );
   }
 
@@ -298,7 +323,7 @@ export function deriveCodeChanges(
       add(
         "build-config",
         "build-config",
-        config?.path ?? joinRel(next, "next.config.mjs"),
+        config?.path ?? under(next, "next.config.mjs"),
         inFolder
           ? `Set output: "standalone" and outputFileTracingRoot (the repository root, for example path.join(__dirname, "${toRoot}")) in the Next.js config, so the container image only ships the files the server needs, including workspace packages.`
           : 'Set output: "standalone" in the Next.js config so the container image only ships the files the server needs.',

@@ -1,7 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
 import {
-  type CostEstimate,
-  CostEstimateSchema,
   type DesignOption,
   DesignOptionSchema,
   type PortainerDeployTarget,
@@ -9,8 +7,8 @@ import {
   type Requirements,
 } from "@opscrew/plan-schema";
 import type { PortainerConnection } from "../shared";
-import { hasCloudflareDomain } from "./own";
-import { sizeFor } from "./sizing";
+import { hasCloudflareDomain, noServerCost, OWN_SERVER_LOCATION } from "./own";
+import { containersText, sizeFor } from "./sizing";
 
 /** What design needs from the interview's Portainer answers (`.opscrew/server.json`). */
 export type PortainerDesignChoice = Pick<
@@ -39,7 +37,7 @@ export const PORTAINER_PRICE_NOTE = "No server price: you already run this Porta
  * schema's smallest placeholders.
  */
 export const PORTAINER_SERVER_TYPE = "your Portainer environment";
-export const PORTAINER_LOCATION = "its current location";
+export const PORTAINER_LOCATION = OWN_SERVER_LOCATION;
 
 /**
  * The design choice from the interview's record, or a plain refusal: without the environment's
@@ -105,11 +103,6 @@ export function portainerChoiceProblem(
   return undefined;
 }
 
-function joinWords(words: readonly string[]): string {
-  if (words.length <= 1) return words.join("");
-  return `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
-}
-
 /** How visitors reach the app, as a sentence. */
 function webText(web: PortainerDesignChoice["web"]): string {
   switch (web.mode) {
@@ -146,21 +139,13 @@ export interface PortainerOptionInput {
 export function buildPortainerOption(input: PortainerOptionInput): DesignOption {
   const { facts, requirements, choice } = input;
   const sizing = sizeFor(facts, requirements);
-  const containers = [
-    "the app",
-    ...(sizing.services.postgres ? ["Postgres"] : []),
-    ...(sizing.services.redis ? ["Redis"] : []),
-  ];
-  const currency = requirements.budgetMonthly.currency;
-  const cost: CostEstimate = CostEstimateSchema.parse({
-    monthly: { amount: 0, currency },
-    breakdown: [{ item: "Your Portainer (you already run it)", monthly: { amount: 0, currency } }],
-    pricesIncludeVat: false,
-    source: "live",
-    asOf: input.now.toISOString(),
-  });
+  const cost = noServerCost(
+    "Your Portainer (you already run it)",
+    requirements.budgetMonthly.currency,
+    input.now.toISOString(),
+  );
   const summary = [
-    `Your existing Portainer, running ${joinWords(containers)} as a Docker Compose stack in the environment you picked (${choice.arch}).`,
+    `Your existing Portainer, running ${containersText(sizing)} as a Docker Compose stack in the environment you picked (${choice.arch}).`,
     webText(choice.web),
     PORTAINER_PRICE_NOTE,
     PORTAINER_HOST_NOTE,

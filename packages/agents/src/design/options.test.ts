@@ -12,13 +12,8 @@ import {
   offer,
   staticSpaFacts,
 } from "./__fixtures__/catalog";
-import {
-  buildDesignOptions,
-  convertMoney,
-  costFor,
-  EXCHANGE_RATE_NOTE,
-  minimumMonthlyCost,
-} from "./index";
+import { convertMoney, costFor, EXCHANGE_RATE_NOTE } from "./cost";
+import { buildDesignOptions, minimumMonthlyCost } from "./options";
 
 const extras: ProviderExtras = {
   ipv4Monthly: { amount: 0.5, currency: "EUR" },

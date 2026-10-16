@@ -25,9 +25,8 @@ import {
   PORTAINER_HOST_NOTE,
   PORTAINER_OPTION_ID,
   portainerDesignChoice,
-  previewDesignOptions,
-  runDesign,
-} from "./index";
+} from "./portainer";
+import { previewDesignOptions, runDesign } from "./run";
 
 const URL_ = "https://nas.home.example.com:9443";
 const now = new Date("2026-10-11T12:00:00.000Z");

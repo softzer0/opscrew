@@ -3,6 +3,7 @@
  * template text and regular expressions (keeping offsets), reads imports and `require` calls, and
  * finds the statements that create an app object.
  */
+import { posix } from "node:path";
 import {
   closingBracket,
   eolOf,
@@ -46,6 +47,23 @@ const KEYWORDS_BEFORE_REGEX = new Set([
 ]);
 
 /** Scans a JavaScript or TypeScript file. */
+/**
+ * The files a relative import specifier from `from` may name, in the order OpsCrew tries them
+ * (`./app.module`, or `./app.module.js` for the TypeScript source of an ESM build); none for a
+ * package.
+ */
+export function moduleCandidates(from: string, specifier: string): string[] {
+  if (!specifier.startsWith(".")) return [];
+  const base = posix.normalize(posix.join(posix.dirname(from), specifier));
+  const stem = base.replace(/\.[cm]?js$/, "");
+  return [
+    ...(/\.[cm]?[jt]s$/.test(base) ? [base] : []),
+    ...["ts", "mts", "cts", "js", "mjs", "cjs"].map((ext) => `${stem}.${ext}`),
+    `${stem}/index.ts`,
+    `${stem}/index.js`,
+  ];
+}
+
 export function scanJs(text: string): JsSource {
   const out = text.split("");
   const strings: JsString[] = [];

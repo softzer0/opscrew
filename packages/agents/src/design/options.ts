@@ -16,15 +16,13 @@ import {
 import { requestedProvider, requestedRegion } from "../providers";
 import {
   convertMoney,
-  costFor,
   EXCHANGE_RATE_NOTE,
   formatMoney,
-  nonLiveRates,
+  type NonLiveRates,
+  pricedOffer,
   priceLabel,
-  type RateSource,
 } from "./cost";
-import { buildOwnServerOption, type OwnServerAccess } from "./own";
-import { regionLocations, type Sizing, sizeFor } from "./sizing";
+import { containersText, regionLocations, type Sizing, sizeFor } from "./sizing";
 import { type DesignWording, designWording } from "./wording";
 
 export interface BuildDesignOptionsInput {
@@ -33,8 +31,6 @@ export interface BuildDesignOptionsInput {
   catalog: ComputeCatalog;
   /** Current time; used to say how old a static price table is. Defaults to the catalogue date. */
   now?: Date;
-  /** A server the user owns only: how the internet reaches it (default `public`). */
-  access?: OwnServerAccess;
 }
 
 /** Option tiers, in display order. */
@@ -47,7 +43,7 @@ interface Candidate {
   offer: ComputeOffer;
   cost: CostEstimate;
   /** Rates in the estimate of a live offer that were not read from the API. */
-  rates: { ipv4?: RateSource; backups?: RateSource };
+  rates: NonLiveRates;
 }
 
 /**
@@ -59,8 +55,8 @@ interface Candidate {
  * type is offered in the first location of the region (from the provider profile) where it is
  * available. Prices stay in the catalogue's currency; the budget is compared at the fixed
  * approximate exchange rate. Exactly one option is recommended. Validated with
- * `DesignOptionListSchema`. A server the user owns (`provider: own`) has exactly one option, the
- * inspected server without a price (see `buildOwnServerOption`).
+ * `DesignOptionListSchema`. A server the user owns has its own single option
+ * (`buildOwnServerOption`).
  * @throws OpsCrewError `INVALID_INPUT` when no server in the region meets the need.
  * @throws Error when the catalogue belongs to another provider (a bug, never user input).
  */
@@ -69,15 +65,6 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
   const provider = requestedProvider(requirements);
   if (catalog.provider !== provider) {
     throw new Error(`Design needs the ${provider} catalogue but got the ${catalog.provider} one.`);
-  }
-  if (provider === "own") {
-    const { option } = await buildOwnServerOption({
-      facts,
-      requirements,
-      catalog,
-      access: input.access ?? "public",
-    });
-    return DesignOptionListSchema.parse([option]);
   }
   const wording = designWording(provider);
   const { profile } = wording;
@@ -117,8 +104,8 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
   for (const offer of byType.values()) {
     if (!meets(offer, sizing)) continue;
     const extras = await extrasFor(offer.location);
-    const cost = costFor(offer, extras, { backups, backupPercent: profile.backupPercent });
-    candidates.push({ offer, cost, rates: nonLiveRates(offer, extras, { backups }) });
+    const priced = pricedOffer(offer, extras, { backups, backupPercent: profile.backupPercent });
+    candidates.push({ offer, ...priced });
   }
   candidates.sort(cheapestFirst);
 
@@ -258,13 +245,8 @@ function toOption(
     ? `live ${wording.profile.serverNoun} price, ${notLive.map((r) => `${r.what} at ${r.rate}`).join(", ")}`
     : priceLabel(cost);
   const price = `${formatMoney(cost.monthly)}/month (${label}, ${cost.pricesIncludeVat ? "including" : "excluding"} ${tax})`;
-  const containers = [
-    "the app",
-    ...(sizing.services.postgres ? ["Postgres"] : []),
-    ...(sizing.services.redis ? ["Redis"] : []),
-  ];
   const summary = [
-    `One ${offer.id} ${wording.summaryNoun} (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${joinWords(containers)} with Docker Compose behind Caddy.`,
+    `One ${offer.id} ${wording.summaryNoun} (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${containersText(sizing)} with Docker Compose behind Caddy.`,
     `${price}.`,
     backups ? "Automated backups are on." : "Automated backups are off.",
   ].join(" ");
@@ -332,11 +314,6 @@ function toOption(
     recommended: context.recommended,
     tradeoffs,
   };
-}
-
-function joinWords(words: readonly string[]): string {
-  if (words.length <= 1) return words.join("");
-  return `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
 }
 
 /** The cheapest option's monthly cost converted to the budget currency. */

@@ -28,6 +28,19 @@ export function lineAt(starts: readonly number[], offset: number): number {
   return low;
 }
 
+/**
+ * Lines inserted after line `line` (zero-based), each followed by the file's line ending, or each
+ * preceded by it after the file's last line.
+ */
+export function linesAfter(text: string, line: number, block: readonly string[]): Insertion {
+  const eol = eolOf(text);
+  const next = lineStarts(text)[line + 1];
+  if (next === undefined) {
+    return { offset: text.length, text: block.map((l) => `${eol}${l}`).join("") };
+  }
+  return { offset: next, text: block.map((l) => `${l}${eol}`).join("") };
+}
+
 /** The text of every line, without line endings. */
 export function splitLines(text: string): string[] {
   return text.split(/\r?\n/);
@@ -216,10 +229,4 @@ export function indentUnit(lines: readonly string[], fallback: string): string {
 /** Escapes a string for a regular expression. */
 export function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-}
-
-/** `a`, `a and b`, `a, b and c`. */
-export function listing(items: readonly string[]): string {
-  if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 }

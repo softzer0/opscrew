@@ -8,7 +8,9 @@ import {
   staticSpaFacts,
 } from "./__fixtures__/catalog";
 import { digitaloceanCatalog, doEuCatalog, doOffer } from "./__fixtures__/digitalocean-catalog";
-import { buildDesignOptions, optionToPlan, regionLocations } from "./index";
+import { buildDesignOptions } from "./options";
+import { optionToPlan } from "./plan";
+import { regionLocations } from "./sizing";
 
 const doRequirements = (overrides: Parameters<typeof makeRequirements>[0] = {}) =>
   makeRequirements({ provider: "digitalocean", ...overrides });

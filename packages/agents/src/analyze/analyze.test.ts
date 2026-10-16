@@ -12,14 +12,10 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
-import {
-  ANALYST_SYSTEM_PROMPT,
-  buildAnalystPrompt,
-  DEFAULT_ANALYST_MODEL,
-  renderArchitectureMarkdown,
-  runAnalyze,
-  summarizeFacts,
-} from "./index";
+import { renderArchitectureMarkdown } from "./markdown";
+import { ANALYST_SYSTEM_PROMPT, buildAnalystPrompt } from "./prompts";
+import { DEFAULT_ANALYST_MODEL, runAnalyze } from "./run";
+import { summarizeFacts } from "./summary";
 
 const examples = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 /** The detect fixture with an Express API in `apps/api` and a Next.js app in `apps/web`. */

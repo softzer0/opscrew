@@ -13,7 +13,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { createTestPhaseDeps, type TestPhaseDeps } from "../../testing";
-import type { CodeChange } from "../../design";
+import type { CodeChange } from "../../design/code-changes";
 import type { AdaptGitHub } from "../run";
 
 /** Absolute path of git, or undefined when it is not installed (tests skip). */

@@ -4,10 +4,47 @@
  * `create-next-app` writes and returns `manual` whenever anything is unusual, so the change falls
  * back to the Code-change agent or to the user.
  */
+import { join, posix } from "node:path";
+import { NEXT_CONFIG_NAMES } from "../design/code-changes";
+import { exists, readIfExists } from "../shared";
 
 /** True for a Next.js config file (`next.config.{js,mjs,ts,cjs}`) in any folder. */
 export function isNextConfigPath(path: string): boolean {
-  return /(?:^|\/)next\.config\.(?:js|mjs|ts|cjs)$/.test(path);
+  return NEXT_CONFIG_NAMES.includes(posix.basename(path));
+}
+
+/**
+ * The deterministic standalone edit for the Next.js config at `path` (repo-relative) under `root`.
+ * A config in a subfolder also gets `outputFileTracingRoot` pointing back at the project root.
+ * OpsCrew edits (or creates) the config only when no other `next.config.*` sits next to it:
+ * Next.js reads just one of them, so editing the planned one could change nothing.
+ */
+export async function nextConfigEdit(root: string, path: string): Promise<StandaloneEdit> {
+  const folders = posix
+    .dirname(posix.normalize(path.replace(/\\/g, "/")))
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ".");
+  const dir = folders.join("/");
+  const planned = dir === "" ? posix.basename(path) : `${dir}/${posix.basename(path)}`;
+  const content = await readIfExists(join(root, path));
+  const others: string[] = [];
+  for (const name of NEXT_CONFIG_NAMES) {
+    const other = dir === "" ? name : `${dir}/${name}`;
+    if (other !== planned && (await exists(join(root, other)))) others.push(other);
+  }
+  if (others.length > 0) {
+    return manual(
+      content === undefined
+        ? `the plan expects ${path} but the app has ${others.join(" and ")}; run \`opscrew design\` again.`
+        : `the app has ${[planned, ...others].join(" and ")}, and Next.js reads only one of them; delete the ones you do not use, then run \`opscrew design\` again.`,
+    );
+  }
+  const tracingRoot = folders.length === 0 ? undefined : "../".repeat(folders.length);
+  return standaloneConfigEdit({
+    path,
+    content,
+    ...(tracingRoot === undefined ? {} : { tracingRoot }),
+  });
 }
 
 export interface StandaloneEditInput {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { detectProject } from "@opscrew/detect";
 import { afterEach, describe, expect, it } from "vitest";
-import { deriveCodeChanges, healthRouteFor } from "../../design";
+import { deriveCodeChanges, healthRouteFor } from "../../design/code-changes";
 
 const roots: string[] = [];
 afterEach(async () => {

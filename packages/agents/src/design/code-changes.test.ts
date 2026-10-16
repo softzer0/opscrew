@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { RepoPathSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeFacts, nextPostgresFacts, staticSpaFacts } from "./__fixtures__/catalog";
-import { collectCodeChangeSignals, deriveCodeChanges, healthRouteFor } from "./index";
+import { collectCodeChangeSignals, deriveCodeChanges, healthRouteFor } from "./code-changes";
 
 async function project(files: Record<string, string>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "opscrew-design-"));

@@ -1,8 +1,10 @@
+import { listText } from "@opscrew/core";
 /**
  * Django: a tiny view and a `path(...)` entry first in the root URLconf's `urlpatterns` (the
  * module `ROOT_URLCONF` names in the settings).
  */
-import { appCodeFiles, appFolder, readSource, under } from "./common";
+import { appDirOf, under } from "../../design/code-changes";
+import { appCodeFiles, readSource } from "./common";
 import {
   blockBefore,
   type PyStatement,
@@ -12,7 +14,7 @@ import {
   pyReference,
   scanPy,
 } from "./py";
-import { applyInsertions, escapeRegExp, type Insertion, listing, prependElement } from "./text";
+import { applyInsertions, escapeRegExp, type Insertion, prependElement } from "./text";
 import { type HealthEdit, type HealthRouteInput, manual, OK_BODY } from "./types";
 
 const ROOT_URLCONF = /^ROOT_URLCONF[ \t]*=[ \t]*(["'])([\w.]+)\1/m;
@@ -42,12 +44,12 @@ async function rootUrlconf(
   if (modules.size > 1) {
     const named = [...modules].map(([module, file]) => `${module} in ${file}`);
     return {
-      reason: `the Django settings name different root URLconfs (${listing(named)}), so OpsCrew cannot tell which one serves the app`,
+      reason: `the Django settings name different root URLconfs (${listText(named)}), so OpsCrew cannot tell which one serves the app`,
     };
   }
   const module = [...modules.keys()][0] as string;
   const relative = module.split(".").join("/");
-  const dir = appFolder(input.facts);
+  const dir = appDirOf(input.facts);
   const bases = new Set<string>();
   for (const file of files) {
     if (file === under(dir, "manage.py") || file.endsWith("/manage.py")) {

@@ -4,6 +4,7 @@
  * `{"status":"ok"}` and touching no database, cache, session or auth, only where OpsCrew can tell
  * unambiguously where it goes; anything else is left to the Code-change agent with the reason.
  */
+import { OpsCrewError } from "@opscrew/core";
 import { packageDependencies, SIMPLE_PATH } from "./common";
 import { djangoHealthRoute } from "./django";
 import { fileHealthRoute, fileRoutedFramework } from "./files";
@@ -11,8 +12,6 @@ import { adonisHealthRoute, nestHealthRoute } from "./nest";
 import { nodeHealthRoute } from "./node";
 import { pythonHealthRoute } from "./python";
 import { type HealthEdit, type HealthRouteInput, manual } from "./types";
-
-export type { HealthEdit, HealthFile, HealthRepo, HealthRouteInput } from "./types";
 
 /** Frameworks whose app object OpsCrew finds in code, for the message when it finds none. */
 const PYTHON_FRAMEWORKS =
@@ -25,14 +24,16 @@ const NODE_FRAMEWORKS = "Express, Fastify, Hono, Koa, Elysia, Hapi or Restify";
  * NestJS, a route in `start/routes.ts` for AdonisJS, a view in the root URLconf for Django, and
  * for the other Python and Node.js frameworks a route right after the one app object is created.
  * `none` when a route for the path exists, `manual` (with the reason) when OpsCrew cannot tell.
- * It never throws: a file it cannot read leaves the route to the Code-change agent.
+ * A file it cannot read (a file-system error, or OpsCrew's own error listing the files) leaves the
+ * route to the Code-change agent; anything else is a bug and is thrown.
  */
 export async function healthRouteEdit(input: HealthRouteInput): Promise<HealthEdit> {
   try {
     return await chooseEdit(input);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return manual(`OpsCrew could not read the app's code to add the route (${message}).`);
+    const fileSystem = error instanceof Error && "syscall" in error;
+    if (!(error instanceof OpsCrewError) && !fileSystem) throw error;
+    return manual(`OpsCrew could not read the app's code to add the route (${error.message}).`);
   }
 }
 

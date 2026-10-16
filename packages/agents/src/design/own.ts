@@ -1,4 +1,4 @@
-import type { ComputeCatalog, ComputeOffer } from "@opscrew/contracts";
+import type { ComputeCatalog, ComputeOffer, Currency } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
   type CostEstimate,
@@ -9,7 +9,12 @@ import {
   type ProjectFacts,
   type Requirements,
 } from "@opscrew/plan-schema";
-import { OWN_SERVER_MEMORY_TOLERANCE, ownServerFreeDiskGb, sizeFor } from "./sizing";
+import {
+  containersText,
+  OWN_SERVER_MEMORY_TOLERANCE,
+  ownServerFreeDiskGb,
+  sizeFor,
+} from "./sizing";
 
 /** How the internet reaches a server the user owns: directly, or through a Cloudflare Tunnel. */
 export type OwnServerAccess = OwnDeployTarget["access"];
@@ -84,11 +89,23 @@ export const OWN_SERVER_OPTION_ID = "own-server";
 
 /**
  * The option's `target.serverType` and `target.location`, which the option schema requires but a
- * server the user owns does not have. Surfaces that print them (`Server: <type> in <location>`)
- * then read naturally; they never reach the plan.
+ * server the user owns does not have (the location is the same for an existing Portainer).
+ * Surfaces that print them (`Server: <type> in <location>`) then read naturally; they never reach
+ * the plan.
  */
 export const OWN_SERVER_TYPE = "your server";
 export const OWN_SERVER_LOCATION = "its current location";
+
+/** The cost of an option on a server or Portainer the user already pays for: nothing. */
+export function noServerCost(item: string, currency: Currency, asOf: string): CostEstimate {
+  return CostEstimateSchema.parse({
+    monthly: { amount: 0, currency },
+    breakdown: [{ item, monthly: { amount: 0, currency } }],
+    pricesIncludeVat: false,
+    source: "live",
+    asOf,
+  });
+}
 
 export interface OwnServerOptionInput {
   facts: ProjectFacts;
@@ -141,11 +158,6 @@ export function distinctAmounts(a: number, b: number): [string, string] {
   return [String(a), String(b)];
 }
 
-function joinWords(words: readonly string[]): string {
-  if (words.length <= 1) return words.join("");
-  return `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`;
-}
-
 /**
  * The single design option on a server the user already owns: the inspected server (the
  * catalogue's only offer) with no price ("you already pay for this server"), warnings when its
@@ -173,25 +185,21 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
     );
   }
   const sizing = sizeFor(facts, requirements);
-  const containers = [
-    "the app",
-    ...(sizing.services.postgres ? ["Postgres"] : []),
-    ...(sizing.services.redis ? ["Redis"] : []),
-  ];
+  const containers = containersText(sizing);
   const arch = server.architecture === "arm" ? "arm64" : "amd64";
 
   const warnings: string[] = [];
   if (server.memoryGb < sizing.memoryGb * OWN_SERVER_MEMORY_TOLERANCE) {
     const [has, needs] = distinctAmounts(server.memoryGb, sizing.memoryGb);
     warnings.push(
-      `Your server has ${has} GB of memory, but OpsCrew plans at least ${needs} GB for ${joinWords(containers)} at the number of users you expect. The app may slow down or stop when memory runs out: add memory to the server, or expect fewer users.`,
+      `Your server has ${has} GB of memory, but OpsCrew plans at least ${needs} GB for ${containers} at the number of users you expect. The app may slow down or stop when memory runs out: add memory to the server, or expect fewer users.`,
     );
   }
   const freeDiskNeed = ownServerFreeDiskGb(sizing);
   if (server.diskGb < freeDiskNeed) {
     const [has, needs] = distinctAmounts(server.diskGb, freeDiskNeed);
     warnings.push(
-      `Your server has ${has} GB of free disk, but OpsCrew plans at least ${needs} GB of free disk for ${joinWords(containers)}, their images and updates. Free up space or add disk before you deploy.`,
+      `Your server has ${has} GB of free disk, but OpsCrew plans at least ${needs} GB of free disk for ${containers}, their images and updates. Free up space or add disk before you deploy.`,
     );
   }
   if (tunnelNeedsCloudflareDomain(requirements, access)) {
@@ -199,16 +207,11 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
     warnings.push(`${message} ${hint}`);
   }
 
-  const currency = requirements.budgetMonthly.currency;
-  const cost: CostEstimate = CostEstimateSchema.parse({
-    monthly: { amount: 0, currency },
-    breakdown: [
-      { item: "Your own server (you already pay for it)", monthly: { amount: 0, currency } },
-    ],
-    pricesIncludeVat: false,
-    source: "live",
-    asOf: server.asOf,
-  });
+  const cost = noServerCost(
+    "Your own server (you already pay for it)",
+    requirements.budgetMonthly.currency,
+    server.asOf,
+  );
 
   const os = server.description === undefined ? "" : `, ${server.description}`;
   const served =
@@ -218,7 +221,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
         ? " The app is served directly behind Cloudflare's proxy; a filter in Docker lets only Cloudflare's addresses reach ports 80 and 443."
         : "";
   const summary = [
-    `Your own server (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${joinWords(containers)} with Docker Compose behind Caddy.${served}`,
+    `Your own server (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${containers} with Docker Compose behind Caddy.${served}`,
     OWN_SERVER_PRICE_NOTE,
     OWN_SERVER_BACKUPS_NOTE,
   ].join(" ");

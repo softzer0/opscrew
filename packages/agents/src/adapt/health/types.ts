@@ -1,3 +1,4 @@
+import { listText } from "@opscrew/core";
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import type { PlaybookId } from "../playbooks";
 
@@ -69,6 +70,27 @@ export const OK_BODY = '{"status":"ok"}';
 /** A manual result. */
 export function manual(reason: string): HealthEdit {
   return { action: "manual", reason };
+}
+
+/** Several app objects, none of them clearly the one that serves the app (`where` each). */
+export function severalApps(where: readonly string[]): HealthEdit {
+  return manual(
+    `OpsCrew found ${where.length} app objects (${listText(where)}), so it cannot tell which one serves the app.`,
+  );
+}
+
+/** The one app object, not assigned to a variable. */
+export function unassignedApp(framework: string, file: string, line: number): HealthEdit {
+  return manual(
+    `the ${framework} app in ${file} (line ${line}) is not assigned to a variable OpsCrew can add a route to.`,
+  );
+}
+
+/** The one app object, created inside a class. */
+export function appInClass(framework: string, file: string, line: number): HealthEdit {
+  return manual(
+    `the ${framework} app in ${file} (line ${line}) is created inside a class, so OpsCrew cannot tell where a route belongs.`,
+  );
 }
 
 /** The note for a route that answers at `actual` instead of the plan's `planned` path. */

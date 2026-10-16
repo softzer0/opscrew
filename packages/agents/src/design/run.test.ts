@@ -25,7 +25,7 @@ import {
   staticSpaFacts,
 } from "./__fixtures__/catalog";
 import { doEuCatalog } from "./__fixtures__/digitalocean-catalog";
-import { previewDesignOptions, runDesign } from "./index";
+import { previewDesignOptions, runDesign } from "./run";
 
 const TOKEN = "hcloud-test-token-not-a-real-value";
 /** The detect `monorepo-turbo` fixture plus an Express API in `apps/api`. */
@@ -357,6 +357,7 @@ describe("runDesign", () => {
             severity: "critical",
           },
         ],
+        counts: { critical: 1, high: 0, medium: 0, low: 0, info: 0 },
       }),
     );
     const result = await runDesign(deps, { catalog: euCatalog() });

@@ -1,5 +1,5 @@
 import type { PhaseResult } from "@opscrew/contracts";
-import { ensureStateDir, writeFileAtomic } from "@opscrew/core";
+import { ensureStateDir, plural, writeFileAtomic } from "@opscrew/core";
 import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   AppKindSchema,
@@ -129,11 +129,10 @@ export async function runAnalyze(
     if (options.appDir !== undefined) await recordAppChoice(deps, architecture.facts.appDir ?? ".");
 
     const { facts } = architecture;
-    const riskCount = architecture.risks.length;
     await deps.state.markPhase(
       "analyze",
       "ok",
-      `${APP_KIND_LABELS[facts.appKind]}${inFolder(facts)}; ${riskCount} risk${riskCount === 1 ? "" : "s"}` +
+      `${APP_KIND_LABELS[facts.appKind]}${inFolder(facts)}; ${plural(architecture.risks.length, "risk")}` +
         (architecture.aiEnriched ? "; refined by the Analyst" : ""),
     );
     return {
@@ -254,10 +253,10 @@ async function enrich(
     return skip(redactor.redact(`the Analyst failed (${message}).`));
   }
 
-  const costUsd = Number.isFinite(result.costUsd) && result.costUsd > 0 ? result.costUsd : 0;
+  const { costUsd } = result;
   await deps.costs.append({ phase: "analyze", model: result.model ?? model, costUsd });
   reporter.info(
-    `The Analyst used ${result.turns} turn${result.turns === 1 ? "" : "s"} and cost $${costUsd.toFixed(4)}.`,
+    `The Analyst used ${plural(result.turns, "turn")} and cost $${costUsd.toFixed(4)}.`,
   );
 
   if (!result.ok || result.output === undefined) {

@@ -1,7 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
 import type { ComputeCatalog, VpsProviderId } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError, plural, toPosixRelative } from "@opscrew/core";
 import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   type DeployPlan,
@@ -14,25 +12,29 @@ import {
   readArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
-import { z } from "zod";
 import { appCandidatesText } from "../analyze/summary";
 import type { PhaseDeps } from "../context";
 import {
   type OwnServerFacts,
-  planProvider,
   providerProfile,
   requestedProvider,
   requestedRegion,
   vpsConnector,
 } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
-import { hasDeployment, readOwnServer, readPortainerConnection, serverAddress } from "../shared";
+import {
+  hasDeployment,
+  hasState,
+  readOwnServer,
+  readPortainerConnection,
+  serverAddress,
+} from "../shared";
 import { backgroundJobsWarning } from "./background-jobs";
 import {
   type CodeChangeSignals,
   collectCodeChangeSignals,
   deriveCodeChanges,
-  type ScanFindings,
+  readScanReport,
 } from "./code-changes";
 import { convertMoney, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
 import { buildDesignOptions, minimumMonthlyCost } from "./options";
@@ -104,13 +106,6 @@ export interface DesignResult {
   /** Plain-English warnings that were also sent to the reporter. */
   warnings: string[];
 }
-
-/** Lenient reader for `.opscrew/scan.json`: only the fields code-change derivation needs. */
-const ScanFileSchema = z.looseObject({
-  findings: z.array(
-    z.looseObject({ ruleId: z.string(), title: z.string(), file: z.string().optional() }),
-  ),
-});
 
 /**
  * The design phase: reads `opscrew/architecture.json` and `opscrew/requirements.yaml`, prices 2–3
@@ -463,7 +458,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
 
   const [signals, scan] = await Promise.all([
     collectCodeChangeSignals(paths.root, facts).catch((): CodeChangeSignals => ({})),
-    readScanFindings(paths.files.scanReportJson),
+    readScanReport(paths.files.scanReportJson),
   ]);
   const codeChanges = deriveCodeChanges(facts, scan, signals);
   const fresh = optionToPlan(chosen, {
@@ -496,7 +491,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       : `${cost}/month${inBudget}`;
   reporter.success(
     say(
-      `Wrote ${planFile}: ${chosen.title}, ${price}, ${codeChanges.length} code change${codeChanges.length === 1 ? "" : "s"} to make.`,
+      `Wrote ${planFile}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
     ),
   );
   const migrations = releaseCommandNote(plan, facts);
@@ -515,38 +510,13 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   return { options: designOptions, chosen, plan, priceSource, warnings };
 }
 
-/** True when the local infrastructure state file exists and is not empty. */
-async function stateExists(deps: PhaseDeps): Promise<boolean> {
-  try {
-    return (await stat(join(deps.paths.files.tfstateDir, "prod.tfstate"))).size > 0;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The provider of a deployment that may still have resources: not destroyed, and either an apply
- * recorded or a non-empty state file (`stateExists`: a first apply that fails half-way records
- * nothing in the plan but keeps what it created in the state). `undefined` when nothing can be
- * live. Throws a plain `PHASE_PRECONDITION` for a Portainer target.
- */
-export function liveDeploymentProvider(
-  plan: Pick<DeployPlan, "target" | "deployment">,
-  stateExists = false,
-): VpsProviderId | undefined {
-  const { deployment } = plan;
-  if (deployment.destroyedAt !== undefined) return undefined;
-  const applied = deployment.lastApplyAt !== undefined || stateExists;
-  return applied ? planProvider(plan) : undefined;
-}
-
 /**
  * True when an earlier provision may have left resources behind: a non-empty infrastructure state,
  * or for a Portainer target anything OpsCrew's record lists as created there (a stack apply that
  * failed half-way records what it made without an apply time in the plan).
  */
 async function mayHaveResources(deps: PhaseDeps, previous: DeployPlan): Promise<boolean> {
-  if (await stateExists(deps)) return true;
+  if (await hasState(deps.paths)) return true;
   if (previous.target.provider !== "portainer") return false;
   const created = (await readPortainerConnection(deps.paths).catch(() => undefined))?.created;
   return (
@@ -555,7 +525,12 @@ async function mayHaveResources(deps: PhaseDeps, previous: DeployPlan): Promise<
   );
 }
 
-/** Like {@link liveDeploymentProvider}, with a Portainer target as `portainer`. */
+/**
+ * The provider of a deployment that may still have resources: not destroyed, and either an apply
+ * recorded or, with `stateExists`, resources left behind ({@link mayHaveResources}: a first apply
+ * that fails half-way records nothing in the plan but keeps what it created). `undefined` when
+ * nothing can be live.
+ */
 function liveProvider(
   plan: Pick<DeployPlan, "target" | "deployment">,
   stateExists: boolean,
@@ -614,15 +589,13 @@ function providerSwitchBlock(
     : `An earlier apply may have created resources ${owned ? "for" : "at"} ${from}`;
   const retarget = `\`opscrew retarget --to ${requested}\``;
   const keep = `or keep ${from} by answering \`opscrew interview\` again.`;
+  const portainer = current === "portainer" || requested === "portainer";
   let hint: string;
-  if (current === "portainer" || requested === "portainer") {
-    // `opscrew retarget` does not move an app to or from a Portainer target.
+  if (portainer || current === "own" || requested === "own") {
+    // `opscrew retarget` does not move an app to or from a Portainer or a server the user owns.
+    const what = portainer ? "your Portainer" : "a server you already own";
     const there = deployed && !hasServer ? " on the computer that provisioned it" : "";
-    hint = `OpsCrew cannot move an app to or from your Portainer. Run \`opscrew destroy\`${there} first and then \`opscrew design\`, ${keep}`;
-  } else if (current === "own" || requested === "own") {
-    // `opscrew retarget` does not move an app to or from a server the user owns.
-    const there = deployed && !hasServer ? " on the computer that provisioned it" : "";
-    hint = `OpsCrew cannot move an app to or from a server you already own. Run \`opscrew destroy\`${there} first and then \`opscrew design\`, ${keep}`;
+    hint = `OpsCrew cannot move an app to or from ${what}. Run \`opscrew destroy\`${there} first and then \`opscrew design\`, ${keep}`;
   } else if (hasServer) {
     hint = `Run ${retarget} to move the deployment with its data, or \`opscrew destroy\` first and then \`opscrew design\`, ${keep}`;
   } else if (deployed) {
@@ -639,7 +612,7 @@ function providerSwitchBlock(
 
 /**
  * Stops with `PHASE_PRECONDITION` before anything is written when the plan has a live deployment
- * (see {@link liveDeploymentProvider}) and the requirements ask for another provider. A destroyed
+ * (see {@link liveProvider}) and the requirements ask for another provider. A destroyed
  * or never-applied plan may switch.
  */
 function requireSameProvider(
@@ -867,19 +840,4 @@ async function staticCatalog(
     date,
     dated: `${designWording(provider).name}'s published price list dated ${date}`,
   };
-}
-
-async function readScanFindings(file: string): Promise<ScanFindings | undefined> {
-  let text: string;
-  try {
-    text = await readFile(file, "utf8");
-  } catch {
-    return undefined;
-  }
-  try {
-    const parsed = ScanFileSchema.safeParse(JSON.parse(text));
-    return parsed.success ? parsed.data : undefined;
-  } catch {
-    return undefined;
-  }
 }

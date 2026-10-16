@@ -6,19 +6,9 @@ import { genericPlaybook } from "./generic";
 import { nextjsPlaybook } from "./nextjs";
 import { nodeServerPlaybook } from "./node-server";
 import { staticSpaPlaybook } from "./static-spa";
-import type { Playbook, PlaybookId } from "./types";
+import type { Playbook } from "./types";
 
 export type { Playbook, PlaybookId } from "./types";
-
-/** Every playbook by id. */
-export const PLAYBOOKS: Readonly<Record<PlaybookId, Playbook>> = Object.freeze({
-  nextjs: nextjsPlaybook,
-  "node-server": nodeServerPlaybook,
-  "static-spa": staticSpaPlaybook,
-  fastapi: fastapiPlaybook,
-  django: djangoPlaybook,
-  generic: genericPlaybook,
-});
 
 /** The playbook for the app's container stack (the generic one when there is no better match). */
 export function playbookFor(facts: ProjectFacts): Playbook {

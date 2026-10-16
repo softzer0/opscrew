@@ -1,6 +1,6 @@
 import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import { z } from "zod";
-import type { CodeChange } from "../design";
+import type { CodeChange } from "../design/code-changes";
 import { appDirOf } from "../design/code-changes";
 import { type Playbook, playbookInstructions } from "./playbooks";
 

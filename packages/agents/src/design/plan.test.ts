@@ -18,13 +18,9 @@ import {
   nextPostgresFacts,
   staticSpaFacts,
 } from "./__fixtures__/catalog";
-import {
-  appNameFor,
-  appPortFor,
-  buildDesignOptions,
-  deriveCodeChanges,
-  optionToPlan,
-} from "./index";
+import { deriveCodeChanges } from "./code-changes";
+import { buildDesignOptions } from "./options";
+import { appNameFor, appPortFor, optionToPlan } from "./plan";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
 

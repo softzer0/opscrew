@@ -1,23 +1,22 @@
+import { listText } from "@opscrew/core";
 /**
  * Health routes for Python web frameworks that register routes in code: the route goes right
  * after the one app object is created (at module level or inside an app factory).
  */
+import { appDirOf, under } from "../../design/code-changes";
 import {
   appCodeFiles,
-  appFolder,
   type PathUse,
   pathTaken,
   pathVariants,
   readSource,
   routeUses,
-  under,
 } from "./common";
 import {
   blockAfter,
   blockBefore,
   enclosing,
   gapFor,
-  linesAfter,
   type PyCall,
   type PyImport,
   type PySource,
@@ -29,8 +28,16 @@ import {
   scanPy,
   statementAt,
 } from "./py";
-import { applyInsertions, type Insertion, listing, partsOf, prependElement } from "./text";
-import { addedNote, type HealthEdit, type HealthRouteInput, manual } from "./types";
+import { applyInsertions, type Insertion, linesAfter, partsOf, prependElement } from "./text";
+import {
+  addedNote,
+  appInClass,
+  type HealthEdit,
+  type HealthRouteInput,
+  manual,
+  severalApps,
+  unassignedApp,
+} from "./types";
 
 /** What a framework's edit gets. */
 interface PyContext {
@@ -484,7 +491,7 @@ function pyramidEdit(ctx: PyContext): Insertion[] | string {
       `def ${ctx.handler}(request):`,
       `${ctx.src.unit}return ${okBody(ctx)}`,
     ]),
-    linesAfter(ctx.src, statement.last, [
+    linesAfter(ctx.src.text, statement.last, [
       `${indent}${config}.add_route(${lit(ctx, routeName)}, ${lit(ctx, ctx.healthPath)})`,
       `${indent}${config}.add_view(`,
       `${indent}${ctx.src.unit}${ctx.handler},`,
@@ -547,24 +554,18 @@ function pythonEdit(
   // Several apps (a mounted sub-app): the one in the module the start command serves.
   const started = found.length > 1 ? startedBy(input, found) : found;
   if (started.length !== 1) {
-    const where = found.map(
-      (f) => `${f.spec.name} in ${f.file} line ${f.call.statement.first + 1}`,
-    );
-    return manual(
-      `OpsCrew found ${found.length} app objects (${listing(where)}), so it cannot tell which one serves the app.`,
+    return severalApps(
+      found.map((f) => `${f.spec.name} in ${f.file} line ${f.call.statement.first + 1}`),
     );
   }
   const { file, src, imports, call, spec } = started[0] as Found;
   const forms = spec.forms ?? ["assign"];
+  const line = call.statement.first + 1;
   if (!forms.includes(call.form) || (call.form !== "other" && call.name === undefined)) {
-    return manual(
-      `the ${spec.name} app in ${file} (line ${call.statement.first + 1}) is not assigned to a variable OpsCrew can add a route to.`,
-    );
+    return unassignedApp(spec.name, file, line);
   }
   if (enclosing(src, call.statement).some((header) => /^\s*class\b/.test(header.code))) {
-    return manual(
-      `the ${spec.name} app in ${file} (line ${call.statement.first + 1}) is created inside a class, so OpsCrew cannot tell where a route belongs.`,
-    );
+    return appInClass(spec.name, file, line);
   }
   let handler = "health";
   const elsewhere = [...texts.entries()].some(
@@ -604,7 +605,7 @@ function startedBy(input: HealthRouteInput, found: readonly Found[]): Found[] {
     /(?:^|[\s'"=])([A-Za-z_][\w.]*):[A-Za-z_]\w*(?:\(\))?(?=['"\s]|$)/.exec(command)?.[1] ??
     /--app[=\s]+['"]?([A-Za-z_][\w.]*)/.exec(command)?.[1];
   if (module === undefined) return [];
-  const dir = appFolder(input.facts);
+  const dir = appDirOf(input.facts);
   const base = module.split(".").join("/");
   const files = new Set([`${base}.py`, `${base}/__init__.py`].map((path) => under(dir, path)));
   return found.filter((f) => files.has(f.file));
@@ -629,6 +630,6 @@ function pythonChecks(
   if (/\bguards\s*=/.test(args)) kinds.push("app-wide guards");
   if (kinds.length === 0) return [];
   return [
-    `Check that the ${listing(kinds)} in ${file} do not redirect or protect ${healthPath}: ${framework} runs them for every route, and the deploy health check calls it without a session.`,
+    `Check that the ${listText(kinds)} in ${file} do not redirect or protect ${healthPath}: ${framework} runs them for every route, and the deploy health check calls it without a session.`,
   ];
 }

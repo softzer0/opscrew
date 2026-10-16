@@ -4,7 +4,7 @@ import type { PhaseRequest } from "@opscrew/contracts";
 import { FakeAgentRuntime, type FakePhaseResponse } from "@opscrew/core/testing";
 import { type ProjectFacts, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import type { CodeChange } from "../design";
+import type { CodeChange } from "../design/code-changes";
 import { ScriptedApprovalHandler } from "../testing";
 import {
   createTestRepo,
@@ -17,13 +17,8 @@ import {
   type TestRepo,
   type TestRepoOptions,
 } from "./__fixtures__/repo";
-import {
-  ADAPT_BRANCH,
-  ADAPT_COMMIT_SUBJECT,
-  PULL_REQUEST_FOOTER,
-  PULL_REQUEST_TITLE,
-  runAdapt,
-} from "./index";
+import { PULL_REQUEST_FOOTER, PULL_REQUEST_TITLE } from "./pr";
+import { ADAPT_BRANCH, ADAPT_COMMIT_SUBJECT, runAdapt } from "./run";
 
 /** A Code-change agent that edits files directly (no tools) and reports statuses. */
 function editingAgent(

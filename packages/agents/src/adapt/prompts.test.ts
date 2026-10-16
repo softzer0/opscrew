@@ -1,7 +1,13 @@
 import { CodeChangeKindSchema, type ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makePlan, nextChanges, nextFacts } from "./__fixtures__/repo";
-import { PLAYBOOKS, playbookFor, playbookInstructions } from "./playbooks";
+import { playbookFor, playbookInstructions } from "./playbooks";
+import { djangoPlaybook } from "./playbooks/django";
+import { fastapiPlaybook } from "./playbooks/fastapi";
+import { genericPlaybook } from "./playbooks/generic";
+import { nextjsPlaybook } from "./playbooks/nextjs";
+import { nodeServerPlaybook } from "./playbooks/node-server";
+import { staticSpaPlaybook } from "./playbooks/static-spa";
 import {
   buildCodeChangePrompt,
   CODE_CHANGE_MODEL,
@@ -48,7 +54,14 @@ describe("playbooks", () => {
   });
 
   it("has instructions and acceptance checks for every kind in every playbook", () => {
-    for (const playbook of Object.values(PLAYBOOKS)) {
+    for (const playbook of [
+      nextjsPlaybook,
+      nodeServerPlaybook,
+      staticSpaPlaybook,
+      fastapiPlaybook,
+      djangoPlaybook,
+      genericPlaybook,
+    ]) {
       expect(playbook.guidance.length).toBeGreaterThan(0);
       for (const kind of CodeChangeKindSchema.options) {
         const { step, checks } = playbookInstructions(playbook, kind);

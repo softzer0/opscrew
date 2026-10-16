@@ -1,3 +1,4 @@
+import { listText } from "@opscrew/core";
 import type { ProjectFacts } from "@opscrew/plan-schema";
 
 /** Known background-job libraries by package name, with the name users know them by. */
@@ -44,11 +45,6 @@ export function backgroundJobLibraries(facts: ProjectFacts): string[] {
   return [...names].sort((a, b) => a.localeCompare(b, "en"));
 }
 
-function listed(items: readonly string[]): string {
-  if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
-}
-
 /**
  * The plain-English note for a web app that also runs background jobs (FR-812): only the web
  * process is deployed for now, the jobs will not run until worker support arrives, and what to do
@@ -59,6 +55,6 @@ export function backgroundJobsWarning(facts: ProjectFacts): string | undefined {
   const libraries = backgroundJobLibraries(facts);
   const hasQueue = facts.services.some((service) => service.kind === "queue");
   if (!hasQueue && libraries.length === 0) return undefined;
-  const which = libraries.length === 0 ? "" : ` with ${listed(libraries)}`;
+  const which = libraries.length === 0 ? "" : ` with ${listText(libraries)}`;
   return `This app also runs background jobs${which}. OpsCrew deploys only the web process for now, so the background jobs will not run until worker support arrives. Meanwhile, run the worker yourself, for example on the same server next to the app.`;
 }

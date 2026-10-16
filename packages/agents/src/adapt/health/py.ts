@@ -10,6 +10,7 @@ import {
   indentUnit,
   isBlank,
   lineStarts,
+  linesAfter,
   splitLines,
 } from "./text";
 
@@ -293,15 +294,6 @@ export function statementEnd(src: PySource, statement: PyStatement): number {
   return src.text[next - 2] === "\r" ? next - 2 : next - 1;
 }
 
-/** Lines inserted after line `line` (zero-based), as an insertion. */
-export function linesAfter(src: PySource, line: number, block: readonly string[]): Insertion {
-  const next = src.starts[line + 1];
-  if (next === undefined) {
-    return { offset: src.text.length, text: block.map((l) => `${src.eol}${l}`).join("") };
-  }
-  return { offset: next, text: block.map((l) => `${l}${src.eol}`).join("") };
-}
-
 /** Lines inserted before line `line`, as an insertion. */
 function linesBefore(src: PySource, line: number, block: readonly string[]): Insertion {
   return {
@@ -331,7 +323,7 @@ export function blockAfter(
   let blanks = 0;
   while (next + blanks < src.lines.length && isBlank(src.lines[next + blanks])) blanks++;
   const after = atEnd ? [] : Array<string>(Math.max(0, gap - blanks)).fill("");
-  return linesAfter(src, statement.last, [...Array<string>(gap).fill(""), ...block, ...after]);
+  return linesAfter(src.text, statement.last, [...Array<string>(gap).fill(""), ...block, ...after]);
 }
 
 /**
@@ -392,12 +384,12 @@ export function pyImportName(
   );
   const after =
     anchor?.indent === "" ? anchor : (samePackage.at(-1)?.statement ?? topLevel.at(-1)?.statement);
-  if (after !== undefined) return { local, insertion: linesAfter(src, after.last, [line]) };
+  if (after !== undefined) return { local, insertion: linesAfter(src.text, after.last, [line]) };
   // No import yet: after the module docstring, when there is one.
   const first = src.statements[0];
   const docstring = first !== undefined && /^[rRuU]?("""|''')/.test(first.code.trim());
   if (first !== undefined && docstring) {
-    return { local, insertion: linesAfter(src, first.last, ["", line]) };
+    return { local, insertion: linesAfter(src.text, first.last, ["", line]) };
   }
   return { local, insertion: linesBefore(src, 0, [line, ""]) };
 }
