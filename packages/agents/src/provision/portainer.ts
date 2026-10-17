@@ -1,6 +1,7 @@
 import { randomBytes as nodeRandomBytes, randomUUID as nodeRandomUUID } from "node:crypto";
 import { join } from "node:path";
-import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
+import { PORTAINER_TOKEN_STEPS } from "@opscrew/connector-portainer";
+import { OpsCrewError, type ProjectPaths, type Redactor } from "@opscrew/core";
 import { portainerTarget } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -103,6 +104,21 @@ export function portainerContainerUrl(url: string): string {
 }
 
 /**
+ * Hands Portainer's address to the engine only as the sensitive variable `TF_VAR_portainer_origin`
+ * (as a container on the Portainer host reaches it, see {@link portainerContainerUrl}), never in a
+ * file, and keeps it out of everything OpsCrew prints.
+ */
+export function setPortainerOrigin(
+  redactor: Pick<Redactor, "addName">,
+  env: Record<string, string | undefined>,
+  url: string,
+): void {
+  const origin = portainerContainerUrl(url);
+  hidePortainerAddress(redactor, origin);
+  env.TF_VAR_portainer_origin = origin;
+}
+
+/**
  * The stop when the interview on this computer chose another Portainer environment than
  * `opscrew/plan.yaml` deploys to (`PHASE_PRECONDITION`, nothing changed). `mismatch` names both
  * without what stayed as it was, for a command that changes nothing anyway (`opscrew secure`).
@@ -157,7 +173,7 @@ export function requirePortainerToken(deps: Pick<PhaseDeps, "env" | "redactor">)
       "CREDENTIALS_MISSING",
       `No Portainer access token found: set ${PORTAINER_TOKEN_VAR}. Nothing was changed.`,
       {
-        hint: `In Portainer, open your user menu → My account → Access tokens and add a token (for an administrator, or for a user who may manage stacks on the environment), then set ${PORTAINER_TOKEN_VAR} to it. OpsCrew reads it only from this environment variable and never saves it.`,
+        hint: `${PORTAINER_TOKEN_STEPS}, then set ${PORTAINER_TOKEN_VAR} to it. OpsCrew reads it only from this environment variable and never saves it.`,
       },
     );
   }

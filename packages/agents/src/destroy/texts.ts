@@ -1,3 +1,4 @@
+import { HETZNER_TOKEN_HINT } from "@opscrew/connector-hetzner";
 import type { VpsProviderId } from "@opscrew/contracts";
 import { providerProfile } from "../providers";
 
@@ -54,8 +55,7 @@ function hetznerTexts(): DestroyTexts {
     snapshotBilling: `Hetzner bills snapshots per GB per month at the rate listed on ${HETZNER_PRICING_URL}`,
     snapshotBilled: `billed per GB per month at the rate listed on ${HETZNER_PRICING_URL}`,
     lookup: (app) => `labelled managed-by=opscrew,app=${app}`,
-    tokenHint: () =>
-      "Create a Read & Write API token in the Hetzner Cloud Console (your project → Security → API tokens).",
+    tokenHint: () => HETZNER_TOKEN_HINT,
     deletedBackups: "Hetzner's automatic backups of the server",
   };
 }

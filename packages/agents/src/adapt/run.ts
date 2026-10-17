@@ -10,11 +10,13 @@ import {
 } from "@opscrew/connector-github";
 import type { AgentRuntime, AuditInput } from "@opscrew/contracts";
 import {
+  exists,
   findExecutable,
   isSecretPath,
   isUserFacingError,
   OpsCrewError,
   plural,
+  readTextIfExists,
   toPosixRelative,
   writeFileAtomic,
 } from "@opscrew/core";
@@ -32,7 +34,7 @@ import type { PhaseDeps } from "../context";
 import { backgroundJobsWarning } from "../design/background-jobs";
 import { type CodeChange, readScanReport } from "../design/code-changes";
 import { releaseCommandNote } from "../design/release";
-import { exists, readIfExists, writeRenderedFiles } from "../shared";
+import { writeRenderedFiles } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { healthRouteEdit } from "./health";
 import { isNextConfigPath, nextConfigEdit } from "./next-config";
@@ -395,7 +397,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
             projectFiles ??= listProjectFiles(paths.root).then((list) => list.files);
             return projectFiles;
           },
-          read: (path) => readIfExists(join(paths.root, path)),
+          read: (path) => readTextIfExists(join(paths.root, path)),
           exists: (path) => exists(join(paths.root, path)),
           folders: (path) => subfolders(join(paths.root, path)),
         },

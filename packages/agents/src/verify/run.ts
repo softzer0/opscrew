@@ -7,7 +7,7 @@ import {
   resolveGitHubToken,
 } from "@opscrew/connector-github";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
-import { OpsCrewError, replaceNames, toPosixRelative } from "@opscrew/core";
+import { OpsCrewError, readTextIfExists, replaceNames, toPosixRelative } from "@opscrew/core";
 import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
@@ -20,7 +20,6 @@ import {
   hasDeployment,
   hidesServerAddress,
   lookupPublicAddresses,
-  readIfExists,
   type ServerAddress,
   serverAddress,
   summarizeChecks,
@@ -260,7 +259,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     : renderRunbook(current, {
         opscrewVersion: deps.version,
         github: repo,
-        deploySshPublicKey: (await readIfExists(paths.files.deployKeyPub))?.trim() ?? "",
+        deploySshPublicKey: (await readTextIfExists(paths.files.deployKeyPub))?.trim() ?? "",
         projectId: paths.projectId,
         ...(shown !== undefined ? { serverIpv4: shown.ipv4 } : {}),
         ...(shown?.ipv6 !== undefined ? { serverIpv6: shown.ipv6 } : {}),

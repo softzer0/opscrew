@@ -307,6 +307,13 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     // SSH and firewall changes were proven with new logins before they were kept.
     expect(applied?.verified).toBe(true);
     expect(result.hostPlans).toEqual({ teardown: teardown?.planHash, undo: undo?.planHash });
+    // The audit names each plan's apply by its purpose and hash: host teardown …, host undo ….
+    const audited = (action: string) =>
+      s.deps.audit.entries.filter((entry) => entry.action.startsWith(action));
+    expect(audited("host teardown started")[0]?.target).toBe(teardown?.planHash);
+    expect(audited("host undo started")[0]?.target).toBe(undo?.planHash);
+    expect(audited("host teardown step ").length).toBeGreaterThan(0);
+    expect(audited("host undo step ").length).toBeGreaterThan(0);
     expect(s.host.facts.deployUser).toBeNull();
     expect(s.host.facts.record).toBeNull();
     // The user's own containers survive both plans.
@@ -410,6 +417,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
       "Check Docker on the server. The app's Cloudflare resources are deleted already; the app is still on your server. Run `opscrew destroy` again to finish.",
     );
     expect(`${error.message} ${error.hint}`).not.toContain(OWN_IPV4);
+    expect(s.deps.audit.entries.map((entry) => entry.action)).toContain("host teardown failed");
     expect(
       (await readArtifact("plan", s.deps.paths.files.plan)).deployment.destroyedAt,
     ).toBeUndefined();

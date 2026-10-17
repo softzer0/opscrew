@@ -3,6 +3,7 @@ import { join, posix } from "node:path";
 import { plural } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { trackedFiles } from "../shared";
 
 /** The committed Cloudflare configuration of a Portainer root: its directory and the modules. */
 function staleRootDirs(plan: DeployPlan): [string, string] {
@@ -14,20 +15,8 @@ function staleRootDirs(plan: DeployPlan): [string, string] {
  * Files of the earlier Cloudflare configuration that are deleted in the working copy but still
  * committed: an earlier run removed them (after its approval) and stopped before its commit.
  */
-export async function uncommittedRemovals(deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
-  const listed = await deps.runner.run("git", [
-    "-C",
-    deps.paths.root,
-    "ls-files",
-    "--deleted",
-    "--",
-    ...staleRootDirs(plan),
-  ]);
-  if (listed.exitCode !== 0) return [];
-  return listed.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
+export function uncommittedRemovals(deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
+  return trackedFiles(deps, staleRootDirs(plan), { deleted: true });
 }
 
 /**
@@ -37,19 +26,8 @@ export async function uncommittedRemovals(deps: PhaseDeps, plan: DeployPlan): Pr
  */
 export async function removeStaleRoot(deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
   const [dir, modules] = staleRootDirs(plan);
-  const listed = await deps.runner.run("git", [
-    "-C",
-    deps.paths.root,
-    "ls-files",
-    "--",
-    dir,
-    modules,
-  ]);
-  const paths = listed.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
-  if (listed.exitCode !== 0 || paths.length === 0) return [];
+  const paths = await trackedFiles(deps, [dir, modules]);
+  if (paths.length === 0) return [];
   const approval = await deps.approvals.request({
     kind: "repo-write",
     title: `Remove the Cloudflare configuration this setup no longer uses from the repository (${plural(paths.length, "file")})`,

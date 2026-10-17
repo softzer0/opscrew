@@ -1,17 +1,16 @@
-import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
-import { OpsCrewError, plural } from "@opscrew/core";
+import { exists, lowerFirst, OpsCrewError, plural } from "@opscrew/core";
 import { cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider } from "../provision";
 import {
   describeChanges,
-  exists,
   hasDeployment,
-  recordServerAddress,
+  planStop,
+  refusalReason,
   serverAddress,
   stateFile,
 } from "../shared";
@@ -28,17 +27,17 @@ import {
   COMMAND,
   checkCloudflare,
   containerImagesLeft,
+  DRIFT_THEN_DESTROY,
   deploySecretsLeft,
-  destroyedPlan,
   type GitHubTarget,
   nothingDeployed,
+  recordTeardown,
   removeDeploySecrets,
   requireInfraCode,
   resolveGitHub,
-  secretsPage,
   setupEngine,
-  stateNotHere,
   teardownScope,
+  teardownStateNotHere,
 } from "./common";
 import {
   applyApprovedPlan,
@@ -99,7 +98,7 @@ function moveInProgress(plan: DeployPlan): OpsCrewError {
 async function requirePreconditions(deps: PhaseDeps, plan: DeployPlan) {
   if (!(await exists(stateFile(deps.paths)))) {
     if (!hasDeployment(plan)) throw nothingDeployed(plan);
-    throw stateNotHere(plan);
+    throw teardownStateNotHere(plan);
   }
   await requireInfraCode(deps, plan, "the teardown");
 }
@@ -128,7 +127,7 @@ async function destroyInfrastructure(
     : "";
   const hintAfterLift = (hint: string) =>
     protectionOff
-      ? `Run \`opscrew provision\` to turn delete protection back on, or ${hint.charAt(0).toLowerCase()}${hint.slice(1)}`
+      ? `Run \`opscrew provision\` to turn delete protection back on, or ${lowerFirst(hint)}`
       : hint;
   deps.reporter.step("Planning the teardown");
   const summary = await savePlan(session, "destroy", {
@@ -150,9 +149,7 @@ async function destroyInfrastructure(
         problem === "unbounded"
           ? {
               note: `${protectionOff ? "Nothing was deleted." : "Nothing was changed."}${lifted}`,
-              hint: hintAfterLift(
-                "Run `opscrew drift` to see what changed, then run `opscrew destroy` again.",
-              ),
+              hint: hintAfterLift(DRIFT_THEN_DESTROY),
             }
           : problem === "unconfirmed"
             ? {
@@ -208,7 +205,7 @@ async function destroyInfrastructure(
     if (!approval.approved) {
       throw new OpsCrewError(
         "APPROVAL_REFUSED",
-        `The teardown was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${lifted}${snapshotKeptNote(texts, snapshotId)}`,
+        `The teardown was not approved${refusalReason(approval)}. Nothing was deleted.${lifted}${snapshotKeptNote(texts, snapshotId)}`,
         {
           hint: protectionOff
             ? `Run \`opscrew provision\` to turn delete protection back on, or run \`opscrew destroy\` again and type ${name} to delete the deployment.`
@@ -348,15 +345,10 @@ async function deleteTunnelLeft(
     if (outside.length > 0) {
       // With a server still in the plan, nothing is claimed about what the first apply deleted.
       const already = servers.length > 0 ? "" : ` ${input.tunnelLeft}`;
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        [
-          `The plan for what is left would do more than delete what you confirmed, so OpsCrew stopped before applying it.${already}`,
-          ...outside.map((problem) => `  ${problem}`),
-        ].join("\n"),
-        {
-          hint: "Run `opscrew drift` to see what changed, then run `opscrew destroy` again to see the current list and confirm it.",
-        },
+      throw planStop(
+        `The plan for what is left would do more than delete what you confirmed, so OpsCrew stopped before applying it.${already}`,
+        outside,
+        "Run `opscrew drift` to see what changed, then run `opscrew destroy` again to see the current list and confirm it.",
       );
     }
     // Shown before the approval, which the typed name may already grant (the CLI).
@@ -383,7 +375,7 @@ async function deleteTunnelLeft(
     if (!approval.approved) {
       throw new OpsCrewError(
         "APPROVAL_REFUSED",
-        `The deletion of the app's Cloudflare Tunnel was not approved${approval.reason ? ` (${approval.reason})` : ""}. ${input.tunnelLeft}${snapshotKeptNote(texts, input.snapshotId)}`,
+        `The deletion of the app's Cloudflare Tunnel was not approved${refusalReason(approval)}. ${input.tunnelLeft}${snapshotKeptNote(texts, input.snapshotId)}`,
         {
           hint: `Run \`opscrew destroy\` again and type ${name} when you are ready (in a script: \`opscrew destroy --confirm ${name}\`); it deletes what is left.`,
         },
@@ -475,11 +467,6 @@ export async function runDestroy(
   await checkProvider(deps, provider, services);
   await checkCloudflare(deps, plan, services);
   const github = await resolveGitHub(deps, services);
-  if (github.skipReason) {
-    deps.reporter.warn(
-      `OpsCrew cannot remove the deploy secrets from GitHub Actions: ${github.skipReason}. The teardown continues; delete them yourself afterwards at ${secretsPage(github)}.`,
-    );
-  }
 
   // 3. Engine, state encryption, init
   const setup = await setupEngine(deps, plan, options);
@@ -589,16 +576,11 @@ export async function runDestroy(
   if ((await forgetHostKeys(deps, [address?.ipv4, address?.ipv6])) > 0) {
     deps.reporter.info(`Removed the ${texts.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
-  const at = deps.clock.now().toISOString();
-  await writeArtifact(
-    "plan",
-    deps.paths.files.plan,
-    destroyedPlan(plan, at, [protection.approval, destroyApproval, tunnelApproval]),
-  );
-  await recordServerAddress(deps.paths, undefined);
-  await rm(deps.paths.files.deploySecrets, { force: true });
+  await recordTeardown(deps, plan, [protection.approval, destroyApproval, tunnelApproval], {
+    summary: "infrastructure destroyed",
+    forgetAddress: true,
+  });
   await removeSnapshotRecord(deps, "destroy");
-  await deps.state.markPhase("provision", "skipped", "infrastructure destroyed");
   await deps.audit.append({
     kind: "phase",
     actor: "opscrew",

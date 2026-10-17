@@ -11,16 +11,9 @@ export async function inspectOwnServerForDesign(
   deps: OwnServerDeps,
   options: { hostKey?: string; services?: OwnServerServices } = {},
 ): Promise<OwnServerDesignInput> {
-  const { remote, homeDir, host } = options.services ?? {};
+  const host = options.services?.host;
   deps.reporter.step("Connecting to your server to read its size (read-only)");
-  const session = await connectOwnServer(deps, {
-    ...(options.hostKey === undefined ? {} : { hostKey: options.hostKey }),
-    ...(remote === undefined ? {} : { remote }),
-    ...(homeDir === undefined ? {} : { homeDir }),
-  });
-  if (session.pinned) {
-    deps.reporter.success(`Pinned your server's SSH host key ${session.hostKey.fingerprint}.`);
-  }
+  const session = await connectOwnServer(deps, options);
   const inspected = await inspectOwnServer(
     session,
     host === undefined ? {} : { inspect: (shell) => host.inspect(shell) },

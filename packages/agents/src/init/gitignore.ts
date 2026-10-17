@@ -1,7 +1,7 @@
 import { appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readTextIfExists } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
-import { readIfExists } from "../shared";
 
 /**
  * The lines `ensureGitignore` adds: `.opscrew/` (OpsCrew's machine-local state: saved plans,
@@ -50,7 +50,7 @@ export function describeGitignoreEntries(entries: readonly string[]): string {
 
 /** Contents of `<root>/.gitignore`, or `undefined` when the file does not exist. */
 export function readGitignore(root: string): Promise<string | undefined> {
-  return readIfExists(join(root, ".gitignore"));
+  return readTextIfExists(join(root, ".gitignore"));
 }
 
 export interface EnsureGitignoreOptions {

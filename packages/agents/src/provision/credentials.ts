@@ -4,13 +4,7 @@ import {
   type EntrypointRulesetStatus,
   OPSCREW_MANAGED_COMMENT,
 } from "@opscrew/connector-cloudflare";
-import {
-  type GitClient,
-  GitHubClient,
-  githubConnector,
-  parseGitHubRepo,
-  resolveGitHubToken,
-} from "@opscrew/connector-github";
+import { type GitClient, githubConnector } from "@opscrew/connector-github";
 import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
@@ -23,7 +17,14 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
-import { hasState, infrastructureOutputs, readServerAddresses, serverAddress } from "../shared";
+import {
+  githubClientFromToken,
+  githubCoordinates,
+  hasState,
+  infrastructureOutputs,
+  readServerAddresses,
+  serverAddress,
+} from "../shared";
 import {
   ownServerLogin,
   ownServerNotSetUp,
@@ -69,6 +70,13 @@ function missing(service: string, requirement: CredentialRequirement): OpsCrewEr
   );
 }
 
+/** What a token needs, in words: `the Read & Write permission` or `these scopes (…, …)`. */
+export function neededScopes(requirement: Pick<CredentialRequirement, "scopes">): string {
+  return requirement.scopes.length === 1
+    ? `the ${requirement.scopes[0]} permission`
+    : `these scopes (${requirement.scopes.join(", ")})`;
+}
+
 /**
  * The token was rejected. The connector's message often names the service and the scopes and
  * links the token page already; the message and hint add only what it does not say.
@@ -77,15 +85,11 @@ function invalid(service: string, message: string, requirement: CredentialRequir
   const brand = service.split(" ")[0] ?? service;
   const text = message.includes(brand) ? message : `${service}: ${message}`;
   const scopesSaid = requirement.scopes.every((scope) => message.includes(scope));
-  const needs =
-    requirement.scopes.length === 1
-      ? `the ${requirement.scopes[0]} permission`
-      : `these scopes (${requirement.scopes.join(", ")})`;
   const create = message.includes(requirement.createUrl)
     ? "Replace the token as described"
     : `Create a new one at ${requirement.createUrl}`;
   return new OpsCrewError("CREDENTIALS_INVALID", text, {
-    hint: `${scopesSaid ? "" : `The token needs ${needs}. `}${create}, then try again.`,
+    hint: `${scopesSaid ? "" : `The token needs ${neededScopes(requirement)}. `}${create}, then try again.`,
   });
 }
 
@@ -324,12 +328,7 @@ function tunnelHosts(plan: DeployPlan, zone: string): string[] {
 export function cloudflareTokenMissing(
   deps: Pick<PhaseDeps, "env" | "fetch" | "redactor" | "version">,
 ): OpsCrewError {
-  const requirement = cloudflareConnector({
-    env: deps.env,
-    fetch: deps.fetch,
-    redactor: deps.redactor,
-    version: deps.version,
-  }).credentials;
+  const requirement = cloudflareConnector(deps).credentials;
   const error = missing("Cloudflare", requirement);
   return new OpsCrewError(error.code, `${error.message} Nothing was changed.`, {
     hint: `The token needs: ${tunnelTokenPermissions()}. Create one at ${requirement.createUrl}`,
@@ -400,12 +399,7 @@ export async function setupCloudflare(
   if (portainer !== undefined && !portainer.appTunnel && !portainer.webhook) return undefined;
   /** A Cloudflare Tunnel is part of the plan, so the token needs the tunnel permissions. */
   const tunnels = usesTunnel(plan) || portainer !== undefined;
-  const connector = cloudflareConnector({
-    env: deps.env,
-    fetch: deps.fetch,
-    redactor: deps.redactor,
-    version: deps.version,
-  });
+  const connector = cloudflareConnector(deps);
   const requirement = connector.credentials;
   const api: CloudflareApi | null =
     services.cloudflare === undefined ? (connector.client ?? null) : services.cloudflare;
@@ -546,22 +540,6 @@ export async function setupCloudflare(
   }
 }
 
-/** `owner`/`repo` of the `origin` remote; stops when there is no GitHub remote. */
-export async function githubCoordinates(git: GitClient): Promise<{ owner: string; repo: string }> {
-  const remote = await git.remoteUrl("origin");
-  const coordinates = remote ? parseGitHubRepo(remote) : undefined;
-  if (!coordinates) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "This repository has no GitHub remote named origin, so there is nowhere to build and deploy from.",
-      {
-        hint: "Create the repository on GitHub, run `git remote add origin https://github.com/<owner>/<repo>.git`, push, then try again.",
-      },
-    );
-  }
-  return coordinates;
-}
-
 /** GitHub token, repository from the `origin` remote, push access and default branch. */
 export async function setupGitHub(
   deps: PhaseDeps,
@@ -571,11 +549,7 @@ export async function setupGitHub(
   const coordinates = await githubCoordinates(git);
   const requirement = githubConnector({ token: undefined, fetch: deps.fetch }).credentials;
   let api: GitHubApi | null | undefined = services.github;
-  if (api === undefined) {
-    const token = await resolveGitHubToken(deps.env, deps.runner);
-    if (token) deps.redactor.addLiteral(token, "github-token");
-    api = token ? new GitHubClient({ token, fetch: deps.fetch, version: deps.version }) : null;
-  }
+  if (api === undefined) api = (await githubClientFromToken(deps)) ?? null;
   if (api === null) throw missing("GitHub", requirement);
   const repo = await api.getRepo(coordinates.owner, coordinates.repo);
   if (!repo.canPush) {

@@ -9,6 +9,7 @@ import {
   updateServerAddresses,
 } from "../shared";
 import { moveProvider } from "../shared/vps-target";
+import { moveOf } from "./session";
 
 /**
  * The two servers of a move, from OpsCrew's local state (`.opscrew/server.json`): the server being
@@ -96,12 +97,7 @@ export async function loadMoveServers(
   outputs: ReadOutputs,
   options: { oldServerOptional?: boolean } = {},
 ): Promise<MoveServers> {
-  const move = plan.retarget;
-  if (move === undefined) {
-    throw new OpsCrewError("INTERNAL", "No move is recorded in opscrew/plan.yaml.", {
-      hint: "This is a bug in OpsCrew; please report it.",
-    });
-  }
+  const move = moveOf({ plan });
   const local = (await readServerAddresses(deps.paths)).retarget;
   let from = local?.from;
   let next = local?.next;

@@ -1,6 +1,6 @@
 import { access, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { GitClient, GitHubClient, resolveGitHubToken } from "@opscrew/connector-github";
+import type { GitClient } from "@opscrew/connector-github";
 import type {
   ApprovalRecord,
   AuditInput,
@@ -36,18 +36,23 @@ import {
 } from "../provision";
 import {
   approvalEntry,
+  confirmChangedHostKey,
   type DeployKey,
+  deployKeyMissing,
   diffRenderedFiles,
   ensureDeployKey,
   existingStateEngine,
+  githubClientFromToken,
   hasState,
   infrastructureOutputs,
   pinHostKey,
   providerConsole,
   readOutputsAfterInit,
+  requireGitRepo,
   type ServerAddress,
   SshRemoteExec,
   stateFile,
+  stateNotHere,
   writeRenderedFiles,
 } from "../shared";
 import { previousTarget } from "./layouts";
@@ -116,12 +121,10 @@ export async function moveBase(
 /** Stops unless the infrastructure state is on this computer. */
 export async function requireState(deps: PhaseDeps, plan: DeployPlan): Promise<void> {
   if (await hasState(deps.paths)) return;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `The infrastructure state of ${plan.app.name} is not on this computer (.opscrew/tfstate/prod.tfstate), so OpsCrew cannot move the deployment. Nothing was changed.`,
-    {
-      hint: "Run OpsCrew on the computer that ran `opscrew provision`, or copy its .opscrew/tfstate folder (and, with OpenTofu, the state passphrase from ~/.opscrew/projects/<project>/state_passphrase) here, then try again.",
-    },
+  throw stateNotHere(
+    plan,
+    "move the deployment",
+    "Run OpsCrew on the computer that ran `opscrew provision`, or copy its .opscrew/tfstate folder (and, with OpenTofu, the state passphrase from ~/.opscrew/projects/<project>/state_passphrase) here, then try again.",
   );
 }
 
@@ -131,17 +134,13 @@ async function readDeployKey(deps: PhaseDeps, command: string): Promise<DeployKe
     await access(deps.paths.files.deployKey);
     await access(deps.paths.files.deployKeyPub);
   } catch {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "The project's SSH deploy key is not on this computer, so OpsCrew cannot reach the servers. Nothing was changed.",
-      {
-        hint: `Copy the deploy key files from the computer that ran \`opscrew provision\` to ${deps.paths.files.deployKey} and ${deps.paths.files.deployKeyPub}, then run \`${command}\` again.`,
-      },
+    throw deployKeyMissing(
+      deps.paths,
+      "cannot reach the servers. Nothing was changed.",
+      `then run \`${command}\` again.`,
     );
   }
-  const key = await ensureDeployKey(deps.paths);
-  deps.redactor.addLiteral(key.privateKeyOpenSsh, "deploy-key");
-  return key;
+  return ensureDeployKey(deps.paths, deps.redactor);
 }
 
 /** The remote shell for `host`: the injected one, else SSH with the deploy key and pinned keys. */
@@ -179,10 +178,7 @@ async function githubApiOf(
   services: RetargetServices,
 ): Promise<RetargetGitHubApi | null> {
   if (services.github !== undefined) return services.github;
-  const token = await resolveGitHubToken(deps.env, deps.runner);
-  if (!token) return null;
-  deps.redactor.addLiteral(token, "github-token");
-  return new GitHubClient({ token, fetch: deps.fetch, version: deps.version });
+  return (await githubClientFromToken(deps)) ?? null;
 }
 
 export interface OpenSessionInput {
@@ -212,17 +208,7 @@ export async function openSession(
 ): Promise<MoveSession> {
   const { services, command } = input;
   await requireState(deps, plan);
-  const git = new GitClient({
-    cwd: deps.paths.root,
-    runner: deps.runner,
-    env: deps.env,
-    redactor: deps.redactor,
-  });
-  if (!(await git.isRepo())) {
-    throw new OpsCrewError("PHASE_PRECONDITION", "This project is not a git repository.", {
-      hint: "Run OpsCrew from a clone of your GitHub repository.",
-    });
-  }
+  const git = await requireGitRepo(deps);
   const providers = [...new Set(input.providers)];
   const names = providers.map((id) => providerProfile(id).displayName);
   const usesCloudflare = plan.dns.provider === "cloudflare";
@@ -480,20 +466,6 @@ export async function pinHost(session: MoveSession, host: string, provider: VpsP
     console: providerConsole(providerProfile(provider)),
     knownHostsFile: deps.paths.files.knownHosts,
     runner: deps.runner,
-    confirmChangedKey: async ({ host: changed, previous, current }) => {
-      const decision = await deps.approvals.request({
-        kind: "remote-exec",
-        title: `Trust the new SSH host key of ${changed}`,
-        details: [
-          "The server's SSH host key is different from the one OpsCrew pinned earlier.",
-          "Only accept this if you rebuilt or replaced the server yourself.",
-          "Pinned:",
-          ...previous.map((line) => `  ${line}`),
-          "Now:",
-          ...current.map((line) => `  ${line}`),
-        ].join("\n"),
-      });
-      return decision.approved;
-    },
+    confirmChangedKey: confirmChangedHostKey(deps),
   });
 }

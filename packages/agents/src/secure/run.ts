@@ -5,7 +5,7 @@ import type {
   Scanner,
   ScanReport,
 } from "@opscrew/contracts";
-import { plural, replaceNames, toPosixRelative, writeFileAtomic } from "@opscrew/core";
+import { exists, plural, replaceNames, toPosixRelative, writeFileAtomic } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import {
   defaultTcpConnect,
@@ -21,13 +21,7 @@ import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile } from "../providers";
 import { findSavedPlan } from "../provision/plan-apply";
 import type { PortainerServices } from "../provision/types";
-import {
-  exists,
-  hidesServerAddress,
-  SshRemoteExec,
-  serverAddress,
-  withoutServerAddress,
-} from "../shared";
+import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { type OwnSecureTarget, ownSecureTarget } from "./own";
 import {

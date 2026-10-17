@@ -10,12 +10,12 @@ import {
   hostPlanHash,
 } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
-import { type ProjectPaths, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { adapterBlocked, describeAdapterPlan } from "./adapter-plan";
-import { PlanRefusedError } from "./approvals";
-import { readIfExists } from "./files";
+import { PlanRefusedError, refusalReason } from "./approvals";
+import { readValidJson } from "./files";
 import type { HostChangeResult } from "./tunnel-connections";
 
 /** The host adapter calls made on a server the user owns (`@opscrew/connector-ssh-host` or a fake). */
@@ -44,19 +44,8 @@ export async function lastHostSetup(
     .map((approval) => approval.planHash)
     .reverse();
   for (const hash of hashes) {
-    const text = await readIfExists(hostPlanFile(deps.paths, hash));
-    if (text === undefined) continue;
-    let json: unknown;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      continue;
-    }
-    const parsed = HostPlanSchema.safeParse(json);
-    if (!parsed.success) continue;
-    if (parsed.data.purpose === "setup" && parsed.data.steps.some((step) => step.id === "sshd")) {
-      return parsed.data;
-    }
+    const saved = await readValidJson(hostPlanFile(deps.paths, hash), HostPlanSchema);
+    if (saved?.purpose === "setup" && saved.steps.some((step) => step.id === "sshd")) return saved;
   }
   return undefined;
 }
@@ -139,6 +128,19 @@ export interface HostPlanStep {
   phase: PhaseName;
   /** The plan deletes data: the approval needs `allowDestroy` and the typed app name. */
   allowDestroy?: boolean;
+  /** Said before the plan in the approval's details (what it removes, what stays). */
+  intro?: readonly string[];
+  /**
+   * The stop when the plan is not approved: its message (the reason follows) and hint. Default: a
+   * {@link PlanRefusedError} that says how to apply it later with `--approve <hash>`.
+   */
+  refused?: { message: string; hint: string };
+  /**
+   * How the audit names the apply, for a teardown or undo plan: `host teardown` gives `host
+   * teardown started`, `host teardown step <id>` and `host teardown failed`. Default: `host apply
+   * started`, `host step <id>` and `host apply failed`.
+   */
+  auditAs?: string;
   /** Show and save the plan only. */
   planOnly?: boolean;
   /**
@@ -175,7 +177,7 @@ export async function approveAndApplyHostPlan(
   const hash = hostPlanHash(plan);
   step.shown?.(hash);
   await writeFileAtomic(hostPlanFile(deps.paths, hash), `${JSON.stringify(plan, null, 2)}\n`);
-  const details = describeHostPlan(plan, hash);
+  const details = [...(step.intro ?? []), describeHostPlan(plan, hash)].join("\n");
   deps.reporter.info(details);
   requireNoBlockers(plan, step);
   const changes = plan.steps.filter((item) => item.state === "change");
@@ -196,6 +198,13 @@ export async function approveAndApplyHostPlan(
     ...(allowDestroy ? { allowDestroy: true, confirmPhrase: plan.app } : {}),
   });
   if (!approval.approved) {
+    if (step.refused !== undefined) {
+      throw new OpsCrewError(
+        "APPROVAL_REFUSED",
+        `${step.refused.message}${refusalReason(approval)}`,
+        { hint: step.refused.hint },
+      );
+    }
     throw new PlanRefusedError({
       plan: "host plan",
       ...(approval.reason ? { reason: approval.reason } : {}),
@@ -207,6 +216,10 @@ export async function approveAndApplyHostPlan(
   const secrets = await step.secrets(changes);
   if (step.applying !== undefined) deps.reporter.step(step.applying);
   const changeIds = changes.map((item) => item.id);
+  const [applying, each] =
+    step.auditAs === undefined
+      ? ["host apply", "host step"]
+      : [step.auditAs, `${step.auditAs} step`];
   const audit = (action: string, decision: "approved" | "refused", detail?: string) =>
     deps.audit.append({
       kind: "remote-exec",
@@ -217,7 +230,7 @@ export async function approveAndApplyHostPlan(
       decision,
       ...(detail !== undefined ? { detail } : {}),
     });
-  await audit("host apply started", "approved", `steps to change: ${changeIds.join(", ")}`);
+  await audit(`${applying} started`, "approved", `steps to change: ${changeIds.join(", ")}`);
   let result: ApplyResult;
   try {
     result = await step.apply(step.remote, plan, {
@@ -234,7 +247,7 @@ export async function approveAndApplyHostPlan(
         ? error.applied.filter((id) => changeIds.includes(id))
         : undefined;
     await audit(
-      "host apply failed",
+      `${applying} failed`,
       "refused",
       done === undefined
         ? "the host adapter did not report which steps were applied before the failure; /etc/opscrew/host.json on the server lists every change"
@@ -243,7 +256,7 @@ export async function approveAndApplyHostPlan(
     throw error;
   }
   for (const id of result.applied) {
-    await audit(`host step ${id}`, "approved", plan.steps.find((item) => item.id === id)?.title);
+    await audit(`${each} ${id}`, "approved", plan.steps.find((item) => item.id === id)?.title);
   }
   return { plan, hash, applied: result.applied.length > 0, approval, steps: result.applied };
 }

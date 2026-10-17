@@ -850,7 +850,7 @@ export async function moveFakes(
     }),
   );
   // What `opscrew provision` left on this computer.
-  await ensureDeployKey(paths);
+  await ensureDeployKey(paths, new Redactor());
   await ensureStatePassphrase(paths);
   await mkdir(paths.files.tfstateDir, { recursive: true });
   await writeFile(join(paths.files.tfstateDir, "prod.tfstate"), '{"version":4}\n');

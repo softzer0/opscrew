@@ -169,6 +169,17 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     expect(approval?.details).toContain(
       "Backups, including the app's data volumes, are your responsibility",
     );
+    // The audit names the teardown's apply and each change by the plan's hash only.
+    const teardownAudit = s.deps.audit.entries.filter((entry) =>
+      entry.action.startsWith("stack teardown "),
+    );
+    expect(teardownAudit[0]?.action).toBe("stack teardown started");
+    expect(teardownAudit.slice(1).map((entry) => entry.action)).toEqual([
+      "stack teardown updater-stack",
+      "stack teardown app-stack",
+      "stack teardown registry",
+    ]);
+    expect(teardownAudit.every((entry) => entry.target === result.stackPlan)).toBe(true);
     expect(previews[0]).toMatchObject({ provider: "portainer", name: "shop" });
     expect(previews[0]?.stackChanges).toEqual([
       "Remove the stack opscrew-shop-updater",
@@ -322,6 +333,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
       return working(init);
     };
     await expect(destroy(s)).rejects.toThrow();
+    expect(s.deps.audit.entries.map((entry) => entry.action)).toContain("stack teardown failed");
     const left = (await readPortainerConnection(s.deps.paths))?.created;
     expect(left?.stacks.map((stack) => stack.role)).toEqual(["app"]);
     expect(s.events).not.toContain("iac-apply");

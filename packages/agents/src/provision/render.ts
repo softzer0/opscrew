@@ -1,7 +1,4 @@
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { GitClient } from "@opscrew/connector-github";
-import { OpsCrewError } from "@opscrew/core";
 import {
   type RenderContext,
   type RenderedFile,
@@ -12,16 +9,21 @@ import {
   usesTunnel,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-schema";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
   diffRenderedFiles,
   ensureDeployKey,
+  githubCoordinates,
   hidesServerAddress,
+  readDeployPublicKey,
   readServerAddresses,
+  readValidJson,
+  requireGitRepo,
   type ServerAddress,
 } from "../shared";
 import { readOwnServerRecord } from "../shared/own-server";
-import { type CloudflareSetup, githubCoordinates, setupCloudflare } from "./credentials";
+import { type CloudflareSetup, setupCloudflare } from "./credentials";
 import type { ProvisionServices } from "./types";
 
 export async function readRequirements(deps: PhaseDeps): Promise<Requirements | undefined> {
@@ -117,20 +119,14 @@ export function deploymentFiles(plan: DeployPlan, ctx: RenderContext): RenderedF
  * The values of the committed `terraform.tfvars.json` (the files of the last run), or `undefined`
  * when the file is missing or not a JSON object. Never holds secrets or a server address.
  */
-export async function committedTfvars(
+export function committedTfvars(
   root: string,
   plan: Pick<DeployPlan, "infra">,
 ): Promise<Record<string, unknown> | undefined> {
-  try {
-    const values = JSON.parse(
-      await readFile(join(root, plan.infra.dir, "terraform.tfvars.json"), "utf8"),
-    ) as unknown;
-    return typeof values === "object" && values !== null && !Array.isArray(values)
-      ? (values as Record<string, unknown>)
-      : undefined;
-  } catch {
-    return undefined;
-  }
+  return readValidJson(
+    join(root, plan.infra.dir, "terraform.tfvars.json"),
+    z.record(z.string(), z.unknown()),
+  );
 }
 
 /**
@@ -166,22 +162,8 @@ async function ownPreviewRender(deps: PhaseDeps, plan: DeployPlan): Promise<OwnR
 
 /** The deploy key's public half: created once when allowed, otherwise read (never invented). */
 async function deployPublicKeyFor(deps: PhaseDeps, create: boolean): Promise<string> {
-  if (create) {
-    const key = await ensureDeployKey(deps.paths);
-    deps.redactor.addLiteral(key.privateKeyOpenSsh, "deploy-key");
-    return key.publicKeyOpenSsh;
-  }
-  const existing = (await readFile(deps.paths.files.deployKeyPub, "utf8").catch(() => ""))?.trim();
-  if (!existing) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "The project's deploy key is not on this computer, so OpsCrew cannot render the files it would compare. Nothing was checked.",
-      {
-        hint: `Copy the deploy key files from the computer that ran \`opscrew provision\` to ${deps.paths.files.deployKey} and ${deps.paths.files.deployKeyPub}, then try again.`,
-      },
-    );
-  }
-  return existing;
+  if (create) return (await ensureDeployKey(deps.paths, deps.redactor)).publicKeyOpenSsh;
+  return readDeployPublicKey(deps, "cannot render the files it would compare");
 }
 
 export interface DeploymentPreview {
@@ -214,17 +196,7 @@ export async function previewDeploymentFiles(
 ): Promise<DeploymentPreview> {
   let plan = await readArtifact("plan", deps.paths.files.plan);
   const requirements = await readRequirements(deps);
-  const git = new GitClient({
-    cwd: deps.paths.root,
-    runner: deps.runner,
-    env: deps.env,
-    redactor: deps.redactor,
-  });
-  if (!(await git.isRepo())) {
-    throw new OpsCrewError("PHASE_PRECONDITION", "This project is not a git repository.", {
-      hint: "Run OpsCrew from a clone of your GitHub repository.",
-    });
-  }
+  const git = await requireGitRepo(deps);
   const github = await githubCoordinates(git);
   const cloudflare = await setupCloudflare(deps, plan, options.services ?? {}, {
     foreignRecords: options.foreignRecords ?? "stop",

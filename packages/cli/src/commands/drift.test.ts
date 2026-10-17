@@ -3,7 +3,7 @@ import path from "node:path";
 import { deploymentRenderContext, ensureDeployKey, writeRenderedFiles } from "@opscrew/agents";
 import { FakeEngine, FakeGitHub, testPlan } from "@opscrew/agents/testing";
 import type { PlanSummary, ResourceChange, ResourceDrift } from "@opscrew/contracts";
-import { resolveProjectPaths } from "@opscrew/core";
+import { Redactor, resolveProjectPaths } from "@opscrew/core";
 import { renderDeployment } from "@opscrew/iac-templates";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPhaseDeps, withServices } from "../deps";
@@ -69,7 +69,7 @@ async function setup(engine: DriftEngine) {
   await mkdir(paths.projectHomeDir, { recursive: true });
   await writeFile(paths.files.statePassphrase, `${"p".repeat(43)}\n`);
   // A deployed project has its deploy key; drift reads it and never creates one.
-  await ensureDeployKey(paths);
+  await ensureDeployKey(paths, new Redactor());
   withServices(ctx, {
     provision: provisionServices(engine, new FakeGitHub(), { cloudflare: null }),
   });
@@ -82,7 +82,7 @@ describe.skipIf(!GIT)("opscrew drift", () => {
     const ctx = await setup(engine);
     const deps = createPhaseDeps(ctx, { ai: false });
     const plan = testPlan({ deployed: true, httpAllowedFrom: "any", userSecret: false });
-    const key = await ensureDeployKey(deps.paths);
+    const key = await ensureDeployKey(deps.paths, deps.redactor);
     const files = renderDeployment(
       plan,
       deploymentRenderContext(deps, {

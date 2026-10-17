@@ -1,9 +1,8 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RegistrarId } from "@opscrew/contracts";
-import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, type ProjectPaths, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import { z } from "zod";
-import { readIfExists } from "../shared";
 import { DASHBOARD, formatDate } from "./common";
 import { buyCommandOf, registrarDashboard } from "./links";
 import { REGISTRAR_IDS } from "./registrars";
@@ -54,7 +53,7 @@ export function purchaseRecordPath(paths: ProjectPaths): string {
  * tell whether a purchase is under way.
  */
 export async function readPurchaseRecord(file: string): Promise<PurchaseRecord | undefined> {
-  const text = await readIfExists(file);
+  const text = await readTextIfExists(file);
   if (text === undefined) return undefined;
   let data: unknown;
   try {

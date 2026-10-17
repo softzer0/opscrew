@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
+import { CLOUDFLARE_TOKEN_PAGE, CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import {
   type ApprovalRecord,
   type IacEngine,
@@ -11,7 +11,14 @@ import {
   SEVERITIES,
   type VpsProviderId,
 } from "@opscrew/contracts";
-import { OpsCrewError, type Redactor, writeFileAtomic } from "@opscrew/core";
+import {
+  formatMoney,
+  OpsCrewError,
+  plural,
+  type Redactor,
+  taxLabel,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { checkDialect, engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import { usesTunnel } from "@opscrew/iac-templates";
@@ -22,6 +29,7 @@ import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
 import { describeChanges, PlanRefusedError, stateFile } from "../shared";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
+import { neededScopes } from "./credentials";
 import { maskSensitivePlanJson } from "./plan-json";
 import type { SavedPlan } from "./types";
 import { tunnelTokenPermissions } from "./zero-trust";
@@ -148,11 +156,7 @@ function applyFailureHint(
   }
   if (refused.has("provider")) {
     const requirement = vpsConnector(provider, deps).credentials;
-    const needed =
-      requirement.scopes.length === 1
-        ? `${requirement.scopes[0]} permission`
-        : `these scopes (${requirement.scopes.join(", ")})`;
-    return `${displayName} refused the request, so the API token is probably missing a permission OpsCrew needs. Create a token at ${requirement.createUrl} with ${needed}, set ${profile.tokenVars[0]} to it, then run \`${command}\` again. ${kept}`;
+    return `${displayName} refused the request, so the API token is probably missing a permission OpsCrew needs. Create a token at ${requirement.createUrl} with ${neededScopes(requirement)}, set ${profile.tokenVars[0]} to it, then run \`${command}\` again. ${kept}`;
   }
   const target = deployPlan.target;
   // A server the user owns is never created, so no size can be unavailable (a Portainer target
@@ -182,7 +186,7 @@ function portainerFailureHint(log: string, command: string): string {
 
 /** Next step when Cloudflare refused a request of the apply: a token with `permissions`. */
 function cloudflareRefusedHint(permissions: string, command: string): string {
-  return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at https://dash.cloudflare.com/profile/api-tokens with ${permissions} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. Nothing that was already created is removed.`;
+  return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at ${CLOUDFLARE_TOKEN_PAGE} with ${permissions} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. Nothing that was already created is removed.`;
 }
 
 /** File name ending of a saved plan that removes everything in the state (`destroy: true`). */
@@ -196,20 +200,10 @@ export interface PlanAndApplyResult {
   plan?: SavedPlan;
 }
 
-function money(amount: number, currency: string): string {
-  return `${currency === "EUR" ? "€" : currency === "USD" ? "$" : `${currency} `}${amount.toFixed(2)}`;
-}
-
-function resources(count: number): string {
-  return `${count} resource${count === 1 ? "" : "s"}`;
-}
-
 /** `Estimated cost: €4.51 per month (…)`: the deployment's monthly price with its source. */
 function estimatedCost(deployPlan: DeployPlan): string {
   const cost = deployPlan.cost.monthly;
-  // EUR prices (Hetzner) are quoted with or without VAT; USD prices (DigitalOcean) exclude sales tax.
-  const tax = cost.currency === "EUR" ? "VAT" : "tax";
-  return `Estimated cost: ${money(cost.amount, cost.currency)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${deployPlan.cost.pricesIncludeVat ? "incl." : "excl."} ${tax}).`;
+  return `Estimated cost: ${formatMoney(cost)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${taxLabel(cost.currency, deployPlan.cost.pricesIncludeVat)}).`;
 }
 
 /** True when the plan only renames resources in the state (`moved` blocks) and changes nothing. */
@@ -238,13 +232,15 @@ export function describePlan(
   }
   if (isMovesOnly(saved)) {
     lines.push(
-      `Changes: none in the cloud; ${resources(moves.length)} renamed in the infrastructure state only.`,
+      `Changes: none in the cloud; ${plural(moves.length, "resource")} renamed in the infrastructure state only.`,
       "Cost: unchanged (nothing is created, updated or deleted).",
     );
   } else {
     const { create, update, delete: del, replace } = saved.counts;
     const renamed =
-      moves.length > 0 ? ` ${resources(moves.length)} renamed in the infrastructure state.` : "";
+      moves.length > 0
+        ? ` ${plural(moves.length, "resource")} renamed in the infrastructure state.`
+        : "";
     lines.push(
       `Changes: ${create} to create, ${update} to update, ${del} to delete, ${replace} to replace.${renamed}`,
     );
@@ -411,7 +407,11 @@ export async function findSavedPlan(
   return undefined;
 }
 
-function toSaved(summary: PlanSummary, policy: PolicyResult[]): SavedPlan {
+/**
+ * A plan as its sidecar keeps it ({@link writePlanSidecar}): the engine's summary (with its state
+ * renames, when it has any) and the policy results.
+ */
+export function savedPlanOf(summary: PlanSummary, policy: PolicyResult[]): SavedPlan {
   return {
     planHash: summary.planHash,
     planFile: summary.planFile,
@@ -484,7 +484,7 @@ async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise
   });
   // Policies, summaries and the saved sidecar only ever see non-sensitive values.
   const planJson = maskSensitivePlanJson(summary.planJson);
-  return toSaved({ ...summary, planJson }, evaluatePlanPolicies(planJson, options.deployPlan));
+  return savedPlanOf({ ...summary, planJson }, evaluatePlanPolicies(planJson, options.deployPlan));
 }
 
 /**
@@ -623,7 +623,7 @@ export async function planAndApply(
       ? deployPlan.cost.monthly
       : costDeltaOption;
   const title = movesOnly
-    ? `Rename ${resources(saved.moves?.length ?? 0)} in the infrastructure state (nothing changes in the cloud)`
+    ? `Rename ${plural(saved.moves?.length ?? 0, "resource")} in the infrastructure state (nothing changes in the cloud)`
     : (options.approvalTitle ??
       `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`);
   const approval = await deps.approvals.request({

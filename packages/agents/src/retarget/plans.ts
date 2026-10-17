@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import type { ApprovalRecord, ApprovalRequest, Money, PlanSummary } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError, upperFirst } from "@opscrew/core";
 import { engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -13,12 +13,11 @@ import {
 import {
   findSavedPlan,
   isMovesOnly,
-  maskSensitivePlanJson,
   type PlanAndApplyOptions,
   planAndApply,
   type SavedPlan,
 } from "../provision";
-import { writePlanSidecar } from "../provision/plan-apply";
+import { savedPlanOf, writePlanSidecar } from "../provision/plan-apply";
 import {
   clearPending,
   type MoveAction,
@@ -259,23 +258,6 @@ export interface DeletionStepInput {
   beforeApply?: () => Promise<void>;
 }
 
-/** The sidecar saved next to a move's plan file (exported for tests). */
-export function savedOf(summary: PlanSummary): SavedPlan {
-  return {
-    planHash: summary.planHash,
-    planFile: summary.planFile,
-    dir: summary.dir,
-    engine: summary.engine,
-    createdAt: summary.createdAt,
-    changes: summary.changes,
-    counts: summary.counts,
-    hasDestroy: summary.hasDestroy,
-    policy: [],
-    // Saved next to the plan file: never the prior state or a sensitive value in clear.
-    planJson: maskSensitivePlanJson(summary.planJson),
-  };
-}
-
 /**
  * A plan of a move's deletion (finish or abort): the protection lift or the bounded removal of a
  * server module. Planned with the destroy helpers' `savePlan` (variables allowed), checked before
@@ -303,7 +285,7 @@ export async function deletionStep(
       await discardSaved(fresh.planFile);
       throw error;
     }
-    await writePlanSidecar(deps.redactor, savedOf(fresh));
+    await writePlanSidecar(deps.redactor, savedPlanOf(fresh, []));
     await writePending(deps, input.action, fresh.planHash);
     if (!deps.interactive) {
       const request = input.request(fresh);
@@ -321,7 +303,7 @@ export async function deletionStep(
       allowDestroy: input.allowDestroy,
     });
     await input.beforeApply?.();
-    deps.reporter.step(`${input.what.charAt(0).toUpperCase()}${input.what.slice(1)}`);
+    deps.reporter.step(upperFirst(input.what));
     await applyApprovedPlan(del, summary, {
       allowDestroy: input.allowDestroy,
       what: input.what,

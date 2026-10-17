@@ -13,7 +13,7 @@ import {
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
 } from "@opscrew/connector-ssh-host";
-import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { listText, OpsCrewError, readTextIfExists, sha256Hex } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
   type RenderContext,
@@ -26,7 +26,7 @@ import { connectOwnServer, desiredHost, type OwnServerServices, ownTarget } from
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
 import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
-import { lastHostSetup, passwordLoginChoice, readIfExists } from "../shared";
+import { lastHostSetup, passwordLoginChoice } from "../shared";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
 export interface HostDifference {
@@ -659,7 +659,7 @@ export async function ownHostDrift(
   },
 ): Promise<HostDrift> {
   const own = options.own ?? {};
-  const deployPublicKey = ((await readIfExists(deps.paths.files.deployKeyPub)) ?? "").trim();
+  const deployPublicKey = ((await readTextIfExists(deps.paths.files.deployKeyPub)) ?? "").trim();
   if (deployPublicKey === "") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -670,11 +670,7 @@ export async function ownHostDrift(
     );
   }
   deps.reporter.step("Connecting to your server");
-  const session = await connectOwnServer(deps, {
-    ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
-    ...(own.remote !== undefined ? { remote: own.remote } : {}),
-    ...(own.homeDir !== undefined ? { homeDir: own.homeDir } : {}),
-  });
+  const session = await connectOwnServer(deps, { hostKey: options.hostKey, services: own });
   deps.reporter.step("Inspecting your server (read-only)");
   const facts = own.host?.inspect
     ? await own.host.inspect(session.remote)

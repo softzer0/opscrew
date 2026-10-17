@@ -18,6 +18,11 @@ export function approvalEntry(record: ApprovalRecord): PlanApproval {
   };
 }
 
+/** ` (reason)` to follow a refusal's first words, or nothing when the handler gave no reason. */
+export function refusalReason(approval: { reason?: string | undefined }): string {
+  return approval.reason ? ` (${approval.reason})` : "";
+}
+
 /** What {@link PlanRefusedError} says: which plan, why, and what stayed as it was. */
 export interface PlanRefusal {
   /** The plan in words: `host plan`, `stack plan`. */
@@ -38,11 +43,14 @@ export class PlanRefusedError extends OpsCrewError {
   readonly refusal: PlanRefusal;
 
   constructor(refusal: PlanRefusal, cause?: unknown) {
-    const why = refusal.reason ? ` (${refusal.reason})` : "";
-    super("APPROVAL_REFUSED", `The ${refusal.plan} was not approved${why}. ${refusal.unchanged}`, {
-      hint: refusal.hint,
-      ...(cause !== undefined ? { cause } : {}),
-    });
+    super(
+      "APPROVAL_REFUSED",
+      `The ${refusal.plan} was not approved${refusalReason(refusal)}. ${refusal.unchanged}`,
+      {
+        hint: refusal.hint,
+        ...(cause !== undefined ? { cause } : {}),
+      },
+    );
     this.name = "PlanRefusedError";
     this.refusal = refusal;
   }

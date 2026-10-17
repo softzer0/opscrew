@@ -1,39 +1,39 @@
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  applyStackPlan,
-  type CreatedRecord,
+  type applyStackPlan,
   DEPLOY_BRANCH,
   type PortainerClient,
   planStackTeardown,
-  StackApplyError,
   type StackPlan,
   stackPlanHash,
 } from "@opscrew/connector-portainer";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { isUserFacingError, listText, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
 import { DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS, portainerTarget } from "@opscrew/iac-templates";
-import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import { portainerCloudflare } from "../provision/credentials";
 import {
-  portainerContainerUrl,
   portainerValueKeyFile,
   portainerWebhookFile,
   requirePortainerConnection,
   requirePortainerToken,
+  setPortainerOrigin,
   stackPlanFile,
 } from "../provision/portainer";
+import { recordConnection } from "../provision/stack-plan";
 import {
+  adapterBlocked,
+  applyStackPlanAudited,
   chooseEngine,
   hasDeployment,
   hasState,
-  hidePortainerAddress,
   inspectRecordedPortainer,
   type PortainerConnection,
   readPortainerConnection,
-  recordPortainerConnection,
+  refusalReason,
   stateContents,
   stateFile,
 } from "../shared";
@@ -46,18 +46,18 @@ import {
   checkCloudflare,
   containerImagesLeft,
   deploySecretsLeft,
-  destroyedPlan,
   type GitHubTarget,
   nothingDeployed,
   previewCloudflareRemoval,
+  recordTeardown,
   removeDeploySecrets,
   requireInfraCode,
   resolveGitHub,
-  secretsPage,
+  SHOWS_PLAN_AGAIN,
   setupEngine,
-  stateNotHere,
   stoppedPartWay,
   teardownScope,
+  teardownStateNotHere,
   teardownSummary,
 } from "./common";
 import { confirmDeletion, type DeletionSession, deletionSession, discardPlan } from "./deletion";
@@ -86,39 +86,13 @@ const SECRET_NAMES = [DEPLOY_SECRETS.buildEnv, ...Object.values(PORTAINER_DEPLOY
 function requireNoStackBlockers(plan: StackPlan, name: string): void {
   const blocked = plan.changes.filter((change) => change.state === "blocked");
   if (plan.findings.length === 0 && blocked.length === 0) return;
-  const reasons = [
-    ...plan.findings.map((finding) => finding.message),
-    ...blocked.map((change) => `${change.title}: ${change.reason ?? "blocked"}`),
-  ];
-  const hints = [...new Set(plan.findings.map((finding) => finding.hint))];
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `OpsCrew cannot remove ${name} from your Portainer, so it changed nothing:\n${reasons.map((reason) => `  - ${reason}`).join("\n")}`,
-    {
-      hint:
-        hints.length > 0
-          ? `${hints.join(" ")} Then run \`${COMMAND}\` again.`
-          : `Fix what blocks these changes in Portainer, then run \`${COMMAND}\` again.`,
-    },
-  );
-}
-
-/** Writes what OpsCrew still has in Portainer to `.opscrew/server.json`. */
-async function recordCreated(
-  deps: Pick<PhaseDeps, "paths">,
-  connection: PortainerConnection,
-  created: CreatedRecord,
-): Promise<PortainerConnection> {
-  const next: PortainerConnection = {
-    ...connection,
-    created: {
-      stacks: created.stacks.map((stack) => ({ ...stack })),
-      ...(created.registryId !== undefined ? { registryId: created.registryId } : {}),
-      volumes: [...created.volumes],
-    },
-  };
-  await recordPortainerConnection(deps.paths, next);
-  return next;
+  throw adapterBlocked({
+    cannot: `OpsCrew cannot remove ${name} from your Portainer`,
+    findings: plan.findings,
+    blocked,
+    ...(plan.findings.length > 0 ? { extraHint: `Then run \`${COMMAND}\` again.` } : {}),
+    fallbackHint: `Fix what blocks these changes in Portainer, then run \`${COMMAND}\` again.`,
+  });
 }
 
 /**
@@ -196,11 +170,9 @@ async function approveTeardown(
     confirmPhrase: name,
   });
   if (!approval.approved) {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      `${input.refused}${approval.reason ? ` (${approval.reason})` : ""}`,
-      { hint: `Run \`${COMMAND}\` again when you are ready; it shows the plan again.` },
-    );
+    throw new OpsCrewError("APPROVAL_REFUSED", `${input.refused}${refusalReason(approval)}`, {
+      hint: SHOWS_PLAN_AGAIN,
+    });
   }
   await deps.approvals.assertApprovedStackPlan(hash, { allowDestroy: true });
   return { plan, hash, approval };
@@ -226,59 +198,30 @@ async function applyTeardown(
   const { name } = input;
   const work = plan.changes.filter((change) => change.state === "change");
   await deps.approvals.assertApprovedStackPlan(hash, { allowDestroy: true });
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "stack teardown started",
-    phase: "provision",
-    target: hash,
-    decision: "approved",
-    detail: `changes: ${work.map((change) => change.id).join(", ")}`,
-  });
   deps.reporter.step(`Removing ${name} from your Portainer (${plural(work.length, "change")})`);
   let connection = input.connection;
-  let result: Awaited<ReturnType<typeof applyStackPlan>>;
   try {
-    // A teardown sends no value: nothing but names and ids leaves this computer.
-    result = await applyStackPlan(input.client, plan, {
-      approvedHash: hash,
-      secrets: { env: {} },
-      ...(input.wait !== undefined ? { wait: input.wait } : {}),
+    const result = await applyStackPlanAudited(deps, {
+      client: input.client,
+      plan,
+      hash,
+      // A teardown sends no value: nothing but names and ids leaves this computer.
+      options: { secrets: { env: {} }, ...(input.wait !== undefined ? { wait: input.wait } : {}) },
+      phase: "provision",
+      teardown: true,
+      // What is left is still OpsCrew's, also after a failure part-way.
+      record: async (created) => {
+        connection = await recordConnection(deps, connection, { created });
+      },
     });
+    return { applied: result.applied, connection };
   } catch (error) {
-    if (error instanceof StackApplyError) {
-      // What is left is still OpsCrew's: record it before the error is shown.
-      connection = await recordCreated(deps, connection, error.record);
-      await deps.audit.append({
-        kind: "provider-call",
-        actor: "opscrew",
-        action: "stack teardown failed",
-        phase: "provision",
-        target: hash,
-        decision: "refused",
-        detail: `changes applied before the failure: ${error.applied.length > 0 ? error.applied.join(", ") : "none"}`,
-      });
-    }
     throw stoppedPartWay(error, {
       place: "your Portainer",
       afterFailure: input.afterFailure,
       say: deps.redactor.redact,
     });
   }
-  connection = await recordCreated(deps, connection, result.record);
-  for (const id of result.applied) {
-    const change = plan.changes.find((item) => item.id === id);
-    await deps.audit.append({
-      kind: "provider-call",
-      actor: "opscrew",
-      action: `stack teardown ${id}`,
-      phase: "provision",
-      target: hash,
-      decision: "approved",
-      ...(change !== undefined ? { detail: change.title } : {}),
-    });
-  }
-  return { applied: result.applied, connection };
 }
 
 /** True when OpsCrew can delete the deploy branch: a GitHub client with `deleteBranch` and the repository. */
@@ -424,7 +367,7 @@ export async function destroyPortainer(
   const dataOnly = !removeApp && deleteData && record.volumes.length > 0;
   if (!removeApp && !dataOnly) throw nothingDeployed(plan);
   const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
-  if (removeApp && (root.appTunnel || root.webhook) && !stateHere) throw stateNotHere(plan);
+  if (removeApp && (root.appTunnel || root.webhook) && !stateHere) throw teardownStateNotHere(plan);
   const cloudflareState = removeApp && stateHere;
   if (cloudflareState) {
     await requireInfraCode(deps, plan, "the removal of the app's Cloudflare resources");
@@ -438,11 +381,6 @@ export async function destroyPortainer(
   const token = requirePortainerToken(deps);
   if (cloudflare) await checkCloudflare(deps, plan, services);
   const github: GitHubTarget = removeApp ? await resolveGitHub(deps, services) : {};
-  if (removeApp && github.skipReason) {
-    deps.reporter.warn(
-      `OpsCrew cannot remove the deploy secrets from GitHub Actions: ${github.skipReason}. The teardown continues; delete them yourself afterwards at ${secretsPage(github)}.`,
-    );
-  }
 
   // 3. Connect (pinned certificate) and inspect (read-only)
   const { client, facts } = await inspectRecordedPortainer(deps, {
@@ -465,10 +403,7 @@ export async function destroyPortainer(
   let confirmed: ReadonlySet<string> = new Set();
   if (cloudflareState) {
     const setup = await setupEngine(deps, plan, options);
-    // Portainer's address reaches the engine only as a sensitive variable, never in a file.
-    const origin = portainerContainerUrl(connection.url);
-    hidePortainerAddress(deps.redactor, origin);
-    setup.env.TF_VAR_portainer_origin = origin;
+    setPortainerOrigin(deps.redactor, setup.env, connection.url);
     session = deletionSession(scope, { ...setup, dir: join(deps.paths.root, plan.infra.dir) });
     ({ resources, confirmed } = await previewCloudflareRemoval(session, WORDS));
   }
@@ -584,9 +519,8 @@ export async function destroyPortainer(
       );
     } else if (teardown.changes.some((change) => change.params.action === "forget")) {
       // Only what Portainer no longer has: forget it, nothing to change there.
-      connection = await recordCreated(deps, connection, {
-        stacks: [],
-        volumes: [...record.volumes],
+      connection = await recordConnection(deps, connection, {
+        created: { stacks: [], volumes: [...record.volumes] },
       });
     }
     if (connection.created.stacks.length === 0) await forgetLocalStackFiles(deps);
@@ -614,14 +548,10 @@ export async function destroyPortainer(
       done: "The app is removed from your Portainer and Cloudflare.",
       reach: "your Portainer",
     });
-    const at = deps.clock.now().toISOString();
-    await writeArtifact(
-      "plan",
-      deps.paths.files.plan,
-      destroyedPlan(plan, at, [removal?.approval, stackApproval]),
-    );
-    await rm(deps.paths.files.deploySecrets, { force: true });
-    await deps.state.markPhase("provision", "skipped", "app removed from your Portainer");
+    await recordTeardown(deps, plan, [removal?.approval, stackApproval], {
+      summary: "app removed from your Portainer",
+      forgetAddress: false,
+    });
   }
   await deps.audit.append({
     kind: "phase",

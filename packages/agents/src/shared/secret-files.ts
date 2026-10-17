@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
-import { readIfExists } from "./files";
+import { OpsCrewError, type ProjectPaths, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 
 /** A secret OpsCrew keeps in a private file (mode 0600) of the user's OpsCrew folder. */
 export interface SecretFile {
@@ -19,7 +18,7 @@ export interface SecretFile {
  * made with the secret (encrypted state, an admin account) needs exactly that value.
  */
 export async function readSecretFile(secret: SecretFile): Promise<string | undefined> {
-  const text = await readIfExists(secret.file);
+  const text = await readTextIfExists(secret.file);
   if (text === undefined) return undefined;
   const value = text.trim();
   if (!secret.valid(value)) {

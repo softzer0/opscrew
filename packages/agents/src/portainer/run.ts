@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import { GitClient } from "@opscrew/connector-github";
 import {
   applyHostPlan,
   type HostPlan,
@@ -8,7 +7,7 @@ import {
   planPortainer,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { exists, OpsCrewError } from "@opscrew/core";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import {
   portainerHostname,
@@ -18,7 +17,7 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { githubCoordinates, setupCloudflare } from "../provision/credentials";
+import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import {
   applyOwnHostPlan,
@@ -45,7 +44,7 @@ import {
   approveAndWriteRenderedFiles,
   diffRenderedFiles,
   ensureDeployKey,
-  exists,
+  githubCoordinates,
   type HostAdapterApi,
   type HostPlanOutcome,
   hasDeployment,
@@ -55,6 +54,7 @@ import {
   PlanRefusedError,
   projectEngine,
   readServerAddresses,
+  requireGitRepo,
   SshRemoteExec,
   stringOutput,
 } from "../shared";
@@ -178,17 +178,7 @@ async function renderChange(
   },
 ): Promise<{ plan: DeployPlan; files: ReturnType<typeof deploymentFiles>; written: string[] }> {
   const root = deps.paths.root;
-  const git = new GitClient({
-    cwd: root,
-    runner: deps.runner,
-    env: deps.env,
-    redactor: deps.redactor,
-  });
-  if (!(await git.isRepo())) {
-    throw new OpsCrewError("PHASE_PRECONDITION", "This project is not a git repository.", {
-      hint: "Run OpsCrew from a clone of your GitHub repository.",
-    });
-  }
+  const git = await requireGitRepo(deps);
   const github = await githubCoordinates(git);
   let plan = change.after;
   const cloudflare = await setupCloudflare(deps, plan, input.services);
@@ -282,8 +272,7 @@ async function runChange(
   const tunnelInvolved = usesTunnel(change.before) || usesTunnel(change.after);
   const approvals: ApprovalRecord[] = [];
 
-  const deployKey = await ensureDeployKey(deps.paths);
-  deps.redactor.addLiteral(deployKey.privateKeyOpenSsh, "deploy-key");
+  const deployKey = await ensureDeployKey(deps.paths, deps.redactor);
   const approveHash = await savedInfrastructureHash(
     deps,
     change.before,

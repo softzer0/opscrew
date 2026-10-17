@@ -2,8 +2,8 @@ import { access, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type HostFacts, inspectHost, isPublicAddress } from "@opscrew/connector-ssh-host";
-import type { CommandResult, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import type { CommandResult, PhaseName, RemoteExec } from "@opscrew/contracts";
+import { errorMessage, OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
@@ -12,6 +12,7 @@ import {
   type OwnServerLogin,
   sshKeyWords,
 } from "../providers";
+import type { OwnServerServices } from "../provision/types";
 import { SshRemoteExec } from "./remote";
 import {
   type OwnServerConnection,
@@ -40,11 +41,12 @@ export interface ConnectOwnServerOptions {
    * connection when nobody can answer a prompt; when the server presents another key, nothing
    * connects. A fingerprint that differs from the pinned one replaces it (after a reinstall).
    */
-  hostKey?: string;
-  /** Builds the admin login's shell (tests); default: {@link SshRemoteExec} with the login. */
-  remote?: (connection: OwnServerConnection) => RemoteExec;
-  /** Home directory for `~/` key paths (default: `HOME`, `USERPROFILE`, then the OS's). */
-  homeDir?: string;
+  hostKey?: string | undefined;
+  /**
+   * The admin login's shell (default: {@link SshRemoteExec} with the login) and the home directory
+   * for `~/` key paths (default: `HOME`, `USERPROFILE`, then the OS's); fakes in tests.
+   */
+  services?: Pick<OwnServerServices, "remote" | "homeDir"> | undefined;
 }
 
 /** A connection to the user's own server whose host key is confirmed and pinned. */
@@ -200,12 +202,14 @@ function describeKey(key: ScannedHostKey): string {
  * Then it logs in once (`true`) as the admin login: a host key ssh refuses stops like a changed
  * key, a refused login names the user and key (and `ssh-add` for a key with a passphrase), and an
  * unreachable server says so; in each case the earlier known_hosts comes back and nothing is
- * recorded. Returns the admin login's shell, which only ever talks to the pinned key.
+ * recorded. A key this connection pinned is said. Returns the admin login's shell, which only ever
+ * talks to the pinned key.
  */
 export async function connectOwnServer(
   deps: OwnServerDeps,
   options: ConnectOwnServerOptions = {},
 ): Promise<OwnServerSession> {
+  const homeDir = options.services?.homeDir;
   const connection = await readOwnServerRecord(deps.paths);
   if (connection === undefined) throw ownServerNotSetUp();
   const given = options.hostKey?.trim();
@@ -216,7 +220,7 @@ export async function connectOwnServer(
       { hint: `${CHECK_ON_SERVER} Pass the SHA256:… part it prints.` },
     );
   }
-  await requireOwnServerKey(connection, deps.env, options.homeDir);
+  await requireOwnServerKey(connection, deps.env, homeDir);
 
   const where = `${connection.host} (SSH port ${connection.port})`;
   const keys = await scanHostKeys({
@@ -306,7 +310,7 @@ export async function connectOwnServer(
   await writeKnownHost(knownHostsFile, knownHostsName(connection.host, connection.port), [chosen]);
   const session = { ...connection, hostKey: chosen.fingerprint };
   const remote =
-    options.remote?.(session) ?? adminRemote(deps, session, knownHostsFile, options.homeDir);
+    options.services?.remote?.(session) ?? adminRemote(deps, session, knownHostsFile, homeDir);
   try {
     await testLogin(deps, remote, session, where);
   } catch (error) {
@@ -316,8 +320,57 @@ export async function connectOwnServer(
     throw error;
   }
   const changed = chosen.fingerprint !== pinned;
-  if (changed) await recordOwnServer(deps.paths, { ...connection, hostKey: chosen.fingerprint });
+  if (changed) {
+    await recordOwnServer(deps.paths, { ...connection, hostKey: chosen.fingerprint });
+    deps.reporter.success(`Pinned your server's SSH host key ${chosen.fingerprint}.`);
+  }
   return { connection: session, remote, hostKey: chosen, knownHostsFile, pinned: changed };
+}
+
+/**
+ * Inspects the user's own server read-only through the host adapter of `services` (default
+ * `inspectHost`: fixed commands that change nothing) and audits it without the server's address:
+ * `detail` says for what, `phase` when the command has one.
+ */
+export async function inspectOwnHost(
+  deps: Pick<PhaseDeps, "reporter" | "audit">,
+  session: Pick<OwnServerSession, "remote">,
+  options: {
+    services?: Pick<OwnServerServices, "host"> | undefined;
+    phase?: PhaseName;
+    detail?: string;
+  },
+): Promise<HostFacts> {
+  deps.reporter.step("Inspecting your server (read-only)");
+  const host = options.services?.host;
+  const facts = host ? await host.inspect(session.remote) : await inspectHost(session.remote);
+  await deps.audit.append({
+    kind: "remote-exec",
+    actor: "opscrew",
+    action: "inspect host (read-only)",
+    ...(options.phase !== undefined ? { phase: options.phase } : {}),
+    target: "own server",
+    decision: "allow",
+    ...(options.detail !== undefined ? { detail: options.detail } : {}),
+  });
+  return facts;
+}
+
+/**
+ * "Connecting to your server": {@link connectOwnServer} (the pinned host key, the login checked),
+ * then {@link inspectOwnHost}.
+ */
+export async function connectAndInspectOwnServer(
+  deps: OwnServerDeps & Pick<PhaseDeps, "audit">,
+  options: Pick<ConnectOwnServerOptions, "hostKey"> & {
+    services?: Pick<OwnServerServices, "remote" | "homeDir" | "host"> | undefined;
+    phase?: PhaseName;
+    detail?: string;
+  },
+): Promise<{ session: OwnServerSession; facts: HostFacts }> {
+  deps.reporter.step("Connecting to your server");
+  const session = await connectOwnServer(deps, options);
+  return { session, facts: await inspectOwnHost(deps, session, options) };
 }
 
 /** ssh's own words about a failed login: its last lines, redacted, for a hint. */
@@ -358,7 +411,7 @@ async function testLogin(
   try {
     result = await remote.run("true", { timeoutMs: 30_000 });
   } catch (error) {
-    throw unreachable(sshSaid(deps, error instanceof Error ? error.message : String(error)));
+    throw unreachable(sshSaid(deps, errorMessage(error)));
   }
   if (result.exitCode === 0) return;
   const detail = sshSaid(deps, result.stderr);

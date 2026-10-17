@@ -1,6 +1,6 @@
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { ApprovalRecord, IacEngine, ResourceAction, ResourceChange } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { durationText, errorMessage, OpsCrewError, realSleep } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { PlanRefusedError } from "./approvals";
@@ -23,7 +23,6 @@ const POLL_INTERVAL_MS = 5_000;
 const PROGRESS_EVERY_MS = 20_000;
 
 type Sleep = (ms: number) => Promise<void>;
-const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * True when the plan changes a Cloudflare Tunnel itself (not only its routes or records) with one
@@ -124,7 +123,7 @@ export async function waitForTunnelToClose(
   let problem: string | undefined;
   let lastProgress = 0;
   deps.reporter.step(
-    `Waiting until Cloudflare reports no active connections for the app's Cloudflare Tunnel (up to ${minutes(timeoutMs)})`,
+    `Waiting until Cloudflare reports no active connections for the app's Cloudflare Tunnel (up to ${durationText(timeoutMs)})`,
   );
   const closed = await pollUntil(
     async () => {
@@ -133,12 +132,12 @@ export async function waitForTunnelToClose(
         problem = undefined;
         if (state !== "active") return true;
       } catch (error) {
-        problem = deps.redactor.redact(error instanceof Error ? error.message : String(error));
+        problem = deps.redactor.redact(errorMessage(error));
       }
       if (elapsed() < timeoutMs && elapsed() - lastProgress >= PROGRESS_EVERY_MS) {
         lastProgress = elapsed();
         deps.reporter.info(
-          `Still waiting for Cloudflare to close the tunnel's connections (${Math.round(elapsed() / 1000)} s so far, up to ${minutes(timeoutMs)}).`,
+          `Still waiting for Cloudflare to close the tunnel's connections (${Math.round(elapsed() / 1000)} s so far, up to ${durationText(timeoutMs)}).`,
         );
       }
       return undefined;
@@ -150,11 +149,6 @@ export async function waitForTunnelToClose(
     return { closed: true };
   }
   return problem !== undefined ? { closed: false, problem } : { closed: false };
-}
-
-function minutes(ms: number): string {
-  const count = Math.max(1, Math.round(ms / 60_000));
-  return `${count} minute${count === 1 ? "" : "s"}`;
 }
 
 /** Engine log text of Cloudflare refusing to delete a tunnel that still has connections. */
@@ -181,7 +175,7 @@ export function tunnelBusyError(input: {
   timeoutMs?: number;
   cause?: unknown;
 }): OpsCrewError {
-  const wait = minutes(input.timeoutMs ?? TUNNEL_CLOSE_TIMEOUT_MS);
+  const wait = durationText(input.timeoutMs ?? TUNNEL_CLOSE_TIMEOUT_MS);
   const first =
     input.reason === "refused"
       ? "Cloudflare refused to delete the app's Cloudflare Tunnel because it still has active connections, so the tunnel is still there."

@@ -1,4 +1,4 @@
-import { OpsCrewError } from "@opscrew/core";
+import { formatMoney, OpsCrewError } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
 import {
   type CloudDeployTarget,
@@ -8,10 +8,10 @@ import {
   readArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { buildDesignOptions, formatMoney, priceLabel } from "../design";
+import { buildDesignOptions } from "../design";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { readRequirements } from "../provision";
-import { hasState, serverAddress } from "../shared";
+import { designOptionLine, hasState, serverAddress } from "../shared";
 import { ownServerNoMove, portainerTargetNoMove } from "../shared/vps-target";
 import { databaseSize } from "./server-ops";
 import { recordMoveServers } from "./servers";
@@ -219,15 +219,7 @@ export async function startMove(
     catalog,
     now: deps.clock.now(),
   });
-  for (const option of designOptions) {
-    const marks = [
-      option.fitsBudget ? "fits the budget" : "over budget",
-      ...(option.recommended ? ["recommended"] : []),
-    ];
-    deps.reporter.info(
-      `${option.title} (${option.id}): ${formatMoney(option.cost.monthly)}/month, ${priceLabel(option.cost)} — ${marks.join(", ")}`,
-    );
-  }
+  for (const option of designOptions) deps.reporter.info(designOptionLine(option));
   const chosen = await pickOption(designOptions, options);
   const target = targetOf(chosen);
 

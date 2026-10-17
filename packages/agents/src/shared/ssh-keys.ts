@@ -1,8 +1,8 @@
 import { createHash, generateKeyPairSync, randomBytes, randomInt } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { ProjectPaths } from "@opscrew/core";
-import { readIfExists } from "./files";
+import { OpsCrewError, type ProjectPaths, type Redactor, readTextIfExists } from "@opscrew/core";
+import type { PhaseDeps } from "../context";
 
 export interface Ed25519KeyPair {
   /** `-----BEGIN OPENSSH PRIVATE KEY-----` … (unencrypted openssh-key-v1). */
@@ -87,27 +87,75 @@ export interface DeployKey {
   created: boolean;
 }
 
-/** Creates the project's deploy key once (`~/.opscrew/projects/<id>/deploy_key`) and reuses it. */
-export async function ensureDeployKey(paths: ProjectPaths): Promise<DeployKey> {
-  const existingPrivate = await readIfExists(paths.files.deployKey);
-  const existingPublic = await readIfExists(paths.files.deployKeyPub);
+/**
+ * Creates the project's deploy key once (`~/.opscrew/projects/<id>/deploy_key`) and reuses it. Its
+ * private half is registered with the redactor.
+ */
+export async function ensureDeployKey(
+  paths: ProjectPaths,
+  redactor: Pick<Redactor, "addLiteral">,
+): Promise<DeployKey> {
+  const existingPrivate = await readTextIfExists(paths.files.deployKey);
+  const existingPublic = await readTextIfExists(paths.files.deployKeyPub);
+  let key: DeployKey;
   if (existingPrivate && existingPublic) {
-    return {
+    key = {
       privateKeyOpenSsh: existingPrivate,
       publicKeyOpenSsh: existingPublic.trim(),
       privateKeyFile: paths.files.deployKey,
       created: false,
     };
+  } else {
+    const pair = generateEd25519KeyPair(`opscrew-deploy@${paths.projectId}`);
+    await writePrivate(paths.files.deployKey, pair.privateKeyOpenSsh);
+    await writeFile(paths.files.deployKeyPub, `${pair.publicKeyOpenSsh}\n`, { mode: 0o644 });
+    key = {
+      privateKeyOpenSsh: pair.privateKeyOpenSsh,
+      publicKeyOpenSsh: pair.publicKeyOpenSsh,
+      privateKeyFile: paths.files.deployKey,
+      created: true,
+    };
   }
-  const pair = generateEd25519KeyPair(`opscrew-deploy@${paths.projectId}`);
-  await writePrivate(paths.files.deployKey, pair.privateKeyOpenSsh);
-  await writeFile(paths.files.deployKeyPub, `${pair.publicKeyOpenSsh}\n`, { mode: 0o644 });
-  return {
-    privateKeyOpenSsh: pair.privateKeyOpenSsh,
-    publicKeyOpenSsh: pair.publicKeyOpenSsh,
-    privateKeyFile: paths.files.deployKey,
-    created: true,
-  };
+  redactor.addLiteral(key.privateKeyOpenSsh, "deploy-key");
+  return key;
+}
+
+/** How to bring the deploy key to this computer; `then` ends it (`then try again.`). */
+export function copyDeployKeyHint(paths: Pick<ProjectPaths, "files">, then: string): string {
+  return `Copy the deploy key files from the computer that ran \`opscrew provision\` to ${paths.files.deployKey} and ${paths.files.deployKeyPub}, ${then}`;
+}
+
+/**
+ * The stop (`PHASE_PRECONDITION`) when the project's deploy key is not on this computer: what
+ * OpsCrew `cannot` do and what stayed as it was (`cannot reach the servers. Nothing was
+ * changed.`), and the {@link copyDeployKeyHint} that ends with `then`.
+ */
+export function deployKeyMissing(
+  paths: Pick<ProjectPaths, "files">,
+  cannot: string,
+  then: string,
+): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The project's deploy key is not on this computer, so OpsCrew ${cannot}`,
+    { hint: copyDeployKeyHint(paths, then) },
+  );
+}
+
+/**
+ * The public half of the project's deploy key, read and never created. Stops with
+ * {@link deployKeyMissing} when it is not on this computer: OpsCrew `cannot` (`cannot compare
+ * your server with its setup`), and nothing was checked.
+ */
+export async function readDeployPublicKey(
+  deps: Pick<PhaseDeps, "paths">,
+  cannot: string,
+): Promise<string> {
+  const key = ((await readTextIfExists(deps.paths.files.deployKeyPub)) ?? "").trim();
+  if (key === "") {
+    throw deployKeyMissing(deps.paths, `${cannot}. Nothing was checked.`, "then try again.");
+  }
+  return key;
 }
 
 const PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

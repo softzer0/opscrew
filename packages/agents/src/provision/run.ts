@@ -1,10 +1,9 @@
 import { join } from "node:path";
-import { GitClient } from "@opscrew/connector-github";
+import type { GitClient } from "@opscrew/connector-github";
 import type { IacEngine } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { exists, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { portainerHostname, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
-import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { planProvider, providerProfile } from "../providers";
@@ -13,24 +12,22 @@ import {
   approvalEntry,
   approveAndWriteRenderedFiles,
   committableUrl,
+  continuesHint,
   ensureDeployKey,
-  exists,
   type HostPlanOutcome,
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
   oneTimePinIdentityProvider,
   type PlanApproval,
-  pinHostKey,
-  providerConsole,
+  readyNewServer,
   recordOwnServer,
   recordServerAddress,
+  requireGitRepo,
   type ServerAddress,
-  SshRemoteExec,
   serverAddress,
   stringOutput,
-  waitForCloudInit,
-  waitForPort,
+  trackedFiles,
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
@@ -71,9 +68,6 @@ import {
 import type { ProvisionOptions, ProvisionResult, ProvisionServices } from "./types";
 import { cloudflareZeroTrust, createZeroTrustOrganization } from "./zero-trust";
 
-const SSH_WAIT_MS = 5 * 60_000;
-const CLOUD_INIT_WAIT_MS = 8 * 60_000;
-
 /**
  * After a failed apply: the apply may have replaced the server before it stopped, so the address
  * in `.opscrew/server.json` is refreshed from the state's outputs. Best effort: when they cannot be
@@ -96,14 +90,8 @@ async function refreshServerAddress(
 
 async function requireDockerfile(deps: PhaseDeps, git: GitClient, plan: DeployPlan) {
   const dockerfile = join(plan.app.buildContext, plan.app.dockerfile).replace(/\\/g, "/");
-  const tracked = await deps.runner.run("git", [
-    "-C",
-    deps.paths.root,
-    "ls-files",
-    "--",
-    dockerfile,
-  ]);
-  if (!(await exists(join(deps.paths.root, dockerfile))) || tracked.stdout.trim() === "") {
+  const tracked = await trackedFiles(deps, [dockerfile]);
+  if (!(await exists(join(deps.paths.root, dockerfile))) || tracked.length === 0) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `${dockerfile} is not committed on ${await git.currentBranch()}, so GitHub Actions has nothing to build.`,
@@ -112,11 +100,6 @@ async function requireDockerfile(deps: PhaseDeps, git: GitClient, plan: DeployPl
       },
     );
   }
-}
-
-/** Quotes a path for a copy-pasteable shell command. */
-function quotePath(path: string): string {
-  return `"${path.replace(/"/g, '\\"')}"`;
 }
 
 /** Extra inputs a phase passes to the shared flow. */
@@ -255,17 +238,7 @@ async function provisionFlow(
   const command = `opscrew ${phase}`;
 
   // 1–2. Preconditions and credentials
-  const git = new GitClient({
-    cwd: root,
-    runner: deps.runner,
-    env: deps.env,
-    redactor: deps.redactor,
-  });
-  if (!(await git.isRepo())) {
-    throw new OpsCrewError("PHASE_PRECONDITION", "This project is not a git repository.", {
-      hint: "Run OpsCrew from a clone of your GitHub repository.",
-    });
-  }
+  const git = await requireGitRepo(deps);
   await requireDockerfile(deps, git, plan);
   if (plan.target.provider === "portainer") {
     // The user's Portainer: no server, SSH or deploy key; stacks through Portainer's API.
@@ -306,8 +279,7 @@ async function provisionFlow(
 
   // 3. Engine, state encryption, deploy key
   const { engine, env: engineEnv } = await provisionEngine(deps, plan, options);
-  const deployKey = await ensureDeployKey(deps.paths);
-  deps.redactor.addLiteral(deployKey.privateKeyOpenSsh, "deploy-key");
+  const deployKey = await ensureDeployKey(deps.paths, deps.redactor);
   if (deployKey.created) deps.reporter.info("Created a dedicated SSH deploy key for this project.");
   const dir = join(root, plan.infra.dir);
   const approvals: PlanApproval[] = [];
@@ -575,71 +547,14 @@ async function provisionFlow(
   } else {
     const ipv4 = (address as ServerAddress).ipv4;
     // 7. Wait for the server and pin its SSH host key
-    const sleep = services.sleep;
-    const clockMs = services.now;
-    const waits = { ...(sleep ? { sleep } : {}), ...(clockMs ? { now: clockMs } : {}) };
-    deps.reporter.step(`Waiting for the server at ${ipv4} to accept SSH`);
-    const sshOpen = await waitForPort(ipv4, 22, {
-      timeoutMs: SSH_WAIT_MS,
-      intervalMs: 5_000,
-      connect: services.tcpConnect ?? defaultTcpConnect,
-      ...waits,
-    });
-    if (!sshOpen) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `The server at ${ipv4} did not open SSH within 5 minutes.`,
-        {
-          hint: `Check the ${profile.serverNoun} in the ${providerConsole(profile)}, then run \`${command}\` again; it continues where it stopped.`,
-        },
-      );
-    }
-    const pinned = await pinHostKey({
+    const pinned = await readyNewServer(deps, {
       host: ipv4,
-      console: providerConsole(profile),
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-      confirmChangedKey: async ({ host: changedHost, previous, current }) => {
-        const decision = await deps.approvals.request({
-          kind: "remote-exec",
-          title: `Trust the new SSH host key of ${changedHost}`,
-          details: [
-            "The server's SSH host key is different from the one OpsCrew pinned earlier.",
-            "Only accept this if you rebuilt or replaced the server yourself.",
-            "Pinned:",
-            ...previous.map((line) => `  ${line}`),
-            "Now:",
-            ...current.map((line) => `  ${line}`),
-          ].join("\n"),
-        });
-        return decision.approved;
-      },
+      server: "server",
+      profile,
+      keyFile: deployKey.privateKeyFile,
+      again: continuesHint(command),
+      services,
     });
-    const remote =
-      services.remote?.(ipv4) ??
-      new SshRemoteExec({
-        host: ipv4,
-        keyFile: deployKey.privateKeyFile,
-        knownHostsFile: deps.paths.files.knownHosts,
-        runner: deps.runner,
-      });
-    deps.reporter.step("Waiting for the server to finish its first-boot setup (up to 8 minutes)");
-    const ready = await waitForCloudInit(remote, {
-      timeoutMs: CLOUD_INIT_WAIT_MS,
-      intervalMs: 10_000,
-      ...waits,
-    });
-    if (!ready) {
-      const check = `ssh -i ${quotePath(deployKey.privateKeyFile)} -o UserKnownHostsFile=${quotePath(deps.paths.files.knownHosts)} deploy@${ipv4} cloud-init status --long`;
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        "The server did not finish its first-boot setup within 8 minutes.",
-        {
-          hint: `Check what it is still doing (or what failed) with \`${check}\`, then run \`${command}\` again; it continues where it stopped.`,
-        },
-      );
-    }
-    deps.reporter.success(`The server at ${ipv4} is ready.`);
     secretsTarget = { host: ipv4, knownHosts: pinned.knownHostsLines };
   }
 

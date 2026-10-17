@@ -1,7 +1,6 @@
-import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
+import { OpsCrewError, type ProjectPaths, readTextIfExists } from "@opscrew/core";
 import { z } from "zod";
 import { stackPlanFile } from "../provision/portainer";
-import { readIfExists } from "./files";
 import { hostPlanFile } from "./host-plan";
 
 /** A plan saved beside the infrastructure plan: a server's host plan or a Portainer's stack plan. */
@@ -34,7 +33,7 @@ export async function readSavedPlanChanges(
   hint: string,
 ): Promise<boolean | undefined> {
   const file = kind === "host" ? hostPlanFile(paths, hash) : stackPlanFile(paths, hash);
-  const text = await readIfExists(file);
+  const text = await readTextIfExists(file);
   if (text === undefined) return undefined;
   const items = SAVED_PLAN_ITEMS[kind].safeParse(parseJson(text));
   if (!items.success) {

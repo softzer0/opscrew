@@ -106,7 +106,8 @@ export function sentTokens(plan: StackPlan): { repository: boolean; registry: bo
 }
 
 const REPOSITORY_TOKEN_HINT = `Create a fine-grained token at https://github.com/settings/personal-access-tokens/new for only this repository with Contents: Read-only, set ${REPOSITORY_TOKEN_VAR} to it and run the command again. OpsCrew sends it only to your Portainer (for this stack) and never saves it.`;
-const REGISTRY_TOKEN_HINT = `Create a classic token with only the read:packages scope at https://github.com/settings/tokens/new?scopes=read:packages, set ${REGISTRY_TOKEN_VAR} to it and run the command again (OpsCrew sends it only to your Portainer's registry entry and never saves it). If you made the image public on GitHub, run \`opscrew provision --public-image\` instead.`;
+/** How to make the registry token of a private image, and that `--public-image` avoids it. */
+export const REGISTRY_TOKEN_HINT = `Create a classic token with only the read:packages scope at https://github.com/settings/tokens/new?scopes=read:packages, set ${REGISTRY_TOKEN_VAR} to it and run the command again (OpsCrew sends it only to your Portainer's registry entry and never saves it). If you made the image public on GitHub, run \`opscrew provision --public-image\` instead.`;
 
 /** Stops plainly when a change sends a token that is not set (nothing in Portainer changed). */
 export function requireTokens(

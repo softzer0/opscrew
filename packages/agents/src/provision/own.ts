@@ -36,7 +36,7 @@ import {
   stringOutput,
 } from "../shared";
 import {
-  connectOwnServer,
+  connectAndInspectOwnServer,
   type OwnServerSession,
   ownServerLoginCheck,
   ownServerPublicAddress,
@@ -295,24 +295,10 @@ export async function prepareOwnServer(
   // Behind Cloudflare's proxy the firewall needs Cloudflare's current ranges; read them first, so
   // a failure stops before anything is changed.
   const webSources = await ownWebSources(deps, plan, input.services.cloudflare);
-  deps.reporter.step("Connecting to your server");
-  const session = await connectOwnServer(deps, {
-    ...(input.options.hostKey !== undefined ? { hostKey: input.options.hostKey } : {}),
-    ...(own.remote !== undefined ? { remote: own.remote } : {}),
-    ...(own.homeDir !== undefined ? { homeDir: own.homeDir } : {}),
-  });
-  if (session.pinned) {
-    deps.reporter.success(`Pinned your server's SSH host key ${session.hostKey.fingerprint}.`);
-  }
-  deps.reporter.step("Inspecting your server (read-only)");
-  const facts = await host.inspect(session.remote);
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "inspect host (read-only)",
+  const { session, facts } = await connectAndInspectOwnServer(deps, {
+    hostKey: input.options.hostKey,
+    services: { ...own, host },
     phase: input.phase,
-    target: "own server",
-    decision: "allow",
   });
   if ((facts.arch === "amd64" || facts.arch === "arm64") && facts.arch !== target.arch) {
     throw new OpsCrewError(

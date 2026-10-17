@@ -1,4 +1,3 @@
-import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   applyHostPlan,
@@ -6,33 +5,34 @@ import {
   type HostPlan,
   HostPlanSchema,
   hostPlanHash,
-  inspectHost,
   PORTAINER_PROJECT,
   planTeardown,
   planUndo,
 } from "@opscrew/connector-ssh-host";
-import type { ApprovalRecord, RemoteExec, ResourceChange } from "@opscrew/contracts";
-import { listText, OpsCrewError, plural, replaceNames, writeFileAtomic } from "@opscrew/core";
+import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
+import { listText, OpsCrewError, plural, replaceNames } from "@opscrew/core";
 import { DEPLOY_SECRETS, TUNNEL_DEPLOY_SECRETS, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   checkProvider,
-  connectOwnServer,
   type OwnServerSession,
   ownEngineEnv,
   ownServerLoginCheck,
   ownTarget,
 } from "../provision";
 import {
+  adapterBlocked,
   approvalEntry,
-  describeHostPlan,
+  approveAndApplyHostPlan,
   type HostAdapterApi,
+  type HostPlanOutcome,
   hasDeployment,
   hasState,
   hostPlanFile,
-  recordServerAddress,
+  readValidJson,
 } from "../shared";
+import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
 import {
   applyCloudflareRemoval,
   approveCloudflareRemoval,
@@ -42,18 +42,18 @@ import {
   checkCloudflare,
   containerImagesLeft,
   deploySecretsLeft,
-  destroyedPlan,
   type GitHubTarget,
   nothingDeployed,
   previewCloudflareRemoval,
+  recordTeardown,
   removeDeploySecrets,
   requireInfraCode,
   resolveGitHub,
-  secretsPage,
+  SHOWS_PLAN_AGAIN,
   setupEngine,
-  stateNotHere,
   stoppedPartWay,
   teardownScope,
+  teardownStateNotHere,
   teardownSummary,
 } from "./common";
 import { confirmDeletion, type DeletionSession, deletionSession, discardPlan } from "./deletion";
@@ -67,7 +67,7 @@ const SERVER_STAYS =
 /** What the teardown on the user's server needs once connected. */
 interface OwnHost {
   session: OwnServerSession;
-  adapter: HostAdapterApi;
+  apply: HostAdapterApi["apply"];
   verifyLogin: () => Promise<boolean>;
 }
 
@@ -101,21 +101,13 @@ function requireOwnApp(plan: DeployPlan, projectId: string, facts: HostFacts): v
 function requireNoHostBlockers(plan: HostPlan, what: string, command: string, already = ""): void {
   const blocked = plan.steps.filter((step) => step.state === "blocked");
   if (plan.findings.length === 0 && blocked.length === 0) return;
-  const reasons =
-    plan.findings.length > 0
-      ? plan.findings.map((finding) => finding.message)
-      : blocked.map((step) => `${step.title}: ${step.reason ?? "blocked"}`);
-  const hints = [...new Set(plan.findings.map((finding) => finding.hint))];
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `OpsCrew cannot ${what}, so it changed nothing on your server${already}:\n${reasons.map((reason) => `  - ${reason}`).join("\n")}`,
-    {
-      hint:
-        hints.length > 0
-          ? hints.join(" ")
-          : `Fix what blocks these steps on the server, then run \`${command}\` again.`,
-    },
-  );
+  throw adapterBlocked({
+    cannot: `OpsCrew cannot ${what}`,
+    nothing: `changed nothing on your server${already}`,
+    findings: plan.findings,
+    blocked,
+    fallbackHint: `Fix what blocks these steps on the server, then run \`${command}\` again.`,
+  });
 }
 
 /** Why the tunnel goes last, said in the approval and the summary. */
@@ -123,100 +115,63 @@ const TUNNEL_AFTER_SERVER =
   "Cloudflare deletes a tunnel only after its connector on your server has stopped,";
 
 /**
- * Saves a teardown or undo host plan as `.opscrew/plans/host-<hash>.json`, asks for its own
- * `host-apply` approval by that hash, checks the approval, and applies it through the host adapter
- * (which refuses any other plan and calls `verifyLogin` around SSH and firewall changes). Every
- * step is audited by the plan's hash, never with the server's address.
+ * A teardown or undo host plan through {@link approveAndApplyHostPlan}: saved as
+ * `.opscrew/plans/host-<hash>.json` and shown after `intro`, approved as `host-apply` by its hash
+ * with `allowDestroy` and the typed app name, checked, and applied through the host adapter (which
+ * refuses any other plan and calls `verifyLogin` around SSH and firewall changes). Audited by the
+ * plan's hash as `host teardown …` or `host undo …`, never with the server's address. A failed
+ * apply also says `afterFailure` (what already happened before it), when given.
  */
-async function applyHostPlanApproved(
+function applyHostPlanApproved(
   deps: PhaseDeps,
   host: OwnHost,
   plan: HostPlan,
   request: {
     title: string;
     intro: readonly string[];
-    allowDestroy: boolean;
-    confirmPhrase?: string;
     refused: string;
     /** What the user runs again after a failure: `opscrew destroy`, with `--undo-host` if given. */
     command: string;
-    /** Added to the hint when the apply fails, saying what already happened before it. */
     afterFailure?: string;
   },
-): Promise<{ hash: string; approval: ApprovalRecord; applied: string[] }> {
-  const hash = hostPlanHash(plan);
-  await writeFileAtomic(hostPlanFile(deps.paths, hash), `${JSON.stringify(plan, null, 2)}\n`);
-  const details = [...request.intro, describeHostPlan(plan, hash)].join("\n");
-  deps.reporter.info(details);
-  const approval = await deps.approvals.request({
-    kind: "host-apply",
+): Promise<HostPlanOutcome> {
+  const { afterFailure } = request;
+  // The typed confirmation is the plan's app: this app's name (requireOwnApp checked the server).
+  return approveAndApplyHostPlan(deps, {
+    plan,
+    remote: host.session.remote,
+    apply:
+      afterFailure === undefined
+        ? host.apply
+        : async (remote, hostPlan, options) => {
+            try {
+              return await host.apply(remote, hostPlan, options);
+            } catch (error) {
+              // Say what already happened (redacted, and never the server's address).
+              throw stoppedPartWay(error, {
+                place: "your server",
+                afterFailure,
+                say: (text) =>
+                  replaceNames(
+                    deps.redactor.redact(text),
+                    ownServerNames(host.session),
+                    "your server",
+                  ),
+              });
+            }
+          },
+    verifyLogin: host.verifyLogin,
     title: request.title,
-    details,
-    planHash: hash,
-    ...(request.allowDestroy ? { allowDestroy: true } : {}),
-    ...(request.confirmPhrase !== undefined ? { confirmPhrase: request.confirmPhrase } : {}),
-  });
-  if (!approval.approved) {
-    throw new OpsCrewError(
-      "APPROVAL_REFUSED",
-      `${request.refused}${approval.reason ? ` (${approval.reason})` : ""}`,
-      { hint: `Run \`${COMMAND}\` again when you are ready; it shows the plan again.` },
-    );
-  }
-  await deps.approvals.assertApprovedHostPlan(hash, { allowDestroy: request.allowDestroy });
-  const changes = plan.steps.filter((step) => step.state === "change").map((step) => step.id);
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: `host ${plan.purpose} started`,
+    server: "your server",
+    upToDate: "Nothing on your server needs to change.",
+    command: request.command,
     phase: "provision",
-    target: hash,
-    decision: "approved",
-    detail: `steps to change: ${changes.join(", ")}`,
+    allowDestroy: true,
+    intro: request.intro,
+    refused: { message: request.refused, hint: SHOWS_PLAN_AGAIN },
+    auditAs: `host ${plan.purpose}`,
+    secrets: async () => ({}),
   });
-  let applied: string[];
-  try {
-    const result = await host.adapter.apply(host.session.remote, plan, {
-      approvedHash: hash,
-      command: request.command,
-      verifyLogin: host.verifyLogin,
-      version: deps.version,
-      now: () => deps.clock.now(),
-    });
-    applied = result.applied;
-  } catch (error) {
-    await deps.audit.append({
-      kind: "remote-exec",
-      actor: "opscrew",
-      action: `host ${plan.purpose} failed`,
-      phase: "provision",
-      target: hash,
-      decision: "refused",
-      detail:
-        "/etc/opscrew/host.json on the server lists what OpsCrew changed; the next run shows what is left",
-    });
-    if (request.afterFailure === undefined) throw error;
-    // Say what already happened (redacted, and never the server's address).
-    throw stoppedPartWay(error, {
-      place: "your server",
-      afterFailure: request.afterFailure,
-      say: (text) =>
-        replaceNames(deps.redactor.redact(text), ownServerNames(host.session), "your server"),
-    });
-  }
-  for (const id of applied) {
-    const step = plan.steps.find((item) => item.id === id);
-    await deps.audit.append({
-      kind: "remote-exec",
-      actor: "opscrew",
-      action: `host ${plan.purpose} step ${id}`,
-      phase: "provision",
-      target: hash,
-      decision: "approved",
-      ...(step !== undefined ? { detail: step.title } : {}),
-    });
-  }
-  return { hash, approval, applied };
 }
 
 /**
@@ -230,15 +185,8 @@ export async function savedHostPlanPurpose(
   hash: string | undefined,
 ): Promise<HostPlan["purpose"] | undefined> {
   if (hash === undefined || !/^[0-9a-f]{64}$/.test(hash)) return undefined;
-  try {
-    const parsed = HostPlanSchema.safeParse(
-      JSON.parse(await readFile(hostPlanFile(paths, hash), "utf8")),
-    );
-    if (!parsed.success || hostPlanHash(parsed.data) !== hash) return undefined;
-    return parsed.data.purpose;
-  } catch {
-    return undefined;
-  }
+  const saved = await readValidJson(hostPlanFile(paths, hash), HostPlanSchema);
+  return saved !== undefined && hostPlanHash(saved) === hash ? saved.purpose : undefined;
 }
 
 /** The server's address and host names as OpsCrew knows them (kept out of errors). */
@@ -395,7 +343,7 @@ export async function destroyOwnServer(
   // infrastructure code that matches it. Without the state OpsCrew cannot remove the DNS records or
   // the tunnel, so it changes nothing, not even on the server.
   const managesCloudflare = plan.dns.provider === "cloudflare" || usesTunnel(plan);
-  if (removeApp && managesCloudflare && !stateHere) throw stateNotHere(plan);
+  if (removeApp && managesCloudflare && !stateHere) throw teardownStateNotHere(plan);
   if (removeApp && stateHere) {
     await requireInfraCode(deps, plan, "the removal of the app's Cloudflare resources");
   }
@@ -408,30 +356,21 @@ export async function destroyOwnServer(
   await checkProvider(deps, "own", services);
   if (cloudflare) await checkCloudflare(deps, plan, services);
   const github: GitHubTarget = removeApp ? await resolveGitHub(deps, services) : {};
-  if (removeApp && github.skipReason) {
-    deps.reporter.warn(
-      `OpsCrew cannot remove the deploy secrets from GitHub Actions: ${github.skipReason}. The teardown continues; delete them yourself afterwards at ${secretsPage(github)}.`,
-    );
-  }
 
   // 3. Connect (pinned host key) and inspect (read-only); never another app's server
-  deps.reporter.step("Connecting to your server");
-  const session = await connectOwnServer(deps, {
-    ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
-    ...(own.remote !== undefined ? { remote: own.remote } : {}),
-    ...(own.homeDir !== undefined ? { homeDir: own.homeDir } : {}),
+  const inspected = await connectAndInspectOwnServer(deps, {
+    hostKey: options.hostKey,
+    services: own,
+    phase: "provision",
+    detail: "destroy",
   });
-  const adapter: HostAdapterApi = {
-    inspect: (remote: RemoteExec) =>
-      own.host?.inspect ? own.host.inspect(remote) : inspectHost(remote),
-    apply: (remote, hostPlan, applyOptions) =>
-      own.host?.apply
-        ? own.host.apply(remote, hostPlan, applyOptions)
-        : applyHostPlan(remote, hostPlan, applyOptions),
-  };
+  const { session } = inspected;
   const host: OwnHost = {
     session,
-    adapter,
+    apply: (remote, hostPlan, applyOptions) =>
+      own.host
+        ? own.host.apply(remote, hostPlan, applyOptions)
+        : applyHostPlan(remote, hostPlan, applyOptions),
     verifyLogin:
       own.verifyLogin ??
       ownServerLoginCheck(deps, session, {
@@ -439,21 +378,7 @@ export async function destroyOwnServer(
         ...(own.homeDir !== undefined ? { homeDir: own.homeDir } : {}),
       }),
   };
-  const inspect = async () => {
-    deps.reporter.step("Inspecting your server (read-only)");
-    const found = await adapter.inspect(session.remote);
-    await deps.audit.append({
-      kind: "remote-exec",
-      actor: "opscrew",
-      action: "inspect host (read-only)",
-      phase: "provision",
-      target: "own server",
-      decision: "allow",
-      detail: "destroy",
-    });
-    return found;
-  };
-  const facts = await inspect();
+  const facts = inspected.facts;
   requireOwnApp(plan, deps.paths.projectId, facts);
 
   // 4. What the teardown removes: checked before anything changes, shown, confirmed once
@@ -570,15 +495,13 @@ export async function destroyOwnServer(
             : []),
           SERVER_STAYS,
         ],
-        allowDestroy: true,
-        confirmPhrase: name,
         refused: `The removal of ${name} from your server was not approved, so nothing on your server was changed${already}.`,
         ...(afterFailure !== undefined ? { afterFailure } : {}),
       });
       hostPlans.teardown = result.hash;
       teardownApproval = result.approval;
       deps.reporter.success(
-        `Removed ${name} from your server (${plural(result.applied.length, "change")}).`,
+        `Removed ${name} from your server (${plural(result.steps.length, "change")}).`,
       );
     }
     if (iac !== undefined && removal?.tunnel === true) {
@@ -599,13 +522,11 @@ export async function destroyOwnServer(
       done: "The app is removed from your server and Cloudflare.",
       reach: "your server",
     });
-    const at = deps.clock.now().toISOString();
-    current = destroyedPlan(plan, at, [iacApproval, teardownApproval]);
-    await writeArtifact("plan", deps.paths.files.plan, current);
-    // The address DNS pointed at; the login and the confirmed host key stay (the server stays).
-    await recordServerAddress(deps.paths, undefined);
-    await rm(deps.paths.files.deploySecrets, { force: true });
-    await deps.state.markPhase("provision", "skipped", "app removed from your server");
+    // The address DNS pointed at goes; the login and the confirmed host key stay (the server stays).
+    current = await recordTeardown(deps, plan, [iacApproval, teardownApproval], {
+      summary: "app removed from your server",
+      forgetAddress: true,
+    });
     await deps.audit.append({
       kind: "phase",
       actor: "opscrew",
@@ -622,7 +543,14 @@ export async function destroyOwnServer(
   // 8. --undo-host: reverse OpsCrew's own host changes, as a separate approved plan
   let undone = false;
   if (options.undoHost === true) {
-    const after = removeApp && hostSteps.length > 0 ? await inspect() : facts;
+    const after =
+      removeApp && hostSteps.length > 0
+        ? await inspectOwnHost(deps, session, {
+            services: own,
+            phase: "provision",
+            detail: "destroy",
+          })
+        : facts;
     requireOwnApp(plan, deps.paths.projectId, after);
     const undo = planUndo(after, command);
     requireNoHostBlockers(
@@ -657,18 +585,18 @@ export async function destroyOwnServer(
           `SSH and firewall changes are undone under a safety switch: the server puts them back on its own unless new logins as deploy and as ${session.connection.user} still work afterwards.`,
           SERVER_STAYS,
         ],
-        allowDestroy: true,
-        confirmPhrase: name,
         refused: removeApp
           ? `Undoing OpsCrew's changes to your server was not approved. ${name} is removed; OpsCrew's host setup stays.`
           : "Undoing OpsCrew's changes to your server was not approved, so nothing on your server was changed.",
       });
       hostPlans.undo = result.hash;
-      current = { ...current, approvals: [...current.approvals, approvalEntry(result.approval)] };
+      if (result.approval) {
+        current = { ...current, approvals: [...current.approvals, approvalEntry(result.approval)] };
+      }
       await writeArtifact("plan", deps.paths.files.plan, current);
       undone = true;
       deps.reporter.success(
-        `Undid OpsCrew's changes to your server (${plural(result.applied.length, "change")}).`,
+        `Undid OpsCrew's changes to your server (${plural(result.steps.length, "change")}).`,
       );
     }
   }

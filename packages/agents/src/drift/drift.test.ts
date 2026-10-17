@@ -237,7 +237,7 @@ async function setup(options: SetupOptions = {}) {
     options.passphrase === false ? undefined : await ensureStatePassphrase(deps.paths);
 
   // What `opscrew provision` left behind: the rendered files and the state.
-  const deployKey = await ensureDeployKey(deps.paths);
+  const deployKey = await ensureDeployKey(deps.paths, deps.redactor);
   // Matches what provision learns from `fakeCloudflare()` for a Cloudflare plan.
   const cloudflare =
     plan.dns.provider === "cloudflare"

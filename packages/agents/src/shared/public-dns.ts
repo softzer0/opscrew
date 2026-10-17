@@ -1,6 +1,6 @@
 import { isIPv4, isIPv6 } from "node:net";
 import type { FetchLike } from "@opscrew/contracts";
-import { normalizeHostName } from "@opscrew/core";
+import { errorMessage, normalizeHostName } from "@opscrew/core";
 import { z } from "zod";
 
 /** Cloudflare's public DNS over HTTPS (JSON answers). */
@@ -62,7 +62,7 @@ export async function dohQuery(fetch: FetchLike, name: string, type: string): Pr
       signal: AbortSignal.timeout(DNS_LOOKUP_TIMEOUT_MS),
     });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = errorMessage(error);
     return { state: "unknown", problem: `the request failed: ${reason}` };
   }
   if (!response.ok) return { state: "unknown", problem: `HTTP ${response.status}` };

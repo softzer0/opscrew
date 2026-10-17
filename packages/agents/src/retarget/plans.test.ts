@@ -1,16 +1,21 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PlanSummary } from "@opscrew/contracts";
+import { Redactor } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { SENSITIVE_VALUE } from "../provision";
-import { savedOf } from "./plans";
+import { savedPlanOf, writePlanSidecar } from "../provision/plan-apply";
 
 describe("a move's saved plan sidecar", () => {
-  it("never holds the prior state or a sensitive value in clear", () => {
+  it("never holds the prior state or a sensitive value in clear", async () => {
     const secret = fakeSecret("generic-password");
+    const dir = await mkdtemp(join(tmpdir(), "opscrew-move-plan-"));
     const summary = {
       planHash: "a".repeat(64),
-      planFile: "/tmp/x.tfplan",
-      dir: "/tmp",
+      planFile: join(dir, "x.tfplan"),
+      dir,
       engine: "tofu",
       createdAt: "2026-10-14T00:00:00.000Z",
       changes: [],
@@ -32,7 +37,8 @@ describe("a move's saved plan sidecar", () => {
         ],
       },
     } as unknown as PlanSummary;
-    const sidecar = JSON.stringify(savedOf(summary));
+    await writePlanSidecar(new Redactor(), savedPlanOf(summary, []));
+    const sidecar = await readFile(join(dir, "x.tfplan.json"), "utf8");
     expect(sidecar).not.toContain(secret);
     expect(sidecar).not.toContain("prior_state");
     expect(sidecar).toContain(SENSITIVE_VALUE);

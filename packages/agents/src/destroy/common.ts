@@ -1,24 +1,25 @@
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { cloudflareConnector } from "@opscrew/connector-cloudflare";
-import {
-  GitClient,
-  GitHubClient,
-  githubConnector,
-  resolveGitHubToken,
-} from "@opscrew/connector-github";
+import { githubConnector } from "@opscrew/connector-github";
 import type { ApprovalRecord, PlanSummary, ResourceChange } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, plural } from "@opscrew/core";
+import { errorMessage, isUserFacingError, OpsCrewError, plural, upperFirst } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { githubCoordinates } from "../provision";
 import {
   approvalEntry,
   describeChanges,
   existingStateEngine,
+  gitClient,
+  githubClientFromToken,
+  githubCoordinates,
   type ProjectEngine,
+  planStop,
+  recordServerAddress,
+  refusalReason,
   stateFile,
+  stateNotHere,
 } from "../shared";
 import {
   requireTunnelClosed,
@@ -40,6 +41,13 @@ import type { DeletionProvider, DestroyGitHubApi, DestroyOptions, DestroyService
 
 /** The command every hint of a stopped teardown tells the user to run again. */
 export const COMMAND = "opscrew destroy";
+
+/** The next step after the user did not approve a teardown's host or stack plan. */
+export const SHOWS_PLAN_AGAIN = `Run \`${COMMAND}\` again when you are ready; it shows the plan again.`;
+
+/** The next step when the plan to delete differs from what was confirmed or applied. */
+export const DRIFT_THEN_DESTROY =
+  "Run `opscrew drift` to see what changed, then run `opscrew destroy` again.";
 
 /** Where the deploy secrets live, and why they cannot be removed when `api` is missing. */
 export interface GitHubTarget {
@@ -79,13 +87,11 @@ export function nothingDeployed(plan: DeployPlan): OpsCrewError {
 }
 
 /** 1. The infrastructure state is not on this computer: nothing can be planned, nothing changes. */
-export function stateNotHere(plan: DeployPlan): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `The infrastructure state of ${plan.app.name} is not on this computer (.opscrew/tfstate/prod.tfstate), so OpsCrew cannot tell what to delete. Nothing was changed.`,
-    {
-      hint: "Run `opscrew destroy` on the computer that ran `opscrew provision`, or copy its .opscrew/tfstate folder (and, with OpenTofu, its state passphrase from ~/.opscrew/projects/<project>/state_passphrase) here, then try again.",
-    },
+export function teardownStateNotHere(plan: DeployPlan): OpsCrewError {
+  return stateNotHere(
+    plan,
+    "tell what to delete",
+    "Run `opscrew destroy` on the computer that ran `opscrew provision`, or copy its .opscrew/tfstate folder (and, with OpenTofu, its state passphrase from ~/.opscrew/projects/<project>/state_passphrase) here, then try again.",
   );
 }
 
@@ -118,12 +124,7 @@ export async function checkCloudflare(
   services: DestroyServices,
 ): Promise<boolean> {
   if (plan.dns.provider !== "cloudflare") return false;
-  const connector = cloudflareConnector({
-    env: deps.env,
-    fetch: deps.fetch,
-    redactor: deps.redactor,
-    version: deps.version,
-  });
+  const connector = cloudflareConnector(deps);
   const requirement = connector.credentials;
   const api = services.cloudflare === undefined ? (connector.client ?? null) : services.cloudflare;
   const help = `It needs: ${requirement.scopes.join(", ")}. Create one at ${requirement.createUrl}`;
@@ -152,36 +153,37 @@ export async function checkCloudflare(
   return true;
 }
 
-/** 2. GitHub repository and token for the secret cleanup; optional, so problems become a reason. */
+/**
+ * 2. GitHub repository and token for the secret cleanup; optional, so a problem becomes the reason
+ * the teardown cannot remove the deploy secrets, said as a warning.
+ */
 export async function resolveGitHub(
   deps: PhaseDeps,
   services: DestroyServices,
 ): Promise<GitHubTarget> {
-  const git = new GitClient({
-    cwd: deps.paths.root,
-    runner: deps.runner,
-    env: deps.env,
-    redactor: deps.redactor,
-  });
+  const skipped = (github: GitHubTarget & { skipReason: string }): GitHubTarget => {
+    deps.reporter.warn(
+      `OpsCrew cannot remove the deploy secrets from GitHub Actions: ${github.skipReason}. The teardown continues; delete them yourself afterwards at ${secretsPage(github)}.`,
+    );
+    return github;
+  };
+  const git = gitClient(deps);
   let coordinates: { owner: string; repo: string };
   try {
-    if (!(await git.isRepo())) return { skipReason: "this project is not a git repository" };
+    if (!(await git.isRepo())) {
+      return skipped({ skipReason: "this project is not a git repository" });
+    }
     coordinates = await githubCoordinates(git);
   } catch {
-    return { skipReason: "the repository has no GitHub remote named origin" };
+    return skipped({ skipReason: "the repository has no GitHub remote named origin" });
   }
-  let api: DestroyGitHubApi | null | undefined = services.github;
-  if (api === undefined) {
-    const token = await resolveGitHubToken(deps.env, deps.runner);
-    if (token) deps.redactor.addLiteral(token, "github-token");
-    api = token ? new GitHubClient({ token, fetch: deps.fetch, version: deps.version }) : null;
-  }
-  if (api === null) {
+  const api = services.github === undefined ? await githubClientFromToken(deps) : services.github;
+  if (!api) {
     const variables = githubConnector({ token: undefined, fetch: deps.fetch }).credentials.envVars;
-    return {
+    return skipped({
       ...coordinates,
       skipReason: `no GitHub token was found (set ${variables.join(" or ")}, or sign in with \`gh auth login\`)`,
-    };
+    });
   }
   return { ...coordinates, api };
 }
@@ -244,15 +246,10 @@ function cloudflareOnly(changes: readonly ResourceChange[], note: string): void 
     .filter((change) => !change.type.startsWith("cloudflare_"))
     .map((change) => change.address);
   if (others.length === 0) return;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    [
-      `The teardown plan would delete resources other than the app's Cloudflare DNS records, tunnel and Access, so OpsCrew stopped. ${note}`,
-      ...others.map((address) => `  ${address}`),
-    ].join("\n"),
-    {
-      hint: "Run `opscrew drift` to see what changed in the infrastructure code, then run `opscrew destroy` again.",
-    },
+  throw planStop(
+    `The teardown plan would delete resources other than the app's Cloudflare DNS records, tunnel and Access, so OpsCrew stopped. ${note}`,
+    others,
+    "Run `opscrew drift` to see what changed in the infrastructure code, then run `opscrew destroy` again.",
   );
 }
 
@@ -349,13 +346,13 @@ export async function approveCloudflareRemoval(
           }
         : {
             note: "Nothing was changed.",
-            hint: "Run `opscrew drift` to see what changed, then run `opscrew destroy` again.",
+            hint: DRIFT_THEN_DESTROY,
           },
     );
     cloudflareOnly(summary.changes, "Nothing was deleted.");
     const tunnel = tunnelChange(summary.changes, "delete");
     const count = summary.changes.length;
-    const place = `${words.place.charAt(0).toUpperCase()}${words.place.slice(1)}`;
+    const place = upperFirst(words.place);
     const approval = await deps.approvals.request({
       kind: "iac-apply",
       title: `Delete the ${words.what} of ${name} (${plural(count, "resource")} to delete)`,
@@ -380,7 +377,7 @@ export async function approveCloudflareRemoval(
     if (!approval.approved) {
       throw new OpsCrewError(
         "APPROVAL_REFUSED",
-        `The teardown was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.`,
+        `The teardown was not approved${refusalReason(approval)}. Nothing was deleted.`,
         { hint: `Run \`opscrew destroy\` again and type ${name} when you are ready.` },
       );
     }
@@ -449,7 +446,7 @@ export function stoppedPartWay(
   const facing = isUserFacingError(error);
   const message = facing
     ? error.message
-    : `Changing ${input.place} stopped: ${error instanceof Error ? error.message : String(error)}`;
+    : `Changing ${input.place} stopped: ${errorMessage(error)}`;
   const hint = facing && error.hint ? `${error.hint} ${input.afterFailure}` : input.afterFailure;
   return new OpsCrewError(
     error instanceof OpsCrewError ? error.code : "COMMAND_FAILED",
@@ -521,22 +518,34 @@ export async function removeDeploySecrets(
   return removed;
 }
 
-/** 8. The plan without the app's URL, with `destroyedAt` and this run's approvals recorded. */
-export function destroyedPlan(
+/**
+ * 8. OpsCrew's record of a finished teardown: `opscrew/plan.yaml` without the app's URL, with
+ * `destroyedAt` and the plans this run's `approvals` approved; the record of the stored deploy
+ * secrets goes (with `forgetAddress`, the server's address in `.opscrew/server.json` too) and the
+ * `provision` phase is recorded as skipped with `summary`. Returns the plan as written.
+ */
+export async function recordTeardown(
+  deps: Pick<PhaseDeps, "paths" | "clock" | "state">,
   plan: DeployPlan,
-  at: string,
   approvals: readonly (ApprovalRecord | undefined)[],
-): DeployPlan {
+  opts: { summary: string; forgetAddress: boolean },
+): Promise<DeployPlan> {
+  const at = deps.clock.now().toISOString();
   const { url, lastCompletedPhase, ...kept } = plan.deployment;
   const recorded = approvals.flatMap((record) =>
     record?.planHash === undefined ? [] : [approvalEntry(record)],
   );
-  return {
+  const destroyed: DeployPlan = {
     ...plan,
     updatedAt: at,
     approvals: [...plan.approvals, ...recorded],
     deployment: { ...kept, destroyedAt: at },
   };
+  await writeArtifact("plan", deps.paths.files.plan, destroyed);
+  if (opts.forgetAddress) await recordServerAddress(deps.paths, undefined);
+  await rm(deps.paths.files.deploySecrets, { force: true });
+  await deps.state.markPhase("provision", "skipped", opts.summary);
+  return destroyed;
 }
 
 /** 9. "What remains": the deploy secrets OpsCrew could not remove (none when it could). */

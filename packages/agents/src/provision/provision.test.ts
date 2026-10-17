@@ -1035,8 +1035,13 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
       },
     });
     const error = await runProvision(deps, { services }).catch((e: unknown) => e);
-    expect(error).toMatchObject({ code: "PROVIDER_ERROR" });
+    expect(error).toMatchObject({
+      code: "PROVIDER_ERROR",
+      message: `The server at ${SERVER_IPV4} did not finish its first-boot setup within 8 minutes.`,
+    });
     const hint = (error as OpsCrewError).hint ?? "";
+    expect(hint).toMatch(/^Check what it is doing with `ssh /);
+    expect(hint).toMatch(/then run `opscrew provision` again; it continues where it stopped\.$/);
     expect(hint).toContain(`deploy@${SERVER_IPV4} cloud-init status --long`);
     expect(hint).toContain(`-i "${deps.paths.files.deployKey}"`);
     expect(hint).toContain(`UserKnownHostsFile="${deps.paths.files.knownHosts}"`);

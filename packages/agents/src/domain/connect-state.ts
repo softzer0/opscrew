@@ -1,8 +1,7 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, type ProjectPaths, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import { z } from "zod";
-import { readIfExists } from "../shared";
 import { OTHER_REGISTRAR_IDS } from "./registrars";
 
 /**
@@ -75,7 +74,7 @@ export function laterSwitch(state: ConnectState | undefined, at: number): string
  * whether old DS records were removed recently.
  */
 export async function readConnectState(file: string): Promise<ConnectState | undefined> {
-  const text = await readIfExists(file);
+  const text = await readTextIfExists(file);
   if (text === undefined) return undefined;
   let data: unknown;
   try {

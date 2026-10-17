@@ -4,9 +4,10 @@
  * `create-next-app` writes and returns `manual` whenever anything is unusual, so the change falls
  * back to the Code-change agent or to the user.
  */
+
 import { join, posix } from "node:path";
+import { exists, readTextIfExists } from "@opscrew/core";
 import { NEXT_CONFIG_NAMES } from "../design/code-changes";
-import { exists, readIfExists } from "../shared";
 
 /** True for a Next.js config file (`next.config.{js,mjs,ts,cjs}`) in any folder. */
 export function isNextConfigPath(path: string): boolean {
@@ -26,7 +27,7 @@ export async function nextConfigEdit(root: string, path: string): Promise<Standa
     .filter((segment) => segment !== "" && segment !== ".");
   const dir = folders.join("/");
   const planned = dir === "" ? posix.basename(path) : `${dir}/${posix.basename(path)}`;
-  const content = await readIfExists(join(root, path));
+  const content = await readTextIfExists(join(root, path));
   const others: string[] = [];
   for (const name of NEXT_CONFIG_NAMES) {
     const other = dir === "" ? name : `${dir}/${name}`;

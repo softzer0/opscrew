@@ -15,7 +15,7 @@ import {
   valueFingerprints,
 } from "@opscrew/connector-portainer";
 import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { exists, OpsCrewError, readTextIfExists } from "@opscrew/core";
 import {
   fillPortainerStack,
   PORTAINER_STACK_TEMPLATE_PATH,
@@ -53,13 +53,11 @@ import {
   type AppEnvironment,
   assembleAppEnv,
   diffRenderedFiles,
-  exists,
   hidePortainerAddress,
   inspectRecordedPortainer,
   type PortainerConnection,
   parseDotenv,
   publishedPorts,
-  readIfExists,
   recordedStack,
   stateContents,
   stateFile,
@@ -118,12 +116,12 @@ async function readAppValues(
   const envFile = deps.env.OPSCREW_APP_ENV_FILE?.trim();
   if (!envFile) return false;
   const path = isAbsolute(envFile) ? envFile : join(deps.paths.root, envFile);
-  const dotenvText = await readIfExists(path);
+  const dotenvText = await readTextIfExists(path);
   if (dotenvText === undefined) return false;
   let previous: z.infer<typeof GeneratedValuesSchema> | undefined;
   try {
     const parsed = GeneratedValuesSchema.safeParse(
-      JSON.parse((await readIfExists(generatedValuesFile(deps))) ?? "null"),
+      JSON.parse((await readTextIfExists(generatedValuesFile(deps))) ?? "null"),
     );
     previous = parsed.success ? parsed.data : undefined;
   } catch {

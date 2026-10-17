@@ -21,7 +21,6 @@ export {
   type CloudflareSetup,
   checkProvider,
   type GitHubSetup,
-  githubCoordinates,
   OWN_SERVER_CONNECT_HINT,
   setupCloudflare,
   setupGitHub,

@@ -2,20 +2,13 @@ import { join } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import {
   type ApplySecrets,
-  applyStackPlan,
   DEPLOY_BRANCH,
   DEPLOY_COMPOSE_FILE,
   type DesiredStacks,
   type DesiredValueFingerprints,
   inspectCertificate,
-  inspectPortainer,
-  normalizeCertFingerprint,
-  opscrewStackNames,
-  PortainerCertificateError,
   type PortainerFacts,
   planStacks,
-  portainerClient,
-  StackApplyError,
   stackPlanHash,
   valueFingerprint,
   valueFingerprints,
@@ -24,11 +17,8 @@ import { OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
 import {
   PORTAINER_STACK_VARIABLES,
   portainerStackEnvKeys,
-  portainerStackVolumes,
   portainerTarget,
   portainerWebhookHostname,
-  renderPortainerConnectorStack,
-  renderUpdaterStack,
   siteHosts,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type Requirements, writeArtifact } from "@opscrew/plan-schema";
@@ -36,14 +26,17 @@ import type { PhaseDeps } from "../context";
 import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
 import {
   type AppEnvironment,
+  applyStackPlanAudited,
   approvalEntry,
   approveAndWriteRenderedFiles,
-  hidePortainerAddress,
+  desiredStacks,
   infrastructureOutputs,
+  inspectAudited,
   type PlanApproval,
   PlanRefusedError,
   type ProjectEngine,
-  publishedPorts,
+  pinnedPublicKey,
+  portainerClientFor,
   stateContents,
   stateFile,
   stringOutput,
@@ -66,6 +59,7 @@ import {
   REPOSITORY_TOKEN_VAR,
   requirePortainerConnection,
   requirePortainerToken,
+  setPortainerOrigin,
   stackPlanFile,
 } from "./portainer";
 import { portainerDnsRecordNote } from "./publish";
@@ -264,30 +258,18 @@ export async function provisionPortainer(
 
   // 2. Connect with the pinned certificate, inspect read-only, stop on what blocks the deploy.
   const valueKey = await ensurePortainerValueKey(deps, portainerServices.randomBytes);
-  const client = (portainerServices.client ?? portainerClient)(
-    {
-      url: connection.url,
-      ...(connection.certFingerprint !== undefined
-        ? { certFingerprint: connection.certFingerprint }
-        : {}),
-    },
+  const client = portainerClientFor(deps, {
+    connection,
     token,
-    { redactor: deps.redactor, valueKey },
-  );
-  const names = opscrewStackNames(plan.app.name);
+    client: portainerServices.client,
+    valueKey,
+  });
   const inspect = async (detail?: string): Promise<PortainerFacts> => {
-    deps.reporter.step("Inspecting your Portainer (read-only)");
-    const facts = await inspectPortainer(client, {
-      environmentId: target.environmentId,
-      names,
-    });
-    await deps.audit.append({
-      kind: "provider-call",
-      actor: "opscrew",
-      action: "inspect Portainer (read-only)",
+    const facts = await inspectAudited(deps, client, {
+      plan,
+      target,
+      step: "Inspecting your Portainer (read-only)",
       phase,
-      target: `portainer environment ${target.environmentId}`,
-      decision: "allow",
       ...(detail !== undefined ? { detail } : {}),
     });
     requireUsableFacts(facts, target);
@@ -299,35 +281,19 @@ export async function provisionPortainer(
   const routeChanges = removal || switchesWebRoute(target, connection);
 
   const keys = portainerStackEnvKeys(plan);
-  const envKeys = [...keys.app, ...keys.opscrew].sort();
   const updater = target.redeploy === "updater";
-  const repositoryUrl = `https://github.com/${github.owner}/${github.repo}`;
   // The user's word on the image's visibility, as given now or recorded by an earlier run.
   const publicImage = options.publicImage ?? connection.publicImage ?? false;
   const imagePrivate = !publicImage;
-  const desired = (fingerprints?: DesiredValueFingerprints): DesiredStacks => ({
-    app: plan.app.name,
-    environmentId: target.environmentId,
-    repository: {
-      url: repositoryUrl,
-      branch: DEPLOY_BRANCH,
-      composeFile: DEPLOY_COMPOSE_FILE,
-      private: repository.private,
-    },
-    envKeys,
-    registry: { url: "ghcr.io", private: imagePrivate, username: github.owner },
-    redeploy: target.redeploy,
-    ...(updater
-      ? { updater: { compose: renderUpdaterStack(plan).content } }
-      : { tunnelConnector: { compose: renderPortainerConnectorStack(plan).content } }),
-    record: connection.created,
-    ports: publishedPorts(target),
-    volumes: portainerStackVolumes(plan),
-    ...(fingerprints !== undefined ? { valueFingerprints: fingerprints } : {}),
-    ...(fingerprints !== undefined && options.replaceTokens !== undefined
-      ? { replaceTokens: options.replaceTokens }
-      : {}),
-  });
+  const desired = (fingerprints?: DesiredValueFingerprints): DesiredStacks =>
+    desiredStacks(plan, {
+      connection,
+      github,
+      repositoryPrivate: repository.private,
+      imagePrivate,
+      ...(fingerprints !== undefined ? { fingerprints } : {}),
+      ...(options.replaceTokens !== undefined ? { replaceTokens: options.replaceTokens } : {}),
+    });
   // Without values: what blocks the deploy shows before anything is written or changed.
   const preliminary = planStacks(facts, desired());
   requireNoStackBlockers(preliminary);
@@ -394,24 +360,11 @@ export async function provisionPortainer(
   };
   let pin: string | undefined;
   const publicKeyPin = async (): Promise<string> => {
-    if (pin !== undefined) return pin;
-    if (new URL(connection.url).protocol !== "https:") {
-      pin = "";
-      return pin;
-    }
-    const pinned = normalizeCertFingerprint(connection.certFingerprint ?? "");
-    const details = await (portainerServices.inspectCertificate ?? inspectCertificate)(
-      connection.url,
+    pin ??= await pinnedPublicKey(
+      deps,
+      connection,
+      portainerServices.inspectCertificate ?? inspectCertificate,
     );
-    const actual = normalizeCertFingerprint(details.fingerprint);
-    if (pinned === undefined || actual === undefined || actual !== pinned) {
-      throw new PortainerCertificateError(
-        pinned ?? "no confirmed certificate",
-        actual ?? "an unreadable fingerprint",
-      );
-    }
-    pin = details.publicKeyPin;
-    deps.redactor.addLiteral(pin, "portainer-key");
     return pin;
   };
   // Every value is registered with the redactor where it is made (the app's environment, the
@@ -539,61 +492,27 @@ export async function provisionPortainer(
     deps.reporter.step(
       `Changing your Portainer (${plural(work.length, "change")}; a stack's first deploy can take a few minutes)`,
     );
-    await deps.audit.append({
-      kind: "provider-call",
-      actor: "opscrew",
-      action: "stack apply started",
-      phase,
-      target: hash,
-      decision: "approved",
-      detail: `changes: ${work.map((change) => change.id).join(", ")}`,
-    });
     stale = true;
-    let result: Awaited<ReturnType<typeof applyStackPlan>>;
-    try {
-      result = await applyStackPlan(client, stackPlan, {
-        approvedHash: hash,
+    const result = await applyStackPlanAudited(deps, {
+      client,
+      plan: stackPlan,
+      hash,
+      options: {
         secrets,
         valueKey,
         ...(portainerServices.wait !== undefined ? { wait: portainerServices.wait } : {}),
-      });
-    } catch (error) {
-      if (error instanceof StackApplyError) {
-        // What was created before the failure is OpsCrew's: record it (and the route of an app
-        // stack it holds) before the error is shown.
+      },
+      phase,
+      // What OpsCrew created is recorded (with the route of an app stack it holds), also after a
+      // failure part-way; the image's visibility once the apply is done.
+      record: async (created, finished) => {
         connection = await recordConnection(deps, connection, {
-          created: error.record,
-          ...(hasAppStack(error.record) ? { appliedWeb: target.web } : {}),
+          created,
+          ...(finished ? { publicImage } : {}),
+          ...(hasAppStack(created) ? { appliedWeb: target.web } : {}),
         });
-        await deps.audit.append({
-          kind: "provider-call",
-          actor: "opscrew",
-          action: "stack apply failed",
-          phase,
-          target: hash,
-          decision: "refused",
-          detail: `changes applied before the failure: ${error.applied.length > 0 ? error.applied.join(", ") : "none"}`,
-        });
-      }
-      throw error;
-    }
-    connection = await recordConnection(deps, connection, {
-      created: result.record,
-      publicImage,
-      ...(hasAppStack(result.record) ? { appliedWeb: target.web } : {}),
+      },
     });
-    for (const id of result.applied) {
-      const change = stackPlan.changes.find((item) => item.id === id);
-      await deps.audit.append({
-        kind: "provider-call",
-        actor: "opscrew",
-        action: `stack change ${id}`,
-        phase,
-        target: hash,
-        decision: "approved",
-        ...(change !== undefined ? { detail: change.title } : {}),
-      });
-    }
     deps.reporter.success(
       `Changed your Portainer (${plural(result.applied.length, "change")} applied).`,
     );
@@ -613,10 +532,7 @@ export async function provisionPortainer(
     const { engine, env } = await engineSetup();
     // The earlier configuration may declare it too, so a removal gets it as well.
     if (cloudflareRoot.webhook || removal) {
-      // Portainer's address reaches the engine only as a sensitive variable, never in a file.
-      const origin = portainerContainerUrl(connection.url);
-      hidePortainerAddress(deps.redactor, origin);
-      env.TF_VAR_portainer_origin = origin;
+      setPortainerOrigin(deps.redactor, env, connection.url);
     }
     const first = connectorFirst(deps, {
       command,

@@ -1,6 +1,6 @@
 import { isAbsolute, join } from "node:path";
 import type { PhaseName } from "@opscrew/contracts";
-import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
   PORTAINER_DEPLOY_SECRETS,
@@ -8,13 +8,7 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import {
-  type AppEnvironment,
-  assembleAppEnv,
-  type GeneratedValues,
-  hostListKind,
-  readIfExists,
-} from "../shared";
+import { type AppEnvironment, assembleAppEnv, type GeneratedValues, hostListKind } from "../shared";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
 
@@ -24,7 +18,7 @@ export function generatedValuesFile(deps: PhaseDeps): string {
 }
 
 async function readGenerated(deps: PhaseDeps): Promise<GeneratedValues | undefined> {
-  const text = await readIfExists(generatedValuesFile(deps));
+  const text = await readTextIfExists(generatedValuesFile(deps));
   if (text === undefined) return undefined;
   try {
     return JSON.parse(text) as GeneratedValues;
@@ -53,12 +47,12 @@ export async function buildAppEnvironment(
   let dotenvText: string | undefined;
   const ask = deps.interactive ? services.askEnv : undefined;
   if (ask) {
-    dotenvText = await readIfExists(join(deps.paths.root, ".env"));
+    dotenvText = await readTextIfExists(join(deps.paths.root, ".env"));
   } else {
     const file = deps.env.OPSCREW_APP_ENV_FILE?.trim();
     if (file) {
       const path = isAbsolute(file) ? file : join(deps.paths.root, file);
-      dotenvText = await readIfExists(path);
+      dotenvText = await readTextIfExists(path);
       if (dotenvText === undefined) {
         throw new OpsCrewError(
           "INVALID_INPUT",
@@ -190,7 +184,7 @@ export async function deploySecretsStoredFor(
   deps: PhaseDeps,
   where: { host: string; owner: string; repo: string },
 ): Promise<boolean> {
-  const text = await readIfExists(deps.paths.files.deploySecrets);
+  const text = await readTextIfExists(deps.paths.files.deploySecrets);
   if (text === undefined) return false;
   try {
     const record = JSON.parse(text) as { host?: unknown; repo?: unknown };

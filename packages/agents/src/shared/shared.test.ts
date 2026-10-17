@@ -1,7 +1,13 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findExecutable, NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
+import {
+  findExecutable,
+  NodeCommandRunner,
+  OpsCrewError,
+  Redactor,
+  resolveProjectPaths,
+} from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -23,6 +29,7 @@ import {
   pinHostKey,
   providerConsole,
   randomPassword,
+  readDeployPublicKey,
   SshRemoteExec,
   sshArgs,
   summarizeChecks,
@@ -107,14 +114,35 @@ describe("Ed25519 deploy keys", () => {
   it("creates the project key and passphrase once and reuses them", async () => {
     const root = await temp();
     const paths = resolveProjectPaths(root, { env: { OPSCREW_HOME: join(root, "home") } });
-    const first = await ensureDeployKey(paths);
-    const second = await ensureDeployKey(paths);
+    const redactor = new Redactor();
+    const first = await ensureDeployKey(paths, redactor);
+    const second = await ensureDeployKey(paths, new Redactor());
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
     expect(second.publicKeyOpenSsh).toBe(first.publicKeyOpenSsh);
+    // The private half is registered with the redactor wherever the key is read or made.
+    expect(redactor.redact(first.privateKeyOpenSsh)).not.toContain(first.privateKeyOpenSsh);
     const passphrase = await ensureStatePassphrase(paths);
     expect(passphrase.length).toBeGreaterThanOrEqual(32);
     expect(await ensureStatePassphrase(paths)).toBe(passphrase);
+  });
+
+  it("reads the deploy key's public half, or stops plainly when it is not on this computer", async () => {
+    const root = await temp();
+    const paths = resolveProjectPaths(root, { env: { OPSCREW_HOME: join(root, "home") } });
+    const error = await readDeployPublicKey(
+      { paths },
+      "cannot compare your server with its setup",
+    ).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toBe(
+      "The project's deploy key is not on this computer, so OpsCrew cannot compare your server with its setup. Nothing was checked.",
+    );
+    expect((error as OpsCrewError).hint).toBe(
+      `Copy the deploy key files from the computer that ran \`opscrew provision\` to ${paths.files.deployKey} and ${paths.files.deployKeyPub}, then try again.`,
+    );
+    const key = await ensureDeployKey(paths, new Redactor());
+    expect(await readDeployPublicKey({ paths }, "cannot compare")).toBe(key.publicKeyOpenSsh);
   });
 
   it("generates URL-safe passwords", () => {

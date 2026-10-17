@@ -1,6 +1,13 @@
-import { readFile, rename, rm } from "node:fs/promises";
+import { rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { ensureStateDir, OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
+import {
+  ensureStateDir,
+  OpsCrewError,
+  type ProjectPaths,
+  readTextIfExists,
+  stripBom,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { PortainerWebSchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 
@@ -302,16 +309,16 @@ export async function setAsideServerAddresses(paths: ProjectPaths): Promise<stri
 export async function readServerAddresses(
   paths: Pick<ProjectPaths, "stateDir">,
 ): Promise<ServerAddresses> {
-  let text: string;
+  let text: string | undefined;
   try {
-    text = await readFile(serverAddressesFile(paths), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...EMPTY };
+    text = await readTextIfExists(serverAddressesFile(paths));
+  } catch {
     throw damaged("it cannot be read");
   }
+  if (text === undefined) return { ...EMPTY };
   let json: unknown;
   try {
-    json = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+    json = JSON.parse(stripBom(text));
   } catch {
     throw damaged("it is not valid JSON");
   }

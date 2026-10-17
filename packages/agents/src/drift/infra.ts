@@ -1,12 +1,12 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { IacEngine, ResourceChange, ResourceDrift } from "@opscrew/contracts";
-import { OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { OpsCrewError, readTextIfExists, toPosixRelative } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { type ProjectEngine, projectEngine, readIfExists } from "../shared";
+import { type ProjectEngine, projectEngine } from "../shared";
 import {
   type AttributesByType,
   mergeAttributes,
@@ -31,7 +31,7 @@ export type StateKind = "plain" | "encrypted" | "unknown";
  */
 export async function inspectState(deps: PhaseDeps, statePath: string): Promise<StateKind> {
   const relative = toPosixRelative(deps.paths.root, statePath);
-  const text = await readIfExists(statePath);
+  const text = await readTextIfExists(statePath);
   const copyHint = `The state lives on the computer that ran \`opscrew provision\`, in ${relative} inside the project. Copy the .opscrew/tfstate folder from there into this project (with OpenTofu state encryption, also copy the state passphrase file; on this computer OpsCrew reads it from ${deps.paths.files.statePassphrase}), then run \`opscrew drift\` again.`;
   if (text === undefined || text.trim() === "") {
     throw new OpsCrewError(
@@ -63,7 +63,7 @@ export async function inspectState(deps: PhaseDeps, statePath: string): Promise<
 
 /** True when the state file is missing, blank or holds no resources (OpenTofu-encrypted is not). */
 export async function stateHoldsNothing(statePath: string): Promise<boolean> {
-  const text = await readIfExists(statePath);
+  const text = await readTextIfExists(statePath);
   if (text === undefined || text.trim() === "") return true;
   try {
     const parsed = StateFileSchema.safeParse(JSON.parse(text));

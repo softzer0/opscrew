@@ -10,7 +10,7 @@ import {
   previewDeletion,
 } from "../destroy/deletion";
 import { type DestroyTexts, destroyTexts } from "../destroy/texts";
-import { describeChanges } from "../shared";
+import { describeChanges, planStop, refusalReason } from "../shared";
 import { protectionVariable } from "./layouts";
 import type { MoveAction } from "./pending";
 import { deletionStep } from "./plans";
@@ -142,15 +142,10 @@ export async function liftMoveProtection(
         prefix: removal.prefix,
       });
       if (problems.length === 0) return;
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        [
-          `Lifting the delete protection on the ${which} ${words.noun} would also change other things, so OpsCrew stopped. Nothing was deleted.${input.kept}`,
-          ...problems.map((problem) => `  ${problem}`),
-        ].join("\n"),
-        {
-          hint: `The infrastructure no longer matches what OpsCrew applied. Check the ${words.noun}s in ${texts.console}, then run \`${command}\` again.`,
-        },
+      throw planStop(
+        `Lifting the delete protection on the ${which} ${words.noun} would also change other things, so OpsCrew stopped. Nothing was deleted.${input.kept}`,
+        problems,
+        `The infrastructure no longer matches what OpsCrew applied. Check the ${words.noun}s in ${texts.console}, then run \`${command}\` again.`,
       );
     },
     request: (plan) => ({
@@ -167,7 +162,7 @@ export async function liftMoveProtection(
     refused: (approval, planHash) =>
       new OpsCrewError(
         "APPROVAL_REFUSED",
-        `Delete protection on the ${which} ${words.noun} was not lifted${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${input.kept}`,
+        `Delete protection on the ${which} ${words.noun} was not lifted${refusalReason(approval)}. Nothing was deleted.${input.kept}`,
         {
           hint: `Run \`${command}\` again when you are ready (in scripts: \`${command} ${flags.join(" ")} --approve ${planHash}\`).`,
         },
@@ -244,7 +239,7 @@ export async function removeMoveServer(
     refused: (approval, planHash) =>
       new OpsCrewError(
         "APPROVAL_REFUSED",
-        `The removal of the ${which} ${words.noun} was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${input.note}`,
+        `The removal of the ${which} ${words.noun} was not approved${refusalReason(approval)}. Nothing was deleted.${input.note}`,
         {
           hint: `Run \`${command}\` again and type ${app} when you are ready (in scripts: \`${command} ${flags.join(" ")} --approve ${planHash}\`).`,
         },

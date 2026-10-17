@@ -8,7 +8,7 @@ import { type MoveSession, moveBase, moveOf, openSession, warnUnusedApproval } f
 import { startMove } from "./start";
 import { createStep, deployStep, renameStep } from "./steps";
 import { completeSwitch, switchStep } from "./switch";
-import { ABORT_COMMAND, RUN_COMMAND } from "./texts";
+import { ABORT_COMMAND, FINISH_ABORT_HINT, RUN_COMMAND } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
 import { recoverInterruptedWindow, stepBefore } from "./window";
 
@@ -18,18 +18,13 @@ async function continueMove(
   plan: DeployPlan,
   options: RetargetOptions,
 ): Promise<MoveSession> {
-  const move = plan.retarget;
-  if (move === undefined) {
-    throw new OpsCrewError("INTERNAL", "No move is recorded.", {
-      hint: "This is a bug in OpsCrew; please report it.",
-    });
-  }
+  const move = moveOf({ plan });
   const to = providerProfile(moveProvider(plan.target)).displayName;
   if (move.abort !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The move to ${to} is being aborted, so it cannot continue.`,
-      { hint: `Run \`${ABORT_COMMAND}\` to complete the abort.` },
+      { hint: FINISH_ABORT_HINT },
     );
   }
   if (options.to !== undefined && options.to !== moveProvider(plan.target)) {

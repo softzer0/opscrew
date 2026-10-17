@@ -7,7 +7,7 @@ import {
   ownPlan,
   preparedServerFacts,
 } from "@opscrew/agents/testing";
-import { resolveProjectPaths } from "@opscrew/core";
+import { Redactor, resolveProjectPaths } from "@opscrew/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
 import { type DeployProject, deployProject } from "../ui/__fixtures__/deploy";
@@ -30,7 +30,7 @@ async function setup(hostKey?: string) {
   project = await deployProject(ownPlan({ domain: null, deployed: true }));
   await recordOwnLogin(project, hostKey === undefined ? {} : { hostKey });
   const paths = resolveProjectPaths(project.root, { env: project.env });
-  await ensureDeployKey(paths);
+  await ensureDeployKey(paths, new Redactor());
   const host = new FakeHostServer(preparedServerFacts(paths.projectId));
   const ctx = projectContext(project, { services: { runner: new OwnRunner() } });
   const own = ownServices(host, await fakeHome(project));

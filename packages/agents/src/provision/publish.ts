@@ -1,6 +1,6 @@
 import type { GitClient, PullRequest } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError, upperFirst } from "@opscrew/core";
 import { portainerTarget } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -16,6 +16,22 @@ export interface PublishResult {
   commit?: string;
   prUrl?: string;
   pushed: boolean;
+}
+
+/**
+ * The pull request's next step: merging it deploys the app to `where` once the deploy secrets are
+ * stored; while OpsCrew has no record of them (`secretsStored` false), first `opscrew provision` in
+ * a terminal. `ready` says what is set up already.
+ */
+function nextStepLines(secretsStored: boolean | undefined, ready: string, where: string): string[] {
+  return secretsStored === false
+    ? [
+        `${ready}, but OpsCrew has no record of storing the deploy secrets in GitHub Actions, so a deploy would fail.`,
+        `**Before merging, run \`opscrew provision\` in a terminal in the project directory.** It finds nothing to change, asks for the production environment values and stores the secrets. After that, merging this pull request deploys the app to ${where}. When the first deploy finishes, run \`opscrew verify\`.`,
+      ]
+    : [
+        `${ready} and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${where}.** After the first deploy finishes, run \`opscrew verify\`.`,
+      ];
 }
 
 /**
@@ -35,15 +51,6 @@ export function deploySetupPullRequestBody(
   const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";
   const host = plan.dns.domain ?? (own ? "your server" : `the ${profile.serverNoun}`);
   const ready = own ? "Your server is prepared" : "The server is already running";
-  const nextStep =
-    options.secretsStored === false
-      ? [
-          `${ready}, but OpsCrew has no record of storing the deploy secrets in GitHub Actions for it, so a deploy would fail.`,
-          `**Before merging, run \`opscrew provision\` in a terminal in the project directory.** It finds no infrastructure changes, asks for the production environment values and stores the secrets. After that, merging this pull request deploys the app to ${host}. When the first deploy finishes, run \`opscrew verify\`.`,
-        ]
-      : [
-          `${ready} and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${host}.** After the first deploy finishes, run \`opscrew verify\`.`,
-        ];
   const infra = own
     ? tunnel
       ? "the Cloudflare Tunnel that serves the app, its DNS records and the Cloudflare Access application GitHub Actions deploys through (works with OpenTofu and Terraform). OpsCrew never creates, reinstalls or deletes your server itself."
@@ -59,7 +66,7 @@ export function deploySetupPullRequestBody(
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and deploys it on every push to \`${plan.cicd.branch}\`, rolling back when the health check fails.`,
     "- `opscrew/plan.yaml`: the deployment plan. The server's IP address is not in the repository; `opscrew status` shows it on the computer that ran `opscrew provision`.",
     "",
-    ...nextStep,
+    ...nextStepLines(options.secretsStored, ready, host),
     ...(own
       ? [
           "",
@@ -132,15 +139,6 @@ function portainerPullRequestBody(
     target.redeploy === "updater"
       ? "the updater stack in your Portainer asks Portainer to redeploy it within about a minute"
       : "it asks Portainer to redeploy at once, through Cloudflare Access";
-  const nextStep =
-    options.secretsStored === false
-      ? [
-          "The app's stacks are set up in your Portainer, but OpsCrew has no record of storing the deploy secrets in GitHub Actions, so a deploy would fail.",
-          `**Before merging, run \`opscrew provision\` in a terminal in the project directory.** It finds nothing to change, asks for the production environment values and stores the secrets. After that, merging this pull request deploys the app to ${where}. When the first deploy finishes, run \`opscrew verify\`.`,
-        ]
-      : [
-          `The app's stacks are set up in your Portainer and the deploy secrets are stored in GitHub Actions. **Merging this pull request deploys the app to ${where}.** After the first deploy finishes, run \`opscrew verify\`.`,
-        ];
   const dns = portainerDnsRecordNote(plan);
   return [
     `This pull request adds the deployment setup that OpsCrew generated from \`opscrew/plan.yaml\` for **${plan.app.name}**, which runs as stacks in your Portainer:`,
@@ -154,7 +152,7 @@ function portainerPullRequestBody(
     `- \`${plan.cicd.workflowPath}\`: builds the image, pushes it to GitHub Container Registry and writes it to the \`opscrew-deploy\` branch on every push to \`${plan.cicd.branch}\`; ${redeploy}. It checks the site and writes the previous version back when the health check fails.`,
     "- `opscrew/plan.yaml`: the deployment plan. Portainer's address is not in the repository; it stays on the computer that ran `opscrew provision`.",
     "",
-    ...nextStep,
+    ...nextStepLines(options.secretsStored, "The app's stacks are set up in your Portainer", where),
     ...(dns !== undefined ? ["", dns] : []),
     "",
     PORTAINER_HOST_NOTE,
@@ -207,7 +205,7 @@ function branchStop(
   }
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${reason.charAt(0).toUpperCase()}${reason.slice(1)}, so OpsCrew did not change anything.`,
+    `${upperFirst(reason)}, so OpsCrew did not change anything.`,
     { hint: hints.rerun },
   );
 }

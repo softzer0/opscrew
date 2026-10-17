@@ -1,8 +1,11 @@
-import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, plural, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import type { RenderedFile } from "@opscrew/iac-templates";
+import type { z } from "zod";
 import type { PhaseDeps } from "../context";
+
+/** Core's `exists`, which the MCP server's status tool imports from here. */
+export { exists } from "@opscrew/core";
 
 export interface RenderedFileDiff {
   created: RenderedFile[];
@@ -12,24 +15,22 @@ export interface RenderedFileDiff {
 
 const normalise = (text: string) => text.replace(/\r\n/g, "\n");
 
-/** True when `path` exists (a file or a directory). */
-export async function exists(path: string): Promise<boolean> {
+/**
+ * The JSON file's content when it is valid for `schema`; `undefined` when the file is missing, is
+ * not JSON or does not match. Any other read error (for example a file OpsCrew may not read) is
+ * thrown.
+ */
+export async function readValidJson<T>(file: string, schema: z.ZodType<T>): Promise<T | undefined> {
+  const text = await readTextIfExists(file);
+  if (text === undefined) return undefined;
+  let json: unknown;
   try {
-    await access(path);
-    return true;
+    json = JSON.parse(text);
   } catch {
-    return false;
+    return undefined;
   }
-}
-
-/** The file's text, or `undefined` when it does not exist; any other read error is thrown. */
-export async function readIfExists(file: string): Promise<string | undefined> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
+  const parsed = schema.safeParse(json);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** Compares rendered files with what is on disk under `root` (line endings ignored). */
@@ -39,7 +40,7 @@ export async function diffRenderedFiles(
 ): Promise<RenderedFileDiff> {
   const diff: RenderedFileDiff = { created: [], changed: [], unchanged: [] };
   for (const file of files) {
-    const current = await readIfExists(join(root, file.path));
+    const current = await readTextIfExists(join(root, file.path));
     if (current === undefined) diff.created.push(file);
     else if (normalise(current) === normalise(file.content)) diff.unchanged.push(file);
     else diff.changed.push(file);

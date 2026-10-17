@@ -49,11 +49,13 @@ export function describeAdapterPlan(input: {
 
 /**
  * The plain stop (`PHASE_PRECONDITION`, nothing changed) for an adapter plan's findings or blocked
- * items: `cannot` and the findings (else the blocked items with their reasons), with the
- * findings' hints, `extraHint` when given, or `fallbackHint` when there are none.
+ * items: `cannot`, "so it" `nothing` (default `changed nothing`) and the findings (else the blocked
+ * items with their reasons), with the findings' hints, `extraHint` when given, or `fallbackHint`
+ * when there are none.
  */
 export function adapterBlocked(input: {
   cannot: string;
+  nothing?: string;
   findings: readonly AdapterFinding[];
   blocked: readonly AdapterPlanItem[];
   extraHint?: string;
@@ -65,9 +67,22 @@ export function adapterBlocked(input: {
       : input.blocked.map((item) => `${item.title}: ${item.reason ?? "blocked"}`);
   const hints = [...new Set(input.findings.map((finding) => finding.hint))];
   if (input.extraHint !== undefined) hints.push(input.extraHint);
+  return planStop(
+    `${input.cannot}, so it ${input.nothing ?? "changed nothing"}:`,
+    reasons.map((reason) => `- ${reason}`),
+    hints.length > 0 ? hints.join(" ") : input.fallbackHint,
+  );
+}
+
+/**
+ * The plain stop (`PHASE_PRECONDITION`) when a plan would do more than its step may: `message`,
+ * then each problem on its own indented line, and `hint`. Callers check first that there are
+ * problems.
+ */
+export function planStop(message: string, problems: readonly string[], hint: string): OpsCrewError {
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${input.cannot}, so it changed nothing:\n${reasons.map((reason) => `  - ${reason}`).join("\n")}`,
-    { hint: hints.length > 0 ? hints.join(" ") : input.fallbackHint },
+    [message, ...problems.map((problem) => `  ${problem}`)].join("\n"),
+    { hint },
   );
 }

@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   ApprovalRecord,
@@ -11,11 +11,24 @@ import type {
   SnapshotRequest,
   VpsProviderId,
 } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
+import {
+  isUserFacingError,
+  OpsCrewError,
+  plural,
+  readTextIfExists,
+  upperFirst,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { providerProfile, type VpsConnectorOptions, vpsConnector } from "../providers";
-import { describeChanges, type ProjectEngine } from "../shared";
+import {
+  describeChanges,
+  type ProjectEngine,
+  planStop,
+  readValidJson,
+  refusalReason,
+} from "../shared";
 import {
   type DeletionBounds,
   deletesServer,
@@ -142,8 +155,9 @@ export async function applyApprovedPlan(
   await audit(result.ok);
   if (!result.ok) {
     const log = deps.redactor.redact(lastLines(result.log));
-    const what = options.what.charAt(0).toUpperCase() + options.what.slice(1);
-    throw new OpsCrewError("ENGINE_FAILED", `${what} failed:\n${log}`, { hint: options.hint });
+    throw new OpsCrewError("ENGINE_FAILED", `${upperFirst(options.what)} failed:\n${log}`, {
+      hint: options.hint,
+    });
   }
 }
 
@@ -220,11 +234,7 @@ export function assertDeletionPlan(
   const problems = deletionPlanProblems(summary.changes, bounds);
   const fail = (problem: DeletionProblem, lead: string, lines: readonly string[] = []) => {
     const { note, hint } = typeof stop === "function" ? stop(problem) : stop;
-    return new OpsCrewError(
-      "PHASE_PRECONDITION",
-      [`${lead}, so OpsCrew stopped. ${note}`, ...lines.map((l) => `  ${l}`)].join("\n"),
-      { hint },
-    );
+    return planStop(`${lead}, so OpsCrew stopped. ${note}`, lines, hint);
   };
   const unbounded = [...new Set([...problems.notDeletes, ...problems.outsidePrefix])];
   if (unbounded.length > 0) {
@@ -327,19 +337,12 @@ const SnapshotRecordSchema = z.looseObject({
   snapshotId: z.string().min(1),
 });
 
-/** The snapshot an earlier run recorded, or `undefined` when there is none or it is unreadable. */
-async function readSnapshotRecord(
+/** The snapshot an earlier run recorded, or `undefined` when there is none or it is damaged. */
+function readSnapshotRecord(
   deps: PhaseDeps,
   purpose: SnapshotPurpose,
 ): Promise<z.infer<typeof SnapshotRecordSchema> | undefined> {
-  let json: unknown;
-  try {
-    json = JSON.parse(await readFile(snapshotRecordPath(deps, purpose), "utf8"));
-  } catch {
-    return undefined;
-  }
-  const parsed = SnapshotRecordSchema.safeParse(json);
-  return parsed.success ? parsed.data : undefined;
+  return readValidJson(snapshotRecordPath(deps, purpose), SnapshotRecordSchema);
 }
 
 /** Whether a snapshot is taken first (`auto`: when data lives only on the server). */
@@ -635,13 +638,10 @@ export async function liftProtection(
     }
     const problems = unprotectPlanProblems(summary.changes, summary.planJson);
     if (problems.length > 0) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        [
-          `Lifting the delete protection on ${name} would also change other things, so OpsCrew stopped. Nothing was changed.`,
-          ...problems.map((p) => `  ${p}`),
-        ].join("\n"),
-        { hint: input.mismatchHint },
+      throw planStop(
+        `Lifting the delete protection on ${name} would also change other things, so OpsCrew stopped. Nothing was changed.`,
+        problems,
+        input.mismatchHint,
       );
     }
     const approval = await deps.approvals.request({
@@ -658,7 +658,7 @@ export async function liftProtection(
     if (!approval.approved) {
       throw new OpsCrewError(
         "APPROVAL_REFUSED",
-        `Delete protection on ${name} was not lifted${approval.reason ? ` (${approval.reason})` : ""}. Nothing was deleted.${snapshotKeptNote(destroyTexts(session.provider), input.snapshotId)}`,
+        `Delete protection on ${name} was not lifted${refusalReason(approval)}. Nothing was deleted.${snapshotKeptNote(destroyTexts(session.provider), input.snapshotId)}`,
         { hint: `Run \`${command}\` again when you are ready.` },
       );
     }
@@ -687,13 +687,8 @@ export async function forgetHostKeys(
   const wanted = hosts.filter((host): host is string => host !== undefined && host !== "");
   if (wanted.length === 0) return 0;
   const file = deps.paths.files.knownHosts;
-  let text: string;
-  try {
-    text = await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
-    throw error;
-  }
+  const text = await readTextIfExists(file);
+  if (text === undefined) return 0;
   const result = removeHostKeys(text, wanted);
   if (result.removed === 0) return 0;
   await writeFileAtomic(file, result.text, { mode: 0o644 });

@@ -36,7 +36,14 @@ import {
 } from "./session";
 import { assertRenameOnly, pendingStop, storeDeploySecrets } from "./steps";
 import { assertDnsUpdatesOnly } from "./switch";
-import { ABORT_COMMAND, FINISH_COMMAND, managedDns, providerWords, RUN_COMMAND } from "./texts";
+import {
+  ABORT_COMMAND,
+  FINISH_COMMAND,
+  managedDns,
+  providerWords,
+  RUN_COMMAND,
+  START_MOVE_HINT,
+} from "./texts";
 import type { AbortRetargetOptions, RetargetResult } from "./types";
 import { recoverInterruptedWindow, restartOldApp, stepBefore } from "./window";
 
@@ -326,7 +333,7 @@ export async function abortRetarget(
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       "No move to another provider is in progress, so there is nothing to abort.",
-      { hint: `Start one with \`${RUN_COMMAND} --to <provider>\`.` },
+      { hint: START_MOVE_HINT },
     );
   }
   if (move.step === "switched") {

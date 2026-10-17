@@ -2,12 +2,15 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { CommandRunner, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
-import type { TcpConnect } from "@opscrew/secops";
-import { readIfExists } from "./files";
+import { durationText, OpsCrewError, readTextIfExists, realSleep } from "@opscrew/core";
+import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
+import type { PhaseDeps } from "../context";
+import type { ProviderProfile } from "../providers";
+import type { ProvisionServices } from "../provision/types";
+import { providerConsole } from "./provider-text";
+import { SshRemoteExec } from "./remote";
 
 type Sleep = (ms: number) => Promise<void>;
-const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** How long to poll and how often; tests inject `sleep` and `now` (monotonic milliseconds). */
 export interface WaitOptions {
@@ -126,7 +129,7 @@ export async function pinHostKey(options: PinHostKeyOptions): Promise<PinnedHost
       },
     );
   }
-  const existing = (await readIfExists(options.knownHostsFile)) ?? "";
+  const existing = (await readTextIfExists(options.knownHostsFile)) ?? "";
   const previous = keysFor(existing, options.host);
   const current = lines.map((line) => line.split(/\s+/).slice(1, 3).join(" "));
   const same = previous.length > 0 && current.every((key) => previous.includes(key));
@@ -155,6 +158,117 @@ export async function pinHostKey(options: PinHostKeyOptions): Promise<PinnedHost
     changed: previous.length > 0,
     created: previous.length === 0,
   };
+}
+
+/**
+ * Asks (`remote-exec` approval) whether to trust the new SSH host key of a server OpsCrew pinned
+ * earlier, showing both keys: only right after the user rebuilt or replaced the server.
+ */
+export function confirmChangedHostKey(
+  deps: Pick<PhaseDeps, "approvals">,
+): NonNullable<PinHostKeyOptions["confirmChangedKey"]> {
+  return async ({ host, previous, current }) => {
+    const decision = await deps.approvals.request({
+      kind: "remote-exec",
+      title: `Trust the new SSH host key of ${host}`,
+      details: [
+        "The server's SSH host key is different from the one OpsCrew pinned earlier.",
+        "Only accept this if you rebuilt or replaced the server yourself.",
+        "Pinned:",
+        ...previous.map((line) => `  ${line}`),
+        "Now:",
+        ...current.map((line) => `  ${line}`),
+      ].join("\n"),
+    });
+    return decision.approved;
+  };
+}
+
+/** How long a server OpsCrew created may take to accept SSH, and how often it is tried. */
+const SSH_WAIT_MS = 5 * 60_000;
+const SSH_INTERVAL_MS = 5_000;
+/** How long its first-boot setup (cloud-init) may take, and how often it is checked. */
+const CLOUD_INIT_WAIT_MS = 8 * 60_000;
+const CLOUD_INIT_INTERVAL_MS = 10_000;
+
+/** `run \`<command>\` again; it continues where it stopped.`: the end of a hint after a stop. */
+export function continuesHint(command: string): string {
+  return `run \`${command}\` again; it continues where it stopped.`;
+}
+
+/** Quotes a path for a copy-pasteable shell command. */
+function quotePath(path: string): string {
+  return `"${path.replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Makes a server OpsCrew just created ready to use: waits until `host` accepts SSH, pins its SSH
+ * host key (a changed key only after {@link confirmChangedHostKey}) and waits until its first-boot
+ * setup (cloud-init) is done, through the deploy user's shell (`services.remote`, else SSH with
+ * `keyFile`). `server` names it in the messages (`server`, `new Droplet`); a stop says what to
+ * check and then `again` ({@link continuesHint}). Returns the pinned key.
+ */
+export async function readyNewServer(
+  deps: Pick<PhaseDeps, "reporter" | "approvals" | "paths" | "runner">,
+  input: {
+    host: string;
+    server: string;
+    profile: Pick<ProviderProfile, "serverNoun" | "displayName" | "consoleUrl">;
+    keyFile: string;
+    again: string;
+    services: Pick<ProvisionServices, "tcpConnect" | "remote" | "sleep" | "now">;
+  },
+): Promise<PinnedHostKey> {
+  const { host, server, profile, services } = input;
+  const knownHostsFile = deps.paths.files.knownHosts;
+  const waits = {
+    ...(services.sleep ? { sleep: services.sleep } : {}),
+    ...(services.now ? { now: services.now } : {}),
+  };
+  deps.reporter.step(`Waiting for the ${server} at ${host} to accept SSH`);
+  const open = await waitForPort(host, 22, {
+    timeoutMs: SSH_WAIT_MS,
+    intervalMs: SSH_INTERVAL_MS,
+    connect: services.tcpConnect ?? defaultTcpConnect,
+    ...waits,
+  });
+  if (!open) {
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `The ${server} at ${host} did not open SSH within ${durationText(SSH_WAIT_MS)}.`,
+      {
+        hint: `Check the ${profile.serverNoun} in the ${providerConsole(profile)}, then ${input.again}`,
+      },
+    );
+  }
+  const pinned = await pinHostKey({
+    host,
+    console: providerConsole(profile),
+    knownHostsFile,
+    runner: deps.runner,
+    confirmChangedKey: confirmChangedHostKey(deps),
+  });
+  const remote =
+    services.remote?.(host) ??
+    new SshRemoteExec({ host, keyFile: input.keyFile, knownHostsFile, runner: deps.runner });
+  deps.reporter.step(
+    `Waiting for the ${server} to finish its first-boot setup (up to ${durationText(CLOUD_INIT_WAIT_MS)})`,
+  );
+  const ready = await waitForCloudInit(remote, {
+    timeoutMs: CLOUD_INIT_WAIT_MS,
+    intervalMs: CLOUD_INIT_INTERVAL_MS,
+    ...waits,
+  });
+  if (!ready) {
+    const check = `ssh -i ${quotePath(input.keyFile)} -o UserKnownHostsFile=${quotePath(knownHostsFile)} deploy@${host} cloud-init status --long`;
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `The ${server} at ${host} did not finish its first-boot setup within ${durationText(CLOUD_INIT_WAIT_MS)}.`,
+      { hint: `Check what it is doing with \`${check}\`, then ${input.again}` },
+    );
+  }
+  deps.reporter.success(`The ${server} at ${host} is ready.`);
+  return pinned;
 }
 
 /** A host key the server presented: its type (`ssh-ed25519`), base64 key and fingerprint. */
@@ -227,7 +341,7 @@ export async function writeKnownHost(
   name: string,
   keys: readonly Pick<ScannedHostKey, "type" | "key">[],
 ): Promise<string> {
-  const existing = (await readIfExists(file)) ?? "";
+  const existing = (await readTextIfExists(file)) ?? "";
   const others = parseKeyscan(existing).filter(
     (line) => !(line.split(/\s+/)[0] ?? "").split(",").includes(name),
   );

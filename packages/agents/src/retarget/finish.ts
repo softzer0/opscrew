@@ -1,4 +1,4 @@
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { isUserFacingError, lowerFirst, OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { dataWarning } from "../destroy/checks";
@@ -13,7 +13,7 @@ import {
 } from "../destroy/deletion";
 import { providerProfile } from "../providers";
 import { publishDeploySetup } from "../provision";
-import { describeChanges } from "../shared";
+import { describeChanges, trackedFiles } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { moveProvider } from "../shared/vps-target";
 import { previousTarget } from "./layouts";
@@ -34,7 +34,14 @@ import {
 } from "./session";
 import { reasonOf } from "./steps";
 import { requireSwitchSettled } from "./switch";
-import { ABORT_COMMAND, FINISH_COMMAND, providerWords, RUN_COMMAND } from "./texts";
+import {
+  ABORT_COMMAND,
+  FINISH_ABORT_HINT,
+  FINISH_COMMAND,
+  providerWords,
+  RUN_COMMAND,
+  START_MOVE_HINT,
+} from "./texts";
 import type { FinishRetargetOptions, RetargetResult } from "./types";
 
 /** The flags a scripted finish repeats with each `--approve <hash>`. */
@@ -48,16 +55,7 @@ function finishFlags(app: string, snapshot: FinishRetargetOptions["snapshot"]): 
 
 /** Paths among `paths` that git tracks (a deleted tracked file is staged with `git add`). */
 async function trackedPaths(session: MoveSession, paths: readonly string[]): Promise<string[]> {
-  if (paths.length === 0) return [];
-  const result = await session.deps.runner.run("git", [
-    "-C",
-    session.deps.paths.root,
-    "ls-files",
-    "--",
-    ...paths,
-  ]);
-  if (result.exitCode !== 0) return [];
-  const tracked = new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()));
+  const tracked = new Set(await trackedFiles(session.deps, paths));
   return paths.filter((path) => tracked.has(path));
 }
 
@@ -204,7 +202,7 @@ async function finish(
     deps.reporter.warn(
       deps.redactor.redact(
         stopped
-          ? `The move is finished, but ${error.message.charAt(0).toLowerCase()}${error.message.slice(1)}`
+          ? `The move is finished, but ${lowerFirst(error.message)}`
           : `The move is finished, but publishing the final files failed: ${reasonOf(error)}.`,
       ),
     );
@@ -248,14 +246,14 @@ export async function finishRetarget(
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       "No move to another provider is in progress, so there is nothing to finish.",
-      { hint: `Start one with \`${RUN_COMMAND} --to <provider>\`.` },
+      { hint: START_MOVE_HINT },
     );
   }
   if (move.abort !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       "The move is being aborted, so it cannot be finished. Nothing was changed.",
-      { hint: `Run \`${ABORT_COMMAND}\` to complete the abort.` },
+      { hint: FINISH_ABORT_HINT },
     );
   }
   if (move.step !== "switched") {

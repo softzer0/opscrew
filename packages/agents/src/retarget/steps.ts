@@ -1,7 +1,5 @@
 import { posix } from "node:path";
-import { OpsCrewError } from "@opscrew/core";
-import { defaultTcpConnect } from "@opscrew/secops";
-import { formatMoney } from "../design";
+import { errorMessage, formatMoney, OpsCrewError } from "@opscrew/core";
 import { providerProfile } from "../providers";
 import {
   buildAppEnvironment,
@@ -10,7 +8,7 @@ import {
   type SavedPlan,
   setDeploySecrets,
 } from "../provision";
-import { providerConsole, serverOfProvider, waitForCloudInit, waitForPort } from "../shared";
+import { continuesHint, planStop, readyNewServer, serverOfProvider } from "../shared";
 import { moveProvider } from "../shared/vps-target";
 import { planThenApply } from "./plans";
 import { stopService, waitAppHealthy } from "./server-ops";
@@ -31,8 +29,6 @@ import { ABORT_COMMAND, approveCommand, providerWords, RUN_COMMAND } from "./tex
 import type { RetargetResult } from "./types";
 import { codeOf, hintOf, newRemote } from "./window";
 
-const SSH_WAIT_MS = 5 * 60_000;
-const CLOUD_INIT_WAIT_MS = 8 * 60_000;
 const WORKFLOW_WAIT_MS = 30 * 60_000;
 
 /** A non-interactive run stopped before an apply: the plan's hash and the command that applies it. */
@@ -55,7 +51,7 @@ export function pendingStop(
 
 /** The reason of an error in plain words, without a trailing full stop. */
 export function reasonOf(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).replace(/[.\s]+$/, "");
+  return errorMessage(error).replace(/[.\s]+$/, "");
 }
 
 /**
@@ -75,13 +71,10 @@ export function assertRenameOnly(
       .map((move) => `move ${move.from} → ${move.to}`),
   ];
   if (problems.length === 0) return;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    [
-      `The ${bounds.what} plan would do more than rename resources in the infrastructure state, so OpsCrew stopped. Nothing was changed.`,
-      ...problems.map((problem) => `  ${problem}`),
-    ].join("\n"),
-    { hint: bounds.hint },
+  throw planStop(
+    `The ${bounds.what} plan would do more than rename resources in the infrastructure state, so OpsCrew stopped. Nothing was changed.`,
+    problems,
+    bounds.hint,
   );
 }
 
@@ -132,56 +125,24 @@ function assertCreateOnly(saved: Pick<SavedPlan, "changes">): void {
       change.address.startsWith("module.server_previous."),
   );
   if (problems.length === 0) return;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    [
-      "The plan for the new server would also change, replace or delete what is already running, so OpsCrew stopped. Nothing was changed.",
-      ...problems.map((change) => `  ${change.action} ${change.address}`),
-    ].join("\n"),
-    { hint: DRIFT_HINT },
+  throw planStop(
+    "The plan for the new server would also change, replace or delete what is already running, so OpsCrew stopped. Nothing was changed.",
+    problems.map((change) => `${change.action} ${change.address}`),
+    DRIFT_HINT,
   );
 }
 
 /** Waits for SSH on the new server, pins its host key and waits for its first-boot setup. */
 async function waitForNewServer(session: MoveSession, host: string): Promise<void> {
-  const { deps, services } = session;
-  const provider = moveProvider(session.plan.target);
-  const profile = providerProfile(provider);
-  const waits = waitsOf(services);
-  const again = `run \`${RUN_COMMAND}\` again; it continues where it stopped. To remove the new ${profile.serverNoun} instead, run \`${ABORT_COMMAND}\`.`;
-  deps.reporter.step(`Waiting for the new ${profile.serverNoun} at ${host} to accept SSH`);
-  const open = await waitForPort(host, 22, {
-    timeoutMs: SSH_WAIT_MS,
-    intervalMs: 5_000,
-    connect: services.tcpConnect ?? defaultTcpConnect,
-    ...waits,
+  const profile = providerProfile(moveProvider(session.plan.target));
+  await readyNewServer(session.deps, {
+    host,
+    server: `new ${profile.serverNoun}`,
+    profile,
+    keyFile: session.deployKey.privateKeyFile,
+    again: `${continuesHint(RUN_COMMAND)} To remove the new ${profile.serverNoun} instead, run \`${ABORT_COMMAND}\`.`,
+    services: session.services,
   });
-  if (!open) {
-    throw new OpsCrewError(
-      "PROVIDER_ERROR",
-      `The new ${profile.serverNoun} at ${host} did not open SSH within 5 minutes.`,
-      { hint: `Check the ${profile.serverNoun} in the ${providerConsole(profile)}, then ${again}` },
-    );
-  }
-  await pinHost(session, host, provider);
-  deps.reporter.step(
-    `Waiting for the new ${profile.serverNoun} to finish its first-boot setup (up to 8 minutes)`,
-  );
-  const ready = await waitForCloudInit(newRemote(session), {
-    timeoutMs: CLOUD_INIT_WAIT_MS,
-    intervalMs: 10_000,
-    ...waits,
-  });
-  if (!ready) {
-    throw new OpsCrewError(
-      "PROVIDER_ERROR",
-      `The new ${profile.serverNoun} at ${host} did not finish its first-boot setup within 8 minutes.`,
-      {
-        hint: `Check what it is doing with \`ssh deploy@${host} cloud-init status --long\`, then ${again}`,
-      },
-    );
-  }
-  deps.reporter.success(`The new ${profile.serverNoun} at ${host} is ready.`);
 }
 
 /**

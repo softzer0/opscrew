@@ -10,6 +10,11 @@ export const FINISH_COMMAND = "opscrew retarget --finish";
 /** Undoes a move before the switch. */
 export const ABORT_COMMAND = "opscrew retarget --abort";
 
+/** The next step when no move is in progress. */
+export const START_MOVE_HINT = `Start one with \`${RUN_COMMAND} --to <provider>\`.`;
+/** The next step while a move is being aborted. */
+export const FINISH_ABORT_HINT = `Run \`${ABORT_COMMAND}\` to complete the abort.`;
+
 /** Start of the title of the maintenance window's `remote-exec` approval. */
 export const MAINTENANCE_WINDOW_TITLE = "Maintenance window:";
 

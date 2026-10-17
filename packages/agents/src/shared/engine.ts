@@ -1,7 +1,7 @@
 import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { IacEngine, ResourceAction, ResourceChange } from "@opscrew/contracts";
-import { OpsCrewError, type ProjectPaths } from "@opscrew/core";
+import { OpsCrewError, type ProjectPaths, readTextIfExists } from "@opscrew/core";
 import {
   type EnginePreference,
   engineLabel,
@@ -11,12 +11,27 @@ import {
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { readIfExists } from "./files";
 import { ensureStatePassphrase, readSecretFile, statePassphraseFile } from "./secret-files";
 
 /** `.opscrew/tfstate/prod.tfstate`: the state file provision, destroy, drift and retarget use. */
 export function stateFile(paths: Pick<ProjectPaths, "files">): string {
   return join(paths.files.tfstateDir, "prod.tfstate");
+}
+
+/**
+ * The stop (`PHASE_PRECONDITION`, nothing changed) when the infrastructure state of `plan` is not
+ * on this computer, so OpsCrew `cannot` do what the command is for (`tell what to delete`).
+ */
+export function stateNotHere(
+  plan: Pick<DeployPlan, "app">,
+  cannot: string,
+  hint: string,
+): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The infrastructure state of ${plan.app.name} is not on this computer (.opscrew/tfstate/prod.tfstate), so OpsCrew cannot ${cannot}. Nothing was changed.`,
+    { hint },
+  );
 }
 
 /** True when the project's state file exists and is not empty. */
@@ -55,7 +70,7 @@ export async function stateContents(
   statePath: string,
   engine: () => Promise<IacEngine>,
 ): Promise<StateContents> {
-  const text = await readIfExists(statePath);
+  const text = await readTextIfExists(statePath);
   if (text === undefined || text.trim() === "") return "nothing";
   let raw: unknown;
   try {
@@ -76,7 +91,7 @@ export async function stateContents(
   const env: Record<string, string | undefined> = { ...deps.env };
   if (encrypted) {
     if (reader.info.name !== "tofu") return "unknown";
-    const passphrase = (await readIfExists(deps.paths.files.statePassphrase))?.trim();
+    const passphrase = (await readTextIfExists(deps.paths.files.statePassphrase))?.trim();
     if (!passphrase) return "unknown";
     deps.redactor.addLiteral(passphrase, "state-passphrase");
     try {

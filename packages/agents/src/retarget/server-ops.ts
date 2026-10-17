@@ -1,5 +1,5 @@
 import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { durationText, errorMessage, OpsCrewError } from "@opscrew/core";
 import { pollUntil, sshArgs } from "../shared";
 
 /**
@@ -38,13 +38,6 @@ export function moveTimeoutMs(sizeBytes: number): number {
   if (!Number.isFinite(sizeBytes)) return ceiling;
   const extra = Math.ceil(Math.max(0, sizeBytes) / HUNDRED_MB) * MINUTE;
   return Math.min(ceiling, floor + extra);
-}
-
-function duration(ms: number): string {
-  const minutes = Math.round(ms / MINUTE);
-  if (minutes < 1) return `${Math.round(ms / 1000)} seconds`;
-  if (minutes >= 120 && minutes % 60 === 0) return `${minutes / 60} hours`;
-  return minutes === 1 ? "1 minute" : `${minutes} minutes`;
 }
 
 /** Redacts first (so a secret is never cut in half), then truncates. */
@@ -94,7 +87,7 @@ function check(
   if (result.timedOut) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `Could not ${step.what} ${step.where}: it did not finish within ${duration(timeoutMs)}.`,
+      `Could not ${step.what} ${step.where}: it did not finish within ${durationText(timeoutMs)}.`,
       { hint: step.hint },
     );
   }
@@ -116,7 +109,7 @@ async function runStep(
   try {
     result = await remote.run(command, { timeoutMs });
   } catch (error) {
-    throw failure(full, error instanceof Error ? error.message : String(error), redact);
+    throw failure(full, errorMessage(error), redact);
   }
   return check(result, full, timeoutMs, redact);
 }
@@ -180,7 +173,7 @@ async function probe(
     if (result.timedOut) return { healthy: false, detail: "the check timed out" };
     return { healthy: result.exitCode === 0, detail: result.stderr };
   } catch (error) {
-    return { healthy: false, detail: error instanceof Error ? error.message : String(error) };
+    return { healthy: false, detail: errorMessage(error) };
   }
 }
 
@@ -233,7 +226,7 @@ export async function waitAppHealthy(
   const last = excerpt(detail, options.redact);
   throw new OpsCrewError(
     "COMMAND_FAILED",
-    `The app on ${remote.host} did not answer on http://app:${port}${healthPath} within ${duration(timeoutMs)}${last ? ` (last check: ${last})` : ""}.`,
+    `The app on ${remote.host} did not answer on http://app:${port}${healthPath} within ${durationText(timeoutMs)}${last ? ` (last check: ${last})` : ""}.`,
     {
       hint: `See why on the server: \`ssh deploy@${remote.host}\`, then \`cd /srv/app && docker compose logs --tail 200 app\`.`,
     },
@@ -367,7 +360,7 @@ export async function runRelease(remote: RemoteExec, sizeBytes: number): Promise
   } catch {
     throw failed("the SSH connection failed");
   }
-  if (result.timedOut) throw failed(`it did not finish within ${duration(timeoutMs)}`);
+  if (result.timedOut) throw failed(`it did not finish within ${durationText(timeoutMs)}`);
   if (result.exitCode !== 0) throw failed(`it exited with code ${result.exitCode}`);
 }
 
@@ -462,7 +455,7 @@ export async function copyDump(runner: CommandRunner, options: CopyDumpOptions):
   try {
     result = await runner.run("scp", args, { timeoutMs });
   } catch (error) {
-    throw failure(step, error instanceof Error ? error.message : String(error), options.redact);
+    throw failure(step, errorMessage(error), options.redact);
   }
   check(result, step, timeoutMs, options.redact);
 }

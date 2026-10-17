@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { SavedPlan } from "../provision";
 import {
   committableUrl,
+  planStop,
   pollUntil,
   recordServerAddress,
   type ServerAddress,
@@ -77,13 +78,10 @@ export function assertDnsUpdatesOnly(
     ...(saved.moves ?? []).map((move) => `move ${move.from} → ${move.to}`),
   ];
   if (problems.length === 0) return;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    [
-      `The ${wording.what} plan would do more than update the DNS records in place, so OpsCrew stopped. Nothing was changed.`,
-      ...problems.map((problem) => `  ${problem}`),
-    ].join("\n"),
-    { hint: wording.hint },
+  throw planStop(
+    `The ${wording.what} plan would do more than update the DNS records in place, so OpsCrew stopped. Nothing was changed.`,
+    problems,
+    wording.hint,
   );
 }
 

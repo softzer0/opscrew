@@ -1,8 +1,9 @@
+import { exists } from "@opscrew/core";
 import { PORTAINER_PORT, portainerHostname } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { portainerPasswordFile } from "../provision/own";
-import { exists, readServerAddresses } from "../shared";
+import { readServerAddresses } from "../shared";
 import { readOwnServerRecord } from "../shared/own-server";
 import { PORTAINER_LOCAL_URL } from "./settings";
 
