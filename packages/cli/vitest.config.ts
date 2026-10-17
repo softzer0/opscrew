@@ -10,5 +10,10 @@ export default defineConfig({
     // Real git and file-system tests are slow on Windows under parallel load, and the full flows
     // (retarget, own servers) run several times slower when every package is tested at once.
     testTimeout: 60_000,
+    // A live run logs every step. Inside an AI agent (CLAUDECODE, AI_AGENT) vitest picks its
+    // minimal reporter, which drops a passing test's output, so live runs keep the default one.
+    ...(Object.keys(process.env).some((name) => name.startsWith("OPSCREW_E2E_"))
+      ? { reporters: ["default"] }
+      : {}),
   },
 });

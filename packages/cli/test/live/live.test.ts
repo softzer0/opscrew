@@ -516,6 +516,8 @@ async function deployAndTearDown(
       for (const p of involved)
         if (p !== live && appName !== undefined) await p.apiCleanup(appName);
     }
+    // The throwaway repository keeps only `main`, as the own-server and Portainer runs leave it.
+    await github.reset();
   }
 }
 
