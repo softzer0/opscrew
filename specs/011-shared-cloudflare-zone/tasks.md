@@ -155,6 +155,19 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
 
 - [ ] T1108 Live runs (lead): own server, Portainer core (with the second app), Hetzner; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
+- [ ] T1109 [US1] A second app's ghcr.io registry entry in the same Portainer, in `packages/connectors/portainer/src/**` and `docs/guide/portainer-target.md` (found by T1108)
+  - Owns: those paths (+ tests); the test lines that follow in `packages/agents/src/**` and `packages/cli/src/**` when they assert the old user name
+  - Reads: `packages/connectors/portainer/src/plan.ts` (`registryChange`, the token-replace change); `docs/e2e-coverage.md` row "GHCR accepts the GitHub owner as the registry user name" (any user name works, the token decides)
+  - Depends: —
+  - Accept:
+    - **The cause (live, 2026-10-18).** Portainer refuses a registry entry whose URL and login user name match another entry's: "Another registry with the same URL and credentials already exists". OpsCrew logs every app's ghcr.io entry in as `opscrew`, so a second app in the same Portainer stops at its stack apply.
+    - **The fix.** The default login user name of an app's entry is the entry's own name (`names.registry`, for example `opscrew-shop`), both when adding the entry and when replacing its token. An explicit `registry.username` still wins.
+    - **The fake Portainer** refuses a second entry with the same URL and user name (with authentication on), with Portainer's message and status. A test adds two apps' entries for ghcr.io in one fake Portainer, and another test shows the refusal for an equal user name.
+    - **The guide** (`portainer-target.md`): several apps in one Portainer each get their own ghcr.io entry. Portainer may log in to ghcr.io with any of them when it pulls, so every app's read token must be able to read every app's image (one classic token with `read:packages` from your GitHub account does).
+    - Nothing else changes: entry names, grants, the record, destroy and token replacement.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-portainer --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: high
+
 ## Dependencies
 
 T1101 → {T1102, T1103} → T1104 → T1105 → T1106 → T1107 → T1108.
