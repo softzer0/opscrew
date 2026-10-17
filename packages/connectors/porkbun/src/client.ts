@@ -358,8 +358,8 @@ export class PorkbunClient {
         "Try again in a few minutes; if it keeps happening, OpsCrew may need an update.",
       );
     } catch (error) {
-      const { code, message, hint } = error as OpsCrewError;
-      throw this.#error(code, message, hint);
+      if (!(error instanceof OpsCrewError)) throw error;
+      throw this.#error(error.code, error.message, error.hint);
     }
   }
 

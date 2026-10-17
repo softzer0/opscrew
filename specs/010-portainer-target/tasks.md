@@ -283,7 +283,7 @@ each with a test that fails without the fix.
 
 From the duplicate scans and reviews recorded in `dry.md`. Waves: T1034 → {T1035, T1036} → T1037 → T1038 → T1039.
 
-- [ ] T1034 Core and connectors (dry.md C1–C14), plus the core helpers the other tasks use
+- [X] T1034 Core and connectors (dry.md C1–C14), plus the core helpers the other tasks use
   - Owns: `packages/{core,contracts,plan-schema,detect,iac-engine,runtime-claude}/src/**`, `packages/connectors/*/src/**` (+ tests)
   - Reads: dry.md C, D1, D7, B2, B8, B9 (`readOptionalArtifact`, `lowerFirst`/`upperFirst`), A20
   - Depends: T1033

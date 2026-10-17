@@ -3,13 +3,14 @@
  * Portainer's address.
  */
 import { plural } from "@opscrew/core";
+import { PORTAINER_TOKEN_STEPS } from "./client";
 import { MIN_COMPOSE_VERSION, MIN_PORTAINER_VERSION, type PortainerFinding } from "./facts";
 
 export const findings = {
   tokenRejected: (): PortainerFinding => ({
     code: "token-rejected",
     message: "Portainer rejected the access token (HTTP 401).",
-    hint: "Create an access token in Portainer (your user menu → My account → Access tokens) for a user who may manage stacks on the environment, set it as PORTAINER_API_KEY and run the command again.",
+    hint: `${PORTAINER_TOKEN_STEPS}, set PORTAINER_API_KEY to it, then run the command again.`,
   }),
   accessDenied: (what: string): PortainerFinding => ({
     code: "access-denied",

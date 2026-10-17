@@ -9,6 +9,7 @@ import {
   RATE_LIMIT_HINT,
   type RequestFailure,
   requestJson,
+  statusPageHint,
 } from "@opscrew/core";
 import { z } from "zod";
 
@@ -408,7 +409,7 @@ async function statusError(response: Response, path: string): Promise<OpsCrewErr
       hint:
         response.status === 403
           ? "Check that the token belongs to the right project and has Read & Write permission."
-          : "Try again later; check https://status.hetzner.com/ if it keeps failing.",
+          : statusPageHint("https://status.hetzner.com/"),
     },
   );
 }

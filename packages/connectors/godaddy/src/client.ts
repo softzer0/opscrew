@@ -1,7 +1,9 @@
 import type { FetchLike } from "@opscrew/contracts";
 import {
   CONNECTION_HINT,
+  connectAfterBuyingHint,
   durationText,
+  lowerFirst,
   maybeStarted,
   normalizeHostName,
   OpsCrewError,
@@ -318,7 +320,7 @@ export class GoDaddyClient {
         "PHASE_PRECONDITION",
         `GoDaddy cannot quote ${domain}: ${describeError(error, answer.status)}.`,
         {
-          hint: `Pick another name, or buy it at ${GODADDY_DASHBOARD_URLS.portfolio} and run \`opscrew domain connect ${domain}\`.`,
+          hint: `Pick another name, or ${lowerFirst(connectAfterBuyingHint(`at ${GODADDY_DASHBOARD_URLS.portfolio}`, domain))}`,
         },
       );
     }

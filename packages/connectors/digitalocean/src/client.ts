@@ -1,12 +1,15 @@
 import type { FetchLike } from "@opscrew/contracts";
 import {
+  CONNECTION_HINT,
   durationText,
   type JsonClient,
   jsonClient,
   OpsCrewError,
   pollAction,
+  RATE_LIMIT_HINT,
   type RequestFailure,
   requestJson,
+  statusPageHint,
 } from "@opscrew/core";
 import { z } from "zod";
 
@@ -341,9 +344,7 @@ export class DigitalOceanClient {
             ? `The DigitalOcean API did not answer within ${durationText(this.#http.timeoutMs)} (${method} ${path}).`
             : `Could not reach the DigitalOcean API (${method} ${path}).`,
           {
-            hint: idempotent
-              ? "Check your network connection and try again; see https://status.digitalocean.com/ if it keeps happening."
-              : MAYBE_DONE_HINT,
+            hint: idempotent ? CONNECTION_HINT : MAYBE_DONE_HINT,
             cause: failure.cause,
           },
         );
@@ -417,16 +418,14 @@ export class DigitalOceanClient {
         return new OpsCrewError(
           "PROVIDER_ERROR",
           `DigitalOcean rate limit reached for ${request} (${detail}).`,
-          { hint: "Wait a few minutes and try again." },
+          { hint: RATE_LIMIT_HINT },
         );
       default:
         return new OpsCrewError(
           "PROVIDER_ERROR",
           `DigitalOcean API request ${request} failed (HTTP ${response.status}: ${detail}).`,
           {
-            hint: idempotent
-              ? "Try again later; check https://status.digitalocean.com/ if it keeps failing."
-              : MAYBE_DONE_HINT,
+            hint: idempotent ? statusPageHint("https://status.digitalocean.com/") : MAYBE_DONE_HINT,
           },
         );
     }

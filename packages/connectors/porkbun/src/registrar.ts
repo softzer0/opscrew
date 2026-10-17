@@ -19,6 +19,7 @@ import {
   listText,
   normalizeHostName,
   OpsCrewError,
+  plural,
   realSleep,
 } from "@opscrew/core";
 import type {
@@ -150,12 +151,12 @@ function toRegisteredDomain(domain: PorkbunDomain): RegisteredDomain {
 /** Porkbun registers exactly the registry-minimum term: any other number of years is refused. */
 function requireTerm(domain: string, years: number, term: number): void {
   if (years === term) return;
-  const unit = term === 1 ? "year" : "years";
+  const minimum = plural(term, "year");
   throw new OpsCrewError(
     "INVALID_INPUT",
-    `Porkbun registers ${domain} for the registry minimum of ${term} ${unit} only, not ${years}.`,
+    `Porkbun registers ${domain} for the registry minimum of ${minimum} only, not ${years}.`,
     {
-      hint: `Buy it for ${term} ${unit} (auto-renew extends it later), or pick a registrar that lets you choose the years.`,
+      hint: `Buy it for ${minimum} (auto-renew extends it later), or pick a registrar that lets you choose the years.`,
     },
   );
 }

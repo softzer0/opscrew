@@ -14,11 +14,13 @@ import { checkKey, fingerprint, WEBHOOK_FINGERPRINT_NAME } from "./values";
 /** Default time one request to Portainer may take. */
 export const PORTAINER_REQUEST_TIMEOUT_MS = 30_000;
 const USER_AGENT = "opscrew-connector-portainer/0.1.0";
-const TOKEN_HINT =
-  "Create an access token in Portainer (your user menu → My account → Access tokens) for a user who may manage stacks on the environment, and set it as PORTAINER_API_KEY.";
-/** Where in Portainer the access token OpsCrew uses is created, and where it goes. */
+/**
+ * Where in Portainer the access token OpsCrew uses is created, as the start of a sentence: callers
+ * continue it with ", then set PORTAINER_API_KEY to it…" or ", set PORTAINER_API_KEY to it, then …".
+ */
 export const PORTAINER_TOKEN_STEPS =
-  "In Portainer, open your user menu → My account → Access tokens and add a token (for an administrator, or for a user who may manage stacks on the environment), then set PORTAINER_API_KEY to it.";
+  "In Portainer, open your user menu → My account → Access tokens and add a token (for an administrator, or for a user who may manage stacks on the environment)";
+const TOKEN_HINT = `${PORTAINER_TOKEN_STEPS}, then set PORTAINER_API_KEY to it.`;
 /** What a 403 means for registry entries, as an access the user can grant. */
 const REGISTRY_ACCESS = "manage registries (administrators only)";
 
