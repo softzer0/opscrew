@@ -26,7 +26,7 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | Passed (with step 11, after the simplification) | 2026-10-17 | — |
 | Your existing Portainer, a second app in the same Portainer, zone and account, seeded rules, shared-rule checks (steps 7b, 9b, in the core pass; feature 011) | + `OPSCREW_E2E_GITHUB_REPO_B` | **Added, not yet run live** | — | A live run (T1108) |
 | Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | Passed: steps 1–11 in run 10 (2026-10-16), steps 11 and 12 with the fixed leak check on 2026-10-17 | 2026-10-17 (steps 11, 12) | — |
-| Hetzner with a Cloudflare domain: the app's hostnames in OpsCrew's shared rules after provision, gone after destroy (feature 011) | as Hetzner with a Cloudflare domain | **Added, not yet run live** | — | A live run (T1108) |
+| Hetzner with a Cloudflare domain: the app's hostnames in OpsCrew's shared rules after provision, gone after destroy (feature 011) | as Hetzner with a Cloudflare domain | Passed (the zone had no rule lists: OpsCrew created both and deleted them again on destroy) | 2026-10-17 | — |
 
 Run in development, not tracked by date:
 
