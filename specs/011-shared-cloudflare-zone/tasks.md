@@ -153,7 +153,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
   - Effort: xhigh
 
-- [ ] T1108 Live runs (lead): own server, Portainer core (with the second app), Hetzner; results in `docs/e2e.md` and `docs/e2e-coverage.md`
+- [X] T1108 Live runs (lead): own server, Portainer core (with the second app), Hetzner; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 - [X] T1109 [US1] A second app's ghcr.io registry entry in the same Portainer, in `packages/connectors/portainer/src/**` and `docs/guide/portainer-target.md` (found by T1108)
   - Owns: those paths (+ tests); the test lines that follow in `packages/agents/src/**` and `packages/cli/src/**` when they assert the old user name
