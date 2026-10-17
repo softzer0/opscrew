@@ -34,11 +34,7 @@ import {
   type OwnRenderInput,
   readRequirements,
 } from "../provision/render";
-import {
-  applySharedCloudflare,
-  planSharedCloudflare,
-  sharedCloudflareClient,
-} from "../provision/shared-cloudflare";
+import { applySharedCloudflare, planSharedCloudflare } from "../provision/shared-cloudflare";
 import { currentOutputs } from "../provision/steps";
 import type { ProvisionServices } from "../provision/types";
 import {
@@ -305,16 +301,12 @@ async function runChange(
     : undefined;
   let oneTimePinId: string | undefined;
   let cloudflareHash: { cloudflarePlanHash?: string } = {};
-  if (cloudflare !== undefined) {
-    const client = sharedCloudflareClient(deps, services);
-    const planned = await planSharedCloudflare(deps, {
-      client,
-      plan: change.after,
-      cloudflare,
-      command,
-    });
-    const shared = await applySharedCloudflare(deps, planned, {
-      client,
+  const sharedPlans =
+    cloudflare === undefined
+      ? undefined
+      : await planSharedCloudflare(deps, { services, plan: change.after, cloudflare, command });
+  if (sharedPlans !== undefined) {
+    const shared = await applySharedCloudflare(deps, sharedPlans, {
       app: change.after.app.name,
       planOnly,
       command,

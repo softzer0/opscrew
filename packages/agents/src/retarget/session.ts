@@ -28,8 +28,11 @@ import { providerProfile } from "../providers";
 import {
   type CloudflareSetup,
   checkProvider,
+  committedTfvars,
   deploymentRenderContext,
   type GitHubSetup,
+  type OwnRenderInput,
+  ownRenderFromTfvars,
   readRequirements,
   setupCloudflare,
   setupGitHub,
@@ -82,6 +85,11 @@ export interface MoveSession {
   approve: string | undefined;
   /** The servers' addresses, from OpsCrew's local state (never from `opscrew/plan.yaml`). */
   servers: MoveServers;
+  /**
+   * The render inputs of the committed `terraform.tfvars.json` (the one-time PIN login's id with
+   * Portainer on a subdomain): the move renders with them, as the last provision did.
+   */
+  committedRender: OwnRenderInput;
 }
 
 /**
@@ -262,6 +270,7 @@ export async function openSession(
     command,
     approve: input.approvePlanHash?.trim() || undefined,
     servers,
+    committedRender: ownRenderFromTfvars(await committedTfvars(deps.paths.root, plan)),
   };
 }
 
@@ -296,6 +305,7 @@ export function renderFiles(
     github: { owner: session.github.owner, repo: session.github.repo },
     deployPublicKey: session.deployKey.publicKeyOpenSsh,
     cloudflare: session.cloudflare,
+    own: session.committedRender,
   });
   return renderDeployment(plan, layout ? { ...ctx, layout } : ctx);
 }

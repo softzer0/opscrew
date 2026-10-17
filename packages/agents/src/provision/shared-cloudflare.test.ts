@@ -404,6 +404,77 @@ describe.skipIf(!findExecutable("git"))(
       });
     });
 
+    it("a plan without a Cloudflare zone any more first removes this app's hostnames from the zone it used", async () => {
+      const zone = new FakeZone();
+      zone.seedRule(WAF, {
+        description: "Block one country",
+        expression: '(ip.src.country eq "XX")',
+        action: "block",
+      });
+      const userRules = zone.userRulesText(WAF);
+      const s = await hetzner({ zone });
+      await runProvision(s.deps, { services: s.services });
+      expect((await record(s)).hostnames).toEqual(both(["shop.example.com"]));
+      // The user serves the app on the server's address now: the plan has no Cloudflare domain.
+      const deployed = await readArtifact("plan", s.deps.paths.files.plan);
+      await writeArtifact("plan", s.deps.paths.files.plan, {
+        ...deployed,
+        dns: { provider: "none", proxied: false, www: false },
+        security: { ...deployed.security, httpAllowedFrom: "any" },
+      });
+      s.github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
+      s.handler.requests.length = 0;
+      const writes = zone.writes().length;
+
+      // Without a Cloudflare token the hostnames cannot leave: a plain stop, nothing changed.
+      const { sharedCloudflare: _client, ...withoutClient } = s.services;
+      const token = s.deps.env.CLOUDFLARE_API_TOKEN;
+      delete s.deps.env.CLOUDFLARE_API_TOKEN;
+      const missing = await failure(runProvision(s.deps, { services: withoutClient }));
+      if (token !== undefined) s.deps.env.CLOUDFLARE_API_TOKEN = token;
+      expect(missing).toMatchObject({
+        code: "CREDENTIALS_MISSING",
+        message:
+          "This app's hostnames are still in OpsCrew's shared rules of a Cloudflare zone the plan no longer uses, and CLOUDFLARE_API_TOKEN is not set, so OpsCrew cannot remove them. Nothing was changed.",
+      });
+      expect(kinds(s)).toEqual([]);
+
+      // --plan-only: the removal is the run's Cloudflare plan; the infrastructure plan follows.
+      const planned = await runProvision(s.deps, { services: s.services, planOnly: true });
+      expect(planned.cloudflarePlanHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(s.deps.reporter.text()).toContain(
+        "Cloudflare plan for the zone this app leaves: 2 to change, 0 already in place.",
+      );
+      expect(zone.writes()).toHaveLength(writes);
+
+      s.handler.requests.length = 0;
+      await runProvision(s.deps, { services: s.services });
+      expect(kinds(s)[0]).toBe("cloudflare-apply");
+      expect(s.handler.requests[0]).toMatchObject({
+        planHash: planned.cloudflarePlanHash,
+        allowDestroy: true,
+        confirmPhrase: "shop",
+      });
+      // OpsCrew's rules are gone; the user's rule and its ruleset stay as they were.
+      expect(zone.opscrewRule(WAF)).toBeUndefined();
+      expect(zone.userRulesText(WAF)).toBe(userRules);
+      expect(zone.entrypoints.has(CONFIG)).toBe(false);
+      expect(await record(s)).toEqual({
+        zoneId: FAKE_ZONE_ID,
+        hostnames: {},
+        createdEntrypoints: [],
+      });
+
+      // Nothing of this app is left in the zone: the next run plans nothing in Cloudflare.
+      s.handler.requests.length = 0;
+      await runProvision(s.deps, { services: s.services });
+      expect(kinds(s)).not.toContain("cloudflare-apply");
+      expect(
+        s.deps.reporter.text().split("Cloudflare plan for the zone this app leaves"),
+      ).toHaveLength(3);
+    });
+
     it("an app moved to another zone first leaves the old zone's rules, in a Cloudflare plan of its own", async () => {
       const OLD_ZONE = "a".repeat(32);
       const current = new FakeZone();
@@ -437,7 +508,7 @@ describe.skipIf(!findExecutable("git"))(
       const text = s.deps.reporter.text();
       expect(text).toContain("Cloudflare plan for the zone this app leaves: 2 to change");
       expect(text).toContain(
-        `After this Cloudflare plan is applied (\`opscrew provision --approve ${leaveHash}\`), run \`opscrew provision\` again for the plans of the app's new zone.`,
+        `After this Cloudflare plan is applied (\`opscrew provision --approve ${leaveHash}\`), run \`opscrew provision\` again for the plans that follow.`,
       );
       expect(s.engine.calls).toEqual([]);
       expect(old.writes()).toHaveLength(oldWrites);

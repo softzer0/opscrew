@@ -70,11 +70,7 @@ import {
   portainerDeploySecrets,
   setDeploySecrets,
 } from "./secrets";
-import {
-  applySharedCloudflare,
-  planSharedCloudflare,
-  sharedCloudflareClient,
-} from "./shared-cloudflare";
+import { applySharedCloudflare, planSharedCloudflare } from "./shared-cloudflare";
 import {
   describeStackPlan,
   hasAppStack,
@@ -214,14 +210,10 @@ export async function provisionPortainer(
       hint: "Run `opscrew interview` and `opscrew design` again.",
     });
   }
-  // OpsCrew's shared Cloudflare change, planned read-only now and applied before the
-  // infrastructure plan.
-  const sharedClient =
-    cloudflare === undefined ? undefined : sharedCloudflareClient(deps, services);
-  const shared =
-    cloudflare === undefined || sharedClient === undefined
-      ? undefined
-      : await planSharedCloudflare(deps, { client: sharedClient, plan, cloudflare, command });
+  // OpsCrew's shared Cloudflare change (also the removal of this app's hostnames from a zone it
+  // no longer uses, for example after leaving web mode tunnel), planned read-only now and applied
+  // before the infrastructure plan.
+  const shared = await planSharedCloudflare(deps, { services, plan, cloudflare, command });
   const repository = await github.api.getRepo(github.owner, github.repo);
   const commits = !(options.planOnly && saved.apply === undefined && saved.removal === undefined);
   const deployBranch = await deployBranchFor(deps, {
@@ -341,10 +333,9 @@ export async function provisionPortainer(
   // organization for the webhook's Access) before anything else changes: shown, approved by its
   // hash, applied and recorded.
   const sharedResult =
-    shared === undefined || sharedClient === undefined
+    shared === undefined
       ? undefined
       : await applySharedCloudflare(deps, shared, {
-          client: sharedClient,
           app: plan.app.name,
           planOnly: options.planOnly === true,
           command,
@@ -683,6 +674,8 @@ export async function provisionPortainer(
   // delete the Cloudflare Tunnel's records at those names).
   if (target.web.mode === "caddy") {
     const done: string[] = [];
+    if (sharedResult?.applied)
+      done.push("The Cloudflare plan of OpsCrew's shared rules is applied.");
     if (iac.applied) {
       done.push(
         removal

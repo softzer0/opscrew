@@ -55,7 +55,6 @@ import {
   applySharedCloudflare,
   cloudflarePlanHashes,
   planSharedCloudflare,
-  sharedCloudflareClient,
 } from "./shared-cloudflare";
 import {
   currentOutputs,
@@ -186,8 +185,9 @@ async function savedInfrastructureHashes(
 }
 
 /**
- * Provision and DNS share this flow: credentials (and, with a Cloudflare zone, the Cloudflare plan
- * of OpsCrew's shared rules and Zero Trust pieces, read-only) → engine, deploy key and state
+ * Provision and DNS share this flow: credentials (and the Cloudflare plan of OpsCrew's shared rules
+ * and Zero Trust pieces, read-only: for the plan's Cloudflare zone, and for a zone the record
+ * names that the app leaves) → engine, deploy key and state
  * encryption → the Cloudflare plan's approval by its hash, apply and `.opscrew/cloudflare.json` →
  * render (approved write) → plan, policies, approval, apply → record the deployment → wait for the
  * server and pin its host key → deploy secrets → commit, push and pull request.
@@ -233,14 +233,10 @@ async function provisionFlow(
   await checkProvider(deps, profile.id, services);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
-  // OpsCrew's shared Cloudflare change, planned read-only now (it stops on its findings) and
-  // applied before the infrastructure plan.
-  const sharedClient =
-    cloudflare === undefined ? undefined : sharedCloudflareClient(deps, services);
-  const shared =
-    cloudflare === undefined || sharedClient === undefined
-      ? undefined
-      : await planSharedCloudflare(deps, { client: sharedClient, plan, cloudflare, command });
+  // OpsCrew's shared Cloudflare change (also the removal of this app's hostnames from a zone it
+  // no longer uses), planned read-only now (it stops on its findings) and applied before the
+  // infrastructure plan.
+  const shared = await planSharedCloudflare(deps, { services, plan, cloudflare, command });
   // The saved infrastructure plans the `--approve` hashes name (applied instead of planning again).
   const saved = await savedInfrastructureHashes(deps, options, plan, cloudflarePlanHashes(shared));
   const approveHash = saved.apply;
@@ -344,10 +340,9 @@ async function provisionFlow(
   // mode switch's removal of the old one): shown, approved by its hash, applied and recorded. The
   // infrastructure takes the PIN login's id from it.
   const sharedResult =
-    shared === undefined || sharedClient === undefined
+    shared === undefined
       ? undefined
       : await applySharedCloudflare(deps, shared, {
-          client: sharedClient,
           app: plan.app.name,
           planOnly: options.planOnly === true,
           command,

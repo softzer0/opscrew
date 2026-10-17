@@ -1452,7 +1452,22 @@ describe.skipIf(!findExecutable("git"))(
       expect(error.hint).toContain(CONTINUES);
       // The record was just deleted: an answer now could only be the tunnel's, still cached.
       expect(s.dnsQueries.filter((query) => query.startsWith("shop.example.com"))).toEqual([]);
-      expect(kinds(s)).toEqual(["repo-write", "iac-apply", "stack-apply", "repo-write"]);
+      // Caddy serves the app without Cloudflare's tunnel: its hostname leaves OpsCrew's probe block
+      // first, in a Cloudflare plan of its own (the user's records are the user's).
+      expect(kinds(s)).toEqual([
+        "cloudflare-apply",
+        "repo-write",
+        "iac-apply",
+        "stack-apply",
+        "repo-write",
+      ]);
+      expect(error.message).toContain("The Cloudflare plan of OpsCrew's shared rules is applied.");
+      expect(s.zone.opscrewRule("http_request_firewall_custom")).toBeUndefined();
+      expect(JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"))).toMatchObject(
+        {
+          hostnames: {},
+        },
+      );
       expect(s.events.indexOf("iac-apply")).toBeGreaterThan(-1);
       const stack = s.fake.stacks.find((item) => item.Name === "opscrew-shop");
       expect(stack?.Env.map((pair) => pair.name)).not.toContain("OPSCREW_TUNNEL_TOKEN");
