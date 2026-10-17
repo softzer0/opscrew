@@ -166,6 +166,16 @@ function jsInstallFor(facts: ProjectFacts, dir: string): string {
     : `cd ${shellQuote(dir)} && ${jsInstall(facts)}`;
 }
 
+/** The start of a JS image's build stage: the whole repository in `/app`, dependencies installed. */
+function jsBuildStage(facts: ProjectFacts, dir: string): string[] {
+  return [
+    "FROM node:22-alpine AS build",
+    "WORKDIR /app",
+    "COPY . .",
+    `RUN ${jsInstallFor(facts, dir)}`,
+  ];
+}
+
 /** Header note for an app in a subfolder (nothing at the root). */
 function jsFolderNote(facts: ProjectFacts, dir: string): string[] {
   if (dir === ".") return [];
@@ -242,10 +252,7 @@ export function nextStandaloneDockerfile(facts: ProjectFacts, port: number): str
     HEADER("next-standalone"),
     ...notes,
     "",
-    "FROM node:22-alpine AS build",
-    "WORKDIR /app",
-    "COPY . .",
-    `RUN ${jsInstallFor(facts, dir)}`,
+    ...jsBuildStage(facts, dir),
     "ENV NEXT_TELEMETRY_DISABLED=1",
     ...buildArgs(facts),
     `RUN ${build} && mkdir -p ${shellQuote(inApp("public"))}`,
@@ -286,10 +293,7 @@ export function nodeServerDockerfile(facts: ProjectFacts, port: number): string 
     HEADER("node-server"),
     ...jsFolderNote(facts, dir),
     "",
-    "FROM node:22-alpine AS build",
-    "WORKDIR /app",
-    "COPY . .",
-    `RUN ${jsInstallFor(facts, dir)}`,
+    ...jsBuildStage(facts, dir),
     ...buildArgs(facts),
   ];
   if (facts.build.buildCommand) lines.push(`RUN ${facts.build.buildCommand}`);
@@ -337,10 +341,7 @@ export function staticSpaDockerfile(facts: ProjectFacts): string {
     "# unprivileged user (OpsCrew's outer Caddy terminates TLS in front of it).",
     ...jsFolderNote(facts, dir),
     "",
-    "FROM node:22-alpine AS build",
-    "WORKDIR /app",
-    "COPY . .",
-    `RUN ${jsInstallFor(facts, dir)}`,
+    ...jsBuildStage(facts, dir),
     ...buildArgs(facts),
     `RUN ${build}`,
     "",

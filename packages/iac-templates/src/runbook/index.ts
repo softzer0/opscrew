@@ -1,3 +1,4 @@
+import { formatMoney, taxLabel } from "@opscrew/core";
 import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText } from "../providers";
@@ -11,6 +12,7 @@ import {
   DRIFT_FILES,
   deployRows,
   deploySections,
+  externalDatabaseCell,
   runbookHead,
   SECURITY_HEAD,
   serverCommands,
@@ -18,19 +20,18 @@ import {
   TROUBLESHOOTING,
 } from "./shared";
 
+export { cell, deployRows, externalDatabaseCell, runbookHead } from "./shared";
+
 const PENDING = "_(set by `opscrew provision`)_";
 
 function money(plan: DeployPlan, provider: ProviderText): string {
-  const { amount, currency } = plan.cost.monthly;
-  const symbol = currency === "EUR" ? "€" : "$";
-  // EUR prices are quoted with VAT; DigitalOcean's USD prices exclude sales tax, which is not VAT.
-  const tax = currency === "EUR" ? "VAT" : "tax";
-  const vat = `${plan.cost.pricesIncludeVat ? "incl." : "excl."} ${tax}`;
+  const { monthly } = plan.cost;
+  const tax = taxLabel(monthly.currency, plan.cost.pricesIncludeVat);
   const source =
     plan.cost.source === "static"
       ? `, estimate from ${provider.name}'s price list of ${plan.cost.asOf.slice(0, 10)}`
       : "";
-  return `${symbol}${amount.toFixed(2)} per month (${vat}${source})`;
+  return `${formatMoney(monthly)} per month (${tax}${source})`;
 }
 
 /**
@@ -57,9 +58,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
   const db = plan.services.postgres
     ? `PostgreSQL 17 in a container on the server, data in \`/srv/data/postgres\`${target.backups ? `; ${provider.runbook.backupsOnDatabaseCell}` : "; automated backups are off"}`
-    : plan.externalServices.length > 0
-      ? `External: ${plan.externalServices.join(", ")} (not managed by OpsCrew)`
-      : "None";
+    : externalDatabaseCell(plan);
   const dns = usesCloudflare(plan)
     ? `Cloudflare, ${plan.dns.proxied ? "proxied (the server IP is hidden behind Cloudflare)" : "DNS only"}`
     : "No domain yet: the app is served over plain HTTP on the server IP";

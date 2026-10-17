@@ -6,6 +6,7 @@ import { tunnelMode } from "../tunnel";
 import type { RenderContext } from "../types";
 import { DNS_RULESETS_OUTPUT, dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
+  APP_NAME_VARIABLE,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   output,
@@ -28,9 +29,7 @@ const ADDRESS_NOTE = [
 ];
 
 function variables(plan: DeployPlan, pieces: TunnelPieces | undefined): VariableSpec[] {
-  const specs: VariableSpec[] = [
-    { name: "app_name", type: "string", description: "App name, used for resource names." },
-  ];
+  const specs: VariableSpec[] = [APP_NAME_VARIABLE];
   const tunnel = tunnelMode(plan);
   if (!tunnel) {
     specs.push(

@@ -4,11 +4,11 @@ import { CLOUDFLARED_SHA256, CLOUDFLARED_VERSION, cloudflaredUrl, sshHostname } 
 import type { RenderContext, RenderedFile } from "../types";
 import { renderPortainerWorkflow } from "./portainer";
 import {
-  block,
   buildJob,
   CHECKOUT_ACTION,
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
+  deployJob,
   healthPath,
   secret,
   workflowStart,
@@ -310,16 +310,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     ]),
     ...build,
     "",
-    "  deploy:",
-    "    name: Deploy to the server",
-    "    needs: build",
-    "    runs-on: ubuntu-latest",
-    "    environment: production",
-    "    permissions:",
-    "      contents: read",
-    "      packages: read",
-    "    steps:",
-    ...block(deploySteps, 6),
+    ...deployJob("Deploy to the server", ["contents: read", "packages: read"], deploySteps),
     "",
   ];
   return { path: plan.cicd.workflowPath, content: lines.join("\n"), kind: "workflow" };

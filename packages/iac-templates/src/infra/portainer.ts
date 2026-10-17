@@ -16,6 +16,7 @@ import {
   zoneVariables,
 } from "./cloudflare";
 import {
+  APP_NAME_VARIABLE,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   moduleBlock,
@@ -160,7 +161,7 @@ function mainTf(plan: DeployPlan, s: Shape): string {
 
 function variables(s: Shape): VariableSpec[] {
   const specs: VariableSpec[] = [
-    { name: "app_name", type: "string", description: "App name, used for resource names." },
+    APP_NAME_VARIABLE,
     ...zoneVariables(s.appTunnel ? "tunnel" : "zone"),
     {
       name: "cloudflare_account_id",

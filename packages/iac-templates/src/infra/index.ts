@@ -5,6 +5,7 @@ import { cloudTarget, PROVIDER_TEXT, type ProviderText, type VariablePrefix } fr
 import type { RenderContext, RenderedFile, ServerModule } from "../types";
 import { DNS_RULESETS_OUTPUT, dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
+  APP_NAME_VARIABLE,
   alignedArguments,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
@@ -206,7 +207,7 @@ function variables(
   pieces: TunnelPieces | undefined,
 ): VariableSpec[] {
   const base: VariableSpec[] = [
-    { name: "app_name", type: "string", description: "App name, used for resource names." },
+    APP_NAME_VARIABLE,
     ...shape.servers.flatMap(serverVariables),
     {
       name: "deploy_ssh_public_key",

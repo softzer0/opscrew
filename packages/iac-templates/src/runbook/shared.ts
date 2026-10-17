@@ -7,7 +7,11 @@ export function cell(text: string): string {
 }
 
 /** The title, the generation note and the first rows of "At a glance" (the app and its check). */
-export function runbookHead(plan: DeployPlan, ctx: RenderContext, url: string): string[] {
+export function runbookHead(
+  plan: DeployPlan,
+  ctx: Pick<RenderContext, "opscrewVersion">,
+  url: string,
+): string[] {
   return [
     `# Runbook: ${plan.app.name}`,
     "",
@@ -20,6 +24,13 @@ export function runbookHead(plan: DeployPlan, ctx: RenderContext, url: string): 
     `| App | ${cell(url)} |`,
     `| Health check | \`${plan.app.healthPath}\` |`,
   ];
+}
+
+/** The "Database" cell when Postgres does not run with the app: its external services, or `None`. */
+export function externalDatabaseCell(plan: DeployPlan): string {
+  return plan.externalServices.length > 0
+    ? `External: ${plan.externalServices.join(", ")} (not managed by OpsCrew)`
+    : "None";
 }
 
 /** The "Deploys" and "Image" rows of "At a glance". */

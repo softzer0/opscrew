@@ -10,6 +10,7 @@ import {
   DRIFT_FILES,
   deployRows,
   deploySections,
+  externalDatabaseCell,
   runbookHead,
   SECURITY_HEAD,
   serverCommands,
@@ -54,9 +55,7 @@ export function renderOwnRunbook(
       : "kept out of this repository: `opscrew status` shows them";
   const db = plan.services.postgres
     ? "PostgreSQL 17 in a container on the server, data in `/srv/data/postgres`; backups are your responsibility"
-    : plan.externalServices.length > 0
-      ? `External: ${plan.externalServices.join(", ")} (not managed by OpsCrew)`
-      : "None";
+    : externalDatabaseCell(plan);
   const dns = tunnel
     ? "Cloudflare, through a Cloudflare Tunnel (no DNS record points at the server)"
     : cloudflare

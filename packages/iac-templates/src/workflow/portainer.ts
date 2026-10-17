@@ -15,6 +15,7 @@ import {
   buildJob,
   CHECKOUT_ACTION,
   DIGEST_REF_PATTERN,
+  deployJob,
   healthPath,
   secret,
   workflowStart,
@@ -212,7 +213,7 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
 
 /** Indents `script` as the body of a step's `run: |`. */
 function run(script: readonly string[]): string[] {
-  return ["  run: |", ...block([...script], 4)];
+  return ["  run: |", ...block(script, 4)];
 }
 
 /**
@@ -316,15 +317,7 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
     ]),
     ...build,
     "",
-    "  deploy:",
-    "    name: Deploy to Portainer",
-    "    needs: build",
-    "    runs-on: ubuntu-latest",
-    "    environment: production",
-    "    permissions:",
-    "      contents: write",
-    "    steps:",
-    ...block(steps, 6),
+    ...deployJob("Deploy to Portainer", ["contents: write"], steps),
     "",
   ];
   return { path: plan.cicd.workflowPath, content: lines.join("\n"), kind: "workflow" };

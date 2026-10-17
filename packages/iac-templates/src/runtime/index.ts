@@ -11,8 +11,10 @@ import {
   cacheService,
   caddyfile,
   cloudflaredService,
+  composeLiteral,
   dbService,
   hardened,
+  RELEASE_NOTE,
 } from "./services";
 
 const HEADER = [
@@ -79,7 +81,7 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
       env_file: ["app.env"],
       environment: { PORT: String(plan.app.port) },
       // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
-      command: ["sh", "-c", release.replaceAll("$", () => "$$")],
+      command: ["sh", "-c", composeLiteral(release)],
       ...hardened({ noCapabilities: true, internal: true }),
     };
   }
@@ -110,10 +112,7 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
     networks: { internal: {} },
     volumes: { caddy_data: {}, caddy_config: {} },
   };
-  const header =
-    release === undefined
-      ? HEADER
-      : `${HEADER}\n# \`release\` runs app.releaseCommand from opscrew/plan.yaml before each new version starts.`;
+  const header = release === undefined ? HEADER : `${HEADER}\n${RELEASE_NOTE}`;
   return {
     path: "opscrew/runtime/compose.yaml",
     content: `${header}\n${stringify(document, { lineWidth: 0 })}`,

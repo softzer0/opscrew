@@ -5,6 +5,15 @@ export const POSTGRES_IMAGE = "postgres:17-alpine";
 export const VALKEY_IMAGE = "valkey/valkey:8-alpine";
 export const CADDY_IMAGE = "caddy:2-alpine";
 
+/** The header line of a Compose file with a `release` service. */
+export const RELEASE_NOTE =
+  "# `release` runs app.releaseCommand from opscrew/plan.yaml before each new version starts.";
+
+/** `$` doubled, so Compose leaves it for the container (Compose interpolates `configs.content` too). */
+export function composeLiteral(text: string): string {
+  return text.replaceAll("$", () => "$$");
+}
+
 /**
  * Log rotation for one of OpsCrew's Compose services: the values of the Docker daemon settings on
  * servers OpsCrew creates (json-file, 10m, 3 files), set per service so that on a server the user

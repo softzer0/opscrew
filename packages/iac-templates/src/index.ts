@@ -2,6 +2,7 @@ export * from "./docker";
 export * from "./infra";
 export * from "./portainer-host";
 export * from "./portainer-target";
+export { webOnlyFromCloudflare } from "./predicates";
 export { cloudTarget, portainerTarget, wrongTarget } from "./providers";
 export * from "./render";
 export * from "./runbook";

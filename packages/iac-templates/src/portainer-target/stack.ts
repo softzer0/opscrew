@@ -10,8 +10,10 @@ import {
   cacheService,
   caddyfile,
   cloudflaredService,
+  composeLiteral,
   dbService,
   hardened,
+  RELEASE_NOTE,
 } from "../runtime/services";
 import type { RenderContext, RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN } from "../workflow/shared";
@@ -225,11 +227,6 @@ function caddyPorts(web: PortainerWeb): string[] | undefined {
   return ["80:80", "443:443", "443:443/udp"];
 }
 
-/** `$` doubled, so Compose leaves it for the container (Compose interpolates `configs.content` too). */
-function composeLiteral(text: string): string {
-  return text.replaceAll("$", () => "$$");
-}
-
 function yamlDocument(header: string, document: unknown): string {
   return `${header}\n${stringify(document, { lineWidth: 0, aliasDuplicateObjects: false })}`;
 }
@@ -336,10 +333,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
     ...(volumes.length > 0 ? { volumes: Object.fromEntries(volumes.map((v) => [v, {}])) } : {}),
     configs: { caddyfile: { content: composeLiteral(config) } },
   };
-  const header =
-    release === undefined
-      ? STACK_HEADER
-      : `${STACK_HEADER}\n# \`release\` runs app.releaseCommand from opscrew/plan.yaml before each new version starts.`;
+  const header = release === undefined ? STACK_HEADER : `${STACK_HEADER}\n${RELEASE_NOTE}`;
   return {
     path: PORTAINER_STACK_TEMPLATE_PATH,
     content: yamlDocument(header, document),

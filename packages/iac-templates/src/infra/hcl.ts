@@ -64,6 +64,13 @@ export interface VariableSpec {
   sensitive?: boolean;
 }
 
+/** The `app_name` variable every root module declares first. */
+export const APP_NAME_VARIABLE: VariableSpec = {
+  name: "app_name",
+  type: "string",
+  description: "App name, used for resource names.",
+};
+
 /** `variables.tf` declaring `specs` in order. */
 export function variablesTf(specs: readonly VariableSpec[]): string {
   const blocks = specs.map((v) =>

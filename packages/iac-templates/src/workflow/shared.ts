@@ -46,7 +46,7 @@ export function secret(name: string): string {
   return `\${{ secrets.${name} }}`;
 }
 
-export function block(lines: string[], indent: number): string[] {
+export function block(lines: readonly string[], indent: number): string[] {
   const pad = " ".repeat(indent);
   return lines.map((line) => (line.length > 0 ? `${pad}${line}` : ""));
 }
@@ -71,6 +71,28 @@ export function workflowStart(plan: DeployPlan, about: readonly string[]): strin
     "  cancel-in-progress: false",
     "",
     "jobs:",
+  ];
+}
+
+/**
+ * The `deploy` job (`name` shown in GitHub): after `build`, on `ubuntu-latest` in the `production`
+ * environment, with the token's `permissions` (`contents: read`, …) and the `steps`.
+ */
+export function deployJob(
+  name: string,
+  permissions: readonly string[],
+  steps: readonly string[],
+): string[] {
+  return [
+    "  deploy:",
+    `    name: ${name}`,
+    "    needs: build",
+    "    runs-on: ubuntu-latest",
+    "    environment: production",
+    "    permissions:",
+    ...block(permissions, 6),
+    "    steps:",
+    ...block(steps, 6),
   ];
 }
 
