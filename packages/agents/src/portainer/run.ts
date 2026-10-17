@@ -8,7 +8,7 @@ import {
   planPortainer,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, RemoteExec } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { OpsCrewError } from "@opscrew/core";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import {
   portainerHostname,
@@ -58,6 +58,7 @@ import {
   SshRemoteExec,
   stringOutput,
 } from "../shared";
+import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import {
   clearPendingPortainer,
@@ -928,18 +929,11 @@ async function recordedPhase(
   summary: "Portainer on" | "Portainer off",
   run: () => Promise<PortainerResult>,
 ): Promise<PortainerResult> {
-  try {
+  return runPhase(deps, "portainer", async () => {
     const result = await run();
     if (!planOnly) await deps.state.markPhase("portainer", "ok", summary);
     return result;
-  } catch (error) {
-    await deps.state.markPhase(
-      "portainer",
-      "failed",
-      isUserFacingError(error) ? deps.redactor.redact(error.message) : undefined,
-    );
-    throw error;
-  }
+  });
 }
 
 /**

@@ -14,6 +14,7 @@ import {
 import { providerProfile } from "../providers";
 import { publishDeploySetup } from "../provision";
 import { describeChanges } from "../shared";
+import { runPhase } from "../shared/phase-status";
 import { moveProvider } from "../shared/vps-target";
 import { previousTarget } from "./layouts";
 import { clearPending } from "./pending";
@@ -23,7 +24,6 @@ import {
   auditStep,
   layoutOf,
   type MoveSession,
-  markFailed,
   moveOf,
   openSession,
   planFilePath,
@@ -265,7 +265,7 @@ export async function finishRetarget(
       { hint: `Run \`${RUN_COMMAND}\` to continue the move, or \`${ABORT_COMMAND}\` to undo it.` },
     );
   }
-  try {
+  return runPhase(deps, "retarget", async () => {
     const session = await openSession(deps, plan, {
       command: FINISH_COMMAND,
       providers: [move.from.target.provider, moveProvider(plan.target)],
@@ -279,8 +279,5 @@ export async function finishRetarget(
     const result = await finish(session, options);
     warnUnusedApproval(session);
     return result;
-  } catch (error) {
-    await markFailed(deps, error);
-    throw error;
-  }
+  });
 }

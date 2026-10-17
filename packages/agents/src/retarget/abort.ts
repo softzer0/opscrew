@@ -11,6 +11,7 @@ import { costFor } from "../design";
 import { confirmDeletion, forgetHostKeys } from "../destroy/deletion";
 import { providerProfile, vpsConnector } from "../providers";
 import { describeChanges } from "../shared";
+import { runPhase } from "../shared/phase-status";
 import { moveProvider } from "../shared/vps-target";
 import { previousTarget } from "./layouts";
 import { clearPending } from "./pending";
@@ -22,7 +23,6 @@ import {
   auditStep,
   layoutOf,
   type MoveSession,
-  markFailed,
   moveBase,
   moveOf,
   openSession,
@@ -340,7 +340,7 @@ export async function abortRetarget(
       },
     );
   }
-  try {
+  return runPhase(deps, "retarget", async () => {
     const services = options.services ?? {};
     // Users first: the old app runs again before anything else is checked (no provider token
     // needed; the infrastructure state names the servers when the local record is gone).
@@ -366,8 +366,5 @@ export async function abortRetarget(
     const result = await abort(session, options);
     warnUnusedApproval(session);
     return result;
-  } catch (error) {
-    await markFailed(deps, error);
-    throw error;
-  }
+  });
 }

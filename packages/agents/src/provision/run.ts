@@ -32,6 +32,7 @@ import {
   waitForCloudInit,
   waitForPort,
 } from "../shared";
+import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import { type CloudflareSetup, checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { requireNoMoveInProgress } from "./guard";
@@ -696,7 +697,7 @@ export async function runPhaseFlow(
   options: ProvisionOptions,
   extras: PhaseFlowExtras = {},
 ): Promise<ProvisionResult> {
-  try {
+  return runPhase(deps, phase, async () => {
     const result = await provisionFlow(deps, options, phase, extras);
     if (!(options.planOnly && (options.approveHashes ?? []).length === 0)) {
       await deps.state.markPhase(
@@ -706,13 +707,7 @@ export async function runPhaseFlow(
       );
     }
     return result;
-  } catch (error) {
-    const reason = isUserFacingError(error) ? error.message : "unexpected error";
-    await deps.state
-      .markPhase(phase, "failed", deps.redactor.redact(reason))
-      .catch(() => undefined);
-    throw error;
-  }
+  });
 }
 
 /**

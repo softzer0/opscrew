@@ -29,6 +29,7 @@ import {
   readPortainerConnection,
   serverAddress,
 } from "../shared";
+import { runPhase } from "../shared/phase-status";
 import { backgroundJobsWarning } from "./background-jobs";
 import {
   type CodeChangeSignals,
@@ -123,16 +124,7 @@ export async function runDesign(
   // A move in progress stops before anything else, without recording a failed design phase.
   const onDisk = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
   if (onDisk !== undefined) requireNoMoveInProgress(onDisk);
-  try {
-    return await design(deps, options);
-  } catch (error) {
-    await deps.state.markPhase(
-      "design",
-      "failed",
-      isUserFacingError(error) ? deps.redactor.redact(error.message) : undefined,
-    );
-    throw error;
-  }
+  return runPhase(deps, "design", () => design(deps, options));
 }
 
 export interface PreviewDesignOptions {

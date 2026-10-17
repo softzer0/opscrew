@@ -17,6 +17,7 @@ import {
   readPortainerConnection,
   setAsideServerAddresses,
 } from "../shared";
+import { runPhase } from "../shared/phase-status";
 import { answersToRequirements } from "./answers";
 import { hasFollowUps, splitFollowUps } from "./follow-ups";
 import {
@@ -223,7 +224,7 @@ export async function runInterview(
   options: InterviewOptions = {},
 ): Promise<InterviewResult> {
   const { reporter, paths } = deps;
-  try {
+  return runPhase(deps, "interview", async () => {
     await ensureStateDir(paths);
     reporter.step("Collecting your deployment requirements");
     const facts = await loadFacts(deps);
@@ -353,17 +354,5 @@ export async function runInterview(
       ...(ownServer ? { ownServer } : {}),
       ...(portainer ? { portainer } : {}),
     };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    try {
-      await deps.state.markPhase(
-        "interview",
-        "failed",
-        deps.redactor.redact(message).slice(0, 300),
-      );
-    } catch {
-      // Keep the original error.
-    }
-    throw error;
-  }
+  });
 }

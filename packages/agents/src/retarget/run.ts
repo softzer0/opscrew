@@ -2,15 +2,9 @@ import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
+import { runPhase } from "../shared/phase-status";
 import { moveProvider } from "../shared/vps-target";
-import {
-  type MoveSession,
-  markFailed,
-  moveBase,
-  moveOf,
-  openSession,
-  warnUnusedApproval,
-} from "./session";
+import { type MoveSession, moveBase, moveOf, openSession, warnUnusedApproval } from "./session";
 import { startMove } from "./start";
 import { createStep, deployStep, renameStep } from "./steps";
 import { completeSwitch, switchStep } from "./switch";
@@ -116,7 +110,7 @@ export async function runRetarget(
   options: RetargetOptions = {},
 ): Promise<RetargetResult> {
   const plan = await readArtifact("plan", deps.paths.files.plan);
-  try {
+  return runPhase(deps, "retarget", async () => {
     const session =
       plan.retarget === undefined
         ? await startMove(deps, plan, options)
@@ -124,8 +118,5 @@ export async function runRetarget(
     const result = await runSteps(session, options);
     warnUnusedApproval(session);
     return result;
-  } catch (error) {
-    await markFailed(deps, error);
-    throw error;
-  }
+  });
 }

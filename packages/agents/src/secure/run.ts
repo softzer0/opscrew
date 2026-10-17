@@ -5,13 +5,7 @@ import type {
   Scanner,
   ScanReport,
 } from "@opscrew/contracts";
-import {
-  isUserFacingError,
-  plural,
-  replaceNames,
-  toPosixRelative,
-  writeFileAtomic,
-} from "@opscrew/core";
+import { plural, replaceNames, toPosixRelative, writeFileAtomic } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import {
   defaultTcpConnect,
@@ -34,6 +28,7 @@ import {
   serverAddress,
   withoutServerAddress,
 } from "../shared";
+import { runPhase } from "../shared/phase-status";
 import { type OwnSecureTarget, ownSecureTarget } from "./own";
 import {
   PORTAINER_PROBES_SKIPPED,
@@ -188,16 +183,7 @@ export async function runSecure(
   deps: PhaseDeps,
   options: RunSecureOptions = {},
 ): Promise<SecureResult> {
-  try {
-    return await secure(deps, options);
-  } catch (error) {
-    await deps.state.markPhase(
-      "secure",
-      "failed",
-      isUserFacingError(error) ? deps.redactor.redact(error.message) : undefined,
-    );
-    throw error;
-  }
+  return runPhase(deps, "secure", () => secure(deps, options));
 }
 
 async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<SecureResult> {

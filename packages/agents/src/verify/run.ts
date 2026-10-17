@@ -7,7 +7,7 @@ import {
   resolveGitHubToken,
 } from "@opscrew/connector-github";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, replaceNames, toPosixRelative } from "@opscrew/core";
+import { OpsCrewError, replaceNames, toPosixRelative } from "@opscrew/core";
 import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
@@ -26,6 +26,7 @@ import {
   summarizeChecks,
   writeRenderedFiles,
 } from "../shared";
+import { runPhase } from "../shared/phase-status";
 import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
 import {
   type DnsResolver,
@@ -100,16 +101,7 @@ export async function runVerify(
   deps: PhaseDeps,
   options: RunVerifyOptions = {},
 ): Promise<VerifyResult> {
-  try {
-    return await verify(deps, options);
-  } catch (error) {
-    await deps.state.markPhase(
-      "verify",
-      "failed",
-      isUserFacingError(error) ? deps.redactor.redact(error.message) : undefined,
-    );
-    throw error;
-  }
+  return runPhase(deps, "verify", () => verify(deps, options));
 }
 
 async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<VerifyResult> {

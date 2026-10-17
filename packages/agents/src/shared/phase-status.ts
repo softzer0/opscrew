@@ -1,5 +1,6 @@
 import { PHASES, type PhaseName } from "@opscrew/contracts";
-import type { PhaseRecord } from "@opscrew/core";
+import { isUserFacingError, type PhaseRecord } from "@opscrew/core";
+import type { PhaseDeps } from "../context";
 
 /** Phases shown only once they ran: a move to another provider and the Portainer add-on. */
 const OPTIONAL_PHASES: readonly PhaseName[] = ["retarget", "portainer"];
@@ -17,4 +18,25 @@ export function phaseStatusLines(phases: Partial<Record<PhaseName, PhaseRecord>>
     const summary = record.summary === undefined ? "" : `  ${record.summary}`;
     return [`  ${name}  ${record.status.padEnd(7)}  ${record.at}${summary}`];
   });
+}
+
+/**
+ * Runs `run` as `phase`. When it throws, the phase is recorded as failed with the redacted
+ * user-facing message (at most 300 characters; "unexpected error" for any other error) and the
+ * error is thrown again: a failed write of the state never hides it.
+ */
+export async function runPhase<T>(
+  deps: Pick<PhaseDeps, "state" | "redactor">,
+  phase: PhaseName,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    const reason = isUserFacingError(error)
+      ? deps.redactor.redact(error.message).slice(0, 300)
+      : "unexpected error";
+    await deps.state.markPhase(phase, "failed", reason).catch(() => undefined);
+    throw error;
+  }
 }

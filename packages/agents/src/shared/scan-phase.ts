@@ -2,6 +2,7 @@ import type { Scanner, ScanReport } from "@opscrew/contracts";
 import { ensureStateDir, writeFileAtomic } from "@opscrew/core";
 import { formatCounts, renderScanMarkdown, runScan } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { runPhase } from "./phase-status";
 
 /** What {@link runScanPhase} found: the report and the warnings it reported on the way. */
 export interface ScanPhaseResult {
@@ -22,7 +23,7 @@ export async function runScanPhase(
 ): Promise<ScanPhaseResult> {
   const { paths } = deps;
   const warnings: string[] = [];
-  try {
+  return runPhase(deps, "scan", async () => {
     await ensureStateDir(paths);
     const report = await runScan(paths.root, {
       offline: options.offline,
@@ -41,11 +42,5 @@ export async function runScanPhase(
     await writeFileAtomic(paths.files.scanReportJson, `${JSON.stringify(report, null, 2)}\n`);
     await deps.state.markPhase("scan", "ok", formatCounts(report));
     return { report, warnings };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await deps.state
-      .markPhase("scan", "failed", deps.redactor.redact(message).slice(0, 300))
-      .catch(() => undefined);
-    throw error;
-  }
+  });
 }

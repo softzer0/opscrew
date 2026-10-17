@@ -14,6 +14,7 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { runPhase } from "../shared/phase-status";
 import { renderArchitectureMarkdown } from "./markdown";
 import { ANALYST_SYSTEM_PROMPT, buildAnalystPrompt } from "./prompts";
 import { APP_KIND_LABELS, summarizeFacts } from "./summary";
@@ -80,7 +81,7 @@ export async function runAnalyze(
 ): Promise<AnalyzeResult> {
   const { ai = true, model = DEFAULT_ANALYST_MODEL } = options;
   const { reporter, paths } = deps;
-  try {
+  return runPhase(deps, "analyze", async () => {
     await ensureStateDir(paths);
     reporter.step("Analysing the project");
     const appDir = options.appDir ?? (await chosenAppDir(deps));
@@ -140,10 +141,7 @@ export async function runAnalyze(
       costUsd,
       ...(aiSkippedReason !== undefined ? { aiSkippedReason } : {}),
     };
-  } catch (error) {
-    await markFailed(deps, error);
-    throw error;
-  }
+  });
 }
 
 /**
@@ -187,15 +185,6 @@ async function recordAppChoice(deps: PhaseDeps, appDir: string): Promise<void> {
     appDir === "." ? rest : { ...rest, appDir },
   );
   deps.reporter.info("Updated the app to deploy in opscrew/requirements.yaml.");
-}
-
-async function markFailed(deps: PhaseDeps, error: unknown): Promise<void> {
-  const message = error instanceof Error ? error.message : String(error);
-  try {
-    await deps.state.markPhase("analyze", "failed", deps.redactor.redact(message).slice(0, 300));
-  } catch {
-    // Keep the original error; a broken state file is reported by the next read.
-  }
 }
 
 interface Enrichment {

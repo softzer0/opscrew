@@ -8,7 +8,7 @@ import type {
   RemoteExec,
   VpsProviderId,
 } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { OpsCrewError, toPosixRelative } from "@opscrew/core";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import {
   type InfraLayout,
@@ -428,14 +428,6 @@ export function withApply(
     approvals: approval ? [...plan.approvals, approvalEntry(approval)] : plan.approvals,
     deployment: { ...plan.deployment, lastPlanHash: applied.planHash, lastApplyAt: at },
   };
-}
-
-/** Records a failed run of the `retarget` phase (the reason is redacted). */
-export async function markFailed(deps: PhaseDeps, error: unknown): Promise<void> {
-  const reason = isUserFacingError(error) ? error.message : "unexpected error";
-  await deps.state
-    .markPhase("retarget", "failed", deps.redactor.redact(reason))
-    .catch(() => undefined);
 }
 
 /** Says so when `--approve <hash>` named no plan this run used. */

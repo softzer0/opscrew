@@ -33,6 +33,7 @@ import { backgroundJobsWarning } from "../design/background-jobs";
 import { type CodeChange, readScanReport } from "../design/code-changes";
 import { releaseCommandNote } from "../design/release";
 import { exists, readIfExists, writeRenderedFiles } from "../shared";
+import { runPhase } from "../shared/phase-status";
 import { healthRouteEdit } from "./health";
 import { isNextConfigPath, nextConfigEdit } from "./next-config";
 import { playbookFor } from "./playbooks";
@@ -161,16 +162,7 @@ export async function runAdapt(
   deps: PhaseDeps,
   options: RunAdaptOptions = {},
 ): Promise<AdaptResult> {
-  try {
-    return await adapt(deps, options);
-  } catch (error) {
-    await deps.state.markPhase(
-      "adapt",
-      "failed",
-      isUserFacingError(error) ? deps.redactor.redact(error.message) : undefined,
-    );
-    throw error;
-  }
+  return runPhase(deps, "adapt", () => adapt(deps, options));
 }
 
 async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptResult> {
