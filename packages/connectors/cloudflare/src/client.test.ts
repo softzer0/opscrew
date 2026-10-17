@@ -282,6 +282,143 @@ describe("CloudflareClient", () => {
   });
 });
 
+describe("CloudflareClient ruleset and Zero Trust writes", () => {
+  const ENTRYPOINT = "/zones/z1/rulesets/phases/http_request_firewall_custom/entrypoint";
+  const RULE = "/zones/z1/rulesets/rs1/rules/r1";
+  const rule = {
+    ref: "opscrew-strict-tls",
+    description: "OpsCrew: verify the origin certificate (Full (strict) TLS)",
+    expression: '(http.host in {"example.com"})',
+    action: "set_config",
+    action_parameters: { ssl: "strict" },
+    enabled: true,
+  };
+  const client = (routes: Record<string, FakeReply | FakeReply[]>, timeoutMs?: number) => {
+    const fake = fakeFetch(routes);
+    return {
+      calls: fake.calls,
+      api: new CloudflareClient({
+        token: TOKEN,
+        fetch: fake.fetch,
+        sleep: noSleep,
+        ...(timeoutMs ? { timeoutMs } : {}),
+      }),
+    };
+  };
+
+  it("reads an entrypoint with its rules, a missing one, and a refused read", async () => {
+    const { api } = client({
+      [ENTRYPOINT]: [
+        ok({
+          id: "rs1",
+          name: "default",
+          rules: [
+            { id: "u1", ref: "u1", action: "block", expression: "(cf.client.bot)", enabled: false },
+            { ...rule, id: "r1", version: "2", last_updated: "2026-10-17T00:00:00Z" },
+          ],
+        }),
+        fail(404, [{ code: 10003, message: "could not find entrypoint ruleset" }]),
+        fail(404, [{ code: 7003, message: "Could not route" }]),
+        fail(403, [{ code: 10000, message: "Authentication error" }]),
+      ],
+    });
+    expect(await api.entrypointRuleset("z1", "http_request_firewall_custom")).toEqual({
+      id: "rs1",
+      rules: [
+        { id: "u1", ref: "u1", action: "block", expression: "(cf.client.bot)", enabled: false },
+        {
+          id: "r1",
+          ref: "opscrew-strict-tls",
+          action: "set_config",
+          expression: '(http.host in {"example.com"})',
+          actionParameters: { ssl: "strict" },
+          enabled: true,
+        },
+      ],
+    });
+    expect(await api.entrypointRuleset("z1", "http_request_firewall_custom")).toBeUndefined();
+    await expect(api.entrypointRuleset("z1", "http_request_firewall_custom")).rejects.toMatchObject(
+      { code: "PROVIDER_ERROR" },
+    );
+    expect(await api.entrypointRuleset("z1", "http_request_firewall_custom")).toBe("forbidden");
+  });
+
+  it("sends each kind of ruleset write once to its endpoint", async () => {
+    const ruleset = ok({ id: "rs1", rules: [{ ...rule, id: "r1" }] });
+    const { api, calls } = client({
+      [`PUT ${ENTRYPOINT}`]: ruleset,
+      "POST /zones/z1/rulesets/rs1/rules": ruleset,
+      [`PATCH ${RULE}`]: ruleset,
+      [`DELETE ${RULE}`]: ok({ id: "rs1", rules: [] }),
+      "DELETE /zones/z1/rulesets/rs1": { status: 204 },
+    });
+    await api.createEntrypointRuleset("z1", "http_request_firewall_custom", rule);
+    await api.addRulesetRule("z1", "rs1", rule);
+    await api.updateRulesetRule("z1", "rs1", "r1", rule);
+    expect(await api.deleteRulesetRule("z1", "rs1", "r1")).toEqual({ id: "rs1", rules: [] });
+    await api.deleteRuleset("z1", "rs1");
+    expect(calls.map((c) => [c.method, c.path, c.body])).toEqual([
+      ["PUT", ENTRYPOINT, { rules: [rule] }],
+      ["POST", "/zones/z1/rulesets/rs1/rules", rule],
+      ["PATCH", RULE, rule],
+      ["DELETE", RULE, undefined],
+      ["DELETE", "/zones/z1/rulesets/rs1", undefined],
+    ]);
+  });
+
+  it("never sends a write again after a 5xx, a timeout or a lost connection", async () => {
+    for (const reply of [
+      { status: 503, body: { success: false, errors: [] } },
+      { hang: true },
+      { error: new TypeError("fetch failed") },
+      { status: 200, body: { success: true, errors: [], result: { rules: "?" } } },
+    ] satisfies FakeReply[]) {
+      const { api, calls } = client({ [`PATCH ${RULE}`]: reply }, 5);
+      const error = await api.updateRulesetRule("z1", "rs1", "r1", rule).catch((e: unknown) => e);
+      expect(error).toMatchObject({
+        code: "PROVIDER_ERROR",
+        message: expect.stringContaining("The change may still have reached Cloudflare."),
+        hint: expect.stringContaining("Run the command again"),
+      });
+      expect(calls).toHaveLength(1);
+    }
+  });
+
+  it("reports a clear refusal of a write as one", async () => {
+    const { api, calls } = client({
+      "POST /zones/z1/rulesets/rs1/rules": fail(400, [{ code: 20023, message: "duplicate ref" }]),
+    });
+    const error = (await api.addRulesetRule("z1", "rs1", rule).catch((e: unknown) => e)) as Error;
+    expect(error.message).toBe(
+      'Cloudflare could not add the rule "OpsCrew: verify the origin certificate (Full (strict) TLS)": duplicate ref.',
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("creates the Zero Trust organization and the one-time PIN login method", async () => {
+    const { api, calls } = client({
+      "POST /accounts/acc-1/access/organizations": ok({
+        name: "team.cloudflareaccess.com",
+        auth_domain: "team.cloudflareaccess.com",
+      }),
+      "POST /accounts/acc-1/access/identity_providers": ok({
+        id: "idp-1",
+        name: "One-time PIN",
+        type: "onetimepin",
+        config: {},
+      }),
+    });
+    expect(await api.createAccessOrganization("acc-1", "team.cloudflareaccess.com")).toEqual({
+      authDomain: "team.cloudflareaccess.com",
+    });
+    expect(await api.createOneTimePinProvider("acc-1")).toBe("idp-1");
+    expect(calls.map((c) => c.body)).toEqual([
+      { name: "team.cloudflareaccess.com", auth_domain: "team.cloudflareaccess.com" },
+      { name: "One-time PIN", type: "onetimepin", config: {} },
+    ]);
+  });
+});
+
 describe("CloudflareClient Zero Trust reads", () => {
   const ORG = "/accounts/acc-1/access/organizations";
   const IDPS = "/accounts/acc-1/access/identity_providers";

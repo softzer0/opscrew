@@ -10,6 +10,7 @@ import type {
 import {
   CONNECTION_HINT,
   durationText,
+  lowerFirst,
   maybeDoneHint,
   maybeStarted,
   normalizeHostName,
@@ -18,6 +19,7 @@ import {
   plural,
   realSleep,
   statusPageHint,
+  zodIssues,
 } from "@opscrew/core";
 import { z } from "zod";
 import type { CloudflareRecordInput } from "./records";
@@ -80,6 +82,32 @@ export interface EntrypointRulesetStatus {
   ruleCount: number;
   /** Ruleset id, when it exists. */
   id?: string;
+}
+
+/** A rule of a zone ruleset: the fields OpsCrew compares (others are not kept). */
+export interface RulesetRule {
+  id: string;
+  ref?: string;
+  enabled: boolean;
+  action: string;
+  expression: string;
+  actionParameters?: unknown;
+}
+
+/** A zone's entrypoint ruleset for one phase, with its rules in order. */
+export interface EntrypointRuleset {
+  id: string;
+  rules: RulesetRule[];
+}
+
+/** A rule OpsCrew writes into a zone ruleset, named as in the Cloudflare API. */
+export interface CloudflareRuleInput {
+  ref: string;
+  description: string;
+  expression: string;
+  action: string;
+  action_parameters?: Record<string, string>;
+  enabled: boolean;
 }
 
 export interface CloudflareZone {
@@ -222,6 +250,22 @@ const RulesetSchema = z.looseObject({
   rules: z.array(z.unknown()).nullable().optional(),
 });
 
+const EntrypointSchema = z.looseObject({
+  id: z.string().min(1),
+  rules: z
+    .array(
+      z.looseObject({
+        id: z.string().min(1),
+        ref: z.string().nullish(),
+        enabled: z.boolean().default(true),
+        action: z.string(),
+        expression: z.string(),
+        action_parameters: z.unknown().optional(),
+      }),
+    )
+    .nullish(),
+});
+
 const IpsSchema = z.looseObject({
   ipv4_cidrs: z.array(z.string()),
   ipv6_cidrs: z.array(z.string()),
@@ -262,6 +306,8 @@ const IdentityProvidersSchema = z
   .array(z.looseObject({ id: z.string().min(1), type: z.string() }))
   .nullable();
 
+const OneTimePinSchema = z.looseObject({ id: z.string().min(1), type: z.literal("onetimepin") });
+
 /** The fields of a tunnel that say whether it has connections (their details are not kept). */
 const TunnelSchema = z.looseObject({
   status: z.string().nullish(),
@@ -291,6 +337,9 @@ const DOMAIN_CHECK_BATCH = 20;
 
 /** Cloudflare's error code for "zone already exists". */
 const ZONE_EXISTS_CODE = 1061;
+
+/** Cloudflare's error code (with HTTP 404) for a phase that has no entrypoint ruleset yet. */
+const NO_ENTRYPOINT_CODE = 10003;
 
 /**
  * Cloudflare's answer (HTTP 403, error 9999) when the account never turned on Zero Trust; checked
@@ -351,13 +400,33 @@ const ACCESS_HINTS: FailHints = {
   auth: `Reading Cloudflare Access needs the account permission "Access: Organizations, Identity Providers, and Groups" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
+/** Hints for creating the account's Zero Trust organization and login methods. */
+const ACCESS_EDIT_HINTS: FailHints = {
+  auth: `Setting up Cloudflare Access needs the account permission "Access: Organizations, Identity Providers, and Groups → Edit" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/**
+ * The error for a write Cloudflare gave no clear answer to (a 5xx, a timeout, a lost connection
+ * or an unreadable answer): it is not sent again, and it may have been carried out.
+ */
+function mayHaveReached(what: string, detail: string, cause?: unknown): OpsCrewError {
+  return new OpsCrewError(
+    "PROVIDER_ERROR",
+    `OpsCrew got no clear answer from Cloudflare when it tried to ${what} (${detail}). The change may still have reached Cloudflare.`,
+    {
+      hint: "Run the command again: OpsCrew reads the current state first and shows what is left to do.",
+      ...(cause === undefined ? {} : { cause }),
+    },
+  );
+}
+
 /** Hints for the account's Cloudflare Tunnels. */
 const TUNNEL_HINTS: FailHints = {
   auth: `Reading a Cloudflare Tunnel needs the account permission "Cloudflare Tunnel" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "PUT";
+  method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   body?: unknown;
   headers?: Record<string, string>;
   auth?: boolean;
@@ -419,6 +488,20 @@ function toZone(zone: z.infer<typeof ZoneSchema>): CloudflareZone {
   };
 }
 
+function toEntrypoint(ruleset: z.infer<typeof EntrypointSchema>): EntrypointRuleset {
+  return {
+    id: ruleset.id,
+    rules: (ruleset.rules ?? []).map((rule) => ({
+      id: rule.id,
+      ...(rule.ref ? { ref: rule.ref } : {}),
+      enabled: rule.enabled,
+      action: rule.action,
+      expression: rule.expression,
+      ...(rule.action_parameters == null ? {} : { actionParameters: rule.action_parameters }),
+    })),
+  };
+}
+
 /**
  * The connection state of a tunnel: active while Cloudflare lists a connection or the status is
  * `healthy` or `degraded`; closed once the status is `down` or `inactive` (or, without a status,
@@ -457,7 +540,8 @@ const SANDBOX_REGISTRANT = {
 
 /**
  * Cloudflare API client. DNS changes are made through HCL and the approval gate; the registrar,
- * zone-create and DNSSEC calls are made by the domain purchase flow after its approval.
+ * zone-create and DNSSEC calls are made by the domain purchase flow after its approval; the ruleset
+ * and Zero Trust writes are made by `applyShared` after its `cloudflare-apply` approval.
  */
 export class CloudflareClient {
   readonly #token: string | undefined;
@@ -641,6 +725,56 @@ export class CloudflareClient {
     }
   }
 
+  /**
+   * Sends a write once and returns the answer of a success (`204` included). It is never sent
+   * again after a 5xx, a timeout or a lost connection: those, and an answer without a clear
+   * result, throw PROVIDER_ERROR saying the change may have reached Cloudflare. A clear refusal
+   * (a 4xx with Cloudflare's errors, or 429) throws as every other call does.
+   */
+  async #send(
+    path: string,
+    what: string,
+    options: { method: "POST" | "PATCH" | "PUT" | "DELETE"; body?: unknown; hints?: FailHints },
+  ): Promise<RawAnswer> {
+    let answer: RawAnswer;
+    try {
+      answer = await this.#request(path, { ...options, retryServerErrors: false });
+    } catch (error) {
+      if (error instanceof OpsCrewError && error.code === "PROVIDER_ERROR") {
+        throw mayHaveReached(what, lowerFirst(error.message.replace(/\.$/, "")), error);
+      }
+      throw error;
+    }
+    const { status, body, envelope } = answer;
+    if (status === 204) return answer;
+    if (status === 429 || (status >= 400 && status < 500 && envelope)) {
+      this.#fail(status, body, what, options.hints);
+    }
+    if (status >= 300 || !envelope || !body.success) {
+      throw mayHaveReached(what, `HTTP ${status}${envelope ? "" : " without a readable answer"}`);
+    }
+    return answer;
+  }
+
+  /** The `result` of a write's success parsed with `schema`; an unexpected one may hide a change. */
+  #parseWrite<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) {
+      throw mayHaveReached(what, `an unexpected answer: ${zodIssues(parsed.error)}`);
+    }
+    return parsed.data;
+  }
+
+  /** A ruleset write: sent once, and the whole ruleset Cloudflare returns. */
+  async #writeRuleset(
+    path: string,
+    what: string,
+    options: { method: "POST" | "PATCH" | "PUT" | "DELETE"; body?: unknown },
+  ): Promise<EntrypointRuleset> {
+    const answer = await this.#send(path, what, options);
+    return toEntrypoint(this.#parseWrite(EntrypointSchema, answer.body.result, what));
+  }
+
   /** `/accounts/{id}/registrar{rest}` (or `registrar-sandbox`). */
   #registrarPath(accountId: string, rest: string): string {
     return `/accounts/${encodeURIComponent(accountId)}/${this.#registrar}${rest}`;
@@ -746,6 +880,91 @@ export class CloudflareClient {
     };
   }
 
+  /**
+   * The zone's entrypoint ruleset for `phase` with its rules: `undefined` when the zone has none
+   * (HTTP 404 with code 10003), `"forbidden"` when the token may not read it (HTTP 403). Any other
+   * failure throws. Read-only.
+   */
+  async entrypointRuleset(
+    zoneId: string,
+    phase: ManagedRulesetPhase,
+  ): Promise<EntrypointRuleset | undefined | "forbidden"> {
+    const answer = await this.#request(
+      `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/${phase}/entrypoint`,
+    );
+    if (answer.status === 404 && answer.body.errors.some((e) => e.code === NO_ENTRYPOINT_CODE)) {
+      return undefined;
+    }
+    if (answer.status === 403) return "forbidden";
+    return toEntrypoint(this.#result(answer, EntrypointSchema, `read the ${phase} rules`));
+  }
+
+  /**
+   * Creates the zone's entrypoint ruleset for `phase` holding only `rule` (`PUT`). Send it only to a
+   * phase {@link entrypointRuleset} found without one: on an existing entrypoint, `PUT` replaces
+   * every rule. Returns the ruleset.
+   */
+  async createEntrypointRuleset(
+    zoneId: string,
+    phase: ManagedRulesetPhase,
+    rule: CloudflareRuleInput,
+  ): Promise<EntrypointRuleset> {
+    return this.#writeRuleset(
+      `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/${phase}/entrypoint`,
+      `create the zone's ${phase} rules`,
+      { method: "PUT", body: { rules: [rule] } },
+    );
+  }
+
+  /** Appends `rule` to a zone ruleset (`POST …/rules`) and returns the ruleset. */
+  async addRulesetRule(
+    zoneId: string,
+    rulesetId: string,
+    rule: CloudflareRuleInput,
+  ): Promise<EntrypointRuleset> {
+    return this.#writeRuleset(
+      `/zones/${encodeURIComponent(zoneId)}/rulesets/${encodeURIComponent(rulesetId)}/rules`,
+      `add the rule "${rule.description}"`,
+      { method: "POST", body: rule },
+    );
+  }
+
+  /** Replaces the definition of one rule, keeping its id (`PATCH …/rules/{id}`); returns the ruleset. */
+  async updateRulesetRule(
+    zoneId: string,
+    rulesetId: string,
+    ruleId: string,
+    rule: CloudflareRuleInput,
+  ): Promise<EntrypointRuleset> {
+    return this.#writeRuleset(
+      `/zones/${encodeURIComponent(zoneId)}/rulesets/${encodeURIComponent(rulesetId)}/rules/${encodeURIComponent(ruleId)}`,
+      `change the rule "${rule.description}"`,
+      { method: "PATCH", body: rule },
+    );
+  }
+
+  /** Deletes one rule of a zone ruleset (`DELETE …/rules/{id}`) and returns the ruleset. */
+  async deleteRulesetRule(
+    zoneId: string,
+    rulesetId: string,
+    ruleId: string,
+  ): Promise<EntrypointRuleset> {
+    return this.#writeRuleset(
+      `/zones/${encodeURIComponent(zoneId)}/rulesets/${encodeURIComponent(rulesetId)}/rules/${encodeURIComponent(ruleId)}`,
+      `delete the rule ${ruleId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /** Deletes a whole zone ruleset (`DELETE /zones/{id}/rulesets/{id}`, HTTP 204). */
+  async deleteRuleset(zoneId: string, rulesetId: string): Promise<void> {
+    await this.#send(
+      `/zones/${encodeURIComponent(zoneId)}/rulesets/${encodeURIComponent(rulesetId)}`,
+      `delete the ruleset ${rulesetId}`,
+      { method: "DELETE" },
+    );
+  }
+
   /** Cloudflare's published edge IP ranges (public endpoint, no token needed). */
   async getIpRanges(): Promise<CloudflareIpRanges> {
     const ips = await this.#call("/ips", IpsSchema, "read its IP ranges", { auth: false });
@@ -803,6 +1022,41 @@ export class CloudflareClient {
       { hints: ACCESS_HINTS },
     );
     return (providers ?? []).map((p) => ({ id: p.id, type: p.type }));
+  }
+
+  /** Creates the account's Zero Trust organization with `authDomain` as its team domain and name. */
+  async createAccessOrganization(
+    accountId: string,
+    authDomain: string,
+  ): Promise<{ authDomain: string }> {
+    const what = "create the account's Zero Trust organization";
+    const answer = await this.#send(
+      `/accounts/${encodeURIComponent(accountId)}/access/organizations`,
+      what,
+      {
+        method: "POST",
+        body: { name: authDomain, auth_domain: authDomain },
+        hints: ACCESS_EDIT_HINTS,
+      },
+    );
+    return {
+      authDomain: this.#parseWrite(AccessOrganizationSchema, answer.body.result, what).auth_domain,
+    };
+  }
+
+  /** Adds the one-time PIN login method to the account's Cloudflare Access; returns its id. */
+  async createOneTimePinProvider(accountId: string): Promise<string> {
+    const what = "add the one-time PIN login method to Cloudflare Access";
+    const answer = await this.#send(
+      `/accounts/${encodeURIComponent(accountId)}/access/identity_providers`,
+      what,
+      {
+        method: "POST",
+        body: { name: "One-time PIN", type: "onetimepin", config: {} },
+        hints: ACCESS_EDIT_HINTS,
+      },
+    );
+    return this.#parseWrite(OneTimePinSchema, answer.body.result, what).id;
   }
 
   /**

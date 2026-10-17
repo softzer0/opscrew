@@ -5,8 +5,11 @@ export {
   CloudflareClient,
   type CloudflareDnsRecord,
   type CloudflareIdentityProvider,
+  type CloudflareRuleInput,
+  type EntrypointRuleset,
   type EntrypointRulesetStatus,
   OPSCREW_MANAGED_COMMENT,
+  type RulesetRule,
   type TunnelConnectionState,
   zoneCandidates,
 } from "./client";
@@ -17,3 +20,18 @@ export {
   mapRegistrarRecords,
 } from "./records";
 export { CloudflareRegistrar } from "./registrar";
+export {
+  applyShared,
+  inspectShared,
+  planShared,
+  SHARED_RULES,
+  SharedApplyError,
+  type SharedApplyResult,
+  type SharedChange,
+  type SharedDesired,
+  type SharedFacts,
+  type SharedFinding,
+  type SharedPlan,
+  type SharedRecord,
+  type SharedRuleRef,
+} from "./shared";
