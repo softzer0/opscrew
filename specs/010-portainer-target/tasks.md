@@ -279,11 +279,59 @@ each with a test that fails without the fix.
 
 - [X] T1032 Live check after the simplification (lead): the Hetzner live test, the own-server live test and the Portainer core pass, results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
+## Phase 7: DRY pass over features 000–010 (founder, 2026-10-17)
+
+From the duplicate scans and reviews recorded in `dry.md`. Waves: T1034 → {T1035, T1036} → T1037 → T1038 → T1039.
+
+- [ ] T1034 Core and connectors (dry.md C1–C14), plus the core helpers the other tasks use
+  - Owns: `packages/{core,contracts,plan-schema,detect,iac-engine,runtime-claude}/src/**`, `packages/connectors/*/src/**` (+ tests)
+  - Reads: dry.md C, D1, D7, B2, B8, B9 (`readOptionalArtifact`, `lowerFirst`/`upperFirst`), A20
+  - Depends: T1033
+  - Accept: dry.md C1–C14; and added to core for later tasks: `approvalDecision`, `PHRASE_MISMATCH`, `CANCELLED_BY_USER`, `DECLINED_BY_USER`, `systemClock` (D1), `taxLabel` and `formatMoney` (D7), `errorMessage` (B8), `lowerFirst`/`upperFirst`, `durationText`, `realSleep`, `errorText`, `stripBom`/`readTextIfExists`/`exists`; `readOptionalArtifact` in plan-schema's io; `PORTAINER_TOKEN_STEPS` from the Portainer connector (B2); `CLOUDFLARE_TOKEN_PAGE` and Hetzner's `TOKEN_HINT` exported. Agents, CLI and MCP keep compiling with the smallest call-site changes. Follow the rules at the top of `dry.md` (behaviour, tests and rendered output unchanged unless stated; the safety core not weakened; KEEP lists kept; one wording per message as named).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/plan-schema --filter=@opscrew/detect --filter=@opscrew/iac-engine --filter=@opscrew/runtime-claude --filter=./packages/connectors/*` and the whole-repo `pnpm turbo run typecheck`
+  - Effort: xhigh
+
+- [ ] T1035 [P] iac-templates and secops (dry.md D6, D15–D18, B4, B5)
+  - Owns: `packages/{iac-templates,secops}/**` except `package.json` (+ tests; snapshots unchanged)
+  - Reads: dry.md D6, D7, D15–D18, B4, B5
+  - Depends: T1034
+  - Accept: secops exports `SEVERITY_LABEL`, `prose`, `findingLocation`; `jsBuildStage`, `deployJob`, `composeLiteral` in `runtime/services.ts` and `RELEASE_NOTE`, `APP_NAME_VARIABLE`, the secops probe `base`; the runbook uses core's `formatMoney`/`taxLabel`; exported from the iac-templates root: `cell`, `runbookHead`, `deployRows`, the external-database cell and `webOnlyFromCloudflare`. Every rendered file byte-identical; both engines validate (`OPSCREW_IT=1`). Follow the rules at the top of `dry.md` (behaviour, tests and rendered output unchanged unless stated; the safety core not weakened; KEEP lists kept; one wording per message as named).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/secops` and `OPSCREW_IT=1` for iac-templates
+  - Effort: high
+
+- [ ] T1036 [P] Agents: the shared helpers and the deploy-side folders (dry.md A1–A20 except A11; B1–B9 where they touch these folders)
+  - Owns: `packages/agents/src/{shared,provision,providers,portainer,destroy,retarget}/**` (+ tests); minimal call-site changes elsewhere in agents, the CLI and MCP (listed in the report)
+  - Reads: dry.md A, B
+  - Depends: T1034
+  - Accept: the shared helpers of A (`runPhase`, `gitClient`/`requireGitRepo`, `githubClientFromToken`, `connectAndInspectOwnServer`/`inspectOwnHost`, `readyNewServer`/`confirmChangedHostKey`, `readValidJson`, `planStop`, `trackedFiles`, `ensureDeployKey`/`deployKeyMissing`/`readDeployPublicKey`/`copyDeployKeyHint`, `refusalReason`, `continuesHint`, `stateNotHere`, `desiredStacks`, `pinnedPublicKey`, `setPortainerOrigin`, `applyStackPlanAudited`, `portainerClientFor`/`inspectAudited`) and B's that live in `shared/`, used everywhere in these folders; A4 with the audit actions' names kept; A11 not done; core's helpers from T1034 adopted in these folders. The bug of B1 fixed with a test (a failed state write never hides the original error). Every approval, typed confirmation and deletion check unchanged. Follow the rules at the top of `dry.md` (behaviour, tests and rendered output unchanged unless stated; the safety core not weakened; KEEP lists kept; one wording per message as named).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: xhigh
+
+- [ ] T1037 Agents: the planning-side folders (dry.md B, and A where it touches these folders)
+  - Owns: `packages/agents/src/{domain,dns,init,adapt,analyze,design,drift,verify,secure,interview}/**` (+ tests)
+  - Reads: dry.md A, B, D6, D9, D14
+  - Depends: T1035, T1036
+  - Accept: these folders use T1036's shared helpers (`runPhase`, `requireGitRepo`, `githubClientFromToken`, `readValidJson`, `inspectOwnHost`, `adapterBlocked` with drift's `nothing` option, `desiredStacks`, `pinnedPublicKey`, `readDeployPublicKey`) and T1034's core helpers; B3 (`cloudflareTokenHint`, one `cloudflareTokenMissing` renamed), B4 (the iac-templates runbook helpers in Portainer verify), B5 (`webOnlyFromCloudflare` in secure probes, after checking the schema), B9's small items, D6 (secops report helpers in secure's report), D9 (`CHECK_PORTAINER_CERTIFICATE`, `NEW_CERTIFICATE_WARNING` exported from interview), D14 (`CHECK_MARK` in `shared/check-results.ts`, which T1036 owns: added there by this task as one constant), `REGISTRAR_IDS` a const tuple (D18). Purchase paths keep every check. Follow the rules at the top of `dry.md` (behaviour, tests and rendered output unchanged unless stated; the safety core not weakened; KEEP lists kept; one wording per message as named).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: xhigh
+
+- [ ] T1038 CLI, MCP server and plugin (dry.md D1–D5, D8–D12, D14, D18; C7)
+  - Owns: `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**` (+ tests)
+  - Reads: dry.md D, C7
+  - Depends: T1037
+  - Accept: D1 (`approvalDecision` and the reason constants, `systemClock`), D2, D3, D4, D5, D8 (with the `PLAN_AGAIN` wording), D9, D10, D11, D12 (`askTypedName`), D14, D18 (MCP `elicitOptions`, `z.enum(REGISTRAR_IDS)`, the next-step constants), C7 (`errorText` in CLI status); D13 not done. MCP never auto-approves; data deletion stays in the terminal; the MCP instructions unchanged. Follow the rules at the top of `dry.md` (behaviour, tests and rendered output unchanged unless stated; the safety core not weakened; KEEP lists kept; one wording per message as named).
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server` and `node plugin/validate.mjs`
+  - Effort: high
+
+- [ ] T1039 After the DRY pass (lead): the duplicate scans again (`.tools/scratch/dupes.py`, `dupe-strings.py`) to confirm what is left is on the KEEP lists; the full gate; feature 011's live runs (T1108) also cover this code
+
 ## Dependencies
 
 T1001 → {T1002, T1003, T1004} (parallel) → T1010 → T1005 → T1006 → T1007 → {T1008, T1011} (parallel) → T1012 → T1009 (core run 1) → T1013 → T1009 (full runs 1–10, with T1014–T1019 between them).
 
 Phase 6: T1020 → {T1021, T1022, T1023} → T1024 → {T1025, T1026, T1027, T1028} → {T1029, T1033} → {T1030, T1031} → T1032.
+
+Phase 7: T1034 → {T1035, T1036} → T1037 → T1038 → T1039.
 
 ## Parallel execution
 
