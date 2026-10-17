@@ -1,3 +1,4 @@
+import type { FetchLike } from "@opscrew/contracts";
 import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
@@ -580,6 +581,102 @@ describe("applyShared", () => {
     );
     expect(writesSince(zone, before)).toEqual([]);
     expect(zone.userRulesText(CONFIG)).toBe(users);
+  });
+
+  it.each([
+    ["its action changed", { action: "log" }],
+    ["it was turned off", { enabled: false }],
+  ])(
+    "re-checks OpsCrew's rule before writing and stops when %s since the plan",
+    async (_, edit) => {
+      const zone = new FakeZone();
+      await deploy(zone, { hostnames: A });
+      const plan = await planFor(zone, { hostnames: B });
+      expect(kinds(plan)).toEqual(["update-hostnames", "update-hostnames"]);
+      const rule = zone.opscrewRule(WAF) as Record<string, unknown>;
+      Object.assign(rule, edit);
+
+      const before = zone.calls.length;
+      const error = await rejection(
+        applyShared(clientFor(zone), plan, { approvedHash: plan.hash }),
+      );
+      expect(error).not.toBeInstanceOf(SharedApplyError);
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toBe(
+        "The zone's WAF custom rules changed after this Cloudflare plan was made: OpsCrew's rule was changed beyond its hostnames. OpsCrew changed nothing.",
+      );
+      expect(writesSince(zone, before)).toEqual([]);
+      expect(zone.opscrewRule(WAF)).toMatchObject({ ...edit, expression: blockExpression(A) });
+    },
+  );
+
+  /** The zone with only app B, and B's destroy plan (it deletes both rules and entrypoints). */
+  async function lastAppDestroy() {
+    const zone = new FakeZone();
+    const { result } = await deploy(zone, { hostnames: B });
+    const plan = await planFor(zone, { hostnames: [] }, result.record);
+    expect(kinds(plan)).toEqual([
+      "delete-rule",
+      "delete-entrypoint",
+      "delete-rule",
+      "delete-entrypoint",
+    ]);
+    return { zone, plan };
+  }
+  const userRule = {
+    description: "Block one country",
+    expression: '(ip.src.country eq "XX")',
+    action: "block",
+  };
+
+  it("does not delete a ruleset that gained a rule of the user's after the destroy plan", async () => {
+    const { zone, plan } = await lastAppDestroy();
+    zone.seedRule(WAF, userRule);
+
+    const before = zone.calls.length;
+    const error = await rejection(applyShared(clientFor(zone), plan, { approvedHash: plan.hash }));
+    expect(error).not.toBeInstanceOf(SharedApplyError);
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain(
+      "their ruleset holds another rule now. OpsCrew changed nothing.",
+    );
+    expect(writesSince(zone, before)).toEqual([]);
+    expect(zone.entrypoints.get(WAF)?.rules).toMatchObject([
+      { ref: BLOCK },
+      { description: userRule.description, expression: userRule.expression },
+    ]);
+  });
+
+  it("re-reads before each write and keeps a ruleset that gained a rule between two writes", async () => {
+    const { zone, plan } = await lastAppDestroy();
+    const deleteRule = `DELETE /zones/${ZONE_ID}/rulesets/${zone.entrypoints.get(WAF)?.id}/rules/`;
+    let seeded = false;
+    const fetch: FetchLike = async (input, init) => {
+      const response = await zone.fetch(input, init);
+      const call = zone.calls.at(-1);
+      if (!seeded && response.ok && `${call?.method} ${call?.path}`.startsWith(deleteRule)) {
+        seeded = true;
+        zone.seedRule(WAF, userRule);
+      }
+      return response;
+    };
+    const client = new CloudflareClient({ token: TOKEN, fetch, sleep: async () => {} });
+
+    const error = await rejection(applyShared(client, plan, { approvedHash: plan.hash }));
+    expect(error).toBeInstanceOf(SharedApplyError);
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain(
+      "their ruleset holds a rule again. OpsCrew stopped before changing them.",
+    );
+    expect((error as SharedApplyError).applied).toEqual([`delete-rule ${WAF}`]);
+    expect(seeded).toBe(true);
+    expect(zone.calls.some((c) => c.method === "DELETE" && !c.path.includes("/rules/"))).toBe(
+      false,
+    );
+    expect(zone.entrypoints.get(WAF)?.rules).toMatchObject([
+      { description: userRule.description, expression: userRule.expression },
+    ]);
+    expect(zone.opscrewRule(CONFIG)).toBeDefined();
   });
 
   it("stops part-way on a failed write, never sends it twice, and says what was applied", async () => {
