@@ -713,6 +713,51 @@ describe("applyShared", () => {
     ]);
   });
 
+  it.each([
+    [
+      "reads the phase again and records the hostnames OpsCrew's rule holds",
+      false,
+      ["shop.example.com"],
+    ],
+    ["keeps the old and the new hostnames when that read fails too", true, A],
+  ])("after a write with no clear answer, %s", async (_, readFails, held) => {
+    const zone = new FakeZone();
+    const first = await deploy(zone, { hostnames: ["shop.example.com"] });
+    const plan = await planFor(zone, { hostnames: A }, first.result.record);
+    expect(plan.changes).toMatchObject([
+      { kind: "update-hostnames", phase: WAF, add: ["www.shop.example.com"] },
+      { kind: "update-hostnames", phase: CONFIG, add: ["www.shop.example.com"] },
+    ]);
+    const patchConfig = `PATCH /zones/${ZONE_ID}/rulesets/${zone.entrypoints.get(CONFIG)?.id}/rules/`;
+    zone.faults.push({ match: patchConfig, reply: { error: new TypeError("fetch failed") } });
+    const fetch: FetchLike = async (input, init) => {
+      const wrote = zone.calls.some((c) => `${c.method} ${c.path}`.startsWith(patchConfig));
+      if (readFails && wrote) throw new TypeError("fetch failed");
+      return zone.fetch(input, init);
+    };
+    const client = new CloudflareClient({ token: TOKEN, fetch, sleep: async () => {} });
+
+    const error = (await rejection(
+      applyShared(client, plan, { approvedHash: plan.hash }),
+    )) as SharedApplyError;
+    expect(error).toBeInstanceOf(SharedApplyError);
+    expect(error.message).toContain("The change may still have reached Cloudflare.");
+    expect(error.applied).toEqual([`update-hostnames ${WAF}`]);
+    expect(error.record.hostnames).toEqual({ [BLOCK]: A, [TLS]: held });
+    const patched = zone.calls.findIndex((c) => `${c.method} ${c.path}`.startsWith(patchConfig));
+    expect(zone.calls.slice(patched + 1)).toEqual(
+      readFails
+        ? []
+        : [
+            {
+              method: "GET",
+              path: `/zones/${ZONE_ID}/rulesets/phases/${CONFIG}/entrypoint`,
+              body: undefined,
+            },
+          ],
+    );
+  });
+
   it("says a write that timed out may have reached Cloudflare, and counts its hostnames as this app's", async () => {
     const zone = new FakeZone();
     const plan = await planFor(zone, { hostnames: A });

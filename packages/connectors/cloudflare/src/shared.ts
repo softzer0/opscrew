@@ -214,8 +214,9 @@ export interface SharedApplyResult {
 
 /**
  * An apply that stopped part-way: `applied` lists the changes made before the failure and
- * `record` is the app's record after them (save it). A hostname of the write that failed counts
- * as this app's, as that write may have reached Cloudflare.
+ * `record` is the app's record after them (save it). The write that failed may have reached
+ * Cloudflare, so its phase is read again and the record keeps the app's hostnames OpsCrew's rule
+ * holds; when that read fails too, it keeps the hostnames of both the old and the new record.
  */
 export class SharedApplyError extends OpsCrewError {
   readonly applied: string[];
@@ -564,7 +565,10 @@ export async function applyShared(
       done.push(change);
       sent = undefined;
     } catch (error) {
-      const record = recordAfter(plan, done, sent);
+      const unclear =
+        sent && "phase" in sent && sent.kind !== "delete-entrypoint" ? sent : undefined;
+      const held = unclear ? await heldHostnames(client, plan.zoneId, unclear.phase) : undefined;
+      const record = recordAfter(plan, done, unclear, held);
       const applied = done.map(changeId);
       if (error instanceof OpsCrewError) {
         throw new SharedApplyError(
@@ -725,14 +729,37 @@ function notShown(ref: SharedRuleRef, what: string): OpsCrewError {
 }
 
 /**
+ * The hostnames OpsCrew's rule in `phase` holds now (none when the phase has no OpsCrew rule), read
+ * after a write that failed and may have reached Cloudflare; undefined when that cannot be told.
+ */
+async function heldHostnames(
+  client: CloudflareClient,
+  zoneId: string,
+  phase: SharedPhase,
+): Promise<string[] | undefined> {
+  try {
+    const current = await client.entrypointRuleset(zoneId, phase);
+    if (current === "forbidden") return undefined;
+    const ref = refOf(phase);
+    const rule = ownRule(ref, current);
+    return rule ? hostnamesOf(ref, rule) : [];
+  } catch {
+    // The apply already stops on the write's error; without this read the record keeps both lists.
+    return undefined;
+  }
+}
+
+/**
  * The app's record after the changes in `done`: a phase whose change was made, or that had none,
- * has the plan's hostnames; the phase of the write `sent` (which may have reached Cloudflare)
- * has the hostnames of both records; any other keeps the previous record's.
+ * has the plan's hostnames; the phase of the failed write `unclear` has those of both records
+ * that OpsCrew's rule holds (`held`, read again), or all of them when it could not be read; any
+ * other phase keeps the previous record's.
  */
 function recordAfter(
   plan: SharedPlan,
   done: readonly SharedChange[],
-  sent: SharedChange | undefined,
+  unclear: SharedChange | undefined,
+  held: readonly string[] | undefined,
 ): SharedRecord {
   const hostnames: SharedRecord["hostnames"] = {};
   for (const ref of REFS) {
@@ -741,11 +768,12 @@ function recordAfter(
     const change = plan.changes.find(
       (c) => "phase" in c && c.phase === SHARED_RULES[ref].phase && c.kind !== "delete-entrypoint",
     );
+    const either = [...new Set([...before, ...after])].sort();
     const list =
       !change || done.includes(change)
         ? after
-        : change === sent
-          ? [...new Set([...before, ...after])].sort()
+        : change === unclear
+          ? either.filter((h) => !held || held.includes(h))
           : before;
     if (list.length > 0) hostnames[ref] = list;
   }

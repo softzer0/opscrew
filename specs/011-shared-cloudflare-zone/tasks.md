@@ -28,7 +28,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
 
 ## Phase 2: Packages (parallel)
 
-- [ ] T1102 [P] [US1] [US2] [US3] [US4] [US5] Shared-resources adapter in `packages/connectors/cloudflare/src/shared.ts` (+ tests)
+- [X] T1102 [P] [US1] [US2] [US3] [US4] [US5] Shared-resources adapter in `packages/connectors/cloudflare/src/shared.ts` (+ tests)
   - Owns: `packages/connectors/cloudflare/src/**` (+ tests)
   - Reads: contracts/cloudflare-shared.md; data-model.md; research.md R1–R5; the client's `inspectEntrypointRuleset`, `accessOrganization`, `accessIdentityProviders`
   - Depends: T1101
