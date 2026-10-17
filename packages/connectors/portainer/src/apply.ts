@@ -1,4 +1,4 @@
-import { isPlanHash, OpsCrewError } from "@opscrew/core";
+import { durationText, isPlanHash, OpsCrewError, realSleep, upperFirst } from "@opscrew/core";
 import type { EnvPair, PortainerClient, StackDetails } from "./client";
 import {
   DEPLOY_COMPOSE_FILE,
@@ -162,7 +162,7 @@ export async function applyStackPlan(
     timeoutMs: opts.wait?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     intervalMs: opts.wait?.intervalMs ?? DEFAULT_INTERVAL_MS,
     now: opts.wait?.now ?? Date.now,
-    sleep: opts.wait?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
+    sleep: opts.wait?.sleep ?? realSleep,
   };
   const record: CreatedRecord = structuredClone(valid.record);
   const applied: StackChangeId[] = [];
@@ -447,9 +447,7 @@ function requireWebhook(webhookId: string | undefined): void {
 
 function requireToken(value: string | undefined, what: string): void {
   if (typeof value !== "string" || !/^[\x21-\x7e]{1,4096}$/.test(value)) {
-    throw invalid(
-      `${what[0]?.toUpperCase()}${what.slice(1)} is missing, so OpsCrew changes nothing.`,
-    );
+    throw invalid(`${upperFirst(what)} is missing, so OpsCrew changes nothing.`);
   }
 }
 
@@ -747,12 +745,12 @@ async function waitForDeploy(
     }
     const elapsed = wait.now() - start;
     if (elapsed >= wait.timeoutMs) {
-      const seconds = Math.round(wait.timeoutMs / 1000);
+      const waited = durationText(wait.timeoutMs);
       throw new OpsCrewError(
         "PROVIDER_ERROR",
         baseline.kind === "start" && current.status === 2
-          ? `The stack ${name} is still stopped ${seconds} seconds after OpsCrew started it.`
-          : `The stack ${name} is still deploying after ${seconds} seconds${current.status === 3 ? "" : " (Portainer has not reported the new deploy yet)"}.`,
+          ? `The stack ${name} is still stopped ${waited} after OpsCrew started it.`
+          : `The stack ${name} is still deploying after ${waited}${current.status === 3 ? "" : " (Portainer has not reported the new deploy yet)"}.`,
         {
           hint: "Portainer may still finish it: look at the stack in Portainer (Stacks → the stack). Then run opscrew provision again; it shows no changes if the deploy worked.",
         },

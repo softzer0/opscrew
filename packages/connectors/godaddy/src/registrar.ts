@@ -9,7 +9,14 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { normalizeHostName, OpsCrewError } from "@opscrew/core";
+import {
+  checkRegistrationYears,
+  connectAfterBuyingHint,
+  isoDateOr,
+  normalizeHostName,
+  OpsCrewError,
+  realSleep,
+} from "@opscrew/core";
 import type { z } from "zod";
 import { GODADDY_MAX_BATCH, type GoDaddyClient } from "./client";
 import {
@@ -20,7 +27,6 @@ import {
   type GoDaddyRegistration,
   holding,
   isHeld,
-  isoDate,
   isPremium,
   type ResolvedSchema,
   toDomainCheck,
@@ -110,7 +116,7 @@ export class GoDaddyRegistrar implements Registrar {
     this.#randomUUID = options.randomUUID ?? (() => globalThis.crypto.randomUUID());
     this.#pollIntervalMs = Math.max(0, options.pollIntervalMs ?? 3_000);
     this.#pollTimeoutMs = Math.max(0, options.pollTimeoutMs ?? 60_000);
-    this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#sleep = options.sleep ?? realSleep;
   }
 
   /** Indicative availability and prices, 25 domains per call, matched to the names by name. */
@@ -145,7 +151,7 @@ export class GoDaddyRegistrar implements Registrar {
   /** A locked price and quote token (valid 10 minutes) for buying `domain` for `years`. */
   async quote(domain: string, years: number): Promise<RegistrationQuote> {
     const name = normalizeHostName(domain);
-    checkYears(years);
+    checkRegistrationYears(years);
     const raw = await this.#client.quoteRegistration({
       domain: name,
       period: years,
@@ -165,7 +171,7 @@ export class GoDaddyRegistrar implements Registrar {
         "PHASE_PRECONDITION",
         `${name} is a premium domain at GoDaddy; OpsCrew does not buy premium names through the API.`,
         {
-          hint: `Buy it at ${GODADDY_DASHBOARD_URLS.portfolio}, then run \`opscrew domain connect ${name}\`.`,
+          hint: connectAfterBuyingHint(`at ${GODADDY_DASHBOARD_URLS.portfolio}`, name),
         },
       );
     }
@@ -182,14 +188,13 @@ export class GoDaddyRegistrar implements Registrar {
         "PHASE_PRECONDITION",
         `GoDaddy quoted ${name} in ${raw.price.currencyCode}, which OpsCrew cannot show yet.`,
         {
-          hint: `Buy it at ${GODADDY_DASHBOARD_URLS.portfolio}, then run \`opscrew domain connect ${name}\`.`,
+          hint: connectAfterBuyingHint(`at ${GODADDY_DASHBOARD_URLS.portfolio}`, name),
         },
       );
     }
     // Renewal prices are per term (like check-availability); shown per year.
     const renewal = raw.renewalPrice ? toMoney(raw.renewalPrice, raw.period ?? years) : undefined;
     const agreements = raw.requiredAgreements ?? [];
-    const expiresAt = isoDate(raw.expiresAt);
     if (raw.resolved) this.#resolved.set(raw.quoteToken, raw.resolved);
     this.#lastResolved = raw.resolved;
     return {
@@ -198,7 +203,7 @@ export class GoDaddyRegistrar implements Registrar {
       token: raw.quoteToken,
       agreements: agreements.map(formatAgreement),
       agreementTypes: agreements.map((a) => a.agreementType),
-      ...(expiresAt ? { expiresAt } : {}),
+      ...(raw.expiresAt ? { expiresAt: isoDateOr(raw.expiresAt) } : {}),
     };
   }
 
@@ -218,7 +223,7 @@ export class GoDaddyRegistrar implements Registrar {
    */
   async register(request: RegistrationRequest): Promise<RegistrationStatus> {
     const domain = normalizeHostName(request.domain);
-    checkYears(request.years);
+    checkRegistrationYears(request.years);
     const quote = request.quote;
     if (!quote?.token) {
       throw new OpsCrewError(
@@ -480,16 +485,6 @@ export class GoDaddyRegistrar implements Registrar {
       ok: true,
       message: `The GoDaddy token works and the account can check and buy domains through the API. Purchases use ${contact}.`,
     };
-  }
-}
-
-function checkYears(years: number): void {
-  if (!Number.isInteger(years) || years < 1 || years > 10) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `A domain can be registered for 1 to 10 years, not ${years}.`,
-      { hint: "Pass a whole number of years between 1 and 10." },
-    );
   }
 }
 

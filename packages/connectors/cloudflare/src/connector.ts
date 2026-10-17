@@ -1,7 +1,8 @@
 import type { Connector, CredentialCheck, FetchLike } from "@opscrew/contracts";
-import { Redactor } from "@opscrew/core";
+import { errorText, Redactor } from "@opscrew/core";
 import {
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
+  CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
   CloudflareClient,
 } from "./client";
@@ -49,7 +50,7 @@ export function cloudflareConnector(options: CloudflareConnectorOptions): Cloudf
         ...CLOUDFLARE_TOKEN_PERMISSIONS,
         ...CLOUDFLARE_REGISTRAR_PERMISSIONS.map((p) => `${p} (optional, for buying domains)`),
       ],
-      createUrl: "https://dash.cloudflare.com/profile/api-tokens",
+      createUrl: CLOUDFLARE_TOKEN_PAGE,
     },
     client,
     async verifyCredentials(): Promise<CredentialCheck> {
@@ -57,10 +58,7 @@ export function cloudflareConnector(options: CloudflareConnectorOptions): Cloudf
       try {
         return await client.verifyToken();
       } catch (error) {
-        return {
-          ok: false,
-          message: redactor.redact(error instanceof Error ? error.message : String(error)),
-        };
+        return { ok: false, message: redactor.redact(errorText(error)) };
       }
     },
   };

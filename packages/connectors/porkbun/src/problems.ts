@@ -1,4 +1,9 @@
-import type { ErrorCode } from "@opscrew/core";
+import {
+  connectAfterBuyingHint,
+  type ErrorCode,
+  NEW_PRICE_HINT,
+  RATE_LIMIT_HINT,
+} from "@opscrew/core";
 import { dollars, type Envelope, toNumber } from "./parse";
 
 /** Porkbun's account pages (domain management, API keys, credit). */
@@ -64,8 +69,9 @@ export interface ProblemContext {
   domain?: string;
 }
 
-function websiteThenConnect(domain: string): string {
-  return `Buy ${domain} on ${PORKBUN_WEBSITE} instead, then run \`opscrew domain connect ${domain}\`.`;
+/** For a domain OpsCrew cannot buy through Porkbun's API: buy it on the website, then connect it. */
+export function websiteThenConnect(domain: string): string {
+  return connectAfterBuyingHint(`on ${PORKBUN_WEBSITE}`, domain);
 }
 
 /** Plain English for one Porkbun error answer (without Porkbun's hint or request id). */
@@ -149,7 +155,7 @@ function describe(status: number, body: Envelope, ctx: ProblemContext): Problem 
       return {
         code: "PHASE_PRECONDITION",
         message: `The price of ${domain} at Porkbun changed since it was quoted.`,
-        hint: "Run the command again to see and approve the new price.",
+        hint: NEW_PRICE_HINT,
       };
     case "DOMAIN_NOT_AVAILABLE":
       return {
@@ -177,7 +183,7 @@ function describe(status: number, body: Envelope, ctx: ProblemContext): Problem 
     return {
       code: "PROVIDER_ERROR",
       message: `Porkbun's rate limit stopped the request to ${ctx.what}.`,
-      hint: "Wait a minute and try again.",
+      hint: RATE_LIMIT_HINT,
     };
   }
   const detail = (body.message ?? "").trim().replace(/\.$/, "") || code || `HTTP ${status}`;

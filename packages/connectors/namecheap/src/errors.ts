@@ -1,5 +1,13 @@
-import { OpsCrewError } from "@opscrew/core";
+import {
+  connectAfterBuyingHint,
+  NEW_PRICE_HINT,
+  OpsCrewError,
+  statusPageHint,
+} from "@opscrew/core";
 import type { NamecheapApiError } from "./xml";
+
+/** The next step after Namecheap failed on its side. */
+export const STATUS_PAGE_HINT = statusPageHint("https://www.namecheap.com/status-updates/");
 
 /** Namecheap dashboard pages OpsCrew points users at. */
 export interface NamecheapDashboardUrls {
@@ -171,7 +179,7 @@ export function namecheapError(
       return new OpsCrewError(
         "PHASE_PRECONDITION",
         `Namecheap's price changed, so it did not ${ctx.what}.${suffix}`,
-        { hint: "Run the command again to see and approve the new price." },
+        { hint: NEW_PRICE_HINT },
       );
     case "premium":
     case "extended":
@@ -180,7 +188,10 @@ export function namecheapError(
         "PHASE_PRECONDITION",
         `Namecheap cannot ${ctx.what} through its API (${detail}).${suffix}`,
         {
-          hint: `Buy it in the Namecheap dashboard at ${ctx.urls.domainList}, then run \`opscrew domain connect ${domainOf(ctx.what)}\`.`,
+          hint: connectAfterBuyingHint(
+            `in the Namecheap dashboard at ${ctx.urls.domainList}`,
+            domainOf(ctx.what),
+          ),
         },
       );
     case "unavailable":
@@ -217,9 +228,7 @@ export function namecheapError(
       return new OpsCrewError(
         "PROVIDER_ERROR",
         `Namecheap could not ${ctx.what}: ${detail}.${suffix}`,
-        {
-          hint: "Try again in a minute; if it keeps failing, check https://www.namecheap.com/status-updates/.",
-        },
+        { hint: STATUS_PAGE_HINT },
       );
   }
 }

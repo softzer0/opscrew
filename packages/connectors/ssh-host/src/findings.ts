@@ -1,5 +1,5 @@
 /** Blocking findings: what OpsCrew found and what the user can do. Plain English, no secrets. */
-import { listText } from "@opscrew/core";
+import { listText, upperFirst } from "@opscrew/core";
 import { MIN_DOCKER_MAJOR, PORTAINER_PORT, TUNNEL_APP_PORT } from "./constants";
 import type { HostFacts } from "./facts";
 import type { HostFinding } from "./types";
@@ -105,7 +105,7 @@ export function hostFindings(command: string) {
     otherFirewall: (what: readonly string[]): HostFinding => ({
       code: "other-firewall",
       message: `This server already uses another firewall: ${listText(what)}. OpsCrew does not add a second one.`,
-      hint: `Either turn that firewall off and let OpsCrew manage ufw (it allows only SSH and web traffic), or keep yours and do not use OpsCrew on this server for now. ${rerun.charAt(0).toUpperCase()}${rerun.slice(1)} after the change.`,
+      hint: `Either turn that firewall off and let OpsCrew manage ufw (it allows only SSH and web traffic), or keep yours and do not use OpsCrew on this server for now. ${upperFirst(rerun)} after the change.`,
     }),
     dockerNftables: (): HostFinding => ({
       code: "docker-nftables",

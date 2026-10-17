@@ -1,8 +1,12 @@
 import type { FetchLike } from "@opscrew/contracts";
 import {
+  CONNECTION_HINT,
+  durationText,
   type JsonClient,
+  jsonClient,
   OpsCrewError,
   pollAction,
+  RATE_LIMIT_HINT,
   type RequestFailure,
   requestJson,
 } from "@opscrew/core";
@@ -17,7 +21,8 @@ const PER_PAGE = 50;
 /** Default time one HTTP request may take before it counts as failed (and a read is retried). */
 const REQUEST_TIMEOUT_MS = 15_000;
 const ACTION_INTERVAL_MS = 2_000;
-const TOKEN_HINT =
+/** How to create the Hetzner Cloud API token OpsCrew needs and where it goes. */
+export const HETZNER_TOKEN_HINT =
   "Create a Read & Write API token in the Hetzner Cloud Console (your project → Security → API tokens) and set it as HCLOUD_TOKEN.";
 
 // --- Response schemas (hcloud-go shapes; unknown fields are kept) ------------------------------
@@ -158,8 +163,6 @@ export interface HetznerClientOptions {
   timeoutMs?: number;
 }
 
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /**
  * Typed Hetzner Cloud API client with pagination, retries and error mapping. Write methods are
  * only called after an approval; reads and rate-limited writes are retried, other failed writes
@@ -175,18 +178,15 @@ export class HetznerClient {
     this.#token = options.token;
     this.#baseUrl = (options.baseUrl ?? HETZNER_API_URL).replace(/\/+$/, "");
     this.#userAgent = `opscrew/${options.version ?? CONNECTOR_VERSION}`;
-    this.#http = {
-      fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
-      timeoutMs: options.timeoutMs ?? REQUEST_TIMEOUT_MS,
+    this.#http = jsonClient(options, {
+      timeoutMs: REQUEST_TIMEOUT_MS,
       retry: {
         serverErrors: 2,
         serverErrorDelayMs: (attempt) => 2 ** attempt * 1000,
         rateLimits: 3,
         rateLimitDelayMs: (attempt) => 2 ** attempt * 1000,
       },
-      sleep: options.sleep ?? defaultSleep,
-      now: options.now ?? Date.now,
-    };
+    });
   }
 
   /** All server types (`GET /server_types`, every page). */
@@ -278,7 +278,7 @@ export class HetznerClient {
       timedOut: (action) =>
         new OpsCrewError(
           "PROVIDER_ERROR",
-          `${label(action)} did not finish within ${seconds(options.timeoutMs)}.`,
+          `${label(action)} did not finish within ${durationText(options.timeoutMs)}.`,
           {
             hint: "It may still be running: check its progress in the Hetzner Cloud Console and try again once it has finished.",
           },
@@ -327,11 +327,10 @@ export class HetznerClient {
     query: Record<string, string> = {},
     init: { method?: "GET" | "POST"; body?: unknown } = {},
   ): Promise<z.infer<S>> {
-    const url = new URL(`${this.#baseUrl}${path}`);
-    for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
     const method = init.method ?? "GET";
     return requestJson(this.#http, {
-      url: url.toString(),
+      url: `${this.#baseUrl}${path}`,
+      query,
       method,
       headers: { Authorization: `Bearer ${this.#token}`, "User-Agent": this.#userAgent },
       ...(init.body !== undefined && { body: init.body }),
@@ -344,7 +343,7 @@ export class HetznerClient {
     switch (failure.kind) {
       case "unreachable": {
         const { timedOut, cause } = failure;
-        const within = `did not answer within ${seconds(this.#http.timeoutMs)}`;
+        const within = `did not answer within ${durationText(this.#http.timeoutMs)}`;
         if (!failure.idempotent) {
           return new OpsCrewError(
             "PROVIDER_ERROR",
@@ -363,7 +362,7 @@ export class HetznerClient {
               cause,
             })
           : new OpsCrewError("PROVIDER_ERROR", `Could not reach the Hetzner Cloud API (${path}).`, {
-              hint: "Check your network connection and try again.",
+              hint: CONNECTION_HINT,
               cause,
             });
       }
@@ -383,11 +382,6 @@ export class HetznerClient {
   }
 }
 
-function seconds(ms: number): string {
-  const value = Math.round(ms / 100) / 10;
-  return `${value} second${value === 1 ? "" : "s"}`;
-}
-
 async function statusError(response: Response, path: string): Promise<OpsCrewError> {
   let apiMessage: string | undefined;
   try {
@@ -399,12 +393,12 @@ async function statusError(response: Response, path: string): Promise<OpsCrewErr
   const detail = apiMessage ?? (response.statusText || `HTTP ${response.status}`);
   if (response.status === 401) {
     return new OpsCrewError("CREDENTIALS_INVALID", `Hetzner rejected the API token: ${detail}`, {
-      hint: TOKEN_HINT,
+      hint: HETZNER_TOKEN_HINT,
     });
   }
   if (response.status === 429) {
     return new OpsCrewError("PROVIDER_ERROR", `Hetzner rate limit reached: ${detail}`, {
-      hint: "Wait a minute and try again.",
+      hint: RATE_LIMIT_HINT,
     });
   }
   return new OpsCrewError(

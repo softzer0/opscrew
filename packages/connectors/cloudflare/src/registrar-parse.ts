@@ -6,6 +6,7 @@ import type {
   RegistrationState,
   RegistrationStatus,
 } from "@opscrew/contracts";
+import { DOMAIN_TAKEN_REASON, isoDateOr } from "@opscrew/core";
 import { z } from "zod";
 
 /** Where users buy what the API cannot (premium names, some extensions). */
@@ -13,7 +14,7 @@ export const CLOUDFLARE_REGISTRAR_DASHBOARD = "https://dash.cloudflare.com (Doma
 
 const REASONS: Record<string, string> = {
   domain_premium: `This is a premium domain; Cloudflare sells premium names only in the dashboard, so buy it at ${CLOUDFLARE_REGISTRAR_DASHBOARD}.`,
-  domain_unavailable: "This domain is already registered by someone else.",
+  domain_unavailable: DOMAIN_TAKEN_REASON,
   extension_not_supported_via_api: `Cloudflare sells this extension, but not through its API; buy it at ${CLOUDFLARE_REGISTRAR_DASHBOARD}.`,
   extension_not_supported: "Cloudflare Registrar does not sell this extension.",
   extension_disallows_registration:
@@ -176,24 +177,16 @@ export const RegistrationSchema = z.looseObject({
   privacy_mode: z.string().nullable().optional(),
 });
 
-function isoDate(value: string | null | undefined): string | undefined {
-  if (!value) return undefined;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toISOString();
-}
-
 /** Maps a Cloudflare registration to a {@link RegisteredDomain}. */
 export function toRegisteredDomain(
   raw: z.infer<typeof RegistrationSchema>,
   domain: string,
 ): RegisteredDomain {
-  const createdAt = isoDate(raw.created_at);
-  const expiresAt = isoDate(raw.expires_at);
   return {
     domain: (raw.domain_name ?? domain).toLowerCase(),
     registrar: "cloudflare",
-    ...(createdAt ? { createdAt } : {}),
-    ...(expiresAt ? { expiresAt } : {}),
+    ...(raw.created_at ? { createdAt: isoDateOr(raw.created_at) } : {}),
+    ...(raw.expires_at ? { expiresAt: isoDateOr(raw.expires_at) } : {}),
     autoRenew: raw.auto_renew ?? false,
     ...(raw.locked != null ? { locked: raw.locked } : {}),
     ...(raw.privacy_mode != null ? { privacy: raw.privacy_mode !== "off" } : {}),

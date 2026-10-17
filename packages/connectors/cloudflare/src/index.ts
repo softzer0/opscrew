@@ -1,5 +1,6 @@
 export {
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
+  CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
   CloudflareClient,
   type CloudflareDnsRecord,

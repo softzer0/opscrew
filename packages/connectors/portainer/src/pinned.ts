@@ -3,7 +3,7 @@ import http from "node:http";
 import { isIP } from "node:net";
 import type { Duplex } from "node:stream";
 import tls from "node:tls";
-import { OpsCrewError } from "@opscrew/core";
+import { durationText, OpsCrewError } from "@opscrew/core";
 import { normalizeCertFingerprint } from "./fingerprint";
 
 /** How OpsCrew reaches Portainer: HTTPS with the certificate pinned, or plain HTTP to localhost. */
@@ -299,7 +299,7 @@ function toTransportError(error: unknown): OpsCrewError {
   if (error instanceof TimeoutError) {
     return new OpsCrewError(
       "PROVIDER_ERROR",
-      `Portainer did not answer within ${Math.round(error.ms / 1000)} seconds.`,
+      `Portainer did not answer within ${durationText(error.ms)}.`,
       {
         hint: "Check that Portainer is running and reachable from this computer, then try again.",
       },

@@ -1,4 +1,4 @@
-import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { canonicalJson, OpsCrewError, sha256Hex, zodIssues } from "@opscrew/core";
 import { z } from "zod";
 import type { PortainerFacts, PortainerFinding, PortainerStackFacts } from "./facts";
 import { findings as finding } from "./findings";
@@ -602,10 +602,7 @@ function parseDesired(desired: DesiredStacks): DesiredStacks {
   if (!parsed.success) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The desired Portainer stacks are not valid: ${parsed.error.issues
-        .slice(0, 5)
-        .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-        .join("; ")}`,
+      `The desired Portainer stacks are not valid: ${zodIssues(parsed.error, 5)}`,
     );
   }
   return parsed.data;
@@ -1152,6 +1149,7 @@ export function planStackTeardown(
       const seen = facts.volumes?.find((volume) => volume.name === name);
       return seen !== undefined && seen.project?.toLowerCase() !== names.app;
     });
+    const title = `Delete the app's data volumes ${valid.volumes.join(", ")}`;
     if (valid.volumes.length === 0) {
       changes.push({
         id: "volumes",
@@ -1163,7 +1161,7 @@ export function planStackTeardown(
     } else if (foreign.length > 0) {
       changes.push({
         id: "volumes",
-        title: `Delete the app's data volumes ${valid.volumes.join(", ")}`,
+        title,
         state: "blocked",
         reason: `Portainer shows ${foreign.join(", ")} as belonging to ${foreign
           .map((name) => facts.volumes?.find((volume) => volume.name === name)?.project)
@@ -1178,7 +1176,7 @@ export function planStackTeardown(
     } else {
       changes.push({
         id: "volumes",
-        title: `Delete the app's data volumes ${valid.volumes.join(", ")} (this cannot be undone; OpsCrew does not back them up)`,
+        title: `${title} (this cannot be undone; OpsCrew does not back them up)`,
         state: "change",
         ...(kept !== "" && { reason: kept.trim() }),
         params: {
@@ -1221,15 +1219,16 @@ function removeStackChange(
   role: Role,
 ): StackChange {
   const id = ROLES[role].change;
+  const title = `Remove the stack ${recorded.name}`;
   const params = { action: "remove", name: recorded.name, stackId: recorded.id };
   const visible = facts.stacks.find((stack) => stack.id === recorded.id);
   if (visible !== undefined && visible.name.toLowerCase() === recorded.name) {
-    return { id, title: `Remove the stack ${recorded.name}`, state: "change", params };
+    return { id, title, state: "change", params };
   }
   const other = facts.stacks.find((stack) => stack.name.toLowerCase() === recorded.name);
   return {
     id,
-    title: `Remove the stack ${recorded.name}`,
+    title,
     state: "in-place",
     reason:
       other !== undefined
@@ -1245,11 +1244,12 @@ function removeRegistryChange(
   names: OpsCrewNames,
 ): StackChange {
   const registryId = record.registryId as number;
+  const title = `Remove the registry entry ${names.registry} OpsCrew added`;
   const params = { action: "remove", name: names.registry, registryId };
   if (facts.user?.role !== "admin" || facts.registryEntries === undefined) {
     return {
       id: "registry",
-      title: `Remove the registry entry ${names.registry} OpsCrew added`,
+      title,
       state: "blocked",
       reason:
         "Only an administrator can remove registry entries: run the command with an administrator's token in PORTAINER_API_KEY.",
@@ -1260,7 +1260,7 @@ function removeRegistryChange(
   if (entry === undefined) {
     return {
       id: "registry",
-      title: `Remove the registry entry ${names.registry} OpsCrew added`,
+      title,
       state: "in-place",
       reason: `Portainer no longer has registry entry ${registryId}.`,
       params: { ...params, action: "forget" },

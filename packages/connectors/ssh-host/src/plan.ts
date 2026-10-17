@@ -238,6 +238,10 @@ const TITLES = {
   runtime: "Create /srv/app and /srv/data for the app, owned by deploy",
   tunnel: "Run the Cloudflare Tunnel connector",
   portainer: "Run Portainer CE",
+  removeWebFilter: "Remove OpsCrew's web filter for Cloudflare's addresses",
+  removeTunnel: "Remove the Cloudflare Tunnel connector",
+  removePortainer: "Remove Portainer (its data volume stays)",
+  removePortainerData: "Remove Portainer and its data",
 };
 
 interface SetupContext {
@@ -704,7 +708,7 @@ function webFilterStep({ facts, desired, found, findings }: SetupContext): HostS
     if (!webFilterPresent(facts)) return undefined;
     return step(
       "web-filter",
-      "Remove OpsCrew's web filter for Cloudflare's addresses",
+      TITLES.removeWebFilter,
       "change",
       { remove: true },
       "The site is no longer served directly behind Cloudflare's proxy. Docker first stops requiring the filter (it keeps running), then OpsCrew's rules in DOCKER-USER, its unit and its script are removed; your own rules stay.",
@@ -845,7 +849,7 @@ function tunnelStep({ facts, desired, found, findings }: SetupContext): HostStep
     if (!tunnel.installed && !tunnel.running) return undefined;
     return step(
       "tunnel-connector",
-      "Remove the Cloudflare Tunnel connector",
+      TITLES.removeTunnel,
       "change",
       { remove: true },
       "No Cloudflare Tunnel is planned any more (the app is served directly and Portainer has no subdomain), so the connector is no longer needed.",
@@ -914,7 +918,7 @@ function portainerStep({ facts, desired, found, findings }: SetupContext): HostS
     if (!portainer.installed && !portainer.running) return undefined;
     return step(
       "portainer",
-      "Remove Portainer (its data volume stays)",
+      TITLES.removePortainer,
       "change",
       { remove: true, deleteData: false, dir: PORTAINER_DIR, runAs: "root" },
       "Portainer is turned off for this project.",
@@ -1130,19 +1134,16 @@ export function planTeardown(
   }
   if (f.tunnel.installed) {
     steps.push(
-      step(
-        "tunnel-connector",
-        "Remove the Cloudflare Tunnel connector and its token file",
-        "change",
-        { remove: true },
-      ),
+      step("tunnel-connector", `${TITLES.removeTunnel} and its token file`, "change", {
+        remove: true,
+      }),
     );
   }
   if (f.portainer.installed || (deleteData && f.portainer.dataVolume)) {
     steps.push(
       step(
         "portainer",
-        deleteData ? "Remove Portainer and its data" : "Remove Portainer (its data volume stays)",
+        deleteData ? TITLES.removePortainerData : TITLES.removePortainer,
         "change",
         { remove: true, deleteData },
       ),
@@ -1230,7 +1231,7 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
   }
   if (entry("tunnel-connector") && (f.tunnel.installed || f.tunnel.running)) {
     steps.push(
-      step("tunnel-connector", "Remove the Cloudflare Tunnel connector", "change", {
+      step("tunnel-connector", TITLES.removeTunnel, "change", {
         remove: true,
       }),
     );
@@ -1294,7 +1295,7 @@ export function planUndo(facts: HostFacts, command: string): HostPlan {
     steps.push(
       step(
         "web-filter",
-        "Remove OpsCrew's web filter for Cloudflare's addresses",
+        TITLES.removeWebFilter,
         "change",
         { remove: true },
         "Docker first stops requiring the filter (it keeps running), then OpsCrew's rules in DOCKER-USER, its unit and its script are removed; your own rules stay.",
@@ -1441,7 +1442,7 @@ export function planPortainer(options: {
       : "remove" in connector
         ? {
             id: "tunnel-connector",
-            title: "Remove the Cloudflare Tunnel connector that served Portainer's subdomain",
+            title: `${TITLES.removeTunnel} that served Portainer's subdomain`,
             state: "change",
             params: { remove: true, dir: connector.dir, runAs },
           }
@@ -1480,8 +1481,8 @@ export function planPortainer(options: {
         title: enable
           ? `Run Portainer CE ${enable.version}, reachable only from the server itself (127.0.0.1:${PORTAINER_PORT})`
           : disable?.deleteData
-            ? "Remove Portainer and its data"
-            : "Remove Portainer (its data volume stays)",
+            ? TITLES.removePortainerData
+            : TITLES.removePortainer,
         state: "change",
         params,
       },

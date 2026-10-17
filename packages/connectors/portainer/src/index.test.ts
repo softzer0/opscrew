@@ -6,6 +6,7 @@ import {
   inspectPortainer,
   opscrewNames,
   opscrewStackNames,
+  PORTAINER_TOKEN_STEPS,
   planStacks,
   planStackTeardown,
   portainerClient,
@@ -30,6 +31,12 @@ describe("@opscrew/connector-portainer", () => {
     ]) {
       expect(typeof fn).toBe("function");
     }
+  });
+
+  it("says where the access token is created and where it goes", () => {
+    expect(PORTAINER_TOKEN_STEPS).toBe(
+      "In Portainer, open your user menu → My account → Access tokens and add a token (for an administrator, or for a user who may manage stacks on the environment), then set PORTAINER_API_KEY to it.",
+    );
   });
 
   it("names everything OpsCrew creates opscrew-<app>…", () => {

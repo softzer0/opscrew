@@ -5,7 +5,12 @@ import type {
   RegisteredDomain,
   RegistrarDnsRecord,
 } from "@opscrew/contracts";
-import { normalizeHostName } from "@opscrew/core";
+import {
+  connectAfterBuyingHint,
+  DOMAIN_TAKEN_REASON,
+  isoDateOr,
+  normalizeHostName,
+} from "@opscrew/core";
 import { z } from "zod";
 
 /** GoDaddy pages users are sent to for what the API cannot do. */
@@ -188,7 +193,7 @@ export function isPremium(inventory: string | undefined): boolean {
 }
 
 const premiumReason = (domain: string) =>
-  `This is a premium domain; OpsCrew does not buy premium names through GoDaddy's API. Buy it at ${GODADDY_DASHBOARD_URLS.portfolio}, then run \`opscrew domain connect ${domain}\`.`;
+  `This is a premium domain; OpsCrew does not buy premium names through GoDaddy's API. ${connectAfterBuyingHint(`at ${GODADDY_DASHBOARD_URLS.portfolio}`, domain)}`;
 
 const ERROR_TEXT: Record<string, string> = {
   UNSUPPORTED_TLD:
@@ -282,7 +287,7 @@ export function toDomainCheck(raw: {
     return {
       domain,
       registrable: false,
-      reason: "This domain is already registered by someone else.",
+      reason: DOMAIN_TAKEN_REASON,
     };
   }
   const prices = yearlyPrices(raw.prices ?? []);
@@ -308,13 +313,6 @@ export function toDomainCheck(raw: {
     firstYear: prices.firstYear,
     ...(prices.renewal ? { renewal: prices.renewal } : {}),
   };
-}
-
-/** An ISO date (UTC) for GoDaddy's RFC 3339 time, or the text as it is when it is not one. */
-export function isoDate(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toISOString();
 }
 
 /**
@@ -347,13 +345,11 @@ export function isHeld(raw: GoDaddyDomain): boolean {
 
 /** Maps a GoDaddy domain to a {@link RegisteredDomain}. */
 export function toRegisteredDomain(raw: GoDaddyDomain): RegisteredDomain {
-  const createdAt = isoDate(raw.createdAt);
-  const expiresAt = isoDate(raw.expiresAt);
   return {
     domain: normalizeHostName(raw.domain),
     registrar: "godaddy",
-    ...(createdAt ? { createdAt } : {}),
-    ...(expiresAt ? { expiresAt } : {}),
+    ...(raw.createdAt ? { createdAt: isoDateOr(raw.createdAt) } : {}),
+    ...(raw.expiresAt ? { expiresAt: isoDateOr(raw.expiresAt) } : {}),
     autoRenew: raw.autoRenew ?? false,
     ...(raw.transferLock !== undefined ? { locked: raw.transferLock } : {}),
     ...(raw.privacy !== undefined ? { privacy: raw.privacy } : {}),

@@ -16,6 +16,7 @@ export {
 } from "./apply";
 export {
   type DockerInfo,
+  PORTAINER_TOKEN_STEPS,
   PortainerApiError,
   type PortainerClient,
   type PortainerClientDeps,

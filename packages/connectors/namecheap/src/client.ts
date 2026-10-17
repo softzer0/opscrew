@@ -1,5 +1,14 @@
 import type { FetchLike } from "@opscrew/contracts";
-import { maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
+import {
+  CONNECTION_HINT,
+  checkRegistrationYears,
+  maybeDoneHint,
+  maybeStarted,
+  normalizeHostName,
+  OpsCrewError,
+  parseAnswer,
+  realSleep,
+} from "@opscrew/core";
 import type { z } from "zod";
 import { ContactCard } from "./contacts";
 import {
@@ -8,6 +17,7 @@ import {
   NAMECHEAP_SANDBOX_DASHBOARD_URLS,
   type NamecheapDashboardUrls,
   namecheapError,
+  STATUS_PAGE_HINT,
   TEXT_KINDS,
 } from "./errors";
 import {
@@ -143,8 +153,7 @@ const MAX_RETRIES = 2;
 /** Default time one request may take before it counts as failed. */
 const REQUEST_TIMEOUT_MS = 30_000;
 /** Hint after a write without a clear answer: sending it again could repeat it. */
-const MAYBE_DONE_HINT =
-  "The request may still have reached Namecheap; check the current state before trying again.";
+const MAYBE_DONE_HINT = maybeDoneHint("Namecheap");
 const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 
@@ -222,7 +231,7 @@ export class NamecheapClient {
     this.sandbox = options.sandbox ?? false;
     this.#endpoint = this.sandbox ? NAMECHEAP_SANDBOX_API : NAMECHEAP_API;
     this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
-    this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#sleep = options.sleep ?? realSleep;
     this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   }
 
@@ -358,7 +367,7 @@ export class NamecheapClient {
         throw new OpsCrewError(
           "PROVIDER_ERROR",
           `Could not reach the Namecheap API to ${what} (${error.message}).`,
-          { hint: write ? MAYBE_DONE_HINT : "Check your internet connection and try again." },
+          { hint: write ? MAYBE_DONE_HINT : CONNECTION_HINT },
         );
       }
       const { status, envelope } = answer;
@@ -379,20 +388,11 @@ export class NamecheapClient {
         "PROVIDER_ERROR",
         `Namecheap returned an unreadable answer (HTTP ${status}) when trying to ${what}.`,
         {
-          hint: write
-            ? MAYBE_DONE_HINT
-            : "Try again in a minute; if it keeps failing, check https://www.namecheap.com/status-updates/.",
+          hint: write ? MAYBE_DONE_HINT : STATUS_PAGE_HINT,
         },
       );
     }
-    const parsed = schema.safeParse(envelope.commandResponse);
-    if (!parsed.success) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `Namecheap returned an unexpected answer when trying to ${what}.`,
-      );
-    }
-    return parsed.data;
+    return parseAnswer(schema, envelope.commandResponse, "Namecheap", what);
   }
 
   /** A command; returns its `CommandResponse` validated by `schema` (see {@link #send}). */
@@ -552,13 +552,7 @@ export class NamecheapClient {
   async createDomain(request: NamecheapCreateRequest): Promise<NamecheapCreateResult> {
     const domain = normalizeHostName(request.domain);
     splitDomain(domain);
-    if (!Number.isInteger(request.years) || request.years < 1 || request.years > 10) {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        `A domain can be registered for 1 to 10 years, not ${request.years}.`,
-        { hint: "Pass a whole number of years between 1 and 10." },
-      );
-    }
+    checkRegistrationYears(request.years);
     const contact = await this.#defaultContact();
     const privacy = request.privacy ? "yes" : "no";
     const body = await this.#body("domains.create", {

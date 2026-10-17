@@ -1,5 +1,15 @@
 import type { FetchLike } from "@opscrew/contracts";
-import { maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
+import {
+  CONNECTION_HINT,
+  durationText,
+  maybeStarted,
+  normalizeHostName,
+  OpsCrewError,
+  parseAnswer,
+  RATE_LIMIT_HINT,
+  realSleep,
+  statusPageHint,
+} from "@opscrew/core";
 import type { z } from "zod";
 import {
   AvailabilityListSchema,
@@ -118,7 +128,7 @@ export class GoDaddyClient {
   constructor(options: GoDaddyClientOptions) {
     this.#token = options.token;
     this.#fetch = options.fetch ?? ((input, init) => fetch(input, init));
-    this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#sleep = options.sleep ?? realSleep;
     this.#baseUrl = (options.baseUrl ?? GODADDY_API).replace(/\/+$/, "");
     this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   }
@@ -154,9 +164,9 @@ export class GoDaddyClient {
         throw new OpsCrewError(
           "PROVIDER_ERROR",
           signal.aborted
-            ? `The GoDaddy API did not answer within ${Math.round(this.#timeoutMs / 1000)} seconds.`
+            ? `The GoDaddy API did not answer within ${durationText(this.#timeoutMs)}.`
             : "Could not reach the GoDaddy API.",
-          { hint: "Check your internet connection and try again." },
+          { hint: CONNECTION_HINT },
         );
       }
       if (response.status === 429 && options.retryRateLimit && attempt === 0) {
@@ -208,7 +218,7 @@ export class GoDaddyClient {
       throw new OpsCrewError(
         "PROVIDER_ERROR",
         `GoDaddy answered with too many requests while trying to ${what}.`,
-        { hint: "Wait a minute and try again." },
+        { hint: RATE_LIMIT_HINT },
       );
     }
     if (status >= 400 && status < 500) {
@@ -217,20 +227,12 @@ export class GoDaddyClient {
       });
     }
     throw new OpsCrewError("PROVIDER_ERROR", `GoDaddy could not ${what} (HTTP ${status}).`, {
-      hint: `Try again in a minute; if it keeps failing, check ${STATUS_PAGE}.`,
+      hint: statusPageHint(STATUS_PAGE),
     });
   }
 
   #parse<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
-    const parsed = schema.safeParse(value);
-    if (!parsed.success) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `GoDaddy returned an unexpected answer when trying to ${what}.`,
-        { hint: `Try again in a minute; if it keeps failing, check ${STATUS_PAGE}.` },
-      );
-    }
-    return parsed.data;
+    return parseAnswer(schema, value, "GoDaddy", what, statusPageHint(STATUS_PAGE));
   }
 
   async #read<T>(

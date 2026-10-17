@@ -8,7 +8,7 @@ import type {
   SnapshotRequest,
   VpsConnector,
 } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, Redactor } from "@opscrew/core";
+import { errorText, OpsCrewError, Redactor, realSleep } from "@opscrew/core";
 import { DigitalOceanCatalog, StaticDigitalOceanCatalog } from "./catalog";
 import {
   DIGITALOCEAN_SCOPES,
@@ -37,7 +37,6 @@ const DEFAULT_SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
 /** Extra reads of the snapshot list after the action completes (the list can lag behind). */
 const SNAPSHOT_LOOKUP_RETRIES = 3;
 const SNAPSHOT_LOOKUP_POLL_MS = 5_000;
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface DigitalOceanConnectorOptions {
   env: Record<string, string | undefined>;
@@ -89,7 +88,7 @@ export function digitaloceanConnector(
     credentials: DIGITALOCEAN_CREDENTIALS,
     configured: client !== undefined,
     client,
-    servers: client === undefined ? undefined : serverApi(client, options.sleep ?? defaultSleep),
+    servers: client === undefined ? undefined : serverApi(client, options.sleep ?? realSleep),
     catalog: () => {
       catalog ??=
         client === undefined
@@ -108,9 +107,7 @@ export function digitaloceanConnector(
       try {
         account = await client.getAccount();
       } catch (error) {
-        const message = isUserFacingError(error)
-          ? `${error.message}${error.hint ? ` ${error.hint}` : ""}`
-          : "Could not check the DigitalOcean API token.";
+        const message = errorText(error, "Could not check the DigitalOcean API token.");
         return { ok: false, message: redactor.redact(message) };
       }
       return redactor.redactDeep(accountCheck(account));

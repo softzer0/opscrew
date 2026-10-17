@@ -143,7 +143,7 @@ describe("servers.snapshotServer", () => {
       ?.snapshotServer("7", request)
       .catch((e: unknown) => e)) as OpsCrewError;
     expect(defaultError.code).toBe("PROVIDER_ERROR");
-    expect(defaultError.message).toContain("did not finish within 900 seconds");
+    expect(defaultError.message).toContain("did not finish within 15 minutes");
 
     const custom = setup(
       { "POST /servers/7/actions/create_image": createImage, "/actions/99": running },
@@ -152,7 +152,7 @@ describe("servers.snapshotServer", () => {
     const customError = (await custom.connector.servers
       ?.snapshotServer("7", { ...request, timeoutMs: 120_000 })
       .catch((e: unknown) => e)) as OpsCrewError;
-    expect(customError.message).toContain("did not finish within 120 seconds");
+    expect(customError.message).toContain("did not finish within 2 minutes");
   });
 
   it("rejects a non-numeric server id without calling the API", async () => {

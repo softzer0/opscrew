@@ -6,9 +6,9 @@ import type {
   ServerSnapshotApi,
   VpsConnector,
 } from "@opscrew/contracts";
-import { isUserFacingError, Redactor } from "@opscrew/core";
+import { errorText, Redactor } from "@opscrew/core";
 import { HetznerCatalog, StaticHetznerCatalog } from "./catalog";
-import { HetznerClient } from "./client";
+import { HETZNER_TOKEN_HINT, HetznerClient } from "./client";
 import { hetznerServerApi } from "./servers";
 
 /** Credentials OpsCrew needs for Hetzner Cloud. */
@@ -78,19 +78,13 @@ export function hetznerConnector(options: HetznerConnectorOptions): HetznerConne
     },
     async verifyCredentials(): Promise<CredentialCheck> {
       if (client === undefined) {
-        return {
-          ok: false,
-          message:
-            "HCLOUD_TOKEN is not set. Create a Read & Write API token in the Hetzner Cloud Console (your project → Security → API tokens) and set it as HCLOUD_TOKEN.",
-        };
+        return { ok: false, message: `HCLOUD_TOKEN is not set. ${HETZNER_TOKEN_HINT}` };
       }
       try {
         await client.verifyToken();
         return { ok: true, message: "The Hetzner Cloud API token works." };
       } catch (error) {
-        const message = isUserFacingError(error)
-          ? `${error.message}${error.hint ? ` ${error.hint}` : ""}`
-          : "Could not check the Hetzner Cloud API token.";
+        const message = errorText(error, "Could not check the Hetzner Cloud API token.");
         return { ok: false, message: redactor.redact(message) };
       }
     },

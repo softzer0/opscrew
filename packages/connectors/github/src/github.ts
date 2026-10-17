@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
 import type { FetchLike } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import {
+  CONNECTION_HINT,
+  durationText,
+  isRecord,
+  OpsCrewError,
+  parseAnswer,
+  pollAction,
+  realSleep,
+} from "@opscrew/core";
 import { z } from "zod";
 import { sealSecret } from "./seal";
 
@@ -77,6 +85,11 @@ const TreeSchema = z.looseObject({
   truncated: z.boolean().optional(),
 });
 
+/** The `message` of GitHub's error answer, or `fallback` when it has none. */
+function messageOf(json: unknown, fallback: string): string {
+  return isRecord(json) && "message" in json ? String(json.message) : fallback;
+}
+
 /** The git blob SHA-1 of a file's text, as GitHub names it in a tree. */
 function gitBlobSha(content: string): string {
   const body = Buffer.from(content, "utf8");
@@ -96,10 +109,7 @@ function refusedRef(
   owner: string,
   repo: string,
 ): OpsCrewError {
-  const said =
-    typeof json === "object" && json !== null && "message" in json
-      ? String((json as { message: unknown }).message)
-      : "HTTP 422";
+  const said = messageOf(json, "HTTP 422");
   return new OpsCrewError(
     "PROVIDER_ERROR",
     `GitHub refused to ${what} in ${owner}/${repo}: ${said}.`,
@@ -193,7 +203,7 @@ export class GitHubClient {
     this.#fetch = options.fetch;
     this.#baseUrl = (options.baseUrl ?? GITHUB_API).replace(/\/$/, "");
     this.#userAgent = `opscrew/${options.version ?? "0.1.0"}`;
-    this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#sleep = options.sleep ?? realSleep;
     this.#now = options.now ?? Date.now;
     this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   }
@@ -226,9 +236,9 @@ export class GitHubClient {
       throw new OpsCrewError(
         "PROVIDER_ERROR",
         signal.aborted
-          ? `GitHub did not answer within ${Math.round(this.#timeoutMs / 1000)} seconds when trying to ${what}.`
+          ? `GitHub did not answer within ${durationText(this.#timeoutMs)} when trying to ${what}.`
           : `Could not reach GitHub to ${what}.`,
-        { hint: "Check your internet connection and try again.", cause: error },
+        { hint: CONNECTION_HINT, cause: error },
       );
     }
     let json: unknown;
@@ -238,10 +248,7 @@ export class GitHubClient {
       json = undefined;
     }
     if (response.status >= 400 && !okStatuses.includes(response.status)) {
-      const message =
-        typeof json === "object" && json !== null && "message" in json
-          ? String((json as { message: unknown }).message)
-          : `HTTP ${response.status}`;
+      const message = messageOf(json, `HTTP ${response.status}`);
       if (response.status === 401) {
         throw new OpsCrewError(
           "CREDENTIALS_INVALID",
@@ -262,13 +269,7 @@ export class GitHubClient {
   }
 
   #parse<T>(schema: z.ZodType<T>, json: unknown, what: string): T {
-    const parsed = schema.safeParse(json);
-    if (!parsed.success)
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `GitHub returned an unexpected answer when trying to ${what}.`,
-      );
-    return parsed.data;
+    return parseAnswer(schema, json, "GitHub", what);
   }
 
   async getRepo(owner: string, repo: string): Promise<RepoInfo> {
@@ -644,14 +645,11 @@ export class GitHubClient {
     const sinceMs = floorToSecond(options.since) - CLOCK_SKEW_ALLOWANCE_MS;
     const createdSince = new Date(sinceMs).toISOString().replace(/\.\d{3}Z$/, "Z");
     const branch = options.ref.replace(/^refs\/heads\//, "");
-    const deadline = this.#now() + timeoutMs;
+    const within = durationText(timeoutMs);
     let runId = options.runId;
-    let htmlUrl: string | undefined;
-    for (;;) {
-      let run: WorkflowRun | undefined;
-      if (runId !== undefined) {
-        run = await this.getWorkflowRun(owner, repo, runId);
-      } else {
+    const run = await pollAction<WorkflowRun | undefined>({
+      read: async () => {
+        if (runId !== undefined) return this.getWorkflowRun(owner, repo, runId);
         const runs = await this.listWorkflowRuns(owner, repo, {
           workflowFile: options.workflowFile,
           branch,
@@ -659,35 +657,38 @@ export class GitHubClient {
           createdSince,
           perPage: 10,
         });
-        run = runs
+        const newest = runs
           .filter((r) => Date.parse(r.createdAt) >= sinceMs)
           .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id - a.id)[0];
-        if (run) runId = run.id;
-      }
-      if (run) {
-        htmlUrl = run.htmlUrl;
-        if (run.status === "completed") {
-          return { id: run.id, conclusion: run.conclusion, htmlUrl: run.htmlUrl };
-        }
-      }
-      if (this.#now() >= deadline) break;
-      await this.#sleep(Math.max(0, Math.min(pollMs, deadline - this.#now())));
-    }
-    const minutes = Math.max(1, Math.round(timeoutMs / 60_000));
-    if (htmlUrl !== undefined) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `The ${options.workflowFile} run on ${branch} did not finish within ${minutes} minute${minutes === 1 ? "" : "s"}.`,
-        { hint: `Follow it at ${htmlUrl}, then run the command again once it has finished.` },
-      );
-    }
-    throw new OpsCrewError(
-      "PROVIDER_ERROR",
-      `GitHub did not show a run of ${options.workflowFile} on ${branch} within ${minutes} minute${minutes === 1 ? "" : "s"}.`,
-      {
-        hint: `Check the Actions tab of https://github.com/${owner}/${repo} for the run, then run the command again.`,
+        runId = newest?.id;
+        return newest;
       },
-    );
+      finished: (run) => run?.status === "completed",
+      // Once a run was found, every later read returns it.
+      timedOut: (run) =>
+        run === undefined
+          ? new OpsCrewError(
+              "PROVIDER_ERROR",
+              `GitHub did not show a run of ${options.workflowFile} on ${branch} within ${within}.`,
+              {
+                hint: `Check the Actions tab of https://github.com/${owner}/${repo} for the run, then run the command again.`,
+              },
+            )
+          : new OpsCrewError(
+              "PROVIDER_ERROR",
+              `The ${options.workflowFile} run on ${branch} did not finish within ${within}.`,
+              {
+                hint: `Follow it at ${run.htmlUrl}, then run the command again once it has finished.`,
+              },
+            ),
+      timeoutMs,
+      intervalMs: pollMs,
+      sleep: this.#sleep,
+      now: this.#now,
+    });
+    // `finished` is true only for a completed run.
+    const { id, conclusion, htmlUrl } = run as WorkflowRun;
+    return { id, conclusion, htmlUrl };
   }
 
   /** The authenticated user's login (used to verify the token). */

@@ -1,4 +1,4 @@
-import { OpsCrewError, Redactor } from "@opscrew/core";
+import { OpsCrewError, parseAnswer, Redactor } from "@opscrew/core";
 import { z } from "zod";
 import { COMPOSE_PROJECT_LABEL, VolumeNameSchema } from "./names";
 import {
@@ -16,6 +16,11 @@ export const PORTAINER_REQUEST_TIMEOUT_MS = 30_000;
 const USER_AGENT = "opscrew-connector-portainer/0.1.0";
 const TOKEN_HINT =
   "Create an access token in Portainer (your user menu → My account → Access tokens) for a user who may manage stacks on the environment, and set it as PORTAINER_API_KEY.";
+/** Where in Portainer the access token OpsCrew uses is created, and where it goes. */
+export const PORTAINER_TOKEN_STEPS =
+  "In Portainer, open your user menu → My account → Access tokens and add a token (for an administrator, or for a user who may manage stacks on the environment), then set PORTAINER_API_KEY to it.";
+/** What a 403 means for registry entries, as an access the user can grant. */
+const REGISTRY_ACCESS = "manage registries (administrators only)";
 
 // --- What the client returns (secrets are dropped while parsing) --------------------------------
 
@@ -326,20 +331,13 @@ export function portainerClient(
         },
       );
     }
-    const parsed = spec.schema.safeParse(json);
-    if (!parsed.success) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `Portainer returned an unexpected answer when asked to ${spec.action}: ${parsed.error.issues
-          .slice(0, 3)
-          .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-          .join("; ")}`,
-        {
-          hint: "OpsCrew supports Portainer 2.45 or newer; if yours is, please report this to OpsCrew.",
-        },
-      );
-    }
-    return parsed.data;
+    return parseAnswer(
+      spec.schema,
+      json,
+      "Portainer",
+      spec.action,
+      "OpsCrew supports Portainer 2.45 or newer; if yours is, please report this to OpsCrew.",
+    );
   }
 
   const get = async <S extends z.ZodType>(
@@ -488,7 +486,7 @@ export function portainerClient(
         "/api/registries",
         z.array(registrySchema),
         "list its registries",
-        "manage registries (administrators only)",
+        REGISTRY_ACCESS,
       );
       return list.map((registry) => ({
         ...toRegistrySummary(registry),
@@ -513,7 +511,7 @@ export function portainerClient(
         },
         schema: z.object({ Id: idSchema }),
         action: `add the registry entry ${input.name}`,
-        access: "manage registries (administrators only)",
+        access: REGISTRY_ACCESS,
       })) as { Id: number };
       return { id: body.Id };
     },
@@ -529,7 +527,7 @@ export function portainerClient(
           Password: input.password,
         },
         action: `replace the token of the registry entry ${input.name}`,
-        access: "manage registries (administrators only)",
+        access: REGISTRY_ACCESS,
       });
     },
     async grantRegistry(environmentId, registryId, userId) {
@@ -542,7 +540,7 @@ export function portainerClient(
           Namespaces: [],
         },
         action: "let the user use the registry entry on the environment",
-        access: "manage registries (administrators only)",
+        access: REGISTRY_ACCESS,
       });
     },
     async removeRegistry(registryId) {
@@ -550,7 +548,7 @@ export function portainerClient(
         method: "DELETE",
         path: `/api/registries/${id(registryId)}`,
         action: "remove the registry entry",
-        access: "manage registries (administrators only)",
+        access: REGISTRY_ACCESS,
         notFound: "absent",
       });
       return result === "absent" ? "absent" : "removed";

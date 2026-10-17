@@ -6,7 +6,7 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { checkRegistrationYears } from "@opscrew/core";
 import type { CloudflareClient } from "./client";
 
 /** Suggestions checked live per `suggest` call (one domain-check request). */
@@ -50,16 +50,8 @@ export class CloudflareRegistrar implements Registrar {
   }
 
   /** Starts the purchase (costs money). Uses the account's default contact and payment method. */
-  register(request: RegistrationRequest): Promise<RegistrationStatus> {
-    if (!Number.isInteger(request.years) || request.years < 1 || request.years > 10) {
-      return Promise.reject(
-        new OpsCrewError(
-          "INVALID_INPUT",
-          `A domain can be registered for 1 to 10 years, not ${request.years}.`,
-          { hint: "Pass a whole number of years between 1 and 10." },
-        ),
-      );
-    }
+  async register(request: RegistrationRequest): Promise<RegistrationStatus> {
+    checkRegistrationYears(request.years);
     return this.#client.createRegistration(this.#accountId, {
       domain_name: request.domain,
       years: request.years,

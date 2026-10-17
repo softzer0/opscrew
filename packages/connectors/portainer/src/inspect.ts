@@ -1,4 +1,4 @@
-import { OpsCrewError, sha256Hex } from "@opscrew/core";
+import { OpsCrewError, sha256Hex, zodIssues } from "@opscrew/core";
 import { z } from "zod";
 import { PortainerApiError, type PortainerClient, type PortainerEnvironment } from "./client";
 import {
@@ -38,9 +38,7 @@ export async function inspectPortainer(
   if (!parsed.success) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `inspectPortainer needs a positive environment id and OpsCrew's stack names (opscrew-<app>…): ${parsed.error.issues
-        .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-        .join("; ")}`,
+      `inspectPortainer needs a positive environment id and OpsCrew's stack names (opscrew-<app>…): ${zodIssues(parsed.error, Number.POSITIVE_INFINITY)}`,
     );
   }
   const { environmentId } = parsed.data;

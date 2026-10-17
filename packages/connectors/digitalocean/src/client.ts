@@ -1,6 +1,8 @@
 import type { FetchLike } from "@opscrew/contracts";
 import {
+  durationText,
   type JsonClient,
+  jsonClient,
   OpsCrewError,
   pollAction,
   type RequestFailure,
@@ -176,8 +178,6 @@ export interface DigitalOceanClientOptions {
   timeoutMs?: number;
 }
 
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /**
  * Typed DigitalOcean API v2 client with pagination, rate-limit handling and plain-English errors
  * that never contain the token. The only write is {@link snapshotDroplet}, called after approval.
@@ -192,18 +192,15 @@ export class DigitalOceanClient {
     this.#token = options.token;
     this.#baseUrl = (options.baseUrl ?? DIGITALOCEAN_API_URL).replace(/\/+$/, "");
     this.#userAgent = `opscrew/${options.version ?? CONNECTOR_VERSION}`;
-    this.#http = {
-      fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
-      timeoutMs: options.timeoutMs ?? REQUEST_TIMEOUT_MS,
+    this.#http = jsonClient(options, {
+      timeoutMs: REQUEST_TIMEOUT_MS,
       retry: {
         serverErrors: 1,
         serverErrorDelayMs: () => 1_000,
         rateLimits: 1,
         rateLimitDelayMs: () => 5_000,
       },
-      sleep: options.sleep ?? defaultSleep,
-      now: options.now ?? Date.now,
-    };
+    });
   }
 
   /** The account the token belongs to (`GET /v2/account`). */
@@ -274,7 +271,7 @@ export class DigitalOceanClient {
       timedOut: (action) =>
         new OpsCrewError(
           "PROVIDER_ERROR",
-          `${label(action)} did not finish within ${duration(options.timeoutMs)}.`,
+          `${label(action)} did not finish within ${durationText(options.timeoutMs)}.`,
           {
             hint: "It may still be running: check its progress in the DigitalOcean control panel and try again once it has finished.",
           },
@@ -322,11 +319,10 @@ export class DigitalOceanClient {
     query: Record<string, string> = {},
     init: { method?: "GET" | "POST"; body?: unknown } = {},
   ): Promise<z.infer<S>> {
-    const url = new URL(`${this.#baseUrl}${path}`);
-    for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
     const method = init.method ?? "GET";
     return requestJson(this.#http, {
-      url: url.toString(),
+      url: `${this.#baseUrl}${path}`,
+      query,
       method,
       headers: { Authorization: `Bearer ${this.#token}`, "User-Agent": this.#userAgent },
       ...(init.body !== undefined && { body: init.body }),
@@ -342,7 +338,7 @@ export class DigitalOceanClient {
         return new OpsCrewError(
           "PROVIDER_ERROR",
           failure.timedOut
-            ? `The DigitalOcean API did not answer within ${duration(this.#http.timeoutMs)} (${method} ${path}).`
+            ? `The DigitalOcean API did not answer within ${durationText(this.#http.timeoutMs)} (${method} ${path}).`
             : `Could not reach the DigitalOcean API (${method} ${path}).`,
           {
             hint: idempotent
@@ -435,13 +431,4 @@ export class DigitalOceanClient {
         );
     }
   }
-}
-
-function duration(ms: number): string {
-  if (ms >= 60_000 && ms % 60_000 === 0) {
-    const minutes = ms / 60_000;
-    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
-  }
-  const value = Math.round(ms / 100) / 10;
-  return `${value} second${value === 1 ? "" : "s"}`;
 }

@@ -10,6 +10,7 @@ import { AppMarkerSchema, HOST_ADAPTER_VERSION, type HostRecord, HostRecordSchem
 import { type HostFindings, hostFindings } from "./findings";
 import { hostPlanHash } from "./hash";
 import { probePrivilege } from "./inspect";
+import { linesOf } from "./parse";
 import { asLogin, asRoot, type Privilege } from "./shell";
 import {
   armScript,
@@ -71,10 +72,7 @@ function nextStep(command: string): string {
 /** Plain detail from a failed script: its `opscrew: ` lines, else the last stderr lines. */
 function detail(result: CommandResult, redactor: Redactor): string {
   if (result.timedOut) return "it took too long";
-  const lines = result.stderr
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
+  const lines = linesOf(result.stderr);
   const own = lines.filter((line) => line.startsWith("opscrew: ")).map((line) => line.slice(9));
   const text = own.length > 0 ? own.join(" ") : lines.slice(-3).join(" / ");
   const clipped = text.length > 500 ? `${text.slice(0, 500)}…` : text;
@@ -131,8 +129,8 @@ function wrapRoot(ctx: Context, script: string): string {
 /** `prev.<key>=<value>` lines from a check script. */
 function previousValues(stdout: string): Record<string, string | boolean> {
   const values: Record<string, string | boolean> = {};
-  for (const line of stdout.split("\n")) {
-    const match = /^prev\.([A-Za-z][A-Za-z0-9]*)=(.*)$/.exec(line.trim());
+  for (const line of linesOf(stdout)) {
+    const match = /^prev\.([A-Za-z][A-Za-z0-9]*)=(.*)$/.exec(line);
     if (!match?.[1]) continue;
     const value = match[2] ?? "";
     values[match[1]] = value === "true" ? true : value === "false" ? false : value;

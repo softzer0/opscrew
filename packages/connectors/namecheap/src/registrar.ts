@@ -10,7 +10,17 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
+import {
+  checkRegistrationYears,
+  connectAfterBuyingHint,
+  DOMAIN_TAKEN_REASON,
+  lowerFirst,
+  maybeStarted,
+  NEW_PRICE_HINT,
+  normalizeHostName,
+  OpsCrewError,
+  plural,
+} from "@opscrew/core";
 import {
   type NamecheapClient,
   type NamecheapDomain,
@@ -93,11 +103,16 @@ export class NamecheapRegistrar implements Registrar {
   }
 
   #extensionReason(domain: string, tld: string): string {
-    return `Registering .${tld} at Namecheap needs registrant details (extended attributes) that OpsCrew does not collect; buy it in the Namecheap dashboard at ${this.#client.dashboard.domainList}, then run \`opscrew domain connect ${domain}\`.`;
+    return `Registering .${tld} at Namecheap needs registrant details (extended attributes) that OpsCrew does not collect; ${this.#buyInDashboard(domain)}`;
   }
 
   #premiumReason(domain: string): string {
-    return `This is a premium domain; buy it in the Namecheap dashboard at ${this.#client.dashboard.domainList}, then run \`opscrew domain connect ${domain}\`.`;
+    return `This is a premium domain; ${this.#buyInDashboard(domain)}`;
+  }
+
+  #buyInDashboard(domain: string): string {
+    const where = `in the Namecheap dashboard at ${this.#client.dashboard.domainList}`;
+    return lowerFirst(connectAfterBuyingHint(where, domain));
   }
 
   /** Live availability with first-year and renewal prices (fees included). */
@@ -139,12 +154,7 @@ export class NamecheapRegistrar implements Registrar {
       } else if (r.error) {
         checks.push(no(`Namecheap could not check this domain: ${r.error.replace(/\.$/, "")}.`));
       } else if (!r.available) {
-        checks.push(
-          no(
-            "This domain is already registered by someone else.",
-            r.premium ? "premium" : undefined,
-          ),
-        );
+        checks.push(no(DOMAIN_TAKEN_REASON, r.premium ? "premium" : undefined));
       } else if (r.premium) {
         checks.push(no(this.#premiumReason(domain), "premium"));
       } else if (NAMECHEAP_EXTENDED_ATTRIBUTE_TLDS.includes(tld)) {
@@ -205,7 +215,7 @@ export class NamecheapRegistrar implements Registrar {
    */
   async quote(domain: string, years: number): Promise<RegistrationQuote> {
     const name = normalizeHostName(domain);
-    checkYears(years);
+    checkRegistrationYears(years);
     const { tld } = splitDomain(name);
     const stop = (reason: string) =>
       new OpsCrewError("PHASE_PRECONDITION", `Namecheap cannot sell ${name} through its API.`, {
@@ -221,7 +231,7 @@ export class NamecheapRegistrar implements Registrar {
     const price = priceFor(checked.register, years);
     if (!price) {
       throw stop(
-        `Namecheap lists no USD price for ${years} year${years === 1 ? "" : "s"} of .${tld}; try another number of years or buy it in the dashboard at ${this.#client.dashboard.domainList}.`,
+        `Namecheap lists no USD price for ${plural(years, "year")} of .${tld}; try another number of years or buy it in the dashboard at ${this.#client.dashboard.domainList}.`,
       );
     }
     const { renewal } = checked.check;
@@ -254,7 +264,7 @@ export class NamecheapRegistrar implements Registrar {
         { hint: "Get a new quote from Namecheap and approve it." },
       );
     }
-    checkYears(request.years);
+    checkRegistrationYears(request.years);
     const { tld } = splitDomain(domain);
     if (NAMECHEAP_EXTENDED_ATTRIBUTE_TLDS.includes(tld)) {
       throw new OpsCrewError(
@@ -270,7 +280,7 @@ export class NamecheapRegistrar implements Registrar {
     if (!current) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `Namecheap no longer lists a price for ${request.years} year${request.years === 1 ? "" : "s"} of .${tld}. Nothing was bought.`,
+        `Namecheap no longer lists a price for ${plural(request.years, "year")} of .${tld}. Nothing was bought.`,
         { hint: "Run the command again to get a new quote." },
       );
     }
@@ -278,7 +288,7 @@ export class NamecheapRegistrar implements Registrar {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         `The Namecheap price of ${domain} changed from ${dollars(approved)} to ${dollars(current.amount)} since you approved it. Nothing was bought.`,
-        { hint: "Run the command again to see and approve the new price." },
+        { hint: NEW_PRICE_HINT },
       );
     }
     const balance = await this.#client.getBalances();
@@ -446,14 +456,4 @@ function namecheapMailService(
   if (emailType === "OX") return "Private Email";
   if (records.some((r) => r.type === "MX")) return undefined;
   return `mail service (${emailType})`;
-}
-
-function checkYears(years: number): void {
-  if (!Number.isInteger(years) || years < 1 || years > 10) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `A domain can be registered for 1 to 10 years, not ${years}.`,
-      { hint: "Pass a whole number of years between 1 and 10." },
-    );
-  }
 }

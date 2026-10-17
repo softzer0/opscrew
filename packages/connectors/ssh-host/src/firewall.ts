@@ -3,6 +3,7 @@
  * second firewall: rules from Docker, ufw itself and well-known helpers (fail2ban, CrowdSec,
  * Tailscale, libvirt, Kubernetes networking) are not counted.
  */
+import { plural } from "@opscrew/core";
 
 /** Chains and nftables tables that belong to tools OpsCrew can live next to. */
 const KNOWN_PREFIXES = [
@@ -56,7 +57,7 @@ export function foreignIptables(text: string, ufwActive: boolean, label: string)
   }
   if (unmanaged > 0) {
     found.push(
-      `${label} has ${unmanaged} rule${unmanaged === 1 ? "" : "s"} in the INPUT chain that ufw does not manage`,
+      `${label} has ${plural(unmanaged, "rule")} in the INPUT chain that ufw does not manage`,
     );
   }
   return found;

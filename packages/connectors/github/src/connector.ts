@@ -1,5 +1,5 @@
 import type { CommandRunner, Connector, CredentialCheck, FetchLike } from "@opscrew/contracts";
-import { findExecutable, Redactor } from "@opscrew/core";
+import { errorText, findExecutable, Redactor } from "@opscrew/core";
 import { GITHUB_TOKEN_PERMISSIONS, GitHubClient } from "./github";
 
 /**
@@ -67,10 +67,7 @@ export function githubConnector(options: GitHubConnectorOptions): GitHubConnecto
           message: `GitHub token works (signed in as ${login}).`,
         };
       } catch (error) {
-        return {
-          ok: false,
-          message: redactor.redact(error instanceof Error ? error.message : String(error)),
-        };
+        return { ok: false, message: redactor.redact(errorText(error)) };
       }
     },
   };

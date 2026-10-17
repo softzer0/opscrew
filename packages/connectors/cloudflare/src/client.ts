@@ -7,7 +7,18 @@ import type {
   RegistrarDnsRecord,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
+import {
+  CONNECTION_HINT,
+  durationText,
+  maybeDoneHint,
+  maybeStarted,
+  normalizeHostName,
+  OpsCrewError,
+  parseAnswer,
+  plural,
+  realSleep,
+  statusPageHint,
+} from "@opscrew/core";
 import { z } from "zod";
 import type { CloudflareRecordInput } from "./records";
 import {
@@ -34,7 +45,7 @@ export const CLOUDFLARE_TOKEN_PERMISSIONS = [
 ] as const;
 
 /** Where users create and edit Cloudflare API tokens. */
-const CLOUDFLARE_TOKEN_PAGE = "https://dash.cloudflare.com/profile/api-tokens";
+export const CLOUDFLARE_TOKEN_PAGE = "https://dash.cloudflare.com/profile/api-tokens";
 
 /**
  * Optional permissions for buying domains, named as in the token builder: the account-level
@@ -461,7 +472,7 @@ export class CloudflareClient {
     this.#token = options.token;
     this.#fetch = options.fetch;
     this.#baseUrl = (options.baseUrl ?? CLOUDFLARE_API).replace(/\/$/, "");
-    this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#sleep = options.sleep ?? realSleep;
     this.#userAgent = `opscrew/${options.version ?? "0.1.0"}`;
     this.#registrar = options.registrarSandbox ? "registrar-sandbox" : "registrar";
     this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
@@ -510,12 +521,10 @@ export class CloudflareClient {
         throw new OpsCrewError(
           "PROVIDER_ERROR",
           signal.aborted
-            ? `The Cloudflare API did not answer within ${Math.round(this.#timeoutMs / 1000)} seconds.`
+            ? `The Cloudflare API did not answer within ${durationText(this.#timeoutMs)}.`
             : "Could not reach the Cloudflare API.",
           {
-            hint: retryServerErrors
-              ? "Check your internet connection and try again."
-              : "The request may still have reached Cloudflare; check the current state before trying again.",
+            hint: retryServerErrors ? CONNECTION_HINT : maybeDoneHint("Cloudflare"),
             cause: error,
           },
         );
@@ -586,19 +595,12 @@ export class CloudflareClient {
     throw new OpsCrewError("PROVIDER_ERROR", `Cloudflare could not ${what}: ${detail}.`, {
       hint: clientError
         ? (hints.other ?? tokenHint())
-        : "Try again in a minute; if it keeps failing, check https://www.cloudflarestatus.com.",
+        : statusPageHint("https://www.cloudflarestatus.com"),
     });
   }
 
   #parse<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
-    const result = schema.safeParse(value);
-    if (!result.success) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `Cloudflare returned an unexpected answer when trying to ${what}.`,
-      );
-    }
-    return result.data;
+    return parseAnswer(schema, value, "Cloudflare", what);
   }
 
   /** The `result` of a successful answer, parsed with `schema`; any other answer throws. */
@@ -1127,7 +1129,7 @@ export class CloudflareClient {
       const result = await this.#call(
         `/zones/${encodeURIComponent(zoneId)}/dns_records/batch`,
         BatchResultSchema.nullish(),
-        `create ${posts.length} DNS record${posts.length === 1 ? "" : "s"}`,
+        `create ${plural(posts.length, "DNS record")}`,
         {
           method: "POST",
           body: { posts },

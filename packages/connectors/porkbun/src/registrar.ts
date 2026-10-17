@@ -12,7 +12,15 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { isUserFacingError, listText, normalizeHostName, OpsCrewError } from "@opscrew/core";
+import {
+  checkRegistrationYears,
+  DOMAIN_TAKEN_REASON,
+  isUserFacingError,
+  listText,
+  normalizeHostName,
+  OpsCrewError,
+  realSleep,
+} from "@opscrew/core";
 import type {
   PorkbunAvailability,
   PorkbunClient,
@@ -25,7 +33,7 @@ import {
   PORKBUN_API_SETTINGS_URL,
   PORKBUN_CREDIT_URL,
   PORKBUN_DASHBOARD_URL,
-  PORKBUN_WEBSITE,
+  websiteThenConnect,
 } from "./problems";
 
 /** The client calls {@link PorkbunRegistrar} needs (a `PorkbunClient` or a test fake). */
@@ -75,10 +83,6 @@ const SCOPE_FEATURES = [
 
 const usd = (cents: number): Money => ({ amount: cents / 100, currency: "USD" });
 
-function websiteThenConnect(domain: string): string {
-  return `Buy ${domain} on ${PORKBUN_WEBSITE}, then run \`opscrew domain connect ${domain}\`.`;
-}
-
 function isPorkbunNameserver(host: string): boolean {
   return host === "porkbun.com" || host.endsWith(".porkbun.com");
 }
@@ -95,7 +99,7 @@ function unavailableReason(
   if (!item.available) {
     return item.inYourAccount
       ? "This domain is already in your Porkbun account."
-      : "This domain is already registered by someone else.";
+      : DOMAIN_TAKEN_REASON;
   }
   if (item.premium) {
     return `This is a premium domain; Porkbun sells premium names only on its website. ${websiteThenConnect(d)}`;
@@ -189,7 +193,7 @@ export class PorkbunRegistrar implements Registrar {
     this.#client = client;
     this.#randomUUID = options.randomUUID ?? randomUUID;
     this.#now = options.now ?? Date.now;
-    this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#sleep = options.sleep ?? realSleep;
   }
 
   /** Waits out the rest of Porkbun's one-create-per-second window, then records this attempt. */
@@ -292,15 +296,7 @@ export class PorkbunRegistrar implements Registrar {
    */
   async quote(domain: string, years: number): Promise<RegistrationQuote> {
     const name = normalizeDomain(domain);
-    if (!Number.isInteger(years) || years < 1) {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        `A domain is registered for whole years, not ${years}.`,
-        {
-          hint: "Porkbun registers the registry minimum, usually 1 year.",
-        },
-      );
-    }
+    checkRegistrationYears(years);
     const cannotSell = (reason: string | undefined) =>
       new OpsCrewError("PHASE_PRECONDITION", `Porkbun cannot sell ${name} through its API.`, {
         hint: reason ?? "Porkbun did not check the domain.",
@@ -383,13 +379,7 @@ export class PorkbunRegistrar implements Registrar {
         { hint: "Get a new Porkbun quote and approve it." },
       );
     }
-    if (!Number.isInteger(request.years) || request.years < 1) {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        `A domain is registered for whole years, not ${request.years}.`,
-        { hint: "Porkbun registers the registry minimum, usually 1 year." },
-      );
-    }
+    checkRegistrationYears(request.years);
     requireTerm(name, request.years, (await this.#requirementsFor(tldOf(name))).termYears ?? 1);
     const costCents = Math.round(quote.price.amount * 100);
     const idempotencyKey = request.idempotencyKey?.trim() || this.#randomUUID();

@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { DsRecord, FetchLike } from "@opscrew/contracts";
-import { type ErrorCode, maybeStarted, normalizeHostName, OpsCrewError } from "@opscrew/core";
+import {
+  CONNECTION_HINT,
+  type ErrorCode,
+  maybeStarted,
+  normalizeHostName,
+  OpsCrewError,
+  parseAnswer,
+  realSleep,
+} from "@opscrew/core";
 import type { z } from "zod";
 import {
   AutoRenewSchema,
@@ -195,7 +203,7 @@ export class PorkbunClient {
     this.#secretApiKey = options.secretApiKey.trim();
     this.sandbox = isPorkbunSandboxKey(this.#apiKey);
     this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
-    this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#sleep = options.sleep ?? realSleep;
     this.#randomUUID = options.randomUUID ?? randomUUID;
     this.#baseUrl = (options.baseUrl ?? PORKBUN_API).replace(/\/$/, "");
   }
@@ -319,7 +327,7 @@ export class PorkbunClient {
         throw this.#error(
           "PROVIDER_ERROR",
           `Could not reach the Porkbun API to ${what} (${failure}).`,
-          "Check your internet connection and try again.",
+          CONNECTION_HINT,
         );
       }
       if (!answer.envelope) {
@@ -341,15 +349,18 @@ export class PorkbunClient {
   }
 
   #parse<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
-    const result = schema.safeParse(value);
-    if (!result.success) {
-      throw this.#error(
-        "PROVIDER_ERROR",
-        `Porkbun returned an unexpected answer when trying to ${what}.`,
+    try {
+      return parseAnswer(
+        schema,
+        value,
+        "Porkbun",
+        what,
         "Try again in a few minutes; if it keeps happening, OpsCrew may need an update.",
       );
+    } catch (error) {
+      const { code, message, hint } = error as OpsCrewError;
+      throw this.#error(code, message, hint);
     }
-    return result.data;
   }
 
   async #get<T>(what: string, path: string, schema: z.ZodType<T>, options?: CallOptions) {
@@ -415,7 +426,7 @@ export class PorkbunClient {
 
   /** Whether (and for how long) an extension can be registered through the API. */
   async registrationRequirements(tld: string): Promise<PorkbunTldRequirements> {
-    const ext = tld.trim().toLowerCase().replace(/^\./, "").replace(/\.$/, "");
+    const ext = normalizeHostName(tld).replace(/^\./, "");
     if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(ext)) {
       throw new OpsCrewError("INVALID_INPUT", `".${tld.slice(0, 40)}" is not a domain extension.`);
     }
@@ -716,7 +727,7 @@ function toDomain(raw: z.infer<typeof DomainSchema>): PorkbunDomain {
   const whoisPrivacy = toFlag(raw.whoisPrivacy);
   const apiAccess = toFlag(raw.apiAccess);
   return {
-    domain: raw.domain.toLowerCase().replace(/\.$/, ""),
+    domain: normalizeHostName(raw.domain),
     ...(raw.status ? { status: raw.status } : {}),
     ...(createdAt ? { createdAt } : {}),
     ...(expiresAt ? { expiresAt } : {}),
