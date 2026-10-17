@@ -349,7 +349,12 @@ async function provisionFlow(
           phase,
         });
   const cloudflareHash =
-    sharedResult?.hash === undefined ? {} : { cloudflarePlanHash: sharedResult.hash };
+    sharedResult?.hash === undefined
+      ? {}
+      : {
+          cloudflarePlanHash: sharedResult.hash,
+          ...(sharedResult.deletes ? { cloudflarePlanDeletes: true as const } : {}),
+        };
   if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
   for (const approval of sharedResult?.approvals ?? []) approvals.push(approvalEntry(approval));
   if (sharedResult?.oneTimePinId !== undefined) {

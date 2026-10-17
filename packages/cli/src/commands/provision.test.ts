@@ -4,14 +4,16 @@ import { readServerAddresses } from "@opscrew/agents";
 import {
   FakeEngine,
   FakeGitHub,
+  fakeSharedCloudflare,
   planJsonFor,
   SERVER_IPV4,
   testPlan,
 } from "@opscrew/agents/testing";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
 import {
@@ -47,6 +49,8 @@ interface Setup {
   interactive?: boolean;
   approvals?: ApprovalHandler;
   prompts?: ScriptedPrompts;
+  /** The Cloudflare zone of OpsCrew's shared rules, kept between runs. */
+  zone?: FakeZone;
 }
 
 /** A non-interactive context (the real `--approve`/`--yes` handler) with deploy fakes attached. */
@@ -62,7 +66,13 @@ function context(p: DeployProject, options: Setup = {}) {
       ...(options.prompts === undefined ? {} : { prompts: options.prompts }),
     },
   });
-  withServices(ctx, { provision: provisionServices(engine, github) });
+  withServices(ctx, {
+    provision: provisionServices(
+      engine,
+      github,
+      options.zone === undefined ? {} : { sharedCloudflare: fakeSharedCloudflare(options.zone) },
+    ),
+  });
   return { ctx, engine, github, runner };
 }
 
@@ -226,6 +236,34 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
       );
       return hash;
     }
+
+    it("a Cloudflare plan that deletes OpsCrew's rule prints --confirm <app> in the --approve command", async () => {
+      project = await deployProject(testPlan({ domain: "shop.example.com" }));
+      const zone = new FakeZone();
+      // Deployed once: the app's hostname is in OpsCrew's rules.
+      const first = context(project, { approvals: new ApproveAll(), zone });
+      // (The run stops later, at the production values this test does not give.)
+      await run(first.ctx, "provision");
+      expect(zone.opscrewRule("http_request_firewall_custom")).toBeDefined();
+      // The app stops blocking probes: its hostname leaves OpsCrew's rule, the only app in it.
+      const file = path.join(project.root, "opscrew", "plan.yaml");
+      const plan = await readArtifact("plan", file);
+      await writeArtifact("plan", file, {
+        ...plan,
+        security: { ...plan.security, wafCustomRules: false },
+      });
+
+      const second = context(project, { zone });
+      expect(await run(second.ctx, "provision", "--plan-only", "--yes"), second.ctx.errors).toBe(0);
+      const hash = /Cloudflare plan:\s+([0-9a-f]{64})/.exec(second.ctx.output)?.[1];
+      expect(hash).toBeDefined();
+      expect(second.ctx.output).toMatch(
+        new RegExp(
+          `    opscrew provision --approve ${hash}( --approve [0-9a-f]{64})? --yes --confirm shop\n`,
+        ),
+      );
+      expect(second.ctx.output).toContain("keep --confirm shop in the command above in a script.");
+    });
 
     it("--approve <hash> --confirm <app> applies exactly that plan in a script", async () => {
       const hash = await planned();

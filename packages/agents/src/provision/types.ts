@@ -181,6 +181,11 @@ export interface ProvisionResult {
    * changes: applied by this run or, with `--plan-only`, the hash to approve.
    */
   cloudflarePlanHash?: string;
+  /**
+   * The Cloudflare plan with `cloudflarePlanHash` deletes OpsCrew's rule (or a ruleset it created),
+   * so approving it needs the app's name typed (`--confirm <app>` in scripts).
+   */
+  cloudflarePlanDeletes?: true;
   /** True when this run applied an infrastructure plan. */
   applied: boolean;
   /**

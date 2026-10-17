@@ -1,5 +1,6 @@
 import {
   applyCommand,
+  approveLaterHint,
   findSavedPlan,
   HOST_KEY_FINGERPRINT,
   type PhaseDeps,
@@ -262,13 +263,15 @@ export async function runInfraCommand(
         // OpsCrew's shared Cloudflare resources change first: their plan is approved by its hash too.
         if (result.cloudflarePlanHash !== undefined) {
           planned.push({ label: "Cloudflare plan", hash: result.cloudflarePlanHash });
+          // Deleting OpsCrew's rule needs the app's name, like an infrastructure plan that deletes.
+          removes = result.cloudflarePlanDeletes === true;
         }
         const saved =
           result.planHash === undefined
             ? undefined
             : await findSavedPlan(deps.paths.files.plansDir, result.planHash);
         if (result.planHash !== undefined && saved !== undefined) {
-          removes = saved.hasDestroy;
+          removes ||= saved.hasDestroy;
           planned.push({
             label: own || portainer ? "infrastructure (Cloudflare)" : "infrastructure",
             hash: result.planHash,
@@ -298,6 +301,8 @@ export async function runInfraCommand(
         stackFollows,
         publicImage,
         confirmApp: removes ? app : undefined,
+        // `opscrew dns` has no --confirm: a deleting plan is approved in a terminal or by provision.
+        dnsDeletes: removes && command === "dns" ? plan?.app.name : undefined,
       };
     },
     (error) => (wrongName ? undefined : yesHint(error)),
@@ -328,6 +333,12 @@ export async function runInfraCommand(
       if (result.confirmApp !== undefined) {
         ctx.stdout(
           `This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm ${result.confirmApp} in the command above in a script.\n`,
+        );
+      }
+      if (result.dnsDeletes !== undefined) {
+        ctx.stdout(
+          `${approveLaterHint(`opscrew ${command}`, result.planned[0]?.hash ?? "", result.dnsDeletes)}
+`,
         );
       }
       if (result.stackFollows) {

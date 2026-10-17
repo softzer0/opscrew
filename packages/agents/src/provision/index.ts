@@ -39,6 +39,7 @@ export {
   removeOldAccessMode,
 } from "./own";
 export {
+  approveLaterHint,
   describePlan,
   findSavedPlan,
   isMovesOnly,

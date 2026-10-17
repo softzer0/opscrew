@@ -410,6 +410,11 @@ export interface SharedCloudflareResult {
    * the one to approve; absent when nothing in Cloudflare changes.
    */
   hash?: string;
+  /**
+   * True when the plan with {@link SharedCloudflareResult.hash} deletes OpsCrew's rule or a ruleset
+   * it created, so approving it needs the typed app name (`--confirm <app>` in scripts).
+   */
+  deletes: boolean;
   /** True when this run changed something in Cloudflare. */
   applied: boolean;
   /** The `cloudflare-apply` approvals of this run. */
@@ -430,9 +435,15 @@ export async function applyZonePlan(
   client: CloudflareClient,
   zone: ZonePlan,
   input: SharedCloudflareInput,
-): Promise<{ applied?: SharedApplyResult; approval?: ApprovalRecord }> {
+): Promise<{ applied?: SharedApplyResult; approval?: ApprovalRecord; deletes: boolean }> {
   const { plan, details } = zone;
   deps.reporter.info(details);
+  // Deleting OpsCrew's rule (or a ruleset it created) needs the typed app name.
+  const deletes =
+    input.allowDestroy === true ||
+    plan.changes.some(
+      (change) => change.kind === "delete-rule" || change.kind === "delete-entrypoint",
+    );
   if (plan.changes.length === 0) {
     deps.reporter.success(
       "OpsCrew's shared Cloudflare resources are already set up for this app; nothing in Cloudflare changes.",
@@ -440,19 +451,14 @@ export async function applyZonePlan(
     // Hostnames removed from OpsCrew's rules by hand and no longer wanted leave the record; a
     // `--plan-only` run writes nothing.
     if (!input.planOnly) await writeCloudflareRecord(deps.paths, plan.record);
-    return {};
+    return { deletes: false };
   }
   if (input.planOnly) {
     deps.reporter.info(
       `The Cloudflare plan (hash ${plan.hash}) is not applied; nothing in Cloudflare was changed.`,
     );
-    return {};
+    return { deletes };
   }
-  const deletes =
-    input.allowDestroy === true ||
-    plan.changes.some(
-      (change) => change.kind === "delete-rule" || change.kind === "delete-entrypoint",
-    );
   const approval = await deps.approvals.request({
     kind: "cloudflare-apply",
     title: `Apply the Cloudflare plan to OpsCrew's shared Cloudflare resources (${plural(plan.changes.length, "change")})`,
@@ -507,7 +513,7 @@ export async function applyZonePlan(
   deps.reporter.success(
     `Changed OpsCrew's shared Cloudflare resources (${plural(applied.applied.length, "change")} applied).`,
   );
-  return { applied, approval };
+  return { applied, approval, deletes };
 }
 
 /**
@@ -528,6 +534,7 @@ export async function applySharedCloudflare(
   /** The hash of the removal from the zone the app leaves, when it changes something. */
   let left: string | undefined;
   let leftApplied = false;
+  let leftDeletes = false;
   if (planned.leave !== undefined) {
     const { plan } = planned.leave;
     const leave = await applyZonePlan(deps, planned.client, planned.leave, input);
@@ -536,16 +543,24 @@ export async function applySharedCloudflare(
       deps.reporter.info(
         `After this Cloudflare plan is applied (\`${command} --approve ${plan.hash}\`), run \`${command}\` again for the plans that follow.`,
       );
-      return { hash: plan.hash, applied: false, approvals, infrastructureWaits: true };
+      return {
+        hash: plan.hash,
+        deletes: leave.deletes,
+        applied: false,
+        approvals,
+        infrastructureWaits: true,
+      };
     }
     if (leave.approval !== undefined) approvals.push(leave.approval);
     if (plan.changes.length > 0) left = plan.hash;
     leftApplied = leave.applied !== undefined;
+    leftDeletes = leave.deletes;
   }
   const { main } = planned;
   if (main === undefined) {
     return {
       ...(left !== undefined ? { hash: left } : {}),
+      deletes: leftDeletes,
       applied: leftApplied,
       approvals,
       infrastructureWaits: false,
@@ -561,9 +576,11 @@ export async function applySharedCloudflare(
       `The infrastructure plan follows once this Cloudflare plan is applied, because it needs the one-time PIN login the Cloudflare plan adds (in scripts: run \`${command} --approve ${main.plan.hash}\`, then again with \`--approve\` and the infrastructure plan's hash).`,
     );
   }
-  const hash = main.plan.changes.length > 0 ? main.plan.hash : left;
+  const mainChanges = main.plan.changes.length > 0;
+  const hash = mainChanges ? main.plan.hash : left;
   return {
     ...(hash !== undefined ? { hash } : {}),
+    deletes: mainChanges ? change.deletes : leftDeletes,
     applied: leftApplied || change.applied !== undefined,
     approvals,
     ...(oneTimePinId !== undefined ? { oneTimePinId } : {}),

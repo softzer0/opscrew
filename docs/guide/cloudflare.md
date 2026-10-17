@@ -49,7 +49,9 @@ npx opscrew provision --approve <Cloudflare plan hash> --approve <infrastructure
 
 `--yes` never approves the Cloudflare plan. A Cloudflare plan that deletes OpsCrew's rule (when the
 last app's hostnames leave it) also needs the app's name: type it when the command asks in a
-terminal, or add `--confirm <app name>` to `npx opscrew provision` in a script.
+terminal. In a script, the command `npx opscrew provision --plan-only` prints already carries
+`--confirm <app name>`. `npx opscrew dns` has no `--confirm`: run it in a terminal, or use
+`npx opscrew provision` in the script.
 
 When Portainer gets a subdomain and the account has no one-time PIN login yet (see below), the
 infrastructure plan needs the login that the Cloudflare plan adds. In a script, the first

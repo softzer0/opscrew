@@ -302,6 +302,8 @@ describe.skipIf(!findExecutable("git"))(
       const planned = await runProvision(s.deps, { services: s.services, planOnly: true });
       const cloudflareHash = planned.cloudflarePlanHash as string;
       expect(cloudflareHash).toMatch(/^[0-9a-f]{64}$/);
+      // It only adds: no typed app name.
+      expect(planned.cloudflarePlanDeletes).toBeUndefined();
       expect(planned.planHash).toBeUndefined();
       const text = s.deps.reporter.text();
       expect(text).toContain("Cloudflare plan for example.com: 4 to change, 0 already in place.");
@@ -424,6 +426,9 @@ describe.skipIf(!findExecutable("git"))(
         security: { ...plan.security, wafCustomRules: false },
       });
       s.github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
+      // --plan-only says the Cloudflare plan deletes (its approval then needs --confirm <app>).
+      const planned = await runProvision(s.deps, { services: s.services, planOnly: true });
+      expect(planned.cloudflarePlanDeletes).toBe(true);
       s.handler.requests.length = 0;
 
       confirmation = "yes";
@@ -445,6 +450,7 @@ describe.skipIf(!findExecutable("git"))(
       expect(refused?.hint).toBe(
         `To apply it later without prompts, run: opscrew provision --approve ${request?.planHash} --confirm shop`,
       );
+      expect(request?.planHash).toBe(planned.cloudflarePlanHash);
       expect(s.zone.opscrewRule(WAF)).toBeDefined();
       expect(s.engine.applied).toHaveLength(1);
 
@@ -497,6 +503,7 @@ describe.skipIf(!findExecutable("git"))(
       // --plan-only: the removal is the run's Cloudflare plan; the infrastructure plan follows.
       const planned = await runProvision(s.deps, { services: s.services, planOnly: true });
       expect(planned.cloudflarePlanHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(planned.cloudflarePlanDeletes).toBe(true);
       expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
       expect(s.deps.reporter.text()).toContain(
         "Cloudflare plan for the zone this app leaves: 2 to change, 0 already in place.",
