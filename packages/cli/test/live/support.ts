@@ -2,11 +2,17 @@
  * Pure helpers of the live tests on a throwaway server (`own-server.test.ts`,
  * `portainer-target.test.ts`): their variables, reading plan hashes and checklists from CLI
  * output, choosing the throwaway Hetzner server, reading `ufw status` and `ss` output, splitting
- * the printed SSH tunnel command, and masking the server's address and secrets in everything the
+ * the printed SSH tunnel command, OpsCrew's shared Cloudflare rules in the zone (feature 011) and
+ * the cleanup's leftover decision, and masking the server's address and secrets in everything the
  * tests print. No network, no processes; the safety and leak helpers are unit-tested in
  * `support.test.ts`.
  */
 import { parseKeyscan } from "@opscrew/agents";
+import {
+  SHARED_RULES,
+  SharedRecordSchema,
+  type SharedRuleRef,
+} from "@opscrew/connector-cloudflare";
 import { Redactor } from "@opscrew/core";
 
 /** The variables both server live tests need besides their gate. */
@@ -31,20 +37,213 @@ export function missingVariables(
 }
 
 /**
- * The run's own hostname, one level below the zone: `e2e-<runId>.<zone>`. The zone is
+ * The run's own hostname, one level below the zone: `e2e-<runId>.<zone>`, or
+ * `e2e-<runId>-<app>.<zone>` for the run's second app (`app` `b`). The zone is
  * `OPSCREW_E2E_DOMAIN` without its first label when it has more than two labels
  * (`e2e.example.com` → `example.com`), else `OPSCREW_E2E_DOMAIN` itself (already the apex). Each
  * run asks Let's Encrypt for a certificate on new names (it issues only 5 per week for the same
  * names), and one level below the zone stays under Cloudflare's free edge certificate (`*.<zone>`).
  */
-export function runHostname(domain: string, runId: string): string {
+export function runHostname(domain: string, runId: string, app?: string): string {
   const labels = domain.trim().toLowerCase().replace(/\.$/, "").split(".");
   const zone = labels.length > 2 ? labels.slice(1) : labels;
   const id = runId.toLowerCase().replace(/[^a-z0-9]/g, "");
   if (id === "" || zone.some((label) => label === "")) {
     throw new Error(`Cannot derive a hostname for this run from "${domain}" and "${runId}".`);
   }
-  return [`e2e-${id}`, ...zone].join(".");
+  return [`e2e-${id}${app === undefined ? "" : `-${app}`}`, ...zone].join(".");
+}
+
+// ---------------------------------------------------------------------------------------------
+// OpsCrew's shared Cloudflare rules (contracts/cloudflare-shared.md of feature 011).
+
+const SHARED_REFS = Object.keys(SHARED_RULES) as SharedRuleRef[];
+
+/** A phase OpsCrew keeps one shared rule in. */
+export type SharedPhase = (typeof SHARED_RULES)[SharedRuleRef]["phase"];
+
+/** A rule of a zone ruleset as Cloudflare's API returns it (the fields the tests read). */
+export interface ZoneRule {
+  id: string;
+  ref?: string;
+  description?: string;
+  expression?: string;
+  action?: string;
+  action_parameters?: unknown;
+  enabled?: boolean;
+}
+
+/** The zone's entrypoint ruleset of each of OpsCrew's phases; `undefined` where it has none. */
+export type ZoneEntrypoints = Record<SharedPhase, { id: string; rules: ZoneRule[] } | undefined>;
+
+/** The hostnames of OpsCrew's rule of each ref, sorted; `undefined` where there is no such rule. */
+export type SharedHosts = Record<SharedRuleRef, string[] | undefined>;
+
+/** The hostnames one app has in each of OpsCrew's shared rules. */
+export type AppRules = Partial<Record<SharedRuleRef, readonly string[]>>;
+
+/** The hostnames a rule expression matches on (`http.host in {"a" "b"}`, `http.host eq "a"`), lower case. */
+function expressionHosts(expression: string): string[] {
+  const hosts: string[] = [];
+  for (const set of expression.matchAll(/http\.host\s+in\s+\{([^}]*)\}/g)) {
+    for (const host of (set[1] ?? "").matchAll(/"([^"]*)"/g)) hosts.push(host[1] ?? "");
+  }
+  for (const one of expression.matchAll(/http\.host\s+(?:eq|==)\s+"([^"]*)"/g)) {
+    hosts.push(one[1] ?? "");
+  }
+  return hosts.map((host) => host.toLowerCase());
+}
+
+const sortedUnique = (hosts: readonly string[]) =>
+  [...new Set(hosts.map((host) => host.toLowerCase()))].sort();
+
+const isShared = (rule: ZoneRule) => SHARED_REFS.includes(rule.ref as SharedRuleRef);
+
+/** The hostnames OpsCrew's rule of each ref lists now (found by its `ref`, never by its name). */
+export function sharedRuleHosts(entrypoints: ZoneEntrypoints): SharedHosts {
+  const hosts = {} as SharedHosts;
+  for (const ref of SHARED_REFS) {
+    const rule = entrypoints[SHARED_RULES[ref].phase]?.rules.find((item) => item.ref === ref);
+    hosts[ref] =
+      rule === undefined ? undefined : sortedUnique(expressionHosts(rule.expression ?? ""));
+  }
+  return hosts;
+}
+
+/**
+ * The zone's rules OpsCrew did not create, per phase and in their order, each as the JSON of its
+ * id, ref, expression, action, action_parameters and enabled (not the version and time Cloudflare
+ * changes on its own): two equal snapshots mean byte-identical rules in the same order.
+ */
+export function userRules(entrypoints: ZoneEntrypoints): Record<SharedPhase, string[]> {
+  const snapshot = {} as Record<SharedPhase, string[]>;
+  for (const ref of SHARED_REFS) {
+    const { phase } = SHARED_RULES[ref];
+    snapshot[phase] = (entrypoints[phase]?.rules ?? [])
+      .filter((rule) => !isShared(rule))
+      .map(({ id, ref: own, expression, action, action_parameters, enabled }) =>
+        JSON.stringify({ id, ref: own, expression, action, action_parameters, enabled }),
+      );
+  }
+  return snapshot;
+}
+
+/**
+ * What OpsCrew's rule of each ref must list with only one live test in the zone: the hostnames it
+ * listed before the run plus each of the run's live apps' (`apps`), sorted; `undefined` (no rule)
+ * when that is none. So "OpsCrew's rules are gone" is expected only of rules that listed no other
+ * hostname before the run.
+ */
+export function expectedSharedHosts(before: SharedHosts, apps: readonly AppRules[]): SharedHosts {
+  const expected = {} as SharedHosts;
+  for (const ref of SHARED_REFS) {
+    const hosts = sortedUnique([...(before[ref] ?? []), ...apps.flatMap((app) => app[ref] ?? [])]);
+    expected[ref] = hosts.length > 0 ? hosts : undefined;
+  }
+  return expected;
+}
+
+/**
+ * The shared rules an app's hostnames (its domain, and `www.` when it serves that too) belong in,
+ * as the user guide says: the probe block for every app except one in a Portainer without the
+ * Cloudflare Tunnel; strict TLS for every app except one served through a tunnel or in a Portainer.
+ */
+export function appRules(plan: {
+  target: { provider: string; access?: string; web?: { mode: string } };
+  dns: { provider: string; domain?: string | undefined; www: boolean };
+}): AppRules {
+  const { target, dns } = plan;
+  if (dns.provider !== "cloudflare" || dns.domain === undefined) return {};
+  const hosts = dns.www ? [dns.domain, `www.${dns.domain}`] : [dns.domain];
+  if (target.provider === "portainer") {
+    return target.web?.mode === "tunnel" ? { "opscrew-block-probes": hosts } : {};
+  }
+  if (target.provider === "own" && target.access === "tunnel") {
+    return { "opscrew-block-probes": hosts };
+  }
+  return { "opscrew-block-probes": hosts, "opscrew-strict-tls": hosts };
+}
+
+/** The description of the rules of the user's own a run seeds, unique to the run. */
+export function seededDescription(runId: string): string {
+  return `OpsCrew E2E: a rule of the user's own, seeded by run ${runId}`;
+}
+
+/**
+ * The leftover decision of the cleanup for one of the zone's entrypoint rulesets: the rules this
+ * run seeded go, and so does an OpsCrew rule (by `ref`) that lists only the run's `hostnames`; one
+ * that lists them next to other hostnames is reported and kept (the cleanup never edits a rule).
+ * The ruleset itself goes only when the run created it and nothing is left in it.
+ */
+export function rulesCleanup(
+  rules: readonly ZoneRule[],
+  run: { hostnames: readonly string[]; seeded: string; createdByRun: boolean },
+): { deletes: { id: string; what: string }[]; problems: string[]; deleteEntrypoint: boolean } {
+  const ours = new Set(run.hostnames.map((host) => host.toLowerCase()));
+  const deletes: { id: string; what: string }[] = [];
+  const problems: string[] = [];
+  for (const rule of rules) {
+    if (rule.description === run.seeded) {
+      deletes.push({ id: rule.id, what: "the rule of the user's own this run seeded" });
+      continue;
+    }
+    if (!isShared(rule)) continue;
+    const hosts = sortedUnique(expressionHosts(rule.expression ?? ""));
+    const left = hosts.filter((host) => ours.has(host));
+    if (left.length === 0) continue;
+    if (left.length === hosts.length) {
+      deletes.push({
+        id: rule.id,
+        what: `OpsCrew's rule ${rule.ref}, which still listed only this run's ${left.join(", ")}`,
+      });
+    } else {
+      problems.push(
+        `OpsCrew's rule ${rule.ref} still lists this run's ${left.join(", ")} next to other hostnames (not changed; remove them from its list in the Cloudflare dashboard)`,
+      );
+    }
+  }
+  return {
+    deletes,
+    problems,
+    deleteEntrypoint: run.createdByRun && deletes.length === rules.length,
+  };
+}
+
+/** Whether an HTTP answer is Cloudflare's block page (HTTP 403 from Cloudflare's edge). */
+export function blockedByCloudflare(answer: {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+}): boolean {
+  return (
+    answer.status === 403 &&
+    answer.headers["cf-ray"] !== undefined &&
+    /you have been blocked/i.test(answer.body)
+  );
+}
+
+/**
+ * What is wrong with one version of `.opscrew/cloudflare.json` for the leak search: it must hold
+ * only the zone's id, hostnames and phases (OpsCrew's schema, unknown keys refused), and none of
+ * the `known` values. Names labels, never values.
+ */
+export function cloudflareRecordProblems(
+  text: string,
+  known: readonly { label: string; value: string }[],
+): string[] {
+  const problems: string[] = [];
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = undefined;
+  }
+  if (!SharedRecordSchema.safeParse(json).success) {
+    problems.push(".opscrew/cloudflare.json holds more than the zone's id, hostnames and phases");
+  }
+  const found = leakedLabels(text, known);
+  if (found.length > 0) problems.push(`.opscrew/cloudflare.json contains: ${found.join(", ")}`);
+  return problems;
 }
 
 /** Every distinct plan hash a run names with `--approve <hash>` (in order of appearance). */

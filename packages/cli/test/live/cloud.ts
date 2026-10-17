@@ -1,16 +1,26 @@
 /**
  * Network helpers of the live tests: the throwaway Hetzner server they create outside OpsCrew
  * (with its own SSH key and, for the Portainer test, a firewall), the Cloudflare resources OpsCrew
- * creates for an app (listed, and removed only when this run created them), the throwaway GitHub
- * repository, TCP and HTTP probes, and root SSH to the server with the test's own key. Nothing
- * here prints; the tests mask everything they log.
+ * creates for an app (listed, and removed only when this run created them), the zone's two
+ * entrypoint rulesets with OpsCrew's shared rules and the rules the test seeds as the user's, the
+ * account's Zero Trust pieces, the throwaway GitHub repository, TCP and HTTP probes, and root SSH
+ * to the server with the test's own key. Nothing here prints; the tests mask everything they log.
  */
 import { Resolver } from "node:dns";
 import { request as nodeHttpRequest } from "node:http";
 import { request as nodeHttpsRequest } from "node:https";
 import { connect, type LookupFunction } from "node:net";
+import { SHARED_RULES } from "@opscrew/connector-cloudflare";
 import type { CommandResult, CommandRunner } from "@opscrew/contracts";
-import { type HetznerServerType, hetznerIpv6Address, serverCandidates } from "./support";
+import {
+  type HetznerServerType,
+  hetznerIpv6Address,
+  rulesCleanup,
+  type SharedPhase,
+  serverCandidates,
+  type ZoneEntrypoints,
+  type ZoneRule,
+} from "./support";
 
 export const HETZNER_API = "https://api.hetzner.cloud/v1";
 export const CLOUDFLARE_API = "https://api.cloudflare.com/client/v4";
@@ -276,7 +286,8 @@ export async function deleteThrowaway(options: {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Cloudflare: what OpsCrew creates for the app, found by name (see modules/cloudflare-*).
+// Cloudflare: what OpsCrew creates for the app, found by name (see modules/cloudflare-*), and
+// what several OpsCrew apps share (feature 011): the zone's rules by `ref`, the Zero Trust pieces.
 
 /** The Cloudflare zone of the test hostname and its account. */
 export interface CloudflareZone {
@@ -290,61 +301,33 @@ interface Named {
   name: string;
 }
 
-/** Everything OpsCrew may have created in Cloudflare for the app. */
+/** Everything OpsCrew may have created in Cloudflare for the app (the shared rules are the zone's). */
 export interface CloudflareAppResources {
   records: (Named & { type: string })[];
   tunnels: Named[];
   apps: Named[];
   policies: Named[];
   serviceTokens: Named[];
-  /**
-   * Every ruleset of the zone (any name), so the snapshot before the run holds them all;
-   * `undefined` when the token could not list them (then none is ever deleted).
-   */
-  rulesets?: ZoneRuleset[];
 }
 
-/** A zone ruleset as Cloudflare lists it (the list has no rules; the single read has them). */
-export interface ZoneRuleset {
-  id: string;
-  name: string;
-  kind?: string;
-  phase?: string;
-  rules?: { expression?: string }[];
+/** The account's Zero Trust pieces several OpsCrew apps share: never deleted by an app's destroy. */
+export interface ZeroTrust {
+  /** The organization's team domain, when the account has one. */
+  organization?: string;
+  /** The ids of the account's one-time PIN logins. */
+  oneTimePins: string[];
 }
 
-/** The entrypoint phases of the `cloudflare-dns` module's rulesets. */
-const OPSCREW_RULESET_PHASES = new Set(["http_config_settings", "http_request_firewall_custom"]);
-
-/** The hostnames a rule expression matches on: `http.host in {"a" "b"}` and `http.host eq "a"`. */
-function expressionHosts(expression: string): string[] {
-  const hosts: string[] = [];
-  for (const set of expression.matchAll(/http\.host\s+in\s+\{([^}]*)\}/g)) {
-    for (const host of (set[1] ?? "").matchAll(/"([^"]*)"/g)) hosts.push(host[1] ?? "");
-  }
-  for (const one of expression.matchAll(/http\.host\s+(?:eq|==)\s+"([^"]*)"/g)) {
-    hosts.push(one[1] ?? "");
-  }
-  return hosts.map((host) => host.toLowerCase());
+/** A rule of the user's own the test seeds into one of OpsCrew's phases. */
+export interface SeededRule {
+  description: string;
+  expression: string;
+  action: string;
+  action_parameters?: Record<string, unknown>;
+  enabled: boolean;
 }
 
-/**
- * Whether a zone ruleset is one the `cloudflare-dns` module renders for this run: a zone
- * entrypoint of its phases, named `OpsCrew …`, with at least one rule, and every rule's expression
- * matching on hostnames that are all the run's. Anything else (the user's rulesets, another app's,
- * a rule for the whole zone) is never this run's.
- */
-export function rulesetOfRun(ruleset: Omit<ZoneRuleset, "id">, hostnames: readonly string[]) {
-  if (ruleset.kind !== "zone" || !OPSCREW_RULESET_PHASES.has(ruleset.phase ?? "")) return false;
-  if (!ruleset.name.startsWith("OpsCrew ")) return false;
-  const rules = ruleset.rules ?? [];
-  if (rules.length === 0) return false;
-  const ours = new Set(hostnames.map((host) => host.toLowerCase()));
-  return rules.every((rule) => {
-    const hosts = expressionHosts(rule.expression ?? "");
-    return hosts.length > 0 && hosts.every((host) => ours.has(host));
-  });
-}
+const SHARED_PHASES = Object.values(SHARED_RULES).map((rule) => rule.phase);
 
 /**
  * What of the app is still in Cloudflare after a destroy: every DNS record on its hostnames, and
@@ -413,9 +396,8 @@ export class Cloudflare {
    * What OpsCrew creates for `app` on a server or in a Portainer (modules/cloudflare-dns, -tunnel
    * and -access): DNS records on `hostnames`, the tunnels `opscrew-<app>` and
    * `opscrew-<app>-portainer`, the Access applications `OpsCrew SSH|Portainer|Portainer webhook
-   * (<app>)`, the policies `OpsCrew deploy|Portainer (<app>)`, the service token `OpsCrew deploy
-   * (<app>)` and the zone's rulesets (all of them, for the snapshot; `removeCreated` deletes only
-   * the run's). Never the Zero Trust organization.
+   * (<app>)`, the policies `OpsCrew deploy|Portainer (<app>)` and the service token `OpsCrew deploy
+   * (<app>)`. Never the shared rules or the Zero Trust organization.
    */
   async appResources(
     zone: CloudflareZone,
@@ -448,30 +430,18 @@ export class Cloudflare {
     const serviceTokens = (await this.list<Named>(`${account}/access/service_tokens`)).filter(
       (t) => t.name === `OpsCrew deploy (${app})`,
     );
-    const listed = await this.call("GET", `/zones/${zone.id}/rulesets`);
-    const rulesets = (listed.json as { success?: boolean; result?: ZoneRuleset[] } | undefined)
-      ?.result;
-    return {
-      records,
-      tunnels,
-      apps,
-      policies,
-      serviceTokens,
-      ...(listed.status === 200 && Array.isArray(rulesets) ? { rulesets } : {}),
-    };
+    return { records, tunnels, apps, policies, serviceTokens };
   }
 
   /**
    * Deletes the resources in `now` whose ids are not in `before` (so only what this run created):
-   * Access applications, then policies and service tokens, then DNS records, then the zone's
-   * OpsCrew rulesets whose rules name only the run's `hostnames` (`rulesetOfRun`; each deleted one
-   * is logged by name), then tunnels (their connections first). Returns what could not be deleted.
+   * Access applications, then policies and service tokens, then DNS records, then tunnels (their
+   * connections first). Returns what could not be deleted.
    */
   async removeCreated(
     zone: CloudflareZone,
     now: CloudflareAppResources,
     before: CloudflareAppResources,
-    run: { hostnames: readonly string[]; log: (message: string) => void },
   ): Promise<string[]> {
     const fresh = <T extends Named>(items: T[], old: T[]) =>
       items.filter((item) => !old.some((o) => o.id === item.id));
@@ -495,7 +465,6 @@ export class Cloudflare {
         `/zones/${zone.id}/dns_records/${record.id}`,
       );
     }
-    problems.push(...(await this.removeRulesetsOfRun(zone, now, before, run)));
     for (const tunnel of fresh(now.tunnels, before.tunnels)) {
       await this.call("DELETE", `${account}/cfd_tunnel/${tunnel.id}/connections`);
       await remove(`tunnel "${tunnel.name}"`, `${account}/cfd_tunnel/${tunnel.id}`);
@@ -504,36 +473,124 @@ export class Cloudflare {
   }
 
   /**
-   * The zone rulesets this run created (absent from `before`, `rulesetOfRun` on their rules),
-   * deleted and logged by name. Without a listing before the run nothing is deleted.
+   * The zone's entrypoint rulesets of OpsCrew's two phases with their rules, as Cloudflare
+   * returns them; a phase without one (HTTP 404) is `undefined`. Throws on any other answer.
    */
-  private async removeRulesetsOfRun(
-    zone: CloudflareZone,
-    now: CloudflareAppResources,
-    before: CloudflareAppResources,
-    run: { hostnames: readonly string[]; log: (message: string) => void },
-  ): Promise<string[]> {
-    if (before.rulesets === undefined) return [];
-    if (now.rulesets === undefined) return ["the zone's rulesets (Cloudflare did not list them)"];
-    const old = new Set(before.rulesets.map((ruleset) => ruleset.id));
-    const problems: string[] = [];
-    for (const listed of now.rulesets) {
-      if (old.has(listed.id) || !listed.name.startsWith("OpsCrew ")) continue;
-      const path = `/zones/${zone.id}/rulesets/${listed.id}`;
-      const read = await this.call("GET", path);
-      const ruleset = (read.json as { result?: ZoneRuleset } | undefined)?.result;
-      if (read.status !== 200 || ruleset === undefined) {
-        problems.push(`ruleset "${listed.name}" (Cloudflare did not show its rules)`);
-        continue;
-      }
-      if (!rulesetOfRun(ruleset, run.hostnames)) continue;
-      if (await retryDelete(() => this.call("DELETE", path))) {
-        run.log(`deleted the zone ruleset "${listed.name}" this run created`);
+  async sharedEntrypoints(zone: CloudflareZone): Promise<ZoneEntrypoints> {
+    const entrypoints = {} as ZoneEntrypoints;
+    for (const phase of SHARED_PHASES) {
+      const read = await this.call("GET", `/zones/${zone.id}/rulesets/phases/${phase}/entrypoint`);
+      const result = (read.json as { result?: { id?: string; rules?: ZoneRule[] } } | undefined)
+        ?.result;
+      if (read.status === 404) {
+        entrypoints[phase] = undefined;
+      } else if (read.status === 200 && typeof result?.id === "string") {
+        entrypoints[phase] = { id: result.id, rules: result.rules ?? [] };
       } else {
-        problems.push(`ruleset "${listed.name}"`);
+        throw new Error(
+          `Cloudflare did not show the zone's ${phase} rules (HTTP ${read.status}); check the token's Zone WAF and Config Rules permissions in docs/e2e.md.`,
+        );
+      }
+    }
+    return entrypoints;
+  }
+
+  /**
+   * Adds `rule`, as a user would, to the zone's entrypoint ruleset of `phase`: appended with
+   * `POST …/rules` when the zone has one, or the entrypoint created with only that rule (`PUT`)
+   * when Cloudflare answers 404.
+   */
+  async seedRule(zone: CloudflareZone, phase: SharedPhase, rule: SeededRule): Promise<void> {
+    const entrypoint = `/zones/${zone.id}/rulesets/phases/${phase}/entrypoint`;
+    const read = await this.call("GET", entrypoint);
+    const id = (read.json as { result?: { id?: string } } | undefined)?.result?.id;
+    const written =
+      read.status === 404
+        ? await this.call("PUT", entrypoint, { rules: [rule] })
+        : read.status === 200 && id !== undefined
+          ? await this.call("POST", `/zones/${zone.id}/rulesets/${id}/rules`, rule)
+          : read;
+    if (written.status !== 200) {
+      const message = (written.json as { errors?: { message?: string }[] } | undefined)?.errors?.[0]
+        ?.message;
+      throw new Error(
+        `Cloudflare did not take the test's own rule in ${phase} (HTTP ${written.status}${message ? `: ${message.slice(0, 200)}` : ""}).`,
+      );
+    }
+  }
+
+  /**
+   * The cleanup of the zone's two entrypoint rulesets (`rulesCleanup`): deletes the rules this run
+   * seeded and OpsCrew's rules (by `ref`) that list only the run's `hostnames`, each logged, then
+   * a ruleset that was not there before the run (`before`) once it is empty. Returns problems: an
+   * OpsCrew rule listing the run's hostnames next to others, and what Cloudflare did not delete.
+   */
+  async removeRulesOfRun(
+    zone: CloudflareZone,
+    before: ZoneEntrypoints,
+    run: { hostnames: readonly string[]; seeded: string; log: (message: string) => void },
+  ): Promise<string[]> {
+    const now = await this.sharedEntrypoints(zone);
+    const problems: string[] = [];
+    for (const phase of SHARED_PHASES) {
+      const entrypoint = now[phase];
+      if (entrypoint === undefined) continue;
+      const decision = rulesCleanup(entrypoint.rules, {
+        hostnames: run.hostnames,
+        seeded: run.seeded,
+        createdByRun: before[phase] === undefined,
+      });
+      problems.push(...decision.problems);
+      const ruleset = `/zones/${zone.id}/rulesets/${entrypoint.id}`;
+      for (const rule of decision.deletes) {
+        if (await retryDelete(() => this.call("DELETE", `${ruleset}/rules/${rule.id}`))) {
+          run.log(`deleted ${rule.what} (${phase})`);
+        } else {
+          problems.push(`${rule.what} (${phase}): Cloudflare did not delete it`);
+        }
+      }
+      if (decision.deleteEntrypoint) {
+        if (await retryDelete(() => this.call("DELETE", ruleset))) {
+          run.log(`deleted the zone's ${phase} ruleset, which this run created`);
+        } else {
+          problems.push(`the zone's ${phase} ruleset, which this run created`);
+        }
       }
     }
     return problems;
+  }
+
+  /**
+   * The account's Zero Trust organization and one-time PIN logins. An account without an
+   * organization answers 404 or an error saying so; any other refusal throws.
+   */
+  async zeroTrust(accountId: string): Promise<ZeroTrust> {
+    const account = `/accounts/${accountId}/access`;
+    const organization = await this.call("GET", `${account}/organizations`);
+    const body = organization.json as
+      | { result?: { auth_domain?: string } | null; errors?: { message?: string }[] }
+      | undefined;
+    const none =
+      organization.status === 404 ||
+      (![200, 401, 403].includes(organization.status) &&
+        (body?.errors ?? []).some((error) =>
+          /not (?:been )?found|does not exist|no (?:zero trust )?organi[sz]ation/i.test(
+            error.message ?? "",
+          ),
+        ));
+    if (organization.status !== 200 && !none) {
+      throw new Error(
+        `Cloudflare did not show the account's Zero Trust organization (HTTP ${organization.status}); check the token's Access permissions and that Zero Trust is turned on (docs/e2e.md).`,
+      );
+    }
+    const domain = body?.result?.auth_domain;
+    const providers = await this.list<{ id: string; type: string }>(
+      `${account}/identity_providers`,
+    );
+    return {
+      ...(domain ? { organization: domain } : {}),
+      oneTimePins: providers.filter((p) => p.type === "onetimepin").map((p) => p.id),
+    };
   }
 }
 

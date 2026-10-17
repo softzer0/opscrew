@@ -2,7 +2,8 @@
  * Live end-to-end test against a real cloud (Hetzner Cloud and/or DigitalOcean), GitHub (a
  * throwaway repository) and optionally Cloudflare. Each provider runs only when its
  * OPSCREW_E2E_* token is set; see docs/e2e.md. It creates a real server for a few minutes (cents)
- * and always tears it down, even when a step fails. OPSCREW_E2E_APP picks the app to deploy.
+ * and always tears it down, even when a step fails. OPSCREW_E2E_APP picks the app to deploy. With
+ * a Cloudflare domain it also checks the app's hostnames in OpsCrew's shared rules (feature 011).
  */
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -14,9 +15,9 @@ import { materializeFixture } from "@opscrew/core/testing";
 import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { api, GitHubRepo, HETZNER_API, minutes, retryDelete } from "./cloud";
+import { api, Cloudflare, GitHubRepo, HETZNER_API, minutes, retryDelete } from "./cloud";
 import { CLI, EXAMPLES, isExample } from "./harness";
-import { approveHashes } from "./support";
+import { type AppRules, appRules, approveHashes, sharedRuleHosts } from "./support";
 
 const E2E = {
   hcloudToken: process.env.OPSCREW_E2E_HCLOUD_TOKEN,
@@ -242,6 +243,25 @@ for (const provider of [HETZNER, DIGITALOCEAN]) {
 
 const PLAN_HASH = /(?:Plan hash \(SHA-256\): |--approve )([0-9a-f]{64})/;
 
+/**
+ * The app's hostnames in OpsCrew's shared Cloudflare rules (feature 011), found by `ref`: after a
+ * provision (`listed`) exactly the rules `rules` names list them, after the destroy none does.
+ * Other hostnames in the rules (other apps in the zone) are not this test's.
+ */
+async function expectInSharedRules(rules: AppRules, listed: boolean): Promise<void> {
+  const cloudflare = new Cloudflare(E2E.cloudflareToken as string);
+  const zone = await cloudflare.zoneOf(E2E.domain as string);
+  const now = sharedRuleHosts(await cloudflare.sharedEntrypoints(zone));
+  const hosts = new Set(Object.values(rules).flat());
+  for (const [ref, ruleHosts] of Object.entries(now)) {
+    const want = listed ? (rules[ref as keyof AppRules] ?? []) : [];
+    expect(
+      (ruleHosts ?? []).filter((host) => hosts.has(host)),
+      `the app's hostnames in OpsCrew's shared rule ${ref} ${listed ? "after provision" : "after destroy"}`,
+    ).toEqual([...want].sort());
+  }
+}
+
 /** Runs `opscrew retarget …` until it exits 0, approving each plan it stops at by its hash. */
 async function retargetUntilDone(run: LiveRun, first: string[], next: string[]): Promise<void> {
   let args = first;
@@ -389,6 +409,8 @@ async function deployAndTearDown(
   await github.reset();
 
   let appName: string | undefined;
+  /** The shared Cloudflare rules the app's hostnames belong in (none without a domain). */
+  let sharedRules: AppRules = {};
   try {
     expect((await opscrew("analyze", ...aiFlags)).exitCode).toBe(0);
     await writeFile(
@@ -410,6 +432,7 @@ async function deployAndTearDown(
     const plan = await readArtifact("plan", join(repo, "opscrew/plan.yaml"));
     appName = plan.app.name;
     expect(plan.target.provider).toBe(provider.id);
+    if (withDns) sharedRules = appRules(plan);
 
     const adapt = await opscrew("adapt", ...aiFlags, "--yes");
     expect(adapt.exitCode, adapt.output).toBe(0);
@@ -422,10 +445,16 @@ async function deployAndTearDown(
 
     const planned = await opscrew("provision", "--plan-only", "--yes");
     expect(planned.exitCode, planned.output).toBe(0);
-    const hash = approveHashes(planned.output)[0];
-    expect(hash, "the plan hash is printed").toBeDefined();
-    const applied = await opscrew("provision", "--approve", hash as string, "--yes");
+    // With a Cloudflare domain the Cloudflare plan comes first; every printed plan is approved.
+    const hashes = approveHashes(planned.output);
+    expect(hashes.length, "the plan hashes are printed").toBeGreaterThan(0);
+    const applied = await opscrew(
+      "provision",
+      ...hashes.flatMap((hash) => ["--approve", hash]),
+      "--yes",
+    );
     expect(applied.exitCode, applied.output).toBe(0);
+    if (withDns) await expectInSharedRules(sharedRules, true);
     // OpsCrew picks the next free name (`opscrew/deploy-setup-2`) when an earlier pass's branch is
     // still on GitHub, so take the branch provision created, like the adapt branch above.
     const deployBranch = (
@@ -506,6 +535,7 @@ async function deployAndTearDown(
     }
     if (destroyed && appName !== undefined) {
       for (const p of involved) await p.expectNothingLeft(appName);
+      if (withDns) await expectInSharedRules(sharedRules, false);
     } else if (current.moving && appName !== undefined) {
       // A move left half-way has servers on both providers: delete them through the APIs.
       console.error("A move was still in progress; deleting through both providers' APIs.");

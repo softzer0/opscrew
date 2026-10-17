@@ -46,22 +46,25 @@ export const PORTAINER_STEPS: readonly { id: string; needs: readonly string[] }[
   { id: "5", needs: ["2"] },
   { id: "6", needs: ["2"] },
   { id: "7", needs: ["2"] },
+  { id: "7b", needs: ["2"] },
   { id: "8", needs: ["2"] },
   { id: "9", needs: ["8"] },
+  { id: "9b", needs: ["7b", "8"] },
   { id: "10", needs: ["2a"] },
   { id: "11", needs: ["2a"] },
   { id: "12", needs: ["1"] },
 ];
 
 /** The steps of the core pass (the default). */
-export const CORE_STEPS = ["1", "1b", "2a", "2", "3", "8", "9", "12"] as const;
+export const CORE_STEPS = ["1", "1b", "2a", "2", "3", "7b", "8", "9", "9b", "12"] as const;
 
 /**
  * The steps `OPSCREW_E2E_PORTAINER_STEPS` selects, in order: `core` (or unset), `full` (every
  * step) or a comma-separated list such as `11,12`, to which every step a chosen one needs is
  * added (steps 1, 1b and 12 are always taken). OpsCrew refuses another Portainer address while its
  * record lists anything, so when step 2 sets the app up, the fresh setups of steps 10 and 11 also
- * take steps 8 and 9, which empty that record. `undefined` for anything else (an unknown step).
+ * take steps 8 and 9, which empty that record. The second app of step 7b is always destroyed in
+ * step 9b, after the first app's destroy (step 8). `undefined` for anything else (an unknown step).
  */
 export function portainerSteps(value: string | undefined): string[] | undefined {
   const text = (value ?? "").trim().toLowerCase() || "core";
@@ -80,6 +83,7 @@ export function portainerSteps(value: string | undefined): string[] | undefined 
   };
   for (const id of ["1", "1b", "12", ...chosen]) take(id);
   if (selected.has("2") && (selected.has("10") || selected.has("11"))) take("9");
+  if (selected.has("7b")) take("9b");
   return ids.filter((id) => selected.has(id));
 }
 

@@ -10,11 +10,16 @@
  * replaced through MCP, caddy, proxy (with `verify --url`), the Cloudflare redeploy mode, then
  * `destroy` with and without `--delete-data`, and finally two setups of their own with a loopback
  * and a short Portainer address (OpsCrew refuses another address while its record lists
- * anything), each removed with its data. The server, its key and firewall are always deleted
- * (afterAll), and what OpsCrew created in Cloudflare is removed through the API when `destroy` did
- * not finish. Nothing the test prints contains a token, a secret, the server's address or
- * Portainer's: every line goes through a scrubber. Runs only with OPSCREW_E2E_PORTAINER=1 and the
- * variables in docs/e2e.md ("Your existing Portainer"); costs a few cents of server time.
+ * anything), each removed with its data. With `OPSCREW_E2E_GITHUB_REPO_B`, a second app goes into
+ * the same Portainer, zone and account with the tunnel (step 7b) before the first one's destroy,
+ * and is destroyed after it (step 9b; feature 011). A rule of the user's own seeded in each of
+ * OpsCrew's rule phases must stay byte-identical after every provision and destroy, and OpsCrew's
+ * shared rules must list exactly the live apps' hostnames. The server, its key and firewall are
+ * always deleted (afterAll), and what OpsCrew created in Cloudflare is removed through the API
+ * when `destroy` did not finish. Nothing the test prints contains a token, a secret, the server's
+ * address or Portainer's: every line goes through a scrubber. Runs only with
+ * OPSCREW_E2E_PORTAINER=1 and the variables in docs/e2e.md ("Your existing Portainer"); costs a
+ * few cents of server time.
  *
  * `OPSCREW_E2E_PORTAINER_STEPS` selects the steps (`portainerSteps`): `core` (the default, about
  * 15 minutes), `full` (every step) or a list such as `11,12`, which also takes the steps those
@@ -46,7 +51,7 @@ import {
   waitFor,
   waitForAccessRefusal,
 } from "./cloud";
-import { CLI, LiveRun, serverSettings } from "./harness";
+import { CLI, LiveRun, secondAppSkip, serverSettings } from "./harness";
 import {
   changedRulesets,
   commitDetails,
@@ -63,6 +68,7 @@ import {
   rulesetRules,
   runSteps,
   secretNames,
+  zoneRulesets,
 } from "./portainer-cloud";
 import {
   BUSYBOX_IMAGE,
@@ -119,6 +125,8 @@ const MISSING = [
     : []),
 ];
 const SETTINGS = serverSettings(ENV, "OPSCREW_E2E_PORTAINER_SERVER_TYPE");
+/** Why the second app's steps (7b, 9b) are skipped, if they are. */
+const SECOND_SKIP = secondAppSkip(SETTINGS);
 const E2E = {
   /** Optional: a narrower Cloudflare token OpsCrew uses for the updater + tunnel steps (2–4). */
   cloudflareTunnelToken: ENV.OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN?.trim() || undefined,
@@ -146,21 +154,38 @@ describe.skipIf(MISSING.length > 0)(
     ? `live end-to-end in your existing Portainer (skipped: set ${MISSING.join(", ")}; see docs/e2e.md)`
     : `live end-to-end in your existing Portainer: examples/${SETTINGS.app} on a throwaway Portainer CE ${PORTAINER_VERSION}`,
   () => {
-    /** The latest content of every file in `.opscrew/plans/` (destroy removes the stack plans). */
+    /**
+     * The latest content of every file in `.opscrew/plans/` (destroy removes the stack plans), by
+     * name; the second app's under `b/`.
+     */
     const planFiles = new Map<string, string>();
+    /** Keeps the latest copy of every saved plan of `app` for the leak check. */
+    const keepPlans = async (app: LiveRun, prefix: string) => {
+      const dir = app.paths().files.plansDir;
+      if (!existsSync(dir)) return;
+      for (const file of await readdir(dir)) {
+        planFiles.set(`${prefix}${file}`, await readFile(join(dir, file), "utf8").catch(() => ""));
+      }
+    };
     const run: LiveRun = new LiveRun({
       label: "Portainer",
       name: "portainer",
       settings: SETTINGS,
-      // Keeps the latest copy of every saved plan for the leak check.
-      afterCli: async () => {
-        const dir = run.paths().files.plansDir;
-        if (!existsSync(dir)) return;
-        for (const file of await readdir(dir)) {
-          planFiles.set(file, await readFile(join(dir, file), "utf8").catch(() => ""));
-        }
-      },
+      afterCli: () => keepPlans(run, ""),
     });
+    /** The second app, B: its own stacks in the same Portainer (steps 7b and 9b), when they run. */
+    const b: LiveRun | undefined =
+      SECOND_SKIP === undefined
+        ? run.second({
+            label: "Portainer, B",
+            name: "portainer-b",
+            settings: { ...SETTINGS, githubRepo: SETTINGS.secondRepo },
+            afterCli: () => keepPlans(b as LiveRun, "b/"),
+          })
+        : undefined;
+    const second = () => b as LiveRun;
+    /** Whether the second app is set up and not destroyed. */
+    const secondUp = () => b?.appName !== undefined && !b.destroyed;
     const { log, scrubber, appHost } = run;
     scrubber.add(E2E.cloudflareTunnelToken, "cloudflare-tunnel-token");
     scrubber.add(E2E.ghcrToken, "OPSCREW_GHCR_READ_TOKEN");
@@ -208,31 +233,45 @@ describe.skipIf(MISSING.length > 0)(
       log(
         `OPSCREW_E2E_PORTAINER_STEPS=${pass}: steps ${SELECTED.join(", ")}${estimates[pass] ?? ""}`,
       );
+      if (SECOND_SKIP !== undefined) log(`the second app's steps are skipped: ${SECOND_SKIP}`);
     }
 
-    /** An ordered step of {@link run}, reported as skipped when the run does not select it. */
-    function step(title: string, timeoutMs: number, body: () => Promise<void>, always = false) {
+    /**
+     * An ordered step of {@link run}, reported as skipped when the run does not select it, or with
+     * `skip` as the reason.
+     */
+    function step(
+      title: string,
+      timeoutMs: number,
+      body: () => Promise<void>,
+      options: { always?: boolean; skip?: string | undefined } = {},
+    ) {
       const selected = SELECTED.includes(stepNumber(title));
+      const skip = selected
+        ? options.skip
+        : "not selected; OPSCREW_E2E_PORTAINER_STEPS=full or a list with it runs it";
       run.step(title, timeoutMs, body, {
-        always,
-        ...(selected
-          ? {}
-          : { skip: `not selected; OPSCREW_E2E_PORTAINER_STEPS=full or a list with it runs it` }),
+        ...(options.always === true ? { always: true } : {}),
+        ...(skip === undefined ? {} : { skip }),
       });
     }
 
     const portainer = () => admin as PortainerApi;
-    const names = () => opscrewNames(run.app());
-    const branchHead = (branch: string) => readBranchHead(run.github, branch);
+    const names = (app = run) => opscrewNames(app.app());
+    const branchHead = (branch: string, app = run) => readBranchHead(app.github, branch);
 
-    /** Interview (Portainer, the pinned certificate) then design, checking the plan's target. */
+    /**
+     * Interview (Portainer, the pinned certificate) then design for `app` (A by default), checking
+     * the plan's target.
+     */
     async function answerAndDesign(
       answers: Omit<PortainerAnswers, "domain">,
       overrides: Record<string, string | undefined> = {},
+      app = run,
     ): Promise<void> {
-      const file = join(run.work, "answers.json");
-      await writeFile(file, JSON.stringify(portainerAnswers({ ...answers, domain: appHost })));
-      await run.opscrewOkWith(
+      const file = join(app.work, "answers.json");
+      await writeFile(file, JSON.stringify(portainerAnswers({ ...answers, domain: app.appHost })));
+      await app.opscrewOkWith(
         overrides,
         "interview",
         "--answers",
@@ -240,8 +279,8 @@ describe.skipIf(MISSING.length > 0)(
         "--portainer-cert",
         fingerprint,
       );
-      await run.opscrewOkWith(overrides, "design");
-      const plan = await run.readPlan();
+      await app.opscrewOkWith(overrides, "design");
+      const plan = await app.readPlan();
       expect(plan.target, "design planned the user's Portainer as answered").toMatchObject({
         provider: "portainer",
         mode: "portainer-stack",
@@ -249,7 +288,7 @@ describe.skipIf(MISSING.length > 0)(
         redeploy: answers.redeploy,
         web: answers.web === "proxy" ? { mode: "proxy", port: PROXY_PORT } : { mode: answers.web },
       });
-      const local = await readPortainerConnection(run.paths());
+      const local = await readPortainerConnection(app.paths());
       expect(local?.url, "server.json keeps Portainer's address").toBe(answers.url);
       expect(
         sameCertFingerprint(local?.certFingerprint ?? "", fingerprint),
@@ -269,22 +308,29 @@ describe.skipIf(MISSING.length > 0)(
 
     /**
      * The documented three runs of a script when the stack plan needs a tunnel's token that does
-     * not exist yet: `--plan-only` prints only the infrastructure hash (and says so), applying it
-     * stops at the stack plan and prints its hash, `--yes` alone never approves that plan, and the
-     * third run applies exactly that hash. A deviation is a finding and the generic loop finishes.
+     * not exist yet: `--plan-only` prints the infrastructure hash, after the Cloudflare plan's when
+     * OpsCrew's shared rules change (and says so), applying them stops at the stack plan and prints
+     * its hash, `--yes` alone never approves that plan, and the third run applies exactly that hash.
+     * A deviation is a finding and the generic loop finishes.
      */
     async function threeRuns(label: string, firstSetup: boolean): Promise<string | undefined> {
       const first = await run.opscrewOk("provision", "--plan-only", "--yes");
       const hashes = approveHashes(first.output);
+      const cloudflarePlan = printedHash(first.output, "Cloudflare plan hash");
+      const infrastructure = hashes.filter((hash) => hash !== cloudflarePlan);
       const noted = first.output.includes("In a script that takes three runs");
-      if (hashes.length !== 1 || !noted) {
+      if (infrastructure.length !== 1 || !noted) {
         run.findings.push(
-          `${label}: --plan-only printed ${hashes.length} hash(es)${noted ? "" : " and no three-runs note"}, not only the infrastructure hash`,
+          `${label}: --plan-only printed ${infrastructure.length} infrastructure hash(es)${noted ? "" : " and no three-runs note"}, not one`,
         );
         await run.provisionUntilDone(label);
         return undefined;
       }
-      const second = await run.opscrew("provision", "--approve", hashes[0] as string, "--yes");
+      const second = await run.opscrew(
+        "provision",
+        ...hashes.flatMap((hash) => ["--approve", hash]),
+        "--yes",
+      );
       const stackHash = printedHash(second.output, "Stack plan hash");
       if (
         second.exitCode === 0 ||
@@ -469,17 +515,17 @@ describe.skipIf(MISSING.length > 0)(
     }
 
     /**
-     * Keeps the deploy branch's history in a local ref (`refs/e2e/deploy-<label>`) before destroy
-     * deletes it on GitHub, so the leak search still covers every commit the workflow wrote.
+     * Keeps the deploy branch's history of `app` in a local ref (`refs/e2e/deploy-<label>`) before
+     * destroy deletes it on GitHub, so the leak search still covers every commit the workflow wrote.
      */
-    async function keepDeployBranch(label: string): Promise<void> {
-      if ((await branchHead(DEPLOY_BRANCH)) === undefined) {
+    async function keepDeployBranch(label: string, app = run): Promise<void> {
+      if ((await branchHead(DEPLOY_BRANCH, app)) === undefined) {
         run.findings.push(
           `there was no ${DEPLOY_BRANCH} branch to keep before ${label}, so its history is not searched`,
         );
         return;
       }
-      await run.git(
+      await app.git(
         "fetch",
         "-q",
         "origin",
@@ -600,8 +646,12 @@ describe.skipIf(MISSING.length > 0)(
       };
     }
 
-    /** What "the user's" Portainer holds besides the app: settings, users, environments, registries, stacks. */
+    /**
+     * What "the user's" Portainer holds besides the app: settings, users, environments, registries
+     * (without the second app's own entry while it is set up), stacks.
+     */
     async function portainerState(): Promise<Record<string, unknown>> {
+      const secondRegistry = secondUp() ? names(second()).registry : undefined;
       const users = await portainer().ok<{ Id: number; Username: string; Role: number }[]>(
         "GET",
         "/api/users",
@@ -628,7 +678,9 @@ describe.skipIf(MISSING.length > 0)(
           item.UserAccessPolicies,
           item.TeamAccessPolicies,
         ]),
-        registries: registries.map((item) => [item.Id, item.Name, item.URL]),
+        registries: registries
+          .filter((item) => item.Name !== secondRegistry)
+          .map((item) => [item.Id, item.Name, item.URL]),
         stacks: (await stackNames()).filter((name) => !name.startsWith("opscrew-")),
       };
     }
@@ -659,22 +711,25 @@ describe.skipIf(MISSING.length > 0)(
       return entry.RegistryAccesses ?? {};
     }
 
-    /** Adds every secret OpsCrew made for the app to the scrubber (missing ones are findings). */
-    async function rememberSecrets(outputNames: readonly string[]): Promise<void> {
-      const home = run.paths().projectHomeDir;
+    /**
+     * Adds every secret OpsCrew made for `app` (A by default) to the scrubber (missing ones are
+     * findings).
+     */
+    async function rememberSecrets(outputNames: readonly string[], app = run): Promise<void> {
+      const home = app.paths().projectHomeDir;
       for (const [file, label] of [
         ["portainer-webhook", "portainer-webhook"],
         ["portainer-env.key", "portainer-value-key"],
       ] as const) {
-        if (!(await run.rememberSecretFile(join(home, file), label))) {
+        if (!(await app.rememberSecretFile(join(home, file), label))) {
           run.findings.push(
             `OpsCrew's ${file} file is missing, so the leak search cannot look for it`,
           );
         }
       }
-      await run.rememberSecretFile(run.paths().files.statePassphrase, "state-passphrase");
+      await app.rememberSecretFile(app.paths().files.statePassphrase, "state-passphrase");
       if (outputNames.length > 0) {
-        const outputsNow = await run.infraOutputs().catch((error: unknown) => {
+        const outputsNow = await app.infraOutputs().catch((error: unknown) => {
           run.findings.push(`could not read the infrastructure outputs: ${String(error)}`);
           return {} as Record<string, unknown>;
         });
@@ -689,7 +744,7 @@ describe.skipIf(MISSING.length > 0)(
         }
       }
       // The values Portainer holds for the app's stack (read as its administrator, never printed).
-      const stack = await stackByName(names().app);
+      const stack = await stackByName(names(app).app);
       for (const item of (stack?.Env as { name?: string; value?: string }[] | undefined) ?? []) {
         if (item.value === undefined || item.value.length < 8) continue;
         if (/PASSWORD|SECRET|TOKEN|KEY|DATABASE_URL|REDIS_URL/.test(item.name ?? "")) {
@@ -1293,13 +1348,15 @@ describe.skipIf(MISSING.length > 0)(
           `www.${appHost}`,
           `portainer-${run.app()}.${z.name}`,
         ]);
-        // The rules of the zone's rulesets before the run: compared in the cleanup.
-        for (const ruleset of run.cloudflareBefore?.rulesets ?? []) {
+        // The rules of every zone ruleset before the run: compared in the cleanup.
+        for (const ruleset of await zoneRulesets(run.cloudflare, zone)) {
           rulesetsBefore.set(ruleset.id, {
             name: ruleset.name,
             rules: await rulesetRules(run.cloudflare, zone, ruleset.id).catch(() => undefined),
           });
         }
+        // Before the first provision: a rule of the user's own in each of OpsCrew's phases.
+        await run.seedUserRules();
         await run.adaptAndMerge();
       },
     );
@@ -1311,6 +1368,8 @@ describe.skipIf(MISSING.length > 0)(
         await limitedTokenRegistrySteps();
 
         const stackHash = await threeRuns("updater + tunnel, first setup", true);
+        // A tunnel app in a Portainer is in OpsCrew's probe block only (no strict TLS there).
+        await run.expectSharedCloudflare("the updater + tunnel provision");
 
         // The deploy branch OpsCrew created with the real fine-grained token (createOrphanBranch).
         await expectPlaceholderBranch("the first setup");
@@ -1624,6 +1683,7 @@ describe.skipIf(MISSING.length > 0)(
           mcpTexts.push(...mcp.transcript);
           await mcp.close();
         }
+        await run.expectSharedCloudflare("the apply through MCP");
         if (Object.keys(await registryAccesses()).includes(String(environmentId))) {
           observe(
             "after a registry token replace through MCP the entry is still granted to the environment",
@@ -1752,6 +1812,8 @@ describe.skipIf(MISSING.length > 0)(
           provisioned.includes(`OpsCrew creates no DNS record for ${appHost}`),
           "provision names the DNS record to create",
         ).toBe(true);
+        // Without the tunnel, the app's hostnames left OpsCrew's probe block.
+        await run.expectSharedCloudflare("the switch to caddy");
         try {
           await run.deploy("caddy");
           web = "caddy";
@@ -1829,6 +1891,7 @@ describe.skipIf(MISSING.length > 0)(
         provisioned.includes(`port ${PROXY_PORT}`),
         "provision names the port to route to",
       ).toBe(true);
+      await run.expectSharedCloudflare("the switch to proxy");
       await run.deploy("proxy");
       web = "proxy";
       await waitForSite((await deployBranchImage()).version, minutes(10));
@@ -1853,6 +1916,8 @@ describe.skipIf(MISSING.length > 0)(
         await removeTestRecords();
         await answerAndDesign({ url: portainerUrl, redeploy: "cloudflare", web: "tunnel" });
         await threeRuns("Cloudflare redeploy + tunnel", false);
+        // Back in the probe block; the webhook's Access uses (or creates) the Zero Trust organization.
+        await run.expectSharedCloudflare("the switch to Cloudflare redeploys with the tunnel");
         await rememberSecrets([
           "tunnel_token",
           "portainer_tunnel_token",
@@ -1931,8 +1996,76 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
+    /** Waits until the second app answers 200 on its health path through Cloudflare (its tunnel). */
+    async function waitForSecond(what: string): Promise<void> {
+      const app = second();
+      const url = `https://${app.appHost}${(await app.readPlan()).app.healthPath}`;
+      log(`waiting for the second app at ${url} to answer through its tunnel (${what})`);
+      await waitFor(
+        `the second app answering 200 through Cloudflare (${what})`,
+        minutes(10),
+        async () => {
+          const answer = await httpRequest(url);
+          if (answer.status !== 200 || answer.headers["cf-ray"] === undefined) {
+            throw new Error(
+              `${url} answered ${answer.status}${answer.headers["cf-ray"] === undefined ? " without Cloudflare's cf-ray header" : ""}.`,
+            );
+          }
+          return true;
+        },
+      );
+    }
+
     step(
-      "8. destroy keeps the data volumes; Portainer, its settings and the decoys stay",
+      "7b. a second app: its own stacks with the tunnel in the same Portainer, zone and account; both blocked on /.env, both in OpsCrew's probe block",
+      minutes(60),
+      async () => {
+        const app = second();
+        const info = await repoInfo(app.github);
+        if (info.private && E2E.repoReadToken === undefined) {
+          throw new Error(
+            "The second throwaway repository is private, so Portainer needs a read-only token for it: set OPSCREW_E2E_REPO_READ_TOKEN to one that covers both repositories (docs/e2e.md).",
+          );
+        }
+        await app.prepareRepo({
+          commit: `e2e: a second app (examples/${SETTINGS.app}) in your Portainer`,
+          env: {
+            CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken,
+            OPSCREW_GHCR_READ_TOKEN: E2E.ghcrToken,
+            ...(info.private ? { OPSCREW_REPO_READ_TOKEN: E2E.repoReadToken } : {}),
+          },
+          drop: ["PORTAINER_API_KEY", ...(info.private ? [] : ["OPSCREW_REPO_READ_TOKEN"])],
+        });
+        await app.initFix();
+        await app.opscrewOk("analyze", "--no-ai");
+        app.env.PORTAINER_API_KEY = adminToken;
+        await answerAndDesign({ url: portainerUrl, redeploy: "updater", web: "tunnel" }, {}, app);
+        app.appName = (await app.readPlan()).app.name;
+        await app.snapshotCloudflare((z) => [
+          app.appHost,
+          `www.${app.appHost}`,
+          `portainer-${app.app()}.${z.name}`,
+        ]);
+        await app.adaptAndMerge();
+        await app.provisionUntilDone("the second app, updater + tunnel");
+        await run.expectSharedCloudflare("the second app's provision");
+        await rememberSecrets(["tunnel_token"], app);
+        if ((await app.deploy("the second app")) === undefined)
+          await app.deployMain("the second app");
+        await waitForSecond("its first deploy");
+        await app.opscrewOk("verify");
+        if (web === "tunnel") await run.expectProbeBlocked(appHost);
+        await run.expectProbeBlocked(app.appHost);
+        observe(
+          `a second app runs in the same Portainer, zone and account; OpsCrew's probe block lists both apps${web === "tunnel" ? "" : ` (the first one is in ${web} mode, so only the second)`}`,
+        );
+        await expectDecoysUnchanged("the second app's setup");
+      },
+      { skip: SECOND_SKIP },
+    );
+
+    step(
+      "8. destroy keeps the data volumes; Portainer, its settings and the decoys stay; the second app keeps working",
       minutes(30),
       async () => {
         useFullCloudflareToken("the steps before 8");
@@ -1955,6 +2088,13 @@ describe.skipIf(MISSING.length > 0)(
           expect(volumes, `destroy keeps the data volume ${volume}`).toContain(volume);
         }
         await run.expectCloudflareClean();
+        await run.expectSharedCloudflare("the first app's destroy");
+        if (secondUp()) {
+          // SC-1102: the second app's tunnel and probe block still work.
+          await waitForSecond("after the first app's destroy");
+          await run.expectProbeBlocked(second().appHost);
+          observe("after the first app's destroy the second app still answers and is protected");
+        }
         const secrets = await secretNames(run.github);
         const kept = [
           "OPSCREW_BUILD_ENV",
@@ -2003,9 +2143,30 @@ describe.skipIf(MISSING.length > 0)(
           expect(volumes, `--delete-data removes ${volume}`).not.toContain(volume);
         }
         observe(`destroy --delete-data removed the ${recordedVolumes.length} recorded volume(s)`);
+        await run.expectSharedCloudflare("destroy --delete-data");
         await expectPortainerIntact("destroy --delete-data");
         await expectDecoysUnchanged("destroy --delete-data");
       },
+    );
+
+    step(
+      "9b. destroying the second app removes OpsCrew's shared rules; the seeded rules, the Zero Trust pieces, Portainer and the decoys stay",
+      minutes(30),
+      async () => {
+        const app = second();
+        await keepDeployBranch("second", app);
+        await app.opscrewOk("destroy", "--confirm", app.app(), "--delete-data");
+        app.destroyed = true;
+        expect(
+          (await stackNames()).filter((name) => name.startsWith(names(app).app)),
+          "no stack of the second app is left",
+        ).toEqual([]);
+        await app.expectCloudflareClean();
+        await run.expectSharedCloudflare("the second app's destroy");
+        await expectPortainerIntact("the second app's destroy");
+        await expectDecoysUnchanged("the second app's destroy");
+      },
+      { skip: SECOND_SKIP },
     );
 
     /**
@@ -2034,6 +2195,7 @@ describe.skipIf(MISSING.length > 0)(
         `no stack of the app is left after removing ${what}`,
       ).toEqual([]);
       expect(await appVolumes(), `no volume of the app is left after removing ${what}`).toEqual([]);
+      await run.expectSharedCloudflare(`removing ${what}`);
       await expectPortainerIntact(`removing ${what}`);
       await expectDecoysUnchanged(`removing ${what}`);
     }
@@ -2052,6 +2214,7 @@ describe.skipIf(MISSING.length > 0)(
           web: "proxy",
         });
         const provisioned = await run.provisionUntilDone("the loopback address");
+        await run.expectSharedCloudflare("the loopback setup");
         await rememberSecrets([]);
         // No deploy branch is left from before, so the new app stack starts from a new placeholder.
         expect(
@@ -2137,6 +2300,7 @@ describe.skipIf(MISSING.length > 0)(
             short,
           );
           await run.provisionUntilDone("the short host name", short);
+          await run.expectSharedCloudflare("the short-host setup");
           await rememberSecrets([]);
           // Never deployed: the app's stack runs the placeholder, so no app answers. secure and
           // drift run against that stack; their exits are recorded, not judged.
@@ -2163,7 +2327,7 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     step(
-      "12. no token, secret, server address or Portainer address in commits, pull requests, files, CLI output, MCP results or the audit log",
+      "12. no token, secret, server address or Portainer address in commits, pull requests, files, CLI output, MCP results, OpsCrew's Cloudflare record or the audit log",
       minutes(10),
       async () => {
         if (!run.repoReady) return;
@@ -2187,17 +2351,40 @@ describe.skipIf(MISSING.length > 0)(
             problems.push(`${where} names the short Portainer host ${mentions} time(s)`);
           }
         };
-        await run.git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*");
-        // `--all` also walks refs/e2e/deploy-*: the deploy branches kept before each destroy
-        // deleted them on GitHub.
-        search(
-          "the commits (every branch)",
-          await run.git("log", "--all", "-p", "--format=%B"),
-          known,
-          false,
-        );
-        for (const pull of await run.github.pullRequestTexts()) {
-          if (pull.createdAt >= run.startedAt) search(`pull request #${pull.number}`, pull.text);
+        for (const app of [run, ...(b?.repoReady === true ? [b] : [])]) {
+          const which = app === run ? "" : " (the second app)";
+          await app.git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*");
+          // `--all` also walks refs/e2e/deploy-*: the deploy branches kept before each destroy
+          // deleted them on GitHub.
+          search(
+            `the commits (every branch)${which}`,
+            await app.git("log", "--all", "-p", "--format=%B"),
+            known,
+            false,
+          );
+          for (const pull of await app.github.pullRequestTexts()) {
+            if (pull.createdAt >= app.startedAt) {
+              search(`pull request #${pull.number}${which}`, pull.text);
+            }
+          }
+          const tracked = (await app.git("ls-files", "-co", "--exclude-standard"))
+            .split("\n")
+            .filter(Boolean);
+          for (const file of tracked) {
+            const path = join(app.repo, file);
+            if (!existsSync(path) || statSync(path).size > 1_000_000) continue;
+            search(`the file ${file}${which}`, await readFile(path, "utf8"), known, false);
+          }
+          // The one local file meant to hold Portainer's address: the short host too.
+          const local = join(app.paths().stateDir, "server.json");
+          if (existsSync(local))
+            search(`.opscrew/server.json${which}`, await readFile(local, "utf8"), secrets, false);
+          const auditDir = app.paths().auditDir;
+          if (existsSync(auditDir)) {
+            for (const file of await readdir(auditDir)) {
+              search(`the audit log ${file}${which}`, await readFile(join(auditDir, file), "utf8"));
+            }
+          }
         }
         for (const [label, output] of run.outputs) search(label, output);
         search("the MCP results", mcpTexts.join("\n"));
@@ -2207,24 +2394,14 @@ describe.skipIf(MISSING.length > 0)(
           if (file.endsWith(".tfplan") && isEncryptedPlan(content)) continue;
           search(`.opscrew/plans/${file}`, content);
         }
-        const tracked = (await run.git("ls-files", "-co", "--exclude-standard"))
-          .split("\n")
-          .filter(Boolean);
-        for (const file of tracked) {
-          const path = join(run.repo, file);
-          if (!existsSync(path) || statSync(path).size > 1_000_000) continue;
-          search(`the file ${file}`, await readFile(path, "utf8"), known, false);
-        }
-        // The one local file meant to hold Portainer's address: the short host too.
-        const local = join(run.paths().stateDir, "server.json");
-        if (existsSync(local))
-          search(".opscrew/server.json", await readFile(local, "utf8"), secrets, false);
-        const auditDir = run.paths().auditDir;
-        if (existsSync(auditDir)) {
-          for (const file of await readdir(auditDir)) {
-            search(`the audit log ${file}`, await readFile(join(auditDir, file), "utf8"));
-          }
-        }
+        // The Cloudflare plans are in the CLI outputs; the steps that serve the first app through
+        // the tunnel (2, 7) always show one.
+        problems.push(
+          ...run.sharedPlanLeaks(
+            known,
+            ["2", "7"].some((id) => SELECTED.includes(id)),
+          ),
+        );
         for (const label of requiredLeakLabels(SELECTED, repoPrivate)) {
           if (!known.some((entry) => entry.label === label))
             run.findings.push(`the leak search had no value for ${label}`);
@@ -2235,12 +2412,13 @@ describe.skipIf(MISSING.length > 0)(
         for (const observation of observations) log(`run log: ${observation}`);
         run.expectNothingLeaked(problems);
       },
-      true,
+      { always: true },
     );
 
     run.registerCleanup({
       first: closeTunnel,
-      // The zone's own rulesets must have the rules they had before the run (never restored here).
+      // Every zone ruleset must have the rules it had before the run, once the cleanup removed the
+      // seeded rules (never restored here).
       cloudflare: (attempt) =>
         attempt("compare the zone's rulesets", () =>
           changedRulesets(run.cloudflare, run.zone as CloudflareZone, rulesetsBefore),

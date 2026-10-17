@@ -1,9 +1,10 @@
 /**
  * Network helpers of the Portainer live test (`portainer-target.test.ts`): the test's own calls to
  * Portainer (setup as "the user", observations, the decoys; always with the certificate pinned),
- * the zone rulesets it compares and the DNS record it creates in Cloudflare, a few GitHub reads,
- * GHCR's token endpoint, the test computer's public address and an MCP client session with the
- * built CLI. Nothing here prints; the test masks everything it logs.
+ * the zone rulesets it compares (all phases; OpsCrew's two are also checked rule by rule in the
+ * harness) and the DNS record it creates in Cloudflare, a few GitHub reads, GHCR's token endpoint,
+ * the test computer's public address and an MCP client session with the built CLI. Nothing here
+ * prints; the test masks everything it logs.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -119,6 +120,16 @@ export class PortainerApi {
 
 // ---------------------------------------------------------------------------------------------
 // Cloudflare: the zone's rulesets before and after the run, and the record the user creates.
+
+/** Every ruleset of the zone (any phase or name); none when the token could not list them. */
+export async function zoneRulesets(
+  cloudflare: Cloudflare,
+  zone: CloudflareZone,
+): Promise<{ id: string; name: string }[]> {
+  const listed = await cloudflare.call("GET", `/zones/${zone.id}/rulesets`);
+  const rulesets = (listed.json as { result?: { id: string; name: string }[] } | undefined)?.result;
+  return listed.status === 200 && Array.isArray(rulesets) ? rulesets : [];
+}
 
 /**
  * The rules of a zone ruleset in a comparable form (each rule's id, expression, action, its

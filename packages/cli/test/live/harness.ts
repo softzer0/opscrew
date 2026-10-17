@@ -3,8 +3,10 @@
  * `portainer-target.test.ts`): ordered steps that stop at the first failure, the log and its
  * scrubber, the built CLI run non-interactively, the step-1 bootstrap (the throwaway repository
  * and the throwaway Hetzner server with root SSH), provision until every plan is applied, the
- * deploy, and the cleanup that always runs (the server, what the run created in Cloudflare, the
- * repository). Nothing the harness prints holds a known secret or the server's address.
+ * deploy, a second app in the same zone and account (feature 011), the zone's shared rules and
+ * the rules seeded as the user's, and the cleanup that always runs (the servers, what the run
+ * created in Cloudflare, the seeded rules, the repositories). Nothing the harness prints holds a
+ * known secret or the server's address.
  */
 import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
@@ -28,19 +30,31 @@ import {
   type FirewallRule,
   GitHubRepo,
   type HetznerIds,
+  httpRequest,
   minutes,
   RootShell,
   type ThrowawayServer,
   waitFor,
+  type ZeroTrust,
 } from "./cloud";
 import {
+  type AppRules,
+  appRules,
   approveHashes,
+  blockedByCloudflare,
+  cloudflareRecordProblems,
   ed25519FromKeyscan,
+  expectedSharedHosts,
   fingerprintFromKeygen,
   ipv6PrefixForms,
   removalApproval,
   runHostname,
   Scrubber,
+  type SharedPhase,
+  seededDescription,
+  sharedRuleHosts,
+  userRules,
+  type ZoneEntrypoints,
 } from "./support";
 
 export const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -129,6 +143,8 @@ export interface ServerSettings {
   /** An example under examples/ (default nextjs-postgres). */
   app: string;
   appEnvFile?: string;
+  /** Optional: the second app's throwaway repository (`OPSCREW_E2E_GITHUB_REPO_B`), or "". */
+  secondRepo: string;
 }
 
 /** The settings both server live tests share; `serverTypeVariable` names the test's own one. */
@@ -147,7 +163,23 @@ export function serverSettings(
     ...(serverType ? { serverType } : {}),
     app: env.OPSCREW_E2E_APP?.trim() || "nextjs-postgres",
     ...(env.OPSCREW_E2E_APP_ENV ? { appEnvFile: env.OPSCREW_E2E_APP_ENV } : {}),
+    secondRepo: env.OPSCREW_E2E_GITHUB_REPO_B?.trim() ?? "",
   };
+}
+
+/**
+ * Why the second app's steps are skipped, or `undefined` when they run: they need its own
+ * throwaway repository (`OPSCREW_E2E_GITHUB_REPO_B`) and an example with a `package.json`, where
+ * the second app gets its own name.
+ */
+export function secondAppSkip(settings: ServerSettings): string | undefined {
+  if (settings.secondRepo === "") {
+    return "set OPSCREW_E2E_GITHUB_REPO_B to a second throwaway repository to deploy a second app into the same zone (docs/e2e.md)";
+  }
+  if (!existsSync(join(EXAMPLES, settings.app, "package.json"))) {
+    return `examples/${settings.app} has no package.json, where the second app gets its own name; use a Node example such as nextjs-postgres`;
+  }
+  return undefined;
 }
 
 /** One CLI run. */
@@ -161,24 +193,37 @@ export interface CliRun {
 /** A function the cleanup runs one action with: errors and returned problems are collected. */
 export type CleanupAttempt = (what: string, body: () => Promise<unknown>) => Promise<void>;
 
+/** What a {@link LiveRun} is made with. */
+interface LiveRunOptions {
+  /** In the log prefix: `OpsCrew E2E (<label>)`. */
+  label: string;
+  /** In the names of the temporary folder and the server (`opscrew-e2e-<name>-<run id>`). */
+  name: string;
+  settings: ServerSettings;
+  /** Runs after every CLI run (for example to keep the saved plans for the leak search). */
+  afterCli?: () => Promise<void>;
+}
+
 /**
  * One live run on a throwaway server: its state, its steps and its cleanup. Create it in the
- * `describe` block; it does nothing until a step runs.
+ * `describe` block; it does nothing until a step runs. {@link second} adds the run's second app.
  */
 export class LiveRun {
-  readonly runId = `${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
+  readonly runId: string;
   readonly startedAt = new Date();
   readonly runner = new NodeCommandRunner();
-  readonly scrubber = new Scrubber();
-  readonly scrub = this.scrubber.scrub;
+  readonly scrubber: Scrubber;
+  readonly scrub: (text: string) => string;
   readonly github: GitHubRepo;
   readonly cloudflare: Cloudflare;
   /** The app's hostname for this run only (`runHostname`), so Let's Encrypt's weekly limit never applies. */
   readonly appHost: string;
   /** Raw CLI outputs by (scrubbed) label: never printed, searched at the end. */
-  readonly outputs = new Map<string, string>();
+  readonly outputs: Map<string, string>;
   /** Problems that do not stop the run but fail it at the end. */
-  readonly findings: string[] = [];
+  readonly findings: string[];
+  /** Every version of `.opscrew/cloudflare.json` seen after a CLI run, for the leak search. */
+  readonly cloudflareRecords: Set<string>;
 
   work = "";
   repo = "";
@@ -193,30 +238,56 @@ export class LiveRun {
   hostnames: string[] = [];
   cloudflareBefore: CloudflareAppResources | undefined;
   destroyed = false;
+  /** The zone's two entrypoint rulesets before the run (and its seeded rules); the first app only. */
+  sharedBefore: ZoneEntrypoints | undefined;
 
   private stopped = false;
   private publicKey = "";
   private hetznerTouched = false;
   private readonly hetznerIds: HetznerIds = {};
+  private readonly parent: LiveRun | undefined;
+  private readonly children: LiveRun[] = [];
+  /** The zone's rules OpsCrew did not create, right after {@link seedUserRules}. */
+  private userRulesSeeded: Record<SharedPhase, string[]> | undefined;
+  /** The Zero Trust organization and one-time PIN logins seen so far: none may go. */
+  private readonly zeroTrustSeen: { organization?: string; oneTimePins: Set<string> } = {
+    oneTimePins: new Set(),
+  };
 
   constructor(
-    private readonly options: {
-      /** In the log prefix: `OpsCrew E2E (<label>)`. */
-      label: string;
-      /** In the names of the temporary folder and the server (`opscrew-e2e-<name>-<run id>`). */
-      name: string;
-      settings: ServerSettings;
-      /** Runs after every CLI run (for example to keep the saved plans for the leak search). */
-      afterCli?: () => Promise<void>;
-    },
+    private readonly options: LiveRunOptions,
+    parent?: LiveRun,
   ) {
     const { settings } = options;
+    this.parent = parent;
+    this.runId = parent?.runId ?? `${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
+    this.scrubber = parent?.scrubber ?? new Scrubber();
+    this.scrub = this.scrubber.scrub;
+    this.outputs = parent?.outputs ?? new Map();
+    this.findings = parent?.findings ?? [];
+    this.cloudflareRecords = parent?.cloudflareRecords ?? new Set();
     this.github = new GitHubRepo(settings.githubToken, settings.githubRepo);
     this.cloudflare = new Cloudflare(settings.cloudflareToken);
-    this.appHost = settings.domain === "" ? "" : runHostname(settings.domain, this.runId);
+    this.appHost =
+      settings.domain === ""
+        ? ""
+        : runHostname(settings.domain, this.runId, parent === undefined ? undefined : "b");
     this.scrubber.add(settings.hcloudToken, "hetzner-token");
     this.scrubber.add(settings.githubToken, "github-token");
     this.scrubber.add(settings.cloudflareToken, "cloudflare-token");
+  }
+
+  /**
+   * The run's second app, B (feature 011): its own temporary folder, project, throwaway repository
+   * (`settings.githubRepo`), SSH key and server, with this run's id (its server carries the same
+   * label), the hostname `e2e-<run id>-b.<zone>`, and this run's scrubber, CLI outputs and
+   * findings. Its steps go through this run's `step`; this run's cleanup also removes what it
+   * created, and {@link expectSharedCloudflare} counts its hostnames.
+   */
+  second(options: LiveRunOptions): LiveRun {
+    const second = new LiveRun(options, this);
+    this.children.push(second);
+    return second;
   }
 
   readonly log = (message: string) =>
@@ -295,7 +366,10 @@ export class LiveRun {
     return result.stdout.trim();
   }
 
-  /** Runs the built CLI in the project, non-interactively (`CI=1`), with `overrides` in its env. */
+  /**
+   * Runs the built CLI in the project, non-interactively (`CI=1`), with `overrides` in its env,
+   * and keeps its output and the version of `.opscrew/cloudflare.json` it left for the leak search.
+   */
   async opscrewWith(
     overrides: Record<string, string | undefined>,
     ...args: string[]
@@ -307,7 +381,13 @@ export class LiveRun {
       timeoutMs: minutes(30),
     });
     const output = `${result.stdout}\n${result.stderr}`;
-    this.outputs.set(this.scrub(`#${this.outputs.size + 1} opscrew ${args.join(" ")}`), output);
+    const app = this.parent === undefined ? "" : "(B) ";
+    this.outputs.set(
+      this.scrub(`#${this.outputs.size + 1} ${app}opscrew ${args.join(" ")}`),
+      output,
+    );
+    const record = await readFile(this.paths().files.cloudflareRecord, "utf8").catch(() => "");
+    if (record !== "") this.cloudflareRecords.add(record);
     await this.options.afterCli?.();
     if (result.timedOut === true) {
       throw new Error(
@@ -366,7 +446,9 @@ export class LiveRun {
    * folder, the CLI's environment (`CI=1`, the GitHub token, `env`; never a cloud token, an SSH
    * agent, an `OPSCREW_E2E_*` variable or a name in `drop`), the server's own SSH key (never in
    * the repository, never printed), and the throwaway repository's `main` with a fresh copy of the
-   * example (`commit` as its message) and without earlier pull requests or branches.
+   * example (`commit` as its message) and without earlier pull requests or branches. The second
+   * app's copy gets `b-` before the name in its `package.json`, the name OpsCrew gives the app, so
+   * none of its names (stacks, tunnel, Access) starts with the first app's.
    */
   async prepareRepo(options: {
     commit: string;
@@ -415,6 +497,14 @@ export class LiveRun {
 
     this.log(`pushing examples/${settings.app} to the throwaway repository`);
     await materializeFixture(join(EXAMPLES, settings.app), this.repo);
+    if (this.parent !== undefined) {
+      const file = join(this.repo, "package.json");
+      const manifest = JSON.parse(await readFile(file, "utf8")) as { name?: string };
+      await writeFile(
+        file,
+        `${JSON.stringify({ ...manifest, name: `b-${manifest.name}` }, null, 2)}\n`,
+      );
+    }
     const appEnv = settings.appEnvFile ? await readFile(settings.appEnvFile, "utf8") : "";
     await writeFile(join(this.work, "production.env"), appEnv);
     // Stand-in values, but still never to be shown or committed (8+ characters: shorter ones
@@ -544,7 +634,9 @@ export class LiveRun {
   /**
    * The Cloudflare zone of the run's hostname, which must be directly below it (Cloudflare's free
    * edge certificate covers only `*.<zone>`), and a snapshot of what OpsCrew may create there for
-   * the app on `hostnames`: the cleanup never deletes what was there before the run.
+   * the app on `hostnames`: the cleanup never deletes what was there before the run. The first app
+   * also keeps the zone's two entrypoint rulesets and the account's Zero Trust pieces as they were
+   * before the run.
    */
   async snapshotCloudflare(hostnames: (zone: CloudflareZone) => string[]): Promise<CloudflareZone> {
     const zone = await this.cloudflare.zoneOf(this.appHost);
@@ -557,7 +649,112 @@ export class LiveRun {
     this.zone = zone;
     this.hostnames = hostnames(zone);
     this.cloudflareBefore = await this.cloudflare.appResources(zone, this.app(), this.hostnames);
+    if (this.parent === undefined) {
+      this.sharedBefore = await this.cloudflare.sharedEntrypoints(zone);
+      this.noteZeroTrust(await this.cloudflare.zeroTrust(zone.accountId));
+    }
     return zone;
+  }
+
+  /**
+   * Before the first provision (the first app only): one rule of the user's own in each of
+   * OpsCrew's two phases, added as a user would (`seedRule`), that matches only
+   * `opscrew-e2e-seeded.<the run's hostname>`, a name that does not exist: a block in the WAF
+   * custom rules, a harmless setting in the configuration rules (both on the Free plan). The
+   * zone's rules OpsCrew did not create, these among them, are then compared after every provision
+   * and destroy ({@link expectSharedCloudflare}); the cleanup removes the seeded ones.
+   */
+  async seedUserRules(): Promise<void> {
+    const zone = this.zone as CloudflareZone;
+    const description = seededDescription(this.runId);
+    const expression = `(http.host eq "opscrew-e2e-seeded.${this.appHost}")`;
+    await this.cloudflare.seedRule(zone, "http_request_firewall_custom", {
+      description,
+      expression,
+      action: "block",
+      enabled: true,
+    });
+    await this.cloudflare.seedRule(zone, "http_config_settings", {
+      description,
+      expression,
+      action: "set_config",
+      action_parameters: { automatic_https_rewrites: true },
+      enabled: true,
+    });
+    const now = await this.cloudflare.sharedEntrypoints(zone);
+    for (const [phase, entrypoint] of Object.entries(now)) {
+      expect(
+        entrypoint?.rules.some((rule) => rule.description === description),
+        `the seeded rule is in the zone's ${phase} rules`,
+      ).toBe(true);
+    }
+    this.userRulesSeeded = userRules(now);
+    this.log(
+      "seeded a rule of the user's own in the zone's WAF custom rules and configuration rules",
+    );
+  }
+
+  /**
+   * After `what` (a provision or a destroy), with one live test in the zone: the zone's rules
+   * OpsCrew did not create (the seeded ones among them) are byte-identical and in the same order
+   * as right after {@link seedUserRules}; OpsCrew's rule of each ref (found by `ref`) lists exactly
+   * what it listed before the run plus the hostnames of this run's apps that are not destroyed
+   * (`appRules` of their plans), so it is gone when it listed nothing else before the run; and
+   * the account's Zero Trust organization and one-time PIN logins seen so far are still there.
+   */
+  async expectSharedCloudflare(what: string): Promise<void> {
+    const zone = this.zone as CloudflareZone;
+    const now = await this.cloudflare.sharedEntrypoints(zone);
+    expect(
+      userRules(now),
+      `the zone's own rules (the seeded ones among them) are unchanged after ${what}`,
+    ).toEqual(this.userRulesSeeded);
+    const apps: AppRules[] = [];
+    for (const app of [this, ...this.children]) {
+      if (app.appName !== undefined && !app.destroyed) apps.push(appRules(await app.readPlan()));
+    }
+    expect(
+      sharedRuleHosts(now),
+      `OpsCrew's shared rules list exactly the hostnames of this run's apps after ${what}`,
+    ).toEqual(expectedSharedHosts(sharedRuleHosts(this.sharedBefore as ZoneEntrypoints), apps));
+    const zeroTrust = await this.cloudflare.zeroTrust(zone.accountId);
+    const seen = this.zeroTrustSeen;
+    if (seen.organization !== undefined) {
+      expect(
+        zeroTrust.organization,
+        `the account's Zero Trust organization stays after ${what}`,
+      ).toBe(seen.organization);
+    }
+    expect(zeroTrust.oneTimePins, `the account's one-time PIN login stays after ${what}`).toEqual(
+      expect.arrayContaining([...seen.oneTimePins]),
+    );
+    this.noteZeroTrust(zeroTrust);
+    this.log(
+      `after ${what}: the zone's own rules are unchanged, OpsCrew's shared rules list this run's apps, the Zero Trust pieces stay`,
+    );
+  }
+
+  private noteZeroTrust(now: ZeroTrust): void {
+    this.zeroTrustSeen.organization ??= now.organization;
+    for (const id of now.oneTimePins) this.zeroTrustSeen.oneTimePins.add(id);
+  }
+
+  /** Waits up to 3 minutes until `https://<hostname>/.env` answers with Cloudflare's block page. */
+  async expectProbeBlocked(hostname: string): Promise<void> {
+    const url = `https://${hostname}/.env`;
+    await waitFor(
+      `${url} answering with Cloudflare's block page`,
+      minutes(3),
+      async () => {
+        const answer = await httpRequest(url);
+        if (blockedByCloudflare(answer)) return true;
+        throw new Error(
+          `${url} answered ${answer.status}${answer.headers["cf-ray"] === undefined ? " without Cloudflare's cf-ray header" : ""}.`,
+        );
+      },
+      10_000,
+    );
+    this.log(`${url} is blocked by Cloudflare`);
   }
 
   /** `adapt --no-ai --yes`, then the merge of its pull request, with `main` checked out again. */
@@ -725,11 +922,14 @@ export class LiveRun {
   }
 
   /**
-   * The cleanup, after every step and always: `first` (for example stopping a tunnel), the
-   * throwaway server, its key and firewall (they are billed), then what the run created in
-   * Cloudflare (also after a finished destroy, which should have left nothing; only ids that were
-   * not there before the run), then `cloudflare` (more checks there), then the repository's reset
-   * and the temporary folder. Problems are collected and fail the cleanup at the end.
+   * The cleanup, after every step and always, for this app and the second one: `first` (for
+   * example stopping a tunnel), the throwaway servers, their keys and firewalls (they are billed),
+   * then what each app created in Cloudflare (also after a finished destroy, which should have
+   * left nothing; only ids that were not there before the run), then the zone's rules
+   * (`removeRulesOfRun`: the seeded ones, OpsCrew's rules left holding only the run's hostnames,
+   * an entrypoint the run created once it is empty), then `cloudflare` (more checks there), then
+   * the repositories' reset and the temporary folders. Problems are collected and fail the cleanup
+   * at the end.
    */
   registerCleanup(
     options: { first?: () => void; cloudflare?: (attempt: CleanupAttempt) => Promise<void> } = {},
@@ -745,45 +945,86 @@ export class LiveRun {
         }
       };
       options.first?.();
-      if (this.hetznerTouched) {
-        this.log("deleting the throwaway server, its SSH key and any firewall");
+      const apps = [this, ...this.children];
+      for (const app of apps.filter((item) => item.hetznerTouched)) {
+        app.log("deleting the throwaway server, its SSH key and any firewall");
         await attempt("delete the throwaway server", () =>
           deleteThrowaway({
-            token: this.options.settings.hcloudToken,
-            runId: this.runId,
-            ids: this.hetznerIds,
+            token: app.options.settings.hcloudToken,
+            runId: app.runId,
+            ids: app.hetznerIds,
           }),
         );
       }
-      const { zone, appName, cloudflareBefore } = this;
-      if (zone !== undefined && appName !== undefined && cloudflareBefore !== undefined) {
-        this.log(
-          this.destroyed
-            ? "checking Cloudflare for anything this run created that destroy left"
-            : "destroy did not finish: removing what this run created in Cloudflare",
+      for (const app of apps) {
+        const { zone, appName, cloudflareBefore } = app;
+        if (zone === undefined || appName === undefined || cloudflareBefore === undefined) continue;
+        app.log(
+          app.destroyed
+            ? "checking Cloudflare for anything of the app that destroy left"
+            : "destroy did not finish: removing what this run created in Cloudflare for the app",
         );
-        await attempt("remove the Cloudflare resources", async () =>
-          this.cloudflare.removeCreated(
+        await attempt(`remove the Cloudflare resources of ${appName}`, async () =>
+          app.cloudflare.removeCreated(
             zone,
-            await this.cloudflare.appResources(zone, appName, this.hostnames),
+            await app.cloudflare.appResources(zone, appName, app.hostnames),
             cloudflareBefore,
-            { hostnames: this.hostnames, log: this.log },
           ),
+        );
+      }
+      const { zone, sharedBefore } = this;
+      if (zone !== undefined && sharedBefore !== undefined) {
+        this.log(
+          "removing the seeded rules; checking OpsCrew's shared rules for this run's hostnames",
+        );
+        await attempt("clean up the zone's rules", () =>
+          this.cloudflare.removeRulesOfRun(zone, sharedBefore, {
+            hostnames: apps.flatMap((app) => app.hostnames),
+            seeded: seededDescription(this.runId),
+            log: this.log,
+          }),
         );
         await options.cloudflare?.(attempt);
       }
-      if (this.repoReady) {
-        await attempt("reset the throwaway repository", () => this.github.reset());
-      }
-      if (this.work !== "") {
-        await rm(this.work, { recursive: true, force: true }).catch(() => undefined);
+      for (const app of apps) {
+        if (app.repoReady) {
+          await attempt(`reset the throwaway repository ${app.github.name}`, () =>
+            app.github.reset(),
+          );
+        }
+        if (app.work !== "") {
+          await rm(app.work, { recursive: true, force: true }).catch(() => undefined);
+        }
       }
       if (problems.length > 0) {
         throw this.cleanError(
           new Error(`Cleanup left something behind:\n- ${problems.join("\n- ")}`),
         );
       }
-      if (this.hetznerTouched) this.log("the throwaway server and everything with it are deleted");
-    }, minutes(15));
+      if (this.hetznerTouched)
+        this.log("the throwaway servers and everything with them are deleted");
+    }, minutes(25));
+  }
+
+  /**
+   * The leak search's part for OpsCrew's shared Cloudflare resources (feature 011): every version
+   * of `.opscrew/cloudflare.json` the run saw must hold only hostnames and ids, and none of `known`
+   * (`cloudflareRecordProblems`). The Cloudflare plans are in the CLI outputs, which the search
+   * covers anyway. With `expected` (a run that provisioned an app into the shared rules), seeing
+   * no Cloudflare plan or no record is a finding, since then the search did not cover them.
+   */
+  sharedPlanLeaks(known: readonly { label: string; value: string }[], expected: boolean): string[] {
+    const shown = [...this.outputs.values()].some((output) =>
+      output.includes("Cloudflare plan hash: "),
+    );
+    if (expected && !shown) {
+      this.findings.push("no CLI output showed a Cloudflare plan, so the leak search covered none");
+    }
+    if (expected && this.cloudflareRecords.size === 0) {
+      this.findings.push(
+        "no .opscrew/cloudflare.json was written, so the leak search covered none",
+      );
+    }
+    return [...this.cloudflareRecords].flatMap((text) => cloudflareRecordProblems(text, known));
   }
 }

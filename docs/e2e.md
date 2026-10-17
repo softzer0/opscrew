@@ -2,6 +2,14 @@
 
 What has run live so far, and what has not, is tracked in [e2e-coverage.md](e2e-coverage.md).
 
+**One live test per Cloudflare zone at a time.** OpsCrew keeps one shared rule per kind in a
+zone, listing the hostnames of every OpsCrew app there (see
+[the guide](guide/cloudflare.md)). The live tests compare those rules, and the zone's rules
+OpsCrew did not create, with exactly what they expect after each provision and destroy, so the
+apps or seeded rules of another run in the same zone would look like a change and fail it. Run
+the live test files one after another, never two at once against the same `OPSCREW_E2E_DOMAIN`
+zone.
+
 `packages/cli/test/live/live.test.ts` runs the whole OpsCrew flow against real services, once for
 each cloud provider whose token is set (Hetzner Cloud, DigitalOcean, or both, one after the other):
 
@@ -12,11 +20,17 @@ each cloud provider whose token is set (Hetzner Cloud, DigitalOcean, or both, on
 2. It runs `analyze --no-ai`, then `interview --answers` (with the provider and
    `OPSCREW_E2E_REGION`) and `design`.
 3. It runs `adapt --no-ai --yes` and merges that pull request through the GitHub API.
-4. It runs `provision --plan-only --yes` and then `provision --approve <hash> --yes`, which creates a real server (or Droplet).
+4. It runs `provision --plan-only --yes` and then `provision --approve <hash> … --yes` with every
+   hash it printed (with a Cloudflare domain, the Cloudflare plan of OpsCrew's shared rules comes
+   before the infrastructure plan), which creates a real server (or Droplet). With a Cloudflare
+   domain, the app's hostnames must then be in both of OpsCrew's shared rules, found by their
+   `ref` (`opscrew-block-probes` and `opscrew-strict-tls`).
 5. It merges the deployment pull request and waits for the `opscrew-deploy.yml` workflow to succeed.
 6. It runs `verify`, checks that the app answers 200 on the health path from `opscrew/plan.yaml`,
    then runs `secure` and `drift` (which must report no differences).
-7. It tears everything down with `opscrew destroy --confirm`.
+7. It tears everything down with `opscrew destroy --confirm`. With a Cloudflare domain, none of
+   OpsCrew's shared rules may list the app's hostnames afterwards (other apps' hostnames there are
+   not the test's).
 
 When both `OPSCREW_E2E_HCLOUD_TOKEN` and `OPSCREW_E2E_DIGITALOCEAN_TOKEN` are set, a third pass
 tests `opscrew retarget`: it deploys on Hetzner Cloud, writes a row into the app's database over
@@ -128,12 +142,28 @@ The test sets `CI=1`, so every command runs non-interactively:
    `.gitignore` lines it adds are committed to `main`), `analyze --no-ai`, `interview --answers`
    (own server, `root`, the key's path, `server.serve: dns-only`), `init` again (now everything
    passes), `design --host-key <fingerprint>`, `adapt --no-ai --yes` (pull request
-   merged), `provision --plan-only` then `provision --approve <infrastructure> --approve <host plan>`,
-   merge of the deploy pull request and its workflow run, then the domain answers from the server
-   itself (not proxied), `verify`, `secure` (no failed check) and `drift` pass and root still logs
-   in with its key. The step measures the time from the start of `init` to the passing `verify`
-   (SC-901) and logs it; when that takes 20 minutes or more, the run fails at the end (step 8), after
-   the later steps.
+   merged), `provision --plan-only` then `provision --approve <Cloudflare plan> --approve
+   <infrastructure> --approve <host plan>`, merge of the deploy pull request and its workflow run,
+   then the domain answers from the server itself (not proxied), `verify`, `secure` (no failed
+   check) and `drift` pass and root still logs in with its key. The step measures the time from
+   the start of `init` to the passing `verify` (SC-901) and logs it; when that takes 20 minutes or
+   more, the run fails at the end (step 8), after the later steps.
+
+   Before the first provision the test snapshots the zone's WAF custom rules and configuration
+   rules and the account's Zero Trust organization and one-time PIN login, then seeds one rule of
+   the user's own in each (added through the Cloudflare API as a user would: to the zone's
+   existing rule list, or as a new list only when the zone has none). Both match only
+   `opscrew-e2e-seeded.e2e-<run id>.<zone>`, a name that does not exist: a `block` in the WAF
+   custom rules and Automatic HTTPS Rewrites in the configuration rules, both available on the
+   Free plan. After this provision and every later provision and destroy (steps 5, 6, 6b, 7, 7b):
+   - the zone's rules OpsCrew did not create, the seeded ones among them, are byte-identical (id,
+     `ref`, expression, action, `action_parameters`, enabled) and in the same order;
+   - OpsCrew's two rules, found by their `ref` (`opscrew-block-probes` and `opscrew-strict-tls`),
+     list exactly what they listed before the run plus the hostnames of this run's apps that are
+     not destroyed: in DNS-only and proxy mode an app is in both rules, through the tunnel only in
+     the probe block. A rule that listed nothing before the run must be gone once no app of the
+     run is left;
+   - the Zero Trust organization and every one-time PIN login seen so far are still there.
 3. `provision --plan-only` again: nothing to apply.
 4. `portainer enable` (plan, then `--approve`): ports 9443, 9000 and 8000 do not answer on the
    server's addresses; through the SSH tunnel command `portainer status` prints, Portainer answers,
@@ -149,54 +179,85 @@ The test sets `CI=1`, so every command runs non-interactively:
 6. **The tunnel** (`server.serve: tunnel`): the switch runs as two applies. The first one removes
    the old DNS records, so it is approved with its hash and the app's name, both taken from the
    command `--plan-only` prints (`provision --approve <removal hash> --confirm <app>`); the second
-   one, the new setup, with its own `--approve` hashes. Then: ufw is active and lists only SSH
+   one, the new setup, with its own `--approve` hashes (the app's hostnames leave OpsCrew's
+   strict-TLS rule, which a tunnel app does not need). Then: ufw is active and lists only SSH
    rules, the domain answers through the tunnel, 80/443 stay closed, `verify` and `drift` pass, and
    the SSH hostname (`ssh-<app>.<zone>`) refuses a request without the service token. The deploy
    workflow on `main` names that hostname and `cloudflared access ssh`; a merged change then
    deploys, and sshd's journal on the server shows every `deploy` login of that run coming from
    `127.0.0.1` or `::1` (the tunnel connector), not from GitHub's runners.
+
+   6b. **A second app** (only with `OPSCREW_E2E_GITHUB_REPO_B`; otherwise skipped with a message
+   that says so): OpsCrew keeps one app per server until feature 013, so the second app, B, goes on
+   a second throwaway server created like step 1's (its own SSH key, the run's label), with its own
+   throwaway repository and project folder. It is the same example with `b-` before the name in its
+   `package.json`, so its stacks, tunnel and Access names never start with the first app's, and it
+   is served on `e2e-<run id>-b.<zone>`, also directly below the zone. In tunnel mode: `init --fix`,
+   `analyze`, interview and `design --host-key`, `adapt`, provision, deploy, `verify`. Then both
+   apps' `https://<hostname>/.env` answer Cloudflare's block page (HTTP 403, "you have been
+   blocked"), both apps' hostnames are in OpsCrew's probe block (neither in the strict-TLS rule:
+   both use the tunnel), and the two apps share the account's Zero Trust organization.
 7. `destroy --confirm <app> --undo-host`, then again with `--approve <undo host plan hash>`: no DNS
    record, tunnel, Access application, policy or service token of the app is left in Cloudflare,
    no container of the app and no `deploy` user are left on the server, and root still logs in
-   with its key.
-8. Nothing leaked: the server's addresses (IPv4, IPv6 and its `/64` prefix), the private keys,
-   the state passphrase, the tunnel token, the Access service token, the Portainer password and
+   with its key. With the second app: it still answers through its tunnel, its `/.env` is still
+   blocked, its SSH hostname still refuses a request without the service token, and OpsCrew's probe
+   block lists only its hostnames of this run.
+
+   7b. **Destroying the second app** (`destroy --undo-host` on its server, with the same approvals):
+   nothing of it is left in Cloudflare, OpsCrew's shared rules are gone (unless they listed other
+   apps' hostnames before the run, which then stay), the seeded rules are byte-identical, and the
+   Zero Trust organization and one-time PIN login are still there.
+8. Nothing leaked: the servers' addresses (IPv4, IPv6 and their `/64` prefixes), the private keys,
+   the state passphrases, the tunnel tokens, the Access service tokens, the Portainer password and
    the `OPSCREW_E2E_APP_ENV` values (those of 8 characters or more) are in no commit (any branch,
-   messages and contents) and no pull request of the run; no secret is in any CLI output or
-   OpsCrew's audit log; and the CLI shows the server's address only in the Portainer tunnel command
-   (`deploy@<address>`) and in "your server at <address>" messages (host key and reachability).
-   Those mentions are cut out of a line before the rest of it is searched. When the tunnel or
-   service-token secrets could not be read, the run fails with a finding that says so.
+   messages and contents) and no pull request of the run, in both apps' repositories; no secret is
+   in any CLI output (the Cloudflare plans among it) or OpsCrew's audit logs; and the CLI shows a
+   server's address only in the Portainer tunnel command (`deploy@<address>`) and in "your server
+   at <address>" messages (host key and reachability). Those mentions are cut out of a line before
+   the rest of it is searched. Every version of `.opscrew/cloudflare.json` the run saw (after each
+   CLI run, both apps) must hold only the zone's id, hostnames and phases, and no known value. When
+   the tunnel or service-token secrets could not be read, or no CLI output showed a Cloudflare plan,
+   or no `.opscrew/cloudflare.json` was written, the run fails with a finding that says so.
 
 Each step logs what it waits for. The steps stop at the first failure (a timeout too), but the
 cleanup always runs:
 
-- It deletes the throwaway server and its SSH key: everything labelled with the run's id, and
+- It deletes the throwaway servers and their SSH keys: everything labelled with the run's id, and
   nothing else, then reports any server or key still listed under that label.
-- It removes what this run created in Cloudflare for the app, also after a finished `destroy`
-  (which should have left nothing): DNS records on the run's hostname, `www.`, `ssh-<app>.` and
-  `portainer.`, the tunnel `opscrew-<app>`, the Access applications and policies and the service
-  token named after the app, and the zone's OpsCrew rulesets (configuration and WAF rules) that
-  this run created, those whose rules name only the run's hostnames. Anything that existed before
-  the run is skipped, including rulesets of other apps or earlier runs.
-- It resets the throwaway repository: closes every open pull request and deletes every branch
+- It removes what this run created in Cloudflare for each app, also after a finished `destroy`
+  (which should have left nothing): DNS records on the app's hostname, `www.`, `ssh-<app>.` and
+  `portainer.`, the tunnel `opscrew-<app>`, and the Access applications and policies and the
+  service token named after the app. Anything that existed before the run is skipped.
+- It cleans up the zone's WAF custom rules and configuration rules: it deletes the rules it
+  seeded, and OpsCrew's rules (found by `ref`, never by name) that list only this run's hostnames,
+  each logged. An OpsCrew rule that lists this run's hostnames next to other hostnames is reported
+  and left as it is (the cleanup never edits a rule). A rule list the run created (the zone had
+  none of that kind before the run) is deleted once nothing is left in it.
+- It resets the throwaway repositories: closes every open pull request and deletes every branch
   except `main`.
 
-Everything the test prints goes through a scrubber that masks the server's addresses and every
+Everything the test prints goes through a scrubber that masks the servers' addresses and every
 secret it knows.
 
 If a run was interrupted (the process killed, so the cleanup never ran): in the Hetzner project,
 delete the servers and SSH keys labelled `managed-by=opscrew-e2e`; in Cloudflare, delete the DNS
-records on the run's hostname `e2e-<run id>.<zone>` (the id is the server's `run=<id>` label) and
-on `www.`, `portainer.` and `ssh-<app>.`, the tunnel `opscrew-<app>`, the Access applications `OpsCrew SSH (<app>)`, the Access policy and service token `OpsCrew deploy (<app>)`, and the zone's
-OpsCrew rulesets whose rules name only that run's hostnames.
+records on the run's hostnames `e2e-<run id>.<zone>` and `e2e-<run id>-b.<zone>` (the id is the
+servers' `run=<id>` label) and on `www.`, `portainer.` and `ssh-<app>.`, the tunnels
+`opscrew-<app>`, the Access applications `OpsCrew SSH (<app>)`, the Access policies and service
+tokens `OpsCrew deploy (<app>)`, the rules described "OpsCrew E2E: a rule of the user's own, seeded
+by run <run id>" in Security → WAF → Custom rules and Rules → Configuration Rules, and the run's
+hostnames from OpsCrew's rules there ("OpsCrew: block probes for secrets and admin panels" and
+"OpsCrew: verify the origin certificate (Full (strict) TLS)"; delete a rule that lists nothing
+else).
 
 | Variable | What it is |
 |---|---|
 | `OPSCREW_E2E_OWN_SERVER` | `1` runs this test. |
-| `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test to create and delete the throwaway server. Use a separate, empty project. |
-| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as above. |
-| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | A Cloudflare token for the zone with Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit, plus the account permissions tunnel mode needs: Cloudflare Tunnel Edit, Access: Apps and Policies Edit, Access: Service Tokens Edit, Access: Organizations, Identity Providers, and Groups Edit. Cloudflare Zero Trust must be turned on for the account. |
+| `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test to create and delete the throwaway servers. Use a separate, empty project. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as above. With `OPSCREW_E2E_GITHUB_REPO_B` the token must cover that repository too, with the same permissions (a fine-grained token can list several repositories). |
+| `OPSCREW_E2E_GITHUB_REPO_B` | Optional, `owner/name` of a second **throwaway** repository, for the second app (steps 6b and 7b). The test force-pushes its `main` branch like the first one's. Without it those two steps are skipped with a message and the rest runs as before. The second app needs a Node example (it changes the name in its `package.json`). |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | A Cloudflare token for the zone with Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit, plus the account permissions tunnel mode needs: Cloudflare Tunnel Edit, Access: Apps and Policies Edit, Access: Service Tokens Edit, Access: Organizations, Identity Providers, and Groups Edit (the test also reads the Zero Trust organization and login methods with it, and seeds and removes its own rules). Cloudflare Zero Trust must be turned on for the account. |
 | `OPSCREW_E2E_DOMAIN` | A hostname one level below that zone, for example `e2e.example.com`, or the zone itself. It names the zone only: each run uses its own hostname `e2e-<run id>.<zone>` (see step 1) and owns its records while it runs. |
 | `OPSCREW_E2E_REGION` | Optional, where the server runs, with OpsCrew's own Hetzner locations for the region: `eu-central` (default; Nuremberg, then Falkenstein), `eu-north` (Helsinki), `us-east`, `us-west` or `ap-southeast`. |
 | `OPSCREW_E2E_OWN_SERVER_TYPE` | Optional, a Hetzner server type to use instead of the cheapest x86 one, for example `cx23`. |
@@ -204,22 +265,25 @@ OpsCrew rulesets whose rules name only that run's hostnames.
 
 Requirements: the built CLI, `git`, OpenTofu or Terraform, `ssh`, `ssh-keygen` and `ssh-keyscan`,
 Node.js 22.9+, and outgoing SSH (port 22) from the test computer. Run only this file, never together
-with the other live tests (they share the throwaway repository):
+with the other live tests (they share the throwaway repository and the zone):
 
 ```bash
 pnpm --filter opscrew build
 cd packages/cli
 OPSCREW_E2E_OWN_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_REPO_B=you/opscrew-e2e-b \
   OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
   npx vitest run test/live/own-server.test.ts
 ```
 
-A full run takes about 26 minutes (measured on the passing runs; it includes five deploy workflow
-runs, Docker's installation on the server and a reboot). The server is the smallest x86 type, billed by the hour at Hetzner, so a run
-costs about one or two cents of server time, plus GitHub Actions minutes for the builds (free for
-public repositories). Left behind on purpose: the GitHub Actions secrets and the container image
-in the throwaway repository (as above), the zone's rulesets that existed before the run, and the
-Zero Trust organization if OpsCrew created it (other apps may use them).
+A full run without the second app takes about 26 minutes (measured on the passing runs; it
+includes five deploy workflow runs, Docker's installation on the server and a reboot); the second
+app adds its own server, a deploy and its destroy. The servers are the smallest x86 type, billed by the hour at Hetzner, so a run
+costs a few cents of server time, plus GitHub Actions minutes for the builds (free for
+public repositories). Left behind on purpose: the GitHub Actions secrets and the container images
+in the throwaway repositories (as above), the zone's rules that existed before the run (OpsCrew's
+shared rules too, when they listed other apps' hostnames), and the Zero Trust organization and
+one-time PIN login if OpsCrew created them (OpsCrew never deletes them: other apps may use them).
 
 ## Your existing Portainer
 
@@ -227,10 +291,12 @@ Zero Trust organization if OpsCrew created it (other apps may use them).
 runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install.
 `OPSCREW_E2E_PORTAINER_STEPS` chooses the steps:
 
-- `core` (the default, about 15 minutes): steps 1, 1b, 2a, 2, 3, 8, 9 and 12. Step 8 then removes
-  an updater + tunnel setup (one tunnel, no Access application), and step 12 searches what this
-  pass produced; the bare short host name is searched only when step 11 ran and gave it to
-  OpsCrew.
+- `core` (the default, about 15 minutes before the second app, which adds its setup, a deploy and
+  its destroy): steps 1, 1b, 2a, 2, 3, 7b, 8, 9, 9b and 12. Step 8 then removes an updater +
+  tunnel setup (one tunnel, no Access application), and step 12 searches what this pass produced;
+  the bare short host name is searched only when step 11 ran and gave it to OpsCrew. Without
+  `OPSCREW_E2E_GITHUB_REPO_B`, steps 7b and 9b are skipped with a message and the rest runs as
+  before.
 - `full` (about 1 to 1½ hours): every step and check below.
 - A comma-separated list of steps, such as `11,12`: those steps and every step they need (see
   [Running chosen steps](#running-chosen-steps)).
@@ -261,16 +327,24 @@ other value skips the whole test and names the variable.
 
    2a. **Preparing the project**: `init --fix`, `analyze --no-ai`,
    `interview --answers <file> --portainer-cert SHA256:…`, `init` again, `design`,
-   `adapt --no-ai --yes` (pull request merged), and the snapshot of what is in Cloudflare before
-   the run.
+   `adapt --no-ai --yes` (pull request merged), the snapshot of what is in Cloudflare before
+   the run (every zone ruleset, the account's Zero Trust organization and one-time PIN login), and
+   the rules of the user's own seeded as for [your own server](#your-own-server) (step 2). After
+   every later provision and destroy the same checks follow: the zone's rules OpsCrew did not
+   create are byte-identical and in the same order, OpsCrew's rules list exactly what they listed
+   before the run plus the hostnames of this run's apps that are not destroyed (an app in a
+   Portainer is only in the probe block, and only with the tunnel: OpsCrew sets no strict TLS
+   there), and the Zero Trust pieces seen so far are still there.
 
    2. With the standard user's token and a private image
    `provision --plan-only` must stop before any change with the registry steps (FR-1018); the
    test then does the guide's step 1 through the API (a Custom `ghcr.io` registry entry granted to
    that user on the environment), the same token must get past that check, and the entry is
    removed again. With the administrator's token the three script runs follow: `--plan-only`
-   prints only the infrastructure hash and says that three runs are needed,
-   `provision --approve <infrastructure hash> --yes` applies it, creates the `opscrew-deploy`
+   prints the Cloudflare plan's hash (the app's hostnames into OpsCrew's probe block) and one
+   infrastructure hash and says that three runs are needed,
+   `provision --approve <Cloudflare plan hash> --approve <infrastructure hash> --yes` applies them,
+   creates the `opscrew-deploy`
    branch (a root commit holding only `compose.yaml`, made with the fine-grained token) and stops at
    the stack plan printing its hash, `provision --yes` alone must not apply the stack plan, and
    `provision --approve <stack plan hash> --yes` applies exactly that hash; neither of the last
@@ -309,18 +383,39 @@ other value skips the whole test and names the variable.
    404 outside `/api/stacks/webhooks/` with it, `verify`, `secure`, `drift`, a re-run with nothing
    to apply, and `provision --replace-token registry` (plus `repository` for a private repository)
    after which the registry entry must still be granted to the environment.
+
+   7b. **A second app** (only with `OPSCREW_E2E_GITHUB_REPO_B`; otherwise skipped with a message
+   that says so): a second set of stacks in the same Portainer, from its own throwaway repository
+   and project folder. It is the same example with `b-` before the name in its `package.json`, so
+   its stacks, registry entry and tunnel never start with the first app's names, served on
+   `e2e-<run id>-b.<zone>` with the updater and the Cloudflare Tunnel (web mode `tunnel`), with the
+   administrator's token and the full `OPSCREW_E2E_CLOUDFLARE_TOKEN`: `init --fix`, `analyze`,
+   interview, `design`, `adapt`, provision (each plan approved by its hash), deploy, `verify`. Then
+   its site answers through its tunnel, its `/.env` answers Cloudflare's block page (HTTP 403, "you
+   have been blocked"), and so does the first app's when that one runs with the tunnel at that
+   point (in the core pass and after step 7 it does), OpsCrew's probe block lists both apps'
+   hostnames, and the decoys are unchanged.
 8. `destroy --confirm <app>` in tunnel + Cloudflare mode (two tunnels; in the core pass updater +
    tunnel, one tunnel), with the full `OPSCREW_E2E_CLOUDFLARE_TOKEN`: no stack of the app, no
    registry entry of OpsCrew, no DNS record, tunnel, Access application, policy or service token of
    the app; the data volumes kept; the deploy secrets, the webhook and value-key files and the
    saved stack plans removed; the `opscrew-deploy` branch deleted on GitHub (destroy says
    "Deleted the branch opscrew-deploy" and does not list it under "What remains"); Portainer's
-   users, environments, registries, other stacks and settings as before the run; the decoys
-   unchanged. (The zone's rulesets that existed before the run are compared by the cleanup.)
+   users, environments, registries (apart from the second app's own entry while it is set up),
+   other stacks and settings as before the run; the decoys unchanged. With the second app: it
+   still answers through its tunnel, its `/.env` is still blocked, and OpsCrew's probe block lists
+   only its hostnames of this run. (Every zone ruleset that existed before the run is also compared
+   by the cleanup.)
 9. `destroy --confirm <app> --delete-data`: the recorded volumes are gone, nothing else changed;
    it deletes data only, so GitHub is left alone (the branch stays absent, the Actions secrets as
    they were). OpsCrew's record is now empty, which steps 10 and 11 need after step 2: while the
    record lists anything, OpsCrew refuses another Portainer address.
+
+   9b. **Destroying the second app** (`destroy --confirm <app> --delete-data`): no stack of it is
+   left, nothing of it in Cloudflare, OpsCrew's shared rules are gone (unless they listed other
+   apps' hostnames before the run, which then stay), the seeded rules are byte-identical, the Zero
+   Trust organization and one-time PIN login are still there, and Portainer (now with no OpsCrew
+   registry entry left) and the decoys are as before the run.
 10. **A loopback Portainer address**, as a setup of its own: through an SSH tunnel on the test
     computer's port 9443 the interview uses `https://localhost:9443` (web mode `proxy`, the
     updater, no Cloudflare). Provision must create `opscrew-deploy` anew ("Created the branch",
@@ -344,9 +439,12 @@ other value skips the whole test and names the variable.
     webhook id, value key, tunnel token, service token, state passphrase, app secret, server
     address or Portainer address in any commit of any branch (including `opscrew-deploy`, whose
     history the test fetches into `refs/e2e/deploy-*` before each destroy deletes it on GitHub),
-    pull request, file in the repository, CLI output (stdout and stderr), MCP result or dialog, saved plan
-    (`.opscrew/plans/`, also the stack plans destroy removes), the audit log or (secrets only)
-    `.opscrew/server.json`. The bare short host name counts in what OpsCrew printed or saved
+    pull request, file in the repository, CLI output (stdout and stderr, the Cloudflare plans
+    among it), MCP result or dialog, saved plan (`.opscrew/plans/`, also the stack plans destroy
+    removes), the audit log or (secrets only) `.opscrew/server.json`, for both apps. Every version
+    of `.opscrew/cloudflare.json` the run saw must hold only the zone's id, hostnames and phases,
+    and no known value; when step 2 or 7 ran, a run that showed no Cloudflare plan or wrote no such
+    record fails with a finding. The bare short host name counts in what OpsCrew printed or saved
     (the app's own files and history may use it as a word); its URL forms count everywhere.
 
 After every step from 2 on that changes the setup, the decoy Compose project's and the decoy stack's containers, volumes,
@@ -357,25 +455,28 @@ the R5 result, the bare-variable and stop results, GHCR's answers, timings) are 
 target or a missing secret) are `finding:` lines and fail step 12.
 
 The cleanup always runs: it deletes the server, its SSH key and its firewall (everything labelled
-with the run's id, and nothing else), removes what the run created in Cloudflare (DNS records on
-`e2e-<run id>.<zone>`, `www.` and `portainer-<app>.<zone>`, the tunnels `opscrew-<app>` and
-`opscrew-<app>-portainer`, the Access application `OpsCrew Portainer webhook (<app>)`, the policy
-and service token `OpsCrew deploy (<app>)`, and the zone rulesets this run created), reports any
+with the run's id, and nothing else), removes what the run created in Cloudflare for each app (DNS
+records on `e2e-<run id>.<zone>`, `e2e-<run id>-b.<zone>`, `www.` and `portainer-<app>.<zone>`,
+the tunnels `opscrew-<app>` and `opscrew-<app>-portainer`, the Access application `OpsCrew
+Portainer webhook (<app>)`, the policy and service token `OpsCrew deploy (<app>)`), cleans up the
+zone's rules as for [your own server](#your-own-server) (the seeded rules, OpsCrew's rules that
+list only this run's hostnames, a rule list the run created once it is empty), then reports any
 zone ruleset that existed before the run and has other rules now (it never restores one), and
-resets the throwaway repository. If a run was interrupted, delete those by hand (the run id is the
-server's `run=<id>` label).
+resets the throwaway repositories. If a run was interrupted, delete those by hand (the run id is
+the server's `run=<id>` label), as described for your own server.
 
 | Variable | What it is |
 |---|---|
 | `OPSCREW_E2E_PORTAINER` | `1` runs this test. |
 | `OPSCREW_E2E_PORTAINER_STEPS` | Optional, `core` (the default), `full` or a list of steps such as `11,12`: which steps run (see above and [Running chosen steps](#running-chosen-steps)). |
 | `OPSCREW_E2E_HCLOUD_TOKEN` | Hetzner Cloud API token (Read & Write), used only by the test for the server, its key and firewall. Use a separate, empty project. |
-| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its fine-grained token, as above (Contents, Pull requests, Secrets, Actions and Workflows read and write, Metadata read). |
-| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for [your own server](#your-own-server) (the zone permissions and the account's Tunnel and Access permissions). Cloudflare Zero Trust must be turned on. |
-| `OPSCREW_E2E_DOMAIN` | As for your own server: names the zone; each run uses `e2e-<run id>.<zone>`. |
-| `OPSCREW_E2E_GHCR_READ_TOKEN` | A GitHub **classic** token with only `read:packages` (<https://github.com/settings/tokens/new?scopes=read:packages>), for the user that owns the throwaway repository. OpsCrew gets it as `OPSCREW_GHCR_READ_TOKEN` and puts it into Portainer's registry entry. |
-| `OPSCREW_E2E_REPO_READ_TOKEN` | Only when the throwaway repository is private: a fine-grained token for that repository with Contents read-only. OpsCrew gets it as `OPSCREW_REPO_READ_TOKEN`; Portainer reads the deploy branch with it. |
-| `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | Optional, to narrow the guide's Cloudflare list for the tunnel-only `updater` setup: a token with fewer permissions that OpsCrew uses in steps 2–4 (the test's own cleanup still uses `OPSCREW_E2E_CLOUDFLARE_TOKEN`). Start with Zone → Zone → Read, Zone → DNS → Edit and Account → Cloudflare Tunnel → Edit; when a step fails because a permission is missing, OpsCrew names it: add it and run again. Record the list that passed in [Live results](#live-results). |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its fine-grained token, as above (Contents, Pull requests, Secrets, Actions and Workflows read and write, Metadata read). With `OPSCREW_E2E_GITHUB_REPO_B` the token must cover that repository too, with the same permissions. |
+| `OPSCREW_E2E_GITHUB_REPO_B` | Optional, `owner/name` of a second **throwaway** repository of the same owner, for the second app (steps 7b and 9b). Without it those two steps are skipped with a message and the rest runs as before. The second app needs a Node example (it changes the name in its `package.json`). |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN` | As for [your own server](#your-own-server) (the zone permissions and the account's Tunnel and Access permissions; the test reads the Zero Trust pieces and seeds its own rules with it). Cloudflare Zero Trust must be turned on. |
+| `OPSCREW_E2E_DOMAIN` | As for your own server: names the zone; each run uses `e2e-<run id>.<zone>` (and `e2e-<run id>-b.<zone>` for the second app). |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | A GitHub **classic** token with only `read:packages` (<https://github.com/settings/tokens/new?scopes=read:packages>), for the user that owns the throwaway repositories. OpsCrew gets it as `OPSCREW_GHCR_READ_TOKEN` and puts it into Portainer's registry entries. |
+| `OPSCREW_E2E_REPO_READ_TOKEN` | Only when a throwaway repository is private: a fine-grained token for it with Contents read-only, covering the second repository too when that one is private. OpsCrew gets it as `OPSCREW_REPO_READ_TOKEN`; Portainer reads the deploy branch with it. |
+| `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | Optional, to narrow the guide's Cloudflare list for the tunnel-only `updater` setup: a token with fewer permissions that OpsCrew uses in steps 2–4 (the test's own calls and the second app still use `OPSCREW_E2E_CLOUDFLARE_TOKEN`). Start with Zone → Zone → Read, Zone → DNS → Edit, Zone → Zone WAF → Edit and Zone → Config Rules → Edit (OpsCrew's shared rules: the probe block, and reading the configuration rules) and Account → Cloudflare Tunnel → Edit; when a step fails because a permission is missing, OpsCrew names it: add it and run again. Record the list that passed in [Live results](#live-results). |
 | `OPSCREW_E2E_PORTAINER_SHORT_HOST` | Optional, the short host name of step 11 (default `nas` and five random letters or digits, so no word in the app or an encoded value matches it by chance). `portainer` is refused: OpsCrew's own text uses that word, so the check could not tell a leak from it. |
 | `OPSCREW_E2E_PORTAINER_MANUAL_MINUTES` | Optional, for example `20`: after step 1 the test writes Portainer's address and the administrator's login to a file in its temporary folder (never printed) and waits up to that many minutes until you delete the file. Use the time to check the guide's steps the test cannot: the certificate's SHA-256 fingerprint in a browser's padlock (the file names the fingerprint OpsCrew pins), and in Portainer's UI Registries → Add registry → Custom registry and the environment's Registries → Manage access. Look only: do not save, add or change anything (the run compares Portainer and the decoys with how they were, taken again after the pause). Only the test computer can reach Portainer. |
 | `OPSCREW_E2E_REGION` | Optional, as for your own server. |
@@ -385,12 +486,13 @@ server's `run=<id>` label).
 Requirements: the built CLI, `git`, OpenTofu or Terraform, `ssh`, `ssh-keygen` and `ssh-keyscan`,
 Node.js 22.9+, outgoing SSH (22), HTTPS to the server's port 9443 and HTTP to its port 8080 from
 the test computer, and the test computer's port 9443 free (the SSH tunnel of steps 10 and 11). Run only this
-file, never together with the other live tests (they share the throwaway repository):
+file, never together with the other live tests (they share the throwaway repository and the zone):
 
 ```bash
 pnpm --filter opscrew build
 cd packages/cli
 OPSCREW_E2E_PORTAINER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_REPO_B=you/opscrew-e2e-b \
   OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
   OPSCREW_E2E_GHCR_READ_TOKEN=… npx vitest run test/live/portainer-target.test.ts
 ```
@@ -410,11 +512,13 @@ server, which it deletes at the end like every run (a server is never kept betwe
 | 1, 1b, 12 | (always taken) |
 | 2a | 1 |
 | 2, 10, 11 | 2a |
-| 3, 3b, 4, 5, 6, 7, 8 | 2 |
+| 3, 3b, 4, 5, 6, 7, 7b, 8 | 2 |
 | 9 | 8 |
+| 9b | 7b, 8 |
 
 When the list takes step 2 together with step 10 or 11, it also takes steps 8 and 9: they empty
 OpsCrew's record, and while the record lists anything OpsCrew refuses another Portainer address.
+Step 7b always takes step 9b (and so step 8): the second app is destroyed after the first one.
 Steps run in their usual order. Examples:
 
 - `OPSCREW_E2E_PORTAINER_STEPS=11,12` runs steps 1, 1b, 2a, 11 and 12 (about 15 minutes): the short
@@ -422,6 +526,8 @@ Steps run in their usual order. Examples:
 - `OPSCREW_E2E_PORTAINER_STEPS=3b` runs steps 1, 1b, 2a, 2, 3b and 12: the rollback after the first
   deploy.
 - `OPSCREW_E2E_PORTAINER_STEPS=2,10` runs steps 1, 1b, 2a, 2, 8, 9, 10 and 12.
+- `OPSCREW_E2E_PORTAINER_STEPS=7b` runs steps 1, 1b, 2a, 2, 7b, 8, 9b and 12: the second app next
+  to the first one's updater + tunnel setup, then both destroys.
 
 An unknown step skips the whole test and names the variable.
 
@@ -430,8 +536,8 @@ one of which waits ten minutes for its failing health check before it rolls back
 installation); the core pass about 15 minutes (its first run on 2026-10-15 took 14½ minutes). The server is the smallest x86 type, billed by the hour, so a run
 costs a few cents of server time, plus GitHub Actions minutes for the builds (free for public
 repositories). Left behind on purpose, as for your own server: the GitHub Actions secrets of other
-targets and the container image in the throwaway repository, the zone's rulesets that existed
-before the run, and the Zero Trust organization if OpsCrew created it.
+targets and the container images in the throwaway repositories, the zone's rules that existed
+before the run, and the Zero Trust organization and one-time PIN login if OpsCrew created them.
 
 ## Price tables
 
@@ -472,6 +578,11 @@ Teardown runs in a `finally` block, so it happens even after a failure:
 Some things are not removed:
 
 - **Cloudflare DNS records:** the IaC destroy removes them, but the API fallback does not. Check the zone if a run failed.
+- **The app's hostnames in OpsCrew's shared rules:** `opscrew destroy` removes them, but the
+  fallbacks do not. When destroy failed, remove the hostnames from OpsCrew's rules in the
+  Cloudflare dashboard (Security → WAF → Custom rules and Rules → Configuration Rules; delete a
+  rule that lists nothing else), or the next run stops before any change because they are already
+  in OpsCrew's shared rule.
 - **GitHub repository state:** the pushed container image (GHCR package), the Actions secrets and
   the pull requests stay in the throwaway repository (GitHub cannot delete pull requests; the next
   run closes open ones, deletes the branches and overwrites the rest). Delete and recreate the

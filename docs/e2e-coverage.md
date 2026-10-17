@@ -22,8 +22,11 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Namecheap sandbox (`registrars.test.ts`) | Namecheap sandbox keys | Passed | 2026-10-14 | — |
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
 | Your own server (`own-server.test.ts`) | `OPSCREW_E2E_OWN_SERVER=1` | Passed | 2026-10-17 (after the simplification) | — |
+| Your own server, a second app in the same zone and account, seeded rules, shared-rule checks (steps 6b, 7b; feature 011) | + `OPSCREW_E2E_GITHUB_REPO_B` | **Added, not yet run live** | — | A live run (T1108) |
 | Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | Passed (with step 11, after the simplification) | 2026-10-17 | — |
+| Your existing Portainer, a second app in the same Portainer, zone and account, seeded rules, shared-rule checks (steps 7b, 9b, in the core pass; feature 011) | + `OPSCREW_E2E_GITHUB_REPO_B` | **Added, not yet run live** | — | A live run (T1108) |
 | Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | Passed: steps 1–11 in run 10 (2026-10-16), steps 11 and 12 with the fixed leak check on 2026-10-17 | 2026-10-17 (steps 11, 12) | — |
+| Hetzner with a Cloudflare domain: the app's hostnames in OpsCrew's shared rules after provision, gone after destroy (feature 011) | as Hetzner with a Cloudflare domain | **Added, not yet run live** | — | A live run (T1108) |
 
 Run in development, not tracked by date:
 
@@ -48,8 +51,11 @@ Tick a step once it has passed live. Since the simplification (T1031) any steps 
 | 5. Caddy: the app stack updated in place, the DNS record OpsCrew prints, certificates on 80/443 | full | [x] 2026-10-16 |
 | 6. Your own proxy: the app on a host port, `verify --url` | full | [x] 2026-10-16 |
 | 7. Cloudflare redeploys with the tunnel: a deploy through Access, 404 outside the webhook, a token replace | full | [x] 2026-10-16 |
-| 8. Destroy keeps the data volumes; Portainer, its settings and the decoys stay | core | [x] 2026-10-16 |
+| 7b. A second app in the same Portainer, zone and account with the tunnel: both blocked on `/.env`, both in OpsCrew's probe block (feature 011) | core | [ ] added, not yet run live |
+| 8. Destroy keeps the data volumes; Portainer, its settings and the decoys stay | core | [x] 2026-10-16; the second app still working after it: [ ] added, not yet run live |
 | 9. `destroy --delete-data` removes the data volumes and nothing else | core | [x] 2026-10-16 |
+| 9b. Destroying the second app removes OpsCrew's shared rules; the seeded rules and the Zero Trust pieces stay (feature 011) | core | [ ] added, not yet run live |
+| From 2a on: a seeded rule of the user's own per phase byte-identical, and OpsCrew's shared rules listing exactly the live apps' hostnames, after every provision and destroy; the cleanup by `ref` (feature 011) | core | [ ] added, not yet run live |
 | 10. A loopback Portainer address (the updater through `host.docker.internal`) | full | [x] 2026-10-16 |
 | 11. A short Portainer host name in the leak check | full | [x] 2026-10-16; 2026-10-17 with a random short host |
 | 12. No token, secret, server address or Portainer address anywhere | core | [x] 2026-10-15 (core pass); 2026-10-17 with step 11 (nothing found) |
@@ -75,5 +81,17 @@ live test records each one as an `observed:` line.
 | GitHub accepts the orphan-branch calls and drift's `git fetch` with the user's fine-grained token | core | [x] 2026-10-15 |
 | The smallest Cloudflare token for a tunnel-only `updater` setup | core, with `OPSCREW_E2E_CLOUDFLARE_TUNNEL_TOKEN` | [ ] |
 | The guide's `openssl` command shows the fingerprint OpsCrew pins | core | [x] 2026-10-15 |
-| Two OpsCrew apps in one environment stay apart (their own stacks, registry entries and volumes; ports and 80/443 checked) | not exercised (unit tests only) | [ ] |
+| Two OpsCrew apps in one environment stay apart (their own stacks, registry entries and volumes; ports and 80/443 checked) | core (steps 7b, 8, 9b: stacks, registry entries, tunnels; ports not) | [ ] added, not yet run live |
 | The guide's steps that need a person: the certificate fingerprint in a browser, the registry steps in Portainer's UI | not automated | [ ] |
+
+## Several OpsCrew apps in one zone (feature 011): to confirm live
+
+The test's own Cloudflare calls and checks assume these; the first live run (T1108) confirms them.
+
+| Assumption | Checked in | Confirmed |
+|---|---|---|
+| A rule the test seeds as the user's (a `block` WAF custom rule, a configuration rule with Automatic HTTPS Rewrites) is taken on the Free plan: `POST` to an existing rule list, `PUT` of the list only when the zone has none (404) | own server step 2, Portainer step 2a | [ ] added, not yet run live |
+| Cloudflare's answer to a blocked `/.env` is HTTP 403 with `cf-ray` and "you have been blocked" in the page | own server steps 6b and 7, Portainer steps 7b and 8 | [ ] added, not yet run live |
+| The zone's rules OpsCrew did not create read back byte-identical (id, `ref`, expression, action, `action_parameters`, enabled) and in the same order after OpsCrew's writes | own server, Portainer (every provision and destroy) | [ ] added, not yet run live |
+| The Zero Trust organization and one-time PIN login stay after both apps' destroys | own server step 7b, Portainer step 9b | [ ] added, not yet run live |
+| The leak search finds no token in the Cloudflare plans (CLI and MCP output) or any version of `.opscrew/cloudflare.json` | own server step 8, Portainer step 12 | [ ] added, not yet run live |

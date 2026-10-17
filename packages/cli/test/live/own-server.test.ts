@@ -4,11 +4,15 @@
  * directly, its own SSH key generated at runtime) and treats it as the user's own; OpsCrew never
  * gets the Hetzner token. On it, with a throwaway GitHub repository and a hostname in a Cloudflare
  * zone, the built CLI runs the whole flow: DNS only → re-run → Portainer → the Cloudflare-only
- * filter (with a reboot) → the tunnel (with a merged change) → `destroy --undo-host`. The server
- * and its key are always deleted (afterAll), and what OpsCrew created in Cloudflare is removed
- * through the API when `destroy` did not finish. Nothing the test prints contains the server's
- * address or a secret: every line goes through a scrubber. Runs only with OPSCREW_E2E_OWN_SERVER=1
- * and the variables in docs/e2e.md; costs a few cents of server time.
+ * filter (with a reboot) → the tunnel (with a merged change) → `destroy --undo-host`. With
+ * `OPSCREW_E2E_GITHUB_REPO_B`, a second app goes on a second throwaway server in tunnel mode into
+ * the same zone and account before the first one's destroy, and is destroyed after it (feature
+ * 011). A rule of the user's own seeded in each of OpsCrew's rule phases must stay byte-identical
+ * after every provision and destroy, and OpsCrew's shared rules must list exactly the live apps'
+ * hostnames. The servers and their keys are always deleted (afterAll), and what OpsCrew created in
+ * Cloudflare is removed through the API when `destroy` did not finish. Nothing the test prints
+ * contains a server's address or a secret: every line goes through a scrubber. Runs only with
+ * OPSCREW_E2E_OWN_SERVER=1 and the variables in docs/e2e.md; costs a few cents of server time.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -25,7 +29,7 @@ import {
   waitFor,
   waitForAccessRefusal,
 } from "./cloud";
-import { LiveRun, serverSettings } from "./harness";
+import { LiveRun, secondAppSkip, serverSettings } from "./harness";
 import {
   addressLinesOutsidePurpose,
   approveHashes,
@@ -42,11 +46,16 @@ import {
 
 const MISSING = missingVariables(process.env, "OPSCREW_E2E_OWN_SERVER", SERVER_E2E_VARIABLES);
 const SETTINGS = serverSettings(process.env, "OPSCREW_E2E_OWN_SERVER_TYPE");
+/** Why the second app's steps (6b, 7b) are skipped, if they are. */
+const SECOND_SKIP = secondAppSkip(SETTINGS);
 
 if (MISSING.length > 0 && process.env.OPSCREW_E2E_OWN_SERVER === "1") {
   console.warn(
     `OpsCrew E2E (own server): skipped, set ${MISSING.join(", ")} (see docs/e2e.md, "Your own server").`,
   );
+}
+if (MISSING.length === 0 && SECOND_SKIP !== undefined) {
+  console.warn(`OpsCrew E2E (own server): the second app's steps are skipped: ${SECOND_SKIP}.`);
 }
 
 const PORTAINER_PORTS = [9443, 9000, 8000];
@@ -63,6 +72,16 @@ describe.skipIf(MISSING.length > 0)(
     const run = new LiveRun({ label: "own server", name: "own", settings: SETTINGS });
     const { log, scrubber } = run;
     const { appHost } = run;
+    /** The second app, B, on its own server (steps 6b and 7b), when its steps run. */
+    const b =
+      SECOND_SKIP === undefined
+        ? run.second({
+            label: "own server, B",
+            name: "own-b",
+            settings: { ...SETTINGS, githubRepo: SETTINGS.secondRepo },
+          })
+        : undefined;
+    const second = () => b as LiveRun;
     let fingerprint = "";
     let ipv6Route = false;
     let tunnel: ChildProcess | undefined;
@@ -73,9 +92,9 @@ describe.skipIf(MISSING.length > 0)(
       ...(ipv6Route && run.server?.ipv6 !== undefined ? [run.server.ipv6] : []),
     ];
 
-    /** Interview (own server, root, the test key, `serve`) then design. */
-    async function answerAndDesign(serve: Serve, hostKey?: string): Promise<void> {
-      const answers = join(run.work, "answers.json");
+    /** Interview (own server, root, the test key, `serve`) then design, for `app` (A by default). */
+    async function answerAndDesign(serve: Serve, hostKey?: string, app = run): Promise<void> {
+      const answers = join(app.work, "answers.json");
       await writeFile(
         answers,
         JSON.stringify({
@@ -85,51 +104,55 @@ describe.skipIf(MISSING.length > 0)(
           uptime: "best-effort",
           dataCriticality: "important",
           dnsProvider: "cloudflare",
-          domain: appHost,
+          domain: app.appHost,
           keepExternalServices: [],
-          "server.host": run.ipv4(),
+          "server.host": app.ipv4(),
           "server.port": 22,
           "server.user": "root",
-          "server.key": run.keyFile,
+          "server.key": app.keyFile,
           "server.reachable": true,
           "server.serve": serve,
         }),
       );
-      await run.opscrewOk("interview", "--answers", answers);
-      await run.opscrewOk("design", ...(hostKey === undefined ? [] : ["--host-key", hostKey]));
-      const plan = await run.readPlan();
+      await app.opscrewOk("interview", "--answers", answers);
+      await app.opscrewOk("design", ...(hostKey === undefined ? [] : ["--host-key", hostKey]));
+      const plan = await app.readPlan();
       if (plan.target.provider !== "own") {
         throw new Error(`design planned ${plan.target.provider}, not the user's own server.`);
       }
     }
 
     /**
-     * Deploys what the last provision prepared; when provision committed nothing, the deploy
-     * workflow on main is started instead.
+     * Deploys what the last provision of `app` prepared; when provision committed nothing, the
+     * deploy workflow on main is started instead.
      */
-    async function deploy(what: string): Promise<void> {
-      if ((await run.deploy(what)) === undefined) await run.deployMain(what);
+    async function deploy(what: string, app = run): Promise<void> {
+      if ((await app.deploy(what)) === undefined) await app.deployMain(what);
     }
 
-    /** The app's health URL on the test hostname. */
-    async function healthUrl(): Promise<string> {
-      return `https://${appHost}${(await run.readPlan()).app.healthPath}`;
+    /** The app's health URL on its test hostname. */
+    async function healthUrl(app = run): Promise<string> {
+      return `https://${app.appHost}${(await app.readPlan()).app.healthPath}`;
     }
 
-    /** Waits until the domain resolves (through 1.1.1.1) to the server itself or to Cloudflare. */
-    async function waitForDns(direct: boolean): Promise<void> {
+    /** Waits until the app's domain resolves (through 1.1.1.1) to its server or to Cloudflare. */
+    async function waitForDns(direct: boolean, app = run): Promise<void> {
       const where = direct ? "at the server" : "at Cloudflare";
-      log(`waiting for ${appHost} to point ${where} (up to 10 minutes)`);
-      await waitFor(`${appHost} pointing ${where}`, minutes(10), async () => {
-        const addresses = await resolveIpv4(appHost);
+      log(`waiting for ${app.appHost} to point ${where} (up to 10 minutes)`);
+      await waitFor(`${app.appHost} pointing ${where}`, minutes(10), async () => {
+        const addresses = await resolveIpv4(app.appHost);
         if (addresses.length === 0) return undefined;
-        return addresses.includes(run.ipv4()) === direct ? true : undefined;
+        return addresses.includes(app.ipv4()) === direct ? true : undefined;
       });
     }
 
     /** Waits for 200 on the health path; `throughCloudflare` also wants Cloudflare's `cf-ray`. */
-    async function waitForApp(throughCloudflare: boolean, timeoutMs = minutes(10)): Promise<void> {
-      const url = await healthUrl();
+    async function waitForApp(
+      throughCloudflare: boolean,
+      timeoutMs = minutes(10),
+      app = run,
+    ): Promise<void> {
+      const url = await healthUrl(app);
       log(
         `waiting for ${url} to answer 200${throughCloudflare ? " through Cloudflare" : " from the server"}`,
       );
@@ -164,6 +187,62 @@ describe.skipIf(MISSING.length > 0)(
         log("this computer has no IPv6 route: the server's IPv6 address is not tried");
       const open = await answering(ports);
       expect(open, `the server's own address answers on ${open.join(", ")} (${why})`).toEqual([]);
+    }
+
+    /**
+     * Adds the tunnel's and the Access service token's secrets of `app` to the scrubber for the leak
+     * search; not finding them is a finding, not a reason to stop the run.
+     */
+    async function rememberTunnelSecrets(app: LiveRun): Promise<void> {
+      const outputsNow = await app.infraOutputs().catch((error: unknown) => {
+        run.findings.push(
+          `could not read the infrastructure outputs, so the leak search misses the tunnel token: ${String(error)}`,
+        );
+        return {} as Record<string, unknown>;
+      });
+      for (const name of [
+        "tunnel_token",
+        "deploy_service_token_client_secret",
+        "deploy_service_token_client_id",
+      ]) {
+        const value = outputsNow[name];
+        if (typeof value === "string" && value !== "") {
+          scrubber.add(value, name.replaceAll("_", "-"));
+        } else {
+          run.findings.push(
+            `the infrastructure outputs have no ${name}, so the leak search could not look for it`,
+          );
+        }
+      }
+    }
+
+    /**
+     * `destroy --confirm <app> --undo-host`, then again with `--approve <undo host plan hash>` until
+     * it exits 0 (at most three runs, each hash approved once).
+     */
+    async function destroyUndoHost(app: LiveRun): Promise<void> {
+      let approve: string[] = [];
+      const tried: string[] = [];
+      for (let attempt = 1; ; attempt++) {
+        const result = await app.opscrew(
+          "destroy",
+          "--confirm",
+          app.app(),
+          "--undo-host",
+          ...approve,
+        );
+        if (result.exitCode === 0) break;
+        const hash = printedHash(result.output, "Host plan hash");
+        if (hash === undefined || tried.includes(hash) || attempt >= 3) {
+          throw new Error(
+            `opscrew destroy --undo-host exited with ${result.exitCode}:\n${run.tail(result.output)}`,
+          );
+        }
+        tried.push(hash);
+        log(`approving the undo host plan ${hash}`);
+        approve = ["--approve", hash];
+      }
+      app.destroyed = true;
     }
 
     // -------------------------------------------------------------------------------------------
@@ -219,9 +298,11 @@ describe.skipIf(MISSING.length > 0)(
           `ssh-${run.app()}.${zone.name}`,
           `portainer.${appHost}`,
         ]);
+        await run.seedUserRules();
 
         await run.adaptAndMerge();
         await run.provisionUntilDone("DNS only");
+        await run.expectSharedCloudflare("the DNS-only provision");
         await run.rememberSecretFile(run.paths().files.deployKey, "deploy-private-key");
         await run.rememberSecretFile(run.paths().files.statePassphrase, "state-passphrase");
         await deploy("the first deploy, DNS only");
@@ -360,6 +441,7 @@ describe.skipIf(MISSING.length > 0)(
           "re-running the interview and design keeps Portainer on",
         ).toBe(true);
         await run.provisionUntilDone("the Cloudflare-only filter");
+        await run.expectSharedCloudflare("the switch to the Cloudflare-only filter");
         await deploy("the Cloudflare-only filter");
 
         const portainer = JSON.parse(
@@ -447,28 +529,9 @@ describe.skipIf(MISSING.length > 0)(
           access: "tunnel",
         });
         await run.provisionUntilDone("the tunnel");
-        // The leak search needs the tunnel's and the service token's secrets; not finding them is
-        // a finding, not a reason to stop the run.
-        const outputsNow = await run.infraOutputs().catch((error: unknown) => {
-          run.findings.push(
-            `could not read the infrastructure outputs, so the leak search misses the tunnel token: ${String(error)}`,
-          );
-          return {} as Record<string, unknown>;
-        });
-        for (const name of [
-          "tunnel_token",
-          "deploy_service_token_client_secret",
-          "deploy_service_token_client_id",
-        ]) {
-          const value = outputsNow[name];
-          if (typeof value === "string" && value !== "") {
-            scrubber.add(value, name.replaceAll("_", "-"));
-          } else {
-            run.findings.push(
-              `the infrastructure outputs have no ${name}, so the leak search could not look for it`,
-            );
-          }
-        }
+        // A tunnel app is only in the probe block: its strict-TLS hostnames left OpsCrew's rule.
+        await run.expectSharedCloudflare("the switch to the tunnel");
+        await rememberTunnelSecrets(run);
         await deploy("the tunnel");
 
         const ufw = ufwRulesBeyondSsh(await run.shell().ok("ufw status"));
@@ -550,27 +613,67 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "7. destroy --undo-host removes the app, DNS, tunnel and Access; root still logs in",
+      "6b. a second app on its own throwaway server, in tunnel mode, in the same zone and account: both blocked on /.env, both in OpsCrew's probe block",
+      minutes(75),
+      async () => {
+        const app = second();
+        await app.prepareRepo({
+          commit: `e2e: a second app (examples/${SETTINGS.app}) on your own server`,
+          env: { CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken },
+        });
+        const hostKey = await app.createServer();
+        await app.initFix();
+        await app.opscrewOk("analyze", "--no-ai");
+        await answerAndDesign("tunnel", hostKey, app);
+        const plan = await app.readPlan();
+        expect(plan.target, "the second app in tunnel mode").toMatchObject({
+          provider: "own",
+          access: "tunnel",
+        });
+        app.appName = plan.app.name;
+        await app.snapshotCloudflare((zone) => [
+          app.appHost,
+          `www.${app.appHost}`,
+          `ssh-${app.app()}.${zone.name}`,
+        ]);
+        await app.adaptAndMerge();
+        await app.provisionUntilDone("the second app, tunnel");
+        // Both tunnel apps are in OpsCrew's probe block, neither in its strict-TLS rule.
+        await run.expectSharedCloudflare("the second app's provision");
+        await app.rememberSecretFile(app.paths().files.deployKey, "deploy-private-key");
+        await app.rememberSecretFile(app.paths().files.statePassphrase, "state-passphrase");
+        await rememberTunnelSecrets(app);
+        await deploy("the second app", app);
+        await waitForDns(false, app);
+        await waitForApp(true, minutes(10), app);
+        await app.opscrewOk("verify");
+        await run.expectProbeBlocked(appHost);
+        await run.expectProbeBlocked(app.appHost);
+        log(
+          "second app: served through its own tunnel in the same zone and account; both apps' /.env blocked",
+        );
+      },
+      { skip: SECOND_SKIP },
+    );
+
+    run.step(
+      "7. destroy --undo-host removes the app, DNS, tunnel and Access; root still logs in; the second app keeps working",
       minutes(30),
       async () => {
         const name = run.app();
-        let approve: string[] = [];
-        const tried: string[] = [];
-        for (let attempt = 1; ; attempt++) {
-          const result = await run.opscrew("destroy", "--confirm", name, "--undo-host", ...approve);
-          if (result.exitCode === 0) break;
-          const hash = printedHash(result.output, "Host plan hash");
-          if (hash === undefined || tried.includes(hash) || attempt >= 3) {
-            throw new Error(
-              `opscrew destroy --undo-host exited with ${result.exitCode}:\n${run.tail(result.output)}`,
-            );
-          }
-          tried.push(hash);
-          log(`approving the undo host plan ${hash}`);
-          approve = ["--approve", hash];
-        }
-        run.destroyed = true;
+        await destroyUndoHost(run);
         await run.expectCloudflareClean();
+        await run.expectSharedCloudflare("the first app's destroy");
+        if (b?.appName !== undefined) {
+          // SC-1102: the second app's tunnel, probe block and Access login still work.
+          await waitForApp(true, minutes(5), b);
+          await run.expectProbeBlocked(b.appHost);
+          const sshHost = `ssh-${b.app()}.${(run.zone as CloudflareZone).name}`;
+          const access = await waitForAccessRefusal(`https://${sshHost}/`);
+          log(
+            `the second app still answers through its tunnel, its /.env is blocked and ${sshHost} refuses a request without the service token (${access})`,
+          );
+        }
 
         await run.shell().ok("true");
         const containers = await run
@@ -586,22 +689,52 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "8. no server address or secret in commits, pull requests, CLI output or the audit log",
+      "7b. destroying the second app removes OpsCrew's shared rules; the seeded rules and the Zero Trust pieces stay",
+      minutes(30),
+      async () => {
+        const app = second();
+        await destroyUndoHost(app);
+        await app.expectCloudflareClean();
+        await run.expectSharedCloudflare("the second app's destroy");
+        log(
+          "second app destroyed: OpsCrew's shared rules list nothing of this run, the zone's own rules and the Zero Trust pieces are as they were",
+        );
+      },
+      { skip: SECOND_SKIP },
+    );
+
+    run.step(
+      "8. no server address or secret in commits, pull requests, CLI output, OpsCrew's Cloudflare record or the audit log",
       minutes(10),
       async () => {
         if (!run.repoReady) return;
         const known = scrubber.entries();
         const secrets = known.filter(({ label }) => !label.startsWith("server-"));
         const problems: string[] = [];
-        await run.git("fetch", "-q", "origin");
-        const inHistory = leakedLabels(await run.git("log", "--all", "-p", "--format=%B"), known);
-        if (inHistory.length > 0) problems.push(`commits contain: ${inHistory.join(", ")}`);
-        for (const pull of await run.github.pullRequestTexts()) {
-          if (pull.createdAt < run.startedAt) continue;
-          const found = leakedLabels(pull.text, known);
-          if (found.length > 0)
-            problems.push(`pull request #${pull.number} contains: ${found.join(", ")}`);
+        for (const app of [run, ...(b?.repoReady === true ? [b] : [])]) {
+          const which = app === run ? "" : " of the second app";
+          await app.git("fetch", "-q", "origin");
+          const inHistory = leakedLabels(await app.git("log", "--all", "-p", "--format=%B"), known);
+          if (inHistory.length > 0) {
+            problems.push(`commits${which} contain: ${inHistory.join(", ")}`);
+          }
+          for (const pull of await app.github.pullRequestTexts()) {
+            if (pull.createdAt < app.startedAt) continue;
+            const found = leakedLabels(pull.text, known);
+            if (found.length > 0)
+              problems.push(`pull request #${pull.number}${which} contains: ${found.join(", ")}`);
+          }
+          const auditDir = app.paths().auditDir;
+          if (existsSync(auditDir)) {
+            for (const file of await readdir(auditDir)) {
+              const found = leakedLabels(await readFile(join(auditDir, file), "utf8"), secrets);
+              if (found.length > 0) {
+                problems.push(`audit log ${file}${which} contains: ${found.join(", ")}`);
+              }
+            }
+          }
         }
+        problems.push(...run.sharedPlanLeaks(known, true));
         // The CLI shows the server's address on purpose only in the Portainer tunnel command and
         // in messages about "your server at <address>"; anywhere else in its output it is a leak.
         const addresses = known
@@ -612,13 +745,6 @@ describe.skipIf(MISSING.length > 0)(
           if (found.length > 0) problems.push(`${label} printed: ${found.join(", ")}`);
           const lines = addressLinesOutsidePurpose(output, addresses);
           if (lines > 0) problems.push(`${label} printed the server's address on ${lines} line(s)`);
-        }
-        const auditDir = run.paths().auditDir;
-        if (existsSync(auditDir)) {
-          for (const file of await readdir(auditDir)) {
-            const found = leakedLabels(await readFile(join(auditDir, file), "utf8"), secrets);
-            if (found.length > 0) problems.push(`audit log ${file} contains: ${found.join(", ")}`);
-          }
         }
         run.expectNothingLeaked(problems);
       },

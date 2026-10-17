@@ -1,11 +1,11 @@
 /**
  * Offline checks of the live tests' safety and leak helpers (the scrubber and the leak searches,
- * the cleanup's ruleset filter, the firewall and listener checks, the rollback's outcome) and of
- * the Portainer test's step selection. No network.
+ * OpsCrew's shared Cloudflare rules and the cleanup's leftover decision, the firewall and listener
+ * checks, the rollback's outcome) and of the Portainer test's step selection. No network.
  */
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { GitHubRepo, rulesetOfRun } from "./cloud";
+import { GitHubRepo } from "./cloud";
 import {
   CORE_STEPS,
   envNames,
@@ -24,11 +24,21 @@ import {
 } from "./portainer-support";
 import {
   addressLinesOutsidePurpose,
+  appRules,
+  blockedByCloudflare,
+  cloudflareRecordProblems,
+  expectedSharedHosts,
   ipv6PrefixForms,
   leakedLabels,
+  rulesCleanup,
+  runHostname,
   Scrubber,
+  seededDescription,
+  sharedRuleHosts,
   ufwRulesBeyondSsh,
+  userRules,
   webListenersBeyondIpv4,
+  type ZoneRule,
 } from "./support";
 
 describe("the leak helpers", () => {
@@ -160,67 +170,208 @@ describe("the leak helpers", () => {
   });
 });
 
-describe("the safety helpers", () => {
-  it("treats a zone ruleset as this run's only when it is OpsCrew's and names only the run's hostnames", () => {
-    const hostnames = ["e2e.example.com", "www.e2e.example.com", "ssh-shop.example.com"];
-    const config = {
-      name: "OpsCrew configuration rules",
-      kind: "zone",
-      phase: "http_config_settings",
-      rules: [{ expression: '(http.host in {"e2e.example.com" "www.e2e.example.com"})' }],
+describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
+  const quoted = (hosts: readonly string[]) => hosts.map((host) => `"${host}"`).join(" ");
+  const block = (hosts: readonly string[]): ZoneRule => ({
+    id: "rule-block",
+    ref: "opscrew-block-probes",
+    description: "OpsCrew: block probes for secrets and admin panels",
+    expression: `(http.host in {${quoted(hosts)}}) and (http.request.uri.path contains "/.env" or starts_with(http.request.uri.path, "/.git"))`,
+    action: "block",
+    enabled: true,
+  });
+  const tls = (hosts: readonly string[]): ZoneRule => ({
+    id: "rule-tls",
+    ref: "opscrew-strict-tls",
+    description: "OpsCrew: verify the origin certificate (Full (strict) TLS)",
+    expression: `(http.host in {${quoted(hosts)}})`,
+    action: "set_config",
+    action_parameters: { ssl: "strict" },
+    enabled: true,
+  });
+  const mine: ZoneRule = {
+    id: "user-1",
+    ref: "user-1",
+    description: "My own rule",
+    expression: '(http.host in {"shop.example.com" "e2e-abc.example.com"})',
+    action: "block",
+    enabled: true,
+  };
+  const seeded: ZoneRule = {
+    id: "user-2",
+    ref: "user-2",
+    description: seededDescription("abc"),
+    expression: '(http.host eq "opscrew-e2e-seeded.e2e-abc.example.com")',
+    action: "set_config",
+    action_parameters: { automatic_https_rewrites: true },
+    enabled: true,
+  };
+  const zone = (custom: ZoneRule[] | undefined, config: ZoneRule[] | undefined) => ({
+    http_request_firewall_custom: custom && { id: "ruleset-custom", rules: custom },
+    http_config_settings: config && { id: "ruleset-config", rules: config },
+  });
+
+  it("reads the hostnames of OpsCrew's rules by ref, never of the user's rules", () => {
+    const now = zone([mine, block(["E2E-abc.example.com", "a.example.com"])], [seeded]);
+    expect(sharedRuleHosts(now)).toEqual({
+      "opscrew-block-probes": ["a.example.com", "e2e-abc.example.com"],
+      "opscrew-strict-tls": undefined,
+    });
+    expect(sharedRuleHosts(zone(undefined, [tls(["a.example.com"])]))).toEqual({
+      "opscrew-block-probes": undefined,
+      "opscrew-strict-tls": ["a.example.com"],
+    });
+  });
+
+  it("compares the rules OpsCrew did not create byte for byte and in their order", () => {
+    const before = userRules(zone([mine], [seeded]));
+    expect(before.http_request_firewall_custom).toHaveLength(1);
+    expect(before.http_config_settings).toHaveLength(1);
+    // OpsCrew's own rules and what Cloudflare changes on its own (versions, times) do not count.
+    const withOpsCrew = zone(
+      [mine, { ...block(["e2e-abc.example.com"]), version: "3" } as ZoneRule],
+      [{ ...seeded, last_updated: "2026-10-17T10:00:00Z" } as ZoneRule, tls(["x.example.com"])],
+    );
+    expect(userRules(withOpsCrew)).toEqual(before);
+    // Any field the user set, and the order, count.
+    const other = { ...mine, id: "user-3", ref: "user-3" };
+    const changed = [
+      zone([{ ...mine, enabled: false }], [seeded]),
+      zone([{ ...mine, expression: '(http.host eq "shop.example.com")' }], [seeded]),
+      zone([mine], [{ ...seeded, action_parameters: { automatic_https_rewrites: false } }]),
+      zone([{ ...mine, ref: "my-ref" }], [seeded]),
+      zone([mine], undefined),
+    ];
+    for (const entrypoints of changed) expect(userRules(entrypoints)).not.toEqual(before);
+    expect(userRules(zone([mine, other], [seeded]))).not.toEqual(
+      userRules(zone([other, mine], [seeded])),
+    );
+  });
+
+  it("expects OpsCrew's rules to list what they listed before the run plus each live app's hostnames", () => {
+    const before = {
+      "opscrew-block-probes": ["shop.example.com"],
+      "opscrew-strict-tls": undefined,
     };
-    const waf = {
-      name: "OpsCrew custom rules",
-      kind: "zone",
-      phase: "http_request_firewall_custom",
-      rules: [
-        {
-          expression:
-            '(http.host in {"e2e.example.com"}) and (http.request.uri.path contains "/.env" or starts_with(http.request.uri.path, "/.git") or http.request.uri.path contains "/wp-login.php")',
-        },
-      ],
-    };
-    expect(rulesetOfRun(config, hostnames)).toBe(true);
-    expect(rulesetOfRun(waf, hostnames)).toBe(true);
+    const a = { "opscrew-block-probes": ["e2e-abc.example.com"] };
+    const b = { "opscrew-block-probes": ["e2e-abc-b.example.com"] };
+    expect(expectedSharedHosts(before, [a, b])).toEqual({
+      "opscrew-block-probes": ["e2e-abc-b.example.com", "e2e-abc.example.com", "shop.example.com"],
+      "opscrew-strict-tls": undefined,
+    });
+    // After the last destroy: as before the run, so a rule is gone only when it listed nothing.
+    expect(expectedSharedHosts(before, [{}, {}])).toEqual(before);
     expect(
-      rulesetOfRun(
-        { ...config, rules: [{ expression: 'http.host eq "E2E.example.com"' }] },
-        hostnames,
-      ),
+      expectedSharedHosts({ "opscrew-block-probes": undefined, "opscrew-strict-tls": undefined }, [
+        {
+          "opscrew-block-probes": ["E2E-abc.example.com"],
+          "opscrew-strict-tls": ["e2e-abc.example.com"],
+        },
+      ]),
+    ).toEqual({
+      "opscrew-block-probes": ["e2e-abc.example.com"],
+      "opscrew-strict-tls": ["e2e-abc.example.com"],
+    });
+  });
+
+  it("puts an app's hostnames into the rules the guide names for its target", () => {
+    const dns = { provider: "cloudflare", domain: "e2e-abc.example.com", www: false };
+    const both = {
+      "opscrew-block-probes": ["e2e-abc.example.com"],
+      "opscrew-strict-tls": ["e2e-abc.example.com"],
+    };
+    const blockOnly = { "opscrew-block-probes": ["e2e-abc.example.com"] };
+    expect(appRules({ target: { provider: "hetzner" }, dns })).toEqual(both);
+    expect(appRules({ target: { provider: "own", access: "public" }, dns })).toEqual(both);
+    expect(appRules({ target: { provider: "own", access: "tunnel" }, dns })).toEqual(blockOnly);
+    expect(appRules({ target: { provider: "portainer", web: { mode: "tunnel" } }, dns })).toEqual(
+      blockOnly,
+    );
+    for (const mode of ["caddy", "proxy"]) {
+      expect(appRules({ target: { provider: "portainer", web: { mode } }, dns })).toEqual({});
+    }
+    expect(
+      appRules({
+        target: { provider: "hetzner" },
+        dns: { ...dns, domain: "example.com", www: true },
+      }),
+    ).toEqual({
+      "opscrew-block-probes": ["example.com", "www.example.com"],
+      "opscrew-strict-tls": ["example.com", "www.example.com"],
+    });
+    expect(
+      appRules({ target: { provider: "hetzner" }, dns: { provider: "none", www: false } }),
+    ).toEqual({});
+  });
+
+  it("cleans up only what the run left: its seeded rules and OpsCrew's rules holding only its hostnames", () => {
+    const run = {
+      hostnames: ["e2e-abc.example.com", "e2e-abc-b.example.com"],
+      seeded: seededDescription("abc"),
+      createdByRun: false,
+    };
+    const left = rulesCleanup([mine, seeded, block(["e2e-abc.example.com"])], run);
+    expect(left.deletes.map((item) => item.id)).toEqual(["user-2", "rule-block"]);
+    expect(left.problems).toEqual([]);
+    expect(left.deleteEntrypoint).toBe(false);
+    // Next to another app's hostname the run's is reported, and the rule stays.
+    const mixed = rulesCleanup([block(["E2E-abc-b.example.com", "shop.example.com"])], run);
+    expect(mixed.deletes).toEqual([]);
+    expect(mixed.problems).toHaveLength(1);
+    expect(mixed.problems[0]).toContain("e2e-abc-b.example.com");
+    expect(mixed.problems[0]).not.toContain("shop.example.com");
+    // Another app's rule, a rule of another run, the user's own rules: never touched.
+    const others = rulesCleanup(
+      [mine, tls(["shop.example.com"]), { ...seeded, description: seededDescription("other") }],
+      run,
+    );
+    expect(others).toEqual({ deletes: [], problems: [], deleteEntrypoint: false });
+    // An entrypoint the run created goes once nothing else is left in it.
+    expect(
+      rulesCleanup([seeded, tls(["e2e-abc.example.com"])], { ...run, createdByRun: true })
+        .deleteEntrypoint,
     ).toBe(true);
-    // Another app's hostname, alone or next to the run's, is never this run's.
-    expect(
-      rulesetOfRun(
-        {
-          ...config,
-          rules: [{ expression: '(http.host in {"e2e.example.com" "shop.example.com"})' }],
-        },
-        hostnames,
-      ),
-    ).toBe(false);
-    expect(
-      rulesetOfRun(
-        { ...waf, rules: [...waf.rules, { expression: '(http.host in {"shop.example.com"})' }] },
-        hostnames,
-      ),
-    ).toBe(false);
-    // A rule that names no hostname (it applies to the whole zone), no rules, the user's name.
-    expect(
-      rulesetOfRun(
-        { ...waf, rules: [{ expression: 'http.request.uri.path contains "/.env"' }] },
-        hostnames,
-      ),
-    ).toBe(false);
-    expect(rulesetOfRun({ ...config, rules: [] }, hostnames)).toBe(false);
-    expect(rulesetOfRun({ ...config, rules: undefined }, hostnames)).toBe(false);
-    expect(rulesetOfRun({ ...config, name: "My configuration rules" }, hostnames)).toBe(false);
-    // Only zone entrypoints of the phases OpsCrew uses.
-    expect(rulesetOfRun({ ...config, kind: "managed" }, hostnames)).toBe(false);
-    expect(rulesetOfRun({ ...config, phase: "http_request_cache_settings" }, hostnames)).toBe(
+    expect(rulesCleanup([], { ...run, createdByRun: true }).deleteEntrypoint).toBe(true);
+    expect(rulesCleanup([mine, seeded], { ...run, createdByRun: true }).deleteEntrypoint).toBe(
       false,
     );
   });
 
+  it("recognises Cloudflare's block page", () => {
+    const page =
+      "<title>Attention Required! | Cloudflare</title><h1>Sorry, you have been blocked</h1>";
+    const ray = { "cf-ray": "8d1f0c0a1b2c3d4e-FRA", server: "cloudflare" };
+    expect(blockedByCloudflare({ status: 403, headers: ray, body: page })).toBe(true);
+    expect(blockedByCloudflare({ status: 404, headers: ray, body: "Not Found" })).toBe(false);
+    expect(blockedByCloudflare({ status: 403, headers: ray, body: "Forbidden" })).toBe(false);
+    expect(blockedByCloudflare({ status: 403, headers: {}, body: page })).toBe(false);
+    expect(blockedByCloudflare({ status: 200, headers: ray, body: "ok" })).toBe(false);
+  });
+
+  it("allows only hostnames and ids in .opscrew/cloudflare.json", () => {
+    const token = fakeSecret("cloudflare-token", "record");
+    const known = [{ label: "cloudflare-token", value: token }];
+    const record = {
+      zoneId: "0123456789abcdef0123456789abcdef",
+      hostnames: { "opscrew-block-probes": ["e2e-abc.example.com"] },
+      createdEntrypoints: ["http_request_firewall_custom"],
+    };
+    expect(cloudflareRecordProblems(JSON.stringify(record), known)).toEqual([]);
+    const leaked = cloudflareRecordProblems(JSON.stringify({ ...record, token }), known);
+    expect(leaked).toHaveLength(2);
+    expect(leaked.join("\n")).toContain("cloudflare-token");
+    expect(leaked.join("\n")).not.toContain(token);
+    expect(cloudflareRecordProblems("{ not json", known)).toHaveLength(1);
+  });
+
+  it("gives the second app its own hostname directly below the zone", () => {
+    expect(runHostname("e2e.example.com", "abc")).toBe("e2e-abc.example.com");
+    expect(runHostname("e2e.example.com", "abc", "b")).toBe("e2e-abc-b.example.com");
+    expect(runHostname("example.com", "ABC-1", "b")).toBe("e2e-abc1-b.example.com");
+  });
+});
+
+describe("the safety helpers", () => {
   it("opens Portainer and the proxy port only to the test computer", () => {
     const rules = firewallRules("192.0.2.44");
     expect(rules.find((rule) => rule.port === String(PORTAINER_PORT))?.source_ips).toEqual([
@@ -300,7 +451,7 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
     for (const value of [undefined, "", " ", "core", "CORE"]) {
       expect(portainerSteps(value), String(value)).toEqual([...CORE_STEPS]);
     }
-    expect(CORE_STEPS).toEqual(["1", "1b", "2a", "2", "3", "8", "9", "12"]);
+    expect(CORE_STEPS).toEqual(["1", "1b", "2a", "2", "3", "7b", "8", "9", "9b", "12"]);
     expect(portainerSteps("full")).toEqual(all);
     expect(all).toEqual([
       "1",
@@ -313,12 +464,21 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
       "5",
       "6",
       "7",
+      "7b",
       "8",
       "9",
+      "9b",
       "10",
       "11",
       "12",
     ]);
+  });
+
+  it("destroys the second app after the first one whenever it is set up", () => {
+    for (const value of ["7b", "9b", "7b,9b"]) {
+      expect(portainerSteps(value), value).toEqual(["1", "1b", "2a", "2", "7b", "8", "9b", "12"]);
+    }
+    expect(portainerSteps("7,7b")).toEqual(["1", "1b", "2a", "2", "7", "7b", "8", "9b", "12"]);
   });
 
   it("reruns the short host step on a fresh setup: the server, the prepared project, 11 and 12", () => {
@@ -373,7 +533,7 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
   });
 
   it("refuses an unknown step", () => {
-    for (const value of ["all", "13", "2b", "11,x", "11,"]) {
+    for (const value of ["all", "13", "2b", "8b", "11,x", "11,"]) {
       expect(portainerSteps(value), value).toBeUndefined();
     }
   });
