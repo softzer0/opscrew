@@ -591,14 +591,18 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("CREDENTIALS_MISSING");
     expect(error.message).toContain(REPOSITORY_TOKEN_VAR);
-    expect(error.hint).toContain("Contents: Read-only");
+    expect(error.hint).toBe(
+      "Create a fine-grained token at https://github.com/settings/personal-access-tokens/new for only this repository with Contents: Read-only, set OPSCREW_REPO_READ_TOKEN to it and run the command again. OpsCrew sends it only to your Portainer (for this stack) and never saves it.",
+    );
     expect(kinds(s)).toEqual([]);
     expect(s.fake.mutations()).toEqual([]);
 
     const registry = await setup({ env: { [REGISTRY_TOKEN_VAR]: undefined } });
     const missing = (await registry.run().catch((e: unknown) => e)) as OpsCrewError;
     expect(missing.code).toBe("CREDENTIALS_MISSING");
-    expect(missing.hint).toContain("read:packages");
+    expect(missing.hint).toBe(
+      "Create a classic token with only the read:packages scope at https://github.com/settings/tokens/new?scopes=read:packages, set OPSCREW_GHCR_READ_TOKEN to it and run the command again (OpsCrew sends it only to your Portainer's registry entry and never saves it). If you made the image public on GitHub, run `opscrew provision --public-image` instead.",
+    );
   });
 
   it("stops with a plain message when PORTAINER_API_KEY is not set or the certificate changed", async () => {

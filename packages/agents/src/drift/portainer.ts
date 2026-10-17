@@ -71,6 +71,10 @@ const NO_CLOUDFLARE_NOTE =
 /** Said when the app's values cannot be read on this computer without asking for them. */
 const APP_VALUES_NOTE = `OpsCrew compared the names of the app stack's variables in Portainer, not their values: it reads the production values only from the file OPSCREW_APP_ENV_FILE names (as \`opscrew provision\` does in scripts), together with the values it generated on this computer. Set OPSCREW_APP_ENV_FILE and run \`opscrew drift\` again to compare the values too (by keyed fingerprints; no value is shown).`;
 
+/** Said when provision's record of the values it generated cannot be read. */
+const DAMAGED_GENERATED_VALUES_NOTE =
+  "OpsCrew did not compare the values it generated for the app's stack (such as the database password): its record of them, generated_values.json in OpsCrew's folder for this project, is damaged, so they compare as Portainer has them.";
+
 /** Said when the value key is not on this computer. */
 const NO_VALUE_KEY_NOTE =
   "OpsCrew compared the names of the stacks' variables, not their values: its value key for your Portainer (portainer-env.key in OpsCrew's folder for this project) is not on this computer. Run `opscrew drift` on the computer that ran `opscrew provision` to compare the values too.";
@@ -102,21 +106,26 @@ const UNKNOWN = "__OPSCREW_DRIFT_UNKNOWN__";
  * The app stack's values as `opscrew provision` would send them, into `values` (by name; a value
  * this computer cannot know is left out, so it compares as Portainer has it): the production
  * values from the file `OPSCREW_APP_ENV_FILE` names, and the values provision generated, read from
- * its record without writing it or anything else, and without a note. False when the production
- * values cannot be read without asking for them.
+ * its record without writing it or anything else (a damaged record adds a note to `notes`). False
+ * when the production values cannot be read without asking for them.
  */
 async function readAppValues(
   deps: PhaseDeps,
   plan: DeployPlan,
   appKeys: readonly string[],
   values: Record<string, string | undefined>,
+  notes: string[],
 ): Promise<boolean> {
   const envFile = deps.env.OPSCREW_APP_ENV_FILE?.trim();
   if (!envFile) return false;
   const path = isAbsolute(envFile) ? envFile : join(deps.paths.root, envFile);
   const dotenvText = await readTextIfExists(path);
   if (dotenvText === undefined) return false;
-  const previous = await readValidJson(generatedValuesFile(deps), GeneratedValuesSchema);
+  const generatedFile = generatedValuesFile(deps);
+  const previous = await readValidJson(generatedFile, GeneratedValuesSchema);
+  if (previous === undefined && (await exists(generatedFile))) {
+    notes.push(DAMAGED_GENERATED_VALUES_NOTE);
+  }
   let environment: AppEnvironment;
   try {
     environment = await assembleAppEnv({
@@ -186,7 +195,7 @@ async function desiredFingerprints(
   // The app stack: the production values only from OPSCREW_APP_ENV_FILE, never asked for, and the
   // values provision generated, read without writing anything.
   const values: Record<string, string | undefined> = {};
-  const appKnown = await readAppValues(deps, plan, keys.app, values);
+  const appKnown = await readAppValues(deps, plan, keys.app, values, notes);
   if (!appKnown) notes.push(APP_VALUES_NOTE);
   if (target.web.mode === "tunnel") {
     const token = stringOutput(outputs, "tunnel_token");

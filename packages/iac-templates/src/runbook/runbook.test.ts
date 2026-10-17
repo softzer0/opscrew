@@ -277,6 +277,14 @@ describe("the runbook's shared rows", () => {
     ]);
   });
 
+  it("keeps a branch with a pipe inside the Deploys cell", () => {
+    const p = plan();
+    const piped: DeployPlan = { ...p, cicd: { ...p.cicd, branch: "release|2026" } };
+    expect(deployRows(piped, "acme/shop")[0]).toBe(
+      `| Deploys | every push to \`release\\|2026\` runs \`${p.cicd.workflowPath}\` |`,
+    );
+  });
+
   it("exports whether web traffic may come only from Cloudflare", () => {
     const proxied = plan({ domain: "shop.example.com" });
     const only: DeployPlan = {

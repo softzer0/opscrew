@@ -105,10 +105,24 @@ export function sentTokens(plan: StackPlan): { repository: boolean; registry: bo
   };
 }
 
-/** How to make the read-only token of a private repository, which Portainer pulls the stack with. */
-export const REPOSITORY_TOKEN_HINT = `Create a fine-grained token at https://github.com/settings/personal-access-tokens/new for only this repository with Contents: Read-only, set ${REPOSITORY_TOKEN_VAR} to it and run the command again. OpsCrew sends it only to your Portainer (for this stack) and never saves it.`;
-/** How to make the registry token of a private image, and that `--public-image` avoids it. */
-export const REGISTRY_TOKEN_HINT = `Create a classic token with only the read:packages scope at https://github.com/settings/tokens/new?scopes=read:packages, set ${REGISTRY_TOKEN_VAR} to it and run the command again (OpsCrew sends it only to your Portainer's registry entry and never saves it). If you made the image public on GitHub, run \`opscrew provision --public-image\` instead.`;
+/**
+ * How to make the read-only token of a private repository, which Portainer pulls `stack` with
+ * (`this stack`); `then` ends "set the variable to it" (`and run the command again`).
+ */
+export function repositoryTokenHint(then: string, stack: string): string {
+  return `Create a fine-grained token at https://github.com/settings/personal-access-tokens/new for only this repository with Contents: Read-only, set ${REPOSITORY_TOKEN_VAR} to it ${then}. OpsCrew sends it only to your Portainer (for ${stack}) and never saves it.`;
+}
+
+/**
+ * How to make the registry token of a private image, and that `--public-image` avoids it; `then`
+ * ends "set the variable to it" (`and run the command again`).
+ */
+export function registryTokenHint(then: string): string {
+  return `Create a classic token with only the read:packages scope at https://github.com/settings/tokens/new?scopes=read:packages, set ${REGISTRY_TOKEN_VAR} to it ${then} (OpsCrew sends it only to your Portainer's registry entry and never saves it). If you made the image public on GitHub, run \`opscrew provision --public-image\` instead.`;
+}
+
+/** How a stop of the stack plan ends the token hints. */
+const RUN_AGAIN = "and run the command again";
 
 /** Stops plainly when a change sends a token that is not set (nothing in Portainer changed). */
 export function requireTokens(
@@ -119,14 +133,14 @@ export function requireTokens(
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
       `Your repository is private, so Portainer needs a read-only token to fetch the ${DEPLOY_BRANCH} branch, and ${REPOSITORY_TOKEN_VAR} is not set. Nothing in Portainer was changed.`,
-      { hint: REPOSITORY_TOKEN_HINT },
+      { hint: repositoryTokenHint(RUN_AGAIN, "this stack") },
     );
   }
   if (sends.registry && !present.registry) {
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
       `The app's image on GitHub Container Registry is private, so Portainer needs a registry entry with a read-only token, and ${REGISTRY_TOKEN_VAR} is not set. Nothing in Portainer was changed.`,
-      { hint: REGISTRY_TOKEN_HINT },
+      { hint: registryTokenHint(RUN_AGAIN) },
     );
   }
 }

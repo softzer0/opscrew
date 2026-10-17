@@ -12,7 +12,7 @@ import type { PhaseDeps } from "../context";
 import { hasEnv } from "../domain/registrars";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer";
-import { REGISTRY_TOKEN_HINT, REPOSITORY_TOKEN_HINT } from "../provision/stack-plan";
+import { registryTokenHint, repositoryTokenHint } from "../provision/stack-plan";
 import { hidePortainerAddress } from "../shared";
 import { type PortainerConnection, readPortainerConnection } from "../shared/server-record";
 import { type CheckResult, failFrom } from "./check-result";
@@ -147,6 +147,7 @@ export function checkPortainerTokens(
   repoPrivate: boolean | undefined,
 ): CheckResult {
   const env = deps.env;
+  const beforeProvision = "before you run `opscrew provision`";
   const publicImage = record.connection?.publicImage === true;
   const notes: string[] = [];
   const missing: string[] = [];
@@ -159,14 +160,14 @@ export function checkPortainerTokens(
     missing.push(
       `${REGISTRY_TOKEN_VAR} (the app's image on GitHub Container Registry is private by default)`,
     );
-    fixes.push(REGISTRY_TOKEN_HINT);
+    fixes.push(registryTokenHint(beforeProvision));
   }
   if (repoPrivate === true) {
     if (hasEnv(env, REPOSITORY_TOKEN_VAR)) {
       notes.push(`${REPOSITORY_TOKEN_VAR} is set for the private repository.`);
     } else {
       missing.push(`${REPOSITORY_TOKEN_VAR} (the repository is private)`);
-      fixes.push(REPOSITORY_TOKEN_HINT);
+      fixes.push(repositoryTokenHint(beforeProvision, "the app's stack"));
     }
   } else if (repoPrivate === false) {
     notes.push("The repository is public, so Portainer needs no repository token.");
@@ -176,6 +177,6 @@ export function checkPortainerTokens(
   return {
     status: "warn",
     message: `Portainer needs ${missing.length > 1 ? "read-only GitHub tokens that are" : "a read-only GitHub token that is"} not set yet: ${missing.join(" and ")}. \`opscrew provision\` stops without ${missing.length > 1 ? "them" : "it"}.${known}`,
-    fix: `${fixes.join(" ")} Set ${missing.length > 1 ? "them" : "it"} before you run \`opscrew provision\`.`,
+    fix: fixes.join(" "),
   };
 }

@@ -210,7 +210,23 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     await rm(generated);
     report = await drift(s);
     expect(report.clean).toBe(true);
+    expect(report.notes?.join("\n") ?? "").not.toContain("generated_values.json");
     await expect(stat(generated)).rejects.toThrow();
+  });
+
+  it("says when provision's record of the generated values is damaged, and compares them as Portainer has them", async () => {
+    const s = await deployed();
+    const generated = generatedValuesFile(s.deps);
+    const note =
+      "OpsCrew did not compare the values it generated for the app's stack (such as the database password): its record of them, generated_values.json in OpsCrew's folder for this project, is damaged, so they compare as Portainer has them.";
+    // Not JSON, and JSON that is not a record of generated values.
+    for (const damaged of ["{ not json", JSON.stringify({ dbPassword: "" })]) {
+      await writeFile(generated, damaged);
+      const report = await drift(s);
+      expect(report.clean).toBe(true);
+      expect(report.notes).toContain(note);
+      expect(await readFile(generated, "utf8")).toBe(damaged);
+    }
   });
 
   it("without the production values file compares the app's values as Portainer has them, and says so", async () => {

@@ -307,7 +307,7 @@ From the duplicate scans and reviews recorded in `dry.md`. Waves: T1034 → {T10
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: xhigh
 
-- [ ] T1037 Agents: the planning-side folders (dry.md B, and A where it touches these folders)
+- [X] T1037 Agents: the planning-side folders (dry.md B, and A where it touches these folders)
   - Owns: `packages/agents/src/{domain,dns,init,adapt,analyze,design,drift,verify,secure,interview}/**` (+ tests)
   - Reads: dry.md A, B, D6, D9, D14
   - Depends: T1035, T1036

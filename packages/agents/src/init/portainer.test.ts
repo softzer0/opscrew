@@ -10,7 +10,6 @@ import type { CommandResult, FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { REGISTRY_TOKEN_HINT, REPOSITORY_TOKEN_HINT } from "../provision/stack-plan";
 import {
   type PortainerConnectionInput,
   recordPortainerConnection,
@@ -293,9 +292,9 @@ describe("opscrew init for a Portainer target", () => {
     expect(tokens.status).toBe("warn");
     expect(tokens.message).toContain("OPSCREW_GHCR_READ_TOKEN");
     expect(tokens.message).toContain("OPSCREW_REPO_READ_TOKEN");
-    // The tokens' help is the stack plan's, word for word.
+    // The stack plan's help, ending with when to set each token.
     expect(tokens.fix).toBe(
-      `${REGISTRY_TOKEN_HINT} ${REPOSITORY_TOKEN_HINT} Set them before you run \`opscrew provision\`.`,
+      "Create a classic token with only the read:packages scope at https://github.com/settings/tokens/new?scopes=read:packages, set OPSCREW_GHCR_READ_TOKEN to it before you run `opscrew provision` (OpsCrew sends it only to your Portainer's registry entry and never saves it). If you made the image public on GitHub, run `opscrew provision --public-image` instead. Create a fine-grained token at https://github.com/settings/personal-access-tokens/new for only this repository with Contents: Read-only, set OPSCREW_REPO_READ_TOKEN to it before you run `opscrew provision`. OpsCrew sends it only to your Portainer (for the app's stack) and never saves it.",
     );
     // Warnings never fail init.
     expect(find(list, "provider").status).toBe("pass");

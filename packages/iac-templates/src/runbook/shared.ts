@@ -36,7 +36,7 @@ export function externalDatabaseCell(plan: DeployPlan): string {
 /** The "Deploys" and "Image" rows of "At a glance". */
 export function deployRows(plan: DeployPlan, repo: string): string[] {
   return [
-    `| Deploys | every push to \`${plan.cicd.branch}\` runs \`${plan.cicd.workflowPath}\` |`,
+    `| Deploys | ${cell(`every push to \`${plan.cicd.branch}\` runs \`${plan.cicd.workflowPath}\``)} |`,
     `| Image | \`ghcr.io/${repo.toLowerCase()}\` (GitHub Container Registry) |`,
   ];
 }
