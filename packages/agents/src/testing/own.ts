@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { FAKE_ACCOUNT_ID } from "@opscrew/connector-cloudflare/testing";
 import {
   type ApplyOptions,
   type ApplyResult,
@@ -23,7 +24,6 @@ import type {
 } from "@opscrew/contracts";
 import { NodeCommandRunner } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
-import type { ZeroTrustApi } from "../provision/zero-trust";
 import type { HostAdapterApi } from "../shared";
 import { fakeCloudflare } from "./deploy";
 import { ScriptedRunner } from "./deps";
@@ -34,7 +34,8 @@ export const OWN_IPV4 = "203.0.113.20";
 /** A home server's LAN address (not public). */
 export const LAN_IPV4 = "192.168.1.20";
 export const TUNNEL_ID = "6f1f3a2e-7b1c-4d2e-9f00-112233445566";
-export const ACCOUNT_ID = "acct-0001";
+/** The Cloudflare account of the fake zone (the one `fakeSharedCloudflare`'s zone is in). */
+export const ACCOUNT_ID = FAKE_ACCOUNT_ID;
 
 const sha256 = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
 
@@ -711,37 +712,7 @@ export function tunnelOutputs(secrets: {
 
 /** A Cloudflare fake whose zone names its account (tunnels and Access belong to it). */
 export function ownCloudflare() {
-  const base = fakeCloudflare();
-  return {
-    ...base,
-    findZone: async () => ({
-      id: "zone-123",
-      name: "example.com",
-      status: "active",
-      nameServers: [],
-      accountId: ACCOUNT_ID,
-    }),
-  };
-}
-
-/**
- * Zero Trust fake: the account's organization (none by default), its one-time PIN login method
- * (none by default) and the accounts whose organization was asked for.
- */
-export function fakeZeroTrust(
-  authDomain?: string,
-  pin?: string,
-): ZeroTrustApi & { asked: string[] } {
-  const asked: string[] = [];
-  return {
-    asked,
-    accessOrganization: async (accountId) => {
-      asked.push(accountId);
-      return authDomain === undefined ? undefined : { authDomain };
-    },
-    accessIdentityProviders: async () =>
-      pin === undefined ? [] : [{ id: pin, type: "onetimepin" }],
-  };
+  return fakeCloudflare();
 }
 
 /**

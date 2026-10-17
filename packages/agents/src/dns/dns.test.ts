@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
@@ -13,6 +14,7 @@ import {
   FakeEngine,
   FakeGitHub,
   fakeCloudflare,
+  fakeSharedCloudflare,
   movingPlan,
   planJsonFor,
   projectRunner,
@@ -21,6 +23,9 @@ import {
   testPlan,
 } from "../testing";
 import { runDns } from "./run";
+
+const WAF = "http_request_firewall_custom";
+const CONFIG = "http_config_settings";
 
 /** The pull request an earlier run opened, while it is still open. */
 const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
@@ -71,6 +76,7 @@ async function setup(options: { deployed?: boolean } = {}) {
   });
   const github = new FakeGitHub();
   const engine = new FakeEngine({ planJson: planJsonFor({ proxied: true }) });
+  const zone = new FakeZone();
   const services: ProvisionServices = {
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
@@ -79,13 +85,14 @@ async function setup(options: { deployed?: boolean } = {}) {
     tcpConnect: async () => true,
     remote: readyRemote,
     sleep: async () => undefined,
+    sharedCloudflare: fakeSharedCloudflare(zone),
   };
-  return { ...project, deps, handler, github, engine, services };
+  return { ...project, deps, handler, github, engine, services, zone };
 }
 
 describe.skipIf(!findExecutable("git"))("runDns", () => {
   it("moves the app behind a Cloudflare domain through the same approved plan", async () => {
-    const { deps, handler, github, services, root } = await setup();
+    const { deps, handler, github, services, root, zone } = await setup();
     await writeArtifact("requirements", deps.paths.files.requirements, {
       schemaVersion: 1,
       answeredAt: "2026-10-11T09:00:00.000Z",
@@ -114,6 +121,7 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
 
     // the server exists already, so no deploy secrets are touched
     expect(handler.requests.map((r) => r.kind)).toEqual([
+      "cloudflare-apply",
       "repo-write",
       "iac-apply",
       "git-push",
@@ -124,10 +132,15 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     await expect(readFile(join(root, "opscrew/runtime/Caddyfile"), "utf8")).resolves.toContain(
       "shop.example.com",
     );
+    // OpsCrew's shared rules in the zone now protect the domain (probe block, strict TLS).
+    expect(zone.opscrewRule(WAF)?.expression).toContain('(http.host in {"shop.example.com"})');
+    expect(zone.opscrewRule(CONFIG)?.expression).toBe('(http.host in {"shop.example.com"})');
+    expect(result.cloudflarePlanHash).toBe(handler.requests[0]?.planHash);
     const tfvars = JSON.parse(
       await readFile(join(root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
     );
-    expect(tfvars).toMatchObject({ manage_config_rule: true, manage_waf_rules: true });
+    expect(tfvars).not.toHaveProperty("manage_config_rule");
+    expect(tfvars).not.toHaveProperty("manage_waf_rules");
     expect((await deps.state.read()).phases.dns?.status).toBe("ok");
 
     // the running server is told about before anything is approved
@@ -150,6 +163,34 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     const body = github.pulls[0]?.body ?? "";
     expect(body).not.toContain("the deploy secrets are stored");
     expect(body).toContain("run `opscrew provision` in a terminal");
+  });
+
+  it("a new domain: one Cloudflare plan removes the old hostname from the shared rules and adds the new one", async () => {
+    const { deps, handler, services, github, zone } = await setup();
+    await runDns(deps, { domain: "shop.example.com", services });
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
+    handler.requests.length = 0;
+
+    await runDns(deps, { domain: "app.example.com", services });
+    const request = handler.requests.find((r) => r.kind === "cloudflare-apply");
+    expect(request?.details).toContain(
+      "Block probes for secrets and admin panels: add app.example.com; remove shop.example.com",
+    );
+    expect(request?.details).toContain(
+      "Verify the origin certificate (Full (strict) TLS): add app.example.com; remove shop.example.com",
+    );
+    // Nothing is deleted, so no typed confirmation.
+    expect(request?.allowDestroy).toBeUndefined();
+    expect(zone.opscrewRule(CONFIG)?.expression).toBe('(http.host in {"app.example.com"})');
+    expect(zone.opscrewRule(WAF)?.expression).toContain('(http.host in {"app.example.com"})');
+    expect(JSON.parse(await readFile(deps.paths.files.cloudflareRecord, "utf8"))).toEqual({
+      zoneId: FAKE_ZONE_ID,
+      hostnames: {
+        "opscrew-block-probes": ["app.example.com"],
+        "opscrew-strict-tls": ["app.example.com"],
+      },
+      createdEntrypoints: [WAF, CONFIG],
+    });
   });
 
   it("says the deploy secrets are stored when provision stored them for this server", async () => {

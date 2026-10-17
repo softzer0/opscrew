@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import type { IacEngine } from "@opscrew/contracts";
 import { exists, isUserFacingError, OpsCrewError } from "@opscrew/core";
-import { portainerHostname, usesTunnel } from "@opscrew/iac-templates";
+import { usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { cloudConnectorRemoval } from "../portainer/run";
@@ -18,7 +18,6 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
-  oneTimePinIdentityProvider,
   type PlanApproval,
   readyNewServer,
   recordOwnServer,
@@ -31,7 +30,7 @@ import {
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
-import { type CloudflareSetup, checkProvider, setupCloudflare, setupGitHub } from "./credentials";
+import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { requireNoMoveInProgress } from "./guard";
 import {
   applyOwnHostPlan,
@@ -53,6 +52,12 @@ import {
 } from "./render";
 import { buildAppEnvironment, deploySecrets, setDeploySecrets } from "./secrets";
 import {
+  applySharedCloudflare,
+  cloudflarePlanHashes,
+  planSharedCloudflare,
+  sharedCloudflareClient,
+} from "./shared-cloudflare";
+import {
   currentOutputs,
   deployBranchFor,
   deploymentRecord,
@@ -65,8 +70,7 @@ import {
   type SavedInfrastructureHashes,
   withLearnedZone,
 } from "./steps";
-import type { ProvisionOptions, ProvisionResult, ProvisionServices } from "./types";
-import { cloudflareZeroTrust, createZeroTrustOrganization } from "./zero-trust";
+import type { ProvisionOptions, ProvisionResult } from "./types";
 
 /**
  * After a failed apply: the apply may have replaced the server before it stopped, so the address
@@ -141,21 +145,32 @@ async function tfvarsShowPublicAddress(root: string, plan: DeployPlan): Promise<
 }
 
 /**
- * The saved infrastructure plans the `--approve` hashes name. Servers OpsCrew creates have one
- * plan, so the main plan is the first hash given. A server the user owns and the user's Portainer
- * have more (infrastructure, host or stack plan and, when an earlier setup goes, its removal): the
- * main plan is the hash whose saved plan exists, is not a removal and was not applied yet (a script
- * that names both hashes again after the infrastructure was applied plans afresh, which finds
- * nothing to change); a saved removal plan is kept apart and only ever applied as the removal; the
- * host or stack plan's hash is granted by the approval handler.
+ * The saved infrastructure plans the `--approve` hashes name, apart from this run's Cloudflare
+ * plans (`cloudflare`, granted by the approval handler). Servers OpsCrew creates have one
+ * infrastructure plan, so the main plan is the first other hash that names a saved plan, else the
+ * first other hash given (applying it then fails plainly). A server the user owns and
+ * the user's Portainer have more (infrastructure, host or stack plan and, when an earlier setup
+ * goes, its removal): the main plan is the hash whose saved plan exists, is not a removal and was
+ * not applied yet (a script that names both hashes again after the infrastructure was applied
+ * plans afresh, which finds nothing to change); a saved removal plan is kept apart and only ever
+ * applied as the removal; the host or stack plan's hash is granted by the approval handler.
  */
 async function savedInfrastructureHashes(
   deps: PhaseDeps,
   options: ProvisionOptions,
   plan: DeployPlan,
+  cloudflare: readonly string[] = [],
 ): Promise<SavedInfrastructureHashes> {
-  const hashes = options.approveHashes ?? [];
+  const hashes = (options.approveHashes ?? []).filter(
+    (hash) => !cloudflare.includes(hash.toLowerCase()),
+  );
   if (plan.target.provider !== "own" && plan.target.provider !== "portainer") {
+    // A Cloudflare plan an earlier run applied may be named too: the saved plan's hash wins.
+    for (const hash of hashes) {
+      if ((await findSavedPlan(deps.paths.files.plansDir, hash)) !== undefined) {
+        return { apply: hash };
+      }
+    }
     return hashes[0] === undefined ? {} : { apply: hashes[0] };
   }
   const applied = plan.deployment.lastPlanHash?.toLowerCase();
@@ -171,45 +186,9 @@ async function savedInfrastructureHashes(
 }
 
 /**
- * The Cloudflare Access render inputs of any plan with a tunnel and Access (an own server in
- * tunnel mode, or a Portainer subdomain on any target): whether this configuration creates the
- * account's Zero Trust organization (read from Cloudflare, keeping the one an earlier run created)
- * and, with a Portainer subdomain, which one-time PIN login method its Access application uses
- * (the one the last render named; unset when the state holds OpsCrew's own; else the account's
- * existing one). Without them a re-run would plan to delete the organization or to create a
- * second PIN login method. `undefined` when the plan has no tunnel. The lookups are
- * `services.zeroTrust` (default: Cloudflare's client).
- */
-async function accessRenderInput(
-  deps: PhaseDeps,
-  services: ProvisionServices,
-  plan: DeployPlan,
-  cloudflare: CloudflareSetup | undefined,
-): Promise<OwnRenderInput | undefined> {
-  if (!usesTunnel(plan) || cloudflare?.accountId === undefined) return undefined;
-  const previous = await committedTfvars(deps.paths.root, plan);
-  const zeroTrust = services.zeroTrust ?? cloudflareZeroTrust(deps);
-  const input: OwnRenderInput = {
-    createZeroTrustOrganization: await createZeroTrustOrganization({
-      api: zeroTrust,
-      accountId: cloudflare.accountId,
-      zone: cloudflare.zoneName,
-      previous: previous?.create_zero_trust_organization === true,
-    }),
-  };
-  if (portainerHostname(plan) !== undefined) {
-    const pin = await oneTimePinIdentityProvider({
-      previous,
-      accountId: cloudflare.accountId,
-      api: zeroTrust,
-    });
-    if (pin !== undefined) input.oneTimePinIdentityProviderId = pin;
-  }
-  return input;
-}
-
-/**
- * Provision and DNS share this flow: credentials → engine, deploy key and state encryption →
+ * Provision and DNS share this flow: credentials (and, with a Cloudflare zone, the Cloudflare plan
+ * of OpsCrew's shared rules and Zero Trust pieces, read-only) → engine, deploy key and state
+ * encryption → the Cloudflare plan's approval by its hash, apply and `.opscrew/cloudflare.json` →
  * render (approved write) → plan, policies, approval, apply → record the deployment → wait for the
  * server and pin its host key → deploy secrets → commit, push and pull request.
  *
@@ -254,8 +233,16 @@ async function provisionFlow(
   await checkProvider(deps, profile.id, services);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
+  // OpsCrew's shared Cloudflare change, planned read-only now (it stops on its findings) and
+  // applied before the infrastructure plan.
+  const sharedClient =
+    cloudflare === undefined ? undefined : sharedCloudflareClient(deps, services);
+  const shared =
+    cloudflare === undefined || sharedClient === undefined
+      ? undefined
+      : await planSharedCloudflare(deps, { client: sharedClient, plan, cloudflare, command });
   // The saved infrastructure plans the `--approve` hashes name (applied instead of planning again).
-  const saved = await savedInfrastructureHashes(deps, options, plan);
+  const saved = await savedInfrastructureHashes(deps, options, plan, cloudflarePlanHashes(shared));
   const approveHash = saved.apply;
   // `--plan-only` commits nothing.
   const commits = !(options.planOnly && approveHash === undefined);
@@ -352,10 +339,29 @@ async function provisionFlow(
     }
   }
 
+  // 3c. OpsCrew's shared Cloudflare change (its rules in the zone, the account's Zero Trust
+  // organization and one-time PIN login) before the infrastructure plan of this setup (after a
+  // mode switch's removal of the old one): shown, approved by its hash, applied and recorded. The
+  // infrastructure takes the PIN login's id from it.
+  const sharedResult =
+    shared === undefined || sharedClient === undefined
+      ? undefined
+      : await applySharedCloudflare(deps, shared, {
+          client: sharedClient,
+          app: plan.app.name,
+          planOnly: options.planOnly === true,
+          command,
+          phase,
+        });
+  const cloudflareHash =
+    sharedResult?.hash === undefined ? {} : { cloudflarePlanHash: sharedResult.hash };
+  if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
+  for (const approval of sharedResult?.approvals ?? []) approvals.push(approvalEntry(approval));
+  if (sharedResult?.oneTimePinId !== undefined) {
+    ownRender = { ...ownRender, oneTimePinIdentityProviderId: sharedResult.oneTimePinId };
+  }
+
   // 4. Render (skipped when applying a saved plan: its files were written by the --plan-only run)
-  // Cloudflare Access settings for any plan with a tunnel (own servers, Portainer subdomains).
-  const access = await accessRenderInput(deps, services, plan, cloudflare);
-  if (access !== undefined) ownRender = { ...ownRender, ...access };
   const knownServer =
     hidesServerAddress(plan) || ownServer
       ? undefined
@@ -472,6 +478,7 @@ async function provisionFlow(
     if (learned.zoneLearned) await writeArtifact("plan", deps.paths.files.plan, plan);
     return {
       ...(applied.planHash ? { planHash: applied.planHash } : {}),
+      ...cloudflareHash,
       ...(hostPlanHash !== undefined ? { hostPlanHash } : {}),
       applied: false,
       outputs: {},
@@ -597,6 +604,7 @@ async function provisionFlow(
   if (secretsStored) deps.reporter.info(mergeDeploysNote(plan, published.published));
   return {
     ...(applied.planHash ? { planHash: applied.planHash } : {}),
+    ...cloudflareHash,
     applied: applied.applied,
     ...(host !== undefined ? { hostPlanHash: host.hash, hostApplied: host.applied } : {}),
     outputs: publicOutputs(applied.outputs),

@@ -20,7 +20,6 @@ import type {
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { TcpConnect } from "@opscrew/secops";
 import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
-import type { ZeroTrustApi } from "./zero-trust";
 
 /**
  * The Cloudflare calls provisioning needs (a `CloudflareClient` or a test fake). `listAccounts`
@@ -28,12 +27,7 @@ import type { ZeroTrustApi } from "./zero-trust";
  */
 export type CloudflareApi = Pick<
   CloudflareClient,
-  | "verifyToken"
-  | "findZone"
-  | "listDnsRecords"
-  | "inspectEntrypointRuleset"
-  | "getIpRanges"
-  | "listAccounts"
+  "verifyToken" | "findZone" | "listDnsRecords" | "getIpRanges" | "listAccounts"
 >;
 
 /** A one-file branch OpsCrew writes: only ever `opscrew-deploy` (the type allows no other name). */
@@ -87,10 +81,11 @@ export interface ProvisionServices {
   /** A server the user owns: its shell and the host adapter (fakes in tests). */
   own?: OwnServerServices;
   /**
-   * The Cloudflare account's Zero Trust organization and Access login methods, read before Access
-   * is rendered (default: Cloudflare's client with `CLOUDFLARE_API_TOKEN`).
+   * The Cloudflare client for what OpsCrew apps share: OpsCrew's rules in the zone and the
+   * account's Zero Trust organization and one-time PIN login (default: Cloudflare's client with
+   * `CLOUDFLARE_API_TOKEN`).
    */
-  zeroTrust?: ZeroTrustApi;
+  sharedCloudflare?: CloudflareClient;
   /** The user's Portainer (`target.provider: portainer`): its client and local randomness (fakes in tests). */
   portainer?: PortainerServices;
 }
@@ -141,8 +136,10 @@ export interface ProvisionOptions {
   /**
    * Every hash given with `--approve` (each names one plan of an earlier `--plan-only` run). The
    * saved infrastructure plan among them is applied instead of planning again (on servers OpsCrew
-   * creates: the first hash); a host or stack plan is granted by the approval handler when its hash
-   * is one of them, so the CLI's non-interactive handler approves those requests by these hashes.
+   * creates: the first one that names a saved plan, else the first other than this run's
+   * Cloudflare plan); a Cloudflare, host or stack plan is granted by the approval handler when its
+   * hash is one of them, so the CLI's non-interactive handler approves those requests by these
+   * hashes.
    */
   approveHashes?: readonly string[];
   /**
@@ -179,6 +176,11 @@ export interface ProvisionOptions {
 
 export interface ProvisionResult {
   planHash?: string;
+  /**
+   * The Cloudflare plan's SHA-256 hash (OpsCrew's shared rules and Zero Trust pieces), when it has
+   * changes: applied by this run or, with `--plan-only`, the hash to approve.
+   */
+  cloudflarePlanHash?: string;
   /** True when this run applied an infrastructure plan. */
   applied: boolean;
   /**

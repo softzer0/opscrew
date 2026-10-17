@@ -63,13 +63,18 @@ import {
   stackPlanFile,
 } from "./portainer";
 import { portainerDnsRecordNote } from "./publish";
-import { committedTfvars, deploymentFiles, deploymentRenderContext } from "./render";
+import { deploymentFiles, deploymentRenderContext } from "./render";
 import {
   buildAppEnvironment,
   PORTAINER_SECRETS_RECORD,
   portainerDeploySecrets,
   setDeploySecrets,
 } from "./secrets";
+import {
+  applySharedCloudflare,
+  planSharedCloudflare,
+  sharedCloudflareClient,
+} from "./shared-cloudflare";
 import {
   describeStackPlan,
   hasAppStack,
@@ -98,7 +103,6 @@ import {
   withLearnedZone,
 } from "./steps";
 import type { ProvisionOptions, ProvisionResult } from "./types";
-import { cloudflareZeroTrust, createZeroTrustOrganization } from "./zero-trust";
 
 /** What {@link provisionPortainer} gets from the shared provision flow. */
 export interface PortainerFlowInput {
@@ -154,18 +158,21 @@ function requiredOutput(
  * `opscrew provision` for the user's Portainer (plan.md §5): preconditions (Portainer's token and
  * connection, GitHub, Cloudflare when the plan has a tunnel) → connect with the pinned certificate
  * (a changed certificate stops plainly) → inspect read-only → stop on blocking findings (including
- * the steps for a limited token without a registry entry) → render and write the files → the
- * infrastructure plan (Cloudflare only), its policies, `iac-apply` approval and apply, when the
- * plan has a Cloudflare root → the `opscrew-deploy` branch with a placeholder (`git-push`
+ * the steps for a limited token without a registry entry) → with a Cloudflare root, the
+ * Cloudflare plan of OpsCrew's shared rule and Zero Trust organization, its `cloudflare-apply`
+ * approval by its hash and apply → render and write the files → the infrastructure plan
+ * (Cloudflare only), its policies, `iac-apply` approval and apply, when the plan has a
+ * Cloudflare root → the `opscrew-deploy` branch with a placeholder (`git-push`
  * approval) when the app stack is new → the stack plan, bound to the values it sends by their
  * keyed fingerprints → `stack-apply` approval by its hash (`--yes` never grants it) → apply with
  * the secrets → record what OpsCrew created in `.opscrew/server.json` (also when the apply stopped
  * part-way) → the deploy secrets → the deploy pull request. No secret or Portainer address reaches
  * a plan, the output, the audit log, a file in the repository or the pull request.
  *
- * `--plan-only` shows both plans and their hashes and changes nothing (the stack plan follows the
+ * `--plan-only` shows the plans and their hashes and changes nothing (the stack plan follows the
  * infrastructure apply when it needs a tunnel's token that does not exist yet); `--approve` names
- * the infrastructure plan's hash and the stack plan's (the approval handler grants the latter).
+ * the infrastructure plan's hash, the Cloudflare plan's and the stack plan's (the approval handler
+ * grants the latter two).
  */
 export async function provisionPortainer(
   deps: PhaseDeps,
@@ -207,6 +214,14 @@ export async function provisionPortainer(
       hint: "Run `opscrew interview` and `opscrew design` again.",
     });
   }
+  // OpsCrew's shared Cloudflare change, planned read-only now and applied before the
+  // infrastructure plan.
+  const sharedClient =
+    cloudflare === undefined ? undefined : sharedCloudflareClient(deps, services);
+  const shared =
+    cloudflare === undefined || sharedClient === undefined
+      ? undefined
+      : await planSharedCloudflare(deps, { client: sharedClient, plan, cloudflare, command });
   const repository = await github.api.getRepo(github.owner, github.repo);
   const commits = !(options.planOnly && saved.apply === undefined && saved.removal === undefined);
   const deployBranch = await deployBranchFor(deps, {
@@ -322,18 +337,24 @@ export async function provisionPortainer(
     branchStarted = true;
   };
 
-  // 3. Render and write the files (skipped when applying a saved plan: --plan-only wrote them).
-  const access =
-    cloudflareRoot.webhook && cloudflare?.accountId !== undefined
-      ? {
-          createZeroTrustOrganization: await createZeroTrustOrganization({
-            api: services.zeroTrust ?? cloudflareZeroTrust(deps),
-            accountId: cloudflare.accountId,
-            zone: cloudflare.zoneName,
-            previous: (await committedTfvars(root, plan))?.create_zero_trust_organization === true,
-          }),
-        }
-      : undefined;
+  // 3. OpsCrew's shared Cloudflare change (its rule in the zone, the account's Zero Trust
+  // organization for the webhook's Access) before anything else changes: shown, approved by its
+  // hash, applied and recorded.
+  const sharedResult =
+    shared === undefined || sharedClient === undefined
+      ? undefined
+      : await applySharedCloudflare(deps, shared, {
+          client: sharedClient,
+          app: plan.app.name,
+          planOnly: options.planOnly === true,
+          command,
+          phase,
+        });
+  const cloudflareHash =
+    sharedResult?.hash === undefined ? {} : { cloudflarePlanHash: sharedResult.hash };
+  if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
+
+  // 3b. Render and write the files (skipped when applying a saved plan: --plan-only wrote them).
   const files = deploymentFiles(
     plan,
     deploymentRenderContext(deps, {
@@ -343,7 +364,6 @@ export async function provisionPortainer(
       // A Portainer target has no SSH deploy: its files never use the deploy key.
       deployPublicKey: "",
       cloudflare,
-      ...(access !== undefined ? { own: access } : {}),
     }),
   );
   if (saved.apply === undefined && saved.removal === undefined) {
@@ -525,7 +545,7 @@ export async function provisionPortainer(
   // Without a Cloudflare root (web mode proxy or caddy with the updater), what an earlier setup
   // created in Cloudflare is removed: a removal plan (`plan -destroy`) of the configuration still
   // committed, then its files leave the repository.
-  const approvals: PlanApproval[] = [];
+  const approvals: PlanApproval[] = (sharedResult?.approvals ?? []).map(approvalEntry);
   let iac: PlanAndApplyResult = { applied: false, outputs: {} };
   let early: StackStepResult | undefined;
   if (hasRoot || removal) {
@@ -629,6 +649,7 @@ export async function provisionPortainer(
     if (learned.zoneLearned) await writeArtifact("plan", deps.paths.files.plan, plan);
     return {
       ...(iac.planHash ? { planHash: iac.planHash } : {}),
+      ...cloudflareHash,
       ...(stackHash !== undefined ? { stackPlanHash: stackHash } : {}),
       applied: false,
       outputs: {},
@@ -757,6 +778,7 @@ export async function provisionPortainer(
   if (secretsStored) deps.reporter.info(mergeDeploysNote(plan, published.published));
   return {
     ...(iac.planHash ? { planHash: iac.planHash } : {}),
+    ...cloudflareHash,
     applied: iac.applied,
     stackPlanHash: stack.hash,
     stackApplied,

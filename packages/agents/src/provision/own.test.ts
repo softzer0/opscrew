@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
   HostApplyError,
   type HostFacts,
@@ -11,6 +12,7 @@ import {
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { zeroTrustAuthDomain } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
@@ -31,7 +33,7 @@ import {
   ED25519_FINGERPRINT,
   FakeGitHub,
   FakeHostServer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   freshFacts,
   LAN_IPV4,
   OWN_IPV4,
@@ -51,6 +53,8 @@ import { runProvision } from "./run";
 import type { ProvisionOptions } from "./types";
 
 const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
+/** The plans the CLI's non-interactive handler approves only by their hash. */
+const BY_HASH: readonly string[] = ["cloudflare-apply", "iac-apply", "host-apply"];
 
 interface OwnSetup {
   plan?: DeployPlan;
@@ -59,7 +63,7 @@ interface OwnSetup {
   engine?: OwnEngine;
   interactive?: boolean;
   answer?: (request: ApprovalRequest) => boolean | { approved: boolean; confirmation?: string };
-  zeroTrust?: ReturnType<typeof fakeZeroTrust>;
+  zone?: FakeZone;
 }
 
 async function setup(o: OwnSetup = {}) {
@@ -87,7 +91,7 @@ async function setup(o: OwnSetup = {}) {
     deps.paths,
     o.own ?? { host: OWN_IPV4, port: 22, user: "root", agent: true, reachable: true },
   );
-  const zeroTrust = o.zeroTrust ?? fakeZeroTrust();
+  const zone = o.zone ?? new FakeZone();
   const services: PortainerServices = {
     engine: async () => engine,
     github,
@@ -95,10 +99,10 @@ async function setup(o: OwnSetup = {}) {
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own: { host, homeDir: home },
-    // The account has no one-time PIN login method yet (a Portainer subdomain creates one).
-    zeroTrust,
+    // A zone and account without OpsCrew's rules or Zero Trust organization yet.
+    sharedCloudflare: fakeSharedCloudflare(zone),
   };
-  return { ...project, deps, engine, host, github, handler, services, runner, home, zeroTrust };
+  return { ...project, deps, engine, host, github, handler, services, runner, home, zone };
 }
 
 type Setup = Awaited<ReturnType<typeof setup>>;
@@ -119,6 +123,8 @@ async function published(s: Setup): Promise<string> {
 }
 
 const kinds = (s: Setup) => s.handler.requests.map((r) => r.kind);
+const WAF = "http_request_firewall_custom";
+const CONFIG = "http_config_settings";
 
 describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns", () => {
   it("public mode: pins the host key, plans DNS and the host, applies both after approval, and keeps the address out of the repository", async () => {
@@ -129,6 +135,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     });
 
     expect(kinds(s)).toEqual([
+      "cloudflare-apply",
       "repo-write",
       "iac-apply",
       "host-apply",
@@ -136,6 +143,12 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
       "git-push",
       "pull-request",
     ]);
+    // OpsCrew's shared rules in the zone list the app's hostname: the probe block and strict TLS.
+    expect(s.zone.opscrewRule(WAF)?.expression).toContain('(http.host in {"shop.example.com"})');
+    expect(s.zone.opscrewRule(CONFIG)?.expression).toBe('(http.host in {"shop.example.com"})');
+    expect(result.cloudflarePlanHash).toBe(
+      s.handler.requests.find((r) => r.kind === "cloudflare-apply")?.planHash,
+    );
     // The infrastructure approval names Cloudflare and no server cost.
     const iac = s.handler.requests.find((r) => r.kind === "iac-apply");
     expect(iac?.title).toContain("on Cloudflare");
@@ -203,7 +216,11 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
 
     // The plan records both approvals; the audit log every host step, by hash and without address.
     const plan = await readArtifact("plan", s.deps.paths.files.plan);
-    expect(plan.approvals.map((a) => a.kind)).toEqual(["iac-apply", "host-apply"]);
+    expect(plan.approvals.map((a) => a.kind)).toEqual([
+      "cloudflare-apply",
+      "iac-apply",
+      "host-apply",
+    ]);
     expect(plan.deployment.lastApplyAt).toBeDefined();
     const steps = s.deps.audit.entries.filter((e) => e.action.startsWith("host step "));
     expect(steps.map((e) => e.action)).toContain("host step docker");
@@ -251,6 +268,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     s.handler.requests.length = 0;
 
     const again = await runProvision(s.deps, { services: s.services });
+    expect(kinds(s)).not.toContain("cloudflare-apply");
     expect(kinds(s)).not.toContain("iac-apply");
     expect(kinds(s)).not.toContain("host-apply");
     expect(kinds(s)).not.toContain("remote-exec");
@@ -284,10 +302,19 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
       engine: new OwnEngine(TUNNEL_CHANGES, tunnelOutputs({ token, clientId, clientSecret })),
     });
     const key = await placeholderKey(s.home);
+    // SSH's Access needs the account's Zero Trust organization before the infrastructure apply.
+    const organizationAtApply: boolean[] = [];
+    const engineApply = s.engine.apply.bind(s.engine);
+    s.engine.apply = async (...args) => {
+      organizationAtApply.push(s.zone.organization !== undefined);
+      return engineApply(...args);
+    };
     const result = await runProvision(s.deps, { services: s.services });
 
+    expect(organizationAtApply).toEqual([true]);
     expect(kinds(s)).toEqual([
       "remote-exec",
+      "cloudflare-apply",
       "repo-write",
       "iac-apply",
       "host-apply",
@@ -300,7 +327,9 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
       `[${LAN_IPV4}]:2222 ssh-ed25519 ${ED25519}`,
     );
 
-    // The render: sshd's own port, the account, a new Zero Trust organization; no address.
+    // The render: sshd's own port and the account; no address. The Cloudflare plan created the
+    // account's Zero Trust organization (SSH's Access needs it) and put the app's hostname in the
+    // probe block only: the tunnel carries TLS, so there is no strict-TLS rule.
     const tfvars = JSON.parse(
       await readFile(join(s.root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
     ) as Record<string, unknown>;
@@ -308,9 +337,12 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
       ssh_port: 22,
       ssh_hostname: "ssh-shop.example.com",
       cloudflare_account_id: ACCOUNT_ID,
-      create_zero_trust_organization: true,
     });
-    expect(s.zeroTrust.asked).toEqual([ACCOUNT_ID]);
+    expect(tfvars).not.toHaveProperty("create_zero_trust_organization");
+    expect(s.zone.organization?.auth_domain).toBe(zeroTrustAuthDomain("example.com"));
+    expect(s.zone.providers).toEqual([]);
+    expect(s.zone.opscrewRule(WAF)?.expression).toContain('(http.host in {"shop.example.com"})');
+    expect(s.zone.opscrewRule(CONFIG)).toBeUndefined();
     expect(existsSync(join(s.root, "opscrew/runtime/cloudflared/compose.yaml"))).toBe(true);
     for (const env of s.engine.envs) expect(env).not.toHaveProperty("TF_VAR_server_ipv4");
 
@@ -476,8 +508,12 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     });
     expect(result.planHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.hostPlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.cloudflarePlanHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.applied).toBe(false);
     expect(kinds(s)).toEqual(["repo-write"]);
+    expect(s.zone.writes()).toEqual([]);
+    expect(s.deps.reporter.text()).toContain(`Cloudflare plan hash: ${result.cloudflarePlanHash}`);
+    expect(existsSync(s.deps.paths.files.cloudflareRecord)).toBe(false);
     expect(s.engine.applies).toHaveLength(0);
     expect(s.host.applies).toHaveLength(0);
     expect(existsSync(hostPlanFile(s.deps.paths, result.hostPlanHash as string))).toBe(true);
@@ -506,9 +542,9 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
 
   it("scripts approve both plans by hash with two --approve values (never --yes)", async () => {
     const approved: string[] = [];
-    // Like the CLI's non-interactive handler: infrastructure and host plans only by hash.
+    // Like the CLI's non-interactive handler: Cloudflare, infrastructure and host plans by hash.
     const answer = (request: ApprovalRequest) =>
-      request.kind === "iac-apply" || request.kind === "host-apply"
+      BY_HASH.includes(request.kind)
         ? approved.includes(request.planHash ?? "")
         : request.kind !== "remote-exec";
     const s = await setup({ answer });
@@ -519,10 +555,30 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     });
     const iacHash = planned.planHash as string;
     const hostHash = planned.hostPlanHash as string;
+    const cloudflareHash = planned.cloudflarePlanHash as string;
 
-    // Only the infrastructure hash: the host plan is refused and the hint names its hash.
+    // Only the infrastructure hash: the Cloudflare plan is refused first and its hash named.
     approved.push(iacHash);
-    const options: ProvisionOptions = { services: s.services, approveHashes: [iacHash] };
+    const first = (await runProvision(s.deps, {
+      services: s.services,
+      approveHashes: [iacHash],
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(first.code).toBe("APPROVAL_REFUSED");
+    expect(first.message).toBe(
+      "The Cloudflare plan was not approved. Nothing in Cloudflare was changed.",
+    );
+    expect(first.hint).toBe(
+      `To apply it later without prompts, run: opscrew provision --approve ${cloudflareHash}`,
+    );
+    expect(s.zone.writes()).toEqual([]);
+    expect(s.engine.applies).toHaveLength(0);
+
+    // The Cloudflare and infrastructure hashes: the host plan is refused and the hint names its hash.
+    approved.push(cloudflareHash);
+    const options: ProvisionOptions = {
+      services: s.services,
+      approveHashes: [cloudflareHash, iacHash],
+    };
     const refused = (await runProvision(s.deps, options).catch((e: unknown) => e)) as OpsCrewError;
     expect(refused.code).toBe("APPROVAL_REFUSED");
     expect(refused.hint).toContain(`--approve ${hostHash}`);
@@ -536,7 +592,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     s.engine.changes = [];
     const result = await runProvision(s.deps, {
       services: s.services,
-      approveHashes: [iacHash, hostHash],
+      approveHashes: [cloudflareHash, iacHash, hostHash],
     });
     expect(result.hostApplied).toBe(true);
     expect(s.host.applies[0]?.options.approvedHash).toBe(hostHash);
@@ -547,7 +603,7 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
   it("applies both plans in one scripted run after --plan-only", async () => {
     const approved: string[] = [];
     const answer = (request: ApprovalRequest) =>
-      request.kind === "iac-apply" || request.kind === "host-apply"
+      BY_HASH.includes(request.kind)
         ? approved.includes(request.planHash ?? "")
         : request.kind !== "remote-exec";
     const s = await setup({ answer });
@@ -556,11 +612,9 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
       hostKey: ED25519_FINGERPRINT,
       planOnly: true,
     });
-    approved.push(planned.planHash as string, planned.hostPlanHash as string);
-    const result = await runProvision(s.deps, {
-      services: s.services,
-      approveHashes: [planned.planHash as string, planned.hostPlanHash as string],
-    });
+    const hashes = [planned.cloudflarePlanHash, planned.planHash, planned.hostPlanHash] as string[];
+    approved.push(...hashes);
+    const result = await runProvision(s.deps, { services: s.services, approveHashes: hashes });
     expect(result).toMatchObject({
       applied: true,
       hostApplied: true,
@@ -596,7 +650,12 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
 
     await runProvision(s.deps, { services: s.services });
 
-    expect(kinds(s).slice(0, 3)).toEqual(["iac-apply", "repo-write", "iac-apply"]);
+    expect(kinds(s).slice(0, 4)).toEqual([
+      "iac-apply",
+      "cloudflare-apply",
+      "repo-write",
+      "iac-apply",
+    ]);
     const removal = s.handler.requests[0];
     expect(removal?.allowDestroy).toBe(true);
     expect(removal?.confirmPhrase).toBe("shop");
@@ -608,7 +667,12 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(s.deps.reporter.text()).toContain("first removes what the current setup created");
     expect((await readServerAddresses(s.deps.paths)).deployment).toBeUndefined();
     const plan = await readArtifact("plan", s.deps.paths.files.plan);
-    expect(plan.approvals.map((a) => a.kind)).toEqual(["iac-apply", "iac-apply", "host-apply"]);
+    expect(plan.approvals.map((a) => a.kind)).toEqual([
+      "iac-apply",
+      "cloudflare-apply",
+      "iac-apply",
+      "host-apply",
+    ]);
   });
 
   it("--plan-only during a mode switch shows only the removal; approving its hash applies it, then the new setup", async () => {
@@ -765,7 +829,11 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect(existsSync(join(s.root, "opscrew/runtime/cloudflared/compose.yaml"))).toBe(true);
     const apply = s.host.applies[0];
     expect(apply?.options.secrets?.tunnelToken).toBe(token);
-    expect(s.zeroTrust.asked).toEqual([ACCOUNT_ID]);
+    const pin = s.zone.providers.find((provider) => provider.type === "onetimepin");
+    const tfvars = JSON.parse(
+      await readFile(join(s.root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(tfvars.one_time_pin_identity_provider_id).toBe(pin?.id);
     expect(everythingPrinted(s.deps)).not.toContain(token);
   });
 

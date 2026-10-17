@@ -259,6 +259,10 @@ export async function runInfraCommand(
       let removes = false;
       let stackFollows = false;
       if (planOnly) {
+        // OpsCrew's shared Cloudflare resources change first: their plan is approved by its hash too.
+        if (result.cloudflarePlanHash !== undefined) {
+          planned.push({ label: "Cloudflare plan", hash: result.cloudflarePlanHash });
+        }
         const saved =
           result.planHash === undefined
             ? undefined

@@ -87,10 +87,4 @@ export type {
   ProvisionServices,
   SavedPlan,
 } from "./types";
-export {
-  CLOUDFLARE_TUNNEL_PERMISSIONS,
-  cloudflareZeroTrust,
-  createZeroTrustOrganization,
-  tunnelTokenPermissions,
-  type ZeroTrustApi,
-} from "./zero-trust";
+export { CLOUDFLARE_TUNNEL_PERMISSIONS, tunnelTokenPermissions } from "./zero-trust";

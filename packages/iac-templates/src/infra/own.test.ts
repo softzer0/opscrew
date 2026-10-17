@@ -296,14 +296,24 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
       domain: "shop.example.com",
       portainer: PORTAINER,
     });
-    expect(() =>
+    let error: unknown;
+    try {
       renderInfra(
         withPortainer,
         ownContext({
           cloudflare: testCloudflareAccount({ oneTimePinIdentityProviderId: undefined }),
         }),
+      );
+    } catch (thrown) {
+      error = thrown;
+    }
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("one-time PIN login method"),
+      hint: expect.stringContaining(
+        "Run `opscrew provision` again: it sets up the Cloudflare Zero Trust login",
       ),
-    ).toThrow(/one-time PIN login method/);
+    });
   });
 
   it("stops with plain errors without a Cloudflare domain or account id", () => {

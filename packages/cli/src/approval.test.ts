@@ -180,6 +180,50 @@ describe("NonInteractiveApprovalHandler with a stack plan (the user's Portainer)
   });
 });
 
+describe("NonInteractiveApprovalHandler with a Cloudflare plan (OpsCrew's shared rules)", () => {
+  const CLOUDFLARE = "34".repeat(32);
+  const handler = (hashes: string[], assumeYes = false) =>
+    new NonInteractiveApprovalHandler({
+      approvePlanHashes: hashes,
+      ...(assumeYes ? { assumeYes: true } : {}),
+      approver: assumeYes ? "--yes flag" : "--approve flag",
+      clock,
+    });
+  const cloudflareApply = (overrides: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
+    kind: "cloudflare-apply",
+    title: "Apply the Cloudflare plan to OpsCrew's shared Cloudflare resources (2 changes)",
+    details: `Cloudflare plan hash: ${CLOUDFLARE}`,
+    planHash: CLOUDFLARE,
+    ...overrides,
+  });
+
+  it("grants a Cloudflare plan only when its hash is listed with --approve", async () => {
+    expect(
+      (await handler([HASH, CLOUDFLARE.toUpperCase()]).request(cloudflareApply())).approved,
+    ).toBe(true);
+    const unlisted = await handler([HASH]).request(cloudflareApply());
+    expect(unlisted.approved).toBe(false);
+    expect(unlisted.reason).toMatch(/does not match --approve/);
+    expect(
+      (await handler([CLOUDFLARE]).request(cloudflareApply({ planHash: undefined }))).approved,
+    ).toBe(false);
+  });
+
+  it("never grants a Cloudflare plan through --yes, with or without other hashes", async () => {
+    const yes = new NonInteractiveApprovalHandler({ assumeYes: true, approver: "--yes", clock });
+    expect((await yes.request(cloudflareApply())).approved).toBe(false);
+    expect((await handler([HASH], true).request(cloudflareApply())).approved).toBe(false);
+  });
+
+  it("refuses a Cloudflare plan that deletes OpsCrew's rule (typed app name) even when its hash is listed", async () => {
+    const decision = await handler([CLOUDFLARE]).request(
+      cloudflareApply({ allowDestroy: true, confirmPhrase: "shop" }),
+    );
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toMatch(/typed confirmation/);
+  });
+});
+
 describe("NonInteractiveApprovalHandler with --yes", () => {
   const handler = new NonInteractiveApprovalHandler({
     assumeYes: true,

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApplyOptions, HostPlan } from "@opscrew/connector-ssh-host";
 import { hostPlanHash } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
@@ -28,7 +29,7 @@ import {
   FakeEngine,
   FakeGitHub,
   FakeHostServer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   freshFacts,
   OWN_IPV4,
   OwnEngine,
@@ -59,6 +60,17 @@ const tunnelCreate = [
     action: "create" as const,
   },
 ];
+
+/** A fake zone whose account has the user's own Zero Trust organization and one-time PIN login. */
+function userZeroTrust(): FakeZone {
+  const zone = new FakeZone();
+  zone.organization = {
+    name: "someone-else.cloudflareaccess.com",
+    auth_domain: "someone-else.cloudflareaccess.com",
+  };
+  zone.providers.push({ id: "pin-existing", name: "One-time PIN", type: "onetimepin" });
+  return zone;
+}
 
 /**
  * Hetzner: Portainer on a subdomain is enabled (tunnel, Access, connector as the deploy user).
@@ -110,7 +122,7 @@ async function cloudOnSubdomain(o: { closeAfter?: number; never?: boolean } = {}
     cloudflare: ownCloudflare(),
     engine: async () => engine,
     sleep: async () => undefined,
-    zeroTrust: fakeZeroTrust("someone-else.cloudflareaccess.com", "pin-existing"),
+    sharedCloudflare: fakeSharedCloudflare(userZeroTrust()),
   };
   await portainerEnable(deps, { ...SUBDOMAIN, services });
   expect(connector).toBe(true);
@@ -405,7 +417,7 @@ async function ownOnSubdomain(o: { never?: boolean } = {}) {
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own: { host: adapter, homeDir: home },
-    zeroTrust: fakeZeroTrust(),
+    sharedCloudflare: fakeSharedCloudflare(),
   };
   await runProvision(deps, { services, hostKey: ED25519_FINGERPRINT });
   engine.changes = tunnelCreate;

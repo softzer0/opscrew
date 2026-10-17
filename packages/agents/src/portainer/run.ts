@@ -17,7 +17,7 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { setupCloudflare } from "../provision/credentials";
+import { type CloudflareSetup, setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import {
   applyOwnHostPlan,
@@ -29,15 +29,18 @@ import {
 } from "../provision/own";
 import { findSavedPlan, planAndApply, REMOVAL_PLAN_SUFFIX } from "../provision/plan-apply";
 import {
-  committedTfvars,
   deploymentFiles,
   deploymentRenderContext,
   type OwnRenderInput,
   readRequirements,
 } from "../provision/render";
+import {
+  applySharedCloudflare,
+  planSharedCloudflare,
+  sharedCloudflareClient,
+} from "../provision/shared-cloudflare";
 import { currentOutputs } from "../provision/steps";
 import type { ProvisionServices } from "../provision/types";
-import { cloudflareZeroTrust, createZeroTrustOrganization } from "../provision/zero-trust";
 import {
   approvalEntry,
   approveAndApplyHostPlan,
@@ -50,7 +53,6 @@ import {
   hasDeployment,
   hidesServerAddress,
   infrastructureOutputs,
-  oneTimePinIdentityProvider,
   PlanRefusedError,
   projectEngine,
   readServerAddresses,
@@ -115,6 +117,11 @@ export interface PortainerDisableOptions extends PortainerRunOptions {
 export interface PortainerResult {
   /** The infrastructure plan's hash (tunnel and Access), when the change needed one. */
   planHash?: string;
+  /**
+   * The Cloudflare plan's hash (OpsCrew's shared rules, the account's Zero Trust organization and
+   * one-time PIN login), when it has changes: applied, or with `--plan-only` the one to approve.
+   */
+  cloudflarePlanHash?: string;
   /** True when this run applied the infrastructure plan. */
   applied: boolean;
   /** The host plan's hash (`.opscrew/plans/host-<hash>.json`). */
@@ -162,10 +169,10 @@ async function savedInfrastructureHash(
 
 /**
  * Renders the deployment files for the changed plan (the runbook's Portainer section, and the
- * tunnel and Access modules for a subdomain) with the same inputs provision uses, plus the
- * decisions this change makes: whether this configuration creates the Zero Trust organization and
- * which one-time PIN login method Portainer's Access application uses. Writes the changed files
- * after a `repo-write` approval (not when a saved plan is applied: its run wrote them).
+ * tunnel and Access modules for a subdomain) with the same inputs provision uses, plus the id of
+ * the one-time PIN login Portainer's Access application uses (from the Cloudflare plan applied
+ * first). Writes the changed files after a `repo-write` approval (not when a saved plan is
+ * applied: its run wrote them).
  */
 async function renderChange(
   deps: PhaseDeps,
@@ -174,34 +181,22 @@ async function renderChange(
     ownRun?: OwnServerRun;
     deployPublicKey: string;
     write: boolean;
-    services: PortainerServices;
+    cloudflare: CloudflareSetup | undefined;
+    oneTimePinId: string | undefined;
   },
 ): Promise<{ plan: DeployPlan; files: ReturnType<typeof deploymentFiles>; written: string[] }> {
   const root = deps.paths.root;
   const git = await requireGitRepo(deps);
   const github = await githubCoordinates(git);
+  const { cloudflare } = input;
   let plan = change.after;
-  const cloudflare = await setupCloudflare(deps, plan, input.services);
   if (cloudflare) plan = { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } };
-  const previous = await committedTfvars(root, plan);
-  const own: OwnRenderInput = input.ownRun ? { sshPort: input.ownRun.sshPort } : {};
-  if (usesTunnel(plan) && cloudflare?.accountId !== undefined) {
-    const zeroTrust = input.services.zeroTrust ?? cloudflareZeroTrust(deps);
-    own.createZeroTrustOrganization = await createZeroTrustOrganization({
-      api: zeroTrust,
-      accountId: cloudflare.accountId,
-      zone: cloudflare.zoneName,
-      previous: previous?.create_zero_trust_organization === true,
-    });
-    if (portainerHostname(plan) !== undefined) {
-      const pin = await oneTimePinIdentityProvider({
-        previous,
-        accountId: cloudflare.accountId,
-        api: zeroTrust,
-      });
-      if (pin !== undefined) own.oneTimePinIdentityProviderId = pin;
-    }
-  }
+  const own: OwnRenderInput = {
+    ...(input.ownRun ? { sshPort: input.ownRun.sshPort } : {}),
+    ...(input.oneTimePinId !== undefined
+      ? { oneTimePinIdentityProviderId: input.oneTimePinId }
+      : {}),
+  };
   const server =
     plan.target.provider === "own" || hidesServerAddress(plan)
       ? undefined
@@ -250,8 +245,9 @@ function recorded(
 }
 
 /**
- * The shared enable/disable flow: render (own servers always, others when a subdomain is
- * involved) → infrastructure plan, policies, `iac-apply` approval and apply when a tunnel is
+ * The shared enable/disable flow: with a subdomain involved, the Cloudflare plan of OpsCrew's
+ * shared resources (`cloudflare-apply` by its hash) → render (own servers always, others when a
+ * subdomain is involved) → infrastructure plan, policies, `iac-apply` approval and apply when a tunnel is
  * involved → host plan, `host-apply` approval and apply → (disable with `deleteData`) the data
  * deletion's own approval with the typed app name → `opscrew/plan.yaml` updated. When the
  * infrastructure plan deletes the tunnel, both plans are approved first, then the host plan (which
@@ -301,6 +297,49 @@ async function runChange(
     if (change.command === "enable") cloudFacts = await cloudPreflight(deps, cloudRemote);
   }
 
+  // OpsCrew's shared Cloudflare change (only a subdomain involves Cloudflare) before anything
+  // changes: the account's Zero Trust organization and one-time PIN login for Portainer's Access,
+  // and the app's hostnames in OpsCrew's rules; shown, approved by its hash, applied and recorded.
+  const cloudflare = subdomainInvolved
+    ? await setupCloudflare(deps, change.after, services)
+    : undefined;
+  let oneTimePinId: string | undefined;
+  let cloudflareHash: { cloudflarePlanHash?: string } = {};
+  if (cloudflare !== undefined) {
+    const client = sharedCloudflareClient(deps, services);
+    const planned = await planSharedCloudflare(deps, {
+      client,
+      plan: change.after,
+      cloudflare,
+      command,
+    });
+    const shared = await applySharedCloudflare(deps, planned, {
+      client,
+      app: change.after.app.name,
+      planOnly,
+      command,
+      phase: "portainer",
+    });
+    approvals.push(...shared.approvals);
+    oneTimePinId = shared.oneTimePinId;
+    if (shared.hash !== undefined) cloudflareHash = { cloudflarePlanHash: shared.hash };
+    if (shared.infrastructureWaits) {
+      // `--approve <its hash>` without options then applies exactly this change.
+      await savePendingPortainer(deps.paths, {
+        command: change.command,
+        settings: change.after.portainer ?? null,
+        deleteData: change.deleteData,
+      });
+      return {
+        ...cloudflareHash,
+        applied: false,
+        hostApplied: false,
+        files: [],
+        status: await portainerStatusOf(deps, change.before),
+      };
+    }
+  }
+
   // Render: only a subdomain (added, changed or removed) changes the infrastructure code. The
   // runbook's Portainer section follows with the next `opscrew verify`, which writes the runbook.
   let plan = change.after;
@@ -311,7 +350,8 @@ async function runChange(
       ...(ownRun !== undefined ? { ownRun } : {}),
       deployPublicKey: deployKey.publicKeyOpenSsh,
       write: approveHash === undefined,
-      services,
+      cloudflare,
+      oneTimePinId,
     });
     plan = rendered.plan;
     files = rendered.files;
@@ -432,6 +472,7 @@ async function runChange(
       );
       return {
         ...(planHash !== undefined ? { planHash } : {}),
+        ...cloudflareHash,
         applied: false,
         ...(shownFirst !== undefined ? { hostPlanHash: shownFirst.hash } : {}),
         hostApplied: false,
@@ -503,6 +544,7 @@ async function runChange(
     await planned();
     return {
       ...(planHash !== undefined ? { planHash } : {}),
+      ...cloudflareHash,
       applied: false,
       ...(hostPlanHashValue !== undefined ? { hostPlanHash: hostPlanHashValue } : {}),
       hostApplied: false,
@@ -535,6 +577,7 @@ async function runChange(
   );
   return {
     ...(planHash !== undefined ? { planHash } : {}),
+    ...cloudflareHash,
     applied: iacApplied,
     ...(hostPlanHashValue !== undefined ? { hostPlanHash: hostPlanHashValue } : {}),
     hostApplied,

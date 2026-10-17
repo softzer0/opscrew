@@ -21,7 +21,7 @@ import {
   ED25519_FINGERPRINT,
   FakeGitHub,
   FakeHostServer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   freshFacts,
   OWN_IPV4,
   OwnEngine,
@@ -165,7 +165,7 @@ async function setup(o: Setup = {}) {
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own: { host, homeDir: home },
-    zeroTrust: fakeZeroTrust(),
+    sharedCloudflare: fakeSharedCloudflare(),
   };
   return { deps, engine, host, handler, services };
 }

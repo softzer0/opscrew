@@ -36,13 +36,7 @@ import {
   requirePortainerToken,
   setPortainerOrigin,
 } from "../provision/portainer";
-import {
-  committedTfvars,
-  deploymentFiles,
-  deploymentRenderContext,
-  ownRenderFromTfvars,
-  readRequirements,
-} from "../provision/render";
+import { deploymentFiles, deploymentRenderContext, readRequirements } from "../provision/render";
 import { generatedValuesFile } from "../provision/secrets";
 import {
   type AppEnvironment,
@@ -462,7 +456,6 @@ export async function portainerDrift(
 
   // 2. The generated files against what OpsCrew renders (no deploy key on this target).
   deps.reporter.step("Comparing the generated files with what OpsCrew renders from the plan");
-  const committed = ownRenderFromTfvars(await committedTfvars(deps.paths.root, current));
   const files = deploymentFiles(
     current,
     deploymentRenderContext(deps, {
@@ -471,9 +464,6 @@ export async function portainerDrift(
       github,
       deployPublicKey: "",
       cloudflare,
-      ...(root.webhook
-        ? { own: { createZeroTrustOrganization: committed.createZeroTrustOrganization ?? false } }
-        : {}),
     }),
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);

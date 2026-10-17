@@ -36,10 +36,9 @@ export async function readRequirements(deps: PhaseDeps): Promise<Requirements | 
 }
 
 /**
- * What the render of a server the user owns needs besides the plan: the SSH port (`sshPort`) and,
- * when the plan has
- * Cloudflare Access, whether this configuration creates the account's Zero Trust organization and
- * the id of an existing one-time PIN login method.
+ * What the render needs besides the plan: on a server the user owns the SSH port (`sshPort`) and,
+ * with Portainer on a subdomain (any target), the id of the account's one-time PIN login, which
+ * the Cloudflare plan sets up first.
  */
 export interface OwnRenderInput {
   /**
@@ -47,7 +46,6 @@ export interface OwnRenderInput {
    * own port in tunnel mode (inspection, `sshd -T`; the tunnel routes the SSH hostname there).
    */
   sshPort?: number;
-  createZeroTrustOrganization?: boolean;
   oneTimePinIdentityProviderId?: string;
 }
 
@@ -89,13 +87,8 @@ export function deploymentRenderContext(
       ? {
           cloudflare: {
             zoneId: cloudflare.zoneId,
-            manageConfigRule: cloudflare.manageConfigRule,
-            manageWafRules: cloudflare.manageWafRules,
             ...(cloudflare.ipRanges ? { ipRanges: cloudflare.ipRanges } : {}),
-            ...(cloudflare.accountId !== undefined ? { accountId: cloudflare.accountId } : {}),
-            ...(own?.createZeroTrustOrganization !== undefined
-              ? { createZeroTrustOrganization: own.createZeroTrustOrganization }
-              : {}),
+            accountId: cloudflare.accountId,
             ...(own?.oneTimePinIdentityProviderId !== undefined
               ? { oneTimePinIdentityProviderId: own.oneTimePinIdentityProviderId }
               : {}),
@@ -130,32 +123,30 @@ export function committedTfvars(
 }
 
 /**
- * The own-server render inputs the last run used, read from the committed `terraform.tfvars.json`
- * (`ssh_port`, `create_zero_trust_organization`, `one_time_pin_identity_provider_id`), for a
- * preview that must not connect to the server.
+ * The render inputs the last run used, read from the committed `terraform.tfvars.json`
+ * (`ssh_port`, `one_time_pin_identity_provider_id`), for a preview that must not connect to the
+ * server.
  */
 export function ownRenderFromTfvars(values: Record<string, unknown> | undefined): OwnRenderInput {
   if (values === undefined) return {};
   const port = values.ssh_port;
-  const create = values.create_zero_trust_organization;
   const pin = values.one_time_pin_identity_provider_id;
   return {
     ...(typeof port === "number" && Number.isInteger(port) ? { sshPort: port } : {}),
-    ...(typeof create === "boolean" ? { createZeroTrustOrganization: create } : {}),
     ...(typeof pin === "string" && pin !== "" ? { oneTimePinIdentityProviderId: pin } : {}),
   };
 }
 
 /**
- * The render inputs of a server the user owns for a preview that does not connect to it: those of
- * the committed `terraform.tfvars.json` ({@link ownRenderFromTfvars}), with the SSH port provision
- * used. In public mode that is the recorded login port (`.opscrew/server.json`, which differs from
- * sshd's when a router forwards it); the committed `ssh_port` (written only in tunnel mode) stands
- * in when no login is recorded on this computer.
+ * The render inputs for a preview that connects to no server: those of the committed
+ * `terraform.tfvars.json` ({@link ownRenderFromTfvars}) and, on a server the user owns, the SSH
+ * port provision used. In public mode that is the recorded login port (`.opscrew/server.json`,
+ * which differs from sshd's when a router forwards it); the committed `ssh_port` (written only in
+ * tunnel mode) stands in when no login is recorded on this computer.
  */
-async function ownPreviewRender(deps: PhaseDeps, plan: DeployPlan): Promise<OwnRenderInput> {
+async function previewRender(deps: PhaseDeps, plan: DeployPlan): Promise<OwnRenderInput> {
   const committed = ownRenderFromTfvars(await committedTfvars(deps.paths.root, plan));
-  if (tunnelMode(plan)) return committed;
+  if (plan.target.provider !== "own" || tunnelMode(plan)) return committed;
   const login = await readOwnServerRecord(deps.paths).catch(() => undefined);
   return login?.port !== undefined ? { ...committed, sshPort: login.port } : committed;
 }
@@ -181,9 +172,9 @@ export interface DeploymentPreview {
  * anything to it or recording a phase. Needs the Cloudflare token when the plan uses Cloudflare
  * (the zone id is part of the rendered code). Creates the project's deploy key in the user's
  * OpsCrew home when it does not exist yet, so the preview matches the later provision exactly.
- * A server the user owns is not contacted: its Zero Trust choices come from the committed
- * `terraform.tfvars.json` of the last run, and its SSH port is the one provision used (the
- * recorded login port in public mode, sshd's committed port in tunnel mode).
+ * No server is contacted and no Cloudflare plan is made: the one-time PIN login's id comes from the
+ * committed `terraform.tfvars.json` of the last run, and a server the user owns gets the SSH port
+ * provision used (the recorded login port in public mode, sshd's committed port in tunnel mode).
  */
 export async function previewDeploymentFiles(
   deps: PhaseDeps,
@@ -210,7 +201,7 @@ export async function previewDeploymentFiles(
         (record) => record.deployment,
         () => undefined,
       );
-  const own = plan.target.provider === "own" ? await ownPreviewRender(deps, plan) : undefined;
+  const own = await previewRender(deps, plan);
   const files = deploymentFiles(
     plan,
     deploymentRenderContext(deps, {
@@ -220,7 +211,7 @@ export async function previewDeploymentFiles(
       deployPublicKey,
       cloudflare,
       server,
-      ...(own !== undefined ? { own } : {}),
+      own,
     }),
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);

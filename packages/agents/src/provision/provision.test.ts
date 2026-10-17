@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -16,8 +17,8 @@ import {
   type FakeEngineScenario,
   FakeGitHub,
   fakeCloudflare,
+  fakeSharedCloudflare,
   HOST_KEY,
-  heldRulesetsOutput,
   movingPlan,
   opscrewRecord,
   planJsonFor,
@@ -39,6 +40,8 @@ const STRIPE = fakeSecret("stripe-live-key");
 /** The pull request the first run opened, while it is still open. */
 const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
 const HCLOUD = fakeSecret("hcloud-token");
+const WAF = "http_request_firewall_custom";
+const CONFIG = "http_config_settings";
 
 interface SetupOptions {
   plan?: ReturnType<typeof testPlan>;
@@ -55,6 +58,8 @@ async function setup(options: SetupOptions = {}) {
   const engine = options.engine ?? new FakeEngine();
   const github = new FakeGitHub();
   const handler = new ScriptedApprovalHandler(options.answer ?? (() => true));
+  // OpsCrew's shared rules: a zone without any yet, unless the test brings its own.
+  const zone = new FakeZone();
   const env: Record<string, string | undefined> = {
     ...process.env,
     OPSCREW_HOME: join(project.root, ".home-opscrew"),
@@ -77,9 +82,10 @@ async function setup(options: SetupOptions = {}) {
     tcpConnect: async () => true,
     remote: readyRemote,
     sleep: async () => undefined,
+    sharedCloudflare: fakeSharedCloudflare(zone),
     ...options.services,
   };
-  return { ...project, deps, engine, github, handler, services };
+  return { ...project, deps, engine, github, handler, services, zone };
 }
 
 /** Every user-visible or persisted text a run produced. */
@@ -708,19 +714,36 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     });
   });
 
-  it("does not manage Cloudflare rule phases the zone already uses", async () => {
+  it("adds OpsCrew's rules after the user's own rules in the zone, which stay byte-identical", async () => {
+    const zone = new FakeZone();
+    zone.seedRule(WAF, {
+      description: "Block one country",
+      expression: '(ip.src.country eq "XX")',
+      action: "block",
+    });
+    zone.seedRule(CONFIG, {
+      description: "My config rule",
+      expression: '(http.request.uri.path contains "/img/")',
+      action: "set_config",
+    });
+    const before = [zone.userRulesText(WAF), zone.userRulesText(CONFIG)];
     const { deps, services, root } = await setup({
       plan: testPlan({ domain: "shop.example.com" }),
       engine: new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
-      services: { cloudflare: fakeCloudflare({ configRules: true, wafRules: true }) },
+      services: { cloudflare: fakeCloudflare(), sharedCloudflare: fakeSharedCloudflare(zone) },
     });
     await runProvision(deps, { services });
+    expect([zone.userRulesText(WAF), zone.userRulesText(CONFIG)]).toEqual(before);
+    // OpsCrew's rule goes after them in each phase; nothing is skipped.
+    expect(zone.entrypoints.get(WAF)?.rules.map((rule) => rule.ref)).toHaveLength(2);
+    expect(zone.entrypoints.get(WAF)?.rules.at(-1)?.ref).toBe("opscrew-block-probes");
+    expect(zone.entrypoints.get(CONFIG)?.rules.at(-1)?.ref).toBe("opscrew-strict-tls");
     const tfvars = JSON.parse(
       await readFile(join(root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
     );
-    expect(tfvars).toMatchObject({ manage_config_rule: false, manage_waf_rules: false });
-    expect(deps.reporter.text()).toContain("already has its own configuration rules");
-    expect(deps.reporter.text()).toContain("already has its own WAF custom rules");
+    expect(tfvars).not.toHaveProperty("manage_config_rule");
+    expect(tfvars).not.toHaveProperty("manage_waf_rules");
+    expect(deps.reporter.text()).not.toContain("already has its own");
     const plan = await readArtifact("plan", deps.paths.files.plan);
     expect(plan.dns.zone).toBe("example.com");
   });
@@ -767,84 +790,117 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(deps.reporter.text()).toContain(`The server at ${SERVER_IPV4} is ready.`);
   });
 
-  it("keeps managing its own Cloudflare rules and records when run again", async () => {
+  it("records this app's hostnames, and changes and asks nothing in Cloudflare when run again", async () => {
     const cloudflare = fakeCloudflare();
-    const { deps, services, root, handler, github } = await setup({
+    const { deps, services, root, handler, github, zone } = await setup({
       plan: testPlan({ domain: "shop.example.com" }),
       engine: new FakeEngine({
         planJson: planJsonFor({ proxied: true }),
-        // The state's outputs after the first apply: the ids of the rulesets it created.
         outputs: {
           server_ipv4: SERVER_IPV4,
           server_ipv6: SERVER_IPV6,
           server_id: "4711",
           server_name: "shop",
           url: "https://shop.example.com",
-          cloudflare_rulesets: heldRulesetsOutput(),
         },
       }),
       services: { cloudflare },
     });
     await runProvision(deps, { services });
+    expect(handler.requests.map((r) => r.kind).slice(0, 2)).toEqual([
+      "cloudflare-apply",
+      "repo-write",
+    ]);
+    expect(JSON.parse(await readFile(deps.paths.files.cloudflareRecord, "utf8"))).toEqual({
+      zoneId: FAKE_ZONE_ID,
+      hostnames: {
+        "opscrew-block-probes": ["shop.example.com"],
+        "opscrew-strict-tls": ["shop.example.com"],
+      },
+      createdEntrypoints: [WAF, CONFIG],
+    });
     await writeFakeState(deps.paths);
     const tfvarsFile = join(root, "opscrew/infra/prod/terraform.tfvars.json");
     const first = await readFile(tfvarsFile, "utf8");
-    expect(JSON.parse(first)).toMatchObject({ manage_config_rule: true, manage_waf_rules: true });
 
     // What the first apply created in the zone
-    cloudflare.state.config = "opscrew";
-    cloudflare.state.waf = "opscrew";
     cloudflare.state.records.push(
       opscrewRecord("shop.example.com", "A", SERVER_IPV4),
       opscrewRecord("shop.example.com", "AAAA", SERVER_IPV6),
     );
     handler.requests.length = 0;
+    const writes = zone.writes().length;
     // The first run's pull request is still open, so the second run adds to it.
     github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
     await runProvision(deps, { services });
 
     expect(await readFile(tfvarsFile, "utf8")).toBe(first);
     expect(handler.requests.map((r) => r.kind)).not.toContain("repo-write");
-    expect(deps.reporter.text()).not.toContain("already has its own");
+    expect(handler.requests.map((r) => r.kind)).not.toContain("cloudflare-apply");
+    expect(zone.writes()).toHaveLength(writes);
+    expect(deps.reporter.text()).toContain(
+      "OpsCrew's shared Cloudflare resources are already set up for this app; nothing in Cloudflare changes.",
+    );
+  });
+
+  it("adds this app's hostnames to the shared rules another OpsCrew app holds in the zone", async () => {
+    const zone = new FakeZone();
+    const services = { cloudflare: fakeCloudflare(), sharedCloudflare: fakeSharedCloudflare(zone) };
+    const engine = () => new FakeEngine({ planJson: planJsonFor({ proxied: true }) });
+    const other = await setup({
+      plan: testPlan({ domain: "api.example.com" }),
+      engine: engine(),
+      services,
+    });
+    await runProvision(other.deps, { services: other.services });
+    const { deps, handler } = await setup({
+      plan: testPlan({ domain: "example.com", www: true }),
+      engine: engine(),
+      services,
+    });
+    await runProvision(deps, { services: { ...other.services, ...services } });
+
+    const all = '(http.host in {"api.example.com" "example.com" "www.example.com"})';
+    expect(String(zone.opscrewRule(WAF)?.expression).startsWith(`${all} and (`)).toBe(true);
+    expect(zone.opscrewRule(CONFIG)?.expression).toBe(all);
+    // One OpsCrew rule per phase, whatever the number of apps in the zone.
+    expect(zone.entrypoints.get(WAF)?.rules).toHaveLength(1);
+    expect(zone.entrypoints.get(CONFIG)?.rules).toHaveLength(1);
+    // The plan names this app's hostnames and only counts the other app's.
+    const request = handler.requests.find((r) => r.kind === "cloudflare-apply");
+    expect(request?.title).toBe(
+      "Apply the Cloudflare plan to OpsCrew's shared Cloudflare resources (2 changes)",
+    );
+    expect(request?.details).toContain(
+      "Block probes for secrets and admin panels: add example.com and www.example.com",
+    );
+    expect(request?.details).toContain(
+      "OpsCrew's rule keeps the 1 hostname of other OpsCrew apps there.",
+    );
+    expect(request?.details).not.toContain("api.example.com");
     expect(deps.reporter.text()).not.toContain("Another OpsCrew deployment");
   });
 
-  it("leaves OpsCrew's rulesets of another deployment alone in a new project and says how to free them", async () => {
-    const { deps, services, root } = await setup({
+  it("adds OpsCrew's rule to an empty ruleset of the zone instead of skipping it", async () => {
+    const zone = new FakeZone();
+    for (const phase of [WAF, CONFIG]) {
+      zone.seedRule(phase, { description: "gone", expression: "true", action: "log" });
+      zone.entrypoints.get(phase)?.rules.splice(0);
+    }
+    const ids = [WAF, CONFIG].map((phase) => zone.entrypoints.get(phase)?.id);
+    const { deps, services } = await setup({
       plan: testPlan({ domain: "shop.example.com" }),
       engine: new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
-      services: { cloudflare: fakeCloudflare({ configRules: "opscrew", wafRules: "opscrew" }) },
+      services: { cloudflare: fakeCloudflare(), sharedCloudflare: fakeSharedCloudflare(zone) },
     });
     await runProvision(deps, { services });
-    const tfvars = JSON.parse(
-      await readFile(join(root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
-    );
-    expect(tfvars).toMatchObject({ manage_config_rule: false, manage_waf_rules: false });
-    const text = deps.reporter.text();
-    expect(text).toContain(
-      "Another OpsCrew deployment (or one whose state is gone) holds the example.com zone's configuration rules",
-    );
-    expect(text).toContain("DELETE /zones/zone-123/rulesets/rs-http_request_firewall_custom");
-  });
-
-  it("leaves an empty rule phase it did not create alone and explains what to do", async () => {
-    const { deps, services, root } = await setup({
-      plan: testPlan({ domain: "shop.example.com" }),
-      engine: new FakeEngine({ planJson: planJsonFor({ proxied: true }) }),
-      services: {
-        cloudflare: fakeCloudflare({ configRules: "user-empty", wafRules: "user-empty" }),
-      },
+    // The user's rulesets stay (nothing replaced them); OpsCrew's rule is added to each.
+    expect([WAF, CONFIG].map((phase) => zone.entrypoints.get(phase)?.id)).toEqual(ids);
+    expect(zone.writes().map((call) => call.method)).toEqual(["POST", "POST"]);
+    expect(JSON.parse(await readFile(deps.paths.files.cloudflareRecord, "utf8"))).toMatchObject({
+      createdEntrypoints: [],
     });
-    await runProvision(deps, { services });
-    const tfvars = JSON.parse(
-      await readFile(join(root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
-    );
-    expect(tfvars).toMatchObject({ manage_config_rule: false, manage_waf_rules: false });
-    const text = deps.reporter.text();
-    expect(text).toContain("empty configuration ruleset");
-    expect(text).toContain('set SSL/TLS to "Full (strict)"');
-    expect(text).toContain("empty WAF custom ruleset");
-    expect(text).toContain("delete");
+    expect(deps.reporter.text()).not.toContain("empty");
   });
 
   it("stops before creating anything when the hostname has DNS records OpsCrew did not create", async () => {

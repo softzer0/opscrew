@@ -1,5 +1,6 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
   PortainerCertificateError,
   type PortainerClientDeps,
@@ -39,7 +40,7 @@ import {
   type FakePortainerOptions,
   fakeCertificate,
   fakePortainer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   MANAGED_TUNNEL,
   ownCloudflare,
   PORTAINER_HOST,
@@ -250,11 +251,11 @@ async function setup(options: SetupOptions = {}) {
       portainer_tunnel_token: WEBHOOK_TUNNEL_TOKEN,
       deploy_service_token_client_id: ACCESS_ID,
       deploy_service_token_client_secret: ACCESS_SECRET,
-      cloudflare_rulesets: { http_config_settings: null, http_request_firewall_custom: null },
     },
   });
   let uuid = 0;
   const clients: { endpoint: PortainerEndpoint; deps: PortainerClientDeps }[] = [];
+  const zone = new FakeZone();
   const services: ProvisionServices = {
     engine: async () => engine,
     github,
@@ -269,12 +270,13 @@ async function setup(options: SetupOptions = {}) {
       randomUUID: () => UUIDS[uuid++ % UUIDS.length] as string,
       wait: { now: () => 0, sleep: async () => undefined },
     },
-    zeroTrust: fakeZeroTrust(),
+    sharedCloudflare: fakeSharedCloudflare(zone),
   };
   const run = (extra: ProvisionOptions = {}) => runProvision(deps, { services, ...extra });
   return {
     ...project,
     deps,
+    zone,
     fake,
     github,
     handler,
@@ -331,6 +333,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     const result = await s.run();
 
     expect(kinds(s)).toEqual([
+      "cloudflare-apply",
       "repo-write",
       "iac-apply",
       "git-push",
@@ -339,6 +342,12 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
       "git-push",
       "pull-request",
     ]);
+    // The app is served through the tunnel: its hostname is in OpsCrew's probe block only.
+    expect(s.zone.opscrewRule("http_request_firewall_custom")?.expression).toContain(
+      '(http.host in {"shop.example.com"})',
+    );
+    expect(s.zone.opscrewRule("http_config_settings")).toBeUndefined();
+    expect(result.cloudflarePlanHash).toBe(s.handler.requests[0]?.planHash);
     const stackApproval = s.handler.requests.find((r) => r.kind === "stack-apply");
     expect(stackApproval?.planHash).toBe(result.stackPlanHash);
     expect(stackApproval?.planHash).toMatch(/^[0-9a-f]{64}$/);
@@ -428,11 +437,22 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
       lastPlanHash: result.planHash,
       lastCompletedPhase: "provision",
     });
-    expect(plan.approvals.map((approval) => approval.kind)).toEqual(["iac-apply", "stack-apply"]);
+    expect(plan.approvals.map((approval) => approval.kind)).toEqual([
+      "cloudflare-apply",
+      "iac-apply",
+      "stack-apply",
+    ]);
     expect(s.github.pulls[0]?.body).toContain("runs as stacks in your Portainer");
     expect(s.deps.reporter.text()).not.toContain(ROUTE_CHANGE_NOTE);
     expect(s.deps.audit.entries).toContainEqual(
       expect.objectContaining({ kind: "provider-call", action: "stack change app-stack" }),
+    );
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        kind: "provider-call",
+        action: "cloudflare change create-entrypoint http_request_firewall_custom",
+        target: result.cloudflarePlanHash,
+      }),
     );
     expectNoSecrets(await everythingPublished(s), webhookId);
     expectNoSecrets(

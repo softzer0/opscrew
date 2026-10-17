@@ -1,4 +1,5 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
+import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import {
   PORTAINER_PORT,
@@ -116,8 +117,12 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
   if (portainer !== undefined) {
     const pin = ctx.cloudflare?.oneTimePinIdentityProviderId;
     if (pin === undefined) {
-      throw new Error(
-        "The account's one-time PIN login method id is required to render Portainer's Cloudflare Access.",
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        "Portainer's Cloudflare Access needs the account's one-time PIN login method, and OpsCrew does not know its id yet.",
+        {
+          hint: "Run `opscrew provision` again: it sets up the Cloudflare Zero Trust login (the account's organization and its one-time PIN login) before the infrastructure.",
+        },
       );
     }
     variables.push(

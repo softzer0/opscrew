@@ -18,7 +18,7 @@ import {
   type FakeEngine,
   type FakeGitHub,
   type FakeHostServer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   OWN_IPV4,
   ownCloudflare,
 } from "@opscrew/agents/testing";
@@ -92,7 +92,7 @@ export function ownProvisionServices(
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own,
-    zeroTrust: fakeZeroTrust(),
+    sharedCloudflare: fakeSharedCloudflare(),
   };
 }
 

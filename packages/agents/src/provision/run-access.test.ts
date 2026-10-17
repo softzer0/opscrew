@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { zeroTrustAuthDomain } from "@opscrew/iac-templates";
@@ -12,7 +13,7 @@ import {
   createTestPhaseDeps,
   FakeEngine,
   FakeGitHub,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   ownCloudflare,
   projectRunner,
   readyRemote,
@@ -23,6 +24,8 @@ import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 
 const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
+const ORGANIZATIONS = `/accounts/${ACCOUNT_ID}/access/organizations`;
+const PROVIDERS = `/accounts/${ACCOUNT_ID}/access/identity_providers`;
 
 /** A Hetzner plan with Portainer on a subdomain behind Cloudflare Access. */
 function hetznerWithPortainer() {
@@ -40,7 +43,7 @@ function hetznerWithPortainer() {
   });
 }
 
-async function setup(o: { organization?: string; pin?: string }) {
+async function setup(zone: FakeZone) {
   const project = await createProject(hetznerWithPortainer());
   await writeFile(
     join(project.root, "production.env"),
@@ -59,70 +62,105 @@ async function setup(o: { organization?: string; pin?: string }) {
     runner: projectRunner(),
     approvalHandler: handler,
   });
-  const zeroTrust = { authDomain: o.organization, pin: o.pin };
-  const lookups: string[] = [];
+  // The engine records whether the account's Zero Trust pieces existed when it applied.
+  const engine = new FakeEngine();
+  const atApply: { organization: boolean; pins: number }[] = [];
+  const apply = engine.apply.bind(engine);
+  engine.apply = async (...args) => {
+    atApply.push({ organization: zone.organization !== undefined, pins: zone.providers.length });
+    return apply(...args);
+  };
   const services: PortainerServices = {
-    engine: async () => new FakeEngine(),
+    engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
     github,
     cloudflare: ownCloudflare(),
     tcpConnect: async () => true,
     remote: readyRemote,
     sleep: async () => undefined,
-    zeroTrust: {
-      accessOrganization: async (accountId) =>
-        fakeZeroTrust(zeroTrust.authDomain).accessOrganization(accountId),
-      accessIdentityProviders: async (accountId) => {
-        lookups.push(accountId);
-        return fakeZeroTrust(undefined, zeroTrust.pin).accessIdentityProviders(accountId);
-      },
-    },
+    sharedCloudflare: fakeSharedCloudflare(zone),
   };
   const tfvars = async () =>
     JSON.parse(
       await readFile(join(project.root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
     ) as Record<string, unknown>;
-  return { ...project, deps, github, handler, services, zeroTrust, lookups, tfvars };
+  return { ...project, deps, github, handler, services, tfvars, atApply };
 }
+
+const accountWrites = (zone: FakeZone) =>
+  zone.writes().filter((call) => call.path.startsWith(`/accounts/${ACCOUNT_ID}/`));
 
 describe.skipIf(!findExecutable("git"))(
   "runProvision: Cloudflare Access settings on Hetzner with a Portainer subdomain",
   () => {
-    it("creates the Zero Trust organization and keeps creating it on a re-run, reusing the account's PIN method", async () => {
-      const s = await setup({ pin: "pin-existing" });
+    it("creates the Zero Trust organization and the one-time PIN login before the infrastructure, and a re-run changes nothing", async () => {
+      const zone = new FakeZone();
+      const s = await setup(zone);
       await runProvision(s.deps, { services: s.services });
-      expect(await s.tfvars()).toMatchObject({
+
+      const kinds = s.handler.requests.map((r) => r.kind);
+      expect(kinds.indexOf("cloudflare-apply")).toBeLessThan(kinds.indexOf("iac-apply"));
+      expect(s.atApply).toEqual([{ organization: true, pins: 1 }]);
+      const authDomain = zeroTrustAuthDomain("example.com");
+      expect(zone.organization).toEqual({ name: authDomain, auth_domain: authDomain });
+      expect(accountWrites(zone).map((call) => `${call.method} ${call.path}`)).toEqual([
+        `POST ${ORGANIZATIONS}`,
+        `POST ${PROVIDERS}`,
+      ]);
+      const pin = zone.providers.find((provider) => provider.type === "onetimepin");
+      const first = await s.tfvars();
+      expect(first).toMatchObject({
         cloudflare_account_id: ACCOUNT_ID,
-        create_zero_trust_organization: true,
-        zero_trust_auth_domain: zeroTrustAuthDomain("example.com"),
-        one_time_pin_identity_provider_id: "pin-existing",
+        one_time_pin_identity_provider_id: pin?.id,
         portainer_hostname: "portainer.example.com",
       });
-      expect(s.lookups).toEqual([ACCOUNT_ID]);
+      expect(first).not.toHaveProperty("create_zero_trust_organization");
+      expect(first).not.toHaveProperty("zero_trust_auth_domain");
+      const request = s.handler.requests.find((r) => r.kind === "cloudflare-apply");
+      expect(request?.details).toContain(
+        `~ Create the account's Zero Trust organization (team domain ${authDomain})`,
+      );
+      expect(request?.details).toContain(
+        "~ Add the one-time PIN login to the account's Zero Trust organization",
+      );
 
-      // The apply created OpsCrew's organization; the re-run must neither delete it nor look again.
-      s.zeroTrust.authDomain = zeroTrustAuthDomain("example.com");
+      // Nothing changed: the re-run asks nothing and writes nothing in Cloudflare.
       s.github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
       s.handler.requests.length = 0;
-      const first = await s.tfvars();
+      const writes = zone.writes().length;
       await runProvision(s.deps, { services: s.services });
       expect(await s.tfvars()).toEqual(first);
-      expect(s.lookups).toEqual([ACCOUNT_ID]);
-      expect(s.handler.requests.map((r) => r.kind)).not.toContain("repo-write");
+      expect(zone.writes()).toHaveLength(writes);
+      const again = s.handler.requests.map((r) => r.kind);
+      expect(again).not.toContain("cloudflare-apply");
+      expect(again).not.toContain("repo-write");
     });
 
-    it("leaves the PIN method unset on a re-run when OpsCrew created it (it is in the state)", async () => {
-      const s = await setup({ organization: "team.cloudflareaccess.com" });
+    it("reuses the organization and one-time PIN login the user set up, never changing or deleting them", async () => {
+      const zone = new FakeZone();
+      zone.organization = { name: "Acme", auth_domain: "acme.cloudflareaccess.com" };
+      zone.providers.push({ id: "pin-existing", name: "One-time PIN", type: "onetimepin" });
+      const s = await setup(zone);
       await runProvision(s.deps, { services: s.services });
-      const first = await s.tfvars();
-      expect(first.create_zero_trust_organization).toBe(false);
-      expect(first).not.toHaveProperty("one_time_pin_identity_provider_id");
 
-      // Cloudflare now lists OpsCrew's own PIN method; naming it would make the plan destroy it.
-      s.zeroTrust.pin = "pin-created-by-opscrew";
+      expect(zone.organization).toEqual({ name: "Acme", auth_domain: "acme.cloudflareaccess.com" });
+      expect(zone.providers).toEqual([
+        { id: "pin-existing", name: "One-time PIN", type: "onetimepin" },
+      ]);
+      expect(accountWrites(zone)).toEqual([]);
+      const first = await s.tfvars();
+      expect(first.one_time_pin_identity_provider_id).toBe("pin-existing");
+      const request = s.handler.requests.find((r) => r.kind === "cloudflare-apply");
+      expect(request?.details).toContain(
+        "✓ The account's Zero Trust organization (team domain acme.cloudflareaccess.com) (already in place)",
+      );
+      expect(request?.details).toContain("✓ The account's one-time PIN login (already in place)");
+
       s.github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
       await runProvision(s.deps, { services: s.services });
       expect(await s.tfvars()).toEqual(first);
+      expect(accountWrites(zone)).toEqual([]);
+      expect(zone.calls.some((call) => call.method === "DELETE")).toBe(false);
     });
   },
 );

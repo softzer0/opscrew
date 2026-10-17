@@ -511,7 +511,11 @@ const CONFIRM_COMMANDS = ["opscrew provision", "opscrew retarget"];
  * needs `--confirm <app>`; a command without that flag (`opscrew dns`, `opscrew portainer …`)
  * points to a terminal instead, and `opscrew dns` also to `opscrew provision` for scripts.
  */
-function approveLaterHint(command: string, planHash: string, confirmPhrase?: string): string {
+export function approveLaterHint(
+  command: string,
+  planHash: string,
+  confirmPhrase?: string,
+): string {
   if (confirmPhrase === undefined) {
     return `To apply it later without prompts, run: ${command} --approve ${planHash}`;
   }

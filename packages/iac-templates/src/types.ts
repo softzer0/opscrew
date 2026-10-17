@@ -28,10 +28,6 @@ export interface RenderContext {
   acmeEmail?: string;
   cloudflare?: {
     zoneId: string;
-    /** Unused: the zone's rules left the IaC configuration. T1104 removes it with its callers. */
-    manageConfigRule?: boolean;
-    /** Unused: the zone's rules left the IaC configuration. T1104 removes it with its callers. */
-    manageWafRules?: boolean;
     /** Cloudflare edge ranges used to restrict ports 80/443 when proxied. */
     ipRanges?: { ipv4: string[]; ipv6: string[] };
     /**

@@ -1,7 +1,6 @@
 import {
   type CloudflareDnsRecord,
   cloudflareConnector,
-  type EntrypointRulesetStatus,
   OPSCREW_MANAGED_COMMENT,
 } from "@opscrew/connector-cloudflare";
 import { type GitClient, githubConnector } from "@opscrew/connector-github";
@@ -14,15 +13,12 @@ import {
   usesTunnel,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { cloudflareTokenHint } from "../domain/common";
 import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
 import {
   githubClientFromToken,
   githubCoordinates,
-  hasState,
-  infrastructureOutputs,
   readServerAddresses,
   serverAddress,
 } from "../shared";
@@ -39,14 +35,12 @@ import { tunnelTokenPermissions } from "./zero-trust";
 export interface CloudflareSetup {
   zoneId: string;
   zoneName: string;
-  manageConfigRule: boolean;
-  manageWafRules: boolean;
   ipRanges?: { ipv4: string[]; ipv6: string[] };
   /**
-   * The account that holds the zone. Always known when the plan has a Cloudflare Tunnel (an own
-   * server in tunnel mode, or a Portainer subdomain): tunnels and Access belong to the account.
+   * The account that holds the zone: tunnels, Access and OpsCrew's shared Zero Trust pieces
+   * belong to it.
    */
-  accountId?: string;
+  accountId: string;
   /**
    * A/AAAA/CNAME records at the app's hostnames that OpsCrew did not create; only collected when
    * `setupCloudflare` runs with `foreignRecords: "report"` (otherwise they stop the run).
@@ -210,106 +204,6 @@ async function foreignDnsRecords(
   return foreign;
 }
 
-/** The zone entrypoint phases OpsCrew's DNS module manages. */
-type RulePhase = "http_config_settings" | "http_request_firewall_custom";
-
-/** The names OpsCrew's modules give their entrypoint rulesets, by phase. */
-const OPSCREW_RULESET_NAME: Record<RulePhase, string> = {
-  http_config_settings: "OpsCrew configuration rules",
-  http_request_firewall_custom: "OpsCrew custom rules",
-};
-
-/**
- * The root-module output `cloudflare_rulesets` (`module.dns.ruleset_ids`, or the tunnel's WAF
- * ruleset in tunnel mode): an id or null per phase.
- */
-const RulesetIdsSchema = z.looseObject({
-  http_config_settings: z.string().nullable().optional(),
-  http_request_firewall_custom: z.string().nullable().optional(),
-});
-
-/**
- * Which of the zone's OpsCrew-named entrypoint rulesets this project's state holds:
- * - `fresh`: no state file, an empty one, a state without outputs (nothing deployed), or outputs of
- *   a root without a `cloudflare_rulesets` output (no Cloudflare domain): none;
- * - `ids`: the ids by phase.
- */
-type HeldRulesets =
-  | { kind: "fresh" }
-  | { kind: "ids"; ids: Partial<Record<RulePhase, string | null>> };
-
-/**
- * Reads which entrypoint rulesets this project's state holds, from the root-module outputs (read
- * with the engine, decrypted with the project's passphrase; no provider credentials). Stops when
- * a state exists but its outputs cannot be read: skipping a phase then could plan to delete the
- * project's own ruleset.
- */
-async function heldRulesets(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  services: Pick<ProvisionServices, "engine">,
-  zone: string,
-): Promise<HeldRulesets> {
-  if (!(await hasState(deps.paths))) return { kind: "fresh" };
-  const outputs = await infrastructureOutputs(
-    deps,
-    plan,
-    services.engine !== undefined ? { engine: services.engine } : {},
-  );
-  const unreadable = () =>
-    new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The ${zone} zone has rules named by OpsCrew, and OpsCrew could not read this project's infrastructure state (.opscrew/tfstate) to tell whether this deployment created them. Nothing was changed.`,
-      {
-        hint: "Check that OpenTofu or Terraform runs on this computer and that .opscrew/tfstate and the state passphrase OpsCrew keeps for this project are this project's (copy them back from the computer that deployed it if they are not), then run OpsCrew again.",
-      },
-    );
-  if (outputs === undefined) throw unreadable();
-  // Only a root with a Cloudflare domain has the output, and only such a root holds a ruleset.
-  if (!("cloudflare_rulesets" in outputs)) return { kind: "fresh" };
-  const ids = RulesetIdsSchema.safeParse(outputs.cloudflare_rulesets);
-  if (!ids.success) throw unreadable();
-  return { kind: "ids", ids: ids.data };
-}
-
-/**
- * Whether OpsCrew may manage a rule phase: only when the zone has no entrypoint ruleset for it or
- * this project's state holds it (by id; OpsCrew's name alone is not enough). An OpsCrew-named
- * ruleset the project does not hold belongs to another OpsCrew deployment (or one whose state is
- * gone) and is left alone like the user's own. Warns, in plain English, whenever it skips.
- */
-async function mayManagePhase(
-  deps: PhaseDeps,
-  phase: RulePhase,
-  status: EntrypointRulesetStatus,
-  text: { theirs: string; empty: string; fallback: string; skipped: string; domain: string },
-  zoneId: string,
-  held: () => Promise<HeldRulesets>,
-): Promise<boolean> {
-  if (!status.exists) return true;
-  if (status.ownedByOpsCrew) {
-    const state = await held();
-    if (state.kind === "ids" && status.id !== undefined && state.ids[phase] === status.id) {
-      return true;
-    }
-    const name = OPSCREW_RULESET_NAME[phase];
-    const api = status.id ? ` (or the API: DELETE /zones/${zoneId}/rulesets/${status.id})` : "";
-    deps.reporter.warn(
-      `Another OpsCrew deployment (or one whose state is gone) holds ${text.skipped} If no other OpsCrew app uses this zone, delete the ruleset "${name}" in the Cloudflare dashboard${api} and run OpsCrew again: it then adds these rules for ${text.domain}.`,
-    );
-    return false;
-  }
-  if (status.ruleCount > 0) {
-    deps.reporter.warn(text.theirs);
-    return false;
-  }
-  const api = status.id ? ` (or the API: DELETE /zones/${zoneId}/rulesets/${status.id})` : "";
-  deps.reporter.warn(
-    `${text.empty} Cloudflare allows only one per zone, and OpsCrew did not create this one. To let OpsCrew manage it, delete the empty ruleset in the Cloudflare dashboard${api} and run OpsCrew again; ${text.fallback}`,
-  );
-  return false;
-}
-
 /**
  * The tunnel's other hostnames in the zone: the SSH hostname in tunnel mode (`ssh-<app>.<zone>`)
  * and Portainer's subdomain when opted in. Their records must not exist unless OpsCrew made them.
@@ -356,12 +250,13 @@ export function portainerCloudflare(
 }
 
 /**
- * The account that holds the zone, which owns the tunnel and Access: the one Cloudflare names
- * with the zone, else the token's only account.
+ * The account that holds the zone, which owns the tunnel, Access and OpsCrew's shared Zero Trust
+ * pieces: the one Cloudflare names with the zone, else the token's only account.
  */
-async function tunnelAccount(
+async function zoneAccount(
   api: CloudflareApi,
   zone: { name: string; accountId?: string },
+  tunnels: boolean,
 ): Promise<string> {
   if (zone.accountId !== undefined && zone.accountId !== "") return zone.accountId;
   const accounts = await api.listAccounts();
@@ -369,7 +264,7 @@ async function tunnelAccount(
   if (only !== undefined) return only.id;
   throw new OpsCrewError(
     "CREDENTIALS_INVALID",
-    `Cloudflare did not say which account holds ${zone.name}, and the token ${accounts.length === 0 ? "sees no account" : "sees several accounts"}, so OpsCrew cannot tell where to create the Cloudflare Tunnel.`,
+    `Cloudflare did not say which account holds ${zone.name}, and the token ${accounts.length === 0 ? "sees no account" : "sees several accounts"}, so OpsCrew cannot tell ${tunnels ? "where to create the Cloudflare Tunnel" : "which account OpsCrew's shared Cloudflare rules belong to"}.`,
     {
       hint: `Create a token for the account that holds ${zone.name} with ${tunnelTokenPermissions()}, set CLOUDFLARE_API_TOKEN to it, then run the command again.`,
     },
@@ -379,15 +274,13 @@ async function tunnelAccount(
 /**
  * Cloudflare checks for a plan with a Cloudflare domain: token, zone, existing DNS records at the
  * app's hostnames (and the tunnel's SSH and Portainer hostnames; stops when records OpsCrew did
- * not create are there), which rule phases OpsCrew may manage (never a phase the user or another
- * OpsCrew deployment holds; always the rulesets this project's state holds, by id), the edge IP
- * ranges when proxied, and the zone's account when the plan has a Cloudflare Tunnel.
+ * not create are there), the edge IP ranges when proxied, and the zone's account. OpsCrew's
+ * shared rules in the zone are planned afterwards (`planSharedCloudflare`).
  *
  * The user's Portainer ({@link portainerCloudflare}) needs Cloudflare only for its tunnels:
  * `undefined` without them. The app's hostnames are checked only in web mode `tunnel` (in `proxy`
  * and `caddy` mode the user's own record there is expected), the webhook's hostname
- * (`portainer-<app>.<zone>`) in redeploy mode `cloudflare`; the account is always read; the
- * configuration-rule phase is never used, and the WAF phase only with the app's tunnel.
+ * (`portainer-<app>.<zone>`) in redeploy mode `cloudflare`.
  */
 export async function setupCloudflare(
   deps: PhaseDeps,
@@ -453,64 +346,11 @@ export async function setupCloudflare(
       );
     }
 
-    // Tunnel mode renders no configuration rule (the tunnel carries TLS), so OpsCrew neither
-    // inspects nor decides that phase; nor does the user's Portainer, whose WAF rules come only
-    // with the app's tunnel.
-    const usesConfigRule = !tunnelMode(plan) && portainer === undefined;
-    const usesWafRules = portainer === undefined || portainer.appTunnel;
-    const [configStatus, wafStatus] = await Promise.all([
-      usesConfigRule ? api.inspectEntrypointRuleset(zone.id, "http_config_settings") : undefined,
-      usesWafRules
-        ? api.inspectEntrypointRuleset(zone.id, "http_request_firewall_custom")
-        : undefined,
-    ]);
-    const tlsYourself = `set SSL/TLS to "Full (strict)" for ${domain} yourself.`;
-    // Read once, and only when the zone has an OpsCrew-named ruleset.
-    let held: Promise<HeldRulesets> | undefined;
-    const heldOnce = () => {
-      held ??= heldRulesets(deps, plan, services, zone.name);
-      return held;
-    };
-    const manageConfigRule =
-      configStatus !== undefined &&
-      (await mayManagePhase(
-        deps,
-        "http_config_settings",
-        configStatus,
-        {
-          theirs: `The ${zone.name} zone already has its own configuration rules, so OpsCrew will not add the TLS (Full strict) rule. Set SSL/TLS to "Full (strict)" for ${domain} yourself.`,
-          empty: `The ${zone.name} zone has an empty configuration ruleset, so OpsCrew cannot add its TLS (Full strict) rule.`,
-          fallback: `otherwise ${tlsYourself}`,
-          domain,
-          skipped: `the ${zone.name} zone's configuration rules, so OpsCrew will not add the TLS (Full strict) rule for ${domain}; ${tlsYourself}`,
-        },
-        zone.id,
-        heldOnce,
-      ));
-    const manageWafRules =
-      plan.security.wafCustomRules &&
-      wafStatus !== undefined &&
-      (await mayManagePhase(
-        deps,
-        "http_request_firewall_custom",
-        wafStatus,
-        {
-          theirs: `The ${zone.name} zone already has its own WAF custom rules, so OpsCrew will not add its probe-blocking rules.`,
-          empty: `The ${zone.name} zone has an empty WAF custom ruleset, so OpsCrew cannot add its probe-blocking rules.`,
-          fallback: "otherwise the site runs without them.",
-          domain,
-          skipped: `the ${zone.name} zone's WAF custom rules, so OpsCrew will not add its probe-blocking rules for ${domain}; the site runs without them.`,
-        },
-        zone.id,
-        heldOnce,
-      ));
-    const accountId = tunnels ? await tunnelAccount(api, zone) : zone.accountId;
+    const accountId = await zoneAccount(api, zone, tunnels);
     const setup: CloudflareSetup = {
       zoneId: zone.id,
       zoneName: zone.name,
-      manageConfigRule,
-      manageWafRules,
-      ...(accountId !== undefined ? { accountId } : {}),
+      accountId,
       ...(reportForeign && foreign.length > 0
         ? {
             foreignRecords: foreign.map((r) => ({

@@ -1,7 +1,6 @@
 import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, type OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { zeroTrustAuthDomain } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import { describeHostPlan, recordOwnServer, requireNoBlockers } from "../shared";
 import {
@@ -11,7 +10,7 @@ import {
   ED25519_FINGERPRINT,
   FakeGitHub,
   FakeHostServer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   freshFacts,
   OWN_IPV4,
   OwnEngine,
@@ -27,11 +26,8 @@ import { deploySetupPullRequestBody } from "./publish";
 import { previewDeploymentFiles } from "./render";
 import { runProvision } from "./run";
 import { deploySecrets } from "./secrets";
-import {
-  cloudflareZeroTrust,
-  createZeroTrustOrganization,
-  tunnelTokenPermissions,
-} from "./zero-trust";
+import { sharedCloudflareClient } from "./shared-cloudflare";
+import { tunnelTokenPermissions } from "./zero-trust";
 
 const TOKEN = fakeSecret("cloudflare-token", "zero-trust");
 
@@ -53,7 +49,7 @@ async function zeroTrustDeps(answer: (url: string) => Response) {
   return { deps, calls };
 }
 
-describe("Zero Trust organization", () => {
+describe("The client for OpsCrew's shared Cloudflare resources", () => {
   it("reads the account's organization and login methods through Cloudflare's client, read-only", async () => {
     const { deps, calls } = await zeroTrustDeps((url) =>
       url.endsWith("/access/organizations")
@@ -64,7 +60,7 @@ describe("Zero Trust organization", () => {
           })
         : json(200, { success: true, errors: [], result: [{ id: "pin-9", type: "onetimepin" }] }),
     );
-    const api = cloudflareZeroTrust(deps);
+    const api = sharedCloudflareClient(deps, {});
     expect(await api.accessOrganization(ACCOUNT_ID)).toEqual({
       authDomain: "team.cloudflareaccess.com",
     });
@@ -90,7 +86,7 @@ describe("Zero Trust organization", () => {
         errors: [{ code: 10000, message: `Authentication error ${TOKEN}` }],
       }),
     );
-    const error = (await cloudflareZeroTrust(deps)
+    const error = (await sharedCloudflareClient(deps, {})
       .accessOrganization(ACCOUNT_ID)
       .catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("CREDENTIALS_INVALID");
@@ -98,28 +94,13 @@ describe("Zero Trust organization", () => {
     // The token is registered with the redactor, which every shown message passes through.
     expect(deps.redactor.redact(`${error.message} ${error.hint}`)).not.toContain(TOKEN);
     const none = await createTestPhaseDeps();
-    expect(() => cloudflareZeroTrust(none)).toThrow(
+    expect(() => sharedCloudflareClient(none, {})).toThrow(
       expect.objectContaining({
         code: "CREDENTIALS_MISSING",
-        hint: `Create a token at https://dash.cloudflare.com/profile/api-tokens with these permissions: ${tunnelTokenPermissions()}. Then set CLOUDFLARE_API_TOKEN to it and run the command again.`,
+        message: "No Cloudflare token found: set CLOUDFLARE_API_TOKEN. Nothing was changed.",
+        hint: `Create a token at https://dash.cloudflare.com/profile/api-tokens with these permissions: ${tunnelTokenPermissions()}. Then try again.`,
       }),
     );
-  });
-
-  it("creates the organization when there is none, keeps OpsCrew's own and leaves the user's alone", async () => {
-    const zone = "example.com";
-    const ask = (authDomain?: string, previous?: boolean) =>
-      createZeroTrustOrganization({
-        api: fakeZeroTrust(authDomain),
-        accountId: ACCOUNT_ID,
-        zone,
-        ...(previous !== undefined ? { previous } : {}),
-      });
-    expect(await ask()).toBe(true);
-    expect(await ask(zeroTrustAuthDomain(zone))).toBe(true);
-    expect(await ask("my-team.cloudflareaccess.com")).toBe(false);
-    // The last run's configuration created it: keep managing it (never plan to remove it).
-    expect(await ask("my-team.cloudflareaccess.com", true)).toBe(true);
   });
 });
 
@@ -310,7 +291,7 @@ describe.skipIf(!findExecutable("git"))("previewDeploymentFiles for a server the
       github: new FakeGitHub(),
       cloudflare: ownCloudflare(),
       own: { host },
-      zeroTrust: fakeZeroTrust(),
+      sharedCloudflare: fakeSharedCloudflare(),
     };
     await runProvision(deps, { services, hostKey: ED25519_FINGERPRINT, push: false });
 

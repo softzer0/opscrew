@@ -18,7 +18,7 @@ import {
   ED25519_FINGERPRINT,
   FakeGitHub,
   FakeHostServer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   freshFacts,
   OWN_IPV4,
   OwnEngine,
@@ -113,7 +113,7 @@ async function switchToPublic(o: { closeAfter?: number; never?: boolean } = {}) 
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own: { host: adapter, homeDir: home },
-    zeroTrust: fakeZeroTrust(),
+    sharedCloudflare: fakeSharedCloudflare(),
   };
   return {
     ...project,
@@ -148,17 +148,19 @@ describe.skipIf(!findExecutable("git"))(
     it("approves the removal and the host plan first, removes the connector, waits, then removes the tunnel", async () => {
       const s = await switchToPublic({ closeAfter: 1 });
       await runProvision(s.deps, { services: s.services });
-      expect(s.events.slice(0, 7)).toEqual([
+      expect(s.events.slice(0, 8)).toEqual([
         "approve:iac-apply",
         "approve:host-apply",
         "host",
         "poll",
         "poll",
         "iac-apply",
+        // The new setup: its Cloudflare plan (the app's hostname into both shared rules) first.
+        "approve:cloudflare-apply",
         "approve:repo-write",
       ]);
       // Then the new setup's plan; its host plan finds the server prepared already.
-      expect(s.events.slice(7, 9)).toEqual(["approve:iac-apply", "iac-apply"]);
+      expect(s.events.slice(8, 10)).toEqual(["approve:iac-apply", "iac-apply"]);
       expect(s.events.filter((e) => e === "host")).toHaveLength(1);
       expect(s.host.facts.tunnel.running).toBe(false);
       const connector = s.host.applies[0]?.plan.steps.find(
@@ -168,7 +170,12 @@ describe.skipIf(!findExecutable("git"))(
       expect(connector?.params.remove).toBe(true);
       expect(s.engine.applies.map((a) => a.destroy)).toEqual([true, false]);
       const plan = await readArtifact("plan", s.deps.paths.files.plan);
-      expect(plan.approvals.map((a) => a.kind)).toEqual(["iac-apply", "host-apply", "iac-apply"]);
+      expect(plan.approvals.map((a) => a.kind)).toEqual([
+        "iac-apply",
+        "host-apply",
+        "cloudflare-apply",
+        "iac-apply",
+      ]);
       expect(plan.deployment.lastApplyAt).toBeDefined();
       // The removal's approval says the server goes first; the output reads in that order.
       expect(s.handler.requests[0]?.details).toContain(

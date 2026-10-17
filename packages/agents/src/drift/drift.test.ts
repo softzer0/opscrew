@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { access, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID } from "@opscrew/connector-cloudflare/testing";
 import type {
   IacApplyResult,
   IacEngine,
@@ -242,10 +243,9 @@ async function setup(options: SetupOptions = {}) {
   const cloudflare =
     plan.dns.provider === "cloudflare"
       ? {
-          zoneId: "zone-123",
+          zoneId: FAKE_ZONE_ID,
           zoneName: "example.com",
-          manageConfigRule: true,
-          manageWafRules: plan.security.wafCustomRules,
+          accountId: FAKE_ACCOUNT_ID,
           ipRanges: { ipv4: CF_V4, ipv6: CF_V6 },
         }
       : undefined;

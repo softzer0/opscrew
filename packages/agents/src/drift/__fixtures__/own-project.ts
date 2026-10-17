@@ -14,7 +14,7 @@ import {
   ED25519_FINGERPRINT,
   FakeDestroyGitHub,
   FakeHostServer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   freshFacts,
   LAN_IPV4,
   OWN_IPV4,
@@ -107,7 +107,7 @@ export async function ownProject(o: OwnProjectOptions = {}) {
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own: { host, homeDir: home },
-    zeroTrust: fakeZeroTrust(),
+    sharedCloudflare: fakeSharedCloudflare(),
   };
   return { ...project, deps, engine, host, github, handler, services, runner, home, secrets };
 }

@@ -21,7 +21,7 @@ import {
   PORTAINER_HOST,
   PORTAINER_URL,
   fakePortainer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   ownCloudflare,
   portainerPlan,
   portainerPlanJson,
@@ -204,7 +204,7 @@ export async function portainerProject(o: PortainerProjectOptions = {}) {
       randomUUID: () => WEBHOOK_UUID,
       wait: { now: () => 0, sleep: async () => undefined },
     },
-    zeroTrust: fakeZeroTrust(),
+    sharedCloudflare: fakeSharedCloudflare(),
   };
   return { ...project, plan, deps, fake, github, handler, engine, services, secrets, clients };
 }

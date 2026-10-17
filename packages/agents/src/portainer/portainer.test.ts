@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
   type ApplyOptions,
   type ApplyResult,
@@ -24,7 +25,7 @@ import {
   FakeEngine,
   FakeGitHub,
   FakeHostServer,
-  fakeZeroTrust,
+  fakeSharedCloudflare,
   freshFacts,
   OWN_IPV4,
   OwnEngine,
@@ -124,21 +125,21 @@ async function cloudSetup(
     approvalHandler: handler,
   });
   const host = new FakeApply();
-  const pins: string[] = [];
+  // The account has a Zero Trust organization the user set up and its one-time PIN login.
+  const zone = new FakeZone();
+  zone.organization = {
+    name: "someone-else.cloudflareaccess.com",
+    auth_domain: "someone-else.cloudflareaccess.com",
+  };
+  zone.providers.push({ id: "pin-existing", name: "One-time PIN", type: "onetimepin" });
   const services: PortainerServices = {
     deployRemote: deployShell(o.docker === undefined ? "28.5.1" : o.docker, server, commands),
     applyHost: host.apply,
     cloudflare: ownCloudflare(),
     ...(o.engine !== undefined ? { engine: async () => o.engine as FakeEngine } : {}),
-    zeroTrust: {
-      ...fakeZeroTrust("someone-else.cloudflareaccess.com"),
-      accessIdentityProviders: async (accountId) => {
-        pins.push(accountId);
-        return [{ id: "pin-existing", type: "onetimepin" }];
-      },
-    },
+    sharedCloudflare: fakeSharedCloudflare(zone),
   };
-  return { ...project, deps, handler, host, services, pins, commands, server };
+  return { ...project, deps, handler, host, services, zone, commands, server };
 }
 
 const kinds = (handler: ScriptedApprovalHandler) => handler.requests.map((r) => r.kind);
@@ -225,9 +226,13 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
       services: s.services,
     });
 
-    expect(kinds(s.handler)).toEqual(["repo-write", "iac-apply", "host-apply"]);
+    // The Cloudflare plan first: the app's hostnames into OpsCrew's rules (this project has no
+    // record yet); the user's organization and PIN login are reused as they are.
+    expect(kinds(s.handler)).toEqual(["cloudflare-apply", "repo-write", "iac-apply", "host-apply"]);
+    expect(result.cloudflarePlanHash).toBe(s.handler.requests[0]?.planHash);
+    expect(s.zone.writes().filter((call) => call.path.startsWith("/accounts"))).toEqual([]);
     expect(result.applied).toBe(true);
-    const iac = s.handler.requests[1];
+    const iac = s.handler.requests[2];
     expect(iac?.planHash).toBe(result.planHash);
     expect(iac?.costDelta).toBeUndefined();
     const tfvars = JSON.parse(
@@ -237,8 +242,8 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
       portainer_hostname: "portainer.example.com",
       portainer_allowed_emails: ["owner@example.com"],
       one_time_pin_identity_provider_id: "pin-existing",
-      create_zero_trust_organization: false,
     });
+    expect(tfvars).not.toHaveProperty("create_zero_trust_organization");
     expect(result.files).toContain("opscrew/infra/prod/terraform.tfvars.json");
 
     const call = s.host.calls[0];
@@ -726,6 +731,8 @@ async function ownSetup(
     agent: true,
     reachable: true,
   });
+  // A zone and account without OpsCrew's rules or Zero Trust organization yet.
+  const zone = new FakeZone();
   // Setup plans go to the fake server; the add-on plan that deletes Portainer's data is recorded.
   const addonApplies: { plan: HostPlan; options: ApplyOptions }[] = [];
   const adapter = {
@@ -746,11 +753,11 @@ async function ownSetup(
     tcpConnect: async () => true,
     sleep: async () => undefined,
     own: { host: adapter, homeDir: home },
-    zeroTrust: fakeZeroTrust(),
+    sharedCloudflare: fakeSharedCloudflare(zone),
   };
   await runProvision(deps, { services, hostKey: ED25519_FINGERPRINT });
   handler.requests.length = 0;
-  return { ...project, deps, engine, host, handler, services, addonApplies };
+  return { ...project, deps, engine, host, handler, services, addonApplies, zone };
 }
 
 describe.skipIf(!hasGit)("Portainer on a server the user owns (host plan)", () => {
@@ -791,7 +798,22 @@ describe.skipIf(!hasGit)("Portainer on a server the user owns (host plan)", () =
       allowEmails: ["owner@example.com"],
       services: s.services,
     });
-    expect(kinds(s.handler)).toEqual(["repo-write", "iac-apply", "host-apply"]);
+    // Provision put the app's hostname into OpsCrew's rules; the Cloudflare plan adds the account's
+    // Zero Trust organization and one-time PIN login, before the tunnel and Access.
+    expect(kinds(s.handler)).toEqual(["cloudflare-apply", "repo-write", "iac-apply", "host-apply"]);
+    const cloudflare = s.handler.requests[0];
+    expect(cloudflare?.title).toBe(
+      "Apply the Cloudflare plan to OpsCrew's shared Cloudflare resources (2 changes)",
+    );
+    expect(cloudflare?.details).toContain(
+      "✓ Block probes for secrets and admin panels: shop.example.com (already in place)",
+    );
+    const pin = s.zone.providers.find((provider) => provider.type === "onetimepin");
+    expect(s.zone.organization).toBeDefined();
+    const tfvars = JSON.parse(
+      await readFile(join(s.root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(tfvars.one_time_pin_identity_provider_id).toBe(pin?.id);
     expect(result.applied).toBe(true);
     const apply = s.host.applies.at(-1);
     const connector = apply?.plan.steps.find((item) => item.id === "tunnel-connector");

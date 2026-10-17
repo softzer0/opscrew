@@ -16,9 +16,11 @@ import {
   FakeEngine,
   FakeGitHub,
   FakeHostServer,
+  fakeSharedCloudflare,
   OWN_IPV4,
   PUBLIC_CHANGES,
 } from "@opscrew/agents/testing";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { resolveProjectPaths } from "@opscrew/core";
 import { FakeAgentRuntime } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
@@ -68,11 +70,14 @@ const ANSWERS = {
 const STEP_TIMEOUT = 120_000;
 
 /** The labelled hashes a `--plan-only` run on an own server prints. */
-function printedHashes(output: string): { infra: string; host: string } {
+function printedHashes(output: string): { cloudflare: string; infra: string; host: string } {
+  const cloudflare = /Cloudflare plan:\s+([0-9a-f]{64})/.exec(output)?.[1];
   const infra = /infrastructure \(Cloudflare\):\s+([0-9a-f]{64})/.exec(output)?.[1];
   const host = /host plan for your server:\s+([0-9a-f]{64})/.exec(output)?.[1];
-  if (infra === undefined || host === undefined) throw new Error(`No plan hashes in:\n${output}`);
-  return { infra, host };
+  if (cloudflare === undefined || infra === undefined || host === undefined) {
+    throw new Error(`No plan hashes in:\n${output}`);
+  }
+  return { cloudflare, infra, host };
 }
 
 describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns`, () => {
@@ -85,6 +90,8 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
   const outputs = new Map<string, string>();
   const engine = new FakeEngine({ changes: PUBLIC_CHANGES, planJson: {} });
   const github = new FakeGitHub();
+  // OpsCrew's shared Cloudflare rules: one zone for every run, as in Cloudflare.
+  const zone = new FakeZone();
 
   /** Runs `opscrew <args>` offline with the own-server fakes attached. */
   async function opscrew(args: string[], approvals?: ScriptedApprovals) {
@@ -96,7 +103,10 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
       },
     });
     withServices(ctx, {
-      provision: ownProvisionServices(engine, github, ownServices(host, home)),
+      provision: {
+        ...ownProvisionServices(engine, github, ownServices(host, home)),
+        sharedCloudflare: fakeSharedCloudflare(zone),
+      },
     });
     const code = await run(ctx, ...args);
     outputs.set(`${args.join(" ")} (stdout)`, ctx.output);
@@ -169,10 +179,17 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
       const planned = await opscrew(["provision", "--plan-only", "--yes"]);
       expect(planned.code, planned.text).toBe(0);
       expect(host.applies).toEqual([]);
-      const { infra, host: hostHash } = printedHashes(planned.ctx.output);
+      const { cloudflare, infra, host: hostHash } = printedHashes(planned.ctx.output);
 
-      // Only the infrastructure hash: Cloudflare is applied, the server is not touched.
-      const half = await opscrew(["provision", "--approve", infra, "--yes"]);
+      // The Cloudflare and infrastructure hashes: Cloudflare is applied, the server is not touched.
+      const half = await opscrew([
+        "provision",
+        "--approve",
+        cloudflare,
+        "--approve",
+        infra,
+        "--yes",
+      ]);
       expect(half.code).toBe(1);
       expect(host.applies).toEqual([]);
       expect(half.text).toContain(`--approve ${hostHash}`);
@@ -193,7 +210,11 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
       expect(engine.applied).toHaveLength(1);
 
       const plan = await readPlan(project.root);
-      expect(plan.approvals.map((a) => a.kind)).toEqual(["iac-apply", "host-apply"]);
+      expect(plan.approvals.map((a) => a.kind)).toEqual([
+        "cloudflare-apply",
+        "iac-apply",
+        "host-apply",
+      ]);
       expect([...github.secrets.keys()]).toContain("OPSCREW_SSH_PRIVATE_KEY");
       expect(github.pulls).toEqual([expect.objectContaining({ head: "opscrew/deploy-setup" })]);
     },

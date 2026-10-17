@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CloudflareDnsRecord, OPSCREW_MANAGED_COMMENT } from "@opscrew/connector-cloudflare";
+import {
+  CloudflareClient,
+  type CloudflareDnsRecord,
+  OPSCREW_MANAGED_COMMENT,
+} from "@opscrew/connector-cloudflare";
+import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type {
   IacApplyResult,
   IacApproval,
@@ -14,6 +19,7 @@ import type {
   ResourceMove,
 } from "@opscrew/contracts";
 import { NodeCommandRunner, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { cloudTarget } from "@opscrew/iac-templates";
 import {
   type CloudProvider,
@@ -556,15 +562,7 @@ export class FakeGitHub implements GitHubApi {
   }
 }
 
-/**
- * Who holds a phase's entrypoint ruleset in the fake zone: nobody, the user (with rules, or an
- * empty one) or OpsCrew's module. `true` means `"user"`, `false` means `"none"`.
- */
-export type FakeRuleset = "none" | "user" | "user-empty" | "opscrew";
-
 export interface FakeCloudflareOptions {
-  configRules?: FakeRuleset | boolean;
-  wafRules?: FakeRuleset | boolean;
   zone?: boolean;
   /** DNS records in the zone. */
   records?: CloudflareDnsRecord[];
@@ -574,13 +572,10 @@ export interface FakeCloudflareOptions {
 
 /** Cloudflare fake whose zone contents tests may change between runs. */
 export interface FakeCloudflareApi extends CloudflareApi {
-  readonly state: { config: FakeRuleset; waf: FakeRuleset; records: CloudflareDnsRecord[] };
+  readonly state: { records: CloudflareDnsRecord[] };
   /** Names passed to `listDnsRecords`, in call order. */
   readonly listed: string[];
 }
-
-const rulesetOwner = (value: FakeRuleset | boolean | undefined): FakeRuleset =>
-  value === true ? "user" : value === false || value === undefined ? "none" : value;
 
 /** A DNS record as OpsCrew's module creates it (with its comment). */
 export function opscrewRecord(
@@ -601,12 +596,12 @@ export function opscrewRecord(
   };
 }
 
+/**
+ * The zone `example.com` (id {@link FAKE_ZONE_ID}, in the account {@link FAKE_ACCOUNT_ID}) as the
+ * Cloudflare checks see it; OpsCrew's shared rules are in {@link fakeSharedCloudflare}'s zone.
+ */
 export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudflareApi {
-  const state = {
-    config: rulesetOwner(options.configRules),
-    waf: rulesetOwner(options.wafRules),
-    records: [...(options.records ?? [])],
-  };
+  const state = { records: [...(options.records ?? [])] };
   const listed: string[] = [];
   return {
     state,
@@ -615,7 +610,13 @@ export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudfl
     findZone: async () =>
       options.zone === false
         ? undefined
-        : { id: "zone-123", name: "example.com", status: "active", nameServers: [] },
+        : {
+            id: FAKE_ZONE_ID,
+            name: "example.com",
+            status: "active",
+            nameServers: [],
+            accountId: FAKE_ACCOUNT_ID,
+          },
     listDnsRecords: async (_zone, filter = {}) => {
       listed.push(filter.name ?? "*");
       if (options.listError) throw options.listError;
@@ -625,36 +626,21 @@ export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudfl
           (filter.type === undefined || r.type === filter.type),
       );
     },
-    inspectEntrypointRuleset: async (_zone, phase) => {
-      const owner = phase === "http_config_settings" ? state.config : state.waf;
-      if (owner === "none") return { exists: false, ownedByOpsCrew: false, ruleCount: 0 };
-      return {
-        exists: true,
-        ownedByOpsCrew: owner === "opscrew",
-        ruleCount: owner === "user-empty" ? 0 : 1,
-        id: fakeRulesetId(phase),
-      };
-    },
     getIpRanges: async () => ({ ipv4: CF_V4, ipv6: CF_V6 }),
     listAccounts: async () => [],
   };
 }
 
-/** The id {@link fakeCloudflare} gives a zone's entrypoint ruleset of `phase`. */
-export const fakeRulesetId = (phase: string) => `rs-${phase}`;
-
 /**
- * The root-module output `cloudflare_rulesets` of a project whose state holds both of
- * {@link fakeCloudflare}'s entrypoint rulesets (override a phase with another id or `null`).
+ * The client OpsCrew's shared Cloudflare step uses (`ProvisionServices.sharedCloudflare`) on a
+ * fake zone and account that behave like Cloudflare's (a new, empty one by default).
  */
-export function heldRulesetsOutput(
-  overrides: Partial<Record<"http_config_settings" | "http_request_firewall_custom", unknown>> = {},
-) {
-  return {
-    http_config_settings: fakeRulesetId("http_config_settings"),
-    http_request_firewall_custom: fakeRulesetId("http_request_firewall_custom"),
-    ...overrides,
-  };
+export function fakeSharedCloudflare(zone: FakeZone = new FakeZone()): CloudflareClient {
+  return new CloudflareClient({
+    token: fakeSecret("cloudflare-token", "shared"),
+    fetch: zone.fetch,
+    sleep: async () => undefined,
+  });
 }
 
 /** Writes a non-empty (fake) infrastructure state file, as an apply leaves one. */

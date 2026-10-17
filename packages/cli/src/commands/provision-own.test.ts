@@ -59,11 +59,14 @@ async function ownProject(): Promise<DeployProject> {
 }
 
 /** The labelled hashes printed by a `--plan-only` run on an own server. */
-function printedHashes(output: string): { infra: string; host: string } {
+function printedHashes(output: string): { cloudflare: string; infra: string; host: string } {
+  const cloudflare = /Cloudflare plan:\s+([0-9a-f]{64})/.exec(output)?.[1];
   const infra = /infrastructure \(Cloudflare\):\s+([0-9a-f]{64})/.exec(output)?.[1];
   const host = /host plan for your server:\s+([0-9a-f]{64})/.exec(output)?.[1];
-  if (infra === undefined || host === undefined) throw new Error(`No plan hashes in:\n${output}`);
-  return { infra, host };
+  if (cloudflare === undefined || infra === undefined || host === undefined) {
+    throw new Error(`No plan hashes in:\n${output}`);
+  }
+  return { cloudflare, infra, host };
 }
 
 describe.skipIf(GIT === undefined)("opscrew provision on a server the user owns", () => {
@@ -74,22 +77,32 @@ describe.skipIf(GIT === undefined)("opscrew provision on a server the user owns"
     expect(await run(first.ctx, ...planOnly), first.ctx.errors).toBe(0);
     expect(first.engine.calls).not.toContain("apply");
     expect(first.host.applies).toEqual([]);
-    const { infra, host } = printedHashes(first.ctx.output);
+    const { cloudflare, infra, host } = printedHashes(first.ctx.output);
     expect(first.ctx.output).toContain(
-      `    opscrew provision --approve ${infra} --approve ${host} --host-key ${ED25519_FINGERPRINT} --yes\n`,
+      `    opscrew provision --approve ${cloudflare} --approve ${infra} --approve ${host} --host-key ${ED25519_FINGERPRINT} --yes\n`,
     );
     // The host key is pinned on this first connection; the address stays in the local state.
     const paths = resolveProjectPaths(project.root, { env: project.env });
     expect(await readFile(paths.files.knownHosts, "utf8")).toContain(OWN_IPV4);
 
     const second = await context(project);
-    const approve = ["provision", "--approve", infra, "--approve", host, "--yes"];
+    const approve = [
+      "provision",
+      "--approve",
+      cloudflare,
+      "--approve",
+      infra,
+      "--approve",
+      host,
+      "--yes",
+    ];
     expect(await run(second.ctx, ...approve), second.ctx.errors).toBe(0);
     expect(second.engine.applied[0]?.approval.approvedPlanHash).toBe(infra);
     expect(second.host.applies).toHaveLength(1);
     expect(second.host.applies[0]?.options.approvedHash).toBe(host);
     const plan = await readArtifact("plan", path.join(project.root, "opscrew", "plan.yaml"));
     expect(plan.approvals.map((a) => [a.kind, a.planHash])).toEqual([
+      ["cloudflare-apply", cloudflare],
       ["iac-apply", infra],
       ["host-apply", host],
     ]);
@@ -103,10 +116,11 @@ describe.skipIf(GIT === undefined)("opscrew provision on a server the user owns"
     project = await ownProject();
     const first = await context(project);
     await run(first.ctx, "provision", "--plan-only", "--host-key", ED25519_FINGERPRINT, "--yes");
-    const { infra, host } = printedHashes(first.ctx.output);
+    const { cloudflare, infra, host } = printedHashes(first.ctx.output);
 
     const second = await context(project);
-    expect(await run(second.ctx, "provision", "--approve", infra, "--yes")).toBe(1);
+    const approve = ["provision", "--approve", cloudflare, "--approve", infra, "--yes"];
+    expect(await run(second.ctx, ...approve)).toBe(1);
     expect(second.engine.applied).toHaveLength(1);
     expect(second.host.applies).toEqual([]);
     expect(second.ctx.errors).toContain("The host plan was not approved");

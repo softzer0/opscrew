@@ -40,7 +40,11 @@ describe.skipIf(GIT === undefined)("opscrew dns", () => {
     expect(plan.security.httpAllowedFrom).toBe("cloudflare");
     expect(engine.calls).toEqual(["init", "validate", "plan"]);
     expect(ctx.output).toContain("https://shop.example.com through Cloudflare");
-    expect(ctx.output).toMatch(/ {4}opscrew dns --approve [0-9a-f]{64} --yes\n/);
+    // The Cloudflare plan (OpsCrew's shared rules) and the infrastructure plan, one hash each.
+    expect(ctx.output).toMatch(/Cloudflare plan: +[0-9a-f]{64}\n/);
+    expect(ctx.output).toMatch(
+      / {4}opscrew dns --approve [0-9a-f]{64} --approve [0-9a-f]{64} --yes\n/,
+    );
   });
 
   it("exits 2 for an invalid domain or when there is no domain at all", async () => {

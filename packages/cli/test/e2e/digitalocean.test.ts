@@ -64,6 +64,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
   const runtime = new FakeAgentRuntime();
   const approvals = new ScriptedApprovals([
     "repo-write",
+    "cloudflare-apply",
     "iac-apply",
     "github-secrets",
     "git-push",
@@ -208,6 +209,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on DigitalOcean`, () => {
       });
       expect(await readFile(paths.files.plan, "utf8")).not.toContain(SERVER_IPV4);
       expect(plan.approvals).toEqual([
+        expect.objectContaining({ kind: "cloudflare-apply" }),
         expect.objectContaining({
           kind: "iac-apply",
           planHash: engine.applied[0]?.approval.approvedPlanHash,
