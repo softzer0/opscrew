@@ -134,15 +134,24 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
   - Depends: T1106
   - Accept:
     - **Second app.** The own-server and Portainer live tests deploy a second app, B, into the same zone and account under the run's subdomain.
+      - B has its own throwaway repository, from the new optional `OPSCREW_E2E_GITHUB_REPO_B`. The run's GitHub token (and, for Portainer, `OPSCREW_E2E_REPO_READ_TOKEN`) must cover it too. Without it, the second-app checks are skipped with a plain message and the rest runs as before (lead, 2026-10-17).
+      - Own server: one OpsCrew app per server until 013, so B goes on a second throwaway server created like step 1's, in tunnel mode. A and B then share the account's Zero Trust organization.
+      - Portainer: B is a second stack in the same Portainer, with the Cloudflare Tunnel (web mode `tunnel`).
     - **User rules.** Before the first provision, they seed one user rule per phase that matches nothing (a hostname under the run's subdomain that does not exist).
     - **Protection.** They check that `/.env` is blocked for A and B, and that both hostnames are in both shared rules.
     - **Destroying A** leaves B working and protected.
     - **Destroying B** removes OpsCrew's rules and leaves the seeded rules byte-identical. The Zero Trust organization and identity provider remain.
     - **Cleanup.** It removes the seeded rules and keeps the leftover checks for this run's resources.
+      - The harness's leftover check no longer looks for whole "OpsCrew …" rulesets (`rulesetOfRun`). It looks for OpsCrew's rules by `ref`.
+      - None of the run's hostnames may remain in them.
+      - A rule left holding only the run's hostnames is deleted and reported.
+      - An entrypoint the run created (absent from the snapshot before the run) is deleted once empty.
+      - "OpsCrew's rules are gone" is asserted only when they held none of the zone's other hostnames before the run.
+      - `docs/e2e.md` says to run one live test per zone at a time.
     - **The leak check** covers the shared plans.
     - **Hetzner live run.** It checks its single app's hostnames in the shared rules.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
-  - Effort: high
+  - Effort: xhigh
 
 - [ ] T1108 Live runs (lead): own server, Portainer core (with the second app), Hetzner; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
