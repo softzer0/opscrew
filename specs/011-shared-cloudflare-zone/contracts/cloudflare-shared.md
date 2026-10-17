@@ -23,8 +23,12 @@ export interface SharedFacts {
 }
 
 export interface SharedDesired {
-  /** This app's hostnames, lower case (empty on destroy). */
-  hostnames: string[];
+  /**
+   * This app's hostnames per shared rule, lower case; a rule absent or empty means none (all
+   * empty on destroy). The block rule and the strict-TLS rule can differ: a tunnel app has only
+   * the block rule, `security.wafCustomRules: false` only the TLS rule (T1104, lead 2026-10-17).
+   */
+  hostnames: Partial<Record<SharedRuleRef, string[]>>;
   /** Access wanted: ensure the organization (with this auth domain) and the one-time PIN. */
   access?: { authDomain: string; oneTimePin: boolean };
 }
