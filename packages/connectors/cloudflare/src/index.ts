@@ -33,5 +33,6 @@ export {
   type SharedFinding,
   type SharedPlan,
   type SharedRecord,
+  SharedRecordSchema,
   type SharedRuleRef,
 } from "./shared";

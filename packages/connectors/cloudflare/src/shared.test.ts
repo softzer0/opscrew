@@ -1,7 +1,6 @@
 import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_ID, FakeZone, ZONE_ID } from "./__fixtures__/fake-zone";
 import { CloudflareClient } from "./client";
 import {
   applyShared,
@@ -13,7 +12,9 @@ import {
   type SharedDesired,
   type SharedPlan,
   type SharedRecord,
+  SharedRecordSchema,
 } from "./shared";
+import { FAKE_ACCOUNT_ID as ACCOUNT_ID, FakeZone, FAKE_ZONE_ID as ZONE_ID } from "./testing";
 
 const TOKEN = fakeSecret("cloudflare-token");
 const WAF = "http_request_firewall_custom";
@@ -317,23 +318,27 @@ describe("findings", () => {
     expect(zone.calls.length).toBe(before);
   });
 
-  it("stops when the Free plan's rule slots are used by others", async () => {
+  /** A zone on `plan` whose phases already hold `custom` and `config` rules of the user's own. */
+  const fullZone = (plan: string | undefined, custom: number, config: number) => {
     const zone = new FakeZone();
-    for (let i = 0; i < 5; i++) {
-      zone.seedRule(WAF, {
-        description: `user ${i}`,
-        expression: `(http.host eq "u${i}.example.com")`,
-        action: "block",
-      });
+    zone.plan = plan;
+    for (const [phase, count, action] of [
+      [WAF, custom, "block"],
+      [CONFIG, config, "set_config"],
+    ] as const) {
+      for (let i = 0; i < count; i++) {
+        zone.seedRule(phase, {
+          description: `user ${i}`,
+          expression: `(http.host eq "u${i}.example.com")`,
+          action,
+        });
+      }
     }
-    for (let i = 0; i < 10; i++) {
-      zone.seedRule(CONFIG, {
-        description: `user ${i}`,
-        expression: `(http.host eq "u${i}.example.com")`,
-        action: "set_config",
-      });
-    }
-    const plan = await planFor(zone, { hostnames: A });
+    return zone;
+  };
+
+  it("stops when the Free plan's rule slots are used by others", async () => {
+    const plan = await planFor(fullZone("free", 5, 10), { hostnames: A });
     expect(plan.changes).toEqual([]);
     expect(plan.findings).toMatchObject([
       {
@@ -341,13 +346,64 @@ describe("findings", () => {
         message: expect.stringContaining(
           "WAF custom rules already hold 5 rules, the most Cloudflare's Free plan allows (5)",
         ),
-        hint: expect.stringContaining("Delete or merge one of the zone's WAF custom rules"),
+        hint: expect.stringContaining(
+          "Delete or merge one of the zone's WAF custom rules in the Cloudflare dashboard, or move the zone to a higher plan",
+        ),
       },
       {
         code: "no-rule-slot",
-        message: expect.stringContaining("configuration rules already hold 10 rules"),
+        message: expect.stringContaining(
+          "configuration rules already hold 10 rules, the most Cloudflare's Free plan allows (10)",
+        ),
       },
     ]);
+  });
+
+  it("counts rule slots by the zone's plan", async () => {
+    const roomy = await planFor(fullZone("pro", 5, 10), { hostnames: A });
+    expect(roomy.findings).toEqual([]);
+    expect(kinds(roomy)).toEqual(["add-rule", "add-rule"]);
+
+    const full = await planFor(fullZone("pro", 20, 24), { hostnames: A });
+    expect(full.findings).toMatchObject([
+      {
+        code: "no-rule-slot",
+        message: expect.stringContaining(
+          "already hold 20 rules, the most Cloudflare's Pro plan allows (20)",
+        ),
+      },
+    ]);
+    expect(kinds(full)).toEqual(["add-rule"]);
+
+    const enterprise = await planFor(fullZone("enterprise", 0, 300), { hostnames: A });
+    expect(enterprise.findings).toMatchObject([
+      {
+        code: "no-rule-slot",
+        message: expect.stringContaining("the most Cloudflare's Enterprise plan allows (300)"),
+        hint: expect.not.stringContaining("higher plan"),
+      },
+    ]);
+  });
+
+  it("leaves the slot count to Cloudflare on a plan OpsCrew does not know", async () => {
+    for (const plan of ["partners_free", undefined]) {
+      const zone = fullZone(plan, 5, 0);
+      const planned = await planFor(zone, { hostnames: A });
+      expect(planned.findings).toEqual([]);
+      expect(planned.changes).toMatchObject([
+        { kind: "add-rule", phase: WAF },
+        { kind: "create-entrypoint", phase: CONFIG },
+      ]);
+      const error = (await rejection(
+        applyShared(clientFor(zone), planned, { approvedHash: planned.hash }),
+      )) as SharedApplyError;
+      expect(error).toBeInstanceOf(SharedApplyError);
+      expect(error.message).toBe(
+        'Cloudflare could not add the rule "OpsCrew: block probes for secrets and admin panels": exceeded the maximum number of rules in the phase.',
+      );
+      expect(error.applied).toEqual([]);
+      expect(zone.opscrewRule(WAF)).toBeUndefined();
+    }
   });
 
   it("counts the expression length before planning", async () => {
@@ -701,7 +757,40 @@ describe("Zero Trust", () => {
   });
 });
 
+describe("SharedRecordSchema", () => {
+  it("reads the record an apply returns, as written to disk", async () => {
+    const zone = new FakeZone();
+    const { result } = await deploy(zone, { hostnames: A });
+    const onDisk = JSON.parse(JSON.stringify(result.record, null, 2));
+    expect(SharedRecordSchema.parse(onDisk)).toEqual(result.record);
+    const empty = { zoneId: ZONE_ID, hostnames: {}, createdEntrypoints: [] };
+    expect(SharedRecordSchema.parse(empty)).toEqual(empty);
+  });
+
+  it.each([
+    ["a zone id that is not 32 hex", { zoneId: "example.com" }],
+    ["a rule OpsCrew does not have", { hostnames: { "opscrew-other": A } }],
+    ["a hostname that is not lower case", { hostnames: { [BLOCK]: ["Shop.example.com"] } }],
+    ["a hostname list that is not a list", { hostnames: { [TLS]: "shop.example.com" } }],
+    ["an unknown phase", { createdEntrypoints: ["http_request_redirect"] }],
+    ["an unknown key", { version: 2 }],
+    ["a missing key", { createdEntrypoints: undefined }],
+  ])("refuses a damaged record: %s", (_, damage) => {
+    const record = { zoneId: ZONE_ID, hostnames: both(A), createdEntrypoints: [WAF], ...damage };
+    expect(SharedRecordSchema.safeParse(record).success).toBe(false);
+  });
+});
+
 describe("inspectShared", () => {
+  it("reads the zone's plan", async () => {
+    const zone = new FakeZone();
+    zone.plan = "business";
+    const opts = { zoneId: ZONE_ID, accountId: ACCOUNT_ID, access: false };
+    expect(await inspectShared(clientFor(zone), opts)).toMatchObject({ zonePlan: "business" });
+    zone.plan = undefined;
+    expect(await inspectShared(clientFor(zone), opts)).not.toHaveProperty("zonePlan");
+  });
+
   it("treats only Cloudflare's 'no entrypoint' answer as a missing ruleset", async () => {
     const zone = new FakeZone();
     zone.faults.push({

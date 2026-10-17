@@ -8,11 +8,15 @@ import { CLOUDFLARE_API } from "../client";
  * creates it (or replaces every rule of an existing one); `POST …/rules` appends; `PATCH` keeps the
  * rule's id; deleting the last rule leaves an empty ruleset; deleting a ruleset answers 204; a
  * duplicate `ref` is refused (20023), as is an expression over 4,096 characters (20127) and a rule
- * beyond the Free plan's 5 custom or 10 configuration rules. State is plain data for assertions.
+ * beyond the zone plan's limit (a plan the fake does not know has the Free plan's 5 custom and 10
+ * configuration rules). The zone details answer with its `plan.legacy_id`. The account holds the
+ * Zero Trust organization and login methods. State is plain data for assertions.
  */
 
-export const ZONE_ID = "0123456789abcdef0123456789abcdef";
-export const ACCOUNT_ID = "fedcba9876543210fedcba9876543210";
+/** The fake zone's id. */
+export const FAKE_ZONE_ID = "0123456789abcdef0123456789abcdef";
+/** The fake account's id. */
+export const FAKE_ACCOUNT_ID = "fedcba9876543210fedcba9876543210";
 
 export interface FakeRuleset {
   id: string;
@@ -39,10 +43,13 @@ export interface FakeFault {
   applied?: boolean;
 }
 
-const LIMITS: Record<string, number> = {
-  http_request_firewall_custom: 5,
-  http_config_settings: 10,
-};
+/** Rules per phase (custom, configuration) by plan, as Cloudflare enforces them. */
+const LIMITS = new Map<string, [number, number]>([
+  ["free", [5, 10]],
+  ["pro", [20, 25]],
+  ["business", [100, 50]],
+  ["enterprise", [1000, 300]],
+]);
 const UPDATED = "2026-10-17T00:00:00.000000Z";
 
 const ok = (result: unknown): FakeReply => ({
@@ -57,7 +64,10 @@ const refuse = (status: number, code: number, message: string): FakeReply => ({
 const answer = (reply: FakeReply, ...request: Parameters<FetchLike>) =>
   fakeFetch({ "/": reply }, { base: CLOUDFLARE_API }).fetch(...request);
 
+/** A fake zone and account; send a `CloudflareClient`'s requests to its `fetch`. */
 export class FakeZone {
+  /** The zone's plan as `plan.legacy_id`; undefined leaves `plan` out of the zone details. */
+  plan: string | undefined = "free";
   /** The zone's entrypoint rulesets by phase. */
   readonly entrypoints = new Map<string, FakeRuleset>();
   organization: { name: string; auth_domain: string } | undefined;
@@ -119,7 +129,9 @@ export class FakeZone {
       id,
       version,
       action: rule.action,
-      ...(rule.action_parameters === undefined ? {} : { action_parameters: rule.action_parameters }),
+      ...(rule.action_parameters === undefined
+        ? {}
+        : { action_parameters: rule.action_parameters }),
       expression: rule.expression,
       description: rule.description ?? "",
       last_updated: UPDATED,
@@ -141,15 +153,25 @@ export class FakeZone {
     if (rule.ref !== undefined && others.some((r) => r.ref === rule.ref)) {
       return refuse(400, 20023, "a rule with the same ref already exists");
     }
-    if (!replacing && others.length >= (LIMITS[ruleset.phase] ?? 0)) {
+    const [custom, config] = LIMITS.get(this.plan ?? "") ?? [5, 10];
+    const limit = ruleset.phase === "http_request_firewall_custom" ? custom : config;
+    if (!replacing && others.length >= limit) {
       return refuse(400, 20003, "exceeded the maximum number of rules in the phase");
     }
     return undefined;
   }
 
   #handle(method: string, path: string, body: unknown): FakeReply {
-    const zone = `/zones/${ZONE_ID}/rulesets`;
-    const account = `/accounts/${ACCOUNT_ID}/access`;
+    if (method === "GET" && path === `/zones/${FAKE_ZONE_ID}`) {
+      return ok({
+        id: FAKE_ZONE_ID,
+        name: "example.com",
+        status: "active",
+        ...(this.plan ? { plan: { id: "0".repeat(32), legacy_id: this.plan } } : {}),
+      });
+    }
+    const zone = `/zones/${FAKE_ZONE_ID}/rulesets`;
+    const account = `/accounts/${FAKE_ACCOUNT_ID}/access`;
     const entry = new RegExp(`^${zone}/phases/([a-z_]+)/entrypoint$`).exec(path);
     if (entry?.[1]) return this.#entrypoint(method, entry[1], body);
     const rules = new RegExp(`^${zone}/([0-9a-f]+)/rules(?:/([0-9a-f]+))?$`).exec(path);
@@ -187,12 +209,7 @@ export class FakeZone {
     return [...this.entrypoints.values()].find((r) => r.id === rulesetId);
   }
 
-  #rules(
-    method: string,
-    rulesetId: string,
-    ruleId: string | undefined,
-    body: unknown,
-  ): FakeReply {
+  #rules(method: string, rulesetId: string, ruleId: string | undefined, body: unknown): FakeReply {
     const ruleset = this.#find(rulesetId);
     if (!ruleset) return refuse(404, 10000, "ruleset not found");
     if (this.denied.has(ruleset.phase)) return refuse(403, 10000, "Authentication error");

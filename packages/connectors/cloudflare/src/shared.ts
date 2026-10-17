@@ -15,6 +15,7 @@ import {
   plural,
   sha256Hex,
 } from "@opscrew/core";
+import { z } from "zod";
 import {
   CLOUDFLARE_TOKEN_PAGE,
   type CloudflareClient,
@@ -56,8 +57,6 @@ interface RuleTemplate {
   label: string;
   /** The token permission that reads and edits them. */
   permission: string;
-  /** Rules a zone on Cloudflare's Free plan may hold in the phase (research R3). */
-  freeLimit: number;
   /** How a user puts a changed rule back. */
   restore: string;
 }
@@ -69,7 +68,6 @@ const TEMPLATES: Record<SharedRuleRef, RuleTemplate> = {
     suffix: ` and (${PROBE_PATHS})`,
     label: "WAF custom rules",
     permission: "Zone → Zone WAF → Edit",
-    freeLimit: 5,
     restore: `set it back to the action Block, turned on, with the expression (http.host in {…its quoted hostnames…}) and (${PROBE_PATHS})`,
   },
   "opscrew-strict-tls": {
@@ -79,11 +77,33 @@ const TEMPLATES: Record<SharedRuleRef, RuleTemplate> = {
     suffix: "",
     label: "configuration rules",
     permission: "Zone → Config Rules → Edit",
-    freeLimit: 10,
     restore:
       "set it back to turned on, with only the SSL setting Strict and the expression (http.host in {…its quoted hostnames…})",
   },
 };
+
+/** A Cloudflare plan's name and how many rules a zone on it may hold in each OpsCrew phase. */
+interface PlanLimits {
+  name: string;
+  limits: Record<SharedRuleRef, number>;
+}
+
+/**
+ * The rule limits by the zone's plan (`plan.legacy_id`). For a plan not listed, OpsCrew does not
+ * count, and Cloudflare's own refusal stops the apply.
+ */
+const RULE_LIMITS = new Map<string, PlanLimits>([
+  ["free", { name: "Free", limits: { "opscrew-block-probes": 5, "opscrew-strict-tls": 10 } }],
+  ["pro", { name: "Pro", limits: { "opscrew-block-probes": 20, "opscrew-strict-tls": 25 } }],
+  [
+    "business",
+    { name: "Business", limits: { "opscrew-block-probes": 100, "opscrew-strict-tls": 50 } },
+  ],
+  [
+    "enterprise",
+    { name: "Enterprise", limits: { "opscrew-block-probes": 1000, "opscrew-strict-tls": 300 } },
+  ],
+]);
 
 /** A hostname OpsCrew writes into an expression: lower-case labels joined by dots. */
 const HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/;
@@ -94,6 +114,8 @@ const HOST_SET = /^\(http\.host in \{("[a-z0-9.-]+"(?: "[a-z0-9.-]+")*)\}\)/;
 export interface SharedFacts {
   zoneId: string;
   accountId: string;
+  /** The zone's plan (`free`, `pro`, `business`, `enterprise`), when Cloudflare says. */
+  zonePlan?: string;
   /** Per phase: the entrypoint ruleset (absent when Cloudflare answered 404). */
   entrypoints: Record<string, EntrypointRuleset | undefined>;
   /** Phases whose entrypoint the token may not read (HTTP 403). */
@@ -116,6 +138,18 @@ export interface SharedRecord {
   hostnames: Partial<Record<SharedRuleRef, string[]>>;
   createdEntrypoints: string[];
 }
+
+const Hostnames = z.array(z.string().regex(HOSTNAME)).optional();
+
+/**
+ * `.opscrew/cloudflare.json` as read from disk: a 32-hex zone id, OpsCrew's two rule refs with
+ * lower-case hostnames, and phases. Unknown keys are refused, so a damaged file stops the command.
+ */
+export const SharedRecordSchema: z.ZodType<SharedRecord> = z.strictObject({
+  zoneId: z.string().regex(/^[0-9a-f]{32}$/),
+  hostnames: z.strictObject({ "opscrew-block-probes": Hostnames, "opscrew-strict-tls": Hostnames }),
+  createdEntrypoints: z.array(z.enum(["http_request_firewall_custom", "http_config_settings"])),
+});
 
 /** One change of a shared plan; rule bodies and ids are exactly what is sent. */
 export type SharedChange =
@@ -204,13 +238,14 @@ export class SharedApplyError extends OpsCrewError {
 // --- Inspect -------------------------------------------------------------------------------------
 
 /**
- * Reads the zone's two entrypoint rulesets and, when `access` is set, the account's Zero Trust
- * organization and its one-time PIN login method. Read-only.
+ * Reads the zone's plan and its two entrypoint rulesets and, when `access` is set, the account's
+ * Zero Trust organization and its one-time PIN login method. Read-only.
  */
 export async function inspectShared(
   client: CloudflareClient,
   opts: { zoneId: string; accountId: string; access: boolean },
 ): Promise<SharedFacts> {
+  const zonePlan = await client.zonePlan(opts.zoneId);
   const entrypoints: Record<string, EntrypointRuleset | undefined> = {};
   const deniedPhases: string[] = [];
   for (const ref of REFS) {
@@ -219,7 +254,12 @@ export async function inspectShared(
     if (read === "forbidden") deniedPhases.push(phase);
     else entrypoints[phase] = read;
   }
-  const facts: SharedFacts = { zoneId: opts.zoneId, accountId: opts.accountId, entrypoints };
+  const facts: SharedFacts = {
+    zoneId: opts.zoneId,
+    accountId: opts.accountId,
+    ...(zonePlan ? { zonePlan } : {}),
+    entrypoints,
+  };
   if (deniedPhases.length > 0) facts.deniedPhases = deniedPhases;
   if (!opts.access) return facts;
   const organization = await client.accessOrganization(opts.accountId);
@@ -257,7 +297,13 @@ export function planShared(
       continue;
     }
     const entrypoint = facts.entrypoints[phase];
-    const planned = planRule(ref, entrypoint, hostnames, record?.hostnames[ref] ?? []);
+    const planned = planRule(
+      ref,
+      entrypoint,
+      hostnames,
+      record?.hostnames[ref] ?? [],
+      facts.zonePlan,
+    );
     if ("finding" in planned) {
       findings.push(planned.finding);
       continue;
@@ -299,6 +345,7 @@ function planRule(
   entrypoint: EntrypointRuleset | undefined,
   hostnames: readonly string[],
   mine: readonly string[],
+  zonePlan: string | undefined,
 ): { changes: RuleChange[] } | { finding: SharedFinding } {
   const { phase } = SHARED_RULES[ref];
   const rule = ownRule(ref, entrypoint);
@@ -321,8 +368,9 @@ function planRule(
   if (!entrypoint) return { changes: [{ kind: "create-entrypoint", phase, rule: body }] };
   const rulesetId = entrypoint.id;
   if (!rule) {
-    if (entrypoint.rules.length >= TEMPLATES[ref].freeLimit) {
-      return { finding: noRuleSlot(ref, entrypoint.rules.length) };
+    const plan = zonePlan === undefined ? undefined : RULE_LIMITS.get(zonePlan);
+    if (plan && entrypoint.rules.length >= plan.limits[ref]) {
+      return { finding: noRuleSlot(ref, entrypoint.rules.length, plan) };
     }
     return { changes: [{ kind: "add-rule", phase, rulesetId, rule: body }] };
   }
@@ -428,12 +476,13 @@ function hostnameClaimed(ref: SharedRuleRef, hostnames: readonly string[]): Shar
   };
 }
 
-function noRuleSlot(ref: SharedRuleRef, count: number): SharedFinding {
-  const { description, label, freeLimit } = TEMPLATES[ref];
+function noRuleSlot(ref: SharedRuleRef, count: number, plan: PlanLimits): SharedFinding {
+  const { description, label } = TEMPLATES[ref];
+  const upgrade = plan.name === "Enterprise" ? "" : ", or move the zone to a higher plan";
   return {
     code: "no-rule-slot",
-    message: `The zone's ${label} already hold ${plural(count, "rule")}, the most Cloudflare's Free plan allows (${freeLimit}), so OpsCrew cannot add its rule "${description}".`,
-    hint: `Delete or merge one of the zone's ${label} in the Cloudflare dashboard, or move the zone to a paid plan, then run the command again. OpsCrew needs one rule there for all its apps in the zone.`,
+    message: `The zone's ${label} already hold ${plural(count, "rule")}, the most Cloudflare's ${plan.name} plan allows (${plan.limits[ref].toLocaleString("en-US")}), so OpsCrew cannot add its rule "${description}".`,
+    hint: `Delete or merge one of the zone's ${label} in the Cloudflare dashboard${upgrade}, then run the command again. OpsCrew needs one rule there for all its apps in the zone.`,
   };
 }
 

@@ -250,6 +250,10 @@ const RulesetSchema = z.looseObject({
   rules: z.array(z.unknown()).nullable().optional(),
 });
 
+const ZonePlanSchema = z.looseObject({
+  plan: z.looseObject({ legacy_id: z.string().nullish() }).nullish(),
+});
+
 const EntrypointSchema = z.looseObject({
   id: z.string().min(1),
   rules: z
@@ -824,6 +828,19 @@ export class CloudflareClient {
       if (zone) return toZone(zone);
     }
     return undefined;
+  }
+
+  /**
+   * The zone's plan as the zone details name it (`plan.legacy_id`: `free`, `pro`, `business`,
+   * `enterprise`), or undefined when Cloudflare does not say. Read-only.
+   */
+  async zonePlan(zoneId: string): Promise<string | undefined> {
+    const zone = await this.#call(
+      `/zones/${encodeURIComponent(zoneId)}`,
+      ZonePlanSchema,
+      "read the zone's plan",
+    );
+    return zone.plan?.legacy_id ?? undefined;
   }
 
   /** DNS records of a zone, optionally filtered by exact name and type. Follows pagination. */
