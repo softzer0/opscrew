@@ -169,6 +169,74 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-portainer --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
+## Phase 5: Converge and simplify (from the end-of-feature review, 2026-10-18)
+
+Four read-only reviewers checked the whole feature (`bc01843..b73fad1`) by area. They found no bugs, no safety problems and no missing FR or SC beyond the two small gaps below. These tasks fold in the findings worth doing. Their Owns are disjoint, so they run in parallel.
+
+- [ ] T1110 [P] Dead code in `packages/connectors/cloudflare/src/**`
+  - Owns: that path (+ tests)
+  - Accept:
+    - The pre-011 whole-ruleset inspection goes: `OPSCREW_RULESET_NAMES`, `EntrypointRulesetStatus`, `RulesetSchema`, `inspectEntrypointRuleset` (`client.ts`), its export in `index.ts`, and its two tests. Confirm first that nothing outside the package imports them.
+    - The comments on `ManagedRulesetPhase` and `OPSCREW_MANAGED_COMMENT` describe what is left.
+    - `testing/index.ts` drops the `FakeRuleset`, `FakeZoneCall` and `FakeFault` type exports that nothing imports.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents`
+  - Effort: medium
+
+- [ ] T1111 [P] The flows in `packages/agents/src/**`
+  - Owns: that path (+ tests); `packages/iac-templates/src/infra/{cloudflare,index}.ts` for the move below
+  - Accept:
+    - **`--plan-only` during a mode switch** (spec gap, FR-1114). On your own server, a switch between public and tunnel mode with a pending removal returns early (`provision/run.ts` ~318) without printing the Cloudflare plan it already made. Print it first.
+    - **One result shape.** `applySharedCloudflare` returns the ready fields (`cloudflarePlanHash`, `cloudflarePlanDeletes`) that `provision/run.ts`, `provision/portainer-flow.ts` and `portainer/run.ts` now each build. `ProvisionResult` and the other public results keep their shape, so the CLI and MCP do not change.
+    - **`applySharedCloudflare`** loops over `[planned.leave, planned.main]` instead of the `left`/`leftApplied`/`leftDeletes` bookkeeping, keeping the one early return for plan-only.
+    - **Drop `leftInZoneTokenMissing` and its guard.** `sharedCloudflareClient` already says the token is missing and nothing was changed.
+    - **Shared helpers.** One exported `listsHostnames(record)` and `REFS` from `provision/shared-cloudflare.ts`, used by drift and destroy, instead of three checks and two `REFS`.
+    - **Move `zeroTrustAuthDomain`** from `iac-templates/src/infra/cloudflare.ts` (and its export) to the agents, its only caller.
+    - **Destroy prints the Cloudflare plan once.** Keep the preview, and skip the second print in `applyZonePlan` when the request is a destroy.
+    - **A "leave" plan with nothing to change** prints a neutral line, not "already set up for this app".
+    - **`init`** turns only `permission-missing` findings into token problems (`init/checks.ts` ~788). A `rule-changed` finding is not a token problem.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: high
+
+- [ ] T1112 [P] The CLI and MCP tools in `packages/cli/src/**`, `packages/mcp-server/src/**`
+  - Owns: those paths (+ tests)
+  - Accept:
+    - **MCP typed-name note** (spec gap, FR-1117). `opscrew_plan` says the user must type the app's name also when only the Cloudflare plan deletes (`result.cloudflarePlanDeletes`), as the CLI does. Add one assertion to the existing "returned alone and deleting OpsCrew's rule" test.
+    - **Simplify in `mcp-server/src/tools/deploy.ts`:**
+      - one `planText(messages, prefix, hash?)` instead of `hostPlanText`, `stackPlanText` and `cloudflarePlanText`;
+      - the `shown` wording from a three-entry list;
+      - the apply summary without the repeated "The infrastructure needed no change.";
+      - one helper for the "Applied the Cloudflare plan" sentence, shared with `tools/portainer.ts`.
+    - **`opscrew dns --plan-only` with a deleting plan** prints no `--approve` command a script cannot finish. It prints only the hint (terminal, or `opscrew provision --plan-only` in a script), without the unused `[first]` guard.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server` and `node plugin/validate.mjs`
+  - Effort: medium
+
+- [ ] T1113 [P] The live harness in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
+  - Owns: those paths
+  - Accept:
+    - **Shared harness methods.**
+      - One `LiveRun.leakSources()` used by both leak searches: own server and Portainer, for A and B, with "(B)" in the second app's labels.
+      - One `rememberOutputs(names)` for the infrastructure outputs that go into the scrubber.
+      - `second()` builds B's label, name and settings itself, and returns `undefined` when `secondAppSkip` gives a reason.
+      - One `deployAny(what)` for `deploy || deployMain`.
+    - **Smaller code.**
+      - `expressionHosts` keeps only the `http.host in {…}` form.
+      - `zeroTrust` treats 404 as "no organization" and throws on any other non-200, without matching error text.
+      - The Portainer `step()` wrapper passes its options as they are.
+      - The comments and module headers that restate `docs/e2e.md` or the code shrink to one sentence each.
+    - **`docs/e2e-coverage.md`.**
+      - Fold each 011 row into the row above it. The own server and the Portainer core pass passed with the second app on 2026-10-18, so no row contradicts another.
+      - In the "two apps in one environment" row, the note sits in one column, and it says volumes and ports are not checked.
+      - The 011 section is retitled "confirmed live", keeping the one unconfirmed row.
+      - The leak row says "CLI output; MCP in Portainer".
+    - **`docs/e2e.md`.**
+      - Portainer step 2a links to own-server step 2 and lists only the difference.
+      - The run times are the measured ones: own server with B 36 minutes, Portainer core with B 21 minutes.
+    - Every step title and every check stays.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
+  - Effort: high
+
+- [ ] T1114 Live reruns (lead) after T1110–T1113: Hetzner with the domain, own server with B, Portainer core with B; results in `docs/e2e.md` and `docs/e2e-coverage.md`
+
 ## Dependencies
 
-T1101 → {T1102, T1103} → T1104 → T1105 → T1106 → T1107 → T1108.
+T1101 → {T1102, T1103} → T1104 → T1105 → T1106 → T1107 → T1108 → T1109 → {T1110, T1111, T1112, T1113} → T1114.
