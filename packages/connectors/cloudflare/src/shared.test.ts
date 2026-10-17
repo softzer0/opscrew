@@ -86,7 +86,9 @@ describe("SHARED_RULES", () => {
 describe("planShared and applyShared", () => {
   it("creates both entrypoints for the first app, from sorted lower-case hostnames, and plans nothing on a re-run", async () => {
     const zone = new FakeZone();
-    const plan = await planFor(zone, { hostnames: ["WWW.Shop.example.com", "shop.example.com"] });
+    const plan = await planFor(zone, {
+      hostnames: both(["WWW.Shop.example.com", "shop.example.com"]),
+    });
     expect(plan.findings).toEqual([]);
     expect(plan.changes).toEqual([
       {
@@ -148,15 +150,15 @@ describe("planShared and applyShared", () => {
       action_parameters: { ssl: "strict" },
     });
 
-    const again = await planFor(zone, { hostnames: A }, result.record);
+    const again = await planFor(zone, { hostnames: both(A) }, result.record);
     expect(again).toMatchObject({ changes: [], findings: [], expect: {}, record: result.record });
   });
 
   it("adds a second app's hostnames to both shared rules, and the last app removes the rules", async () => {
     const zone = new FakeZone();
-    const a = await deploy(zone, { hostnames: A });
+    const a = await deploy(zone, { hostnames: both(A) });
     const blockRule = zone.opscrewRule(WAF);
-    const b = await deploy(zone, { hostnames: B });
+    const b = await deploy(zone, { hostnames: both(B) });
     expect(b.plan.changes).toEqual([
       {
         kind: "update-hostnames",
@@ -188,9 +190,9 @@ describe("planShared and applyShared", () => {
       createdEntrypoints: [],
     });
     expect(zone.entrypoints.get(WAF)?.rules).toHaveLength(1);
-    expect((await planFor(zone, { hostnames: A }, a.result.record)).changes).toEqual([]);
+    expect((await planFor(zone, { hostnames: both(A) }, a.result.record)).changes).toEqual([]);
 
-    const aGone = await deploy(zone, { hostnames: [] }, a.result.record);
+    const aGone = await deploy(zone, { hostnames: {} }, a.result.record);
     expect(aGone.plan.changes).toMatchObject([
       { kind: "update-hostnames", phase: WAF, add: [], remove: A },
       { kind: "update-hostnames", phase: CONFIG, add: [], remove: A },
@@ -203,7 +205,7 @@ describe("planShared and applyShared", () => {
     expect(zone.opscrewRule(WAF)?.expression).toBe(blockExpression(B));
     expect(zone.opscrewRule(CONFIG)?.expression).toBe(hostSet(B));
 
-    const bGone = await deploy(zone, { hostnames: [] }, b.result.record);
+    const bGone = await deploy(zone, { hostnames: {} }, b.result.record);
     expect(bGone.plan.changes).toMatchObject([
       { kind: "delete-rule", phase: WAF },
       { kind: "delete-entrypoint", phase: WAF },
@@ -212,22 +214,57 @@ describe("planShared and applyShared", () => {
     ]);
     expect(zone.entrypoints.size).toBe(0);
     expect(bGone.result.record).toEqual({ zoneId: ZONE_ID, hostnames: {}, createdEntrypoints: [] });
-    expect((await planFor(zone, { hostnames: [] }, bGone.result.record)).changes).toEqual([]);
+    expect((await planFor(zone, { hostnames: {} }, bGone.result.record)).changes).toEqual([]);
+  });
+
+  it("keeps each rule's own hostnames: a tunnel app only in the block rule, an app without WAF rules only in the TLS rule", async () => {
+    const zone = new FakeZone();
+    // Served through a Cloudflare Tunnel: no strict-TLS rule for its hostnames.
+    const tunnel = await deploy(zone, { hostnames: { [BLOCK]: A } });
+    expect(kinds(tunnel.plan)).toEqual(["create-entrypoint"]);
+    expect(tunnel.result.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: { [BLOCK]: A },
+      createdEntrypoints: [WAF],
+    });
+    // `security.wafCustomRules: false`: no block rule for its hostnames.
+    const noWaf = await deploy(zone, { hostnames: { [TLS]: B, [BLOCK]: [] } });
+    expect(kinds(noWaf.plan)).toEqual(["create-entrypoint"]);
+    expect(noWaf.result.record).toEqual({
+      zoneId: ZONE_ID,
+      hostnames: { [TLS]: B },
+      createdEntrypoints: [CONFIG],
+    });
+    expect(zone.opscrewRule(WAF)?.expression).toBe(blockExpression(A));
+    expect(zone.opscrewRule(CONFIG)?.expression).toBe(hostSet(B));
+    expect(
+      (await planFor(zone, { hostnames: { [BLOCK]: A } }, tunnel.result.record)).changes,
+    ).toEqual([]);
+
+    // The tunnel app moves to public records: it joins the TLS rule, the block rule stays as it is.
+    const moved = await deploy(zone, { hostnames: both(A) }, tunnel.result.record);
+    expect(moved.plan.changes).toMatchObject([
+      { kind: "update-hostnames", phase: CONFIG, add: A, remove: [] },
+    ]);
+    expect(zone.opscrewRule(CONFIG)?.expression).toBe(hostSet([...B, ...A]));
+    // The other app turns its WAF rules back off again later: only its TLS hostnames stay.
+    const off = await deploy(zone, { hostnames: { [TLS]: B } }, noWaf.result.record);
+    expect(off.plan.changes).toEqual([]);
   });
 
   it("adds back a hostname this app recorded that was removed by hand, and changes a hostname set in one plan", async () => {
     const zone = new FakeZone();
-    const a = await deploy(zone, { hostnames: A });
+    const a = await deploy(zone, { hostnames: both(A) });
     const rule = zone.opscrewRule(WAF) as Record<string, unknown>;
     rule.expression = blockExpression(["shop.example.com"]);
 
-    const plan = await planFor(zone, { hostnames: A }, a.result.record);
+    const plan = await planFor(zone, { hostnames: both(A) }, a.result.record);
     expect(plan.changes).toMatchObject([
       { kind: "update-hostnames", phase: WAF, add: ["www.shop.example.com"], remove: [] },
     ]);
 
     await applyShared(clientFor(zone), plan, { approvedHash: plan.hash });
-    const moved = await deploy(zone, { hostnames: ["shop.example.org"] }, a.result.record);
+    const moved = await deploy(zone, { hostnames: both(["shop.example.org"]) }, a.result.record);
     expect(moved.plan.changes).toMatchObject([
       { kind: "update-hostnames", phase: WAF, add: ["shop.example.org"], remove: A },
       { kind: "update-hostnames", phase: CONFIG, add: ["shop.example.org"], remove: A },
@@ -269,11 +306,11 @@ describe("planShared and applyShared", () => {
       };
 
       const access = { authDomain: AUTH_DOMAIN, oneTimePin: true };
-      const a = await step({ hostnames: A, access });
-      const b = await step({ hostnames: B, access });
-      const a2 = await step({ hostnames: ["shop.example.com"] }, a);
-      await step({ hostnames: [] }, a2);
-      await step({ hostnames: [] }, b);
+      const a = await step({ hostnames: both(A), access });
+      const b = await step({ hostnames: both(B), access });
+      const a2 = await step({ hostnames: both(["shop.example.com"]) }, a);
+      await step({ hostnames: {} }, a2);
+      await step({ hostnames: {} }, b);
 
       for (const phase of phases) {
         expect(zone.entrypoints.get(phase)?.rules).toHaveLength(2);
@@ -302,8 +339,8 @@ describe("planShared and applyShared", () => {
 describe("findings", () => {
   it("refuses to claim a hostname another app added", async () => {
     const zone = new FakeZone();
-    await deploy(zone, { hostnames: A });
-    const plan = await planFor(zone, { hostnames: ["c.example.com", "shop.example.com"] });
+    await deploy(zone, { hostnames: both(A) });
+    const plan = await planFor(zone, { hostnames: both(["c.example.com", "shop.example.com"]) });
     expect(plan.changes).toEqual([]);
     expect(plan.findings).toHaveLength(2);
     expect(plan.findings[0]).toMatchObject({
@@ -339,7 +376,7 @@ describe("findings", () => {
   };
 
   it("stops when the Free plan's rule slots are used by others", async () => {
-    const plan = await planFor(fullZone("free", 5, 10), { hostnames: A });
+    const plan = await planFor(fullZone("free", 5, 10), { hostnames: both(A) });
     expect(plan.changes).toEqual([]);
     expect(plan.findings).toMatchObject([
       {
@@ -361,11 +398,11 @@ describe("findings", () => {
   });
 
   it("counts rule slots by the zone's plan", async () => {
-    const roomy = await planFor(fullZone("pro", 5, 10), { hostnames: A });
+    const roomy = await planFor(fullZone("pro", 5, 10), { hostnames: both(A) });
     expect(roomy.findings).toEqual([]);
     expect(kinds(roomy)).toEqual(["add-rule", "add-rule"]);
 
-    const full = await planFor(fullZone("pro", 20, 24), { hostnames: A });
+    const full = await planFor(fullZone("pro", 20, 24), { hostnames: both(A) });
     expect(full.findings).toMatchObject([
       {
         code: "no-rule-slot",
@@ -376,7 +413,7 @@ describe("findings", () => {
     ]);
     expect(kinds(full)).toEqual(["add-rule"]);
 
-    const enterprise = await planFor(fullZone("enterprise", 0, 300), { hostnames: A });
+    const enterprise = await planFor(fullZone("enterprise", 0, 300), { hostnames: both(A) });
     expect(enterprise.findings).toMatchObject([
       {
         code: "no-rule-slot",
@@ -389,7 +426,7 @@ describe("findings", () => {
   it("leaves the slot count to Cloudflare on a plan OpsCrew does not know", async () => {
     for (const plan of ["partners_free", undefined]) {
       const zone = fullZone(plan, 5, 0);
-      const planned = await planFor(zone, { hostnames: A });
+      const planned = await planFor(zone, { hostnames: both(A) });
       expect(planned.findings).toEqual([]);
       expect(planned.changes).toMatchObject([
         { kind: "add-rule", phase: WAF },
@@ -413,11 +450,11 @@ describe("findings", () => {
       Array.from({ length: n }, (_, i) => `host-${String(i).padStart(3, "0")}.example.com`);
     let n = 1;
     while (blockExpression(hosts(n + 1)).length <= 4096) n++;
-    await deploy(zone, { hostnames: hosts(n) });
+    await deploy(zone, { hostnames: both(hosts(n)) });
     expect(String(zone.opscrewRule(WAF)?.expression).length).toBeLessThanOrEqual(4096);
 
     // Longer than any hostname of the first app, so it cannot fit in what is left.
-    const plan = await planFor(zone, { hostnames: [`${"z".repeat(24)}.example.com`] });
+    const plan = await planFor(zone, { hostnames: both([`${"z".repeat(24)}.example.com`]) });
     expect(plan.findings).toMatchObject([
       {
         code: "expression-too-long",
@@ -446,10 +483,10 @@ describe("findings", () => {
     "reports OpsCrew's rule changed by someone and writes nothing (%s %o)",
     async (phase, edit, difference) => {
       const zone = new FakeZone();
-      const a = await deploy(zone, { hostnames: A });
+      const a = await deploy(zone, { hostnames: both(A) });
       Object.assign(zone.opscrewRule(phase) as Record<string, unknown>, edit);
 
-      const again = await planFor(zone, { hostnames: A }, a.result.record);
+      const again = await planFor(zone, { hostnames: both(A) }, a.result.record);
       expect(again.findings).toMatchObject([
         {
           code: "rule-changed",
@@ -459,7 +496,7 @@ describe("findings", () => {
           hint: expect.stringContaining("delete the rule so OpsCrew creates it again"),
         },
       ]);
-      const other = await planFor(zone, { hostnames: B });
+      const other = await planFor(zone, { hostnames: both(B) });
       expect(other.changes.map((c) => ("phase" in c ? c.phase : c.kind))).toEqual(
         [WAF, CONFIG].filter((p) => p !== phase),
       );
@@ -483,7 +520,7 @@ describe("findings", () => {
       access: false,
     });
     expect(facts.deniedPhases).toEqual([WAF, CONFIG]);
-    const plan = planShared(facts, { hostnames: A }, undefined);
+    const plan = planShared(facts, { hostnames: both(A) }, undefined);
     expect(plan.changes).toEqual([]);
     expect(plan.findings).toMatchObject([
       {
@@ -505,11 +542,14 @@ describe("findings", () => {
       access: false,
     });
     const injected = await rejection(
-      (async () => planShared(facts, { hostnames: ['a" or true or "b.example.com'] }, undefined))(),
+      (async () =>
+        planShared(facts, { hostnames: both(['a" or true or "b.example.com']) }, undefined))(),
     );
     expect(injected.code).toBe("INVALID_INPUT");
     const record = { zoneId: "f".repeat(32), hostnames: both(A), createdEntrypoints: [] };
-    const otherZone = await rejection((async () => planShared(facts, { hostnames: A }, record))());
+    const otherZone = await rejection(
+      (async () => planShared(facts, { hostnames: both(A) }, record))(),
+    );
     expect(otherZone.code).toBe("INVALID_INPUT");
   });
 });
@@ -517,7 +557,7 @@ describe("findings", () => {
 describe("applyShared", () => {
   it("refuses a plan whose hash was not approved or that changed after approval", async () => {
     const zone = new FakeZone();
-    const plan = await planFor(zone, { hostnames: A });
+    const plan = await planFor(zone, { hostnames: both(A) });
     const tampered: SharedPlan = {
       ...plan,
       changes: [{ kind: "create-organization", authDomain: AUTH_DOMAIN }],
@@ -538,9 +578,9 @@ describe("applyShared", () => {
 
   it("stops a plan another app made stale, writing nothing", async () => {
     const zone = new FakeZone();
-    const a = await deploy(zone, { hostnames: A });
-    const stale = await planFor(zone, { hostnames: B });
-    await deploy(zone, { hostnames: ["c.example.com"] });
+    const a = await deploy(zone, { hostnames: both(A) });
+    const stale = await planFor(zone, { hostnames: both(B) });
+    await deploy(zone, { hostnames: both(["c.example.com"]) });
 
     const before = zone.calls.length;
     const error = await rejection(
@@ -554,7 +594,7 @@ describe("applyShared", () => {
     expect(error.hint).toContain("make a new plan");
     expect(writesSince(zone, before)).toEqual([]);
 
-    const removed = await planFor(zone, { hostnames: [] }, a.result.record);
+    const removed = await planFor(zone, { hostnames: {} }, a.result.record);
     zone.entrypoints.get(CONFIG)?.rules.splice(0, 1);
     const gone = await rejection(
       applyShared(clientFor(zone), removed, { approvedHash: removed.hash }),
@@ -567,7 +607,7 @@ describe("applyShared", () => {
 
   it("never sends PUT to an entrypoint created after the plan", async () => {
     const zone = new FakeZone();
-    const plan = await planFor(zone, { hostnames: A });
+    const plan = await planFor(zone, { hostnames: both(A) });
     zone.seedRule(CONFIG, {
       description: "user",
       expression: "(cf.client.bot)",
@@ -590,8 +630,8 @@ describe("applyShared", () => {
     "re-checks OpsCrew's rule before writing and stops when %s since the plan",
     async (_, edit) => {
       const zone = new FakeZone();
-      await deploy(zone, { hostnames: A });
-      const plan = await planFor(zone, { hostnames: B });
+      await deploy(zone, { hostnames: both(A) });
+      const plan = await planFor(zone, { hostnames: both(B) });
       expect(kinds(plan)).toEqual(["update-hostnames", "update-hostnames"]);
       const rule = zone.opscrewRule(WAF) as Record<string, unknown>;
       Object.assign(rule, edit);
@@ -613,8 +653,8 @@ describe("applyShared", () => {
   /** The zone with only app B, and B's destroy plan (it deletes both rules and entrypoints). */
   async function lastAppDestroy() {
     const zone = new FakeZone();
-    const { result } = await deploy(zone, { hostnames: B });
-    const plan = await planFor(zone, { hostnames: [] }, result.record);
+    const { result } = await deploy(zone, { hostnames: both(B) });
+    const plan = await planFor(zone, { hostnames: {} }, result.record);
     expect(kinds(plan)).toEqual([
       "delete-rule",
       "delete-entrypoint",
@@ -681,8 +721,8 @@ describe("applyShared", () => {
 
   it("stops part-way on a failed write, never sends it twice, and says what was applied", async () => {
     const zone = new FakeZone();
-    const a = await deploy(zone, { hostnames: A });
-    const plan = await planFor(zone, { hostnames: ["shop.example.com"] }, a.result.record);
+    const a = await deploy(zone, { hostnames: both(A) });
+    const plan = await planFor(zone, { hostnames: both(["shop.example.com"]) }, a.result.record);
     const config = zone.entrypoints.get(CONFIG)?.id;
     zone.faults.push({
       match: `PATCH /zones/${ZONE_ID}/rulesets/${config}/rules`,
@@ -706,7 +746,7 @@ describe("applyShared", () => {
     ).toHaveLength(1);
     expect(zone.opscrewRule(CONFIG)?.expression).toBe(hostSet(A));
 
-    const next = await planFor(zone, { hostnames: ["shop.example.com"] }, failed.record);
+    const next = await planFor(zone, { hostnames: both(["shop.example.com"]) }, failed.record);
     expect(next.findings).toEqual([]);
     expect(next.changes).toMatchObject([
       { kind: "update-hostnames", phase: CONFIG, remove: ["www.shop.example.com"] },
@@ -722,8 +762,8 @@ describe("applyShared", () => {
     ["keeps the old and the new hostnames when that read fails too", true, A],
   ])("after a write with no clear answer, %s", async (_, readFails, held) => {
     const zone = new FakeZone();
-    const first = await deploy(zone, { hostnames: ["shop.example.com"] });
-    const plan = await planFor(zone, { hostnames: A }, first.result.record);
+    const first = await deploy(zone, { hostnames: both(["shop.example.com"]) });
+    const plan = await planFor(zone, { hostnames: both(A) }, first.result.record);
     expect(plan.changes).toMatchObject([
       { kind: "update-hostnames", phase: WAF, add: ["www.shop.example.com"] },
       { kind: "update-hostnames", phase: CONFIG, add: ["www.shop.example.com"] },
@@ -760,7 +800,7 @@ describe("applyShared", () => {
 
   it("says a write that timed out may have reached Cloudflare, and counts its hostnames as this app's", async () => {
     const zone = new FakeZone();
-    const plan = await planFor(zone, { hostnames: A });
+    const plan = await planFor(zone, { hostnames: both(A) });
     zone.faults.push({
       match: `PUT /zones/${ZONE_ID}/rulesets/phases/${CONFIG}/entrypoint`,
       reply: { hang: true },
@@ -782,14 +822,14 @@ describe("applyShared", () => {
     expect(zone.calls.filter((c) => c.method === "PUT")).toHaveLength(2);
     expect(zone.opscrewRule(CONFIG)).toBeDefined();
 
-    const next = await planFor(zone, { hostnames: A }, failed.record);
+    const next = await planFor(zone, { hostnames: both(A) }, failed.record);
     expect(next).toMatchObject({ changes: [], findings: [] });
   });
 
   it("does not send a write again after a lost connection", async () => {
     const zone = new FakeZone();
     zone.seedRule(WAF, { description: "user", expression: "(cf.client.bot)", action: "block" });
-    const plan = await planFor(zone, { hostnames: A });
+    const plan = await planFor(zone, { hostnames: both(A) });
     const waf = zone.entrypoints.get(WAF)?.id;
     zone.faults.push({
       match: `POST /zones/${ZONE_ID}/rulesets/${waf}/rules`,
@@ -808,7 +848,7 @@ describe("applyShared", () => {
   it("checks the ruleset Cloudflare returns after a write", async () => {
     const zone = new FakeZone();
     zone.seedRule(WAF, { description: "user", expression: "(cf.client.bot)", action: "block" });
-    const plan = await planFor(zone, { hostnames: A });
+    const plan = await planFor(zone, { hostnames: both(A) });
     const waf = zone.entrypoints.get(WAF)?.id;
     zone.faults.push({
       match: `POST /zones/${ZONE_ID}/rulesets/${waf}/rules`,
@@ -833,7 +873,7 @@ describe("Zero Trust", () => {
   it("creates the organization and the one-time PIN when absent, and never deletes them", async () => {
     const zone = new FakeZone();
     const access = { authDomain: AUTH_DOMAIN, oneTimePin: true };
-    const a = await deploy(zone, { hostnames: A, access });
+    const a = await deploy(zone, { hostnames: both(A), access });
     expect(a.plan.changes.slice(2)).toEqual([
       { kind: "create-organization", authDomain: AUTH_DOMAIN },
       { kind: "create-identity-provider", type: "onetimepin" },
@@ -864,15 +904,15 @@ describe("Zero Trust", () => {
       ],
     );
 
-    const b = await deploy(zone, { hostnames: B, access });
+    const b = await deploy(zone, { hostnames: both(B), access });
     expect(kinds(b.plan)).toEqual(["update-hostnames", "update-hostnames"]);
     expect(b.result).toMatchObject({
       organization: { authDomain: AUTH_DOMAIN },
       oneTimePinId: pin,
     });
 
-    await deploy(zone, { hostnames: [], access }, a.result.record);
-    await deploy(zone, { hostnames: [] }, b.result.record);
+    await deploy(zone, { hostnames: {}, access }, a.result.record);
+    await deploy(zone, { hostnames: {} }, b.result.record);
     expect(zone.organization).toEqual({ name: AUTH_DOMAIN, auth_domain: AUTH_DOMAIN });
     expect(zone.providers).toHaveLength(1);
     expect(zone.calls.some((c) => c.method === "DELETE" && c.path.startsWith("/accounts"))).toBe(
@@ -884,7 +924,7 @@ describe("Zero Trust", () => {
     const zone = new FakeZone();
     zone.organization = { name: "Acme", auth_domain: "acme.cloudflareaccess.com" };
     const { plan, result } = await deploy(zone, {
-      hostnames: A,
+      hostnames: both(A),
       access: { authDomain: AUTH_DOMAIN, oneTimePin: true },
     });
     expect(kinds(plan).slice(2)).toEqual(["create-identity-provider"]);
@@ -894,7 +934,7 @@ describe("Zero Trust", () => {
 
   it("reads Zero Trust only when Access is wanted", async () => {
     const zone = new FakeZone();
-    await planFor(zone, { hostnames: A });
+    await planFor(zone, { hostnames: both(A) });
     expect(zone.calls.some((c) => c.path.startsWith("/accounts"))).toBe(false);
   });
 });
@@ -902,7 +942,7 @@ describe("Zero Trust", () => {
 describe("SharedRecordSchema", () => {
   it("reads the record an apply returns, as written to disk", async () => {
     const zone = new FakeZone();
-    const { result } = await deploy(zone, { hostnames: A });
+    const { result } = await deploy(zone, { hostnames: both(A) });
     const onDisk = JSON.parse(JSON.stringify(result.record, null, 2));
     expect(SharedRecordSchema.parse(onDisk)).toEqual(result.record);
     const empty = { zoneId: ZONE_ID, hostnames: {}, createdEntrypoints: [] };

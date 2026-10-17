@@ -126,8 +126,8 @@ export interface SharedFacts {
 }
 
 export interface SharedDesired {
-  /** This app's hostnames, lower case (empty on destroy). */
-  hostnames: string[];
+  /** This app's hostnames in each OpsCrew rule; a rule absent or empty gets none (none on destroy). */
+  hostnames: Partial<Record<SharedRuleRef, string[]>>;
   /** Access wanted: ensure the organization (with this auth domain) and the one-time PIN. */
   access?: { authDomain: string; oneTimePin: boolean };
 }
@@ -287,7 +287,9 @@ export function planShared(
       },
     );
   }
-  const hostnames = appHostnames(desired.hostnames);
+  const hostnames = Object.fromEntries(
+    REFS.map((ref) => [ref, appHostnames(desired.hostnames[ref] ?? [])]),
+  ) as Record<SharedRuleRef, string[]>;
   const changes: SharedChange[] = [];
   const findings: SharedFinding[] = [];
   const expect: SharedPlan["expect"] = {};
@@ -301,7 +303,7 @@ export function planShared(
     const planned = planRule(
       ref,
       entrypoint,
-      hostnames,
+      hostnames[ref],
       record?.hostnames[ref] ?? [],
       facts.zonePlan,
     );
@@ -331,7 +333,9 @@ export function planShared(
     previous: record,
     record: {
       zoneId: facts.zoneId,
-      hostnames: hostnames.length === 0 ? {} : Object.fromEntries(REFS.map((r) => [r, hostnames])),
+      hostnames: Object.fromEntries(
+        REFS.flatMap((ref) => (hostnames[ref].length > 0 ? [[ref, hostnames[ref]]] : [])),
+      ),
       createdEntrypoints: createdAfter(record, changes),
     },
     ...(facts.organization ? { organization: facts.organization } : {}),
