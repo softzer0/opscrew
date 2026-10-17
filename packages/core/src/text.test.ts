@@ -39,6 +39,13 @@ describe("durationText", () => {
   it("says whole minutes for a whole number of minutes", () => {
     expect(durationText(60_000)).toBe("1 minute");
     expect(durationText(15 * 60_000)).toBe("15 minutes");
+    expect(durationText(60 * 60_000)).toBe("60 minutes");
+    expect(durationText(150 * 60_000)).toBe("150 minutes");
+  });
+
+  it("says whole hours for a whole number of hours from two hours on", () => {
+    expect(durationText(2 * 3_600_000)).toBe("2 hours");
+    expect(durationText(6 * 3_600_000)).toBe("6 hours");
   });
 
   it("says whole seconds otherwise", () => {

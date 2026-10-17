@@ -17,10 +17,11 @@ export function normalizeHostName(name: string): string {
 }
 
 /**
- * A wait or timeout in words: `15 minutes` for a whole number of minutes, otherwise whole
- * seconds (`90 seconds`).
+ * A wait or timeout in words: `6 hours` for a whole number of hours from two hours on, `15
+ * minutes` for a whole number of minutes, otherwise whole seconds (`90 seconds`).
  */
 export function durationText(ms: number): string {
+  if (ms >= 2 * 3_600_000 && ms % 3_600_000 === 0) return plural(ms / 3_600_000, "hour");
   if (ms >= 60_000 && ms % 60_000 === 0) return plural(ms / 60_000, "minute");
   return plural(Math.round(ms / 1000), "second");
 }
