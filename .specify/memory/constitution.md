@@ -15,7 +15,9 @@ governs every specification, plan, task and line of code in this repository.
 - An apply MUST be bound to the exact plan that was approved: the plan file's SHA-256 hash is
   recorded with the approval, and the IaC engine (or, for changes to a server the user already
   owns, OpsCrew's host adapter; for changes in a Portainer the user already runs, OpsCrew's
-  Portainer adapter) refuses to apply a plan whose hash differs.
+  Portainer adapter; for Cloudflare resources several OpsCrew apps share, such as a zone's rules
+  or the account's Zero Trust organization, OpsCrew's Cloudflare shared-resources adapter) refuses
+  to apply a plan whose hash differs.
 - Destructive operations (destroy, delete, replace with data loss, DNS zone deletion, server
   rebuild) are denied by default. They require an approval flagged `allowDestroy` plus a typed
   confirmation of the affected resource name.
@@ -172,4 +174,4 @@ human sees and approves every change.
 - Every plan includes a Constitution Check; violations are either fixed or justified in the plan's
   Complexity Tracking table. Every reviewer pass checks constitution compliance.
 
-**Version**: 1.4.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-15
+**Version**: 1.5.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-17
