@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -32,10 +33,12 @@ import {
   ownRunner,
   PUBLIC_CHANGES,
   preparedServerFacts,
+  TUNNEL_ID,
 } from "@opscrew/agents/testing";
 import type { RemoteExec, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
-import { writeArtifact } from "@opscrew/plan-schema";
+import { fakeSecret } from "@opscrew/core/testing";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
@@ -98,6 +101,8 @@ interface Options {
   facts?: (projectId: string) => HostFacts;
   /** Resource changes the fake engine plans (Cloudflare's DNS record for a domain). */
   changes?: ResourceChange[];
+  /** Outputs of the fake engine's state (a tunnel's id and token). */
+  outputs?: Record<string, unknown>;
 }
 
 async function connect(options: Options = {}) {
@@ -160,6 +165,7 @@ async function connect(options: Options = {}) {
   const engine = new FakeEngine({
     changes: options.changes ?? [],
     planJson: { format_version: "1.2", planned_values: { root_module: {} } },
+    ...(options.outputs === undefined ? {} : { outputs: options.outputs }),
   });
   const github = new FakeGitHub();
   const services: ProvisionServices = {
@@ -192,12 +198,13 @@ async function connect(options: Options = {}) {
     options.elicit ? { capabilities: { elicitation: { form: {} } } } : {},
   );
   const elicited: ElicitRequestFormParams[] = [];
-  const answer = options.elicit;
-  if (answer) {
+  // The user's answers, which a test may change between calls.
+  const user = { answer: options.elicit };
+  if (options.elicit) {
     client.setRequestHandler(ElicitRequestSchema, async (request) => {
       const params = request.params as ElicitRequestFormParams;
       elicited.push(params);
-      return answer(params);
+      return (user.answer ?? approveAll)(params);
     });
   }
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -214,6 +221,9 @@ async function connect(options: Options = {}) {
     engine,
     elicited,
     outputs,
+    set answer(answer: Answer) {
+      user.answer = answer;
+    },
     async call(name: string, args: Record<string, unknown> = {}) {
       const result = (await client.callTool({ name, arguments: args })) as CallToolResult;
       outputs.push(result);
@@ -333,7 +343,7 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     expectNoAddress(h);
   });
 
-  it("with a Cloudflare domain: two plans, two dialogs (infrastructure, then host), no price", async () => {
+  it("with a Cloudflare domain: three plans, three dialogs (Cloudflare, infrastructure, host), no price", async () => {
     const h = await connect({
       elicit: approveAll,
       plan: shopPlan({ cloudflare: true }),
@@ -342,27 +352,165 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     });
     const planned = await h.call("opscrew_plan");
     expect(planned.isError, textOf(planned)).toBeFalsy();
-    const { planHash, hostPlanHash } = dataOf(planned) as {
+    const { planHash, hostPlanHash, cloudflarePlanHash } = dataOf(planned) as {
       planHash: string;
       hostPlanHash: string;
+      cloudflarePlanHash: string;
     };
-    expect(planHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(hostPlanHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(planHash).not.toBe(hostPlanHash);
+    for (const hash of [planHash, hostPlanHash, cloudflarePlanHash]) {
+      expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    }
+    expect(new Set([planHash, hostPlanHash, cloudflarePlanHash]).size).toBe(3);
     const text = textOf(planned);
-    expect(text).toContain(`planHash ${planHash} and hostPlanHash ${hostPlanHash}`);
+    // The Cloudflare plan comes first, with its text and hash, as in the terminal.
+    expect(text).toContain("Cloudflare plan for example.com");
+    expect(text).toContain(`Cloudflare plan hash: ${cloudflarePlanHash}`);
+    expect(text.indexOf("Cloudflare plan for")).toBeLessThan(text.indexOf("Host plan for"));
+    expect(text).toContain(
+      `planHash ${planHash} and hostPlanHash ${hostPlanHash} and cloudflarePlanHash ${cloudflarePlanHash}`,
+    );
+    expect(dataOf(planned).applyCommand).toBe(
+      `opscrew provision --approve ${cloudflarePlanHash} --approve ${planHash} --approve ${hostPlanHash}`,
+    );
     expect(text).not.toMatch(/€|live prices/i);
     expect(dataOf(planned)).not.toHaveProperty("cost");
+    expect(existsSync(h.paths.files.cloudflareRecord)).toBe(false);
 
-    const applied = await h.call("opscrew_apply", { planHash, hostPlanHash });
+    const applied = await h.call("opscrew_apply", { planHash, hostPlanHash, cloudflarePlanHash });
     expect(applied.isError, textOf(applied)).toBeFalsy();
     const kinds = (dataOf(applied).approvals as { kind: string }[])
       .map((d) => d.kind)
-      .filter((kind) => kind === "iac-apply" || kind === "host-apply");
-    expect(kinds).toEqual(["iac-apply", "host-apply"]);
+      .filter((kind) => kind.endsWith("-apply"));
+    expect(kinds).toEqual(["cloudflare-apply", "iac-apply", "host-apply"]);
+    expect(h.elicited[0]?.message).toContain(`Cloudflare plan hash: ${cloudflarePlanHash}`);
+    expect(textOf(applied)).toContain(`Applied the Cloudflare plan ${cloudflarePlanHash}`);
+    expect(dataOf(applied).cloudflarePlanHash).toBe(cloudflarePlanHash);
+    expect(existsSync(h.paths.files.cloudflareRecord)).toBe(true);
     expect(h.engine.applied.map((a) => a.approval.approvedPlanHash)).toEqual([planHash]);
     expect(h.host.applies.map((a) => a.options.approvedHash)).toEqual([hostPlanHash]);
     expectNoAddress(h);
+  });
+
+  describe("the Cloudflare plan of OpsCrew's shared rules", () => {
+    const planWithCloudflare = async (elicit?: Answer, changes = PUBLIC_CHANGES) => {
+      const h = await connect({
+        ...(elicit === undefined ? {} : { elicit }),
+        plan: shopPlan({ cloudflare: true }),
+        login: { hostKey: ED25519_FINGERPRINT },
+        changes,
+      });
+      const planned = await h.call("opscrew_plan");
+      expect(planned.isError, textOf(planned)).toBeFalsy();
+      const hashes = dataOf(planned) as {
+        planHash: string;
+        hostPlanHash: string;
+        cloudflarePlanHash: string;
+      };
+      return { h, hashes };
+    };
+
+    /** Nothing was applied anywhere: Cloudflare, the infrastructure or the server. */
+    const expectNothingApplied = (h: Awaited<ReturnType<typeof connect>>) => {
+      expect(existsSync(h.paths.files.cloudflareRecord)).toBe(false);
+      expect(h.engine.applied).toEqual([]);
+      expect(h.host.applies).toEqual([]);
+    };
+
+    it("is refused before any dialog when opscrew_apply was not given its hash", async () => {
+      const { h, hashes } = await planWithCloudflare(approveAll);
+      const { planHash, hostPlanHash } = hashes;
+      const applied = await h.call("opscrew_apply", { planHash, hostPlanHash });
+      expect(applied.isError).toBe(true);
+      expect(textOf(applied)).toContain("The Cloudflare plan was not approved");
+      expect(textOf(applied)).toContain("cloudflarePlanHash");
+      expect(h.elicited.some((e) => e.message.includes("Cloudflare plan"))).toBe(false);
+      expectNothingApplied(h);
+    });
+
+    it("is refused when the client cannot show a dialog, with the terminal command", async () => {
+      const { h, hashes } = await planWithCloudflare();
+      const applied = await h.call("opscrew_apply", hashes);
+      expect(applied.isError).toBe(true);
+      expect(textOf(applied)).toContain("cannot show OpsCrew's approval dialog");
+      expect(textOf(applied)).toContain(
+        `opscrew provision --approve ${hashes.cloudflarePlanHash} --approve ${hashes.planHash} --approve ${hashes.hostPlanHash}`,
+      );
+      expectNothingApplied(h);
+    });
+
+    it("declined in its dialog changes nothing anywhere", async () => {
+      const decline: Answer = (params) =>
+        params.message.includes("Cloudflare plan") ? { action: "decline" } : approveAll(params);
+      const { h, hashes } = await planWithCloudflare(decline);
+      const applied = await h.call("opscrew_apply", hashes);
+      expect(applied.isError).toBe(true);
+      expect(textOf(applied)).toContain("The Cloudflare plan was not approved");
+      expect(textOf(applied)).toContain("Nothing was applied");
+      expectNothingApplied(h);
+    });
+
+    it("returned alone and deleting OpsCrew's rule, it needs only its hash and the app's name typed in its dialog", async () => {
+      // No infrastructure change (the DNS record exists): the Cloudflare plan and the host plan.
+      const { h, hashes } = await planWithCloudflare(approveAll, []);
+      const { hostPlanHash, cloudflarePlanHash } = hashes;
+      const first = await h.call("opscrew_apply", { planHash: hostPlanHash, cloudflarePlanHash });
+      expect(first.isError, textOf(first)).toBeFalsy();
+      // The user merges the deploy pull request.
+      const git = new NodeCommandRunner();
+      for (const args of [
+        ["checkout", "main"],
+        ["merge", "--ff-only", "opscrew/deploy-setup"],
+        ["push", "origin", "main"],
+      ]) {
+        expect((await git.run("git", ["-C", h.root, ...args])).exitCode).toBe(0);
+      }
+      // The app stops blocking probes: its hostname leaves OpsCrew's rule, the only app in it.
+      const planFile = path.join(h.root, "opscrew", "plan.yaml");
+      const plan = await readArtifact("plan", planFile);
+      await writeArtifact("plan", planFile, {
+        ...plan,
+        security: { ...plan.security, wafCustomRules: false },
+      });
+      const planned = await h.call("opscrew_plan");
+      expect(planned.isError, textOf(planned)).toBeFalsy();
+      const again = dataOf(planned);
+      expect(again.cloudflarePlanHash).toMatch(/^[0-9a-f]{64}$/);
+      // Only the Cloudflare plan changes something now.
+      expect(again.planHash).toBeUndefined();
+      expect(again.hostPlanHash).toBeUndefined();
+      expect(textOf(planned)).toContain(
+        `call opscrew_apply with cloudflarePlanHash ${again.cloudflarePlanHash}:`,
+      );
+      expect(again.applyCommand).toBe(`opscrew provision --approve ${again.cloudflarePlanHash}`);
+      const args = { cloudflarePlanHash: again.cloudflarePlanHash };
+      const recorded = () => readFile(h.paths.files.cloudflareRecord, "utf8");
+      const before = await recorded();
+      expect(before).toContain("opscrew-block-probes");
+
+      // A wrong name in the dialog refuses it; OpsCrew's rule stays.
+      h.answer = (params) =>
+        "confirmation" in params.requestedSchema.properties
+          ? { action: "accept", content: { confirmation: "shopx" } }
+          : approveAll(params);
+      const wrong = await h.call("opscrew_apply", args);
+      expect(wrong.isError).toBe(true);
+      expect(textOf(wrong)).toContain("The Cloudflare plan was not approved");
+      const dialog = h.elicited.at(-1);
+      expect(dialog?.message).toContain(`Cloudflare plan hash: ${again.cloudflarePlanHash}`);
+      expect(dialog?.requestedSchema.properties).toHaveProperty("confirmation");
+      expect(String(dialog?.requestedSchema.properties.confirmation?.title)).toContain('"shop"');
+      expect(await recorded()).toBe(before);
+
+      // Typed right, OpsCrew's rule leaves the zone.
+      h.answer = approveAll;
+      const applied = await h.call("opscrew_apply", args);
+      expect(applied.isError, textOf(applied)).toBeFalsy();
+      expect(textOf(applied)).toContain(`Applied the Cloudflare plan ${again.cloudflarePlanHash}`);
+      expect(textOf(applied)).toContain("The infrastructure needed no change.");
+      expect(h.engine.applied).toEqual([]);
+      const record = JSON.parse(await recorded()) as { hostnames: Record<string, string[]> };
+      expect(record.hostnames["opscrew-block-probes"] ?? []).toEqual([]);
+    });
   });
 
   it("declining the host dialog after Cloudflare was applied leaves the server untouched and says so", async () => {
@@ -375,11 +523,12 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
       changes: PUBLIC_CHANGES,
     });
     const planned = await h.call("opscrew_plan");
-    const { planHash, hostPlanHash } = dataOf(planned) as {
+    const { planHash, hostPlanHash, cloudflarePlanHash } = dataOf(planned) as {
       planHash: string;
       hostPlanHash: string;
+      cloudflarePlanHash: string;
     };
-    const applied = await h.call("opscrew_apply", { planHash, hostPlanHash });
+    const applied = await h.call("opscrew_apply", { planHash, hostPlanHash, cloudflarePlanHash });
     expect(applied.isError).toBe(true);
     expect(h.engine.applied).toHaveLength(1);
     expect(h.host.applies).toEqual([]);
@@ -470,6 +619,33 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     expect(textOf(status)).toContain("https://localhost:9443");
     expect(JSON.stringify(ok.outputs)).not.toContain(password);
     expectNoAddress(ok);
+  });
+
+  it("Portainer on a subdomain: the Cloudflare plan is approved in its own dialog first", async () => {
+    const tunnelToken = `eyJ${fakeSecret("cloudflare-token", "portainer-tunnel")}`;
+    const h = await connect({
+      elicit: approveAll,
+      plan: shopPlan({ cloudflare: true, deployed: true }),
+      login: { hostKey: ED25519_FINGERPRINT },
+      facts: preparedServerFacts,
+      changes: PUBLIC_CHANGES,
+      outputs: {
+        tunnel_id: TUNNEL_ID,
+        tunnel_token: tunnelToken,
+        portainer_url: "https://portainer.example.com",
+      },
+    });
+    const enabled = await h.call("opscrew_portainer_enable", {
+      subdomain: "portainer",
+      allowEmails: ["owner@example.com"],
+    });
+    expect(enabled.isError, textOf(enabled)).toBeFalsy();
+    const cloudflarePlanHash = dataOf(enabled).cloudflarePlanHash as string;
+    expect(cloudflarePlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(h.elicited[0]?.message).toContain(`Cloudflare plan hash: ${cloudflarePlanHash}`);
+    expect(textOf(enabled)).toContain(`Applied the Cloudflare plan ${cloudflarePlanHash}`);
+    expect(JSON.stringify([h.outputs, h.elicited])).not.toContain(tunnelToken);
+    expectNoAddress(h);
   });
 
   it("Portainer: disable refuses deleteData and points to the terminal, deleting nothing", async () => {

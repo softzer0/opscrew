@@ -203,7 +203,7 @@ describe("NonInteractiveApprovalHandler with a Cloudflare plan (OpsCrew's shared
     ).toBe(true);
     const unlisted = await handler([HASH]).request(cloudflareApply());
     expect(unlisted.approved).toBe(false);
-    expect(unlisted.reason).toMatch(/does not match --approve/);
+    expect(unlisted.reason).toContain("The Cloudflare plan's hash does not match --approve");
     expect(
       (await handler([CLOUDFLARE]).request(cloudflareApply({ planHash: undefined }))).approved,
     ).toBe(false);

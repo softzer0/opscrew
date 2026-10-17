@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { portainerPasswordFile } from "@opscrew/agents";
@@ -44,10 +45,17 @@ class ApproveAll implements ApprovalHandler {
   }
 }
 
-/** An app deployed on the user's own server (no domain); Portainer on when `enabled`. */
-async function setup(options: { enabled?: boolean } = {}) {
+/**
+ * An app deployed on the user's own server (no domain, or `shop.example.com` on Cloudflare with
+ * `domain`); Portainer on when `enabled`.
+ */
+async function setup(options: { enabled?: boolean; domain?: boolean } = {}) {
   project = await deployProject(
-    ownPlan({ domain: null, deployed: true, ...(options.enabled ? { portainer: "local" } : {}) }),
+    ownPlan({
+      ...(options.domain ? { proxied: false } : { domain: null }),
+      deployed: true,
+      ...(options.enabled ? { portainer: "local" } : {}),
+    }),
   );
   await recordOwnLogin(project, { hostKey: ED25519_FINGERPRINT });
   const paths = resolveProjectPaths(project.root, { env: project.env });
@@ -117,6 +125,32 @@ describe.skipIf(!GIT)("opscrew portainer", () => {
     expect(await run(ctx, "portainer", "enable", "--yes")).toBe(1);
     expect(s.host.applies).toEqual([]);
     expect(ctx.errors).toContain("--approve");
+  });
+
+  it("enable --subdomain --plan-only prints the Cloudflare plan's hash in the --approve command", async () => {
+    const s = await setup({ domain: true });
+    const ctx = s.context();
+    const args = ["portainer", "enable", "--subdomain", "portainer"];
+    const planOnly = [...args, "--allow-email", "owner@example.com", "--plan-only", "--yes"];
+    expect(await run(ctx, ...planOnly), ctx.errors).toBe(0);
+    expect(ctx.output).toContain("Cloudflare plan for example.com");
+    expect(ctx.output).not.toContain("Nothing to apply");
+    const hash = /Cloudflare plan hash: ([0-9a-f]{64})/.exec(ctx.output)?.[1];
+    expect(hash).toBeDefined();
+    expect(ctx.output).toMatch(
+      new RegExp(
+        `    opscrew portainer enable --approve ${hash}( --approve [0-9a-f]{64})* --yes\\n`,
+      ),
+    );
+    expect(s.host.applies).toEqual([]);
+    expect(existsSync(s.paths.files.cloudflareRecord)).toBe(false);
+
+    // Its hash approves the Cloudflare plan; the infrastructure plan then asks for its own.
+    const second = s.context();
+    expect(await run(second, "portainer", "enable", "--approve", hash as string, "--yes")).toBe(1);
+    expect(existsSync(s.paths.files.cloudflareRecord)).toBe(true);
+    expect(second.errors).toMatch(/--approve [0-9a-f]{64}/);
+    expect(s.host.applies).toEqual([]);
   });
 
   it("--allow-email without --subdomain is refused", async () => {

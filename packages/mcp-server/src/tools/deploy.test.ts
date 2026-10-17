@@ -208,7 +208,9 @@ describe.skipIf(!findExecutable("git"))(
       expect(byName.get("opscrew_render")?.annotations?.readOnlyHint).toBe(true);
       const apply = byName.get("opscrew_apply");
       expect(apply?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
-      expect(apply?.inputSchema.required).toContain("planHash");
+      expect(Object.keys(apply?.inputSchema.properties ?? {})).toEqual(
+        expect.arrayContaining(["planHash", "cloudflarePlanHash"]),
+      );
       expect(apply?._meta).toMatchObject({ "anthropic/requiresUserInteraction": true });
       expect(byName.get("opscrew_plan")?._meta).toMatchObject({
         "anthropic/requiresUserInteraction": true,

@@ -22,6 +22,11 @@ export interface PortainerToolOptions {
 /** What a change did, in plain text: the hashes approved and how to open Portainer now. */
 function changeText(command: "enable" | "disable", result: PortainerResult): string {
   return [
+    ...(result.cloudflarePlanHash !== undefined
+      ? [
+          `Applied the Cloudflare plan ${result.cloudflarePlanHash} (OpsCrew's shared Cloudflare resources).`,
+        ]
+      : []),
     ...(result.applied ? [`Applied the infrastructure plan ${result.planHash}.`] : []),
     ...(result.hostApplied
       ? [`Changed the server with the host plan ${result.hostPlanHash}.`]
@@ -92,7 +97,7 @@ export function registerPortainerTools(
     {
       title: "Turn Portainer on",
       description:
-        "Install Portainer CE (pinned version) on the deployment's server, listening only on the server itself and reached through an SSH tunnel; its admin password is generated on the user's computer and never shown here. Optional opt-in: subdomain plus allowEmails serve it on that subdomain of the app's Cloudflare domain behind Cloudflare Access (needs Cloudflare Zero Trust turned on). The host plan (and, for a subdomain, the infrastructure plan) is shown to the USER in a dialog and applied only after they approve it; the coding agent cannot approve. Refuses when the client cannot show dialogs.",
+        "Install Portainer CE (pinned version) on the deployment's server, listening only on the server itself and reached through an SSH tunnel; its admin password is generated on the user's computer and never shown here. Optional opt-in: subdomain plus allowEmails serve it on that subdomain of the app's Cloudflare domain behind Cloudflare Access (needs Cloudflare Zero Trust turned on). The host plan (and, for a subdomain, the Cloudflare plan of OpsCrew's shared Cloudflare resources and the infrastructure plan) is shown to the USER in a dialog and applied only after they approve it; the coding agent cannot approve. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
         subdomain: z
@@ -124,6 +129,7 @@ export function registerPortainerTools(
         return {
           text: changeText("enable", result),
           data: {
+            cloudflarePlanHash: result.cloudflarePlanHash,
             planHash: result.planHash,
             hostPlanHash: result.hostPlanHash,
             applied: result.applied,
@@ -177,6 +183,7 @@ export function registerPortainerTools(
         return {
           text: changeText("disable", result),
           data: {
+            cloudflarePlanHash: result.cloudflarePlanHash,
             planHash: result.planHash,
             hostPlanHash: result.hostPlanHash,
             dataPlanHash: result.dataPlanHash,

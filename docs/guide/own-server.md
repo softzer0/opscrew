@@ -58,7 +58,10 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
    server has less memory or free disk than the app needs.
 3. `npx opscrew adapt` prepares the app for a container, as for any other deployment. Merge its
    pull request.
-4. `npx opscrew provision` shows two plans and asks for each separately:
+4. `npx opscrew provision` shows up to three plans and asks for each separately:
+   - the **Cloudflare plan**, when your domain is on Cloudflare: your app's hostnames in the two
+     rules OpsCrew keeps in your zone for all its apps (see
+     [Your domain on Cloudflare](cloudflare.md)), with its hash;
    - the **infrastructure plan**: the DNS records on Cloudflare, and the Cloudflare Tunnel with its
      access rules, when your site uses it, with its hash (with DNS somewhere else and DNS-only
      serving, you add the record yourself);
@@ -70,7 +73,7 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
 5. `npx opscrew verify` checks the live site and writes `opscrew/RUNBOOK.md`; `npx opscrew secure`
    checks the server's hardening.
 
-Running `npx opscrew provision` again later shows what is still missing; on a prepared server both
+Running `npx opscrew provision` again later shows what is still missing; on a prepared server the
 plans show no changes and nothing on the server changes.
 
 ### In scripts
@@ -79,22 +82,22 @@ Without a terminal, nothing is approved for you:
 
 ```bash
 npx opscrew design --host-key SHA256:...                  # the fingerprint you checked
-npx opscrew provision --plan-only --yes                   # prints both hashes and the command
-npx opscrew provision --approve <infrastructure hash> --approve <host plan hash> --yes
+npx opscrew provision --plan-only --yes                   # prints every hash and the command
+npx opscrew provision --approve <Cloudflare plan hash> --approve <infrastructure hash> --approve <host plan hash> --yes
 ```
 
 Each `--approve` names exactly one plan you reviewed. `--yes` only approves writing the files,
 storing the GitHub secrets, pushing and opening the pull request; it never approves a plan.
 
 With the Cloudflare Tunnel, the host plan needs the tunnel's id, so its hash appears only after the
-infrastructure plan is applied. The first `--plan-only` prints only the infrastructure hash. Apply
-that first, then plan again and approve the host plan in a second run. The infrastructure-only run
-ends with an error that asks for the host plan's approval (and prints its hash), so a script that
-stops on errors lets that one through:
+infrastructure plan is applied. The first `--plan-only` prints only the Cloudflare plan's and the
+infrastructure plan's hashes. Apply those first, then plan again and approve the host plan in a
+second run. The first applying run ends with an error that asks for the host plan's approval (and
+prints its hash), so a script that stops on errors lets that one through:
 
 ```bash
-npx opscrew provision --plan-only --yes                   # prints the infrastructure hash
-npx opscrew provision --approve <infrastructure hash> --yes || true   # applies it, then asks for the host plan
+npx opscrew provision --plan-only --yes                   # prints the Cloudflare and infrastructure hashes
+npx opscrew provision --approve <Cloudflare plan hash> --approve <infrastructure hash> --yes || true   # applies them, then asks for the host plan
 npx opscrew provision --plan-only --yes                   # now prints the host plan's hash
 npx opscrew provision --approve <host plan hash> --yes
 ```
@@ -222,8 +225,9 @@ ones. For the commands in a script, see [In scripts](#in-scripts).
 ### Cloudflare token permissions
 
 Your `CLOUDFLARE_API_TOKEN` needs Zone → Zone → Read, Zone → DNS → Edit, Zone → Config Rules → Edit
-and Zone → Zone WAF → Edit, as for every OpsCrew deployment. Tunnel mode (and a Portainer subdomain)
-also needs:
+and Zone → Zone WAF → Edit, as for every OpsCrew deployment (the last two for the rules OpsCrew keeps
+in your zone; see [Your domain on Cloudflare](cloudflare.md)). Tunnel mode (and a Portainer
+subdomain) also needs:
 
 - Account → Cloudflare Tunnel → Edit
 - Account → Access: Apps and Policies → Edit
@@ -265,8 +269,10 @@ volumes, for example with your provider's backup feature or a nightly copy to an
 ## Removing the app, and undoing OpsCrew's changes
 
 `npx opscrew destroy` removes only what OpsCrew set up for the app: its containers and runtime
-files, the deploy workflow's secrets, and the DNS records or tunnel it created. It asks you to type
-the app's name first, and never deletes, rebuilds or reinstalls your server.
+files, the deploy workflow's secrets, the DNS records or tunnel it created, and the app's hostnames
+in OpsCrew's rules in your Cloudflare zone (other OpsCrew apps there keep theirs; see
+[Removing an app](cloudflare.md#removing-an-app)). It asks you to type the app's name first, and
+never deletes, rebuilds or reinstalls your server.
 
 - The app's data stays on the server unless you add `--delete-data`; deleting it needs the app's
   name typed as well.

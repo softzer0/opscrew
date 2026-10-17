@@ -112,9 +112,23 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    Unless `OPSCREW_APP_ENV_FILE` is set, the deploy secrets still have to be stored by running
    `npx opscrew provision` in their terminal afterwards (it resumes without changing the server).
 
-   **On the user's own server** there are two plans, each approved on its own: the Cloudflare
-   infrastructure (DNS records, or the tunnel and Cloudflare Access in tunnel mode) and the host
-   plan, which lists every change OpsCrew would make on the server (Docker 28 or newer from
+   **The Cloudflare plan comes first.** When the app's domain is on Cloudflare, `opscrew_plan` also
+   returns a Cloudflare plan with its own hash (`cloudflarePlanHash`), approved on its own before
+   the infrastructure plan. It lists what OpsCrew changes in its two shared rules in the zone (the
+   probe block for paths like `/.env` and the strict TLS rule, each listing the hostnames of every
+   OpsCrew app in the zone) and, when Cloudflare Access is used, in the account's Zero Trust
+   organization and one-time PIN login. Show it to the user and say that the zone's other rules
+   stay exactly as they are. Pass `cloudflarePlanHash` to `opscrew_apply` with the other hashes
+   (only it when `opscrew_plan` returned nothing else); without it, the Cloudflare plan is refused.
+   When the plan removes OpsCrew's rule (the last app's hostnames leave it), the dialog asks the
+   user to type the app's name. In a terminal script the Cloudflare plan's hash is one more
+   `--approve <hash>`, and `--yes` never approves it. When the plan stops because a hostname is
+   already in OpsCrew's rule for another app, pass on its explanation: OpsCrew never takes a
+   hostname from another app.
+
+   **On the user's own server** there are two plans besides the Cloudflare plan, each approved on
+   its own: the Cloudflare infrastructure (DNS records, or the tunnel and Cloudflare Access in
+   tunnel mode) and the host plan, which lists every change OpsCrew would make on the server (Docker 28 or newer from
    Docker's repository, a `deploy` user, SSH hardening, the ufw firewall, fail2ban, automatic
    security updates, `/srv/app` and `/srv/data`) and marks what is already in place. Show both to
    the user. `opscrew_plan` returns `planHash` and `hostPlanHash`; pass both to `opscrew_apply`
@@ -131,9 +145,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    another OpsCrew app; pass on its explanation. Tunnel mode and Portainer's subdomain need
    Cloudflare Zero Trust turned on for the account (free plan, https://one.dash.cloudflare.com/).
 
-   **In the user's existing Portainer** there are up to two plans, each approved on its own: the
-   Cloudflare infrastructure (the tunnel, and Access in front of Portainer's webhook in
-   `cloudflare` mode) and the stack plan, which lists every change in Portainer (the app's stack,
+   **In the user's existing Portainer** there are up to two plans besides the Cloudflare plan, each
+   approved on its own: the Cloudflare infrastructure (the tunnel, and Access in front of
+   Portainer's webhook in `cloudflare` mode) and the stack plan, which lists every change in Portainer (the app's stack,
    the updater or connector stack, the registry entry and the repository access) and marks what is
    already in place. `opscrew_plan` returns `planHash` and `stackPlanHash`; pass both to
    `opscrew_apply` (when it returned only a stack plan, pass its `stackPlanHash` as `planHash`).
@@ -217,7 +231,10 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   There are no snapshots there: backups are their responsibility. In their existing Portainer it
   removes only what OpsCrew created (the app's stacks, its registry entry, the deploy secrets and
   the Cloudflare resources) after they type the app's name, never Portainer itself or another
-  stack, and keeps the app's data volumes unless they add `--delete-data`.
+  stack, and keeps the app's data volumes unless they add `--delete-data`. On every target it
+  also removes the app's hostnames from OpsCrew's shared Cloudflare rules (deleting a rule only
+  when no other OpsCrew app is in it), and the account's Zero Trust organization and one-time PIN
+  login stay for the other apps.
 - **Portainer.** A web UI for the containers, off by default, on any server OpsCrew deploys to.
   `opscrew_portainer_enable` installs it (listening only on the server itself, reached through an
   SSH tunnel; an admin password generated on the user's computer) after the user approves the plan

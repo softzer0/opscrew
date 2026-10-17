@@ -225,7 +225,9 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
           ? "The host plan's hash"
           : request.kind === "stack-apply"
             ? "The stack plan's hash"
-            : "The plan hash";
+            : request.kind === "cloudflare-apply"
+              ? "The Cloudflare plan's hash"
+              : "The plan hash";
       return `${what} does not match --approve ${hashes.join(" / ")}; the plan changed since you reviewed it, or it was not approved. ${RUN_INTERACTIVELY}`;
     }
     return undefined;

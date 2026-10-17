@@ -47,7 +47,9 @@ Portainer password. Give each token only the access listed here.
 
 With your own reverse proxy or Caddy and the `updater` redeploy mode, OpsCrew needs no Cloudflare
 token at all. The Cloudflare lists above are what OpsCrew uses today; the gated live test will
-narrow them further, and when a permission is missing OpsCrew names it.
+narrow them further, and when a permission is missing OpsCrew names it. Zone WAF and the Access
+organizations permission are for what OpsCrew shares between your apps in the zone and the
+account; see [Your domain on Cloudflare](cloudflare.md).
 
 With an administrator's token OpsCrew adds the registry entry for your image itself. A standard
 user's token works too; see [A limited token and a private image](#a-limited-token-and-a-private-image).
@@ -79,7 +81,10 @@ user's token works too; see [A limited token and a private image](#a-limited-tok
    it). OpsCrew builds the image for the environment's architecture.
 3. `npx opscrew adapt` prepares the app for a container, as for any other deployment. Merge its pull
    request.
-4. `npx opscrew provision` shows up to two plans and asks for each separately:
+4. `npx opscrew provision` shows up to three plans and asks for each separately:
+   - the **Cloudflare plan**, when you use Cloudflare: your app's hostnames in the probe block
+     OpsCrew keeps in your zone for all its apps, and the account's Zero Trust organization when
+     Access is used (see [Your domain on Cloudflare](cloudflare.md)), with its hash;
    - the **infrastructure plan** for Cloudflare (the tunnel, and Access in front of Portainer's
      webhook in the Cloudflare redeploy mode), when you use Cloudflare;
    - the **stack plan** for Portainer: every change OpsCrew would make there, each marked as
@@ -90,7 +95,7 @@ user's token works too; see [A limited token and a private image](#a-limited-tok
 5. `npx opscrew verify` checks the live site and writes `opscrew/RUNBOOK.md`; `npx opscrew secure`
    checks the app's stack and writes `opscrew/SECURITY_REPORT.md`.
 
-Running `npx opscrew provision` again later shows what is still missing. On an unchanged setup both
+Running `npx opscrew provision` again later shows what is still missing. On an unchanged setup the
 plans show no changes and nothing in Portainer changes.
 
 ### In scripts
@@ -101,18 +106,19 @@ opening the pull request. It never approves a plan.
 
 ```bash
 npx opscrew provision --plan-only --yes                 # prints the hashes and the command
-npx opscrew provision --approve <infrastructure hash> --approve <stack plan hash> --yes
+npx opscrew provision --approve <Cloudflare plan hash> --approve <infrastructure hash> --approve <stack plan hash> --yes
 ```
 
 With the Cloudflare Tunnel (web mode `tunnel`) or Cloudflare redeploys (redeploy mode
 `cloudflare`), OpsCrew creates a tunnel, and the first stack plan needs that tunnel's token, which
-exists only after the infrastructure plan is applied. So such a first setup takes three runs: the first
-`--plan-only` prints only the infrastructure hash; applying it ends with an error that asks for the
-stack plan's approval and prints its hash; the third run approves that hash.
+exists only after the infrastructure plan is applied. So such a first setup takes three runs: the
+first `--plan-only` prints only the Cloudflare plan's and the infrastructure plan's hashes;
+applying them ends with an error that asks for the stack plan's approval and prints its hash; the
+third run approves that hash.
 
 ```bash
-npx opscrew provision --plan-only --yes                                # the infrastructure hash
-npx opscrew provision --approve <infrastructure hash> --yes || true    # applies it, prints the stack plan's hash
+npx opscrew provision --plan-only --yes      # the Cloudflare and infrastructure hashes
+npx opscrew provision --approve <Cloudflare plan hash> --approve <infrastructure hash> --yes || true   # applies them, prints the stack plan's hash
 npx opscrew provision --approve <stack plan hash> --yes
 ```
 
@@ -274,8 +280,9 @@ npx opscrew destroy --delete-data   # also deletes the app's data volumes
 ```
 
 `destroy` shows what it removes and asks you to type the app's name first. It removes only what
-OpsCrew created: the app's stacks, the registry entry, the deploy secrets in GitHub, and the
-Cloudflare tunnel, DNS records and Access. Portainer itself, its settings, your other stacks and the
+OpsCrew created: the app's stacks, the registry entry, the deploy secrets in GitHub, the
+Cloudflare tunnel, DNS records and Access, and the app's hostnames in OpsCrew's rules in your zone
+(other OpsCrew apps there keep theirs; the account's Zero Trust organization stays). Portainer itself, its settings, your other stacks and the
 host stay exactly as they are. The app's data volumes stay too, unless you add `--delete-data`;
 deleting them cannot be undone unless you have your own backup. A later `--delete-data` run also
 deletes the volumes an earlier `destroy` kept.

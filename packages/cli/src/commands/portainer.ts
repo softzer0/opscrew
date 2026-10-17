@@ -61,6 +61,10 @@ function addChangeOptions(command: Command): Command {
 /** The plans of a `--plan-only` run that need approving, each labelled. */
 async function plannedHashes(deps: PhaseDeps, result: PortainerResult): Promise<PlannedHash[]> {
   const planned: PlannedHash[] = [];
+  // OpsCrew's shared Cloudflare resources change first: their plan is approved by its hash too.
+  if (result.cloudflarePlanHash !== undefined) {
+    planned.push({ label: "Cloudflare plan", hash: result.cloudflarePlanHash });
+  }
   if (
     result.planHash !== undefined &&
     (await findSavedPlan(deps.paths.files.plansDir, result.planHash)) !== undefined

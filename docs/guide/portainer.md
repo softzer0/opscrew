@@ -70,8 +70,13 @@ domain on `example.com`). It needs:
 The subdomain always goes through a Cloudflare Tunnel, so the server opens no port for it.
 Cloudflare Access lets in only the email addresses you listed with `--allow-email` (repeat it for
 several), each after a one-time code sent to that address; then Portainer's own login follows. This
-adds a second plan (the tunnel and the Access rules in your infrastructure code), approved
-separately.
+adds two plans, each approved separately: the Cloudflare plan, which adds the account's Zero Trust
+organization and one-time PIN login when they are missing (every OpsCrew app in the account shares
+them, and OpsCrew never deletes them; see [Your domain on Cloudflare](cloudflare.md)), and the
+infrastructure plan (the tunnel and the Access rules in your infrastructure code). When the
+Cloudflare plan adds the one-time PIN login, the infrastructure plan follows once it is applied: in
+a script, the printed `--approve` command applies the Cloudflare plan and stops at the
+infrastructure plan, printing its hash; run it again with `--approve` and that hash.
 
 ## Turn it off
 

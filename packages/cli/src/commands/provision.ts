@@ -86,7 +86,7 @@ export const YES_DESCRIPTION =
 
 /** Help text of `--approve <hash>`, which may be given once per plan. */
 export const APPROVE_DESCRIPTION =
-  "Apply exactly the saved plan with this hash (from an earlier --plan-only run); give it once per plan (on your own server: the infrastructure plan and the host plan; in your Portainer: the infrastructure plan and the stack plan)";
+  "Apply exactly the plan with this hash (from an earlier --plan-only run); give it once per plan (the Cloudflare plan of OpsCrew's shared rules and the infrastructure plan; on your own server also the host plan; in your Portainer also the stack plan)";
 
 /** Adds `--plan-only` and the repeatable `--approve <hash>` to `command`. */
 export function addPlanApproveOptions(command: Command): Command {
