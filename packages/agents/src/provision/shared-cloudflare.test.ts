@@ -339,6 +339,61 @@ describe.skipIf(!findExecutable("git"))(
       expect(s.engine.applied).toHaveLength(1);
     });
 
+    it("a write that fails part-way records what reached Cloudflare and audits it", async () => {
+      const s = await hetzner();
+      // The block rule's entrypoint is created; Cloudflare then fails the strict-TLS one.
+      s.zone.faults.push({
+        match: `PUT /zones/${FAKE_ZONE_ID}/rulesets/phases/${CONFIG}/entrypoint`,
+        reply: { status: 500, body: { success: false, errors: [], messages: [], result: null } },
+      });
+      const error = await failure(runProvision(s.deps, { services: s.services }));
+      expect(error).toBeDefined();
+      expect(s.zone.opscrewRule(WAF)).toBeDefined();
+      expect(s.zone.entrypoints.has(CONFIG)).toBe(false);
+      expect(await record(s)).toEqual({
+        zoneId: FAKE_ZONE_ID,
+        hostnames: { [BLOCK]: ["shop.example.com"] },
+        createdEntrypoints: [WAF],
+      });
+      expect(s.deps.audit.entries).toContainEqual(
+        expect.objectContaining({
+          action: "cloudflare apply failed",
+          detail: `changes applied before the failure: create-entrypoint ${WAF}`,
+        }),
+      );
+      expect(s.engine.calls).toEqual([]);
+
+      // The next run plans only what is missing.
+      await runProvision(s.deps, { services: s.services });
+      expect(s.zone.opscrewRule(CONFIG)?.expression).toBe('(http.host in {"shop.example.com"})');
+      expect((await record(s)).hostnames).toEqual(both(["shop.example.com"]));
+    });
+
+    it("--plan-only writes no record, even when nothing in Cloudflare changes", async () => {
+      const s = await hetzner();
+      await runProvision(s.deps, { services: s.services });
+      // A hostname the record lists that OpsCrew's rules no longer hold (removed by hand), and
+      // that this app no longer wants: nothing changes in Cloudflare, only the record would.
+      const stale: SharedRecord = {
+        ...(await record(s)),
+        hostnames: both(["old.example.com", "shop.example.com"]),
+      };
+      const text = `${JSON.stringify(stale, null, 2)}\n`;
+      await writeFile(s.deps.paths.files.cloudflareRecord, text);
+      s.github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
+      const writes = s.zone.writes().length;
+
+      const planned = await runProvision(s.deps, { services: s.services, planOnly: true });
+      expect(planned.cloudflarePlanHash).toBeUndefined();
+      expect(await readFile(s.deps.paths.files.cloudflareRecord, "utf8")).toBe(text);
+      expect(s.zone.writes()).toHaveLength(writes);
+
+      // A run that applies writes it.
+      await runProvision(s.deps, { services: s.services });
+      expect((await record(s)).hostnames).toEqual(both(["shop.example.com"]));
+      expect(s.zone.writes()).toHaveLength(writes);
+    });
+
     it("a damaged record stops before any change", async () => {
       const s = await hetzner();
       await mkdir(dirname(s.deps.paths.files.cloudflareRecord), { recursive: true });

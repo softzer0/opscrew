@@ -71,7 +71,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
 
 ## Phase 3: Flows
 
-- [ ] T1104 [US1] [US3] [US5] Provision, `dns` and `domain connect` plan and apply the shared change in `packages/agents/src/{provision,shared,dns,domain,portainer}/**`
+- [X] T1104 [US1] [US3] [US5] Provision, `dns` and `domain connect` plan and apply the shared change in `packages/agents/src/{provision,shared,dns,domain,portainer}/**`
   - Owns: those folders (+ tests); the import lines that follow in `packages/cli/src/**` and `packages/mcp-server/src/**`
   - Reads: plan.md "4. Flows"; contracts/cloudflare-shared.md
   - Depends: T1102, T1103

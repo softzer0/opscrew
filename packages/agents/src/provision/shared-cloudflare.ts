@@ -424,8 +424,9 @@ async function applyZonePlan(
     deps.reporter.success(
       "OpsCrew's shared Cloudflare resources are already set up for this app; nothing in Cloudflare changes.",
     );
-    // Hostnames removed from OpsCrew's rules by hand and no longer wanted leave the record.
-    await writeCloudflareRecord(deps.paths, plan.record);
+    // Hostnames removed from OpsCrew's rules by hand and no longer wanted leave the record; a
+    // `--plan-only` run writes nothing.
+    if (!input.planOnly) await writeCloudflareRecord(deps.paths, plan.record);
     return {};
   }
   if (input.planOnly) {
@@ -500,7 +501,7 @@ async function applyZonePlan(
  * app name when it deletes OpsCrew's rule; `--yes` never grants it) and applied, and
  * `.opscrew/cloudflare.json` is written, also when nothing changes (which asks nothing). The
  * removal from a zone the app leaves goes first; without a zone of its own the record then lists
- * no hostnames. With `planOnly` the plans are only shown.
+ * no hostnames. With `planOnly` the plans are only shown, and nothing is written.
  */
 export async function applySharedCloudflare(
   deps: PhaseDeps,
