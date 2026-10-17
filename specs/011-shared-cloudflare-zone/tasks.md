@@ -115,7 +115,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
   - Reads: plan.md "5. Surfaces"; quickstart.md
   - Depends: T1105
   - Accept:
-    - **CLI.** It prints the shared plan like the stack plan, and `--approve` takes its hash.
+    - **CLI.** It prints the shared plan, called "Cloudflare plan" in output to match core's approval messages, like the stack plan. `--approve` takes its hash (`cloudflare-apply` added to the CLI's `APPROVE_BY_HASH_KINDS`), and a CLI test shows `--yes` never grants it, next to the stack-plan one.
     - **MCP.** `opscrew_plan` and `opscrew_apply` include the shared plan. Its approval goes through the dialog, never auto-approved.
     - **Plugin.** The deploy skill mentions the extra approval.
     - **Guide.** The Cloudflare domain pages explain:
