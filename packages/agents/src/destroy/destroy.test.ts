@@ -1,7 +1,13 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { applyShared, inspectShared, planShared } from "@opscrew/connector-cloudflare";
+import {
+  applyShared,
+  type CloudflareClient,
+  inspectShared,
+  planShared,
+  type SharedRecord,
+} from "@opscrew/connector-cloudflare";
 import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalDecision, ApprovalRequest, FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
@@ -9,7 +15,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { cloudTarget, DEPLOY_SECRETS } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { ensureStatePassphrase, readServerAddresses } from "../shared";
+import { ensureStatePassphrase, readServerAddresses, recordServerAddress } from "../shared";
 import {
   createProject,
   createTestPhaseDeps,
@@ -204,6 +210,20 @@ async function setup(options: SetupOptions = {}) {
 }
 
 type Setup = Awaited<ReturnType<typeof setup>>;
+
+const WAF = "http_request_firewall_custom";
+
+/** Adds `host` to both shared rules in the fake zone, as a provision does; returns its record. */
+async function addToSharedRules(client: CloudflareClient, host: string): Promise<SharedRecord> {
+  const facts = await inspectShared(client, {
+    zoneId: FAKE_ZONE_ID,
+    accountId: FAKE_ACCOUNT_ID,
+    access: false,
+  });
+  const hostnames = { "opscrew-block-probes": [host], "opscrew-strict-tls": [host] };
+  const added = planShared(facts, { hostnames }, undefined);
+  return (await applyShared(client, added, { approvedHash: added.hash })).record;
+}
 
 async function planFilesLeft(deps: Setup["deps"]): Promise<string[]> {
   return readdir(deps.paths.files.plansDir).catch(() => []);
@@ -794,18 +814,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     const zone = new FakeZone();
     const client = fakeSharedCloudflare(zone);
     // An earlier provision added the app's hostname to both shared rules.
-    const facts = await inspectShared(client, {
-      zoneId: FAKE_ZONE_ID,
-      accountId: FAKE_ACCOUNT_ID,
-      access: false,
-    });
-    const hosts = ["shop.example.com"];
-    const added = planShared(
-      facts,
-      { hostnames: { "opscrew-block-probes": hosts, "opscrew-strict-tls": hosts } },
-      undefined,
-    );
-    const { record } = await applyShared(client, added, { approvedHash: added.hash });
+    const record = await addToSharedRules(client, "shop.example.com");
     const s = await setup({
       plan: deployedPlan({ domain: "shop.example.com" }),
       script: { resources: deployedResources({ dns: true }) },
@@ -837,6 +846,66 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     const after = JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"));
     expect(after).toMatchObject({ hostnames: {}, createdEntrypoints: [] });
     expect(result.remaining.join("\n")).not.toContain("Zero Trust");
+  });
+
+  it("a rerun after a failed removal from OpsCrew's shared rules asks for the name and finishes it", async () => {
+    const zone = new FakeZone();
+    const client = fakeSharedCloudflare(zone);
+    const record = await addToSharedRules(client, "shop.example.com");
+    // Another OpsCrew app in the zone: this app's destroy only changes the rules' hostnames.
+    await addToSharedRules(client, "api.example.com");
+    const s = await setup({
+      plan: deployedPlan({ domain: "shop.example.com" }),
+      script: { resources: deployedResources({ dns: true }) },
+      services: { sharedCloudflare: client },
+    });
+    await mkdir(dirname(s.deps.paths.files.cloudflareRecord), { recursive: true });
+    await writeFile(s.deps.paths.files.cloudflareRecord, JSON.stringify(record));
+    zone.faults.push({
+      match: `PATCH /zones/${FAKE_ZONE_ID}/rulesets/`,
+      reply: { status: 502, body: "Bad Gateway" },
+    });
+
+    await expect(
+      runDestroy(s.deps, { services: s.services, confirm: async () => true }),
+    ).rejects.toMatchObject({ code: "PROVIDER_ERROR" });
+    expect(s.events).toContain("apply:destroy");
+    expect(s.events).not.toContain("approval:github-secrets");
+    expect(String(zone.opscrewRule(WAF)?.expression)).toContain("shop.example.com");
+    let plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBeUndefined();
+
+    // The rerun: the infrastructure is gone and its address is no longer known, so only the
+    // Cloudflare plan is left, and it still needs the typed name.
+    s.servers.servers = [];
+    await recordServerAddress(s.deps.paths, undefined);
+    s.handler.requests.length = 0;
+    const previews: DestroyPreview[] = [];
+    await runDestroy(s.deps, {
+      services: s.services,
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+
+    expect(s.deps.reporter.text()).toContain(
+      "The infrastructure is already deleted; OpsCrew finishes the cleanup.",
+    );
+    expect(previews).toHaveLength(1);
+    expect(previews[0]?.resources).toEqual([]);
+    expect(previews[0]?.cloudflarePlan).toContain("remove shop.example.com");
+    expect(s.handler.requests.find((r) => r.kind === "cloudflare-apply")).toMatchObject({
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    for (const phase of [WAF, "http_config_settings"]) {
+      const expression = String(zone.opscrewRule(phase)?.expression);
+      expect(expression).toContain("api.example.com");
+      expect(expression).not.toContain("shop.example.com");
+    }
+    plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBe(NOW);
   });
 
   it("without a GitHub token: warns, skips the secret cleanup and lists the secrets as remaining", async () => {

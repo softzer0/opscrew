@@ -92,7 +92,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: xhigh
 
-- [ ] T1105 [US2] [US4] Destroy, drift and init in `packages/agents/src/{destroy,drift,init}/**`
+- [X] T1105 [US2] [US4] Destroy, drift and init in `packages/agents/src/{destroy,drift,init}/**`
   - Owns: those folders (+ tests)
   - Reads: plan.md "4. Flows"; data-model.md
   - Depends: T1104

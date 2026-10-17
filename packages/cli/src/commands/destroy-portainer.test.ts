@@ -101,12 +101,15 @@ describe("TypedConfirmationHandler for the user's Portainer", () => {
       approved: true,
       confirmation: "shop",
     });
-    for (const request of [
-      { ...shared, allowDestroy: undefined, confirmPhrase: undefined },
-      { ...shared, confirmPhrase: "other" },
-    ]) {
+    for (const [request, typed] of [
+      [{ ...shared, allowDestroy: undefined, confirmPhrase: undefined }, "shop"],
+      [{ ...shared, allowDestroy: undefined }, "shop"],
+      [{ ...shared, confirmPhrase: "other" }, "shop"],
+      [shared, "shp"],
+      [shared, undefined],
+    ] as const) {
       const refused = new BaseApprovals();
-      expect((await handler(refused, "shop").request(request)).approved).toBe(false);
+      expect((await handler(refused, typed).request(request)).approved).toBe(false);
       expect(refused.requests).toEqual([request]);
     }
   });
