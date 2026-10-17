@@ -83,6 +83,10 @@ export function serverCommands(login: readonly string[]): string[] {
   ];
 }
 
+/** The first line of the note on where the deploy key is stored; each runbook ends it its own way. */
+export const DEPLOY_KEY_STORED =
+  "The deploy key is stored only on the machine where you ran `opscrew provision` (and as a GitHub Actions";
+
 /** Dumping and restoring the database on the server. */
 export const DATABASE_DUMP = [
   "```bash",

@@ -10,7 +10,7 @@ import {
   previewDeletion,
 } from "../destroy/deletion";
 import { type DestroyTexts, destroyTexts } from "../destroy/texts";
-import { describeChanges, planStop, refusalReason } from "../shared";
+import { describeChanges, nothingDeletedHint, planStop, refusalReason } from "../shared";
 import { protectionVariable } from "./layouts";
 import type { MoveAction } from "./pending";
 import { deletionStep } from "./plans";
@@ -169,7 +169,7 @@ export async function liftMoveProtection(
       ),
     allowDestroy: false,
     what: `lifting delete protection on the ${which} server`,
-    hint: `Fix the cause shown above, then run \`${command}\` again. Nothing was deleted.`,
+    hint: nothingDeletedHint(command),
     ...(input.beforeApply !== undefined ? { beforeApply: input.beforeApply } : {}),
   });
   if (lifted.kind === "pending") return { stop: pendingStop(session, lifted.planHash, flags) };

@@ -5,8 +5,7 @@ import {
   describePlan,
   findSavedPlan,
   OWN_SERVER_BACKUPS_NOTE,
-  PORTAINER_BACKUPS_NOTE,
-  PORTAINER_HOST_NOTE,
+  PORTAINER_NOTES,
   type ProvisionResult,
   type ProvisionServices,
   portainerImageOptions,
@@ -502,7 +501,7 @@ export function registerDeployTools(
                 result.stackApplied === true
                   ? `Set up the app's stacks in the user's Portainer (stack plan ${result.stackPlanHash}).`
                   : "The user's Portainer needed no change.",
-                `${PORTAINER_HOST_NOTE} ${PORTAINER_BACKUPS_NOTE}`,
+                PORTAINER_NOTES,
               ]
             : []),
           ...outputsLines(result, own || portainer),
@@ -573,7 +572,7 @@ export function registerDeployTools(
                 ...checkLines(result.hostChecks),
               ]
             : []),
-          ...(inPortainer ? ["", `${PORTAINER_HOST_NOTE} ${PORTAINER_BACKUPS_NOTE}`] : []),
+          ...(inPortainer ? ["", PORTAINER_NOTES] : []),
           ...(result.probes.length > 0
             ? ["", "Outside probes:", ...checkLines(result.probes)]
             : []),

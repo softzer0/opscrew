@@ -475,11 +475,12 @@ export function portainerClient(
       return result === "absent" ? "absent" : "removed";
     },
     async listEnvironmentRegistries(environmentId) {
+      const what = "list the registries usable on the environment";
       const list = await get(
         `/api/endpoints/${id(environmentId)}/registries`,
         z.array(registrySchema),
-        "list the registries usable on the environment",
-        "list the registries usable on the environment",
+        what,
+        what,
       );
       return list.map(toRegistrySummary);
     },

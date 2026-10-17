@@ -10,6 +10,7 @@ import {
   hasReleaseService,
   recreateDatabase,
   removeDump,
+  removeDumpByHand,
   restoreDatabase,
   runRelease,
   startService,
@@ -88,7 +89,7 @@ async function removeDumpQuietly(session: MoveBase, remote: RemoteExec): Promise
     await removeDump(remote, session.deps.redactor);
   } catch {
     session.deps.reporter.warn(
-      `OpsCrew could not delete the database dump on ${remote.host}. Delete it yourself: \`ssh deploy@${remote.host} rm -f ${DUMP_PATH}\`.`,
+      `OpsCrew could not delete the database dump on ${remote.host}. Delete it yourself: ${removeDumpByHand(remote.host)}.`,
     );
   }
 }

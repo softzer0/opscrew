@@ -374,7 +374,7 @@ function starletteEdit(ctx: PyContext): Insertion[] | string {
     if (owner !== undefined) holder = owner;
   }
   if (open === undefined) {
-    return `the Starlette app gets its routes from \`${value}\`, which is not a list OpsCrew can find in ${ctx.file}`;
+    return notAList("the Starlette app gets its routes from", value, ctx.file);
   }
   const route = pyImportName(
     ctx.src,
@@ -400,6 +400,11 @@ function starletteEdit(ctx: PyContext): Insertion[] | string {
   ];
 }
 
+/** Why no route goes in: `source` (`the … gets its routes from`) names `value`, which is not a list. */
+function notAList(source: string, value: string, file: string): string {
+  return `${source} \`${value}\`, which is not a list OpsCrew can find in ${file}`;
+}
+
 /**
  * Tornado: a `(r"/health", HealthHandler)` first in the handlers list given to `Application`
  * (inline, or a list variable in the same scope), with the handler class above the statement.
@@ -419,7 +424,7 @@ function tornadoEdit(ctx: PyContext): Insertion[] | string {
       listAssignment(ctx.src, value, "");
   }
   if (open === undefined) {
-    return `the Tornado Application gets its handlers from \`${value}\`, which is not a list OpsCrew can find in ${ctx.file}`;
+    return notAList("the Tornado Application gets its handlers from", value, ctx.file);
   }
   const base = pyImportName(
     ctx.src,

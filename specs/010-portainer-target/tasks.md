@@ -323,7 +323,7 @@ From the duplicate scans and reviews recorded in `dry.md`. Waves: T1034 → {T10
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server` and `node plugin/validate.mjs`
   - Effort: high
 
-- [ ] T1039 After the DRY pass (lead): the duplicate scans again (`.tools/scratch/dupes.py`, `dupe-strings.py`) to confirm what is left is on the KEEP lists; the full gate; feature 011's live runs (T1108) also cover this code
+- [X] T1039 After the DRY pass (lead, 2026-10-17: rescan 726 → 665 blocks of 3+ lines, 108 → 70 repeated strings; what is left is on the KEEP lists or identifiers; the last 11 two-copy messages merged): the duplicate scans again (`.tools/scratch/dupes.py`, `dupe-strings.py`) to confirm what is left is on the KEEP lists; the full gate; feature 011's live runs (T1108) also cover this code
 
 ## Dependencies
 

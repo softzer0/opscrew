@@ -13,7 +13,7 @@ import { isUserFacingError, listText, OpsCrewError, plural, writeFileAtomic } fr
 import { DEPLOY_SECRETS, PORTAINER_DEPLOY_SECRETS, portainerTarget } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { PORTAINER_NOTES } from "../design/portainer";
 import { portainerCloudflare } from "../provision/credentials";
 import {
   portainerValueKeyFile,
@@ -65,7 +65,7 @@ import { destroyConfirmPrompt } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
 /** Said wherever the teardown in the user's Portainer is described (FR-1014, FR-1015). */
-const PORTAINER_STAYS = `Portainer itself, its settings and every stack, volume and registry entry OpsCrew did not create stay as they are: OpsCrew removes only what its record lists for this app. ${PORTAINER_HOST_NOTE} ${PORTAINER_BACKUPS_NOTE}`;
+const PORTAINER_STAYS = `Portainer itself, its settings and every stack, volume and registry entry OpsCrew did not create stay as they are: OpsCrew removes only what its record lists for this app. ${PORTAINER_NOTES}`;
 
 /** Why the tunnel goes last, said in the approval and the summary. */
 const TUNNEL_AFTER_STACKS =
@@ -283,7 +283,7 @@ function remainingInPortainer(input: {
   const { plan, github } = input;
   const items = [
     "Your Portainer itself, its settings and every stack, volume and registry entry OpsCrew did not create: OpsCrew never changes them.",
-    `${PORTAINER_HOST_NOTE} ${PORTAINER_BACKUPS_NOTE}`,
+    PORTAINER_NOTES,
   ];
   if (input.keptVolumes.length > 0) {
     items.push(

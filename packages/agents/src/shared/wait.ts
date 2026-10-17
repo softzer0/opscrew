@@ -196,6 +196,11 @@ export function continuesHint(command: string): string {
   return `run \`${command}\` again; it continues where it stopped.`;
 }
 
+/** The next step after an apply failed that deleted nothing, telling the user to run `command`. */
+export function nothingDeletedHint(command: string): string {
+  return `Fix the cause shown above, then run \`${command}\` again. Nothing was deleted.`;
+}
+
 /** Quotes a path for a copy-pasteable shell command. */
 function quotePath(path: string): string {
   return `"${path.replace(/"/g, '\\"')}"`;

@@ -25,6 +25,7 @@ import {
 import { dataWarning, deletesServer, deletionPlanProblems, planHeading } from "./checks";
 import {
   COMMAND,
+  CONTINUES_WITH_LEFT,
   checkCloudflare,
   containerImagesLeft,
   DRIFT_THEN_DESTROY,
@@ -38,6 +39,7 @@ import {
   setupEngine,
   teardownScope,
   teardownStateNotHere,
+  typeNameHint,
 } from "./common";
 import {
   applyApprovedPlan,
@@ -209,7 +211,7 @@ async function destroyInfrastructure(
         {
           hint: protectionOff
             ? `Run \`opscrew provision\` to turn delete protection back on, or run \`opscrew destroy\` again and type ${name} to delete the deployment.`
-            : `Run \`opscrew destroy\` again and type ${name} when you are ready.`,
+            : typeNameHint(name),
         },
       );
     }
@@ -233,7 +235,7 @@ async function destroyInfrastructure(
       await applyApprovedPlan(tunnel ? { ...session, engine } : session, summary, {
         allowDestroy: true,
         what: "deleting the infrastructure",
-        hint: "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
+        hint: CONTINUES_WITH_LEFT,
       });
     } catch (error) {
       if (!engine.refusedBusyTunnel || !(error instanceof OpsCrewError)) throw error;

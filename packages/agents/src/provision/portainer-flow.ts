@@ -23,7 +23,7 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { PORTAINER_NOTES } from "../design/portainer";
 import {
   type AppEnvironment,
   applyStackPlanAudited,
@@ -753,7 +753,7 @@ export async function provisionPortainer(
   const dns = portainerDnsRecordNote(plan);
   if (dns !== undefined) deps.reporter.info(dns);
   if (routeChanges) deps.reporter.warn(ROUTE_CHANGE_NOTE);
-  deps.reporter.info(`${PORTAINER_HOST_NOTE} ${PORTAINER_BACKUPS_NOTE}`);
+  deps.reporter.info(PORTAINER_NOTES);
   if (secretsStored) deps.reporter.info(mergeDeploysNote(plan, published.published));
   return {
     ...(iac.planHash ? { planHash: iac.planHash } : {}),

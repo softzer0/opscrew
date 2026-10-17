@@ -7,6 +7,7 @@ import {
   cell,
   DATABASE_DUMP,
   DEPLOY_AGAIN,
+  DEPLOY_KEY_STORED,
   DRIFT_FILES,
   deployRows,
   deploySections,
@@ -113,7 +114,7 @@ export function renderOwnRunbook(
           ]
         : []),
     "",
-    "The deploy key is stored only on the machine where you ran `opscrew provision` (and as a GitHub Actions",
+    DEPLOY_KEY_STORED,
     "secret). OpsCrew turned off password logins on the server.",
     "",
     "## Backups are your responsibility",

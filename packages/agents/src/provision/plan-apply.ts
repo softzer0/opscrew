@@ -169,7 +169,7 @@ function applyFailureHint(
       `Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;
     return `${displayName} cannot create a ${serverType} ${serverNoun} in ${location} right now (the ${size} is unavailable or out of stock there). ${next}`;
   }
-  return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
+  return plansRemainingHint(command);
 }
 
 /**
@@ -181,6 +181,11 @@ function portainerFailureHint(log: string, command: string): string {
   if (errorBlocks(log).some((block) => FORBIDDEN.test(block))) {
     return cloudflareRefusedHint(tunnelTokenPermissions(), command);
   }
+  return plansRemainingHint(command);
+}
+
+/** Next step after a failed apply that planning again recovers from. */
+function plansRemainingHint(command: string): string {
   return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
 }
 

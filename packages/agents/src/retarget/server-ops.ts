@@ -397,6 +397,11 @@ export async function verifyDump(
   return hash;
 }
 
+/** The command, in backticks, that deletes {@link DUMP_PATH} on `host` by hand. */
+export function removeDumpByHand(host: string): string {
+  return `\`ssh deploy@${host} rm -f ${DUMP_PATH}\``;
+}
+
 /** Deletes {@link DUMP_PATH}; a missing file is not an error. */
 export async function removeDump(remote: RemoteExec, options: ServerOpOptions): Promise<void> {
   await runStep(
@@ -405,7 +410,7 @@ export async function removeDump(remote: RemoteExec, options: ServerOpOptions): 
     MINUTE,
     {
       what: "remove the database dump",
-      hint: `Delete it by hand: \`ssh deploy@${remote.host} rm -f ${DUMP_PATH}\`.`,
+      hint: `Delete it by hand: ${removeDumpByHand(remote.host)}.`,
     },
     options.redact,
   );

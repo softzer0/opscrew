@@ -265,3 +265,10 @@ KEEP:
 
 About 1,400 lines across the four areas, and one wording for roughly 50 messages and hints. One bug
 is fixed along the way (B1). Nothing is weakened in the safety core.
+
+## Result (2026-10-17)
+
+After T1034–T1039 the scans find 665 blocks of 3+ lines (from 726) and 70 repeated strings of 30+
+characters (from 108). What remains are calls of shared helpers, schemas and data, the safety and
+purchase paths kept apart on purpose, the ssh-host shell fragments, imports and identifiers. The
+founder's example (the git repository check) now exists once, in `agents/src/shared/github.ts`.

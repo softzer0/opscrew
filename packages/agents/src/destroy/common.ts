@@ -45,6 +45,14 @@ export const COMMAND = "opscrew destroy";
 /** The next step after the user did not approve a teardown's host or stack plan. */
 export const SHOWS_PLAN_AGAIN = `Run \`${COMMAND}\` again when you are ready; it shows the plan again.`;
 
+/** The next step after a teardown's apply failed part of the way. */
+export const CONTINUES_WITH_LEFT = `Fix the cause shown above, then run \`${COMMAND}\` again; it continues with what is left.`;
+
+/** The next step after the user did not type the app's name to approve a teardown. */
+export function typeNameHint(name: string): string {
+  return `Run \`${COMMAND}\` again and type ${name} when you are ready.`;
+}
+
 /** The next step when the plan to delete differs from what was confirmed or applied. */
 export const DRIFT_THEN_DESTROY =
   "Run `opscrew drift` to see what changed, then run `opscrew destroy` again.";
@@ -378,7 +386,7 @@ export async function approveCloudflareRemoval(
       throw new OpsCrewError(
         "APPROVAL_REFUSED",
         `The teardown was not approved${refusalReason(approval)}. Nothing was deleted.`,
-        { hint: `Run \`opscrew destroy\` again and type ${name} when you are ready.` },
+        { hint: typeNameHint(name) },
       );
     }
     await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
@@ -420,7 +428,7 @@ export async function applyCloudflareRemoval(
         what: "deleting the Cloudflare resources",
         hint: removal.tunnel
           ? `${left} Fix the cause shown above, then run \`opscrew destroy\` again to finish; it continues with what is left.`
-          : "Fix the cause shown above, then run `opscrew destroy` again; it continues with what is left.",
+          : CONTINUES_WITH_LEFT,
       });
     } catch (error) {
       if (!engine.refusedBusyTunnel) throw error;

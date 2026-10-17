@@ -27,6 +27,9 @@ export const PORTAINER_HOST_NOTE =
 export const PORTAINER_BACKUPS_NOTE =
   "Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host.";
 
+/** Both Portainer notes as one paragraph. */
+export const PORTAINER_NOTES = `${PORTAINER_HOST_NOTE} ${PORTAINER_BACKUPS_NOTE}`;
+
 /** Why a Portainer option has no price. */
 export const PORTAINER_PRICE_NOTE = "No server price: you already run this Portainer.";
 

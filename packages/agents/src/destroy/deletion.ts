@@ -24,6 +24,7 @@ import type { PhaseDeps } from "../context";
 import { providerProfile, type VpsConnectorOptions, vpsConnector } from "../providers";
 import {
   describeChanges,
+  nothingDeletedHint,
   type ProjectEngine,
   planStop,
   readValidJson,
@@ -667,7 +668,7 @@ export async function liftProtection(
     await applyApprovedPlan(session, summary, {
       allowDestroy: false,
       what: "lifting delete protection",
-      hint: `Fix the cause shown above, then run \`${command}\` again. Nothing was deleted.`,
+      hint: nothingDeletedHint(command),
     });
     deps.reporter.success(`Delete protection on ${name} is off.`);
     return { off: true, approval };

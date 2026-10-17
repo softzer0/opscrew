@@ -115,6 +115,9 @@ function profileHint(): string {
 
 const STATUS_PAGE = "https://status.godaddy.com";
 
+/** The next step when GoDaddy rejects a request about one domain. */
+const CHECK_DOMAIN_HINT = `Check the domain at ${GODADDY_DASHBOARD_URLS.portfolio}.`;
+
 /**
  * Typed client for GoDaddy's Domains API v3. Reads retry a rate limit once; mutations
  * (registrations, nameserver changes) are never retried. Errors are `OpsCrewError`s in plain
@@ -225,7 +228,7 @@ export class GoDaddyClient {
     }
     if (status >= 400 && status < 500) {
       throw new OpsCrewError("PROVIDER_ERROR", `GoDaddy could not ${what}: ${detail}.`, {
-        hint: `Check the domain at ${GODADDY_DASHBOARD_URLS.portfolio}.`,
+        hint: CHECK_DOMAIN_HINT,
       });
     }
     throw new OpsCrewError("PROVIDER_ERROR", `GoDaddy could not ${what} (HTTP ${status}).`, {
@@ -499,7 +502,7 @@ export class GoDaddyClient {
     const { status, json } = answer;
     if (status === 404) {
       throw new OpsCrewError("PHASE_PRECONDITION", `${name} is not in this GoDaddy account.`, {
-        hint: `Check the domain at ${GODADDY_DASHBOARD_URLS.portfolio}.`,
+        hint: CHECK_DOMAIN_HINT,
       });
     }
     if (status === 401 || status === 403) this.#fail(answer, what);

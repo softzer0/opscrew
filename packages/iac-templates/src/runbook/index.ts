@@ -9,6 +9,7 @@ import {
   cell,
   DATABASE_DUMP,
   DEPLOY_AGAIN,
+  DEPLOY_KEY_STORED,
   DRIFT_FILES,
   deployRows,
   deploySections,
@@ -82,7 +83,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RenderContext): RenderedFil
         : []),
     ]),
     "",
-    "The deploy key is stored only on the machine where you ran `opscrew provision` (and as a GitHub Actions",
+    DEPLOY_KEY_STORED,
     "secret). Password login and root login are disabled on the server.",
     "",
     ...(ip === undefined

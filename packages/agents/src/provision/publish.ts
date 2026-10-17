@@ -11,6 +11,9 @@ import { type GitHubSetup, portainerCloudflare } from "./credentials";
 /** Branch holding the generated deployment files. */
 export const DEPLOY_SETUP_BRANCH = "opscrew/deploy-setup";
 
+/** The review checklist item of every deploy-setup pull request about the workflow's actions. */
+const PINNED_ACTIONS_CHECK = "- [ ] The workflow only uses pinned, first-party actions.";
+
 export interface PublishResult {
   branch: string;
   commit?: string;
@@ -75,7 +78,7 @@ export function deploySetupPullRequestBody(
       : []),
     "",
     "Review checklist:",
-    "- [ ] The workflow only uses pinned, first-party actions.",
+    PINNED_ACTIONS_CHECK,
     own
       ? "- [ ] The host changes OpsCrew showed before applying them (Docker, the deploy user, SSH settings, the ufw firewall) match what you expect."
       : "- [ ] The firewall rules in the infrastructure code match what you expect.",
@@ -159,7 +162,7 @@ function portainerPullRequestBody(
     PORTAINER_BACKUPS_NOTE,
     "",
     "Review checklist:",
-    "- [ ] The workflow only uses pinned, first-party actions.",
+    PINNED_ACTIONS_CHECK,
     "- [ ] The stacks and the registry entry OpsCrew showed before creating them in Portainer match what you expect.",
     "",
     `Opened by OpsCrew ${version}.`,
