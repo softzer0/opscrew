@@ -28,14 +28,12 @@ module "server" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server.ipv4_address
-  ipv6               = module.server.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server.ipv4_address
+  ipv6    = module.server.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;

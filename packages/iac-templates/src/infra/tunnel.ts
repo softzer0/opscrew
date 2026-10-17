@@ -9,15 +9,7 @@ import {
   usesTunnel,
 } from "../tunnel";
 import type { RenderContext } from "../types";
-import {
-  accessArguments,
-  accountId,
-  DEPLOY_TOKEN_OUTPUTS,
-  TUNNEL_RULESETS_OUTPUT,
-  tunnelArguments,
-  ZERO_TRUST_VARIABLES,
-  zeroTrustTfvars,
-} from "./cloudflare";
+import { accessArguments, accountId, DEPLOY_TOKEN_OUTPUTS, tunnelArguments } from "./cloudflare";
 import { moduleBlock, output, sensitiveOutput, type VariableSpec } from "./hcl";
 
 /** What the Cloudflare Tunnel and Access add to a root module (own server or cloud server). */
@@ -47,13 +39,10 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
 
   const app = `"http://localhost:${TUNNEL_ORIGIN_PORT}"`;
   const routes: string[] = [];
-  const wafHostnames: string[] = [];
   if (tunnel && domain) {
     routes.push(`    { hostname = var.domain, service = ${app} },`);
-    wafHostnames.push("var.domain");
     if (plan.dns.www) {
       routes.push(`    { hostname = "www.\${var.domain}", service = ${app} },`);
-      wafHostnames.push('"www.${var.domain}"');
     }
   }
   if (ssh !== undefined) {
@@ -85,10 +74,7 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
       ],
       name: "tunnel",
       source: "cloudflare-tunnel",
-      args: tunnelArguments(
-        '"opscrew-${var.app_name}"',
-        tunnel ? `[${wafHostnames.join(", ")}]` : undefined,
-      ),
+      args: tunnelArguments('"opscrew-${var.app_name}"'),
       body: [
         "  routes = [",
         ...routes,
@@ -113,13 +99,8 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
       type: "string",
       description: "Cloudflare account id (the tunnel and Access belong to it).",
     },
-    ...ZERO_TRUST_VARIABLES,
   ];
-  // Access (SSH and Portainer alike) needs the account's Zero Trust organization.
-  const tfvars: Record<string, unknown> = {
-    cloudflare_account_id: account,
-    ...zeroTrustTfvars(plan, ctx),
-  };
+  const tfvars: Record<string, unknown> = { cloudflare_account_id: account };
   if (ssh !== undefined) {
     variables.push(
       {
@@ -133,7 +114,12 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
     tfvars.ssh_port = ctx.sshPort ?? 22;
   }
   if (portainer !== undefined) {
-    const existingPin = ctx.cloudflare?.oneTimePinIdentityProviderId;
+    const pin = ctx.cloudflare?.oneTimePinIdentityProviderId;
+    if (pin === undefined) {
+      throw new Error(
+        "The account's one-time PIN login method id is required to render Portainer's Cloudflare Access.",
+      );
+    }
     variables.push(
       {
         name: "portainer_hostname",
@@ -148,14 +134,12 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
       {
         name: "one_time_pin_identity_provider_id",
         type: "string",
-        description:
-          "Id of the account's existing one-time PIN login method; null makes OpsCrew create one.",
-        default: "null",
+        description: "Id of the account's one-time PIN login method, Portainer's login.",
       },
     );
     tfvars.portainer_hostname = portainer;
     tfvars.portainer_allowed_emails = plan.portainer?.allowedEmails ?? [];
-    if (existingPin !== undefined) tfvars.one_time_pin_identity_provider_id = existingPin;
+    tfvars.one_time_pin_identity_provider_id = pin;
   }
 
   const outputs = [
@@ -169,7 +153,6 @@ export function tunnelPieces(plan: DeployPlan, ctx: RenderContext): TunnelPieces
   if (portainer !== undefined) {
     outputs.push(...output("portainer_url", '"https://${var.portainer_hostname}"'));
   }
-  if (tunnel) outputs.push(...TUNNEL_RULESETS_OUTPUT);
 
   return {
     main,

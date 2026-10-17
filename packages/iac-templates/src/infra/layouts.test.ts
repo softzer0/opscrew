@@ -208,7 +208,6 @@ describe("renderInfra move layouts", () => {
           "server_id",
           "server_name",
           "url",
-          "cloudflare_rulesets",
         ]);
         expect(outputsTf, label).not.toContain("other_");
       }
@@ -263,7 +262,7 @@ describe("renderInfra move layouts", () => {
             .map((f) => f.path.split("/")[3]),
         );
         expect(vendored, label).toEqual(
-          new Set(["cloudflare-dns", "cloudflare-waf", "digitalocean-droplet", "hetzner-vps"]),
+          new Set(["cloudflare-dns", "digitalocean-droplet", "hetzner-vps"]),
         );
       }
     }

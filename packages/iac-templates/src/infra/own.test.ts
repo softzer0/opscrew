@@ -5,12 +5,12 @@ import { describe, expect, it } from "vitest";
 import { testTarget } from "../__fixtures__/layouts";
 import {
   ACCOUNT_ID,
+  ONE_TIME_PIN_ID,
   testCloudflare,
   testCloudflareAccount,
   testContext,
   testPlan,
 } from "../__fixtures__/plans";
-import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
 import { moveLayout, renderInfra, tfvars } from "./index";
 
@@ -66,10 +66,6 @@ describe("renderInfra for a server the user owns (public)", () => {
       "opscrew/infra/modules/cloudflare-dns/outputs.tf",
       "opscrew/infra/modules/cloudflare-dns/variables.tf",
       "opscrew/infra/modules/cloudflare-dns/versions.tf",
-      "opscrew/infra/modules/cloudflare-waf/main.tf",
-      "opscrew/infra/modules/cloudflare-waf/outputs.tf",
-      "opscrew/infra/modules/cloudflare-waf/variables.tf",
-      "opscrew/infra/modules/cloudflare-waf/versions.tf",
     ]);
     const main = file(files, "prod/main.tf");
     expect(main).not.toMatch(/module "server|hcloud|digitalocean/);
@@ -88,10 +84,7 @@ describe("renderInfra for a server the user owns (public)", () => {
     expect(dnsOnly).toMatch(/^ {2}ipv6_record +=\s*var\.server_ipv6 != null$/m);
     expect(dnsOnly).toMatchSnapshot("main.tf");
     expect(main).toEqual(
-      dnsOnly.replace(
-        "  ipv6_record        = var.server_ipv6 != null",
-        "  ipv6_record        = false",
-      ),
+      dnsOnly.replace("  ipv6_record = var.server_ipv6 != null", "  ipv6_record = false"),
     );
     expect(file(files, "prod/variables.tf")).toMatchSnapshot("variables.tf");
     expect(file(files, "prod/outputs.tf")).toMatchSnapshot("outputs.tf");
@@ -113,8 +106,6 @@ describe("renderInfra for a server the user owns (public)", () => {
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
       proxied: true,
       www: true,
-      manage_config_rule: true,
-      manage_waf_rules: true,
     });
     expect(file(files, "terraform.tfvars.json")).not.toMatch(/server_ipv|ipv4|ipv6/);
     expect(tfvars(plan, ownContext({ cloudflare: testCloudflare() }))).toEqual(values);
@@ -128,10 +119,6 @@ describe("renderInfra for a server the user owns (public)", () => {
     expect(outputs).toContain('output "url" {\n  value = module.dns.url\n}');
     expect(outputs).toMatch(/output "servers" \{\s+value = \{\s+own = \{/);
     expect(outputs).not.toMatch(/server_id|server_name/);
-    // The DNS module's rulesets, by phase, so OpsCrew tells them from another deployment's.
-    expect(outputs).toContain(
-      'output "cloudflare_rulesets" {\n  value = module.dns.ruleset_ids\n}',
-    );
   });
 
   it("renders an empty root without a domain, with the URL on the address", () => {
@@ -174,10 +161,6 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
       "opscrew/infra/modules/cloudflare-tunnel/outputs.tf",
       "opscrew/infra/modules/cloudflare-tunnel/variables.tf",
       "opscrew/infra/modules/cloudflare-tunnel/versions.tf",
-      "opscrew/infra/modules/cloudflare-waf/main.tf",
-      "opscrew/infra/modules/cloudflare-waf/outputs.tf",
-      "opscrew/infra/modules/cloudflare-waf/variables.tf",
-      "opscrew/infra/modules/cloudflare-waf/versions.tf",
     ]);
     const main = file(files, "prod/main.tf");
     expect(main).not.toMatch(/module "dns"|module "server|server_ipv/);
@@ -196,9 +179,7 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
       app_name: "shop",
       domain: "shop.example.com",
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
-      manage_waf_rules: true,
       cloudflare_account_id: ACCOUNT_ID,
-      create_zero_trust_organization: false,
       ssh_hostname: "ssh-shop.example.com",
       ssh_port: 2222,
     });
@@ -221,24 +202,10 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
     }
     expect(outputs).toContain('output "ssh_hostname" {\n  value = var.ssh_hostname\n}');
     expect(outputs).toContain('output "tunnel_id" {\n  value = module.tunnel.tunnel_id\n}');
-    // The tunnel's WAF ruleset, in the same shape as the DNS module's ids (no configuration rule).
-    expect(outputs).toContain(
-      [
-        'output "cloudflare_rulesets" {',
-        "  value = {",
-        "    http_config_settings         = null",
-        "    http_request_firewall_custom = module.tunnel.waf_ruleset_id",
-        "  }",
-        "}",
-      ].join("\n"),
-    );
-    expect(outputs.match(/output "cloudflare_rulesets"/g)).toHaveLength(1);
-    expect(MODULE_FILES["cloudflare-tunnel/outputs.tf"]).toContain(
-      "value       = one(module.waf[*].ruleset_id)",
-    );
+    expect(outputs).not.toContain("cloudflare_rulesets");
   });
 
-  it("routes www through the tunnel and protects the app's hostnames with the WAF rule", () => {
+  it("routes www through the tunnel", () => {
     const www = renderInfra(
       testPlan({ provider: "own", access: "tunnel", domain: "example.com", www: true }),
       context,
@@ -247,7 +214,6 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
     expect(main).toContain(
       '{ hostname = "www.${var.domain}", service = "http://localhost:18080" },',
     );
-    expect(main).toMatch(/waf_hostnames += \[var\.domain, "www\.\$\{var\.domain\}"\]/);
   });
 
   it("adds Portainer behind Access with the listed emails when opted in", () => {
@@ -258,9 +224,7 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
         domain: "shop.example.com",
         portainer: PORTAINER,
       }),
-      ownContext({
-        cloudflare: testCloudflareAccount({ createZeroTrustOrganization: true }),
-      }),
+      ownContext({ cloudflare: testCloudflareAccount() }),
     );
     const main = file(withPortainer, "prod/main.tf");
     expect(main).toContain(
@@ -270,31 +234,21 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
     expect(JSON.parse(file(withPortainer, "terraform.tfvars.json"))).toMatchObject({
       portainer_hostname: "portainer.example.com",
       portainer_allowed_emails: ["ops@example.com"],
-      create_zero_trust_organization: true,
-      zero_trust_auth_domain: "example-com-opscrew.cloudflareaccess.com",
+      one_time_pin_identity_provider_id: ONE_TIME_PIN_ID,
     });
     expect(file(withPortainer, "prod/outputs.tf")).toContain(
       'output "portainer_url" {\n  value = "https://${var.portainer_hostname}"\n}',
     );
   });
 
-  it("creates a missing Zero Trust organization for SSH-only Access too, but no one-time PIN", () => {
-    const sshOnly = renderInfra(
-      plan,
-      ownContext({
-        cloudflare: testCloudflareAccount({ createZeroTrustOrganization: true }),
-        sshPort: 2222,
-      }),
-    );
-    expect(JSON.parse(file(sshOnly, "terraform.tfvars.json"))).toMatchObject({
-      create_zero_trust_organization: true,
-      zero_trust_auth_domain: "example-com-opscrew.cloudflareaccess.com",
-    });
+  it("takes the account's one-time PIN login method only for Portainer, and no organization", () => {
+    const sshOnly = renderInfra(plan, ownContext({ cloudflare: testCloudflareAccount() }));
     const main = file(sshOnly, "prod/main.tf");
-    expect(main).toMatch(/^ {2}create_organization +=\s*var\.create_zero_trust_organization$/m);
-    expect(main).toMatch(/^ {2}organization_auth_domain +=\s*var\.zero_trust_auth_domain$/m);
-    expect(main).not.toMatch(/one_time_pin|portainer/);
-    expect(file(sshOnly, "prod/variables.tf")).not.toContain("one_time_pin");
+    expect(main).not.toMatch(/organization|one_time_pin|portainer/);
+    expect(file(sshOnly, "prod/variables.tf")).not.toMatch(/organization|one_time_pin/);
+    expect(JSON.parse(file(sshOnly, "terraform.tfvars.json"))).not.toHaveProperty(
+      "one_time_pin_identity_provider_id",
+    );
 
     const withPortainer = renderInfra(
       testPlan({
@@ -303,13 +257,20 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
         domain: "shop.example.com",
         portainer: PORTAINER,
       }),
-      ownContext({ cloudflare: testCloudflareAccount({ createZeroTrustOrganization: true }) }),
+      ownContext({ cloudflare: testCloudflareAccount() }),
     );
     const portainerMain = file(withPortainer, "prod/main.tf");
-    expect(portainerMain).toMatch(/^ {2}create_organization +=/m);
+    expect(portainerMain).not.toContain("organization");
     expect(portainerMain).toMatch(
       /^ {2}one_time_pin_identity_provider_id +=\s*var\.one_time_pin_identity_provider_id$/m,
     );
+    // A plain required input: no default that would let the module make its own.
+    const pinVariable =
+      /variable "one_time_pin_identity_provider_id" \{[^}]*\}/.exec(
+        file(withPortainer, "prod/variables.tf"),
+      )?.[0] ?? "";
+    expect(pinVariable).toContain("type        = string");
+    expect(pinVariable).not.toContain("default");
   });
 
   it("creates every Access application before the tunnel's routes and DNS records", () => {
@@ -328,21 +289,21 @@ describe("renderInfra for a server the user owns (tunnel)", () => {
     }
   });
 
-  it("reuses the account's one-time PIN login method and organization when they exist", () => {
-    const values = tfvars(
-      testPlan({
-        provider: "own",
-        access: "tunnel",
-        domain: "shop.example.com",
-        portainer: PORTAINER,
-      }),
-      ownContext({ cloudflare: testCloudflareAccount({ oneTimePinIdentityProviderId: "otp-1" }) }),
-    );
-    expect(values).toMatchObject({
-      create_zero_trust_organization: false,
-      one_time_pin_identity_provider_id: "otp-1",
+  it("stops plainly without the one-time PIN login method Portainer's Access needs", () => {
+    const withPortainer = testPlan({
+      provider: "own",
+      access: "tunnel",
+      domain: "shop.example.com",
+      portainer: PORTAINER,
     });
-    expect(values).not.toHaveProperty("zero_trust_auth_domain");
+    expect(() =>
+      renderInfra(
+        withPortainer,
+        ownContext({
+          cloudflare: testCloudflareAccount({ oneTimePinIdentityProviderId: undefined }),
+        }),
+      ),
+    ).toThrow(/one-time PIN login method/);
   });
 
   it("stops with plain errors without a Cloudflare domain or account id", () => {
@@ -393,11 +354,8 @@ describe("renderInfra with Portainer on an OpsCrew-created server", () => {
       }
       const main = file(files, "prod/main.tf");
       expect(main).toContain('module "tunnel" {');
-      expect(main).not.toMatch(/ssh_hostname|localhost:18080|waf_hostnames/);
+      expect(main).not.toMatch(/ssh_hostname|localhost:18080/);
       expect(file(files, "prod/outputs.tf")).toContain('output "tunnel_token" {');
-      // The rulesets stay the DNS module's: the tunnel adds no second `cloudflare_rulesets`.
-      expect(file(files, "prod/outputs.tf").match(/output "cloudflare_rulesets"/g)).toHaveLength(1);
-      expect(file(files, "prod/outputs.tf")).toContain("value = module.dns.ruleset_ids");
       expect(files.some((f) => f.path.endsWith("modules/cloudflare-access/main.tf"))).toBe(true);
       expect(checkDialect(files.filter((f) => f.path.endsWith(".tf")))).toEqual([]);
     });

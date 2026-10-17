@@ -22,15 +22,3 @@ variable "routes" {
     no_tls_verify = optional(bool, false)
   }))
 }
-
-variable "manage_waf_rules" {
-  description = "Block common probes on the waf_hostnames with a WAF custom rule. OpsCrew turns this off when the zone already has its own custom rules."
-  type        = bool
-  default     = false
-}
-
-variable "waf_hostnames" {
-  description = "Hostnames the WAF custom rule protects (the app's hostnames)."
-  type        = list(string)
-  default     = []
-}

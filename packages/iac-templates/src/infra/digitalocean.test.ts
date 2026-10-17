@@ -65,7 +65,7 @@ describe("renderInfra for DigitalOcean", () => {
     );
     const vendored = files.filter((f) => f.path.startsWith("opscrew/infra/modules/"));
     expect(new Set(vendored.map((f) => f.path.split("/")[3]))).toEqual(
-      new Set(["cloudflare-dns", "cloudflare-waf", "digitalocean-droplet"]),
+      new Set(["cloudflare-dns", "digitalocean-droplet"]),
     );
     expect(content(files, "prod/main.tf")).toMatchSnapshot("main.tf");
     expect(content(files, "prod/versions.tf")).toMatchSnapshot("versions.tf");
@@ -75,8 +75,6 @@ describe("renderInfra for DigitalOcean", () => {
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
       proxied: true,
       www: true,
-      manage_config_rule: true,
-      manage_waf_rules: true,
       http_allowed_cidrs: [...CF_RANGES.ipv4, ...CF_RANGES.ipv6],
     });
   });

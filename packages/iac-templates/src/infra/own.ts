@@ -4,7 +4,7 @@ import { usesCloudflare } from "../predicates";
 import { webFilterMode } from "../runtime";
 import { tunnelMode } from "../tunnel";
 import type { RenderContext } from "../types";
-import { DNS_RULESETS_OUTPUT, dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
+import { dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
   APP_NAME_VARIABLE,
   CLOUDFLARE_PROVIDER,
@@ -92,7 +92,6 @@ function outputsTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
       "}",
       "",
     );
-    if (usesCloudflare(plan)) lines.push(...DNS_RULESETS_OUTPUT);
   }
   if (pieces) lines.push(...pieces.outputs);
   return lines.join("\n");

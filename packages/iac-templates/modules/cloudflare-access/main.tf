@@ -2,21 +2,11 @@
 # - The service the deploy workflow reaches (SSH, or Portainer's webhook): a Service Auth policy
 #   that lets exactly one service token through.
 # - Portainer (opt-in): the listed email addresses, after a one-time PIN sent to that address.
+# The account's Zero Trust organization and its one-time PIN login method are shared by every
+# OpsCrew app in the account, so OpsCrew creates them outside this configuration.
 locals {
   service   = var.service_hostname != null
   portainer = var.portainer_hostname != null
-  one_time_pin_id = (
-    var.one_time_pin_identity_provider_id != null
-    ? var.one_time_pin_identity_provider_id
-    : one(cloudflare_zero_trust_access_identity_provider.one_time_pin[*].id)
-  )
-}
-
-resource "cloudflare_zero_trust_organization" "this" {
-  count       = var.create_organization ? 1 : 0
-  account_id  = var.account_id
-  name        = var.organization_auth_domain
-  auth_domain = var.organization_auth_domain
 }
 
 resource "cloudflare_zero_trust_access_service_token" "ssh" {
@@ -25,8 +15,6 @@ resource "cloudflare_zero_trust_access_service_token" "ssh" {
   name       = "OpsCrew deploy (${var.app_name})"
   # Deploys must not stop working when a token expires; rotate it by re-running provision.
   duration = "forever"
-
-  depends_on = [cloudflare_zero_trust_organization.this]
 }
 
 resource "cloudflare_zero_trust_access_policy" "ssh" {
@@ -37,8 +25,6 @@ resource "cloudflare_zero_trust_access_policy" "ssh" {
   include = [
     { service_token = { token_id = cloudflare_zero_trust_access_service_token.ssh[0].id } },
   ]
-
-  depends_on = [cloudflare_zero_trust_organization.this]
 }
 
 resource "cloudflare_zero_trust_access_application" "ssh" {
@@ -56,24 +42,12 @@ resource "cloudflare_zero_trust_access_application" "ssh" {
   ]
 }
 
-resource "cloudflare_zero_trust_access_identity_provider" "one_time_pin" {
-  count      = local.portainer && var.one_time_pin_identity_provider_id == null ? 1 : 0
-  account_id = var.account_id
-  name       = "One-time PIN"
-  type       = "onetimepin"
-  config     = {}
-
-  depends_on = [cloudflare_zero_trust_organization.this]
-}
-
 resource "cloudflare_zero_trust_access_policy" "portainer" {
   count      = local.portainer ? 1 : 0
   account_id = var.account_id
   name       = "OpsCrew Portainer (${var.app_name})"
   decision   = "allow"
   include    = [for email in var.portainer_allowed_emails : { email = { email = email } }]
-
-  depends_on = [cloudflare_zero_trust_organization.this]
 }
 
 resource "cloudflare_zero_trust_access_application" "portainer" {
@@ -83,7 +57,7 @@ resource "cloudflare_zero_trust_access_application" "portainer" {
   type                      = "self_hosted"
   domain                    = var.portainer_hostname
   destinations              = [{ type = "public", uri = var.portainer_hostname }]
-  allowed_idps              = [local.one_time_pin_id]
+  allowed_idps              = [var.one_time_pin_identity_provider_id]
   auto_redirect_to_identity = true
   app_launcher_visible      = false
   session_duration          = "24h"

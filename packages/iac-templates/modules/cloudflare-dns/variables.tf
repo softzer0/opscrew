@@ -36,15 +36,3 @@ variable "www" {
   type        = bool
   default     = false
 }
-
-variable "manage_config_rule" {
-  description = "Set Full (strict) TLS for this hostname with a configuration rule. OpsCrew turns this off when the zone already has its own configuration rules."
-  type        = bool
-  default     = true
-}
-
-variable "manage_waf_rules" {
-  description = "Block common probes with a WAF custom rule. OpsCrew turns this off when the zone already has its own custom rules."
-  type        = bool
-  default     = true
-}

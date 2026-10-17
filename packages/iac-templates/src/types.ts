@@ -28,10 +28,10 @@ export interface RenderContext {
   acmeEmail?: string;
   cloudflare?: {
     zoneId: string;
-    /** False when the zone already has its own `http_config_settings` entrypoint ruleset. */
-    manageConfigRule: boolean;
-    /** False when the zone already has its own `http_request_firewall_custom` entrypoint ruleset. */
-    manageWafRules: boolean;
+    /** Unused: the zone's rules left the IaC configuration. T1104 removes it with its callers. */
+    manageConfigRule?: boolean;
+    /** Unused: the zone's rules left the IaC configuration. T1104 removes it with its callers. */
+    manageWafRules?: boolean;
     /** Cloudflare edge ranges used to restrict ports 80/443 when proxied. */
     ipRanges?: { ipv4: string[]; ipv6: string[] };
     /**
@@ -40,17 +40,9 @@ export interface RenderContext {
      */
     accountId?: string;
     /**
-     * True when OpsCrew must create the account's Zero Trust organization: the account has none
-     * yet, or this configuration's state already holds the one OpsCrew created
-     * (`module.access.cloudflare_zero_trust_organization.this[0]`). Used whenever the plan has
-     * Cloudflare Access (tunnel mode's SSH hostname or a Portainer subdomain); default false.
-     */
-    createZeroTrustOrganization?: boolean;
-    /**
-     * Id of the account's existing one-time PIN login method. Leave it unset when the account has
-     * none, or when this configuration's state already holds the one OpsCrew created
-     * (`module.access.cloudflare_zero_trust_access_identity_provider.one_time_pin[0]`): the module
-     * then creates (or keeps) its own. Used only with a Portainer subdomain.
+     * Id of the account's one-time PIN login method, which OpsCrew creates outside the IaC
+     * configuration when the account has none. Required with a Portainer subdomain (Portainer's
+     * login).
      */
     oneTimePinIdentityProviderId?: string;
   };

@@ -35,14 +35,12 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server_previous.ipv4_address
-  ipv6               = module.server_previous.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server_previous.ipv4_address
+  ipv6    = module.server_previous.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -82,12 +80,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -111,9 +103,7 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -181,16 +171,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -234,14 +214,12 @@ moved {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server.ipv4_address
-  ipv6               = module.server.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server.ipv4_address
+  ipv6    = module.server.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -281,12 +259,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -310,9 +282,7 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -380,16 +350,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -443,14 +403,12 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server_previous.ipv4_address
-  ipv6               = module.server_previous.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server_previous.ipv4_address
+  ipv6    = module.server_previous.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -495,12 +453,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -528,9 +480,7 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -624,16 +574,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -671,14 +611,12 @@ module "server" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server.ipv4_address
-  ipv6               = module.server.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server.ipv4_address
+  ipv6    = module.server.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -718,12 +656,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -747,9 +679,7 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -823,16 +753,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -877,14 +797,12 @@ moved {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server_previous.ipv4_address
-  ipv6               = module.server_previous.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server_previous.ipv4_address
+  ipv6    = module.server_previous.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -924,12 +842,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -953,9 +865,7 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -1023,16 +933,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -1086,14 +986,12 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server.ipv4_address
-  ipv6               = module.server.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server.ipv4_address
+  ipv6    = module.server.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -1138,12 +1036,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -1171,9 +1063,7 @@ exports[`renderInfra move layouts (snapshots) > digitalocean to hetzner > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -1267,16 +1157,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -1343,14 +1223,12 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server_previous.ipv4_address
-  ipv6               = module.server_previous.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server_previous.ipv4_address
+  ipv6    = module.server_previous.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -1390,12 +1268,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -1419,9 +1291,7 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -1495,16 +1365,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -1548,14 +1408,12 @@ moved {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server.ipv4_address
-  ipv6               = module.server.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server.ipv4_address
+  ipv6    = module.server.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -1595,12 +1453,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -1624,9 +1476,7 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -1700,16 +1550,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -1763,14 +1603,12 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server_previous.ipv4_address
-  ipv6               = module.server_previous.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server_previous.ipv4_address
+  ipv6    = module.server_previous.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -1815,12 +1653,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -1848,9 +1680,7 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -1944,16 +1774,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -1991,14 +1811,12 @@ module "server" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server.ipv4_address
-  ipv6               = module.server.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server.ipv4_address
+  ipv6    = module.server.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -2038,12 +1856,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -2067,9 +1879,7 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -2137,16 +1947,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -2191,14 +1991,12 @@ moved {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server_previous.ipv4_address
-  ipv6               = module.server_previous.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server_previous.ipv4_address
+  ipv6    = module.server_previous.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -2238,12 +2036,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -2267,9 +2059,7 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -2343,16 +2133,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -2406,14 +2186,12 @@ module "server_previous" {
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = module.server.ipv4_address
-  ipv6               = module.server.ipv6_address
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id = var.cloudflare_zone_id
+  domain  = var.domain
+  ipv4    = module.server.ipv4_address
+  ipv6    = module.server.ipv6_address
+  proxied = var.proxied
+  www     = var.www
 }
 "
 `;
@@ -2458,12 +2236,6 @@ output "servers" {
     }
   }
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
-}
 "
 `;
 
@@ -2491,9 +2263,7 @@ exports[`renderInfra move layouts (snapshots) > hetzner to digitalocean > render
   "domain": "example.com",
   "cloudflare_zone_id": "0123456789abcdef0123456789abcdef",
   "proxied": true,
-  "www": true,
-  "manage_config_rule": true,
-  "manage_waf_rules": true
+  "www": true
 }
 "
 `;
@@ -2585,16 +2355,6 @@ variable "proxied" {
 
 variable "www" {
   description = "Also serve www.<domain>."
-  type        = bool
-}
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
   type        = bool
 }
 "

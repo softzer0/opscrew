@@ -3,7 +3,7 @@ import { MODULE_FILES } from "../generated/modules";
 import { usesCloudflare, webOnlyFromCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText, type VariablePrefix } from "../providers";
 import type { RenderContext, RenderedFile, ServerModule } from "../types";
-import { DNS_RULESETS_OUTPUT, dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
+import { dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
   APP_NAME_VARIABLE,
   alignedArguments,
@@ -31,12 +31,6 @@ const MOVE_NOTE = [
   "# A move to another provider is in progress: `opscrew retarget` manages these files until the",
   "# move is finished (`opscrew retarget --finish`) or aborted (`opscrew retarget --abort`).",
 ].join("\n");
-
-/** Modules the vendored modules call themselves, vendored with them. */
-const NESTED_MODULES: Readonly<Record<string, readonly string[]>> = {
-  "cloudflare-dns": ["cloudflare-waf"],
-  "cloudflare-tunnel": ["cloudflare-waf"],
-};
 
 /** CIDRs allowed to reach ports 80/443: Cloudflare's ranges when proxied and restricted. */
 function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[] {
@@ -265,7 +259,6 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
     ...output("server_name", `module.${live}.server_name`),
     ...output("url", url),
     ...serversOutput(shape),
-    ...(usesCloudflare(plan) ? DNS_RULESETS_OUTPUT : []),
     ...(pieces?.outputs ?? []),
   ].join("\n");
 }
@@ -379,7 +372,6 @@ export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[
   if (root === undefined) return [];
   const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
   const modulesDir = `${dir.slice(0, dir.lastIndexOf("/") + 1)}modules`;
-  const modules = root.modules.flatMap((module) => [module, ...(NESTED_MODULES[module] ?? [])]);
   const files: RenderedFile[] = [
     { path: `${dir}/versions.tf`, content: root.versions, kind: "infra" },
     { path: `${dir}/main.tf`, content: root.main, kind: "infra" },
@@ -394,7 +386,7 @@ export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[
   for (const [path, content] of Object.entries(MODULE_FILES).sort(([a], [b]) =>
     a.localeCompare(b),
   )) {
-    if (modules.some((m) => path.startsWith(`${m}/`))) {
+    if (root.modules.some((m) => path.startsWith(`${m}/`))) {
       files.push({ path: `${modulesDir}/${path}`, content, kind: "infra" });
     }
   }

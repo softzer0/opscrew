@@ -8,10 +8,7 @@ import {
   accessArguments,
   accountId,
   DEPLOY_TOKEN_OUTPUTS,
-  TUNNEL_RULESETS_OUTPUT,
   tunnelArguments,
-  ZERO_TRUST_VARIABLES,
-  zeroTrustTfvars,
   zoneTfvars,
   zoneVariables,
 } from "./cloudflare";
@@ -102,10 +99,7 @@ function mainTf(plan: DeployPlan, s: Shape): string {
         ],
         name: "tunnel",
         source: "cloudflare-tunnel",
-        args: tunnelArguments(
-          '"opscrew-${var.app_name}"',
-          www ? '[var.domain, "www.${var.domain}"]' : "[var.domain]",
-        ),
+        args: tunnelArguments('"opscrew-${var.app_name}"'),
         body: [
           "  routes = [",
           `    { hostname = var.domain, service = ${APP_ORIGIN} },`,
@@ -171,7 +165,6 @@ function variables(s: Shape): VariableSpec[] {
   ];
   if (s.webhook) {
     specs.push(
-      ...ZERO_TRUST_VARIABLES,
       {
         name: "portainer_hostname",
         type: "string",
@@ -199,7 +192,6 @@ function outputsTf(s: Shape): string {
       ...output("tunnel_id", "module.tunnel.tunnel_id"),
       "# The app stack's connector token: it goes only into the stack's environment in Portainer.",
       ...sensitiveOutput("tunnel_token", "module.tunnel.token"),
-      ...TUNNEL_RULESETS_OUTPUT,
     );
   }
   if (s.webhook) {
@@ -220,9 +212,7 @@ function tfvars(plan: DeployPlan, ctx: RenderContext, s: Shape): Record<string, 
     app_name: plan.app.name,
     ...zoneTfvars(plan, ctx, s.appTunnel ? "tunnel" : "zone"),
     cloudflare_account_id: accountId(ctx),
-    ...(s.webhook
-      ? { ...zeroTrustTfvars(plan, ctx), portainer_hostname: portainerWebhookHostname(plan) }
-      : {}),
+    ...(s.webhook ? { portainer_hostname: portainerWebhookHostname(plan) } : {}),
   };
 }
 
@@ -231,7 +221,7 @@ function tfvars(plan: DeployPlan, ctx: RenderContext, s: Shape): Record<string, 
  * no server, changes nothing on the host and creates no DNS record for web modes `proxy` and
  * `caddy` (those work with any DNS; `opscrew provision` says which record to create). Web mode
  * `tunnel` gets `module "tunnel"` to Caddy in the app's stack (outputs `url`, `tunnel_id`,
- * `tunnel_token`, `cloudflare_rulesets`). Redeploy mode `cloudflare` gets
+ * `tunnel_token`). Redeploy mode `cloudflare` gets
  * `module "portainer_tunnel"` (Portainer's hostname, only the webhook paths, to the sensitive
  * variable `portainer_origin` supplied as `TF_VAR_portainer_origin`) and `module "access"` with a
  * Service Auth policy for the deploy workflow's service token (outputs `portainer_hostname`,

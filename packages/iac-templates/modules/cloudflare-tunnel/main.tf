@@ -50,11 +50,3 @@ data "cloudflare_zero_trust_tunnel_cloudflared_token" "this" {
   account_id = var.account_id
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.this.id
 }
-
-module "waf" {
-  source = "../cloudflare-waf"
-  count  = var.manage_waf_rules && length(var.waf_hostnames) > 0 ? 1 : 0
-
-  zone_id   = var.zone_id
-  hostnames = var.waf_hostnames
-}

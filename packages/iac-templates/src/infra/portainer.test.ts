@@ -57,16 +57,11 @@ describe("renderInfra for a Portainer target, web mode tunnel", () => {
       "opscrew/infra/modules/cloudflare-tunnel/outputs.tf",
       "opscrew/infra/modules/cloudflare-tunnel/variables.tf",
       "opscrew/infra/modules/cloudflare-tunnel/versions.tf",
-      "opscrew/infra/modules/cloudflare-waf/main.tf",
-      "opscrew/infra/modules/cloudflare-waf/outputs.tf",
-      "opscrew/infra/modules/cloudflare-waf/variables.tf",
-      "opscrew/infra/modules/cloudflare-waf/versions.tf",
     ]);
     expect(main).toContain('module "tunnel" {');
-    expect(main).toContain('  name             = "opscrew-${var.app_name}"');
+    expect(main).toContain('  name       = "opscrew-${var.app_name}"');
     expect(main).toContain('    { hostname = var.domain, service = "http://caddy:80" },');
     expect(main).toContain('    { hostname = "www.${var.domain}", service = "http://caddy:80" },');
-    expect(main).toContain('  waf_hostnames    = [var.domain, "www.${var.domain}"]');
     expect(main).not.toMatch(
       /module "(dns|access|portainer_tunnel)"|depends_on|hcloud|digitalocean/,
     );
@@ -80,15 +75,14 @@ describe("renderInfra for a Portainer target, web mode tunnel", () => {
     expect(outputs).toContain(
       'output "tunnel_token" {\n  value     = module.tunnel.token\n  sensitive = true\n}',
     );
-    expect(outputs).toContain("http_request_firewall_custom = module.tunnel.waf_ruleset_id");
+    expect(outputs).not.toContain("cloudflare_rulesets");
   });
 
-  it("writes the account and the WAF switch to tfvars, never an address", () => {
+  it("writes the account to tfvars, never an address", () => {
     expect(tfvars(plan, accountCtx())).toEqual({
       app_name: "shop",
       domain: "example.com",
       cloudflare_zone_id: testCloudflare().zoneId,
-      manage_waf_rules: true,
       cloudflare_account_id: testCloudflareAccount().accountId,
     });
     expect(JSON.parse(file(files, "terraform.tfvars.json"))).toEqual(tfvars(plan, accountCtx()));
@@ -130,9 +124,7 @@ describe("renderInfra for a Portainer target, redeploy mode cloudflare", () => {
     redeploy: "cloudflare",
     proxied: false,
   });
-  const ctx = accountCtx({
-    cloudflare: { ...testCloudflareAccount(), createZeroTrustOrganization: true },
-  });
+  const ctx = accountCtx();
   const files = renderInfra(plan, ctx);
   const main = file(files, "prod/main.tf");
   const variables = file(files, "prod/variables.tf");
@@ -167,19 +159,15 @@ describe("renderInfra for a Portainer target, redeploy mode cloudflare", () => {
       "opscrew/infra/modules/cloudflare-tunnel/outputs.tf",
       "opscrew/infra/modules/cloudflare-tunnel/variables.tf",
       "opscrew/infra/modules/cloudflare-tunnel/versions.tf",
-      "opscrew/infra/modules/cloudflare-waf/main.tf",
-      "opscrew/infra/modules/cloudflare-waf/outputs.tf",
-      "opscrew/infra/modules/cloudflare-waf/variables.tf",
-      "opscrew/infra/modules/cloudflare-waf/versions.tf",
     ]);
   });
 
   it("puts Access on the whole hostname, named as Portainer's webhook", () => {
     expect(main).toContain('module "access" {');
     // The module's service-token slot: only the deploy workflow's service token gets through.
-    expect(main).toContain("  service_hostname         = var.portainer_hostname");
-    expect(main).toContain('  service_label            = "Portainer webhook"');
-    expect(main).toContain("  app_name                 = var.app_name");
+    expect(main).toContain("  service_hostname = var.portainer_hostname");
+    expect(main).toContain('  service_label    = "Portainer webhook"');
+    expect(main).toContain("  app_name         = var.app_name");
     expect(main).not.toContain("portainer_allowed_emails");
   });
 
@@ -192,11 +180,9 @@ describe("renderInfra for a Portainer target, redeploy mode cloudflare", () => {
       app_name: "shop",
       cloudflare_zone_id: testCloudflare().zoneId,
       cloudflare_account_id: testCloudflareAccount().accountId,
-      create_zero_trust_organization: true,
-      zero_trust_auth_domain: "example-com-opscrew.cloudflareaccess.com",
       portainer_hostname: "portainer-shop.example.com",
     });
-    expect(variables).not.toMatch(/variable "(domain|manage_waf_rules|proxied|www)"/);
+    expect(variables).not.toMatch(/variable "(domain|proxied|www)"|organization|one_time_pin/);
     expectNoAddress(files);
   });
 
@@ -214,14 +200,13 @@ describe("renderInfra for a Portainer target, redeploy mode cloudflare", () => {
     expect(outputs).not.toMatch(/output "(tunnel_token|url|cloudflare_rulesets)"/);
   });
 
-  it("with web mode tunnel: two tunnels, the app's and Portainer's, and one WAF owner", () => {
+  it("with web mode tunnel: two tunnels, the app's and Portainer's", () => {
     const both = portainerTestPlan({ web: { mode: "tunnel" }, redeploy: "cloudflare" });
     const bothFiles = renderInfra(both, ctx);
     const bothMain = file(bothFiles, "prod/main.tf");
     expect(bothMain).toContain('module "tunnel" {');
     expect(bothMain).toContain('module "portainer_tunnel" {');
     expect(bothMain).not.toContain('module "dns"');
-    expect(bothMain.match(/manage_waf_rules +=/g)).toHaveLength(1);
     const bothOutputs = file(bothFiles, "prod/outputs.tf");
     expect(bothOutputs).toContain('output "tunnel_token"');
     expect(bothOutputs).toContain('output "portainer_tunnel_token"');
@@ -280,8 +265,7 @@ const validated = {
   "proxy + cloudflare": () =>
     portainerTestPlan({ web: { mode: "proxy", port: 8080 }, redeploy: "cloudflare" }),
 };
-const validatedContext = () =>
-  testContext({ cloudflare: { ...testCloudflareAccount(), createZeroTrustOrganization: true } });
+const validatedContext = () => testContext({ cloudflare: testCloudflareAccount() });
 
 async function write(root: string, files: readonly RenderedFile[]): Promise<string> {
   for (const f of files) {

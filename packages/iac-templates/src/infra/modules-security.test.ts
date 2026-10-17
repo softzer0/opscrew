@@ -19,38 +19,12 @@ function outputBlock(source: string, name: string): string {
   return match[1];
 }
 
-describe("cloudflare-waf module security", () => {
-  const main = MODULE_FILES["cloudflare-waf/main.tf"] ?? "";
-
-  it("blocks probes for secrets and admin panels on the app's hostnames only", () => {
-    expect(main).toContain(
-      'host_expression = "(http.host in {${join(" ", [for host in var.hostnames : "\\"${host}\\""])}})"',
-    );
-    const paths = /probe_paths = join\(" or ", \[\n([\s\S]*?)\n {2}\]\)/.exec(main)?.[1] ?? "";
-    expect(paths.split("\n").map((line) => line.trim())).toEqual([
-      '"http.request.uri.path contains \\"/.env\\"",',
-      '"starts_with(http.request.uri.path, \\"/.git\\")",',
-      '"http.request.uri.path contains \\"/wp-admin\\"",',
-      '"http.request.uri.path contains \\"/wp-login.php\\"",',
-      '"http.request.uri.path contains \\"/xmlrpc.php\\"",',
-      '"http.request.uri.path contains \\"/phpmyadmin\\"",',
-    ]);
-    const ruleset = resource(main, "cloudflare_ruleset", "this");
-    expect(ruleset).toMatch(/^ {2}phase {7}= "http_request_firewall_custom"$/m);
-    expect(ruleset).toContain(
-      'description = "OpsCrew: block probes for secrets and admin panels on ${var.hostnames[0]}"',
-    );
-    expect(ruleset).toContain(
-      'expression  = "${local.host_expression} and (${local.probe_paths})"',
-    );
-    expect(ruleset).toContain('action      = "block"');
-  });
-
-  it("is the one WAF rule of the DNS and tunnel modules", () => {
-    for (const module of ["cloudflare-dns", "cloudflare-tunnel"]) {
-      const source = MODULE_FILES[`${module}/main.tf`] ?? "";
-      expect(source, module).toContain('module "waf" {\n  source = "../cloudflare-waf"');
-      expect(source, module).not.toMatch(/probe_paths|resource "cloudflare_ruleset" "waf"/);
+describe("resources several OpsCrew apps share", () => {
+  it("are in no module: the zone's rules and the account's Zero Trust login stay outside Terraform", () => {
+    for (const [path, content] of Object.entries(MODULE_FILES)) {
+      expect(content, path).not.toMatch(
+        /cloudflare_ruleset|cloudflare_zero_trust_organization|cloudflare_zero_trust_access_identity_provider|module "waf"/,
+      );
     }
   });
 });
@@ -127,12 +101,7 @@ describe("cloudflare-access module security", () => {
     );
     expect(policy).not.toMatch(/everyone|email_domain|service_token|require|exclude/);
     const app = resource(main, "cloudflare_zero_trust_access_application", "portainer");
-    expect(app).toMatch(/^ {2}allowed_idps\s+= \[local\.one_time_pin_id\]$/m);
-    expect(main).toContain(
-      "one(cloudflare_zero_trust_access_identity_provider.one_time_pin[*].id)",
-    );
-    const idp = resource(main, "cloudflare_zero_trust_access_identity_provider", "one_time_pin");
-    expect(idp).toMatch(/type {7}= "onetimepin"/);
+    expect(app).toMatch(/^ {2}allowed_idps\s+= \[var\.one_time_pin_identity_provider_id\]$/m);
     const policies = /policies = \[([\s\S]*?)\n {2}\]/.exec(app)?.[1] ?? "";
     expect(policies.trim()).toBe(
       "{ id = cloudflare_zero_trust_access_policy.portainer[0].id, precedence = 1 },",

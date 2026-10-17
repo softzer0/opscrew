@@ -7,7 +7,12 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it, type TestContext } from "vitest";
 import { collectModuleFiles, renderGeneratedModule } from "../../scripts/gen-modules";
 import { DIRECTIONS, testTarget } from "../__fixtures__/layouts";
-import { testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
+import {
+  ONE_TIME_PIN_ID,
+  testCloudflareAccount,
+  testContext,
+  testPlan,
+} from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
 import { MOVE_LAYOUTS, moveLayout, renderInfra, tfvars } from "./index";
@@ -34,9 +39,7 @@ const CF = { ipv4: ["173.245.48.0/20", "103.21.244.0/22"], ipv6: ["2400:cb00::/3
 const PUBLIC_KEY =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE opscrew-deploy";
 
-function plan(
-  overrides: { domain?: string; www?: boolean; waf?: boolean; backups?: boolean } = {},
-): DeployPlan {
+function plan(overrides: { domain?: string; www?: boolean; backups?: boolean } = {}): DeployPlan {
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-11T12:00:00.000Z",
@@ -73,7 +76,7 @@ function plan(
         }
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
-    security: overrides.waf === false ? { wafCustomRules: false } : {},
+    security: {},
   });
 }
 
@@ -86,10 +89,8 @@ function ctx(overrides: Partial<RenderContext> = {}): RenderContext {
   };
 }
 
-const cloudflare = (manage = true) => ({
+const cloudflare = () => ({
   zoneId: "0123456789abcdef0123456789abcdef",
-  manageConfigRule: manage,
-  manageWafRules: manage,
   ipRanges: CF,
   // Only the tunnel and Access use the account id; cloud roots without them ignore it.
   accountId: "fedcba9876543210fedcba9876543210",
@@ -139,57 +140,34 @@ describe("renderInfra", () => {
       cloudflare_zone_id: "0123456789abcdef0123456789abcdef",
       proxied: true,
       www: true,
-      manage_config_rule: true,
-      manage_waf_rules: true,
       http_allowed_cidrs: [...CF.ipv4, ...CF.ipv6],
     });
   });
 
-  it("outputs the ids of the zone rulesets the DNS module manages wherever it renders the module", () => {
-    const outputsOf = (files: RenderedFile[]) =>
-      files.find((f) => f.path === "opscrew/infra/prod/outputs.tf")?.content ?? "";
-    const rulesets = ['output "cloudflare_rulesets" {', "  value = module.dns.ruleset_ids", "}"];
-    for (const provider of ["hetzner", "digitalocean"] as const) {
-      for (const manage of [true, false]) {
-        const files = renderInfra(
-          testPlan({ provider, domain: "shop.example.com" }),
-          testContext({ cloudflare: testCloudflare(manage) }),
-        );
-        expect(outputsOf(files), `${provider}, managed: ${manage}`).toContain(rulesets.join("\n"));
-      }
-      // No domain: no DNS module, no output.
-      expect(outputsOf(renderInfra(testPlan({ provider }), testContext()))).not.toContain(
-        "cloudflare_rulesets",
+  it("leaves the zone's rules out of every root: OpsCrew changes them outside Terraform", () => {
+    const context = testContext({ cloudflare: testCloudflareAccount() });
+    const roots = {
+      hetzner: testPlan({ domain: "example.com", www: true }),
+      digitalocean: testPlan({ provider: "digitalocean", domain: "example.com", www: true }),
+      "own server": testPlan({ provider: "own", domain: "example.com", www: true }),
+      "own server (tunnel)": testPlan({
+        provider: "own",
+        access: "tunnel",
+        domain: "example.com",
+        www: true,
+      }),
+    };
+    for (const [name, deployPlan] of Object.entries(roots)) {
+      const files = renderInfra(deployPlan, context);
+      expect(files.some((f) => /modules\/cloudflare-(dns|tunnel)\/main\.tf$/.test(f.path))).toBe(
+        true,
       );
+      for (const file of files) {
+        expect(file.content, `${name}: ${file.path}`).not.toMatch(
+          /cloudflare_ruleset|cloudflare-waf|module "waf"|manage_config_rule|manage_waf_rules|ruleset_ids|cloudflare_rulesets/,
+        );
+      }
     }
-    const own = renderInfra(
-      testPlan({ provider: "own", domain: "shop.example.com" }),
-      testContext({ cloudflare: testCloudflare() }),
-    );
-    expect(outputsOf(own)).toContain(rulesets.join("\n"));
-    // The module's output: one id (or null) per phase.
-    const moduleOutputs = MODULE_FILES["cloudflare-dns/outputs.tf"] ?? "";
-    expect(moduleOutputs).toContain('output "ruleset_ids"');
-    expect(moduleOutputs).toContain(
-      "http_config_settings         = one(cloudflare_ruleset.config[*].id)",
-    );
-    expect(moduleOutputs).toContain("http_request_firewall_custom = one(module.waf[*].ruleset_id)");
-  });
-
-  it("leaves existing Cloudflare rulesets alone", () => {
-    const values = tfvars(
-      plan({ domain: "shop.example.com" }),
-      ctx({ cloudflare: cloudflare(false) }),
-    );
-    expect(values).toMatchObject({ manage_config_rule: false, manage_waf_rules: false });
-  });
-
-  it("turns WAF rules off when the plan says so", () => {
-    const values = tfvars(
-      plan({ domain: "shop.example.com", waf: false }),
-      ctx({ cloudflare: cloudflare() }),
-    );
-    expect(values).toMatchObject({ manage_config_rule: true, manage_waf_rules: false });
   });
 
   it("keeps web ports open when Cloudflare ranges are unknown", () => {
@@ -294,9 +272,12 @@ const validatedPlans = {
   "own server (tunnel)": () =>
     testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" }),
 };
-/** Context for the validated plans: the organization and one-time PIN are created. */
+/** Context for the validated plans, with the account's one-time PIN login method. */
 const validatedContext = () =>
-  ctx({ cloudflare: { ...cloudflare(), createZeroTrustOrganization: true }, sshPort: 2222 });
+  ctx({
+    cloudflare: { ...cloudflare(), oneTimePinIdentityProviderId: ONE_TIME_PIN_ID },
+    sshPort: 2222,
+  });
 
 /** Writes rendered files under `root`, initialises the root module and validates it. */
 async function initAndValidate(

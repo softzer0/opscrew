@@ -62,7 +62,7 @@ describe.skipIf(!runIt)("own-server DNS plans (integration)", () => {
             dns: { ...proxied.dns, proxied: false },
             security: { ...proxied.security, httpAllowedFrom: "any" },
           });
-      const files = renderInfra(deployPlan, testContext({ cloudflare: testCloudflare(false) }));
+      const files = renderInfra(deployPlan, testContext({ cloudflare: testCloudflare() }));
       for (const file of files) {
         const target = join(root, file.path);
         await mkdir(dirname(target), { recursive: true });

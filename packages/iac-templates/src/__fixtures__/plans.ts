@@ -24,7 +24,6 @@ export interface TestPlanOptions {
   };
   domain?: string;
   www?: boolean;
-  waf?: boolean;
   backups?: boolean;
   postgres?: boolean;
 }
@@ -81,7 +80,7 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
         }
       : { provider: "none", proxied: false },
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
-    security: o.waf === false ? { wafCustomRules: false } : {},
+    security: {},
     ...(o.portainer === undefined
       ? {}
       : { portainer: { enabled: true, version: "2.33.1", ...o.portainer } }),
@@ -98,22 +97,28 @@ export function testContext(overrides: Partial<RenderContext> = {}): RenderConte
   };
 }
 
-/** Cloudflare render context for a zone (rulesets managed unless `manage` is false). */
-export function testCloudflare(manage = true): NonNullable<RenderContext["cloudflare"]> {
-  return {
-    zoneId: "0123456789abcdef0123456789abcdef",
-    manageConfigRule: manage,
-    manageWafRules: manage,
-    ipRanges: CF_RANGES,
-  };
+/** Cloudflare render context for a zone. */
+export function testCloudflare(): NonNullable<RenderContext["cloudflare"]> {
+  return { zoneId: "0123456789abcdef0123456789abcdef", ipRanges: CF_RANGES };
 }
 
 /** Cloudflare account id used by the tunnel and Access tests. */
 export const ACCOUNT_ID = "fedcba9876543210fedcba9876543210";
 
-/** {@link testCloudflare} with the account id the tunnel and Access need. */
+/** Id of the account's one-time PIN login method used by the Portainer Access tests. */
+export const ONE_TIME_PIN_ID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
+/**
+ * {@link testCloudflare} with the account id the tunnel and Access need, and the one-time PIN
+ * login method Portainer's Access needs.
+ */
 export function testCloudflareAccount(
   overrides: Partial<NonNullable<RenderContext["cloudflare"]>> = {},
 ): NonNullable<RenderContext["cloudflare"]> {
-  return { ...testCloudflare(), accountId: ACCOUNT_ID, ...overrides };
+  return {
+    ...testCloudflare(),
+    accountId: ACCOUNT_ID,
+    oneTimePinIdentityProviderId: ONE_TIME_PIN_ID,
+    ...overrides,
+  };
 }

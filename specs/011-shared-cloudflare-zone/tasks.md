@@ -54,7 +54,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare`
   - Effort: xhigh
 
-- [ ] T1103 [P] [US1] [US2] Templates without zone rulesets or account-wide Zero Trust resources in `packages/iac-templates/**`
+- [X] T1103 [P] [US1] [US2] Templates without zone rulesets or account-wide Zero Trust resources in `packages/iac-templates/**`
   - Owns: `packages/iac-templates/**` except `package.json` (+ tests, snapshots)
   - Reads: plan.md "3. Templates"
   - Depends: T1101

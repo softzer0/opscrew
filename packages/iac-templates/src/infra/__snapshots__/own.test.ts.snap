@@ -16,15 +16,13 @@ provider "cloudflare" {}
 module "dns" {
   source = "../modules/cloudflare-dns"
 
-  zone_id            = var.cloudflare_zone_id
-  domain             = var.domain
-  ipv4               = var.server_ipv4
-  ipv6               = var.server_ipv6
-  ipv6_record        = var.server_ipv6 != null
-  proxied            = var.proxied
-  www                = var.www
-  manage_config_rule = var.manage_config_rule
-  manage_waf_rules   = var.manage_waf_rules
+  zone_id     = var.cloudflare_zone_id
+  domain      = var.domain
+  ipv4        = var.server_ipv4
+  ipv6        = var.server_ipv6
+  ipv6_record = var.server_ipv6 != null
+  proxied     = var.proxied
+  www         = var.www
 }
 "
 `;
@@ -53,12 +51,6 @@ output "servers" {
       ipv6 = var.server_ipv6
     }
   }
-}
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone.
-output "cloudflare_rulesets" {
-  value = module.dns.ruleset_ids
 }
 "
 `;
@@ -102,16 +94,6 @@ variable "www" {
   description = "Also serve www.<domain>."
   type        = bool
 }
-
-variable "manage_config_rule" {
-  description = "Manage the TLS configuration rule."
-  type        = bool
-}
-
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
 "
 `;
 
@@ -150,11 +132,9 @@ provider "cloudflare" {}
 module "tunnel" {
   source = "../modules/cloudflare-tunnel"
 
-  account_id       = var.cloudflare_account_id
-  zone_id          = var.cloudflare_zone_id
-  name             = "opscrew-\${var.app_name}"
-  manage_waf_rules = var.manage_waf_rules
-  waf_hostnames    = [var.domain]
+  account_id = var.cloudflare_account_id
+  zone_id    = var.cloudflare_zone_id
+  name       = "opscrew-\${var.app_name}"
 
   routes = [
     { hostname = var.domain, service = "http://localhost:18080" },
@@ -173,8 +153,6 @@ module "access" {
 
   account_id                        = var.cloudflare_account_id
   app_name                          = var.app_name
-  create_organization               = var.create_zero_trust_organization
-  organization_auth_domain          = var.zero_trust_auth_domain
   service_hostname                  = var.ssh_hostname
   portainer_hostname                = var.portainer_hostname
   portainer_allowed_emails          = var.portainer_allowed_emails
@@ -198,11 +176,9 @@ provider "cloudflare" {}
 module "tunnel" {
   source = "../modules/cloudflare-tunnel"
 
-  account_id       = var.cloudflare_account_id
-  zone_id          = var.cloudflare_zone_id
-  name             = "opscrew-\${var.app_name}"
-  manage_waf_rules = var.manage_waf_rules
-  waf_hostnames    = [var.domain]
+  account_id = var.cloudflare_account_id
+  zone_id    = var.cloudflare_zone_id
+  name       = "opscrew-\${var.app_name}"
 
   routes = [
     { hostname = var.domain, service = "http://localhost:18080" },
@@ -218,11 +194,9 @@ module "tunnel" {
 module "access" {
   source = "../modules/cloudflare-access"
 
-  account_id               = var.cloudflare_account_id
-  app_name                 = var.app_name
-  create_organization      = var.create_zero_trust_organization
-  organization_auth_domain = var.zero_trust_auth_domain
-  service_hostname         = var.ssh_hostname
+  account_id       = var.cloudflare_account_id
+  app_name         = var.app_name
+  service_hostname = var.ssh_hostname
 }
 "
 `;
@@ -259,15 +233,6 @@ output "deploy_service_token_client_secret" {
   value     = module.access.ssh_service_token_client_secret
   sensitive = true
 }
-
-# The zone's entrypoint rulesets this deployment manages, by phase: OpsCrew leaves the ones
-# another deployment holds alone. Tunnel mode has no configuration rule.
-output "cloudflare_rulesets" {
-  value = {
-    http_config_settings         = null
-    http_request_firewall_custom = module.tunnel.waf_ruleset_id
-  }
-}
 "
 `;
 
@@ -290,25 +255,9 @@ variable "cloudflare_zone_id" {
   type        = string
 }
 
-variable "manage_waf_rules" {
-  description = "Manage the WAF custom rule."
-  type        = bool
-}
-
 variable "cloudflare_account_id" {
   description = "Cloudflare account id (the tunnel and Access belong to it)."
   type        = string
-}
-
-variable "create_zero_trust_organization" {
-  description = "Create the account's Zero Trust organization (only when the account has none, or this configuration created it)."
-  type        = bool
-}
-
-variable "zero_trust_auth_domain" {
-  description = "Team domain of the Zero Trust organization OpsCrew creates."
-  type        = string
-  default     = null
 }
 
 variable "ssh_hostname" {
