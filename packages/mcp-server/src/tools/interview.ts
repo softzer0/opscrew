@@ -3,9 +3,11 @@ import {
   buildPortainerQuestions,
   buildQuestions,
   buildServerQuestions,
+  CHECK_PORTAINER_CERTIFICATE,
   type ConfirmPortainerCertificate,
   createPortainerAccess,
   inferredAnswers,
+  NEW_CERTIFICATE_WARNING,
   PORTAINER_FIELDS,
   type PortainerAccess,
   PortainerCertificateError,
@@ -28,7 +30,7 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
-import { type CallExtra, clientSupportsElicitation, ELICITATION_TIMEOUT_MS } from "./elicitation";
+import { type CallExtra, clientSupportsElicitation, elicitOptions } from "./elicitation";
 import { projectDirInput, runTool, withHint } from "./shared";
 
 /** Facts from `opscrew/architecture.json` when it is valid, otherwise fresh detection. */
@@ -184,12 +186,8 @@ function certificateDialog(
       "",
       `    ${fingerprint}`,
       "",
-      "Check it before you trust it: in your browser open Portainer, click the padlock and view the certificate's SHA-256 fingerprint, or run `openssl s_client -connect <host>:<port> </dev/null | openssl x509 -noout -fingerprint -sha256` on the Portainer host itself.",
-      ...(previous === undefined
-        ? []
-        : [
-            "Trust the new one only if you changed Portainer's certificate yourself; otherwise someone may be intercepting the connection.",
-          ]),
+      CHECK_PORTAINER_CERTIFICATE,
+      ...(previous === undefined ? [] : [NEW_CERTIFICATE_WARNING]),
       "Your coding agent cannot confirm this for you.",
     ].join("\n");
     try {
@@ -210,11 +208,7 @@ function certificateDialog(
             required: ["trust"],
           },
         },
-        {
-          timeout: ELICITATION_TIMEOUT_MS,
-          ...(extra.requestId !== undefined ? { relatedRequestId: extra.requestId } : {}),
-          ...(extra.signal !== undefined ? { signal: extra.signal } : {}),
-        },
+        elicitOptions(extra),
       );
       if (result.action !== "accept") return false;
       const answer = CertificateAnswer.safeParse(result.content ?? {});

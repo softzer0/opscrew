@@ -26,9 +26,10 @@ import {
   NodeCommandRunner,
   nodeRealpath,
   registerEnvSecrets,
+  systemClock,
 } from "@opscrew/core";
 import { ClaudeAgentRuntime } from "@opscrew/runtime-claude";
-import { createApprovalHandler, systemClock } from "./approval";
+import { createApprovalHandler } from "./approval";
 import type { CliContext } from "./context";
 import { clackPrompts, type UiPrompts } from "./ui/prompts";
 

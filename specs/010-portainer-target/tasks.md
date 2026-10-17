@@ -315,7 +315,7 @@ From the duplicate scans and reviews recorded in `dry.md`. Waves: T1034 → {T10
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: xhigh
 
-- [ ] T1038 CLI, MCP server and plugin (dry.md D1–D5, D8–D12, D14, D18; C7)
+- [X] T1038 CLI, MCP server and plugin (dry.md D1–D5, D8–D12, D14, D18; C7)
   - Owns: `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**` (+ tests)
   - Reads: dry.md D, C7
   - Depends: T1037

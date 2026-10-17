@@ -4,7 +4,7 @@ import { toPosixRelative } from "@opscrew/core";
 import { renderScanSummary } from "@opscrew/secops";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
-import { projectDirInput, runTool } from "./shared";
+import { IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
 
 /** Severities at or above which a finding counts as blocking in the summary. */
 const BLOCKING = ["critical", "high"] as const;
@@ -36,12 +36,7 @@ export function registerScanTool(server: McpServer, deps: ResolvedMcpDeps): void
           .optional()
           .describe("How many findings to return, most severe first. Default 10."),
       },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: IDEMPOTENT_WRITE,
     },
     ({ projectDir, offline, top }) =>
       runTool(deps, "opscrew_scan", projectDir, async (call) => {

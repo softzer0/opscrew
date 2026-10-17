@@ -5,7 +5,7 @@ import {
   type ServerAddress,
   serverAddress,
 } from "@opscrew/agents";
-import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
@@ -34,7 +34,7 @@ async function addressLines(deps: PhaseDeps, plan: DeployPlan | undefined): Prom
     address = await addressOf(deps, plan);
   } catch (error) {
     if (!isUserFacingError(error) || error.code !== "ARTIFACT_INVALID") throw error;
-    const note = `Server address: unknown. ${error.message}${error.hint ? ` ${error.hint}` : ""}`;
+    const note = `Server address: unknown. ${errorText(error)}`;
     return ["", deps.redactor.redact(note)];
   }
   if (address === undefined) return [];

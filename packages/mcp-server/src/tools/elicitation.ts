@@ -8,7 +8,13 @@ import type {
   ApprovalRequest,
   Clock,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import {
+  approvalDecision,
+  CANCELLED_BY_USER,
+  DECLINED_BY_USER,
+  OpsCrewError,
+  PHRASE_MISMATCH,
+} from "@opscrew/core";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 
@@ -62,6 +68,15 @@ export function hostKeyNeedsTerminal(command: string, unchanged: string): OpsCre
   );
 }
 
+/** The options of one dialog: the timeout, and the tool call it belongs to (with its abort signal). */
+export function elicitOptions(extra: CallExtra | undefined) {
+  return {
+    timeout: ELICITATION_TIMEOUT_MS,
+    ...(extra?.requestId !== undefined ? { relatedRequestId: extra.requestId } : {}),
+    ...(extra?.signal !== undefined ? { signal: extra.signal } : {}),
+  };
+}
+
 const ElicitedAnswer = z.object({
   approve: z.boolean().optional(),
   confirmation: z.string().optional(),
@@ -109,12 +124,8 @@ export class ElicitationApprovalHandler implements ApprovalHandler {
   }
 
   private async ask(request: ApprovalRequest): Promise<ApprovalDecision> {
-    const decide = (approved: boolean, extra: Partial<ApprovalDecision> = {}) => ({
-      approved,
-      approver: this.approver(),
-      decidedAt: this.options.clock.now().toISOString(),
-      ...extra,
-    });
+    const decide = (approved: boolean, extra?: Pick<ApprovalDecision, "confirmation" | "reason">) =>
+      approvalDecision(this.options.clock, this.approver(), approved, extra);
     const phrase = request.confirmPhrase;
     const requestedSchema: ElicitRequestFormParams["requestedSchema"] = {
       type: "object" as const,
@@ -137,16 +148,11 @@ export class ElicitationApprovalHandler implements ApprovalHandler {
             },
       required: [phrase === undefined ? "approve" : "confirmation"],
     };
-    const extra = this.options.extra;
     let result: Awaited<ReturnType<McpServer["server"]["elicitInput"]>>;
     try {
       result = await this.server.server.elicitInput(
         { mode: "form", message: this.options.redact(approvalMessage(request)), requestedSchema },
-        {
-          timeout: ELICITATION_TIMEOUT_MS,
-          ...(extra?.requestId !== undefined ? { relatedRequestId: extra.requestId } : {}),
-          ...(extra?.signal !== undefined ? { signal: extra.signal } : {}),
-        },
+        elicitOptions(this.options.extra),
       );
     } catch {
       return decide(false, {
@@ -155,7 +161,7 @@ export class ElicitationApprovalHandler implements ApprovalHandler {
     }
     if (result.action !== "accept") {
       return decide(false, {
-        reason: result.action === "decline" ? "declined by the user" : "cancelled by the user",
+        reason: result.action === "decline" ? DECLINED_BY_USER : CANCELLED_BY_USER,
       });
     }
     const answer = ElicitedAnswer.safeParse(result.content ?? {});
@@ -164,11 +170,11 @@ export class ElicitationApprovalHandler implements ApprovalHandler {
       const typed = (answer.data.confirmation ?? "").trim();
       return typed === phrase
         ? decide(true, { confirmation: typed })
-        : decide(false, { confirmation: typed, reason: "confirmation phrase did not match" });
+        : decide(false, { confirmation: typed, reason: PHRASE_MISMATCH });
     }
     return answer.data.approve === true
       ? decide(true)
-      : decide(false, { reason: "declined by the user" });
+      : decide(false, { reason: DECLINED_BY_USER });
   }
 }
 

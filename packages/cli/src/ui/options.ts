@@ -1,10 +1,5 @@
-import {
-  convertMoney,
-  EXCHANGE_RATE_NOTE,
-  formatMoney,
-  isUnpriced,
-  priceLabel,
-} from "@opscrew/agents";
+import { convertMoney, EXCHANGE_RATE_NOTE, isUnpriced, priceLabel } from "@opscrew/agents";
+import { formatMoney } from "@opscrew/core";
 import type { DesignOption, Money } from "@opscrew/plan-schema";
 import { cancelled, clackPrompts, type UiPrompts } from "./prompts";
 

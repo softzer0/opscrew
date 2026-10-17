@@ -1,5 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { type DomainComparison, REGISTRAR_NAMES, searchDomains } from "@opscrew/agents";
+import {
+  type DomainComparison,
+  REGISTRAR_IDS,
+  REGISTRAR_NAMES,
+  searchDomains,
+} from "@opscrew/agents";
 import type { DomainCheck, Money, RegistrarId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
@@ -8,14 +13,6 @@ import { projectDirInput, runTool } from "./shared";
 
 /** What the user runs in a terminal to buy a domain (there is no purchase tool on purpose). */
 const DOMAIN_BUY_COMMAND = "npx opscrew domain buy <domain>";
-
-/** The registrars the check can ask (the ids of `opscrew domain search --registrar`). */
-const REGISTRARS = [
-  "cloudflare",
-  "porkbun",
-  "namecheap",
-  "godaddy",
-] as const satisfies readonly RegistrarId[];
 
 /** The buy command for a registrar (`--registrar` only when it is not Cloudflare). */
 const buyCommand = (registrar: RegistrarId) =>
@@ -84,7 +81,7 @@ export function registerDomainCheckTool(server: McpServer, deps: ResolvedMcpDeps
           .optional()
           .describe("Cloudflare account id, needed only when the token can use several accounts."),
         registrar: z
-          .enum(REGISTRARS)
+          .enum(REGISTRAR_IDS)
           .optional()
           .describe("Check at this registrar instead of Cloudflare. Not together with `compare`."),
         compare: z
@@ -128,7 +125,7 @@ export function registerDomainCheckTool(server: McpServer, deps: ResolvedMcpDeps
           return {
             text: `${header}\n${body}${next}`,
             data: {
-              ...(result.account !== undefined ? { account: result.account } : {}),
+              account: result.account,
               comparison,
               buyCommand: `${DOMAIN_BUY_COMMAND} [--registrar <id>]`,
             },

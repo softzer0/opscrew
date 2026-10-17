@@ -9,7 +9,7 @@ import {
   portainerStatus,
 } from "@opscrew/agents";
 import { readArtifact } from "@opscrew/plan-schema";
-import { type Command, Option } from "commander";
+import type { Command } from "commander";
 import { checkConfirmName, FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
@@ -26,6 +26,7 @@ import {
   APPROVE_DESCRIPTION,
   addHostKeyOption,
   checkApproveFlags,
+  engineOption,
   planChanges,
   YES_DESCRIPTION,
 } from "./provision";
@@ -54,14 +55,7 @@ function addChangeOptions(command: Command): Command {
   command
     .option("--plan-only", "Show the plans and their hashes; change nothing")
     .option("--approve <hash>", APPROVE_DESCRIPTION, collect);
-  return addHostKeyOption(command)
-    .addOption(
-      new Option("--engine <name>", "Infrastructure engine to use instead of the plan's").choices([
-        "tofu",
-        "terraform",
-      ]),
-    )
-    .option("--yes", YES_DESCRIPTION);
+  return addHostKeyOption(command).addOption(engineOption()).option("--yes", YES_DESCRIPTION);
 }
 
 /** The plans of a `--plan-only` run that need approving, each labelled. */

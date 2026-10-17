@@ -9,7 +9,7 @@ import type {
   Reporter,
   Scanner,
 } from "@opscrew/contracts";
-import { Redactor, registerEnvSecrets } from "@opscrew/core";
+import { approvalDecision, Redactor, registerEnvSecrets, systemClock } from "@opscrew/core";
 import { defaultScanners } from "@opscrew/secops";
 
 /** One message a phase reported while a tool ran. */
@@ -100,7 +100,7 @@ export interface ResolvedMcpDeps extends Required<Omit<OpscrewMcpDeps, "log">> {
 export function resolveMcpDeps(deps: OpscrewMcpDeps): ResolvedMcpDeps {
   const redactor = deps.redactor ?? new Redactor();
   if (deps.redactor === undefined) registerEnvSecrets(redactor, deps.env);
-  const clock = deps.clock ?? { now: () => new Date() };
+  const clock = deps.clock ?? systemClock;
   const partial = {
     version: deps.version,
     env: deps.env,
@@ -122,13 +122,10 @@ export function resolveMcpDeps(deps: OpscrewMcpDeps): ResolvedMcpDeps {
 class RefusingApprovalHandler implements ApprovalHandler {
   constructor(private readonly clock: Clock) {}
   async request(_request: ApprovalRequest): Promise<ApprovalDecision> {
-    return {
-      approved: false,
-      approver: "opscrew-mcp",
-      decidedAt: this.clock.now().toISOString(),
+    return approvalDecision(this.clock, "opscrew-mcp", false, {
       reason:
         "This OpsCrew MCP server cannot ask for approvals. Run the step with the opscrew CLI in a terminal.",
-    };
+    });
   }
 }
 

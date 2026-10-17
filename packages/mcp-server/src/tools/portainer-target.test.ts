@@ -311,7 +311,9 @@ describe("the MCP tools for the user's existing Portainer", () => {
       publicImage: true,
     });
     expect(textOf(applied)).toContain("Set up the app's stacks in the user's Portainer");
-    expect(textOf(applied)).toContain("backups of the app's data volumes are the user's");
+    expect(textOf(applied)).toContain(
+      "Backups, including the app's data volumes, are your responsibility",
+    );
     for (const output of h.outputs) expect(JSON.stringify(output)).not.toContain(PORTAINER_HOST);
   });
 

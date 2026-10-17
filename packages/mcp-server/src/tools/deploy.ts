@@ -1,8 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   applyCommand,
+  CHECK_MARK,
   describePlan,
   findSavedPlan,
+  OWN_SERVER_BACKUPS_NOTE,
   PORTAINER_BACKUPS_NOTE,
   PORTAINER_HOST_NOTE,
   type ProvisionResult,
@@ -17,6 +19,7 @@ import {
   runSecure,
   runVerify,
   type SavedPlan,
+  stringOutput,
   summarizeChecks,
 } from "@opscrew/agents";
 import type {
@@ -26,7 +29,7 @@ import type {
   CheckResult,
   Clock,
 } from "@opscrew/contracts";
-import { isPlanHash, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { approvalDecision, isPlanHash, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
@@ -37,7 +40,7 @@ import {
   REQUIRES_USER,
   requireDialogs,
 } from "./elicitation";
-import { projectDirInput, runTool } from "./shared";
+import { IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
 
 /**
  * Test-only collaborators for the deploy tools. Production leaves them unset, so every phase uses
@@ -63,17 +66,17 @@ class PlanToolApprovalHandler implements ApprovalHandler {
   constructor(private readonly clock: Clock) {}
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
     const approved = request.kind === "repo-write";
-    return {
+    return approvalDecision(
+      this.clock,
+      "user (opscrew_plan tool call)",
       approved,
-      approver: "user (opscrew_plan tool call)",
-      decidedAt: this.clock.now().toISOString(),
-      ...(approved
+      approved
         ? {}
         : {
             reason:
               "opscrew_plan only plans. Apply the plan with opscrew_apply or `opscrew provision --approve <hash>`.",
-          }),
-    };
+          },
+    );
   }
 }
 
@@ -94,10 +97,9 @@ function planData(saved: SavedPlan) {
 }
 
 function checkLines(checks: readonly CheckResult[]): string[] {
-  const mark = { pass: "✓", fail: "✗", warn: "!", skip: "-" } as const;
   return checks.map(
     (c) =>
-      `${mark[c.status]} [${c.severity}] ${c.title}: ${c.message}${c.status === "fail" && c.remediation ? ` Fix: ${c.remediation}` : ""}`,
+      `${CHECK_MARK[c.status]} [${c.severity}] ${c.title}: ${c.message}${c.status === "fail" && c.remediation ? ` Fix: ${c.remediation}` : ""}`,
   );
 }
 
@@ -121,8 +123,16 @@ const REPLACE_TOKENS_INPUT = z
     'The user\'s Portainer, only when the user rotated a token and asks to send it again: "repository" (OPSCREW_REPO_READ_TOKEN) and/or "registry" (OPSCREW_GHCR_READ_TOKEN). Never the tokens themselves. Pass the same value to opscrew_plan and opscrew_apply.',
   );
 
-/** What to do about a damaged saved host or stack plan through MCP. */
-const PLAN_AGAIN = "Call opscrew_plan again and show the user the new plans.";
+/** What to do about a missing or damaged saved plan through MCP. */
+const PLAN_AGAIN =
+  "Call opscrew_plan again, show the new plans to the user and apply their hashes.";
+
+/** The stop when no saved `what` (`plan`, `host plan`, `stack plan`) has `hash`. */
+function noSavedPlan(what: string, hash: string): OpsCrewError {
+  return new OpsCrewError("PLAN_HASH_MISMATCH", `No saved ${what} has the hash ${hash}.`, {
+    hint: PLAN_AGAIN,
+  });
+}
 
 /** The host plan as OpsCrew described it while planning (from the collected messages). */
 function hostPlanText(messages: readonly { message: string }[]): string | undefined {
@@ -137,14 +147,14 @@ function stackPlanText(messages: readonly { message: string }[]): string | undef
 function outputsLines(result: ProvisionResult, own: boolean): string[] {
   // A server the user owns or their Portainer: no address leaves OpsCrew's local state.
   if (own) return [];
-  const out = result.outputs;
   const lines: string[] = [];
   for (const [key, label] of [
     ["server_ipv4", "Server IPv4"],
     ["server_ipv6", "Server IPv6"],
     ["url", "URL"],
   ] as const) {
-    if (typeof out[key] === "string" && out[key] !== "") lines.push(`${label}: ${out[key]}`);
+    const value = stringOutput(result.outputs, key);
+    if (value !== undefined) lines.push(`${label}: ${value}`);
   }
   return lines;
 }
@@ -289,7 +299,7 @@ export function registerDeployTools(
               upToDate: true,
               ...(result.planHash ? { planHash: result.planHash } : {}),
               ...(result.stackPlanHash ? { stackPlanHash: result.stackPlanHash } : {}),
-              ...(cost === undefined ? {} : { cost }),
+              cost,
             },
           };
         }
@@ -331,10 +341,10 @@ export function registerDeployTools(
           text,
           data: {
             ...(saved !== undefined ? planData(saved) : {}),
-            ...(hostHash !== undefined ? { hostPlanHash: hostHash } : {}),
-            ...(stackHash !== undefined ? { stackPlanHash: stackHash } : {}),
+            hostPlanHash: hostHash,
+            stackPlanHash: stackHash,
             ...(stackFollows ? { stackPlanFollows: true } : {}),
-            ...(cost === undefined ? {} : { cost }),
+            cost,
             applyCommand: command,
           },
         };
@@ -433,34 +443,18 @@ export function registerDeployTools(
         // The user's Portainer whose Cloudflare setup needs no change: the hash names the stack plan.
         const stackOnly =
           saved === undefined && portainer && (await savedChanges("stack", hash)) !== undefined;
-        if (saved === undefined && !hostOnly && !stackOnly) {
-          throw new OpsCrewError("PLAN_HASH_MISMATCH", `No saved plan has the hash ${hash}.`, {
-            hint: "Call opscrew_plan again, show the new plan to the user and apply its hash.",
-          });
-        }
+        if (saved === undefined && !hostOnly && !stackOnly) throw noSavedPlan("plan", hash);
         if (
           hostHash !== undefined &&
           (!own || (await savedChanges("host", hostHash)) === undefined)
         ) {
-          throw new OpsCrewError(
-            "PLAN_HASH_MISMATCH",
-            `No saved host plan has the hash ${hostHash}.`,
-            {
-              hint: "Call opscrew_plan again, show the new plans to the user and apply their hashes.",
-            },
-          );
+          throw noSavedPlan("host plan", hostHash);
         }
         if (
           stackHash !== undefined &&
           (!portainer || (await savedChanges("stack", stackHash)) === undefined)
         ) {
-          throw new OpsCrewError(
-            "PLAN_HASH_MISMATCH",
-            `No saved stack plan has the hash ${stackHash}.`,
-            {
-              hint: "Call opscrew_plan again, show the new plans to the user and apply their hashes.",
-            },
-          );
+          throw noSavedPlan("stack plan", stackHash);
         }
         const secrets = (phase.env.OPSCREW_APP_ENV_FILE ?? "").trim() !== "";
         let result: ProvisionResult;
@@ -500,7 +494,7 @@ export function registerDeployTools(
                 result.hostApplied === true
                   ? `Prepared the user's server (host plan ${result.hostPlanHash}).`
                   : "The user's server needed no change.",
-                "OpsCrew cannot turn on backups or snapshots on the user's own server; backups are the user's responsibility.",
+                OWN_SERVER_BACKUPS_NOTE,
               ]
             : []),
           ...(portainer
@@ -508,7 +502,7 @@ export function registerDeployTools(
                 result.stackApplied === true
                   ? `Set up the app's stacks in the user's Portainer (stack plan ${result.stackPlanHash}).`
                   : "The user's Portainer needed no change.",
-                "OpsCrew does not change the host (its firewall, SSH and Portainer's own security stay the user's); backups of the app's data volumes are the user's responsibility.",
+                `${PORTAINER_HOST_NOTE} ${PORTAINER_BACKUPS_NOTE}`,
               ]
             : []),
           ...outputsLines(result, own || portainer),
@@ -558,12 +552,7 @@ export function registerDeployTools(
           .optional()
           .describe("Skip the online dependency-vulnerability lookup (default false)."),
       },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: IDEMPOTENT_WRITE,
     },
     ({ projectDir, offline }) =>
       runTool(deps, "opscrew_secure", projectDir, async (call) => {
@@ -599,7 +588,7 @@ export function registerDeployTools(
             problems: result.problems,
             hostChecks: result.hostChecks,
             probes: result.probes,
-            ...(result.policies !== undefined ? { policies: result.policies } : {}),
+            policies: result.policies,
             scan: { counts: result.scan.counts, findings: result.scan.findings.length },
             reportPath: result.reportPath,
           },
@@ -622,12 +611,7 @@ export function registerDeployTools(
             "Only for an app in the user's Portainer behind their own reverse proxy: the address the proxy serves the app on (for example https://shop.example.com), checked instead of the domain. Ask the user for it.",
           ),
       },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: IDEMPOTENT_WRITE,
     },
     ({ projectDir, url }) =>
       runTool(deps, "opscrew_verify", projectDir, async (call) => {
@@ -676,21 +660,14 @@ function refusalWithNextStep(
   const applyApproved = handler.decisions.some((d) => d.kind === "iac-apply" && d.approved);
   const hostRefused = handler.decisions.some((d) => d.kind === "host-apply" && !d.approved);
   const stackRefused = handler.decisions.some((d) => d.kind === "stack-apply" && !d.approved);
-  if (stackRefused) {
-    // The user's Portainer: Cloudflare may already be changed; Portainer itself is not.
+  if (stackRefused || hostRefused) {
+    // The user's Portainer or own server: Cloudflare may already be changed; the target is not.
+    const [plan, where] = stackRefused
+      ? ["stack plan", "in the user's Portainer"]
+      : ["host plan", "on the user's server"];
     const message = applyApproved
-      ? "The user declined the stack plan. The Cloudflare changes are applied; nothing in the user's Portainer was changed."
-      : "The user declined the stack plan; nothing in the user's Portainer was changed.";
-    return new OpsCrewError("APPROVAL_REFUSED", message, {
-      hint: "When the user is ready, call opscrew_plan again (it shows what is still missing) and opscrew_apply with its hashes, or ask them to run `opscrew provision` in a terminal in the project directory.",
-      cause: error,
-    });
-  }
-  if (hostRefused) {
-    // The user's own server: Cloudflare may already be changed; the server itself is not.
-    const message = applyApproved
-      ? "The user declined the host plan. The Cloudflare changes are applied; nothing on the user's server was changed."
-      : "The user declined the host plan; nothing on the user's server was changed.";
+      ? `The user declined the ${plan}. The Cloudflare changes are applied; nothing ${where} was changed.`
+      : `The user declined the ${plan}; nothing ${where} was changed.`;
     return new OpsCrewError("APPROVAL_REFUSED", message, {
       hint: "When the user is ready, call opscrew_plan again (it shows what is still missing) and opscrew_apply with its hashes, or ask them to run `opscrew provision` in a terminal in the project directory.",
       cause: error,

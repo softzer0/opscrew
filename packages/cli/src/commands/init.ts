@@ -1,4 +1,5 @@
 import {
+  CHECK_MARK,
   describeGitignoreEntries,
   ensureGitignore,
   type InitCheck,
@@ -16,13 +17,11 @@ interface InitFlags {
   offline?: boolean;
 }
 
-const MARK: Record<InitCheck["status"], string> = { pass: "✓", warn: "!", fail: "✗", skip: "-" };
-
 function checklist(checks: readonly InitCheck[]): string {
   const lines = ["OpsCrew preflight", ""];
   for (const check of checks) {
     // " — ", not ":", so "<provider> token: <TOKEN_VAR>" never looks like a labelled secret.
-    lines.push(`  ${MARK[check.status]} ${check.title} — ${check.message}`);
+    lines.push(`  ${CHECK_MARK[check.status]} ${check.title} — ${check.message}`);
     if (check.fix !== undefined && check.status !== "pass") lines.push(`      ${check.fix}`);
   }
   return `${lines.join("\n")}\n`;

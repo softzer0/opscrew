@@ -1,12 +1,12 @@
 import { driftNextSteps, renderDriftReport, runDrift } from "@opscrew/agents";
-import { type Command, Option } from "commander";
+import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { CliExit, ERROR_EXIT_CODE, REFUSED_EXIT_CODE } from "../exit";
 import { quietReporter } from "../reporter";
 import { runPhaseCommand } from "../ui/deploy";
 import { printNextSteps } from "../ui/output";
-import { addHostKeyOption, checkApproveFlags } from "./provision";
+import { addHostKeyOption, checkApproveFlags, engineOption } from "./provision";
 
 interface DriftFlags {
   json?: boolean;
@@ -27,12 +27,7 @@ export function register(program: Command, ctx: CliContext): void {
     .command("drift")
     .description("Check whether the live infrastructure still matches the plan (changes nothing)")
     .option("--json", "Print the report as JSON")
-    .addOption(
-      new Option("--engine <name>", "Infrastructure engine to use instead of the plan's").choices([
-        "tofu",
-        "terraform",
-      ]),
-    );
+    .addOption(engineOption());
   addHostKeyOption(command).action(async (flags: DriftFlags) => {
     const json = flags.json === true;
     // Progress is dropped for `--json` so stdout holds only the report; problems go to stderr.

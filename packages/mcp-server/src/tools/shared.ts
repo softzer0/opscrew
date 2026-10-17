@@ -18,6 +18,14 @@ export const projectDirInput = {
     ),
 };
 
+/** The annotations of a tool that writes files but deletes nothing and can safely run again. */
+export const IDEMPOTENT_WRITE = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true,
+} as const;
+
 /** What a tool body returns: plain text for the model plus machine-readable data. */
 export interface ToolOutput {
   text: string;

@@ -4,9 +4,6 @@ import type { RenderedFile } from "@opscrew/iac-templates";
 import type { z } from "zod";
 import type { PhaseDeps } from "../context";
 
-/** Core's `exists`, which the MCP server's status tool imports from here. */
-export { exists } from "@opscrew/core";
-
 export interface RenderedFileDiff {
   created: RenderedFile[];
   changed: RenderedFile[];

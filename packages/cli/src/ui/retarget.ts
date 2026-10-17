@@ -1,12 +1,12 @@
 import {
   ABORT_COMMAND,
   FINISH_COMMAND,
-  formatMoney,
   moveProvider,
   providerProfile,
   type RetargetSummary,
   RUN_COMMAND,
 } from "@opscrew/agents";
+import { formatMoney } from "@opscrew/core";
 import type { DeployPlan, Retarget } from "@opscrew/plan-schema";
 
 /** What each completed step of a move means, in plain words. */

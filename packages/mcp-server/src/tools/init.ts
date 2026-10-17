@@ -1,10 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { type InitCheck, initPassed, runInitChecks } from "@opscrew/agents";
+import { CHECK_MARK, initPassed, runInitChecks } from "@opscrew/agents";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { projectDirInput, runTool } from "./shared";
-
-const MARK: Record<InitCheck["status"], string> = { pass: "✓", warn: "!", fail: "✗", skip: "-" };
 
 /**
  * `opscrew_init_check`: the `opscrew init` checklist (tools, GitHub remote, tokens and their access,
@@ -33,7 +31,7 @@ export function registerInitCheckTool(server: McpServer, deps: ResolvedMcpDeps):
         const checks = await runInitChecks(phase, offline === true ? { offline: true } : {});
         const passed = initPassed(checks);
         const lines = checks.flatMap((check) => [
-          `${MARK[check.status]} ${check.title} — ${check.message}`,
+          `${CHECK_MARK[check.status]} ${check.title} — ${check.message}`,
           ...(check.fix !== undefined && check.status !== "pass" ? [`    ${check.fix}`] : []),
         ]);
         const text = [

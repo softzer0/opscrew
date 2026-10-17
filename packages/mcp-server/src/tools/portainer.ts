@@ -12,7 +12,7 @@ import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
-import { projectDirInput, runTool } from "./shared";
+import { IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
 
 /** Test-only collaborators for the Portainer tools (production uses the real ones). */
 export interface PortainerToolOptions {
@@ -108,12 +108,7 @@ export function registerPortainerTools(
             "With subdomain: the email addresses Cloudflare Access lets in (at least one).",
           ),
       },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: IDEMPOTENT_WRITE,
       _meta: REQUIRES_USER,
     },
     ({ projectDir, subdomain, allowEmails }, extra: CallExtra) =>
@@ -129,8 +124,8 @@ export function registerPortainerTools(
         return {
           text: changeText("enable", result),
           data: {
-            ...(result.planHash !== undefined ? { planHash: result.planHash } : {}),
-            ...(result.hostPlanHash !== undefined ? { hostPlanHash: result.hostPlanHash } : {}),
+            planHash: result.planHash,
+            hostPlanHash: result.hostPlanHash,
             applied: result.applied,
             hostApplied: result.hostApplied,
             files: result.files,
@@ -182,9 +177,9 @@ export function registerPortainerTools(
         return {
           text: changeText("disable", result),
           data: {
-            ...(result.planHash !== undefined ? { planHash: result.planHash } : {}),
-            ...(result.hostPlanHash !== undefined ? { hostPlanHash: result.hostPlanHash } : {}),
-            ...(result.dataPlanHash !== undefined ? { dataPlanHash: result.dataPlanHash } : {}),
+            planHash: result.planHash,
+            hostPlanHash: result.hostPlanHash,
+            dataPlanHash: result.dataPlanHash,
             applied: result.applied,
             hostApplied: result.hostApplied,
             files: result.files,

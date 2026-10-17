@@ -9,11 +9,17 @@ import type {
   Clock,
   CommandRunner,
 } from "@opscrew/contracts";
-import { isPlanHash, NodeCommandRunner, OpsCrewError } from "@opscrew/core";
+import {
+  approvalDecision,
+  CANCELLED_BY_USER,
+  DECLINED_BY_USER,
+  isPlanHash,
+  NodeCommandRunner,
+  OpsCrewError,
+  PHRASE_MISMATCH,
+  systemClock,
+} from "@opscrew/core";
 import type { CliContext } from "./context";
-
-/** The real time, for every CLI run without an injected clock. */
-export const systemClock: Clock = { now: () => new Date() };
 
 /** The terminal prompts the interactive handler uses; replaced by fakes in tests. */
 export interface ApprovalPrompts {
@@ -55,25 +61,18 @@ export class InteractiveApprovalHandler implements ApprovalHandler {
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
     this.options.stdout(formatRequest(request));
     const approver = await this.approverName();
-    const decide = (approved: boolean, extra: Partial<ApprovalDecision> = {}) => ({
-      approved,
-      approver,
-      decidedAt: this.clock.now().toISOString(),
-      ...extra,
-    });
+    const decide = (approved: boolean, extra?: Pick<ApprovalDecision, "confirmation" | "reason">) =>
+      approvalDecision(this.clock, approver, approved, extra);
 
     if (request.confirmPhrase !== undefined) {
       const answer = await this.prompts.text({
         message: `Type "${request.confirmPhrase}" to approve, or anything else to cancel`,
         placeholder: request.confirmPhrase,
       });
-      if (this.prompts.isCancel(answer)) return decide(false, { reason: "cancelled by the user" });
+      if (this.prompts.isCancel(answer)) return decide(false, { reason: CANCELLED_BY_USER });
       const typed = answer.trim();
       if (typed !== request.confirmPhrase) {
-        return decide(false, {
-          confirmation: typed,
-          reason: "confirmation phrase did not match",
-        });
+        return decide(false, { confirmation: typed, reason: PHRASE_MISMATCH });
       }
       return decide(true, { confirmation: typed });
     }
@@ -82,8 +81,8 @@ export class InteractiveApprovalHandler implements ApprovalHandler {
       message: "Approve this change?",
       initialValue: false,
     });
-    if (this.prompts.isCancel(answer)) return decide(false, { reason: "cancelled by the user" });
-    return answer === true ? decide(true) : decide(false, { reason: "declined by the user" });
+    if (this.prompts.isCancel(answer)) return decide(false, { reason: CANCELLED_BY_USER });
+    return answer === true ? decide(true) : decide(false, { reason: DECLINED_BY_USER });
   }
 
   /** `git config user.name`, falling back to the OS user name; cached after the first call. */
@@ -110,6 +109,20 @@ function osUserName(): string {
   } catch {
     return "unknown user";
   }
+}
+
+/**
+ * Asks in the terminal for `name` to be typed (the prompt `message`, with `name` as the
+ * placeholder): the trimmed answer, or `undefined` when the user cancelled. The typed name stays
+ * in the terminal.
+ */
+export async function askTypedName(
+  prompts: Pick<ApprovalPrompts, "text" | "isCancel">,
+  message: string,
+  name: string,
+): Promise<string | undefined> {
+  const answer = await prompts.text({ message, placeholder: name });
+  return prompts.isCancel(answer) ? undefined : answer.trim();
 }
 
 /** The text shown before asking: the title, then what `approvalRequestLines` shows. */
@@ -172,13 +185,12 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
     const reason = this.refusalReason(request);
-    const decision: ApprovalDecision = {
-      approved: reason === undefined,
-      approver: this.options.approver,
-      decidedAt: this.clock.now().toISOString(),
-    };
-    if (reason !== undefined) decision.reason = reason;
-    return decision;
+    return approvalDecision(
+      this.clock,
+      this.options.approver,
+      reason === undefined,
+      reason === undefined ? {} : { reason },
+    );
   }
 
   private refusalReason(request: ApprovalRequest): string | undefined {
@@ -309,12 +321,8 @@ export class FlagConfirmation implements ApprovalHandler {
       request.allowDestroy === true &&
       request.confirmPhrase !== undefined;
     if (!deletion) return this.base.request(request);
-    const decide = (approved: boolean, extra: Partial<ApprovalDecision>): ApprovalDecision => ({
-      approved,
-      approver: "--approve and --confirm flags",
-      decidedAt: clock.now().toISOString(),
-      ...extra,
-    });
+    const decide = (approved: boolean, extra: Pick<ApprovalDecision, "confirmation" | "reason">) =>
+      approvalDecision(clock, "--approve and --confirm flags", approved, extra);
     if (confirmed) {
       if (request.confirmPhrase === app && hashListed(hashes, request.planHash)) {
         print(`  ✓ ${request.title} (confirmed with --confirm ${app})\n`);

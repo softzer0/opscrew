@@ -29,14 +29,18 @@ import type {
   RegistrarId,
 } from "@opscrew/contracts";
 import {
+  approvalDecision,
+  CANCELLED_BY_USER,
   type ErrorCode,
   isUserFacingError,
   listText,
   normalizeHostName,
   OpsCrewError,
+  PHRASE_MISMATCH,
+  systemClock,
 } from "@opscrew/core";
 import { Argument, type Command, Option } from "commander";
-import { formatRequest, systemClock } from "../approval";
+import { formatRequest } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { quietReporter } from "../reporter";
@@ -86,44 +90,34 @@ export class DomainApprovalHandler implements ApprovalHandler {
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
     if (!TYPED_KINDS.includes(request.kind)) return this.base.request(request);
     const { interactive, confirm, priceBound, prompts, print } = this.options;
-    const decidedAt = this.clock.now().toISOString();
     const phrase = (request.confirmPhrase ?? "").trim();
     const purchase = request.kind === "domain-purchase";
     print(formatRequest(request));
     if (phrase === "") {
-      return {
-        approved: false,
-        approver: "opscrew domain",
-        decidedAt,
+      return approvalDecision(this.clock, "opscrew domain", false, {
         reason: "no domain name to confirm",
-      };
+      });
     }
 
     if (confirm !== undefined) {
       if (!sameDomain(confirm, phrase)) {
         this.refused = { request, phrase, why: "confirm-mismatch" };
-        return {
-          approved: false,
-          approver: "--confirm flag",
-          decidedAt,
+        return approvalDecision(this.clock, "--confirm flag", false, {
           confirmation: confirm.trim(),
-          reason: "confirmation phrase did not match",
-        };
+          reason: PHRASE_MISMATCH,
+        });
       }
       if (!purchase || priceBound) {
         print(`  ✓ ${request.title} (confirmed with --confirm ${phrase})\n`);
-        return { approved: true, approver: "--confirm flag", decidedAt, confirmation: phrase };
+        return approvalDecision(this.clock, "--confirm flag", true, { confirmation: phrase });
       }
     }
 
     if (!interactive) {
       this.refused = { request, phrase, why: "not-interactive" };
-      return {
-        approved: false,
-        approver: "--confirm flag",
-        decidedAt,
+      return approvalDecision(this.clock, "--confirm flag", false, {
         reason: `this run is not interactive and --confirm ${phrase} was not given`,
-      };
+      });
     }
 
     const answer = await prompts.text({
@@ -133,25 +127,52 @@ export class DomainApprovalHandler implements ApprovalHandler {
       placeholder: phrase,
     });
     if (prompts.isCancel(answer)) {
-      return {
-        approved: false,
-        approver: "typed domain name",
-        decidedAt,
-        reason: "cancelled by the user",
-      };
+      return approvalDecision(this.clock, "typed domain name", false, {
+        reason: CANCELLED_BY_USER,
+      });
     }
     const typed = answer.trim();
     if (!sameDomain(typed, phrase)) {
-      return {
-        approved: false,
-        approver: "typed domain name",
-        decidedAt,
+      return approvalDecision(this.clock, "typed domain name", false, {
         confirmation: typed,
-        reason: "confirmation phrase did not match",
-      };
+        reason: PHRASE_MISMATCH,
+      });
     }
-    return { approved: true, approver: "typed domain name", decidedAt, confirmation: phrase };
+    return approvalDecision(this.clock, "typed domain name", true, { confirmation: phrase });
   }
+}
+
+/** The typed-domain approvals of one `opscrew domain` run. */
+interface DomainApprovals {
+  /** For `createPhaseDeps`: wraps the run's handler in a {@link DomainApprovalHandler}. */
+  wrapApprovals: (base: ApprovalHandler, clock: Clock) => ApprovalHandler;
+  /** The handler, once `wrapApprovals` built it (for {@link withScriptedHint}). */
+  handler?: DomainApprovalHandler;
+}
+
+/**
+ * The typed-domain approvals of a run: `confirm` is `--confirm <domain>`, `priceBound` true when
+ * `--max-price` was given, `print` where requests are shown (default `ctx.stdout`).
+ */
+function domainApprovals(
+  ctx: CliContext,
+  confirm: string | undefined,
+  opts: { priceBound?: boolean; print?: (text: string) => void } = {},
+): DomainApprovals {
+  const approvals: DomainApprovals = {
+    wrapApprovals: (base, clock) => {
+      approvals.handler = new DomainApprovalHandler(base, {
+        interactive: ctx.isInteractive,
+        ...(confirm === undefined ? {} : { confirm }),
+        priceBound: opts.priceBound === true,
+        prompts: promptsOf(ctx),
+        print: opts.print ?? ctx.stdout,
+        clock,
+      });
+      return approvals.handler;
+    },
+  };
+  return approvals;
 }
 
 /** Domain names compare without case and without a trailing dot. */
@@ -497,6 +518,9 @@ const ACCOUNT_DESCRIPTION =
 
 const REGISTRAR_LIST = REGISTRAR_IDS.join(", ");
 
+/** Help text of `--registrar <id>` where the plan may name the registrar that holds the domain. */
+const HELD_BY_DESCRIPTION = `The registrar that holds it (${REGISTRAR_LIST}; default: the one in opscrew/plan.yaml, else cloudflare)`;
+
 /**
  * `--registrar <id>`, parsed (unknown ids stop with `INVALID_INPUT`, exit 2); undefined when not
  * given.
@@ -658,7 +682,7 @@ export function register(program: Command, ctx: CliContext): void {
       const registrar = registrarFlag(flags.registrar);
       const maxPrice = flags.maxPrice === undefined ? undefined : parseMaxPriceFlag(flags.maxPrice);
       const years = flags.years === undefined ? undefined : Number(flags.years.trim());
-      let handler: DomainApprovalHandler | undefined;
+      const approvals = domainApprovals(ctx, flags.confirm, { priceBound: maxPrice !== undefined });
       // The command that approves the refused request: forgetting the note needs only the
       // typed domain, setting up an owned domain no price, a purchase the price limit too.
       const scripted = (refused: ApprovalRequest, phrase: string) => {
@@ -679,17 +703,7 @@ export function register(program: Command, ctx: CliContext): void {
       const deps = createPhaseDeps(ctx, {
         ai: false,
         ...(flags.yes === true ? { assumeYes: true } : {}),
-        wrapApprovals: (base, clock) => {
-          handler = new DomainApprovalHandler(base, {
-            interactive: ctx.isInteractive,
-            ...(flags.confirm === undefined ? {} : { confirm: flags.confirm }),
-            priceBound: maxPrice !== undefined,
-            prompts: promptsOf(ctx),
-            print: ctx.stdout,
-            clock,
-          });
-          return handler;
-        },
+        wrapApprovals: approvals.wrapApprovals,
       });
       const chosen = await servicesFor(ctx, deps, account);
       const result = await buyDomain(deps, {
@@ -701,7 +715,7 @@ export function register(program: Command, ctx: CliContext): void {
         ...(forget ? { forgetPendingPurchase: true } : {}),
         ...chosen,
       }).catch((error: unknown) => {
-        throw withScriptedHint(error, handler, scripted);
+        throw withScriptedHint(error, approvals.handler, scripted);
       });
       const details = renderBuyResult(result);
       if (details !== "") ctx.stdout(`${details}\n`);
@@ -738,7 +752,10 @@ export function register(program: Command, ctx: CliContext): void {
       const account = flags.account?.trim() || undefined;
       const recordsFile = flags.recordsFile?.trim() || undefined;
       const registrar = registrarFlag(flags.registrar);
-      let handler: DomainApprovalHandler | undefined;
+      // With --json, stdout holds only the result.
+      const approvals = domainApprovals(ctx, flags.confirm, {
+        print: json ? ctx.stderr : ctx.stdout,
+      });
       // `opscrew domain connect <domain>` with the flags of this run that change what it does.
       const again = () =>
         [
@@ -753,18 +770,7 @@ export function register(program: Command, ctx: CliContext): void {
         ai: false,
         ...(json ? { reporter: quietReporter(ctx.reporter) } : {}),
         ...(flags.yes === true ? { assumeYes: true } : {}),
-        wrapApprovals: (base, clock) => {
-          handler = new DomainApprovalHandler(base, {
-            interactive: ctx.isInteractive,
-            ...(flags.confirm === undefined ? {} : { confirm: flags.confirm }),
-            priceBound: false,
-            prompts: promptsOf(ctx),
-            // With --json, stdout holds only the result.
-            print: json ? ctx.stderr : ctx.stdout,
-            clock,
-          });
-          return handler;
-        },
+        wrapApprovals: approvals.wrapApprovals,
       });
       const chosen = await servicesFor(ctx, deps, account);
       const result = await connectDomain(deps, {
@@ -773,7 +779,7 @@ export function register(program: Command, ctx: CliContext): void {
         ...(recordsFile === undefined ? {} : { recordsFile }),
         ...chosen,
       }).catch((error: unknown) => {
-        throw withScriptedHint(error, handler, scripted);
+        throw withScriptedHint(error, approvals.handler, scripted);
       });
       if (json) {
         ctx.stdout(`${JSON.stringify(result, null, 2)}\n`);
@@ -786,10 +792,7 @@ export function register(program: Command, ctx: CliContext): void {
   domain
     .command("status")
     .description("Show the registration of the project's domain: expiry, auto-renew, lock, DNSSEC")
-    .option(
-      "--registrar <id>",
-      `The registrar that holds it (${REGISTRAR_LIST}; default: the one in opscrew/plan.yaml, else cloudflare)`,
-    )
+    .option("--registrar <id>", HELD_BY_DESCRIPTION)
     .option("--account <id or name>", ACCOUNT_DESCRIPTION)
     .option(
       "--yes",
@@ -816,16 +819,13 @@ export function register(program: Command, ctx: CliContext): void {
     .command("auto-renew")
     .description("Turn automatic renewal of the project's domain on or off (asks first)")
     .addArgument(new Argument("<state>", "on or off").choices(["on", "off"]))
-    .option(
-      "--registrar <id>",
-      `The registrar that holds it (${REGISTRAR_LIST}; default: the one in opscrew/plan.yaml, else cloudflare)`,
-    )
+    .option("--registrar <id>", HELD_BY_DESCRIPTION)
     .option("--account <id or name>", ACCOUNT_DESCRIPTION)
     .option("--confirm <domain>", "The project's domain, to approve without a prompt (for scripts)")
     .action(async (state: "on" | "off", flags: AutoRenewFlags) => {
       const account = flags.account?.trim() || undefined;
       const registrar = registrarFlag(flags.registrar);
-      let handler: DomainApprovalHandler | undefined;
+      const approvals = domainApprovals(ctx, flags.confirm);
       const scripted = (_refused: ApprovalRequest, phrase: string) =>
         [
           `opscrew domain auto-renew ${state}`,
@@ -835,24 +835,14 @@ export function register(program: Command, ctx: CliContext): void {
         ].join(" ");
       const deps = createPhaseDeps(ctx, {
         ai: false,
-        wrapApprovals: (base, clock) => {
-          handler = new DomainApprovalHandler(base, {
-            interactive: ctx.isInteractive,
-            ...(flags.confirm === undefined ? {} : { confirm: flags.confirm }),
-            priceBound: false,
-            prompts: promptsOf(ctx),
-            print: ctx.stdout,
-            clock,
-          });
-          return handler;
-        },
+        wrapApprovals: approvals.wrapApprovals,
       });
       const result = await setDomainAutoRenew(deps, {
         on: state === "on",
         ...(registrar === undefined ? {} : { registrar }),
         ...lazyServicesFor(ctx, deps, account),
       }).catch((error: unknown) => {
-        throw withScriptedHint(error, handler, scripted);
+        throw withScriptedHint(error, approvals.handler, scripted);
       });
       printNextSteps(ctx, result.next);
     });

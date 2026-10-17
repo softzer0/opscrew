@@ -2,7 +2,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   type DesignPreview,
   type DesignResult,
-  formatMoney,
   inspectOwnServerForDesign,
   isUnpriced,
   type OwnServerDesignInput,
@@ -17,7 +16,7 @@ import {
   runDesign,
 } from "@opscrew/agents";
 import type { ApprovalHandler } from "@opscrew/contracts";
-import { OpsCrewError, toPosixRelative } from "@opscrew/core";
+import { formatMoney, OpsCrewError, taxLabel, toPosixRelative } from "@opscrew/core";
 import { detectProject } from "@opscrew/detect";
 import { type DesignOption, readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -28,7 +27,7 @@ import {
   dialogHandler,
   hostKeyNeedsTerminal,
 } from "./elicitation";
-import { isMissingArtifact, projectDirInput, runTool, withHint } from "./shared";
+import { IDEMPOTENT_WRITE, isMissingArtifact, projectDirInput, runTool, withHint } from "./shared";
 
 const REQUIREMENTS_HINT =
   "Call opscrew_interview_questions, ask the user the questions, then call opscrew_save_requirements.";
@@ -136,15 +135,6 @@ function costText(option: DesignOption): string {
   return option.target.provider === "own"
     ? "no server price (the user already pays for this server)"
     : `${formatMoney(option.cost.monthly)}/month, ${priceLabel(option.cost)}`;
-}
-
-/**
- * "incl./excl. VAT" for EUR prices, "incl./excl. tax" for USD prices (DigitalOcean's USD prices
- * exclude sales tax, which is not VAT).
- */
-function taxLabel(cost: Pick<DesignOption["cost"], "monthly" | "pricesIncludeVat">): string {
-  const tax = cost.monthly.currency === "EUR" ? "VAT" : "tax";
-  return `${cost.pricesIncludeVat ? "incl." : "excl."} ${tax}`;
 }
 
 /** Plain-text block for one option. */
@@ -281,7 +271,8 @@ export function registerDesignTools(
         const fitting = result.options.some((o) => o.fitsBudget);
         const provider = requestedProvider(requirements);
         const providerName = providerProfile(provider).displayName;
-        const tax = result.options[0] ? `, ${taxLabel(result.options[0].cost)}` : "";
+        const first = result.options[0]?.cost;
+        const tax = first ? `, ${taxLabel(first.monthly.currency, first.pricesIncludeVat)}` : "";
         const prices = priceSourceText(deps, provider, result.priceSource);
         const text = [
           `Deployment options on ${providerName} (budget ${formatMoney(requirements.budgetMonthly)}/month, ${prices}${tax}):`,
@@ -318,12 +309,7 @@ export function registerDesignTools(
           .min(1)
           .describe("Id of the chosen option, as returned by opscrew_design_options."),
       },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
+      annotations: IDEMPOTENT_WRITE,
     },
     ({ projectDir, optionId }, extra: CallExtra) =>
       runTool(deps, "opscrew_select_design", projectDir, async (call) => {

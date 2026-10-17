@@ -1,6 +1,8 @@
 import {
+  CHECK_PORTAINER_CERTIFICATE,
   type ConfirmPortainerCertificate,
   createPortainerAccess,
+  NEW_CERTIFICATE_WARNING,
   type PortainerInterviewOptions,
 } from "@opscrew/agents";
 import { normalizeCertFingerprint } from "@opscrew/connector-portainer";
@@ -12,10 +14,6 @@ import type { UiPrompts } from "./prompts";
 /** Help text of `--portainer-cert <fingerprint>`. */
 export const PORTAINER_CERT_DESCRIPTION =
   "Your existing Portainer: trust this certificate fingerprint (SHA256:…) on the first connection, for scripts; check it first";
-
-/** How to check a certificate fingerprint before trusting it (no address in it). */
-const CHECK_CERTIFICATE =
-  "Check it before you trust it: in your browser open Portainer, click the padlock and view the certificate's SHA-256 fingerprint, or run `openssl s_client -connect <host>:<port> </dev/null | openssl x509 -noout -fingerprint -sha256` on the Portainer host itself.";
 
 /**
  * `--portainer-cert` checked before anything runs: a SHA-256 fingerprint in any spelling the
@@ -29,7 +27,7 @@ export function checkPortainerCert(value: string | undefined): string | undefine
     throw new OpsCrewError(
       "INVALID_INPUT",
       "--portainer-cert expects the SHA-256 fingerprint of Portainer's certificate: SHA256: followed by 64 hex characters (with or without colons) or the base64 form.",
-      { hint: CHECK_CERTIFICATE },
+      { hint: CHECK_PORTAINER_CERTIFICATE },
     );
   }
   return fingerprint;
@@ -53,12 +51,8 @@ function terminalCertificateConfirmation(
         ...(previous === undefined ? [] : [`    ${previous}`, "It now presents:"]),
         `    ${fingerprint}`,
         "",
-        CHECK_CERTIFICATE,
-        ...(previous === undefined
-          ? []
-          : [
-              "Trust the new one only if you changed Portainer's certificate yourself; otherwise someone may be intercepting the connection.",
-            ]),
+        CHECK_PORTAINER_CERTIFICATE,
+        ...(previous === undefined ? [] : [NEW_CERTIFICATE_WARNING]),
         "",
       ].join("\n"),
     );

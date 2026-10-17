@@ -1,12 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  exists,
-  moveInProgress,
-  moveProvider,
-  phaseStatusLines,
-  providerProfile,
-} from "@opscrew/agents";
-import { toPosixRelative } from "@opscrew/core";
+import { moveInProgress, moveProvider, phaseStatusLines, providerProfile } from "@opscrew/agents";
+import { exists, toPosixRelative } from "@opscrew/core";
 import { type Retarget, readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
 import { projectDirInput, runTool, withHint } from "./shared";
@@ -93,9 +87,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
                 from: plan.retarget.from.target.provider,
                 to: moveProvider(plan.target),
                 step: plan.retarget.step,
-                ...(plan.retarget.abort !== undefined
-                  ? { abortStep: plan.retarget.abort.step }
-                  : {}),
+                abortStep: plan.retarget.abort?.step,
                 startedAt: plan.retarget.startedAt,
               };
         const moveLines =
@@ -129,7 +121,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
             phases,
             artifacts,
             nextStep: step,
-            ...(moveData === undefined ? {} : { move: moveData }),
+            move: moveData,
           },
         };
       }),

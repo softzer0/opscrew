@@ -4,6 +4,7 @@ import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
 import { printNextSteps } from "../ui/output";
+import { SECURE_SERVER_STEP } from "./provision";
 
 interface VerifyFlags {
   /** `--url <route>`: the user's Portainer behind their own reverse proxy only. */
@@ -41,7 +42,7 @@ export function register(program: Command, ctx: CliContext): void {
             : `read ${result.runbookPath}: it explains deploys, rollbacks, logs, SSH access, backups and secret rotation.`,
           portainer
             ? "run `opscrew secure` to check the app's stack in your Portainer and write opscrew/SECURITY_REPORT.md."
-            : "run `opscrew secure` to check the server's hardening and write opscrew/SECURITY_REPORT.md.",
+            : SECURE_SERVER_STEP,
         ]);
         return;
       }

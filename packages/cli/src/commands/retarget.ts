@@ -12,10 +12,16 @@ import type {
   Clock,
   VpsProviderId,
 } from "@opscrew/contracts";
-import { isPlanHash, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import {
+  approvalDecision,
+  isPlanHash,
+  isUserFacingError,
+  OpsCrewError,
+  systemClock,
+} from "@opscrew/core";
 import { type Money, readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
-import { checkConfirmName, formatRequest, hashListed, systemClock } from "../approval";
+import { askTypedName, checkConfirmName, formatRequest, hashListed } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
@@ -23,7 +29,7 @@ import { runPhaseCommand } from "../ui/deploy";
 import { chooseOption } from "../ui/options";
 import { printNextSteps } from "../ui/output";
 import { startQuestion } from "../ui/retarget";
-import { YES_DESCRIPTION } from "./provision";
+import { engineOption, YES_DESCRIPTION } from "./provision";
 
 /** Flags of `opscrew retarget` (FR-501). */
 export interface RetargetFlags {
@@ -77,10 +83,10 @@ export class RetargetApprovalHandler implements ApprovalHandler {
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
     const { interactive, appName, approve, allowDowntime, typed, print } = this.options;
-    const decidedAt = (this.options.clock ?? systemClock).now().toISOString();
+    const clock = this.options.clock ?? systemClock;
     if (!interactive && allowDowntime === true && isMaintenanceWindowRequest(request)) {
       print(`  ✓ ${request.title} (allowed with --allow-downtime)\n`);
-      return { approved: true, approver: "--allow-downtime flag", decidedAt };
+      return approvalDecision(clock, "--allow-downtime flag", true);
     }
     const deletion =
       request.kind === "iac-apply" &&
@@ -91,26 +97,20 @@ export class RetargetApprovalHandler implements ApprovalHandler {
       const named = approve !== undefined && hashListed([approve], request.planHash);
       if (named && typed() === appName) {
         print(`  ✓ ${request.title} (approved with --approve and --confirm)\n`);
-        return {
-          approved: true,
-          approver: "--approve and --confirm flags",
-          decidedAt,
+        return approvalDecision(clock, "--approve and --confirm flags", true, {
           confirmation: appName,
-        };
+        });
       }
-      return {
-        approved: false,
-        approver: "--approve and --confirm flags",
-        decidedAt,
+      return approvalDecision(clock, "--approve and --confirm flags", false, {
         reason: named
           ? `deleting needs --confirm ${appName}`
           : `deleting needs --approve with this plan's hash ${request.planHash ?? ""} and --confirm ${appName}`,
-      };
+      });
     }
     if (deletion && typed() === appName) {
       print(formatRequest(request));
       print(`  ✓ ${request.title} (confirmed with the app name)\n`);
-      return { approved: true, approver: "typed app name", decidedAt, confirmation: appName };
+      return approvalDecision(clock, "typed app name", true, { confirmation: appName });
     }
     return this.base.request(request);
   }
@@ -279,12 +279,11 @@ async function runCommand(ctx: CliContext, flags: RetargetFlags): Promise<Retarg
   });
   const confirm = async (preview: { name: string }) => {
     if (scripted) return typed === preview.name;
-    const answer = await prompts.text({
-      message: `Type ${preview.name} to delete everything listed above (anything else cancels)`,
-      placeholder: preview.name,
-    });
-    if (prompts.isCancel(answer)) return false;
-    typed = answer.trim();
+    typed = await askTypedName(
+      prompts,
+      `Type ${preview.name} to delete everything listed above (anything else cancels)`,
+      preview.name,
+    );
     return typed === preview.name;
   };
   if (mode === "finish") {
@@ -327,12 +326,7 @@ export function register(program: Command, ctx: CliContext): void {
       "--dns-switched",
       "You changed the DNS records (or the address) to the new server yourself",
     )
-    .addOption(
-      new Option("--engine <name>", "Infrastructure engine to use instead of the plan's").choices([
-        "tofu",
-        "terraform",
-      ]),
-    )
+    .addOption(engineOption())
     .addOption(
       new Option(
         "--finish",

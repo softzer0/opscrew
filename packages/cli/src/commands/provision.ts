@@ -13,6 +13,7 @@ import {
   readSavedPlanChanges,
   runProvision,
   type SavedPlanKind,
+  stringOutput,
 } from "@opscrew/agents";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
@@ -94,6 +95,26 @@ export function addPlanApproveOptions(command: Command): Command {
     .option("--approve <hash>", APPROVE_DESCRIPTION, collect);
 }
 
+/** `--engine tofu|terraform`, the infrastructure engine to use instead of the plan's. */
+export function engineOption(): Option {
+  return new Option(
+    "--engine <name>",
+    "Infrastructure engine to use instead of the plan's",
+  ).choices(["tofu", "terraform"]);
+}
+
+/** The next step once the deployment is gone (the plan and the repository files stay). */
+export const DEPLOY_AGAIN_STEP =
+  "run `opscrew provision` to deploy again (the plan and the repository files are kept).";
+
+/** The next step once the deploy run has finished: check the live site. */
+const VERIFY_STEP =
+  "when the deploy run in GitHub Actions has finished, run `opscrew verify` to check the live site and write opscrew/RUNBOOK.md.";
+
+/** The next step for a server: check its hardening. */
+export const SECURE_SERVER_STEP =
+  "run `opscrew secure` to check the server's hardening and write opscrew/SECURITY_REPORT.md.";
+
 /** Adds `--host-key <fingerprint>` (a server the user owns) to `command`. */
 export function addHostKeyOption(command: Command): Command {
   return command.option(
@@ -153,11 +174,6 @@ export async function planChanges(
   hash: string,
 ): Promise<boolean> {
   return (await readSavedPlanChanges(deps.paths, kind, hash, DAMAGED_PLAN_HINT[kind])) === true;
-}
-
-function stringOutput(outputs: Record<string, unknown>, name: string): string | undefined {
-  const value = outputs[name];
-  return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 /**
@@ -341,8 +357,8 @@ export async function runInfraCommand(
     ctx.stdout(`\n${applied ? "Created or updated" : "Using"} the server at ${ipv4}.\n`);
   }
   printNextSteps(ctx, [
-    "when the deploy run in GitHub Actions has finished, run `opscrew verify` to check the live site and write opscrew/RUNBOOK.md.",
-    "run `opscrew secure` to check the server's hardening and write opscrew/SECURITY_REPORT.md.",
+    VERIFY_STEP,
+    SECURE_SERVER_STEP,
     ...(result.own
       ? [
           "back up your server and the app's data yourself: OpsCrew cannot turn on backups or snapshots on your own server.",
@@ -377,7 +393,7 @@ function portainerNextSteps(plan: DeployPlan | undefined): string[] {
   return [
     proxy
       ? "when the deploy run in GitHub Actions has finished and your reverse proxy routes to the app, run `opscrew verify` (add `--url <address>` to check the address your proxy serves it on) to check the live site and write opscrew/RUNBOOK.md."
-      : "when the deploy run in GitHub Actions has finished, run `opscrew verify` to check the live site and write opscrew/RUNBOOK.md.",
+      : VERIFY_STEP,
     "run `opscrew secure` to check the app's stack and write opscrew/SECURITY_REPORT.md (the host, its firewall, SSH and Portainer's own security stay yours).",
     "back up the app's data volumes yourself: OpsCrew cannot back up a Portainer host.",
   ];
@@ -408,12 +424,7 @@ export function register(program: Command, ctx: CliContext): void {
         "Your own server, when other users log in with a password and no SSH key: turn password logins off anyway, or keep them",
       ).choices(["off", "keep"]),
     )
-    .addOption(
-      new Option("--engine <name>", "Infrastructure engine to use instead of the plan's").choices([
-        "tofu",
-        "terraform",
-      ]),
-    )
+    .addOption(engineOption())
     .option(
       "--no-push",
       "Commit the generated files locally but do not push or open a pull request",

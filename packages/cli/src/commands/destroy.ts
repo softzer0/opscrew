@@ -8,15 +8,15 @@ import {
   savedHostPlanPurpose,
 } from "@opscrew/agents";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest, Clock } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { approvalDecision, OpsCrewError, systemClock } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
-import { type Command, Option } from "commander";
-import { checkConfirmName, hashListed, systemClock } from "../approval";
+import type { Command } from "commander";
+import { askTypedName, checkConfirmName, hashListed } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { collect, runPhaseCommand } from "../ui/deploy";
 import { printNextSteps } from "../ui/output";
-import { addHostKeyOption, checkApproveFlags } from "./provision";
+import { addHostKeyOption, checkApproveFlags, DEPLOY_AGAIN_STEP, engineOption } from "./provision";
 
 /** The flags of `opscrew destroy`. */
 export interface DestroyFlags {
@@ -91,12 +91,8 @@ export class TypedConfirmationHandler implements ApprovalHandler {
   /** The undo host plan's approval: `--confirm <app>` with `--approve <hash>`, or the base handler. */
   private async undoDecision(request: ApprovalRequest): Promise<ApprovalDecision> {
     if (!this.undo.scripted) return this.base.request(request);
-    const decide = (approved: boolean, extra: Partial<ApprovalDecision>): ApprovalDecision => ({
-      approved,
-      approver: "--confirm and --approve flags",
-      decidedAt: this.clock.now().toISOString(),
-      ...extra,
-    });
+    const decide = (approved: boolean, extra: Pick<ApprovalDecision, "confirmation" | "reason">) =>
+      approvalDecision(this.clock, "--confirm and --approve flags", approved, extra);
     const listed = hashListed(this.undo.hashes, request.planHash);
     if (request.confirmPhrase === this.name && this.typed() === this.name && listed) {
       this.print(`  ✓ ${request.title} (confirmed with --confirm ${this.name} and --approve)\n`);
@@ -115,12 +111,12 @@ export class TypedConfirmationHandler implements ApprovalHandler {
     }
     if (this.covers(request, purpose) && this.typed() === this.name) {
       this.print(`  ✓ ${request.title} (confirmed with ${this.what})\n`);
-      return {
-        approved: true,
-        approver: `typed ${this.what.replace(/^the /, "").replace("'s", "")}`,
-        decidedAt: this.clock.now().toISOString(),
-        ...(request.confirmPhrase !== undefined ? { confirmation: this.name } : {}),
-      };
+      return approvalDecision(
+        this.clock,
+        `typed ${this.what.replace(/^the /, "").replace("'s", "")}`,
+        true,
+        request.confirmPhrase !== undefined ? { confirmation: this.name } : {},
+      );
     }
     return this.base.request(request);
   }
@@ -152,12 +148,7 @@ export function register(program: Command, ctx: CliContext): void {
       "--confirm <name>",
       "The server name (on your own server or in your Portainer, the app's name), to run without prompts (for scripts and CI)",
     )
-    .addOption(
-      new Option("--engine <name>", "Infrastructure engine to use instead of the plan's").choices([
-        "tofu",
-        "terraform",
-      ]),
-    )
+    .addOption(engineOption())
     .option(
       "--undo-host",
       "Your own server: also reverse OpsCrew's changes to it (deploy user, SSH and firewall settings, automatic updates), as a separate plan you approve",
@@ -265,13 +256,7 @@ export async function runDestroyCommand(
       ...(hostKey === undefined ? {} : { hostKey }),
       confirm: async (preview) => {
         if (scripted) return true;
-        const prompts = promptsOf(ctx);
-        const answer = await prompts.text({
-          message: confirmMessage(preview),
-          placeholder: preview.name,
-        });
-        if (prompts.isCancel(answer)) return false;
-        typed = answer.trim();
+        typed = await askTypedName(promptsOf(ctx), confirmMessage(preview), preview.name);
         return typed === preview.name;
       },
     });
@@ -281,13 +266,13 @@ export async function runDestroyCommand(
       ctx.stdout(`\nApplied the stack teardown plan ${result.stackPlan} to your Portainer.\n`);
     }
     printNextSteps(ctx, [
-      "run `opscrew provision` to deploy again (the plan and the repository files are kept).",
+      DEPLOY_AGAIN_STEP,
       "your Portainer, its other stacks and the host stay as they are; back up anything you keep yourself (OpsCrew cannot back up a Portainer host).",
     ]);
     return;
   }
   printNextSteps(ctx, [
-    "run `opscrew provision` to deploy again (the plan and the repository files are kept).",
+    DEPLOY_AGAIN_STEP,
     ...(provider === "own"
       ? [
           "your server stays as it is otherwise; back up anything on it yourself (OpsCrew cannot take snapshots of your own server).",

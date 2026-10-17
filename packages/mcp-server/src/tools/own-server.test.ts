@@ -327,7 +327,7 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
     expect(h.host.applies[0]?.options.approvedHash).toBe(hostHash);
     const kinds = h.elicited.map((e) => e.message);
     expect(kinds.some((m) => m.includes("Apply the host plan to your server"))).toBe(true);
-    expect(textOf(applied)).toContain("backups are the user's responsibility");
+    expect(textOf(applied)).toContain("backups are your responsibility");
     expectNoAddress(h);
   });
 
