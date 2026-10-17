@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
   type PinnedRequest,
   PORTAINER_TOKEN_STEPS,
@@ -55,9 +56,11 @@ function repoRunner(): ScriptedRunner {
 /** Records which hosts were called; Cloudflare and GitHub answer like working tokens. */
 function fakeNet(repoPrivate: boolean): { fetch: FetchLike; hosts: string[] } {
   const hosts: string[] = [];
-  const fetch: FetchLike = async (input) => {
+  const zone = new FakeZone();
+  const fetch: FetchLike = async (input, init) => {
     const url = new URL(String(input));
     hosts.push(url.hostname);
+    if (url.pathname.startsWith(`/client/v4/zones/${FAKE_ZONE_ID}`)) return zone.fetch(input, init);
     const body = (value: unknown) =>
       new Response(JSON.stringify(value), {
         status: 200,
@@ -71,7 +74,7 @@ function fakeNet(repoPrivate: boolean): { fetch: FetchLike; hosts: string[] } {
         return body({
           success: true,
           errors: [],
-          result: [{ id: "zone-1", name: "example.com", status: "active", name_servers: [] }],
+          result: [{ id: FAKE_ZONE_ID, name: "example.com", status: "active", name_servers: [] }],
         });
       }
       return body({ success: true, errors: [], result: [] });

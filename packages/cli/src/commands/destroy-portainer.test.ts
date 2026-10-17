@@ -90,6 +90,26 @@ describe("TypedConfirmationHandler for the user's Portainer", () => {
       expect(base.requests).toEqual([request]);
     }
   });
+
+  it("covers the Cloudflare plan of OpsCrew's shared rules only when it deletes and asks for the name", async () => {
+    const shared = teardown({
+      kind: "cloudflare-apply",
+      title: "Apply the Cloudflare plan to OpsCrew's shared Cloudflare resources (2 changes)",
+    });
+    const base = new BaseApprovals();
+    expect(await handler(base, "shop").request(shared)).toMatchObject({
+      approved: true,
+      confirmation: "shop",
+    });
+    for (const request of [
+      { ...shared, allowDestroy: undefined, confirmPhrase: undefined },
+      { ...shared, confirmPhrase: "other" },
+    ]) {
+      const refused = new BaseApprovals();
+      expect((await handler(refused, "shop").request(request)).approved).toBe(false);
+      expect(refused.requests).toEqual([request]);
+    }
+  });
 });
 
 interface FakeDestroy {

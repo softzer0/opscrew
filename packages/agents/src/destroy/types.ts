@@ -20,7 +20,8 @@ export type DestroyCloudflareApi = Pick<CloudflareClient, "verifyToken">;
  * Collaborators that talk to the outside world, as in provisioning. Each defaults to the real
  * implementation built from `PhaseDeps` (env, fetch, runner); tests replace them with fakes.
  */
-export interface DestroyServices extends Pick<ProvisionServices, "engine" | "provider"> {
+export interface DestroyServices
+  extends Pick<ProvisionServices, "engine" | "provider" | "sharedCloudflare"> {
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: DestroyCloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */
@@ -112,6 +113,11 @@ export interface DestroyPreview {
    * itself and everything OpsCrew did not create always stay.
    */
   stackChanges?: string[];
+  /**
+   * The Cloudflare plan that removes this app's hostnames from OpsCrew's shared rules in the zone,
+   * in words, when it changes something (approved with `allowDestroy` and the same typed name).
+   */
+  cloudflarePlan?: string;
 }
 
 export interface DestroyResult {

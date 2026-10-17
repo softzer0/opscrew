@@ -18,6 +18,16 @@ export interface PortainerDifference {
   detail?: string;
 }
 
+/**
+ * One way OpsCrew's shared rules in the Cloudflare zone differ from this app's record: names the
+ * rule and this app's hostnames (public), never a token or an id.
+ */
+export interface CloudflareRuleDifference {
+  title: string;
+  /** What it means and how to put it back. */
+  detail: string;
+}
+
 /** The Portainer part of a drift report. */
 export interface PortainerDrift {
   /** The environment checked, by its name in Portainer. */
@@ -63,6 +73,11 @@ export interface DriftReport {
    * what OpsCrew sets up now. Key names only, never a value, a token or Portainer's address.
    */
   portainer?: PortainerDrift;
+  /**
+   * How OpsCrew's shared Cloudflare rules differ from this app's record: a missing rule, a missing
+   * hostname of this app, a rule changed beyond its hostnames. Absent when the app has none there.
+   */
+  cloudflareRules?: CloudflareRuleDifference[];
   /** True when nothing drifted, nothing is pending and every file (and the server) matches. */
   clean: boolean;
   engine: IacEngineInfo;

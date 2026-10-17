@@ -102,6 +102,7 @@ function services(s: PortainerProject): DestroyServices {
     engine: s.services.engine,
     github: s.github,
     cloudflare: { verifyToken: async () => ({ ok: true, message: "ok" }) },
+    ...(s.services.sharedCloudflare ? { sharedCloudflare: s.services.sharedCloudflare } : {}),
     sleep: async () => undefined,
     portainer: {
       ...(s.services.portainer?.client !== undefined
@@ -151,6 +152,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
       `portainer:DELETE /api/stacks/${appId}`,
       `portainer:DELETE /api/registries/${registryId}`,
       "iac-apply",
+      "approve:cloudflare-apply",
       "approve:github-secrets",
     ]);
     // The tunnel was deleted only after Cloudflare reported the connector gone.
@@ -212,9 +214,10 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     ]);
     const plan = await readArtifact("plan", s.deps.paths.files.plan);
     expect(plan.deployment.destroyedAt).toBeDefined();
-    expect(plan.approvals.slice(-2).map((entry) => entry.kind)).toEqual([
+    expect(plan.approvals.slice(-3).map((entry) => entry.kind)).toEqual([
       "iac-apply",
       "stack-apply",
+      "cloudflare-apply",
     ]);
     expect(result.remaining.join("\n")).toContain("opscrew-shop_postgres_data");
     expect(result.remaining.join("\n")).toContain("OpsCrew does not change the host");

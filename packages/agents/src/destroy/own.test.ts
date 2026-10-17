@@ -76,6 +76,7 @@ function services(s: OwnProject): DestroyServices {
     engine: s.services.engine,
     github: s.github,
     cloudflare: { verifyToken: async () => ({ ok: true, message: "ok" }) },
+    ...(s.services.sharedCloudflare ? { sharedCloudflare: s.services.sharedCloudflare } : {}),
     ...(s.services.own !== undefined ? { own: s.services.own } : {}),
   };
 }
@@ -115,7 +116,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(previews[0]?.confirmPrompt).toBe(
       "Type shop (the app's name) to remove the app as listed above; your server itself stays (anything else cancels)",
     );
-    expect(kinds(s)).toEqual(["iac-apply", "host-apply", "github-secrets"]);
+    expect(kinds(s)).toEqual(["iac-apply", "host-apply", "cloudflare-apply", "github-secrets"]);
     const [iac, host] = s.handler.requests;
     expect(iac).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
     expect(iac?.details).toContain("never deletes, rebuilds or reinstalls it");
@@ -164,7 +165,11 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     );
     const plan = await readArtifact("plan", s.deps.paths.files.plan);
     expect(plan.deployment.destroyedAt).toBeDefined();
-    expect(plan.approvals.slice(-2).map((a) => a.kind)).toEqual(["iac-apply", "host-apply"]);
+    expect(plan.approvals.slice(-3).map((a) => a.kind)).toEqual([
+      "iac-apply",
+      "host-apply",
+      "cloudflare-apply",
+    ]);
     // The address DNS pointed at is forgotten; the login and the pinned host key stay.
     expect((await readServerAddresses(s.deps.paths)).deployment).toBeUndefined();
     expect(await readOwnServer(s.deps.paths)).toMatchObject({ host: OWN_IPV4 });
@@ -204,7 +209,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     s.answer(() => true);
     s.handler.requests.length = 0;
     const result = await runDestroy(s.deps, { services: services(s), deleteData: true });
-    expect(kinds(s)).toEqual(["host-apply", "github-secrets"]);
+    expect(kinds(s)).toEqual(["host-apply", "cloudflare-apply", "github-secrets"]);
     expect(s.host.applies.at(-1)?.plan.deleteData).toBe(true);
     expect(s.host.facts.volumeProjects).toEqual(["nextcloud"]);
     // The data really went, so "What remains" no longer lists it.
@@ -289,7 +294,13 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     const s = await deployed();
     const result = await runDestroy(s.deps, { services: services(s), undoHost: true });
 
-    expect(kinds(s)).toEqual(["iac-apply", "host-apply", "github-secrets", "host-apply"]);
+    expect(kinds(s)).toEqual([
+      "iac-apply",
+      "host-apply",
+      "cloudflare-apply",
+      "github-secrets",
+      "host-apply",
+    ]);
     const [teardown, undo] = s.handler.requests.filter((r) => r.kind === "host-apply");
     expect(undo?.planHash).not.toBe(teardown?.planHash);
     // It deletes the deploy user OpsCrew created and its home: a destroy (Constitution I).
@@ -479,7 +490,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
 
     s.handler.requests.length = 0;
     await runDestroy(s.deps, { services: services(s) });
-    expect(kinds(s)).toEqual(["host-apply", "github-secrets"]);
+    expect(kinds(s)).toEqual(["host-apply", "cloudflare-apply", "github-secrets"]);
     expect(s.host.facts.marker).toBeNull();
   });
 
@@ -570,7 +581,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
   it("tunnel mode: removes the tunnel and the connector; no address and no secret anywhere", async () => {
     const s = await deployed({ access: "tunnel" });
     const result = await runDestroy(s.deps, { services: services(s) });
-    expect(kinds(s)).toEqual(["iac-apply", "host-apply", "github-secrets"]);
+    expect(kinds(s)).toEqual(["iac-apply", "host-apply", "cloudflare-apply", "github-secrets"]);
     const teardown = s.host.applies.at(-1)?.plan;
     expect(teardown?.steps.map((step) => step.id)).toEqual(
       expect.arrayContaining(["runtime-dirs", "tunnel-connector", "app-marker"]),

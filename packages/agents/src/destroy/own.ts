@@ -58,6 +58,12 @@ import {
   teardownSummary,
 } from "./common";
 import { confirmDeletion, type DeletionSession, deletionSession, discardPlan } from "./deletion";
+import {
+  applySharedRemoval,
+  planSharedRemoval,
+  removalDetails,
+  zeroTrustLeft,
+} from "./shared-rules";
 import { destroyConfirmPrompt } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
@@ -310,6 +316,7 @@ function remainingOnOwnServer(input: {
   items.push(
     ...deploySecretsLeft(github, { names: input.secretNames, removed: input.secretsRemoved }),
     containerImagesLeft(github),
+    ...zeroTrustLeft(plan),
     `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy step fails until \`opscrew provision\` prepares your server again from these files.`,
     "How OpsCrew reaches your server (.opscrew/server.json) with its confirmed host key, and the project's SSH deploy key on this computer, kept so a new deployment can reuse them.",
   );
@@ -435,9 +442,13 @@ export async function destroyOwnServer(
     );
   }
   const dataWarning = deleteData && hasAppData(facts, name) ? dataLoss(plan, facts) : undefined;
+  // This app's hostnames in OpsCrew's shared Cloudflare rules: removed after the rest.
+  const shared = removeApp ? await planSharedRemoval(deps, plan, services) : undefined;
+  const cloudflarePlan = removalDetails(shared);
   if (removeApp) {
     const removed = hostSteps.map((step) => step.title);
     deps.reporter.info(teardownSummary({ resources, removed, words }));
+    if (cloudflarePlan !== undefined) deps.reporter.info(cloudflarePlan);
     if (dataWarning !== undefined) deps.reporter.warn(dataWarning);
     else if (hasAppData(facts, name)) {
       // `--delete-data` works only while the teardown still removes the app's runtime (its marker
@@ -462,6 +473,7 @@ export async function destroyOwnServer(
         snapshot: false,
         ...(dataWarning !== undefined ? { dataWarning } : {}),
         hostSteps: removed,
+        ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
       },
       options.confirm,
     );
@@ -532,6 +544,9 @@ export async function destroyOwnServer(
     if (removal !== undefined) await discardPlan(removal.summary);
   }
 
+  // 6b. This app's hostnames leave OpsCrew's shared Cloudflare rules (`cloudflare-apply`)
+  const sharedApproval = await applySharedRemoval(deps, plan, shared);
+
   // 7. Deploy secrets (tunnel ones included) and OpsCrew's record of the deployment
   const secretNames = [...Object.values(DEPLOY_SECRETS), ...Object.values(TUNNEL_DEPLOY_SECRETS)];
   let secretsRemoved: string[] = [];
@@ -543,7 +558,7 @@ export async function destroyOwnServer(
       reach: "your server",
     });
     // The address DNS pointed at goes; the login and the confirmed host key stay (the server stays).
-    current = await recordTeardown(deps, plan, [iacApproval, teardownApproval], {
+    current = await recordTeardown(deps, plan, [iacApproval, teardownApproval, sharedApproval], {
       summary: "app removed from your server",
       forgetAddress: true,
     });

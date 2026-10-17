@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { applyShared, inspectShared, planShared } from "@opscrew/connector-cloudflare";
+import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalDecision, ApprovalRequest, FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -17,6 +19,7 @@ import {
   FakeDestroyGitHub,
   FakeServers,
   fakeCloudflare,
+  fakeSharedCloudflare,
   HOST_KEY,
   projectRunner,
   ScriptedApprovalHandler,
@@ -785,6 +788,55 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
       code: "CREDENTIALS_INVALID",
     });
     expect(rejected.engine.calls).toEqual([]);
+  });
+
+  it("removes this app's hostnames from OpsCrew's shared Cloudflare rules after the infrastructure", async () => {
+    const zone = new FakeZone();
+    const client = fakeSharedCloudflare(zone);
+    // An earlier provision added the app's hostname to both shared rules.
+    const facts = await inspectShared(client, {
+      zoneId: FAKE_ZONE_ID,
+      accountId: FAKE_ACCOUNT_ID,
+      access: false,
+    });
+    const hosts = ["shop.example.com"];
+    const added = planShared(
+      facts,
+      { hostnames: { "opscrew-block-probes": hosts, "opscrew-strict-tls": hosts } },
+      undefined,
+    );
+    const { record } = await applyShared(client, added, { approvedHash: added.hash });
+    const s = await setup({
+      plan: deployedPlan({ domain: "shop.example.com" }),
+      script: { resources: deployedResources({ dns: true }) },
+      services: { sharedCloudflare: client },
+    });
+    await mkdir(dirname(s.deps.paths.files.cloudflareRecord), { recursive: true });
+    await writeFile(s.deps.paths.files.cloudflareRecord, JSON.stringify(record));
+    const previews: DestroyPreview[] = [];
+
+    const result = await runDestroy(s.deps, {
+      services: s.services,
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+
+    expect(previews[0]?.cloudflarePlan).toContain("remove shop.example.com");
+    expect(s.events.slice(s.events.indexOf("apply:destroy"), -SECRET_NAMES.length)).toEqual([
+      "apply:destroy",
+      "approval:cloudflare-apply",
+      "approval:github-secrets",
+    ]);
+    expect(s.handler.requests.find((r) => r.kind === "cloudflare-apply")).toMatchObject({
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    expect(zone.entrypoints.size).toBe(0);
+    const after = JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"));
+    expect(after).toMatchObject({ hostnames: {}, createdEntrypoints: [] });
+    expect(result.remaining.join("\n")).not.toContain("Zero Trust");
   });
 
   it("without a GitHub token: warns, skips the secret cleanup and lists the secrets as remaining", async () => {

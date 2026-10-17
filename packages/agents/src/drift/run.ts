@@ -9,6 +9,7 @@ import { requireNoMoveInProgress } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import { previewDeploymentFiles } from "../provision/render";
 import { hasDeployment, stateFile, stringOutput } from "../shared";
+import { cloudflareRulesDrift } from "./cloudflare-rules";
 import { type HostDrift, ownHostDrift } from "./host";
 import {
   compareInfrastructure,
@@ -80,6 +81,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
       : `Checking your ${cloud}${usesCloudflare ? " and Cloudflare" : ""} access`,
   );
   await checkProvider(deps, provider, services);
+  const cloudflareRules = await cloudflareRulesDrift(deps, services);
   deps.reporter.step("Comparing the generated files with what OpsCrew renders from the plan");
   const preview = await previewDeploymentFiles(deps, {
     services,
@@ -139,6 +141,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
     files: { changed: preview.changed, created: preview.created },
     foreignDnsRecords: preview.foreignDnsRecords ?? [],
     ...(host !== undefined ? { host } : {}),
+    ...(cloudflareRules !== undefined ? { cloudflareRules } : {}),
     engine: engine.info,
     provider,
     notes,

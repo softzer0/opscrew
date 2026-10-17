@@ -76,6 +76,7 @@ function services(s: OwnProject): DestroyServices {
     engine: s.services.engine,
     github: s.github,
     cloudflare: { verifyToken: async () => ({ ok: true, message: "ok" }) },
+    ...(s.services.sharedCloudflare ? { sharedCloudflare: s.services.sharedCloudflare } : {}),
     sleep: async () => undefined,
     ...(s.services.own !== undefined ? { own: s.services.own } : {}),
   };
@@ -114,6 +115,7 @@ describe.skipIf(!findExecutable("git"))(
         "host:teardown",
         ...Array.from({ length: 6 }, () => "poll"),
         "iac-apply",
+        "approve:cloudflare-apply",
         "approve:github-secrets",
       ]);
       expect(
@@ -144,8 +146,15 @@ describe.skipIf(!findExecutable("git"))(
       expect(s.engine.applies.at(-1)?.approval.approvedPlanHash).toBe(iac?.planHash);
       const plan = await readArtifact("plan", s.deps.paths.files.plan);
       expect(plan.deployment.destroyedAt).toBeDefined();
-      expect(plan.approvals.slice(-2).map((a) => a.kind)).toEqual(["iac-apply", "host-apply"]);
+      expect(plan.approvals.slice(-3).map((a) => a.kind)).toEqual([
+        "iac-apply",
+        "host-apply",
+        "cloudflare-apply",
+      ]);
       expect(await leftPlans(s)).toEqual([]);
+      expect(result.remaining).toContain(
+        "The Cloudflare account's Zero Trust organization: OpsCrew never deletes it, because every OpsCrew app in the account uses it for Cloudflare Access, and it costs nothing.",
+      );
       const everything = `${everythingPrinted(s)}\n${JSON.stringify(result)}`;
       for (const hidden of [ORIGIN_IP, LAN_IPV4, s.token]) expect(everything).not.toContain(hidden);
     });
@@ -179,6 +188,7 @@ describe.skipIf(!findExecutable("git"))(
         "approve:iac-apply",
         "poll",
         "iac-apply",
+        "approve:cloudflare-apply",
         "approve:github-secrets",
       ]);
       expect(s.handler.requests[0]?.details).toContain(
@@ -209,6 +219,7 @@ describe.skipIf(!findExecutable("git"))(
         "approve:iac-apply",
         "poll",
         "iac-apply",
+        "approve:cloudflare-apply",
         "approve:github-secrets",
       ]);
     });
@@ -250,7 +261,11 @@ describe.skipIf(!findExecutable("git"))(
         "approve:host-apply",
         "host:teardown",
       ]);
-      expect(s.events.slice(-2)).toEqual(["iac-apply", "approve:github-secrets"]);
+      expect(s.events.slice(-3)).toEqual([
+        "iac-apply",
+        "approve:cloudflare-apply",
+        "approve:github-secrets",
+      ]);
     });
 
     it("no tunnel deleted (public mode): Cloudflare first as before, no polls", async () => {
@@ -261,6 +276,7 @@ describe.skipIf(!findExecutable("git"))(
         "iac-apply",
         "approve:host-apply",
         "host:teardown",
+        "approve:cloudflare-apply",
         "approve:github-secrets",
       ]);
       const [iac, host] = s.handler.requests;

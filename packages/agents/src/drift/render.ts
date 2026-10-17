@@ -104,6 +104,7 @@ export function renderDriftReport(report: DriftReport): string {
   const ownServer = cloud === undefined;
   const host = report.host?.differences ?? [];
   const stacks = report.portainer?.differences ?? [];
+  const rules = report.cloudflareRules ?? [];
   const files = [
     ...report.files.changed.map((path) => ({ path, label: "changed" })),
     ...report.files.created.map((path) => ({ path, label: "missing" })),
@@ -115,7 +116,8 @@ export function renderDriftReport(report: DriftReport): string {
     files.length === 0 &&
     foreign.length === 0 &&
     host.length === 0 &&
-    stacks.length === 0
+    stacks.length === 0 &&
+    rules.length === 0
   ) {
     lines.push(
       portainer
@@ -142,6 +144,14 @@ export function renderDriftReport(report: DriftReport): string {
       "`opscrew provision` shows a stack plan for what it puts back in Portainer, and nothing changes until you approve it; what it does not put back says what to do with it. Values are compared only as keyed fingerprints and never shown.",
       "",
     );
+  }
+
+  if (rules.length > 0) {
+    lines.push(
+      `OpsCrew's shared rules in the Cloudflare zone differ from what this app's record lists (${rules.length}):`,
+    );
+    for (const item of rules) lines.push(`  ~ ${item.title}`, `      ${item.detail}`);
+    lines.push("");
   }
 
   if (drift.length > 0) {

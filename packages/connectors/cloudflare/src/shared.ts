@@ -306,6 +306,7 @@ export function planShared(
       hostnames[ref],
       record?.hostnames[ref] ?? [],
       facts.zonePlan,
+      record?.createdEntrypoints.includes(phase) ?? false,
     );
     if ("finding" in planned) {
       findings.push(planned.finding);
@@ -344,13 +345,18 @@ export function planShared(
   return { ...plan, hash: sharedPlanHash(plan) };
 }
 
-/** The changes to one shared rule, or the finding that stops them. */
+/**
+ * The changes to one shared rule, or the finding that stops them. `created`: the app's record says
+ * it created the phase's entrypoint, which then goes when it holds no rule and the app wants none
+ * there (a destroy whose delete of the entrypoint was not answered left it empty).
+ */
 function planRule(
   ref: SharedRuleRef,
   entrypoint: EntrypointRuleset | undefined,
   hostnames: readonly string[],
   mine: readonly string[],
   zonePlan: string | undefined,
+  created: boolean,
 ): { changes: RuleChange[] } | { finding: SharedFinding } {
   const { phase } = SHARED_RULES[ref];
   const rule = ownRule(ref, entrypoint);
@@ -364,7 +370,12 @@ function planRule(
   if (claimed.length > 0) return { finding: hostnameClaimed(ref, claimed) };
   const add = hostnames.filter((h) => !current.includes(h));
   const remove = mine.filter((h) => !hostnames.includes(h) && current.includes(h)).sort();
-  if (add.length === 0 && remove.length === 0) return { changes: [] };
+  if (add.length === 0 && remove.length === 0) {
+    if (created && entrypoint && entrypoint.rules.length === 0) {
+      return { changes: [{ kind: "delete-entrypoint", phase, rulesetId: entrypoint.id }] };
+    }
+    return { changes: [] };
+  }
   const next = [...current, ...add].filter((h) => !remove.includes(h)).sort();
   const body = ruleBody(ref, next);
   if (next.length > 0 && body.expression.length > MAX_EXPRESSION_LENGTH) {

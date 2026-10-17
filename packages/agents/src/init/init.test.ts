@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type {
   AgentRuntime,
   CommandResult,
@@ -82,6 +83,8 @@ interface NetOptions {
   registrar?: "ok" | 403 | 400 | "hang";
   /** Accounts the Cloudflare token can see (default one). */
   accounts?: number;
+  /** The zone's details and rulesets (default: a zone with none). */
+  rules?: FakeZone;
 }
 
 function json(status: number, body: unknown): Response {
@@ -93,9 +96,12 @@ function json(status: number, body: unknown): Response {
 
 function fakeNet(o: NetOptions = {}): { fetch: FetchLike; calls: string[] } {
   const calls: string[] = [];
-  const fetch: FetchLike = async (input) => {
+  const rules = o.rules ?? new FakeZone();
+  const fetch: FetchLike = async (input, init) => {
     const url = new URL(String(input));
     calls.push(url.toString());
+    if (url.pathname.startsWith(`/client/v4/zones/${FAKE_ZONE_ID}`))
+      return rules.fetch(input, init);
     if (url.hostname === "api.hetzner.cloud") {
       const mode = o.hetzner ?? 200;
       if (mode === "hang") return new Promise<Response>(() => {});
@@ -164,7 +170,7 @@ function fakeNet(o: NetOptions = {}): { fetch: FetchLike; calls: string[] } {
         const name = url.searchParams.get("name");
         const zones =
           (o.zone ?? true) && name === "example.com"
-            ? [{ id: "zone-1", name: "example.com", status: "active", name_servers: [] }]
+            ? [{ id: FAKE_ZONE_ID, name: "example.com", status: "active", name_servers: [] }]
             : [];
         return json(200, { success: true, errors: [], result: zones });
       }
@@ -567,6 +573,44 @@ describe("runInitChecks", () => {
       expect(cf?.fix).toContain("https://dash.cloudflare.com/profile/api-tokens");
       expectNoTokens(checks);
     });
+
+    it("reads both rulesets of OpsCrew's shared rules and changes nothing", async () => {
+      const rules = new FakeZone();
+      const { deps } = await setup({ net: { rules } });
+      await writeArtifact("plan", deps.paths.files.plan, testPlan());
+      const checks = await runInitChecks(deps, { services: services() });
+      expect(checks.find((c) => c.id === "cloudflare")?.status).toBe("pass");
+      expect(rules.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+        `GET /zones/${FAKE_ZONE_ID}`,
+        `GET /zones/${FAKE_ZONE_ID}/rulesets/phases/http_request_firewall_custom/entrypoint`,
+        `GET /zones/${FAKE_ZONE_ID}/rulesets/phases/http_config_settings/entrypoint`,
+      ]);
+    });
+
+    it.each([
+      ["http_request_firewall_custom", "WAF custom rules", "Zone → Zone WAF → Edit"],
+      ["http_config_settings", "configuration rules", "Zone → Config Rules → Edit"],
+    ])(
+      "names the missing permission when reading the %s ruleset answers 403",
+      async (phase, rulesName, permission) => {
+        const rules = new FakeZone();
+        rules.denied.add(phase);
+        const { deps } = await setup({ net: { rules } });
+        await writeArtifact("plan", deps.paths.files.plan, testPlan());
+        const checks = await runInitChecks(deps, { services: services() });
+        const cf = checks.find((c) => c.id === "cloudflare");
+        expect(cf?.status).toBe("fail");
+        expect(cf?.message).toBe(
+          `CLOUDFLARE_API_TOKEN can see the zone example.com, but OpsCrew cannot keep its shared rules there: The Cloudflare token may not read the zone's ${rulesName} (HTTP 403).`,
+        );
+        expect(cf?.fix).toBe(
+          `Edit the token at https://dash.cloudflare.com/profile/api-tokens and give it ${permission} for this zone, then run the command again.`,
+        );
+        expect(rules.writes()).toEqual([]);
+        expect(initPassed(checks)).toBe(false);
+        expectNoTokens(checks);
+      },
+    );
 
     it("only warns about a missing token before the DNS choice is known", async () => {
       const cf = await check("cloudflare", { env: { HCLOUD_TOKEN: HCLOUD, GITHUB_TOKEN: GITHUB } });

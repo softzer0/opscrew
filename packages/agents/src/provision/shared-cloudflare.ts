@@ -52,7 +52,7 @@ import type { ProvisionServices } from "./types";
 const REFS = Object.keys(SHARED_RULES) as SharedRuleRef[];
 
 /** Each shared rule in words, and the zone's rules it is one of. */
-const RULES: Record<SharedRuleRef, { name: string; kind: string }> = {
+export const RULES: Record<SharedRuleRef, { name: string; kind: string }> = {
   "opscrew-block-probes": {
     name: "Block probes for secrets and admin panels",
     kind: "WAF custom rules",
@@ -92,7 +92,8 @@ export async function readCloudflareRecord(
   );
 }
 
-async function writeCloudflareRecord(
+/** Writes this app's record of its hostnames in OpsCrew's shared Cloudflare rules. */
+export async function writeCloudflareRecord(
   paths: Pick<ProjectPaths, "files">,
   record: SharedRecord,
 ): Promise<void> {
@@ -152,6 +153,13 @@ function ruleItem(plan: SharedPlan, ref: SharedRuleRef): AdapterPlanItem | undef
       ? `OpsCrew's rule keeps the ${plural(others.length, "hostname")} of other OpsCrew apps there.`
       : undefined;
   switch (first.kind) {
+    case "delete-entrypoint":
+      // Only the ruleset this app created is left (an interrupted destroy, or a rule deleted by hand).
+      return {
+        title: `${name}: delete the zone's ${kind}, which hold no rule`,
+        state: "change",
+        reason: "OpsCrew created them for this app, and they hold no rule any more.",
+      };
     case "create-entrypoint":
       return {
         title: `${name}: add ${listText(mine)}`,
@@ -243,7 +251,7 @@ export function sharedCloudflareClient(
 }
 
 /** One zone's Cloudflare plan, with what it was planned for and its text. */
-interface ZonePlan {
+export interface ZonePlan {
   plan: SharedPlan;
   desired: SharedDesired;
   details: string;
@@ -269,7 +277,7 @@ export function cloudflarePlanHashes(planned: PlannedCloudflare | undefined): st
 }
 
 /** One zone's plan; stops (`PHASE_PRECONDITION`, nothing changed) on its findings. */
-async function zonePlan(
+export async function zonePlan(
   deps: Pick<PhaseDeps, "reporter">,
   input: {
     client: CloudflareClient;
@@ -389,6 +397,11 @@ export interface SharedCloudflareInput {
   /** The command that applies them later (`--approve <hash>`). */
   command: string;
   phase: PhaseName;
+  /**
+   * Ask with `allowDestroy` and the typed app name even when the plan deletes nothing in
+   * Cloudflare (destroy: removing this app's hostnames takes their protection away).
+   */
+  allowDestroy?: boolean;
 }
 /** The outcome of {@link applySharedCloudflare}. */
 export interface SharedCloudflareResult {
@@ -412,7 +425,7 @@ export interface SharedCloudflareResult {
 }
 
 /** One zone's plan shown, then approved by its hash, applied and recorded (unless `planOnly`). */
-async function applyZonePlan(
+export async function applyZonePlan(
   deps: PhaseDeps,
   client: CloudflareClient,
   zone: ZonePlan,
@@ -435,9 +448,11 @@ async function applyZonePlan(
     );
     return {};
   }
-  const deletes = plan.changes.some(
-    (change) => change.kind === "delete-rule" || change.kind === "delete-entrypoint",
-  );
+  const deletes =
+    input.allowDestroy === true ||
+    plan.changes.some(
+      (change) => change.kind === "delete-rule" || change.kind === "delete-entrypoint",
+    );
   const approval = await deps.approvals.request({
     kind: "cloudflare-apply",
     title: `Apply the Cloudflare plan to OpsCrew's shared Cloudflare resources (${plural(plan.changes.length, "change")})`,

@@ -269,7 +269,8 @@ export function assertDeletionPlan(
  * The typed confirmation: asks `confirm` once with the preview (skipped without a hook or when
  * nothing would be deleted or changed), audits the answer and stops with `APPROVAL_REFUSED`
  * (nothing changed) when it is not given. On a server the user owns and in their Portainer the
- * app's name is typed, and the changes there (`hostSteps`, `stackChanges`) count as well.
+ * app's name is typed, and the changes there (`hostSteps`, `stackChanges`) count as well, as does
+ * the Cloudflare plan for OpsCrew's shared rules (`cloudflarePlan`).
  */
 export async function confirmDeletion(
   scope: DeletionScope,
@@ -283,9 +284,11 @@ export async function confirmDeletion(
         ? { changes: preview.stackChanges, where: "in your Portainer" }
         : undefined;
   const changes = elsewhere?.changes.length ?? 0;
-  if (confirm === undefined || (preview.resources.length === 0 && changes === 0)) return;
+  const shared = preview.cloudflarePlan !== undefined;
+  if (confirm === undefined || (preview.resources.length === 0 && changes === 0 && !shared)) return;
   const confirmed = await confirm(preview);
   const resources = plural(preview.resources.length, "resource");
+  const rules = shared ? ", and this app's hostnames in OpsCrew's shared Cloudflare rules" : "";
   await scope.deps.audit.append({
     kind: "approval",
     actor: "user",
@@ -295,8 +298,8 @@ export async function confirmDeletion(
     decision: confirmed ? "approved" : "refused",
     detail:
       elsewhere === undefined
-        ? `typed confirmation for deleting ${resources}`
-        : `typed confirmation for deleting ${resources} and ${plural(changes, "change")} ${elsewhere.where}`,
+        ? `typed confirmation for deleting ${resources}${rules}`
+        : `typed confirmation for deleting ${resources} and ${plural(changes, "change")} ${elsewhere.where}${rules}`,
   });
   if (!confirmed) {
     const noun =

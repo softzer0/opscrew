@@ -60,6 +60,12 @@ import {
 } from "./deletion";
 import { destroyOwnServer } from "./own";
 import { destroyPortainer } from "./portainer";
+import {
+  applySharedRemoval,
+  planSharedRemoval,
+  removalDetails,
+  zeroTrustLeft,
+} from "./shared-rules";
 import { type DestroyTexts, destroyConfirmPrompt, destroyTexts } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
@@ -423,6 +429,7 @@ function remainingAfterDestroy(input: {
       removed: input.secretsRemoved,
     }),
     containerImagesLeft(github),
+    ...zeroTrustLeft(plan),
     `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy step fails until \`opscrew provision\` creates a new ${texts.noun} from these files.`,
     "The project's SSH deploy key on this computer, kept so a new deployment can reuse it.",
   ];
@@ -498,7 +505,11 @@ export async function runDestroy(
     engine: async () => engine,
     engineEnv: env,
   });
-  if (preview.changes.length === 0 && address === undefined) {
+  // This app's hostnames in OpsCrew's shared Cloudflare rules (read-only now; removed after the
+  // infrastructure is deleted, so a run that stopped before that continues with them).
+  const shared = await planSharedRemoval(deps, plan, services);
+  const cloudflarePlan = removalDetails(shared);
+  if (preview.changes.length === 0 && address === undefined && cloudflarePlan === undefined) {
     throw nothingDeployed(plan);
   }
   // Which server that is, by the id the state records (names need not be unique).
@@ -510,6 +521,7 @@ export async function runDestroy(
   } else {
     deps.reporter.info("The infrastructure is already deleted; OpsCrew finishes the cleanup.");
   }
+  if (cloudflarePlan !== undefined) deps.reporter.info(cloudflarePlan);
   const warning = dataWarning(plan, serverInState);
   if (warning) deps.reporter.warn(warning);
   const data = { postgres: plan.services.postgres, backups: cloudTarget(plan.target).backups };
@@ -535,6 +547,7 @@ export async function runDestroy(
       resources: preview.changes,
       snapshot: snapshotFirst,
       ...(warning ? { dataWarning: warning } : {}),
+      ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
     },
     options.confirm,
   );
@@ -569,6 +582,9 @@ export async function runDestroy(
     serverIds,
   });
 
+  // 7c. This app's hostnames leave OpsCrew's shared Cloudflare rules (`cloudflare-apply`)
+  const sharedApproval = await applySharedRemoval(deps, plan, shared);
+
   // 8. Cleanup: deploy secrets, pinned host key, plan, stored-secrets record, phase state
   const secretsRemoved = await removeDeploySecrets(deps, github, {
     names: Object.values(DEPLOY_SECRETS),
@@ -578,7 +594,8 @@ export async function runDestroy(
   if ((await forgetHostKeys(deps, [address?.ipv4, address?.ipv6])) > 0) {
     deps.reporter.info(`Removed the ${texts.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
-  await recordTeardown(deps, plan, [protection.approval, destroyApproval, tunnelApproval], {
+  const approvals = [protection.approval, destroyApproval, tunnelApproval, sharedApproval];
+  await recordTeardown(deps, plan, approvals, {
     summary: "infrastructure destroyed",
     forgetAddress: true,
   });

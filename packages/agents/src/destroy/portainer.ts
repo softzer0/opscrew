@@ -61,6 +61,12 @@ import {
   teardownSummary,
 } from "./common";
 import { confirmDeletion, type DeletionSession, deletionSession, discardPlan } from "./deletion";
+import {
+  applySharedRemoval,
+  planSharedRemoval,
+  removalDetails,
+  zeroTrustLeft,
+} from "./shared-rules";
 import { destroyConfirmPrompt } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
@@ -302,6 +308,7 @@ function remainingInPortainer(input: {
   }
   items.push(
     containerImagesLeft(github),
+    ...zeroTrustLeft(plan),
     `The deployment files in the repository (opscrew/ and ${plan.cicd.workflowPath}). Pushes still build an image, but the deploy fails until \`opscrew provision\` sets up the app's stacks again from these files.`,
     "How OpsCrew reaches your Portainer (.opscrew/server.json) with its confirmed certificate, kept so a new deployment can reuse it.",
   );
@@ -426,6 +433,9 @@ export async function destroyPortainer(
       ? `Once the app's stack is gone, OpsCrew also deletes the branch ${DEPLOY_BRANCH} of ${github.owner}/${github.repo}, which holds the stack's file.`
       : undefined;
   const stackTitles = stackWork.map((change) => change.title);
+  // This app's hostnames in OpsCrew's shared Cloudflare rules: removed after the rest.
+  const shared = removeApp ? await planSharedRemoval(deps, plan, services) : undefined;
+  const cloudflarePlan = removalDetails(shared);
   deps.reporter.info(
     teardownSummary({
       resources,
@@ -434,6 +444,7 @@ export async function destroyPortainer(
       notes: branchNote !== undefined ? [branchNote] : [],
     }),
   );
+  if (cloudflarePlan !== undefined) deps.reporter.info(cloudflarePlan);
   if (dataWarning !== undefined) deps.reporter.warn(dataWarning);
   else if (!deleteData && record.volumes.length > 0) {
     deps.reporter.info(
@@ -451,6 +462,7 @@ export async function destroyPortainer(
       snapshot: false,
       ...(dataWarning !== undefined ? { dataWarning } : {}),
       stackChanges: stackTitles,
+      ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
     },
     options.confirm,
   );
@@ -540,6 +552,9 @@ export async function destroyPortainer(
     removeApp && stackGone && approvedNow ? await deleteDeployBranch(deps, github) : false;
   const branchUnapproved = removeApp && stackGone && !approvedNow && canDeleteBranch(github);
 
+  // 6b. This app's hostnames leave OpsCrew's shared Cloudflare rules (`cloudflare-apply`)
+  const sharedApproval = await applySharedRemoval(deps, plan, shared);
+
   // 7. Deploy secrets and OpsCrew's record of the deployment
   let secretsRemoved: string[] = [];
   if (removeApp) {
@@ -548,7 +563,7 @@ export async function destroyPortainer(
       done: "The app is removed from your Portainer and Cloudflare.",
       reach: "your Portainer",
     });
-    await recordTeardown(deps, plan, [removal?.approval, stackApproval], {
+    await recordTeardown(deps, plan, [removal?.approval, stackApproval, sharedApproval], {
       summary: "app removed from your Portainer",
       forgetAddress: false,
     });

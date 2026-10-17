@@ -4,6 +4,9 @@ import {
   CLOUDFLARE_TOKEN_PERMISSIONS,
   type CloudflareClient,
   cloudflareConnector,
+  inspectShared,
+  planShared,
+  type SharedFinding,
 } from "@opscrew/connector-cloudflare";
 import { GITHUB_TOKEN_PERMISSIONS, parseGitHubRepo } from "@opscrew/connector-github";
 import type {
@@ -772,6 +775,29 @@ async function checkCloudflare(
       status: problem,
       message: `CLOUDFLARE_API_TOKEN cannot see the zone of ${domain}: it is missing the "${CLOUDFLARE_TOKEN_PERMISSIONS[0]}" permission for that zone, or the domain is not on Cloudflare yet.`,
       fix: `Add the domain to Cloudflare if it is not there yet. ${cloudflareFix(domain, tunnel)}`,
+    };
+  }
+  // OpsCrew's shared rules: the token must read (and edit) both rulesets they live in.
+  let denied: SharedFinding[];
+  try {
+    const facts = await inspectShared(client, {
+      zoneId: zone.id,
+      accountId: zone.accountId ?? "",
+      access: false,
+    });
+    denied = planShared(facts, { hostnames: {} }, undefined).findings;
+  } catch (error) {
+    return {
+      status: problem,
+      message: `CLOUDFLARE_API_TOKEN works but could not read the rules of the zone ${zone.name}: ${errorText(error)}`,
+      fix: cloudflareFix(domain, tunnel),
+    };
+  }
+  if (denied.length > 0) {
+    return {
+      status: problem,
+      message: `CLOUDFLARE_API_TOKEN can see the zone ${zone.name}, but OpsCrew cannot keep its shared rules there: ${denied.map((finding) => finding.message).join(" ")}`,
+      fix: denied.map((finding) => finding.hint).join(" "),
     };
   }
   return {

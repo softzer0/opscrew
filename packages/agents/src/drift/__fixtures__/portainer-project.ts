@@ -186,7 +186,6 @@ export async function portainerProject(o: PortainerProjectOptions = {}) {
       portainer_tunnel_token: secrets.webhookTunnelToken,
       deploy_service_token_client_id: secrets.accessId,
       deploy_service_token_client_secret: secrets.accessSecret,
-      cloudflare_rulesets: { http_config_settings: null, http_request_firewall_custom: null },
     },
   });
   const clients: PortainerClientDeps[] = [];

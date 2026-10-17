@@ -47,7 +47,9 @@ export interface UndoApproval {
  * infrastructure plans (lifting delete protection where the provider has it, then deleting) and,
  * on a server the user owns, the teardown host plan that asks for exactly that name; in the user's
  * Portainer, the stack teardown plan (a `stack-apply` with `allowDestroy` that asks for exactly
- * that name; a `stack-apply` without them is never covered). A `--confirm` run also approves
+ * that name; a `stack-apply` without them is never covered); on every target, the Cloudflare plan
+ * that removes the app's hostnames from OpsCrew's shared rules (a `cloudflare-apply` with
+ * `allowDestroy` that asks for exactly that name, likewise). A `--confirm` run also approves
  * removing the GitHub deploy secrets (no prompts at all). `--yes` does not exist here.
  *
  * The undo host plan of `--undo-host` deletes the deploy user OpsCrew created (and its home), so
@@ -81,8 +83,9 @@ export class TypedConfirmationHandler implements ApprovalHandler {
     if (request.kind === "host-apply") {
       return purpose === "teardown" && request.confirmPhrase === this.name;
     }
-    if (request.kind === "stack-apply") {
-      // The user's Portainer: only the teardown, which deletes (allowDestroy) and asks for the name.
+    if (request.kind === "stack-apply" || request.kind === "cloudflare-apply") {
+      // The user's Portainer's teardown, and this app's hostnames leaving OpsCrew's shared
+      // Cloudflare rules: only a plan that deletes (allowDestroy) and asks for the name.
       return request.allowDestroy === true && request.confirmPhrase === this.name;
     }
     return this.approveSecrets && request.kind === "github-secrets";

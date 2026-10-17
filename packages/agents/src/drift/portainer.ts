@@ -55,6 +55,7 @@ import {
   stateFile,
   stringOutput,
 } from "../shared";
+import { cloudflareRulesDrift } from "./cloudflare-rules";
 import { compareInfrastructure, driftEngine, finishDriftReport, inspectState } from "./infra";
 import type { DriftOptions, DriftReport, PortainerDifference } from "./types";
 
@@ -449,6 +450,7 @@ export async function portainerDrift(
   const cloudflare = hasRoot
     ? await setupCloudflare(deps, plan, services, { foreignRecords: "report" })
     : undefined;
+  const cloudflareRules = await cloudflareRulesDrift(deps, services);
   const current =
     cloudflare !== undefined && plan.dns.zone !== cloudflare.zoneName
       ? { ...plan, dns: { ...plan.dns, zone: cloudflare.zoneName } }
@@ -602,6 +604,7 @@ export async function portainerDrift(
         ...(item.detail !== undefined ? { detail: deps.redactor.redact(item.detail) } : {}),
       })),
     },
+    ...(cloudflareRules !== undefined ? { cloudflareRules } : {}),
     engine: engine.info,
     provider: "portainer",
     notes,

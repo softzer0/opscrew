@@ -867,6 +867,61 @@ describe("applyShared", () => {
     expect(error.applied).toEqual([]);
     expect(error.record.hostnames).toEqual({ [BLOCK]: A });
   });
+
+  it("deletes an empty entrypoint this app created that an interrupted destroy left, only when the app wants no hostnames there", async () => {
+    const zone = new FakeZone();
+    const { result } = await deploy(zone, { hostnames: { [BLOCK]: A } });
+    const waf = zone.entrypoints.get(WAF)?.id;
+    // OpsCrew's rule is deleted, but the ruleset's delete fails (a fault matches by prefix, so
+    // this one is told apart by its exact path).
+    const rulesetPath = `/zones/${ZONE_ID}/rulesets/${waf}`;
+    const failing: FetchLike = async (input, init) =>
+      init?.method === "DELETE" && new URL(String(input)).pathname.endsWith(rulesetPath)
+        ? new Response("Bad Gateway", { status: 502 })
+        : zone.fetch(input, init);
+    const destroy = await planFor(zone, { hostnames: {} }, result.record);
+    const client = new CloudflareClient({ token: TOKEN, fetch: failing, sleep: async () => {} });
+    const failed = (await rejection(
+      applyShared(client, destroy, { approvedHash: destroy.hash }),
+    )) as SharedApplyError;
+    expect(failed.applied).toEqual([`delete-rule ${WAF}`]);
+    expect(failed.record).toEqual({ zoneId: ZONE_ID, hostnames: {}, createdEntrypoints: [WAF] });
+    expect(zone.entrypoints.get(WAF)?.rules).toEqual([]);
+
+    // A provision that adds hostnames again keeps the entrypoint and adds OpsCrew's rule to it.
+    expect((await planFor(zone, { hostnames: { [BLOCK]: A } }, failed.record)).changes).toEqual([
+      expect.objectContaining({ kind: "add-rule", phase: WAF, rulesetId: waf }),
+    ]);
+    // Another app's record (it did not create the entrypoint) plans nothing for it.
+    const other = { zoneId: ZONE_ID, hostnames: {}, createdEntrypoints: [] };
+    expect((await planFor(zone, { hostnames: {} }, other)).changes).toEqual([]);
+
+    const again = await planFor(zone, { hostnames: {} }, failed.record);
+    expect(again.changes).toEqual([{ kind: "delete-entrypoint", phase: WAF, rulesetId: waf }]);
+    expect(again.expect).toEqual({ [WAF]: null });
+    expect(again.record.createdEntrypoints).toEqual([]);
+    const done = await applyShared(clientFor(zone), again, { approvedHash: again.hash });
+    expect(done.applied).toEqual([`delete-entrypoint ${WAF}`]);
+    expect(zone.entrypoints.has(WAF)).toBe(false);
+  });
+
+  it("keeps an empty entrypoint that gained a rule after the plan that deletes it", async () => {
+    const zone = new FakeZone();
+    zone.seedRule(WAF, { description: "user", expression: "(cf.client.bot)", action: "block" });
+    const ruleset = zone.entrypoints.get(WAF);
+    if (ruleset === undefined) throw new Error("no ruleset");
+    const userRule = ruleset.rules.splice(0);
+    const record = { zoneId: ZONE_ID, hostnames: {}, createdEntrypoints: [WAF] };
+    const plan = await planFor(zone, { hostnames: {} }, record);
+    expect(kinds(plan)).toEqual(["delete-entrypoint"]);
+    ruleset.rules.push(...userRule);
+    const before = zone.calls.length;
+    const error = await rejection(applyShared(clientFor(zone), plan, { approvedHash: plan.hash }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("their ruleset holds a rule again");
+    expect(writesSince(zone, before)).toEqual([]);
+    expect(zone.entrypoints.get(WAF)?.rules).toEqual(userRule);
+  });
 });
 
 describe("Zero Trust", () => {
