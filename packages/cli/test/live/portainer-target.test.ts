@@ -1996,26 +1996,6 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
-    /** Waits until the second app answers 200 on its health path through Cloudflare (its tunnel). */
-    async function waitForSecond(what: string): Promise<void> {
-      const app = second();
-      const url = `https://${app.appHost}${(await app.readPlan()).app.healthPath}`;
-      log(`waiting for the second app at ${url} to answer through its tunnel (${what})`);
-      await waitFor(
-        `the second app answering 200 through Cloudflare (${what})`,
-        minutes(10),
-        async () => {
-          const answer = await httpRequest(url);
-          if (answer.status !== 200 || answer.headers["cf-ray"] === undefined) {
-            throw new Error(
-              `${url} answered ${answer.status}${answer.headers["cf-ray"] === undefined ? " without Cloudflare's cf-ray header" : ""}.`,
-            );
-          }
-          return true;
-        },
-      );
-    }
-
     step(
       "7b. a second app: its own stacks with the tunnel in the same Portainer, zone and account; both blocked on /.env, both in OpsCrew's probe block",
       minutes(60),
@@ -2052,7 +2032,7 @@ describe.skipIf(MISSING.length > 0)(
         await rememberSecrets(["tunnel_token"], app);
         if ((await app.deploy("the second app")) === undefined)
           await app.deployMain("the second app");
-        await waitForSecond("its first deploy");
+        await app.waitForHealth();
         await app.opscrewOk("verify");
         if (web === "tunnel") await run.expectProbeBlocked(appHost);
         await run.expectProbeBlocked(app.appHost);
@@ -2091,7 +2071,7 @@ describe.skipIf(MISSING.length > 0)(
         await run.expectSharedCloudflare("the first app's destroy");
         if (secondUp()) {
           // SC-1102: the second app's tunnel and probe block still work.
-          await waitForSecond("after the first app's destroy");
+          await second().waitForHealth();
           await run.expectProbeBlocked(second().appHost);
           observe("after the first app's destroy the second app still answers and is protected");
         }

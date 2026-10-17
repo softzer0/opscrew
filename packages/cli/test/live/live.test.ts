@@ -15,9 +15,23 @@ import { materializeFixture } from "@opscrew/core/testing";
 import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { api, Cloudflare, GitHubRepo, HETZNER_API, minutes, retryDelete } from "./cloud";
+import {
+  api,
+  Cloudflare,
+  type CloudflareZone,
+  GitHubRepo,
+  HETZNER_API,
+  minutes,
+  retryDelete,
+} from "./cloud";
 import { CLI, EXAMPLES, isExample } from "./harness";
-import { type AppRules, appRules, approveHashes, sharedRuleHosts } from "./support";
+import {
+  type AppRules,
+  appRules,
+  approveHashes,
+  sharedRuleHosts,
+  type ZoneEntrypoints,
+} from "./support";
 
 const E2E = {
   hcloudToken: process.env.OPSCREW_E2E_HCLOUD_TOKEN,
@@ -243,15 +257,24 @@ for (const provider of [HETZNER, DIGITALOCEAN]) {
 
 const PLAN_HASH = /(?:Plan hash \(SHA-256\): |--approve )([0-9a-f]{64})/;
 
+/** The Cloudflare zone of the domain and its two entrypoint rulesets before the provision. */
+interface SharedZone {
+  cloudflare: Cloudflare;
+  zone: CloudflareZone;
+  before: ZoneEntrypoints;
+}
+
 /**
  * The app's hostnames in OpsCrew's shared Cloudflare rules (feature 011), found by `ref`: after a
  * provision (`listed`) exactly the rules `rules` names list them, after the destroy none does.
  * Other hostnames in the rules (other apps in the zone) are not this test's.
  */
-async function expectInSharedRules(rules: AppRules, listed: boolean): Promise<void> {
-  const cloudflare = new Cloudflare(E2E.cloudflareToken as string);
-  const zone = await cloudflare.zoneOf(E2E.domain as string);
-  const now = sharedRuleHosts(await cloudflare.sharedEntrypoints(zone));
+async function expectInSharedRules(
+  shared: SharedZone,
+  rules: AppRules,
+  listed: boolean,
+): Promise<void> {
+  const now = sharedRuleHosts(await shared.cloudflare.sharedEntrypoints(shared.zone));
   const hosts = new Set(Object.values(rules).flat());
   for (const [ref, ruleHosts] of Object.entries(now)) {
     const want = listed ? (rules[ref as keyof AppRules] ?? []) : [];
@@ -411,6 +434,8 @@ async function deployAndTearDown(
   let appName: string | undefined;
   /** The shared Cloudflare rules the app's hostnames belong in (none without a domain). */
   let sharedRules: AppRules = {};
+  /** With a Cloudflare domain, from just before the provision on. */
+  let shared: SharedZone | undefined;
   try {
     expect((await opscrew("analyze", ...aiFlags)).exitCode).toBe(0);
     await writeFile(
@@ -443,6 +468,11 @@ async function deployAndTearDown(
     );
     await mergePullRequest(branches.split(/\r?\n/)[0] as string);
 
+    if (withDns) {
+      const cloudflare = new Cloudflare(E2E.cloudflareToken as string);
+      const zone = await cloudflare.zoneOf(E2E.domain as string);
+      shared = { cloudflare, zone, before: await cloudflare.sharedEntrypoints(zone) };
+    }
     const planned = await opscrew("provision", "--plan-only", "--yes");
     expect(planned.exitCode, planned.output).toBe(0);
     // With a Cloudflare domain the Cloudflare plan comes first; every printed plan is approved.
@@ -454,7 +484,7 @@ async function deployAndTearDown(
       "--yes",
     );
     expect(applied.exitCode, applied.output).toBe(0);
-    if (withDns) await expectInSharedRules(sharedRules, true);
+    if (shared !== undefined) await expectInSharedRules(shared, sharedRules, true);
     // OpsCrew picks the next free name (`opscrew/deploy-setup-2`) when an earlier pass's branch is
     // still on GitHub, so take the branch provision created, like the adapt branch above.
     const deployBranch = (
@@ -533,9 +563,20 @@ async function deployAndTearDown(
         console.error(`opscrew destroy failed; falling back:\n${destroy?.output ?? ""}`);
       }
     }
+    if (!destroyed && shared !== undefined) {
+      // Without the destroy the app's hostnames stay in OpsCrew's shared rules, and the next run
+      // would stop at them: remove them (rules holding only them, as `removeRulesOfRun` decides).
+      // It never throws, so the servers' teardown below always runs.
+      const problems = await shared.cloudflare
+        .removeRulesOfRun(shared.zone, shared.before, {
+          hostnames: [...new Set(Object.values(sharedRules).flat())],
+          log: (message) => console.log(`OpsCrew E2E: ${message}`),
+        })
+        .catch((error: unknown) => [String(error)]);
+      for (const problem of problems) console.error(`OpsCrew E2E: ${problem}`);
+    }
     if (destroyed && appName !== undefined) {
       for (const p of involved) await p.expectNothingLeft(appName);
-      if (withDns) await expectInSharedRules(sharedRules, false);
     } else if (current.moving && appName !== undefined) {
       // A move left half-way has servers on both providers: delete them through the APIs.
       console.error("A move was still in progress; deleting through both providers' APIs.");
@@ -546,6 +587,8 @@ async function deployAndTearDown(
       for (const p of involved)
         if (p !== live && appName !== undefined) await p.apiCleanup(appName);
     }
+    // After the destroy or its fallback, no shared rule may list the app's hostnames.
+    if (shared !== undefined) await expectInSharedRules(shared, sharedRules, false);
     // The throwaway repository keeps only `main`, as the own-server and Portainer runs leave it.
     await github.reset();
   }

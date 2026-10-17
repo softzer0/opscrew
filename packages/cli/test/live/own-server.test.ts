@@ -130,11 +130,6 @@ describe.skipIf(MISSING.length > 0)(
       if ((await app.deploy(what)) === undefined) await app.deployMain(what);
     }
 
-    /** The app's health URL on its test hostname. */
-    async function healthUrl(app = run): Promise<string> {
-      return `https://${app.appHost}${(await app.readPlan()).app.healthPath}`;
-    }
-
     /** Waits until the app's domain resolves (through 1.1.1.1) to its server or to Cloudflare. */
     async function waitForDns(direct: boolean, app = run): Promise<void> {
       const where = direct ? "at the server" : "at Cloudflare";
@@ -143,29 +138,6 @@ describe.skipIf(MISSING.length > 0)(
         const addresses = await resolveIpv4(app.appHost);
         if (addresses.length === 0) return undefined;
         return addresses.includes(app.ipv4()) === direct ? true : undefined;
-      });
-    }
-
-    /** Waits for 200 on the health path; `throughCloudflare` also wants Cloudflare's `cf-ray`. */
-    async function waitForApp(
-      throughCloudflare: boolean,
-      timeoutMs = minutes(10),
-      app = run,
-    ): Promise<void> {
-      const url = await healthUrl(app);
-      log(
-        `waiting for ${url} to answer 200${throughCloudflare ? " through Cloudflare" : " from the server"}`,
-      );
-      await waitFor(`${url} answering 200`, timeoutMs, async () => {
-        const answer = await httpRequest(url);
-        if (answer.status !== 200) throw new Error(`${url} answered ${answer.status}.`);
-        const ray = answer.headers["cf-ray"] !== undefined;
-        if (ray !== throughCloudflare) {
-          throw new Error(
-            `${url} answered ${throughCloudflare ? "without" : "with"} Cloudflare's cf-ray header.`,
-          );
-        }
-        return true;
       });
     }
 
@@ -308,7 +280,7 @@ describe.skipIf(MISSING.length > 0)(
         await deploy("the first deploy, DNS only");
 
         await waitForDns(true);
-        await waitForApp(false);
+        await run.waitForHealth(minutes(10), false);
         await run.opscrewOk("verify");
         const took = Date.now() - initStarted;
         const target = `under ${INIT_TO_DEPLOY_TARGET_MS / 60_000} minutes`;
@@ -452,7 +424,7 @@ describe.skipIf(MISSING.length > 0)(
         );
 
         await waitForDns(false);
-        await waitForApp(true);
+        await run.waitForHealth();
         await expectNotAnswering([80, 443], "only Cloudflare may reach the web ports");
         const listeners = webListenersBeyondIpv4(await run.shell().ok("ss -ltnuH"));
         expect(listeners, "nothing listens on IPv6 (or every address) on 80/443").toEqual([]);
@@ -476,7 +448,7 @@ describe.skipIf(MISSING.length > 0)(
             rebooted = boot.exitCode === 0 && boot.stdout.trim() !== bootId;
             if (rebooted) log("the server is back up; waiting for the site through Cloudflare");
           } else {
-            const answer = await httpRequest(await healthUrl()).catch(() => undefined);
+            const answer = await httpRequest(await run.healthUrl()).catch(() => undefined);
             if (answer?.status === 200 && answer.headers["cf-ray"] !== undefined) break;
           }
           if (Date.now() > deadline) {
@@ -539,7 +511,7 @@ describe.skipIf(MISSING.length > 0)(
         expect(ufw.rules, "ufw status lists the SSH rule").toBeGreaterThan(0);
         expect(ufw.others, "ufw allows only SSH").toEqual([]);
         await waitForDns(false);
-        await waitForApp(true);
+        await run.waitForHealth();
         await expectNotAnswering([80, 443], "the tunnel opens no web port");
         await run.opscrewOk("verify");
         await run.opscrewOk("drift");
@@ -605,7 +577,7 @@ describe.skipIf(MISSING.length > 0)(
             ...new Set(logins.map((line) => / from (\S+) port /.exec(line)?.[1] ?? "?")),
           ].join(", ")})`,
         ).toBe(true);
-        await waitForApp(true, minutes(5));
+        await run.waitForHealth(minutes(5));
         log(
           "tunnel: only SSH open, the site served through the tunnel, a merged change deployed through Access",
         );
@@ -645,7 +617,7 @@ describe.skipIf(MISSING.length > 0)(
         await rememberTunnelSecrets(app);
         await deploy("the second app", app);
         await waitForDns(false, app);
-        await waitForApp(true, minutes(10), app);
+        await app.waitForHealth();
         await app.opscrewOk("verify");
         await run.expectProbeBlocked(appHost);
         await run.expectProbeBlocked(app.appHost);
@@ -666,7 +638,7 @@ describe.skipIf(MISSING.length > 0)(
         await run.expectSharedCloudflare("the first app's destroy");
         if (b?.appName !== undefined) {
           // SC-1102: the second app's tunnel, probe block and Access login still work.
-          await waitForApp(true, minutes(5), b);
+          await b.waitForHealth(minutes(5));
           await run.expectProbeBlocked(b.appHost);
           const sshHost = `ssh-${b.app()}.${(run.zone as CloudflareZone).name}`;
           const access = await waitForAccessRefusal(`https://${sshHost}/`);

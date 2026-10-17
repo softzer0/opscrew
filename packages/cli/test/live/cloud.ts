@@ -521,14 +521,16 @@ export class Cloudflare {
 
   /**
    * The cleanup of the zone's two entrypoint rulesets (`rulesCleanup`): deletes the rules this run
-   * seeded and OpsCrew's rules (by `ref`) that list only the run's `hostnames`, each logged, then
-   * a ruleset that was not there before the run (`before`) once it is empty. Returns problems: an
-   * OpsCrew rule listing the run's hostnames next to others, and what Cloudflare did not delete.
+   * seeded (described `seeded`, when it seeded any) and OpsCrew's rules (by `ref`) that list only
+   * the run's `hostnames`, each logged, then a ruleset that was not there before the run (`before`)
+   * when a fresh read finds it empty. Returns problems: an OpsCrew rule listing the run's hostnames
+   * next to others, a ruleset of the run that holds a rule again, and what Cloudflare did not
+   * delete.
    */
   async removeRulesOfRun(
     zone: CloudflareZone,
     before: ZoneEntrypoints,
-    run: { hostnames: readonly string[]; seeded: string; log: (message: string) => void },
+    run: { hostnames: readonly string[]; seeded?: string; log: (message: string) => void },
   ): Promise<string[]> {
     const now = await this.sharedEntrypoints(zone);
     const problems: string[] = [];
@@ -537,7 +539,7 @@ export class Cloudflare {
       if (entrypoint === undefined) continue;
       const decision = rulesCleanup(entrypoint.rules, {
         hostnames: run.hostnames,
-        seeded: run.seeded,
+        ...(run.seeded === undefined ? {} : { seeded: run.seeded }),
         createdByRun: before[phase] === undefined,
       });
       problems.push(...decision.problems);
@@ -549,20 +551,26 @@ export class Cloudflare {
           problems.push(`${rule.what} (${phase}): Cloudflare did not delete it`);
         }
       }
-      if (decision.deleteEntrypoint) {
-        if (await retryDelete(() => this.call("DELETE", ruleset))) {
-          run.log(`deleted the zone's ${phase} ruleset, which this run created`);
-        } else {
-          problems.push(`the zone's ${phase} ruleset, which this run created`);
-        }
+      if (!decision.deleteEntrypoint) continue;
+      // Read again: a rule added since the first read keeps the ruleset.
+      const left = (await this.sharedEntrypoints(zone))[phase];
+      if (left === undefined) continue;
+      if (left.rules.length > 0) {
+        problems.push(
+          `the zone's ${phase} ruleset, which this run created, holds ${left.rules.length} rule(s) that appeared during the cleanup (not deleted)`,
+        );
+      } else if (await retryDelete(() => this.call("DELETE", ruleset))) {
+        run.log(`deleted the zone's ${phase} ruleset, which this run created`);
+      } else {
+        problems.push(`the zone's ${phase} ruleset, which this run created`);
       }
     }
     return problems;
   }
 
   /**
-   * The account's Zero Trust organization and one-time PIN logins. An account without an
-   * organization answers 404 or an error saying so; any other refusal throws.
+   * The account's Zero Trust organization and one-time PIN logins (none without an organization,
+   * which Cloudflare answers with 404 or an error saying so); any other refusal throws.
    */
   async zeroTrust(accountId: string): Promise<ZeroTrust> {
     const account = `/accounts/${accountId}/access`;
@@ -584,11 +592,12 @@ export class Cloudflare {
       );
     }
     const domain = body?.result?.auth_domain;
+    if (none || !domain) return { oneTimePins: [] };
     const providers = await this.list<{ id: string; type: string }>(
       `${account}/identity_providers`,
     );
     return {
-      ...(domain ? { organization: domain } : {}),
+      organization: domain,
       oneTimePins: providers.filter((p) => p.type === "onetimepin").map((p) => p.id),
     };
   }

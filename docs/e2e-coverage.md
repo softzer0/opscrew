@@ -91,7 +91,8 @@ The test's own Cloudflare calls and checks assume these; the first live run (T11
 | Assumption | Checked in | Confirmed |
 |---|---|---|
 | A rule the test seeds as the user's (a `block` WAF custom rule, a configuration rule with Automatic HTTPS Rewrites) is taken on the Free plan: `POST` to an existing rule list, `PUT` of the list only when the zone has none (404) | own server step 2, Portainer step 2a | [ ] added, not yet run live |
-| Cloudflare's answer to a blocked `/.env` is HTTP 403 with `cf-ray` and "you have been blocked" in the page | own server steps 6b and 7, Portainer steps 7b and 8 | [ ] added, not yet run live |
-| The zone's rules OpsCrew did not create read back byte-identical (id, `ref`, expression, action, `action_parameters`, enabled) and in the same order after OpsCrew's writes | own server, Portainer (every provision and destroy) | [ ] added, not yet run live |
+| Cloudflare's answer to a blocked `/.env` is HTTP 403 with `cf-ray` and "you have been blocked", error 1020 or "access denied" in the page | own server steps 6b and 7, Portainer steps 7b and 8 | [ ] added, not yet run live |
+| The zone's rules OpsCrew did not create read back byte-identical (each whole rule, apart from the `version` and `last_updated` Cloudflare changes on its own) and in the same order after OpsCrew's writes | own server, Portainer (every provision and destroy) | [ ] added, not yet run live |
+| After a failed destroy, the Hetzner pass's fallback removes the app's hostnames from OpsCrew's shared rules (`removeRulesOfRun`) | Hetzner with a Cloudflare domain, only when destroy fails | [ ] added, not yet run live |
 | The Zero Trust organization and one-time PIN login stay after both apps' destroys | own server step 7b, Portainer step 9b | [ ] added, not yet run live |
 | The leak search finds no token in the Cloudflare plans (CLI and MCP output) or any version of `.opscrew/cloudflare.json` | own server step 8, Portainer step 12 | [ ] added, not yet run live |

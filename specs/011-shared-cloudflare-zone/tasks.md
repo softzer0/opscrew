@@ -128,17 +128,17 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server` and `node plugin/validate.mjs`
   - Effort: high
 
-- [ ] T1107 [US1] [US2] [US3] Live tests with a second app in the same zone and account in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
+- [X] T1107 [US1] [US2] [US3] Live tests with a second app in the same zone and account in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: plan.md "6. Live tests"; quickstart.md "Live"
   - Depends: T1106
   - Accept:
-    - **Second app.** The own-server and Portainer live tests deploy a second app, B, into the same zone and account under the run's subdomain.
+    - **Second app.** The own-server and Portainer live tests deploy a second app, B, into the same zone and account, on a hostname of the run (`e2e-<id>-b.<zone>`: Cloudflare's free certificate covers only one level below the zone).
       - B has its own throwaway repository, from the new optional `OPSCREW_E2E_GITHUB_REPO_B`. The run's GitHub token (and, for Portainer, `OPSCREW_E2E_REPO_READ_TOKEN`) must cover it too. Without it, the second-app checks are skipped with a plain message and the rest runs as before (lead, 2026-10-17).
       - Own server: one OpsCrew app per server until 013, so B goes on a second throwaway server created like step 1's, in tunnel mode. A and B then share the account's Zero Trust organization.
       - Portainer: B is a second stack in the same Portainer, with the Cloudflare Tunnel (web mode `tunnel`).
     - **User rules.** Before the first provision, they seed one user rule per phase that matches nothing (a hostname under the run's subdomain that does not exist).
-    - **Protection.** They check that `/.env` is blocked for A and B, and that both hostnames are in both shared rules.
+    - **Protection.** They check that `/.env` is blocked for A and B, and that each hostname is in the shared rules its mode uses. A tunnel or Portainer app is only in the probe block, never in the strict-TLS rule (lead, 2026-10-17, from the T1107 report).
     - **Destroying A** leaves B working and protected.
     - **Destroying B** removes OpsCrew's rules and leaves the seeded rules byte-identical. The Zero Trust organization and identity provider remain.
     - **Cleanup.** It removes the seeded rules and keeps the leftover checks for this run's resources.

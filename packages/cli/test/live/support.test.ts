@@ -229,17 +229,22 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
     expect(before.http_config_settings).toHaveLength(1);
     // OpsCrew's own rules and what Cloudflare changes on its own (versions, times) do not count.
     const withOpsCrew = zone(
-      [mine, { ...block(["e2e-abc.example.com"]), version: "3" } as ZoneRule],
-      [{ ...seeded, last_updated: "2026-10-17T10:00:00Z" } as ZoneRule, tls(["x.example.com"])],
+      [
+        { ...mine, version: "2" },
+        { ...block(["e2e-abc.example.com"]), version: "3" },
+      ],
+      [{ ...seeded, last_updated: "2026-10-17T10:00:00Z" }, tls(["x.example.com"])],
     );
     expect(userRules(withOpsCrew)).toEqual(before);
-    // Any field the user set, and the order, count.
+    // Every other field of the whole rule, and the order, count.
     const other = { ...mine, id: "user-3", ref: "user-3" };
     const changed = [
       zone([{ ...mine, enabled: false }], [seeded]),
       zone([{ ...mine, expression: '(http.host eq "shop.example.com")' }], [seeded]),
       zone([mine], [{ ...seeded, action_parameters: { automatic_https_rewrites: false } }]),
       zone([{ ...mine, ref: "my-ref" }], [seeded]),
+      zone([{ ...mine, description: "My rule" }], [seeded]),
+      zone([{ ...mine, logging: { enabled: false } } as ZoneRule], [seeded]),
       zone([mine], undefined),
     ];
     for (const entrypoints of changed) expect(userRules(entrypoints)).not.toEqual(before);
@@ -335,6 +340,12 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
     expect(rulesCleanup([mine, seeded], { ...run, createdByRun: true }).deleteEntrypoint).toBe(
       false,
     );
+    expect(rulesCleanup([seeded], { ...run, createdByRun: false }).deleteEntrypoint).toBe(false);
+    // A run that seeded nothing (the Hetzner pass) deletes no user rule.
+    const unseeded = { hostnames: run.hostnames, createdByRun: false };
+    expect(rulesCleanup([seeded, block(["e2e-abc.example.com"])], unseeded).deletes).toEqual([
+      expect.objectContaining({ id: "rule-block" }),
+    ]);
   });
 
   it("recognises Cloudflare's block page", () => {
@@ -342,6 +353,13 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
       "<title>Attention Required! | Cloudflare</title><h1>Sorry, you have been blocked</h1>";
     const ray = { "cf-ray": "8d1f0c0a1b2c3d4e-FRA", server: "cloudflare" };
     expect(blockedByCloudflare({ status: 403, headers: ray, body: page })).toBe(true);
+    for (const body of [
+      "<title>Access denied | e2e-abc.example.com used Cloudflare to restrict access</title>",
+      "<span>Error code: 1020</span>",
+      "error code 1020",
+    ]) {
+      expect(blockedByCloudflare({ status: 403, headers: ray, body }), body).toBe(true);
+    }
     expect(blockedByCloudflare({ status: 404, headers: ray, body: "Not Found" })).toBe(false);
     expect(blockedByCloudflare({ status: 403, headers: ray, body: "Forbidden" })).toBe(false);
     expect(blockedByCloudflare({ status: 403, headers: {}, body: page })).toBe(false);

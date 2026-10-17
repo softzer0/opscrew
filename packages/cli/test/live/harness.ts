@@ -739,6 +739,32 @@ export class LiveRun {
     for (const id of now.oneTimePins) this.zeroTrustSeen.oneTimePins.add(id);
   }
 
+  /** The app's health URL on its hostname: `https://<appHost><the plan's health path>`. */
+  async healthUrl(): Promise<string> {
+    return `https://${this.appHost}${(await this.readPlan()).app.healthPath}`;
+  }
+
+  /**
+   * Waits up to `timeoutMs` until the app's health URL answers 200 with Cloudflare's `cf-ray`
+   * header, or, with `throughCloudflare` false, without it (straight from the server).
+   */
+  async waitForHealth(timeoutMs = minutes(10), throughCloudflare = true): Promise<void> {
+    const url = await this.healthUrl();
+    this.log(
+      `waiting for ${url} to answer 200${throughCloudflare ? " through Cloudflare" : " from the server"}`,
+    );
+    await waitFor(`${url} answering 200`, timeoutMs, async () => {
+      const answer = await httpRequest(url);
+      if (answer.status !== 200) throw new Error(`${url} answered ${answer.status}.`);
+      if ((answer.headers["cf-ray"] !== undefined) !== throughCloudflare) {
+        throw new Error(
+          `${url} answered ${throughCloudflare ? "without" : "with"} Cloudflare's cf-ray header.`,
+        );
+      }
+      return true;
+    });
+  }
+
   /** Waits up to 3 minutes until `https://<hostname>/.env` answers with Cloudflare's block page. */
   async expectProbeBlocked(hostname: string): Promise<void> {
     const url = `https://${hostname}/.env`;

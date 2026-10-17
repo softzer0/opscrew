@@ -30,7 +30,8 @@ each cloud provider whose token is set (Hetzner Cloud, DigitalOcean, or both, on
    then runs `secure` and `drift` (which must report no differences).
 7. It tears everything down with `opscrew destroy --confirm`. With a Cloudflare domain, none of
    OpsCrew's shared rules may list the app's hostnames afterwards (other apps' hostnames there are
-   not the test's).
+   not the test's); when destroy failed, the fallback removes them first (see
+   [Cost and cleanup](#cost-and-cleanup)).
 
 When both `OPSCREW_E2E_HCLOUD_TOKEN` and `OPSCREW_E2E_DIGITALOCEAN_TOKEN` are set, a third pass
 tests `opscrew retarget`: it deploys on Hetzner Cloud, writes a row into the app's database over
@@ -156,8 +157,9 @@ The test sets `CI=1`, so every command runs non-interactively:
    `opscrew-e2e-seeded.e2e-<run id>.<zone>`, a name that does not exist: a `block` in the WAF
    custom rules and Automatic HTTPS Rewrites in the configuration rules, both available on the
    Free plan. After this provision and every later provision and destroy (steps 5, 6, 6b, 7, 7b):
-   - the zone's rules OpsCrew did not create, the seeded ones among them, are byte-identical (id,
-     `ref`, expression, action, `action_parameters`, enabled) and in the same order;
+   - the zone's rules OpsCrew did not create, the seeded ones among them, are byte-identical (each
+     whole rule as Cloudflare returns it, apart from the `version` and `last_updated` it changes on
+     its own) and in the same order;
    - OpsCrew's two rules, found by their `ref` (`opscrew-block-probes` and `opscrew-strict-tls`),
      list exactly what they listed before the run plus the hostnames of this run's apps that are
      not destroyed: in DNS-only and proxy mode an app is in both rules, through the tunnel only in
@@ -194,8 +196,9 @@ The test sets `CI=1`, so every command runs non-interactively:
    `package.json`, so its stacks, tunnel and Access names never start with the first app's, and it
    is served on `e2e-<run id>-b.<zone>`, also directly below the zone. In tunnel mode: `init --fix`,
    `analyze`, interview and `design --host-key`, `adapt`, provision, deploy, `verify`. Then both
-   apps' `https://<hostname>/.env` answer Cloudflare's block page (HTTP 403, "you have been
-   blocked"), both apps' hostnames are in OpsCrew's probe block (neither in the strict-TLS rule:
+   apps' `https://<hostname>/.env` answer Cloudflare's block page (HTTP 403 with `cf-ray`, and
+   "you have been blocked", error 1020 or "access denied" in the page), both apps' hostnames are in
+   OpsCrew's probe block (neither in the strict-TLS rule:
    both use the tunnel), and the two apps share the account's Zero Trust organization.
 7. `destroy --confirm <app> --undo-host`, then again with `--approve <undo host plan hash>`: no DNS
    record, tunnel, Access application, policy or service token of the app is left in Cloudflare,
@@ -233,7 +236,8 @@ cleanup always runs:
   seeded, and OpsCrew's rules (found by `ref`, never by name) that list only this run's hostnames,
   each logged. An OpsCrew rule that lists this run's hostnames next to other hostnames is reported
   and left as it is (the cleanup never edits a rule). A rule list the run created (the zone had
-  none of that kind before the run) is deleted once nothing is left in it.
+  none of that kind before the run) is deleted when a fresh read finds nothing left in it; a rule
+  that appeared there meanwhile is reported and the list kept.
 - It resets the throwaway repositories: closes every open pull request and deletes every branch
   except `main`.
 
@@ -391,8 +395,8 @@ other value skips the whole test and names the variable.
    `e2e-<run id>-b.<zone>` with the updater and the Cloudflare Tunnel (web mode `tunnel`), with the
    administrator's token and the full `OPSCREW_E2E_CLOUDFLARE_TOKEN`: `init --fix`, `analyze`,
    interview, `design`, `adapt`, provision (each plan approved by its hash), deploy, `verify`. Then
-   its site answers through its tunnel, its `/.env` answers Cloudflare's block page (HTTP 403, "you
-   have been blocked"), and so does the first app's when that one runs with the tunnel at that
+   its site answers through its tunnel, its `/.env` answers Cloudflare's block page (as for your
+   own server, step 6b), and so does the first app's when that one runs with the tunnel at that
    point (in the core pass and after step 7 it does), OpsCrew's probe block lists both apps'
    hostnames, and the decoys are unchanged.
 8. `destroy --confirm <app>` in tunnel + Cloudflare mode (two tunnels; in the core pass updater +
@@ -578,11 +582,13 @@ Teardown runs in a `finally` block, so it happens even after a failure:
 Some things are not removed:
 
 - **Cloudflare DNS records:** the IaC destroy removes them, but the API fallback does not. Check the zone if a run failed.
-- **The app's hostnames in OpsCrew's shared rules:** `opscrew destroy` removes them, but the
-  fallbacks do not. When destroy failed, remove the hostnames from OpsCrew's rules in the
-  Cloudflare dashboard (Security → WAF → Custom rules and Rules → Configuration Rules; delete a
-  rule that lists nothing else), or the next run stops before any change because they are already
-  in OpsCrew's shared rule.
+- **The app's hostnames in OpsCrew's shared rules:** `opscrew destroy` removes them. When destroy
+  failed, the fallback deletes OpsCrew's rules that list only the app's hostnames (and a rule list
+  this run created, once it is empty), as the own-server cleanup does, and the run then checks that
+  no shared rule lists them. A rule that lists them next to other apps' hostnames is reported and
+  left as it is, and that check fails: remove the app's hostnames from that rule in the Cloudflare
+  dashboard (Security → WAF → Custom rules or Rules → Configuration Rules), or the next run stops
+  before any change because they are already in OpsCrew's shared rule.
 - **GitHub repository state:** the pushed container image (GHCR package), the Actions secrets and
   the pull requests stay in the throwaway repository (GitHub cannot delete pull requests; the next
   run closes open ones, deletes the branches and overwrites the rest). Delete and recreate the

@@ -62,7 +62,10 @@ const SHARED_REFS = Object.keys(SHARED_RULES) as SharedRuleRef[];
 /** A phase OpsCrew keeps one shared rule in. */
 export type SharedPhase = (typeof SHARED_RULES)[SharedRuleRef]["phase"];
 
-/** A rule of a zone ruleset as Cloudflare's API returns it (the fields the tests read). */
+/**
+ * A rule of a zone ruleset as Cloudflare's API returns it: the fields the tests read by name (it
+ * holds more, all compared by {@link userRules}).
+ */
 export interface ZoneRule {
   id: string;
   ref?: string;
@@ -71,6 +74,9 @@ export interface ZoneRule {
   action?: string;
   action_parameters?: unknown;
   enabled?: boolean;
+  /** Changed by Cloudflare on its own whenever the ruleset changes. */
+  version?: string;
+  last_updated?: string;
 }
 
 /** The zone's entrypoint ruleset of each of OpsCrew's phases; `undefined` where it has none. */
@@ -111,9 +117,9 @@ export function sharedRuleHosts(entrypoints: ZoneEntrypoints): SharedHosts {
 }
 
 /**
- * The zone's rules OpsCrew did not create, per phase and in their order, each as the JSON of its
- * id, ref, expression, action, action_parameters and enabled (not the version and time Cloudflare
- * changes on its own): two equal snapshots mean byte-identical rules in the same order.
+ * The zone's rules OpsCrew did not create, per phase and in their order, each as the JSON of the
+ * whole rule Cloudflare returns, without only the `version` and `last_updated` it changes on its
+ * own whenever the ruleset changes: two equal snapshots mean byte-identical rules in the same order.
  */
 export function userRules(entrypoints: ZoneEntrypoints): Record<SharedPhase, string[]> {
   const snapshot = {} as Record<SharedPhase, string[]>;
@@ -121,9 +127,7 @@ export function userRules(entrypoints: ZoneEntrypoints): Record<SharedPhase, str
     const { phase } = SHARED_RULES[ref];
     snapshot[phase] = (entrypoints[phase]?.rules ?? [])
       .filter((rule) => !isShared(rule))
-      .map(({ id, ref: own, expression, action, action_parameters, enabled }) =>
-        JSON.stringify({ id, ref: own, expression, action, action_parameters, enabled }),
-      );
+      .map(({ version, last_updated, ...rest }) => JSON.stringify(rest));
   }
   return snapshot;
 }
@@ -171,19 +175,20 @@ export function seededDescription(runId: string): string {
 
 /**
  * The leftover decision of the cleanup for one of the zone's entrypoint rulesets: the rules this
- * run seeded go, and so does an OpsCrew rule (by `ref`) that lists only the run's `hostnames`; one
- * that lists them next to other hostnames is reported and kept (the cleanup never edits a rule).
- * The ruleset itself goes only when the run created it and nothing is left in it.
+ * run seeded (described `seeded`, when it seeded any) go, and so does an OpsCrew rule (by `ref`)
+ * that lists only the run's `hostnames`; one that lists them next to other hostnames is reported
+ * and kept (the cleanup never edits a rule). The ruleset itself goes only when the run created it
+ * and nothing is left in it.
  */
 export function rulesCleanup(
   rules: readonly ZoneRule[],
-  run: { hostnames: readonly string[]; seeded: string; createdByRun: boolean },
+  run: { hostnames: readonly string[]; seeded?: string; createdByRun: boolean },
 ): { deletes: { id: string; what: string }[]; problems: string[]; deleteEntrypoint: boolean } {
   const ours = new Set(run.hostnames.map((host) => host.toLowerCase()));
   const deletes: { id: string; what: string }[] = [];
   const problems: string[] = [];
   for (const rule of rules) {
-    if (rule.description === run.seeded) {
+    if (run.seeded !== undefined && rule.description === run.seeded) {
       deletes.push({ id: rule.id, what: "the rule of the user's own this run seeded" });
       continue;
     }
@@ -209,7 +214,10 @@ export function rulesCleanup(
   };
 }
 
-/** Whether an HTTP answer is Cloudflare's block page (HTTP 403 from Cloudflare's edge). */
+/**
+ * Whether an HTTP answer is Cloudflare's block page: HTTP 403 from Cloudflare's edge (`cf-ray`)
+ * with the page's "you have been blocked", or its error 1020 or "access denied".
+ */
 export function blockedByCloudflare(answer: {
   status: number;
   headers: Record<string, string | string[] | undefined>;
@@ -218,7 +226,7 @@ export function blockedByCloudflare(answer: {
   return (
     answer.status === 403 &&
     answer.headers["cf-ray"] !== undefined &&
-    /you have been blocked/i.test(answer.body)
+    /you have been blocked|error code:?\s*1020|access denied/i.test(answer.body)
   );
 }
 
