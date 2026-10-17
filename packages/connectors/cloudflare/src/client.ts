@@ -61,28 +61,14 @@ export const CLOUDFLARE_REGISTRAR_PERMISSIONS = [
   `${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")} for all zones of the account, not only the zone you use today: a token limited to existing zones does not cover the zone of a domain you buy, so otherwise add that zone to the token right after buying`,
 ] as const;
 
-/** Rule phases OpsCrew may manage; it never takes over a phase the user already uses. */
+/** The zone rule phases OpsCrew adds its own rule to, next to the user's rules. */
 export type ManagedRulesetPhase = "http_config_settings" | "http_request_firewall_custom";
 
 /**
- * Comment on the DNS records and description of the rulesets that OpsCrew's `cloudflare-dns`
- * module creates; it is how OpsCrew recognises its own resources in a zone.
+ * Comment on the DNS records that OpsCrew's `cloudflare-dns` and `cloudflare-tunnel` modules
+ * create; it is how OpsCrew recognises its own records in a zone.
  */
 export const OPSCREW_MANAGED_COMMENT = "Managed by OpsCrew";
-
-/** Names the `cloudflare-dns` module gives its entrypoint rulesets. */
-const OPSCREW_RULESET_NAMES = new Set(["OpsCrew configuration rules", "OpsCrew custom rules"]);
-
-/** What a zone's entrypoint ruleset for one phase looks like (Cloudflare allows one per phase). */
-export interface EntrypointRulesetStatus {
-  /** The zone has an entrypoint ruleset in this phase (possibly with no rules). */
-  exists: boolean;
-  /** The ruleset carries the name or description OpsCrew's module renders. */
-  ownedByOpsCrew: boolean;
-  ruleCount: number;
-  /** Ruleset id, when it exists. */
-  id?: string;
-}
 
 /** A rule of a zone ruleset: the fields OpsCrew compares (others are not kept). */
 export interface RulesetRule {
@@ -241,13 +227,6 @@ const RecordSchema = z.looseObject({
   ttl: z.number(),
   priority: z.number().nullable().optional(),
   comment: z.string().nullable().optional(),
-});
-
-const RulesetSchema = z.looseObject({
-  id: z.string().optional(),
-  name: z.string().nullable().optional(),
-  description: z.string().nullable().optional(),
-  rules: z.array(z.unknown()).nullable().optional(),
 });
 
 const ZonePlanSchema = z.looseObject({
@@ -870,31 +849,6 @@ export class CloudflareClient {
       ...(r.priority == null ? {} : { priority: r.priority }),
       ...(r.comment ? { comment: r.comment } : {}),
     }));
-  }
-
-  /**
-   * The zone's entrypoint ruleset for `phase`: whether it exists, whether OpsCrew created it (by
-   * the name or description its module renders) and how many rules it holds. OpsCrew manages a
-   * phase only when the entrypoint is missing or its own.
-   */
-  async inspectEntrypointRuleset(
-    zoneId: string,
-    phase: ManagedRulesetPhase,
-  ): Promise<EntrypointRulesetStatus> {
-    const answer = await this.#request(
-      `/zones/${encodeURIComponent(zoneId)}/rulesets/phases/${phase}/entrypoint`,
-    );
-    if (answer.status === 404) return { exists: false, ownedByOpsCrew: false, ruleCount: 0 };
-    const ruleset = this.#result(answer, RulesetSchema, `read the ${phase} rules`);
-    const ownedByOpsCrew =
-      ruleset.description?.trim() === OPSCREW_MANAGED_COMMENT ||
-      OPSCREW_RULESET_NAMES.has(ruleset.name?.trim() ?? "");
-    return {
-      exists: true,
-      ownedByOpsCrew,
-      ruleCount: ruleset.rules?.length ?? 0,
-      ...(ruleset.id ? { id: ruleset.id } : {}),
-    };
   }
 
   /**

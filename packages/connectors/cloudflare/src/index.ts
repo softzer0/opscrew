@@ -7,7 +7,6 @@ export {
   type CloudflareIdentityProvider,
   type CloudflareRuleInput,
   type EntrypointRuleset,
-  type EntrypointRulesetStatus,
   OPSCREW_MANAGED_COMMENT,
   type RulesetRule,
   type TunnelConnectionState,

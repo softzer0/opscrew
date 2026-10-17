@@ -173,7 +173,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
 
 Four read-only reviewers checked the whole feature (`bc01843..b73fad1`) by area. They found no bugs, no safety problems and no missing FR or SC beyond the two small gaps below. These tasks fold in the findings worth doing. Their Owns are disjoint, so they run in parallel.
 
-- [ ] T1110 [P] Dead code in `packages/connectors/cloudflare/src/**`
+- [X] T1110 [P] Dead code in `packages/connectors/cloudflare/src/**`
   - Owns: that path (+ tests)
   - Accept:
     - The pre-011 whole-ruleset inspection goes: `OPSCREW_RULESET_NAMES`, `EntrypointRulesetStatus`, `RulesetSchema`, `inspectEntrypointRuleset` (`client.ts`), its export in `index.ts`, and its two tests. Confirm first that nothing outside the package imports them.
