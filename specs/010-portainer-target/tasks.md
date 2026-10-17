@@ -291,7 +291,7 @@ From the duplicate scans and reviews recorded in `dry.md`. Waves: T1034 → {T10
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/plan-schema --filter=@opscrew/detect --filter=@opscrew/iac-engine --filter=@opscrew/runtime-claude --filter=./packages/connectors/*` and the whole-repo `pnpm turbo run typecheck`
   - Effort: xhigh
 
-- [ ] T1035 [P] iac-templates and secops (dry.md D6, D15–D18, B4, B5)
+- [X] T1035 [P] iac-templates and secops (dry.md D6, D15–D18, B4, B5)
   - Owns: `packages/{iac-templates,secops}/**` except `package.json` (+ tests; snapshots unchanged)
   - Reads: dry.md D6, D7, D15–D18, B4, B5
   - Depends: T1034

@@ -1,9 +1,9 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { RenderContext } from "../types";
 
-/** Text for a Markdown table cell. */
+/** Text for a Markdown table cell: pipes escaped, newlines turned into spaces. */
 export function cell(text: string): string {
-  return text.replace(/\|/g, "\\|");
+  return text.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
 
 /** The title, the generation note and the first rows of "At a glance" (the app and its check). */

@@ -258,6 +258,7 @@ describe("the runbook's shared rows", () => {
   it("exports the head and the deploy rows, with pipes escaped in cells", () => {
     const p = plan({ domain: "shop.example.com" });
     expect(cell("a | b")).toBe("a \\| b");
+    expect(cell("one\ntwo\r\nthree")).toBe("one two three");
     expect(runbookHead(p, { opscrewVersion: "0.1.0" }, "https://shop.example.com")).toEqual([
       "# Runbook: shop",
       "",

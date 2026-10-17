@@ -80,7 +80,6 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
       profiles: ["release"],
       env_file: ["app.env"],
       environment: { PORT: String(plan.app.port) },
-      // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
       command: ["sh", "-c", composeLiteral(release)],
       ...hardened({ noCapabilities: true, internal: true }),
     };
