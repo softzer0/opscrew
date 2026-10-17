@@ -22,9 +22,9 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Namecheap sandbox (`registrars.test.ts`) | Namecheap sandbox keys | Passed | 2026-10-14 | — |
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
 | Your own server (`own-server.test.ts`) | `OPSCREW_E2E_OWN_SERVER=1` | Passed | 2026-10-17 (after the simplification) | — |
-| Your own server, a second app in the same zone and account, seeded rules, shared-rule checks (steps 6b, 7b; feature 011) | + `OPSCREW_E2E_GITHUB_REPO_B` | **Added, not yet run live** | — | A live run (T1108) |
+| Your own server, a second app in the same zone and account, seeded rules, shared-rule checks (steps 6b, 7b; feature 011) | + `OPSCREW_E2E_GITHUB_REPO_B` | Passed (all 10 steps) | 2026-10-18 | — |
 | Your existing Portainer, core pass (`portainer-target.test.ts`) | `OPSCREW_E2E_PORTAINER=1` | Passed (with step 11, after the simplification) | 2026-10-17 | — |
-| Your existing Portainer, a second app in the same Portainer, zone and account, seeded rules, shared-rule checks (steps 7b, 9b, in the core pass; feature 011) | + `OPSCREW_E2E_GITHUB_REPO_B` | **Added, not yet run live** | — | A live run (T1108) |
+| Your existing Portainer, a second app in the same Portainer, zone and account, seeded rules, shared-rule checks (steps 7b, 9b, in the core pass; feature 011) | + `OPSCREW_E2E_GITHUB_REPO_B` | **Failed in step 7b** (2026-10-18): Portainer refused the second app's ghcr.io entry (same URL and user name); fixed in T1109 | — | A rerun after T1109 |
 | Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | Passed: steps 1–11 in run 10 (2026-10-16), steps 11 and 12 with the fixed leak check on 2026-10-17 | 2026-10-17 (steps 11, 12) | — |
 | Hetzner with a Cloudflare domain: the app's hostnames in OpsCrew's shared rules after provision, gone after destroy (feature 011) | as Hetzner with a Cloudflare domain | Passed (the zone had no rule lists: OpsCrew created both and deleted them again on destroy) | 2026-10-17 | — |
 
@@ -90,9 +90,9 @@ The test's own Cloudflare calls and checks assume these; the first live run (T11
 
 | Assumption | Checked in | Confirmed |
 |---|---|---|
-| A rule the test seeds as the user's (a `block` WAF custom rule, a configuration rule with Automatic HTTPS Rewrites) is taken on the Free plan: `POST` to an existing rule list, `PUT` of the list only when the zone has none (404) | own server step 2, Portainer step 2a | [ ] added, not yet run live |
-| Cloudflare's answer to a blocked `/.env` is HTTP 403 with `cf-ray` and "you have been blocked", error 1020 or "access denied" in the page | own server steps 6b and 7, Portainer steps 7b and 8 | [ ] added, not yet run live |
-| The zone's rules OpsCrew did not create read back byte-identical (each whole rule, apart from the `version` and `last_updated` Cloudflare changes on its own) and in the same order after OpsCrew's writes | own server, Portainer (every provision and destroy) | [ ] added, not yet run live |
+| A rule the test seeds as the user's (a `block` WAF custom rule, a configuration rule with Automatic HTTPS Rewrites) is taken on the Free plan: `POST` to an existing rule list, `PUT` of the list only when the zone has none (404) | own server step 2, Portainer step 2a | [x] 2026-10-18, the `PUT` path (the zone had no rule lists); OpsCrew's own rule then went in by `POST` to the lists the seeds created |
+| Cloudflare's answer to a blocked `/.env` is HTTP 403 with `cf-ray` and "you have been blocked", error 1020 or "access denied" in the page | own server steps 6b and 7, Portainer steps 7b and 8 | [x] 2026-10-18 (own server, both apps, also after the first app's destroy) |
+| The zone's rules OpsCrew did not create read back byte-identical (each whole rule, apart from the `version` and `last_updated` Cloudflare changes on its own) and in the same order after OpsCrew's writes | own server, Portainer (every provision and destroy) | [x] 2026-10-18 (own server: after each of the 4 provisions that changed something and both destroys) |
 | After a failed destroy, the Hetzner pass's fallback removes the app's hostnames from OpsCrew's shared rules (`removeRulesOfRun`) | Hetzner with a Cloudflare domain, only when destroy fails | [ ] added, not yet run live |
-| The Zero Trust organization and one-time PIN login stay after both apps' destroys | own server step 7b, Portainer step 9b | [ ] added, not yet run live |
-| The leak search finds no token in the Cloudflare plans (CLI and MCP output) or any version of `.opscrew/cloudflare.json` | own server step 8, Portainer step 12 | [ ] added, not yet run live |
+| The Zero Trust organization and one-time PIN login stay after both apps' destroys | own server step 7b, Portainer step 9b | [x] 2026-10-18 (own server) |
+| The leak search finds no token in the Cloudflare plans (CLI and MCP output) or any version of `.opscrew/cloudflare.json` | own server step 8, Portainer step 12 | [x] 2026-10-18 (own server; Portainer step 12 also ran clean after its stop in 7b) |
