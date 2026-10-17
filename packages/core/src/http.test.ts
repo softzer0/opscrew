@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { type JsonClient, pollAction, type RequestFailure, requestJson } from "./http";
+import { OpsCrewError } from "./errors";
+import {
+  type JsonClient,
+  jsonClient,
+  maybeDoneHint,
+  parseAnswer,
+  pollAction,
+  type RequestFailure,
+  requestJson,
+  statusPageHint,
+} from "./http";
 import { type FakeReply, fakeFetch } from "./testing";
+import { realSleep } from "./time";
 
 const BASE = "https://api.example.test/v1";
 const NOW = Date.UTC(2026, 9, 16, 12, 0, 0);
@@ -35,7 +46,7 @@ function setup(routes: Record<string, FakeReply | FakeReply[]>, timeoutMs = 1_00
         return new Error(`failed: ${failure.kind}`);
       },
     });
-  return { ...fake, waits, failures, send };
+  return { ...fake, client, waits, failures, send };
 }
 
 describe("requestJson", () => {
@@ -161,6 +172,86 @@ describe("requestJson", () => {
     const h = setup({ "/things/7": { status: 404 } });
     await expect(h.send("GET")).rejects.toThrow("failed: status");
     expect(h.calls).toHaveLength(1);
+  });
+
+  it("adds the query parameters to the URL", async () => {
+    const h = setup({
+      "/things/7?page=2&label_selector=app%3Dshop": { body: { thing: { id: 7 } } },
+    });
+    await requestJson(h.client, {
+      url: `${BASE}/things/7`,
+      query: { page: "2", label_selector: "app=shop" },
+      schema: ThingSchema,
+      fail: () => new Error("no"),
+    });
+    expect(h.calls[0]?.url).toBe(`${BASE}/things/7?page=2&label_selector=app%3Dshop`);
+  });
+});
+
+describe("jsonClient", () => {
+  const retry = {
+    serverErrors: 1,
+    serverErrorDelayMs: () => 1_000,
+    rateLimits: 1,
+    rateLimitDelayMs: () => 5_000,
+  };
+
+  it("takes what the options set", () => {
+    const fetch = fakeFetch({}).fetch;
+    const sleep = async () => {};
+    const now = () => NOW;
+    const client = jsonClient({ fetch, timeoutMs: 5, sleep, now }, { timeoutMs: 15_000, retry });
+    expect(client).toEqual({ fetch, timeoutMs: 5, retry, sleep, now });
+  });
+
+  it("uses the provider's timeout, the global fetch, a real sleep and the system clock otherwise", () => {
+    const client = jsonClient({}, { timeoutMs: 15_000, retry });
+    expect(client.timeoutMs).toBe(15_000);
+    expect(client.retry).toBe(retry);
+    expect(client.sleep).toBe(realSleep);
+    expect(client.now).toBe(Date.now);
+    expect(typeof client.fetch).toBe("function");
+  });
+});
+
+describe("parseAnswer", () => {
+  it("returns the validated answer", () => {
+    expect(parseAnswer(ThingSchema, { thing: { id: 7 } }, "Example", "read the thing")).toEqual({
+      thing: { id: 7 },
+    });
+  });
+
+  it("names the provider, what it tried and the problems of an unexpected answer", () => {
+    const error = (() => {
+      try {
+        parseAnswer(ThingSchema, { thing: { id: "7" } }, "Example", "read the thing");
+      } catch (caught) {
+        return caught;
+      }
+    })() as OpsCrewError;
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe(
+      "Example returned an unexpected answer when trying to read the thing: thing.id: Invalid input: expected number, received string.",
+    );
+    expect(error.hint).toBe("The Example API may have changed; please report this to OpsCrew.");
+  });
+
+  it("gives the provider's own hint", () => {
+    expect(() =>
+      parseAnswer(ThingSchema, {}, "Example", "read the thing", "Update Example, then try again."),
+    ).toThrow(expect.objectContaining({ hint: "Update Example, then try again." }));
+  });
+});
+
+describe("provider hints", () => {
+  it("name the status page and the place a write may have reached", () => {
+    expect(statusPageHint("https://status.example.test")).toBe(
+      "Try again in a minute; if it keeps failing, check https://status.example.test.",
+    );
+    expect(maybeDoneHint("Example")).toBe(
+      "The request may still have reached Example; check the current state before trying again.",
+    );
   });
 });
 

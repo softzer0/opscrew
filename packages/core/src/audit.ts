@@ -1,9 +1,9 @@
-import { appendFile, type FileHandle, mkdir, open, readFile } from "node:fs/promises";
+import { appendFile, type FileHandle, mkdir, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { AuditEntry, AuditInput, AuditLog, Clock } from "@opscrew/contracts";
 import type { z } from "zod";
-
-const systemClock: Clock = { now: () => new Date() };
+import { readTextIfExists, stripBom } from "./paths";
+import { systemClock } from "./time";
 
 // ---------------------------------------------------------------------------------------------
 // JSONL helpers (shared by the audit log, the approval store and the cost ledger)
@@ -64,16 +64,10 @@ export async function readJsonLines<T = unknown>(
   file: string,
   schema?: z.ZodType<T>,
 ): Promise<T[]> {
-  let text: string;
-  try {
-    text = await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  const text = await readTextIfExists(file);
+  if (text === undefined) return [];
   const values: T[] = [];
-  for (const line of text.split("\n")) {
+  for (const line of stripBom(text).split("\n")) {
     if (line.trim() === "") continue;
     let value: unknown;
     try {

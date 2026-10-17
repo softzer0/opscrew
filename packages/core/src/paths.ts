@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir as osHomedir } from "node:os";
 import path from "node:path";
 import { sha256Hex } from "./values";
@@ -141,4 +141,29 @@ export async function ensureStateDir(paths: ProjectPaths): Promise<void> {
 /** Path of `abs` relative to `root`, with forward slashes (`""` when they are the same). */
 export function toPosixRelative(root: string, abs: string): string {
   return path.relative(root, abs).split(path.sep).join("/");
+}
+
+/** `text` without a leading UTF-8 byte order mark. */
+export function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/** The file's UTF-8 text, or `undefined` when it does not exist; any other read error is thrown. */
+export async function readTextIfExists(file: string): Promise<string | undefined> {
+  try {
+    return await readFile(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/** True when something exists at `file` (a file or a folder). */
+export async function exists(file: string): Promise<boolean> {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
 }

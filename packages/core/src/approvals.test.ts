@@ -10,7 +10,16 @@ import type {
   Clock,
 } from "@opscrew/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ApprovalGate, isPlanHash, JsonlApprovalStore, MemoryApprovalStore } from "./approvals";
+import {
+  ApprovalGate,
+  approvalDecision,
+  CANCELLED_BY_USER,
+  DECLINED_BY_USER,
+  isPlanHash,
+  JsonlApprovalStore,
+  MemoryApprovalStore,
+  PHRASE_MISMATCH,
+} from "./approvals";
 import { MemoryAuditLog } from "./audit";
 import { OpsCrewError } from "./errors";
 
@@ -74,6 +83,33 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
+});
+
+describe("approvalDecision", () => {
+  it("is a decision made now, with the typed confirmation or the reason when given", () => {
+    expect(approvalDecision(clock, "Test User", true)).toEqual({
+      approved: true,
+      approver: "Test User",
+      decidedAt: "2026-10-11T12:00:00.000Z",
+    });
+    expect(
+      approvalDecision(clock, "Test User", false, {
+        confirmation: "shop",
+        reason: PHRASE_MISMATCH,
+      }),
+    ).toEqual({
+      approved: false,
+      approver: "Test User",
+      decidedAt: "2026-10-11T12:00:00.000Z",
+      confirmation: "shop",
+      reason: "confirmation phrase did not match",
+    });
+  });
+
+  it("has one wording for each refusal reason", () => {
+    expect(CANCELLED_BY_USER).toBe("cancelled by the user");
+    expect(DECLINED_BY_USER).toBe("declined by the user");
+  });
 });
 
 describe("isPlanHash", () => {

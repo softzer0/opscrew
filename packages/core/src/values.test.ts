@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, isRecord, sha256Hex } from "./values";
+import { z } from "zod";
+import { canonicalJson, isRecord, sha256Hex, zodIssues } from "./values";
 
 describe("isRecord", () => {
   it("is true for objects only", () => {
@@ -28,6 +29,30 @@ describe("canonicalJson", () => {
     expect(canonicalJson([undefined, null, "x", 1.5, true])).toBe('[null,null,"x",1.5,true]');
     expect(canonicalJson(undefined)).toBe("null");
     expect(canonicalJson('quote"d')).toBe('"quote\\"d"');
+  });
+});
+
+describe("zodIssues", () => {
+  const Schema = z.object({ a: z.string(), b: z.number(), c: z.boolean(), d: z.string() });
+  const error = Schema.safeParse({}).error as z.ZodError;
+
+  it("names the first three problems by field path", () => {
+    expect(zodIssues(error)).toBe(
+      "a: Invalid input: expected string, received undefined; b: Invalid input: expected number, received undefined; c: Invalid input: expected boolean, received undefined",
+    );
+  });
+
+  it("takes another maximum and a path in front", () => {
+    expect(zodIssues(error, 1, ["items", 2])).toBe(
+      "items.2.a: Invalid input: expected string, received undefined",
+    );
+    expect(zodIssues(error, Number.POSITIVE_INFINITY).split("; ")).toHaveLength(4);
+  });
+
+  it("calls a problem with the value itself (root)", () => {
+    expect(zodIssues(z.string().safeParse(1).error as z.ZodError)).toBe(
+      "(root): Invalid input: expected string, received number",
+    );
   });
 });
 

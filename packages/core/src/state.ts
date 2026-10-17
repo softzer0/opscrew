@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { type Clock, PHASES, type PhaseName } from "@opscrew/contracts";
 import { z } from "zod";
 import { appendJsonLine, readJsonLines } from "./audit";
 import { OpsCrewError } from "./errors";
-
-const systemClock: Clock = { now: () => new Date() };
+import { readTextIfExists, stripBom } from "./paths";
+import { realSleep, systemClock } from "./time";
 
 // ---------------------------------------------------------------------------------------------
 // Project state (`.opscrew/state.json`)
@@ -63,19 +63,12 @@ export class ProjectStateStore {
   }
 
   private async readNow(): Promise<ProjectState> {
-    let text: string;
-    try {
-      // Windows briefly refuses access while another process renames over the file.
-      text = await retryTransient(() => readFile(this.file, "utf8"));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        return { schemaVersion: 1, phases: {} };
-      throw error;
-    }
-    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    // Windows briefly refuses access while another process renames over the file.
+    const text = await retryTransient(() => readTextIfExists(this.file));
+    if (text === undefined) return { schemaVersion: 1, phases: {} };
     let json: unknown;
     try {
-      json = JSON.parse(text);
+      json = JSON.parse(stripBom(text));
     } catch {
       json = undefined;
     }
@@ -151,7 +144,7 @@ async function retryTransient<T>(fn: () => Promise<T>, options: RetryOptions = {
     } catch (error) {
       if (attempt >= attempts || !isTransientFsError(error)) throw error;
       const wait = delayMs(attempt);
-      if (wait > 0) await new Promise((done) => setTimeout(done, wait));
+      if (wait > 0) await realSleep(wait);
     }
   }
 }

@@ -5,6 +5,7 @@
  */
 import { basenameRel, dirnameRel, isWithin, joinRel } from "../paths";
 import {
+  ANALYZE_AGAIN,
   atStartup,
   cleanPath,
   inFolder,
@@ -70,7 +71,7 @@ function prisma(ctx: ReleaseContext): ReleaseDetection | undefined {
   if (ctx.npm("prisma")) return { command: ctx.at(".", "npx prisma migrate deploy") };
   if (ctx.npm("@prisma/client")) {
     return leftOut(
-      "OpsCrew found Prisma migrations in prisma/migrations, but the Prisma CLI (the `prisma` package) is not a dependency of the app, so deploys could not run `npx prisma migrate deploy`. Add `prisma` to the app's devDependencies and run `opscrew analyze` again, or set `app.releaseCommand` in opscrew/plan.yaml yourself.",
+      `OpsCrew found Prisma migrations in prisma/migrations, but the Prisma CLI (the \`prisma\` package) is not a dependency of the app, so deploys could not run \`npx prisma migrate deploy\`. Add \`prisma\` to the app's devDependencies and ${ANALYZE_AGAIN}`,
     );
   }
   return undefined;
@@ -204,7 +205,7 @@ async function typeorm(ctx: ReleaseContext): Promise<ReleaseDetection | undefine
   const source = await typeormDataSource(ctx);
   if (source === undefined) {
     return leftOut(
-      "OpsCrew found TypeORM migrations but not the data source file that `typeorm migration:run -d <file>` needs, so deploys run no migrations. Add a `migrate` script to package.json (for example `typeorm migration:run -d dist/data-source.js`) and run `opscrew analyze` again, or set `app.releaseCommand` in opscrew/plan.yaml.",
+      `OpsCrew found TypeORM migrations but not the data source file that \`typeorm migration:run -d <file>\` needs, so deploys run no migrations. Add a \`migrate\` script to package.json (for example \`typeorm migration:run -d dist/data-source.js\`) and ${ANALYZE_AGAIN}`,
     );
   }
   const sourceText = (await ctx.read(source)) ?? "";
@@ -227,11 +228,11 @@ async function typeorm(ctx: ReleaseContext): Promise<ReleaseDetection | undefine
   if (ctx.npm("ts-node")) return tsNode();
   if (compiled) {
     return leftOut(
-      `OpsCrew found TypeORM migrations, but the data source ${source} lists them as \`.ts\` files, which the compiled data source (${compiled}) cannot load without ts-node, and ts-node is not a dependency. List the migrations so the compiled file finds the compiled ones (for example \`__dirname + "/migrations/*.{ts,js}"\`) or add ts-node, then run \`opscrew analyze\` again, or set \`app.releaseCommand\` in opscrew/plan.yaml.`,
+      `OpsCrew found TypeORM migrations, but the data source ${source} lists them as \`.ts\` files, which the compiled data source (${compiled}) cannot load without ts-node, and ts-node is not a dependency. List the migrations so the compiled file finds the compiled ones (for example \`__dirname + "/migrations/*.{ts,js}"\`) or add ts-node, then ${ANALYZE_AGAIN}`,
     );
   }
   return leftOut(
-    `OpsCrew found TypeORM migrations, but the data source ${source} is TypeScript: OpsCrew could not tell where the build writes the compiled file (set \`outDir\` and \`rootDir\` in tsconfig.json), and ts-node is not a dependency to run it directly. Add a \`migrate\` script to package.json (for example \`typeorm migration:run -d dist/data-source.js\`) and run \`opscrew analyze\` again, or set \`app.releaseCommand\` in opscrew/plan.yaml.`,
+    `OpsCrew found TypeORM migrations, but the data source ${source} is TypeScript: OpsCrew could not tell where the build writes the compiled file (set \`outDir\` and \`rootDir\` in tsconfig.json), and ts-node is not a dependency to run it directly. Add a \`migrate\` script to package.json (for example \`typeorm migration:run -d dist/data-source.js\`) and ${ANALYZE_AGAIN}`,
   );
 }
 
@@ -260,7 +261,7 @@ async function mikroOrm(ctx: ReleaseContext): Promise<ReleaseDetection | undefin
   const command = "npx mikro-orm migration:up";
   if (!ctx.npm("@mikro-orm/cli")) {
     return leftOut(
-      `OpsCrew found MikroORM migrations, but \`@mikro-orm/cli\` is not a dependency of the app, so deploys could not run \`${command}\`. Add \`@mikro-orm/cli\` to the app's dependencies and run \`opscrew analyze\` again, or set \`app.releaseCommand\` in opscrew/plan.yaml.`,
+      `OpsCrew found MikroORM migrations, but \`@mikro-orm/cli\` is not a dependency of the app, so deploys could not run \`${command}\`. Add \`@mikro-orm/cli\` to the app's dependencies and ${ANALYZE_AGAIN}`,
     );
   }
   if (migrations.every((file) => TS_FILE.test(file)) && !ctx.npm("tsx") && !ctx.npm("ts-node")) {
@@ -270,7 +271,7 @@ async function mikroOrm(ctx: ReleaseContext): Promise<ReleaseDetection | undefin
     )?.[1];
     if (path === undefined || !/(?:^|\/)(?:dist|build)(?:\/|$)/.test(cleanPath(path))) {
       return leftOut(
-        `OpsCrew found MikroORM migrations written in TypeScript, but the MikroORM config does not point \`migrations.path\` at the compiled migrations (for example \`dist/migrations\`) and no TypeScript loader (tsx or ts-node) is installed, so deploys could not run \`${command}\`. Set \`migrations.path\` to the compiled folder (keeping \`pathTs\` for the TypeScript one) and run \`opscrew analyze\` again, or set \`app.releaseCommand\` in opscrew/plan.yaml.`,
+        `OpsCrew found MikroORM migrations written in TypeScript, but the MikroORM config does not point \`migrations.path\` at the compiled migrations (for example \`dist/migrations\`) and no TypeScript loader (tsx or ts-node) is installed, so deploys could not run \`${command}\`. Set \`migrations.path\` to the compiled folder (keeping \`pathTs\` for the TypeScript one) and ${ANALYZE_AGAIN}`,
       );
     }
   }
@@ -320,7 +321,7 @@ async function knex(ctx: ReleaseContext): Promise<ReleaseDetection | undefined> 
       : undefined;
   if (typescript && !ctx.npm("ts-node")) {
     return leftOut(
-      `OpsCrew found Knex migrations, but ${typescript} and ts-node, which the Knex CLI uses to load it, is not a dependency, so deploys could not run \`${command}\`. Add ts-node to the app's devDependencies and run \`opscrew analyze\` again, or set \`app.releaseCommand\` in opscrew/plan.yaml.`,
+      `OpsCrew found Knex migrations, but ${typescript} and ts-node, which the Knex CLI uses to load it, is not a dependency, so deploys could not run \`${command}\`. Add ts-node to the app's devDependencies and ${ANALYZE_AGAIN}`,
     );
   }
   return { command: ctx.at(dir, command) };
@@ -359,7 +360,7 @@ async function sequelizeWithoutCli(ctx: ReleaseContext): Promise<ReleaseDetectio
   if (!ctx.npm("sequelize") || ctx.npm("sequelize-cli")) return undefined;
   if (!(await hasSequelizeMigrations(ctx))) return undefined;
   return leftOut(
-    "OpsCrew found Sequelize migrations, but `sequelize-cli` is not a dependency of the app, so deploys could not run `npx sequelize-cli db:migrate`. Add `sequelize-cli` to the app's devDependencies and run `opscrew analyze` again, or set `app.releaseCommand` in opscrew/plan.yaml.",
+    `OpsCrew found Sequelize migrations, but \`sequelize-cli\` is not a dependency of the app, so deploys could not run \`npx sequelize-cli db:migrate\`. Add \`sequelize-cli\` to the app's devDependencies and ${ANALYZE_AGAIN}`,
   );
 }
 
@@ -382,7 +383,7 @@ function nodePgMigrate(ctx: ReleaseContext): ReleaseDetection | undefined {
     return { command: ctx.at(".", 'NODE_OPTIONS="--import tsx" npx node-pg-migrate up') };
   }
   return leftOut(
-    "OpsCrew found node-pg-migrate migrations written in TypeScript, but neither ts-node nor tsx is a dependency to load them, so deploys could not run `npx node-pg-migrate up`. Add ts-node or tsx to the app's devDependencies and run `opscrew analyze` again, or set `app.releaseCommand` in opscrew/plan.yaml.",
+    `OpsCrew found node-pg-migrate migrations written in TypeScript, but neither ts-node nor tsx is a dependency to load them, so deploys could not run \`npx node-pg-migrate up\`. Add ts-node or tsx to the app's devDependencies and ${ANALYZE_AGAIN}`,
   );
 }
 

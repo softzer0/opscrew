@@ -3,7 +3,7 @@
  * pyproject.toml, requirements*.txt, Pipfile, Gemfile, composer.json, go.mod, Cargo.toml);
  * detection reasons about units rather than single files.
  */
-import { isRecord } from "@opscrew/core";
+import { isRecord, stripBom } from "@opscrew/core";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
 import { basenameRel, dirnameRel, sortStrings } from "./paths";
@@ -98,11 +98,6 @@ function stringArray(value: unknown): string[] | undefined {
 
 function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
-}
-
-/** Removes a leading UTF-8 byte-order mark. */
-export function stripBom(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
 /** Parses JSON text, tolerating a BOM; `undefined` when invalid. */

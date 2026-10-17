@@ -8,6 +8,7 @@ import {
   type DeployPlan,
   parseArtifact,
   readArtifact,
+  readOptionalArtifact,
   serializeArtifact,
   writeArtifact,
 } from "./index";
@@ -186,6 +187,20 @@ describe("errors", () => {
       hint: "Run `opscrew interview` to answer the deployment questions.",
     });
     expect((error as ArtifactError).message).toContain(file);
+  });
+
+  it("reads an artefact that may be missing as undefined, but never hides an invalid one", async () => {
+    const file = join(dir, "requirements.yaml");
+    await expect(readOptionalArtifact("requirements", file)).resolves.toBeUndefined();
+    await writeFile(file, await fixture("requirements.yaml"), "utf8");
+    await expect(readOptionalArtifact("requirements", file)).resolves.toEqual(
+      await readArtifact("requirements", file),
+    );
+    await writeFile(file, "budget: [unclosed\n", "utf8");
+    await expect(readOptionalArtifact("requirements", file)).rejects.toMatchObject({
+      code: "ARTIFACT_INVALID",
+      file,
+    });
   });
 
   it("uses the architecture hint", () => {

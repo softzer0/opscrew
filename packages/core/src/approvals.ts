@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  ApprovalDecision,
   ApprovalHandler,
   ApprovalKind,
   ApprovalRecord,
@@ -11,6 +12,7 @@ import type {
 import { z } from "zod";
 import { appendJsonLine, readJsonLines } from "./audit";
 import { OpsCrewError } from "./errors";
+import { systemClock } from "./time";
 
 const PLAN_HASH_RE = /^[0-9a-f]{64}$/i;
 
@@ -162,7 +164,25 @@ export interface ApprovalGateOptions {
   newId?: () => string;
 }
 
-const PHRASE_MISMATCH = "confirmation phrase did not match";
+/** The reason recorded when the typed confirmation was not the requested phrase. */
+export const PHRASE_MISMATCH = "confirmation phrase did not match";
+/** The reason recorded when the user cancelled the question (Ctrl+C, Escape). */
+export const CANCELLED_BY_USER = "cancelled by the user";
+/** The reason recorded when the user answered no. */
+export const DECLINED_BY_USER = "declined by the user";
+
+/**
+ * A decision `approver` made now (by `clock`); `extra` adds the typed confirmation or the
+ * reason for a refusal. The {@link ApprovalGate} still checks it against the request.
+ */
+export function approvalDecision(
+  clock: Clock,
+  approver: string,
+  approved: boolean,
+  extra: Pick<ApprovalDecision, "confirmation" | "reason"> = {},
+): ApprovalDecision {
+  return { approved, approver, decidedAt: clock.now().toISOString(), ...extra };
+}
 
 /**
  * The single place where humans approve mutations (constitution I). Every decision, approved or
@@ -181,7 +201,7 @@ export class ApprovalGate {
     this.handler = options.handler;
     this.store = options.store;
     this.audit = options.audit;
-    this.clock = options.clock ?? { now: () => new Date() };
+    this.clock = options.clock ?? systemClock;
     this.newId = options.newId ?? randomUUID;
   }
 

@@ -15,6 +15,7 @@ export {
   type ArtifactOf,
   parseArtifact,
   readArtifact,
+  readOptionalArtifact,
   serializeArtifact,
   writeArtifact,
 } from "./io";

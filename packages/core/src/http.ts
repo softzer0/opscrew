@@ -1,8 +1,50 @@
 import type { FetchLike } from "@opscrew/contracts";
 import type { z } from "zod";
+import { OpsCrewError } from "./errors";
+import { realSleep } from "./time";
+import { zodIssues } from "./values";
 
 /** Longest wait after a 429, whatever the provider's `RateLimit-Reset` says. */
 const MAX_RATE_LIMIT_WAIT_MS = 60_000;
+
+/** The next step when a provider's API could not be reached. */
+export const CONNECTION_HINT = "Check your internet connection and try again.";
+
+/** The next step after a provider's rate limit stopped a request. */
+export const RATE_LIMIT_HINT = "Wait a minute and try again.";
+
+/** The next step after a provider failed on its side: try again, then look at its status page. */
+export function statusPageHint(url: string): string {
+  return `Try again in a minute; if it keeps failing, check ${url}.`;
+}
+
+/** The next step after a write got no clear answer from `where`: it may have been done. */
+export function maybeDoneHint(where: string): string {
+  return `The request may still have reached ${where}; check the current state before trying again.`;
+}
+
+/**
+ * `value` (a provider's answer) validated against `schema`. An answer that does not match throws
+ * `PROVIDER_ERROR` naming its first problems, with `hint` as the next step (by default: report
+ * the changed API to OpsCrew).
+ */
+export function parseAnswer<S extends z.ZodType>(
+  schema: S,
+  value: unknown,
+  provider: string,
+  what: string,
+  hint?: string,
+): z.output<S> {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `${provider} returned an unexpected answer when trying to ${what}: ${zodIssues(parsed.error)}.`,
+      { hint: hint ?? `The ${provider} API may have changed; please report this to OpsCrew.` },
+    );
+  }
+  return parsed.data;
+}
 
 /** How a JSON API client retries; see {@link requestJson}. */
 export interface RetryRules {
@@ -31,6 +73,33 @@ export interface JsonClient {
   now(): number;
 }
 
+/** What a provider client's options may set of its {@link JsonClient}. */
+export interface JsonClientOptions {
+  fetch?: FetchLike;
+  timeoutMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  /** Epoch milliseconds. */
+  now?: () => number;
+}
+
+/**
+ * The {@link JsonClient} of a provider client: what `options` sets, else the provider's
+ * `timeoutMs`, the global `fetch`, {@link realSleep} and `Date.now`. The retry rules are the
+ * provider's.
+ */
+export function jsonClient(
+  options: JsonClientOptions,
+  provider: { timeoutMs: number; retry: RetryRules },
+): JsonClient {
+  return {
+    fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+    timeoutMs: options.timeoutMs ?? provider.timeoutMs,
+    retry: provider.retry,
+    sleep: options.sleep ?? realSleep,
+    now: options.now ?? Date.now,
+  };
+}
+
 /** Why a request failed, for the client to turn into its provider's plain-English error. */
 export type RequestFailure =
   /** No answer after any retries: the attempt timed out (`timedOut`) or the connection was lost. */
@@ -45,6 +114,8 @@ export type RequestFailure =
 /** One request to a JSON API. */
 export interface JsonRequest<S extends z.ZodType> {
   url: string;
+  /** Query parameters added to `url`. */
+  query?: Record<string, string>;
   /** Default `GET`. */
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   /** Sent as given, plus `Accept: application/json` (and `Content-Type` with a body). */
@@ -69,6 +140,9 @@ export async function requestJson<S extends z.ZodType>(
   client: JsonClient,
   request: JsonRequest<S>,
 ): Promise<z.infer<S>> {
+  const url = new URL(request.url);
+  for (const [name, value] of Object.entries(request.query ?? {}))
+    url.searchParams.set(name, value);
   const method = request.method ?? "GET";
   const idempotent = method === "GET";
   const headers: Record<string, string> = { Accept: "application/json", ...request.headers };
@@ -86,7 +160,7 @@ export async function requestJson<S extends z.ZodType>(
     let response: Response;
     let text: string | undefined;
     try {
-      response = await client.fetch(request.url, { ...init, signal });
+      response = await client.fetch(url.toString(), { ...init, signal });
       if (response.ok) text = await response.text();
     } catch (cause) {
       if (idempotent && serverErrorRetries < client.retry.serverErrors) {
@@ -119,11 +193,7 @@ export async function requestJson<S extends z.ZodType>(
     }
     const parsed = request.schema.safeParse(json);
     if (!parsed.success) {
-      const issues = parsed.error.issues
-        .slice(0, 3)
-        .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-        .join("; ");
-      throw await request.fail({ kind: "unexpected", issues, idempotent });
+      throw await request.fail({ kind: "unexpected", issues: zodIssues(parsed.error), idempotent });
     }
     return parsed.data;
   }

@@ -24,7 +24,9 @@ import {
   type ToolPolicy,
 } from "@opscrew/contracts";
 import {
+  errorMessage,
   isRecord,
+  modelOutputMismatch,
   PROFILE_TOOLS,
   redactDeep,
   STRUCTURED_OUTPUT_TOOL,
@@ -324,10 +326,7 @@ class PhaseRun<T> {
       await this.options.audit.append({
         kind: "tool-call",
         actor: "agent",
-        action: input.tool_name,
-        phase: this.request.phase,
-        ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
-        ...(target === undefined ? {} : { target: shorten(this.#redact(target)) }),
+        ...this.#toolFields(input.tool_name, target),
         decision: gate.decision,
         ...(failed ? { detail: this.#redact(`failed: ${input.error}`) } : {}),
       });
@@ -362,10 +361,7 @@ class PhaseRun<T> {
       await this.options.audit.append({
         kind: "tool-call",
         actor: "agent",
-        action: tool,
-        phase: this.request.phase,
-        ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
-        ...(target === undefined ? {} : { target: shorten(this.#redact(target)) }),
+        ...this.#toolFields(tool, target),
         detail:
           gate === undefined
             ? "ungated: the tool ran without passing the OpsCrew safety gate"
@@ -512,15 +508,22 @@ class PhaseRun<T> {
     await this.options.audit.append({
       kind: "tool-denied",
       actor: "opscrew",
-      action: tool,
-      phase: this.request.phase,
-      ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
-      ...(target === undefined ? {} : { target: shorten(this.#redact(target)) }),
+      ...this.#toolFields(tool, target),
       decision,
       detail: reason,
     });
     this.#emit({ kind: "tool-denied", tool, message: `${tool} denied: ${reason}` });
     return { allowed: false, decision, reason };
+  }
+
+  /** The audit fields of a tool call: the tool, the phase, the session and what it touches. */
+  #toolFields(tool: string, target: string | undefined) {
+    return {
+      action: tool,
+      phase: this.request.phase,
+      ...(this.#sessionId === undefined ? {} : { sessionId: this.#sessionId }),
+      ...(target === undefined ? {} : { target: shorten(this.#redact(target)) }),
+    };
   }
 
   // -------------------------------------------------------------------------------------------
@@ -591,16 +594,10 @@ class PhaseRun<T> {
     const candidate = message.structured_output ?? parseJson(message.result);
     const parsed = request.output.schema.safeParse(candidate);
     if (!parsed.success) {
-      const issues = parsed.error.issues
-        .slice(0, 5)
-        .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-        .join("; ");
       return {
         ...base,
         stopReason: "invalid_output",
-        error: this.#redact(
-          `The model's output did not match the expected ${request.output.name} format (${issues}).`,
-        ),
+        error: this.#redact(modelOutputMismatch(request.output.name, parsed.error)),
       };
     }
     return { ...base, ok: true, stopReason: "completed", output: parsed.data };
@@ -732,8 +729,4 @@ function parseJson(text: string | undefined): unknown {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof AbortError || (error instanceof Error && error.name === "AbortError");
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -1,6 +1,7 @@
 import type { CommandRunner, IacEngine, IacEngineInfo, IacEngineName } from "@opscrew/contracts";
 import {
   findExecutable as defaultFindExecutable,
+  errorMessage,
   NodeCommandRunner,
   OpsCrewError,
 } from "@opscrew/core";
@@ -96,8 +97,7 @@ async function readVersion(
         problem: `\`${binary} version -json\` printed something that is not JSON (the version is probably older than ${MIN_ENGINE_VERSION}).`,
       };
     }
-    const reason = error instanceof Error ? error.message : String(error);
-    return { problem: `Could not run ${binary}: ${reason}` };
+    return { problem: `Could not run ${binary}: ${errorMessage(error)}` };
   }
 }
 

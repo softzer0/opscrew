@@ -1,5 +1,6 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
+import { exists, stripBom, zodIssues } from "@opscrew/core";
 import {
   type AppKind,
   type EnvUrlScheme,
@@ -35,7 +36,6 @@ import {
   parseJson,
   type ReadText,
   readUnits,
-  stripBom,
   type Unit,
   workspacePatterns,
 } from "./manifests";
@@ -158,15 +158,6 @@ async function mapLimit<T>(
     }
   });
   await Promise.all(workers);
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function firstLine(text: string | undefined): string | undefined {
@@ -744,10 +735,9 @@ export async function detectProjectDetails(
 
   const parsed = ProjectFactsSchema.safeParse(facts);
   if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-      .join("; ");
-    throw new Error(`Repository detection produced invalid project facts: ${issues}`);
+    throw new Error(
+      `Repository detection produced invalid project facts: ${zodIssues(parsed.error, Number.POSITIVE_INFINITY)}`,
+    );
   }
   return { facts: parsed.data, appDir, appCandidates, truncated: listing.truncated };
 }

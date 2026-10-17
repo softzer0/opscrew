@@ -3,6 +3,7 @@
  * changes or deletes data in other ways (reset, drop, rollback, schema sync, seed) or one that only
  * starts a migration CLI without a subcommand.
  */
+import { ANALYZE_AGAIN } from "./context";
 
 /** Package scripts that run the app's migrations, in order of preference. */
 export const MIGRATE_SCRIPTS = ["migrate", "db:migrate", "migrate:deploy", "migrate:prod"] as const;
@@ -106,5 +107,5 @@ export function rejectedScriptsNote(
   const instead = hasCommand
     ? "Deploys run the detected migration command instead."
     : "Deploys run no migrations.";
-  return `OpsCrew did not use the package.json script ${which}. ${instead} To have deploys run a script, make it only apply pending migrations and run \`opscrew analyze\` again, or set \`app.releaseCommand\` in opscrew/plan.yaml.`;
+  return `OpsCrew did not use the package.json script ${which}. ${instead} To have deploys run a script, make it only apply pending migrations and ${ANALYZE_AGAIN}`;
 }

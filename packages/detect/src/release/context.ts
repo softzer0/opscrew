@@ -31,6 +31,10 @@ export function atStartup(what: string): ReleaseDetection {
   };
 }
 
+/** How a note about migrations deploys cannot run ends, after the fix it names. */
+export const ANALYZE_AGAIN =
+  "run `opscrew analyze` again, or set `app.releaseCommand` in opscrew/plan.yaml.";
+
 /** A note for migrations OpsCrew found but cannot run as planned (`text` says what to do). */
 export function leftOut(text: string): ReleaseDetection {
   return { note: { atStartup: false, text } };

@@ -6,6 +6,7 @@ import type {
   RuntimeAvailability,
   RuntimeEvent,
 } from "@opscrew/contracts";
+import { modelOutputMismatch } from "../errors";
 
 /** A scripted result: any part of a `PhaseResult`, plus events to replay through `onEvent`. */
 export type FakePhaseResponse = Partial<PhaseResult<unknown>> & { events?: RuntimeEvent[] };
@@ -95,12 +96,8 @@ export class FakeAgentRuntime implements AgentRuntime {
 
     const parsed = request.output.schema.safeParse(response.output);
     if (!parsed.success) {
-      const issues = parsed.error.issues
-        .slice(0, 5)
-        .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-        .join("; ");
       result.stopReason = "invalid_output";
-      result.error = `The model's output did not match the expected ${request.output.name} format (${issues}).`;
+      result.error = modelOutputMismatch(request.output.name, parsed.error);
       return result;
     }
     result.output = parsed.data;

@@ -3,7 +3,15 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ensureStateDir, projectIdFor, resolveProjectPaths, toPosixRelative } from "./paths";
+import {
+  ensureStateDir,
+  exists,
+  projectIdFor,
+  readTextIfExists,
+  resolveProjectPaths,
+  stripBom,
+  toPosixRelative,
+} from "./paths";
 
 const isWindows = process.platform === "win32";
 
@@ -153,5 +161,34 @@ describe("toPosixRelative", () => {
     );
     expect(toPosixRelative(root, root)).toBe("");
     expect(toPosixRelative(root, path.join(tmp, "other", "x.txt"))).toBe("../other/x.txt");
+  });
+});
+
+describe("stripBom", () => {
+  it("removes a leading byte order mark only", () => {
+    const bom = String.fromCharCode(0xfeff);
+    expect(stripBom(`${bom}name: shop`)).toBe("name: shop");
+    expect(stripBom(`name: shop${bom}`)).toBe(`name: shop${bom}`);
+    expect(stripBom("")).toBe("");
+  });
+});
+
+describe("readTextIfExists and exists", () => {
+  it("read a file's text and tell that it exists", async () => {
+    const file = path.join(tmp, "notes.txt");
+    await writeFile(file, "grüße\n");
+    await expect(readTextIfExists(file)).resolves.toBe("grüße\n");
+    await expect(exists(file)).resolves.toBe(true);
+    await expect(exists(tmp)).resolves.toBe(true);
+  });
+
+  it("give undefined and false for a missing file", async () => {
+    const file = path.join(tmp, "missing.txt");
+    await expect(readTextIfExists(file)).resolves.toBeUndefined();
+    await expect(exists(file)).resolves.toBe(false);
+  });
+
+  it("throw any other read error", async () => {
+    await expect(readTextIfExists(tmp)).rejects.toMatchObject({ code: "EISDIR" });
   });
 });

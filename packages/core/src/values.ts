@@ -1,4 +1,16 @@
 import { createHash } from "node:crypto";
+import type { z } from "zod";
+
+/**
+ * The first `max` problems of a failed zod parse as `path: message`, joined with `; `; a problem
+ * with the value itself is `(root)`. `at` goes in front of every path, for a part parsed alone.
+ */
+export function zodIssues(error: z.ZodError, max = 3, at: readonly PropertyKey[] = []): string {
+  return error.issues
+    .slice(0, max)
+    .map((issue) => `${[...at, ...issue.path].join(".") || "(root)"}: ${issue.message}`)
+    .join("; ");
+}
 
 /** True for a plain JSON-like object: not `null` and not an array. */
 export function isRecord(value: unknown): value is Record<string, unknown> {

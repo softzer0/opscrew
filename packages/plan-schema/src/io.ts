@@ -1,5 +1,10 @@
-import { readFile } from "node:fs/promises";
-import { OpsCrewError, writeFileAtomic } from "@opscrew/core";
+import {
+  errorMessage,
+  OpsCrewError,
+  readTextIfExists,
+  stripBom,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { parseDocument, stringify } from "yaml";
 import type { z } from "zod";
 import { type Architecture, ArchitectureSchema } from "./architecture";
@@ -138,8 +143,7 @@ function validate<K extends ArtifactKind>(kind: K, data: unknown, file: string):
 
 /** Strips a UTF-8 BOM and normalises CRLF / CR line endings to LF. */
 function normalizeText(text: string): string {
-  const withoutBom = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-  return withoutBom.replace(/\r\n?/g, "\n");
+  return stripBom(text).replace(/\r\n?/g, "\n");
 }
 
 function decode(kind: ArtifactKind, text: string, file: string): unknown {
@@ -149,11 +153,10 @@ function decode(kind: ArtifactKind, text: string, file: string): unknown {
     try {
       return JSON.parse(text);
     } catch (cause) {
-      const detail = cause instanceof Error ? cause.message : String(cause);
       throw invalid(
         kind,
         file,
-        [{ path: "(root)", message: `is not valid JSON: ${detail}` }],
+        [{ path: "(root)", message: `is not valid JSON: ${errorMessage(cause)}` }],
         cause,
       );
     }
@@ -215,21 +218,24 @@ export async function readArtifact<K extends ArtifactKind>(
   kind: K,
   file: string,
 ): Promise<ArtifactOf<K>> {
-  let text: string;
-  try {
-    text = await readFile(file, "utf8");
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new ArtifactError({
-        code: "ARTIFACT_MISSING",
-        file,
-        hint: ARTIFACT_MISSING_HINTS[kind],
-        cause,
-      });
-    }
-    throw cause;
+  const value = await readOptionalArtifact(kind, file);
+  if (value === undefined) {
+    throw new ArtifactError({ code: "ARTIFACT_MISSING", file, hint: ARTIFACT_MISSING_HINTS[kind] });
   }
-  return parseArtifact(kind, text, file);
+  return value;
+}
+
+/**
+ * {@link readArtifact} for an artefact that may not exist yet: `undefined` when the file is
+ * missing.
+ * @throws ArtifactError with code `ARTIFACT_INVALID` when it cannot be parsed or fails validation.
+ */
+export async function readOptionalArtifact<K extends ArtifactKind>(
+  kind: K,
+  file: string,
+): Promise<ArtifactOf<K> | undefined> {
+  const text = await readTextIfExists(file);
+  return text === undefined ? undefined : parseArtifact(kind, text, file);
 }
 
 /**

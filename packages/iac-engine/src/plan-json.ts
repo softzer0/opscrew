@@ -5,7 +5,7 @@ import type {
   ResourceDrift,
   ResourceMove,
 } from "@opscrew/contracts";
-import { isRecord, OpsCrewError } from "@opscrew/core";
+import { isRecord, OpsCrewError, zodIssues } from "@opscrew/core";
 import { z } from "zod";
 
 /** What `parsePlanJson` extracts from a machine-readable plan (`show -json`). */
@@ -110,14 +110,6 @@ const PlanJsonSchema = z.looseObject({
   resource_drift: z.array(z.looseObject({ mode: z.string().optional() })).nullish(),
 });
 
-/** The first problems of engine output that does not match its schema, by field path. */
-export function problems(error: z.ZodError, at: readonly PropertyKey[] = []): string {
-  return error.issues
-    .slice(0, 3)
-    .map((issue) => `${[...at, ...issue.path].join(".") || "(root)"}: ${issue.message}`)
-    .join("; ");
-}
-
 /**
  * Maps `resource_drift[]` to `ResourceDrift`. Only managed resources count; `no-op` entries are
  * skipped. A deleted resource lists no attributes (every attribute is gone).
@@ -127,7 +119,7 @@ function toDrift(entries: readonly { mode?: string | undefined }[]): ResourceDri
   for (const [index, raw] of entries.entries()) {
     if (raw.mode !== undefined && raw.mode !== "managed") continue;
     const parsed = ResourceEntrySchema.safeParse(raw);
-    if (!parsed.success) throw invalid(problems(parsed.error, ["resource_drift", index]));
+    if (!parsed.success) throw invalid(zodIssues(parsed.error, 3, ["resource_drift", index]));
     const entry = parsed.data;
     const key = entry.change.actions.join(",");
     if (key === "no-op" || key === "read" || key === "") continue;
@@ -161,7 +153,7 @@ export function parsePlanJson(json: unknown): ParsedPlan {
     }
   }
   const parsed = PlanJsonSchema.safeParse(raw);
-  if (!parsed.success) throw invalid(problems(parsed.error));
+  if (!parsed.success) throw invalid(zodIssues(parsed.error));
   const plan = parsed.data;
 
   const changes: ResourceChange[] = [];

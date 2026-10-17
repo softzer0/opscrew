@@ -16,16 +16,17 @@ import type {
   PlanSummary,
 } from "@opscrew/contracts";
 import {
+  durationText,
   isUserFacingError,
   OpsCrewError,
-  plural,
   Redactor,
   registerEnvSecrets,
   sha256Hex,
+  zodIssues,
 } from "@opscrew/core";
 import { z } from "zod";
 import { encryptionSecrets } from "./encryption";
-import { parsePlanJson, problems } from "./plan-json";
+import { parsePlanJson } from "./plan-json";
 import { managedAddresses } from "./state-resources";
 
 /** Default timeout for `apply`: 30 minutes. */
@@ -65,11 +66,6 @@ function tail(text: string): string {
   const lines = text.replace(/\r\n/g, "\n").trimEnd().split("\n");
   const kept = lines.slice(-ERROR_TAIL_LINES).join("\n").trim();
   return kept.length > ERROR_TAIL_CHARS ? `…${kept.slice(-ERROR_TAIL_CHARS)}` : kept;
-}
-
-function minutes(ms: number): string {
-  const m = Math.round(ms / 60_000);
-  return m >= 1 ? plural(m, "minute") : `${Math.round(ms / 1000)} seconds`;
 }
 
 /** The parts of `validate -json` read here; every other field passes through unread. */
@@ -284,7 +280,7 @@ class Engine implements IacEngine {
       );
       if (result.timedOut || result.exitCode !== 0) {
         const reason = result.timedOut
-          ? `timed out after ${minutes(timeoutMs)}`
+          ? `timed out after ${durationText(timeoutMs)}`
           : `failed (exit code ${result.exitCode})`;
         return { ok: false, outputs: {}, log: `${log}\n${this.label} apply ${reason}.`.trim() };
       }
@@ -302,16 +298,11 @@ class Engine implements IacEngine {
       options,
     );
     this.assertOk("output", result, options.timeoutMs);
-    let json: unknown;
-    try {
-      json = JSON.parse(result.stdout.trim() === "" ? "{}" : result.stdout);
-    } catch {
-      throw new OpsCrewError(
-        "ENGINE_FAILED",
-        `${this.label} printed outputs that could not be read.`,
-        { hint: HINTS.output },
-      );
-    }
+    const json = this.#parseJson(
+      result.stdout.trim() === "" ? "{}" : result.stdout,
+      "outputs",
+      HINTS.output,
+    );
     const parsed = OutputJsonSchema.safeParse(json);
     if (!parsed.success) throw this.unreadable("outputs", parsed.error);
     return Object.fromEntries(
@@ -325,16 +316,7 @@ class Engine implements IacEngine {
     const step = "providers schema";
     const result = await this.exec(step, cwd, ["providers", "schema", "-json"], options);
     this.assertOk(step, result, options.timeoutMs);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch {
-      throw new OpsCrewError(
-        "ENGINE_FAILED",
-        `${this.label} printed provider schemas that could not be read.`,
-        { hint: HINTS[step] },
-      );
-    }
+    const parsed = this.#parseJson(result.stdout, "provider schemas", HINTS[step]);
     this.schemas.set(cwd, parsed);
     return parsed;
   }
@@ -362,14 +344,19 @@ class Engine implements IacEngine {
   private async show(cwd: string, file: string, options: IacRunOptions): Promise<unknown> {
     const result = await this.exec("show", cwd, ["show", "-json", "-no-color", file], options);
     this.assertOk("show", result, options.timeoutMs);
+    return this.#parseJson(result.stdout, "a plan", HINTS.show);
+  }
+
+  /** Parses JSON the engine printed; text that is not JSON throws `ENGINE_FAILED` naming `what`. */
+  #parseJson(text: string, what: string, hint: string | undefined): unknown {
     try {
-      return JSON.parse(result.stdout);
+      return JSON.parse(text);
     } catch {
       throw new OpsCrewError(
         "ENGINE_FAILED",
-        `${this.label} printed a plan that could not be read.`,
+        `${this.label} printed ${what} that could not be read.`,
         {
-          hint: HINTS.show,
+          hint,
         },
       );
     }
@@ -379,7 +366,7 @@ class Engine implements IacEngine {
   private unreadable(what: string, error: z.ZodError): OpsCrewError {
     return new OpsCrewError(
       "ENGINE_FAILED",
-      `${this.label} printed ${what} that could not be read (${problems(error)}).`,
+      `${this.label} printed ${what} that could not be read (${zodIssues(error)}).`,
       { hint: `Check that ${this.label} is version 1.6 or newer, then try again.` },
     );
   }
@@ -474,7 +461,7 @@ class Engine implements IacEngine {
       tail(result.stderr.trim() !== "" ? result.stderr : result.stdout),
     );
     const what = result.timedOut
-      ? `timed out after ${minutes(timeoutMs)}`
+      ? `timed out after ${durationText(timeoutMs)}`
       : `failed (exit code ${result.exitCode})`;
     const message = `${this.label} ${step} ${what}.${output ? `\n${output}` : ""}`;
     return new OpsCrewError("ENGINE_FAILED", message, {

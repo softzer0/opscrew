@@ -3,7 +3,13 @@
  * migration tool declared only for development gets a note instead of a command.
  */
 import { parse as parseToml } from "smol-toml";
-import { cleanPath, type ReleaseContext, type ReleaseDetection, shallowest } from "./context";
+import {
+  ANALYZE_AGAIN,
+  cleanPath,
+  type ReleaseContext,
+  type ReleaseDetection,
+  shallowest,
+} from "./context";
 
 /** A WSGI target such as `run:app` or `myproject:create_app()` (never `0.0.0.0:8000`). */
 const WSGI_TARGET = /^[A-Za-z_][\w.]*:[A-Za-z_]\w*(?:\(.*\))?$/;
@@ -56,7 +62,7 @@ function pythonTool(
     return {
       note: {
         atStartup: false,
-        text: `OpsCrew found ${tool} migrations, but ${pkg} is only a development dependency, so the app's image does not install it and deploys could not run \`${command}\`. Add ${pkg} to the app's main dependencies (requirements.txt, or the main dependency list in pyproject.toml) and run \`opscrew analyze\` again, or set \`app.releaseCommand\` in opscrew/plan.yaml yourself.`,
+        text: `OpsCrew found ${tool} migrations, but ${pkg} is only a development dependency, so the app's image does not install it and deploys could not run \`${command}\`. Add ${pkg} to the app's main dependencies (requirements.txt, or the main dependency list in pyproject.toml) and ${ANALYZE_AGAIN}`,
       },
     };
   }

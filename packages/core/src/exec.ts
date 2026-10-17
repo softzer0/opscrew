@@ -4,7 +4,7 @@ import { constants as osConstants } from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { CommandOptions, CommandResult, CommandRunner } from "@opscrew/contracts";
-import { OpsCrewError } from "./errors";
+import { errorMessage, OpsCrewError } from "./errors";
 
 /** Exit code reported when a command is killed because it exceeded its timeout (as in `timeout(1)`). */
 const TIMEOUT_EXIT_CODE = 124;
@@ -90,8 +90,7 @@ function spawnError(command: string, error: unknown): OpsCrewError {
       },
     );
   }
-  const reason = error instanceof Error ? error.message : String(error);
-  return new OpsCrewError("COMMAND_FAILED", `Could not run ${command}: ${reason}`, {
+  return new OpsCrewError("COMMAND_FAILED", `Could not run ${command}: ${errorMessage(error)}`, {
     hint: "Check that the program exists and that you are allowed to run it, then try again.",
     cause: error,
   });
