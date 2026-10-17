@@ -335,11 +335,9 @@ export async function runInfraCommand(
           `This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm ${result.confirmApp} in the command above in a script.\n`,
         );
       }
-      if (result.dnsDeletes !== undefined) {
-        ctx.stdout(
-          `${approveLaterHint(`opscrew ${command}`, result.planned[0]?.hash ?? "", result.dnsDeletes)}
-`,
-        );
+      const [first] = result.planned;
+      if (result.dnsDeletes !== undefined && first !== undefined) {
+        ctx.stdout(`${approveLaterHint("opscrew dns", first.hash, result.dnsDeletes)}\n`);
       }
       if (result.stackFollows) {
         ctx.stdout(

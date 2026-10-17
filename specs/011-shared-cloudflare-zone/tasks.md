@@ -111,7 +111,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
 
 ## Phase 4: Surfaces and live test
 
-- [ ] T1106 [US1] [US2] [US4] CLI, MCP tools, plugin and user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`
+- [X] T1106 [US1] [US2] [US4] CLI, MCP tools, plugin and user docs in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`
   - Owns: those paths (+ tests)
   - Reads: plan.md "5. Surfaces"; quickstart.md
   - Depends: T1105

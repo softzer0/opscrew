@@ -32,9 +32,9 @@ hostnames of this app it adds or removes, and whether it creates or deletes OpsC
 apps' hostnames are not listed one by one; the plan only says how many there are. The plan ends
 with its hash. OpsCrew changes nothing in Cloudflare until you approve that exact plan, and it
 asks before the infrastructure plan. When the app's hostnames are already in place, the plan says
-so, nothing in Cloudflare changes and nothing is asked. `npx opscrew dns` and `npx opscrew domain connect` show a
-Cloudflare plan too when they change the app's hostnames: it removes the old ones and adds the
-new ones.
+so, nothing in Cloudflare changes and nothing is asked. `npx opscrew dns` shows a Cloudflare plan
+too when the app's hostnames change (also after `npx opscrew domain connect` or
+`npx opscrew domain buy` switched the domain): it removes the old ones and adds the new ones.
 
 Just before it writes, OpsCrew reads the rule again. If it changed since the plan, for example
 because you deployed another app into the same zone at the same moment, OpsCrew stops without
@@ -126,8 +126,8 @@ Give your `CLOUDFLARE_API_TOKEN` these permissions for the zone:
 - Zone → Zone WAF → Edit (the probe block)
 - Zone → Config Rules → Edit (the strict TLS rule)
 
-Where the app uses Cloudflare Access (a Cloudflare Tunnel, Portainer on a subdomain or Portainer's
-Cloudflare redeploys), also add Account → Access: Organizations, Identity Providers, and Groups →
+Where the app uses Cloudflare Access (tunnel mode on your own server, Portainer on a subdomain or
+Portainer's Cloudflare redeploys), also add Account → Access: Organizations, Identity Providers, and Groups →
 Edit, plus the tunnel and Access permissions listed in
 [Deploy to a server you already have](own-server.md#cloudflare-token-permissions) and
 [Deploy to a Portainer you already run](portainer-target.md#the-tokens-and-what-they-may-do).

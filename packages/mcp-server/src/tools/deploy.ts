@@ -170,7 +170,10 @@ class CloudflarePlanGate implements ApprovalHandler {
   ) {}
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
-    if (request.kind !== "cloudflare-apply" || request.planHash?.toLowerCase() === this.hash) {
+    if (
+      request.kind !== "cloudflare-apply" ||
+      (this.hash !== undefined && request.planHash?.toLowerCase() === this.hash)
+    ) {
       return this.dialogs.request(request);
     }
     this.refusedOther = true;
@@ -383,7 +386,7 @@ export function registerDeployTools(
           `  ${command}`,
           ...(primary === undefined
             ? [
-                "When the infrastructure needs a change once this Cloudflare plan is applied (for example the one-time PIN login it adds), opscrew_apply shows that plan to the user in its own dialog.",
+                "When the infrastructure needs a change once this Cloudflare plan is applied (for example the one-time PIN login it adds), opscrew_apply shows that plan to the user in its own dialog. When this Cloudflare plan removes the app from a zone it left, the new zone's Cloudflare plan needs another opscrew_plan after this apply.",
               ]
             : []),
           ...(stackFollows
@@ -756,10 +759,18 @@ function refusalWithNextStep(
     (d) => (d.kind === "iac-apply" || d.kind === "cloudflare-apply") && d.approved,
   );
   if (otherCloudflarePlan) {
-    return new OpsCrewError("APPROVAL_REFUSED", error.message, {
-      hint: "Call opscrew_plan again, show the user its Cloudflare plan and pass its cloudflarePlanHash to opscrew_apply with the other hashes.",
-      cause: error,
-    });
+    // The app moved zones: the removal from the zone it left is applied, the new zone's plan is not.
+    const leftApplied = handler.decisions.some((d) => d.kind === "cloudflare-apply" && d.approved);
+    return new OpsCrewError(
+      "APPROVAL_REFUSED",
+      leftApplied
+        ? "The Cloudflare plan for the zone the app left is applied. The Cloudflare plan for its new zone was not returned by opscrew_plan, so nothing in the new zone was changed."
+        : error.message,
+      {
+        hint: "Call opscrew_plan again, show the user its Cloudflare plan and pass its cloudflarePlanHash to opscrew_apply with the other hashes.",
+        cause: error,
+      },
+    );
   }
   const hostRefused = handler.decisions.some((d) => d.kind === "host-apply" && !d.approved);
   const stackRefused = handler.decisions.some((d) => d.kind === "stack-apply" && !d.approved);

@@ -59,8 +59,9 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
 3. `npx opscrew adapt` prepares the app for a container, as for any other deployment. Merge its
    pull request.
 4. `npx opscrew provision` shows up to three plans and asks for each separately:
-   - the **Cloudflare plan**, when your domain is on Cloudflare: your app's hostnames in the two
-     rules OpsCrew keeps in your zone for all its apps (see
+   - the **Cloudflare plan**, when your domain is on Cloudflare: your app's hostnames in the rules
+     OpsCrew keeps in your zone for all its apps (only the probe block in tunnel mode), and in
+     tunnel mode the account's Zero Trust organization (see
      [Your domain on Cloudflare](cloudflare.md)), with its hash;
    - the **infrastructure plan**: the DNS records on Cloudflare, and the Cloudflare Tunnel with its
      access rules, when your site uses it, with its hash (with DNS somewhere else and DNS-only

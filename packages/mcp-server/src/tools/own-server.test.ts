@@ -36,13 +36,18 @@ import {
   TUNNEL_ID,
 } from "@opscrew/agents/testing";
 import type { RemoteExec, ResourceChange } from "@opscrew/contracts";
-import { findExecutable, NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
+import {
+  findExecutable,
+  NodeCommandRunner,
+  OpsCrewError,
+  resolveProjectPaths,
+} from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
-import { registerDeployTools } from "./deploy";
+import { type DeployToolOptions, registerDeployTools } from "./deploy";
 import { registerDesignTools } from "./design";
 import { registerDriftTool } from "./drift";
 import { registerInterviewTools } from "./interview";
@@ -103,6 +108,8 @@ interface Options {
   changes?: ResourceChange[];
   /** Outputs of the fake engine's state (a tunnel's id and token). */
   outputs?: Record<string, unknown>;
+  /** Replaces `runProvision` behind the deploy tools. */
+  runProvision?: DeployToolOptions["runProvision"];
 }
 
 async function connect(options: Options = {}) {
@@ -189,7 +196,10 @@ async function connect(options: Options = {}) {
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
   registerInterviewTools(server, deps);
   registerDesignTools(server, deps, { own });
-  registerDeployTools(server, deps, { provisionServices: services });
+  registerDeployTools(server, deps, {
+    provisionServices: services,
+    ...(options.runProvision === undefined ? {} : { runProvision: options.runProvision }),
+  });
   registerPortainerTools(server, deps, { services });
   registerDriftTool(server, deps, { services });
 
@@ -415,6 +425,80 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
       expect(h.engine.applied).toEqual([]);
       expect(h.host.applies).toEqual([]);
     };
+
+    it("is refused before any dialog when opscrew_apply was given another hash", async () => {
+      const { h, hashes } = await planWithCloudflare(approveAll);
+      const applied = await h.call("opscrew_apply", {
+        ...hashes,
+        cloudflarePlanHash: "0".repeat(64),
+      });
+      expect(applied.isError).toBe(true);
+      expect(textOf(applied)).toContain("The Cloudflare plan was not approved");
+      expect(h.elicited.some((e) => e.message.includes("Cloudflare plan"))).toBe(false);
+      expectNothingApplied(h);
+    });
+
+    it("given alone while the infrastructure changes, the infrastructure plan gets its own dialog after it", async () => {
+      /** The infrastructure plan's dialog: it shows the plan and its hash. */
+      const infrastructure = (message: string) =>
+        !message.includes("Cloudflare plan") && message.includes("Plan hash:");
+      const declineInfra: Answer = (params) =>
+        infrastructure(params.message) ? { action: "decline" } : approveAll(params);
+      const declined = await planWithCloudflare(declineInfra);
+      const refused = await declined.h.call("opscrew_apply", {
+        cloudflarePlanHash: declined.hashes.cloudflarePlanHash,
+      });
+      expect(refused.isError).toBe(true);
+      const messages = declined.h.elicited.map((e) => e.message);
+      const cloudflare = messages.findIndex((m) => m.includes("Cloudflare plan hash:"));
+      const infra = messages.findIndex((m) => infrastructure(m));
+      expect(cloudflare).toBeGreaterThanOrEqual(0);
+      expect(infra).toBeGreaterThan(cloudflare);
+      expect(existsSync(declined.h.paths.files.cloudflareRecord)).toBe(true);
+      expect(declined.h.engine.applied).toEqual([]);
+
+      const { h, hashes } = await planWithCloudflare(approveAll);
+      const applied = await h.call("opscrew_apply", {
+        cloudflarePlanHash: hashes.cloudflarePlanHash,
+      });
+      expect(applied.isError, textOf(applied)).toBeFalsy();
+      const shown = h.elicited.map((e) => e.message).find((m) => infrastructure(m));
+      const hash = /Plan hash: ([0-9a-f]{64})/.exec(shown ?? "")?.[1];
+      expect(hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(h.engine.applied.map((a) => a.approval.approvedPlanHash)).toEqual([hash]);
+    });
+
+    it("after the zone the app left was changed, a refused new zone's plan says what is applied", async () => {
+      const left = "1".repeat(64);
+      const h = await connect({
+        elicit: approveAll,
+        plan: shopPlan({ cloudflare: true }),
+        login: { hostKey: ED25519_FINGERPRINT },
+        // The removal from the zone the app left, then the new zone's plan opscrew_plan never showed.
+        runProvision: async (phase) => {
+          const request = (planHash: string) =>
+            phase.approvals.request({
+              kind: "cloudflare-apply",
+              title:
+                "Apply the Cloudflare plan to OpsCrew's shared Cloudflare resources (1 change)",
+              details: `Cloudflare plan hash: ${planHash}`,
+              planHash,
+            });
+          expect((await request(left)).approved).toBe(true);
+          const refused = await request("2".repeat(64));
+          throw new OpsCrewError(
+            "APPROVAL_REFUSED",
+            `The Cloudflare plan was not approved (${refused.reason}). Nothing in Cloudflare was changed.`,
+          );
+        },
+      });
+      const applied = await h.call("opscrew_apply", { cloudflarePlanHash: left });
+      expect(applied.isError).toBe(true);
+      const text = textOf(applied);
+      expect(text).toContain("The Cloudflare plan for the zone the app left is applied.");
+      expect(text).not.toContain("Nothing in Cloudflare was changed");
+      expect(text).toContain("Call opscrew_plan again");
+    });
 
     it("is refused before any dialog when opscrew_apply was not given its hash", async () => {
       const { h, hashes } = await planWithCloudflare(approveAll);

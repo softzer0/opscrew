@@ -41,15 +41,16 @@ Portainer password. Give each token only the access listed here.
 | `PORTAINER_API_KEY` | Always | A Portainer access token: in Portainer, open your user menu → **My account** → **Access tokens** → **Add access token**. Use an administrator's account, or a standard user whom an administrator gave access to the chosen environment (in Portainer's environment settings) and who may manage stacks there. |
 | `OPSCREW_GHCR_READ_TOKEN` | Your app's image is private (the default) | A GitHub classic token with only the `read:packages` scope: <https://github.com/settings/tokens/new?scopes=read:packages>. GitHub's fine-grained tokens cannot read packages. OpsCrew puts it only into Portainer's registry entry. |
 | `OPSCREW_REPO_READ_TOKEN` | Your repository is private | A GitHub fine-grained token for only this repository with **Contents: Read-only**: <https://github.com/settings/personal-access-tokens/new>. Portainer reads the deploy branch with it; OpsCrew sends it only to Portainer, for this stack. |
-| `CLOUDFLARE_API_TOKEN` | Visitors come through the Cloudflare Tunnel (web mode `tunnel`) | A Cloudflare API token with Zone → Zone → Read, Zone → DNS → Edit and Zone → Zone WAF → Edit for your zone, plus Account → Cloudflare Tunnel → Edit. Turn on Cloudflare Zero Trust for the account (the free plan is enough). |
-| `CLOUDFLARE_API_TOKEN` | New versions reach Portainer through Cloudflare (redeploy mode `cloudflare`) | A Cloudflare API token with Zone → Zone → Read and Zone → DNS → Edit for your zone, plus Account → Cloudflare Tunnel → Edit, Account → Access: Apps and Policies → Edit, Account → Access: Service Tokens → Edit and Account → Access: Organizations, Identity Providers, and Groups → Edit. With both modes, give one token both lists. Turn on Cloudflare Zero Trust for the account. |
+| `CLOUDFLARE_API_TOKEN` | Visitors come through the Cloudflare Tunnel (web mode `tunnel`) | A Cloudflare API token with Zone → Zone → Read, Zone → DNS → Edit, Zone → Zone WAF → Edit and Zone → Config Rules → Edit for your zone, plus Account → Cloudflare Tunnel → Edit. Turn on Cloudflare Zero Trust for the account (the free plan is enough). |
+| `CLOUDFLARE_API_TOKEN` | New versions reach Portainer through Cloudflare (redeploy mode `cloudflare`) | A Cloudflare API token with Zone → Zone → Read, Zone → DNS → Edit, Zone → Zone WAF → Edit and Zone → Config Rules → Edit for your zone, plus Account → Cloudflare Tunnel → Edit, Account → Access: Apps and Policies → Edit, Account → Access: Service Tokens → Edit and Account → Access: Organizations, Identity Providers, and Groups → Edit. With both modes, give one token both lists. Turn on Cloudflare Zero Trust for the account. |
 | `GITHUB_TOKEN` (or `gh auth login`) | Always | As for every OpsCrew deployment: OpsCrew pushes the deploy branch and opens the pull request with it. |
 
 With your own reverse proxy or Caddy and the `updater` redeploy mode, OpsCrew needs no Cloudflare
 token at all. The Cloudflare lists above are what OpsCrew uses today; the gated live test will
-narrow them further, and when a permission is missing OpsCrew names it. Zone WAF and the Access
-organizations permission are for what OpsCrew shares between your apps in the zone and the
-account; see [Your domain on Cloudflare](cloudflare.md).
+narrow them further, and when a permission is missing OpsCrew names it. Zone WAF, Config Rules and
+the Access organizations permission are for what OpsCrew shares between your apps in the zone and
+the account; see [Your domain on Cloudflare](cloudflare.md). OpsCrew reads both kinds of rules in
+the zone even when your app uses only one of them, so the token needs both rule permissions.
 
 With an administrator's token OpsCrew adds the registry entry for your image itself. A standard
 user's token works too; see [A limited token and a private image](#a-limited-token-and-a-private-image).
@@ -82,9 +83,10 @@ user's token works too; see [A limited token and a private image](#a-limited-tok
 3. `npx opscrew adapt` prepares the app for a container, as for any other deployment. Merge its pull
    request.
 4. `npx opscrew provision` shows up to three plans and asks for each separately:
-   - the **Cloudflare plan**, when you use Cloudflare: your app's hostnames in the probe block
-     OpsCrew keeps in your zone for all its apps, and the account's Zero Trust organization when
-     Access is used (see [Your domain on Cloudflare](cloudflare.md)), with its hash;
+   - the **Cloudflare plan**, when you use Cloudflare, with its hash: with the Cloudflare Tunnel
+     (web mode `tunnel`), your app's hostnames in the probe block OpsCrew keeps in your zone for
+     all its apps; with Cloudflare redeploys (redeploy mode `cloudflare`), the account's Zero Trust
+     organization (see [Your domain on Cloudflare](cloudflare.md));
    - the **infrastructure plan** for Cloudflare (the tunnel, and Access in front of Portainer's
      webhook in the Cloudflare redeploy mode), when you use Cloudflare;
    - the **stack plan** for Portainer: every change OpsCrew would make there, each marked as

@@ -263,6 +263,22 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
         ),
       );
       expect(second.ctx.output).toContain("keep --confirm shop in the command above in a script.");
+      const printed = /\n {4}opscrew (provision --approve [^\n]*)\n/.exec(second.ctx.output)?.[1];
+      const args = (printed ?? "").split(" ");
+
+      // A wrong name stops before anything runs: OpsCrew's rule stays.
+      const wrong = context(project, { zone });
+      const misnamed = args.map((arg) => (arg === "shop" ? "shopx" : arg));
+      expect(await run(wrong.ctx, ...misnamed)).toBe(1);
+      expect(wrong.ctx.errors).toContain("--confirm shopx does not match the app's name");
+      expect(wrong.ctx.errors).toContain("--confirm shop");
+      expect(zone.opscrewRule("http_request_firewall_custom")).toBeDefined();
+
+      // The printed command deletes it (the run stops later, at the production values).
+      const third = context(project, { zone });
+      await run(third.ctx, ...args);
+      expect(third.ctx.output).toContain("(confirmed with --confirm shop)");
+      expect(zone.opscrewRule("http_request_firewall_custom")).toBeUndefined();
     });
 
     it("--approve <hash> --confirm <app> applies exactly that plan in a script", async () => {
