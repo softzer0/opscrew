@@ -18,6 +18,8 @@ export interface ProjectFiles {
   costs: string;
   plansDir: string;
   tfstateDir: string;
+  /** `.opscrew/cloudflare.json`: this app's hostnames in OpsCrew's shared Cloudflare rules. */
+  cloudflareRecord: string;
   deployKey: string;
   deployKeyPub: string;
   knownHosts: string;
@@ -91,6 +93,7 @@ export function resolveProjectPaths(
       costs: path.join(stateDir, "costs.jsonl"),
       plansDir: path.join(stateDir, "plans"),
       tfstateDir: path.join(stateDir, "tfstate"),
+      cloudflareRecord: path.join(stateDir, "cloudflare.json"),
       deployKey: path.join(projectHomeDir, "deploy_key"),
       deployKeyPub: path.join(projectHomeDir, "deploy_key.pub"),
       knownHosts: path.join(projectHomeDir, "known_hosts"),

@@ -26,6 +26,7 @@ import { OpsCrewError } from "./errors";
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C_UPPER = `C${"c".repeat(63)}`.toUpperCase();
+const HASH_D = "d".repeat(64);
 const clock: Clock = { now: () => new Date("2026-10-11T12:00:00.000Z") };
 
 function record(overrides: Partial<ApprovalRecord> = {}): ApprovalRecord {
@@ -658,6 +659,158 @@ describe("stack-apply approvals", () => {
       confirmPhrase: "shop",
     });
     const approved = await gate.assertApprovedStackPlan(HASH_B, { allowDestroy: true });
+    expect(approved.allowDestroy).toBe(true);
+  });
+});
+
+// Feature 011: a shared Cloudflare plan's approval is its own kind, bound to that plan's hash.
+describe("cloudflare-apply approvals", () => {
+  const cloudflareRequest: ApprovalRequest = {
+    kind: "cloudflare-apply",
+    title: "Add shop.example.com to OpsCrew's rules in example.com",
+    details: "opscrew-block-probes, opscrew-strict-tls",
+    planHash: HASH_C_UPPER,
+  };
+
+  it("records an approved Cloudflare plan, lower-casing the hash", async () => {
+    const { gate, store, audit } = makeGate();
+    const result = await gate.request(cloudflareRequest);
+    expect(result).toMatchObject({
+      kind: "cloudflare-apply",
+      approved: true,
+      planHash: HASH_C_UPPER.toLowerCase(),
+    });
+    expect(await store.list()).toHaveLength(1);
+    expect(audit.entries[0]).toMatchObject({ action: "cloudflare-apply", decision: "approved" });
+  });
+
+  it("rejects a cloudflare-apply request without a valid plan hash", async () => {
+    const { gate, handler } = makeGate();
+    for (const planHash of [undefined, "", "abc", `${"a".repeat(63)}z`]) {
+      const error = await gate.request({ ...cloudflareRequest, planHash }).catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "INVALID_INPUT" });
+    }
+    const missing = await gate
+      .request({ ...cloudflareRequest, planHash: undefined })
+      .catch((e: unknown) => e);
+    expect((missing as OpsCrewError).message).toContain("Cloudflare plan");
+    expect((missing as OpsCrewError).hint).toContain("64 hexadecimal characters");
+    expect(handler.requests).toHaveLength(0);
+  });
+
+  it("reads cloudflare-apply records back from the JSONL store", async () => {
+    const store = new JsonlApprovalStore(join(root, "cloudflare", "approvals.jsonl"));
+    await store.append(record({ id: "c", kind: "cloudflare-apply" }));
+    expect((await store.list()).map((r) => r.kind)).toEqual(["cloudflare-apply"]);
+  });
+
+  describe.each([
+    ["MemoryApprovalStore", () => new MemoryApprovalStore()],
+    ["JsonlApprovalStore", () => new JsonlApprovalStore(join(root, "approvals.jsonl"))],
+  ])("assertApprovedCloudflarePlan with %s", (_name, makeStore) => {
+    it("returns the latest approved cloudflare-apply record, matching the hash in any case", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "1", kind: "cloudflare-apply", planHash: HASH_A }));
+      await store.append(record({ id: "2", kind: "cloudflare-apply", planHash: HASH_A }));
+      await store.append(record({ id: "3", kind: "cloudflare-apply", planHash: HASH_B }));
+      expect((await gateOver(store).assertApprovedCloudflarePlan(HASH_A.toUpperCase())).id).toBe(
+        "2",
+      );
+    });
+
+    it("refuses another hash and tells the user about --approve", async () => {
+      const store = makeStore();
+      await store.append(record({ kind: "cloudflare-apply", planHash: HASH_A }));
+      const error = await gateOver(store)
+        .assertApprovedCloudflarePlan(HASH_B)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect(error).toMatchObject({ code: "PLAN_NOT_APPROVED" });
+      expect((error as OpsCrewError).message).toContain("Cloudflare plan");
+      expect((error as OpsCrewError).hint).toContain(`--approve ${HASH_B}`);
+    });
+
+    it("refuses a refused approval, another kind's approval and an invalid hash", async () => {
+      const store = makeStore();
+      await store.append(
+        record({ id: "r", kind: "cloudflare-apply", planHash: HASH_A, approved: false }),
+      );
+      await store.append(record({ id: "i", kind: "iac-apply", planHash: HASH_B }));
+      await store.append(record({ id: "h", kind: "host-apply", planHash: HASH_C_UPPER }));
+      await store.append(record({ id: "s", kind: "stack-apply", planHash: HASH_D }));
+      for (const hash of [HASH_A, HASH_B, HASH_C_UPPER, HASH_D, "not-a-hash"]) {
+        await expect(gateOver(store).assertApprovedCloudflarePlan(hash)).rejects.toMatchObject({
+          code: "PLAN_NOT_APPROVED",
+        });
+      }
+    });
+
+    it("refuses removing OpsCrew's rules unless the approval allowed it", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "k", kind: "cloudflare-apply", planHash: HASH_A }));
+      await store.append(
+        record({ id: "d", kind: "cloudflare-apply", planHash: HASH_B, allowDestroy: true }),
+      );
+      const error = await gateOver(store)
+        .assertApprovedCloudflarePlan(HASH_A, { allowDestroy: true })
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({ code: "DESTROY_NOT_APPROVED" });
+      expect((error as OpsCrewError).message).toContain("Cloudflare plan");
+      expect(
+        (await gateOver(store).assertApprovedCloudflarePlan(HASH_B, { allowDestroy: true })).id,
+      ).toBe("d");
+    });
+  });
+
+  it("never lets a cloudflare-apply approval authorise another kind's plan", async () => {
+    const { gate } = makeGate();
+    await gate.request({ ...cloudflareRequest, planHash: HASH_A });
+    await expect(gate.assertApprovedPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    await expect(gate.assertApprovedHostPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    await expect(gate.assertApprovedStackPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+  });
+
+  it("ApprovalGate.assertApprovedCloudflarePlan returns the record or audits the refusal", async () => {
+    const { gate, audit } = makeGate();
+    await gate.request({ ...cloudflareRequest, planHash: HASH_A });
+    expect((await gate.assertApprovedCloudflarePlan(HASH_A.toUpperCase())).planHash).toBe(HASH_A);
+
+    await gate.request({ ...cloudflareRequest, kind: "stack-apply", planHash: HASH_B });
+    await expect(gate.assertApprovedCloudflarePlan(HASH_B)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    expect(audit.entries.at(-1)).toMatchObject({
+      kind: "approval",
+      action: "cloudflare-apply",
+      target: HASH_B,
+      decision: "refused",
+    });
+  });
+
+  it("removes OpsCrew's rules only after a confirmed destroy approval of the Cloudflare plan", async () => {
+    const { gate, audit } = makeGate({ confirmation: "shop" });
+    await gate.request({ ...cloudflareRequest, planHash: HASH_A });
+    await expect(
+      gate.assertApprovedCloudflarePlan(HASH_A, { allowDestroy: true }),
+    ).rejects.toMatchObject({ code: "DESTROY_NOT_APPROVED" });
+    expect(audit.entries.at(-1)).toMatchObject({
+      action: "cloudflare-apply",
+      decision: "refused",
+    });
+
+    await gate.request({
+      ...cloudflareRequest,
+      planHash: HASH_B,
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    const approved = await gate.assertApprovedCloudflarePlan(HASH_B, { allowDestroy: true });
     expect(approved.allowDestroy).toBe(true);
   });
 });

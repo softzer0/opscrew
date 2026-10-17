@@ -33,6 +33,7 @@ const APPROVAL_KINDS = [
   "domain-settings",
   "host-apply",
   "stack-apply",
+  "cloudflare-apply",
 ] as const satisfies readonly ApprovalKind[];
 
 const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({
@@ -48,7 +49,7 @@ const approvalRecordSchema: z.ZodType<ApprovalRecord> = z.object({
 });
 
 /** Approval kinds bound to a plan's SHA-256 hash. */
-type HashBoundKind = "iac-apply" | "host-apply" | "stack-apply";
+type HashBoundKind = "iac-apply" | "host-apply" | "stack-apply" | "cloudflare-apply";
 
 interface Refusal {
   message: string;
@@ -121,6 +122,25 @@ const HASH_BOUND: Record<
       audit: "stack plan deletes app data; deleting it was not approved",
     },
   },
+  "cloudflare-apply": {
+    noHash: {
+      message:
+        "A change to OpsCrew's shared resources in Cloudflare can only be approved for a specific Cloudflare plan, but no valid plan hash was given.",
+      hint: "Pass the Cloudflare plan's SHA-256 hash (64 hexadecimal characters) with the request.",
+    },
+    notApproved: (planHash) => ({
+      message:
+        "This Cloudflare plan has not been approved, so OpsCrew will not change anything in Cloudflare.",
+      hint: `Review the Cloudflare plan, then approve it when asked or re-run with --approve ${planHash}.`,
+      audit: "no approval recorded for this Cloudflare plan",
+    }),
+    destroyNotApproved: {
+      message:
+        "This Cloudflare plan deletes OpsCrew's rules in Cloudflare, but the approval did not allow deleting them.",
+      hint: "Run the command interactively and type the confirmation phrase to approve deleting them.",
+      audit: "Cloudflare plan deletes OpsCrew's rules; deleting them was not approved",
+    },
+  },
 };
 
 function isHashBound(kind: ApprovalKind): kind is HashBoundKind {
@@ -186,9 +206,9 @@ export function approvalDecision(
 
 /**
  * The single place where humans approve mutations (constitution I). Every decision, approved or
- * not, is written to the approval store and the audit log; `iac-apply`, `host-apply` and
- * `stack-apply` approvals are bound to the plan's SHA-256 hash and destroys need `allowDestroy`
- * plus the exact typed confirmation phrase.
+ * not, is written to the approval store and the audit log; `iac-apply`, `host-apply`,
+ * `stack-apply` and `cloudflare-apply` approvals are bound to the plan's SHA-256 hash and destroys
+ * need `allowDestroy` plus the exact typed confirmation phrase.
  */
 export class ApprovalGate {
   private readonly handler: ApprovalHandler;
@@ -207,8 +227,8 @@ export class ApprovalGate {
 
   /**
    * Validates the request, asks the handler and records the decision. Throws
-   * `OpsCrewError("INVALID_INPUT")` for an `iac-apply`, `host-apply` or `stack-apply` without a
-   * valid plan hash, an `allowDestroy`, `domain-purchase` or `domain-settings` request without a
+   * `OpsCrewError("INVALID_INPUT")` for an `iac-apply`, `host-apply`, `stack-apply` or
+   * `cloudflare-apply` without a valid plan hash, an `allowDestroy`, `domain-purchase` or `domain-settings` request without a
    * confirmation phrase. A refusal is returned, not thrown.
    */
   async request(request: ApprovalRequest): Promise<ApprovalRecord> {
@@ -282,6 +302,17 @@ export class ApprovalGate {
     options: { allowDestroy?: boolean } = {},
   ): Promise<ApprovalRecord> {
     return this.assertApproved("stack-apply", planHash, options);
+  }
+
+  /**
+   * {@link assertApprovedPlan} for the `cloudflare-apply` approval of a shared Cloudflare plan
+   * (`allowDestroy` for a plan that deletes OpsCrew's rules). Call before every shared apply.
+   */
+  assertApprovedCloudflarePlan(
+    planHash: string,
+    options: { allowDestroy?: boolean } = {},
+  ): Promise<ApprovalRecord> {
+    return this.assertApproved("cloudflare-apply", planHash, options);
   }
 
   private async assertApproved(

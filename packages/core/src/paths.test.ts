@@ -57,6 +57,7 @@ describe("resolveProjectPaths", () => {
       costs: path.join(root, ".opscrew", "costs.jsonl"),
       plansDir: path.join(root, ".opscrew", "plans"),
       tfstateDir: path.join(root, ".opscrew", "tfstate"),
+      cloudflareRecord: path.join(root, ".opscrew", "cloudflare.json"),
       deployKey: path.join(p.projectHomeDir, "deploy_key"),
       deployKeyPub: path.join(p.projectHomeDir, "deploy_key.pub"),
       knownHosts: path.join(p.projectHomeDir, "known_hosts"),

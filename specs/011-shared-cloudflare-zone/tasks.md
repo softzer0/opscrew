@@ -13,7 +13,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
 
 ## Phase 1: Foundation (serial)
 
-- [ ] T1101 Approval kind, local record, constitution and ADR in `packages/contracts/src/safety.ts`, `packages/core/src/{approvals,paths}.ts` (+ tests); the constitution 1.5.0 and ADR 0014 by the lead
+- [X] T1101 Approval kind, local record, constitution and ADR in `packages/contracts/src/safety.ts`, `packages/core/src/{approvals,paths}.ts` (+ tests); the constitution 1.5.0 and ADR 0014 by the lead
   - Owns: those paths (+ their tests)
   - Reads: plan.md "1. Contracts and approvals"; data-model.md "Local record"; how 010's T1001 added `stack-apply`
   - Depends: —

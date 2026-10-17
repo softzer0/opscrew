@@ -47,7 +47,12 @@ export type ApprovalKind =
    * Applying a stack plan to a Portainer the user runs (stacks, registry entry, volumes); bound to
    * the stack plan's SHA-256 hash, never granted by `--yes`.
    */
-  | "stack-apply";
+  | "stack-apply"
+  /**
+   * Applying a shared Cloudflare plan (OpsCrew's rules in a zone, the Zero Trust organization and
+   * one-time-PIN identity provider); bound to the plan's SHA-256 hash, never granted by `--yes`.
+   */
+  | "cloudflare-apply";
 
 export interface PolicyResult {
   policyId: string;
@@ -66,7 +71,10 @@ export interface ApprovalRequest {
   title: string;
   /** Multi-line summary shown before asking (diff summary, resources, cost). Redacted. */
   details: string;
-  /** SHA-256 hex of the plan file. Required for `iac-apply`, `host-apply` and `stack-apply`. */
+  /**
+   * SHA-256 hex of the plan file. Required for `iac-apply`, `host-apply`, `stack-apply` and
+   * `cloudflare-apply`.
+   */
   planHash?: string;
   /** True when the change deletes or replaces anything. Requires `confirmPhrase`. */
   allowDestroy?: boolean;
