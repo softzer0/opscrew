@@ -184,6 +184,36 @@ describe("probePorts", () => {
     expect(named?.remediation).toContain("the DigitalOcean firewall");
   });
 
+  it("reports each port with the same id, title, severity and messages", async () => {
+    const results = await probePorts("h", {
+      ports: [5432, 1234],
+      connect: async (_h, port) => port === 5432,
+      providerName: "Hetzner Cloud",
+    });
+    expect(JSON.stringify(results)).toBe(
+      JSON.stringify([
+        {
+          id: "port-5432-closed",
+          title: "Port 5432 (PostgreSQL) is closed to the internet",
+          severity: "critical",
+          status: "fail",
+          message: "Port 5432 (PostgreSQL) is reachable from the internet.",
+          remediation:
+            "Close it in the Hetzner Cloud firewall and stop publishing it from Docker; use the internal network instead.",
+          target: "h",
+        },
+        {
+          id: "port-1234-closed",
+          title: "Port 1234 (service) is closed to the internet",
+          severity: "critical",
+          status: "pass",
+          message: "Port 1234 is not reachable from the internet.",
+          target: "h",
+        },
+      ]),
+    );
+  });
+
   it("checks the default sensitive ports", async () => {
     const asked: number[] = [];
     await probePorts("h", {

@@ -1,4 +1,5 @@
-import { type Finding, type ScanReport, SEVERITIES, type Severity } from "@opscrew/contracts";
+import { type ScanReport, SEVERITIES, type Severity } from "@opscrew/contracts";
+import { findingLocation } from "./markdown";
 
 export interface ScanSummaryOptions {
   /** Use ANSI colours. Default false. */
@@ -21,11 +22,6 @@ const DIM = "\u001b[2m";
 
 function paint(text: string, code: string, color: boolean): string {
   return color ? `${code}${text}${RESET}` : text;
-}
-
-function location(finding: Finding): string {
-  if (finding.file === undefined) return "";
-  return finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`;
 }
 
 /** Counts line, e.g. `2 critical, 1 high, 0 medium, 3 low, 0 info`. */
@@ -55,7 +51,7 @@ export function renderScanSummary(report: ScanReport, options: ScanSummaryOption
         ANSI[finding.severity],
         color,
       );
-      const where = location(finding);
+      const where = findingLocation(finding);
       lines.push(`  ${label}  ${finding.title}${where ? `  ${paint(where, DIM, color)}` : ""}`);
     }
     const more = report.findings.length - Math.min(top, report.findings.length);

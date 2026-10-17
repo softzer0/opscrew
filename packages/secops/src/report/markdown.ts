@@ -1,6 +1,7 @@
 import { type Finding, type ScanReport, SEVERITIES, type Severity } from "@opscrew/contracts";
 
-const SEVERITY_LABEL: Record<Severity, string> = {
+/** A severity as a heading or table label: `Critical`, `High`, … */
+export const SEVERITY_LABEL: Record<Severity, string> = {
   critical: "Critical",
   high: "High",
   medium: "Medium",
@@ -23,14 +24,15 @@ export function inlineCode(text: string): string {
 }
 
 /** Prose from a scanner: keep it on one paragraph and neutralise raw HTML. */
-function prose(text: string): string {
+export function prose(text: string): string {
   return text
     .replace(/\r?\n+/g, " ")
     .replace(/</g, "&lt;")
     .trim();
 }
 
-function location(finding: Finding): string {
+/** Where a finding is: `file:line`, the file alone, or `""` when it names no file. */
+export function findingLocation(finding: Finding): string {
   if (finding.file === undefined) return "";
   return finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`;
 }
@@ -43,7 +45,7 @@ export function formatUtc(iso: string): string {
 }
 
 function renderFinding(finding: Finding): string {
-  const where = location(finding);
+  const where = findingLocation(finding);
   const lines = [
     `### ${prose(finding.title)}${where ? ` — ${inlineCode(where)}` : ""}`,
     "",

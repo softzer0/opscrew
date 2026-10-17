@@ -1,7 +1,15 @@
 import type { Finding, ScanReport } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { inlineCode, renderScanMarkdown, renderScanSummary, tableCell } from "./index";
+import {
+  findingLocation,
+  inlineCode,
+  prose,
+  renderScanMarkdown,
+  renderScanSummary,
+  SEVERITY_LABEL,
+  tableCell,
+} from "../index";
 
 function finding(overrides: Partial<Finding>): Finding {
   return {
@@ -141,5 +149,20 @@ describe("helpers", () => {
 
   it("escapes table cells", () => {
     expect(tableCell("a | b\nc")).toBe("a \\| b c");
+  });
+
+  it("labels severities for headings and tables", () => {
+    expect(SEVERITY_LABEL.critical).toBe("Critical");
+    expect(SEVERITY_LABEL.info).toBe("Info");
+  });
+
+  it("keeps scanner prose on one line and neutralises raw HTML", () => {
+    expect(prose("  a\n\nb <script> ")).toBe("a b &lt;script>");
+  });
+
+  it("names where a finding is: file and line, the file alone, or nothing", () => {
+    expect(findingLocation(finding({}))).toBe("src/config.ts:3");
+    expect(findingLocation(finding({ line: undefined }))).toBe("src/config.ts");
+    expect(findingLocation(finding({ file: undefined, line: undefined }))).toBe("");
   });
 });

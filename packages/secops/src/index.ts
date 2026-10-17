@@ -9,11 +9,14 @@ export {
 } from "./hardening";
 export { blockingPolicyFailures, evaluatePlanPolicies } from "./policies";
 export {
+  findingLocation,
   formatCounts,
   formatUtc,
   inlineCode,
+  prose,
   renderScanMarkdown,
   renderScanSummary,
+  SEVERITY_LABEL,
   tableCell,
 } from "./report";
 export { createSecretsScanner } from "./rules/secrets";

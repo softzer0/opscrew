@@ -51,20 +51,21 @@ export async function probePorts(host: string, options: ProbeOptions = {}): Prom
   const open = await Promise.all(ports.map((port) => connect(host, port, timeoutMs)));
   return ports.map((port, i) => {
     const service = SENSITIVE_PORTS[port] ?? "service";
+    const base = {
+      id: `port-${port}-closed`,
+      title: `Port ${port} (${service}) is closed to the internet`,
+      severity: "critical" as const,
+    };
     return open[i]
       ? {
-          id: `port-${port}-closed`,
-          title: `Port ${port} (${service}) is closed to the internet`,
-          severity: "critical",
+          ...base,
           status: "fail",
           message: `Port ${port} (${service}) is reachable from the internet.`,
           remediation: `Close it in ${firewall} and stop publishing it from Docker; use the internal network instead.`,
           target: host,
         }
       : {
-          id: `port-${port}-closed`,
-          title: `Port ${port} (${service}) is closed to the internet`,
-          severity: "critical",
+          ...base,
           status: "pass",
           message: `Port ${port} is not reachable from the internet.`,
           target: host,
