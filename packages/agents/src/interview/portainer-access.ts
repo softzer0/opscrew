@@ -4,6 +4,7 @@ import {
   type DockerInfo,
   dockerArchitecture,
   fetchCertificateFingerprint,
+  PORTAINER_TOKEN_STEPS,
   PortainerApiError,
   type PortainerClient,
   type PortainerClientDeps,
@@ -84,7 +85,7 @@ export function createPortainerAccess(options: PortainerAccessOptions): Portaine
             "CREDENTIALS_INVALID",
             "Portainer rejected the access token (HTTP 401), so OpsCrew saved nothing.",
             {
-              hint: `Create an access token in Portainer (your user menu → My account → Access tokens) for a user who may manage stacks on the environment, set ${PORTAINER_TOKEN_VAR} to it and answer again.`,
+              hint: `${PORTAINER_TOKEN_STEPS}, set ${PORTAINER_TOKEN_VAR} to it and answer again.`,
               cause: error,
             },
           );

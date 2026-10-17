@@ -1,5 +1,5 @@
 import type { PhaseResult } from "@opscrew/contracts";
-import { ensureStateDir, plural, writeFileAtomic } from "@opscrew/core";
+import { ensureStateDir, errorMessage, plural, writeFileAtomic } from "@opscrew/core";
 import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   AppKindSchema,
@@ -237,8 +237,7 @@ async function enrich(
       maxBudgetUsd: MAX_BUDGET_USD,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return skip(redactor.redact(`the Analyst failed (${message}).`));
+    return skip(redactor.redact(`the Analyst failed (${errorMessage(error)}).`));
   }
 
   const { costUsd } = result;

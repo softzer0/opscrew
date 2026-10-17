@@ -36,6 +36,7 @@ import {
   type SecurityProblem,
   type SecurityReportInput,
   securityProblems,
+  UNKNOWN_SERVER_ADDRESS,
 } from "./report";
 
 /** Options for {@link runSecure}; every side effect has a default built from `deps`. */
@@ -222,7 +223,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     hostChecksSkipped =
       plan.target.provider === "own"
         ? "OpsCrew does not know how to reach your server on this computer. Run `opscrew secure` on the computer that ran `opscrew provision` (its `.opscrew/` folder holds the login and the confirmed host key)."
-        : "OpsCrew does not know the server's address on this computer. If the app is deployed, run `opscrew secure` on the computer that provisioned the server (its `.opscrew/` folder holds the address); otherwise deploy it first.";
+        : UNKNOWN_SERVER_ADDRESS;
   } else {
     const checked = await checkServer(deps, plan, sshHost, own, options);
     hostChecks = checked.hostChecks;
@@ -245,15 +246,15 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
       ? { portainer: { notes: PORTAINER_SECURE_NOTES, probesSkipped: PORTAINER_PROBES_SKIPPED } }
       : {}),
   };
+  // A server the user owns: the report and the terminal say "your server", never its address or
+  // host name.
+  const hidden = own?.hidden ?? [];
+  const hide = (text: string) => replaceNames(text, hidden, "your server");
   // The report is committed: behind Cloudflare's proxy it never names the server's address, and
   // for a server the user owns it never names its address or host name at all (FR-902).
   const report = say(
     plan.target.provider === "own"
-      ? replaceNames(
-          renderSecurityReport(privateReportInput(input, own?.hidden ?? [])),
-          own?.hidden ?? [],
-          "your server",
-        )
+      ? hide(renderSecurityReport(privateReportInput(input, hidden)))
       : hidesServerAddress(plan)
         ? withoutServerAddress(
             renderSecurityReport(privateReportInput(input, [address?.ipv4, address?.ipv6])),
@@ -266,15 +267,9 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
 
   const problems = securityProblems(input);
   const passed = problems.every((problem) => problem.status !== "fail");
-  // A server the user owns: the terminal says "your server", never its address or host name.
-  const hidden = own?.hidden ?? [];
   const summary = say(
     plan.target.provider === "own"
-      ? replaceNames(
-          renderSecuritySummary(privateReportInput(input, hidden), { reportPath }),
-          hidden,
-          "your server",
-        )
+      ? hide(renderSecuritySummary(privateReportInput(input, hidden), { reportPath }))
       : renderSecuritySummary(input, { reportPath }),
   );
   const [headline = "", ...details] = summary.trimEnd().split("\n");
@@ -285,11 +280,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   if (hostChecksSkipped !== undefined)
     reporter.warn(
       say(
-        replaceNames(
-          `${portainer ? "Portainer checks" : "Server checks"} skipped: ${hostChecksSkipped}`,
-          hidden,
-          "your server",
-        ),
+        hide(`${portainer ? "Portainer checks" : "Server checks"} skipped: ${hostChecksSkipped}`),
       ),
     );
 

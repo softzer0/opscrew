@@ -1,6 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import type { DsRecord, RegisteredDomain, Registrar, RegistrarDnsRecord } from "@opscrew/contracts";
-import { listText, OpsCrewError, plural } from "@opscrew/core";
+import { listText, OpsCrewError, PHRASE_MISMATCH, plural } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requireNoMoveInProgress } from "../provision/guard";
@@ -707,7 +707,7 @@ async function copyAndSwitch(
 /** What to do after a refused typed approval (mistyped, or no terminal and no `--confirm`). */
 function refusedHint(ctx: ConnectContext, reason: string | undefined, what: string): string {
   const { deps, domain } = ctx;
-  if (reason === "confirmation phrase did not match") {
+  if (reason === PHRASE_MISMATCH) {
     return `To ${what}, run \`${ctx.command}\` again and type ${domain} exactly when asked.`;
   }
   return deps.interactive

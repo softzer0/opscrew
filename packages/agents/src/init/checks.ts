@@ -1,23 +1,24 @@
 import {
   CLOUDFLARE_REGISTRAR_PERMISSIONS,
+  CLOUDFLARE_TOKEN_PAGE,
   CLOUDFLARE_TOKEN_PERMISSIONS,
   type CloudflareClient,
   cloudflareConnector,
 } from "@opscrew/connector-cloudflare";
-import {
-  GITHUB_TOKEN_PERMISSIONS,
-  GitClient,
-  GitHubClient,
-  parseGitHubRepo,
-  resolveGitHubToken,
-} from "@opscrew/connector-github";
+import { GITHUB_TOKEN_PERMISSIONS, parseGitHubRepo } from "@opscrew/connector-github";
 import type {
   CredentialCheck,
   CredentialRequirement,
   RegistrarAccountCheck,
   VpsProviderId,
 } from "@opscrew/contracts";
-import { findExecutable, isUserFacingError } from "@opscrew/core";
+import {
+  errorMessage,
+  errorText,
+  findExecutable,
+  isUserFacingError,
+  lowerFirst,
+} from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
 import { usesTunnel } from "@opscrew/iac-templates";
 import {
@@ -49,6 +50,7 @@ import {
 } from "../providers";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer";
 import { CLOUDFLARE_TUNNEL_PERMISSIONS, tunnelTokenPermissions } from "../provision/zero-trust";
+import { gitClient, githubClientFromToken } from "../shared/github";
 import { ownServerLogin, readOwnServerRecord, requireOwnServerKey } from "../shared/own-server";
 import { type CheckResult, failFrom } from "./check-result";
 import {
@@ -147,11 +149,6 @@ const SCANNERS = [
 /** True when no check failed (optional checks never fail, so warnings still pass). */
 export function initPassed(checks: readonly InitCheck[]): boolean {
   return !checks.some((check) => check.status === "fail");
-}
-
-function errorText(error: unknown): string {
-  if (isUserFacingError(error)) return `${error.message}${error.hint ? ` ${error.hint}` : ""}`;
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** How the plan (or, before design, the requirements) uses Cloudflare. */
@@ -394,13 +391,7 @@ async function inspectRepository(
 ): Promise<RepoInfo> {
   const git = which("git");
   if (git === undefined) return { isRepo: false };
-  const client = new GitClient({
-    cwd: deps.paths.root,
-    runner: deps.runner,
-    env: deps.env,
-    git,
-    redactor: deps.redactor,
-  });
+  const client = gitClient(deps, git);
   if (!(await client.isRepo())) return { git, isRepo: false };
   const remote = await client.remoteUrl("origin");
   const coordinates = remote ? parseGitHubRepo(remote) : undefined;
@@ -684,14 +675,10 @@ async function checkProviderToken(
   };
 }
 
-function lowerFirst(text: string): string {
-  return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
-}
-
 function cloudflareFix(domain?: string, tunnel = false): string {
   const zone = domain ? ` for the zone that holds ${domain}` : "";
   const permissions = tunnel ? tunnelTokenPermissions() : CLOUDFLARE_TOKEN_PERMISSIONS.join(", ");
-  return `Create a token at https://dash.cloudflare.com/profile/api-tokens with ${permissions}${zone}, then set CLOUDFLARE_API_TOKEN.`;
+  return `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with ${permissions}${zone}, then set CLOUDFLARE_API_TOKEN.`;
 }
 
 /** Said with a working token when the plan has a Cloudflare Tunnel: what else the token needs. */
@@ -711,12 +698,7 @@ type CloudflareAccess =
   | { state: "online"; client: CloudflareClient; verified: () => Promise<CredentialCheck> };
 
 function cloudflareAccess(deps: PhaseDeps, offline: boolean): CloudflareAccess {
-  const connector = cloudflareConnector({
-    env: deps.env,
-    fetch: deps.fetch,
-    redactor: deps.redactor,
-    version: deps.version,
-  });
+  const connector = cloudflareConnector(deps);
   const client = connector.client;
   if (client === undefined) return { state: "unset" };
   if (offline) return { state: "offline" };
@@ -804,7 +786,7 @@ const REGISTRAR_PROBE_DOMAIN = "opscrew-registrar-check.com";
 /** Accounts the Registrar probe tries before giving up. */
 const REGISTRAR_PROBE_ACCOUNTS = 3;
 
-const REGISTRAR_FIX = `Buying domains is optional; to enable it add ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")} to the token at https://dash.cloudflare.com/profile/api-tokens.`;
+const REGISTRAR_FIX = `Buying domains is optional; to enable it add ${CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ")} to the token at ${CLOUDFLARE_TOKEN_PAGE}.`;
 
 /** The permissions a purchase needs beyond the read the probe makes. */
 const REGISTRAR_EDIT_PERMISSIONS = `${CLOUDFLARE_REGISTRAR_PERMISSIONS[0]} and ${CLOUDFLARE_REGISTRAR_PERMISSIONS[1]}, with the zone permissions covering all zones of the account`;
@@ -812,11 +794,6 @@ const REGISTRAR_EDIT_PERMISSIONS = `${CLOUDFLARE_REGISTRAR_PERMISSIONS[0]} and $
 /** A refusal for missing permissions: Cloudflare answered 401 or 403. */
 function isPermissionError(error: unknown): boolean {
   return isUserFacingError(error) && error.code === "CREDENTIALS_INVALID";
-}
-
-/** Plain cause of a refusal, without the connector's hint (the fix names the permissions). */
-function causeText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -851,7 +828,7 @@ async function checkRegistrar(access: CloudflareAccess): Promise<CheckResult> {
     isPermissionError(error)
       ? {
           status: "warn",
-          message: `CLOUDFLARE_API_TOKEN cannot buy domains through Cloudflare: ${causeText(error)}`,
+          message: `CLOUDFLARE_API_TOKEN cannot buy domains through Cloudflare: ${errorMessage(error)}`,
           fix: REGISTRAR_FIX,
         }
       : {
@@ -975,8 +952,10 @@ function githubFix(coordinates?: { owner: string; repo: string }): string {
 /** The GitHub token and, online with a GitHub origin, what GitHub says about the repository. */
 interface GitHubLookup {
   info: RepoInfo;
-  token?: string;
-  /** Where the token came from: `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI login. */
+  /**
+   * Where the token came from: `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI login; `undefined`
+   * when there is no token.
+   */
   source?: string;
   /** The repository as GitHub reports it (read once, online only). */
   repo?: { canPush: boolean; private: boolean };
@@ -996,22 +975,20 @@ function githubLookup(
   let lookup: Promise<GitHubLookup> | undefined;
   const run = async (): Promise<GitHubLookup> => {
     const info = await repoInfo;
-    const token = await resolveGitHubToken(deps.env, deps.runner);
-    if (!token) return { info };
-    deps.redactor.addLiteral(token, "github-token");
+    const client = await githubClientFromToken(deps);
+    if (client === undefined) return { info };
     const source = hasEnv(deps.env, "GITHUB_TOKEN")
       ? "GITHUB_TOKEN"
       : hasEnv(deps.env, "GH_TOKEN")
         ? "GH_TOKEN"
         : "the GitHub CLI login";
     const coordinates = info.coordinates;
-    if (offline || !coordinates) return { info, token, source };
-    const client = new GitHubClient({ token, fetch: deps.fetch, version: deps.version });
+    if (offline || !coordinates) return { info, source };
     try {
       const repo = await client.getRepo(coordinates.owner, coordinates.repo);
-      return { info, token, source, repo: { canPush: repo.canPush, private: repo.private } };
+      return { info, source, repo: { canPush: repo.canPush, private: repo.private } };
     } catch (error) {
-      return { info, token, source, error };
+      return { info, source, error };
     }
   };
   return () => {
@@ -1024,8 +1001,8 @@ async function checkGitHub(
   offline: boolean,
   github: () => Promise<GitHubLookup>,
 ): Promise<CheckResult> {
-  const { info, token, source, repo, error } = await github();
-  if (!token) {
+  const { info, source, repo, error } = await github();
+  if (source === undefined) {
     return {
       status: "fail",
       message:

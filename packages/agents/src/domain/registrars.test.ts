@@ -1,11 +1,13 @@
 import type { FetchLike, Registrar } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import { z } from "zod";
 import { createTestPhaseDeps } from "../testing";
 import {
   configuredRegistrars,
   parseRegistrarId,
+  REGISTRAR_IDS,
   registrarFor,
   registrarLinks,
   registrarSandbox,
@@ -62,6 +64,20 @@ function fakeRegistrar(id: Registrar["id"]): Registrar {
     setAutoRenew: async () => ({ domain: "x.com", registrar: id, autoRenew: true }),
   };
 }
+
+describe("REGISTRAR_IDS", () => {
+  it("is a tuple of every registrar in OpsCrew's order, as z.enum takes it", () => {
+    expectTypeOf(REGISTRAR_IDS).toEqualTypeOf<
+      readonly ["cloudflare", "porkbun", "namecheap", "godaddy"]
+    >();
+    expect(z.enum(REGISTRAR_IDS).options).toEqual([
+      "cloudflare",
+      "porkbun",
+      "namecheap",
+      "godaddy",
+    ]);
+  });
+});
 
 describe("parseRegistrarId", () => {
   it("accepts the four registrars in any case", () => {

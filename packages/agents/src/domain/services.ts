@@ -1,8 +1,8 @@
 import { CloudflareClient, CloudflareRegistrar } from "@opscrew/connector-cloudflare";
 import type { Registrar, RegistrarId } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, realSleep } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
-import { cloudflareTokenMissing, requireCloudflareToken } from "./common";
+import { domainTokenMissing, requireCloudflareToken } from "./common";
 import {
   configuredRegistrars,
   hasEnv,
@@ -147,7 +147,7 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
 }
 
 const noToken = async (): Promise<never> => {
-  throw cloudflareTokenMissing();
+  throw domainTokenMissing();
 };
 
 /**
@@ -158,7 +158,7 @@ const noToken = async (): Promise<never> => {
 const WITHOUT_CLOUDFLARE: CloudflareDomainServices = {
   accounts: noToken,
   registrar: () => {
-    throw cloudflareTokenMissing();
+    throw domainTokenMissing();
   },
   extension: async () => undefined,
   zones: {
@@ -173,8 +173,6 @@ const WITHOUT_CLOUDFLARE: CloudflareDomainServices = {
     scanRecords: noToken,
   },
 };
-
-const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface ResolveOptions {
   /**

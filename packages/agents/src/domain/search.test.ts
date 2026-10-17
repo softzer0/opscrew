@@ -1,3 +1,4 @@
+import { CLOUDFLARE_REGISTRAR_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { buyable, domainProject, TOKEN, visibleText } from "../testing";
@@ -140,9 +141,13 @@ describe("searchDomains", () => {
   it("needs a token, one account (or --account) and a plain query", async () => {
     const project = await domainProject();
     const noToken = await project.run({ token: null });
+    const permissions = CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ");
     await expect(
       searchDomains(noToken.deps, { query: "shopapp", services: noToken.services }),
-    ).rejects.toMatchObject({ code: "CREDENTIALS_MISSING" });
+    ).rejects.toMatchObject({
+      code: "CREDENTIALS_MISSING",
+      hint: `Create a token at https://dash.cloudflare.com/profile/api-tokens with these permissions: ${permissions}. Then try again; nothing was changed.`,
+    });
 
     const { deps, services } = await project.run();
     for (const query of ["", "bücher", "shop/app", "-shop"]) {
@@ -167,6 +172,7 @@ describe("searchDomains", () => {
     project.cf.accounts = [];
     await expect(searchDomains(deps, { query: "shopapp", services })).rejects.toMatchObject({
       code: "CREDENTIALS_INVALID",
+      hint: `Create a token at https://dash.cloudflare.com/profile/api-tokens with these permissions: ${permissions}. Then try again.`,
     });
   });
 });

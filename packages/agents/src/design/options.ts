@@ -5,7 +5,7 @@ import type {
   ProviderExtras,
   VpsProviderId,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { formatMoney, OpsCrewError } from "@opscrew/core";
 import {
   type CostEstimate,
   type DesignOption,
@@ -17,7 +17,6 @@ import { requestedProvider, requestedRegion } from "../providers";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
-  formatMoney,
   type NonLiveRates,
   pricedOffer,
   priceLabel,

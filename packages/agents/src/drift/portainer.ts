@@ -1,13 +1,10 @@
 import { isAbsolute, join } from "node:path";
-import { GitClient } from "@opscrew/connector-github";
+import type { GitClient } from "@opscrew/connector-github";
 import {
   DEPLOY_BRANCH,
   DEPLOY_COMPOSE_FILE,
-  type DesiredStacks,
   type DesiredValueFingerprints,
   inspectCertificate,
-  normalizeCertFingerprint,
-  PortainerCertificateError,
   type PortainerFacts,
   planStacks,
   type StackPlan,
@@ -21,11 +18,8 @@ import {
   PORTAINER_STACK_TEMPLATE_PATH,
   PORTAINER_STACK_VARIABLES,
   portainerStackEnvKeys,
-  portainerStackVolumes,
   portainerTarget,
   renderPlaceholderStack,
-  renderPortainerConnectorStack,
-  renderUpdaterStack,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -40,6 +34,7 @@ import {
   REPOSITORY_TOKEN_VAR,
   requirePortainerConnection,
   requirePortainerToken,
+  setPortainerOrigin,
 } from "../provision/portainer";
 import {
   committedTfvars,
@@ -51,13 +46,16 @@ import {
 import { generatedValuesFile } from "../provision/secrets";
 import {
   type AppEnvironment,
+  adapterBlocked,
   assembleAppEnv,
+  desiredStacks,
   diffRenderedFiles,
-  hidePortainerAddress,
+  gitClient,
   inspectRecordedPortainer,
   type PortainerConnection,
   parseDotenv,
-  publishedPorts,
+  pinnedPublicKey,
+  readValidJson,
   recordedStack,
   stateContents,
   stateFile,
@@ -118,15 +116,7 @@ async function readAppValues(
   const path = isAbsolute(envFile) ? envFile : join(deps.paths.root, envFile);
   const dotenvText = await readTextIfExists(path);
   if (dotenvText === undefined) return false;
-  let previous: z.infer<typeof GeneratedValuesSchema> | undefined;
-  try {
-    const parsed = GeneratedValuesSchema.safeParse(
-      JSON.parse((await readTextIfExists(generatedValuesFile(deps))) ?? "null"),
-    );
-    previous = parsed.success ? parsed.data : undefined;
-  } catch {
-    previous = undefined;
-  }
+  const previous = await readValidJson(generatedValuesFile(deps), GeneratedValuesSchema);
   let environment: AppEnvironment;
   try {
     environment = await assembleAppEnv({
@@ -249,7 +239,7 @@ async function desiredFingerprints(
         ? remote
         : valueFingerprints(key, {
             PORTAINER_WEBHOOK_URL: `${portainerContainerUrl(connection.url)}/api/stacks/webhooks/${webhookId}`,
-            PORTAINER_PINNED_KEY: await publicKeyPin(deps, connection, input.inspectCertificate),
+            PORTAINER_PINNED_KEY: await pinnedPublicKey(deps, connection, input.inspectCertificate),
           });
   } else {
     const token = stringOutput(outputs, "portainer_tunnel_token");
@@ -260,30 +250,6 @@ async function desiredFingerprints(
         : valueFingerprints(key, { TUNNEL_TOKEN: token });
   }
   return out;
-}
-
-/**
- * The public-key pin the updater checks Portainer's certificate with (as provision computes it):
- * read with a TLS handshake (read-only) and only when the certificate is the confirmed one; empty
- * for plain HTTP to this computer.
- */
-async function publicKeyPin(
-  deps: Pick<PhaseDeps, "redactor">,
-  connection: PortainerConnection,
-  inspect: typeof inspectCertificate,
-): Promise<string> {
-  if (new URL(connection.url).protocol !== "https:") return "";
-  const pinned = normalizeCertFingerprint(connection.certFingerprint ?? "");
-  const details = await inspect(connection.url);
-  const actual = normalizeCertFingerprint(details.fingerprint);
-  if (pinned === undefined || actual === undefined || actual !== pinned) {
-    throw new PortainerCertificateError(
-      pinned ?? "no confirmed certificate",
-      actual ?? "an unreadable fingerprint",
-    );
-  }
-  deps.redactor.addLiteral(details.publicKeyPin, "portainer-key");
-  return details.publicKeyPin;
 }
 
 /** The plan's changes and findings as drift: what `opscrew provision` would change in Portainer. */
@@ -473,12 +439,7 @@ export async function portainerDrift(
   );
   const connection = await requirePortainerConnection(deps, plan);
   const token = requirePortainerToken(deps);
-  const git = new GitClient({
-    cwd: deps.paths.root,
-    runner: deps.runner,
-    env: deps.env,
-    redactor: deps.redactor,
-  });
+  const git = gitClient(deps);
   const github = await setupGitHub(deps, git, services);
   const repository = await github.api.getRepo(github.owner, github.repo);
   const repo = `${github.owner}/${github.repo}`;
@@ -519,12 +480,7 @@ export async function portainerDrift(
   const notes: string[] = [];
   const differences: PortainerDifference[] = [];
   if (hasRoot) {
-    if (root.webhook) {
-      // Portainer's address reaches the engine only as a sensitive variable, never in a file.
-      const origin = portainerContainerUrl(connection.url);
-      hidePortainerAddress(deps.redactor, origin);
-      env.TF_VAR_portainer_origin = origin;
-    }
+    if (root.webhook) setPortainerOrigin(deps.redactor, env, connection.url);
     const compared = await compareInfrastructure(deps, {
       plan: current,
       engine,
@@ -566,15 +522,18 @@ export async function portainerDrift(
     detail: "drift",
   });
   if (facts.findings.length > 0) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      deps.redactor.redact(
-        `OpsCrew cannot check your Portainer, so it compared nothing there:\n${facts.findings.map((finding) => `  - ${finding.message}`).join("\n")}`,
-      ),
-      {
-        hint: `${[...new Set(facts.findings.map((finding) => finding.hint))].join(" ")} Then run \`opscrew drift\` again.`,
-      },
-    );
+    const again = "Then run `opscrew drift` again.";
+    throw adapterBlocked({
+      cannot: "OpsCrew cannot check your Portainer",
+      nothing: "compared nothing there",
+      findings: facts.findings.map((finding) => ({
+        ...finding,
+        message: deps.redactor.redact(finding.message),
+      })),
+      blocked: [],
+      extraHint: again,
+      fallbackHint: again,
+    });
   }
   const arch = facts.environment?.arch;
   if (arch !== undefined && arch !== target.arch) {
@@ -586,7 +545,6 @@ export async function portainerDrift(
   }
 
   const publicImage = connection.publicImage ?? false;
-  const keys = portainerStackEnvKeys(current);
   let fingerprints: DesiredValueFingerprints | undefined;
   if (valueKey === undefined) {
     notes.push(NO_VALUE_KEY_NOTE);
@@ -608,27 +566,13 @@ export async function portainerDrift(
       differences,
     );
   }
-  const updater = target.redeploy === "updater";
-  const desired: DesiredStacks = {
-    app: plan.app.name,
-    environmentId: target.environmentId,
-    repository: {
-      url: `https://github.com/${repo}`,
-      branch: DEPLOY_BRANCH,
-      composeFile: DEPLOY_COMPOSE_FILE,
-      private: repository.private,
-    },
-    envKeys: [...keys.app, ...keys.opscrew].sort(),
-    registry: { url: "ghcr.io", private: !publicImage, username: github.owner },
-    redeploy: target.redeploy,
-    ...(updater
-      ? { updater: { compose: renderUpdaterStack(current).content } }
-      : { tunnelConnector: { compose: renderPortainerConnectorStack(current).content } }),
-    record: connection.created,
-    ports: publishedPorts(target),
-    volumes: portainerStackVolumes(current),
-    ...(fingerprints !== undefined ? { valueFingerprints: fingerprints } : {}),
-  };
+  const desired = desiredStacks(current, {
+    connection,
+    github,
+    repositoryPrivate: repository.private,
+    imagePrivate: !publicImage,
+    ...(fingerprints !== undefined ? { fingerprints } : {}),
+  });
   differences.push(...stackDifferences(planStacks(facts, desired)));
 
   // 5. The deploy branch's head against the committed template with its image.

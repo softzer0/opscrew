@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { recordPortainerConnection } from "../shared";
 import {
@@ -20,6 +20,7 @@ import {
   ScriptedRunner,
 } from "../testing";
 import type { DnsResolver, TlsConnect } from "./net";
+import { renderPortainerRunbook } from "./portainer";
 import { runVerify } from "./run";
 
 const NOW = "2026-10-11T12:00:00.000Z";
@@ -687,5 +688,28 @@ describe("opscrew verify for the user's Portainer", () => {
       expect((error as OpsCrewError).code).toBe("INVALID_INPUT");
       expect((error as OpsCrewError).message).toContain("behind your own reverse proxy");
     }
+  });
+});
+
+describe("renderPortainerRunbook", () => {
+  const github = { owner: "acme", repo: "shop" };
+  const cases: [string, DeployPlan][] = [
+    ["tunnel, updater, PostgreSQL", portainerPlan()],
+    [
+      "caddy, Cloudflare redeploy, no database",
+      portainerPlan({ web: { mode: "caddy" }, redeploy: "cloudflare", postgres: false }),
+    ],
+    [
+      "proxy without a domain, an external database",
+      {
+        ...portainerPlan({ web: { mode: "proxy", port: 8080 }, domain: null, postgres: false }),
+        externalServices: ["supabase"],
+      },
+    ],
+  ];
+
+  it.each(cases)("%s: the runbook stays as it was", (_name, plan) => {
+    const runbook = renderPortainerRunbook(plan, { opscrewVersion: "0.1.0", github });
+    expect(runbook.content).toMatchSnapshot();
   });
 });

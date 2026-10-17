@@ -5,7 +5,13 @@ import type {
   RegistrationRequest,
   RegistrationStatus,
 } from "@opscrew/contracts";
-import { type ErrorCode, isUserFacingError, OpsCrewError, plural } from "@opscrew/core";
+import {
+  type ErrorCode,
+  isUserFacingError,
+  OpsCrewError,
+  PHRASE_MISMATCH,
+  plural,
+} from "@opscrew/core";
 import { shellWord } from "../shared/apply-command";
 import {
   auditDomain,
@@ -119,6 +125,23 @@ export function chargeCode(quote: Charge): string {
   return `${quote.exact ? "" : "up to "}${formatMoneyCode(quote.charge)}`;
 }
 
+/** The purchase approval's line when auto-renew stays off for a registration of `years`. */
+export function autoRenewOffLine(years: number): string {
+  return `Auto-renew: off. The domain expires after ${plural(years, "year")} unless you renew it; turn auto-renew on with \`opscrew domain auto-renew on\`.`;
+}
+
+/** The setup approval's line about the domain's Cloudflare zone (a domain already registered). */
+export function zoneLine(domain: string): string {
+  return `Cloudflare zone: created for ${domain} in this account if it does not exist there yet (an existing zone in this account is reused).`;
+}
+
+/** What the audit says was done: `already registered; set up`, or `bought` with the approved price. */
+export function registeredSummary(result: Pick<SetUp, "alreadyRegistered" | "total">): string {
+  return result.alreadyRegistered
+    ? "already registered; set up"
+    : `bought${result.total === undefined ? "" : ` (approved price ${formatMoney(result.total)})`}`;
+}
+
 /**
  * Stops when the limit is in another currency than the quote or below what is charged now.
  * `quotedBy` names the registrar in the refusal.
@@ -176,7 +199,7 @@ export function purchaseRefused(
   reason: string | undefined,
 ): OpsCrewError {
   const { domain } = ctx;
-  const mismatch = reason === "confirmation phrase did not match";
+  const mismatch = reason === PHRASE_MISMATCH;
   return new OpsCrewError(
     "APPROVAL_REFUSED",
     `Buying ${domain} was not approved, so nothing was bought.`,

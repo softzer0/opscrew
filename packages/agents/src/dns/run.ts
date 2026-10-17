@@ -1,8 +1,13 @@
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  readArtifact,
+  readOptionalArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { parseHostName } from "../domain/common";
-import { insideDomain, readOptionalArtifact, recordRequirements } from "../domain/project";
+import { insideDomain, recordRequirements } from "../domain/project";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { runPhaseFlow } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";

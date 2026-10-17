@@ -580,7 +580,7 @@ describe("runVerify", () => {
         "OpsCrew does not know the server's address on this computer",
       );
       expect(check.remediation).toBe(
-        "Run `opscrew verify` where the server was provisioned (its .opscrew/ folder holds the address).",
+        "Run `opscrew verify` on the computer that provisioned the server (its `.opscrew/` folder holds the address).",
       );
       expect(`${check.message} ${check.remediation}`).not.toContain("opscrew dns");
     }
@@ -596,8 +596,8 @@ describe("runVerify", () => {
     );
     expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
     expect(error?.message).toContain("OpsCrew does not know the server's address on this computer");
-    expect(error?.hint).toContain(
-      "Run `opscrew verify` on the computer that provisioned the server",
+    expect(error?.hint).toBe(
+      "Run `opscrew verify` on the computer that provisioned the server (its `.opscrew/` folder holds the address).",
     );
     expect(error?.hint).not.toContain("opscrew provision");
   });

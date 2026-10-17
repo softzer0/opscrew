@@ -1,4 +1,8 @@
-import { normalizeCertFingerprint, sameCertFingerprint } from "@opscrew/connector-portainer";
+import {
+  normalizeCertFingerprint,
+  PORTAINER_TOKEN_STEPS,
+  sameCertFingerprint,
+} from "@opscrew/connector-portainer";
 import { listText, OpsCrewError, type ProjectPaths } from "@opscrew/core";
 import type { PortainerWeb, Question } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -77,6 +81,14 @@ export interface PortainerCertificate {
  * Asks the user to confirm Portainer's certificate (never decided by a model); true to trust it.
  */
 export type ConfirmPortainerCertificate = (certificate: PortainerCertificate) => Promise<boolean>;
+
+/** How to check Portainer's certificate fingerprint before trusting it (it names no address). */
+export const CHECK_PORTAINER_CERTIFICATE =
+  "Check it before you trust it: in your browser open Portainer, click the padlock and view the certificate's SHA-256 fingerprint, or run `openssl s_client -connect <host>:<port> </dev/null | openssl x509 -noout -fingerprint -sha256` on the Portainer host itself.";
+
+/** Said when Portainer presents another certificate than the one OpsCrew pinned. */
+export const NEW_CERTIFICATE_WARNING =
+  "Trust the new one only if you changed Portainer's certificate yourself; otherwise someone may be intercepting the connection.";
 
 /** How the interview reaches Portainer to confirm its certificate and list its environments. */
 export interface PortainerInterviewOptions {
@@ -407,7 +419,7 @@ export async function reachPortainer(
       "PHASE_PRECONDITION",
       `OpsCrew needs a Portainer access token in ${PORTAINER_TOKEN_VAR} to list your environments, and it is not set.`,
       {
-        hint: `In Portainer, open My account, then Access tokens, and add a token; set ${PORTAINER_TOKEN_VAR} to it and run \`opscrew interview\` again. OpsCrew reads the token only from this environment variable and never saves it.`,
+        hint: `${PORTAINER_TOKEN_STEPS}, set ${PORTAINER_TOKEN_VAR} to it and run \`opscrew interview\` again. OpsCrew reads the token only from this environment variable and never saves it.`,
       },
     );
   }

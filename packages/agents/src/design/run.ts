@@ -1,5 +1,12 @@
 import type { ComputeCatalog, VpsProviderId } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, plural, toPosixRelative } from "@opscrew/core";
+import {
+  formatMoney,
+  isUserFacingError,
+  lowerFirst,
+  OpsCrewError,
+  plural,
+  toPosixRelative,
+} from "@opscrew/core";
 import { detectProjectDetails, normalizeAppDir } from "@opscrew/detect";
 import {
   type DeployPlan,
@@ -23,6 +30,7 @@ import {
 } from "../providers";
 import { moveInProgress, requireNoMoveInProgress } from "../provision/guard";
 import {
+  designOptionLine,
   hasDeployment,
   hasState,
   readOwnServer,
@@ -37,7 +45,7 @@ import {
   deriveCodeChanges,
   readScanReport,
 } from "./code-changes";
-import { convertMoney, EXCHANGE_RATE_NOTE, formatMoney, priceLabel } from "./cost";
+import { convertMoney, EXCHANGE_RATE_NOTE, priceLabel } from "./cost";
 import { buildDesignOptions, minimumMonthlyCost } from "./options";
 import {
   buildOwnServerOption,
@@ -312,10 +320,6 @@ async function pricePortainer(
   };
 }
 
-function lowerFirst(text: string): string {
-  return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
-}
-
 async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<DesignInputs> {
   const { paths } = deps;
   deps.reporter.step("Designing deployment options");
@@ -375,17 +379,7 @@ async function priceOptions(
   const regionNote = wording.profile.regionNotes[region];
   if (regionNote !== undefined) reporter.info(say(regionNote));
   const budget = requirements.budgetMonthly;
-  for (const option of designOptions) {
-    const marks = [
-      option.fitsBudget ? "fits the budget" : "over budget",
-      ...(option.recommended ? ["recommended"] : []),
-    ];
-    reporter.info(
-      say(
-        `${option.title} (${option.id}): ${formatMoney(option.cost.monthly)}/month, ${priceLabel(option.cost)} — ${marks.join(", ")}`,
-      ),
-    );
-  }
+  for (const option of designOptions) reporter.info(say(designOptionLine(option)));
   const crossCurrency = designOptions.some((o) => o.cost.monthly.currency !== budget.currency);
   if (!designOptions.some((option) => option.fitsBudget)) {
     const minimum = minimumMonthlyCost(designOptions, budget.currency);

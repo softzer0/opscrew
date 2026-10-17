@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PhaseRequest } from "@opscrew/contracts";
 import { FakeAgentRuntime, type FakePhaseResponse } from "@opscrew/core/testing";
@@ -97,6 +97,19 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(repo.runtime?.requests).toHaveLength(0);
     expect(await statusOf(repo)).toMatchObject({ dockerfile: "pending" });
     expect((await repo.deps.state.read()).phases.adapt?.status).toBe("failed");
+  });
+
+  it("stops with the one hint when the project is not a git repository", async () => {
+    const repo = await setup();
+    await rm(join(repo.root, ".git"), { recursive: true, force: true });
+
+    await expect(runAdapt(repo.deps, { github: new FakeGitHub() })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: "This project is not a git repository.",
+      hint: "Run OpsCrew from a clone of your GitHub repository, or run `git init`, commit your code and add your GitHub remote, then try again.",
+    });
+    expect(await exists(repo, "Dockerfile")).toBe(false);
+    expect(repo.handler.requests).toHaveLength(0);
   });
 
   it("writes files, runs the agent, commits, pushes and opens a pull request", async () => {

@@ -1,3 +1,4 @@
+import { CLOUDFLARE_TOKEN_PAGE } from "@opscrew/connector-cloudflare";
 import {
   GODADDY_DASHBOARD_URLS,
   GoDaddyClient,
@@ -19,16 +20,23 @@ import {
 import type { Registrar, RegistrarId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
-import { DASHBOARD, TOKEN_PAGE } from "./common";
+import { DASHBOARD } from "./common";
 
 /** Registrars other than Cloudflare: one account each, set up from environment variables. */
 export type OtherRegistrarId = Exclude<RegistrarId, "cloudflare">;
 
 /** The registrars other than Cloudflare, in the order OpsCrew lists them. */
-export const OTHER_REGISTRAR_IDS: readonly OtherRegistrarId[] = ["porkbun", "namecheap", "godaddy"];
+export const OTHER_REGISTRAR_IDS = [
+  "porkbun",
+  "namecheap",
+  "godaddy",
+] as const satisfies readonly OtherRegistrarId[];
 
-/** Every registrar, in the order OpsCrew lists them. */
-export const REGISTRAR_IDS: readonly RegistrarId[] = ["cloudflare", ...OTHER_REGISTRAR_IDS];
+/** Every registrar, in the order OpsCrew lists them (a tuple, for `z.enum`). */
+export const REGISTRAR_IDS = [
+  "cloudflare",
+  ...OTHER_REGISTRAR_IDS,
+] as const satisfies readonly RegistrarId[];
 
 /** Display names. */
 export const REGISTRAR_NAMES: Readonly<Record<RegistrarId, string>> = {
@@ -102,7 +110,7 @@ export function registrarLinks(
 ): RegistrarLinks {
   switch (id) {
     case "cloudflare":
-      return { domains: DASHBOARD, api: TOKEN_PAGE };
+      return { domains: DASHBOARD, api: CLOUDFLARE_TOKEN_PAGE };
     case "porkbun":
       return { domains: PORKBUN_DASHBOARD_URL, api: PORKBUN_API_SETTINGS_URL };
     case "namecheap": {

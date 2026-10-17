@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PORTAINER_TOKEN_STEPS } from "@opscrew/connector-portainer";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import { QuestionSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -431,6 +432,7 @@ describe("runInterview with an existing Portainer", () => {
       {
         code: "PHASE_PRECONDITION",
         message: expect.stringContaining("PORTAINER_API_KEY"),
+        hint: `${PORTAINER_TOKEN_STEPS}, set PORTAINER_API_KEY to it and run \`opscrew interview\` again. OpsCrew reads the token only from this environment variable and never saves it.`,
       },
     );
     expect(access.tokens).toEqual([]);

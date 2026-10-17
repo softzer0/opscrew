@@ -1,5 +1,6 @@
+import { CLOUDFLARE_TOKEN_PAGE } from "@opscrew/connector-cloudflare";
 import type { Money } from "@opscrew/contracts";
-import { isUserFacingError, OpsCrewError, plural } from "@opscrew/core";
+import { isUserFacingError, OpsCrewError } from "@opscrew/core";
 import {
   auditDomain,
   cents,
@@ -11,11 +12,19 @@ import {
   formatMoneyCode,
   normaliseCheck,
   REGISTRAR_PERMISSIONS,
-  TOKEN_PAGE,
   tldOf,
 } from "./common";
 import { nextProjectStep } from "./project";
-import { chargeCode, type DnsSetup, type Offer, type RegistrarFlow, type SetUp } from "./purchase";
+import {
+  autoRenewOffLine,
+  chargeCode,
+  type DnsSetup,
+  type Offer,
+  type RegistrarFlow,
+  registeredSummary,
+  type SetUp,
+  zoneLine,
+} from "./purchase";
 import type { DomainSetUpResult } from "./types";
 import type { PurchaseContext } from "./wait";
 
@@ -57,7 +66,7 @@ export async function registrarRead<T>(ctx: PurchaseContext, read: () => Promise
       "CREDENTIALS_INVALID",
       `This Cloudflare token cannot use Cloudflare Registrar on the account ${account.name} (${account.id}), so OpsCrew cannot buy ${domain} with it. Nothing was bought.`,
       {
-        hint: `Buying domains is optional and needs these extra token permissions: ${REGISTRAR_PERMISSIONS}. Edit the token at ${TOKEN_PAGE}, then run \`opscrew domain buy ${domain}\` again. DNS and deployments keep working without them.`,
+        hint: `Buying domains is optional and needs these extra token permissions: ${REGISTRAR_PERMISSIONS}. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}, then run \`opscrew domain buy ${domain}\` again. DNS and deployments keep working without them.`,
         cause: error,
       },
     );
@@ -180,7 +189,7 @@ function purchaseLines(
       : `Charged now: at most ${formatMoney(quote.charge)} (${years} × ${formatMoney(perYear)}, the higher of the first-year and renewal prices; OpsCrew bounds purchases of several years this way until Cloudflare's multi-year pricing is confirmed)`,
     autoRenew
       ? `Auto-renew: on. Cloudflare charges the renewal (${renewal} per year) to your account's default payment method up to 30 days before the domain expires. Turn it off any time with \`opscrew domain auto-renew off\`.`
-      : `Auto-renew: off. The domain expires after ${plural(years, "year")} unless you renew it; turn auto-renew on with \`opscrew domain auto-renew on\`.`,
+      : autoRenewOffLine(years),
     "WHOIS privacy: on (your contact details are redacted from public WHOIS where the extension allows it).",
     ...zoneLines(ctx, true),
     "Registrant contact: your Cloudflare account's default contact is used; OpsCrew never reads or stores it.",
@@ -212,7 +221,7 @@ function zoneLines(ctx: PurchaseContext, purchase: boolean): string[] {
   return [
     purchase
       ? `Cloudflare zone: created for ${domain} in this account right after the purchase (an existing zone in this account is reused).`
-      : `Cloudflare zone: created for ${domain} in this account if it does not exist there yet (an existing zone in this account is reused).`,
+      : zoneLine(domain),
     purchase
       ? "DNSSEC: on (OpsCrew turns it on for the zone unless it is already on)."
       : "DNSSEC: turned on for the zone unless it is already on.",
@@ -223,15 +232,12 @@ function zoneLines(ctx: PurchaseContext, purchase: boolean): string[] {
 async function completed(ctx: PurchaseContext, result: SetUp): Promise<DomainSetUpResult> {
   const { deps, domain } = ctx;
   const { files, hostname, info, keptDomain, dns } = result;
-  const what = result.alreadyRegistered
-    ? "already registered; set up"
-    : `bought${result.total === undefined ? "" : ` (approved price ${formatMoney(result.total)})`}`;
   const dnssec = dns.dnssec === "skipped" ? "skipped" : dns.dnssec ? "on" : "off";
   await auditDomain(
     deps,
     "domain purchase",
     domain,
-    `${what}; expires ${formatDate(info.expiresAt)}; auto-renew ${info.autoRenew ? "on" : "off"}; DNSSEC ${dnssec}; zone ${dns.zoneId}`,
+    `${registeredSummary(result)}; expires ${formatDate(info.expiresAt)}; auto-renew ${info.autoRenew ? "on" : "off"}; DNSSEC ${dnssec}; zone ${dns.zoneId}`,
   );
   deps.reporter.success(
     `${domain} is ${result.alreadyRegistered ? "set up" : "yours"}: registered with Cloudflare until ${formatDate(info.expiresAt)}, auto-renew ${info.autoRenew ? "on" : "off"}, WHOIS privacy ${info.privacy === false ? "off" : "on"}, DNSSEC ${dnssec}.`,

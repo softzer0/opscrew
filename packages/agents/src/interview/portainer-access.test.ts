@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   type PortainerEnvironment as AdapterEnvironment,
   type DockerInfo,
+  PORTAINER_TOKEN_STEPS,
   PortainerApiError,
   type PortainerClient,
 } from "@opscrew/connector-portainer";
@@ -133,7 +134,9 @@ describe("createPortainerAccess", () => {
     expect((error as OpsCrewError).message).toBe(
       "Portainer rejected the access token (HTTP 401), so OpsCrew saved nothing.",
     );
-    expect((error as OpsCrewError).hint).toContain("PORTAINER_API_KEY");
+    expect((error as OpsCrewError).hint).toBe(
+      `${PORTAINER_TOKEN_STEPS}, set PORTAINER_API_KEY to it and answer again.`,
+    );
   });
 
   it("passes on the adapter's error when Portainer refuses to list the environments", async () => {

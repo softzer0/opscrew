@@ -1,4 +1,5 @@
 import { SEVERITIES, type Severity } from "@opscrew/contracts";
+import { upperFirst } from "@opscrew/core";
 import type { CodeChangeKind } from "@opscrew/plan-schema";
 import type { CodeChange } from "../design/code-changes";
 
@@ -137,7 +138,7 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
   } else {
     const counts = input.scanCounts;
     lines.push(
-      `| ${SEVERITIES.map((s) => s[0]?.toUpperCase() + s.slice(1)).join(" | ")} |`,
+      `| ${SEVERITIES.map(upperFirst).join(" | ")} |`,
       `|${SEVERITIES.map(() => "---").join("|")}|`,
       `| ${SEVERITIES.map((s) => String(counts[s] ?? 0)).join(" | ")} |`,
     );

@@ -1,6 +1,15 @@
-import { CLOUDFLARE_REGISTRAR_PERMISSIONS } from "@opscrew/connector-cloudflare";
+import {
+  CLOUDFLARE_REGISTRAR_PERMISSIONS,
+  CLOUDFLARE_TOKEN_PAGE,
+} from "@opscrew/connector-cloudflare";
 import type { DomainCheck, Money } from "@opscrew/contracts";
-import { type ErrorCode, isUserFacingError, normalizeHostName, OpsCrewError } from "@opscrew/core";
+import {
+  type ErrorCode,
+  errorMessage,
+  isUserFacingError,
+  normalizeHostName,
+  OpsCrewError,
+} from "@opscrew/core";
 import { FqdnSchema } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { ResolvedDomainServices } from "./services";
@@ -9,8 +18,6 @@ import type { DomainAccount, MaxPrice } from "./types";
 /** Where users manage registrations by hand. */
 export const DASHBOARD =
   "the Cloudflare dashboard (https://dash.cloudflare.com, Domain Registration)";
-/** Where users create and edit Cloudflare API tokens. */
-export const TOKEN_PAGE = "https://dash.cloudflare.com/profile/api-tokens";
 /** Permissions a token needs to buy and set up domains (the connector's list, in one sentence). */
 export const REGISTRAR_PERMISSIONS = CLOUDFLARE_REGISTRAR_PERMISSIONS.join("; ");
 /** Permissions for the zone of a domain registered elsewhere (no Registrar access). */
@@ -26,29 +33,40 @@ const ZONE_PERMISSIONS = CLOUDFLARE_REGISTRAR_PERMISSIONS.filter(
 const FALLBACK_CONTACT_EXTENSION_TLDS = new Set(["us", "uk", "ca"]);
 
 /**
- * The stop when `CLOUDFLARE_API_TOKEN` is not set. `zoneFor` says why a domain registered
- * elsewhere needs a zone ("OpsCrew moves the DNS of x.com into a Cloudflare zone"), so it asks for
- * the zone permissions only; without it, for a token that can buy domains.
+ * How to create a Cloudflare token with `permissions`, then `rerun`: what to do next (`Then try
+ * again.`).
  */
-export function cloudflareTokenMissing(zoneFor?: string): OpsCrewError {
+export function cloudflareTokenHint(permissions: string, rerun: string): string {
+  return `Create a token at ${CLOUDFLARE_TOKEN_PAGE} with these permissions: ${permissions}. ${rerun}`;
+}
+
+/**
+ * The stop when `CLOUDFLARE_API_TOKEN` is not set for a domain command. `zoneFor` says why a
+ * domain registered elsewhere needs a zone ("OpsCrew moves the DNS of x.com into a Cloudflare
+ * zone"), so it asks for the zone permissions only; without it, for a token that can buy domains.
+ */
+export function domainTokenMissing(zoneFor?: string): OpsCrewError {
   return new OpsCrewError(
     "CREDENTIALS_MISSING",
     zoneFor === undefined
       ? "No Cloudflare API token found. Set CLOUDFLARE_API_TOKEN to a token that can buy domains."
       : `No Cloudflare API token found. ${zoneFor}. Set CLOUDFLARE_API_TOKEN to a token that can create zones and edit their DNS.`,
     {
-      hint: `Create one at ${TOKEN_PAGE} with these permissions: ${zoneFor === undefined ? REGISTRAR_PERMISSIONS : ZONE_PERMISSIONS}. Then try again; nothing was changed.`,
+      hint: cloudflareTokenHint(
+        zoneFor === undefined ? REGISTRAR_PERMISSIONS : ZONE_PERMISSIONS,
+        "Then try again; nothing was changed.",
+      ),
     },
   );
 }
 
 /**
  * `CLOUDFLARE_API_TOKEN`, registered with the redactor; stops when it is not set (see
- * {@link cloudflareTokenMissing} for `zoneFor`).
+ * {@link domainTokenMissing} for `zoneFor`).
  */
 export function requireCloudflareToken(deps: PhaseDeps, zoneFor?: string): string {
   const token = deps.env.CLOUDFLARE_API_TOKEN?.trim();
-  if (!token) throw cloudflareTokenMissing(zoneFor);
+  if (!token) throw domainTokenMissing(zoneFor);
   deps.redactor.addLiteral(token, "cloudflare-token");
   return token;
 }
@@ -194,7 +212,7 @@ export function resolveAccount(
   const wanted = requested?.trim();
   if (accounts.length === 0) {
     throw new OpsCrewError("CREDENTIALS_INVALID", "This Cloudflare token cannot see any account.", {
-      hint: `Create a token at ${TOKEN_PAGE} with these permissions: ${REGISTRAR_PERMISSIONS}. Then try again.`,
+      hint: cloudflareTokenHint(REGISTRAR_PERMISSIONS, "Then try again."),
     });
   }
   if (wanted) {
@@ -291,7 +309,7 @@ export async function auditDomain(
 
 /** The message of any thrown value, made safe to show. */
 export function errorText(deps: PhaseDeps, error: unknown): string {
-  return providerText(deps, error instanceof Error ? error.message : String(error));
+  return providerText(deps, errorMessage(error));
 }
 
 /**

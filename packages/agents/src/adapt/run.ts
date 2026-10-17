@@ -1,12 +1,10 @@
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  GitClient,
-  GitHubClient,
+  type GitClient,
   type GitStatusEntry,
   type PullRequest,
   parseGitHubRepo,
-  resolveGitHubToken,
 } from "@opscrew/connector-github";
 import type { AgentRuntime, AuditInput } from "@opscrew/contracts";
 import {
@@ -34,7 +32,7 @@ import type { PhaseDeps } from "../context";
 import { backgroundJobsWarning } from "../design/background-jobs";
 import { type CodeChange, readScanReport } from "../design/code-changes";
 import { releaseCommandNote } from "../design/release";
-import { writeRenderedFiles } from "../shared";
+import { githubClientFromToken, requireGitRepo, writeRenderedFiles } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { healthRouteEdit } from "./health";
 import { isNextConfigPath, nextConfigEdit } from "./next-config";
@@ -180,22 +178,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
 
   // 1. Preconditions: a git repository with at least one commit and a clean working tree.
   const gitBin = findExecutable("git", deps.env) ?? "git";
-  const git = new GitClient({
-    cwd: paths.root,
-    runner: deps.runner,
-    env: deps.env,
-    git: gitBin,
-    redactor: deps.redactor,
-  });
-  if (!(await git.isRepo())) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "This project is not a git repository, so OpsCrew cannot prepare a pull request.",
-      {
-        hint: "Run `git init`, commit your code, add your GitHub remote, then run `opscrew adapt` again.",
-      },
-    );
-  }
+  const git = await requireGitRepo(deps, gitBin);
   try {
     await git.headSha();
   } catch {
@@ -221,7 +204,8 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   // Resolved once, when first needed: before the branch is picked only if origin has it already.
   let client: Promise<AdaptGitHub | undefined> | undefined;
   const gitHub = () => {
-    client ??= options.github === undefined ? defaultGitHub(deps) : Promise.resolve(options.github);
+    client ??=
+      options.github === undefined ? githubClientFromToken(deps) : Promise.resolve(options.github);
     return client;
   };
   const originCheck: OriginCheck | undefined =
@@ -1012,11 +996,4 @@ async function existingFiles(root: string, files: readonly string[]): Promise<st
   const found: string[] = [];
   for (const file of files) if (await exists(join(root, file))) found.push(file);
   return found;
-}
-
-async function defaultGitHub(deps: PhaseDeps): Promise<AdaptGitHub | undefined> {
-  const token = await resolveGitHubToken(deps.env, deps.runner);
-  if (token === undefined) return undefined;
-  deps.redactor.addLiteral(token, "github-token");
-  return new GitHubClient({ token, fetch: deps.fetch, version: deps.version });
 }

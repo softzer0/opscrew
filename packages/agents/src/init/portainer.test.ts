@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type PinnedRequest,
+  PORTAINER_TOKEN_STEPS,
   PortainerCertificateError,
   portainerClient,
 } from "@opscrew/connector-portainer";
@@ -9,6 +10,7 @@ import type { CommandResult, FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { REGISTRY_TOKEN_HINT } from "../provision/stack-plan";
 import {
   type PortainerConnectionInput,
   recordPortainerConnection,
@@ -248,7 +250,9 @@ describe("opscrew init for a Portainer target", () => {
     const provider = find(list, "provider");
     expect(provider.status).toBe("fail");
     expect(provider.message).toContain("PORTAINER_API_KEY is not set");
-    expect(provider.fix).toContain("Access tokens");
+    expect(provider.fix).toBe(
+      `${PORTAINER_TOKEN_STEPS}, then set PORTAINER_API_KEY to it. OpsCrew reads it only from this environment variable and never saves it.`,
+    );
     expect(portainer.calls).toEqual([]);
     expectNothingLeaks(list);
   });
@@ -289,9 +293,9 @@ describe("opscrew init for a Portainer target", () => {
     expect(tokens.status).toBe("warn");
     expect(tokens.message).toContain("OPSCREW_GHCR_READ_TOKEN");
     expect(tokens.message).toContain("OPSCREW_REPO_READ_TOKEN");
-    expect(tokens.fix).toContain("read:packages");
+    // The registry token's help is the stack plan's, word for word.
+    expect(tokens.fix).toContain(REGISTRY_TOKEN_HINT);
     expect(tokens.fix).toContain("Contents: Read-only");
-    expect(tokens.fix).toContain("--public-image");
     // Warnings never fail init.
     expect(find(list, "provider").status).toBe("pass");
   });

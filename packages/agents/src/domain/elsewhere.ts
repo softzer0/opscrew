@@ -11,7 +11,15 @@ import {
 } from "./common";
 import { buyCommandOf, registrarDashboard } from "./links";
 import { nextProjectStep, type ProjectFiles, registeredName } from "./project";
-import { formatTime, type Offer, type RegistrarFlow, type SetUp } from "./purchase";
+import {
+  autoRenewOffLine,
+  formatTime,
+  type Offer,
+  type RegistrarFlow,
+  registeredSummary,
+  type SetUp,
+  zoneLine,
+} from "./purchase";
 import { type OtherRegistrarId, REGISTRAR_NAMES, registrarLinks } from "./registrars";
 import { dsRecordText, hosts, type SwitchResult, sameHosts, switchToCloudflare } from "./switch";
 import type { DomainSetUpResult } from "./types";
@@ -282,7 +290,7 @@ function purchaseLines(
     caps.autoRenew
       ? autoRenew
         ? `Auto-renew: on. ${name} charges the renewal (${renewal}) to your ${name} account before the domain expires. Turn it off any time with \`opscrew domain auto-renew off\`.`
-        : `Auto-renew: off. The domain expires after ${plural(years, "year")} unless you renew it; turn auto-renew on with \`opscrew domain auto-renew on\`.`
+        : autoRenewOffLine(years)
       : `Auto-renew: ${name}'s API cannot set it, so your ${name} account's own setting applies (you asked for ${autoRenew ? "on" : "off"}); OpsCrew says after the purchase if it differs, and you change it at ${page}.`,
     ctx.registrarId === "godaddy"
       ? "WHOIS privacy: GoDaddy applies your contact profile's privacy setting; OpsCrew asks for privacy on and says after the purchase if the profile differs."
@@ -318,7 +326,7 @@ function switchLines(ctx: PurchaseContext, purchase: boolean, dnssecLater = fals
   return [
     purchase
       ? `Cloudflare zone: right after the purchase OpsCrew creates a Cloudflare zone for ${domain} in this account (an existing zone in this account is reused).`
-      : `Cloudflare zone: created for ${domain} in this account if it does not exist there yet (an existing zone in this account is reused).`,
+      : zoneLine(domain),
     caps.nameservers && registrar.setNameservers !== undefined
       ? `Nameservers: OpsCrew then points the nameservers of ${domain} at ${name} to the zone's Cloudflare nameservers (skipped when they already are).`
       : `Nameservers: ${name}'s API cannot change nameservers, so OpsCrew shows the zone's nameservers to set at ${page}.`,
@@ -353,14 +361,11 @@ async function completedElsewhere(
   const name = REGISTRAR_NAMES[ctx.registrarId];
   const page = registrarLinks(ctx.registrarId, deps.env).domains;
   const { zone, nameservers, ds, activation } = switched;
-  const what = result.alreadyRegistered
-    ? "already registered; set up"
-    : `bought${result.total === undefined ? "" : ` (approved price ${formatMoney(result.total)})`}`;
   await auditDomain(
     deps,
     "domain purchase",
     domain,
-    `${what} at ${name}; expires ${formatDate(info.expiresAt)}; auto-renew ${info.autoRenew ? "on" : "off"}; nameservers ${nameservers.outcome}; DS record ${ds.outcome}; zone ${zone.id}`,
+    `${registeredSummary(result)} at ${name}; expires ${formatDate(info.expiresAt)}; auto-renew ${info.autoRenew ? "on" : "off"}; nameservers ${nameservers.outcome}; DS record ${ds.outcome}; zone ${zone.id}`,
   );
 
   const nsText =

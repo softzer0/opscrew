@@ -1,4 +1,5 @@
 import {
+  PORTAINER_TOKEN_STEPS,
   PortainerApiError,
   PortainerCertificateError,
   type PortainerClient,
@@ -11,6 +12,7 @@ import type { PhaseDeps } from "../context";
 import { hasEnv } from "../domain/registrars";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer";
+import { REGISTRY_TOKEN_HINT } from "../provision/stack-plan";
 import { hidePortainerAddress } from "../shared";
 import { type PortainerConnection, readPortainerConnection } from "../shared/server-record";
 import { type CheckResult, failFrom } from "./check-result";
@@ -32,12 +34,10 @@ export interface PortainerRecord {
   problem?: CheckResult;
 }
 
-const TOKEN_FIX = `In Portainer, open your user menu → My account → Access tokens and add a token (for an administrator, or for a user who may manage stacks on the environment), then set ${PORTAINER_TOKEN_VAR} to it. OpsCrew reads it only from this environment variable and never saves it.`;
+const TOKEN_FIX = `${PORTAINER_TOKEN_STEPS}, then set ${PORTAINER_TOKEN_VAR} to it. OpsCrew reads it only from this environment variable and never saves it.`;
 
 const INTERVIEW_FIX =
   "Run `opscrew interview` and answer the Portainer questions: its address, its certificate's fingerprint (OpsCrew shows it for you to confirm) and the environment to deploy to.";
-
-const REGISTRY_FIX = `For ${REGISTRY_TOKEN_VAR}, create a classic token with only the read:packages scope at https://github.com/settings/tokens/new?scopes=read:packages (OpsCrew sends it only to your Portainer's registry entry and never saves it); if you make the image public on GitHub, run \`opscrew provision --public-image\` instead.`;
 
 const REPOSITORY_FIX = `For ${REPOSITORY_TOKEN_VAR}, create a fine-grained token at https://github.com/settings/personal-access-tokens/new for only this repository with Contents: Read-only (OpsCrew sends it only to your Portainer, for the app's stack, and never saves it).`;
 
@@ -161,7 +161,7 @@ export function checkPortainerTokens(
     missing.push(
       `${REGISTRY_TOKEN_VAR} (the app's image on GitHub Container Registry is private by default)`,
     );
-    fixes.push(REGISTRY_FIX);
+    fixes.push(REGISTRY_TOKEN_HINT);
   }
   if (repoPrivate === true) {
     if (hasEnv(env, REPOSITORY_TOKEN_VAR)) {

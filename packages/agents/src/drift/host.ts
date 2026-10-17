@@ -5,7 +5,6 @@ import {
   type HostPlan,
   type HostStep,
   type HostStepId,
-  inspectHost,
   MIN_DOCKER_MAJOR,
   planHost,
   type RuntimeFileName,
@@ -13,7 +12,7 @@ import {
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
 } from "@opscrew/connector-ssh-host";
-import { listText, OpsCrewError, readTextIfExists, sha256Hex } from "@opscrew/core";
+import { listText, lowerFirst, sha256Hex } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
   type RenderContext,
@@ -22,11 +21,12 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { connectOwnServer, desiredHost, type OwnServerServices, ownTarget } from "../provision";
+import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
 import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
-import { lastHostSetup, passwordLoginChoice } from "../shared";
+import { lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
+import { connectAndInspectOwnServer } from "../shared/own-server";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
 export interface HostDifference {
@@ -419,7 +419,7 @@ function runtimeFileDetails(
     }
     if (file.kind !== "file") {
       out.push(
-        `${path} is no longer a regular file (it is a symbolic link or something else), so OpsCrew does not look into it. Remove it on the server, then ${REDEPLOY.charAt(0).toLowerCase()}${REDEPLOY.slice(1)}`,
+        `${path} is no longer a regular file (it is a symbolic link or something else), so OpsCrew does not look into it. Remove it on the server, then ${lowerFirst(REDEPLOY)}`,
       );
       continue;
     }
@@ -658,29 +658,13 @@ export async function ownHostDrift(
     cloudflare?: Pick<CloudflareApi, "getIpRanges"> | null;
   },
 ): Promise<HostDrift> {
-  const own = options.own ?? {};
-  const deployPublicKey = ((await readTextIfExists(deps.paths.files.deployKeyPub)) ?? "").trim();
-  if (deployPublicKey === "") {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "The project's deploy key is not on this computer, so OpsCrew cannot compare your server with its setup. Nothing was checked.",
-      {
-        hint: `Copy the deploy key files from the computer that ran \`opscrew provision\` to ${deps.paths.files.deployKey} and ${deps.paths.files.deployKeyPub}, then try again.`,
-      },
-    );
-  }
-  deps.reporter.step("Connecting to your server");
-  const session = await connectOwnServer(deps, { hostKey: options.hostKey, services: own });
-  deps.reporter.step("Inspecting your server (read-only)");
-  const facts = own.host?.inspect
-    ? await own.host.inspect(session.remote)
-    : await inspectHost(session.remote);
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "inspect host (read-only)",
-    target: "own server",
-    decision: "allow",
+  const deployPublicKey = await readDeployPublicKey(
+    deps,
+    "cannot compare your server with its setup",
+  );
+  const { session, facts } = await connectAndInspectOwnServer(deps, {
+    hostKey: options.hostKey,
+    services: options.own,
     detail: "drift check",
   });
   const setup = await lastHostSetup(deps, plan);

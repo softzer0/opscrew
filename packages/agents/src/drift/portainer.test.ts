@@ -282,6 +282,16 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
   it("stops plainly when Portainer rejects the token, with nothing compared", async () => {
     const s = await deployed();
     s.deps.env.PORTAINER_API_KEY = fakeSecret("generic-password", "wrong token");
-    await expect(drift(s)).rejects.toThrow(/OpsCrew cannot check your Portainer/);
+    const error = await drift(s).then(
+      () => undefined,
+      (e: unknown) => e as { code: string; message: string; hint: string },
+    );
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "OpsCrew cannot check your Portainer, so it compared nothing there:\n  - Portainer rejected the access token (HTTP 401).",
+    });
+    expect(error?.hint).toContain("set PORTAINER_API_KEY to it");
+    expect(error?.hint).toMatch(/ Then run `opscrew drift` again\.$/);
   });
 });

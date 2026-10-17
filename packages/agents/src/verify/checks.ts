@@ -1,6 +1,6 @@
 import { BlockList, isIP, isIPv6, type LookupFunction } from "node:net";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
-import { normalizeHostName } from "@opscrew/core";
+import { normalizeHostName, upperFirst } from "@opscrew/core";
 import { tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
@@ -83,11 +83,16 @@ export interface VerifyCheckContext {
 }
 
 /**
- * What to do when the server's address is not on this computer (a fresh clone): it is kept in the
- * `.opscrew/` folder where the server was provisioned, never in the repository.
+ * Where to run `command` when the server's address is not on this computer (a fresh clone): it is
+ * kept in the `.opscrew/` folder of the computer that provisioned the server, never in the
+ * repository. Starts in lower case, to continue a sentence.
  */
-const UNKNOWN_ADDRESS_REMEDIATION =
-  "Run `opscrew verify` where the server was provisioned (its .opscrew/ folder holds the address).";
+export function provisionedElsewhereHint(command: string): string {
+  return `run \`${command}\` on the computer that provisioned the server (its \`.opscrew/\` folder holds the address)`;
+}
+
+/** What `opscrew verify` says to do when the server's address is not on this computer. */
+export const UNKNOWN_ADDRESS_REMEDIATION = `${upperFirst(provisionedElsewhereHint("opscrew verify"))}.`;
 
 /** Certificates that expire sooner than this fail the TLS check (Caddy renews 30 days ahead). */
 export const MIN_CERT_DAYS = 14;
@@ -478,6 +483,19 @@ async function dnsRecords(
   );
 }
 
+/** GET `target`, following redirects or not, within the check's timeout (default 10 s). */
+function get(
+  ctx: Pick<VerifyCheckContext, "fetch" | "timeoutMs">,
+  target: string,
+  redirect: "follow" | "manual",
+): Promise<Response> {
+  return ctx.fetch(target, {
+    method: "GET",
+    redirect,
+    signal: AbortSignal.timeout(ctx.timeoutMs ?? 10_000),
+  });
+}
+
 /**
  * GET `/` answers with a status below 500. Returns the response headers for the header check, or
  * the error when the site could not be reached.
@@ -489,11 +507,7 @@ async function siteReachable(
   const title = "The site answers";
   const target = `${url}/`;
   try {
-    const response = await ctx.fetch(target, {
-      method: "GET",
-      redirect: "follow",
-      signal: AbortSignal.timeout(ctx.timeoutMs ?? 10_000),
-    });
+    const response = await get(ctx, target, "follow");
     await discard(response);
     if (response.status >= 500) {
       return {
@@ -663,11 +677,7 @@ export async function checkHttpRedirect(
   const title = "HTTP redirects to HTTPS";
   const target = `http://${host}/`;
   try {
-    const response = await ctx.fetch(target, {
-      method: "GET",
-      redirect: "manual",
-      signal: AbortSignal.timeout(ctx.timeoutMs ?? 10_000),
-    });
+    const response = await get(ctx, target, "manual");
     await discard(response);
     const location = response.headers.get("location") ?? "";
     if (response.status >= 300 && response.status < 400 && location.startsWith("https://")) {
@@ -714,11 +724,7 @@ export async function checkHealth(url: string, ctx: VerifyCheckContext): Promise
       ? `Make sure the app serves ${ctx.plan.app.healthPath} with status 200, then look at ${portainerLogs(ctx.plan)}.`
       : `Make sure the app serves ${ctx.plan.app.healthPath} with status 200, then look at \`docker compose logs --tail 200 app\` on the server.`;
   try {
-    const response = await ctx.fetch(target, {
-      method: "GET",
-      redirect: "follow",
-      signal: AbortSignal.timeout(ctx.timeoutMs ?? 10_000),
-    });
+    const response = await get(ctx, target, "follow");
     await discard(response);
     return response.status === 200
       ? checkResult(id, title, "high", "pass", `${target} answered 200.`, { target })
@@ -787,11 +793,7 @@ export async function checkSensitiveFile(
   const title = `${path} is not served`;
   const target = `${url}${path}`;
   try {
-    const response = await ctx.fetch(target, {
-      method: "GET",
-      redirect: "manual",
-      signal: AbortSignal.timeout(ctx.timeoutMs ?? 10_000),
-    });
+    const response = await get(ctx, target, "manual");
     if (response.status !== 200) {
       await discard(response);
       return checkResult(

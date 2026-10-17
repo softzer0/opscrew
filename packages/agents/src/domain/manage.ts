@@ -6,7 +6,7 @@ import type {
   Registrar,
   RegistrarId,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { errorMessage, OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
@@ -221,7 +221,7 @@ export async function domainStatus(
   const files = await readProjectFiles(deps);
   const record = await readPurchaseRecord(purchaseRecordPath(deps.paths)).catch(
     (error: unknown) => {
-      deps.reporter.warn(error instanceof Error ? error.message : String(error));
+      deps.reporter.warn(errorMessage(error));
       return undefined;
     },
   );

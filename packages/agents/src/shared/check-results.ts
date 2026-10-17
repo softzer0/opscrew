@@ -1,6 +1,14 @@
 import type { CheckResult, Severity } from "@opscrew/contracts";
 import { plural } from "@opscrew/core";
 
+/** The mark a check list shows before each check: `✓` passed, `!` warning, `✗` failed, `-` skipped. */
+export const CHECK_MARK: Readonly<Record<CheckResult["status"], string>> = {
+  pass: "✓",
+  warn: "!",
+  fail: "✗",
+  skip: "-",
+};
+
 /** One check's result; `remediation` and `target` only when given. */
 export function checkResult(
   id: string,

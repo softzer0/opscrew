@@ -1,11 +1,6 @@
 import type { LookupFunction } from "node:net";
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
-import {
-  GitClient,
-  GitHubClient,
-  parseGitHubRepo,
-  resolveGitHubToken,
-} from "@opscrew/connector-github";
+import { type GitHubClient, parseGitHubRepo } from "@opscrew/connector-github";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
 import { OpsCrewError, readTextIfExists, replaceNames, toPosixRelative } from "@opscrew/core";
 import { renderRunbook, tunnelMode } from "@opscrew/iac-templates";
@@ -17,6 +12,8 @@ import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
 import {
   committableUrl,
   editCheckText,
+  gitClient,
+  githubClientFromToken,
   hasDeployment,
   hidesServerAddress,
   lookupPublicAddresses,
@@ -26,7 +23,13 @@ import {
   writeRenderedFiles,
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
-import { type CloudflareRanges, type DeployRunInfo, runVerifyChecks, siteUrl } from "./checks";
+import {
+  type CloudflareRanges,
+  type DeployRunInfo,
+  runVerifyChecks,
+  siteUrl,
+  UNKNOWN_ADDRESS_REMEDIATION,
+} from "./checks";
 import {
   type DnsResolver,
   defaultDnsResolver,
@@ -141,9 +144,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
       ? new OpsCrewError(
           "PHASE_PRECONDITION",
           "OpsCrew does not know the server's address on this computer, and without a domain there is nothing else to verify.",
-          {
-            hint: "Run `opscrew verify` on the computer that provisioned the server (its .opscrew/ folder holds the address).",
-          },
+          { hint: UNKNOWN_ADDRESS_REMEDIATION },
         )
       : new OpsCrewError(
           "PHASE_PRECONDITION",
@@ -314,23 +315,14 @@ interface GitHubContext {
 async function githubContext(deps: PhaseDeps, fetch: FetchLike): Promise<GitHubContext> {
   const out: GitHubContext = {};
   try {
-    const git = new GitClient({
-      cwd: deps.paths.root,
-      runner: deps.runner,
-      env: deps.env,
-      redactor: deps.redactor,
-    });
-    const remote = await git.remoteUrl();
+    const remote = await gitClient(deps).remoteUrl();
     const repo = remote ? parseGitHubRepo(remote) : undefined;
     if (repo) out.repo = repo;
   } catch {
     // Not a git repository or git is missing: the deploy-run check reports it.
   }
-  const token = await resolveGitHubToken(deps.env, deps.runner);
-  if (token) {
-    deps.redactor.addLiteral(token, "github-token");
-    out.client = new GitHubClient({ token, fetch, version: deps.version });
-  }
+  const client = await githubClientFromToken({ ...deps, fetch });
+  if (client) out.client = client;
   return out;
 }
 

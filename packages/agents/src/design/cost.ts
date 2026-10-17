@@ -27,11 +27,6 @@ export function convertMoney(money: Money, to: Currency): Money {
   return { amount: roundCents(amount), currency: to };
 }
 
-/** `€6.09` or `$6.70`. */
-export function formatMoney(money: Money): string {
-  return `${money.currency === "EUR" ? "€" : "$"}${money.amount.toFixed(2)}`;
-}
-
 /** `estimate as of 2026-06-15` for static prices, `live price` for prices read from the API. */
 export function priceLabel(cost: Pick<CostEstimate, "source" | "asOf">): string {
   return cost.source === "static" ? `estimate as of ${cost.asOf.slice(0, 10)}` : "live price";

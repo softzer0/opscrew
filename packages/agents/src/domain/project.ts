@@ -1,34 +1,19 @@
-import { CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
+import { CLOUDFLARE_TOKEN_PAGE, CLOUDFLARE_TOKEN_PERMISSIONS } from "@opscrew/connector-cloudflare";
 import type { RegisteredDomain } from "@opscrew/contracts";
 import {
-  type ArtifactKind,
-  type ArtifactOf,
   type DeployPlan,
   type Requirements,
-  readArtifact,
+  readOptionalArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { hasDeployment } from "../shared";
-import { TOKEN_PAGE, toIsoDateTime } from "./common";
+import { toIsoDateTime } from "./common";
 
 /** The project's requirements and plan, when present (validated). */
 export interface ProjectFiles {
   plan?: DeployPlan;
   requirements?: Requirements;
-}
-
-/** The artefact, or undefined when the file does not exist; an invalid file stops the run. */
-export async function readOptionalArtifact<K extends ArtifactKind>(
-  kind: K,
-  file: string,
-): Promise<ArtifactOf<K> | undefined> {
-  try {
-    return await readArtifact(kind, file);
-  } catch (error) {
-    if ((error as { code?: string }).code === "ARTIFACT_MISSING") return undefined;
-    throw error;
-  }
 }
 
 /** Reads `opscrew/plan.yaml` and `opscrew/requirements.yaml`; an invalid file stops the run. */
@@ -331,5 +316,5 @@ function projectStep(
  * within the project's next step, before the user runs it.
  */
 function zoneTokenNote(domain: string): string {
-  return `If your Cloudflare token is limited to specific zones, first add the zone ${domain} to it at ${TOKEN_PAGE} (or set it to all zones of the account): \`opscrew dns\` and \`opscrew provision\` need the token's zone permissions (${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}) on ${domain} too.`;
+  return `If your Cloudflare token is limited to specific zones, first add the zone ${domain} to it at ${CLOUDFLARE_TOKEN_PAGE} (or set it to all zones of the account): \`opscrew dns\` and \`opscrew provision\` need the token's zone permissions (${CLOUDFLARE_TOKEN_PERMISSIONS.join(", ")}) on ${domain} too.`;
 }

@@ -1,25 +1,11 @@
 import type { CheckResult } from "@opscrew/contracts";
+import { webOnlyFromCloudflare } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { planProvider, providerProfile } from "../providers";
 import { ipv6HttpsAnswers, providerConsole } from "../shared";
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
-
-/**
- * True when web traffic may reach the server only through Cloudflare: behind Cloudflare's proxy
- * with `security.httpAllowedFrom: cloudflare`, the cloud firewall (Hetzner, DigitalOcean) or, on a
- * server the user owns in public mode, OpsCrew's web filter in Docker's DOCKER-USER chain lets
- * ports 80/443 in only from Cloudflare's IP ranges. Never in tunnel mode, where no web port is open.
- */
-function originIsCloudflareOnly(plan: DeployPlan): boolean {
-  return (
-    !(plan.target.provider === "own" && plan.target.access === "tunnel") &&
-    plan.dns.provider === "cloudflare" &&
-    plan.dns.proxied &&
-    plan.security.httpAllowedFrom === "cloudflare"
-  );
-}
 
 /**
  * Outside probes of the ports a server the user owns should (or should not) answer on. Public
@@ -45,7 +31,9 @@ export async function probeOwnServerPorts(
   const timeoutMs = options.timeoutMs ?? 3000;
   const port = options.sshPort;
   const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";
-  const cloudflareOnly = !tunnel && originIsCloudflareOnly(plan);
+  // In public mode behind Cloudflare's proxy, OpsCrew's web filter in Docker's DOCKER-USER chain
+  // lets ports 80/443 in only from Cloudflare's IP ranges; in tunnel mode no web port is open.
+  const cloudflareOnly = !tunnel && webOnlyFromCloudflare(plan);
   const [ssh, http, https] = await Promise.all(
     [port, 80, 443].map((p) => options.connect(host, p, timeoutMs)),
   );
@@ -238,7 +226,8 @@ export async function probeExpectedPorts(
     });
   }
 
-  const cloudflareOnly = originIsCloudflareOnly(plan);
+  // Behind Cloudflare's proxy the cloud firewall lets ports 80/443 in only from Cloudflare.
+  const cloudflareOnly = webOnlyFromCloudflare(plan);
   for (const [port, open] of [
     [80, http],
     [443, https],

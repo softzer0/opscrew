@@ -7,14 +7,18 @@ import {
 } from "@opscrew/contracts";
 import { plural } from "@opscrew/core";
 import {
+  findingLocation,
   formatCounts,
   formatUtc,
   inlineCode,
+  prose,
   renderScanSummary,
+  SEVERITY_LABEL,
   SEVERITY_RANK,
   tableCell,
 } from "@opscrew/secops";
 import { summarizeChecks } from "../shared";
+import { provisionedElsewhereHint } from "../verify/checks";
 
 /** Everything `SECURITY_REPORT.md` shows. All values must already be secret-free. */
 export interface SecurityReportInput {
@@ -58,25 +62,18 @@ export interface SecurityProblem {
   where?: string;
 }
 
-const LABEL: Record<Severity, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-  info: "Info",
-};
+/**
+ * Why the server checks and probes were skipped when this computer does not know the server's
+ * address.
+ */
+export const UNKNOWN_SERVER_ADDRESS = `OpsCrew does not know the server's address on this computer. If the app is deployed, ${provisionedElsewhereHint("opscrew secure")}; otherwise deploy it first.`;
+
 const STATUS: Record<CheckResult["status"], string> = {
   pass: "Pass",
   fail: "**Fail**",
   warn: "Warn",
   skip: "Skip",
 };
-function prose(text: string): string {
-  return text
-    .replace(/\r?\n+/g, " ")
-    .replace(/</g, "&lt;")
-    .trim();
-}
 
 function checkProblems(
   checks: readonly CheckResult[],
@@ -103,22 +100,18 @@ export function securityProblems(input: SecurityReportInput): SecurityProblem[] 
   const all: SecurityProblem[] = [
     ...input.scan.findings
       .filter((finding) => finding.severity !== "info")
-      .map(
-        (finding): SecurityProblem => ({
+      .map((finding): SecurityProblem => {
+        const where = findingLocation(finding);
+        return {
           severity: finding.severity,
           status: "fail",
           area: "Code scan",
           title: finding.title,
           detail: finding.description,
           fix: finding.remediation,
-          ...(finding.file !== undefined
-            ? {
-                where:
-                  finding.line !== undefined ? `${finding.file}:${finding.line}` : finding.file,
-              }
-            : {}),
-        }),
-      ),
+          ...(where !== "" ? { where } : {}),
+        };
+      }),
     ...(input.policies ?? [])
       .filter((policy) => !policy.passed)
       .map(
@@ -164,7 +157,7 @@ function checkTable(checks: readonly CheckResult[]): string[] {
     "|---|---|---|---|",
     ...checks.map(
       (check) =>
-        `| ${STATUS[check.status]} | ${LABEL[check.severity]} | ${tableCell(check.title)} | ${tableCell(prose(check.message))} |`,
+        `| ${STATUS[check.status]} | ${SEVERITY_LABEL[check.severity]} | ${tableCell(check.title)} | ${tableCell(prose(check.message))} |`,
     ),
   ];
 }
@@ -213,7 +206,7 @@ export function renderSecurityReport(input: SecurityReportInput): string {
       const where = problem.where ? ` — ${inlineCode(problem.where)}` : "";
       const kind = problem.status === "warn" ? " (warning)" : "";
       out.push(
-        `${i + 1}. **${LABEL[problem.severity]}${kind}** · ${problem.area}: ${prose(problem.title)}${where}`,
+        `${i + 1}. **${SEVERITY_LABEL[problem.severity]}${kind}** · ${problem.area}: ${prose(problem.title)}${where}`,
         `   ${prose(problem.detail)}`,
       );
       if (problem.fix !== undefined) out.push(`   **Fix:** ${prose(problem.fix)}`);
@@ -223,20 +216,16 @@ export function renderSecurityReport(input: SecurityReportInput): string {
 
   out.push("## Code scan", "", "| Severity | Findings |", "|---|---|");
   for (const severity of SEVERITIES) {
-    out.push(`| ${LABEL[severity]} | ${input.scan.counts[severity] ?? 0} |`);
+    out.push(`| ${SEVERITY_LABEL[severity]} | ${input.scan.counts[severity] ?? 0} |`);
   }
   out.push("");
   if (input.scan.findings.length > 0) {
     out.push("| Severity | Finding | Where | Rule |", "|---|---|---|---|");
     for (const finding of input.scan.findings) {
-      const where =
-        finding.file === undefined
-          ? ""
-          : inlineCode(
-              finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`,
-            );
+      const location = findingLocation(finding);
+      const where = location === "" ? "" : inlineCode(location);
       out.push(
-        `| ${LABEL[finding.severity]} | ${tableCell(prose(finding.title))} | ${tableCell(where)} | ${tableCell(inlineCode(finding.ruleId))} |`,
+        `| ${SEVERITY_LABEL[finding.severity]} | ${tableCell(prose(finding.title))} | ${tableCell(where)} | ${tableCell(inlineCode(finding.ruleId))} |`,
       );
     }
     out.push("");
@@ -261,7 +250,7 @@ export function renderSecurityReport(input: SecurityReportInput): string {
     out.push("| Result | Severity | Policy | Details |", "|---|---|---|---|");
     for (const policy of input.policies) {
       out.push(
-        `| ${policy.passed ? "Pass" : "**Fail**"} | ${LABEL[policy.severity]} | ${tableCell(policy.title)} | ${tableCell(prose(policy.message))} |`,
+        `| ${policy.passed ? "Pass" : "**Fail**"} | ${SEVERITY_LABEL[policy.severity]} | ${tableCell(policy.title)} | ${tableCell(prose(policy.message))} |`,
       );
     }
     out.push("");
@@ -299,10 +288,7 @@ export function renderSecurityReport(input: SecurityReportInput): string {
   if (input.portainer !== undefined) {
     // The user's Portainer host is never probed (said above).
   } else if (input.probes.length === 0) {
-    out.push(
-      "Skipped: OpsCrew does not know the server's address on this computer. If the app is deployed, run `opscrew secure` on the computer that provisioned the server (its `.opscrew/` folder holds the address); otherwise deploy it first.",
-      "",
-    );
+    out.push(`Skipped: ${UNKNOWN_SERVER_ADDRESS}`, "");
   } else {
     out.push(
       `Connections attempted from this machine to ${input.host ? inlineCode(input.host) : "the server"}.`,

@@ -10,6 +10,7 @@ import {
   RepoPathSchema,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { readValidJson } from "../shared/files";
 
 /** One entry of `plan.codeChanges`. */
 export type CodeChange = DeployPlan["codeChanges"][number];
@@ -56,12 +57,7 @@ export type ScanReportSummary = z.infer<typeof ScanReportSchema>;
 
 /** The last `opscrew scan` report (`.opscrew/scan.json`); undefined when missing or damaged. */
 export async function readScanReport(file: string): Promise<ScanReportSummary | undefined> {
-  try {
-    const parsed = ScanReportSchema.safeParse(JSON.parse(await readFile(file, "utf8")));
-    return parsed.success ? parsed.data : undefined;
-  } catch {
-    return undefined;
-  }
+  return readValidJson(file, ScanReportSchema);
 }
 
 /** Health check path and, when one must be added, where the endpoint lives. */

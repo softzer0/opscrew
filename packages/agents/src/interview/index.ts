@@ -3,7 +3,9 @@ export { parseMoney } from "./answers";
 export { buildServerQuestions, recordOwnServerAnswers, SERVER_FIELDS } from "./own-server";
 export {
   buildPortainerQuestions,
+  CHECK_PORTAINER_CERTIFICATE,
   type ConfirmPortainerCertificate,
+  NEW_CERTIFICATE_WARNING,
   PORTAINER_FIELDS,
   type PortainerAccess,
   PortainerCertificateError,
