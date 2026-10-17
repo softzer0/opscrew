@@ -71,7 +71,7 @@ live test records each one as an `observed:` line.
 | `GET /api/stacks/{id}` returns `GitConfig`, `AutoUpdate` and `DeploymentStatus` with `Time` | core | [x] 2026-10-15 |
 | A Git stack is updated with `POST /api/stacks/{id}/git`, then `PUT …/git/redeploy` | full (step 5) | [x] 2026-10-16 |
 | `GET /api/stacks/{id}/file` returns a Git stack's deployed file (secure and drift rely on it) | core | [x] 2026-10-15 |
-| GHCR accepts the GitHub owner as the registry user name | core | [x] 2026-10-15 (any user name works; the token decides) |
+| GHCR accepts any registry user name: the owner (the guide's limited-token steps) and `opscrew-<app>` (OpsCrew's own entries, since T1109) | core | [x] 2026-10-15 (any user name works; the token decides) |
 | A bare `NAME:` entry stays unset when the stack has no value for it | core | [x] 2026-10-15: **no**, it arrives as an empty value, like `${NAME}`; the guide already says so |
 | Stopping a stack removes its containers; volumes carry the Compose project label | core (steps 8–9) | [x] 2026-10-15 |
 | A registry token replace keeps the entry granted to the environment | full (steps 4, 7) | [x] 2026-10-16 |

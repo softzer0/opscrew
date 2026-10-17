@@ -253,6 +253,19 @@ export function fakePortainer(options: FakePortainerOptions): FakePortainer {
       }
     }
     if (init.method === "POST" && path === "/api/registries") {
+      if (registries.some((item) => item.Name === body?.Name)) {
+        return json(409, { message: "Another registry with the same name already exists" });
+      }
+      // Portainer compares the URL and, with authentication on, the user name (not the password).
+      if (
+        body?.Authentication === true &&
+        registries.some((item) => item.URL === body.URL && item.Username === body.Username)
+      ) {
+        return json(409, {
+          message: "Another registry with the same URL and credentials already exists",
+          details: "A registry is already defined for this URL and credentials",
+        });
+      }
       const entry: FakeRegistry = {
         Id: ++nextId,
         Name: String(body?.Name),

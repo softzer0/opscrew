@@ -80,7 +80,7 @@ export function desiredStacks(
       private: opts.repositoryPrivate,
     },
     envKeys: [...keys.app, ...keys.opscrew].sort(),
-    registry: { url: "ghcr.io", private: opts.imagePrivate, username: opts.github.owner },
+    registry: { url: "ghcr.io", private: opts.imagePrivate },
     redeploy: target.redeploy,
     ...(target.redeploy === "updater"
       ? { updater: { compose: renderUpdaterStack(plan).content } }

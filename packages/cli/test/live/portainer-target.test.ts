@@ -1534,8 +1534,9 @@ describe.skipIf(MISSING.length > 0)(
     }
 
     /**
-     * GHCR's answers for the registry entry's login: the GitHub owner as the user name (what OpsCrew
-     * sends), another user name, and a wrong token. Recorded only; a refused owner is a finding.
+     * GHCR's answers for the registry entry's login: the GitHub owner as the user name (what the
+     * guide's limited-token steps type), another user name (OpsCrew sends the entry's own name,
+     * `opscrew-<app>`), and a wrong token. A refused owner or other user name is a finding.
      */
     async function ghcrFacts(image: DeployedImage): Promise<void> {
       const repository = image.repository.replace(/^ghcr\.io\//, "");
@@ -1552,6 +1553,10 @@ describe.skipIf(MISSING.length > 0)(
       if (asOwner !== 200)
         run.findings.push(
           `GHCR refused the GitHub owner as the registry user name (HTTP ${asOwner})`,
+        );
+      if (asOther !== 200)
+        run.findings.push(
+          `GHCR refused a user name other than the owner, which OpsCrew's own entries use (HTTP ${asOther})`,
         );
       if (visibility === "public")
         observe("the package is public, so the registry user name checks are inconclusive");

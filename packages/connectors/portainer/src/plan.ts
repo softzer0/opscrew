@@ -205,7 +205,10 @@ const DesiredStacksSchema = z
       .strictObject({
         url: z.literal("ghcr.io"),
         private: z.boolean(),
-        /** User name of the registry entry's login (default `opscrew`; GHCR checks only the token). */
+        /**
+         * User name of the registry entry's login (default: the entry's name, as Portainer refuses
+         * two entries with the same URL and user name; GHCR checks only the token).
+         */
         username: LoginNameSchema.optional(),
       })
       .optional(),
@@ -745,7 +748,7 @@ function registryChange(
           action: "update",
           ...base,
           registryId: recorded.id,
-          username: d.registry?.username ?? "opscrew",
+          username: d.registry?.username ?? names.registry,
           replacesToken: "registry",
           ...grant,
         },
@@ -794,7 +797,7 @@ function registryChange(
     params: {
       action: "create",
       ...base,
-      username: d.registry?.username ?? "opscrew",
+      username: d.registry?.username ?? names.registry,
       ...grant,
     },
   };

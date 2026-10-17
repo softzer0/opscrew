@@ -102,6 +102,7 @@ describe("planStacks", () => {
       action: "create",
       name: "opscrew-shop",
       url: "ghcr.io",
+      username: "opscrew-shop",
       grantUserId: 1,
     });
     expect(app?.params).toMatchObject({
@@ -803,7 +804,7 @@ describe("planStacks: replacing the repository and registry tokens", () => {
       name: "opscrew-shop",
       url: "ghcr.io",
       registryId: 100,
-      username: "opscrew",
+      username: "opscrew-shop",
       replacesToken: "registry",
       grantUserId: 1,
     });
@@ -817,6 +818,24 @@ describe("planStacks: replacing the repository and registry tokens", () => {
     );
     expect(ungranted.changes[0]?.params).toEqual(plan.changes[0]?.params);
     expect(ungranted.changes[0]?.reason).toMatch(/no longer usable on the environment/);
+  });
+
+  it("logs the entry in with an explicit user name when one is given, adding or replacing", async () => {
+    const registry = { url: "ghcr.io", private: true, username: "acme" } as const;
+    const added = planStacks(await world().inspect(), desired({ registry }));
+    expect(added.changes[0]?.params).toMatchObject({ action: "create", username: "acme" });
+    const key = randomBytes(32);
+    const s = secrets();
+    const replaced = planStacks(
+      withFingerprints(key, s),
+      desired({
+        record,
+        registry,
+        valueFingerprints: fingerprintsFor(key, s),
+        replaceTokens: { registry: true },
+      }),
+    );
+    expect(replaced.changes[0]?.params).toMatchObject({ action: "update", username: "acme" });
   });
 
   it("sends only OpsCrew's own entry name and ghcr.io, never what Portainer shows", () => {

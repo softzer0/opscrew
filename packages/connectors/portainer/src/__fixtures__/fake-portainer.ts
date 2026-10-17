@@ -561,6 +561,16 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
     if (state.registries.some((item) => item.Name === body.Name)) {
       return reply(409, { message: "Another registry with the same name already exists" });
     }
+    // Portainer compares the URL and, with authentication on, the user name (not the password).
+    if (
+      body.Authentication === true &&
+      state.registries.some((item) => item.URL === body.URL && item.Username === body.Username)
+    ) {
+      return reply(409, {
+        message: "Another registry with the same URL and credentials already exists",
+        details: "A registry is already defined for this URL and credentials",
+      });
+    }
     const registry: FakeRegistry = {
       Id: nextId++,
       Name: body.Name,

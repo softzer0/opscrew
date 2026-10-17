@@ -16,6 +16,8 @@ import {
 import { type ApplyStackOptions, applyStackPlan, StackApplyError } from "./apply";
 import type { PortainerClient } from "./client";
 import { portainerClient } from "./client";
+import { inspectPortainer } from "./inspect";
+import { opscrewStackNames } from "./names";
 import {
   type DesiredStacks,
   planStacks,
@@ -276,7 +278,7 @@ describe("applyStackPlan: setup", () => {
       URL: "ghcr.io",
       BaseURL: "",
       Authentication: true,
-      Username: "opscrew",
+      Username: "opscrew-shop",
       Password: s.registryToken,
     });
     expect(calls[1]?.body).toEqual({
@@ -1008,6 +1010,72 @@ describe("applyStackPlan: value fingerprints", () => {
   });
 });
 
+describe("applyStackPlan: a second app's ghcr.io entry in the same Portainer", () => {
+  /** The desired stacks of a second app, `blog`, from the same repository owner. */
+  const blog = (s: Secrets, overrides: Partial<DesiredStacks> = {}) =>
+    bound(s, {
+      app: "blog",
+      volumes: [],
+      updater: { compose: UPDATER_COMPOSE.replace("opscrew-shop-updater", "opscrew-blog-updater") },
+      ...overrides,
+    });
+
+  async function setupBlog(w: World, d: DesiredStacks, s: Secrets) {
+    const facts = await inspectPortainer(w.client(), {
+      environmentId: 3,
+      names: opscrewStackNames("blog"),
+    });
+    const plan = planStacks(facts, d);
+    const clock = fakeClock();
+    return apply(w.client(), plan, {
+      approvedHash: stackPlanHash(plan),
+      secrets: s,
+      wait: { now: clock.now, sleep: clock.sleep },
+    });
+  }
+
+  it("adds and grants each app's own entry, logged in with the entry's name", async () => {
+    const w = world();
+    await setupApplied(w);
+    const s = secrets();
+    const done = await setupBlog(w, blog(s), s);
+    expect(done.applied).toEqual(["registry", "app-stack", "updater-stack"]);
+    expect(w.fake.state.registries).toEqual([
+      expect.objectContaining({
+        Name: "opscrew-shop",
+        URL: "ghcr.io",
+        Username: "opscrew-shop",
+        accesses: { 3: [1] },
+      }),
+      expect.objectContaining({
+        Name: "opscrew-blog",
+        URL: "ghcr.io",
+        Username: "opscrew-blog",
+        accesses: { 3: [1] },
+      }),
+    ]);
+  });
+
+  it("stops at Portainer's refusal of an equal user name and applies nothing after it", async () => {
+    const w = world();
+    const registry = { url: "ghcr.io", private: true, username: "acme" } as const;
+    await setupApplied(w, { registry });
+    const s = secrets();
+    const start = w.fake.calls.length;
+    const error = (await failure(setupBlog(w, blog(s, { registry }), s))) as StackApplyError;
+    expect(error).toBeInstanceOf(StackApplyError);
+    expect(error.message).toContain(
+      "Portainer refused to add the registry entry opscrew-blog because it conflicts with something that exists: Another registry with the same URL and credentials already exists: A registry is already defined for this URL and credentials.",
+    );
+    expect(error.applied).toEqual([]);
+    expect(mutating(w, start).map((call) => `${call.method} ${call.path}`)).toEqual([
+      "POST /api/registries",
+    ]);
+    expect(w.fake.state.registries.map((entry) => entry.Name)).toEqual(["opscrew-shop"]);
+    expect(w.fake.state.stacks.some((stack) => stack.Name.startsWith("opscrew-blog"))).toBe(false);
+  });
+});
+
 describe("applyStackPlan: replacing the repository and registry tokens", () => {
   /** A set-up app, then the plan that replaces `tokens` with new values. */
   async function replacing(tokens: { repository?: boolean; registry?: boolean }) {
@@ -1071,7 +1139,7 @@ describe("applyStackPlan: replacing the repository and registry tokens", () => {
       Name: "opscrew-shop",
       URL: "ghcr.io",
       Authentication: true,
-      Username: "opscrew",
+      Username: "opscrew-shop",
       Password: next.registryToken,
     });
     const entry = w.fake.state.registries.find((registry) => registry.Id === 100);

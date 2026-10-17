@@ -160,6 +160,12 @@ Every name starts with `opscrew-` and your app's name, so it cannot be mistaken 
 OpsCrew records what it created in `.opscrew/server.json`, so removing the app later removes exactly
 that.
 
+If you deploy several apps to one Portainer, each app gets its own `ghcr.io` registry entry, named
+after the app (`opscrew-<app>`). When Portainer pulls an image it may log in to `ghcr.io` with any of
+these entries, so each app's read token must be able to read every app's image. One GitHub classic
+token with only `read:packages` from your GitHub account does that: use it as
+`OPSCREW_GHCR_READ_TOKEN` for every app.
+
 ### What OpsCrew never touches
 
 - Your other stacks, containers, volumes, networks and registry entries. If a stack already uses

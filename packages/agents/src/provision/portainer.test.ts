@@ -37,6 +37,7 @@ import {
   encryptedState,
   FakeEngine,
   FakeGitHub,
+  type FakePortainer,
   type FakePortainerOptions,
   fakeCertificate,
   fakePortainer,
@@ -102,6 +103,8 @@ const WEBHOOK_TUNNEL: ResourceChange[] = [
 interface SetupOptions {
   plan?: DeployPlan;
   portainer?: Partial<FakePortainerOptions>;
+  /** A Portainer another app's setup already uses (instead of a new one from `portainer`). */
+  fake?: FakePortainer;
   answer?: (request: ApprovalRequest) => boolean;
   env?: Record<string, string | undefined>;
   connection?: Partial<PortainerConnectionInput>;
@@ -197,7 +200,7 @@ async function setup(options: SetupOptions = {}) {
   const plan = options.plan ?? portainerPlan();
   const project = await createProject(plan);
   await writeFile(join(project.root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
-  const fake = fakePortainer({ token: PORTAINER_TOKEN, ...options.portainer });
+  const fake = options.fake ?? fakePortainer({ token: PORTAINER_TOKEN, ...options.portainer });
   const github = new PortainerGitHub(async (branch) => {
     // The deploy branch now exists where pushes go (its content does not matter here).
     const head = await project.git(project.root, "rev-parse", "HEAD");
@@ -365,11 +368,11 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     ]);
     expect(s.github.branches[0]?.content).toContain("sleep");
 
-    // Portainer: the registry entry for the owner, the app's Git stack, the updater.
+    // Portainer: the app's registry entry, its Git stack, the updater.
     const webhookId = (await readFile(portainerWebhookFile(s.deps.paths), "utf8")).trim();
     expect(webhookId).toBe(UUIDS[0]);
     expect(s.fake.registries).toEqual([
-      expect.objectContaining({ Name: "opscrew-shop", URL: "ghcr.io", Username: "acme" }),
+      expect.objectContaining({ Name: "opscrew-shop", URL: "ghcr.io", Username: "opscrew-shop" }),
     ]);
     const registryBody = s.fake.bodies.find((b) => b.call === "POST /api/registries")?.body;
     expect(registryBody).toMatchObject({ Password: GHCR_TOKEN });
@@ -927,6 +930,28 @@ describe.skipIf(!findExecutable("git"))(
       await s.run({ publicImage: false });
       expect(s.fake.registries).toEqual([expect.objectContaining({ Name: "opscrew-shop" })]);
       expect((await readPortainerConnection(s.deps.paths))?.publicImage).toBe(false);
+    });
+
+    it("a second app of the same GitHub owner gets its own registry entry in the same Portainer", async () => {
+      const shop = await setup({ plan: proxyPlan() });
+      await shop.run();
+      const base = proxyPlan();
+      const blog = await setup({
+        plan: { ...base, app: { ...base.app, name: "blog" } },
+        fake: shop.fake,
+      });
+      await blog.run();
+      // Portainer refuses two entries with the same URL and user name: each logs in with its name.
+      expect(shop.fake.registries).toEqual([
+        expect.objectContaining({ Name: "opscrew-shop", URL: "ghcr.io", Username: "opscrew-shop" }),
+        expect.objectContaining({ Name: "opscrew-blog", URL: "ghcr.io", Username: "opscrew-blog" }),
+      ]);
+      expect(shop.fake.stacks.map((stack) => stack.Name).sort()).toEqual([
+        "opscrew-blog",
+        "opscrew-blog-updater",
+        "opscrew-shop",
+        "opscrew-shop-updater",
+      ]);
     });
 
     it("a Portainer on this computer over plain HTTP: the updater reaches the host, no pin, no TLS probe", async () => {
