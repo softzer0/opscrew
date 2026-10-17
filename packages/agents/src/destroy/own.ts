@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import {
   applyHostPlan,
+  HostApplyError,
   type HostFacts,
   type HostPlan,
   HostPlanSchema,
@@ -65,7 +66,7 @@ const SERVER_STAYS =
   "Your server itself stays: OpsCrew never deletes, rebuilds or reinstalls it, and takes no snapshot of it. Backups are your responsibility.";
 
 /** What the teardown on the user's server needs once connected. */
-interface OwnHost {
+export interface OwnHost {
   session: OwnServerSession;
   apply: HostAdapterApi["apply"];
   verifyLogin: () => Promise<boolean>;
@@ -117,16 +118,19 @@ const TUNNEL_AFTER_SERVER =
 /**
  * A teardown or undo host plan through {@link approveAndApplyHostPlan}: saved as
  * `.opscrew/plans/host-<hash>.json` and shown after `intro`, approved as `host-apply` by its hash
- * with `allowDestroy` and the typed app name, checked, and applied through the host adapter (which
- * refuses any other plan and calls `verifyLogin` around SSH and firewall changes). Audited by the
- * plan's hash as `host teardown …` or `host undo …`, never with the server's address. A failed
- * apply also says `afterFailure` (what already happened before it), when given.
+ * with `allowDestroy` and the typed app `name`, checked, and applied through the host adapter
+ * (which refuses any other plan and calls `verifyLogin` around SSH and firewall changes). Audited
+ * by the plan's hash as `host teardown …` or `host undo …`, never with the server's address. A
+ * failed apply also says `afterFailure` (what already happened before it), when given. A plan
+ * for another app stops with `INTERNAL` before anything is asked (exported for tests).
  */
-function applyHostPlanApproved(
+export async function applyHostPlanApproved(
   deps: PhaseDeps,
   host: OwnHost,
   plan: HostPlan,
   request: {
+    /** The app's name, which the user types to approve the plan. */
+    name: string;
     title: string;
     intro: readonly string[];
     refused: string;
@@ -135,8 +139,15 @@ function applyHostPlanApproved(
     afterFailure?: string;
   },
 ): Promise<HostPlanOutcome> {
-  const { afterFailure } = request;
-  // The typed confirmation is the plan's app: this app's name (requireOwnApp checked the server).
+  const { afterFailure, name } = request;
+  // requireOwnApp checked the server; a plan that names another app is a bug, never approved.
+  if (plan.app !== "" && plan.app !== name) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      `The ${plan.purpose} host plan is for the app "${plan.app}", not "${name}", so OpsCrew stopped before asking to approve it. Nothing on your server was changed.`,
+      { hint: "This is a bug in OpsCrew; please report it." },
+    );
+  }
   return approveAndApplyHostPlan(deps, {
     plan,
     remote: host.session.remote,
@@ -148,7 +159,7 @@ function applyHostPlanApproved(
               return await host.apply(remote, hostPlan, options);
             } catch (error) {
               // Say what already happened (redacted, and never the server's address).
-              throw stoppedPartWay(error, {
+              const stopped = stoppedPartWay(error, {
                 place: "your server",
                 afterFailure,
                 say: (text) =>
@@ -158,6 +169,13 @@ function applyHostPlanApproved(
                     "your server",
                   ),
               });
+              // The steps the adapter applied before the failure stay known to the audit.
+              throw error instanceof HostApplyError
+                ? new HostApplyError(stopped.code, stopped.message, error.applied, {
+                    ...(stopped.hint !== undefined ? { hint: stopped.hint } : {}),
+                    cause: error,
+                  })
+                : stopped;
             }
           },
     verifyLogin: host.verifyLogin,
@@ -167,6 +185,7 @@ function applyHostPlanApproved(
     command: request.command,
     phase: "provision",
     allowDestroy: true,
+    confirmPhrase: name,
     intro: request.intro,
     refused: { message: request.refused, hint: SHOWS_PLAN_AGAIN },
     auditAs: `host ${plan.purpose}`,
@@ -481,6 +500,7 @@ export async function destroyOwnServer(
           ? "The app's Cloudflare resources are deleted already; the app is still on your server. Run `opscrew destroy` again to finish."
           : undefined;
       const result = await applyHostPlanApproved(deps, host, teardown, {
+        name,
         command,
         title: `Remove ${name} from your server (${plural(hostSteps.length, "change")})`,
         intro: [
@@ -573,6 +593,7 @@ export async function destroyOwnServer(
       // it installed): a destroy, so it needs allowDestroy and the typed app name (Constitution I).
       const deletesDeployUser = undoSteps.some((step) => step.id === "deploy-user");
       const result = await applyHostPlanApproved(deps, host, undo, {
+        name,
         command,
         title: `Undo OpsCrew's changes to your server (${plural(undoSteps.length, "change")})`,
         intro: [

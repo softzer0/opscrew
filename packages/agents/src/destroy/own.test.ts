@@ -1,6 +1,12 @@
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { HostFactsSchema, HostPlanSchema, hostPlanHash } from "@opscrew/connector-ssh-host";
+import {
+  HostApplyError,
+  HostFactsSchema,
+  HostPlanSchema,
+  hostPlanHash,
+  planTeardown,
+} from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
@@ -16,7 +22,7 @@ import {
 } from "../drift/__fixtures__/own-project";
 import { hostPlanFile, readOwnServer, readServerAddresses } from "../shared";
 import { ED25519 } from "../testing";
-import { savedHostPlanPurpose } from "./own";
+import { applyHostPlanApproved, savedHostPlanPurpose } from "./own";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
 
@@ -383,6 +389,48 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(error.hint).toContain("--undo-host");
   });
 
+  it("--undo-host against a host record that names no app still asks for the app's name", async () => {
+    const s = await deployed();
+    await runDestroy(s.deps, { services: services(s) });
+    // An older host record without the app's name: the undo plan names no app either.
+    const record = s.host.facts.record;
+    s.host.facts = { ...s.host.facts, record: record === null ? null : { ...record, app: "" } };
+    s.handler.requests.length = 0;
+    const result = await runDestroy(s.deps, { services: services(s), undoHost: true });
+    expect(s.handler.requests.filter((r) => r.kind === "host-apply")).toEqual([
+      expect.objectContaining({ allowDestroy: true, confirmPhrase: "shop" }),
+    ]);
+    expect(s.host.applies.at(-1)?.plan).toMatchObject({ purpose: "undo", app: "" });
+    expect(result.hostPlans?.undo).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("never asks to approve a host plan made for another app", async () => {
+    const s = await deployed();
+    const before = { applies: s.host.applies.length, requests: s.handler.requests.length };
+    const plan = {
+      ...planTeardown(s.host.facts, { deleteData: false, app: "shop" }, "opscrew destroy"),
+      app: "blog",
+    };
+    const host = {
+      session: s.host as never,
+      apply: () => Promise.reject(new Error("must not apply")),
+      verifyLogin: async () => true,
+    };
+    const error = await expectError(
+      applyHostPlanApproved(s.deps, host, plan, {
+        name: "shop",
+        title: "Remove shop from your server",
+        intro: [],
+        refused: "The removal of shop was not approved.",
+        command: "opscrew destroy",
+      }),
+      "INTERNAL",
+    );
+    expect(error.message).toContain('for the app "blog", not "shop"');
+    expect(s.handler.requests).toHaveLength(before.requests);
+    expect(s.host.applies).toHaveLength(before.applies);
+  });
+
   it("refuses before any change when the Cloudflare state is not on this computer", async () => {
     const s = await deployed();
     await rm(join(s.deps.paths.files.tfstateDir, "prod.tfstate"), { force: true });
@@ -405,13 +453,20 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
 
   it("a failed teardown after the Cloudflare deletion says so, and a re-run finishes", async () => {
     const s = await deployed();
-    s.host.fail = new OpsCrewError("COMMAND_FAILED", "Removing the app's containers failed.", {
-      hint: "Check Docker on the server.",
-    });
+    s.host.fail = new HostApplyError(
+      "COMMAND_FAILED",
+      "Removing the app's containers failed.",
+      ["runtime-dirs"],
+      { hint: "Check Docker on the server." },
+    );
     const error = await expectError(
       runDestroy(s.deps, { services: services(s) }),
       "COMMAND_FAILED",
     );
+    // The audit still lists the steps the adapter applied before the failure.
+    expect(
+      s.deps.audit.entries.find((entry) => entry.action === "host teardown failed")?.detail,
+    ).toBe("steps applied before the failure: runtime-dirs");
     expect(error.message).toBe("Removing the app's containers failed.");
     expect(error.hint).toBe(
       "Check Docker on the server. The app's Cloudflare resources are deleted already; the app is still on your server. Run `opscrew destroy` again to finish.",

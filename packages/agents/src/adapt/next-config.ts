@@ -4,7 +4,6 @@
  * `create-next-app` writes and returns `manual` whenever anything is unusual, so the change falls
  * back to the Code-change agent or to the user.
  */
-
 import { join, posix } from "node:path";
 import { exists, readTextIfExists } from "@opscrew/core";
 import { NEXT_CONFIG_NAMES } from "../design/code-changes";

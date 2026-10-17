@@ -299,7 +299,7 @@ From the duplicate scans and reviews recorded in `dry.md`. Waves: T1034 → {T10
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/secops` and `OPSCREW_IT=1` for iac-templates
   - Effort: high
 
-- [ ] T1036 [P] Agents: the shared helpers and the deploy-side folders (dry.md A1–A20 except A11; B1–B9 where they touch these folders)
+- [X] T1036 [P] Agents: the shared helpers and the deploy-side folders (dry.md A1–A20 except A11; B1–B9 where they touch these folders)
   - Owns: `packages/agents/src/{shared,provision,providers,portainer,destroy,retarget}/**` (+ tests); minimal call-site changes elsewhere in agents, the CLI and MCP (listed in the report)
   - Reads: dry.md A, B
   - Depends: T1034

@@ -128,6 +128,8 @@ export interface HostPlanStep {
   phase: PhaseName;
   /** The plan deletes data: the approval needs `allowDestroy` and the typed app name. */
   allowDestroy?: boolean;
+  /** The name the user types to approve a plan that deletes data (default: the plan's app). */
+  confirmPhrase?: string;
   /** Said before the plan in the approval's details (what it removes, what stays). */
   intro?: readonly string[];
   /**
@@ -195,7 +197,7 @@ export async function approveAndApplyHostPlan(
     title: step.title,
     details,
     planHash: hash,
-    ...(allowDestroy ? { allowDestroy: true, confirmPhrase: plan.app } : {}),
+    ...(allowDestroy ? { allowDestroy: true, confirmPhrase: step.confirmPhrase ?? plan.app } : {}),
   });
   if (!approval.approved) {
     if (step.refused !== undefined) {

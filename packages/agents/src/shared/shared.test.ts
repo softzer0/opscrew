@@ -115,13 +115,15 @@ describe("Ed25519 deploy keys", () => {
     const root = await temp();
     const paths = resolveProjectPaths(root, { env: { OPSCREW_HOME: join(root, "home") } });
     const redactor = new Redactor();
+    const reused = new Redactor();
     const first = await ensureDeployKey(paths, redactor);
-    const second = await ensureDeployKey(paths, new Redactor());
+    const second = await ensureDeployKey(paths, reused);
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
     expect(second.publicKeyOpenSsh).toBe(first.publicKeyOpenSsh);
-    // The private half is registered with the redactor wherever the key is read or made.
+    // The private half is registered with the redactor wherever the key is made or read again.
     expect(redactor.redact(first.privateKeyOpenSsh)).not.toContain(first.privateKeyOpenSsh);
+    expect(reused.redact(second.privateKeyOpenSsh)).not.toContain(second.privateKeyOpenSsh);
     const passphrase = await ensureStatePassphrase(paths);
     expect(passphrase.length).toBeGreaterThanOrEqual(32);
     expect(await ensureStatePassphrase(paths)).toBe(passphrase);
