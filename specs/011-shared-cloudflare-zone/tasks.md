@@ -102,6 +102,7 @@ Starts after 010's DRY pass (Phase 7 of `specs/010-portainer-target/tasks.md`).
       - That removal is part of the deletion preview and the typed confirmation (`allowDestroy`), and runs after the IaC destroy.
       - Destroy says the Zero Trust organization and identity provider stay.
       - A damaged `.opscrew/cloudflare.json` stops with nothing changed.
+    - **An empty entrypoint left by an interrupted destroy** (OpsCrew's rule deleted, the entrypoint's delete not answered): destroy deletes an entrypoint listed in the record's `createdEntrypoints` when it holds no rules (from the T1102 review).
     - **Drift** reports a missing OpsCrew rule, a missing hostname of this app, and a rule changed beyond its hostnames.
     - **Init** reads both entrypoints and names Zone WAF → Edit or Config Rules → Edit when a read answers 403.
     - Every target's destroy keeps its other checks.
