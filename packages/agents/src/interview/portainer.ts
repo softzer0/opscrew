@@ -13,7 +13,7 @@ import {
   readPortainerConnection,
   recordPortainerConnection,
 } from "../shared";
-import { type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
+import { FIX_ANSWERS_HINT, type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
 
 /** The follow-up answers for an existing Portainer (`portainer.<field>` in answers files). */
 export const PORTAINER_FIELDS = ["url", "environment", "redeploy", "web", "port"] as const;
@@ -314,9 +314,7 @@ function invalid(problems: readonly string[]): OpsCrewError {
   return new OpsCrewError(
     "INVALID_INPUT",
     `Some answers about your Portainer are missing or not valid: ${problems.join("; ")}.`,
-    {
-      hint: "Fix them in the answers file, or run `opscrew interview` in a terminal to answer the questions.",
-    },
+    { hint: FIX_ANSWERS_HINT },
   );
 }
 

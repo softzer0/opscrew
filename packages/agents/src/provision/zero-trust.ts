@@ -2,6 +2,7 @@ import { CLOUDFLARE_TOKEN_PERMISSIONS, CloudflareClient } from "@opscrew/connect
 import { OpsCrewError } from "@opscrew/core";
 import { zeroTrustAuthDomain } from "@opscrew/iac-templates";
 import type { PhaseDeps } from "../context";
+import { cloudflareTokenHint } from "../domain/common";
 
 /**
  * Cloudflare token permissions a Cloudflare Tunnel with Access needs on top of
@@ -35,7 +36,10 @@ export function cloudflareZeroTrust(
       "CREDENTIALS_MISSING",
       "No Cloudflare token found: set CLOUDFLARE_API_TOKEN.",
       {
-        hint: `Create a Cloudflare API token at https://dash.cloudflare.com/profile/api-tokens with ${tunnelTokenPermissions()}, set CLOUDFLARE_API_TOKEN to it, then run the command again.`,
+        hint: cloudflareTokenHint(
+          tunnelTokenPermissions(),
+          "Then set CLOUDFLARE_API_TOKEN to it and run the command again.",
+        ),
       },
     );
   }

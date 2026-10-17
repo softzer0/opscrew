@@ -27,7 +27,11 @@ import { deploySetupPullRequestBody } from "./publish";
 import { previewDeploymentFiles } from "./render";
 import { runProvision } from "./run";
 import { deploySecrets } from "./secrets";
-import { cloudflareZeroTrust, createZeroTrustOrganization } from "./zero-trust";
+import {
+  cloudflareZeroTrust,
+  createZeroTrustOrganization,
+  tunnelTokenPermissions,
+} from "./zero-trust";
 
 const TOKEN = fakeSecret("cloudflare-token", "zero-trust");
 
@@ -95,7 +99,10 @@ describe("Zero Trust organization", () => {
     expect(deps.redactor.redact(`${error.message} ${error.hint}`)).not.toContain(TOKEN);
     const none = await createTestPhaseDeps();
     expect(() => cloudflareZeroTrust(none)).toThrow(
-      expect.objectContaining({ code: "CREDENTIALS_MISSING" }),
+      expect.objectContaining({
+        code: "CREDENTIALS_MISSING",
+        hint: `Create a token at https://dash.cloudflare.com/profile/api-tokens with these permissions: ${tunnelTokenPermissions()}. Then set CLOUDFLARE_API_TOKEN to it and run the command again.`,
+      }),
     );
   });
 

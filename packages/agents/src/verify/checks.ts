@@ -9,6 +9,7 @@ import {
   checkResult,
   ipv6HttpsAnswers,
   providerConsole,
+  provisionedElsewhereHint,
   type ServerAddress,
   sameIp,
 } from "../shared";
@@ -80,15 +81,6 @@ export interface VerifyCheckContext {
   fetchWithLookup?: FetchWithLookup;
   /** This computer's own host name lookup, asked first (default `dns.lookup`). */
   lookup?: LookupFunction;
-}
-
-/**
- * Where to run `command` when the server's address is not on this computer (a fresh clone): it is
- * kept in the `.opscrew/` folder of the computer that provisioned the server, never in the
- * repository. Starts in lower case, to continue a sentence.
- */
-export function provisionedElsewhereHint(command: string): string {
-  return `run \`${command}\` on the computer that provisioned the server (its \`.opscrew/\` folder holds the address)`;
 }
 
 /** What `opscrew verify` says to do when the server's address is not on this computer. */

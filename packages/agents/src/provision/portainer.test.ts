@@ -63,6 +63,7 @@ import {
 import { runProvision } from "./run";
 import { ROUTE_CHANGE_NOTE, switchesWebRoute } from "./stack-plan";
 import type { ProvisionOptions, ProvisionServices } from "./types";
+import { tunnelTokenPermissions } from "./zero-trust";
 
 const STRIPE = fakeSecret("stripe-live-key");
 const PORTAINER_TOKEN = fakeSecret("generic-password", "portainer-token");
@@ -1065,8 +1066,12 @@ describe.skipIf(!findExecutable("git"))(
       delete s.deps.env.CLOUDFLARE_API_TOKEN;
       const error = (await s.run().catch((e: unknown) => e)) as OpsCrewError;
       expect(error.code).toBe("CREDENTIALS_MISSING");
-      expect(error.message).toContain("CLOUDFLARE_API_TOKEN");
-      expect(error.hint).toContain("Cloudflare Tunnel");
+      expect(error.message).toBe(
+        "No Cloudflare token found: set CLOUDFLARE_API_TOKEN. Nothing was changed.",
+      );
+      expect(error.hint).toBe(
+        `Create a token at https://dash.cloudflare.com/profile/api-tokens with these permissions: ${tunnelTokenPermissions()}. Then try again.`,
+      );
       expect(kinds(s)).toEqual([]);
       expect(s.fake.stacks.map((stack) => stack.Name)).toContain("opscrew-shop-portainer-tunnel");
     });

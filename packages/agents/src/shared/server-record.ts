@@ -259,6 +259,15 @@ export function serverAddressesFile(paths: Pick<ProjectPaths, "stateDir">): stri
   return join(paths.stateDir, "server.json");
 }
 
+/**
+ * Where to run `command` when the server's address is not on this computer (a fresh clone): it is
+ * kept in the `.opscrew/` folder of the computer that provisioned the server, never in the
+ * repository. Starts in lower case, to continue a sentence.
+ */
+export function provisionedElsewhereHint(command: string): string {
+  return `run \`${command}\` on the computer that provisioned the server (its \`.opscrew/\` folder holds the address)`;
+}
+
 /** Where {@link setAsideServerAddresses} keeps a damaged `.opscrew/server.json`. */
 export function damagedServerAddressesFile(paths: Pick<ProjectPaths, "stateDir">): string {
   return join(paths.stateDir, "server.json.damaged");

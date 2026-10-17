@@ -1,6 +1,10 @@
 import { isRecord } from "@opscrew/core";
 import type { InterviewAnswers } from "./questions";
 
+/** What to do when follow-up answers are missing or not valid. */
+export const FIX_ANSWERS_HINT =
+  "Fix them in the answers file, or run `opscrew interview` in a terminal to answer the questions.";
+
 /** True for an answer that was not given: missing, `null` or only blanks. */
 export function isBlank(value: unknown): boolean {
   return (

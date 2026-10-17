@@ -10,7 +10,7 @@ import type { CommandResult, FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type Requirements, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { REGISTRY_TOKEN_HINT } from "../provision/stack-plan";
+import { REGISTRY_TOKEN_HINT, REPOSITORY_TOKEN_HINT } from "../provision/stack-plan";
 import {
   type PortainerConnectionInput,
   recordPortainerConnection,
@@ -293,9 +293,10 @@ describe("opscrew init for a Portainer target", () => {
     expect(tokens.status).toBe("warn");
     expect(tokens.message).toContain("OPSCREW_GHCR_READ_TOKEN");
     expect(tokens.message).toContain("OPSCREW_REPO_READ_TOKEN");
-    // The registry token's help is the stack plan's, word for word.
-    expect(tokens.fix).toContain(REGISTRY_TOKEN_HINT);
-    expect(tokens.fix).toContain("Contents: Read-only");
+    // The tokens' help is the stack plan's, word for word.
+    expect(tokens.fix).toBe(
+      `${REGISTRY_TOKEN_HINT} ${REPOSITORY_TOKEN_HINT} Set them before you run \`opscrew provision\`.`,
+    );
     // Warnings never fail init.
     expect(find(list, "provider").status).toBe("pass");
   });

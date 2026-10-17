@@ -16,6 +16,7 @@ import {
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { cloudflareTokenHint } from "../domain/common";
 import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
 import {
   githubClientFromToken,
@@ -331,7 +332,7 @@ export function cloudflareTokenMissing(
   const requirement = cloudflareConnector(deps).credentials;
   const error = missing("Cloudflare", requirement);
   return new OpsCrewError(error.code, `${error.message} Nothing was changed.`, {
-    hint: `The token needs: ${tunnelTokenPermissions()}. Create one at ${requirement.createUrl}`,
+    hint: cloudflareTokenHint(tunnelTokenPermissions(), "Then try again."),
   });
 }
 

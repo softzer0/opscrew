@@ -12,7 +12,7 @@ import type { PhaseDeps } from "../context";
 import { hasEnv } from "../domain/registrars";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../provision/portainer";
-import { REGISTRY_TOKEN_HINT } from "../provision/stack-plan";
+import { REGISTRY_TOKEN_HINT, REPOSITORY_TOKEN_HINT } from "../provision/stack-plan";
 import { hidePortainerAddress } from "../shared";
 import { type PortainerConnection, readPortainerConnection } from "../shared/server-record";
 import { type CheckResult, failFrom } from "./check-result";
@@ -38,8 +38,6 @@ const TOKEN_FIX = `${PORTAINER_TOKEN_STEPS}, then set ${PORTAINER_TOKEN_VAR} to 
 
 const INTERVIEW_FIX =
   "Run `opscrew interview` and answer the Portainer questions: its address, its certificate's fingerprint (OpsCrew shows it for you to confirm) and the environment to deploy to.";
-
-const REPOSITORY_FIX = `For ${REPOSITORY_TOKEN_VAR}, create a fine-grained token at https://github.com/settings/personal-access-tokens/new for only this repository with Contents: Read-only (OpsCrew sends it only to your Portainer, for the app's stack, and never saves it).`;
 
 /**
  * Reads the Portainer connection the interview recorded in `.opscrew/server.json` and registers
@@ -168,7 +166,7 @@ export function checkPortainerTokens(
       notes.push(`${REPOSITORY_TOKEN_VAR} is set for the private repository.`);
     } else {
       missing.push(`${REPOSITORY_TOKEN_VAR} (the repository is private)`);
-      fixes.push(REPOSITORY_FIX);
+      fixes.push(REPOSITORY_TOKEN_HINT);
     }
   } else if (repoPrivate === false) {
     notes.push("The repository is public, so Portainer needs no repository token.");

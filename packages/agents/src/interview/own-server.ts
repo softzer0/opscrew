@@ -7,7 +7,7 @@ import {
   readOwnServer,
   recordOwnServer,
 } from "../shared";
-import { type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
+import { FIX_ANSWERS_HINT, type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
 
 /** The follow-up answers for a server the user already has (`server.<field>` in answers files). */
 export const SERVER_FIELDS = ["host", "port", "user", "key", "reachable", "serve"] as const;
@@ -383,9 +383,7 @@ export function answersToOwnServer(
     throw new OpsCrewError(
       "INVALID_INPUT",
       `Some answers about your server are missing or not valid: ${problems.join("; ")}.`,
-      {
-        hint: "Fix them in the answers file, or run `opscrew interview` in a terminal to answer the questions.",
-      },
+      { hint: FIX_ANSWERS_HINT },
     );
   }
   return OwnServerAnswersSchema.parse({

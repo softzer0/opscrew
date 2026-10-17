@@ -17,8 +17,7 @@ import {
   SEVERITY_RANK,
   tableCell,
 } from "@opscrew/secops";
-import { summarizeChecks } from "../shared";
-import { provisionedElsewhereHint } from "../verify/checks";
+import { provisionedElsewhereHint, summarizeChecks } from "../shared";
 
 /** Everything `SECURITY_REPORT.md` shows. All values must already be secret-free. */
 export interface SecurityReportInput {
