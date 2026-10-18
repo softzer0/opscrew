@@ -22,7 +22,7 @@ Effort`.
 
 ## Phase 1: Foundation (serial)
 
-- [ ] T1201 Plan fields, runtime versions, the pin table and the pin script in `packages/plan-schema/src/**`, `packages/detect/src/**`, `packages/iac-templates/src/{pins.ts,index.ts}`, `scripts/update-pins.mjs`
+- [X] T1201 Plan fields, runtime versions, the pin table and the pin script in `packages/plan-schema/src/**`, `packages/detect/src/**`, `packages/iac-templates/src/{pins.ts,index.ts}`, `scripts/update-pins.mjs`
   - Owns: those paths (+ tests); `packages/iac-templates/src/index.ts` only for new exports
   - Reads: data-model.md; plan.md "1. Plan, facts and pins"; research.md (pins used, R3 and R7 results); `packages/iac-templates/src/workflow/shared.ts` (the actions and the Trivy image pinned today)
   - Depends: —
@@ -85,7 +85,7 @@ Effort`.
   - Accept:
     - **Node templates:**
       - use `app.build.runtime.version` (the declared major, else `RUNTIME_DEFAULTS.node`);
-      - pin their base by digest from `pins.ts`;
+      - pin their base by digest. The default runtime images come from `pins.ts`. A declared non-default version (for example `node:20-alpine`) takes its digest from an injected `resolveImageDigest(ref)`, the registry lookup used by adapt in T1207. With no digest (offline), the image falls back to the tag, and the Dockerfile and output say so;
       - install production dependencies only in the runtime stage (npm, pnpm and Yarn), keeping the release command's tool when the release command needs it (for example `prisma`);
       - a test proves no devDependency is in the runtime stage's install for `express-api`.
     - **Python** uses the declared version or the default.
@@ -168,6 +168,7 @@ Effort`.
   - Accept:
     - **adapt:**
       - writes the Dockerfile only for `generated-dockerfile`;
+      - resolves the digest of a declared non-default runtime image through the registry (an injected fetch, faked in tests) before rendering; offline, it warns that the image is pinned by tag only;
       - passes the committed files through `keepNewerPins`;
       - adds `dependabot.yml` when absent, or lists the entries it would add;
       - adds the runtime version file (`.nvmrc`, `.python-version`, …) with the recorded version when the repository has none;

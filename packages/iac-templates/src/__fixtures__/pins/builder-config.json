@@ -1,0 +1,10 @@
+{
+  "architecture": "amd64",
+  "os": "linux",
+  "config": {
+    "Labels": {
+      "io.buildpacks.stack.id": "io.buildpacks.stacks.noble",
+      "io.buildpacks.builder.metadata": "{\"description\":\"Ubuntu 24.04 Noble Numbat base image with buildpacks for Java, .NET Core, Node.js, Python, Go, Ruby, PHP and NGINX.\",\"buildpacks\":[{\"id\":\"paketo-buildpacks/ca-certificates\",\"name\":\"Paketo Buildpack for CA Certificates\",\"version\":\"3.14.0\",\"homepage\":\"https://github.com/paketo-buildpacks/ca-certificates\"},{\"id\":\"paketo-buildpacks/go-dist\",\"name\":\"Paketo Buildpack for Go Distribution\",\"version\":\"2.10.31\",\"homepage\":\"https://github.com/paketo-buildpacks/go-dist\"},{\"id\":\"paketo-buildpacks/ca-certificates\",\"name\":\"Paketo Buildpack for CA Certificates\",\"version\":\"3.13.0\",\"homepage\":\"https://github.com/paketo-buildpacks/ca-certificates\"},{\"id\":\"paketo-buildpacks/mri\",\"name\":\"Paketo Buildpack for MRI\",\"version\":\"2.0.8\",\"homepage\":\"https://github.com/paketo-buildpacks/mri\"},{\"id\":\"paketo-buildpacks/mri\",\"name\":\"Paketo Buildpack for MRI\",\"version\":\"2.0.8\",\"homepage\":\"https://github.com/paketo-buildpacks/mri\"}],\"stack\":{\"runImage\":{\"image\":\"docker.io/paketobuildpacks/ubuntu-noble-run:latest\",\"mirrors\":null}},\"lifecycle\":{\"version\":\"0.21.22\"}}"
+    }
+  }
+}

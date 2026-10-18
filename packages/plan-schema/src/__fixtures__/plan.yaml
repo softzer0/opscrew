@@ -25,6 +25,9 @@ target:
   serverType: cpx22
   image: ubuntu-24.04
   backups: true
+deploy:
+  strategy: rolling
+  drainSeconds: 30
 services:
   postgres: true
   redis: false
@@ -77,6 +80,12 @@ cicd:
   workflowPath: .github/workflows/opscrew-deploy.yml
   registry: ghcr
   branch: main
+  deployTags:
+    enabled: false
+    release: false
+  imageRetention:
+    enabled: true
+    keep: 10
 security:
   sshAllowedCidrs:
     - 203.0.113.0/24
@@ -84,6 +93,8 @@ security:
   httpAllowedFrom: cloudflare
   wafCustomRules: true
   imageScan: true
+supplyChain:
+  sign: false
 approvals:
   - planHash: 3f5a9c0e7b1d2f4a6c8e0b2d4f6a8c0e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f1a
     approver: mihailo

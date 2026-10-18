@@ -72,6 +72,40 @@
             "required": ["name", "secret", "source"],
             "additionalProperties": false
           }
+        },
+        "build": {
+          "type": "object",
+          "properties": {
+            "builder": {
+              "type": "string",
+              "enum": ["generated-dockerfile", "own-dockerfile", "buildpacks", "railpack"]
+            },
+            "chosen": {
+              "type": "string",
+              "enum": ["auto", "user"]
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            },
+            "runtime": {
+              "type": "object",
+              "properties": {
+                "language": {
+                  "type": "string",
+                  "enum": ["node", "python", "ruby", "go", "java", "dotnet", "php", "rust", "other"]
+                },
+                "version": {
+                  "type": "string",
+                  "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+                }
+              },
+              "required": ["language"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["builder", "chosen", "reason", "runtime"],
+          "additionalProperties": false
         }
       },
       "required": ["name", "port", "env"],
@@ -203,6 +237,28 @@
           "additionalProperties": false
         }
       ]
+    },
+    "deploy": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "strategy": {
+          "default": "rolling",
+          "type": "string",
+          "enum": ["rolling", "recreate"]
+        },
+        "drainSeconds": {
+          "default": 30,
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 300
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
     },
     "services": {
       "type": "object",
@@ -438,6 +494,38 @@
           "default": "main",
           "type": "string",
           "minLength": 1
+        },
+        "deployTags": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "release": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "imageRetention": {
+          "default": {},
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "keep": {
+              "default": 10,
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 100
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": ["provider", "registry"],
@@ -475,6 +563,17 @@
         },
         "imageScan": {
           "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "supplyChain": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "sign": {
+          "default": false,
           "type": "boolean"
         }
       },

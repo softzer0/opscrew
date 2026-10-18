@@ -118,7 +118,10 @@ describe("input tolerance", () => {
       buildContext: ".",
       dockerfile: "Dockerfile",
     });
+    expect(plan.app.build).toBeUndefined();
     expect(plan.target).toMatchObject({ image: "ubuntu-24.04" });
+    expect(plan.deploy).toEqual({ strategy: "rolling", drainSeconds: 30 });
+    expect(plan.supplyChain).toEqual({ sign: false });
     expect(plan.infra).toEqual({
       engine: "auto",
       dir: "opscrew/infra/prod",
@@ -130,6 +133,8 @@ describe("input tolerance", () => {
       workflowPath: ".github/workflows/opscrew-deploy.yml",
       registry: "ghcr",
       branch: "main",
+      deployTags: { enabled: false, release: false },
+      imageRetention: { enabled: true, keep: 10 },
     });
     expect(plan.security).toEqual({
       sshAllowedCidrs: ["0.0.0.0/0", "::/0"],

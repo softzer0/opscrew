@@ -8,12 +8,14 @@ import {
   CommandLineSchema,
   EnvVarNameSchema,
   FqdnSchema,
+  ImageBuilderSchema,
   IsoDateTimeSchema,
   PhaseNameSchema,
   PlanHashSchema,
   PortSchema,
   RegistrarSchema,
   RepoPathSchema,
+  RuntimeLanguageSchema,
   ServiceKindSchema,
   UrlPathSchema,
 } from "./enums";
@@ -403,6 +405,42 @@ export const RetargetSchema = z.strictObject({
   startedAt: IsoDateTimeSchema,
 });
 
+/**
+ * How the app's image is built. Design sets it; with `chosen: user` later designs keep the user's
+ * builder unless the baseline or the architecture rules it out.
+ */
+export const AppBuildSchema = z.strictObject({
+  builder: ImageBuilderSchema,
+  /** `auto`: design chose the builder. `user`: the user set it. */
+  chosen: z.enum(["auto", "user"]),
+  /** One plain sentence naming the fact that decided the builder. */
+  reason: z.string().min(1),
+  /**
+   * What the builder is given: the version as the app declares it, else OpsCrew's default for the
+   * language. Only `other` may leave the version out.
+   */
+  runtime: z
+    .strictObject({
+      language: RuntimeLanguageSchema,
+      version: z
+        .string()
+        .regex(/^\d+(?:\.\d+){0,2}$/, {
+          message: "must be a version such as `24`, `3.13` or `4.0.7`",
+        })
+        .optional(),
+    })
+    .superRefine((runtime, ctx) => {
+      if (runtime.language !== "other" && runtime.version === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["version"],
+          message: 'is required for every language except "other"',
+        });
+      }
+    }),
+});
+export type AppBuild = z.output<typeof AppBuildSchema>;
+
 const DeployPlanFieldsSchema = z.strictObject({
   schemaVersion: z.literal(1),
   createdAt: IsoDateTimeSchema,
@@ -441,8 +479,21 @@ const DeployPlanFieldsSchema = z.strictObject({
         optional: z.boolean().optional(),
       }),
     ),
+    /** Absent until design sets it. */
+    build: AppBuildSchema.optional(),
   }),
   target: DeployTargetSchema,
+  /** How a new version replaces the running one. */
+  deploy: z
+    .strictObject({
+      /** `rolling`: the new copy takes traffic once healthy. `recreate`: stop, then start. */
+      strategy: z.enum(["rolling", "recreate"]).default("rolling"),
+      /** Seconds the old copy keeps for open requests. */
+      drainSeconds: z.int().min(5).max(300).default(30),
+      /** Why the strategy is not `rolling`, for example "the server has 512 MB of memory". */
+      reason: z.string().min(1).optional(),
+    })
+    .prefault({}),
   services: z.strictObject({ postgres: z.boolean(), redis: z.boolean() }),
   externalServices: z.array(ServiceKindSchema),
   cost: CostEstimateSchema,
@@ -490,6 +541,24 @@ const DeployPlanFieldsSchema = z.strictObject({
     registry: z.literal("ghcr"),
     /** Deploys run on pushes to this branch. */
     branch: z.string().min(1).default("main"),
+    /** A `deploy-<UTC time>` tag on the commit after each healthy deploy. */
+    deployTags: z
+      .strictObject({
+        enabled: z.boolean().default(false),
+        /** Also a GitHub Release naming the image digest. */
+        release: z.boolean().default(false),
+      })
+      .prefault({}),
+    /**
+     * After a healthy deploy, keep the newest `keep` deployed images (with their SBOM and
+     * provenance); never the running or the previous one.
+     */
+    imageRetention: z
+      .strictObject({
+        enabled: z.boolean().default(true),
+        keep: z.int().min(2).max(100).default(10),
+      })
+      .prefault({}),
   }),
   security: z
     .strictObject({
@@ -500,6 +569,15 @@ const DeployPlanFieldsSchema = z.strictObject({
       httpAllowedFrom: z.enum(["any", "cloudflare"]).optional(),
       wafCustomRules: z.boolean().default(true),
       imageScan: z.boolean().default(true),
+    })
+    .prefault({}),
+  supplyChain: z
+    .strictObject({
+      /**
+       * Keyless cosign signature of the image. For a private repository, its name and workflow
+       * path become public in the transparency log.
+       */
+      sign: z.boolean().default(false),
     })
     .prefault({}),
   /** Portainer CE on the server; absent means off. */

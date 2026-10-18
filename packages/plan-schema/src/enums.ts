@@ -19,6 +19,29 @@ export const LanguageSchema = z.enum([
 ]);
 export type Language = z.infer<typeof LanguageSchema>;
 
+/** The runtime an image builder is given, one per app. */
+export const RuntimeLanguageSchema = z.enum([
+  "node",
+  "python",
+  "ruby",
+  "go",
+  "java",
+  "dotnet",
+  "php",
+  "rust",
+  "other",
+]);
+export type RuntimeLanguage = z.infer<typeof RuntimeLanguageSchema>;
+
+/** Who builds the app's image. */
+export const ImageBuilderSchema = z.enum([
+  "generated-dockerfile",
+  "own-dockerfile",
+  "buildpacks",
+  "railpack",
+]);
+export type ImageBuilder = z.infer<typeof ImageBuilderSchema>;
+
 /** Package managers detected in a repository. */
 export const PackageManagerSchema = z.enum([
   "npm",

@@ -110,7 +110,8 @@ export function parseJson(text: string | undefined): unknown {
   }
 }
 
-function parseTomlSafe(text: string | undefined): Record<string, unknown> | undefined {
+/** Parses TOML text, tolerating a BOM; `undefined` when invalid. */
+export function parseTomlSafe(text: string | undefined): Record<string, unknown> | undefined {
   if (text === undefined) return undefined;
   try {
     return parseToml(stripBom(text)) as Record<string, unknown>;

@@ -13,6 +13,7 @@ import {
   type CurrencySchema,
   cloudflareEdgeCoverage,
   DEFAULT_IMAGES,
+  type DeployPlan,
   DeployPlanSchema,
   DeployProviderSchema,
   type DeployTarget,
@@ -1103,11 +1104,13 @@ describe("DeployPlan target on an existing Portainer", () => {
 
 describe("DeployPlan serialisation of existing targets", () => {
   // SHA-256 of `serializeArtifact("plan", …)` before feature 010: adding the Portainer target must
-  // not change one byte of a Hetzner, DigitalOcean or own-server plan.
+  // not change one byte of a Hetzner, DigitalOcean or own-server plan. Updated in 012, which adds
+  // `deploy`, `supplyChain`, `cicd.deployTags` and `cicd.imageRetention` (with their defaults) to
+  // every plan.
   const BEFORE_010 = {
-    hetzner: "2cf00ad2bf7ce780830a5530ab0ee0fb1f9bc5daf6edf1280cf0e555629fb01e",
-    digitalocean: "008cbd2eef00a3e4a10bb86475f801cebf343aef3de416aaf18b09e68fb3286b",
-    own: "97dafd7659eb4ac40e11a13f800c49d056037ebcd01bb65d604aeec675e2869a",
+    hetzner: "a93c5747a0506f2bdacf997c9abab62ff11b42fea0947634f9ee9c6cb5ab6ea5",
+    digitalocean: "807128853570e94a3badf1b9ebad4488634283e669f45513d1c177ab880da0a8",
+    own: "0c91ae1ed8f5a65031e6121ea279a15cda261a36f8983c8ea6bd2b385542d5f0",
   };
 
   it("keeps Hetzner, DigitalOcean and own-server plans byte-identical", async () => {
@@ -1185,5 +1188,170 @@ describe("DeployPlan keeps the server's address out of the repository", () => {
       expect(pathsOf(result), url).toEqual(["deployment.url"]);
       expect(result.error?.issues[0]?.message).toContain("domain");
     }
+  });
+});
+
+describe("DeployPlan image build, deploy strategy, supply chain and deploy tags", () => {
+  async function validPlan() {
+    return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
+  }
+  const build = {
+    builder: "generated-dockerfile",
+    chosen: "auto",
+    reason: "Next.js with pnpm: OpsCrew's Dockerfile builds it; Buildpacks has no pnpm.",
+    runtime: { language: "node", version: "24" },
+  } as const;
+  const withBuild = (plan: DeployPlan, value: object) => ({
+    ...plan,
+    app: { ...plan.app, build: value },
+  });
+
+  it("keeps the builder, how it was chosen, its reason and the runtime handed to it", async () => {
+    const plan = await validPlan();
+    expect(DeployPlanSchema.parse(withBuild(plan, build)).app.build).toEqual(build);
+    for (const builder of ["own-dockerfile", "buildpacks", "railpack"]) {
+      const parsed = DeployPlanSchema.parse(withBuild(plan, { ...build, builder, chosen: "user" }));
+      expect(parsed.app.build?.builder, builder).toBe(builder);
+    }
+    for (const language of ["python", "ruby", "go", "java", "dotnet", "php", "rust", "other"]) {
+      const runtime = { language, version: "3.13" };
+      const result = DeployPlanSchema.safeParse(withBuild(plan, { ...build, runtime }));
+      expect(result.success, language).toBe(true);
+    }
+    expectTypeOf<NonNullable<DeployPlan["app"]["build"]>>().toEqualTypeOf<{
+      builder: "generated-dockerfile" | "own-dockerfile" | "buildpacks" | "railpack";
+      chosen: "auto" | "user";
+      reason: string;
+      runtime: {
+        language: "node" | "python" | "ruby" | "go" | "java" | "dotnet" | "php" | "rust" | "other";
+        version?: string;
+      };
+    }>();
+  });
+
+  it("keeps the version as the app declares it: major, major.minor or major.minor.patch", async () => {
+    const plan = await validPlan();
+    for (const version of ["24", "3.13", "4.0.7"]) {
+      const runtime = { language: "ruby", version };
+      const parsed = DeployPlanSchema.parse(withBuild(plan, { ...build, runtime }));
+      expect(parsed.app.build?.runtime, version).toEqual(runtime);
+    }
+  });
+
+  it("needs a version for every language except other", async () => {
+    const plan = await validPlan();
+    const other = { ...build, builder: "railpack", runtime: { language: "other" } };
+    expect(DeployPlanSchema.parse(withBuild(plan, other)).app.build?.runtime).toEqual({
+      language: "other",
+    });
+    for (const language of ["node", "python", "ruby", "go", "java", "dotnet", "php", "rust"]) {
+      const result = DeployPlanSchema.safeParse(
+        withBuild(plan, { ...build, runtime: { language } }),
+      );
+      expect(pathsOf(result), language).toEqual(["app.build.runtime.version"]);
+      expect(result.error?.issues[0]?.message).toContain("other");
+    }
+  });
+
+  it("rejects an unknown builder or language, no reason, and a malformed version", async () => {
+    const plan = await validPlan();
+    const paths = (value: object) => pathsOf(DeployPlanSchema.safeParse(withBuild(plan, value)));
+    expect(paths({ ...build, builder: "nixpacks" })).toEqual(["app.build.builder"]);
+    expect(paths({ ...build, chosen: "agent" })).toEqual(["app.build.chosen"]);
+    expect(paths({ ...build, reason: "" })).toEqual(["app.build.reason"]);
+    const { reason: _reason, ...noReason } = build;
+    expect(paths(noReason)).toEqual(["app.build.reason"]);
+    expect(paths({ ...build, runtime: { language: "elixir", version: "1.18" } })).toEqual([
+      "app.build.runtime.language",
+    ]);
+    for (const version of ["24", "3.13", "10.0"]) {
+      const runtime = { language: "node", version };
+      const result = DeployPlanSchema.safeParse(withBuild(plan, { ...build, runtime }));
+      expect(result.success, version).toBe(true);
+    }
+    for (const version of ["", "lts", "v24", "1.2.3.4", ">=20", "3.x", "ruby-4.0.7"]) {
+      expect(paths({ ...build, runtime: { language: "node", version } }), version).toEqual([
+        "app.build.runtime.version",
+      ]);
+    }
+    expect(paths({ ...build, extra: true })).toEqual(["app.build"]);
+  });
+
+  it("keeps a recreate strategy with its reason and refuses drain times outside 5–300 s", async () => {
+    const plan = await validPlan();
+    const recreate = { strategy: "recreate", drainSeconds: 10, reason: "the server has 512 MB" };
+    expect(DeployPlanSchema.parse({ ...plan, deploy: recreate }).deploy).toEqual(recreate);
+    expect(DeployPlanSchema.parse({ ...plan, deploy: { drainSeconds: 300 } }).deploy).toEqual({
+      strategy: "rolling",
+      drainSeconds: 300,
+    });
+    for (const drainSeconds of [4, 301, 12.5]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, deploy: { drainSeconds } });
+      expect(pathsOf(result), String(drainSeconds)).toEqual(["deploy.drainSeconds"]);
+    }
+    for (const deploy of [{ strategy: "blue-green" }, { reason: "" }, { extra: 1 }]) {
+      const result = DeployPlanSchema.safeParse({ ...plan, deploy });
+      expect(result.success, JSON.stringify(deploy)).toBe(false);
+    }
+  });
+
+  it("turns on signing and deploy tags only when the plan says so", async () => {
+    const plan = await validPlan();
+    const parsed = DeployPlanSchema.parse({
+      ...plan,
+      supplyChain: { sign: true },
+      cicd: { ...plan.cicd, deployTags: { enabled: true, release: true } },
+    });
+    expect(parsed.supplyChain).toEqual({ sign: true });
+    expect(parsed.cicd.deployTags).toEqual({ enabled: true, release: true });
+    const tagsOnly = { ...plan, cicd: { ...plan.cicd, deployTags: { enabled: true } } };
+    expect(DeployPlanSchema.parse(tagsOnly).cicd.deployTags).toEqual({
+      enabled: true,
+      release: false,
+    });
+    const signYes = { ...plan, supplyChain: { sign: "yes" } };
+    expect(pathsOf(DeployPlanSchema.safeParse(signYes))).toEqual(["supplyChain.sign"]);
+    const unknown = { ...plan, cicd: { ...plan.cicd, deployTags: { tag: "v1" } } };
+    expect(pathsOf(DeployPlanSchema.safeParse(unknown))).toEqual(["cicd.deployTags"]);
+  });
+
+  it("prunes old deployed images by default, keeping 10, and never fewer than 2", async () => {
+    const plan = await validPlan();
+    const { imageRetention: _retention, ...cicd } = plan.cicd;
+    expect(DeployPlanSchema.parse({ ...plan, cicd }).cicd.imageRetention).toEqual({
+      enabled: true,
+      keep: 10,
+    });
+    const retention = (value: object) => ({ ...plan, cicd: { ...cicd, imageRetention: value } });
+    expect(DeployPlanSchema.parse(retention({ enabled: false })).cicd.imageRetention).toEqual({
+      enabled: false,
+      keep: 10,
+    });
+    expect(DeployPlanSchema.parse(retention({ keep: 2 })).cicd.imageRetention.keep).toBe(2);
+    expect(DeployPlanSchema.parse(retention({ keep: 100 })).cicd.imageRetention.keep).toBe(100);
+    for (const keep of [1, 101, 3.5]) {
+      const result = DeployPlanSchema.safeParse(retention({ keep }));
+      expect(pathsOf(result), String(keep)).toEqual(["cicd.imageRetention.keep"]);
+    }
+  });
+});
+
+describe("ProjectFacts runtime versions", () => {
+  it("records the declared version of every language, as declared", async () => {
+    const architecture = parseArtifact("architecture", await fixture("architecture.json"), "f");
+    const runtimeVersions = {
+      node: ">=22",
+      python: "3.13",
+      ruby: "ruby-4.0.7",
+      go: "1.26.9",
+      java: "21",
+      dotnet: "10.0",
+      php: "^8.4",
+      rust: "1.85.1",
+    };
+    const facts = { ...architecture.facts, runtimeVersions };
+    expect(ProjectFactsSchema.parse(facts).runtimeVersions).toEqual(runtimeVersions);
+    const empty = { ...architecture.facts, runtimeVersions: { go: "" } };
+    expect(pathsOf(ProjectFactsSchema.safeParse(empty))).toEqual(["runtimeVersions.go"]);
   });
 });

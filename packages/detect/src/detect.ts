@@ -53,6 +53,7 @@ import {
 import { detectPlatform } from "./platform";
 import { detectRelease } from "./release";
 import { byDepth, inFolder } from "./release/context";
+import { declaredRuntimeVersions, firstLine } from "./runtime-versions";
 import {
   addDependencyServices,
   addDjangoServices,
@@ -158,14 +159,6 @@ async function mapLimit<T>(
     }
   });
   await Promise.all(workers);
-}
-
-function firstLine(text: string | undefined): string | undefined {
-  const line = text
-    ?.split(/\r?\n/)
-    .map((l) => l.trim())
-    .find((l) => l !== "" && !l.startsWith("#"));
-  return line || undefined;
 }
 
 function detectLanguages(files: readonly string[], units: readonly Unit[]): Language[] {
@@ -668,7 +661,8 @@ export async function detectProjectDetails(
     healthEndpoint = builtInHealthEndpoint(texts);
   }
 
-  // Runtime versions.
+  // Runtime versions. A .NET project file may sit below the app folder (`src/Api/Api.csproj`).
+  const dotnetProjects = scopedFiles.filter((f) => f.endsWith(".csproj") && isWithin(appDir, f));
   const runtimeVersions: ProjectFacts["runtimeVersions"] = {};
   const nodeVersion =
     firstLine(await read(findIn(".nvmrc") ?? "")) ??
@@ -685,6 +679,7 @@ export async function detectProjectDetails(
     python?.requiresPython ??
     python?.pipfilePython;
   if (pythonVersion) runtimeVersions.python = pythonVersion;
+  Object.assign(runtimeVersions, await declaredRuntimeVersions(findIn, read, dotnetProjects));
 
   // Frameworks of every relevant unit, sorted by directory then name.
   const frameworks = relevant

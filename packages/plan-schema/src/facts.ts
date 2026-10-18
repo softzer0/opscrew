@@ -92,9 +92,22 @@ export const ProjectFactsSchema = z.strictObject({
     outputDir: z.string().min(1).optional(),
   }),
   port: PortSchema.optional(),
+  /** Runtime versions as the app declares them, not yet normalised. */
   runtimeVersions: z.strictObject({
     node: z.string().min(1).optional(),
     python: z.string().min(1).optional(),
+    /** `.ruby-version`, else the Gemfile's `ruby "…"`. */
+    ruby: z.string().min(1).optional(),
+    /** `go.mod`'s `toolchain go…`, else its `go …`. */
+    go: z.string().min(1).optional(),
+    /** Maven `maven.compiler.release` or `java.version`, Gradle toolchain `languageVersion`. */
+    java: z.string().min(1).optional(),
+    /** The project file's `TargetFramework` `netX.Y`, as `X.Y`. */
+    dotnet: z.string().min(1).optional(),
+    /** `composer.json`'s `require.php`. */
+    php: z.string().min(1).optional(),
+    /** `rust-toolchain.toml`'s `channel`, else `rust-toolchain`. */
+    rust: z.string().min(1).optional(),
   }),
   envVars: z
     .array(

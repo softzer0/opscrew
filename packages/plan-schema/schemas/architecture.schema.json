@@ -156,6 +156,30 @@
             "python": {
               "type": "string",
               "minLength": 1
+            },
+            "ruby": {
+              "type": "string",
+              "minLength": 1
+            },
+            "go": {
+              "type": "string",
+              "minLength": 1
+            },
+            "java": {
+              "type": "string",
+              "minLength": 1
+            },
+            "dotnet": {
+              "type": "string",
+              "minLength": 1
+            },
+            "php": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rust": {
+              "type": "string",
+              "minLength": 1
             }
           },
           "additionalProperties": false
