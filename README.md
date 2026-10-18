@@ -4,7 +4,7 @@
 
 From a GitHub repo to a hardened production deployment on your own cloud. Any cloud. You keep the infrastructure code.
 
-> Status: pre-alpha. Not ready for production use yet.
+> Status: alpha. Tested live on Hetzner Cloud, on a server you already own and on an existing Portainer. DigitalOcean is tested against a fake only so far. Not published on npm yet; expect breaking changes before 1.0.
 
 ## Quickstart
 
