@@ -445,6 +445,11 @@ export const AppBuildSchema = z.strictObject({
    * Rust), or `none` (the user's own Dockerfile keeps its own `HEALTHCHECK`). Set by design.
    */
   probe: z.enum(["node", "python", "ruby", "php", "wget", "bash", "none"]).optional(),
+  /**
+   * The builder an automatic choice would pick, recorded by design so a failed deploy can name it
+   * when the user chose another one.
+   */
+  automatic: ImageBuilderSchema.optional(),
 });
 export type AppBuild = z.output<typeof AppBuildSchema>;
 

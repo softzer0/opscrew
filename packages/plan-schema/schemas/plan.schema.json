@@ -106,6 +106,10 @@
             "probe": {
               "type": "string",
               "enum": ["node", "python", "ruby", "php", "wget", "bash", "none"]
+            },
+            "automatic": {
+              "type": "string",
+              "enum": ["generated-dockerfile", "own-dockerfile", "buildpacks", "railpack"]
             }
           },
           "required": ["builder", "chosen", "reason", "runtime"],
