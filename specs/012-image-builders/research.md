@@ -295,6 +295,27 @@ Four runs in the throwaway repository, on `ubuntu-24.04` (Docker 28, overlay2) a
   - `docker/login-action@dbcb8138…` v4.6.0;
   - `docker/build-push-action@c3c9e263…` v7.4.0.
 
+- **Follow-up (2 more runs):**
+  - **The event payload** comes from buildx v0.38's docker-container driver
+    (`provenance.d/github_actions_context.json`). It is added in **mode=min too**.
+  - **`setup-buildx-action` with `driver-opts: provenance-add-gha=false`** removes every `github_*`
+    field: 0 payload, 0 commit messages, 0 emails. It keeps the run URL as the builder id, plus
+    `vcs.source` and `vcs.revision` when the job checks out the code. The SBOM is unchanged.
+    **Decision: mode=max + `provenance-add-gha=false` + a checkout in the seal job.** The run id
+    stays inside the builder-id URL, and the workflow path is dropped.
+  - **Railpack cache, cold and warm:**
+
+    | Cache | Cold | Warm |
+    |---|---|---|
+    | `type=gha,mode=min` | 89 s | 74 s |
+    | registry `mode=max` | 108 s | 80 s |
+    | gha `mode=max` | 140 s | 86 s |
+
+    **Decision: `type=gha,mode=min` for Railpack.**
+  - **GHCR growth.** Each sealed push makes three package versions. The throwaway package had 162
+    (141 from live tests). It was pruned to the 10 newest, with `GITHUB_TOKEN` and
+    `packages: write`, and 0 failures.
+
 ## R4. SBOM, provenance and signing
 
 - **buildx.** Min-level provenance is on by default; `sbom: true` and `provenance: mode=max` are opt-in.

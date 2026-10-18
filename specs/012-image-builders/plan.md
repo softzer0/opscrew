@@ -32,7 +32,7 @@ opt-in, and deploy tags are off by default.
 - **Measured facts:** builder sizes, users, non-root behaviour, arm64 variants, the docker-rollout
   versus kamal-proxy results and memory are in research R3 and R7.
 - **To verify on a GitHub runner** (T1202):
-  - pack with a `project.toml` instead of `--env` (R7 finding 1);
+  - pack's settings (R8: `--env` is fine on a runner);
   - the seal keeping the Buildpacks launcher;
   - attestations visible in GHCR;
   - Railpack's frontend pinned by digest;
@@ -50,7 +50,7 @@ opt-in, and deploy tags are off by default.
   - The deploy script only replaces the app's containers. It never touches the database, the cache
     or the proxy.
 - **II (user owns everything).** Every generated file is plain and in the repository: the
-  Dockerfile, `project.toml` when needed, the seal step, Compose and Caddy files, and
+  Dockerfile, the seal step, Compose and Caddy files, and
   `dependabot.yml`. Builders and versions are in `plan.yaml` and can be changed there. The user's own
   Dockerfile and own `dependabot.yml` are never rewritten.
 - **III (dual engine).** No HCL change beyond what the runtime files need. Both engines still
@@ -131,7 +131,7 @@ it at release time; no test touches the network.
 ### 2. The GitHub-runner spike (T1202, lead)
 
 In the throwaway repository, one workflow checks:
-- pack with a `project.toml` holding `BP_*` settings: is the throwaway-builder step avoided, and how
+- pack with `BP_*` settings: is the throwaway-builder step avoided, and how
   long do cold and warm builds take?
 - the seal `FROM <temp>@digest`: the Buildpacks launcher still starts the app, and the healthcheck's
   launcher form works;
@@ -182,7 +182,8 @@ and OpsCrew says so.
 The contract is in [contracts/builders.md](contracts/builders.md), section "Build job".
 
 **Every builder:**
-- `docker/setup-buildx-action`;
+- `docker/setup-buildx-action` with `driver-opts: provenance-add-gha=false`, so the provenance holds no GitHub event payload (R8);
+- a checkout in every job that builds the final image, so the provenance gets the repository and commit;
 - GHCR login;
 - an image named `ghcr.io/<repo>:<sha>`;
 - the deploy job takes the final digest from `build-push-action`;
@@ -197,9 +198,9 @@ The contract is in [contracts/builders.md](contracts/builders.md), section "Buil
   - `secrets:` for the secret build values.
 - **`buildpacks`:**
   1. setup-pack, pinned;
-  2. `pack build <ghcr>:build-<sha> --builder <pin> --run-image <pin> --descriptor project.toml --publish --cache-image <ghcr>:buildcache`;
+  2. `pack build <ghcr>:build-<sha> --builder <pin> --run-image <pin> --env BP_…=… --publish --cache-image <ghcr>:buildcache --report-output-dir report`, with the digest taken from `report.toml` (R8);
   3. the seal: an inline Dockerfile `FROM <ghcr>:build-<sha>@<digest>`, built with the same
-     attestation settings and pushed as the final tag.
+     attestation settings and pushed as the final tag. Railpack uses `cache-to: type=gha,mode=min` (R8).
 - **`railpack`:**
   1. install the pinned CLI with a checksum;
   2. `railpack prepare . --plan-out railpack-plan.json`;

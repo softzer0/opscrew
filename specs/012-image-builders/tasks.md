@@ -42,7 +42,7 @@ Effort`.
 
 ## Phase 2: Spike on a GitHub runner (lead; runs in parallel with T1201)
 
-- [ ] T1202 GitHub-runner spike in the throwaway repository. It answers plan.md "2. The GitHub-runner spike", and the results go into research.md as R8:
+- [X] T1202 GitHub-runner spike in the throwaway repository. It answers plan.md "2. The GitHub-runner spike", and the results go into research.md as R8:
   - pack with `project.toml` against `--env`: is the throwaway builder avoided, and what are the cold and warm times?
   - the seal keeping the Buildpacks launcher, and the launcher healthcheck;
   - attestations, read with `imagetools inspect`;
@@ -107,6 +107,8 @@ Effort`.
   - Accept:
     - **Build.** Each builder renders as the contract says.
       - Every image is built with buildx, and the final image with `provenance: mode=max`, `sbom: true` and the GHA cache.
+      - setup-buildx uses `driver-opts: provenance-add-gha=false`, and the final build's job checks out the code, so the provenance has the repository and commit but no event payload (R8). A test asserts both.
+      - pack gets its settings with `--env`, and its digest from `report.toml` (R8). Railpack caches with `type=gha,mode=min`.
       - Buildpacks and Railpack push `build-<sha>`, then seal. Railpack's seal does the `chown` of the framework's writable folders and sets `USER 10001:10001`.
       - Trivy scans the final digest.
       - The deploy uses the final index digest.
