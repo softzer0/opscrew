@@ -273,7 +273,7 @@ describe("the pin script's helpers", () => {
       "railpack-v0.42.0-x86_64-unknown-linux-musl.tar.gz",
     );
     expect(TOOL_RELEASES.pack.asset.arm64("0.40.9")).toBe("pack-v0.40.9-linux-arm64.tgz");
-    expect(Object.keys(TOOL_RELEASES).sort()).toEqual(["pack", "railpack"]);
+    expect(Object.keys(TOOL_RELEASES).sort()).toEqual(["cloudflared", "pack", "railpack"]);
 
     const sha = "b".repeat(64);
     const release = {

@@ -1,6 +1,8 @@
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testPlan } from "../__fixtures__/plans";
+import { IMAGES } from "../pins";
 import { PORTAINER_PASSWORD_FILE, renderPortainerCompose } from "./index";
 
 const plan = testPlan({ provider: "own", portainer: { access: "local" } });
@@ -70,6 +72,23 @@ describe("renderPortainerCompose", () => {
       parse(renderPortainerCompose(hetzner, { initialAdmin: false }).content).services.portainer
         .image,
     ).toBe("portainer/portainer-ce:2.33.1");
+  });
+
+  it("runs OpsCrew's pinned version by digest, and another version by tag with a comment", () => {
+    const tag = IMAGES.portainer.ref.slice(0, IMAGES.portainer.ref.indexOf("@")).split(":")[1];
+    const pinnedPlan = DeployPlanSchema.parse({
+      ...plan,
+      portainer: { ...plan.portainer, version: tag },
+    });
+    const pinned = renderPortainerCompose(pinnedPlan, { initialAdmin: false }).content;
+    expect(parse(pinned).services.portainer.image).toBe(IMAGES.portainer.ref);
+    expect(pinned).not.toContain("pinned by tag only");
+
+    const other = renderPortainerCompose(plan, { initialAdmin: false }).content;
+    expect(parse(other).services.portainer.image).toBe("portainer/portainer-ce:2.33.1");
+    expect(other).toContain(
+      "# Portainer CE 2.33.1 (portainer.version in opscrew/plan.yaml) is pinned by tag only, not by digest.",
+    );
   });
 
   it("needs Portainer settings in the plan", () => {

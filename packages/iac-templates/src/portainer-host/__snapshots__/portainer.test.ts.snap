@@ -6,6 +6,7 @@ exports[`renderPortainerCompose > matches the snapshot 1`] = `
 # in, its Cloudflare Access subdomain. It controls Docker through the socket, which is root on this
 # server: never publish its port.
 # First start: Portainer creates its admin from ./admin_password, which is then deleted.
+# Portainer CE 2.33.1 (portainer.version in opscrew/plan.yaml) is pinned by tag only, not by digest.
 name: opscrew-portainer
 services:
   portainer:

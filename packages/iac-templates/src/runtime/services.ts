@@ -1,9 +1,10 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose syntax, not JavaScript templates.
+import { IMAGES } from "../pins";
 import { CLOUDFLARED_IMAGE, CLOUDFLARED_METRICS } from "../tunnel";
 
-export const POSTGRES_IMAGE = "postgres:17-alpine";
-export const VALKEY_IMAGE = "valkey/valkey:8-alpine";
-export const CADDY_IMAGE = "caddy:2-alpine";
+export const POSTGRES_IMAGE = IMAGES.postgres.ref;
+export const VALKEY_IMAGE = IMAGES.valkey.ref;
+export const CADDY_IMAGE = IMAGES.caddy.ref;
 
 /** The header line of a Compose file with a `release` service. */
 export const RELEASE_NOTE =
@@ -74,6 +75,22 @@ export function cacheService(data: string): object {
   };
 }
 
+/** Where Caddy sends the app's traffic on a server: kamal-proxy, which switches between copies. */
+export const PROXY_UPSTREAM = "proxy:80";
+
+/**
+ * The switch between app copies on a server: kamal-proxy on ports 80 and 443 of the internal
+ * network, with no host port. Its named volume keeps the routes it was given across restarts.
+ */
+export function proxyService(): object {
+  return {
+    image: IMAGES.kamalProxy.ref,
+    restart: "unless-stopped",
+    volumes: ["kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy"],
+    ...hardened({ noCapabilities: true, internal: true }),
+  };
+}
+
 /**
  * A Cloudflare Tunnel connector with `fields` (its token and how it reaches the origin). Metrics,
  * diagnostics and pprof listen on loopback only: on the host network the image default would
@@ -98,8 +115,8 @@ export interface CaddySite {
    */
   mode: "tunnel" | "proxy" | "direct";
   hosts: readonly string[];
-  /** The app's port on the Compose network. */
-  port: number;
+  /** What Caddy proxies to on the Compose network: {@link PROXY_UPSTREAM} or `app:<port>`. */
+  upstream: string;
   acmeEmail?: string | undefined;
   /** Extra response header lines, before `-Server`. */
   headers?: readonly string[];
@@ -143,7 +160,7 @@ export function caddyfile(site: CaddySite): string[] {
       "\tredir @http_visitor https://{host}{uri} 308",
     );
   }
-  lines.push("\tencode zstd gzip", `\treverse_proxy app:${site.port}`, "\theader {");
+  lines.push("\tencode zstd gzip", `\treverse_proxy ${site.upstream}`, "\theader {");
   if (hosts.length > 0) {
     lines.push('\t\tStrict-Transport-Security "max-age=31536000; includeSubDomains"');
   }

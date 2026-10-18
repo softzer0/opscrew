@@ -7,7 +7,7 @@ http://example.com, http://www.example.com {
 	@http_visitor header Cf-Visitor \`*"http"*\`
 	redir @http_visitor https://{host}{uri} 308
 	encode zstd gzip
-	reverse_proxy app:3000
+	reverse_proxy proxy:80
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"

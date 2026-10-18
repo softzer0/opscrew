@@ -54,7 +54,7 @@ services:
     networks:
       - internal
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
     ports:
       - 80:80
@@ -132,7 +132,7 @@ services:
     networks:
       - internal
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
     ports:
       - 8080:80
@@ -247,7 +247,7 @@ services:
     networks:
       - internal
   db:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     restart: unless-stopped
     environment:
       POSTGRES_USER: \${OPSCREW_DB_USER}
@@ -272,7 +272,7 @@ services:
     networks:
       - internal
   cache:
-    image: valkey/valkey:8-alpine
+    image: valkey/valkey:8-alpine@sha256:081c2f5cb575efc901aa80ff9cdbd1ec6a301682fd35e1ebb4b0990a4a4a8507
     restart: unless-stopped
     command:
       - valkey-server
@@ -290,7 +290,7 @@ services:
     networks:
       - internal
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     restart: unless-stopped
     environment:
       OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__

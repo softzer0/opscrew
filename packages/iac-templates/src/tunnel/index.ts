@@ -1,34 +1,20 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { IMAGES, TOOLS } from "../pins";
 
-/**
- * cloudflared release the deploy workflow and the server's connector use. 2026.6.0 ignores service
- * tokens for `access ssh` and falls back to a browser login (cloudflare/cloudflared#1673), so CI
- * would hang; replace the pin only after a smoke test proves service tokens work.
- */
-export const CLOUDFLARED_VERSION = "2026.5.1";
+/** cloudflared release the deploy workflow installs in tunnel mode: `TOOLS.cloudflared` in pins.ts. */
+export const CLOUDFLARED_VERSION = TOOLS.cloudflared.version;
 
-/**
- * SHA-256 of the cloudflared 2026.5.1 Linux binaries, read on 2026-10-14 from the GitHub release
- * (`digest` of the assets `cloudflared-linux-amd64` and `cloudflared-linux-arm64`, identical to the
- * checksums listed in the release notes).
- */
-export const CLOUDFLARED_SHA256 = {
-  amd64: "3c6a5ba995a258dbe90f98e5fdb2c2620b7be72c3ca761614f6eb52aee252cea",
-  arm64: "7b7a8b9a2764acab0fecda633cb54a6c0df42d7f8ca1ec45c78333c2227d8d91",
-} as const;
+/** SHA-256 of the cloudflared Linux binaries per architecture, from pins.ts. */
+export const CLOUDFLARED_SHA256 = TOOLS.cloudflared.sha256;
 
 /** Download URL of a cloudflared Linux binary of {@link CLOUDFLARED_VERSION}. */
 export function cloudflaredUrl(arch: keyof typeof CLOUDFLARED_SHA256): string {
   return `https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-${arch}`;
 }
 
-/**
- * Image of the tunnel connector on the server, pinned by the digest of the multi-arch index of tag
- * 2026.5.1 (read on 2026-10-14 from `registry-1.docker.io/v2/cloudflare/cloudflared/manifests/2026.5.1`).
- */
-export const CLOUDFLARED_IMAGE =
-  "cloudflare/cloudflared:2026.5.1@sha256:a5b5e6fd9a372f054b9a843c219bfbcdceb54691605312a8b1ee72978bdf1aa1";
+/** Image of the tunnel connector on the server, from `pins.ts`. */
+export const CLOUDFLARED_IMAGE = IMAGES.cloudflared.ref;
 
 /**
  * Loopback port Caddy publishes on in tunnel mode (`127.0.0.1:18080` → Caddy's port 80). The

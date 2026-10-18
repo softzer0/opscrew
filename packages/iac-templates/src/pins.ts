@@ -101,6 +101,19 @@ export const TOOLS = {
       arm64: "63c0417d6c0a437162fa2c688ddf58aabf9e4433eeffb69d8c3fb498603e2c3b",
     },
   },
+  /**
+   * The cloudflared Linux binary the deploy workflow installs in tunnel mode (the release assets
+   * `cloudflared-linux-amd64` and `cloudflared-linux-arm64`). 2026.6.0 ignores service tokens for
+   * `access ssh` and falls back to a browser login (cloudflare/cloudflared#1673), so CI would hang;
+   * change the version only after a smoke test proves service tokens work.
+   */
+  cloudflared: {
+    version: "2026.5.1",
+    sha256: {
+      amd64: "3c6a5ba995a258dbe90f98e5fdb2c2620b7be72c3ca761614f6eb52aee252cea",
+      arm64: "7b7a8b9a2764acab0fecda633cb54a6c0df42d7f8ca1ec45c78333c2227d8d91",
+    },
+  },
   /** The cosign release `sigstore/cosign-installer` installs; the installer verifies it. */
   cosign: {
     version: "v3.1.3",

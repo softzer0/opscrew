@@ -3,6 +3,7 @@ import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import type { DeployPlan, PortainerWeb } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { isClientExposedEnvName } from "../docker";
+import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
 import { siteHosts } from "../runtime";
 import {
@@ -18,13 +19,8 @@ import {
 import type { RenderContext, RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN } from "../workflow/shared";
 
-/**
- * The official curl image of the updater stack and the placeholder stack, pinned by the digest of
- * the multi-arch index of tag 8.23.0 (linux/amd64 and linux/arm64 among its platforms), read on
- * 2026-10-15 from `registry-1.docker.io/v2/curlimages/curl/manifests/8.23.0`.
- */
-export const CURL_IMAGE =
-  "curlimages/curl:8.23.0@sha256:a134550be58ab783810e613ae96fd253c38f7bdd16d9bf9be350700c7a29ac06";
+/** The official curl image of the updater stack and the placeholder stack, from `pins.ts`. */
+export const CURL_IMAGE = IMAGES.curl.ref;
 
 /** Branch of the app's repository that holds only the stack file Portainer deploys. */
 export const PORTAINER_DEPLOY_BRANCH = "opscrew-deploy";
@@ -296,7 +292,8 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RenderContext): Rend
   const config = caddyfile({
     mode: web.mode === "caddy" ? "direct" : web.mode,
     hosts: siteHosts(plan),
-    port: plan.app.port,
+    // Portainer recreates the stack, so Caddy reaches the app directly (no kamal-proxy).
+    upstream: `app:${plan.app.port}`,
     acmeEmail: ctx.acmeEmail,
     // Caddy reads the variable when it starts: the version of the image the stack runs.
     headers: [`\t\t${PORTAINER_VERSION_HEADER} "{$OPSCREW_APP_VERSION}"`],

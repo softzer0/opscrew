@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { IMAGES } from "../pins";
 import { renderCaddyfile } from "../runtime";
 import { serviceLogging } from "../runtime/services";
 import { CLOUDFLARED_IMAGE } from "../tunnel";
@@ -46,6 +47,7 @@ type Service = {
   read_only?: boolean;
   cap_drop?: string[];
   restart?: string;
+  healthcheck?: unknown;
 };
 type Stack = {
   name: string;
@@ -269,14 +271,17 @@ describe("renderPortainerStack", () => {
     expect(caddyfile).not.toContain("email");
   });
 
-  it("keeps the Caddyfile's site directives the same as on servers OpsCrew runs", () => {
+  it("keeps the Caddyfile's site directives the same as on servers OpsCrew runs, except the upstream", () => {
     const server = renderCaddyfile(
       testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" }),
       ctx,
     ).content;
     const inline = (fullStack.configs?.caddyfile?.content ?? "").replaceAll("$$", "$");
     const site = (text: string) =>
-      text.split("\n").filter((line) => line.startsWith("\t") && !line.includes("X-OpsCrew-Image"));
+      text
+        .split("\n")
+        .filter((line) => line.startsWith("\t") && !line.includes("X-OpsCrew-Image"))
+        .map((line) => line.replace(/^\treverse_proxy .*$/, "\treverse_proxy <upstream>"));
     expect(site(inline)).toEqual(site(server));
   });
 
@@ -358,6 +363,24 @@ describe("renderPortainerStack", () => {
 
   it("is deterministic", () => {
     expect(renderPortainerStack(full, ctx)).toEqual(fullFile);
+  });
+
+  it("takes every service image from pins.ts by digest, and has no kamal-proxy (Portainer recreates)", () => {
+    const pinned = new Set<string>(Object.values(IMAGES).map((image) => image.ref));
+    const images = Object.entries(fullStack.services)
+      .filter(([name]) => name !== "app" && name !== "release")
+      .map(([, service]) => service.image ?? "");
+    expect(images).toEqual([
+      IMAGES.postgres.ref,
+      IMAGES.valkey.ref,
+      IMAGES.caddy.ref,
+      IMAGES.cloudflared.ref,
+    ]);
+    for (const image of images) expect(pinned.has(image)).toBe(true);
+    expect(fullStack.services.proxy).toBeUndefined();
+    expect(fullFile.content).not.toContain("kamal-proxy");
+    expect(fullStack.configs?.caddyfile?.content).toContain("\treverse_proxy app:3000\n");
+    expect(fullStack.services.app?.healthcheck).toBeUndefined();
   });
 
   it("matches the snapshots", () => {

@@ -1,5 +1,6 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
+import { IMAGES } from "../pins";
 import { hardened } from "../runtime/services";
 import { PORTAINER_PORT } from "../tunnel";
 import type { RenderedFile } from "../types";
@@ -28,7 +29,8 @@ export interface PortainerComposeOptions {
 
 /**
  * `opscrew/runtime/portainer/compose.yaml`: Portainer CE as its own Compose project
- * (`opscrew-portainer`), pinned to `plan.portainer.version`, listening only on
+ * (`opscrew-portainer`), pinned to `plan.portainer.version` (by digest when it is the version
+ * in `pins.ts`, else by tag), listening only on
  * `127.0.0.1:9443` (no Edge port 8000, HTTP port 9000 disabled), with the Docker socket and the
  * `portainer_data` volume. Throws when the plan has no Portainer settings.
  */
@@ -40,8 +42,10 @@ export function renderPortainerCompose(
   if (portainer === undefined) {
     throw new Error("The plan has no Portainer settings (plan.portainer) to render.");
   }
+  // OpsCrew's pinned version runs by digest; another version the user chose runs by its tag.
+  const pinned = IMAGES.portainer.ref.startsWith(`${PORTAINER_IMAGE}:${portainer.version}@`);
   const service: Record<string, unknown> = {
-    image: `${PORTAINER_IMAGE}:${portainer.version}`,
+    image: pinned ? IMAGES.portainer.ref : `${PORTAINER_IMAGE}:${portainer.version}`,
     restart: "unless-stopped",
     command: [
       "--http-disabled",
@@ -71,6 +75,11 @@ export function renderPortainerCompose(
     ...(options.initialAdmin
       ? ["# First start: Portainer creates its admin from ./admin_password, which is then deleted."]
       : []),
+    ...(pinned
+      ? []
+      : [
+          `# Portainer CE ${portainer.version} (portainer.version in opscrew/plan.yaml) is pinned by tag only, not by digest.`,
+        ]),
   ].join("\n");
   return {
     path: "opscrew/runtime/portainer/compose.yaml",

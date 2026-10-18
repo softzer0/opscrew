@@ -6,6 +6,7 @@ import { webOnlyFromCloudflare } from "../predicates";
 import { wrongTarget } from "../providers";
 import { TUNNEL_ORIGIN_PORT, tunnelMode } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
+import { appHealthcheck } from "./healthcheck";
 import {
   CADDY_IMAGE,
   cacheService,
@@ -14,6 +15,8 @@ import {
   composeLiteral,
   dbService,
   hardened,
+  PROXY_UPSTREAM,
+  proxyService,
   RELEASE_NOTE,
 } from "./services";
 
@@ -56,17 +59,23 @@ export function siteHosts(plan: DeployPlan): string[] {
 }
 
 /**
- * `opscrew/runtime/compose.yaml`: app, optional Postgres and Valkey, and Caddy in front. Throws for
- * a Portainer target, whose stack `renderPortainerStack` renders.
+ * `opscrew/runtime/compose.yaml`: app, optional Postgres and Valkey, kamal-proxy (`proxy`) switching
+ * between app copies, and Caddy in front. The app has no container name and no host port, so a
+ * second copy can start next to it. Throws for a Portainer target, whose stack
+ * `renderPortainerStack` renders.
  */
 export function renderCompose(plan: DeployPlan): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();
   const image = "${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}";
+  const healthcheck = appHealthcheck(plan);
   const app: Record<string, unknown> = {
     image,
     restart: "unless-stopped",
     env_file: ["app.env"],
     environment: { PORT: String(plan.app.port) },
+    ...(healthcheck === undefined ? {} : { healthcheck }),
+    // Docker waits this long after SIGTERM: the drain, plus time to finish shutting down.
+    stop_grace_period: `${plan.deploy.drainSeconds + 5}s`,
     ...hardened({ noCapabilities: true, internal: true }),
   };
   const dependsOn: Record<string, { condition: string }> = {};
@@ -94,6 +103,7 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
   }
   if (Object.keys(dependsOn).length > 0) app.depends_on = dependsOn;
 
+  services.proxy = proxyService();
   services.caddy = {
     image: CADDY_IMAGE,
     restart: "unless-stopped",
@@ -101,7 +111,8 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
     // behind OpsCrew's web filter only IPv4 is published (the filter covers IPv4 only).
     ports: caddyPorts(plan),
     volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data", "caddy_config:/config"],
-    depends_on: ["app"],
+    // Caddy talks only to kamal-proxy, which routes to the app.
+    depends_on: ["proxy"],
     ...hardened({ internal: true }),
   };
 
@@ -109,7 +120,7 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
     name: plan.app.name,
     services,
     networks: { internal: {} },
-    volumes: { caddy_data: {}, caddy_config: {} },
+    volumes: { caddy_data: {}, caddy_config: {}, "kamal-proxy-config": {} },
   };
   const header = release === undefined ? HEADER : `${HEADER}\n${RELEASE_NOTE}`;
   return {
@@ -120,9 +131,9 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
 }
 
 /**
- * `opscrew/runtime/Caddyfile`: TLS (with a domain), compression, security headers, proxy to the
- * app; in tunnel mode Cloudflare terminates TLS and the connector reaches Caddy over plain HTTP.
- * Throws for a Portainer target, whose stack holds Caddy's configuration inline.
+ * `opscrew/runtime/Caddyfile`: TLS (with a domain), compression, security headers, proxy to
+ * kamal-proxy (which routes to the healthy app copy); in tunnel mode Cloudflare terminates TLS and
+ * the connector reaches Caddy over plain HTTP. Throws for a Portainer target, whose stack holds Caddy's configuration inline.
  */
 export function renderCaddyfile(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();
@@ -131,7 +142,7 @@ export function renderCaddyfile(plan: DeployPlan, ctx: RenderContext): RenderedF
     ...caddyfile({
       mode: tunnelMode(plan) ? "tunnel" : "direct",
       hosts: siteHosts(plan),
-      port: plan.app.port,
+      upstream: PROXY_UPSTREAM,
       acmeEmail: ctx.acmeEmail,
     }),
   ];

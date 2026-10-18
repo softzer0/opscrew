@@ -112,6 +112,11 @@ export const TOOL_RELEASES: Record<
     tag: (v) => `v${v}`,
     asset: { amd64: (v) => `pack-v${v}-linux.tgz`, arm64: (v) => `pack-v${v}-linux-arm64.tgz` },
   },
+  cloudflared: {
+    repo: "cloudflare/cloudflared",
+    tag: (v) => v,
+    asset: { amd64: () => "cloudflared-linux-amd64", arm64: () => "cloudflared-linux-arm64" },
+  },
   railpack: {
     repo: "railwayapp/railpack",
     tag: (v) => `v${v}`,
