@@ -210,6 +210,7 @@ Effort`.
   - Depends: T1207
   - Accept:
     - **The CLI and MCP** show the builder, the strategy and the supply-chain settings, with their reasons, and accept the `plan.yaml` overrides.
+    - **`repositoryPrivate`:** the CLI and MCP pass it into the interview (`InterviewOptions.repositoryPrivate`), read from GitHub's repository API, so the signing question shows the public-log warning for a private repository.
     - **The plugin's** deploy skill mentions the builder choice and zero-downtime deploys.
     - **New guide pages:**
       - `builders.md`: the choice and its order, the comparison table from R7, how to switch, the baseline, own Dockerfiles;
@@ -236,6 +237,8 @@ Effort`.
       - Railpack keeping a secret whose value is empty at `prepare`;
       - image retention on an org-owned package (the `/orgs` endpoints);
       - kamal-proxy's `--target-timeout 300s` letting a 60 s request through.
+      - a cosign signature surviving a prune (cosign v3 may store signatures as OCI referrers without a `sha256-*` tag);
+      - after `build-<sha>` is deleted, the sealed image still pulling on a clean host (GHCR kept the shared layers).
     - **Docs.** `docs/e2e.md` documents the runs, and the coverage page marks them "added, not yet run live".
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
   - Effort: high
