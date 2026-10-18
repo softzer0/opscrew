@@ -528,6 +528,27 @@ export function failedInitChecks(output: string): string[] {
   return titles;
 }
 
+/** A job of a deploy run as GitHub lists it, with its steps' conclusions. */
+export interface DeployJob {
+  name: string;
+  conclusion: string | null;
+  steps: { conclusion: string | null }[];
+}
+
+/**
+ * Whether a job of a finished deploy run did not succeed. GitHub can mark the run completed while
+ * a job's own record still says in progress (seen live on 2026-10-18); such a job counts as
+ * succeeded when the run succeeded and each of its steps succeeded or was skipped.
+ */
+export function deployJobFailed(job: DeployJob, runConclusion: string | null): boolean {
+  if (job.conclusion !== null) return job.conclusion !== "success";
+  return (
+    runConclusion !== "success" ||
+    job.steps.length === 0 ||
+    job.steps.some((step) => step.conclusion !== "success" && step.conclusion !== "skipped")
+  );
+}
+
 /** Minutes and seconds in words (`3 min 5 s`). */
 export function duration(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));

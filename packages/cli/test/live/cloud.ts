@@ -13,6 +13,7 @@ import { connect, type LookupFunction } from "node:net";
 import { SHARED_RULES } from "@opscrew/connector-cloudflare";
 import type { CommandResult, CommandRunner } from "@opscrew/contracts";
 import {
+  type DeployJob,
   type HetznerServerType,
   hetznerIpv6Address,
   rulesCleanup,
@@ -601,7 +602,7 @@ export class Cloudflare {
 export interface DeployRun {
   id: number;
   conclusion: string | null;
-  jobs: { name: string; conclusion: string | null }[];
+  jobs: DeployJob[];
 }
 
 /** A GitHub API client for the throwaway repository. */
@@ -765,12 +766,25 @@ export class GitHubRepo {
       if (run?.status === "completed") {
         const jobs = await this.call("GET", `/repos/${this.name}/actions/runs/${run.id}/jobs`);
         const list =
-          (jobs.json as { jobs?: { name: string; conclusion: string | null }[] } | undefined)
-            ?.jobs ?? [];
+          (
+            jobs.json as
+              | {
+                  jobs?: {
+                    name: string;
+                    conclusion: string | null;
+                    steps?: { conclusion: string | null }[];
+                  }[];
+                }
+              | undefined
+          )?.jobs ?? [];
         return {
           id: run.id,
           conclusion: run.conclusion,
-          jobs: list.map((job) => ({ name: job.name, conclusion: job.conclusion })),
+          jobs: list.map((job) => ({
+            name: job.name,
+            conclusion: job.conclusion,
+            steps: (job.steps ?? []).map((step) => ({ conclusion: step.conclusion })),
+          })),
         };
       }
       await sleep(20_000);

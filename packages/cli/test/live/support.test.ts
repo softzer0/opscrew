@@ -27,6 +27,7 @@ import {
   appRules,
   blockedByCloudflare,
   cloudflareRecordProblems,
+  deployJobFailed,
   expectedSharedHosts,
   ipv6PrefixForms,
   leakedLabels,
@@ -557,5 +558,33 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
     for (const value of ["all", "13", "2b", "8b", "11,x", "11,"]) {
       expect(portainerSteps(value), value).toBeUndefined();
     }
+  });
+});
+
+describe("deployJobFailed", () => {
+  const ok = { conclusion: "success" };
+  it("judges a finished job by its conclusion", () => {
+    expect(deployJobFailed({ name: "deploy", conclusion: "success", steps: [] }, "success")).toBe(
+      false,
+    );
+    expect(deployJobFailed({ name: "deploy", conclusion: "skipped", steps: [ok] }, "success")).toBe(
+      true,
+    );
+    expect(deployJobFailed({ name: "deploy", conclusion: "failure", steps: [ok] }, "failure")).toBe(
+      true,
+    );
+  });
+
+  it("takes a job GitHub still lists as running from its steps, only when the run succeeded", () => {
+    const steps = [ok, { conclusion: "skipped" }, ok];
+    expect(deployJobFailed({ name: "deploy", conclusion: null, steps }, "success")).toBe(false);
+    expect(deployJobFailed({ name: "deploy", conclusion: null, steps }, "failure")).toBe(true);
+    expect(deployJobFailed({ name: "deploy", conclusion: null, steps: [] }, "success")).toBe(true);
+    expect(
+      deployJobFailed(
+        { name: "deploy", conclusion: null, steps: [ok, { conclusion: null }] },
+        "success",
+      ),
+    ).toBe(true);
   });
 });

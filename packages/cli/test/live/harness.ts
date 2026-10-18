@@ -34,6 +34,7 @@ import {
   approveHashes,
   blockedByCloudflare,
   cloudflareRecordProblems,
+  deployJobFailed,
   ed25519FromKeyscan,
   expectedSharedHosts,
   fingerprintFromKeygen,
@@ -938,7 +939,7 @@ export class LiveRun {
     run: Awaited<ReturnType<GitHubRepo["waitForDeploy"]>>,
     what: string,
   ): number {
-    const failed = run.jobs.filter((job) => job.conclusion !== "success");
+    const failed = run.jobs.filter((job) => deployJobFailed(job, run.conclusion));
     if (run.conclusion !== "success" || failed.length > 0) {
       throw new Error(
         `The deploy run ${run.id} (${what}) ended ${run.conclusion}; jobs: ${run.jobs.map((j) => `${j.name}=${j.conclusion}`).join(", ")}.`,
