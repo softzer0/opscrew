@@ -1,10 +1,13 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveProjectPaths } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
   CANCEL,
+  GIT,
+  git,
   projectContext,
   run,
   ScriptedPrompts,
@@ -143,6 +146,76 @@ describe("opscrew interview", () => {
     });
     expect(ctx.output).toContain("a server you already have");
     expect(ctx.output).not.toContain("203.0.113.20");
+  });
+
+  describe.skipIf(GIT === undefined)("the signing question and the repository's visibility", () => {
+    /** A project whose origin is github.com/acme/shop, and a fetch answering GitHub's repository API. */
+    async function onGitHub(visibility: { private: boolean } | "unavailable") {
+      project = await tempProject("nextjs-postgres");
+      await git(project.env, project.root, "init");
+      await git(
+        project.env,
+        project.root,
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/acme/shop.git",
+      );
+      const urls: string[] = [];
+      const fetch = async (input: string | URL) => {
+        urls.push(String(input));
+        if (
+          visibility === "unavailable" ||
+          String(input) !== "https://api.github.com/repos/acme/shop"
+        ) {
+          return new Response("unavailable in tests", { status: 503 });
+        }
+        return Response.json({ default_branch: "main", private: visibility.private });
+      };
+      const env = { ...project.env, GITHUB_TOKEN: fakeSecret("github-pat") };
+      return { urls, env, fetch };
+    }
+
+    /** Runs the interview in a terminal and returns the signing question's text. */
+    async function signingQuestion(setup: Awaited<ReturnType<typeof onGitHub>>): Promise<string> {
+      const prompts = new ScriptedPrompts([
+        "<1k",
+        "15 USD",
+        "hetzner",
+        "eu-central",
+        "best-effort",
+        "none",
+        "",
+        true, // sign the images
+        "off",
+      ]);
+      const ctx = projectContext(
+        { ...(project as TempProject), env: setup.env },
+        { interactive: true, services: { prompts, fetch: setup.fetch } },
+      );
+      expect(await run(ctx, "interview"), ctx.errors).toBe(0);
+      expect(ctx.output + ctx.errors).not.toContain(setup.env.GITHUB_TOKEN);
+      const question = prompts.calls.find((call) => call.kind === "confirm");
+      return question?.message ?? "";
+    }
+
+    it("warns that a private repository's name becomes public", async () => {
+      const setup = await onGitHub({ private: true });
+      expect(await signingQuestion(setup)).toContain(
+        "Your repository is private, but once images are signed",
+      );
+      expect(setup.urls).toEqual(["https://api.github.com/repos/acme/shop"]);
+    });
+
+    it("gives no warning for a public repository", async () => {
+      const setup = await onGitHub({ private: false });
+      expect(await signingQuestion(setup)).not.toContain("public log");
+    });
+
+    it("warns conditionally when GitHub cannot say", async () => {
+      const setup = await onGitHub("unavailable");
+      expect(await signingQuestion(setup)).toContain("If your repository is private, its name");
+    });
   });
 
   it("pre-fills the previous answers on a re-run and reuses them without a terminal", async () => {

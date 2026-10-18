@@ -70,6 +70,14 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 4. **Design.** Call `opscrew_design_options`. Present each option with its monthly cost, whether it
    fits the budget and its trade-offs; say which one OpsCrew recommends and why. When prices are
    marked as static estimates, say so. After the user chooses, call `opscrew_select_design`.
+   - **Builder and deploys.** `opscrew_select_design` returns who builds the image (OpsCrew's
+     Dockerfile for Node and Python, Buildpacks for Go, Java, .NET and Ruby, Railpack for Bun
+     projects and the rest, or the repository's own Dockerfile), how deploys switch, and the signing, deploy tag
+     and image retention settings, each with its reason; pass them on. Deploys have no downtime: the
+     new version gets traffic only once its health check passes. Servers under 1 GB and Portainer
+     restart the app instead, with a short gap. Tell the user that migrations must keep working
+     with the version still running. They change these settings in `opscrew/plan.yaml` (the
+     builder needs `app.build.chosen: user`); then call `opscrew_select_design` again.
    - **Currencies.** When the user's budget is in another currency than the provider's prices,
      OpsCrew converts with a fixed approximate rate. If the user wants exact numbers, search the
      web for today's exchange rate, recalculate the monthly costs with it and say which rate and

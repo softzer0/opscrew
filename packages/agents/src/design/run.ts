@@ -37,7 +37,7 @@ import {
   readPortainerConnection,
   serverAddress,
 } from "../shared";
-import { runPhase } from "../shared/phase-status";
+import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
 import { backgroundJobsWarning } from "./background-jobs";
 import { chooseBuilder } from "./builder";
 import {
@@ -72,7 +72,7 @@ import {
   portainerDesignChoice,
 } from "./portainer";
 import { releaseCommandNote } from "./release";
-import { deploySentence, keptDeploy } from "./strategy";
+import { keptDeploy } from "./strategy";
 import { designWording } from "./wording";
 
 export interface RunDesignOptions {
@@ -116,6 +116,11 @@ export interface DesignResult {
   priceSource: "live" | "static";
   /** Plain-English warnings that were also sent to the reporter. */
   warnings: string[];
+  /**
+   * The image builder, deploy strategy and supply-chain lines, each with its reason, as design
+   * reported them.
+   */
+  lines: string[];
 }
 
 /**
@@ -494,13 +499,13 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       `Wrote ${planFile}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
     ),
   );
-  reporter.info(say(`Image builder: ${build.builder}. ${build.reason}`));
-  reporter.info(
-    say(`Deploys: ${plan.deploy.strategy}. ${deploySentence(plan.deploy, fresh.deploy)}`),
-  );
+  const buildLines = buildStatusLines(plan, fresh.deploy).map(say);
+  const supplyLines = supplyChainLines(plan);
+  for (const line of buildLines) reporter.info(line);
   const migrations = releaseCommandNote(plan, facts);
   if (migrations?.warning) warn(migrations.text);
   else if (migrations !== undefined) reporter.info(say(migrations.text));
+  for (const line of supplyLines) reporter.info(line);
   reporter.info("Next: run `opscrew adapt` to prepare the code in a pull request.");
   await deps.state.markPhase(
     "design",
@@ -511,7 +516,14 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
         : `${chosen.id}, ${cost}/month (${priceLabel(chosen.cost)})`,
     ),
   );
-  return { options: designOptions, chosen, plan, priceSource, warnings };
+  return {
+    options: designOptions,
+    chosen,
+    plan,
+    priceSource,
+    warnings,
+    lines: [...buildLines, ...supplyLines],
+  };
 }
 
 /**

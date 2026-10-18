@@ -74,7 +74,7 @@ export function keptDeploy(fresh: PlanDeploy, previous: PlanDeploy): DeployPlan[
  */
 export function deploySentence(
   deploy: DeployPlan["deploy"],
-  designed: DeployPlan["deploy"],
+  designed: Pick<DeployPlan["deploy"], "strategy" | "reason">,
 ): string {
   if (deploy.strategy !== designed.strategy) {
     return `You chose ${deploy.strategy} in opscrew/plan.yaml (deploy.strategy).`;

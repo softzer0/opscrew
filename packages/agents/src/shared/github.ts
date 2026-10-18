@@ -62,6 +62,24 @@ export async function githubClientFromToken(
 }
 
 /**
+ * Whether the project's GitHub repository (the `origin` remote) is private, from GitHub's
+ * repository API with the user's token; `undefined` when that is unknown (no GitHub remote, no
+ * token, or GitHub did not answer). The interview's signing question then says what signing makes
+ * public (FR-1219).
+ */
+export async function repositoryPrivate(
+  deps: GitDeps & Pick<PhaseDeps, "fetch" | "version">,
+): Promise<boolean | undefined> {
+  try {
+    const { owner, repo } = await githubCoordinates(gitClient(deps));
+    const github = await githubClientFromToken(deps);
+    return github === undefined ? undefined : (await github.getRepo(owner, repo)).private;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The paths git tracks under `paths` (`git ls-files`; with `deleted`, only those deleted in the
  * working copy), as git lists them. None when `paths` is empty or git fails.
  */

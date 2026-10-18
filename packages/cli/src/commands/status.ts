@@ -5,6 +5,7 @@ import {
   phaseStatusLines,
   type ServerAddress,
   serverAddress,
+  supplyChainLines,
 } from "@opscrew/agents";
 import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
@@ -48,7 +49,8 @@ async function addressLines(deps: PhaseDeps, plan: DeployPlan | undefined): Prom
 
 /**
  * `opscrew status`: which phases have run in this project, with their result and time, the
- * image builder and the deploy strategy with their reasons, the server's address (from OpsCrew's
+ * image builder and the deploy strategy with their reasons, the supply-chain settings (signing,
+ * deploy tags, image retention), the server's address (from OpsCrew's
  * local state; it is never committed) and a `retarget` line while a move to another provider is
  * in progress (from → to, last completed step, the next command).
  * `--ip` prints only the server's IPv4 address, for scripts such as
@@ -85,7 +87,8 @@ export function register(program: Command, ctx: CliContext): void {
       const move = plan === undefined ? undefined : retargetStatusLine(plan);
       const moveLines = move === undefined ? [] : ["", "Move in progress:", move];
       const serverLines = await addressLines(deps, plan);
-      const buildLines = plan === undefined ? [] : ["", ...buildStatusLines(plan)];
+      const buildLines =
+        plan === undefined ? [] : ["", ...buildStatusLines(plan), ...supplyChainLines(plan)];
       if (Object.keys(state.phases).length === 0) {
         ctx.stdout("No phases have run yet. Start with `opscrew scan`.\n");
         const extra = [...buildLines, ...serverLines, ...moveLines];

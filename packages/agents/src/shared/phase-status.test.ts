@@ -5,7 +5,7 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { PORTAINER_RECREATE_NOTE, ROLLING_NOTE } from "../design/strategy";
 import { createTestPhaseDeps, testPlan } from "../testing";
-import { buildStatusLines, runPhase } from "./phase-status";
+import { buildStatusLines, runPhase, supplyChainLines } from "./phase-status";
 
 describe("buildStatusLines", () => {
   it("shows the builder and the deploy strategy with their reasons", () => {
@@ -26,6 +26,38 @@ describe("buildStatusLines", () => {
     ).toEqual([`Deploys: recreate. ${PORTAINER_RECREATE_NOTE}`]);
     // The user's own recreate in plan.yaml has no reason.
     expect(buildStatusLines({ ...plan, deploy: recreate })).toEqual(["Deploys: recreate."]);
+    // Against what design chose for the server, the user's recreate reads as theirs.
+    expect(buildStatusLines({ ...plan, deploy: recreate }, { strategy: "rolling" })).toEqual([
+      "Deploys: recreate. You chose recreate in opscrew/plan.yaml (deploy.strategy).",
+    ]);
+  });
+});
+
+describe("supplyChainLines", () => {
+  it("shows the defaults with the setting that changes each", () => {
+    expect(supplyChainLines(testPlan())).toEqual([
+      "Image signing: off (the default). Set supplyChain.sign: true in opscrew/plan.yaml to sign each image with cosign.",
+      "Deploy tags: off (the default). Set cicd.deployTags.enabled: true in opscrew/plan.yaml to tag each healthy deploy.",
+      "Image retention: keeps the newest 10 deployed images in GitHub's container registry, never the running or the previous one (cicd.imageRetention in opscrew/plan.yaml).",
+    ]);
+  });
+
+  it("shows signing, tags with a release, and retention turned off", () => {
+    const plan = testPlan();
+    expect(
+      supplyChainLines({
+        supplyChain: { sign: true },
+        cicd: {
+          ...plan.cicd,
+          deployTags: { enabled: true, release: true },
+          imageRetention: { enabled: false, keep: 10 },
+        },
+      }),
+    ).toEqual([
+      "Image signing: on. Each image gets a keyless cosign signature. If your repository is private, its name and the deploy workflow's path appear in Sigstore's public log once images are signed.",
+      "Deploy tags: on. Each healthy deploy tags its commit deploy-<UTC time> and gets a GitHub Release naming the image digest.",
+      "Image retention: off. Every deployed image stays in GitHub's container registry (cicd.imageRetention in opscrew/plan.yaml).",
+    ]);
   });
 });
 

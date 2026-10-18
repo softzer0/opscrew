@@ -53,6 +53,36 @@ describe("opscrew status and the server's address", () => {
     expect(await main(argv("status"), ctx)).toBe(0);
     expect(ctx.output).toContain("\nImage builder: railpack. Rust: Railpack builds it.\n");
     expect(ctx.output).toContain("\nDeploys: rolling. New versions start next to the running one");
+    // The supply-chain settings, with what each does and the setting that changes it.
+    expect(ctx.output).toContain("\nImage signing: off (the default). Set supplyChain.sign: true");
+    expect(ctx.output).toContain("\nDeploy tags: off (the default). Set cicd.deployTags.enabled");
+    expect(ctx.output).toContain(
+      "\nImage retention: keeps the newest 10 deployed images in GitHub's container registry, never the running or the previous one",
+    );
+  });
+
+  it("shows signing, deploy tags and image retention as plan.yaml sets them", async () => {
+    const paths = resolveProjectPaths(dir, { env: {} });
+    const plan = testPlan({ userSecret: false });
+    await writeArtifact("plan", paths.files.plan, {
+      ...plan,
+      supplyChain: { sign: true },
+      cicd: {
+        ...plan.cicd,
+        deployTags: { enabled: true, release: true },
+        imageRetention: { enabled: false, keep: 10 },
+      },
+    });
+    const ctx = createTestContext({ cwd: dir });
+    expect(await main(argv("status"), ctx)).toBe(0);
+    expect(ctx.output).toContain(
+      "\nImage signing: on. Each image gets a keyless cosign signature.",
+    );
+    expect(ctx.output).toContain("Sigstore's public log");
+    expect(ctx.output).toContain(
+      "\nDeploy tags: on. Each healthy deploy tags its commit deploy-<UTC time> and gets a GitHub Release naming the image digest.",
+    );
+    expect(ctx.output).toContain("\nImage retention: off. Every deployed image stays");
   });
 
   it("prints only the IPv4 address with --ip, for ssh deploy@$(opscrew status --ip)", async () => {

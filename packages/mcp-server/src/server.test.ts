@@ -8,6 +8,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { createTestPhaseDeps, forbiddenFetch, ScriptedRunner } from "@opscrew/agents/testing";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { defaultScanners } from "@opscrew/secops";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpscrewMcpDeps } from "./deps";
@@ -354,6 +355,61 @@ describe("createOpscrewMcpServer", () => {
     expect(dataOf(wrong).error.code).toBe("INVALID_INPUT");
     expect(dataOf(wrong).error.hint).toContain("opscrew_design_options");
     expect(await readFile(path.join(dir, "opscrew", "plan.yaml"), "utf8")).toBe(plan);
+  });
+
+  it("opscrew_select_design and opscrew_status show and keep the build, deploy and supply-chain settings of plan.yaml", async () => {
+    const dir = await fixture("nextjs-postgres");
+    const h = await connect(dir);
+    await h.call("opscrew_save_requirements", {
+      answers: { ...ANSWERS, budgetMonthly: "30 EUR", dataCriticality: "critical" },
+    });
+    const { recommendedId } = dataOf(await h.call("opscrew_design_options"));
+    const first = await h.call("opscrew_select_design", { optionId: recommendedId });
+    expect(textOf(first)).toContain(
+      "\nImage builder: generated-dockerfile. OpsCrew has a Dockerfile",
+    );
+    expect(textOf(first)).toContain("\nDeploys: rolling. New versions start next to");
+    expect(textOf(first)).toContain("\nImage signing: off (the default).");
+    expect(textOf(first)).toContain("\nDeploy tags: off (the default).");
+    expect(textOf(first)).toContain("\nImage retention: keeps the newest 10 deployed images");
+
+    // The user's overrides in plan.yaml go through design unchanged.
+    const file = path.join(dir, "opscrew", "plan.yaml");
+    const plan = await readArtifact("plan", file);
+    const build = plan.app.build;
+    if (build === undefined) throw new Error("design recorded no builder");
+    await writeArtifact("plan", file, {
+      ...plan,
+      app: { ...plan.app, build: { ...build, builder: "railpack", chosen: "user" } },
+      deploy: { strategy: "recreate", drainSeconds: 45 },
+      supplyChain: { sign: true },
+      cicd: {
+        ...plan.cicd,
+        deployTags: { enabled: true, release: true },
+        imageRetention: { enabled: false, keep: 10 },
+      },
+    });
+    const again = await h.call("opscrew_select_design", { optionId: recommendedId });
+    expect(again.isError, textOf(again)).toBeFalsy();
+    const kept = dataOf(again).plan;
+    expect(kept.app.build).toMatchObject({ builder: "railpack", chosen: "user" });
+    expect(kept.deploy).toMatchObject({ strategy: "recreate", drainSeconds: 45 });
+    expect(kept.supplyChain).toEqual({ sign: true });
+    expect(kept.cicd.deployTags).toEqual({ enabled: true, release: true });
+    expect(kept.cicd.imageRetention).toEqual({ enabled: false, keep: 10 });
+
+    const status = textOf(await h.call("opscrew_status"));
+    for (const text of [textOf(again), status]) {
+      expect(text).toContain(
+        "\nImage builder: railpack. You chose Railpack in opscrew/plan.yaml (app.build.builder).",
+      );
+      expect(text).toContain("\nImage signing: on. Each image gets a keyless cosign signature.");
+      expect(text).toContain("\nDeploy tags: on. Each healthy deploy tags its commit");
+      expect(text).toContain("\nImage retention: off. Every deployed image stays");
+    }
+    expect(textOf(again)).toContain(
+      "\nDeploys: recreate. You chose recreate in opscrew/plan.yaml (deploy.strategy).",
+    );
   });
 
   it("opscrew_status lists phases, artefacts and the next step", async () => {

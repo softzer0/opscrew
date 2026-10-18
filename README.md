@@ -26,6 +26,11 @@ Where it deploys:
 
 DNS goes through Cloudflare, optionally. AWS, Google Cloud, Azure and Contabo come next.
 
+How your app is built and shipped:
+- [How OpsCrew builds your app's image](docs/guide/builders.md): a builder chosen per language, non-root and pinned.
+- [Deploys without downtime](docs/guide/zero-downtime.md): a broken release never gets traffic.
+- [The image supply chain](docs/guide/supply-chain.md): SBOM, provenance, optional signing, Dependabot and deploy tags.
+
 ## Quickstart
 
 You need Node.js 22.9+, git, OpenTofu or Terraform, a GitHub repository with your app, and an API token for Hetzner Cloud (`HCLOUD_TOKEN`) or DigitalOcean (`DIGITALOCEAN_TOKEN`). For a custom domain, add a Cloudflare token (`CLOUDFLARE_API_TOKEN`) and a domain whose DNS is on Cloudflare. A GitHub token (`GITHUB_TOKEN`, or a logged-in `gh`) lets OpsCrew open pull requests and set the deploy secrets. A model (`ANTHROPIC_API_KEY`) is optional: pass `--no-ai` to `analyze` and `adapt` to run without one.

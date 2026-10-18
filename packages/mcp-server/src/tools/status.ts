@@ -5,6 +5,7 @@ import {
   moveProvider,
   phaseStatusLines,
   providerProfile,
+  supplyChainLines,
 } from "@opscrew/agents";
 import { exists, toPosixRelative } from "@opscrew/core";
 import { type Retarget, readArtifact } from "@opscrew/plan-schema";
@@ -42,7 +43,8 @@ function billing(move: Retarget): string {
 
 /**
  * `opscrew_status`: which phases have run (from `.opscrew/state.json`), which artefacts exist, the
- * plan's image builder and deploy strategy, and the next step. Read-only.
+ * plan's image builder and deploy strategy, its supply-chain settings (signing, deploy tags,
+ * image retention), and the next step. Read-only.
  */
 export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): void {
   server.registerTool(
@@ -50,7 +52,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -116,7 +118,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
           ...Object.values(artifacts).map(
             (a) => `  ${a.path}: ${a.exists ? "present" : "missing"}`,
           ),
-          ...(plan === undefined ? [] : ["", ...buildStatusLines(plan)]),
+          ...(plan === undefined ? [] : ["", ...buildStatusLines(plan), ...supplyChainLines(plan)]),
           ...moveLines,
           "",
           `Next: ${step}`,

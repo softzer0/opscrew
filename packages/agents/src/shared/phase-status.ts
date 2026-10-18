@@ -3,6 +3,7 @@ import { isUserFacingError, type PhaseRecord } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { deploySentence } from "../design/strategy";
+import { signingPublicLog } from "../interview/questions";
 
 /** Phases shown only once they ran: a move to another provider and the Portainer add-on. */
 const OPTIONAL_PHASES: readonly PhaseName[] = ["retarget", "portainer"];
@@ -23,16 +24,39 @@ export function phaseStatusLines(phases: Partial<Record<PhaseName, PhaseRecord>>
 }
 
 /**
- * The build and deploy lines of `opscrew status` and `opscrew_status`: who builds the image and
- * how a new version replaces the running one, each with its reason (the builder line once design
- * chose one).
+ * The build and deploy lines of design and status (CLI and MCP): who builds the image and how a
+ * new version replaces the running one, each with its reason (the builder line once design chose
+ * one). `designed` is what design chose for the server, so a strategy the user set in `plan.yaml`
+ * reads as theirs; without it the plan's own settings are taken as design's.
  */
-export function buildStatusLines(plan: Pick<DeployPlan, "app" | "deploy">): string[] {
+export function buildStatusLines(
+  plan: Pick<DeployPlan, "app" | "deploy">,
+  designed: Pick<DeployPlan["deploy"], "strategy" | "reason"> = plan.deploy,
+): string[] {
   const { build } = plan.app;
   const { deploy } = plan;
   return [
     ...(build === undefined ? [] : [`Image builder: ${build.builder}. ${build.reason}`]),
-    `Deploys: ${deploy.strategy}. ${deploySentence(deploy, deploy)}`.trimEnd(),
+    `Deploys: ${deploy.strategy}. ${deploySentence(deploy, designed)}`.trimEnd(),
+  ];
+}
+
+/**
+ * The supply-chain lines of design and status (CLI and MCP): image signing, deploy tags and image
+ * retention, each with what it does and the `opscrew/plan.yaml` setting that changes it.
+ */
+export function supplyChainLines(plan: Pick<DeployPlan, "supplyChain" | "cicd">): string[] {
+  const { deployTags, imageRetention } = plan.cicd;
+  return [
+    plan.supplyChain.sign
+      ? `Image signing: on. Each image gets a keyless cosign signature. ${signingPublicLog(undefined)}`
+      : "Image signing: off (the default). Set supplyChain.sign: true in opscrew/plan.yaml to sign each image with cosign.",
+    deployTags.enabled
+      ? `Deploy tags: on. Each healthy deploy tags its commit deploy-<UTC time>${deployTags.release ? " and gets a GitHub Release naming the image digest" : ""}.`
+      : "Deploy tags: off (the default). Set cicd.deployTags.enabled: true in opscrew/plan.yaml to tag each healthy deploy.",
+    imageRetention.enabled
+      ? `Image retention: keeps the newest ${imageRetention.keep} deployed images in GitHub's container registry, never the running or the previous one (cicd.imageRetention in opscrew/plan.yaml).`
+      : "Image retention: off. Every deployed image stays in GitHub's container registry (cicd.imageRetention in opscrew/plan.yaml).",
   ];
 }
 

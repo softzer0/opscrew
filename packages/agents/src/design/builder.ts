@@ -122,6 +122,17 @@ function probeFor(
 type Decision = Pick<BuilderChoice, "builder" | "reason">;
 
 /**
+ * A Node project run with Bun: OpsCrew's Dockerfile would install it with npm and run it on
+ * Node.js, which breaks apps that use Bun's runtime, and Buildpacks has no Bun.
+ */
+const isBun = (facts: ProjectFacts, language: RuntimeLanguage) =>
+  language === "node" && facts.packageManager === "bun";
+
+/** Why a Bun project goes to Railpack. */
+const BUN_REASON =
+  "a Bun project: Railpack builds and runs it with Bun; OpsCrew's Dockerfile and Buildpacks have no Bun";
+
+/**
  * The first secret value the build needs: a variable baked into the frontend at build time
  * (client-exposed) that is secret. Buildpacks cannot mount it as a BuildKit secret.
  */
@@ -146,6 +157,9 @@ function automaticChoice(
       reason: `The repository has its own Dockerfile (${dockerfile}), so OpsCrew builds the image with it.`,
     };
   }
+  if (isBun(facts, language)) {
+    return { builder: "railpack", reason: `A${BUN_REASON.slice(1)}.` };
+  }
   if ((language === "node" || language === "python") && stack !== undefined) {
     return {
       builder: "generated-dockerfile",
@@ -169,7 +183,11 @@ function automaticChoice(
     }
     return {
       builder: "buildpacks",
-      reason: `Buildpacks builds ${name} as a non-root image, smaller than Railpack's.`,
+      // Railpack's Go image is a little smaller (research R7), so Go's reason makes no size claim.
+      reason:
+        language === "go"
+          ? `Buildpacks builds ${name} as a non-root image, without the extra layer Railpack needs for that.`
+          : `Buildpacks builds ${name} as a non-root image, smaller than Railpack's.`,
     };
   }
   return {
@@ -235,6 +253,9 @@ function userChoiceCheck(
       problem: `${name} exists only for Node.js and Python apps, and this app runs on ${RUNTIME_NAMES[language]}`,
     };
   }
+  if (builder === "generated-dockerfile" && isBun(facts, language)) {
+    return { problem: `this is ${BUN_REASON}` };
+  }
   if (builder === "generated-dockerfile" && stack === undefined) {
     return { problem: `${name} has no template for this app` };
   }
@@ -246,9 +267,9 @@ function userChoiceCheck(
  * Chooses who builds the app's image (contracts/builders.md "chooseBuilder"), in this order: the
  * user's builder (`plan.app.build.chosen: user`) when it can build the app, else `{ refused }`
  * (for Buildpacks see {@link buildpacksCheck}); the repository's own Dockerfile (unless it is the
- * one OpsCrew generated, recorded as `generated-dockerfile`); OpsCrew's Dockerfile for the Node and
- * Python stacks it has one for; Buildpacks for Go, Java, .NET and Ruby versions its pinned builder
- * offers, unless the build needs a secret value (Buildpacks has no secret mounts); Railpack for
+ * one OpsCrew generated, recorded as `generated-dockerfile`); Railpack for a Bun project; OpsCrew's
+ * Dockerfile for the Node and Python stacks it has one for; Buildpacks for Go, Java, .NET and Ruby
+ * versions its pinned builder offers, unless the build needs a secret value (Buildpacks has no secret mounts); Railpack for
  * everything else. The runtime version follows FR-1228 ({@link resolveRuntime}). Every builder
  * builds for amd64 and arm64 (research R7, R8), so the architecture, part of the contract for
  * `retarget`, decides nothing today. Pure and deterministic: the same inputs give the same result

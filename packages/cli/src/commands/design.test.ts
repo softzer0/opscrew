@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveProjectPaths } from "@opscrew/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 import {
   CANCEL,
   projectContext,
@@ -77,6 +77,52 @@ describe("opscrew design", () => {
     expect(ctx.output).not.toContain("Chose the recommended option");
     const plan = await planOf(project);
     expect(JSON.stringify(plan)).toContain(other.split("-")[2] as string);
+  });
+
+  it("shows the builder, the deploy strategy and the supply-chain settings with their reasons", async () => {
+    project = await prepared();
+    const ctx = projectContext(project);
+    expect(await run(ctx, "design")).toBe(0);
+    expect(ctx.output).toContain("Image builder: generated-dockerfile. OpsCrew has a Dockerfile");
+    expect(ctx.output).toContain("Deploys: rolling. New versions start next to the running one");
+    expect(ctx.output).toContain("  Image signing: off (the default).");
+    expect(ctx.output).toContain("  Deploy tags: off (the default).");
+    expect(ctx.output).toContain("  Image retention: keeps the newest 10 deployed images");
+    // Before the next step.
+    expect(ctx.output.indexOf("Image retention:")).toBeLessThan(
+      ctx.output.indexOf("Next: run `opscrew adapt`"),
+    );
+  });
+
+  it("keeps the builder, strategy and supply-chain settings set in plan.yaml", async () => {
+    project = await prepared();
+    expect(await run(projectContext(project), "design")).toBe(0);
+    const paths = resolveProjectPaths(project.root, { env: project.env });
+    const plan = await planOf(project);
+    plan.app.build = { ...plan.app.build, builder: "railpack", chosen: "user" };
+    plan.deploy = { strategy: "recreate", drainSeconds: 45 };
+    plan.supplyChain = { sign: true };
+    plan.cicd.deployTags = { enabled: true, release: false };
+    plan.cicd.imageRetention = { enabled: true, keep: 5 };
+    await writeFile(paths.files.plan, stringify(plan));
+
+    const ctx = projectContext(project);
+    expect(await run(ctx, "design")).toBe(0);
+    const kept = await planOf(project);
+    expect(kept.app.build).toMatchObject({ builder: "railpack", chosen: "user" });
+    expect(kept.deploy).toMatchObject({ strategy: "recreate", drainSeconds: 45 });
+    expect(kept.supplyChain).toEqual({ sign: true });
+    expect(kept.cicd.deployTags).toEqual({ enabled: true, release: false });
+    expect(kept.cicd.imageRetention).toEqual({ enabled: true, keep: 5 });
+    expect(ctx.output).toContain(
+      "Image builder: railpack. You chose Railpack in opscrew/plan.yaml (app.build.builder).",
+    );
+    expect(ctx.output).toContain(
+      "Deploys: recreate. You chose recreate in opscrew/plan.yaml (deploy.strategy).",
+    );
+    expect(ctx.output).toContain("  Image signing: on.");
+    expect(ctx.output).toContain("  Deploy tags: on. Each healthy deploy tags its commit");
+    expect(ctx.output).toContain("  Image retention: keeps the newest 5 deployed images");
   });
 
   it("fails with the valid ids for an unknown --option", async () => {

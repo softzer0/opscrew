@@ -137,6 +137,9 @@ describe("chooseBuilder: the six new languages", () => {
     expect(reason("spring-boot-api")).toBe(
       "Buildpacks builds Java 21 as a non-root image, smaller than Railpack's.",
     );
+    expect(reason("go-api")).toBe(
+      "Buildpacks builds Go 1.26 as a non-root image, without the extra layer Railpack needs for that.",
+    );
     expect(reason("rust-api")).toBe(
       "OpsCrew has no Dockerfile for Rust and does not build it with Buildpacks, so Railpack builds the image, running the app as a non-root user.",
     );
@@ -271,16 +274,56 @@ describe("chooseBuilder rules", () => {
     });
 
     it("refuses pnpm, Bun and Rust, which the builder does not support", () => {
-      for (const manager of ["pnpm", "bun"] as const) {
+      for (const [manager, automatic] of [
+        ["pnpm", "generated-dockerfile"],
+        ["bun", "railpack"],
+      ] as const) {
         const facts = nextPostgresFacts({ packageManager: manager });
         expect(chooseBuilder(facts, buildpacks("node", "24"), "amd64")).toEqual({
-          refused: `opscrew/plan.yaml sets app.build.builder to buildpacks, but the pinned Buildpacks builder has no ${manager} support. Set it to generated-dockerfile, or set app.build.chosen to auto to let OpsCrew choose; plan.yaml was not changed.`,
+          refused: `opscrew/plan.yaml sets app.build.builder to buildpacks, but the pinned Buildpacks builder has no ${manager} support. Set it to ${automatic}, or set app.build.chosen to auto to let OpsCrew choose; plan.yaml was not changed.`,
         });
       }
       const rust = NEW_LANGUAGES["rust-api"] as ProjectFacts;
       expect(chooseBuilder(rust, buildpacks("rust", "1.98"), "amd64")).toMatchObject({
         refused: expect.stringContaining("the pinned Buildpacks builder has no Rust support"),
       });
+    });
+  });
+
+  describe("a Bun project", () => {
+    const BUN_REASON =
+      "a Bun project: Railpack builds and runs it with Bun; OpsCrew's Dockerfile and Buildpacks have no Bun";
+
+    it("goes to Railpack, never to OpsCrew's Dockerfile, which would run it on Node.js", () => {
+      const facts = nextPostgresFacts({ packageManager: "bun" });
+      expect(choice(chooseBuilder(facts, undefined, "amd64"))).toMatchObject({
+        builder: "railpack",
+        chosen: "auto",
+        automatic: "railpack",
+        probe: "bash",
+        reason: `A${BUN_REASON.slice(1)}.`,
+      });
+    });
+
+    it("refuses the user's choice of OpsCrew's Dockerfile, with the same reason", () => {
+      const facts = nextPostgresFacts({ packageManager: "bun" });
+      const generated = planWith({
+        builder: "generated-dockerfile",
+        chosen: "user",
+        reason: "You chose it.",
+        runtime: { language: "node", version: "24" },
+      });
+      expect(chooseBuilder(facts, generated, "amd64")).toEqual({
+        refused: `opscrew/plan.yaml sets app.build.builder to generated-dockerfile, but this is ${BUN_REASON}. Set it to railpack, or set app.build.chosen to auto to let OpsCrew choose; plan.yaml was not changed.`,
+      });
+    });
+
+    it("keeps the repository's own Dockerfile", () => {
+      const facts = nextPostgresFacts({
+        packageManager: "bun",
+        docker: { dockerfile: "Dockerfile" },
+      });
+      expect(choice(chooseBuilder(facts, undefined, "amd64")).builder).toBe("own-dockerfile");
     });
   });
 

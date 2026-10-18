@@ -301,7 +301,7 @@ export function registerDesignTools(
     {
       title: "Choose a deployment option",
       description:
-        "Write opscrew/plan.yaml for the deployment option the user chose (an id from opscrew_design_options), including the code changes the app needs before it can be deployed. Also writes opscrew/architecture.json from deterministic detection when it does not exist yet. Creates no infrastructure.",
+        "Write opscrew/plan.yaml for the deployment option the user chose (an id from opscrew_design_options), including the code changes the app needs before it can be deployed. Returns the image builder, the deploy strategy and the supply-chain settings (image signing, deploy tags, image retention), each with its reason; settings the user changed in opscrew/plan.yaml (app.build.builder with app.build.chosen: user, deploy.strategy, supplyChain.sign, cicd.deployTags, cicd.imageRetention) are kept. Also writes opscrew/architecture.json from deterministic detection when it does not exist yet. Creates no infrastructure.",
       inputSchema: {
         ...projectDirInput,
         optionId: z
@@ -345,6 +345,9 @@ export function registerDesignTools(
         const text = [
           ...notes,
           `Saved ${planFile}: ${chosen.title} (${chosen.id}), ${costText(chosen)}.`,
+          "",
+          // The image builder, deploy strategy and supply-chain settings, as design reported them.
+          ...result.lines,
           "",
           plan.codeChanges.length === 0
             ? "The app needs no code changes."

@@ -204,7 +204,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (the Docker pass skipped without the flag)
   - Effort: high
 
-- [ ] T1209 [US1] [US2] [US3] [US4] [US5] The CLI, MCP tools, plugin and guide in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`
+- [X] T1209 [US1] [US2] [US3] [US4] [US5] The CLI, MCP tools, plugin and guide in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`, `docs/guide/**`
   - Owns: those paths (+ tests)
   - Reads: spec FR-1224, FR-1226; research.md R7 (the comparison table); quickstart.md
   - Depends: T1207

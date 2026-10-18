@@ -15,6 +15,7 @@ import {
   providerFromTokens,
   providerProfile,
   readServerAddresses,
+  repositoryPrivate,
   requestedProvider,
   runInterview,
   SERVER_FIELDS,
@@ -104,6 +105,9 @@ const ANSWER_HELP: Record<string, string> = {
   keepExternalServices: 'External services to keep, for example ["supabase"].',
   contactEmail: "Contact email for certificates and alerts.",
   notes: "Anything else the user wants to note.",
+  signImages:
+    "true to sign each image with keyless cosign (default false). Pass on the question's help first: for a private repository its name and workflow path appear in Sigstore's public log.",
+  deployTags: 'Tag each healthy deploy: "off" (default), "tag" or "tag-and-release".',
 };
 
 /** The follow-ups for a server the user already has (`provider: own`); never a password. */
@@ -243,20 +247,26 @@ export function registerInterviewTools(
     {
       title: "Interview questions",
       description:
-        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean, a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, external services). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
+        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean, a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, external services, image signing, deploy tags). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
       inputSchema: { ...projectDirInput },
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ projectDir }) =>
       runTool(deps, "opscrew_interview_questions", projectDir, async (call) => {
-        const { paths } = await call.phaseDeps();
+        const phase = await call.phaseDeps();
+        const { paths } = phase;
         const { facts, source } = await loadFacts(paths);
         const previous = await loadPrevious(paths);
         // In a repository with several apps, the first question is which one to deploy.
         const { appCandidates } = await detectProjectDetails(paths.root);
         // The provider default follows the token that is set, as in `opscrew init`/`interview`.
         const inferredProvider = providerFromTokens(deps.env);
-        const context = inferredProvider !== undefined ? { inferredProvider } : {};
+        // The signing question says what signing makes public for this repository.
+        const isPrivate = await repositoryPrivate(phase);
+        const context = {
+          ...(inferredProvider !== undefined ? { inferredProvider } : {}),
+          ...(isPrivate !== undefined ? { repositoryPrivate: isPrivate } : {}),
+        };
         const questions = buildQuestions(facts, previous, appCandidates, context);
         const inferred = inferredAnswers(facts, context);
         // How OpsCrew reached the user's own server or Portainer before (the defaults), if known.
@@ -339,7 +349,7 @@ export function registerInterviewTools(
         readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
-        openWorldHint: false,
+        openWorldHint: true,
       },
     },
     ({ projectDir, answers }, extra: CallExtra) =>
@@ -353,11 +363,13 @@ export function registerInterviewTools(
             ? { confirmCertificate: certificateDialog(server, deps, extra) }
             : {}),
         };
+        const isPrivate = await repositoryPrivate(phase);
         let result: Awaited<ReturnType<typeof runInterview>>;
         try {
           result = await runInterview(phase, {
             answers: answers as Record<string, unknown>,
             portainer,
+            ...(isPrivate !== undefined ? { repositoryPrivate: isPrivate } : {}),
           });
         } catch (error) {
           if (error instanceof PortainerCertificateError) {

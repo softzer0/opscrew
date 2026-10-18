@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { type InterviewAnswers, runInterview } from "@opscrew/agents";
+import { type InterviewAnswers, repositoryPrivate, runInterview } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
 import type { Requirements } from "@opscrew/plan-schema";
 import type { Command } from "commander";
@@ -94,7 +94,8 @@ function nextStep(requirements: Requirements): string {
  * (FR-106). Without a terminal and without `--answers`, previous answers are reused. For an
  * existing Portainer (FR-1001) it asks for its address, shows its certificate's fingerprint and
  * asks the user to trust it (`--portainer-cert SHA256:…` in scripts; a changed certificate is
- * confirmed the same way), then lists its environments with `PORTAINER_API_KEY`.
+ * confirmed the same way), then lists its environments with `PORTAINER_API_KEY`. The signing
+ * question says what signing makes public for the repository, as GitHub reports its visibility.
  */
 export function register(program: Command, ctx: CliContext): void {
   program
@@ -122,8 +123,10 @@ export function register(program: Command, ctx: CliContext): void {
       // The follow-ups for a server the user already has (address, SSH port, user, key, reachable)
       // or an existing Portainer (address, environment, redeploy and web modes) are asked in the
       // terminal too; they are saved on this computer only, never in the repo.
+      const isPrivate = await repositoryPrivate(deps);
       const { requirements } = await runInterview(deps, {
         ...(answers === undefined ? {} : { answers }),
+        ...(isPrivate === undefined ? {} : { repositoryPrivate: isPrivate }),
         ...(ask === undefined ? {} : { ask, askServer: ask, askPortainer: ask }),
         portainer: portainerInterviewOptions(ctx, prompts, certFingerprint),
       });
