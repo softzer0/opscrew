@@ -757,6 +757,25 @@ describe("steadyLoad", () => {
     expect(calls).toBe(20);
   });
 
+  it("catches up after a timer that fired late, so the rate stays steady", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-18T10:00:00.000Z"));
+    let calls = 0;
+    const load = steadyLoad(
+      async () => {
+        calls++;
+        return 200;
+      },
+      20,
+      () => undefined,
+    );
+    // The clock moves a second while no timer fires (a stalled event loop), then one tick runs.
+    vi.setSystemTime(new Date("2026-10-18T10:00:01.000Z"));
+    await vi.advanceTimersByTimeAsync(25);
+    expect(calls).toBe(20);
+    expect((await load.stop()).sent).toBe(20);
+  });
+
   it("waits for the requests still on their way when it stops", async () => {
     vi.useFakeTimers();
     let release: (status: number) => void = () => undefined;

@@ -727,7 +727,7 @@ export function steadyLoad(
   const failures: LoadFailure[] = [];
   const pending = new Set<Promise<void>>();
   let sent = 0;
-  const timer = setInterval(() => {
+  const fire = () => {
     sent++;
     const at = new Date().toISOString();
     const request = send()
@@ -740,7 +740,14 @@ export function steadyLoad(
       })
       .finally(() => pending.delete(request));
     pending.add(request);
-  }, 1000 / rps);
+  };
+  // Sends by schedule, not one request per tick: a timer that fires late (Windows' timer ticks
+  // every ~15.6 ms; a busy event loop) is caught up, so the rate stays `rps` on average.
+  const start = Date.now();
+  const timer = setInterval(() => {
+    const due = Math.floor(((Date.now() - start) * rps) / 1000);
+    while (sent < due) fire();
+  }, 500 / rps);
   return {
     async stop() {
       clearInterval(timer);
