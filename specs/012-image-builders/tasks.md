@@ -100,7 +100,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T1205 [P] [US1] [US2] [US3] [US4] [US5] The build job per builder, the seal, the switch script, signing and deploy tags in `packages/iac-templates/src/workflow/**`
+- [X] T1205 [P] [US1] [US2] [US3] [US4] [US5] The build job per builder, the seal, the switch script, signing and deploy tags in `packages/iac-templates/src/workflow/**`
   - Owns: that folder (+ tests, snapshots)
   - Reads: contracts/builders.md "Build job" and "Switch"; plan.md "5. The build job" and "6. The switch"; research.md R3 results, R7 and R8
   - Depends: T1201, T1202
@@ -126,7 +126,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T1206 [P] [US3] [US4] The runtime Compose and Caddy files, kamal-proxy and image pins in `packages/iac-templates/src/{runtime,tunnel,portainer-target}/**`
+- [X] T1206 [P] [US3] [US4] The runtime Compose and Caddy files, kamal-proxy and image pins in `packages/iac-templates/src/{runtime,tunnel,portainer-target}/**`
   - Owns: those folders (+ tests, snapshots)
   - Reads: contracts/builders.md "Switch"; research.md R3 results (the healthcheck forms, memory); spec FR-1211–FR-1214, FR-1220
   - Depends: T1201

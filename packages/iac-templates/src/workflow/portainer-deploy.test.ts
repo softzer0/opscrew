@@ -169,6 +169,7 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
       expect(git("log", "-1", "--format=%s", "origin-deploy")).toBe(`Deploy ${NEW}`);
       expect(git("log", "-1", "--format=%an", "origin-deploy")).toBe("github-actions[bot]");
       expect(outputs()).toEqual({
+        previous_image: "",
         previous: placeholder,
         deployed: git("rev-parse", "origin-deploy"),
         changed: "true",
@@ -186,11 +187,13 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
       fetchBranch();
       expect(git("rev-list", "--count", "origin-deploy")).toBe("1");
       expect(outputs().previous).toBe("");
+      expect(outputs().previous_image).toBe("");
       rmSync(join(work, "output"));
       const again = sh(steps.write ?? "", { IMAGE: NEW });
       expect(again.status, again.output).toBe(0);
       expect(again.output).toContain("already holds this version");
-      expect(outputs()).toEqual({ changed: "false" });
+      // The branch held this version already: that is the image that ran before this deploy.
+      expect(outputs()).toEqual({ previous_image: NEW, changed: "false" });
       fetchBranch();
       expect(git("rev-list", "--count", "origin-deploy")).toBe("1");
     },
@@ -318,6 +321,8 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
       expect(sh(steps.write ?? "", { IMAGE: NEW }).status).toBe(0);
       const written = outputs();
       expect(written.previous).toBe(previous);
+      // Image retention never deletes the image the branch held before.
+      expect(written.previous_image).toBe(OLD);
 
       const run = sh(steps["Roll back to the previous version"] ?? "", {
         PREVIOUS: written.previous ?? "",

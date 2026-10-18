@@ -1,0 +1,279 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
+"  deploy:
+    name: Deploy to the server
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      previous: \${{ steps.start.outputs.previous }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure SSH with the pinned host key
+        env:
+          SSH_KEY: \${{ secrets.OPSCREW_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: \${{ secrets.OPSCREW_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\\n' "$SSH_KEY" > ~/.ssh/opscrew
+          chmod 600 ~/.ssh/opscrew
+          printf '%s\\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Upload runtime files and environment
+        env:
+          HOST: \${{ secrets.OPSCREW_HOST }}
+          APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
+          DB_ENV: \${{ secrets.OPSCREW_DB_ENV }}
+        run: |
+          set -euo pipefail
+          ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          scp "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
+          printf '%s\\n' "\${APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
+          printf '%s\\n' "\${DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
+      - id: start
+        name: Start the new version
+        env:
+          HOST: \${{ secrets.OPSCREW_HOST }}
+          IMAGE: \${{ needs.build.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag }}
+          REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build job did not report the image digest; re-run the workflow."
+            exit 1
+          fi
+          echo "Deploying \${TAG:-the new image} as $IMAGE"
+          ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+          if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          set -eu
+          trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
+          cd /srv/app
+          export APP_IMAGE="$1"
+          docker compose pull
+          docker compose up -d --no-deps --wait --remove-orphans db proxy caddy
+          printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+          docker compose up -d --no-deps app
+          new="$(docker compose ps -aq app)"
+          name="$(docker inspect --format '{{.Name}}' "$new")"
+          if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+            docker rm -f "$new" > /dev/null
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Check that the app listens on the port in its PORT variable and answers /api/health. OpsCrew chose Buildpacks (app.build.builder: buildpacks in opscrew/plan.yaml): to build with another one, set app.build.builder to generated-dockerfile, own-dockerfile or railpack with app.build.chosen: user, and run opscrew provision.'
+            exit 1
+          fi
+          REMOTE
+      - id: health
+        name: Check that the app is healthy
+        env:
+          URL: http://\${{ secrets.OPSCREW_HOST }}/api/health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 -o /dev/null "$URL"; then
+              echo "Healthy after $attempt attempt(s)."
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "::error::The new version did not answer at $URL."
+          exit 1
+      - name: Roll back to the previous version
+        if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
+        env:
+          HOST: \${{ secrets.OPSCREW_HOST }}
+          IMAGE: \${{ needs.build.outputs.image }}
+        run: |
+          set -uo pipefail
+          ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          cat > "$RUNNER_TEMP/rollback.sh" <<'REMOTE'
+          set -eu
+          cd /srv/app
+          if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
+          if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
+          APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
+          export APP_IMAGE
+          {
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            docker compose up -d --no-deps app
+            new="$(docker compose ps -aq app)"
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              docker rm -f "$new" > /dev/null
+              echo '::error::The previous version did not pass its health check either.'
+              exit 1
+            fi
+          } >&2
+          rm -f .env.previous
+          echo restored
+          REMOTE
+          outcome=unchanged
+          if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
+          fi
+          case "$outcome" in
+            restored)
+              echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
+            unchanged)
+              echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
+            no-previous)
+              echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
+            *)
+              echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/app." ;;
+          esac
+          exit 1"
+`;
+
+exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
+"  deploy:
+    name: Deploy to the server
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      previous: \${{ steps.start.outputs.previous }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure SSH with the pinned host key
+        env:
+          SSH_KEY: \${{ secrets.OPSCREW_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: \${{ secrets.OPSCREW_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\\n' "$SSH_KEY" > ~/.ssh/opscrew
+          chmod 600 ~/.ssh/opscrew
+          printf '%s\\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Upload runtime files and environment
+        env:
+          HOST: \${{ secrets.OPSCREW_HOST }}
+          APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
+          DB_ENV: \${{ secrets.OPSCREW_DB_ENV }}
+        run: |
+          set -euo pipefail
+          ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          scp "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/Caddyfile "deploy@\${HOST}:/srv/app/"
+          printf '%s\\n' "\${APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/app.env'
+          printf '%s\\n' "\${DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/app/db.env'
+      - id: start
+        name: Start the new version
+        env:
+          HOST: \${{ secrets.OPSCREW_HOST }}
+          IMAGE: \${{ needs.build.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag }}
+          REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build job did not report the image digest; re-run the workflow."
+            exit 1
+          fi
+          echo "Deploying \${TAG:-the new image} as $IMAGE"
+          ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+          if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          set -eu
+          trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
+          cd /srv/app
+          export APP_IMAGE="$1"
+          docker compose pull
+          docker compose up -d --no-deps --wait --remove-orphans db proxy caddy
+          old="$(docker compose ps -aq app | tr '\\n' ' ')"
+          docker compose up -d --no-deps --no-recreate --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+          new=""
+          for id in $(docker compose ps -aq app); do
+            case " $old " in *" $id "*) ;; *) new="$id" ;; esac
+          done
+          name="$(docker inspect --format '{{.Name}}' "$new")"
+          if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+            docker rm -f "$new" > /dev/null
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on the port in its PORT variable and answers /api/health. OpsCrew chose Buildpacks (app.build.builder: buildpacks in opscrew/plan.yaml): to build with another one, set app.build.builder to generated-dockerfile, own-dockerfile or railpack with app.build.chosen: user, and run opscrew provision.'
+            exit 1
+          fi
+          printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+          for id in $old; do
+            docker stop "$id" > /dev/null
+            docker rm "$id" > /dev/null
+          done
+          REMOTE
+      - id: health
+        name: Check that the app is healthy
+        env:
+          URL: http://\${{ secrets.OPSCREW_HOST }}/api/health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 -o /dev/null "$URL"; then
+              echo "Healthy after $attempt attempt(s)."
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "::error::The new version did not answer at $URL."
+          exit 1
+      - name: Roll back to the previous version
+        if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
+        env:
+          HOST: \${{ secrets.OPSCREW_HOST }}
+          IMAGE: \${{ needs.build.outputs.image }}
+        run: |
+          set -uo pipefail
+          ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          cat > "$RUNNER_TEMP/rollback.sh" <<'REMOTE'
+          set -eu
+          cd /srv/app
+          if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
+          if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
+          APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
+          export APP_IMAGE
+          {
+            old="$(docker compose ps -aq app | tr '\\n' ' ')"
+            docker compose up -d --no-deps --no-recreate --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+            new=""
+            for id in $(docker compose ps -aq app); do
+              case " $old " in *" $id "*) ;; *) new="$id" ;; esac
+            done
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! docker compose exec -T proxy kamal-proxy deploy app --target "\${name#/}:3000" --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              docker rm -f "$new" > /dev/null
+              echo '::error::The previous version did not pass its health check either.'
+              exit 1
+            fi
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            for id in $old; do
+              docker stop "$id" > /dev/null
+              docker rm "$id" > /dev/null
+            done
+          } >&2
+          rm -f .env.previous
+          echo restored
+          REMOTE
+          outcome=unchanged
+          if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
+          fi
+          case "$outcome" in
+            restored)
+              echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
+            unchanged)
+              echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
+            no-previous)
+              echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
+            *)
+              echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/app." ;;
+          esac
+          exit 1"
+`;

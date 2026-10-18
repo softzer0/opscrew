@@ -27,7 +27,7 @@ jobs:
       contents: read
       packages: write
     outputs:
-      image: \${{ steps.push.outputs.ref }}
+      image: \${{ steps.final.outputs.ref }}
       tag: \${{ steps.image.outputs.image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,37 +36,58 @@ jobs:
         run: |
           set -euo pipefail
           repo="\${GITHUB_REPOSITORY,,}"
+          echo "name=ghcr.io/\${repo}" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/\${repo}:\${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      # Keeps the GitHub event (commit messages, emails) out of the provenance; it still names the
+      # workflow run, and the repository and commit of the checkout.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: provenance-add-gha=false
       - name: Log in to GitHub Container Registry
-        env:
-          REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s\\n' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
       - id: push
         name: Build and push the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: "."
+          file: "Dockerfile"
+          # The provenance records build arguments: only non-secret values go there.
+          build-args: \${{ secrets.OPSCREW_BUILD_ENV }}
+          secrets: \${{ secrets.OPSCREW_BUILD_SECRETS }}
+          push: true
+          tags: \${{ steps.image.outputs.image }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - id: final
+        name: Record the image digest
         env:
-          IMAGE: \${{ steps.image.outputs.image }}
-          BUILD_ENV: \${{ secrets.OPSCREW_BUILD_ENV }}
+          NAME: \${{ steps.image.outputs.name }}
+          DIGEST: \${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          build_args=()
-          while IFS= read -r line; do
-            [[ -z "$line" || "$line" == \\#* ]] && continue
-            build_args+=(--build-arg "$line")
-          done <<< "\${BUILD_ENV:-}"
-          docker build "\${build_args[@]}" -t "$IMAGE" -f "Dockerfile" "."
-          docker push "$IMAGE"
-          docker logout ghcr.io
-          ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" | grep -m1 -F "\${IMAGE%:*}@sha256:" || true)"
+          ref="$NAME@$DIGEST"
           if [[ ! "$ref" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::Could not read the digest of the pushed image $IMAGE; re-run the workflow."
+            echo "::error::Could not read the digest of the pushed image; re-run the workflow."
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "Pushed \\\`$IMAGE\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed \\\`$NAME:$GITHUB_SHA\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"
+      # The scan runs after the registry logout, so it never holds the job's packages: write token.
       - name: Scan the image (report only)
         env:
-          IMAGE: \${{ steps.image.outputs.image }}
-        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"
+          IMAGE: \${{ steps.final.outputs.ref }}
+        run: |
+          set -euo pipefail
+          docker pull --quiet "$IMAGE"
+          docker logout ghcr.io
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"
 
   deploy:
     name: Deploy to Portainer
@@ -75,6 +96,8 @@ jobs:
     environment: production
     permissions:
       contents: write
+    outputs:
+      previous: \${{ steps.write.outputs.previous_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: write
@@ -100,13 +123,16 @@ jobs:
           export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
           tree="$(printf '100644 blob %s\\tcompose.yaml\\n' "$(git hash-object -w "$RUNNER_TEMP/compose.yaml")" | git mktree)"
           previous=""
+          previous_image=""
           parent=()
           remote="$(git ls-remote origin refs/heads/opscrew-deploy)"
           if [[ -n "$remote" ]]; then
             git fetch --no-tags --depth=1 origin +refs/heads/opscrew-deploy:refs/remotes/origin/opscrew-deploy
             previous="$(git rev-parse refs/remotes/origin/opscrew-deploy)"
             parent=(-p "$previous")
+            previous_image="$(git show "$previous:compose.yaml" | grep -o "\${IMAGE%@*}@sha256:[0-9a-f]\\{64\\}" | head -n 1 || true)"
           fi
+          echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"
           if [[ -n "$previous" && "$(git rev-parse "$previous^{tree}")" == "$tree" ]]; then
             echo "The opscrew-deploy branch already holds this version."
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -204,6 +230,177 @@ jobs:
             echo "::error::The deploy failed; OpsCrew wrote the previous version back to the opscrew-deploy branch, but Portainer did not confirm the redeploy (HTTP \${code:-none}). Redeploy the stack in Portainer, or run the workflow again."
           fi
           exit 1
+
+  prune:
+    name: Delete old images
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Keep the newest 10 images and delete older ones
+        shell: node {0}
+        env:
+          TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          IMAGE: \${{ needs.build.outputs.image }}
+          PREVIOUS: \${{ needs.deploy.outputs.previous }}
+          KEEP: "10"
+        run: |
+          // OpsCrew image retention (opscrew/plan.yaml, cicd.imageRetention): deletes old versions of
+          // this repository's image from GitHub Container Registry.
+
+          /**
+           * The ids of the package versions to delete.
+           * versions: [{ id, digest, tags, created }], as the GitHub API lists them.
+           * children: by digest, the digests an image index lists (its platform manifests and attestations).
+           * keep: how many <commit> versions to keep, newest first; undefined (retention off) deletes only
+           * the build-<commit> intermediates and what only they list.
+           * protect: digests never deleted: the running and the previous image.
+           *
+           * Kept: the protected digests, the newest keep <commit> versions, versions with a tag OpsCrew did
+           * not push (yours, or Buildpacks' buildcache), signatures of kept images, and whatever a kept index
+           * lists, tagged or not. Deleted: build-<commit> intermediates, older <commit> versions with their
+           * signatures, and untagged versions nothing kept lists.
+           */
+          function prunable(versions, children, keep, protect) {
+            const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
+            const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
+            const subject = (tag) => {
+              const match = /^sha256-([0-9a-f]{64})(\\.[a-z]+)?$/.exec(tag);
+              return match ? "sha256:" + match[1] : undefined;
+            };
+            const ours = (tag) => commit(tag) || build(tag) || subject(tag) !== undefined;
+            const listed = (digests) => new Set([...digests].flatMap((digest) => children[digest] || []));
+
+            const kept = new Set(protect);
+            if (keep === undefined) {
+              for (const v of versions) if (!v.tags.every(build)) kept.add(v.digest);
+            } else {
+              const deployed = versions
+                .filter((v) => v.tags.some(commit))
+                .sort((a, b) => b.created.localeCompare(a.created) || b.id - a.id);
+              for (const v of deployed.slice(0, keep)) kept.add(v.digest);
+              for (const v of versions) if (!v.tags.every(ours)) kept.add(v.digest);
+              for (const v of versions) if (v.tags.some((tag) => kept.has(subject(tag)))) kept.add(v.digest);
+            }
+
+            // Everything a kept version lists, and what that lists in turn, stays.
+            const reachable = new Set(kept);
+            const queue = [...kept];
+            while (queue.length > 0) {
+              for (const digest of children[queue.pop()] || []) {
+                if (!reachable.has(digest)) {
+                  reachable.add(digest);
+                  queue.push(digest);
+                }
+              }
+            }
+            const goes = (v) => !reachable.has(v.digest);
+            const listedByDeleted = listed(versions.filter((v) => v.tags.length > 0 && goes(v)).map((v) => v.digest));
+            return versions
+              .filter((v) => goes(v) && (v.tags.length > 0 || keep !== undefined || listedByDeleted.has(v.digest)))
+              .map((v) => v.id);
+          }
+
+          async function main() {
+            const fail = (message) => {
+              console.log("::error::" + message);
+              process.exitCode = 1;
+            };
+            const digestOf = (ref) => {
+              const match = /^ghcr\\.io\\/[a-z0-9._\\/-]+@(sha256:[0-9a-f]{64})$/.exec(ref);
+              return match ? match[1] : undefined;
+            };
+            const running = digestOf(process.env.IMAGE || "");
+            const previous = process.env.PREVIOUS ? digestOf(process.env.PREVIOUS) : null;
+            if (running === undefined || previous === undefined) {
+              fail("OpsCrew could not tell which images the server runs, so it deleted none. The deploy itself succeeded.");
+              return;
+            }
+            const protect = previous === null ? [running] : [running, previous];
+            const keep = process.env.KEEP ? Number(process.env.KEEP) : undefined;
+            const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
+            const token = process.env.TOKEN;
+            const read = async (response, what) => {
+              if (!response.ok) throw new Error(what + " answered HTTP " + response.status);
+              return response.json();
+            };
+            const github = (method, path) =>
+              fetch("https://api.github.com" + path, {
+                method,
+                headers: {
+                  Accept: "application/vnd.github+json",
+                  Authorization: "Bearer " + token,
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+              });
+
+            let deleting = false;
+            try {
+              const user = await read(await github("GET", "/users/" + owner), "The GitHub users API");
+              const base =
+                (user.type === "Organization" ? "/orgs/" : "/users/") +
+                owner + "/packages/container/" + encodeURIComponent(name) + "/versions";
+              const versions = [];
+              for (let page = 1; ; page++) {
+                const batch = await read(await github("GET", base + "?per_page=100&page=" + page), "The GitHub packages API");
+                for (const v of batch) {
+                  versions.push({ id: v.id, digest: v.name, tags: v.metadata.container.tags, created: v.created_at });
+                }
+                if (batch.length < 100) break;
+              }
+
+              const basic = Buffer.from(process.env.GITHUB_ACTOR + ":" + token).toString("base64");
+              const scope = "repository:" + owner + "/" + name + ":pull";
+              const login = await read(
+                await fetch("https://ghcr.io/token?service=ghcr.io&scope=" + scope, { headers: { Authorization: "Basic " + basic } }),
+                "GitHub Container Registry",
+              );
+              const children = {};
+              const tagged = versions.filter((v) => v.tags.length > 0).map((v) => v.digest);
+              for (const digest of new Set([...protect, ...tagged])) {
+                const manifest = await read(
+                  await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
+                    headers: {
+                      Authorization: "Bearer " + login.token,
+                      Accept: [
+                        "application/vnd.oci.image.index.v1+json",
+                        "application/vnd.docker.distribution.manifest.list.v2+json",
+                        "application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json",
+                      ].join(", "),
+                    },
+                  }),
+                  "GitHub Container Registry",
+                );
+                children[digest] = (manifest.manifests || []).map((m) => m.digest);
+              }
+
+              const ids = new Set(prunable(versions, children, keep, protect));
+              console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
+              deleting = true;
+              let failed = 0;
+              for (const v of versions.filter((version) => ids.has(version.id))) {
+                const response = await github("DELETE", base + "/" + v.id);
+                const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
+                if (response.ok) {
+                  console.log("Deleted " + what);
+                } else {
+                  failed++;
+                  console.log("::warning::GitHub did not delete " + what + ": HTTP " + response.status + ".");
+                }
+              }
+              if (failed > 0) {
+                fail(failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
+              }
+            } catch (error) {
+              fail(
+                (deleting ? "OpsCrew stopped deleting old images: " : "OpsCrew could not list the images, so it deleted none: ") +
+                  error.message + ". The deploy itself succeeded; the next deploy tries again.",
+              );
+            }
+          }
+          main();
 "
 `;
 
@@ -234,7 +431,7 @@ jobs:
       contents: read
       packages: write
     outputs:
-      image: \${{ steps.push.outputs.ref }}
+      image: \${{ steps.final.outputs.ref }}
       tag: \${{ steps.image.outputs.image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -243,37 +440,58 @@ jobs:
         run: |
           set -euo pipefail
           repo="\${GITHUB_REPOSITORY,,}"
+          echo "name=ghcr.io/\${repo}" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/\${repo}:\${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      # Keeps the GitHub event (commit messages, emails) out of the provenance; it still names the
+      # workflow run, and the repository and commit of the checkout.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: provenance-add-gha=false
       - name: Log in to GitHub Container Registry
-        env:
-          REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s\\n' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
       - id: push
         name: Build and push the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: "."
+          file: "Dockerfile"
+          # The provenance records build arguments: only non-secret values go there.
+          build-args: \${{ secrets.OPSCREW_BUILD_ENV }}
+          secrets: \${{ secrets.OPSCREW_BUILD_SECRETS }}
+          push: true
+          tags: \${{ steps.image.outputs.image }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - id: final
+        name: Record the image digest
         env:
-          IMAGE: \${{ steps.image.outputs.image }}
-          BUILD_ENV: \${{ secrets.OPSCREW_BUILD_ENV }}
+          NAME: \${{ steps.image.outputs.name }}
+          DIGEST: \${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
-          build_args=()
-          while IFS= read -r line; do
-            [[ -z "$line" || "$line" == \\#* ]] && continue
-            build_args+=(--build-arg "$line")
-          done <<< "\${BUILD_ENV:-}"
-          docker build "\${build_args[@]}" -t "$IMAGE" -f "Dockerfile" "."
-          docker push "$IMAGE"
-          docker logout ghcr.io
-          ref="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" | grep -m1 -F "\${IMAGE%:*}@sha256:" || true)"
+          ref="$NAME@$DIGEST"
           if [[ ! "$ref" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::Could not read the digest of the pushed image $IMAGE; re-run the workflow."
+            echo "::error::Could not read the digest of the pushed image; re-run the workflow."
             exit 1
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "Pushed \\\`$IMAGE\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed \\\`$NAME:$GITHUB_SHA\\\` as \\\`$ref\\\`." >> "$GITHUB_STEP_SUMMARY"
+      # The scan runs after the registry logout, so it never holds the job's packages: write token.
       - name: Scan the image (report only)
         env:
-          IMAGE: \${{ steps.image.outputs.image }}
-        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"
+          IMAGE: \${{ steps.final.outputs.ref }}
+        run: |
+          set -euo pipefail
+          docker pull --quiet "$IMAGE"
+          docker logout ghcr.io
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"
 
   deploy:
     name: Deploy to Portainer
@@ -282,6 +500,8 @@ jobs:
     environment: production
     permissions:
       contents: write
+    outputs:
+      previous: \${{ steps.write.outputs.previous_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: write
@@ -307,13 +527,16 @@ jobs:
           export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
           tree="$(printf '100644 blob %s\\tcompose.yaml\\n' "$(git hash-object -w "$RUNNER_TEMP/compose.yaml")" | git mktree)"
           previous=""
+          previous_image=""
           parent=()
           remote="$(git ls-remote origin refs/heads/opscrew-deploy)"
           if [[ -n "$remote" ]]; then
             git fetch --no-tags --depth=1 origin +refs/heads/opscrew-deploy:refs/remotes/origin/opscrew-deploy
             previous="$(git rev-parse refs/remotes/origin/opscrew-deploy)"
             parent=(-p "$previous")
+            previous_image="$(git show "$previous:compose.yaml" | grep -o "\${IMAGE%@*}@sha256:[0-9a-f]\\{64\\}" | head -n 1 || true)"
           fi
+          echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"
           if [[ -n "$previous" && "$(git rev-parse "$previous^{tree}")" == "$tree" ]]; then
             echo "The opscrew-deploy branch already holds this version."
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -376,5 +599,176 @@ jobs:
           fi
           echo "::error::The deploy failed; OpsCrew wrote the previous version back to the opscrew-deploy branch, and Portainer's updater deploys it within about a minute."
           exit 1
+
+  prune:
+    name: Delete old images
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Keep the newest 10 images and delete older ones
+        shell: node {0}
+        env:
+          TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          IMAGE: \${{ needs.build.outputs.image }}
+          PREVIOUS: \${{ needs.deploy.outputs.previous }}
+          KEEP: "10"
+        run: |
+          // OpsCrew image retention (opscrew/plan.yaml, cicd.imageRetention): deletes old versions of
+          // this repository's image from GitHub Container Registry.
+
+          /**
+           * The ids of the package versions to delete.
+           * versions: [{ id, digest, tags, created }], as the GitHub API lists them.
+           * children: by digest, the digests an image index lists (its platform manifests and attestations).
+           * keep: how many <commit> versions to keep, newest first; undefined (retention off) deletes only
+           * the build-<commit> intermediates and what only they list.
+           * protect: digests never deleted: the running and the previous image.
+           *
+           * Kept: the protected digests, the newest keep <commit> versions, versions with a tag OpsCrew did
+           * not push (yours, or Buildpacks' buildcache), signatures of kept images, and whatever a kept index
+           * lists, tagged or not. Deleted: build-<commit> intermediates, older <commit> versions with their
+           * signatures, and untagged versions nothing kept lists.
+           */
+          function prunable(versions, children, keep, protect) {
+            const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
+            const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
+            const subject = (tag) => {
+              const match = /^sha256-([0-9a-f]{64})(\\.[a-z]+)?$/.exec(tag);
+              return match ? "sha256:" + match[1] : undefined;
+            };
+            const ours = (tag) => commit(tag) || build(tag) || subject(tag) !== undefined;
+            const listed = (digests) => new Set([...digests].flatMap((digest) => children[digest] || []));
+
+            const kept = new Set(protect);
+            if (keep === undefined) {
+              for (const v of versions) if (!v.tags.every(build)) kept.add(v.digest);
+            } else {
+              const deployed = versions
+                .filter((v) => v.tags.some(commit))
+                .sort((a, b) => b.created.localeCompare(a.created) || b.id - a.id);
+              for (const v of deployed.slice(0, keep)) kept.add(v.digest);
+              for (const v of versions) if (!v.tags.every(ours)) kept.add(v.digest);
+              for (const v of versions) if (v.tags.some((tag) => kept.has(subject(tag)))) kept.add(v.digest);
+            }
+
+            // Everything a kept version lists, and what that lists in turn, stays.
+            const reachable = new Set(kept);
+            const queue = [...kept];
+            while (queue.length > 0) {
+              for (const digest of children[queue.pop()] || []) {
+                if (!reachable.has(digest)) {
+                  reachable.add(digest);
+                  queue.push(digest);
+                }
+              }
+            }
+            const goes = (v) => !reachable.has(v.digest);
+            const listedByDeleted = listed(versions.filter((v) => v.tags.length > 0 && goes(v)).map((v) => v.digest));
+            return versions
+              .filter((v) => goes(v) && (v.tags.length > 0 || keep !== undefined || listedByDeleted.has(v.digest)))
+              .map((v) => v.id);
+          }
+
+          async function main() {
+            const fail = (message) => {
+              console.log("::error::" + message);
+              process.exitCode = 1;
+            };
+            const digestOf = (ref) => {
+              const match = /^ghcr\\.io\\/[a-z0-9._\\/-]+@(sha256:[0-9a-f]{64})$/.exec(ref);
+              return match ? match[1] : undefined;
+            };
+            const running = digestOf(process.env.IMAGE || "");
+            const previous = process.env.PREVIOUS ? digestOf(process.env.PREVIOUS) : null;
+            if (running === undefined || previous === undefined) {
+              fail("OpsCrew could not tell which images the server runs, so it deleted none. The deploy itself succeeded.");
+              return;
+            }
+            const protect = previous === null ? [running] : [running, previous];
+            const keep = process.env.KEEP ? Number(process.env.KEEP) : undefined;
+            const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
+            const token = process.env.TOKEN;
+            const read = async (response, what) => {
+              if (!response.ok) throw new Error(what + " answered HTTP " + response.status);
+              return response.json();
+            };
+            const github = (method, path) =>
+              fetch("https://api.github.com" + path, {
+                method,
+                headers: {
+                  Accept: "application/vnd.github+json",
+                  Authorization: "Bearer " + token,
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+              });
+
+            let deleting = false;
+            try {
+              const user = await read(await github("GET", "/users/" + owner), "The GitHub users API");
+              const base =
+                (user.type === "Organization" ? "/orgs/" : "/users/") +
+                owner + "/packages/container/" + encodeURIComponent(name) + "/versions";
+              const versions = [];
+              for (let page = 1; ; page++) {
+                const batch = await read(await github("GET", base + "?per_page=100&page=" + page), "The GitHub packages API");
+                for (const v of batch) {
+                  versions.push({ id: v.id, digest: v.name, tags: v.metadata.container.tags, created: v.created_at });
+                }
+                if (batch.length < 100) break;
+              }
+
+              const basic = Buffer.from(process.env.GITHUB_ACTOR + ":" + token).toString("base64");
+              const scope = "repository:" + owner + "/" + name + ":pull";
+              const login = await read(
+                await fetch("https://ghcr.io/token?service=ghcr.io&scope=" + scope, { headers: { Authorization: "Basic " + basic } }),
+                "GitHub Container Registry",
+              );
+              const children = {};
+              const tagged = versions.filter((v) => v.tags.length > 0).map((v) => v.digest);
+              for (const digest of new Set([...protect, ...tagged])) {
+                const manifest = await read(
+                  await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
+                    headers: {
+                      Authorization: "Bearer " + login.token,
+                      Accept: [
+                        "application/vnd.oci.image.index.v1+json",
+                        "application/vnd.docker.distribution.manifest.list.v2+json",
+                        "application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json",
+                      ].join(", "),
+                    },
+                  }),
+                  "GitHub Container Registry",
+                );
+                children[digest] = (manifest.manifests || []).map((m) => m.digest);
+              }
+
+              const ids = new Set(prunable(versions, children, keep, protect));
+              console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
+              deleting = true;
+              let failed = 0;
+              for (const v of versions.filter((version) => ids.has(version.id))) {
+                const response = await github("DELETE", base + "/" + v.id);
+                const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
+                if (response.ok) {
+                  console.log("Deleted " + what);
+                } else {
+                  failed++;
+                  console.log("::warning::GitHub did not delete " + what + ": HTTP " + response.status + ".");
+                }
+              }
+              if (failed > 0) {
+                fail(failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
+              }
+            } catch (error) {
+              fail(
+                (deleting ? "OpsCrew stopped deleting old images: " : "OpsCrew could not list the images, so it deleted none: ") +
+                  error.message + ". The deploy itself succeeded; the next deploy tries again.",
+              );
+            }
+          }
+          main();
 "
 `;

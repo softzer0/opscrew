@@ -2,9 +2,10 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CLOUDFLARED_SHA256, CLOUDFLARED_VERSION, cloudflaredUrl, sshHostname } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
+import { buildJob } from "./build";
+import { afterDeployJobs } from "./jobs";
 import { renderPortainerWorkflow } from "./portainer";
 import {
-  buildJob,
   CHECKOUT_ACTION,
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
@@ -13,6 +14,7 @@ import {
   secret,
   workflowStart,
 } from "./shared";
+import { rollbackCommands, switchCommands } from "./switch";
 
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
 export { buildRunner, CHECKOUT_ACTION, DEFAULT_TRIVY_IMAGE, DEPLOY_SECRETS } from "./shared";
@@ -112,45 +114,6 @@ function healthScript(tlsHint: boolean): string[] {
 }
 
 /**
- * Where the release command's output stays: on the server, readable only by the deploy user. It is
- * never printed in the workflow log, which is public for public repositories, because a failed
- * migration can quote rows of the database.
- */
-const RELEASE_LOG = "/srv/app/release.log";
-
-/** Shown when the release command fails; names neither the server nor any secret. */
-const RELEASE_FAILED = `::error::The release command (app.releaseCommand in opscrew/plan.yaml) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in ${RELEASE_LOG} (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command): fix the command or the app and push again.`;
-
-const RELEASE_DONE = `The release command finished; its output is in ${RELEASE_LOG} on the server.`;
-
-/**
- * Server-side commands (in /srv/app, after the registry login) that start the new image. Without a
- * release command: write `.env` with the new image, pull, `up`. With one: pull the new image (named
- * through the environment, so `.env` still names the running version), start the backing services,
- * run the `release` service of compose.yaml in a one-off container of the new image, and only when
- * it succeeds write `.env` and replace the app. A failure leaves the running version untouched.
- */
-function switchCommands(plan: DeployPlan): string {
-  const writeEnv = "printf 'APP_IMAGE=%s\\n' '${IMAGE}' > .env";
-  if (plan.app.releaseCommand === undefined) {
-    return `${writeEnv}; docker compose pull; docker compose up -d --remove-orphans`;
-  }
-  const backing = [
-    ...(plan.services.postgres ? ["db"] : []),
-    ...(plan.services.redis ? ["cache"] : []),
-  ];
-  return [
-    "export APP_IMAGE='${IMAGE}'",
-    "docker compose pull",
-    ...(backing.length > 0 ? [`docker compose up -d --wait ${backing.join(" ")}`] : []),
-    `if ! (umask 077; docker compose run --rm --no-deps -T release > ${RELEASE_LOG} 2>&1); then echo '${RELEASE_FAILED}'; exit 1; fi`,
-    `echo '${RELEASE_DONE}'`,
-    writeEnv,
-    "docker compose up -d --remove-orphans",
-  ].join("; ");
-}
-
-/**
  * Tunnel mode: installs the pinned cloudflared on the runner after checking its SHA-256, so SSH can
  * go through Cloudflare Access (`ProxyCommand cloudflared access ssh`).
  */
@@ -173,10 +136,16 @@ function installCloudflaredStep(): string[] {
   ];
 }
 
+/** The lines of a server script for a `run: |` block, ended by the heredoc's `REMOTE`. */
+function remote(script: readonly string[]): string[] {
+  return [...script.map((line) => (line.length > 0 ? `    ${line}` : "")), "    REMOTE"];
+}
+
 /**
- * `.github/workflows/opscrew-deploy.yml`: build → push to GHCR → deploy over SSH with rollback. The
- * image is built on an arm64 runner for arm64 servers; in tunnel mode SSH goes through Cloudflare
- * Access to the SSH hostname with the service token from {@link TUNNEL_DEPLOY_SECRETS}.
+ * `.github/workflows/opscrew-deploy.yml`: build → push to GHCR → deploy over SSH with rollback,
+ * then the optional signing, deploy tag and image retention jobs. The image is built on an arm64
+ * runner for arm64 servers; in tunnel mode SSH goes through Cloudflare Access to the SSH hostname
+ * with the service token from {@link TUNNEL_DEPLOY_SECRETS}.
  *
  * For a Portainer target the deploy job instead writes the stack file with the new image to the
  * `opscrew-deploy` branch (its only `contents: write`), lets Portainer redeploy (the updater stack,
@@ -185,7 +154,6 @@ function installCloudflaredStep(): string[] {
  */
 export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFile {
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan);
-  const build = buildJob(plan);
   const hasDb = plan.services.postgres;
   checkSshPort(ctx.sshPort);
 
@@ -249,9 +217,9 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     ...uploadEnv,
     "  run: |",
     ...uploadRun,
-    // Saving the running version is the first thing done on the server, and the rollback only
-    // swaps it back when `.env` already names this run's image, so a failure before the switch
-    // never restores an older version.
+    // Saving the running version is the first thing done on the server (its image is the job's
+    // `previous` output), and the rollback only switches back when `.env` already names this
+    // run's image, so a failure before the switch never restores an older version.
     "- id: start",
     "  name: Start the new version",
     "  env:",
@@ -267,9 +235,12 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "    fi",
     '    echo "Deploying ${TAG:-the new image} as $IMAGE"',
     `    ${sshOpts}`,
-    '    ssh "${ssh_opts[@]}" "deploy@${HOST}" \'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous; fi\'',
+    '    previous="$(ssh "${ssh_opts[@]}" "deploy@${HOST}" \'cd /srv/app && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi\')"',
+    `    if [[ -n "$previous" && ! "$previous" =~ ${DIGEST_REF_PATTERN} ]]; then previous=unknown; fi`,
+    '    echo "previous=$previous" >> "$GITHUB_OUTPUT"',
     '    printf \'%s\\n\' "$REGISTRY_TOKEN" | ssh "${ssh_opts[@]}" "deploy@${HOST}" "docker login ghcr.io -u \'${GITHUB_ACTOR}\' --password-stdin"',
-    `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "set -e; trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT; cd /srv/app; ${switchCommands(plan)}"`,
+    '    ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'',
+    ...remote(switchCommands(plan)),
     "- id: health",
     "  name: Check that the app is healthy",
     "  env:",
@@ -286,15 +257,17 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
     "  run: |",
     "    set -uo pipefail",
     `    ${sshOpts}`,
+    "    cat > \"$RUNNER_TEMP/rollback.sh\" <<'REMOTE'",
+    ...remote(rollbackCommands(plan)),
     "    outcome=unchanged",
     `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-    '      outcome="$(ssh "${ssh_opts[@]}" "deploy@${HOST}" "cd /srv/app || exit 1; if ! grep -qxF \'APP_IMAGE=${IMAGE}\' .env 2>/dev/null; then echo unchanged; elif [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; else mv .env.previous .env && docker compose up -d --remove-orphans >&2 && echo restored; fi")"',
+    '      outcome="$(ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"',
     "    fi",
     '    case "$outcome" in',
     "      restored)",
     '        echo "::error::The deploy failed; OpsCrew restored the previous version." ;;',
     "      unchanged)",
-    '        echo "::error::The deploy failed before the new version started; the server still runs the version it had." ;;',
+    '        echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;',
     "      no-previous)",
     '        echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;',
     "      *)",
@@ -308,9 +281,15 @@ export function renderWorkflow(plan: DeployPlan, ctx: RenderContext): RenderedFi
       "# Builds the app image, pushes it to GitHub Container Registry and deploys it to your server",
       "# over SSH. Secrets are set by `opscrew provision`; their values never appear in this file.",
     ]),
-    ...build,
+    ...buildJob(plan),
     "",
-    ...deployJob("Deploy to the server", ["contents: read", "packages: read"], deploySteps),
+    ...deployJob(
+      "Deploy to the server",
+      ["contents: read", "packages: read"],
+      "${{ steps.start.outputs.previous }}",
+      deploySteps,
+    ),
+    ...afterDeployJobs(plan),
     "",
   ];
   return { path: plan.cicd.workflowPath, content: lines.join("\n"), kind: "workflow" };

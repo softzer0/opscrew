@@ -1,16 +1,14 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { ACTIONS, IMAGES, type PinArch } from "../pins";
 
-/** actions/checkout v7.0.1 (lightweight tag → commit), pinned by SHA. */
-export const CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1";
+/** actions/checkout, pinned by commit in {@link ACTIONS}. */
+export const CHECKOUT_ACTION = ACTIONS.checkout;
 /**
- * Default image for the optional, report-only image scan, pinned by digest because it runs with the
- * Docker socket. Digest of the multi-arch OCI index for tag 0.75.0, resolved on 2026-10-11 from the
- * Docker Hub registry API (`registry-1.docker.io/v2/aquasec/trivy/manifests/0.75.0`) and identical
- * on `ghcr.io/aquasecurity/trivy:0.75.0`.
+ * Image of the optional, report-only image scan, pinned by digest in {@link IMAGES} because it
+ * runs with the Docker socket.
  */
-export const DEFAULT_TRIVY_IMAGE =
-  "aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa";
+export const DEFAULT_TRIVY_IMAGE = IMAGES.trivy.ref;
 
 /** Shell pattern for a GHCR image pinned by digest, `ghcr.io/<owner>/<repo>@sha256:<hex>`. */
 export const DIGEST_REF_PATTERN = "^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$";
@@ -22,18 +20,26 @@ export const DEPLOY_SECRETS = {
   knownHosts: "OPSCREW_SSH_KNOWN_HOSTS",
   appEnv: "OPSCREW_APP_ENV",
   dbEnv: "OPSCREW_DB_ENV",
+  /** Non-secret build values (`NAME=value` lines): build arguments, baked into the image. */
   buildEnv: "OPSCREW_BUILD_ENV",
+  /** Secret build values (`NAME=value` lines): BuildKit secret mounts only, never build arguments. */
+  buildSecrets: "OPSCREW_BUILD_SECRETS",
 } as const;
+
+/** The CPU architecture the image is built for: the server's. */
+export function buildArch(plan: DeployPlan): PinArch {
+  const { target } = plan;
+  return (target.provider === "own" || target.provider === "portainer") && target.arch === "arm64"
+    ? "arm64"
+    : "amd64";
+}
 
 /**
  * GitHub-hosted runner that builds the image: arm64 servers (and arm64 Portainer environments) get
  * an arm64 runner (no emulation).
  */
 export function buildRunner(plan: DeployPlan): string {
-  const { target } = plan;
-  return (target.provider === "own" || target.provider === "portainer") && target.arch === "arm64"
-    ? "ubuntu-24.04-arm"
-    : "ubuntu-latest";
+  return buildArch(plan) === "arm64" ? "ubuntu-24.04-arm" : "ubuntu-latest";
 }
 
 /** The plan's health path with a leading `/`. */
@@ -50,6 +56,21 @@ export function block(lines: readonly string[], indent: number): string[] {
   const pad = " ".repeat(indent);
   return lines.map((line) => (line.length > 0 ? `${pad}${line}` : ""));
 }
+
+/** Indents `script` as the body of a step's `run: |`. */
+export function run(script: readonly string[]): string[] {
+  return ["  run: |", ...block(script, 4)];
+}
+
+/** The step that logs in to GitHub Container Registry with the job's token. */
+export const GHCR_LOGIN = [
+  "- name: Log in to GitHub Container Registry",
+  `  uses: ${ACTIONS.login}`,
+  "  with:",
+  "    registry: ghcr.io",
+  "    username: ${{ github.actor }}",
+  "    password: ${{ secrets.GITHUB_TOKEN }}",
+];
 
 /** The workflow's header comment (`about`), triggers, default permissions and concurrency. */
 export function workflowStart(plan: DeployPlan, about: readonly string[]): string[] {
@@ -74,93 +95,57 @@ export function workflowStart(plan: DeployPlan, about: readonly string[]): strin
   ];
 }
 
-/**
- * The `deploy` job (`name` shown in GitHub): after `build`, on `ubuntu-latest` in the `production`
- * environment, with the token's `permissions` (`contents: read`, …) and the `steps`.
- */
-export function deployJob(
-  name: string,
-  permissions: readonly string[],
-  steps: readonly string[],
-): string[] {
+/** A job of the workflow: its id, the jobs it needs, the token's permissions and its steps. */
+export interface Job {
+  id: string;
+  name: string;
+  needs?: string | readonly string[];
+  /** `contents: read`, …; nothing else is granted. */
+  permissions: readonly string[];
+  /** `name: ${{ … }}` lines. */
+  outputs?: readonly string[];
+  environment?: string;
+  runsOn?: string;
+  steps: readonly string[];
+}
+
+/** Renders `job` as YAML lines under `jobs:`. */
+export function job(j: Job): string[] {
+  const needs =
+    typeof j.needs === "string" || j.needs === undefined ? j.needs : `[${j.needs.join(", ")}]`;
   return [
-    "  deploy:",
-    `    name: ${name}`,
-    "    needs: build",
-    "    runs-on: ubuntu-latest",
-    "    environment: production",
+    `  ${j.id}:`,
+    `    name: ${j.name}`,
+    ...(needs === undefined ? [] : [`    needs: ${needs}`]),
+    `    runs-on: ${j.runsOn ?? "ubuntu-latest"}`,
+    ...(j.environment === undefined ? [] : [`    environment: ${j.environment}`]),
     "    permissions:",
-    ...block(permissions, 6),
+    ...block(j.permissions, 6),
+    ...(j.outputs === undefined ? [] : ["    outputs:", ...block(j.outputs, 6)]),
     "    steps:",
-    ...block(steps, 6),
+    ...block(j.steps, 6),
   ];
 }
 
 /**
- * The `build` job: build the image on a runner of the target's architecture, push it to GHCR, and
- * report the pushed digest (`image`) and the SHA tag (`tag`); then the optional report-only scan.
+ * The `deploy` job (`name` shown in GitHub): after `build`, on `ubuntu-latest` in the `production`
+ * environment, with the token's `permissions` (`contents: read`, …) and the `steps`. Its output
+ * `previous` is the image that ran before this deploy (empty on the first one), which the image
+ * retention job never deletes.
  */
-export function buildJob(plan: DeployPlan): string[] {
-  const context = plan.app.buildContext || ".";
-  const dockerfile = plan.app.dockerfile || "Dockerfile";
-  const buildSteps = [
-    `- uses: ${CHECKOUT_ACTION}`,
-    "- id: image",
-    "  name: Choose the image name",
-    "  run: |",
-    "    set -euo pipefail",
-    '    repo="${GITHUB_REPOSITORY,,}"',
-    '    echo "image=ghcr.io/${repo}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"',
-    "- name: Log in to GitHub Container Registry",
-    "  env:",
-    "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
-    '  run: printf \'%s\\n\' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin',
-    // The deploy uses `ref` (the digest that was pushed), so it runs exactly this build; the SHA
-    // tag stays for humans. Logging out here keeps the `packages: write` token away from the scan.
-    "- id: push",
-    "  name: Build and push the image",
-    "  env:",
-    "    IMAGE: ${{ steps.image.outputs.image }}",
-    `    BUILD_ENV: ${secret(DEPLOY_SECRETS.buildEnv)}`,
-    "  run: |",
-    "    set -euo pipefail",
-    "    build_args=()",
-    "    while IFS= read -r line; do",
-    '      [[ -z "$line" || "$line" == \\#* ]] && continue',
-    '      build_args+=(--build-arg "$line")',
-    '    done <<< "${BUILD_ENV:-}"',
-    `    docker build "\${build_args[@]}" -t "$IMAGE" -f ${JSON.stringify(dockerfile)} ${JSON.stringify(context)}`,
-    '    docker push "$IMAGE"',
-    "    docker logout ghcr.io",
-    '    ref="$(docker image inspect --format \'{{range .RepoDigests}}{{println .}}{{end}}\' "$IMAGE" | grep -m1 -F "${IMAGE%:*}@sha256:" || true)"',
-    `    if [[ ! "$ref" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-    '      echo "::error::Could not read the digest of the pushed image $IMAGE; re-run the workflow."',
-    "      exit 1",
-    "    fi",
-    '    echo "ref=$ref" >> "$GITHUB_OUTPUT"',
-    '    echo "Pushed \\`$IMAGE\\` as \\`$ref\\`." >> "$GITHUB_STEP_SUMMARY"',
-  ];
-  if (plan.security.imageScan) {
-    // Scans the local image the digest above was read from (same image id), without registry login.
-    buildSteps.push(
-      "- name: Scan the image (report only)",
-      "  env:",
-      "    IMAGE: ${{ steps.image.outputs.image }}",
-      `  run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock ${DEFAULT_TRIVY_IMAGE} image --no-progress --severity HIGH,CRITICAL --exit-code 0 "$IMAGE"`,
-    );
-  }
-
-  return [
-    "  build:",
-    "    name: Build the image",
-    `    runs-on: ${buildRunner(plan)}`,
-    "    permissions:",
-    "      contents: read",
-    "      packages: write",
-    "    outputs:",
-    "      image: ${{ steps.push.outputs.ref }}",
-    "      tag: ${{ steps.image.outputs.image }}",
-    "    steps:",
-    ...block(buildSteps, 6),
-  ];
+export function deployJob(
+  name: string,
+  permissions: readonly string[],
+  previous: string,
+  steps: readonly string[],
+): string[] {
+  return job({
+    id: "deploy",
+    name,
+    needs: "build",
+    environment: "production",
+    permissions,
+    outputs: [`previous: ${previous}`],
+    steps,
+  });
 }

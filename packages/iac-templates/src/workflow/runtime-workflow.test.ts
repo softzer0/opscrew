@@ -2,7 +2,7 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { renderCaddyfile, renderCompose } from "../runtime";
+import { ACTIONS } from "../pins";
 import type { RenderContext } from "../types";
 import {
   CHECKOUT_ACTION,
@@ -76,129 +76,55 @@ const ctx: RenderContext = {
   acmeEmail: "ops@example.com",
 };
 
-describe("renderCompose", () => {
-  it("runs the app, Postgres, Valkey and Caddy with only Caddy publishing ports", () => {
-    const file = renderCompose(plan());
-    expect(file.path).toBe("opscrew/runtime/compose.yaml");
-    const doc = parse(file.content);
-    expect(Object.keys(doc.services)).toEqual(["app", "db", "cache", "caddy"]);
-    expect(doc.services.app.ports).toBeUndefined();
-    expect(doc.services.db.ports).toBeUndefined();
-    expect(doc.services.caddy.ports).toEqual(["80:80", "443:443", "443:443/udp"]);
-    expect(doc.services.app.image).toMatch(/^\$\{APP_IMAGE:\?/);
-    expect(doc.services.app.cap_drop).toEqual(["ALL"]);
-    expect(doc.services.app.depends_on).toEqual({
-      db: { condition: "service_healthy" },
-      cache: { condition: "service_started" },
-    });
-    expect(doc.services.db.healthcheck.test[1]).toContain("$${POSTGRES_USER}");
-    expect(file.content).toMatchSnapshot();
-  });
+type Step = {
+  uses?: string;
+  run?: string;
+  env?: Record<string, string>;
+  if?: string;
+  name?: string;
+  id?: string;
+};
 
-  it("omits the database and cache when the plan does not self-host them", () => {
-    const doc = parse(renderCompose(plan({ postgres: false, redis: false })).content);
-    expect(Object.keys(doc.services)).toEqual(["app", "caddy"]);
-    expect(doc.services.app.depends_on).toBeUndefined();
-  });
-
-  it("rotates every service's logs itself and keeps no-new-privileges (Docker's daemon settings stay as they are)", () => {
-    const release = "python manage.py migrate --noinput";
-    const doc = parse(renderCompose(plan({ release })).content);
-    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache", "caddy"]);
-    for (const service of Object.values<Record<string, unknown>>(doc.services)) {
-      expect(service.logging).toEqual({
-        driver: "json-file",
-        options: { "max-size": "10m", "max-file": "3" },
-      });
-      expect(service.security_opt).toEqual(["no-new-privileges:true"]);
-    }
-  });
-
-  it("adds no release service without a release command", () => {
-    const content = renderCompose(plan()).content;
-    expect(content).not.toContain("release");
-  });
-
-  it("runs the release command as a one-off service of the app image, environment and network", () => {
-    const command = "python manage.py migrate --noinput && echo $HOME ${X}";
-    const file = renderCompose(plan({ release: command }));
-    const doc = parse(file.content);
-    expect(Object.keys(doc.services)).toEqual(["app", "release", "db", "cache", "caddy"]);
-    const { app, release } = doc.services;
-    expect(release.image).toBe(app.image);
-    expect(release.env_file).toEqual(app.env_file);
-    expect(release.environment).toEqual(app.environment);
-    expect(release.networks).toEqual(app.networks);
-    expect(release.cap_drop).toEqual(["ALL"]);
-    expect(release.security_opt).toEqual(app.security_opt);
-    // Only `docker compose run` starts it, never `docker compose up`, and it never restarts.
-    expect(release.profiles).toEqual(["release"]);
-    expect(release.restart).toBeUndefined();
-    expect(release.ports).toBeUndefined();
-    expect(release.depends_on).toBeUndefined();
-    // `$` is escaped so Compose passes the command to the shell unchanged.
-    expect(release.command).toEqual([
-      "sh",
-      "-c",
-      "python manage.py migrate --noinput && echo $$HOME $${X}",
-    ]);
-    expect(file.content).toContain("app.releaseCommand");
-    expect(file.content).toMatchSnapshot();
-  });
-});
-
-describe("renderCaddyfile", () => {
-  it("serves the domain (and www) with HSTS and the ACME email", () => {
-    const content = renderCaddyfile(plan({ domain: "example.com", www: true }), ctx).content;
-    expect(content).toContain("example.com, www.example.com {");
-    expect(content).toContain("email ops@example.com");
-    expect(content).toContain("reverse_proxy app:3000");
-    expect(content).toContain("Strict-Transport-Security");
-    expect(content).toMatchSnapshot();
-  });
-
-  it("serves plain HTTP on the IP without HSTS before a domain exists", () => {
-    const content = renderCaddyfile(plan({ port: 8080 }), ctx).content;
-    expect(content).toContain(":80 {");
-    expect(content).toContain("reverse_proxy app:8080");
-    expect(content).not.toContain("Strict-Transport-Security");
-    expect(content).not.toContain("email");
-  });
-});
+/** The server script the start step sends over SSH (the heredoc after `sh -s`). */
+function serverScript(p: DeployPlan): string {
+  const deploy = parse(renderWorkflow(p, ctx).content).jobs.deploy.steps as Step[];
+  const start = deploy.find((s) => s.id === "start")?.run ?? "";
+  return start.slice(start.indexOf("<<'REMOTE'\n"));
+}
 
 describe("renderWorkflow", () => {
   const withDomain = renderWorkflow(plan({ domain: "shop.example.com" }), ctx);
   const doc = parse(withDomain.content);
-  type Step = {
-    uses?: string;
-    run?: string;
-    env?: Record<string, string>;
-    if?: string;
-    name?: string;
-    id?: string;
-  };
   const steps = (job: string): Step[] => doc.jobs[job].steps;
 
   it("is valid YAML with least-privilege permissions and a concurrency group", () => {
     expect(withDomain.path).toBe(".github/workflows/opscrew-deploy.yml");
     expect(doc.on.push.branches).toEqual(["main"]);
     expect(doc.permissions).toEqual({ contents: "read" });
+    expect(Object.keys(doc.jobs)).toEqual(["build", "deploy", "prune"]);
     expect(doc.jobs.build.permissions).toEqual({ contents: "read", packages: "write" });
     expect(doc.jobs.deploy.permissions).toEqual({ contents: "read", packages: "read" });
     expect(doc.jobs.deploy.needs).toBe("build");
+    expect(doc.jobs.deploy.outputs).toEqual({ previous: "${{ steps.start.outputs.previous }}" });
     expect(doc.concurrency).toEqual({ group: "opscrew-deploy", "cancel-in-progress": false });
     expect(withDomain.content).toMatchSnapshot();
   });
 
-  it("pins every action by commit SHA and uses no third-party actions", () => {
-    const uses = [...steps("build"), ...steps("deploy")].map((s) => s.uses).filter(Boolean);
-    expect(uses).toEqual([CHECKOUT_ACTION.split(" #")[0], CHECKOUT_ACTION.split(" #")[0]]);
+  it("pins every action by commit SHA, from pins.ts", () => {
+    const uses = Object.values<{ steps: Step[] }>(doc.jobs)
+      .flatMap((j) => j.steps)
+      .map((s) => s.uses)
+      .filter(Boolean);
     expect(uses.every((u) => /@[0-9a-f]{40}$/.test(u ?? ""))).toBe(true);
+    expect(CHECKOUT_ACTION).toBe(ACTIONS.checkout);
+    expect(steps("deploy")[0]?.uses).toBe(CHECKOUT_ACTION.split(" #")[0]);
   });
 
   it("never interpolates expressions inside run scripts", () => {
-    for (const step of [...steps("build"), ...steps("deploy")]) {
-      if (step.run) expect(step.run, step.name).not.toContain("${{");
+    for (const job of Object.values<{ steps: Step[] }>(doc.jobs)) {
+      for (const step of job.steps) {
+        if (step.run) expect(step.run, step.name).not.toContain("${{");
+      }
     }
   });
 
@@ -210,6 +136,7 @@ describe("renderWorkflow", () => {
       DEPLOY_SECRETS.appEnv,
       DEPLOY_SECRETS.dbEnv,
       DEPLOY_SECRETS.buildEnv,
+      DEPLOY_SECRETS.buildSecrets,
     ]) {
       expect(withDomain.content).toContain(`secrets.${name}`);
     }
@@ -240,21 +167,18 @@ describe("renderWorkflow", () => {
   it("saves the previous environment as the first thing the start step does on the server", () => {
     const start = steps("deploy").find((s) => s.id === "start");
     const remote = (start?.run ?? "").split("\n").filter((line) => line.includes("ssh "));
+    expect(remote).toHaveLength(3);
     expect(remote[0]).toContain("rm -f .env.previous");
     expect(remote[0]).toContain("cp .env .env.previous");
+    expect(remote[0]).toMatch(/^previous="\$\(ssh /);
     expect(remote[1]).toContain("docker login ghcr.io");
-    expect(remote[2]).toContain("docker compose pull");
+    expect(remote[2]).toContain(`sh -s -- "$IMAGE" <<'REMOTE'`);
+    expect(serverScript(plan())).toContain("docker compose pull");
   });
 
   it("deploys the exact pushed image by digest and keeps the SHA tag for humans", () => {
-    const image = steps("build").find((s) => s.id === "image");
-    expect(image?.run).toContain("${GITHUB_SHA}");
-    const push = steps("build").find((s) => s.id === "push");
-    expect(push?.run).toContain('docker push "$IMAGE"');
-    expect(push?.run).toContain("RepoDigests");
-    expect(push?.run).toContain('echo "ref=$ref" >> "$GITHUB_OUTPUT"');
     expect(doc.jobs.build.outputs).toEqual({
-      image: "${{ steps.push.outputs.ref }}",
+      image: "${{ steps.final.outputs.ref }}",
       tag: "${{ steps.image.outputs.image }}",
     });
     const start = steps("deploy").find((s) => s.id === "start");
@@ -273,17 +197,9 @@ describe("renderWorkflow", () => {
 
   it("runs Trivy pinned by digest, after logging out of the registry", () => {
     expect(DEFAULT_TRIVY_IMAGE).toMatch(/^aquasec\/trivy:0\.75\.0@sha256:[0-9a-f]{64}$/);
-    const build = steps("build");
-    const scan = build.findIndex((s) => s.name?.startsWith("Scan"));
-    const logout = build.findIndex((s) => s.run?.includes("docker logout ghcr.io"));
-    expect(scan).toBeGreaterThan(-1);
-    expect(logout).toBeGreaterThan(-1);
-    expect(logout).toBeLessThan(scan);
-    expect(build[scan]?.run).toContain(DEFAULT_TRIVY_IMAGE);
-    const noScan = parse(renderWorkflow(plan({ imageScan: false }), ctx).content);
-    expect(
-      noScan.jobs.build.steps.some((s: Step) => s.run?.includes("docker logout ghcr.io")),
-    ).toBe(true);
+    const scan = steps("build").find((s) => s.name?.startsWith("Scan"))?.run ?? "";
+    expect(scan.indexOf("docker logout ghcr.io")).toBeGreaterThan(-1);
+    expect(scan.indexOf("docker logout ghcr.io")).toBeLessThan(scan.indexOf(DEFAULT_TRIVY_IMAGE));
   });
 
   it("runs no release step without a release command", () => {
@@ -291,44 +207,40 @@ describe("renderWorkflow", () => {
   });
 
   describe("with a release command", () => {
-    const remoteDeploy = (p: DeployPlan) => {
-      const deploy = parse(renderWorkflow(p, ctx).content).jobs.deploy.steps as Step[];
-      const start = deploy.find((s) => s.id === "start")?.run ?? "";
-      return (
-        start
-          .split("\n")
-          .filter((line) => line.includes("ssh "))
-          .at(-1) ?? ""
-      );
-    };
-
     it("starts the backing services and runs the command in the new image before the switch", () => {
-      const remote = remoteDeploy(plan({ release: "python manage.py migrate --noinput" }));
+      const remote = serverScript(plan({ release: "python manage.py migrate --noinput" }));
       const order = [
-        "export APP_IMAGE='${IMAGE}'",
+        'export APP_IMAGE="$1"',
         "docker compose pull",
-        "docker compose up -d --wait db cache",
+        "docker compose up -d --no-deps --wait --remove-orphans db cache proxy caddy",
         "docker compose run --rm --no-deps -T release",
+        "--scale",
         "> .env",
-        "docker compose up -d --remove-orphans",
       ].map((part) => remote.indexOf(part));
       expect(order.every((index) => index >= 0)).toBe(true);
       expect(order).toEqual([...order].sort((a, b) => a - b));
       // The command itself lives in compose.yaml, not in the workflow.
       expect(remote).not.toContain("manage.py");
+      // The database and cache are never named after the release command.
+      const after = remote.slice(remote.indexOf("-T release"));
+      expect(after).not.toMatch(/\b(db|cache)\b/);
     });
 
-    it("waits only for the backing services the plan has", () => {
-      const dbOnly = remoteDeploy(plan({ release: "x", redis: false }));
-      expect(dbOnly).toContain("docker compose up -d --wait db;");
-      const none = remoteDeploy(plan({ release: "x", postgres: false, redis: false }));
-      expect(none).not.toContain("--wait");
+    it("starts only the backing services the plan has", () => {
+      const dbOnly = serverScript(plan({ release: "x", redis: false }));
+      expect(dbOnly).toContain(
+        "docker compose up -d --no-deps --wait --remove-orphans db proxy caddy\n",
+      );
+      const none = serverScript(plan({ release: "x", postgres: false, redis: false }));
+      expect(none).toContain(
+        "docker compose up -d --no-deps --wait --remove-orphans proxy caddy\n",
+      );
       expect(none).toContain("docker compose run --rm --no-deps -T release");
     });
 
     it("stops with a plain message that names neither the server nor a secret", () => {
-      const remote = remoteDeploy(plan({ release: "x" }));
-      const message = /echo '(::error::[^']*)'/.exec(remote)?.[1] ?? "";
+      const remote = serverScript(plan({ release: "x" }));
+      const message = /echo '(::error::The release[^']*)'/.exec(remote)?.[1] ?? "";
       expect(message).toContain("release command");
       expect(message).toContain("app.releaseCommand");
       expect(message).toContain("previous version keeps serving");

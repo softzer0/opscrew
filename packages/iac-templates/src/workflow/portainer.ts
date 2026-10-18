@@ -10,13 +10,14 @@ import {
 } from "../portainer-target/stack";
 import { portainerTarget } from "../providers";
 import type { RenderedFile } from "../types";
+import { buildJob } from "./build";
+import { afterDeployJobs } from "./jobs";
 import {
-  block,
-  buildJob,
   CHECKOUT_ACTION,
   DIGEST_REF_PATTERN,
   deployJob,
   healthPath,
+  run,
   secret,
   workflowStart,
 } from "./shared";
@@ -61,8 +62,9 @@ const GIT_IDENTITY = [
 /**
  * Writes the template with the new image as the only file of a new commit on the deploy branch
  * (an orphan history: each commit holds only `compose.yaml`, its parent the previous version), and
- * reports `previous`, `deployed` and `changed`. Nothing is written when the branch already holds
- * this version.
+ * reports `previous`, `deployed` and `changed`, plus `previous_image`, the app image the branch
+ * held before (empty for the placeholder), which image retention never deletes. Nothing is written
+ * when the branch already holds this version.
  */
 function writeScript(branch: string): string[] {
   const template = PORTAINER_STACK_TEMPLATE_PATH;
@@ -84,13 +86,16 @@ function writeScript(branch: string): string[] {
     ...GIT_IDENTITY,
     'tree="$(printf \'100644 blob %s\\tcompose.yaml\\n\' "$(git hash-object -w "$RUNNER_TEMP/compose.yaml")" | git mktree)"',
     'previous=""',
+    'previous_image=""',
     "parent=()",
     `remote="$(git ls-remote origin refs/heads/${branch})"`,
     'if [[ -n "$remote" ]]; then',
     `  git fetch --no-tags --depth=1 origin +refs/heads/${branch}:refs/remotes/origin/${branch}`,
     `  previous="$(git rev-parse refs/remotes/origin/${branch})"`,
     '  parent=(-p "$previous")',
+    '  previous_image="$(git show "$previous:compose.yaml" | grep -o "${IMAGE%@*}@sha256:[0-9a-f]\\{64\\}" | head -n 1 || true)"',
     "fi",
+    'echo "previous_image=$previous_image" >> "$GITHUB_OUTPUT"',
     'if [[ -n "$previous" && "$(git rev-parse "$previous^{tree}")" == "$tree" ]]; then',
     `  echo "The ${branch} branch already holds this version."`,
     '  echo "changed=false" >> "$GITHUB_OUTPUT"',
@@ -211,15 +216,11 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
   ];
 }
 
-/** Indents `script` as the body of a step's `run: |`. */
-function run(script: readonly string[]): string[] {
-  return ["  run: |", ...block(script, 4)];
-}
-
 /**
  * The deploy workflow of a Portainer target (`renderWorkflow` delegates here): the same build job
- * as other targets, then a deploy job with `contents: write` (only for the deploy branch) that
- * writes the stack file with the new image to `opscrew-deploy`, calls Portainer's webhook through
+ * and jobs after the deploy as other targets, with a deploy job holding `contents: write` (only
+ * for the deploy branch) that writes the stack file with the new image to `opscrew-deploy`, calls
+ * Portainer's webhook through
  * Cloudflare Access in redeploy mode `cloudflare`, waits (bounded) until the site answers with the
  * new version, and otherwise writes the previous version back (calling the webhook again in
  * `cloudflare` mode) and fails the run. Without a domain, or in web mode `proxy` when the site
@@ -317,7 +318,13 @@ export function renderPortainerWorkflow(plan: DeployPlan): RenderedFile {
     ]),
     ...build,
     "",
-    ...deployJob("Deploy to Portainer", ["contents: write"], steps),
+    ...deployJob(
+      "Deploy to Portainer",
+      ["contents: write"],
+      "${{ steps.write.outputs.previous_image }}",
+      steps,
+    ),
+    ...afterDeployJobs(plan),
     "",
   ];
   return { path: plan.cicd.workflowPath, content: lines.join("\n"), kind: "workflow" };

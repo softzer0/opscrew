@@ -1,0 +1,346 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the retention job > runs after a healthy deploy, with only packages: write 1`] = `
+"  prune:
+    name: Delete old images
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Keep the newest 10 images and delete older ones
+        shell: node {0}
+        env:
+          TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          IMAGE: \${{ needs.build.outputs.image }}
+          PREVIOUS: \${{ needs.deploy.outputs.previous }}
+          KEEP: "10"
+        run: |
+          // OpsCrew image retention (opscrew/plan.yaml, cicd.imageRetention): deletes old versions of
+          // this repository's image from GitHub Container Registry.
+
+          /**
+           * The ids of the package versions to delete.
+           * versions: [{ id, digest, tags, created }], as the GitHub API lists them.
+           * children: by digest, the digests an image index lists (its platform manifests and attestations).
+           * keep: how many <commit> versions to keep, newest first; undefined (retention off) deletes only
+           * the build-<commit> intermediates and what only they list.
+           * protect: digests never deleted: the running and the previous image.
+           *
+           * Kept: the protected digests, the newest keep <commit> versions, versions with a tag OpsCrew did
+           * not push (yours, or Buildpacks' buildcache), signatures of kept images, and whatever a kept index
+           * lists, tagged or not. Deleted: build-<commit> intermediates, older <commit> versions with their
+           * signatures, and untagged versions nothing kept lists.
+           */
+          function prunable(versions, children, keep, protect) {
+            const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
+            const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
+            const subject = (tag) => {
+              const match = /^sha256-([0-9a-f]{64})(\\.[a-z]+)?$/.exec(tag);
+              return match ? "sha256:" + match[1] : undefined;
+            };
+            const ours = (tag) => commit(tag) || build(tag) || subject(tag) !== undefined;
+            const listed = (digests) => new Set([...digests].flatMap((digest) => children[digest] || []));
+
+            const kept = new Set(protect);
+            if (keep === undefined) {
+              for (const v of versions) if (!v.tags.every(build)) kept.add(v.digest);
+            } else {
+              const deployed = versions
+                .filter((v) => v.tags.some(commit))
+                .sort((a, b) => b.created.localeCompare(a.created) || b.id - a.id);
+              for (const v of deployed.slice(0, keep)) kept.add(v.digest);
+              for (const v of versions) if (!v.tags.every(ours)) kept.add(v.digest);
+              for (const v of versions) if (v.tags.some((tag) => kept.has(subject(tag)))) kept.add(v.digest);
+            }
+
+            // Everything a kept version lists, and what that lists in turn, stays.
+            const reachable = new Set(kept);
+            const queue = [...kept];
+            while (queue.length > 0) {
+              for (const digest of children[queue.pop()] || []) {
+                if (!reachable.has(digest)) {
+                  reachable.add(digest);
+                  queue.push(digest);
+                }
+              }
+            }
+            const goes = (v) => !reachable.has(v.digest);
+            const listedByDeleted = listed(versions.filter((v) => v.tags.length > 0 && goes(v)).map((v) => v.digest));
+            return versions
+              .filter((v) => goes(v) && (v.tags.length > 0 || keep !== undefined || listedByDeleted.has(v.digest)))
+              .map((v) => v.id);
+          }
+
+          async function main() {
+            const fail = (message) => {
+              console.log("::error::" + message);
+              process.exitCode = 1;
+            };
+            const digestOf = (ref) => {
+              const match = /^ghcr\\.io\\/[a-z0-9._\\/-]+@(sha256:[0-9a-f]{64})$/.exec(ref);
+              return match ? match[1] : undefined;
+            };
+            const running = digestOf(process.env.IMAGE || "");
+            const previous = process.env.PREVIOUS ? digestOf(process.env.PREVIOUS) : null;
+            if (running === undefined || previous === undefined) {
+              fail("OpsCrew could not tell which images the server runs, so it deleted none. The deploy itself succeeded.");
+              return;
+            }
+            const protect = previous === null ? [running] : [running, previous];
+            const keep = process.env.KEEP ? Number(process.env.KEEP) : undefined;
+            const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
+            const token = process.env.TOKEN;
+            const read = async (response, what) => {
+              if (!response.ok) throw new Error(what + " answered HTTP " + response.status);
+              return response.json();
+            };
+            const github = (method, path) =>
+              fetch("https://api.github.com" + path, {
+                method,
+                headers: {
+                  Accept: "application/vnd.github+json",
+                  Authorization: "Bearer " + token,
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+              });
+
+            let deleting = false;
+            try {
+              const user = await read(await github("GET", "/users/" + owner), "The GitHub users API");
+              const base =
+                (user.type === "Organization" ? "/orgs/" : "/users/") +
+                owner + "/packages/container/" + encodeURIComponent(name) + "/versions";
+              const versions = [];
+              for (let page = 1; ; page++) {
+                const batch = await read(await github("GET", base + "?per_page=100&page=" + page), "The GitHub packages API");
+                for (const v of batch) {
+                  versions.push({ id: v.id, digest: v.name, tags: v.metadata.container.tags, created: v.created_at });
+                }
+                if (batch.length < 100) break;
+              }
+
+              const basic = Buffer.from(process.env.GITHUB_ACTOR + ":" + token).toString("base64");
+              const scope = "repository:" + owner + "/" + name + ":pull";
+              const login = await read(
+                await fetch("https://ghcr.io/token?service=ghcr.io&scope=" + scope, { headers: { Authorization: "Basic " + basic } }),
+                "GitHub Container Registry",
+              );
+              const children = {};
+              const tagged = versions.filter((v) => v.tags.length > 0).map((v) => v.digest);
+              for (const digest of new Set([...protect, ...tagged])) {
+                const manifest = await read(
+                  await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
+                    headers: {
+                      Authorization: "Bearer " + login.token,
+                      Accept: [
+                        "application/vnd.oci.image.index.v1+json",
+                        "application/vnd.docker.distribution.manifest.list.v2+json",
+                        "application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json",
+                      ].join(", "),
+                    },
+                  }),
+                  "GitHub Container Registry",
+                );
+                children[digest] = (manifest.manifests || []).map((m) => m.digest);
+              }
+
+              const ids = new Set(prunable(versions, children, keep, protect));
+              console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
+              deleting = true;
+              let failed = 0;
+              for (const v of versions.filter((version) => ids.has(version.id))) {
+                const response = await github("DELETE", base + "/" + v.id);
+                const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
+                if (response.ok) {
+                  console.log("Deleted " + what);
+                } else {
+                  failed++;
+                  console.log("::warning::GitHub did not delete " + what + ": HTTP " + response.status + ".");
+                }
+              }
+              if (failed > 0) {
+                fail(failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
+              }
+            } catch (error) {
+              fail(
+                (deleting ? "OpsCrew stopped deleting old images: " : "OpsCrew could not list the images, so it deleted none: ") +
+                  error.message + ". The deploy itself succeeded; the next deploy tries again.",
+              );
+            }
+          }
+          main();"
+`;
+
+exports[`the retention job > when off, runs only to delete Buildpacks' and Railpack's intermediate images 1`] = `
+"  prune:
+    name: Delete old images
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete the intermediate build images
+        shell: node {0}
+        env:
+          TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          IMAGE: \${{ needs.build.outputs.image }}
+          PREVIOUS: \${{ needs.deploy.outputs.previous }}
+        run: |
+          // OpsCrew image retention (opscrew/plan.yaml, cicd.imageRetention): deletes old versions of
+          // this repository's image from GitHub Container Registry.
+
+          /**
+           * The ids of the package versions to delete.
+           * versions: [{ id, digest, tags, created }], as the GitHub API lists them.
+           * children: by digest, the digests an image index lists (its platform manifests and attestations).
+           * keep: how many <commit> versions to keep, newest first; undefined (retention off) deletes only
+           * the build-<commit> intermediates and what only they list.
+           * protect: digests never deleted: the running and the previous image.
+           *
+           * Kept: the protected digests, the newest keep <commit> versions, versions with a tag OpsCrew did
+           * not push (yours, or Buildpacks' buildcache), signatures of kept images, and whatever a kept index
+           * lists, tagged or not. Deleted: build-<commit> intermediates, older <commit> versions with their
+           * signatures, and untagged versions nothing kept lists.
+           */
+          function prunable(versions, children, keep, protect) {
+            const commit = (tag) => /^[0-9a-f]{40}$/.test(tag);
+            const build = (tag) => /^build-[0-9a-f]{40}$/.test(tag);
+            const subject = (tag) => {
+              const match = /^sha256-([0-9a-f]{64})(\\.[a-z]+)?$/.exec(tag);
+              return match ? "sha256:" + match[1] : undefined;
+            };
+            const ours = (tag) => commit(tag) || build(tag) || subject(tag) !== undefined;
+            const listed = (digests) => new Set([...digests].flatMap((digest) => children[digest] || []));
+
+            const kept = new Set(protect);
+            if (keep === undefined) {
+              for (const v of versions) if (!v.tags.every(build)) kept.add(v.digest);
+            } else {
+              const deployed = versions
+                .filter((v) => v.tags.some(commit))
+                .sort((a, b) => b.created.localeCompare(a.created) || b.id - a.id);
+              for (const v of deployed.slice(0, keep)) kept.add(v.digest);
+              for (const v of versions) if (!v.tags.every(ours)) kept.add(v.digest);
+              for (const v of versions) if (v.tags.some((tag) => kept.has(subject(tag)))) kept.add(v.digest);
+            }
+
+            // Everything a kept version lists, and what that lists in turn, stays.
+            const reachable = new Set(kept);
+            const queue = [...kept];
+            while (queue.length > 0) {
+              for (const digest of children[queue.pop()] || []) {
+                if (!reachable.has(digest)) {
+                  reachable.add(digest);
+                  queue.push(digest);
+                }
+              }
+            }
+            const goes = (v) => !reachable.has(v.digest);
+            const listedByDeleted = listed(versions.filter((v) => v.tags.length > 0 && goes(v)).map((v) => v.digest));
+            return versions
+              .filter((v) => goes(v) && (v.tags.length > 0 || keep !== undefined || listedByDeleted.has(v.digest)))
+              .map((v) => v.id);
+          }
+
+          async function main() {
+            const fail = (message) => {
+              console.log("::error::" + message);
+              process.exitCode = 1;
+            };
+            const digestOf = (ref) => {
+              const match = /^ghcr\\.io\\/[a-z0-9._\\/-]+@(sha256:[0-9a-f]{64})$/.exec(ref);
+              return match ? match[1] : undefined;
+            };
+            const running = digestOf(process.env.IMAGE || "");
+            const previous = process.env.PREVIOUS ? digestOf(process.env.PREVIOUS) : null;
+            if (running === undefined || previous === undefined) {
+              fail("OpsCrew could not tell which images the server runs, so it deleted none. The deploy itself succeeded.");
+              return;
+            }
+            const protect = previous === null ? [running] : [running, previous];
+            const keep = process.env.KEEP ? Number(process.env.KEEP) : undefined;
+            const [owner, name] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");
+            const token = process.env.TOKEN;
+            const read = async (response, what) => {
+              if (!response.ok) throw new Error(what + " answered HTTP " + response.status);
+              return response.json();
+            };
+            const github = (method, path) =>
+              fetch("https://api.github.com" + path, {
+                method,
+                headers: {
+                  Accept: "application/vnd.github+json",
+                  Authorization: "Bearer " + token,
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+              });
+
+            let deleting = false;
+            try {
+              const user = await read(await github("GET", "/users/" + owner), "The GitHub users API");
+              const base =
+                (user.type === "Organization" ? "/orgs/" : "/users/") +
+                owner + "/packages/container/" + encodeURIComponent(name) + "/versions";
+              const versions = [];
+              for (let page = 1; ; page++) {
+                const batch = await read(await github("GET", base + "?per_page=100&page=" + page), "The GitHub packages API");
+                for (const v of batch) {
+                  versions.push({ id: v.id, digest: v.name, tags: v.metadata.container.tags, created: v.created_at });
+                }
+                if (batch.length < 100) break;
+              }
+
+              const basic = Buffer.from(process.env.GITHUB_ACTOR + ":" + token).toString("base64");
+              const scope = "repository:" + owner + "/" + name + ":pull";
+              const login = await read(
+                await fetch("https://ghcr.io/token?service=ghcr.io&scope=" + scope, { headers: { Authorization: "Basic " + basic } }),
+                "GitHub Container Registry",
+              );
+              const children = {};
+              const tagged = versions.filter((v) => v.tags.length > 0).map((v) => v.digest);
+              for (const digest of new Set([...protect, ...tagged])) {
+                const manifest = await read(
+                  await fetch("https://ghcr.io/v2/" + owner + "/" + name + "/manifests/" + digest, {
+                    headers: {
+                      Authorization: "Bearer " + login.token,
+                      Accept: [
+                        "application/vnd.oci.image.index.v1+json",
+                        "application/vnd.docker.distribution.manifest.list.v2+json",
+                        "application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json",
+                      ].join(", "),
+                    },
+                  }),
+                  "GitHub Container Registry",
+                );
+                children[digest] = (manifest.manifests || []).map((m) => m.digest);
+              }
+
+              const ids = new Set(prunable(versions, children, keep, protect));
+              console.log("The package has " + versions.length + " image versions; deleting " + ids.size + ".");
+              deleting = true;
+              let failed = 0;
+              for (const v of versions.filter((version) => ids.has(version.id))) {
+                const response = await github("DELETE", base + "/" + v.id);
+                const what = v.digest + (v.tags.length > 0 ? " (" + v.tags.join(", ") + ")" : "");
+                if (response.ok) {
+                  console.log("Deleted " + what);
+                } else {
+                  failed++;
+                  console.log("::warning::GitHub did not delete " + what + ": HTTP " + response.status + ".");
+                }
+              }
+              if (failed > 0) {
+                fail(failed + " image versions were not deleted; the next deploy tries again. The deploy itself succeeded.");
+              }
+            } catch (error) {
+              fail(
+                (deleting ? "OpsCrew stopped deleting old images: " : "OpsCrew could not list the images, so it deleted none: ") +
+                  error.message + ". The deploy itself succeeded; the next deploy tries again.",
+              );
+            }
+          }
+          main();"
+`;
