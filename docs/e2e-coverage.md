@@ -11,8 +11,8 @@ tests that need real accounts, Docker or the infrastructure engines.
 
 | Live test | Gate | Status | Last passed | Needs to run |
 |---|---|---|---|---|
-| Hetzner, full flow (`live.test.ts`) | `OPSCREW_E2E_HCLOUD_TOKEN` + GitHub | Passed | 2026-10-17 (after the simplification) | — |
-| Hetzner with a Cloudflare domain, the app's hostnames in OpsCrew's shared rules after provision and gone after destroy (feature 011) | + `OPSCREW_E2E_DOMAIN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN` | Passed (the zone had no rule lists: OpsCrew created both and deleted them again on destroy) | 2026-10-17 | — |
+| Hetzner, full flow (`live.test.ts`) | `OPSCREW_E2E_HCLOUD_TOKEN` + GitHub | Passed | 2026-10-18 (after 011's simplification) | — |
+| Hetzner with a Cloudflare domain, the app's hostnames in OpsCrew's shared rules after provision and gone after destroy (feature 011) | + `OPSCREW_E2E_DOMAIN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN` | Passed (the zone had no rule lists: OpsCrew created both and deleted them again on destroy) | 2026-10-18 | — |
 | Framework matrix on Hetzner (19 apps) | `OPSCREW_E2E_APP` per app | Passed | 2026-10-14 | — |
 | With a model (`adapt`, `analyze`) | `OPSCREW_E2E_AI=1` | Passed (FastAPI + Redis) | 2026-10-14 | — |
 | DigitalOcean, full flow (`live.test.ts`) | `OPSCREW_E2E_DIGITALOCEAN_TOKEN` + GitHub | **Not run yet** | — | A DigitalOcean API token for a throwaway project |
@@ -21,8 +21,8 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Porkbun sandbox (`registrars.test.ts`) | Porkbun sandbox keys | Passed | 2026-10-14 | — |
 | Namecheap sandbox (`registrars.test.ts`) | Namecheap sandbox keys | Passed | 2026-10-14 | — |
 | GoDaddy | — | **No live test** (unit tests only) | — | A live test and GoDaddy test (OTE) credentials |
-| Your own server (`own-server.test.ts`), with a second app in the same zone and account, seeded rules and shared-rule checks (steps 6b, 7b; feature 011) | `OPSCREW_E2E_OWN_SERVER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (all 10 steps) | 2026-10-18 | — |
-| Your existing Portainer, core pass (`portainer-target.test.ts`), with a second app in the same Portainer, zone and account, seeded rules and shared-rule checks (steps 7b, 9b; feature 011) | `OPSCREW_E2E_PORTAINER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (after T1109) | 2026-10-18 | — |
+| Your own server (`own-server.test.ts`), with a second app in the same zone and account, seeded rules and shared-rule checks (steps 6b, 7b; feature 011) | `OPSCREW_E2E_OWN_SERVER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (all 10 steps), again after 011's simplification | 2026-10-18 | — |
+| Your existing Portainer, core pass (`portainer-target.test.ts`), with a second app in the same Portainer, zone and account, seeded rules and shared-rule checks (steps 7b, 9b; feature 011) | `OPSCREW_E2E_PORTAINER=1`, + `OPSCREW_E2E_GITHUB_REPO_B` for the second app | Passed (after T1109), again after 011's simplification | 2026-10-18 | — |
 | Your existing Portainer, full pass | + `OPSCREW_E2E_PORTAINER_STEPS=full` | Passed: steps 1–11 in run 10 (2026-10-16), steps 11 and 12 with the fixed leak check on 2026-10-17 | 2026-10-17 (steps 11, 12) | — |
 
 Run in development, not tracked by date:

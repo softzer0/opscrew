@@ -235,7 +235,7 @@ Four read-only reviewers checked the whole feature (`bc01843..b73fad1`) by area.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
   - Effort: high
 
-- [ ] T1114 Live reruns (lead) after T1110–T1113: Hetzner with the domain, own server with B, Portainer core with B; results in `docs/e2e.md` and `docs/e2e-coverage.md`
+- [X] T1114 Live reruns (lead) after T1110–T1113: Hetzner with the domain, own server with B, Portainer core with B; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 ## Dependencies
 
