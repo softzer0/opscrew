@@ -230,5 +230,6 @@ Effort`.
 
 ## Dependencies
 
-{T1201, T1202} → T1212 → {T1203, T1204, T1205, T1206} → T1207 → {T1208, T1209} → T1210 → T1211. T1201 and
-T1202 run in parallel; T1205 needs T1202's R8, while T1203, T1204 and T1206 need only T1201.
+{T1201, T1202} → {T1212 → T1203, T1204, T1205, T1206} → T1207 → {T1208, T1209} → T1210 → T1211.
+T1201 and T1202 run in parallel. T1205 needs T1202's R8; T1203 needs T1212; T1204 and T1206 need
+only T1201.

@@ -232,6 +232,20 @@ Findings:
 It is the best non-root option for Java, .NET, Go and Ruby, where OpsCrew has no template and
 Railpack's images are 1.8–2.8× larger. **The founder decides.**
 
+### Runtime defaults (lead, 2026-10-18, from FR-1228 rule 4)
+
+- **Python:** 3.15.0 came out on 2026-10-09 (python.org), so the default is the second-newest, 3.14
+  (2025-10-07, bugfix). 3.13 is security-only.
+- **Node:** 24, the current LTS. 26 becomes LTS this month and becomes the default only once it has
+  been out a while.
+- **Go, Java, .NET, Ruby:** the default must also be a version the pinned Buildpacks builder offers.
+  `BUILDPACKS_OFFERS` is filled from the pinned builder's buildpack metadata (the `buildpack.toml`
+  dependency lists), not only from the versions the spike happened to build.
+  - Builder `paketobuildpacks/ubuntu-noble-builder:0.0.203`
+    (`@sha256:ba79c24b55830210fc5ee06768237ab989dbaeec36adb60a986bcb8e70e4d7cd`).
+  - Run image `paketobuildpacks/ubuntu-noble-run:0.0.145`
+    (`@sha256:577357bc2a59c962ce3f7d816f7ff401f408538832a1c56a9a87f6fc5829df97`).
+
 ## R4. SBOM, provenance and signing
 
 - **buildx.** Min-level provenance is on by default; `sbom: true` and `provenance: mode=max` are opt-in.
