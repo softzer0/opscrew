@@ -246,12 +246,24 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
   A builder that cannot meet the baseline for a project MUST NOT be used for it, and OpsCrew MUST
   say why and what it uses instead.
 - **FR-1204**: The generated Dockerfile MUST pin its base images by digest. It MUST keep the tools
-  the release command needs in the image, and none of the app's dev dependencies. It MUST use the
-  runtime version the app declares:
-  - Node: `engines.node`, `.nvmrc` or `.node-version`, by major version;
-  - Python: as today.
-  Otherwise it MUST use the current LTS, kept in one place in OpsCrew. Today the Node templates are
-  fixed at Node 22 whatever the app declares.
+  the release command needs in the image, and none of the app's dev dependencies.
+- **FR-1228**: Every builder MUST use the runtime version the app declares:
+  - Node: `engines.node`, `.nvmrc`, `.node-version`;
+  - Python: `requires-python`, `.python-version`, `runtime.txt`, the Pipfile;
+  - Ruby: `.ruby-version`, the Gemfile;
+  - Go: `go.mod`;
+  - Java: the build file's release level;
+  - .NET: the target framework;
+  - PHP: `composer.json`;
+  - Rust: `rust-toolchain`.
+  OpsCrew MUST pass the version explicitly where a builder ignores the file (Buildpacks ignores
+  `.python-version` and defaults to Python 3.11).
+  When the app declares none, OpsCrew MUST use one default per language, kept in one place: the
+  current LTS where the language has one (Node 24 today), otherwise the newest stable version
+  OpsCrew has tested.
+  A declared version that a builder cannot provide MUST lead to another builder or a plain message,
+  never a silent older version. Today the Node templates are fixed at Node 22, and the Python
+  default is 3.13.
 - **FR-1205**: A project's own Dockerfile MUST be used as it is, unless the user chooses another
   builder. OpsCrew MUST check it against the baseline and list each finding with its fix.
 - **FR-1206**: When a deploy's new version fails to start or fails its health check, the message
