@@ -1,127 +1,134 @@
-# Research: Railpack as the default image builder (2026-10-13)
+# Research: image builders, zero-downtime deploys and the image supply chain (012)
 
-Founder decision 2026-10-13: Railpack builds the app image by default; the user can choose
-OpsCrew's generated Dockerfile instead. Official sources only (railpack.com, github.com/railwayapp/railpack);
-items marked **verify** are checked by a real build in the feature's first task.
+Refreshed 2026-10-18 from official sources only (three Sonnet research passes; the first notes were
+from 2026-10-13). **verify** marks what the hands-on comparison task (R7) settles with real builds.
 
-## Project
+## Founder decisions (2026-10-13 and 2026-10-14)
 
-- MIT license. Latest release v0.40.1 (2026-09-28); releases every one to two weeks; 0.x semver
-  with breaking changes in minor releases (v0.38.0 moved pnpm from Corepack to mise; v0.37.1
-  stopped reading `RAILPACK_DISABLE_CACHES` from the host). Pin the version and upgrade on purpose.
-- Install pinned: `curl -sSL https://railpack.com/install.sh | RAILPACK_VERSION=<ver> sh -s -- --bin-dir ~/.local/bin`
-  (or GitHub release binaries, or `mise use github:railwayapp/railpack@<ver>`).
-- README calls it the successor to Nixpacks.
+- Three builders, chosen per project automatically:
+  - **Cloud Native Buildpacks (Paketo)** wherever it fully supports the project;
+  - **Railpack** where it cannot;
+  - the **generated Dockerfile** on request.
+- The user can override the choice in `plan.yaml`, and a comparison build confirms the choice with numbers.
+- Every builder meets the security baseline: non-root, pinned versions, no secrets in layers, scanned. If one cannot, OpsCrew says why and falls back. If Buildpacks falls short, the founder sees the numbers.
+- Also in 012:
+  - zero-downtime deploys with `docker-rollout`, with kamal-proxy as the fallback;
+  - deploy tags or GitHub Releases, offered but off by default;
+  - a generated `dependabot.yml`;
+  - an SBOM and provenance for the pushed image, with keyless cosign signing optional.
 
-## Building in CI
+## R1. Cloud Native Buildpacks (Paketo)
 
-- Two routes: `railpack build DIR` (drives BuildKit itself; needs `BUILDKIT_HOST`) or, recommended
-  for production, `railpack prepare DIR --plan-out railpack-plan.json --info-out railpack-info.json`
-  then `docker buildx build --build-arg BUILDKIT_SYNTAX=ghcr.io/railwayapp/railpack-frontend:<tag>
-  -f railpack-plan.json DIR` (frontend docs). The frontend version must match the CLI that made the
-  plan; docs only show `:latest` — **verify** a per-version tag on GHCR, pin by digest.
-- `prepare` exits 75 on a transient failure, 1 when the app cannot be planned.
-- Frontend build args: `cache-key`, `secrets-hash`, `github-token` (mise downloads from GitHub:
-  pass the Actions token to avoid rate limits).
-- No official GitHub Action (docs link a third-party one). Plan: `docker/setup-buildx-action` +
-  install pinned CLI + `prepare` + `docker/build-push-action` (`file: railpack-plan.json`,
-  `push: true`, digest from the action's output, `cache-from/to: type=gha`, `platforms: linux/amd64`).
-- Output is a standard image (BuildKit LLB); tag, push and digest as with any buildx build.
+- **Versions.** `pack` v0.40.9 (2026-08-09, lifecycle v0.21.0) is still the latest. `buildpacks/github-actions` (setup-pack) is Apache-2.0; it pins pack, but only warns when the `.sha256` file cannot be fetched. Paketo Node.js is at v10.13.2 (2026-10-16).
+- **Builders.** `paketobuildpacks/ubuntu-noble-builder` (Ubuntu 24.04) covers Java, Node.js, Go, Python, .NET, Ruby and NGINX. There are also Jammy Base, Jammy Full and Jammy Tiny builders, a Resolute (26.04) stack, and run images such as `ubuntu-noble-run`. Pin builder and run image by digest (`@sha256:` on `--builder` and `--run-image`; **verify**).
+- **Language coverage:**
+  - **Node.js:** npm or Yarn only. **pnpm is not supported**: nodejs#594 is still open, and RFCs #334 and #336 were closed without merging (2026-08/09). Bun is not supported. `BP_NODE_PROJECT_PATH` sets the app folder; workspaces are undocumented.
+  - **Python:** pip, Poetry, uv, Pipenv, Conda and pixi.
+  - **Go, Java (Maven, Gradle, Spring Boot), Ruby (Bundler, Rails), .NET:** in the Noble builder.
+  - **PHP:** only in Jammy Full. It is deprecated, has no Noble equivalent, and is supported through April 2027 (RFC 0061).
+  - **Rust:** only `paketo-community/rust`, which is in no builder.
+- **Runtime.** Run images use a dedicated non-root user, a different one from the build image, and contain no compilers. Things to **verify**:
+  - the user id;
+  - dev dependencies left in a Node image;
+  - Next.js standalone output;
+  - how the app's port is set.
+- **Procfile** process types are supported; `--default-process` defaults to `web`.
+- **CI:** `pack build <ghcr ref> --publish --cache-image <ref>:buildcache --sbom-output-dir sbom --report-output-dir report`. pack runs the lifecycle in a container, so the runner's Docker is needed. Taking the digest from `report.toml` needs a **verify**. pack has no provenance flag, so provenance needs a separate step.
+- **Secrets:** bindings such as `npmrc`. `--env` values are not available at runtime; whether `BPE_*` values end up in the image needs a **verify**.
+- **Limits:** builder and stack naming is in flux (Jammy → Noble → Resolute, and stacks are deprecated in favour of base images), so pin by digest. Multi-arch support, image size and build time need a **verify**.
 
-## Detection and Node
+## R2. Railpack
 
-- Providers: php, golang, java, rust, ruby, elixir, python, deno, dotnet, node, gleam, cpp,
-  staticfile, shell. File-based detection (Node: `package.json`).
-- Node version: `RAILPACK_NODE_VERSION` → `devEngines.runtime` → `engines.node` → `.nvmrc` →
-  `.node-version` → mise files → `lts`. Package manager from `packageManager`, mise files,
-  lockfiles, `engines`; default npm. Start: `start` script → `main` → `index.js/ts`.
-- Next.js: static export served as an SPA (Caddy); otherwise the `start` script (`next start`,
-  full node_modules). Standalone output not documented.
-- Monorepos: npm/bun/yarn workspaces, pnpm workspaces, Nx (`RAILPACK_NX_APP`). No root-dir
-  variable: the build directory is the argument (a subfolder build lacks workspace deps outside it).
+- **Releases.** v0.42.0 (2026-10-15), with releases every one to three weeks. It is pre-1.0, and changes in mise lockfiles and Java/Node behaviour came in minor releases. License: MIT.
+- **Pinned install.** The release tarball `railpack-v<ver>-x86_64-unknown-linux-musl.tar.gz` plus `checksums.txt` (SHA-256), checked with `sha256sum -c`.
+- **Frontend.** `ghcr.io/railwayapp/railpack-frontend` has per-version tags matching the CLI (`v0.42.0`, plus `-amd64` and `-arm64`) with listed digests. Its version must match the CLI that made the plan. Pin it by digest in `BUILDKIT_SYNTAX` (**verify**).
+- **CI path:**
+  1. `railpack prepare DIR --plan-out railpack-plan.json --info-out railpack-info.json`. Exit code 75 means a transient failure, so retry; 1 means fail.
+  2. `docker buildx build --build-arg BUILDKIT_SYNTAX=<frontend@digest> -f railpack-plan.json DIR`.
+  - There is no official GitHub Action.
+  - The `github-token` build arg raises mise's GitHub rate limits (source comment only).
+- **Secrets.** `prepare --env NAME=…`, then `--secret id=NAME,env=NAME` and `--build-arg secrets-hash=…`. Names appear in the plan, values never do. Plain `--env` and `deploy.variables` are baked into the image.
+- **Runtime image:**
+  - The base is `ghcr.io/railwayapp/railpack-runtime:mise-<ver>`, minimal Debian, holding only the deploy inputs.
+  - Entrypoint `bash -c <start>`, WorkingDir `/app`.
+  - **It runs as root, with no setting to change that.** The deploy schema has no user field (`additionalProperties: false`), and issue #286 is open.
+  - No `PORT`, no `EXPOSE`, no HEALTHCHECK, no OCI labels, no SBOM.
+  - `RAILPACK_BUILT_AT` changes on every build.
+- **Providers:**
+  - Node: npm, pnpm, Yarn and Bun, with workspaces, Nx and the Turborepo cache (v0.42.0).
+  - Also Python, Go, PHP, Java, Ruby, Rust, Elixir, Deno, .NET, Gleam, C++, Zig, static sites and shell.
+  - The build directory is the argument. Workspace dependencies outside a subfolder build are lost.
+  - Next.js standalone output is undocumented.
+- **Limits.** Builds amd64 (the LLB is hardcoded to linux/amd64), Linux only. Versions float unless the runtime versions are exact and the CLI and frontend are pinned.
 
-## Configuration and secrets
+## R3. Zero-downtime deploys: docker-rollout and Caddy
 
-- `railpack.json` at the build root (`RAILPACK_CONFIG_FILE` overrides; schema
-  `https://schema.railpack.com`): `provider`, `buildAptPackages`, `packages`, `caches`, `secrets`,
-  `steps` (inputs, commands, secrets, assets, variables, caches, deployOutputs), `deploy` (base,
-  startCommand, variables, paths, inputs, aptPackages).
-- Build variables (`RAILPACK_START_CMD`, `RAILPACK_BUILD_CMD`, `RAILPACK_INSTALL_CMD`,
-  `RAILPACK_PACKAGES`, `RAILPACK_*_APT_PACKAGES`, `RAILPACK_PRUNE_DEPS`, `RAILPACK_NO_SPA`,
-  `RAILPACK_SPA_OUTPUT_DIR`, …) are passed with `--env`, not read from the environment.
-- Secrets are BuildKit secret mounts (kept out of layers and logs); `prepare --env K=V` lists the
-  names in the plan, buildx gets `--secret id=K,env=K`; `secrets-hash` busts the cache.
-  **Verify** that secret values never land in the plan. Plain `--env`/`deploy.variables` are baked
-  into the image (never secrets).
-- No documented port setting (the app must listen on the port OpsCrew uses) — **verify**.
+- **The project.** `wowu/docker-rollout`: MIT, v0.14 (2026-07-12), one script per release asset (`docker-rollout`), one to two releases a year. Install it pinned from the release asset, with a SHA-256 OpsCrew records (the README only shows curl from `main`).
+- **Requirements.** No `container_name` and no host `ports` on the service; a proxy routes traffic.
+  - Flags: `-f`, `-t/--timeout` (60 s; waits for healthy), `-w/--wait` (10 s, when there is no healthcheck), `--wait-after-healthy`, `--env-file`, `-p`, `--pre-stop-hook` (or the label `docker-rollout.pre-stop-hook`, read from the old container).
+  - It works with `docker compose`.
+- **How it works:**
+  1. `up -d --scale SVC=2N --no-recreate`.
+  2. It polls the health status every second.
+  3. If the new copy fails, it removes the new containers and the old ones keep serving.
+  4. On success, it runs the pre-stop hook in the old containers, then `docker stop` and `rm`.
+  - It never passes `-t` to `docker stop`, so Compose's `stop_grace_period` is probably ignored and Docker's 10-second kill applies. Draining has to be a pre-stop hook that makes the healthcheck fail, then sleeps (**verify**).
+- **Caddy:**
+  - `reverse_proxy` with `dynamic a <service> <port>` re-resolves the Compose service's DNS. Docker returns every replica's IP. The `refresh` default is 1 m, so set it to about 1 s.
+  - `lb_retries` and `lb_try_duration` default to off. Set `lb_try_duration` (about 5 s) so a request that hits the stopping copy is retried.
+  - Active health checks do not run for dynamic upstreams.
+  - A static `app:3000` likely sticks to one address (**verify**).
+- **Health check inside the image.** Do not assume curl or wget: slim images lack them, and distroless has no shell. Use the app's own runtime (`node -e "fetch(…)"`, `python -c`) or a small static probe.
+- **Memory.** Two copies run during the switch; check this on 1 GB servers (**verify**).
+- **Fallback.** kamal-proxy, if the handover is not clean for long requests, uploads or WebSockets.
 
-## Runtime image
+## R4. SBOM, provenance and signing
 
-- Not documented: base image, user (likely root by default), size, build tools in the final
-  image — **verify** with a real build (`docker inspect` `.Config.User`, image size, packages).
-  The final image is `deploy.base` + `deploy.inputs`; build steps and mount caches are not in it.
-- No HEALTHCHECK; static sites served by Caddy (custom Caddyfile at the root overrides).
+- **buildx.** Min-level provenance is on by default; `sbom: true` and `provenance: mode=max` are opt-in.
+  - The attestations are extra manifests in the image index, so deploy by the index digest that `build-push-action` outputs.
+  - They need the docker-container driver (setup-buildx). Whether GHCR displays them needs a **verify**.
+  - pack builds need a separate step.
+- **GitHub artifact attestations.**
+  - Uses `actions/attest@v4` with `subject-name`, `subject-digest`, `push-to-registry` and optionally `sbom-path`.
+  - Needs the permissions `id-token: write`, `attestations: write`, `packages: write` and `contents: read`.
+  - Verify with `gh attestation verify oci://ghcr.io/… -R owner/repo`.
+  - Public repos use Sigstore's public log. Private repos use GitHub's own instance, with no public log. Whether private repos on the Free plan can use them is unconfirmed (believed to need Enterprise Cloud).
+- **cosign keyless.** Uses the GitHub OIDC token. The public Rekor entry's certificate holds the repo and workflow identity, so **a private repo's name and workflow path become public**. Keep it opt-in, with that warning.
 
-## Caching and reproducibility
+## R5. Dependabot
 
-- BuildKit layer cache (any backend, e.g. `type=gha`); mount caches not persisted by `type=gha`.
-- mise resolves fuzzy versions to the latest match and reduces manifest ranges to the major
-  version: builds float unless runtimes and the Railpack/frontend versions are pinned.
+- **Ecosystems:** `github-actions`, `docker`, `docker-compose`, `npm` (also pnpm; Yarn listed), `bun`, `pip` (pip, pip-compile, pipenv, poetry), `uv`, `gomod`, `cargo`, `bundler`, `composer`, `maven`, `gradle`, `nuget`.
+- **Monorepos:** `directories` takes globs; blocks for one branch must not overlap.
+- **Grouping:** groups (`patterns`, `update-types`) and `multi-ecosystem-groups` cut the number of pull requests.
 
-## Limits
+## R6. Deploy tags and releases
 
-- Windows not officially supported (CI runs on Linux; local `opscrew` on Windows only prepares
-  files). Multi-arch not documented (stay `linux/amd64`). GitHub issues not reviewed.
+- They need `contents: write`. `gh release create <tag> --target <sha>` creates the tag.
+- Events from `GITHUB_TOKEN` do not start other workflows, so nothing may depend on a tag-triggered workflow.
+- Tag as the last step, after a verified deploy.
 
-## Risks as a default
+## R7. To measure (the comparison task)
 
-1. Pre-1.0: pin and upgrade deliberately. 2. Frontend tag/digest pinning unverified. 3. Root user
-likely: needs a non-root step or a fallback. 4. Floating runtime versions. 5. Port/health/Next.js
-standalone undocumented; `next start` images larger. 6. GitHub rate limits during mise downloads.
-7. Secret values in `prepare` output unverified. 8. Weak mount-cache persistence on GHA runners.
+Build these examples with Buildpacks, Railpack and the generated Dockerfile, where each builder applies:
+- `nextjs-postgres` (npm);
+- a pnpm app;
+- `fastapi-redis` (uv or pip);
+- Django;
+- Go;
+- Rails;
+- Laravel;
+- Spring Boot;
+- .NET;
+- Rust.
 
-# Cloud Native Buildpacks (Paketo) — compared for the default (2026-10-13)
+For each build, record:
+- image size;
+- cold and warm build time;
+- the user the app runs as;
+- dev dependencies left in the image;
+- the HIGH and CRITICAL counts from Trivy;
+- whether the app starts and answers its health route on OpsCrew's port.
 
-Founder decision 2026-10-13: Buildpacks by default *if* the comparison build confirms it beats
-Railpack; Railpack and the generated Dockerfile stay user choices. Official sources (buildpacks.io,
-paketo.io, their GitHub repos); **verify** = checked by the comparison build.
-
-- Apache-2.0 (github-actions, Paketo Node.js confirmed; pack and lifecycle per project knowledge).
-  pack v0.40.9 (2026-08-09, CVE fixes, lifecycle v0.21.0); Paketo Node.js v10.13.1 (2026-10-09);
-  CNB is a CNCF project, Paketo under the Cloud Foundry Foundation (**verify**).
-- CI: `buildpacks/github-actions/setup-pack` (pin by SHA; it only warns when the checksum cannot be
-  fetched) + `pack build <ghcr ref> --builder <builder>@sha256:… --run-image <run>@sha256:…
-  --publish --cache-image <ghcr ref>:buildcache --sbom-output-dir sbom`; needs the runner's Docker
-  daemon; digest via `crane digest` (setup-tools) or the build report. **Verify** flags.
-- Builders: Ubuntu Noble/Resolute/Jammy Base (Java, Node.js, Go, Python, .NET, Ruby, NGINX), Jammy
-  Full (adds PHP, HTTPD, C libraries — native npm modules may need it), Tiny (Go/Java), UBI (Java,
-  Node.js).
-- Security: SBOM in Syft, CycloneDX and SPDX (confirmed); `pack rebase` swaps the OS layers;
-  non-root user (cnb, uid 1002) and the run-image contents are **verify** items.
-- Node.js: version from `BP_NODE_VERSION` → `engines.node` → `.nvmrc` → `.node-version`; npm and
-  Yarn only — **pnpm is not supported** (open since 2022, paketo-buildpacks/nodejs#594, RFC #336);
-  start from the `start` script, `BP_LAUNCHPOINT` or a Procfile; `BP_NODE_RUN_SCRIPTS=build`;
-  `BP_NODE_PROJECT_PATH` for a subfolder (workspaces not documented); dev dependencies are
-  installed and stay in the run image; **Next.js standalone output is effectively ignored**
-  (larger images; older discussion — **verify** with a current build).
-- Process types: Procfile (`web`, `worker`, …), `--default-process`; the launcher runs a type by
-  name. Secrets: no BuildKit-style mounts — bindings (`--volume`, `npmrc`/`yarnrc` types);
-  `BPE_*` and `--env` end up in the image. No PORT setting or health-check buildpack.
-
-Comparison (to measure in the first task): non-root by default — Buildpacks likely, Railpack
-likely root; SBOM — Buildpacks yes, Railpack no; pnpm — Buildpacks no, Railpack yes; Next.js —
-both run `next start` (Railpack serves static exports via Caddy); monorepos — Railpack documents
-workspaces and Nx, Buildpacks only a project path; Procfile — Buildpacks yes; image size and CI
-build time — unknown for both.
-
-## To research for this feature: zero-downtime deploys with docker-rollout
-
-Founder decision 2026-10-14: zero-downtime deploys come with this feature, through `docker-rollout`
-(https://github.com/wowu/docker-rollout), a Docker CLI plugin that starts a second copy of a Compose
-service, waits until it is healthy and then removes the old one (the old copy keeps serving if the
-new one never gets healthy). It is chosen over kamal-proxy, which is also zero-downtime but is its own proxy (with TLS) and would replace or sit behind Caddy; kamal-proxy stays the fallback if docker-rollout's handover is not clean enough for long requests, uploads or WebSockets (the old copy needs a graceful-stop period either way). Before
-building, confirm: the license and a version to pin (installed on the server with a checksum); the
-documented requirements (no `container_name` or host ports on the service, a healthcheck or a wait);
-how Caddy must route to both copies (dynamic upstreams, retries while the old copy goes away); a
-health-check tool inside slim and distroless images; and the memory headroom on 1 GB servers while
-two copies run.
+Also check:
+- **Railpack non-root:** whether Railpack images run under Compose `user:` with a fixed non-root uid, and whether a `deploy.base` image with a `USER` carries through.
+- **docker-rollout behind Caddy:** zero failed requests during `docker rollout` with `dynamic a` and `lb_try_duration`, under steady load and with a slow request in flight.
