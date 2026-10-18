@@ -177,6 +177,7 @@ Effort`.
       - hands `app.build`, `deploy`, `supplyChain` and `cicd.deployTags` to the workflow and runtime renderers;
       - keeps newer pins in the committed workflow and runtime files;
       - splits the build values into the two secrets: secret by the existing classification, non-secret otherwise.
+      - sets the new `OPSCREW_BUILD_SECRETS` repository secret next to `OPSCREW_BUILD_ENV` in provision, and removes it in destroy (`DEPLOY_SECRETS.buildSecrets`);
     - **retarget** runs `chooseBuilder` for the new architecture before anything is created. A change of builder is shown and approved with the plan.
     - **status** shows the builder and the deploy strategy.
     - **Every target** works: Hetzner, DigitalOcean, own server and Portainer.
@@ -211,7 +212,7 @@ Effort`.
     - **The plugin's** deploy skill mentions the builder choice and zero-downtime deploys.
     - **New guide pages:**
       - `builders.md`: the choice and its order, the comparison table from R7, how to switch, the baseline, own Dockerfiles;
-      - `zero-downtime.md`: the switch, the drain, migrations staying compatible, WebSockets being cut, the recreate case and Portainer;
+      - `zero-downtime.md`: the switch, the drain, migrations staying compatible, WebSockets being cut, requests longer than 300 s being cut, the recreate case and Portainer;
       - `supply-chain.md`: the read commands for the SBOM and provenance, signing and its warning, Dependabot, deploy tags.
     - **README** links the three pages from its "What OpsCrew does" section, at most one line each.
     - `node plugin/validate.mjs` passes.
@@ -229,6 +230,11 @@ Effort`.
     - **Attestations:** the SBOM and provenance are read with the guide's command. The provenance names the repository and commit.
     - **Non-root:** the running container's user is not root.
     - **The leak search** covers the attestations.
+    - **From T1205, to confirm live:**
+      - pack with `repo:tag@sha256` builder and run-image refs;
+      - Railpack keeping a secret whose value is empty at `prepare`;
+      - image retention on an org-owned package (the `/orgs` endpoints);
+      - kamal-proxy's `--target-timeout 300s` letting a 60 s request through.
     - **Docs.** `docs/e2e.md` documents the runs, and the coverage page marks them "added, not yet run live".
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
   - Effort: high
