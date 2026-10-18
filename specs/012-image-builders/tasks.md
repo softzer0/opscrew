@@ -78,7 +78,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1204 [P] [US1] [US4] Dockerfile templates, Dependabot and pin carry-over in `packages/iac-templates/src/{docker,dependabot}/**`
+- [X] T1204 [P] [US1] [US4] Dockerfile templates, Dependabot and pin carry-over in `packages/iac-templates/src/{docker,dependabot}/**`
   - Owns: those folders (+ tests, snapshots); a new `src/pins-carry.ts` (+ test)
   - Reads: plan.md "4. Dockerfiles, Dependabot and pins"; spec FR-1204, FR-1208, FR-1220–FR-1222, FR-1228; research.md R5 and R7 finding 6
   - Depends: T1201
@@ -199,7 +199,8 @@ Effort`.
     - **The Docker pass** (`OPSCREW_DOCKER_TESTS=1`) builds every example with its builder, using the pinned tools in containers. It checks that:
       - the app runs as non-root;
       - `/health` answers on `PORT`;
-      - Node images hold no devDependency.
+      - Node images hold no devDependency;
+      - for `nextjs-postgres` with Prisma: `npx --no-install prisma --version` runs, and the Prisma engine files are in the image. A future npm may block install scripts that are not allow-listed (npm 11.19 already warns), and this check catches it when the Node pin moves.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (the Docker pass skipped without the flag)
   - Effort: high
 

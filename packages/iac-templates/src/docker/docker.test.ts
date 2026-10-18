@@ -1,5 +1,6 @@
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { IMAGES } from "../pins";
 import {
   containerPort,
   detectStack,
@@ -215,10 +216,10 @@ describe("detectStack", () => {
       ...sample,
       build: { ...sample.build, releaseCommand },
     });
-    const prisma = imageReleaseCommand(withRelease(nextApp, "npx prisma migrate deploy"));
-    expect(prisma.command).toBeUndefined();
-    expect(prisma.notRun).toContain("Prisma migrations");
-    expect(prisma.notRun).toContain("app.releaseCommand");
+    // The image keeps Prisma (FR-1204).
+    expect(imageReleaseCommand(withRelease(nextApp, "npx prisma migrate deploy"))).toEqual({
+      command: "npx prisma migrate deploy",
+    });
     const monorepo = imageReleaseCommand(
       withRelease(nextMonorepoApp, "cd apps/web && node scripts/migrate.js"),
     );
@@ -232,7 +233,7 @@ describe("detectStack", () => {
 
   it("knows which images keep which migration tools", () => {
     const withRelease = withReleaseOf;
-    // The Node.js server image keeps every installed package, development ones included.
+    // The Node.js server image keeps the packages of the migration tool, and package scripts.
     for (const command of [
       "npx drizzle-kit migrate",
       "npx typeorm migration:run -d dist/data-source.js",
@@ -242,11 +243,23 @@ describe("detectStack", () => {
     ]) {
       expect(withRelease(expressApp, command)).toEqual({ command });
     }
-    // The Next.js standalone image keeps only what the server needs.
+    // The Next.js standalone image gets the tool of the command or its package script, too ...
+    for (const command of [
+      "npx drizzle-kit migrate",
+      "npx payload migrate",
+      "npm run migrate",
+      "cd apps/web && npx prisma migrate deploy",
+    ]) {
+      expect(withRelease(nextApp, command)).toEqual({ command });
+    }
+    // ... but not a tool OpsCrew does not install there, nor a script npm does not run (the
+    // runtime has no corepack, Bun or workspace root).
     for (const [command, found] of [
-      ["npx drizzle-kit migrate", "Drizzle migrations"],
-      ["npx payload migrate", "Payload migrations"],
-      ["npm run migrate", "a migration script in package.json"],
+      ["npx keystone migrate deploy", "KeystoneJS migrations"],
+      ["node ace migration:run --force", "AdonisJS migrations"],
+      ["pnpm run migrate", "a migration script in package.json"],
+      ["yarn workspace web migrate", "a migration script in package.json"],
+      ["bun run migrate", "a migration script in package.json"],
     ] as const) {
       const result = withRelease(nextApp, command);
       expect(result.command).toBeUndefined();
@@ -390,7 +403,7 @@ describe("renderDockerAssets", () => {
       line.includes("cp /usr/bin/caddy /usr/local/bin/caddy"),
     );
     const user = lines.lastIndexOf("USER 65534");
-    expect(copyCaddy).toBeGreaterThan(lines.indexOf("FROM caddy:2-alpine"));
+    expect(copyCaddy).toBeGreaterThan(lines.indexOf(`FROM ${IMAGES.caddy.ref}`));
     expect(copyCaddy).toBeLessThan(user);
     expect(lines.slice(user)).toContain(
       'CMD ["/usr/local/bin/caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]',
@@ -448,7 +461,7 @@ describe("renderDockerAssets", () => {
     const dockerfile =
       renderDockerAssets(nextApp, { appPort: 3000, healthPath: "/api/health" })[0]?.content ?? "";
     const lines = dockerfile.split("\n");
-    const runtime = lines.indexOf("FROM node:22-alpine AS runtime");
+    const runtime = lines.indexOf(`FROM ${IMAGES.nodeAlpine.ref} AS runtime`);
     expect(runtime).toBeGreaterThan(0);
     const runtimeLines = lines.slice(runtime);
     // The runtime stage copies one folder and runs one entry, as the non-root node user.

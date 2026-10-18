@@ -1,0 +1,109 @@
+import { describe, expect, it } from "vitest";
+import { keepNewerPins } from "./index";
+
+const digest = (c: string) => `sha256:${c.repeat(64)}`;
+const sha = (c: string) => c.repeat(40);
+
+describe("keepNewerPins", () => {
+  it("keeps the committed digest of the same tag (a Dependabot update)", () => {
+    const committed = `FROM node:24-alpine@${digest("b")} AS build\nFROM node:24-alpine@${digest("b")}\n`;
+    const rendered = `FROM node:24-alpine@${digest("a")} AS build\nFROM node:24-alpine@${digest("a")}\n`;
+    expect(keepNewerPins(committed, rendered)).toBe(committed);
+  });
+
+  it("keeps a higher committed tag, and replaces an older one", () => {
+    const rendered = [
+      `    image: caddy:2.11.7-alpine@${digest("a")}`,
+      `    image: postgres:17-alpine@${digest("a")}`,
+      `    image: basecamp/kamal-proxy:v0.10.2@${digest("a")}`,
+      `    image: cloudflare/cloudflared:2026.5.1@${digest("a")}`,
+      "",
+    ].join("\n");
+    const committed = [
+      `    image: caddy:2.11.10-alpine@${digest("b")}`,
+      `    image: postgres:16-alpine@${digest("b")}`,
+      `    image: basecamp/kamal-proxy:v0.10.10@${digest("b")}`,
+      `    image: cloudflare/cloudflared:2026.4.0@${digest("b")}`,
+      "",
+    ].join("\n");
+    expect(keepNewerPins(committed, rendered)).toBe(
+      [
+        `    image: caddy:2.11.10-alpine@${digest("b")}`,
+        `    image: postgres:17-alpine@${digest("a")}`,
+        `    image: basecamp/kamal-proxy:v0.10.10@${digest("b")}`,
+        `    image: cloudflare/cloudflared:2026.5.1@${digest("a")}`,
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps OpsCrew's image when the committed one is another variant or not comparable", () => {
+    const rendered = `FROM node:24-alpine@${digest("a")}\nFROM python:3.14-slim@${digest("a")}\n`;
+    for (const committed of [
+      `FROM node:26-slim@${digest("b")}\nFROM python:3.15-bookworm@${digest("b")}\n`,
+      `FROM node:lts-alpine@${digest("b")}\nFROM python:latest@${digest("b")}\n`,
+      // Pinned by tag only: nothing to carry over.
+      "FROM node:26-alpine\nFROM python:3.15-slim\n",
+      "",
+    ]) {
+      expect(keepNewerPins(committed, rendered)).toBe(rendered);
+    }
+  });
+
+  it("carries images on registries other than Docker Hub", () => {
+    const rendered = `BUILDKIT_SYNTAX=ghcr.io/railwayapp/railpack-frontend:v0.42.0@${digest("a")}\n`;
+    const committed = `BUILDKIT_SYNTAX=ghcr.io/railwayapp/railpack-frontend:v0.43.1@${digest("b")}\n`;
+    expect(keepNewerPins(committed, rendered)).toBe(committed);
+  });
+
+  it("keeps newer action pins and their tag comments", () => {
+    const rendered = [
+      `      - uses: actions/checkout@${sha("1")} # v7.0.1`,
+      `      - uses: docker/build-push-action@${sha("1")} # v7.4.0`,
+      `      - uses: buildpacks/github-actions/setup-pack@${sha("1")} # v6.2.0`,
+      `      - uses: sigstore/cosign-installer@${sha("1")} # v4.1.2`,
+      "",
+    ].join("\n");
+    const committed = [
+      // Same tag, other commit: the committed one stays.
+      `      - uses: actions/checkout@${sha("2")} # v7.0.1`,
+      // A newer release.
+      `      - uses: docker/build-push-action@${sha("2")} # v7.5.0`,
+      `      - uses: buildpacks/github-actions/setup-pack@${sha("2")} # v6.10.0`,
+      // An older release is replaced.
+      `      - uses: sigstore/cosign-installer@${sha("2")} # v4.0.0`,
+      "",
+    ].join("\n");
+    expect(keepNewerPins(committed, rendered)).toBe(
+      [
+        `      - uses: actions/checkout@${sha("2")} # v7.0.1`,
+        `      - uses: docker/build-push-action@${sha("2")} # v7.5.0`,
+        `      - uses: buildpacks/github-actions/setup-pack@${sha("2")} # v6.10.0`,
+        `      - uses: sigstore/cosign-installer@${sha("1")} # v4.1.2`,
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps an action pinned by commit without a tag comment as OpsCrew renders it", () => {
+    const rendered = `      - uses: actions/checkout@${sha("1")} # v7.0.1\n`;
+    expect(keepNewerPins(`      - uses: actions/checkout@${sha("2")}\n`, rendered)).toBe(rendered);
+    expect(keepNewerPins("      - uses: actions/checkout@v8\n", rendered)).toBe(rendered);
+  });
+
+  it("matches each variant of an image on its own", () => {
+    const rendered = `FROM node:24-alpine@${digest("a")}\nFROM node:24-slim@${digest("a")}\n`;
+    // The higher slim pin must not hide the alpine one Dependabot refreshed, nor the other way round.
+    const committed = `FROM node:24-alpine@${digest("b")}\nFROM node:24.3-slim@${digest("c")}\n`;
+    expect(keepNewerPins(committed, rendered)).toBe(committed);
+    expect(keepNewerPins(`FROM node:24.3-slim@${digest("c")}\n`, rendered)).toBe(
+      `FROM node:24-alpine@${digest("a")}\nFROM node:24.3-slim@${digest("c")}\n`,
+    );
+  });
+
+  it("uses the highest committed pin when the committed file names an image twice", () => {
+    const committed = `FROM node:24-alpine@${digest("b")}\nFROM node:24.2-alpine@${digest("c")}\n`;
+    const rendered = `FROM node:24-alpine@${digest("a")}\n`;
+    expect(keepNewerPins(committed, rendered)).toBe(`FROM node:24.2-alpine@${digest("c")}\n`);
+  });
+});

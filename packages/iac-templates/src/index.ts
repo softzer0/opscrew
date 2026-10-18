@@ -1,6 +1,8 @@
+export * from "./dependabot";
 export * from "./docker";
 export * from "./infra";
 export * from "./pins";
+export { keepNewerPins } from "./pins-carry";
 export * from "./portainer-host";
 export * from "./portainer-target";
 export { webOnlyFromCloudflare } from "./predicates";

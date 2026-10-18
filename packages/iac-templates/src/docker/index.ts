@@ -1,6 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
-import type { ProjectFacts } from "@opscrew/plan-schema";
+import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
 import type { RenderedFile } from "../types";
+import { nodeImage, nodeMajor, pythonImage, pythonMinor, type ResolveImageDigest } from "./images";
 import {
   appDirectory,
   type DockerStack,
@@ -14,6 +15,7 @@ import {
   staticSpaDockerfile,
 } from "./stacks";
 
+export type { ResolveImageDigest } from "./images";
 export {
   CLIENT_ENV_PREFIXES,
   type DockerStack,
@@ -29,6 +31,17 @@ export interface DockerAssetOptions {
   appPort: number;
   /** Health check path, for documentation in the generated files. */
   healthPath: string;
+  /**
+   * The plan's `app`: `build.runtime.version` picks the runtime version, `releaseCommand` the
+   * migration tool a Node.js server image keeps. Absent: the version the app declares (else
+   * OpsCrew's default) and the detected release command.
+   */
+  app?: Pick<DeployPlan["app"], "build" | "releaseCommand">;
+  /**
+   * Finds the digest of a runtime image OpsCrew has no pin for (a declared non-default version).
+   * Without it, or when it finds none, that image is pinned by tag only and the Dockerfile says so.
+   */
+  resolveImageDigest?: ResolveImageDigest;
 }
 
 /** Port the container listens on for a stack. */
@@ -36,20 +49,30 @@ export function containerPort(stack: DockerStack, appPort: number): number {
   return stack === "static-spa" ? 8080 : appPort;
 }
 
-function dockerfile(stack: DockerStack, facts: ProjectFacts, port: number): string {
+function dockerfile(
+  stack: DockerStack,
+  facts: ProjectFacts,
+  port: number,
+  options: DockerAssetOptions,
+): string {
+  const build = options.app?.build;
+  const resolve = options.resolveImageDigest;
+  const node = () => nodeImage(nodeMajor(facts, build), resolve);
+  const python = () => pythonImage(pythonMinor(facts, build), resolve);
+  const release = options.app ? options.app.releaseCommand : facts.build.releaseCommand;
   switch (stack) {
     case "next-standalone":
-      return nextStandaloneDockerfile(facts, port);
+      return nextStandaloneDockerfile(facts, port, node(), release);
     case "node-server":
-      return nodeServerDockerfile(facts, port);
+      return nodeServerDockerfile(facts, port, node(), release);
     case "static-spa":
-      return staticSpaDockerfile(facts);
+      return staticSpaDockerfile(facts, node());
     case "python-fastapi":
-      return fastapiDockerfile(facts, port);
+      return fastapiDockerfile(facts, port, python());
     case "python-django":
-      return djangoDockerfile(facts, port);
+      return djangoDockerfile(facts, port, python());
     case "python-generic":
-      return pythonGenericDockerfile(facts, port);
+      return pythonGenericDockerfile(facts, port, python());
   }
 }
 
@@ -138,7 +161,7 @@ export function renderDockerAssets(
   return [
     {
       path: dir === "." ? "Dockerfile" : `${dir}/Dockerfile`,
-      content: dockerfile(stack, facts, port),
+      content: dockerfile(stack, facts, port, options),
       kind: "docker",
     },
     { path: ".dockerignore", content: DOCKERIGNORE, kind: "docker" },
