@@ -1,0 +1,10 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "unknown",
+    "services": []
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerignore", "health-endpoint"],
+  "builder": "buildpacks"
+}

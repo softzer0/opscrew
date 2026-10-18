@@ -1,0 +1,15 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "fullstack",
+    "frameworkNames": ["laravel", "vite"],
+    "port": 8000,
+    "languages": ["php", "javascript"],
+    "services": [],
+    "clientExposedEnv": ["VITE_APP_NAME"],
+    "secretEnv": ["APP_KEY"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerignore"],
+  "builder": "railpack"
+}

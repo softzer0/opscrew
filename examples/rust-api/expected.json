@@ -1,0 +1,11 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "unknown",
+    "languages": ["rust"],
+    "services": []
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerignore", "health-endpoint"],
+  "builder": "railpack"
+}

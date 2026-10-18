@@ -1,29 +1,50 @@
 /**
- * Local Docker pass over every app in `examples/` (T823, FR-811): each example with an
+ * Local Docker pass over every app in `examples/` (T823, FR-811, T1208): each example with an
  * `expected.json` is materialised into a temp git repository and driven through the real CLI
  * in-process, offline and without a model (`analyze --no-ai` → `interview --answers` → `design` →
- * `adapt --no-ai --no-push`, like `examples.test.ts`). Then the image is built from the Dockerfile
- * now in the repository, the container is started the way the production Compose file starts it
- * (the plan's port, placeholder connection URLs, all capabilities dropped) and the plan's health
- * path (static apps: also `/`) must answer HTTP 200 within two minutes. When the plan leaves the
- * health route to the Code-change agent (a pending `health-endpoint` change, which `--no-ai`
- * does not write), any HTTP answer on that path passes with a note. A plan with a release command
- * (`app.releaseCommand`, database migrations) is started like the deploy workflow starts it
+ * `adapt --no-ai --no-push`, like `examples.test.ts`). Then the image is built with the plan's
+ * builder the way the deploy workflow builds it (`workflowBuild`):
+ * - a Dockerfile (generated or the app's own) through buildx;
+ * - Buildpacks through pack, with the workflow's builder, run image and version setting, then the
+ *   seal;
+ * - Railpack: the build plan from the Railpack CLI, buildx with the pinned frontend, then the seal
+ *   (`USER` and the `chown` of the folders the framework writes to).
+ *
+ * pack and Railpack are the release archives pinned in `pins.ts` (checksums checked), run in a
+ * pinned glibc image with CA certificates. The container is started the way the production Compose
+ * file starts it (the plan's port, placeholder values, all capabilities dropped) and the plan's
+ * health path (static apps: also `/`) must answer HTTP 200 within two minutes. When the plan
+ * leaves the health route to the Code-change agent (a pending `health-endpoint` change, which
+ * `--no-ai` does not write), any HTTP answer on that path passes with a note. A plan with a release
+ * command (`app.releaseCommand`, database migrations) is started like the deploy workflow starts it
  * instead: OpsCrew's Compose file, the backing services, the `release` service run once, then the
  * app, which must also answer 200 on a route that writes to the database (`DATABASE_ROUTES`).
+ * Then, inside the running container:
+ * - the app does not run as root;
+ * - the Compose health check OpsCrew renders for the image passes (`docker exec`), so every probe
+ *   (Node, Python, Ruby, PHP, wget, bash through the Buildpacks launcher) runs in a real image;
+ * - a Node.js image holds no development dependency, except the release command's tools and what
+ *   they need;
+ * - `nextjs-postgres-prisma` (nextjs-postgres with Prisma migrations): `npx --no-install prisma
+ *   --version` runs and the engine files it names exist. Prisma's install scripts fetch them, and
+ *   a future npm may block install scripts that are not allow-listed (npm 11.19 warns), so this
+ *   catches it when the Node pin moves.
  *
  * It pulls base images and packages, so it runs only on request: OPSCREW_DOCKER_TESTS=1 with a
  * running Docker daemon (skipped otherwise). OPSCREW_DOCKER_EXAMPLES=a,b limits the run to those
- * examples. Containers and images are always removed.
+ * examples. Containers, images and pack's cache volumes are always removed; every container this
+ * file starts carries the label `opscrew.test=docker-pass`.
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
-import { FakeAgentRuntime } from "@opscrew/core/testing";
-import { renderCompose } from "@opscrew/iac-templates";
+import { FakeAgentRuntime, materializeFixture } from "@opscrew/core/testing";
+import { IMAGES, type PinArch, renderCompose } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
@@ -36,24 +57,55 @@ import {
   type TempProject,
   tempProject,
 } from "../../src/ui/__fixtures__/harness";
+import { toolArchive, workflowBuild } from "./builders";
 import { BASE_ANSWERS, exampleNames, readExpected, readPlan, ScriptedApprovals } from "./support";
 
 const DOCKER = findExecutable("docker");
+const TWENTY_MINUTES = 1_200_000;
 const TEN_MINUTES = 600_000;
 const TWO_MINUTES = 120_000;
 const STEP_TIMEOUT = 180_000;
 
-/** Every example with an `expected.json`. */
-const ALL_EXAMPLES = exampleNames();
+/** On every container this file starts. */
+const LABEL = "opscrew.test=docker-pass";
+
+/**
+ * Where pack and Railpack run: a pinned glibc image with CA certificates (Railpack plans Python
+ * apps only on glibc; node:slim has no CA certificates).
+ */
+const TOOL_IMAGE = IMAGES.python.ref;
+
+const FIXTURES = fileURLToPath(new URL("./__fixtures__/", import.meta.url));
+
+/** One app the pass builds: an example, or an example with extra files and devDependencies. */
+interface Case {
+  name: string;
+  example: string;
+  /** A folder under `__fixtures__/` copied over the example. */
+  overlay?: string;
+  devDependencies?: Record<string, string>;
+}
+
+/** nextjs-postgres with Prisma migrations, which the release command applies. */
+const PRISMA: Case = {
+  name: "nextjs-postgres-prisma",
+  example: "nextjs-postgres",
+  overlay: "prisma",
+  devDependencies: { prisma: "^7.10.1" },
+};
+
+/** Every example with an `expected.json`, plus the variants. */
+const ALL_CASES: Case[] = [...exampleNames().map((name) => ({ name, example: name })), PRISMA];
+const ALL_NAMES = ALL_CASES.map((c) => c.name);
 
 /** OPSCREW_DOCKER_EXAMPLES=a,b, or undefined for every example. */
 const REQUESTED = process.env.OPSCREW_DOCKER_EXAMPLES?.split(",")
   .map((name) => name.trim())
   .filter((name) => name !== "");
-const EXAMPLES =
+const CASES =
   REQUESTED === undefined || REQUESTED.length === 0
-    ? ALL_EXAMPLES
-    : ALL_EXAMPLES.filter((name) => REQUESTED.includes(name));
+    ? ALL_CASES
+    : ALL_CASES.filter((c) => REQUESTED.includes(c.name));
 
 function skipReason(): string | undefined {
   if (process.env.OPSCREW_DOCKER_TESTS !== "1") return "set OPSCREW_DOCKER_TESTS=1 to run it";
@@ -75,6 +127,8 @@ const containers = new Set<string>();
 const images = new Set<string>();
 /** Compose projects (name → compose file) started by this file. */
 const composeProjects = new Map<string, string>();
+/** Image tags pack built, whose cache volumes are removed. */
+const packTags = new Set<string>();
 
 async function docker(args: string[], timeoutMs = 60_000) {
   return runner.run(DOCKER ?? "docker", args, { timeoutMs });
@@ -102,24 +156,137 @@ async function removeImage(tag: string): Promise<void> {
   images.delete(tag);
 }
 
+/** pack's build and launch cache volumes for `tag` (`pack-cache-<repo>_<tag>-<key>.<kind>`). */
+async function removePackVolumes(tag: string): Promise<void> {
+  const prefix = `pack-cache-${tag.replace(/[/:]/g, "_")}-`;
+  const listed = await docker(["volume", "ls", "-q", "--filter", `name=${prefix}`]);
+  const volumes = listed.stdout.split(/\s+/).filter((name) => name.startsWith(prefix));
+  if (volumes.length > 0) await docker(["volume", "rm", "-f", ...volumes]);
+  packTags.delete(tag);
+}
+
 /** The last `lines` lines of a log (build output, container output). */
 function tail(text: string, lines = 60): string {
   return text.trimEnd().split(/\r?\n/).slice(-lines).join("\n");
+}
+
+/** A `--mount` for a file or folder of this computer. */
+function bind(source: string, target: string, readonly = false): string {
+  return `type=bind,source=${source},target=${target}${readonly ? ",readonly" : ""}`;
+}
+
+/** The engine's CPU, which picks the pack and Railpack archives. */
+let engineArch: Promise<PinArch> | undefined;
+function arch(): Promise<PinArch> {
+  engineArch ??= docker(["info", "--format", "{{.Architecture}}"]).then((info) => {
+    const name = info.stdout.trim();
+    if (name === "x86_64") return "amd64";
+    if (name === "aarch64") return "arm64";
+    throw new Error(
+      `The Docker engine runs on ${name}; OpsCrew pins pack and Railpack for x86_64 and aarch64 only.`,
+    );
+  });
+  return engineArch;
+}
+
+/** Downloaded pack and Railpack archives, one download per tool and run. */
+let toolsDir: Promise<string> | undefined;
+const archives = new Map<"pack" | "railpack", Promise<string>>();
+function archive(tool: "pack" | "railpack"): Promise<string> {
+  let found = archives.get(tool);
+  if (found === undefined) {
+    toolsDir ??= mkdtemp(path.join(tmpdir(), "opscrew-tools-"));
+    found = Promise.all([arch(), toolsDir]).then(([cpu, dir]) => toolArchive(tool, cpu, dir));
+    archives.set(tool, found);
+  }
+  return found;
+}
+
+/**
+ * Runs `script` (with `args` as `$@`) in a tool container named `name`; fails with its output
+ * when it exits non-zero or runs longer than twenty minutes.
+ */
+async function toolRun(
+  name: string,
+  what: string,
+  options: string[],
+  script: string,
+  args: string[],
+): Promise<string> {
+  containers.add(name);
+  const started = Date.now();
+  const result = await docker(
+    [
+      "run",
+      "--rm",
+      "--name",
+      name,
+      "--label",
+      LABEL,
+      ...options,
+      TOOL_IMAGE,
+      "sh",
+      "-c",
+      script,
+    ].concat(["sh", ...args]),
+    TWENTY_MINUTES,
+  );
+  await removeContainer(name);
+  const output = `${result.stdout}\n${result.stderr}`;
+  if (result.exitCode !== 0 || result.timedOut) {
+    const failure = result.timedOut
+      ? "did not finish within twenty minutes"
+      : `failed (exit ${result.exitCode})`;
+    throw new Error(`${what} ${failure}. The end of its output:\n${tail(output)}`);
+  }
+  console.info(`${what} took ${Math.round((Date.now() - started) / 1000)} s`);
+  return output;
+}
+
+/** `docker buildx build --load` (the engine's builder); fails with the end of the build log. */
+async function buildx(what: string, args: string[]): Promise<void> {
+  const started = Date.now();
+  const build = await docker(
+    ["buildx", "build", "--load", "--progress=plain", ...args],
+    TWENTY_MINUTES,
+  );
+  if (build.exitCode !== 0 || build.timedOut) {
+    const failure = build.timedOut
+      ? "did not finish within twenty minutes"
+      : `failed (exit ${build.exitCode})`;
+    throw new Error(
+      `${what} ${failure}. The end of the build log:\n${tail(build.stderr + build.stdout)}`,
+    );
+  }
+  console.info(`${what} took ${Math.round((Date.now() - started) / 1000)} s`);
 }
 
 /**
  * A placeholder value for an environment variable the plan names: connection URLs point at a
  * port nothing listens on, so an app that connects at start fails fast instead of hanging; host
  * lists name this computer, as provision fills them with the deployment's host; every other value
- * is a plain word. Never a secret-shaped literal.
+ * is the one the app's own `.env.example` gives, else a plain word. Never a secret-shaped literal.
  */
-function placeholder(name: string): string {
+function placeholder(name: string, example?: string): string {
   if (/(?:^|_)ALLOWED_HOSTS$/.test(name)) return "localhost,127.0.0.1";
   if (/(?:^|_)CSRF_TRUSTED_ORIGINS$/.test(name)) return "http://localhost,http://127.0.0.1";
   if (name === "DATABASE_URL") return "postgres://u:p@127.0.0.1:5/none";
   if (name === "REDIS_URL") return "redis://127.0.0.1:5";
   if (/_(?:URL|URI)$/.test(name)) return "http://127.0.0.1:5/";
-  return "opscrew-placeholder";
+  return example ?? "opscrew-placeholder";
+}
+
+/** The non-empty values of `<root>/.env.example` (Laravel's lists its defaults there). */
+async function envExampleValues(root: string): Promise<Map<string, string>> {
+  const file = path.join(root, ".env.example");
+  const values = new Map<string, string>();
+  if (!existsSync(file)) return values;
+  for (const line of (await readFile(file, "utf8")).split(/\r?\n/)) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
+    const value = match?.[2]?.replace(/^"(.*)"$/, "$1");
+    if (match?.[1] && value) values.set(match[1], value);
+  }
+  return values;
 }
 
 /**
@@ -135,9 +302,44 @@ const DATABASE_ROUTES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * The TypeScript runners a Node.js image keeps with any release tool (the generated Dockerfile's
+ * release-tools helper), since migrations and configs load through them.
+ */
+const TYPESCRIPT_RUNNERS = ["ts-node", "tsx", "typescript"];
+
+/**
+ * `node -e TOOL_TREE <dir> <package...>`: prints the real path of the `package.json` of every
+ * package below `<dir>` that the named packages need (dependencies, optional and peer
+ * dependencies, resolved like Node.js does), the named packages included.
+ */
+const TOOL_TREE = `
+const fs = require("fs"), path = require("path");
+const [dir, ...roots] = process.argv.slice(1);
+const seen = new Set();
+function visit(name, from) {
+  for (let at = from; ; at = path.dirname(at)) {
+    const file = path.join(at, "node_modules", name, "package.json");
+    if (fs.existsSync(file)) {
+      const real = fs.realpathSync(file);
+      if (seen.has(real)) return;
+      seen.add(real);
+      const pkg = JSON.parse(fs.readFileSync(real, "utf8"));
+      const deps = { ...pkg.dependencies, ...pkg.optionalDependencies, ...pkg.peerDependencies };
+      for (const dep of Object.keys(deps)) visit(dep, path.dirname(real));
+      return;
+    }
+    if (at === dir || at === path.dirname(at)) return;
+  }
+}
+for (const root of roots) visit(root, dir);
+console.log([...seen].join("\\n"));
+`;
+
+/**
  * The Compose file OpsCrew deploys (`renderCompose`), adapted to this computer: the data
  * directories under /srv become named volumes, the app's port is published on 127.0.0.1 and
- * Caddy is left out (TLS and the proxy are not under test). The `release` service is unchanged.
+ * Caddy and kamal-proxy are left out (TLS and the switch are not under test). The `release`
+ * service is unchanged.
  */
 function localCompose(plan: DeployPlan): string {
   const rendered = renderCompose(plan);
@@ -146,6 +348,7 @@ function localCompose(plan: DeployPlan): string {
     volumes: Record<string, unknown>;
   };
   delete doc.services.caddy;
+  delete doc.services.proxy;
   doc.volumes = {};
   for (const service of Object.values(doc.services)) {
     service.volumes = service.volumes?.map((volume) => {
@@ -161,12 +364,35 @@ function localCompose(plan: DeployPlan): string {
   return stringify(doc, { lineWidth: 0 });
 }
 
+/**
+ * The app's Compose health check command (`renderCompose`), as `docker exec` arguments: without
+ * `CMD` and with Compose's `$$` back to `$`. Undefined when the plan has none (own Dockerfiles).
+ */
+function healthCommand(plan: DeployPlan): string[] | undefined {
+  const doc = parse(renderCompose(plan).content) as {
+    services: { app: { healthcheck?: { test: string[] } } };
+  };
+  const test = doc.services.app.healthcheck?.test;
+  return test?.slice(1).map((arg) => arg.replaceAll("$$", "$"));
+}
+
 /** What the repository looks like after `adapt`: enough to build and start the app. */
 interface Prepared {
   plan: DeployPlan;
   /** Variables Docker gets as build arguments (client-exposed, baked into the bundle). */
   buildEnv: string[];
   appKind: string;
+  /** The app's folder in the repository (`.` unless a monorepo). */
+  appDir: string;
+  /** Values from the app's `.env.example`, used for the placeholders. */
+  exampleValues: Map<string, string>;
+}
+
+/** The running app, after the health test started it. */
+interface Running {
+  container: string;
+  /** The health path answered 200 from outside, so the route exists. */
+  healthRoute: boolean;
 }
 
 describe.skipIf(SKIP !== undefined)(
@@ -178,23 +404,28 @@ describe.skipIf(SKIP !== undefined)(
       for (const name of [...composeProjects.keys()]) await composeDown(name);
       for (const name of [...containers]) await removeContainer(name);
       for (const tag of [...images]) await removeImage(tag);
+      for (const tag of [...packTags]) await removePackVolumes(tag);
+      if (toolsDir !== undefined) await rm(await toolsDir, { recursive: true, force: true });
     }, TWO_MINUTES);
 
     it("OPSCREW_DOCKER_EXAMPLES names only examples that exist", () => {
-      const unknown = (REQUESTED ?? []).filter((name) => !ALL_EXAMPLES.includes(name));
-      expect(unknown, `known examples: ${ALL_EXAMPLES.join(", ")}`).toEqual([]);
-      expect(EXAMPLES.length, "examples to run").toBeGreaterThan(0);
+      const unknown = (REQUESTED ?? []).filter((name) => !ALL_NAMES.includes(name));
+      expect(unknown, `known examples: ${ALL_NAMES.join(", ")}`).toEqual([]);
+      expect(CASES.length, "examples to run").toBeGreaterThan(0);
     });
 
-    describe.each(EXAMPLES)("example %s", (example) => {
+    describe.each(CASES.map((c) => [c.name, c] as const))("example %s", (example, testCase) => {
       const stamp = `${Date.now()}-${process.pid}`;
       const tag = `opscrew-test/${example}:${stamp}`;
+      /** What Buildpacks and Railpack build before the seal (`build-<commit>` in CI). */
+      const buildTag = `${tag}-build`;
       const container = `opscrew-test-${example}-${stamp}`;
       const runtime = new FakeAgentRuntime();
       const approvals = new ScriptedApprovals();
       let project: TempProject | undefined;
       let prepared: Prepared | undefined;
       let built = false;
+      let running: Running | undefined;
 
       /**
        * Runs `opscrew <args>` in the project and returns what it printed; fails with that output
@@ -211,6 +442,81 @@ describe.skipIf(SKIP !== undefined)(
           );
         }
         return output;
+      }
+
+      /** The running app, or an error pointing at the health test. */
+      function app(): Running {
+        if (running === undefined) {
+          throw new Error(`${example}: the app is not running (see the tests above).`);
+        }
+        return running;
+      }
+
+      /** Buildpacks: pack builds `buildTag` into the engine with the workflow's options. */
+      async function packBuild(project: TempProject, options: string[], buildEnv: string[]) {
+        const context = prepared?.plan.app.buildContext || ".";
+        packTags.add(buildTag);
+        await toolRun(
+          `${container}-pack`,
+          `${example}: pack build`,
+          [
+            ...["-v", "/var/run/docker.sock:/var/run/docker.sock"],
+            ...["--mount", bind(await archive("pack"), "/opt/pack.tgz", true)],
+            ...["--mount", bind(project.root, "/workspace", true)],
+          ],
+          'tar -xzf /opt/pack.tgz -C /usr/local/bin && exec pack build "$@"',
+          [
+            buildTag,
+            ...["--path", path.posix.join("/workspace", context)],
+            ...options,
+            ...buildEnv.flatMap((name) => ["--env", `${name}=${placeholder(name)}`]),
+          ],
+        );
+        await removePackVolumes(buildTag);
+      }
+
+      /**
+       * Railpack: the CLI writes the build plan (with the build values), and buildx builds
+       * `buildTag` from it with the pinned frontend, reading the values as BuildKit secrets.
+       */
+      async function railpackBuild(project: TempProject, frontend: string, buildEnv: string[]) {
+        const context = prepared?.plan.app.buildContext || ".";
+        const out = path.join(project.dir, "railpack");
+        await mkdir(out, { recursive: true });
+        await toolRun(
+          `${container}-railpack`,
+          `${example}: railpack prepare`,
+          [
+            ...["--mount", bind(await archive("railpack"), "/opt/railpack.tgz", true)],
+            ...["--mount", bind(project.root, "/workspace", true)],
+            ...["--mount", bind(out, "/out")],
+          ],
+          'mkdir /tmp/railpack && tar -xzf /opt/railpack.tgz -C /tmp/railpack && exec "$(find /tmp/railpack -type f -name railpack | head -n 1)" prepare "$@"',
+          [
+            path.posix.join("/workspace", context),
+            ...["--plan-out", "/out/railpack-plan.json", "--info-out", "/out/railpack-info.json"],
+            ...buildEnv.flatMap((name) => ["--env", `${name}=${placeholder(name)}`]),
+          ],
+        );
+        const info = JSON.parse(await readFile(path.join(out, "railpack-info.json"), "utf8")) as {
+          resolvedPackages?: Record<string, { resolvedVersion?: string }>;
+        };
+        const versions = Object.entries(info.resolvedPackages ?? {}).map(
+          ([name, resolved]) => `${name} ${resolved.resolvedVersion ?? "?"}`,
+        );
+        console.info(`${example}: Railpack resolved ${versions.join(", ") || "nothing"}`);
+        const secrets: string[] = [];
+        for (const name of buildEnv) {
+          const file = path.join(out, `secret-${name}`);
+          await writeFile(file, placeholder(name));
+          secrets.push("--secret", `id=${name},src=${file}`);
+        }
+        await buildx(`${example}: the Railpack build`, [
+          ...["-f", path.join(out, "railpack-plan.json")],
+          ...["--build-arg", `BUILDKIT_SYNTAX=${frontend}`],
+          ...secrets,
+          ...["-t", buildTag, path.join(project.root, context)],
+        ]);
       }
 
       /**
@@ -274,8 +580,20 @@ describe.skipIf(SKIP !== undefined)(
       }
 
       beforeAll(async () => {
-        project = await tempProject(example);
+        project = await tempProject(testCase.example);
         const { env, root, dir } = project;
+        if (testCase.overlay !== undefined) {
+          await materializeFixture(path.join(FIXTURES, testCase.overlay), root);
+        }
+        if (testCase.devDependencies !== undefined) {
+          const file = path.join(root, "package.json");
+          const pkg = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+          pkg.devDependencies = {
+            ...(pkg.devDependencies as Record<string, string>),
+            ...testCase.devDependencies,
+          };
+          await writeFile(file, `${JSON.stringify(pkg, null, 2)}\n`);
+        }
         // A repository with one commit and a bare `origin` (adapt commits but never pushes).
         await git(env, root, "init", "-q", "-b", "main");
         await git(env, root, "add", "-A");
@@ -289,6 +607,7 @@ describe.skipIf(SKIP !== undefined)(
         await composeDown(container);
         await removeContainer(container);
         await removeImage(tag);
+        await removeImage(buildTag);
         await project?.cleanup();
       }, TWO_MINUTES);
 
@@ -297,7 +616,7 @@ describe.skipIf(SKIP !== undefined)(
         async () => {
           if (project === undefined) throw new Error("no project");
           const { root, dir } = project;
-          const expected = await readExpected(path.join(EXAMPLES_DIR, example));
+          const expected = await readExpected(path.join(EXAMPLES_DIR, testCase.example));
           const answersFile = path.join(dir, "answers.yaml");
           // One small production setup for every example; a monorepo picks the app its
           // `expected.json` names.
@@ -306,6 +625,7 @@ describe.skipIf(SKIP !== undefined)(
             ...BASE_ANSWERS,
           };
           await writeFile(answersFile, `${JSON.stringify(answers, null, 2)}\n`);
+          const exampleValues = await envExampleValues(root);
 
           await opscrew("analyze", "--no-ai");
           await opscrew("interview", "--answers", answersFile);
@@ -320,8 +640,11 @@ describe.skipIf(SKIP !== undefined)(
           const clientExposed = new Set(
             architecture.facts.envVars.filter((v) => v.clientExposed).map((v) => v.name),
           );
-          // Every plan names a Dockerfile, so a missing one means adapt did not write it.
-          if (!existsSync(path.join(root, plan.app.dockerfile))) {
+          const builder = plan.app.build?.builder;
+          console.info(`${example}: builder ${builder}; ${plan.app.build?.reason ?? ""}`);
+          // A Dockerfile plan without the file means adapt did not write it.
+          const dockerfileBuild = builder !== "buildpacks" && builder !== "railpack";
+          if (dockerfileBuild && !existsSync(path.join(root, plan.app.dockerfile))) {
             const change = plan.codeChanges.find((c) => c.kind === "dockerfile");
             throw new Error(
               `${example}: adapt did not write ${plan.app.dockerfile} (dockerfile change: ${change?.status ?? "not in the plan"}). The end of adapt's output:\n${tail(adapted)}`,
@@ -330,44 +653,46 @@ describe.skipIf(SKIP !== undefined)(
           prepared = {
             plan,
             appKind: architecture.facts.appKind,
+            appDir: architecture.facts.appDir ?? ".",
             buildEnv: plan.app.env.map((v) => v.name).filter((name) => clientExposed.has(name)),
+            exampleValues,
           };
         },
         STEP_TIMEOUT,
       );
 
       it(
-        "the image builds from the Dockerfile in the repository",
+        "the image builds with the plan's builder, as the deploy workflow builds it",
         async () => {
           if (project === undefined || prepared === undefined) {
             throw new Error(`${example}: the repository was not prepared (see the test above).`);
           }
           const { plan, buildEnv } = prepared;
+          const builder = plan.app.build?.builder;
           images.add(tag);
-          const build = await docker(
-            [
-              "build",
-              "--progress=plain",
+          if (builder === "buildpacks" || builder === "railpack") {
+            const steps = workflowBuild(plan);
+            images.add(buildTag);
+            if (steps.builder === "buildpacks") {
+              await packBuild(project, steps.packOptions, buildEnv);
+            } else {
+              await railpackBuild(project, steps.frontend, buildEnv);
+            }
+            // The seal, from the checkout like CI (it copies nothing from it).
+            const seal = path.join(project.dir, "seal", "Dockerfile");
+            await mkdir(path.dirname(seal), { recursive: true });
+            await writeFile(seal, [`FROM ${buildTag}`, ...steps.sealLines, ""].join("\n"));
+            await buildx(`${example}: the seal`, ["-f", seal, "-t", tag, project.root]);
+          } else {
+            await buildx(`${example}: docker buildx build`, [
               ...buildEnv.flatMap((name) => ["--build-arg", `${name}=${placeholder(name)}`]),
-              "-f",
-              path.join(project.root, plan.app.dockerfile),
-              "-t",
-              tag,
-              path.join(project.root, plan.app.buildContext),
-            ],
-            TEN_MINUTES,
-          );
-          if (build.exitCode !== 0 || build.timedOut) {
-            const what = build.timedOut
-              ? "docker build did not finish within ten minutes"
-              : `docker build failed (exit ${build.exitCode})`;
-            throw new Error(
-              `${example}: ${what}. The end of the build log:\n${tail(build.stderr + build.stdout)}`,
-            );
+              ...["-f", path.join(project.root, plan.app.dockerfile)],
+              ...["-t", tag, path.join(project.root, plan.app.buildContext)],
+            ]);
           }
           built = true;
         },
-        TEN_MINUTES + 30_000,
+        2 * TWENTY_MINUTES,
       );
 
       it(
@@ -376,20 +701,20 @@ describe.skipIf(SKIP !== undefined)(
           if (prepared === undefined || !built) {
             throw new Error(`${example}: there is no image to start (see the tests above).`);
           }
-          const { plan, appKind } = prepared;
+          const { plan, appKind, exampleValues } = prepared;
           const port = plan.app.port;
           // Like opscrew/runtime/compose.yaml: PORT, the derived connection URLs, the user's
           // variables, all capabilities dropped and no privilege escalation.
           const env = new Map<string, string>([["PORT", String(port)]]);
           for (const variable of plan.app.env) {
             if (variable.name !== "PORT" && !prepared.buildEnv.includes(variable.name)) {
-              env.set(variable.name, placeholder(variable.name));
+              env.set(variable.name, placeholder(variable.name, exampleValues.get(variable.name)));
             }
           }
           if (plan.services.postgres) env.set("DATABASE_URL", placeholder("DATABASE_URL"));
           if (plan.services.redis) env.set("REDIS_URL", placeholder("REDIS_URL"));
           const release = plan.app.releaseCommand !== undefined;
-          const app = release ? await deployWithRelease(plan, env) : container;
+          const name = release ? await deployWithRelease(plan, env) : container;
           if (!release) {
             containers.add(container);
             const started = await docker([
@@ -397,13 +722,15 @@ describe.skipIf(SKIP !== undefined)(
               "-d",
               "--name",
               container,
+              "--label",
+              LABEL,
               "--cap-drop",
               "ALL",
               "--security-opt",
               "no-new-privileges:true",
               "-p",
               `127.0.0.1::${port}`,
-              ...[...env].flatMap(([name, value]) => ["-e", `${name}=${value}`]),
+              ...[...env].flatMap(([key, value]) => ["-e", `${key}=${value}`]),
               tag,
             ]);
             if (started.exitCode !== 0) {
@@ -425,11 +752,11 @@ describe.skipIf(SKIP !== undefined)(
               ...(databaseRoute !== undefined ? [databaseRoute] : []),
             ]),
           ];
-          const result = await waitForHealth(app, port, paths, {
+          const result = await waitForHealth(name, port, paths, {
             anyStatus: leftToModel ? plan.app.healthPath : undefined,
           });
           if (result.failure !== undefined) {
-            const logs = await docker(["logs", "--tail", "80", app]);
+            const logs = await docker(["logs", "--tail", "80", name]);
             const pending = leftToModel
               ? " The plan's health-endpoint change is still pending (left to the Code-change agent by adapt --no-ai)."
               : "";
@@ -442,8 +769,116 @@ describe.skipIf(SKIP !== undefined)(
               `${example}: the health route is left to the Code-change agent (adapt --no-ai); the server answers HTTP ${status} on ${urlPath}`,
             );
           }
+          running = { container: name, healthRoute: !result.notes.has(plan.app.healthPath) };
         },
         TWO_MINUTES + 60_000,
+      );
+
+      it("the app does not run as root", async () => {
+        const { container: name } = app();
+        const status = await docker(["exec", name, "cat", "/proc/1/status"]);
+        const uid = /^Uid:\s+(\d+)/m.exec(status.stdout)?.[1];
+        expect(uid, `${example}: the user of the container's first process`).toBeDefined();
+        console.info(`${example}: the app runs as uid ${uid}`);
+        expect(uid, `${example} runs as root`).not.toBe("0");
+      });
+
+      it(
+        "the Compose health check OpsCrew renders passes inside the container",
+        async (ctx) => {
+          const { container: name, healthRoute } = app();
+          const plan = prepared?.plan as DeployPlan;
+          const command = healthCommand(plan);
+          if (command === undefined) {
+            console.info(`${example}: no Compose health check (the image's own HEALTHCHECK)`);
+            return ctx.skip();
+          }
+          if (!healthRoute) {
+            console.warn(
+              `${example}: no health route yet (adapt --no-ai), so the probe would fail`,
+            );
+            return ctx.skip();
+          }
+          let last = "";
+          const deadline = Date.now() + 60_000;
+          while (Date.now() < deadline) {
+            const probe = await docker(["exec", name, ...command], 15_000);
+            if (probe.exitCode === 0) {
+              console.info(`${example}: the ${plan.app.build?.probe ?? "default"} probe passed`);
+              return;
+            }
+            last = `exit ${probe.exitCode}: ${tail(`${probe.stdout}\n${probe.stderr}`, 10)}`;
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
+          }
+          throw new Error(`${example}: \`${command.join(" ")}\` kept failing (last: ${last})`);
+        },
+        TWO_MINUTES,
+      );
+
+      it("a Node.js image holds no development dependency", async (ctx) => {
+        if (prepared?.plan.app.build?.runtime.language !== "node") return ctx.skip();
+        const { container: name } = app();
+        const { plan, appDir } = prepared;
+        if (project === undefined) throw new Error("no project");
+        const folders = [...new Set([".", appDir])];
+        const dev = new Set<string>();
+        for (const folder of folders) {
+          const file = path.join(project.root, folder, "package.json");
+          if (!existsSync(file)) continue;
+          const pkg = JSON.parse(await readFile(file, "utf8")) as {
+            devDependencies?: Record<string, string>;
+          };
+          for (const dep of Object.keys(pkg.devDependencies ?? {})) dev.add(dep);
+        }
+        const workdir = (await docker(["inspect", "-f", "{{.Config.WorkingDir}}", name])).stdout;
+        const dir = workdir.trim() || "/";
+        const lines = (result: { stdout: string }) =>
+          result.stdout.split(/\r?\n/).filter((line) => line.trim() !== "");
+        const found = await docker([
+          "exec",
+          name,
+          "sh",
+          "-c",
+          'for dep in "$@"; do find "$0" -path "*/node_modules/$dep/package.json" 2>/dev/null; done',
+          dir,
+          ...dev,
+        ]);
+        expect(found.exitCode, found.stderr).toBe(0);
+        // The release command's tools stay in the image with the TypeScript runners they load,
+        // and so do the packages they depend on (Prisma brings @types/react as a peer).
+        const release = plan.app.releaseCommand;
+        const roots = release === undefined ? [] : [...release.split(/\s+/), ...TYPESCRIPT_RUNNERS];
+        const tools =
+          roots.length === 0
+            ? []
+            : lines(await docker(["exec", name, "node", "-e", TOOL_TREE, dir, ...roots]));
+        const shipped = lines(found).filter((file) => !tools.includes(file));
+        expect(shipped, `${example}: development dependencies in the image`).toEqual([]);
+      });
+
+      it.runIf(testCase === PRISMA)(
+        "Prisma's CLI runs and its engine files are in the image",
+        async () => {
+          const { container: name } = app();
+          const version = await docker([
+            "exec",
+            name,
+            "npx",
+            "--no-install",
+            "prisma",
+            "--version",
+          ]);
+          const output = `${version.stdout}\n${version.stderr}`;
+          expect(version.exitCode, tail(output)).toBe(0);
+          // `Schema Engine : schema-engine-cli <hash> (at node_modules/@prisma/engines/...)`
+          const engines = [...output.matchAll(/\(at ([^)]+)\)/g)].map((match) => match[1] ?? "");
+          expect(engines, `engine paths in:\n${tail(output)}`).not.toEqual([]);
+          for (const file of engines) {
+            expect((await docker(["exec", name, "test", "-f", file])).exitCode, file).toBe(0);
+          }
+          console.info(`${example}: prisma --version:\n${tail(output, 12)}`);
+        },
+        TWO_MINUTES,
       );
     });
   },

@@ -7,6 +7,12 @@ They are not part of the pnpm workspace.
   (`.env.fixture` → `.env`, `.gitignore.fixture` → `.gitignore`), so they do not affect this repo.
 - Secret-shaped values are `{{FAKE:<kind>[:<seed>]}}` markers expanded by `materializeFixture()`
   from `@opscrew/core/testing`. Nothing secret-shaped is committed.
+- One app per language OpsCrew builds without its own Dockerfile (feature 012): `go-api`,
+  `rails-api`, `spring-boot-api` and `dotnet-api` build with Buildpacks, `laravel-app` and
+  `rust-api` with Railpack. `rails-api` pins Ruby 4.0.6 in `.ruby-version`, a version the pinned
+  Buildpacks builder offers (`BUILDPACKS_OFFERS.ruby` in `packages/iac-templates/src/pins.ts`).
+  Rails' `master.key` and credentials and Laravel's `.env` are not committed: they hold keys, and
+  production reads `SECRET_KEY_BASE` and `APP_KEY` from the environment.
 
 `expected.json` per example:
 
@@ -20,4 +26,5 @@ They are not part of the pnpm workspace.
 | `scan.mustInclude` | rule ids that `opscrew scan` must report |
 | `scan.clean` | `true` → no high or critical findings |
 | `codeChanges` | code-change kinds `opscrew design` must derive |
+| `builder` | the builder `opscrew design` chooses on its own (`app.build.builder`) |
 | `chosenApp` | monorepos only: the app the interview's `appDir` answer picks, and what analysis describes after it (`appDir`, `appKind`, `frameworkNames`, `port`) |

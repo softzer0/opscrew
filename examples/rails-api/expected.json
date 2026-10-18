@@ -1,0 +1,13 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "fullstack",
+    "frameworkNames": ["rails"],
+    "port": 3000,
+    "languages": ["ruby"],
+    "services": []
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerignore"],
+  "builder": "buildpacks"
+}

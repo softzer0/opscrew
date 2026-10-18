@@ -6,5 +6,6 @@
     "services": []
   },
   "scan": { "clean": true, "mustInclude": [] },
-  "codeChanges": ["dockerfile", "dockerignore"]
+  "codeChanges": ["dockerfile", "dockerignore"],
+  "builder": "generated-dockerfile"
 }

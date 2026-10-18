@@ -8,5 +8,6 @@
     "secretEnv": ["DATABASE_URL"]
   },
   "scan": { "clean": true, "mustInclude": [] },
-  "codeChanges": ["dockerfile", "dockerignore", "health-endpoint", "env-example", "build-config"]
+  "codeChanges": ["dockerfile", "dockerignore", "health-endpoint", "env-example", "build-config"],
+  "builder": "generated-dockerfile"
 }

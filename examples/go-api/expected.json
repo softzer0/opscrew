@@ -1,0 +1,11 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "unknown",
+    "languages": ["go"],
+    "services": []
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerignore", "health-endpoint"],
+  "builder": "buildpacks"
+}

@@ -2,7 +2,8 @@
  * End-to-end flow over every app in `examples/` (T115, SC-102, SC-103, SC-106): each example is
  * materialised into a temp git repository and driven through the real CLI program in-process,
  * offline and without a model: `scan --offline` → `analyze --no-ai` → `interview --answers` →
- * `design --option` → `adapt --no-ai --no-push`. The last check searches every output and every
+ * `design --option` (which also chooses the builder `expected.json` names) →
+ * `adapt --no-ai --no-push`. The last check searches every output and every
  * written file for the fake secret values the example plants.
  */
 import { existsSync } from "node:fs";
@@ -74,6 +75,12 @@ const ANSWERS: Record<string, Record<string, unknown>> = Object.fromEntries(
     },
     "monorepo-two-apps": { appDir: "apps/api", budgetMonthly: "10 EUR" },
     "static-vite": { ...SMALL_SITE, region: "us-east" },
+    "go-api": SMALL_SITE,
+    "rails-api": {},
+    "laravel-app": { budgetMonthly: "30 EUR" },
+    "spring-boot-api": { expectedMonthlyUsers: "1k-10k" },
+    "dotnet-api": { region: "us-east" },
+    "rust-api": SMALL_SITE,
   }).map(([name, answers]) => [name, { ...BASE_ANSWERS, ...answers }]),
 );
 
@@ -92,7 +99,11 @@ const readArchitecture = (root: string) =>
 
 it("finds the example apps and the secrets they plant", async () => {
   expect(EXAMPLES).toEqual(
-    expect.arrayContaining(["fastapi-redis", "lovable-supabase", "nextjs-postgres", "static-vite"]),
+    expect.arrayContaining([
+      ...["fastapi-redis", "lovable-supabase", "nextjs-postgres", "static-vite"],
+      // One per language OpsCrew builds with Buildpacks or Railpack (012).
+      ...["go-api", "rails-api", "laravel-app", "spring-boot-api", "dotnet-api", "rust-api"],
+    ]),
   );
   for (const example of EXAMPLES) expect(ANSWERS[example], example).toBeDefined();
   // The leak search below is only meaningful when at least one example plants a secret.
@@ -238,6 +249,8 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
       } else {
         expect(plan.dns.provider).toBe("none");
       }
+      // OpsCrew chooses the builder itself (contracts/builders.md "chooseBuilder").
+      expect(plan.app.build).toMatchObject({ builder: expected.builder, chosen: "auto" });
       const kinds = plan.codeChanges.map((change) => change.kind);
       for (const kind of expected.codeChanges ?? []) expect(kinds, kind).toContain(kind);
       expect(plan.codeChanges.every((change) => change.status === "pending")).toBe(true);

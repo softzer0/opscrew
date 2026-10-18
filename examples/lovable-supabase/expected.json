@@ -15,5 +15,6 @@
       "secrets/committed-env"
     ],
     "notes": "secrets/committed-env requires the materialised repo to commit .env (the e2e test does so)."
-  }
+  },
+  "builder": "generated-dockerfile"
 }

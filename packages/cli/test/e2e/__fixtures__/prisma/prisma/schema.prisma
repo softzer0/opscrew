@@ -1,0 +1,10 @@
+// Prisma owns the schema and its migrations (applied by `npx prisma migrate deploy`, the release
+// command OpsCrew detects); the app queries with pg. The connection URL is in prisma.config.ts.
+datasource db {
+  provider = "postgresql"
+}
+
+model Visit {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+}

@@ -8,5 +8,6 @@
     "languages": ["python"]
   },
   "scan": { "clean": true, "mustInclude": [] },
-  "codeChanges": ["dockerfile", "dockerignore", "health-endpoint", "env-example"]
+  "codeChanges": ["dockerfile", "dockerignore", "health-endpoint", "env-example"],
+  "builder": "generated-dockerfile"
 }
