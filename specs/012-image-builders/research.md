@@ -246,6 +246,55 @@ Railpack's images are 1.8–2.8× larger. **The founder decides.**
   - Run image `paketobuildpacks/ubuntu-noble-run:0.0.145`
     (`@sha256:577357bc2a59c962ce3f7d816f7ff401f408538832a1c56a9a87f6fc5829df97`).
 
+## R8. On GitHub runners (T1202, 2026-10-18; `.tools/scratch/012-results-r8.md`)
+
+Four runs in the throwaway repository, on `ubuntu-24.04` (Docker 28, overlay2) and
+`ubuntu-24.04-arm`. Every pin from R7 worked.
+
+- **Buildpacks settings.** In pack 0.40.9, `project.toml` env and `--env` go into one map, and the
+  throwaway builder is made whenever that map is non-empty or `--run-image` is set. On a runner it
+  costs **1.7–4.3 s**; R7's 280–340 s came from Docker Desktop's containerd store. `--env` and
+  `project.toml` give the same digest.
+  **Decision: pass `BP_*` settings with `--env` (non-secret only); no `project.toml`.**
+- **pack timings and outputs:**
+  - **go-api:** about 37–57 s for `pack build`, push included. Pulling the builder and run image
+    adds 45–95 s on every run. Warm is barely faster, because restoring the GHCR cache takes
+    17–24 s.
+  - **The digest** comes from pack's report: `report.toml` `[image] digest`, which matched every
+    time. `--report-output-dir` writes a file when the folder is missing, so create it first.
+  - **Untrusted builders.** A builder pinned by digest is "untrusted", so each phase runs in its own
+    container; it works without extra flags.
+  - **setup-pack v6.2.0** fails on a checksum mismatch, which corrects R1.
+- **The seal** (`FROM <pack digest>`) takes 12–14 s.
+  - It keeps the Buildpacks entrypoint (`/cnb/process/<name>`), user `1002:1001`, workdir and
+    labels. The app starts.
+  - Every healthcheck form behaved right against a live and a dead port: launcher with and without
+    `--`, the process shim, the absolute binary, `CMD-SHELL`. Keep `--`.
+  - The run image has `sh` and `bash`, but no curl or wget.
+- **Attestations.** The index holds the image plus an attestation manifest.
+  - **Provenance** is SLSA v1. It has the builder id (the run URL), repository, workflow path,
+    commit and run id. `vcs` source and revision appear **only when the seal job checks out the
+    code**.
+  - **mode=max embeds the whole push event payload**: commit messages, author emails, repository
+    metadata. Anyone who can pull the image can read it.
+  - **SBOM:** 172 packages for go-api, 87 for rust-api.
+  - **GHCR** shows each attestation manifest as a separate untagged version, so one push makes three
+    versions. The fine-grained token gets 403 on the Packages API; `GITHUB_TOKEN` with
+    `packages: write` can list and delete.
+- **Railpack** (rust-api, frontend by digest):
+  - cold 140 s, of which 73 s is the `type=gha,mode=max` cache export;
+  - warm 75–86 s, because cache mounts are not saved and `cargo build` reruns;
+  - the seal sets `User 10001:10001` (uid 10001, `/health` ok), and only the chowned folder is
+    writable.
+- **arm64 Buildpacks** on `ubuntu-24.04-arm` worked natively (build 33–43 s, image arm64, user
+  1002).
+- **Exact action pins that worked:**
+  - `actions/checkout@3d3c42e5…` v7.0.1;
+  - `buildpacks/github-actions/setup-pack@a96fc972…` v6.2.0;
+  - `docker/setup-buildx-action@f87e5991…` v4.4.1;
+  - `docker/login-action@dbcb8138…` v4.6.0;
+  - `docker/build-push-action@c3c9e263…` v7.4.0.
+
 ## R4. SBOM, provenance and signing
 
 - **buildx.** Min-level provenance is on by default; `sbom: true` and `provenance: mode=max` are opt-in.

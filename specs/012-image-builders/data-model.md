@@ -37,8 +37,10 @@ cicd:
   edits the field.
 - `deploy.strategy: rolling` is refused for the Portainer target, which always recreates
   (FR-1217).
-- `runtime.version` is a major or major.minor string. It is not checked against the builder here;
-  `chooseBuilder` does that.
+- `runtime.version` is a major, major.minor or major.minor.patch string, kept as precise as the app
+  declares it, because FR-1228 rule 1 keeps exact versions. It is required for every language except
+  `other`, where Railpack picks the version. It is not checked against the builder here;
+  `chooseBuilder` does that by prefix at the declared precision.
 
 ## `ProjectFacts` (opscrew/architecture.json)
 
