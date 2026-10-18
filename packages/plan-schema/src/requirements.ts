@@ -42,6 +42,16 @@ export const RequirementsSchema = z
     contactEmail: z.email().optional(),
     /** In a repository with several apps: the repo-relative directory of the app to deploy. */
     appDir: RepoPathSchema.optional(),
+    /**
+     * Sign each pushed image with cosign keyless (absent means no). For a private repository, the
+     * repository's name and workflow appear in Sigstore's public log; the interview says so.
+     */
+    signImages: z.boolean().optional(),
+    /**
+     * Tag each deploy that passes its health check: a git tag, or a tag plus a GitHub Release naming
+     * the image digest (absent means off).
+     */
+    deployTags: z.enum(["off", "tag", "tag-and-release"]).optional(),
     /** Free text from the user. */
     notes: z.string().optional(),
   })
