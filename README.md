@@ -37,7 +37,7 @@ OpsCrew is an open-source crew of AI agents that does the DevOps and SecOps work
 1. **Scan** your repo for leaked secrets, exposed Supabase/Firebase data and risky config (free, no AI needed).
 2. **Analyze** how your app is built and **interview** you about traffic, budget and regions.
 3. **Design** a deployment that fits your budget and **open a pull request** with the code changes it needs (Dockerfile, health check, config).
-4. **Provision** the infrastructure on your own account with Terraform or OpenTofu. You approve every change before it is applied.
+4. **Provision** the infrastructure on your own account. You approve every change before it is applied.
 5. **Wire up** your domain, TLS and CI/CD, **harden** the server and **verify** the result.
 
 Everything OpsCrew produces is a plain file in your repo: infrastructure code, workflows, reports, a runbook. Delete OpsCrew and your deployment keeps working.
@@ -62,7 +62,7 @@ Before you buy:
 
 ## Development
 
-Requirements: Node.js 22.9+, pnpm 10+, and OpenTofu or Terraform for infrastructure tests.
+Requirements: the tools from the Quickstart, plus pnpm 10+.
 
 ```bash
 pnpm install
