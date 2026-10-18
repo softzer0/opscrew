@@ -715,6 +715,36 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     });
   });
 
+  it("needs no committed Dockerfile when Buildpacks or Railpack builds the image (012)", async () => {
+    for (const builder of ["buildpacks", "railpack"] as const) {
+      const { deps, services, git, root } = await setup();
+      await git(root, "rm", "-q", "Dockerfile");
+      await git(root, "commit", "-q", "-m", "drop dockerfile");
+      const plan = await readArtifact("plan", deps.paths.files.plan);
+      await writeArtifact("plan", deps.paths.files.plan, {
+        ...plan,
+        app: {
+          ...plan.app,
+          build: {
+            builder,
+            chosen: "auto",
+            reason: "a Go app",
+            runtime: { language: "go", version: "1.26" },
+            probe: "bash",
+            automatic: builder,
+          },
+        },
+      });
+      const failure = await runProvision(deps, { services }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure instanceof Error ? failure.message : "", builder).not.toContain(
+        "nothing to build",
+      );
+    }
+  });
+
   it("adds OpsCrew's rules after the user's own rules in the zone, which stay byte-identical", async () => {
     const zone = new FakeZone();
     zone.seedRule(WAF, {

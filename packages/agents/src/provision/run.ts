@@ -92,6 +92,9 @@ async function refreshServerAddress(
 }
 
 async function requireDockerfile(deps: PhaseDeps, git: GitClient, plan: DeployPlan) {
+  // Buildpacks and Railpack build the image from the code: such an app has no Dockerfile.
+  const builder = plan.app.build?.builder;
+  if (builder === "buildpacks" || builder === "railpack") return;
   const dockerfile = join(plan.app.buildContext, plan.app.dockerfile).replace(/\\/g, "/");
   const tracked = await trackedFiles(deps, [dockerfile]);
   if (!(await exists(join(deps.paths.root, dockerfile))) || tracked.length === 0) {
