@@ -69,6 +69,10 @@ export const IMAGES = {
   paketoRun: {
     ref: "paketobuildpacks/ubuntu-noble-run:0.0.145@sha256:577357bc2a59c962ce3f7d816f7ff401f408538832a1c56a9a87f6fc5829df97",
   },
+  /** Portainer CE for the Portainer add-on on a server (the LTS release OpsCrew installs). */
+  portainer: {
+    ref: "portainer/portainer-ce:2.45.2@sha256:03f94a406496dc84d37b552795fc424ccad8d0d7200353b6a82915f6e8f73ab0",
+  },
   /** The Dockerfile frontend named by the generated Dockerfile's `# syntax=` line. */
   dockerfileSyntax: {
     ref: "docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e",

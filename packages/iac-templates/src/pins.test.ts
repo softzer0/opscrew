@@ -69,6 +69,7 @@ describe("pins.ts", () => {
         "nodeAlpine",
         "paketoBuilder",
         "paketoRun",
+        "portainer",
         "postgres",
         "python",
         "railpackFrontend",
