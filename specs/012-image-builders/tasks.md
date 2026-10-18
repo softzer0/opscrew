@@ -243,6 +243,25 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
   - Effort: high
 
+- [ ] T1213 [US1] Fixes from T1208's real Docker pass in `packages/iac-templates/src/workflow/**`, `packages/iac-templates/{src,scripts}` (`TOOL_RELEASES`), the agents' app-environment defaults, `packages/cli/test/e2e/**`
+  - Reads: T1208's report (the lead summarises it in the brief); research.md R7
+  - Depends: T1208
+  - Accept:
+    - **Laravel on Railpack:**
+      - the PHP seal also makes `public` writable for uid 10001;
+      - it drops the file capabilities of FrankenPHP's binary (copy it over itself), since the app listens on its port (8080 by default), not on a low one;
+      - the app then starts under `cap_drop: ALL` and no-new-privileges.
+    - **Production defaults for Rails and Laravel**, through OpsCrew's existing derived and generated values:
+      - Rails gets `RAILS_ENV=production`, and a generated `SECRET_KEY_BASE` (128 hex characters);
+      - Laravel gets `APP_ENV=production`, `APP_DEBUG=false`, `LOG_CHANNEL=stderr` and a generated `APP_KEY` (`base64:` + 32 random bytes);
+      - a value the user already set wins;
+      - generated values are stored like the others and never printed.
+    - **One `TOOL_RELEASES`:** it moves from the pin script's helpers into `packages/iac-templates/src` and is exported. The pin script, the workflow and the e2e Docker pass use it, with no copied download URLs.
+    - **The Docker pass's dev-dependency check** accepts a devDependency that npm keeps because a production package lists it as a peer (`npm explain`). react-router-ssr's `typescript` passes.
+    - **Rerun** the Docker pass for laravel-app, rails-api and react-router-ssr; all three pass every check.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew`, plus the Docker pass for the three apps with `OPSCREW_DOCKER_TESTS=1`
+  - Effort: high
+
 - [ ] T1211 Live runs (lead): the Hetzner pass with the three apps; the own-server and Portainer core passes, to check the new switch, pins and builds there; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 ## Dependencies
