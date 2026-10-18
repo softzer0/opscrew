@@ -82,6 +82,65 @@ from 2026-10-13). **verify** marks what the hands-on comparison task (R7) settle
 - **Memory.** Two copies run during the switch; check this on 1 GB servers (**verify**).
 - **Fallback.** kamal-proxy, if the handover is not clean for long requests, uploads or WebSockets.
 
+### R3 results: the local spike (2026-10-18; `.tools/scratch/012-results-b.md`)
+
+Load was 20 requests per second through Caddy (`caddy:2.11.7-alpine@sha256:d8542f48…`). Each
+result below is failed requests out of all requests sent.
+
+- **Today's switch** (`up -d` with a new tag): 1/689 for an app that starts instantly; **86/697**
+  for an app that takes 3 s to start.
+- **docker-rollout v0.14** (SHA-256 `cdeaba6ae9eee3b0b606286e585bbda6787283d801a6ad6d9b9d2bc347fda05b`; a
+  `sh` script):
+  - With a static `reverse_proxy app:3000`: 0 failures in 4 runs.
+  - With `dynamic a app 3000 { refresh 1s }`, `lb_try_duration 5s` and `lb_try_interval 250ms`:
+    **0/3,237** over 5 runs.
+  - With `refresh 5s`: 9/2,190.
+  - Adding `lb_retries 3`: 2/2,391. Don't set it.
+- **Slow requests and drain.** A 20 s request is cut 10 s after SIGTERM when nothing extends that.
+  It completes when either of these is set:
+  - `stop_grace_period: 30s`. Compose sets the container's `StopTimeout`, and `docker stop` honours
+    it, so R3's "probably ignored" was wrong.
+  - A pre-stop hook `touch /tmp/draining; sleep 25`.
+  A dynamic upstream ignores health, so the old copy keeps getting new requests until it stops.
+  The sleep is what drains.
+- **A broken release: the failing case.**
+  - When `/health` returns 500 but pages return 200, docker-rollout exits 1 and removes the new copy,
+    so no request failed (0/897). **But the unhealthy copy served visitors for about 20 s** (156
+    requests in the Paketo run). Caddy routes to every address Docker's DNS lists, and the new copy
+    is listed at once.
+  - When every route returns 500: **185/996 failed**.
+  - Caddy's passive health checks hide the broken copy, but break healthy rollouts: 403/980 failed
+    with "no upstreams available".
+  - This fails FR-1212.
+- **kamal-proxy `basecamp/kamal-proxy:v0.10.2@sha256:a686220c…`** passed everything:
+  - healthy rollout 0/1,097, and the slow request completed on the old copy;
+  - a release returning 500 everywhere got **zero** requests, and the deploy exited 1 ("target
+    failed to become healthy within configured timeout");
+  - memory: 11 MiB.
+- **Health check without curl or wget:**
+  - slim image: `["CMD","node","-e","fetch('http://127.0.0.1:'+process.env.PORT+'/health',{signal:AbortSignal.timeout(2000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]`;
+  - Buildpacks image: `["CMD","/cnb/lifecycle/launcher","--","node","-e","…"]`. `node` is not on its
+    PATH, and **without `--` the launcher exits 0 whatever the command does**.
+- **Memory during a switch:** two copies of `nextjs-postgres` (81 MiB each), Caddy (20 MiB) and
+  postgres:17-alpine (62 MiB) come to about 246 MiB. With about 250 MiB for the OS and Docker that
+  is about 500 MiB, so it fits a 1 GB server. Next.js's boot peak was not measured.
+- **WebSockets** stay on the old copy and are cut (code 1006) when it stops, with either tool.
+
+**Lead decision, confirmed by the founder (2026-10-18): kamal-proxy, the founder's named fallback
+(2026-10-14), replaces docker-rollout.**
+- **Why.** docker-rollout behind Caddy lets a release that fails its health check serve visitors
+  until the health timeout, which breaks FR-1212. kamal-proxy routes only to a target that passed
+  its health check, and drains the old one.
+- **The setup:**
+  - Caddy stays in front for TLS, headers and the tunnel.
+  - kamal-proxy runs as one more small container on the internal network, and Caddy proxies to it.
+- **The deploy script:**
+  1. start the new app copy (`docker compose up -d --no-deps --no-recreate --scale app=2 app`);
+  2. hand it to kamal-proxy (`kamal-proxy deploy app --target <new>:<port> --health-check-path <path>`
+     with a deploy timeout and a drain timeout);
+  3. remove the old copy on success, or the new one on failure.
+- docker-rollout is not used.
+
 ## R4. SBOM, provenance and signing
 
 - **buildx.** Min-level provenance is on by default; `sbom: true` and `provenance: mode=max` are opt-in.

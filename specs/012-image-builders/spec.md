@@ -365,7 +365,9 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
   The SBOM and provenance attached to the image work on every plan.
 - Workers, cron, extra services and several apps on one server stay in feature 013. Images are
   built for the server's own architecture only.
-- If docker-rollout's handover proves not clean enough, the lead decides on kamal-proxy as the
-  fallback. The user-visible behaviour in User Story 3 stays the same.
+- The switch runs through kamal-proxy, the founder's named fallback, behind Caddy. In the local
+  spike (research R3 results), docker-rollout behind Caddy let a release that failed its health
+  check serve visitors for about 20 s, which breaks FR-1212. kamal-proxy sent it no request. The
+  user-visible behaviour in User Story 3 is unchanged (lead, confirmed by the founder, 2026-10-18).
 - Nothing is released yet, so `plan.yaml` and the generated files change directly, without
   migrations.
