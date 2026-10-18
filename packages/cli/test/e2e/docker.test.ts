@@ -24,7 +24,7 @@
  * - the Compose health check OpsCrew renders for the image passes (`docker exec`), so every probe
  *   (Node, Python, Ruby, PHP, wget, bash through the Buildpacks launcher) runs in a real image;
  * - a Node.js image holds no development dependency, except the release command's tools and what
- *   they need;
+ *   they need, and what npm keeps because a production package lists it as a peer (`npm explain`);
  * - `nextjs-postgres-prisma` (nextjs-postgres with Prisma migrations): `npx --no-install prisma
  *   --version` runs and the engine files it names exist. Prisma's install scripts fetch them, and
  *   a future npm may block install scripts that are not allow-listed (npm 11.19 warns), so this
@@ -42,6 +42,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assembleAppEnv, fixedProductionValue } from "@opscrew/agents";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
 import { FakeAgentRuntime, materializeFixture } from "@opscrew/core/testing";
 import { IMAGES, type PinArch, renderCompose } from "@opscrew/iac-templates";
@@ -334,6 +335,44 @@ function visit(name, from) {
 for (const root of roots) visit(root, dir);
 console.log([...seen].join("\\n"));
 `;
+
+/** The package of a `.../node_modules/<name>/package.json` path (`@scope/name` too). */
+function packageName(file: string): string {
+  return /node_modules\/((?:@[^/]+\/)?[^/]+)\/package\.json$/.exec(file)?.[1] ?? file;
+}
+
+/** An edge `npm explain --json` lists for a package: who depends on it, and how. */
+interface Dependent {
+  type: string;
+  from?: { dev?: boolean };
+}
+
+/**
+ * The packages among `names` that npm keeps under `--omit=dev` although they are development
+ * dependencies, because a production package lists them as a peer (`@react-router/node` lists
+ * `typescript` as an optional one): npm's behaviour, not a leak. Read with `npm explain` in the
+ * container's working directory.
+ */
+async function keptAsPeers(container: string, dir: string, names: string[]): Promise<Set<string>> {
+  if (names.length === 0) return new Set();
+  const explained = await docker([
+    "exec",
+    "-w",
+    dir,
+    container,
+    "npm",
+    "explain",
+    "--json",
+    ...names,
+  ]);
+  if (explained.exitCode !== 0) {
+    throw new Error(`npm explain failed in the container:\n${tail(explained.stderr)}`);
+  }
+  const nodes = JSON.parse(explained.stdout) as { name: string; dependents?: Dependent[] }[];
+  const fromProduction = (edge: Dependent) =>
+    (edge.type === "peer" || edge.type === "peerOptional") && edge.from?.dev !== true;
+  return new Set(nodes.filter((node) => node.dependents?.some(fromProduction)).map((n) => n.name));
+}
 
 /**
  * The Compose file OpsCrew deploys (`renderCompose`), adapted to this computer: the data
@@ -704,12 +743,19 @@ describe.skipIf(SKIP !== undefined)(
           const { plan, appKind, exampleValues } = prepared;
           const port = plan.app.port;
           // Like opscrew/runtime/compose.yaml: PORT, the derived connection URLs, the user's
-          // variables, all capabilities dropped and no privilege escalation.
+          // variables, all capabilities dropped and no privilege escalation. The generated keys
+          // and fixed production settings (RAILS_ENV, APP_KEY) are the ones provision assembles.
+          const assembled = await assembleAppEnv({ plan, ask: async () => ({ skip: true }) });
           const env = new Map<string, string>([["PORT", String(port)]]);
           for (const variable of plan.app.env) {
-            if (variable.name !== "PORT" && !prepared.buildEnv.includes(variable.name)) {
-              env.set(variable.name, placeholder(variable.name, exampleValues.get(variable.name)));
-            }
+            if (variable.name === "PORT" || prepared.buildEnv.includes(variable.name)) continue;
+            const fromOpsCrew =
+              variable.source === "generated" || fixedProductionValue(variable.name) !== undefined;
+            env.set(
+              variable.name,
+              (fromOpsCrew ? assembled.values.app[variable.name] : undefined) ??
+                placeholder(variable.name, exampleValues.get(variable.name)),
+            );
           }
           if (plan.services.postgres) env.set("DATABASE_URL", placeholder("DATABASE_URL"));
           if (plan.services.redis) env.set("REDIS_URL", placeholder("REDIS_URL"));
@@ -853,7 +899,12 @@ describe.skipIf(SKIP !== undefined)(
             ? []
             : lines(await docker(["exec", name, "node", "-e", TOOL_TREE, dir, ...roots]));
         const shipped = lines(found).filter((file) => !tools.includes(file));
-        expect(shipped, `${example}: development dependencies in the image`).toEqual([]);
+        const peers = await keptAsPeers(name, dir, [...new Set(shipped.map(packageName))]);
+        for (const dep of peers) {
+          console.info(`${example}: npm keeps ${dep}, a peer of a production dependency`);
+        }
+        const leaked = shipped.filter((file) => !peers.has(packageName(file)));
+        expect(leaked, `${example}: development dependencies in the image`).toEqual([]);
       });
 
       it.runIf(testCase === PRISMA)(

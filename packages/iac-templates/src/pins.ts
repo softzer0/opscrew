@@ -121,6 +121,48 @@ export const TOOLS = {
 } as const satisfies Record<string, ToolPin>;
 export type ToolKey = keyof typeof TOOLS;
 
+/** A tool {@link TOOL_RELEASES} lists: every tool with a checksum. */
+export type ReleasedTool = Exclude<ToolKey, "cosign">;
+
+/**
+ * Where each tool with a checksum releases: the GitHub repository, its tag and archive per
+ * architecture. cosign has none: `sigstore/cosign-installer` verifies the binary it installs.
+ */
+export const TOOL_RELEASES: Record<
+  ReleasedTool,
+  {
+    repo: string;
+    tag: (version: string) => string;
+    asset: Record<PinArch, (version: string) => string>;
+  }
+> = {
+  pack: {
+    repo: "buildpacks/pack",
+    tag: (v) => `v${v}`,
+    asset: { amd64: (v) => `pack-v${v}-linux.tgz`, arm64: (v) => `pack-v${v}-linux-arm64.tgz` },
+  },
+  cloudflared: {
+    repo: "cloudflare/cloudflared",
+    tag: (v) => v,
+    asset: { amd64: () => "cloudflared-linux-amd64", arm64: () => "cloudflared-linux-arm64" },
+  },
+  railpack: {
+    repo: "railwayapp/railpack",
+    tag: (v) => `v${v}`,
+    asset: {
+      amd64: (v) => `railpack-v${v}-x86_64-unknown-linux-musl.tar.gz`,
+      arm64: (v) => `railpack-v${v}-arm64-unknown-linux-musl.tar.gz`,
+    },
+  },
+};
+
+/** The download URL of the release asset of `tool` at its pinned version, for `arch`. */
+export function toolDownloadUrl(tool: ReleasedTool, arch: PinArch): string {
+  const { version } = TOOLS[tool];
+  const release = TOOL_RELEASES[tool];
+  return `https://github.com/${release.repo}/releases/download/${release.tag(version)}/${release.asset[arch](version)}`;
+}
+
 /**
  * GitHub Actions the workflows use, as `owner/name@<commit> # <tag>`. An action still pinned by
  * tag only (`owner/name@<tag>`) is filled by the script; `@TODO` needs its tag set first.

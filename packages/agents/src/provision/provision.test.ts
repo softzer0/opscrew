@@ -247,6 +247,37 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(everythingPrinted(deps)).not.toContain(secretKey);
   });
 
+  it("sets Laravel's production settings and stores its generated key privately, never printed", async () => {
+    const base = testPlan();
+    const plan = {
+      ...base,
+      app: {
+        ...base.app,
+        env: [
+          { name: "APP_DEBUG", secret: false, source: "derived" as const },
+          { name: "APP_ENV", secret: false, source: "derived" as const },
+          { name: "APP_KEY", secret: true, source: "generated" as const },
+          { name: "LOG_CHANNEL", secret: false, source: "derived" as const },
+        ],
+      },
+    };
+    const { deps, github, services, root } = await setup({ plan });
+    await writeFile(join(root, "production.env"), "");
+    await runProvision(deps, { services });
+
+    const appEnv = github.secrets.get("OPSCREW_APP_ENV") ?? "";
+    expect(appEnv).toContain("APP_ENV=production\nAPP_KEY=base64:");
+    expect(appEnv).toContain("APP_DEBUG=false\n");
+    expect(appEnv).toContain("LOG_CHANNEL=stderr\n");
+    const key = /APP_KEY=(\S+)/.exec(appEnv)?.[1] as string;
+    const stored = JSON.parse(
+      await readFile(join(deps.paths.projectHomeDir, "generated_values.json"), "utf8"),
+    ) as { env: Record<string, string> };
+    expect(stored.env).toEqual({ APP_KEY: key });
+    expect(everythingPrinted(deps)).not.toContain(key.slice("base64:".length));
+    expect(deps.redactor.redact(`${key} in production`)).toBe("[REDACTED:app-env] in production");
+  });
+
   it("fills host lists with the domain when the plan has one", async () => {
     const base = testPlan({ domain: "example.com", www: true });
     const plan = {

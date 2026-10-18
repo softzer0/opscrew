@@ -399,11 +399,20 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 30_000 }, 
   });
 
   it.each([
-    ["ruby", "tmp log storage db"],
-    ["php", "storage bootstrap/cache database"],
+    ["ruby", "tmp log storage db", []],
+    [
+      "php",
+      "storage bootstrap/cache database",
+      [
+        // FrankenPHP's file capability cannot be granted under cap_drop ALL and no-new-privileges.
+        'RUN bin="$(command -v frankenphp)" && cp "$bin" "$bin.new" && mv "$bin.new" "$bin"',
+        // Laravel's storage link, made while the web root is still writable (it stays root's).
+        "RUN if [ -d /app/public ]; then ln -sfn ../storage/app/public /app/public/storage; fi",
+      ],
+    ],
   ] as const)(
     "seals a Railpack %s image as uid 10001, owning its writable folders",
-    (language, dirs) => {
+    (language, dirs, extra) => {
       const folders = dirs
         .split(" ")
         .map((d) => `/app/${d}`)
@@ -412,6 +421,7 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 30_000 }, 
         [
           `FROM ghcr.io/acme/shop:build-${"f".repeat(40)}@${DIGEST}`,
           `RUN mkdir -p ${folders} && chown -R 10001:10001 ${folders}`,
+          ...extra,
           "USER 10001:10001",
           "",
         ].join("\n"),

@@ -151,6 +151,71 @@ describe("assembleAppEnv: defaults and host lists", () => {
   });
 });
 
+describe("assembleAppEnv: production defaults for Rails and Laravel", () => {
+  /** The variables `design` adds for Rails and Laravel. */
+  const RAILS: Env = [
+    { name: "RAILS_ENV", secret: false, source: "derived" },
+    { name: "SECRET_KEY_BASE", secret: true, source: "generated" },
+  ];
+  const LARAVEL: Env = [
+    { name: "APP_DEBUG", secret: false, source: "derived" },
+    { name: "APP_ENV", secret: false, source: "derived" },
+    { name: "APP_KEY", secret: true, source: "generated" },
+    { name: "LOG_CHANNEL", secret: false, source: "derived" },
+  ];
+
+  it("sets the production settings and generates the keys in the frameworks' formats", async () => {
+    const rails = await assembleAppEnv({ plan: plan(RAILS), dotenvText: "" });
+    expect(rails.values.app.RAILS_ENV).toBe("production");
+    expect(rails.values.app.SECRET_KEY_BASE).toMatch(/^[0-9a-f]{128}$/);
+    expect(rails.generated.env).toEqual({ SECRET_KEY_BASE: rails.values.app.SECRET_KEY_BASE });
+
+    const laravel = await assembleAppEnv({ plan: plan(LARAVEL), dotenvText: "" });
+    const { APP_KEY, ...settings } = laravel.values.app;
+    expect(settings).toMatchObject({ APP_ENV: "production", APP_DEBUG: "false" });
+    expect(settings.LOG_CHANNEL).toBe("stderr");
+    expect(APP_KEY).toMatch(/^base64:[A-Za-z0-9+/]{43}=$/);
+    expect(Buffer.from(APP_KEY?.slice("base64:".length) ?? "", "base64")).toHaveLength(32);
+    expect(laravel.generated.env).toEqual({ APP_KEY });
+    expect(parseDotenv(laravel.appEnv).get("APP_KEY")).toBe(APP_KEY);
+  });
+
+  it("keeps the generated keys between runs", async () => {
+    const first = await assembleAppEnv({ plan: plan(LARAVEL), dotenvText: "" });
+    const again = await assembleAppEnv({
+      plan: plan(LARAVEL),
+      dotenvText: "",
+      previous: first.generated,
+    });
+    expect(again.values.app.APP_KEY).toBe(first.values.app.APP_KEY);
+  });
+
+  it("lets a value the user set in the production env file win", async () => {
+    const key = `base64:${Buffer.from(fakeSecret("generic-password")).toString("base64")}`;
+    const result = await assembleAppEnv({
+      plan: plan(LARAVEL),
+      dotenvText: `APP_ENV=staging\nAPP_KEY=${key}\n`,
+      previous: { env: { APP_KEY: "base64:from-an-earlier-run" } },
+    });
+    expect(result.values.app).toMatchObject({ APP_ENV: "staging", APP_KEY: key });
+    expect(result.values.app.APP_DEBUG).toBe("false");
+    // The user's value is theirs: it is not stored with the generated ones.
+    expect(result.generated.env).toEqual({});
+  });
+
+  it("ignores the local .env of an interactive run, which holds development values", async () => {
+    const result = await assembleAppEnv({
+      plan: plan(LARAVEL),
+      dotenvText: "APP_ENV=local\nAPP_DEBUG=true\nAPP_KEY=base64:local-development-key\n",
+      ask: async () => {
+        throw new Error("OpsCrew never asks for a derived or generated value");
+      },
+    });
+    expect(result.values.app).toMatchObject({ APP_ENV: "production", APP_DEBUG: "false" });
+    expect(result.values.app.APP_KEY).toMatch(/^base64:[A-Za-z0-9+/]{43}=$/);
+  });
+});
+
 describe("connection settings under the app's own names (FR-814)", () => {
   it.each([
     ["DATABASE_URL", "postgres"],

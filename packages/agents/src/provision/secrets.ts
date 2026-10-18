@@ -8,7 +8,13 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { type AppEnvironment, assembleAppEnv, type GeneratedValues, hostListKind } from "../shared";
+import {
+  type AppEnvironment,
+  assembleAppEnv,
+  fixedProductionValue,
+  type GeneratedValues,
+  hostListKind,
+} from "../shared";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
 
@@ -71,8 +77,11 @@ export async function buildAppEnvironment(
   await writeFileAtomic(generatedValuesFile(deps), `${JSON.stringify(environment.generated)}\n`);
   const { app, build, db } = environment.values;
   for (const [name, value] of Object.entries({ ...app, ...build })) {
-    // Host lists hold the domain (or the address), which OpsCrew's own messages show as usual.
-    if (hostListKind(name) === undefined) deps.redactor.addLiteral(value, "app-env");
+    // Host lists hold the domain (or the address), which OpsCrew's own messages show as usual, and
+    // a fixed production setting is a plain word (`production`), masked nowhere.
+    if (hostListKind(name) === undefined && fixedProductionValue(name) !== value) {
+      deps.redactor.addLiteral(value, "app-env");
+    }
   }
   if (db !== undefined) deps.redactor.addLiteral(db.password, "app-env");
   if (options.portainer === true) reportUnsetStackVariables(deps, environment);

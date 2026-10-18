@@ -1,7 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan, RuntimeLanguage } from "@opscrew/plan-schema";
-import { TOOL_RELEASES } from "../../scripts/update-pins-lib";
-import { ACTIONS, IMAGES, TOOLS } from "../pins";
+import { ACTIONS, IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import {
   buildArch,
   buildRunner,
@@ -32,11 +31,27 @@ const BUILDPACKS_VERSION_SETTING: Partial<Record<RuntimeLanguage, string>> = {
 /**
  * The folders under `/app` a framework writes to, which the Railpack seal gives to the app's user
  * (Rails for Ruby, Laravel for PHP): Railpack images run as root, and uid 10001 cannot create
- * them in the root-owned `/app`.
+ * them in the root-owned `/app`. The web root (`public`) stays root's.
  */
 const RAILPACK_WRITABLE: Partial<Record<RuntimeLanguage, readonly string[]>> = {
   ruby: ["tmp", "log", "storage", "db"],
   php: ["storage", "bootstrap/cache", "database"],
+};
+
+/**
+ * More seal lines per language. PHP: FrankenPHP's binary carries the file capability
+ * `cap_net_bind_service`, which Compose's `cap_drop: ALL` with no-new-privileges cannot grant, so
+ * starting it fails ("Operation not permitted"). The app listens on its own port (8080 by
+ * default), not a low one, so the seal copies the binary over itself, which drops the capability.
+ * Railpack's Laravel start runs `php artisan storage:link`, which uid 10001 cannot do in the
+ * root-owned web root, so the seal makes the link (`public/storage` → `storage/app/public`) and
+ * the start finds it already there.
+ */
+const RAILPACK_SEAL: Partial<Record<RuntimeLanguage, readonly string[]>> = {
+  php: [
+    'RUN bin="$(command -v frankenphp)" && cp "$bin" "$bin.new" && mv "$bin.new" "$bin"',
+    "RUN if [ -d /app/public ]; then ln -sfn ../storage/app/public /app/public/storage; fi",
+  ],
 };
 
 /** The user every Railpack image runs as after the seal. */
@@ -191,17 +206,14 @@ function buildpacksSteps(plan: DeployPlan): string[] {
 function railpackSteps(plan: DeployPlan): string[] {
   const arch = buildArch(plan);
   const { version } = TOOLS.railpack;
-  const release = TOOL_RELEASES.railpack;
-  const url = `https://github.com/${release.repo}/releases/download/${release.tag(version)}/${release.asset[arch](version)}`;
   const context = JSON.stringify(plan.app.buildContext || ".");
-  const writable = (RAILPACK_WRITABLE[plan.app.build?.runtime.language ?? "other"] ?? []).map(
-    (dir) => `/app/${dir}`,
-  );
+  const language = plan.app.build?.runtime.language ?? "other";
+  const writable = (RAILPACK_WRITABLE[language] ?? []).map((dir) => `/app/${dir}`);
   return [
     `- name: Install Railpack ${version}`,
     ...run([
       "set -euo pipefail",
-      `curl -fsSL --retry 3 -o "$RUNNER_TEMP/railpack.tar.gz" ${url}`,
+      `curl -fsSL --retry 3 -o "$RUNNER_TEMP/railpack.tar.gz" ${toolDownloadUrl("railpack", arch)}`,
       `echo "${TOOLS.railpack.sha256[arch]}  $RUNNER_TEMP/railpack.tar.gz" | sha256sum -c -`,
       'mkdir -p "$RUNNER_TEMP/railpack"',
       'tar -xzf "$RUNNER_TEMP/railpack.tar.gz" -C "$RUNNER_TEMP/railpack"',
@@ -256,6 +268,7 @@ function railpackSteps(plan: DeployPlan): string[] {
         : [
             `RUN mkdir -p ${writable.join(" ")} && chown -R ${RAILPACK_USER} ${writable.join(" ")}`,
           ]),
+      ...(RAILPACK_SEAL[language] ?? []),
       `USER ${RAILPACK_USER}`,
     ]),
   ];

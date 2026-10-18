@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { ACTIONS, IMAGES, TOOLS } from "../src/pins.ts";
+import { ACTIONS, IMAGES, TOOL_RELEASES, TOOLS } from "../src/pins.ts";
 import { imageDigest, registryRequest } from "../src/registry.ts";
 import {
   assetSha256,
@@ -33,7 +33,6 @@ import {
   replaceOffers,
   replacePin,
   setToolChecksum,
-  TOOL_RELEASES,
 } from "./update-pins-lib.ts";
 
 const pinsFile = fileURLToPath(new URL("../src/pins.ts", import.meta.url));

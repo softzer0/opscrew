@@ -8,7 +8,7 @@ import {
   type Requirements,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
-import { deepDomainProblem, hostListKind, serviceUrlKind } from "../shared";
+import { deepDomainProblem, FRAMEWORK_ENV, hostListKind, serviceUrlKind } from "../shared";
 import type { BuilderChoice } from "./builder";
 import {
   appDirOf,
@@ -164,6 +164,14 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       // A code default for a secret is a development placeholder: production needs a value.
       ...(variable.hasDefault === true && !variable.secretLikely ? { optional: true } : {}),
     });
+  }
+  // Rails and Laravel start in development unless told otherwise, and need a key to sign with.
+  for (const framework of facts.frameworks) {
+    const defaults = FRAMEWORK_ENV[framework.name];
+    for (const name of Object.keys(defaults?.fixed ?? {})) env.set(name, derived(name, false));
+    for (const name of Object.keys(defaults?.generated ?? {})) {
+      env.set(name, { name, secret: true, source: "generated" });
+    }
   }
   if (services.postgres) env.set("DATABASE_URL", derived("DATABASE_URL", true));
   if (services.redis) env.set("REDIS_URL", derived("REDIS_URL", false));

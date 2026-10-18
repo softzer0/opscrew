@@ -214,6 +214,28 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     await expect(stat(generated)).rejects.toThrow();
   });
 
+  it("compares Laravel's APP_KEY as Portainer has it when provision's record is missing", async () => {
+    const base = portainerPlan();
+    const plan = {
+      ...base,
+      app: {
+        ...base.app,
+        env: [
+          ...base.app.env,
+          { name: "APP_ENV", secret: false, source: "derived" as const },
+          { name: "APP_KEY", secret: true, source: "generated" as const },
+        ],
+      },
+    };
+    const s = await deployed({ plan });
+    expect((await drift(s)).clean).toBe(true);
+    // Another computer, or the record lost: a key provision would generate now is unknown here.
+    await rm(generatedValuesFile(s.deps));
+    const report = await drift(s);
+    expect(titles(report)).toEqual([]);
+    expect(report.clean).toBe(true);
+  });
+
   it("says when provision's record of the generated values is damaged, and compares them as Portainer has them", async () => {
     const s = await deployed();
     const generated = generatedValuesFile(s.deps);

@@ -1,12 +1,19 @@
 /**
  * What the local Docker pass (`docker.test.ts`) needs to build an image the way the deploy
  * workflow does: the Buildpacks and Railpack settings read from the workflow OpsCrew renders for
- * the plan, and the pinned pack and Railpack release archives, checked against `pins.ts`.
+ * the plan, and the pinned pack and Railpack release archives (`toolDownloadUrl`), checked against
+ * `pins.ts`.
  */
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { type PinArch, type RenderContext, renderWorkflow, TOOLS } from "@opscrew/iac-templates";
+import {
+  type PinArch,
+  type RenderContext,
+  renderWorkflow,
+  TOOLS,
+  toolDownloadUrl,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 
@@ -90,21 +97,6 @@ export function workflowBuild(plan: DeployPlan): WorkflowBuild {
   };
 }
 
-/** The release archives of the pinned pack and Railpack versions (Railpack's musl build, as CI). */
-const RELEASES: Record<"pack" | "railpack", Record<PinArch, (version: string) => string>> = {
-  pack: {
-    amd64: (v) => `https://github.com/buildpacks/pack/releases/download/v${v}/pack-v${v}-linux.tgz`,
-    arm64: (v) =>
-      `https://github.com/buildpacks/pack/releases/download/v${v}/pack-v${v}-linux-arm64.tgz`,
-  },
-  railpack: {
-    amd64: (v) =>
-      `https://github.com/railwayapp/railpack/releases/download/v${v}/railpack-v${v}-x86_64-unknown-linux-musl.tar.gz`,
-    arm64: (v) =>
-      `https://github.com/railwayapp/railpack/releases/download/v${v}/railpack-v${v}-arm64-unknown-linux-musl.tar.gz`,
-  },
-};
-
 /**
  * Downloads the pinned release archive of `tool` for `arch` into `dir` and checks it against the
  * SHA-256 in `pins.ts`, as the workflow does. Returns the archive's path.
@@ -114,8 +106,8 @@ export async function toolArchive(
   arch: PinArch,
   dir: string,
 ): Promise<string> {
-  const { version, sha256 } = TOOLS[tool];
-  const url = RELEASES[tool][arch](version);
+  const { sha256 } = TOOLS[tool];
+  const url = toolDownloadUrl(tool, arch);
   const response = await fetch(url, { signal: AbortSignal.timeout(300_000) });
   if (!response.ok) throw new Error(`Downloading ${url} failed with HTTP ${response.status}.`);
   const body = Buffer.from(await response.arrayBuffer());

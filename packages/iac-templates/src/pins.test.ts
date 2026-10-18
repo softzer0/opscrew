@@ -15,9 +15,17 @@ import {
   replaceOffers,
   replacePin,
   setToolChecksum,
-  TOOL_RELEASES,
 } from "../scripts/update-pins-lib";
-import { ACTIONS, BUILDPACKS_OFFERS, detectStack, IMAGES, RUNTIME_DEFAULTS, TOOLS } from "./index";
+import {
+  ACTIONS,
+  BUILDPACKS_OFFERS,
+  detectStack,
+  IMAGES,
+  RUNTIME_DEFAULTS,
+  TOOL_RELEASES,
+  TOOLS,
+  toolDownloadUrl,
+} from "./index";
 
 const SOURCE = readFile(new URL("./pins.ts", import.meta.url), "utf8");
 const FIXTURES = new URL("./__fixtures__/pins/", import.meta.url);
@@ -247,6 +255,12 @@ describe("the pin script's helpers", () => {
     );
     expect(TOOL_RELEASES.pack.asset.arm64("0.40.9")).toBe("pack-v0.40.9-linux-arm64.tgz");
     expect(Object.keys(TOOL_RELEASES).sort()).toEqual(["cloudflared", "pack", "railpack"]);
+    expect(toolDownloadUrl("railpack", "arm64")).toBe(
+      `https://github.com/railwayapp/railpack/releases/download/v${TOOLS.railpack.version}/railpack-v${TOOLS.railpack.version}-arm64-unknown-linux-musl.tar.gz`,
+    );
+    expect(toolDownloadUrl("cloudflared", "amd64")).toBe(
+      `https://github.com/cloudflare/cloudflared/releases/download/${TOOLS.cloudflared.version}/cloudflared-linux-amd64`,
+    );
 
     const sha = "b".repeat(64);
     const release = {

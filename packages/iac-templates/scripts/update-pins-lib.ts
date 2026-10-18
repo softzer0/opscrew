@@ -3,7 +3,7 @@
  * metadata, and rewriting values in `src/pins.ts`. Tested in `src/pins.test.ts`; nothing here
  * touches the network. The registry requests are in `src/registry.ts`.
  */
-import type { BUILDPACKS_OFFERS, PinArch, ToolKey } from "../src/pins";
+import type { BUILDPACKS_OFFERS, PinArch } from "../src/pins";
 
 type OfferLanguage = keyof typeof BUILDPACKS_OFFERS;
 
@@ -57,38 +57,6 @@ export function parseActionPin(value: string): ActionPin {
 export function formatActionPin(pin: Required<ActionPin>): string {
   return `${pin.action}@${pin.sha} # ${pin.tag}`;
 }
-
-/**
- * Where each tool with a checksum releases: the GitHub repository, its tag and archive per
- * architecture. cosign has none: `sigstore/cosign-installer` verifies the binary it installs.
- */
-export const TOOL_RELEASES: Record<
-  Exclude<ToolKey, "cosign">,
-  {
-    repo: string;
-    tag: (version: string) => string;
-    asset: Record<PinArch, (version: string) => string>;
-  }
-> = {
-  pack: {
-    repo: "buildpacks/pack",
-    tag: (v) => `v${v}`,
-    asset: { amd64: (v) => `pack-v${v}-linux.tgz`, arm64: (v) => `pack-v${v}-linux-arm64.tgz` },
-  },
-  cloudflared: {
-    repo: "cloudflare/cloudflared",
-    tag: (v) => v,
-    asset: { amd64: () => "cloudflared-linux-amd64", arm64: () => "cloudflared-linux-arm64" },
-  },
-  railpack: {
-    repo: "railwayapp/railpack",
-    tag: (v) => `v${v}`,
-    asset: {
-      amd64: (v) => `railpack-v${v}-x86_64-unknown-linux-musl.tar.gz`,
-      arm64: (v) => `railpack-v${v}-arm64-unknown-linux-musl.tar.gz`,
-    },
-  },
-};
 
 /** The SHA-256 GitHub records for the asset `name` of a release (the API's `digest`). */
 export function assetSha256(release: unknown, name: string): string {

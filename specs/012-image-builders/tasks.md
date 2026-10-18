@@ -243,7 +243,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew` (live parts skipped)
   - Effort: high
 
-- [ ] T1213 [US1] Fixes from T1208's real Docker pass in `packages/iac-templates/src/workflow/**`, `packages/iac-templates/{src,scripts}` (`TOOL_RELEASES`), the agents' app-environment defaults, `packages/cli/test/e2e/**`
+- [X] T1213 [US1] Fixes from T1208's real Docker pass in `packages/iac-templates/src/workflow/**`, `packages/iac-templates/{src,scripts}` (`TOOL_RELEASES`), the agents' app-environment defaults, `packages/cli/test/e2e/**`
   - Reads: T1208's report (the lead summarises it in the brief); research.md R7
   - Depends: T1208
   - Accept:

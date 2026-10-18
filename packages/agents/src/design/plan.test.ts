@@ -469,3 +469,39 @@ describe("examples/django-postgres: facts → plan → production environment", 
     );
   });
 });
+
+describe("examples/rails-api and examples/laravel-app: production defaults", () => {
+  async function examplePlan(name: string) {
+    const root = fileURLToPath(new URL(`../../../../examples/${name}/`, import.meta.url));
+    const facts = await detectProject(root);
+    const requirements = makeRequirements();
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    return optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [] });
+  }
+  const byName = (plan: Awaited<ReturnType<typeof examplePlan>>) =>
+    Object.fromEntries(plan.app.env.map((v) => [v.name, v]));
+
+  it("plans RAILS_ENV as derived and SECRET_KEY_BASE as generated for Rails", async () => {
+    const env = byName(await examplePlan("rails-api"));
+    expect(env.RAILS_ENV).toEqual({ name: "RAILS_ENV", secret: false, source: "derived" });
+    expect(env.SECRET_KEY_BASE).toEqual({
+      name: "SECRET_KEY_BASE",
+      secret: true,
+      source: "generated",
+    });
+  });
+
+  it("plans Laravel's production settings as derived and APP_KEY as generated", async () => {
+    const plan = await examplePlan("laravel-app");
+    const env = byName(plan);
+    for (const name of ["APP_DEBUG", "APP_ENV", "LOG_CHANNEL"]) {
+      expect(env[name]).toEqual({ name, secret: false, source: "derived" });
+    }
+    expect(env.APP_KEY).toEqual({ name: "APP_KEY", secret: true, source: "generated" });
+    // A run without a value for any of them still has them all.
+    const assembled = await assembleAppEnv({ plan, ask: async () => ({ skip: true }) });
+    expect(assembled.values.app).toMatchObject({ APP_ENV: "production", APP_DEBUG: "false" });
+    expect(serializeArtifact("plan", plan)).not.toContain(assembled.values.app.APP_KEY as string);
+  });
+});
