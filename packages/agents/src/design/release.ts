@@ -14,8 +14,8 @@ export interface ReleaseCommandNote {
  * that `app.releaseCommand` in `opscrew/plan.yaml` changes or removes it, followed by detection's
  * note when it skipped a package script (then a warning). Without a command in the
  * plan: why a detected command was left out (a warning: the image lacks the tool, as the Next.js
- * standalone image lacks Drizzle or Prisma, or OpsCrew cannot build an image that runs it yet, as
- * for Rails or Diesel); else detection's note (`facts.build.releaseNote`: the app migrates when it
+ * standalone image lacks a tool OpsCrew does not install, such as KeystoneJS or AdonisJS, or OpsCrew
+ * cannot build an image that runs it yet, as for Rails or Diesel); else detection's note (`facts.build.releaseNote`: the app migrates when it
  * starts, which needs no attention, or the tool is missing, a warning); else a hint when the plan
  * has a database. `undefined` when there is nothing to say.
  */

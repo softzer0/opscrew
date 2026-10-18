@@ -68,27 +68,25 @@ describe("releaseCommandNote", () => {
     expect(note?.text).toContain("app.releaseCommand");
   });
 
-  it("warns that a Next.js standalone image cannot run Prisma migrations", async () => {
+  it("keeps Prisma migrations for a Next.js standalone image, which holds the Prisma CLI (012)", async () => {
     const facts = nextPostgresFacts({
       build: { buildCommand: "npm run build", releaseCommand: "npx prisma migrate deploy" },
     });
     const plan = await planFor(facts);
-    expect("releaseCommand" in plan.app).toBe(false);
+    expect(plan.app.releaseCommand).toBe("npx prisma migrate deploy");
     const note = releaseCommandNote(plan, facts);
-    expect(note?.warning).toBe(true);
-    expect(note?.text).toContain("Prisma migrations");
-    expect(note?.text).not.toContain("no database migration command");
+    expect(note?.warning).toBe(false);
+    expect(note?.text).toContain("Every deploy runs `npx prisma migrate deploy`");
   });
 
-  it("warns that a Next.js standalone image cannot run Drizzle migrations", async () => {
+  it("keeps Drizzle migrations for a Next.js standalone image, which holds drizzle-kit (012)", async () => {
     const facts = nextPostgresFacts({
       build: { buildCommand: "npm run build", releaseCommand: "npx drizzle-kit migrate" },
     });
     const plan = await planFor(facts);
-    expect("releaseCommand" in plan.app).toBe(false);
+    expect(plan.app.releaseCommand).toBe("npx drizzle-kit migrate");
     const note = releaseCommandNote(plan, facts);
-    expect(note?.warning).toBe(true);
-    expect(note?.text).toContain("Drizzle migrations");
+    expect(note?.warning).toBe(false);
     expect(note?.text).toContain("app.releaseCommand");
   });
 

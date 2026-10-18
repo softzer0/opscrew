@@ -172,16 +172,16 @@ describe("runDesign", () => {
     expect(text).toContain("app.releaseCommand");
   });
 
-  it("warns when the image cannot run the migrations OpsCrew found", async () => {
+  it("keeps the migrations OpsCrew found, since the standalone image holds the Prisma CLI (012)", async () => {
     const deps = await setup(
       nextPostgresFacts({
         build: { buildCommand: "npm run build", releaseCommand: "npx prisma migrate deploy" },
       }),
     );
     const result = await runDesign(deps, { catalog: euCatalog() });
-    expect(result.plan.app.releaseCommand).toBeUndefined();
-    expect(result.warnings.join("\n")).toContain("OpsCrew found Prisma migrations");
-    expect(deps.reporter.text()).not.toContain("no database migration command");
+    expect(result.plan.app.releaseCommand).toBe("npx prisma migrate deploy");
+    expect(result.warnings.join("\n")).not.toContain("OpsCrew found Prisma migrations");
+    expect(deps.reporter.text()).toContain("Every deploy runs `npx prisma migrate deploy`");
   });
 
   it("says nothing about migrations for an app without a command or a database", async () => {
