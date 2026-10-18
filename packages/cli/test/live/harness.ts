@@ -1,16 +1,7 @@
-/**
- * The shared harness of the live tests on a throwaway server (`own-server.test.ts` and
- * `portainer-target.test.ts`): ordered steps that stop at the first failure, the log and its
- * scrubber, the built CLI run non-interactively, the step-1 bootstrap (the throwaway repository
- * and the throwaway Hetzner server with root SSH), provision until every plan is applied, the
- * deploy, a second app in the same zone and account (feature 011), the zone's shared rules and
- * the rules seeded as the user's, and the cleanup that always runs (the servers, what the run
- * created in Cloudflare, the seeded rules, the repositories). Nothing the harness prints holds a
- * known secret or the server's address.
- */
+/** The shared harness of the live tests on a throwaway server (own server and Portainer). */
 import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -190,6 +181,13 @@ export interface CliRun {
   output: string;
 }
 
+/** One text the leak search reads; `where` names it in a leak. */
+export interface LeakSource {
+  kind: "commits" | "pull request" | "audit log";
+  where: string;
+  text: string;
+}
+
 /** A function the cleanup runs one action with: errors and returned problems are collected. */
 export type CleanupAttempt = (what: string, body: () => Promise<unknown>) => Promise<void>;
 
@@ -278,14 +276,21 @@ export class LiveRun {
   }
 
   /**
-   * The run's second app, B (feature 011): its own temporary folder, project, throwaway repository
-   * (`settings.githubRepo`), SSH key and server, with this run's id (its server carries the same
-   * label), the hostname `e2e-<run id>-b.<zone>`, and this run's scrubber, CLI outputs and
-   * findings. Its steps go through this run's `step`; this run's cleanup also removes what it
-   * created, and {@link expectSharedCloudflare} counts its hostnames.
+   * The run's second app, B, on `OPSCREW_E2E_GITHUB_REPO_B`, sharing this run's id, scrubber,
+   * outputs, findings and cleanup; `undefined` when {@link secondAppSkip} gives a reason.
    */
-  second(options: LiveRunOptions): LiveRun {
-    const second = new LiveRun(options, this);
+  second(afterCli?: () => Promise<void>): LiveRun | undefined {
+    const { label, name, settings } = this.options;
+    if (secondAppSkip(settings) !== undefined) return undefined;
+    const second = new LiveRun(
+      {
+        label: `${label}, B`,
+        name: `${name}-b`,
+        settings: { ...settings, githubRepo: settings.secondRepo },
+        afterCli,
+      },
+      this,
+    );
     this.children.push(second);
     return second;
   }
@@ -419,8 +424,30 @@ export class LiveRun {
     return this.opscrewOkWith({}, ...args);
   }
 
-  /** The infrastructure outputs (tunnel tokens, the Access service token), read with the engine. */
-  async infraOutputs(): Promise<Record<string, unknown>> {
+  /**
+   * Adds the infrastructure outputs `names` (tunnel tokens, the Access service token) to the
+   * scrubber; one it cannot read is a finding, not a reason to stop the run.
+   */
+  async rememberOutputs(names: readonly string[]): Promise<void> {
+    const outputs = await this.infraOutputs().catch((error: unknown) => {
+      this.findings.push(
+        `could not read the infrastructure outputs, so the leak search misses ${names.join(", ")}: ${String(error)}`,
+      );
+      return {} as Record<string, unknown>;
+    });
+    for (const name of names) {
+      const value = outputs[name];
+      if (typeof value === "string" && value !== "") {
+        this.scrubber.add(value, name.replaceAll("_", "-"));
+      } else {
+        this.findings.push(
+          `the infrastructure outputs have no ${name}, so the leak search misses it`,
+        );
+      }
+    }
+  }
+
+  private async infraOutputs(): Promise<Record<string, unknown>> {
     const plan = await this.readPlan();
     const engine = await selectEngine("auto", { env: this.env, runner: this.runner });
     const engineEnv = { ...this.env };
@@ -694,14 +721,7 @@ export class LiveRun {
     );
   }
 
-  /**
-   * After `what` (a provision or a destroy), with one live test in the zone: the zone's rules
-   * OpsCrew did not create (the seeded ones among them) are byte-identical and in the same order
-   * as right after {@link seedUserRules}; OpsCrew's rule of each ref (found by `ref`) lists exactly
-   * what it listed before the run plus the hostnames of this run's apps that are not destroyed
-   * (`appRules` of their plans), so it is gone when it listed nothing else before the run; and
-   * the account's Zero Trust organization and one-time PIN logins seen so far are still there.
-   */
+  /** The checks after every provision and destroy of docs/e2e.md ("Your own server", step 2). */
   async expectSharedCloudflare(what: string): Promise<void> {
     const zone = this.zone as CloudflareZone;
     const now = await this.cloudflare.sharedEntrypoints(zone);
@@ -909,6 +929,11 @@ export class LiveRun {
     return this.expectDeployed(run, what);
   }
 
+  /** {@link deploy}, or {@link deployMain} when provision committed nothing, as a user would. */
+  async deployAny(what: string): Promise<number> {
+    return (await this.deploy(what)) ?? this.deployMain(what);
+  }
+
   private expectDeployed(
     run: Awaited<ReturnType<GitHubRepo["waitForDeploy"]>>,
     what: string,
@@ -937,6 +962,42 @@ export class LiveRun {
   }
 
   /**
+   * What the leak search reads in each app with a repository ("(B)" in the second app's labels):
+   * the commits of every branch and of `refs/e2e/*`, the pull requests since the run started, and
+   * the audit logs.
+   */
+  async leakSources(): Promise<LeakSource[]> {
+    const sources: LeakSource[] = [];
+    for (const app of [this, ...this.children].filter((item) => item.repoReady)) {
+      const which = app === this ? "" : " (B)";
+      await app.git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*");
+      sources.push({
+        kind: "commits",
+        where: `the commits (every branch)${which}`,
+        text: await app.git("log", "--all", "-p", "--format=%B"),
+      });
+      for (const pull of await app.github.pullRequestTexts()) {
+        if (pull.createdAt < app.startedAt) continue;
+        sources.push({
+          kind: "pull request",
+          where: `pull request #${pull.number}${which}`,
+          text: pull.text,
+        });
+      }
+      const auditDir = app.paths().auditDir;
+      if (!existsSync(auditDir)) continue;
+      for (const file of await readdir(auditDir)) {
+        sources.push({
+          kind: "audit log",
+          where: `the audit log ${file}${which}`,
+          text: await readFile(join(auditDir, file), "utf8"),
+        });
+      }
+    }
+    return sources;
+  }
+
+  /**
    * The end of the leak search: logs every leak and finding (built from labels, command lines,
    * file names and counts, never from the leaked text) and fails when there is any.
    */
@@ -948,14 +1009,8 @@ export class LiveRun {
   }
 
   /**
-   * The cleanup, after every step and always, for this app and the second one: `first` (for
-   * example stopping a tunnel), the throwaway servers, their keys and firewalls (they are billed),
-   * then what each app created in Cloudflare (also after a finished destroy, which should have
-   * left nothing; only ids that were not there before the run), then the zone's rules
-   * (`removeRulesOfRun`: the seeded ones, OpsCrew's rules left holding only the run's hostnames,
-   * an entrypoint the run created once it is empty), then `cloudflare` (more checks there), then
-   * the repositories' reset and the temporary folders. Problems are collected and fail the cleanup
-   * at the end.
+   * The cleanup of docs/e2e.md for both apps, after every step and always, with `first` before it
+   * and `cloudflare` after the zone's rules; problems are collected and fail it at the end.
    */
   registerCleanup(
     options: { first?: () => void; cloudflare?: (attempt: CleanupAttempt) => Promise<void> } = {},

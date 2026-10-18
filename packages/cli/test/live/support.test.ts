@@ -221,6 +221,9 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
       "opscrew-block-probes": undefined,
       "opscrew-strict-tls": ["a.example.com"],
     });
+    // Only OpsCrew's `http.host in {…}` form lists hostnames.
+    const single = { ...tls([]), expression: '(http.host eq "a.example.com")' };
+    expect(sharedRuleHosts(zone(undefined, [single]))["opscrew-strict-tls"]).toEqual([]);
   });
 
   it("compares the rules OpsCrew did not create byte for byte and in their order", () => {

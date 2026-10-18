@@ -210,7 +210,7 @@ Four read-only reviewers checked the whole feature (`bc01843..b73fad1`) by area.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server` and `node plugin/validate.mjs`
   - Effort: medium
 
-- [ ] T1113 [P] The live harness in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
+- [X] T1113 [P] The live harness in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Accept:
     - **Shared harness methods.**

@@ -1,22 +1,6 @@
-/**
- * Live end-to-end test on a server the user already owns (feature 009, quickstart "Gated live
- * test", steps 1–7). It creates a throwaway Hetzner server outside OpsCrew (the Hetzner API
- * directly, its own SSH key generated at runtime) and treats it as the user's own; OpsCrew never
- * gets the Hetzner token. On it, with a throwaway GitHub repository and a hostname in a Cloudflare
- * zone, the built CLI runs the whole flow: DNS only → re-run → Portainer → the Cloudflare-only
- * filter (with a reboot) → the tunnel (with a merged change) → `destroy --undo-host`. With
- * `OPSCREW_E2E_GITHUB_REPO_B`, a second app goes on a second throwaway server in tunnel mode into
- * the same zone and account before the first one's destroy, and is destroyed after it (feature
- * 011). A rule of the user's own seeded in each of OpsCrew's rule phases must stay byte-identical
- * after every provision and destroy, and OpsCrew's shared rules must list exactly the live apps'
- * hostnames. The servers and their keys are always deleted (afterAll), and what OpsCrew created in
- * Cloudflare is removed through the API when `destroy` did not finish. Nothing the test prints
- * contains a server's address or a secret: every line goes through a scrubber. Runs only with
- * OPSCREW_E2E_OWN_SERVER=1 and the variables in docs/e2e.md; costs a few cents of server time.
- */
+/** The live test on a server the user already owns (docs/e2e.md, "Your own server"). */
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect } from "vitest";
 import {
@@ -59,6 +43,12 @@ if (MISSING.length === 0 && SECOND_SKIP !== undefined) {
 }
 
 const PORTAINER_PORTS = [9443, 9000, 8000];
+/** The tunnel's and the Access service token's secrets, for the leak search. */
+const TUNNEL_OUTPUTS = [
+  "tunnel_token",
+  "deploy_service_token_client_secret",
+  "deploy_service_token_client_id",
+];
 /** SC-901: a deploy on the user's own server takes under 20 minutes from `opscrew init`. */
 const INIT_TO_DEPLOY_TARGET_MS = 20 * 60_000;
 
@@ -73,14 +63,7 @@ describe.skipIf(MISSING.length > 0)(
     const { log, scrubber } = run;
     const { appHost } = run;
     /** The second app, B, on its own server (steps 6b and 7b), when its steps run. */
-    const b =
-      SECOND_SKIP === undefined
-        ? run.second({
-            label: "own server, B",
-            name: "own-b",
-            settings: { ...SETTINGS, githubRepo: SETTINGS.secondRepo },
-          })
-        : undefined;
+    const b = run.second();
     const second = () => b as LiveRun;
     let fingerprint = "";
     let ipv6Route = false;
@@ -122,14 +105,6 @@ describe.skipIf(MISSING.length > 0)(
       }
     }
 
-    /**
-     * Deploys what the last provision of `app` prepared; when provision committed nothing, the
-     * deploy workflow on main is started instead.
-     */
-    async function deploy(what: string, app = run): Promise<void> {
-      if ((await app.deploy(what)) === undefined) await app.deployMain(what);
-    }
-
     /** Waits until the app's domain resolves (through 1.1.1.1) to its server or to Cloudflare. */
     async function waitForDns(direct: boolean, app = run): Promise<void> {
       const where = direct ? "at the server" : "at Cloudflare";
@@ -159,33 +134,6 @@ describe.skipIf(MISSING.length > 0)(
         log("this computer has no IPv6 route: the server's IPv6 address is not tried");
       const open = await answering(ports);
       expect(open, `the server's own address answers on ${open.join(", ")} (${why})`).toEqual([]);
-    }
-
-    /**
-     * Adds the tunnel's and the Access service token's secrets of `app` to the scrubber for the leak
-     * search; not finding them is a finding, not a reason to stop the run.
-     */
-    async function rememberTunnelSecrets(app: LiveRun): Promise<void> {
-      const outputsNow = await app.infraOutputs().catch((error: unknown) => {
-        run.findings.push(
-          `could not read the infrastructure outputs, so the leak search misses the tunnel token: ${String(error)}`,
-        );
-        return {} as Record<string, unknown>;
-      });
-      for (const name of [
-        "tunnel_token",
-        "deploy_service_token_client_secret",
-        "deploy_service_token_client_id",
-      ]) {
-        const value = outputsNow[name];
-        if (typeof value === "string" && value !== "") {
-          scrubber.add(value, name.replaceAll("_", "-"));
-        } else {
-          run.findings.push(
-            `the infrastructure outputs have no ${name}, so the leak search could not look for it`,
-          );
-        }
-      }
     }
 
     /**
@@ -277,7 +225,7 @@ describe.skipIf(MISSING.length > 0)(
         await run.expectSharedCloudflare("the DNS-only provision");
         await run.rememberSecretFile(run.paths().files.deployKey, "deploy-private-key");
         await run.rememberSecretFile(run.paths().files.statePassphrase, "state-passphrase");
-        await deploy("the first deploy, DNS only");
+        await run.deployAny("the first deploy, DNS only");
 
         await waitForDns(true);
         await run.waitForHealth(minutes(10), false);
@@ -414,7 +362,7 @@ describe.skipIf(MISSING.length > 0)(
         ).toBe(true);
         await run.provisionUntilDone("the Cloudflare-only filter");
         await run.expectSharedCloudflare("the switch to the Cloudflare-only filter");
-        await deploy("the Cloudflare-only filter");
+        await run.deployAny("the Cloudflare-only filter");
 
         const portainer = JSON.parse(
           (await run.opscrewOk("portainer", "status", "--json")).stdout,
@@ -503,8 +451,8 @@ describe.skipIf(MISSING.length > 0)(
         await run.provisionUntilDone("the tunnel");
         // A tunnel app is only in the probe block: its strict-TLS hostnames left OpsCrew's rule.
         await run.expectSharedCloudflare("the switch to the tunnel");
-        await rememberTunnelSecrets(run);
-        await deploy("the tunnel");
+        await run.rememberOutputs(TUNNEL_OUTPUTS);
+        await run.deployAny("the tunnel");
 
         const ufw = ufwRulesBeyondSsh(await run.shell().ok("ufw status"));
         expect(ufw.active, "ufw is active").toBe(true);
@@ -614,8 +562,8 @@ describe.skipIf(MISSING.length > 0)(
         await run.expectSharedCloudflare("the second app's provision");
         await app.rememberSecretFile(app.paths().files.deployKey, "deploy-private-key");
         await app.rememberSecretFile(app.paths().files.statePassphrase, "state-passphrase");
-        await rememberTunnelSecrets(app);
-        await deploy("the second app", app);
+        await app.rememberOutputs(TUNNEL_OUTPUTS);
+        await app.deployAny("the second app");
         await waitForDns(false, app);
         await app.waitForHealth();
         await app.opscrewOk("verify");
@@ -683,28 +631,9 @@ describe.skipIf(MISSING.length > 0)(
         const known = scrubber.entries();
         const secrets = known.filter(({ label }) => !label.startsWith("server-"));
         const problems: string[] = [];
-        for (const app of [run, ...(b?.repoReady === true ? [b] : [])]) {
-          const which = app === run ? "" : " of the second app";
-          await app.git("fetch", "-q", "origin");
-          const inHistory = leakedLabels(await app.git("log", "--all", "-p", "--format=%B"), known);
-          if (inHistory.length > 0) {
-            problems.push(`commits${which} contain: ${inHistory.join(", ")}`);
-          }
-          for (const pull of await app.github.pullRequestTexts()) {
-            if (pull.createdAt < app.startedAt) continue;
-            const found = leakedLabels(pull.text, known);
-            if (found.length > 0)
-              problems.push(`pull request #${pull.number}${which} contains: ${found.join(", ")}`);
-          }
-          const auditDir = app.paths().auditDir;
-          if (existsSync(auditDir)) {
-            for (const file of await readdir(auditDir)) {
-              const found = leakedLabels(await readFile(join(auditDir, file), "utf8"), secrets);
-              if (found.length > 0) {
-                problems.push(`audit log ${file}${which} contains: ${found.join(", ")}`);
-              }
-            }
-          }
+        for (const { kind, where, text } of await run.leakSources()) {
+          const found = leakedLabels(text, kind === "audit log" ? secrets : known);
+          if (found.length > 0) problems.push(`${where} contains: ${found.join(", ")}`);
         }
         problems.push(...run.sharedPlanLeaks(known, true));
         // The CLI shows the server's address on purpose only in the Portainer tunnel command and

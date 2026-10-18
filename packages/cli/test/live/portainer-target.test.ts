@@ -1,30 +1,5 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: compose files hold ${…} on purpose.
-/**
- * Live end-to-end test for an existing Portainer as a deploy target (feature 010, quickstart
- * "Gated live test", steps 1–6, and the live checks of tasks.md T1008). It creates a throwaway
- * Hetzner server outside OpsCrew (its own SSH key and firewall), installs Portainer CE 2.45.2 on it
- * as "the user's existing Portainer" (admin through the setup token, the local environment, an
- * admin's and a limited user's access tokens), adds a decoy Compose project and a decoy Portainer
- * stack, and drives the built CLI (and once the MCP server) through every web and redeploy mode:
- * updater + tunnel (with a change that deploys by itself and one that rolls back), a registry token
- * replaced through MCP, caddy, proxy (with `verify --url`), the Cloudflare redeploy mode, then
- * `destroy` with and without `--delete-data`, and finally two setups of their own with a loopback
- * and a short Portainer address (OpsCrew refuses another address while its record lists
- * anything), each removed with its data. With `OPSCREW_E2E_GITHUB_REPO_B`, a second app goes into
- * the same Portainer, zone and account with the tunnel (step 7b) before the first one's destroy,
- * and is destroyed after it (step 9b; feature 011). A rule of the user's own seeded in each of
- * OpsCrew's rule phases must stay byte-identical after every provision and destroy, and OpsCrew's
- * shared rules must list exactly the live apps' hostnames. The server, its key and firewall are
- * always deleted (afterAll), and what OpsCrew created in Cloudflare is removed through the API
- * when `destroy` did not finish. Nothing the test prints contains a token, a secret, the server's
- * address or Portainer's: every line goes through a scrubber. Runs only with
- * OPSCREW_E2E_PORTAINER=1 and the variables in docs/e2e.md ("Your existing Portainer"); costs a
- * few cents of server time.
- *
- * `OPSCREW_E2E_PORTAINER_STEPS` selects the steps (`portainerSteps`): `core` (the default, about
- * 15 minutes), `full` (every step) or a list such as `11,12`, which also takes the steps those
- * need; every run starts from a fresh server and removes it at the end.
- */
+/** The live test in a Portainer the user already runs (docs/e2e.md, "Your existing Portainer"). */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { promises as dnsPromises } from "node:dns";
@@ -174,15 +149,7 @@ describe.skipIf(MISSING.length > 0)(
       afterCli: () => keepPlans(run, ""),
     });
     /** The second app, B: its own stacks in the same Portainer (steps 7b and 9b), when they run. */
-    const b: LiveRun | undefined =
-      SECOND_SKIP === undefined
-        ? run.second({
-            label: "Portainer, B",
-            name: "portainer-b",
-            settings: { ...SETTINGS, githubRepo: SETTINGS.secondRepo },
-            afterCli: () => keepPlans(b as LiveRun, "b/"),
-          })
-        : undefined;
+    const b: LiveRun | undefined = run.second(() => keepPlans(b as LiveRun, "b/"));
     const second = () => b as LiveRun;
     /** Whether the second app is set up and not destroyed. */
     const secondUp = () => b?.appName !== undefined && !b.destroyed;
@@ -227,7 +194,7 @@ describe.skipIf(MISSING.length > 0)(
     if (MISSING.length === 0) {
       const pass = STEPS_VALUE?.trim() || "core";
       const estimates: Record<string, string> = {
-        core: "; expected to take about 15 minutes",
+        core: "; expected to take about 15 minutes (21 with the second app)",
         full: "; expected to take about 1–1½ hours",
       };
       log(
@@ -244,16 +211,16 @@ describe.skipIf(MISSING.length > 0)(
       title: string,
       timeoutMs: number,
       body: () => Promise<void>,
-      options: { always?: boolean; skip?: string | undefined } = {},
+      options: { always?: boolean; skip?: string } = {},
     ) {
-      const selected = SELECTED.includes(stepNumber(title));
-      const skip = selected
-        ? options.skip
-        : "not selected; OPSCREW_E2E_PORTAINER_STEPS=full or a list with it runs it";
-      run.step(title, timeoutMs, body, {
-        ...(options.always === true ? { always: true } : {}),
-        ...(skip === undefined ? {} : { skip }),
-      });
+      run.step(
+        title,
+        timeoutMs,
+        body,
+        SELECTED.includes(stepNumber(title))
+          ? options
+          : { skip: "not selected; OPSCREW_E2E_PORTAINER_STEPS=full or a list with it runs it" },
+      );
     }
 
     const portainer = () => admin as PortainerApi;
@@ -728,21 +695,7 @@ describe.skipIf(MISSING.length > 0)(
         }
       }
       await app.rememberSecretFile(app.paths().files.statePassphrase, "state-passphrase");
-      if (outputNames.length > 0) {
-        const outputsNow = await app.infraOutputs().catch((error: unknown) => {
-          run.findings.push(`could not read the infrastructure outputs: ${String(error)}`);
-          return {} as Record<string, unknown>;
-        });
-        for (const name of outputNames) {
-          const value = outputsNow[name];
-          if (typeof value === "string" && value !== "")
-            scrubber.add(value, name.replaceAll("_", "-"));
-          else
-            run.findings.push(
-              `the infrastructure outputs have no ${name}, so the leak search misses it`,
-            );
-        }
-      }
+      if (outputNames.length > 0) await app.rememberOutputs(outputNames);
       // The values Portainer holds for the app's stack (read as its administrator, never printed).
       const stack = await stackByName(names(app).app);
       for (const item of (stack?.Env as { name?: string; value?: string }[] | undefined) ?? []) {
@@ -2035,8 +1988,7 @@ describe.skipIf(MISSING.length > 0)(
         await app.provisionUntilDone("the second app, updater + tunnel");
         await run.expectSharedCloudflare("the second app's provision");
         await rememberSecrets(["tunnel_token"], app);
-        if ((await app.deploy("the second app")) === undefined)
-          await app.deployMain("the second app");
+        await app.deployAny("the second app");
         await app.waitForHealth();
         await app.opscrewOk("verify");
         if (web === "tunnel") await run.expectProbeBlocked(appHost);
@@ -2211,10 +2163,7 @@ describe.skipIf(MISSING.length > 0)(
           `the fresh setup did not replace an earlier ${DEPLOY_BRANCH} branch`,
         ).toBe(false);
         const placeholderHead = await expectPlaceholderBranch("the loopback setup");
-        if ((await run.deploy("the loopback address")) === undefined) {
-          // provision opened no pull request: run the deploy workflow on main, as a user would.
-          await run.deployMain("the loopback address");
-        }
+        await run.deployAny("the loopback address");
         web = "proxy";
         const line = (
           await run
@@ -2336,22 +2285,11 @@ describe.skipIf(MISSING.length > 0)(
             problems.push(`${where} names the short Portainer host ${mentions} time(s)`);
           }
         };
+        for (const { kind, where, text } of await run.leakSources()) {
+          search(where, text, known, kind !== "commits" && shortHostRan);
+        }
         for (const app of [run, ...(b?.repoReady === true ? [b] : [])]) {
-          const which = app === run ? "" : " (the second app)";
-          await app.git("fetch", "-q", "origin", "+refs/heads/*:refs/remotes/origin/*");
-          // `--all` also walks refs/e2e/deploy-*: the deploy branches kept before each destroy
-          // deleted them on GitHub.
-          search(
-            `the commits (every branch)${which}`,
-            await app.git("log", "--all", "-p", "--format=%B"),
-            known,
-            false,
-          );
-          for (const pull of await app.github.pullRequestTexts()) {
-            if (pull.createdAt >= app.startedAt) {
-              search(`pull request #${pull.number}${which}`, pull.text);
-            }
-          }
+          const which = app === run ? "" : " (B)";
           const tracked = (await app.git("ls-files", "-co", "--exclude-standard"))
             .split("\n")
             .filter(Boolean);
@@ -2364,12 +2302,6 @@ describe.skipIf(MISSING.length > 0)(
           const local = join(app.paths().stateDir, "server.json");
           if (existsSync(local))
             search(`.opscrew/server.json${which}`, await readFile(local, "utf8"), secrets, false);
-          const auditDir = app.paths().auditDir;
-          if (existsSync(auditDir)) {
-            for (const file of await readdir(auditDir)) {
-              search(`the audit log ${file}${which}`, await readFile(join(auditDir, file), "utf8"));
-            }
-          }
         }
         for (const [label, output] of run.outputs) search(label, output);
         search("the MCP results", mcpTexts.join("\n"));

@@ -88,16 +88,11 @@ export type SharedHosts = Record<SharedRuleRef, string[] | undefined>;
 /** The hostnames one app has in each of OpsCrew's shared rules. */
 export type AppRules = Partial<Record<SharedRuleRef, readonly string[]>>;
 
-/** The hostnames a rule expression matches on (`http.host in {"a" "b"}`, `http.host eq "a"`), lower case. */
+/** The hostnames in the `http.host in {"a" "b"}` sets of a rule expression (OpsCrew's form). */
 function expressionHosts(expression: string): string[] {
-  const hosts: string[] = [];
-  for (const set of expression.matchAll(/http\.host\s+in\s+\{([^}]*)\}/g)) {
-    for (const host of (set[1] ?? "").matchAll(/"([^"]*)"/g)) hosts.push(host[1] ?? "");
-  }
-  for (const one of expression.matchAll(/http\.host\s+(?:eq|==)\s+"([^"]*)"/g)) {
-    hosts.push(one[1] ?? "");
-  }
-  return hosts.map((host) => host.toLowerCase());
+  return [...expression.matchAll(/http\.host\s+in\s+\{([^}]*)\}/g)].flatMap((set) =>
+    [...(set[1] ?? "").matchAll(/"([^"]*)"/g)].map((host) => host[1] ?? ""),
+  );
 }
 
 const sortedUnique = (hosts: readonly string[]) =>

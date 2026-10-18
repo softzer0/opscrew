@@ -280,14 +280,13 @@ OPSCREW_E2E_OWN_SERVER=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=yo
   npx vitest run test/live/own-server.test.ts
 ```
 
-A full run without the second app takes about 26 minutes (measured on the passing runs; it
-includes five deploy workflow runs, Docker's installation on the server and a reboot); the second
-app adds its own server, a deploy and its destroy. The servers are the smallest x86 type, billed by the hour at Hetzner, so a run
-costs a few cents of server time, plus GitHub Actions minutes for the builds (free for
-public repositories). Left behind on purpose: the GitHub Actions secrets and the container images
-in the throwaway repositories (as above), the zone's rules that existed before the run (OpsCrew's
-shared rules too, when they listed other apps' hostnames), and the Zero Trust organization and
-one-time PIN login if OpsCrew created them (OpsCrew never deletes them: other apps may use them).
+A full run with the second app takes about 36 minutes (measured on 2026-10-18; it includes both
+apps' deploy workflow runs, Docker's installation on both servers and a reboot). The servers are
+the smallest x86 type, billed by the hour at Hetzner, so a run costs a few cents of server time,
+plus GitHub Actions minutes for the builds (free for public repositories). Left behind on purpose:
+the GitHub Actions secrets and the container images in the throwaway repositories (as above), the
+zone's rules that existed before the run (OpsCrew's shared rules too, when they listed other apps'
+hostnames), and the Zero Trust organization and one-time PIN login if OpsCrew created them (OpsCrew never deletes them: other apps may use them).
 
 ## Your existing Portainer
 
@@ -295,12 +294,11 @@ one-time PIN login if OpsCrew created them (OpsCrew never deletes them: other ap
 runs (feature 010) on a real Portainer CE 2.45.2 that OpsCrew did not install.
 `OPSCREW_E2E_PORTAINER_STEPS` chooses the steps:
 
-- `core` (the default, about 15 minutes before the second app, which adds its setup, a deploy and
-  its destroy): steps 1, 1b, 2a, 2, 3, 7b, 8, 9, 9b and 12. Step 8 then removes an updater +
-  tunnel setup (one tunnel, no Access application), and step 12 searches what this pass produced;
-  the bare short host name is searched only when step 11 ran and gave it to OpsCrew. Without
-  `OPSCREW_E2E_GITHUB_REPO_B`, steps 7b and 9b are skipped with a message and the rest runs as
-  before.
+- `core` (the default, about 21 minutes with the second app, measured on 2026-10-18): steps 1, 1b,
+  2a, 2, 3, 7b, 8, 9, 9b and 12. Step 8 then removes an updater + tunnel setup (one tunnel, no
+  Access application), and step 12 searches what this pass produced; the bare short host name is
+  searched only when step 11 ran and gave it to OpsCrew. Without `OPSCREW_E2E_GITHUB_REPO_B`, steps
+  7b and 9b are skipped with a message and the rest runs as before.
 - `full` (about 1 to 1½ hours): every step and check below.
 - A comma-separated list of steps, such as `11,12`: those steps and every step they need (see
   [Running chosen steps](#running-chosen-steps)).
@@ -331,14 +329,11 @@ other value skips the whole test and names the variable.
 
    2a. **Preparing the project**: `init --fix`, `analyze --no-ai`,
    `interview --answers <file> --portainer-cert SHA256:…`, `init` again, `design`,
-   `adapt --no-ai --yes` (pull request merged), the snapshot of what is in Cloudflare before
-   the run (every zone ruleset, the account's Zero Trust organization and one-time PIN login), and
-   the rules of the user's own seeded as for [your own server](#your-own-server) (step 2). After
-   every later provision and destroy the same checks follow: the zone's rules OpsCrew did not
-   create are byte-identical and in the same order, OpsCrew's rules list exactly what they listed
-   before the run plus the hostnames of this run's apps that are not destroyed (an app in a
-   Portainer is only in the probe block, and only with the tunnel: OpsCrew sets no strict TLS
-   there), and the Zero Trust pieces seen so far are still there.
+   `adapt --no-ai --yes` (pull request merged), then the snapshot, the seeded rules and the checks
+   after every later provision and destroy as for [your own server](#your-own-server) (step 2).
+   The differences: the snapshot also keeps every zone ruleset (the cleanup compares them), and an
+   app in a Portainer is only in OpsCrew's probe block, and only with the tunnel (OpsCrew sets no
+   strict TLS there).
 
    2. With the standard user's token and a private image
    `provision --plan-only` must stop before any change with the registry steps (FR-1018); the
@@ -537,11 +532,12 @@ An unknown step skips the whole test and names the variable.
 
 The full pass takes about an hour (runs 9 and 10 on 2026-10-16: about ten deploy workflow runs,
 one of which waits ten minutes for its failing health check before it rolls back, plus Docker's
-installation); the core pass about 15 minutes (its first run on 2026-10-15 took 14½ minutes). The server is the smallest x86 type, billed by the hour, so a run
-costs a few cents of server time, plus GitHub Actions minutes for the builds (free for public
-repositories). Left behind on purpose, as for your own server: the GitHub Actions secrets of other
-targets and the container images in the throwaway repositories, the zone's rules that existed
-before the run, and the Zero Trust organization and one-time PIN login if OpsCrew created them.
+installation); the core pass about 21 minutes with the second app (2026-10-18). The server is the
+smallest x86 type, billed by the hour, so a run costs a few cents of server time, plus GitHub
+Actions minutes for the builds (free for public repositories). Left behind on purpose, as for your
+own server: the GitHub Actions secrets of other targets and the container images in the throwaway
+repositories, the zone's rules that existed before the run, and the Zero Trust organization and
+one-time PIN login if OpsCrew created them.
 
 ## Price tables
 

@@ -569,30 +569,21 @@ export class Cloudflare {
   }
 
   /**
-   * The account's Zero Trust organization and one-time PIN logins (none without an organization,
-   * which Cloudflare answers with 404 or an error saying so); any other refusal throws.
+   * The account's Zero Trust organization and one-time PIN logins (none when Cloudflare answers
+   * 404); any other answer than 200 throws.
    */
   async zeroTrust(accountId: string): Promise<ZeroTrust> {
     const account = `/accounts/${accountId}/access`;
     const organization = await this.call("GET", `${account}/organizations`);
-    const body = organization.json as
-      | { result?: { auth_domain?: string } | null; errors?: { message?: string }[] }
-      | undefined;
-    const none =
-      organization.status === 404 ||
-      (![200, 401, 403].includes(organization.status) &&
-        (body?.errors ?? []).some((error) =>
-          /not (?:been )?found|does not exist|no (?:zero trust )?organi[sz]ation/i.test(
-            error.message ?? "",
-          ),
-        ));
-    if (organization.status !== 200 && !none) {
+    if (organization.status === 404) return { oneTimePins: [] };
+    if (organization.status !== 200) {
       throw new Error(
         `Cloudflare did not show the account's Zero Trust organization (HTTP ${organization.status}); check the token's Access permissions and that Zero Trust is turned on (docs/e2e.md).`,
       );
     }
-    const domain = body?.result?.auth_domain;
-    if (none || !domain) return { oneTimePins: [] };
+    const domain = (organization.json as { result?: { auth_domain?: string } | null } | undefined)
+      ?.result?.auth_domain;
+    if (!domain) return { oneTimePins: [] };
     const providers = await this.list<{ id: string; type: string }>(
       `${account}/identity_providers`,
     );
