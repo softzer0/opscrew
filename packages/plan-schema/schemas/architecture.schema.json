@@ -184,6 +184,50 @@
           },
           "additionalProperties": false
         },
+        "runtimeEvidence": {
+          "type": "object",
+          "properties": {
+            "node": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["value", "source"],
+                "additionalProperties": false
+              }
+            },
+            "python": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["value", "source"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
         "envVars": {
           "type": "array",
           "items": {

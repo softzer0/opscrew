@@ -53,6 +53,7 @@ import {
 import { detectPlatform } from "./platform";
 import { detectRelease } from "./release";
 import { byDepth, inFolder } from "./release/context";
+import { runtimeEvidence } from "./runtime-evidence";
 import { declaredRuntimeVersions, firstLine } from "./runtime-versions";
 import {
   addDependencyServices,
@@ -680,6 +681,13 @@ export async function detectProjectDetails(
     python?.pipfilePython;
   if (pythonVersion) runtimeVersions.python = pythonVersion;
   Object.assign(runtimeVersions, await declaredRuntimeVersions(findIn, read, dotnetProjects));
+  const evidence = await runtimeEvidence({
+    files: scopedFiles,
+    find: findIn,
+    read,
+    dockerfile,
+    units: [...new Set([primary?.unit, rootInfo?.unit])].filter((unit) => unit !== undefined),
+  });
 
   // Frameworks of every relevant unit, sorted by directory then name.
   const frameworks = relevant
@@ -713,6 +721,7 @@ export async function detectProjectDetails(
     build,
     ...(port ? { port } : {}),
     runtimeVersions,
+    ...(evidence ? { runtimeEvidence: evidence } : {}),
     envVars,
     services: services.toList(),
     docker: {

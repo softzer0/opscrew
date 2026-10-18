@@ -144,7 +144,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T1212 [P] [US1] Runtime-version evidence in `packages/detect/src/**`
+- [X] T1212 [P] [US1] Runtime-version evidence in `packages/detect/src/**`
   - Owns: that folder (+ tests)
   - Reads: spec FR-1228 rules 2–3 (founder, 2026-10-18: library compatibility)
   - Depends: T1201

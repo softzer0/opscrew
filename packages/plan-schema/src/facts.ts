@@ -52,6 +52,12 @@ function strictlyAscending<T>(key: (item: T) => string, what: string) {
 /** Matches `scheme://userinfo@host...`; credentials must never be stored in a remote URL. */
 const URL_WITH_USERINFO = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*@/;
 
+/** One runtime version hint and where it was found (see `runtimeEvidence`). */
+const RuntimeEvidenceSchema = z.strictObject({
+  value: z.string().min(1),
+  source: z.string().min(1),
+});
+
 /** Deterministic facts about a repository, produced by `@opscrew/detect`. */
 export const ProjectFactsSchema = z.strictObject({
   name: z.string().min(1).max(100),
@@ -109,6 +115,20 @@ export const ProjectFactsSchema = z.strictObject({
     /** `rust-toolchain.toml`'s `channel`, else `rust-toolchain`. */
     rust: z.string().min(1).optional(),
   }),
+  /**
+   * Hints at the Node and Python versions the app runs on when it declares none (FR-1228 rule 3),
+   * in this order: CI workflows (`node-version:` / `python-version:`, each matrix value),
+   * `.tool-versions`, `mise.toml`, a Dockerfile's `FROM`, the `@types/node` major, and the Python
+   * range of the installed Django. `value` is as written (`20`, `3.11`, `>=3.10,<3.15`); `source`
+   * is the file it came from, or the framework and version for a table (`Django 5.2`). Absent when
+   * nothing was found.
+   */
+  runtimeEvidence: z
+    .strictObject({
+      node: z.array(RuntimeEvidenceSchema).min(1).optional(),
+      python: z.array(RuntimeEvidenceSchema).min(1).optional(),
+    })
+    .optional(),
   envVars: z
     .array(
       z.strictObject({

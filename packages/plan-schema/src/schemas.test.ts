@@ -1354,4 +1354,26 @@ describe("ProjectFacts runtime versions", () => {
     const empty = { ...architecture.facts, runtimeVersions: { go: "" } };
     expect(pathsOf(ProjectFactsSchema.safeParse(empty))).toEqual(["runtimeVersions.go"]);
   });
+
+  it("records runtime version evidence with its source, and refuses empty lists", async () => {
+    const architecture = parseArtifact("architecture", await fixture("architecture.json"), "f");
+    const runtimeEvidence = {
+      node: [
+        { value: "20", source: ".github/workflows/ci.yml" },
+        { value: "22", source: ".github/workflows/ci.yml" },
+      ],
+      python: [{ value: ">=3.10,<3.15", source: "Django 5.2" }],
+    };
+    const facts = { ...architecture.facts, runtimeEvidence };
+    expect(ProjectFactsSchema.parse(facts).runtimeEvidence).toEqual(runtimeEvidence);
+    const empty = { ...architecture.facts, runtimeEvidence: { node: [] } };
+    expect(pathsOf(ProjectFactsSchema.safeParse(empty))).toEqual(["runtimeEvidence.node"]);
+    const blank = {
+      ...architecture.facts,
+      runtimeEvidence: { python: [{ value: "", source: "x" }] },
+    };
+    expect(pathsOf(ProjectFactsSchema.safeParse(blank))).toEqual([
+      "runtimeEvidence.python.0.value",
+    ]);
+  });
 });
