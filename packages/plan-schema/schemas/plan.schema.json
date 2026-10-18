@@ -102,6 +102,10 @@
               },
               "required": ["language"],
               "additionalProperties": false
+            },
+            "probe": {
+              "type": "string",
+              "enum": ["node", "python", "ruby", "php", "wget", "bash", "none"]
             }
           },
           "required": ["builder", "chosen", "reason", "runtime"],

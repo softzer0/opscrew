@@ -438,6 +438,13 @@ export const AppBuildSchema = z.strictObject({
         });
       }
     }),
+  /**
+   * How the app service's Compose health check probes the health route, for a tool the image
+   * has: the app's runtime (`node`, `python`, `ruby`, `php`), busybox `wget` (static sites on
+   * Caddy), bash's `/dev/tcp` (images with bash but no interpreter, such as Go, Java, .NET and
+   * Rust), or `none` (the user's own Dockerfile keeps its own `HEALTHCHECK`). Set by design.
+   */
+  probe: z.enum(["node", "python", "ruby", "php", "wget", "bash", "none"]).optional(),
 });
 export type AppBuild = z.output<typeof AppBuildSchema>;
 

@@ -63,6 +63,7 @@ describe("pins.ts", () => {
         "caddy",
         "cloudflared",
         "curl",
+        "dockerfileSyntax",
         "kamalProxy",
         "node",
         "nodeAlpine",

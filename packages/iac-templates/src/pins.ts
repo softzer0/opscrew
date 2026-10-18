@@ -69,6 +69,10 @@ export const IMAGES = {
   paketoRun: {
     ref: "paketobuildpacks/ubuntu-noble-run:0.0.145@sha256:577357bc2a59c962ce3f7d816f7ff401f408538832a1c56a9a87f6fc5829df97",
   },
+  /** The Dockerfile frontend named by the generated Dockerfile's `# syntax=` line. */
+  dockerfileSyntax: {
+    ref: "docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e",
+  },
   /** Railpack's BuildKit frontend, matching the Railpack CLI in {@link TOOLS}. */
   railpackFrontend: {
     ref: "ghcr.io/railwayapp/railpack-frontend:v0.42.0@sha256:a42a12399fa9e83a09e475f69dbf8a45a8a74ea38a4485fcb401356d84317a14",

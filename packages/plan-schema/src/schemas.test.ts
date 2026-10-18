@@ -1226,7 +1226,16 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
         language: "node" | "python" | "ruby" | "go" | "java" | "dotnet" | "php" | "rust" | "other";
         version?: string;
       };
+      probe?: "node" | "python" | "ruby" | "php" | "wget" | "bash" | "none";
     }>();
+    for (const probe of ["node", "python", "ruby", "php", "wget", "bash", "none"]) {
+      expect(DeployPlanSchema.parse(withBuild(plan, { ...build, probe })).app.build?.probe).toBe(
+        probe,
+      );
+    }
+    expect(DeployPlanSchema.safeParse(withBuild(plan, { ...build, probe: "curl" })).success).toBe(
+      false,
+    );
   });
 
   it("keeps the version as the app declares it: major, major.minor or major.minor.patch", async () => {
