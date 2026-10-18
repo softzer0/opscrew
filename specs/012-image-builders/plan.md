@@ -244,10 +244,11 @@ The database and cache are never restarted. Portainer stacks are unchanged.
 
 - **adapt:**
   - writes a Dockerfile only for `generated-dockerfile`;
-  - adds `dependabot.yml` when absent, or lists what it would add;
   - checks an own Dockerfile against the baseline. The secops rule for an unpinned base image is
     new; the root, latest-tag and secret-arg rules exist.
-- **provision** hands the build choice and the strategy to the renderers.
+- **provision** hands the build choice and the strategy to the renderers, and adds
+  `dependabot.yml` to its deploy-setup pull request when absent, or lists what it would add
+  (moved from adapt by T1214).
 - **retarget** checks the builder for the new architecture first.
 - **status** shows the builder and the strategy.
 

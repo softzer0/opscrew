@@ -337,8 +337,10 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
   repository's name and workflow appear in a public log before the user turns it on.
 - **FR-1220**: Every image reference OpsCrew generates MUST be pinned by digest. This covers the
   app's base images and the database, cache, proxy and helper service images.
-- **FR-1221**: OpsCrew MUST add a Dependabot configuration to the adapt pull request when the
-  repository has none. It MUST cover the detected package ecosystems, GitHub Actions and the
+- **FR-1221**: OpsCrew MUST add a Dependabot configuration to provision's deploy-setup pull request
+  when the repository has none, so it arrives together with the workflow and runtime files it
+  watches (T1211: from the adapt pull request, Dependabot's first GitHub Actions and Compose checks
+  failed, because those files did not exist yet). It MUST cover the detected package ecosystems, GitHub Actions and the
   pinned images, with updates grouped to keep pull requests few. An existing configuration MUST be
   left as it is, with the missing entries listed.
 - **FR-1222**: A pin updated by the user or by Dependabot MUST NOT be reverted by OpsCrew's next

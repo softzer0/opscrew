@@ -78,7 +78,7 @@ export const BUILDPACKS_OFFERS: Record<"go" | "java" | "dotnet" | "ruby", string
 | File | Written by | Rewritten by OpsCrew? |
 |---|---|---|
 | `Dockerfile`, `.dockerignore` | adapt, for `generated-dockerfile` | yes, with newer pins kept |
-| `.github/dependabot.yml` | adapt, when absent | never once present |
+| `.github/dependabot.yml` | provision (deploy-setup pull request), when absent | never once present |
 | `.github/workflows/opscrew-deploy.yml` | provision | yes, with newer pins kept |
 | runtime `compose.yaml`, `Caddyfile` | provision | yes, with newer pins kept |
 

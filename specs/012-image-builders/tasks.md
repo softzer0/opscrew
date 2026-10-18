@@ -262,6 +262,20 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew`, plus the Docker pass for the three apps with `OPSCREW_DOCKER_TESTS=1`
   - Effort: high
 
+- [ ] T1214 [US3] Dependabot's configuration arrives with the files it watches, in `packages/agents/src/{adapt,provision}/**`, `packages/iac-templates/src/dependabot/**`, `docs/guide/supply-chain.md`
+  - Reads: spec FR-1221 (changed by the lead); plan §7; data-model's file table; `adapt/build-files.ts` `dependabotStep`; `provision/steps.ts` `publishDeployment`, `provision/publish.ts` `publishDeploySetup`
+  - Depends: T1213 (merged)
+  - Why: in T1211's live runs every first Dependabot run of `github_actions` and `docker_compose` failed ("/.github/workflows/<anything>.yml not found"; no `opscrew/runtime`). The adapt pull request adds `dependabot.yml`, and Dependabot checks at once, but the workflow and the runtime files come later, with provision's deploy-setup pull request. A user sees two failed Dependabot runs after merging the adapt pull request.
+  - Accept:
+    - adapt no longer writes `.github/dependabot.yml`, and its pull request body no longer mentions it;
+    - provision runs `dependabotStep` and adds the file to the deploy-setup pull request's files when the repository has none. When the repository has one, it is left as it is, and the deploy-setup pull request body and provision's output list the missing entries, with the same wording adapt used;
+    - a rerun of provision, after OpsCrew's file is committed, leaves it as it is;
+    - **Portainer:** Dependabot reads only the default branch. Check where a Portainer target's Compose file is on that branch. If it is only on the orphan `opscrew-deploy` branch, the `docker-compose` entry points at no folder on the default branch, so leave it out for Portainer, with a comment that says why; otherwise point it at that folder;
+    - `docs/guide/supply-chain.md` says the deploy-setup pull request adds the file;
+    - tests: adapt writes no Dependabot file; provision's deploy-setup files include it when absent and not when present; the Portainer entry rule.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
 - [ ] T1211 Live runs (lead): the Hetzner pass with the three apps; the own-server and Portainer core passes, to check the new switch, pins and builds there; results in `docs/e2e.md` and `docs/e2e-coverage.md`
 
 ## Dependencies
