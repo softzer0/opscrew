@@ -17,8 +17,12 @@ most projects well:
   Rust support, and PHP only on a builder being retired.
 - **Railpack:** covers what Buildpacks lacks, but its images run as root.
 
-OpsCrew should pick the right one per project, hold every builder to the same security baseline,
-and fall back to its own Dockerfile when neither fits.
+OpsCrew should pick the right one per project and hold every builder to the same security
+baseline.
+
+The comparison build (research R7) settled the order: OpsCrew's own Dockerfile for Node and Python,
+Buildpacks for Go, Java, .NET and Ruby, and Railpack, run as non-root, for everything else. The
+founder delegated the choice to the measured result (2026-10-18).
 
 A deploy also takes the app down for a few seconds today: the old container stops before the new
 one is ready. Users should not see errors during a deploy, and a broken new version should never
@@ -47,17 +51,20 @@ shows a non-root user and no secret values.
 
 **Acceptance Scenarios**:
 
-1. **Given** an npm Node, Python, Go, Java, Ruby or .NET project that Buildpacks fully supports,
-   **When** OpsCrew designs the deployment, **Then** it picks Buildpacks and gives the reason in one
-   sentence.
-2. **Given** a pnpm or Bun project, a Rust project or a PHP project, **When** OpsCrew designs the
-   deployment, **Then** it picks Railpack if Railpack's image can meet the baseline. Otherwise it
-   picks the generated Dockerfile, says what Railpack lacks, and gives the fallback.
-3. **Given** a user who sets the builder in `plan.yaml` to the generated Dockerfile, **When** they
-   run `opscrew adapt`, **Then** OpsCrew writes its Dockerfile and the deploy uses it.
-4. **Given** a server whose architecture a builder cannot target, **When** OpsCrew designs or
+1. **Given** a Node or Python project of a kind OpsCrew has a Dockerfile template for (with npm,
+   pnpm, Yarn or the Python package managers), **When** OpsCrew designs the deployment, **Then** it
+   picks the generated Dockerfile and gives the reason in one sentence.
+2. **Given** a Go, Java, .NET or Ruby project whose runtime version Buildpacks offers, **When**
+   OpsCrew designs the deployment, **Then** it picks Buildpacks.
+3. **Given** a Rust or PHP project, any other language, or a Go, Java, .NET or Ruby project whose
+   runtime version Buildpacks lacks, **When** OpsCrew designs the deployment, **Then** it picks
+   Railpack, run as a non-root user, and says why.
+4. **Given** a user who sets the builder in `plan.yaml` to Buildpacks or Railpack, **When** they
+   run `opscrew adapt` and deploy, **Then** the deploy uses that builder, or OpsCrew says why it
+   cannot meet the baseline.
+5. **Given** a server whose architecture a builder cannot target, **When** OpsCrew designs or
    retargets, **Then** it picks a builder that can, and says why.
-5. **Given** nothing changed, **When** the user runs design, adapt or provision again, **Then** the
+6. **Given** nothing changed, **When** the user runs design, adapt or provision again, **Then** the
    builder choice and the generated files stay the same.
 
 ---
@@ -212,12 +219,16 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
 
 **Builders**
 
-- **FR-1201**: OpsCrew MUST choose the builder per project, deterministically:
-  - Cloud Native Buildpacks where its builder fully supports the project's language, package
-    manager and layout, and the server's architecture;
-  - Railpack where Buildpacks cannot, provided Railpack's image meets the baseline (FR-1203);
-  - otherwise the generated Dockerfile.
-  The choice and a one-sentence reason MUST be recorded in `plan.yaml` and shown at design.
+- **FR-1201**: OpsCrew MUST choose the builder per project, deterministically, in this order
+  (founder decision, 2026-10-18, from the measured comparison):
+  1. OpsCrew's generated Dockerfile, for the Node and Python stacks it has a template for;
+  2. Cloud Native Buildpacks, for Go, Java, .NET and Ruby projects whose runtime version and server
+     architecture its builder supports;
+  3. Railpack for everything else, run as a non-root user (FR-1203), including Go, Java, .NET and
+     Ruby projects whose runtime version Buildpacks lacks.
+  When no builder can meet the baseline, OpsCrew MUST say so and leave the Dockerfile to the
+  Code-change agent, as today. The choice and a one-sentence reason MUST be recorded in
+  `plan.yaml` and shown at design.
 - **FR-1202**: The user MUST be able to set the builder in `plan.yaml` to:
   - automatic;
   - Buildpacks;
@@ -254,8 +265,8 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
   - the runtime user;
   - HIGH and CRITICAL vulnerability counts;
   - whether the app starts on OpsCrew's port.
-  The automatic choice MUST NOT ship before the founder has seen these numbers, if Buildpacks is
-  larger, slower or more vulnerable than the alternatives for the projects it would be chosen for.
+  The founder saw the numbers on 2026-10-18 and chose the order in FR-1201. The comparison table
+  MUST be published in the guide.
 
 **Zero-downtime deploys**
 
