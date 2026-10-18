@@ -59,7 +59,7 @@ The test is skipped unless its environment variables are set, so normal runs and
 | `OPSCREW_E2E_GITHUB_REPO` | `owner/name` of a **throwaway** repository. The test force-pushes its `main` branch. |
 | `OPSCREW_E2E_GITHUB_TOKEN` | Fine-grained token for that repository only. It needs Contents, Pull requests, Secrets, Actions and Workflows (read and write), plus Metadata (read). |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | Optional. A Cloudflare token limited to one zone, with Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit. |
-| `OPSCREW_E2E_DOMAIN` | Optional, used together with the Cloudflare token: a hostname in that zone, for example `e2e.example.com`. |
+| `OPSCREW_E2E_DOMAIN` | Optional, used together with the Cloudflare token: a hostname in that zone, for example `e2e.example.com`. It names the zone only: each run serves the app on its own hostname, `e2e-<run id>.<zone>`, because Let's Encrypt issues at most 5 certificates per week for the same names and every run's fresh server asks for one. |
 | `OPSCREW_E2E_BUILDS` | Optional, `1` runs [the builder checks](#the-builders) in the Hetzner pass (with `nextjs-postgres`, `go-api` or `rust-api`): about 20–40 minutes and four deploys per app. Off by default. |
 | `OPSCREW_E2E_GHCR_READ_TOKEN` | Needed with `OPSCREW_E2E_BUILDS=1`: a GitHub **classic** token with only `read:packages`, for the user that owns the throwaway repository. The test reads the image's SBOM, provenance and blobs with it. |
 | `OPSCREW_E2E_SIGN` | Optional, `1` turns image signing on for the builder checks; it matters only together with `OPSCREW_E2E_BUILDS=1`. Off by default; read [Signing](#signing) first. |
