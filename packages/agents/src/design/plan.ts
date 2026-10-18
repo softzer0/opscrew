@@ -9,6 +9,7 @@ import {
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { deepDomainProblem, hostListKind, serviceUrlKind } from "../shared";
+import type { BuilderChoice } from "./builder";
 import {
   appDirOf,
   appDockerfile,
@@ -18,6 +19,7 @@ import {
 } from "./code-changes";
 import type { OwnServerAccess, OwnServerServing } from "./own";
 import type { PortainerDesignChoice } from "./portainer";
+import { deployStrategyFor } from "./strategy";
 
 export interface OptionToPlanInput {
   facts: ProjectFacts;
@@ -44,6 +46,8 @@ export interface OptionToPlanInput {
    * redeploy and web modes from the interview's answers.
    */
   portainer?: PortainerDesignChoice;
+  /** Who builds the image (`chooseBuilder`); without it the plan has no `app.build`. */
+  build?: BuilderChoice;
 }
 
 /**
@@ -123,7 +127,9 @@ export function appPortFor(facts: ProjectFacts): number {
  * Turns the chosen option into `opscrew/plan.yaml` content: app (name, port, health path, release command,
  * environment variable names), target (the option's provider and its default image; for the user's
  * own server its architecture and `input.access`), services, cost, code changes, DNS from the requirements and
- * GitHub Actions + GHCR for CI/CD. Every documented default is filled by `DeployPlanSchema`.
+ * GitHub Actions + GHCR for CI/CD, with deploy tags and signing as the interview answered. The
+ * image's builder comes from `input.build`, and the deploy strategy from the option's server
+ * (`deployStrategyFor`). Every documented default is filled by `DeployPlanSchema`.
  * @throws ZodError when the result is not a valid plan (a bug, never user input).
  */
 export function optionToPlan(option: DesignOption, input: OptionToPlanInput): DeployPlan {
@@ -186,6 +192,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
         };
 
   const releaseCommand = releaseCommandInImage(facts);
+  const build = input.build;
+  const tags = requirements.deployTags;
 
   return DeployPlanSchema.parse({
     schemaVersion: 1,
@@ -200,8 +208,21 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       // Database migrations, run before each new version takes traffic (FR-813).
       ...(releaseCommand !== undefined ? { releaseCommand } : {}),
       env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+      ...(build !== undefined
+        ? {
+            build: {
+              builder: build.builder,
+              chosen: build.chosen,
+              reason: build.reason,
+              runtime: build.runtime,
+              probe: build.probe,
+              automatic: build.automatic,
+            },
+          }
+        : {}),
     },
     target: targetFor(option, input.access, input.portainer),
+    deploy: deployStrategyFor(option),
     services: { postgres: services.postgres, redis: services.redis },
     externalServices: [...option.externalServices],
     cost: option.cost,
@@ -212,7 +233,12 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       provider: "github-actions",
       registry: "ghcr",
       branch: facts.git.defaultBranch ?? facts.git.currentBranch ?? "main",
+      deployTags: {
+        enabled: tags !== undefined && tags !== "off",
+        release: tags === "tag-and-release",
+      },
     },
+    supplyChain: { sign: requirements.signImages ?? false },
   });
 }
 

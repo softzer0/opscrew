@@ -28,6 +28,7 @@ import {
   portainerDesignChoice,
 } from "./portainer";
 import { previewDesignOptions, runDesign } from "./run";
+import { PORTAINER_RECREATE_NOTE } from "./strategy";
 
 const URL_ = "https://nas.home.example.com:9443";
 const now = new Date("2026-10-11T12:00:00.000Z");
@@ -148,6 +149,15 @@ describe("runDesign for an existing Portainer", () => {
       status: "ok",
       summary: "portainer, no server cost",
     });
+    // FR-1217: Portainer recreates the stack, and design says so.
+    expect(result.plan.deploy).toEqual({
+      strategy: "recreate",
+      drainSeconds: 30,
+      reason: PORTAINER_RECREATE_NOTE,
+    });
+    expect(deps.reporter.text()).toContain(`Deploys: recreate. ${PORTAINER_RECREATE_NOTE}`);
+    // Built for the environment's architecture.
+    expect(result.plan.app.build).toMatchObject({ builder: "generated-dockerfile" });
   });
 
   it("serves the user's proxy and Caddy with DNS only, and keeps the port", async () => {

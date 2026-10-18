@@ -41,7 +41,12 @@ import {
   reachPortainer,
   recordPortainerAnswers,
 } from "./portainer";
-import { buildQuestions, describesRoot, type InterviewAnswers } from "./questions";
+import {
+  buildQuestions,
+  describesRoot,
+  type InterviewAnswers,
+  signingPublicLog,
+} from "./questions";
 
 export interface InterviewOptions {
   /** Asks the questions interactively and returns the answers keyed by question id. */
@@ -72,7 +77,16 @@ export interface InterviewOptions {
    * `PORTAINER_API_KEY`.
    */
   portainer?: PortainerInterviewOptions;
+  /**
+   * Whether the GitHub repository is private, when the caller knows it: the signing question says
+   * what a private repository makes public, and without it says so conditionally.
+   */
+  repositoryPrivate?: boolean;
 }
+
+/** FR-1229: image retention is on by default and not asked; the interview shows it. */
+export const IMAGE_RETENTION_NOTE =
+  "After each healthy deploy OpsCrew keeps the newest 10 images in GitHub's container registry and deletes older ones, never the running or the previous one. To keep more, or to keep them all, change cicd.imageRetention in opscrew/plan.yaml after `opscrew design`.";
 
 export interface InterviewResult {
   requirements: Requirements;
@@ -231,7 +245,12 @@ export async function runInterview(
     const previous = await loadPrevious(deps);
     const appCandidates = await appCandidatesFor(deps, facts);
     const inferredProvider = providerFromTokens(deps.env);
-    const context = inferredProvider !== undefined ? { inferredProvider } : {};
+    const context = {
+      ...(inferredProvider !== undefined ? { inferredProvider } : {}),
+      ...(options.repositoryPrivate !== undefined
+        ? { repositoryPrivate: options.repositoryPrivate }
+        : {}),
+    };
     const questions = buildQuestions(facts, previous, appCandidates, context);
     if (previous !== undefined) reporter.info("Your previous answers are pre-filled.");
 
@@ -333,6 +352,9 @@ export async function runInterview(
     }
     await writeArtifact("requirements", paths.files.requirements, requirements);
     reporter.success("Wrote opscrew/requirements.yaml.");
+    const publicLog = signingPublicLog(options.repositoryPrivate);
+    if (requirements.signImages === true && publicLog !== undefined) reporter.warn(publicLog);
+    reporter.info(IMAGE_RETENTION_NOTE);
     const budget = requirements.budgetMonthly;
     const where =
       requirements.provider === "own"

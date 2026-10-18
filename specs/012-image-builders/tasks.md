@@ -51,7 +51,7 @@ Effort`.
 
 ## Phase 3: Packages (parallel)
 
-- [ ] T1203 [P] [US1] [US3] [US4] [US5] The builder choice, the deploy strategy and the interview questions in `packages/agents/src/{design,interview}/**`
+- [X] T1203 [P] [US1] [US3] [US4] [US5] The builder choice, the deploy strategy and the interview questions in `packages/agents/src/{design,interview}/**`
   - Owns: those folders (+ tests)
   - Reads: contracts/builders.md "chooseBuilder"; spec FR-1201, FR-1202, FR-1215, FR-1219, FR-1223, FR-1228; research.md R7 "What this means"
   - Depends: T1201, T1212

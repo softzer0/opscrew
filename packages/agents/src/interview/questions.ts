@@ -40,6 +40,20 @@ export interface InterviewContext {
    * the provider default when there is no previous answer. Without it the default is `hetzner`.
    */
   inferredProvider?: VpsProviderId;
+  /**
+   * Whether the GitHub repository is private, when known; the signing question then says whether
+   * its name becomes public (FR-1219).
+   */
+  repositoryPrivate?: boolean;
+}
+
+/** FR-1219: what signing makes public for a private repository. */
+export function signingPublicLog(repositoryPrivate: boolean | undefined): string | undefined {
+  if (repositoryPrivate === false) return undefined;
+  const log = "its name and the deploy workflow's path appear in Sigstore's public log";
+  return repositoryPrivate === true
+    ? `Your repository is private, but once images are signed ${log}.`
+    : `If your repository is private, ${log} once images are signed.`;
 }
 
 /** The provider default: the previous answer, else the one inferred from tokens, else Hetzner. */
@@ -87,7 +101,9 @@ function candidateHint(facts: ProjectFacts, dir: string): string | undefined {
  * the user already has (`own`, whose follow-ups come from `buildServerQuestions`) and an existing
  * Portainer (`portainer`, whose follow-ups come from `buildPortainerQuestions`); for both the
  * region is ignored. It defaults to the previous answer, then `context.inferredProvider`, then
- * `hetzner`. Every question is validated with `QuestionSchema`.
+ * `hetzner`. The last two offer image signing (saying what a private repository makes public,
+ * from `context.repositoryPrivate`) and deploy tags, both off by default. Every question is
+ * validated with `QuestionSchema`.
  */
 export function buildQuestions(
   facts: ProjectFacts,
@@ -252,6 +268,35 @@ export function buildQuestions(
       required: false,
     });
   }
+
+  const publicLog = signingPublicLog(context.repositoryPrivate);
+  questions.push(
+    {
+      id: "signImages",
+      prompt: "Sign each image, so anyone can check it was built by your workflow?",
+      help: `OpsCrew signs with Sigstore's keyless signing (cosign); no key to keep.${publicLog === undefined ? "" : ` ${publicLog}`}`,
+      kind: "confirm",
+      default: previous?.signImages ?? false,
+      required: false,
+    },
+    {
+      id: "deployTags",
+      prompt: "Tag each successful deploy in the repository?",
+      help: "A deploy-<date and time> git tag on the deployed commit, so you can see what ran when and find the version to go back to.",
+      kind: "single-select",
+      options: [
+        { value: "off", label: "No tags" },
+        { value: "tag", label: "A git tag" },
+        {
+          value: "tag-and-release",
+          label: "A git tag and a GitHub Release",
+          hint: "the release names the image digest",
+        },
+      ],
+      default: previous?.deployTags ?? "off",
+      required: false,
+    },
+  );
 
   return questions.map((q) => QuestionSchema.parse(q));
 }

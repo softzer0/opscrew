@@ -56,6 +56,8 @@ const DESCRIPTIONS: Record<QuestionId, string> = {
   contactEmail: "contact email",
   notes: "notes",
   appDir: "app to deploy",
+  signImages: "sign images",
+  deployTags: "tag deploys",
 };
 
 /** Fields whose values are lower-cased enum strings. */
@@ -66,6 +68,7 @@ const ENUM_FIELDS: ReadonlySet<QuestionId> = new Set([
   "uptime",
   "dataCriticality",
   "dnsProvider",
+  "deployTags",
 ]);
 
 /** Keys of a requirements file that are not answers; accepted and ignored. */

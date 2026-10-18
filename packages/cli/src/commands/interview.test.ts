@@ -60,6 +60,8 @@ describe("opscrew interview", () => {
       "best-effort", // uptime
       "none", // data criticality
       "", // no domain, so the DNS provider question is skipped
+      false, // no image signing
+      "off", // no deploy tags
     ]);
     const ctx = projectContext(project, { interactive: true, services: { prompts } });
     expect(await run(ctx, "interview")).toBe(0);
@@ -72,6 +74,8 @@ describe("opscrew interview", () => {
       "select",
       "select",
       "text",
+      "confirm",
+      "select",
     ]);
     expect(prompts.calls[0]?.initial).toBe("<1k");
     expect(prompts.calls[0]?.options?.length).toBeGreaterThan(1);
@@ -158,6 +162,8 @@ describe("opscrew interview", () => {
       "important",
       "shop.example.com",
       "cloudflare",
+      false,
+      "off",
     ]);
     const rerun = projectContext(project, { interactive: true, services: { prompts: answers } });
     expect(await run(rerun, "interview")).toBe(0);

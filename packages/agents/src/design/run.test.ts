@@ -1072,3 +1072,111 @@ describe("runDesign", () => {
     expect((await deps.state.read()).phases.design?.status).toBe("failed");
   });
 });
+
+describe("runDesign: the image builder and the deploy strategy", () => {
+  const later = (deps: TestPhaseDeps) =>
+    createTestPhaseDeps({
+      root: deps.paths.root,
+      env: deps.env,
+      clock: { now: () => new Date("2026-10-12T08:00:00.000Z") },
+    });
+
+  it("writes app.build and deploy with their reasons, and shows both", async () => {
+    const deps = await setup();
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    expect(plan.app.build).toEqual({
+      builder: "generated-dockerfile",
+      chosen: "auto",
+      reason:
+        "OpsCrew has a Dockerfile for a static site built with Vite, which builds a small image that runs as a non-root user.",
+      runtime: { language: "node", version: "24" },
+      probe: "wget",
+      automatic: "generated-dockerfile",
+    });
+    expect(plan.deploy).toEqual({ strategy: "rolling", drainSeconds: 30 });
+    expect(plan.supplyChain).toEqual({ sign: false });
+    expect(plan.cicd.deployTags).toEqual({ enabled: false, release: false });
+    const text = deps.reporter.text();
+    expect(text).toContain(`Image builder: generated-dockerfile. ${plan.app.build?.reason}`);
+    expect(text).toContain("Deploys: rolling. New versions start next to the running one");
+  });
+
+  it("warns about a runtime version past its end of life", async () => {
+    const deps = await setup(nextPostgresFacts({ runtimeVersions: { node: "20" } }));
+    const result = await runDesign(deps, { catalog: euCatalog() });
+    expect(result.plan.app.build?.runtime).toEqual({ language: "node", version: "20" });
+    expect(result.warnings.join("\n")).toContain("Node.js 20 is past its end of life");
+  });
+
+  it("copies the interview's signing and deploy tags", async () => {
+    const deps = await setup(
+      staticSpaFacts(),
+      makeRequirements({ signImages: true, deployTags: "tag-and-release" }),
+    );
+    const { plan } = await runDesign(deps, { catalog: euCatalog() });
+    expect(plan.supplyChain).toEqual({ sign: true });
+    expect(plan.cicd.deployTags).toEqual({ enabled: true, release: true });
+  });
+
+  it("keeps the recorded version and the user's plan.yaml settings on later designs", async () => {
+    const deps = await setup();
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    const build = first.plan.app.build as NonNullable<DeployPlan["app"]["build"]>;
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: { ...first.plan.app, build: { ...build, runtime: { language: "node", version: "22" } } },
+      deploy: { strategy: "recreate", drainSeconds: 60 },
+      supplyChain: { sign: true },
+      cicd: {
+        ...first.plan.cicd,
+        deployTags: { enabled: true, release: false },
+        imageRetention: { enabled: false, keep: 10 },
+      },
+    });
+    const again = await later(deps);
+    const { plan } = await runDesign(again, { catalog: euCatalog() });
+    expect(plan.app.build?.runtime).toEqual({ language: "node", version: "22" });
+    expect(plan.deploy).toEqual({ strategy: "recreate", drainSeconds: 60 });
+    expect(again.reporter.text()).toContain(
+      "Deploys: recreate. You chose recreate in opscrew/plan.yaml (deploy.strategy).",
+    );
+    expect(plan.supplyChain).toEqual({ sign: true });
+    expect(plan.cicd.deployTags).toEqual({ enabled: true, release: false });
+    expect(plan.cicd.imageRetention).toEqual({ enabled: false, keep: 10 });
+  });
+
+  it("takes signing and deploy tags from an interview answered after the plan", async () => {
+    const deps = await setup();
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      supplyChain: { sign: true },
+    });
+    await writeArtifact(
+      "requirements",
+      deps.paths.files.requirements,
+      makeRequirements({ answeredAt: "2026-10-12T07:00:00.000Z", deployTags: "tag" }),
+    );
+    const { plan } = await runDesign(await later(deps), { catalog: euCatalog() });
+    expect(plan.supplyChain).toEqual({ sign: false });
+    expect(plan.cicd.deployTags).toEqual({ enabled: true, release: false });
+  });
+
+  it("stops without changing plan.yaml when the user's builder cannot build the app", async () => {
+    const deps = await setup({ ...staticSpaFacts(), packageManager: "pnpm" });
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    const build = first.plan.app.build as NonNullable<DeployPlan["app"]["build"]>;
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...first.plan,
+      app: { ...first.plan.app, build: { ...build, builder: "buildpacks", chosen: "user" } },
+    });
+    const before = await readFile(deps.paths.files.plan, "utf8");
+    await expect(runDesign(await later(deps), { catalog: euCatalog() })).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining(
+        "opscrew/plan.yaml sets app.build.builder to buildpacks, but the pinned Buildpacks builder has no pnpm support",
+      ),
+    });
+    expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+  });
+});

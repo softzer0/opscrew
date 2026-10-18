@@ -15,7 +15,7 @@ import { runAnalyze } from "../analyze";
 import { createTestPhaseDeps } from "../testing";
 import { answersToRequirements, normaliseDomain, parseMoney } from "./answers";
 import { buildQuestions, type InterviewAnswers, inferredAnswers } from "./questions";
-import { runInterview } from "./run";
+import { IMAGE_RETENTION_NOTE, runInterview } from "./run";
 
 const examples = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 const now = new Date("2026-10-11T12:00:00.000Z");
@@ -65,6 +65,8 @@ describe("buildQuestions", () => {
       "uptime",
       "domain",
       "dnsProvider",
+      "signImages",
+      "deployTags",
     ]);
     for (const q of questions) expect(QuestionSchema.safeParse(q).success).toBe(true);
   });
@@ -80,6 +82,8 @@ describe("buildQuestions", () => {
         "dataCriticality",
         "domain",
         "dnsProvider",
+        "signImages",
+        "deployTags",
       ],
     );
     const questions = buildQuestions(facts([{ kind: "supabase", evidence: [] }]));
@@ -101,6 +105,8 @@ describe("buildQuestions", () => {
       domain: "app.example.com",
       dnsProvider: "other",
       keepExternalServices: [],
+      signImages: true,
+      deployTags: "tag",
     };
     const questions = buildQuestions(facts([{ kind: "supabase", evidence: [] }]), previous);
     const defaults = Object.fromEntries(questions.map((q) => [q.id, q.default]));
@@ -114,8 +120,70 @@ describe("buildQuestions", () => {
       domain: "app.example.com",
       dnsProvider: "other",
       keepExternalServices: false,
+      signImages: true,
+      deployTags: "tag",
     });
     expect(buildQuestions(facts()).find((q) => q.id === "budgetMonthly")?.default).toBeUndefined();
+  });
+});
+
+describe("signing and deploy tags", () => {
+  const question = (id: string, context = {}) =>
+    buildQuestions(facts(), undefined, [], context).find((q) => q.id === id);
+
+  it("offers both, off by default", () => {
+    expect(question("signImages")).toMatchObject({
+      kind: "confirm",
+      default: false,
+      required: false,
+    });
+    expect(question("deployTags")).toMatchObject({
+      kind: "single-select",
+      default: "off",
+      required: false,
+    });
+    expect(question("deployTags")?.options?.map((o) => o.value)).toEqual([
+      "off",
+      "tag",
+      "tag-and-release",
+    ]);
+  });
+
+  it("says what signing makes public for a private repository (FR-1219)", () => {
+    expect(question("signImages", { repositoryPrivate: true })?.help).toContain(
+      "Your repository is private, but once images are signed its name and the deploy workflow's path appear in Sigstore's public log.",
+    );
+    expect(question("signImages")?.help).toContain(
+      "If your repository is private, its name and the deploy workflow's path appear in Sigstore's public log once images are signed.",
+    );
+    expect(question("signImages", { repositoryPrivate: false })?.help).not.toContain("public log");
+  });
+
+  it("records the answers, and leaves them out when not given", () => {
+    const answered = answersToRequirements(
+      { ...BASE_ANSWERS, signImages: true, deployTags: "Tag-And-Release" },
+      { now, facts: facts() },
+    );
+    expect(answered).toMatchObject({ signImages: true, deployTags: "tag-and-release" });
+    const skipped = answersToRequirements(BASE_ANSWERS, { now, facts: facts() });
+    expect(skipped.signImages).toBeUndefined();
+    expect(skipped.deployTags).toBeUndefined();
+    expect(() =>
+      answersToRequirements({ ...BASE_ANSWERS, deployTags: "always" }, { now, facts: facts() }),
+    ).toThrow(/deployTags must be one of off, tag, tag-and-release/);
+  });
+
+  it("warns once signing is on for a private repository, and shows image retention", async () => {
+    const deps = await createTestPhaseDeps({ root: await project("static-vite") });
+    await runInterview(deps, {
+      answers: { ...BASE_ANSWERS, signImages: true },
+      repositoryPrivate: true,
+    });
+    const warnings = deps.reporter.lines.filter((l) => l.level === "warn").map((l) => l.message);
+    expect(warnings).toContain(
+      "Your repository is private, but once images are signed its name and the deploy workflow's path appear in Sigstore's public log.",
+    );
+    expect(deps.reporter.text()).toContain(IMAGE_RETENTION_NOTE);
   });
 });
 
@@ -496,7 +564,12 @@ describe("runInterview", () => {
       keepExternalServices: true,
       budgetMonthly: { amount: 10, currency: "EUR" },
     });
-    expect(second.requirements).toEqual(first.requirements);
+    // The signing and deploy-tag defaults are recorded as answered: off.
+    expect(second.requirements).toEqual({
+      ...first.requirements,
+      signImages: false,
+      deployTags: "off",
+    });
   });
 
   it("fails with INVALID_INPUT listing missing answers and records the failure", async () => {

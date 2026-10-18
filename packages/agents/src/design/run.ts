@@ -39,6 +39,7 @@ import {
 } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { backgroundJobsWarning } from "./background-jobs";
+import { chooseBuilder } from "./builder";
 import {
   type CodeChangeSignals,
   collectCodeChangeSignals,
@@ -71,6 +72,7 @@ import {
   portainerDesignChoice,
 } from "./portainer";
 import { releaseCommandNote } from "./release";
+import { deploySentence, keptDeploy } from "./strategy";
 import { designWording } from "./wording";
 
 export interface RunDesignOptions {
@@ -441,6 +443,17 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const now = deps.clock.now();
 
   const chosen = await pick(designOptions, options);
+  const build = chooseBuilder(
+    facts,
+    previous,
+    chosen.target.architecture === "arm" ? "arm64" : "amd64",
+  );
+  if ("refused" in build) {
+    throw new OpsCrewError("INVALID_INPUT", build.refused, {
+      hint: "Change app.build.builder in opscrew/plan.yaml, then run `opscrew design` again.",
+    });
+  }
+  for (const warning of build.warnings) warn(warning);
 
   const [signals, scan] = await Promise.all([
     collectCodeChangeSignals(paths.root, facts).catch((): CodeChangeSignals => ({})),
@@ -457,8 +470,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     ...(preview.access !== undefined ? { access: preview.access } : {}),
     ...(preview.serving !== undefined ? { serving: preview.serving } : {}),
     ...(preview.portainer !== undefined ? { portainer: preview.portainer } : {}),
+    build,
   });
-  const plan = previous ? keepPlanSettings(fresh, previous) : fresh;
+  const plan = previous ? keepPlanSettings(fresh, previous, requirements) : fresh;
   if (previous) for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
   await writeArtifact("plan", paths.files.plan, plan);
 
@@ -479,6 +493,10 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     say(
       `Wrote ${planFile}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
     ),
+  );
+  reporter.info(say(`Image builder: ${build.builder}. ${build.reason}`));
+  reporter.info(
+    say(`Deploys: ${plan.deploy.strategy}. ${deploySentence(plan.deploy, fresh.deploy)}`),
   );
   const migrations = releaseCommandNote(plan, facts);
   if (migrations?.warning) warn(migrations.text);
@@ -669,9 +687,15 @@ async function requireChosenApp(
  * setting changed, so a Cloudflare-only allow-list never outlives the Cloudflare proxy.
  * `portainer` is kept exactly as it was, with the Cloudflare zone learned for it (`dns.zone`)
  * while the app's domain is still on Cloudflare inside that zone. A Portainer subdomain the new
- * DNS settings no longer allow stops design before plan.yaml changes.
+ * DNS settings no longer allow stops design before plan.yaml changes. Image retention is kept, and
+ * signing and deploy tags too unless the interview was answered after the previous plan was
+ * written. The deploy settings come from {@link keptDeploy}.
  */
-function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
+function keepPlanSettings(
+  fresh: DeployPlan,
+  previous: DeployPlan,
+  requirements: Requirements,
+): DeployPlan {
   const key = (change: DeployPlan["codeChanges"][number]) =>
     `${change.id}\u0000${change.kind}\u0000${change.path}`;
   const statuses = new Map(previous.codeChanges.map((change) => [key(change), change.status]));
@@ -682,6 +706,8 @@ function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
     zone !== undefined &&
     fresh.dns.provider === "cloudflare" &&
     (fresh.dns.domain === zone || (fresh.dns.domain ?? "").endsWith(`.${zone}`));
+  // The interview's answers on signing and deploy tags replace plan.yaml's only when newer.
+  const answeredLater = Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
   const kept = DeployPlanSchema.safeParse({
     ...fresh,
     ...(sameZone ? { dns: { ...fresh.dns, zone } } : {}),
@@ -694,6 +720,13 @@ function keepPlanSettings(fresh: DeployPlan, previous: DeployPlan): DeployPlan {
     approvals: previous.approvals,
     deployment: previous.deployment,
     ...(previous.portainer === undefined ? {} : { portainer: previous.portainer }),
+    deploy: keptDeploy(fresh, previous),
+    cicd: {
+      ...fresh.cicd,
+      imageRetention: previous.cicd.imageRetention,
+      ...(answeredLater ? {} : { deployTags: previous.cicd.deployTags }),
+    },
+    supplyChain: answeredLater ? fresh.supplyChain : previous.supplyChain,
   });
   if (kept.success) return kept.data;
   const portainer = previous.portainer;
