@@ -68,18 +68,20 @@ export function healthUrl(plan: DeployPlan): string {
 const LETS_ENCRYPT_SAME_NAMES_PER_WEEK = 5;
 
 /**
- * Whether the health check reaches Caddy's own certificate: the plan has a domain that Cloudflare
- * does not proxy and no tunnel. Only then does a TLS handshake failure mean that Caddy has no
- * certificate yet (Let's Encrypt's limit is the usual cause on a server rebuilt many times).
+ * Whether the health check reaches Caddy's own certificate: the plan has a domain and no tunnel.
+ * Then a failed TLS handshake means that Caddy has no certificate yet (Let's Encrypt's limit is the
+ * usual cause on a server rebuilt many times): curl's own (exit 35 or 60) or, behind Cloudflare's
+ * proxy, Cloudflare's with the server (HTTP 525 or 526).
  */
 function caddyServesTls(plan: DeployPlan, tunnelHost: string | undefined): boolean {
-  return plan.dns.domain !== undefined && !plan.dns.proxied && tunnelHost === undefined;
+  return plan.dns.domain !== undefined && tunnelHost === undefined;
 }
 
 /**
- * The health check's script. With `tlsHint`, curl's exit codes are recorded and, when every
- * attempt failed the TLS handshake (35 or 60), the error says that the server has no certificate
- * yet; otherwise, and without `tlsHint`, it says only that the new version did not answer.
+ * The health check's script. With `tlsHint`, curl's exit codes and HTTP statuses are recorded
+ * and, when every attempt failed a TLS handshake, the error says that the server has no
+ * certificate yet; otherwise, and without `tlsHint`, it says only that the new version did not
+ * answer.
  */
 function healthScript(tlsHint: boolean): string[] {
   const failed = 'echo "::error::The new version did not answer at $URL."';
@@ -90,14 +92,16 @@ function healthScript(tlsHint: boolean): string[] {
     ...(tlsHint
       ? [
           "      code=0",
-          '      curl -fsS --max-time 10 -o /dev/null "$URL" || code=$?',
+          '      status="$(curl -fsS --max-time 10 -o /dev/null -w \'%{http_code}\' "$URL")" || code=$?',
           '      if [ "$code" -eq 0 ]; then',
         ]
       : ['      if curl -fsS --max-time 10 -o /dev/null "$URL"; then']),
     '        echo "Healthy after $attempt attempt(s)."',
     "        exit 0",
     "      fi",
-    ...(tlsHint ? ['      if [ "$code" -ne 35 ] && [ "$code" -ne 60 ]; then tls_only=0; fi'] : []),
+    ...(tlsHint
+      ? ['      case "$code:$status" in 35:* | 60:* | 22:525 | 22:526) ;; *) tls_only=0 ;; esac']
+      : []),
     "      sleep 6",
     "    done",
     ...(tlsHint

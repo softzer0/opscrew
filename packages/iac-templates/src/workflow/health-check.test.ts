@@ -8,7 +8,8 @@ import { renderWorkflow } from "./index";
 
 /*
  * Runs the generated "Check that the app is healthy" script in bash with a fake `curl` that exits
- * with the codes in CURL_CODES (one per attempt, the last one repeated) and a `sleep` that returns.
+ * with the codes in CURL_CODES (one per attempt, the last one repeated; `22:525` also answers
+ * HTTP 525 to `-w`) and a `sleep` that returns.
  */
 
 type Step = { id?: string; run?: string };
@@ -26,13 +27,20 @@ const proxied = testPlan({ provider: "own", domain: "shop.example.com" });
 const tunnel = testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" });
 const noDomain = testPlan({ provider: "own" });
 
+// The attempt counter lives in a file: the script calls `curl` inside `$(…)`, a subshell.
 const PRELUDE = [
-  "curl_calls=0",
+  'curl_calls="$(mktemp)"',
+  'echo 0 > "$curl_calls"',
+  "trap 'rm -f \"$curl_calls\"' EXIT",
   "curl() {",
   "  local codes=($CURL_CODES)",
-  "  local i=$(( curl_calls < ${#codes[@]} ? curl_calls : ${#codes[@]} - 1 ))",
-  "  curl_calls=$(( curl_calls + 1 ))",
-  '  return "${codes[$i]}"',
+  '  local n; read -r n < "$curl_calls"',
+  "  local i=$(( n < ${#codes[@]} ? n : ${#codes[@]} - 1 ))",
+  '  echo $(( n + 1 )) > "$curl_calls"',
+  '  local code="${codes[$i]%%:*}" status="${codes[$i]#*:}"',
+  '  if [ "$status" = "$code" ]; then if [ "$code" -eq 0 ]; then status=200; else status=000; fi; fi',
+  '  case " $* " in *" -w "*) printf %s "$status" ;; esac',
+  '  return "$code"',
   "}",
   "sleep() { :; }",
 ].join("\n");
@@ -59,17 +67,19 @@ const NO_ANSWER = "::error::The new version did not answer at https://shop.examp
 
 describe("the health check's rendered script", () => {
   it("keeps today's step where the check does not reach Caddy's own certificate", () => {
-    for (const plan of [proxied, tunnel, noDomain]) {
+    for (const plan of [tunnel, noDomain]) {
       const script = healthScript(plan);
       expect(script).toContain('echo "::error::The new version did not answer at $URL."');
       expect(script).not.toContain("Let's Encrypt");
     }
   });
 
-  it("tells a TLS failure apart when Caddy serves the domain itself", () => {
-    const script = healthScript(direct);
-    expect(script).toContain("Let's Encrypt issues at most 5 certificates per week");
-    expect(script).toContain('echo "::error::The new version did not answer at $URL."');
+  it("tells a TLS failure apart when Caddy serves the domain, also behind Cloudflare's proxy", () => {
+    for (const plan of [direct, proxied]) {
+      const script = healthScript(plan);
+      expect(script).toContain("Let's Encrypt issues at most 5 certificates per week");
+      expect(script).toContain('echo "::error::The new version did not answer at $URL."');
+    }
   });
 });
 
@@ -82,8 +92,16 @@ describe.skipIf(!bashWorks())("the health check in bash", { timeout: 30_000 }, (
     }
   });
 
+  it("says so behind Cloudflare's proxy when every attempt gets 525 or 526 (Cloudflare's handshake with the server)", () => {
+    for (const codes of ["22:525", "22:526", "22:525 22:526"]) {
+      const result = run(healthScript(proxied), codes);
+      expect(result.status).toBe(1);
+      expect(result.output.trim()).toBe(TLS_MESSAGE);
+    }
+  });
+
   it("says only that it did not answer when any attempt failed otherwise", () => {
-    for (const codes of ["7", "35 35 7 35", "22", "28"]) {
+    for (const codes of ["7", "35 35 7 35", "22", "28", "22:502", "22:525 22:502"]) {
       const result = run(healthScript(direct), codes);
       expect(result.status).toBe(1);
       expect(result.output.trim()).toBe(NO_ANSWER);
@@ -96,9 +114,9 @@ describe.skipIf(!bashWorks())("the health check in bash", { timeout: 30_000 }, (
     expect(result.output.trim()).toBe("Healthy after 3 attempt(s).");
   });
 
-  it("keeps today's message in proxied and tunnel mode, also for TLS failures", () => {
-    for (const plan of [proxied, tunnel]) {
-      const result = run(healthScript(plan), "35");
+  it("keeps today's message in tunnel mode, also for TLS failures", () => {
+    for (const codes of ["35", "22:525"]) {
+      const result = run(healthScript(tunnel), codes);
       expect(result.status).toBe(1);
       expect(result.output.trim()).toBe(NO_ANSWER);
     }

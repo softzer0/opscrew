@@ -248,14 +248,22 @@ jobs:
           URL: https://shop.example.com/api/health
         run: |
           set -euo pipefail
+          tls_only=1
           for attempt in $(seq 1 30); do
-            if curl -fsS --max-time 10 -o /dev/null "$URL"; then
+            code=0
+            status="$(curl -fsS --max-time 10 -o /dev/null -w '%{http_code}' "$URL")" || code=$?
+            if [ "$code" -eq 0 ]; then
               echo "Healthy after $attempt attempt(s)."
               exit 0
             fi
+            case "$code:$status" in 35:* | 60:* | 22:525 | 22:526) ;; *) tls_only=0 ;; esac
             sleep 6
           done
-          echo "::error::The new version did not answer at $URL."
+          if [ "$tls_only" -eq 1 ]; then
+            echo "::error::The new version did not answer at $URL: every attempt failed the TLS handshake, so the server has no certificate for this domain yet. Let's Encrypt issues at most 5 certificates per week for the same set of names, so a server rebuilt many times can reach that limit. Wait (one more becomes available about every 34 hours) or use another hostname, then deploy again."
+          else
+            echo "::error::The new version did not answer at $URL."
+          fi
           exit 1
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
