@@ -141,6 +141,97 @@ result below is failed requests out of all requests sent.
   3. remove the old copy on success, or the new one on failure.
 - docker-rollout is not used.
 
+### R7 results: the builder comparison (2026-10-18; `.tools/scratch/012-results-a.md`)
+
+Local Docker 29 (containerd image store); every builder pushed to a local registry. Times are
+wall-clock seconds, ±20% (another spike shared the engine). "net" leaves out pack's 5.5 GB
+throwaway builder step (finding 1). Dockerfile = OpsCrew's generated Dockerfile (Node and Python
+only). HIGH/CRIT = Trivy's counts.
+
+| App | Builder | MB | Cold s | Warm s | Runs as | Dev deps in image | HIGH | CRIT | Starts |
+|---|---|---|---|---|---|---|---|---|---|
+| nextjs-postgres (npm, Next.js 16) | Buildpacks | fails: Turbopack cannot find `next/package.json` (node_modules is a symlink outside /workspace) | | | | | | | |
+| | Railpack | 1113 | 53 | 33 | root | yes | 51 | 0 | yes |
+| | Dockerfile | 304 | 31 | 38 | uid 1000 | no | 11 | 0 | yes |
+| express-api (npm) | Buildpacks | 514 | 34 | 23 | uid 1002 | no | 45 | 0 | yes |
+| | Railpack | 657 | 37 | 21 | root | yes | 51 | 0 | yes |
+| | Dockerfile | 272 | 11 | 12 | uid 1000 | **yes** (template bug) | 11 | 0 | yes |
+| fastapi-redis (pip) | Buildpacks (Procfile) | 527 | 35 | 17 | uid 1002 | – | 19 | 0 | yes |
+| | Railpack | 571 | 67 | 23 | root | – | 47 | 0 | yes |
+| | Dockerfile | 240 | 25 | 4 | uid 10001 | – | 48 | 0 | yes |
+| django-postgres (pip) | Buildpacks | fails by default (Python 3.11; Django 6.1 needs ≥ 3.12; `.python-version` ignored) | | | | | | | |
+| | Buildpacks, `BP_CPYTHON_VERSION=3.13` | 693 | 318 (42 net) | 322 (20 net) | uid 1002 | – | 19 | 0 | yes (no sqlite library in the run image) |
+| | Railpack | 600 | 25 | 14 | root | – | 47 | 0 | yes |
+| | Dockerfile | 270 | 15 | 4 | uid 10001 | – | 48 | 0 | yes |
+| static-vite | Buildpacks (NGINX) | 209 | 318 (36 net) | 303 (19 net) | uid 1002 | – | 15 | 0 | yes |
+| | Railpack | 221 | 23 | 11 | root | – | 47 | 0 | yes |
+| | Dockerfile | 163 | 18 | 15 | uid 65534 | – | 8 | 0 | yes |
+| monorepo web app (pnpm workspace) | Buildpacks | fails: ignores pnpm, unlocked npm install | | | | | | | |
+| | Railpack | 1383 | 55 | 36 | root | – | 53 | 0 | yes |
+| | Dockerfile | 339 | 46 | 47 | uid 1000 | – | 13 | 0 | yes |
+| go-api | Buildpacks | 204 | 32 | 21 | uid 1002 | – | 21 | 0 | yes |
+| | Railpack | 159 | 20 | 12 | root | – | 43 | 0 | yes |
+| rails-api (Ruby 4.0.6) | Buildpacks | 731 | 52 | 17 | uid 1002 | – | 13 | 1 | yes (fails with Ruby 4.0.7: not offered yet) |
+| | Railpack | 1033 | 81 | 15 | root | – | 43 | 1 | yes |
+| laravel-app | Buildpacks (Noble) | 1095 | 389 (89 net) | 299 (24 net) | uid 1002 | – | 19 | 0 | **no**: NGINX has no front-controller rewrite (404/500) |
+| | Railpack | 1637 | 62 | 36 | root | – | 141 | 4 | yes |
+| spring-boot-api (Maven) | Buildpacks | 530 | 104 | 32 | uid 1002 | – | 29 | 6 | yes |
+| | Railpack | 954 | 74 | 33 | root | – | 48 | 3 | yes |
+| dotnet-api | Buildpacks | 427 | 120 | 44 | uid 1002 | – | 25 | 2 | yes |
+| | Railpack | 1201 (full SDK) | 81 | 28 | root | – | 131 | 4 | yes |
+| rust-api | Railpack | 153 | 64 | 14 | root | – | 43 | 0 | yes |
+
+Findings:
+1. **Every `pack build --env …` first builds a 5.5 GB throwaway builder image**, which took 280–340 s
+   on the containerd image store (3 s without `--env`). That hits Node (`BP_NODE_RUN_SCRIPTS`), static
+   sites, PHP and Python version pins. It still has to be checked on a GitHub runner. A `project.toml`
+   with `[[io.buildpacks.build.env]]` may avoid it (**verify**).
+2. **Buildpacks cannot build Next.js 16 or a pnpm workspace.**
+3. **PHP is in the Noble builder** (R1's "Jammy Full only" is out of date), but the default NGINX
+   config does not route Laravel's front controller.
+4. **Most of Buildpacks' HIGH findings are in Paketo's own Go helper binaries** (15–37 per image).
+   The Ubuntu Noble OS layer showed none; Railpack's Debian runtime base showed 43.
+5. **Railpack images are large.** They keep dev dependencies, and the full SDK for .NET (624 MB) and
+   Java.
+6. **OpsCrew's `node-server` Dockerfile ships dev dependencies** (`typescript`). Fix it in 012. The
+   Next.js standalone template is clean.
+7. **pack's cache needs a persisted `PACK_HOME`.** The cache volume name comes from a random key kept
+   there.
+8. **`railpack prepare` for Python fails on Alpine (musl).** Run it on glibc (the GitHub runner is
+   fine).
+9. **Buildpacks' default Python is 3.11 and ignores `.python-version`.** Only `BP_CPYTHON_VERSION`
+   sets it, so OpsCrew must pass the version it detected.
+
+**Railpack as non-root.** No Railpack image sets a `USER`; all run as uid 0.
+- Running with `--user 10001:10001` (Compose `user:`) works for 10 of 12 apps: Go, Rust, static,
+  Express, FastAPI, Django, Spring, .NET, Next.js and the monorepo.
+- It fails for Rails (`/app/tmp/cache`) and Laravel (`storage/`, `database/`), which write under
+  `/app`.
+- `deploy.base` with a `USER` does not carry through: the final image's `User` is empty.
+- What works: a non-root user at runtime, plus, for apps that write under `/app`, one extra layer
+  (`FROM <railpack image>`, `chown` of the writable folders, `USER`).
+
+**arm64.**
+- Buildpacks' Noble builder and run image have arm64 variants. Jammy Full has no arm64 builder.
+- Railpack's frontend, builder and runtime images all have arm64, and a `--platform linux/arm64` Go
+  build worked under emulation. R2's "amd64 only" is wrong.
+
+**Pins used:**
+- pack 0.40.9 (`buildpacksio/pack@sha256:4aec804c…`);
+- Noble builder `@sha256:ba79c24b55830210fc5ee06768237ab989dbaeec36adb60a986bcb8e70e4d7cd`
+  (lifecycle 0.21.22);
+- Railpack 0.42.0 (tarball sha256 `81bca91d…194b`, matches `checksums.txt`);
+- Railpack frontend `@sha256:a42a12399fa9e83a09e475f69dbf8a45a8a74ea38a4485fcb401356d84317a14`.
+
+**What this means for the automatic choice (FR-1210).** On the projects it would be chosen for first
+(npm Node, pip Python), Buildpacks falls short of OpsCrew's own Dockerfile:
+- it fails on Next.js 16 and pnpm workspaces;
+- its images are about 2× larger (514 MB against 272, 527 against 240, 693 against 270);
+- it is much slower whenever a build setting is needed.
+
+It is the best non-root option for Java, .NET, Go and Ruby, where OpsCrew has no template and
+Railpack's images are 1.8–2.8× larger. **The founder decides.**
+
 ## R4. SBOM, provenance and signing
 
 - **buildx.** Min-level provenance is on by default; `sbom: true` and `provenance: mode=max` are opt-in.
