@@ -35,8 +35,8 @@ cicd:
 - `chosen: user` keeps the user's builder through every later design, unless the baseline or the
   architecture rules it out (FR-1202). OpsCrew then says why and changes nothing until the user
   edits the field.
-- `deploy.strategy: rolling` is refused for the Portainer target, which always recreates
-  (FR-1217).
+- For the Portainer target, design always records `deploy.strategy: recreate`, since Portainer
+  recreates the stack (FR-1217). The schema itself does not refuse `rolling`.
 - `runtime.version` is a major, major.minor or major.minor.patch string, kept as precise as the app
   declares it, because FR-1228 rule 1 keeps exact versions. It is required for every language except
   `other`, where Railpack picks the version. It is not checked against the builder here;
