@@ -306,7 +306,6 @@ export async function runSteps(
 
 /**
  * The `##[error]` messages in the log of the job named `jobName` of a workflow run, in order.
- * Reads only that job's log (Actions: read is enough; check-run annotations need Checks: read).
  * GitHub masks the run's secrets in the log; the log itself is never returned or printed, and the
  * test still scrubs the messages it shows.
  */
@@ -315,6 +314,14 @@ export async function jobErrors(
   runId: number,
   jobName: string,
 ): Promise<string[]> {
+  return logErrors(await jobLog(github, runId, jobName));
+}
+
+/**
+ * The log of the job named `jobName` of a workflow run (Actions: read is enough; check-run
+ * annotations need Checks: read). GitHub masks the run's secrets in it; never print it.
+ */
+export async function jobLog(github: GitHubRepo, runId: number, jobName: string): Promise<string> {
   const got = await github.call(
     "GET",
     `/repos/${github.name}/actions/runs/${runId}/jobs?per_page=100`,
@@ -329,7 +336,7 @@ export async function jobErrors(
   if (log.status !== 200) {
     throw new Error(`Could not read the log of job ${job.name} (HTTP ${log.status}).`);
   }
-  return logErrors(log.text);
+  return log.text;
 }
 
 /** The names of the repository's GitHub Actions secrets. */

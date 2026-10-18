@@ -3,9 +3,12 @@
  * OpsCrew's shared Cloudflare rules and the cleanup's leftover decision, the firewall and listener
  * checks, the rollback's outcome) and of the Portainer test's step selection. No network.
  */
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fakeSecret } from "@opscrew/core/testing";
-import { describe, expect, it } from "vitest";
-import { GitHubRepo } from "./cloud";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { GitHubRepo, ghcrMissingBlobs } from "./cloud";
 import {
   CORE_STEPS,
   envNames,
@@ -24,18 +27,28 @@ import {
 } from "./portainer-support";
 import {
   addressLinesOutsidePurpose,
+  applyEdit,
   appRules,
+  BUILD_JOB,
   blockedByCloudflare,
   cloudflareRecordProblems,
   deployJobFailed,
   expectedSharedHosts,
+  HEALTH_BREAKS,
   ipv6PrefixForms,
+  jsonStrings,
   leakedLabels,
+  missingBuildSteps,
+  provenanceProblems,
+  requestFailure,
   rulesCleanup,
   runHostname,
   Scrubber,
+  type SourceEdit,
+  sbomPackages,
   seededDescription,
   sharedRuleHosts,
+  steadyLoad,
   ufwRulesBeyondSsh,
   userRules,
   webListenersBeyondIpv4,
@@ -586,5 +599,213 @@ describe("deployJobFailed", () => {
         "success",
       ),
     ).toBe(true);
+  });
+});
+
+describe("the builder checks of the Hetzner pass (feature 012)", () => {
+  const examples = fileURLToPath(new URL("../../../../examples/", import.meta.url));
+
+  it("names the build steps a run did not show as succeeded for the builder", () => {
+    const build = (step: string, conclusion: string | null = "success") => ({
+      job: BUILD_JOB,
+      step,
+      conclusion,
+    });
+    const pack = [
+      build("Set up pack"),
+      build("Build the image with Buildpacks"),
+      build("Seal and push the image"),
+    ];
+    expect(missingBuildSteps(pack, "buildpacks")).toEqual([]);
+    expect(missingBuildSteps(pack, "railpack")).toEqual([
+      "Plan the Railpack build",
+      "Build the image with Railpack",
+    ]);
+    expect(missingBuildSteps([build("Build and push the image")], "generated-dockerfile")).toEqual(
+      [],
+    );
+    // A step of another job, or one that did not succeed, does not count.
+    expect(
+      missingBuildSteps(
+        [
+          { job: "Deploy to the server", step: "Build and push the image", conclusion: "success" },
+          build("Build and push the image", "failure"),
+        ],
+        "generated-dockerfile",
+      ),
+    ).toEqual(["Build and push the image"]);
+  });
+
+  it("breaks each example's health route with one exact edit, and refuses a missing or repeated one", () => {
+    // The route `adapt` writes for the Next.js app router (packages/agents, adapt/health).
+    const route = `import { NextResponse } from "next/server";\n\nexport function GET() {\n  return NextResponse.json({ status: "ok" });\n}\n`;
+    const next = HEALTH_BREAKS["nextjs-postgres"];
+    expect(next?.file).toBe("app/api/health/route.ts");
+    expect(applyEdit(route, next as SourceEdit)).toContain("{ status: 500 }");
+    for (const [app, sample] of [
+      ["go-api", 'w.Header().Set("Content-Type", "application/json")'],
+      ["rust-api", '.route("/health", get(|| async { Json(json!({ "status": "ok" })) }))'],
+    ] as const) {
+      const edit = HEALTH_BREAKS[app] as SourceEdit;
+      expect(applyEdit(`before\n${sample}\nafter`, edit)).toBe(`before\n${edit.to}\nafter`);
+      expect(edit.to).toMatch(/StatusInternalServerError|INTERNAL_SERVER_ERROR/);
+    }
+    const edit = { file: "main.go", from: "ok", to: "broken" };
+    expect(() => applyEdit("nothing here", edit)).toThrow(/main\.go/);
+    expect(() => applyEdit("ok ok", edit)).toThrow(/main\.go/);
+  });
+
+  it.each(["go-api", "rust-api"])("finds the health route in examples/%s", async (app) => {
+    const edit = HEALTH_BREAKS[app] as SourceEdit;
+    const text = await readFile(join(examples, app, edit.file), "utf8");
+    expect(applyEdit(text, edit)).not.toBe(text);
+  });
+
+  it("checks that the provenance names the repository and commit and holds no event payload", () => {
+    const commit = "a".repeat(40);
+    const provenance = {
+      SLSA: {
+        buildDefinition: {
+          externalParameters: {
+            configSource: { uri: "https://github.com/Owner/Repo.git", digest: { sha1: commit } },
+          },
+        },
+        runDetails: {
+          metadata: { buildkit_metadata: { vcs: { source: "https://github.com/Owner/Repo" } } },
+        },
+      },
+    };
+    const expected = { repository: "owner/repo", commit };
+    expect(provenanceProblems(provenance, expected)).toEqual([]);
+    expect(provenanceProblems(provenance, { ...expected, commit: "b".repeat(40) })).toEqual([
+      `the provenance does not name the commit ${"b".repeat(40)}`,
+    ]);
+    expect(provenanceProblems(provenance, { ...expected, repository: "owner/other" })).toEqual([
+      "the provenance does not name the repository owner/other",
+    ]);
+    const withEvent = {
+      ...provenance,
+      environment: { github_event_payload: { head_commit: { message: "m" } } },
+    };
+    expect(provenanceProblems(withEvent, expected)).toEqual([
+      "the provenance holds GitHub's event data (github_event_payload, head_commit)",
+    ]);
+  });
+
+  it("counts the packages an SBOM lists, in one or several documents", () => {
+    expect(sbomPackages({ SPDX: { packages: [{ name: "a" }, { name: "b" }] } })).toBe(2);
+    expect(
+      sbomPackages({
+        "linux/amd64": { SPDX: { packages: [{ name: "a" }] } },
+        "linux/arm64": { SPDX: { packages: [{ name: "b" }] } },
+      }),
+    ).toBe(2);
+    expect(sbomPackages({ SPDX: { packages: [] } })).toBe(0);
+    expect(sbomPackages(null)).toBe(0);
+  });
+
+  it("collects the strings of a JSON value that are long enough to search for", () => {
+    const password = fakeSecret("aws-secret-access-key", "e2e");
+    expect(jsonStrings({ app: { SECRET_KEY: password, SHORT: "abc" }, db: [password, 5] })).toEqual(
+      [password, password],
+    );
+  });
+
+  it("names a failed request by its status, its error code or its timeout", () => {
+    expect(requestFailure(503)).toBe("HTTP 503");
+    expect(requestFailure(204)).toBeUndefined();
+    expect(requestFailure(301)).toBe("HTTP 301");
+    const reset = Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+    expect(requestFailure(reset)).toBe("ECONNRESET");
+    expect(requestFailure(new DOMException("timed out", "TimeoutError"))).toBe("TimeoutError");
+  });
+});
+
+describe("steadyLoad", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sends at a steady rate without waiting for answers, and records every failure with its time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-18T10:00:00.000Z"));
+    const answers = [200, 502, 200, 200];
+    let calls = 0;
+    const logged: string[] = [];
+    const load = steadyLoad(
+      async () => {
+        const answer = answers[calls++ % answers.length] as number;
+        if (calls === 3) throw Object.assign(new Error("socket"), { code: "ECONNREFUSED" });
+        return answer;
+      },
+      20,
+      (failure) => logged.push(`${failure.at} ${failure.what}`),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const summary = await load.stop();
+    expect(summary.sent).toBe(20);
+    expect(summary.failures.map((failure) => failure.what)).toEqual([
+      "HTTP 502",
+      "ECONNREFUSED",
+      "HTTP 502",
+      "HTTP 502",
+      "HTTP 502",
+      "HTTP 502",
+    ]);
+    expect(logged[0]).toBe("2026-10-18T10:00:00.100Z HTTP 502");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(calls).toBe(20);
+  });
+
+  it("waits for the requests still on their way when it stops", async () => {
+    vi.useFakeTimers();
+    let release: (status: number) => void = () => undefined;
+    const load = steadyLoad(
+      () =>
+        new Promise<number>((resolve) => {
+          release = resolve;
+        }),
+      20,
+      () => undefined,
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    const stopped = load.stop();
+    release(500);
+    expect((await stopped).failures.map((failure) => failure.what)).toEqual(["HTTP 500"]);
+  });
+});
+
+describe("ghcrMissingBlobs", () => {
+  it("checks every blob of the index's manifests through the registry API with the read token", async () => {
+    const token = fakeSecret("github-token", "e2e");
+    const digest = (n: string) => `sha256:${n.repeat(64)}`;
+    const manifests: Record<string, unknown> = {
+      [digest("a")]: { manifests: [{ digest: digest("b") }, { digest: digest("c") }] },
+      [digest("b")]: { config: { digest: digest("d") }, layers: [{ digest: digest("e") }] },
+      [digest("c")]: { config: { digest: digest("f") }, layers: [{ digest: digest("e") }] },
+    };
+    const calls: { url: string; method: string; auth: string | null }[] = [];
+    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const auth = new Headers(init?.headers).get("authorization");
+      const href = String(url);
+      calls.push({ url: href, method: init?.method ?? "GET", auth });
+      if (href.startsWith("https://ghcr.io/token")) {
+        return Response.json({ token: "registry-token" });
+      }
+      const [, kind, ref] = /\/(manifests|blobs)\/(sha256:[0-9a-f]{64})$/.exec(href) ?? [];
+      if (kind === "manifests") return Response.json(manifests[ref as string]);
+      return new Response(null, { status: ref === digest("f") ? 404 : 307 });
+    }) as typeof fetch;
+    const image = `ghcr.io/owner/repo@${digest("a")}`;
+    expect(await ghcrMissingBlobs(image, "owner", token, fetchImpl)).toEqual([
+      `${digest("f")} (HTTP 404)`,
+    ]);
+    expect(calls[0]?.auth).toBe(`Basic ${Buffer.from(`owner:${token}`).toString("base64")}`);
+    expect(calls[0]?.url).toContain("scope=repository%3Aowner%2Frepo%3Apull");
+    expect(calls.slice(1).every((call) => call.auth === "Bearer registry-token")).toBe(true);
+    expect(calls.filter((call) => call.method === "HEAD")).toHaveLength(3);
+    await expect(ghcrMissingBlobs("ghcr.io/owner/repo:latest", "owner", token)).rejects.toThrow(
+      /digest reference/,
+    );
   });
 });

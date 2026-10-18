@@ -4,6 +4,7 @@
  * OPSCREW_E2E_* token is set; see docs/e2e.md. It creates a real server for a few minutes (cents)
  * and always tears it down, even when a step fails. OPSCREW_E2E_APP picks the app to deploy. With
  * a Cloudflare domain it also checks the app's hostnames in OpsCrew's shared rules (feature 011).
+ * On Hetzner the builder examples also get the builder checks of feature 012 (builder-checks.ts).
  */
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -15,6 +16,12 @@ import { materializeFixture } from "@opscrew/core/testing";
 import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import {
+  type BuilderRun,
+  builderChecks,
+  builderPreflight,
+  builderSettings,
+} from "./builder-checks";
 import {
   api,
   Cloudflare,
@@ -245,12 +252,48 @@ const DIGITALOCEAN: LiveProvider = {
   },
 };
 
+/**
+ * The builder checks (feature 012) of the Hetzner pass with OPSCREW_E2E_BUILDS=1, when
+ * OPSCREW_E2E_APP is one of the builder examples (nextjs-postgres, go-api, rust-api); otherwise
+ * the line the pass logs instead.
+ */
+const BUILDERS = builderSettings(
+  APP instanceof Error || APP.kind !== "example" ? undefined : APP.name,
+  process.env,
+);
+
+/**
+ * OPSCREW_E2E_SKIP_DESTROY=1: the Hetzner pass skips `opscrew destroy` and takes the fallback a
+ * failed destroy takes (the IaC destroy, the provider API, the shared Cloudflare rules), whose
+ * leftover checks must then find nothing.
+ */
+const skipDestroy = process.env.OPSCREW_E2E_SKIP_DESTROY === "1";
+
 for (const provider of [HETZNER, DIGITALOCEAN]) {
+  const onHetzner = provider.id === "hetzner";
+  const builders = onHetzner && typeof BUILDERS !== "string" ? BUILDERS : undefined;
   describe.skipIf(!(provider.token && withGitHub))(`live end-to-end on ${provider.name}`, () => {
     it(`deploys ${APP_LABEL} from a GitHub repository and tears everything down`, {
-      timeout: minutes(75),
+      timeout: minutes(builders === undefined ? 75 : 180),
     }, async () => {
-      await deployAndTearDown(provider);
+      const cleanup = { skipDestroy: onHetzner && skipDestroy };
+      if (builders === undefined) {
+        if (onHetzner && typeof BUILDERS === "string") console.log(`OpsCrew E2E: ${BUILDERS}`);
+        await deployAndTearDown(provider, cleanup);
+        return;
+      }
+      // Before any GitHub or cloud call.
+      await builderPreflight(builders);
+      await deployAndTearDown(provider, {
+        ...cleanup,
+        answers: builders.sign ? { signImages: true } : {},
+        afterDeploy: (run) =>
+          builderChecks(run, builders, [
+            { label: "OPSCREW_E2E_GITHUB_TOKEN", value: E2E.githubToken },
+            { label: "OPSCREW_E2E_HCLOUD_TOKEN", value: E2E.hcloudToken },
+            { label: "OPSCREW_E2E_CLOUDFLARE_TOKEN", value: E2E.cloudflareToken },
+          ]),
+      });
     });
   });
 }
@@ -283,6 +326,25 @@ async function expectInSharedRules(
       `the app's hostnames in OpsCrew's shared rule ${ref} ${listed ? "after provision" : "after destroy"}`,
     ).toEqual([...want].sort());
   }
+}
+
+/**
+ * After the destroy or its fallback: no DNS record on the app's hostnames (its domain, and `www.`
+ * when it serves that too) is left in the zone. A failure names each record by its type and a
+ * label, never by its name or content.
+ */
+async function expectNoRecordsLeft(shared: SharedZone, rules: AppRules): Promise<void> {
+  const hosts = [...new Set(Object.values(rules).flat())];
+  const records = await shared.cloudflare.list<{ type: string; name: string }>(
+    `/zones/${shared.zone.id}/dns_records`,
+  );
+  const left = records
+    .filter((record) => hosts.includes(record.name))
+    .map(
+      (record) =>
+        `${record.type} record on ${record.name === hosts[0] ? "the app's domain" : "the app's www. name"}`,
+    );
+  expect(left, "DNS records of the app left in the zone after destroy").toEqual([]);
 }
 
 /** Runs `opscrew retarget …` until it exits 0, approving each plan it stops at by its hash. */
@@ -341,20 +403,24 @@ describe.skipIf(!(HETZNER.token && DIGITALOCEAN.token && withGitHub && isDefault
   },
 );
 
-/** A deployed example, handed to `afterDeploy` (for example to move it to the other provider). */
-interface LiveRun {
-  repo: string;
+/**
+ * A deployed example, handed to `afterDeploy` (for example to move it to the other provider, or
+ * for the builder checks).
+ */
+interface LiveRun extends BuilderRun {
   appName: string;
-  /** The deploy key and OpsCrew's known_hosts for this project, for direct SSH checks. */
-  ssh: (host: string, command: string) => Promise<string>;
   opscrew: (...args: string[]) => Promise<{ exitCode: number; output: string }>;
 }
 
 interface DeployOptions {
   /** Tokens of other providers the run may use (a move needs both). */
   alsoTokens?: readonly LiveProvider[];
+  /** More interview answers (for example `signImages`). */
+  answers?: Record<string, unknown>;
   /** Runs after the deployment was verified, before the teardown. */
   afterDeploy?: (run: LiveRun) => Promise<void>;
+  /** Skips `opscrew destroy`, so the fallback cleanup a failed destroy gets runs and is checked. */
+  skipDestroy?: boolean;
 }
 
 async function deployAndTearDown(
@@ -411,6 +477,17 @@ async function deployAndTearDown(
     await git("checkout", "-q", "-B", "main", "origin/main");
     return sha;
   };
+  /** Commits only `files` on `branch`, then merges its new pull request like the ones above. */
+  const mergeFiles = async (branch: string, message: string, files: readonly string[]) => {
+    await git("checkout", "-q", "-B", branch);
+    await git("add", "--", ...files);
+    await git("commit", "-q", "-m", message);
+    await git("push", "-q", "--force", "origin", branch);
+    const sha = await github.merge(await github.createPullRequest(message, branch));
+    await git("fetch", "-q", "origin");
+    await git("checkout", "-q", "-B", "main", "origin/main");
+    return sha;
+  };
 
   // A fresh copy of the app becomes the throwaway repository's main branch.
   console.log(`OpsCrew E2E: deploying ${app.label} on ${provider.name}`);
@@ -450,6 +527,7 @@ async function deployAndTearDown(
         dnsProvider: withDns ? "cloudflare" : "none",
         ...(withDns ? { domain: E2E.domain } : {}),
         keepExternalServices: [],
+        ...options.answers,
       }),
     );
     expect((await opscrew("interview", "--answers", join(work, "answers.json"))).exitCode).toBe(0);
@@ -544,7 +622,16 @@ async function deployAndTearDown(
         if (result.exitCode !== 0) throw new Error(`ssh ${host} failed: ${result.stderr}`);
         return result.stdout.trim();
       };
-      await options.afterDeploy({ repo, appName: appName as string, ssh, opscrew });
+      await options.afterDeploy({
+        repo,
+        env,
+        github,
+        deployed: { runId: deployed.id, sha: mergeSha },
+        appName: appName as string,
+        ssh,
+        opscrew,
+        mergeFiles,
+      });
     }
   } finally {
     // The user's own teardown first (SC-301); the IaC and API fallbacks only if it fails.
@@ -554,7 +641,11 @@ async function deployAndTearDown(
       .catch(() => ({ provider: provider.id, moving: false }));
     const live = involved.find((p) => p.id === current.provider) ?? provider;
     let destroyed = false;
-    if (appName !== undefined && !current.moving) {
+    if (options.skipDestroy === true) {
+      console.log(
+        "OpsCrew E2E: skipping opscrew destroy (OPSCREW_E2E_SKIP_DESTROY=1): the fallback cleanup runs instead",
+      );
+    } else if (appName !== undefined && !current.moving) {
       const destroy = await opscrew("destroy", "--confirm", appName, "--no-snapshot").catch(
         () => undefined,
       );
@@ -588,7 +679,11 @@ async function deployAndTearDown(
         if (p !== live && appName !== undefined) await p.apiCleanup(appName);
     }
     // After the destroy or its fallback, no shared rule may list the app's hostnames.
-    if (shared !== undefined) await expectInSharedRules(shared, sharedRules, false);
+    // … and no DNS record on them is left in the zone.
+    if (shared !== undefined) {
+      await expectInSharedRules(shared, sharedRules, false);
+      await expectNoRecordsLeft(shared, sharedRules);
+    }
     // The throwaway repository keeps only `main`, as the own-server and Portainer runs leave it.
     await github.reset();
   }

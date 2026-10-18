@@ -3,8 +3,9 @@
  * (with its own SSH key and, for the Portainer test, a firewall), the Cloudflare resources OpsCrew
  * creates for an app (listed, and removed only when this run created them), the zone's two
  * entrypoint rulesets with OpsCrew's shared rules and the rules the test seeds as the user's, the
- * account's Zero Trust pieces, the throwaway GitHub repository, TCP and HTTP probes, and root SSH
- * to the server with the test's own key. Nothing here prints; the tests mask everything they log.
+ * account's Zero Trust pieces, the throwaway GitHub repository, the deployed image's blobs in GHCR,
+ * TCP and HTTP probes, and root SSH to the server with the test's own key. Nothing here prints; the
+ * tests mask everything they log.
  */
 import { Resolver } from "node:dns";
 import { request as nodeHttpRequest } from "node:http";
@@ -819,6 +820,90 @@ export class GitHubRepo {
     }
     return texts;
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// GitHub Container Registry: the blobs of a deployed image.
+
+const MANIFEST_TYPES = [
+  "application/vnd.oci.image.index.v1+json",
+  "application/vnd.docker.distribution.manifest.list.v2+json",
+  "application/vnd.oci.image.manifest.v1+json",
+  "application/vnd.docker.distribution.manifest.v2+json",
+].join(", ");
+
+interface RegistryManifest {
+  manifests?: { digest: string }[];
+  config?: { digest: string };
+  layers?: { digest: string }[];
+}
+
+/**
+ * The blobs of `image` (`ghcr.io/<repository>@sha256:<hex>`) GHCR no longer has, each as
+ * `<digest> (HTTP <status>)`: the config and layers of every manifest its index lists (the
+ * platform images and the attestations), asked for through the registry API with the login
+ * `user`/`password` as a pull on a computer without any of its layers would, without downloading
+ * them. A missing manifest throws.
+ */
+export async function ghcrMissingBlobs(
+  image: string,
+  user: string,
+  password: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const [, repository, digest] =
+    /^ghcr\.io\/([a-z0-9._/-]+)@(sha256:[0-9a-f]{64})$/.exec(image) ?? [];
+  if (repository === undefined || digest === undefined) {
+    throw new Error(`${image} is not a GHCR digest reference.`);
+  }
+  const basic = Buffer.from(`${user}:${password}`).toString("base64");
+  const login = await fetchImpl(
+    `https://ghcr.io/token?service=ghcr.io&scope=${encodeURIComponent(`repository:${repository}:pull`)}`,
+    {
+      headers: { Authorization: `Basic ${basic}`, "User-Agent": "opscrew-e2e" },
+      signal: AbortSignal.timeout(30_000),
+    },
+  );
+  const token = login.ok ? ((await login.json()) as { token?: string }).token : undefined;
+  if (token === undefined) {
+    throw new Error(`GHCR refused the read token for ${repository} (HTTP ${login.status}).`);
+  }
+  const headers = { Authorization: `Bearer ${token}`, "User-Agent": "opscrew-e2e" };
+  const v2 = `https://ghcr.io/v2/${repository}`;
+  const manifest = async (ref: string): Promise<RegistryManifest> => {
+    const got = await fetchImpl(`${v2}/manifests/${ref}`, {
+      headers: { ...headers, Accept: MANIFEST_TYPES },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!got.ok)
+      throw new Error(`GHCR has no manifest ${ref} of ${repository} (HTTP ${got.status}).`);
+    return (await got.json()) as RegistryManifest;
+  };
+  const top = await manifest(digest);
+  const images =
+    top.manifests === undefined
+      ? [top]
+      : await Promise.all(top.manifests.map((child) => manifest(child.digest)));
+  const blobs = new Set(
+    images.flatMap((item) => [
+      ...(item.config === undefined ? [] : [item.config.digest]),
+      ...(item.layers ?? []).map((layer) => layer.digest),
+    ]),
+  );
+  const missing: string[] = [];
+  for (const blob of blobs) {
+    // GHCR answers a blob with a redirect to its storage.
+    const got = await fetchImpl(`${v2}/blobs/${blob}`, {
+      method: "HEAD",
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (got.status !== 200 && (got.status < 300 || got.status >= 400)) {
+      missing.push(`${blob} (HTTP ${got.status})`);
+    }
+  }
+  return missing;
 }
 
 // ---------------------------------------------------------------------------------------------

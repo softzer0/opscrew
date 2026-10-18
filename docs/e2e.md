@@ -31,7 +31,9 @@ each cloud provider whose token is set (Hetzner Cloud, DigitalOcean, or both, on
 7. It tears everything down with `opscrew destroy --confirm`. With a Cloudflare domain, none of
    OpsCrew's shared rules may list the app's hostnames afterwards (other apps' hostnames there are
    not the test's); when destroy failed, the fallback removes them first (see
-   [Cost and cleanup](#cost-and-cleanup)).
+   [Cost and cleanup](#cost-and-cleanup)). No DNS record on the app's hostnames (its domain, and
+   `www.` when it serves that too) may be left in the zone either; a failure names each record by
+   its type and "the app's domain" or "the app's www. name".
 
 When both `OPSCREW_E2E_HCLOUD_TOKEN` and `OPSCREW_E2E_DIGITALOCEAN_TOKEN` are set, a third pass
 tests `opscrew retarget`: it deploys on Hetzner Cloud, writes a row into the app's database over
@@ -58,6 +60,10 @@ The test is skipped unless its environment variables are set, so normal runs and
 | `OPSCREW_E2E_GITHUB_TOKEN` | Fine-grained token for that repository only. It needs Contents, Pull requests, Secrets, Actions and Workflows (read and write), plus Metadata (read). |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN` | Optional. A Cloudflare token limited to one zone, with Zone Read, DNS Edit, Config Rules Edit and Zone WAF Edit. |
 | `OPSCREW_E2E_DOMAIN` | Optional, used together with the Cloudflare token: a hostname in that zone, for example `e2e.example.com`. |
+| `OPSCREW_E2E_BUILDS` | Optional, `1` runs [the builder checks](#the-builders) in the Hetzner pass (with `nextjs-postgres`, `go-api` or `rust-api`): about 20–40 minutes and four deploys per app. Off by default. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | Needed with `OPSCREW_E2E_BUILDS=1`: a GitHub **classic** token with only `read:packages`, for the user that owns the throwaway repository. The test reads the image's SBOM, provenance and blobs with it. |
+| `OPSCREW_E2E_SIGN` | Optional, `1` turns image signing on for the builder checks; it matters only together with `OPSCREW_E2E_BUILDS=1`. Off by default; read [Signing](#signing) first. |
+| `OPSCREW_E2E_SKIP_DESTROY` | Optional, `1` makes the Hetzner pass skip `opscrew destroy` and clean up with the fallback a failed destroy gets (see [Cost and cleanup](#cost-and-cleanup)). Off by default. |
 
 Requirements:
 
@@ -113,6 +119,115 @@ done
 
 The DigitalOcean pass also confirms the facts `specs/004-digitalocean/research.md` marks as
 "confirm live" (image slug, Droplet network fields, snapshot listing, pagination).
+
+### The builders
+
+With `OPSCREW_E2E_BUILDS=1` and `OPSCREW_E2E_APP` set to one of the three builder examples, the
+Hetzner pass also checks feature 012 after the first deploy and before the teardown
+(`packages/cli/test/live/builder-checks.ts`). They are off by default because they cost about 20 to
+40 minutes and four deploy workflow runs per app (see below). Without the variable the pass runs as
+before (one deploy, no GHCR token or Buildx needed) and logs one line naming it; with it but
+another app, it logs that the checks cover only these three.
+
+| App | Builder OpsCrew must choose |
+|---|---|
+| `nextjs-postgres` (the default app) | `generated-dockerfile` |
+| `go-api` | `buildpacks` |
+| `rust-api` | `railpack` |
+
+Other apps, and the DigitalOcean pass, run as before. Before any GitHub or cloud call the test stops
+with a plain message when `OPSCREW_E2E_GHCR_READ_TOKEN` is missing, when `docker buildx version`
+fails, or, with `OPSCREW_E2E_SIGN=1`, when `cosign version` fails. The checks, in order:
+
+1. **The builder.** `app.build.builder` in `opscrew/plan.yaml` is the expected one,
+   `deploy.strategy` is `rolling`, and `supplyChain.sign` matches `OPSCREW_E2E_SIGN`. The first
+   deploy run's "Build the image" job has the builder's own steps, all succeeded: "Build and push
+   the image" for the generated Dockerfile; "Set up pack", "Build the image with Buildpacks" and
+   "Seal and push the image" for Buildpacks; "Plan the Railpack build", "Build the image with
+   Railpack" and "Seal and push the image" for Railpack. For Buildpacks the job's log must name
+   the pinned builder and run images as `repo:tag@sha256:…`, exactly as in OpsCrew's pin table.
+2. **Non-root.** On the server, as `deploy`, `docker exec <container> id -u` for every running
+   `app` container: none may print `0`.
+3. **The attestations.** The test reads the deployed image (the digest in `/srv/app/.env` on the
+   server) with the guide's commands, `docker buildx imagetools inspect <image> --format
+   '{{json .Provenance}}'` and `--format '{{json .SBOM}}'`, logged in to `ghcr.io` with
+   `OPSCREW_E2E_GHCR_READ_TOKEN`. The login is written into a Docker configuration folder of the
+   test's own (`DOCKER_CONFIG`), never into your Docker configuration or the computer's credential
+   store, and deleted at the end. The provenance must name the repository
+   (`github.com/<owner>/<repo>`) and the deployed commit and hold none of GitHub's event data
+   (`github_event_payload`, `head_commit`, `pusher`); the SBOM must list packages.
+4. **The leak search** over the provenance and SBOM JSON: none of the GitHub, Hetzner, Cloudflare
+   and GHCR tokens, the deploy key, the state passphrase, the values OpsCrew generated for the app
+   (database password, app secrets) or the `OPSCREW_E2E_APP_ENV` values of 8 characters or more.
+   Only labels are printed.
+5. **A change under load.** The test sends a steady 20 requests per second to the app's health
+   route (through the domain when there is one, otherwise the server's address) from this
+   computer, without waiting for answers, each with a 10-second timeout. Meanwhile it merges a
+   pull request adding `opscrew-e2e-change.txt` and waits for that deploy run. Every non-2xx answer
+   and connection error is logged with the time its request was sent; there must be none, and the
+   server must run a new image afterwards.
+6. **A broken release.** Under the same load, the test merges a commit that makes the health route
+   answer 500 (none of the examples has a switch for that, so the copy in the throwaway repository
+   is edited: Next.js's `app/api/health/route.ts` that `adapt` wrote, `main.go`, `src/main.rs`).
+   No request may fail, the deploy run must fail, an error line of its "Deploy to the server" job
+   must say the new version did not pass its health check and name `app.build.builder: <builder>`,
+   the server must still run the previous image, and the health route must answer 200. Then a
+   third pull request puts the route back and deploys normally.
+7. **The image retention job.** The last deploy's "Delete old images" job must have succeeded
+   (for Buildpacks and Railpack it deletes the `build-<commit>` images, which share their layers
+   with the deployed ones). Then, for the first deployed image and the running one, the test asks
+   GHCR for every blob (the config and layers of every manifest of the image index, the
+   attestations among them) through the registry API, as a pull on a computer with none of the
+   layers would. None may be missing. It does not run `docker pull`: Docker would reuse layers
+   this computer already has (the Node and Debian base layers), so a pull could not prove that
+   GHCR kept them.
+8. **Signing** (only with `OPSCREW_E2E_SIGN=1`, see below): `cosign verify` with the guide's
+   certificate identity (the deploy workflow on the deploy branch) for the first deployed image
+   and the running one, after the image retention jobs of the later deploys. Without the
+   variable the test logs
+   "not checked: image signing".
+
+The test also logs what it does not check, on every run:
+
+- image retention on a package owned by an organization (the `/orgs` endpoints): the throwaway
+  repository is owned by a user;
+- kamal-proxy's `--target-timeout 300s` letting a 60-second request through: no example has a
+  slow route;
+- Railpack with a secret build value that is empty at `prepare`: no example has a secret build
+  value.
+
+Run the three apps one after another (each pass creates and destroys its own server):
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_E2E_BUILDS=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_GHCR_READ_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… \
+  OPSCREW_E2E_DOMAIN=e2e.example.com
+for app in nextjs-postgres go-api rust-api; do
+  echo "=== $app"
+  OPSCREW_E2E_APP="$app" npx vitest run test/live/live.test.ts || echo "FAILED: $app"
+done
+```
+
+Requirements on top of the pass's own: Docker with Buildx on this computer (for `docker buildx
+imagetools`; the daemon pulls nothing), and cosign with `OPSCREW_E2E_SIGN=1`. A pass runs four
+deploy workflow runs instead of one (the first deploy, the change, the broken release and the
+restore; the broken one waits a minute for its health check), so it takes about 20 to 40 minutes
+and more GitHub Actions minutes; the server cost stays at a few cents. The three extra pull
+requests and their branches (`e2e/change`, `e2e/broken`, `e2e/restore`) stay in the throwaway
+repository like the others (the branches are deleted at the end), and so do the images in its
+GHCR package.
+
+#### Signing
+
+`OPSCREW_E2E_SIGN=1` matters only together with `OPSCREW_E2E_BUILDS=1`; on its own it changes
+nothing. With both, it answers "sign images" in the interview, so the deploy workflow signs each
+image with cosign's keyless signing. **Keyless signing publishes the throwaway repository's name
+and the path of its deploy workflow in Sigstore's public transparency log (Rekor), even when the
+repository is private, and entries there cannot be deleted.** Turn it on only with the agreement of
+the repository's owner. It is off by default, and the signing check is then skipped with a plain
+note.
 
 The test sets `CI=1`, so every command runs non-interactively:
 
@@ -575,9 +690,20 @@ Teardown runs in a `finally` block, so it happens even after a failure:
    API, and asserts again that nothing is left. The shared `managed-by:opscrew` DigitalOcean tag
    is never deleted.
 
+That fallback normally runs only when destroy fails. To test it on purpose, set
+`OPSCREW_E2E_SKIP_DESTROY=1` (off by default; the Hetzner pass only): the pass logs that it skips
+`opscrew destroy` and goes straight to step 3. The engine's destroy plan removes the server, its
+firewall and SSH key and the DNS records; the Hetzner API then deletes anything labelled
+`managed-by=opscrew,app=<name>` that is left; with a Cloudflare domain, OpsCrew's shared rules that
+list only the app's hostnames are deleted (`removeRulesOfRun`, see below). The same leftover checks
+as after a destroy must then pass: no labelled server, firewall or SSH key, no shared rule
+listing the app's hostnames and no DNS record on them. The deploy secrets stay in the throwaway repository, as after any
+failed destroy.
+
 Some things are not removed:
 
-- **Cloudflare DNS records:** the IaC destroy removes them, but the API fallback does not. Check the zone if a run failed.
+- **Cloudflare DNS records:** the IaC destroy removes them, but the API fallback does not. The run
+  then fails its check that no record on the app's hostnames is left: delete them in the zone.
 - **The app's hostnames in OpsCrew's shared rules:** `opscrew destroy` removes them. When destroy
   failed, the fallback deletes OpsCrew's rules that list only the app's hostnames (and a rule list
   this run created, once it is empty), as the own-server cleanup does, and the run then checks that

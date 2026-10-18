@@ -3,9 +3,10 @@
  * `portainer-target.test.ts`): their variables, reading plan hashes and checklists from CLI
  * output, choosing the throwaway Hetzner server, reading `ufw status` and `ss` output, splitting
  * the printed SSH tunnel command, OpsCrew's shared Cloudflare rules in the zone (feature 011) and
- * the cleanup's leftover decision, and masking the server's address and secrets in everything the
- * tests print. No network, no processes; the safety and leak helpers are unit-tested in
- * `support.test.ts`.
+ * the cleanup's leftover decision, masking the server's address and secrets in everything the
+ * tests print, and the Hetzner pass's builder checks (the expected builder, the broken health
+ * route, the attestations, the steady load). No network, no processes; the safety and leak helpers
+ * are unit-tested in `support.test.ts`.
  */
 import { parseKeyscan } from "@opscrew/agents";
 import {
@@ -14,6 +15,7 @@ import {
   type SharedRuleRef,
 } from "@opscrew/connector-cloudflare";
 import { Redactor } from "@opscrew/core";
+import type { ImageBuilder } from "@opscrew/plan-schema";
 
 /** The variables both server live tests need besides their gate. */
 export const SERVER_E2E_VARIABLES = [
@@ -553,4 +555,197 @@ export function deployJobFailed(job: DeployJob, runConclusion: string | null): b
 export function duration(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
   return `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The builder checks of the Hetzner pass (feature 012): the builder, the deploy under load, a
+// broken release and the image's attestations.
+
+/** The builder OpsCrew must choose for each example the Hetzner pass checks the builders with. */
+export const EXPECTED_BUILDERS: Readonly<Record<string, ImageBuilder>> = {
+  "nextjs-postgres": "generated-dockerfile",
+  "go-api": "buildpacks",
+  "rust-api": "railpack",
+};
+
+/** The name of the deploy workflow's build job. */
+export const BUILD_JOB = "Build the image";
+
+/** The steps of the build job that only the builder's build has (the workflow's step names). */
+const BUILDER_STEPS: Record<ImageBuilder, readonly string[]> = {
+  "generated-dockerfile": ["Build and push the image"],
+  "own-dockerfile": ["Build and push the image"],
+  buildpacks: ["Set up pack", "Build the image with Buildpacks", "Seal and push the image"],
+  railpack: ["Plan the Railpack build", "Build the image with Railpack", "Seal and push the image"],
+};
+
+/** The steps of `builder` that the build job of a run did not show as succeeded. */
+export function missingBuildSteps(
+  steps: readonly { job: string; step: string; conclusion: string | null }[],
+  builder: ImageBuilder,
+): string[] {
+  const done = new Set(
+    steps
+      .filter((step) => step.job === BUILD_JOB && step.conclusion === "success")
+      .map((step) => step.step),
+  );
+  return BUILDER_STEPS[builder].filter((name) => !done.has(name));
+}
+
+/** One exact text change in a file of the app (a path relative to the repository). */
+export interface SourceEdit {
+  file: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * The change that makes each builder example's health route answer 500. The examples have no
+ * switch for it, so the throwaway repository's copy is edited; Next.js's route is the one `adapt`
+ * writes. The texts hold no line break, so a checkout with CRLF endings matches too.
+ */
+export const HEALTH_BREAKS: Readonly<Record<string, SourceEdit>> = {
+  "nextjs-postgres": {
+    file: "app/api/health/route.ts",
+    from: 'return NextResponse.json({ status: "ok" });',
+    to: 'return NextResponse.json({ status: "broken" }, { status: 500 });',
+  },
+  "go-api": {
+    file: "main.go",
+    from: 'w.Header().Set("Content-Type", "application/json")',
+    to: 'w.Header().Set("Content-Type", "application/json"); w.WriteHeader(http.StatusInternalServerError)',
+  },
+  "rust-api": {
+    file: "src/main.rs",
+    from: '.route("/health", get(|| async { Json(json!({ "status": "ok" })) }))',
+    to: '.route("/health", get(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "status": "broken" }))) }))',
+  },
+};
+
+/** `text` with `edit` applied; throws unless `edit.from` occurs exactly once. */
+export function applyEdit(text: string, edit: SourceEdit): string {
+  const count = text.split(edit.from).length - 1;
+  if (count !== 1) {
+    throw new Error(
+      `${edit.file} holds the text to change ${count} times instead of once; update HEALTH_BREAKS in test/live/support.ts to the example's code.`,
+    );
+  }
+  return text.replace(edit.from, () => edit.to);
+}
+
+/** Every key of a JSON value, at any depth. */
+function jsonKeys(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(jsonKeys);
+  if (value === null || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, child]) => [key, ...jsonKeys(child)]);
+}
+
+/** Keys that only GitHub's event data puts into a provenance (`provenance-add-gha`). */
+const EVENT_KEYS = ["github_event_payload", "head_commit", "pusher"];
+
+/**
+ * What is wrong with an image's provenance (`docker buildx imagetools inspect … --format '{{json
+ * .Provenance}}'`): it must name the repository (`owner/name`, any case) and the commit, and hold
+ * none of GitHub's event data (commit messages, email addresses).
+ */
+export function provenanceProblems(
+  provenance: unknown,
+  expected: { repository: string; commit: string },
+): string[] {
+  const text = JSON.stringify(provenance ?? null).toLowerCase();
+  const problems: string[] = [];
+  if (!text.includes(`github.com/${expected.repository.toLowerCase()}`)) {
+    problems.push(`the provenance does not name the repository ${expected.repository}`);
+  }
+  if (!text.includes(expected.commit.toLowerCase())) {
+    problems.push(`the provenance does not name the commit ${expected.commit}`);
+  }
+  const keys = new Set(jsonKeys(provenance));
+  const event = EVENT_KEYS.filter((key) => keys.has(key));
+  if (event.length > 0) {
+    problems.push(`the provenance holds GitHub's event data (${event.join(", ")})`);
+  }
+  return problems;
+}
+
+/** How many packages an SBOM (`… --format '{{json .SBOM}}'`, one or several SPDX documents) lists. */
+export function sbomPackages(sbom: unknown): number {
+  if (Array.isArray(sbom)) return sbom.reduce((sum: number, item) => sum + sbomPackages(item), 0);
+  if (sbom === null || typeof sbom !== "object") return 0;
+  return Object.entries(sbom).reduce(
+    (sum, [key, child]) =>
+      sum + (key === "packages" && Array.isArray(child) ? child.length : sbomPackages(child)),
+    0,
+  );
+}
+
+/**
+ * Every string value of a JSON value (keys excluded) with 8 characters or more (shorter ones would
+ * match ordinary text).
+ */
+export function jsonStrings(value: unknown): string[] {
+  if (typeof value === "string") return value.length >= 8 ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap(jsonStrings);
+  if (value === null || typeof value !== "object") return [];
+  return Object.values(value).flatMap(jsonStrings);
+}
+
+/**
+ * Why one request of the load failed: `HTTP <status>` for an answer outside 2xx, the error's code
+ * (`ECONNRESET`, also as `fetch`'s `cause`) or name (`TimeoutError`); `undefined` for a 2xx.
+ * Never the error's message, which can name the server's address.
+ */
+export function requestFailure(answer: number | unknown): string | undefined {
+  if (typeof answer === "number") {
+    return answer >= 200 && answer < 300 ? undefined : `HTTP ${answer}`;
+  }
+  const error = answer as { code?: unknown; name?: unknown; cause?: { code?: unknown } };
+  // A DOMException's `code` is a number; its name says what happened.
+  const code = [error?.cause?.code, error?.code, error?.name].find(
+    (item) => typeof item === "string",
+  );
+  return (code as string | undefined) ?? "unknown error";
+}
+
+/** A failed request of the load: when it was sent and why it failed. */
+export interface LoadFailure {
+  at: string;
+  what: string;
+}
+
+/**
+ * A steady load: `send` (resolving to the HTTP status) every `1000 / rps` ms, without waiting for
+ * earlier answers. Each failure ({@link requestFailure}) goes to `onFailure` at once. `stop` ends
+ * the load and, once the requests on their way have answered, returns how many were sent and every
+ * failure.
+ */
+export function steadyLoad(
+  send: () => Promise<number>,
+  rps: number,
+  onFailure: (failure: LoadFailure) => void,
+): { stop: () => Promise<{ sent: number; failures: LoadFailure[] }> } {
+  const failures: LoadFailure[] = [];
+  const pending = new Set<Promise<void>>();
+  let sent = 0;
+  const timer = setInterval(() => {
+    sent++;
+    const at = new Date().toISOString();
+    const request = send()
+      .then(requestFailure, requestFailure)
+      .then((what) => {
+        if (what === undefined) return;
+        const failure = { at, what };
+        failures.push(failure);
+        onFailure(failure);
+      })
+      .finally(() => pending.delete(request));
+    pending.add(request);
+  }, 1000 / rps);
+  return {
+    async stop() {
+      clearInterval(timer);
+      await Promise.all([...pending]);
+      return { sent, failures };
+    },
+  };
 }

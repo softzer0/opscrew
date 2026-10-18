@@ -14,6 +14,8 @@ tests that need real accounts, Docker or the infrastructure engines.
 | Hetzner, full flow (`live.test.ts`) | `OPSCREW_E2E_HCLOUD_TOKEN` + GitHub | Passed | 2026-10-18 (after 011's simplification) | — |
 | Hetzner with a Cloudflare domain, the app's hostnames in OpsCrew's shared rules after provision and gone after destroy (feature 011) | + `OPSCREW_E2E_DOMAIN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN` | Passed (the zone had no rule lists: OpsCrew created both and deleted them again on destroy) | 2026-10-18 | — |
 | Framework matrix on Hetzner (19 apps) | `OPSCREW_E2E_APP` per app | Passed | 2026-10-14 | — |
+| Hetzner builder checks (feature 012): the builder, non-root, the attestations and their leak search, a change and a broken release under load, GHCR's blobs after the image retention job ([details below](#image-builders-feature-012-added-not-yet-run-live)) | `OPSCREW_E2E_BUILDS=1`, `OPSCREW_E2E_APP` = `nextjs-postgres`, `go-api` or `rust-api`, + `OPSCREW_E2E_GHCR_READ_TOKEN` | **Added, not yet run live** | — | The three runs (T1211) |
+| Image signing with the builder checks | + `OPSCREW_E2E_SIGN=1` (only with `OPSCREW_E2E_BUILDS=1`) | **Added, not yet run live** (opt-in) | — | The repository owner's agreement: it publishes the repository's name in Sigstore's public log |
 | With a model (`adapt`, `analyze`) | `OPSCREW_E2E_AI=1` | Passed (FastAPI + Redis) | 2026-10-14 | — |
 | DigitalOcean, full flow (`live.test.ts`) | `OPSCREW_E2E_DIGITALOCEAN_TOKEN` + GitHub | **Not run yet** | — | A DigitalOcean API token for a throwaway project |
 | Retarget Hetzner → DigitalOcean (`live.test.ts`) | both provider tokens, the default app | **Not run yet** | — | Both tokens |
@@ -91,6 +93,34 @@ but the one still open below.
 | A rule the test seeds as the user's (a `block` WAF custom rule, a configuration rule with Automatic HTTPS Rewrites) is taken on the Free plan: `POST` to an existing rule list, `PUT` of the list only when the zone has none (404) | own server step 2, Portainer step 2a | [x] 2026-10-18, the `PUT` path (the zone had no rule lists); OpsCrew's own rule then went in by `POST` to the lists the seeds created |
 | Cloudflare's answer to a blocked `/.env` is HTTP 403 with `cf-ray` and "you have been blocked", error 1020 or "access denied" in the page | own server steps 6b and 7, Portainer steps 7b and 8 | [x] 2026-10-18 (own server and Portainer, both apps, also after the first app's destroy) |
 | The zone's rules OpsCrew did not create read back byte-identical (each whole rule, apart from the `version` and `last_updated` Cloudflare changes on its own) and in the same order after OpsCrew's writes | own server, Portainer (every provision and destroy) | [x] 2026-10-18 (own server: after each of the 4 provisions that changed something and both destroys; Portainer: after every provision and destroy) |
-| After a failed destroy, the Hetzner pass's fallback removes the app's hostnames from OpsCrew's shared rules (`removeRulesOfRun`) | Hetzner with a Cloudflare domain, only when destroy fails | [ ] added, not yet run live |
+| After a failed destroy, the Hetzner pass's fallback removes the app's hostnames from OpsCrew's shared rules (`removeRulesOfRun`) | Hetzner with a Cloudflare domain and `OPSCREW_E2E_SKIP_DESTROY=1` (which skips destroy, so the fallback runs), or when destroy fails | [ ] added, not yet run live |
 | The Zero Trust organization and one-time PIN login stay after both apps' destroys | own server step 7b, Portainer step 9b | [x] 2026-10-18 (own server and Portainer) |
 | The leak search finds no token in the Cloudflare plans (CLI output; MCP in Portainer) or any version of `.opscrew/cloudflare.json` | own server step 8, Portainer step 12 | [x] 2026-10-18 (own server and Portainer) |
+
+## Image builders (feature 012): added, not yet run live
+
+The Hetzner pass checks these with `OPSCREW_E2E_BUILDS=1` and `OPSCREW_E2E_APP` set to
+`nextjs-postgres`, `go-api` or `rust-api` (see [e2e.md](e2e.md#the-builders)). Tick each one per app once it has passed live.
+
+| Check | `nextjs-postgres` (generated Dockerfile) | `go-api` (Buildpacks) | `rust-api` (Railpack) |
+|---|---|---|---|
+| `app.build.builder` is the expected one, the strategy is `rolling`, and the build job ran the builder's steps | [ ] | [ ] | [ ] |
+| pack ran with the pinned builder and run images (`repo:tag@sha256:…`) | — | [ ] | — |
+| The app container's user is not root (`docker exec … id -u`) | [ ] | [ ] | [ ] |
+| The provenance (guide's command) names the repository and commit and holds no GitHub event data; the SBOM lists packages | [ ] | [ ] | [ ] |
+| No known secret in the provenance or SBOM | [ ] | [ ] | [ ] |
+| A merged change deploys under 20 requests per second with no failed request | [ ] | [ ] | [ ] |
+| A release whose health route answers 500: no failed request, the run fails with the builder hint, the previous version still answers | [ ] | [ ] | [ ] |
+| After the image retention job, GHCR still has every blob of the first and the running image (the `build-<commit>` images deleted) | [ ] | [ ] | [ ] |
+| With `OPSCREW_E2E_SIGN=1`: `cosign verify` passes for the first and the running image after the later prunes (cosign v3 may store signatures as OCI referrers) | [ ] | [ ] | [ ] |
+
+Not covered by any live test:
+
+- **Image retention on a package owned by an organization** (the `/orgs` endpoints of the
+  retention job): the throwaway repository is owned by a user. Unit tests only.
+- **Signing**, unless a run opts in with `OPSCREW_E2E_SIGN=1` (it publishes the throwaway
+  repository's name in Sigstore's public log, so it needs the owner's agreement).
+- **kamal-proxy's `--target-timeout 300s`** letting a 60-second request through: no example has a
+  slow route.
+- **Railpack with a secret build value that is empty at `prepare`**: no example has a secret build
+  value.

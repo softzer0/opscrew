@@ -186,7 +186,7 @@ Effort`.
 
 ## Phase 5: Examples, surfaces and live tests
 
-- [ ] T1208 [US1] Six new examples and the Docker pass with builders in `examples/**`, `packages/cli/test/e2e/**`
+- [X] T1208 [US1] Six new examples and the Docker pass with builders in `examples/**`, `packages/cli/test/e2e/**`
   - Owns: those paths
   - Reads: `examples/README.md`; `.tools/scratch/012-examples/**` and `012-results-a.md` (the spike's notes); plan.md "8. Examples"
   - Depends: T1207
@@ -221,7 +221,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server` and `node plugin/validate.mjs`
   - Effort: high
 
-- [ ] T1210 [US1] [US3] [US4] Live tests for the builders, zero-downtime under load, a broken release and the attestations in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
+- [X] T1210 [US1] [US3] [US4] Live tests for the builders, zero-downtime under load, a broken release and the attestations in `packages/cli/test/live/**`, `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: plan.md "10. Live tests"; quickstart.md "Live"
   - Depends: T1208, T1209
