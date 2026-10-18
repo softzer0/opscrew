@@ -54,7 +54,7 @@ Effort`.
 - [ ] T1203 [P] [US1] [US3] [US4] [US5] The builder choice, the deploy strategy and the interview questions in `packages/agents/src/{design,interview}/**`
   - Owns: those folders (+ tests)
   - Reads: contracts/builders.md "chooseBuilder"; spec FR-1201, FR-1202, FR-1215, FR-1219, FR-1223, FR-1228; research.md R7 "What this means"
-  - Depends: T1201
+  - Depends: T1201, T1212
   - Accept:
     - **`chooseBuilder`** follows the contract's rules and order. It is pure, and its reason is one plain sentence naming the deciding fact.
     - **Tests** cover the 19 example apps of today plus the six new languages. Use facts objects; the apps arrive in T1208. They include:
@@ -66,6 +66,14 @@ Effort`.
       - a user choice kept;
       - a user choice refused for the architecture.
     - **Design** writes `app.build` and `deploy` with their reasons, and shows both. The strategy is rolling unless the server type has less than 1 GiB (or the own server's host facts say so). Portainer is always recreate, with its sentence.
+    - **Version resolution** follows FR-1228 rules 1–7:
+      - exact as declared;
+      - the newest supported version inside a range;
+      - evidence before default (T1212's facts);
+      - the conservative default from `RUNTIME_DEFAULTS`;
+      - a version recorded in `plan.yaml` kept on later designs;
+      - an end-of-life warning;
+      - a major change only by the user, with a warning.
     - **The interview** offers signing (with the private-repository warning when the repository is private) and deploy tags. Both default to off.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
@@ -86,6 +94,7 @@ Effort`.
       - one entry per detected ecosystem and directory;
       - plus `github-actions`, `docker` (where a Dockerfile is) and `docker-compose` (the runtime folder);
       - weekly, with minor and patch updates grouped per ecosystem;
+      - no major updates proposed for the runtime base images (FR-1228 rule 6);
       - a snapshot per kind of example.
     - **`keepNewerPins(committed, rendered)`:** the higher tag wins; on the same tag, the committed digest wins; an older committed pin is replaced. It covers images and actions, with tests.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
@@ -129,6 +138,21 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
+- [ ] T1212 [P] [US1] Runtime-version evidence in `packages/detect/src/**`
+  - Owns: that folder (+ tests)
+  - Reads: spec FR-1228 rules 2–3 (founder, 2026-10-18: library compatibility)
+  - Depends: T1201
+  - Accept:
+    - **Facts.** `ProjectFacts` records, per language, the declared value as written (exact or range) and the evidence found with its source:
+      - the CI workflows' `node-version:` / `python-version:` (setup-node, setup-python);
+      - `.tool-versions` and `mise.toml`;
+      - the `FROM` of an existing Dockerfile;
+      - the `@types/node` major;
+      - the Python range of the installed Django, from a small table in detect.
+    - **Pure parsing.** The evidence is read deterministically. Every source has a fixture test.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/agents`
+  - Effort: medium
+
 ## Phase 4: Flows
 
 - [ ] T1207 [US1] [US2] [US4] Adapt, provision, retarget and status wiring, and the own-Dockerfile checks, in `packages/agents/src/{adapt,provision,retarget,status,shared,portainer}/**`, `packages/secops/src/rules/**`
@@ -140,6 +164,7 @@ Effort`.
       - writes the Dockerfile only for `generated-dockerfile`;
       - passes the committed files through `keepNewerPins`;
       - adds `dependabot.yml` when absent, or lists the entries it would add;
+      - adds the runtime version file (`.nvmrc`, `.python-version`, …) with the recorded version when the repository has none;
       - checks an own Dockerfile against the baseline, listing each finding with its fix. The new secops rule is a base image not pinned by digest.
     - **provision:**
       - hands `app.build`, `deploy`, `supplyChain` and `cicd.deployTags` to the workflow and runtime renderers;
@@ -205,5 +230,5 @@ Effort`.
 
 ## Dependencies
 
-{T1201, T1202} → {T1203, T1204, T1205, T1206} → T1207 → {T1208, T1209} → T1210 → T1211. T1201 and
+{T1201, T1202} → T1212 → {T1203, T1204, T1205, T1206} → T1207 → {T1208, T1209} → T1210 → T1211. T1201 and
 T1202 run in parallel; T1205 needs T1202's R8, while T1203, T1204 and T1206 need only T1201.

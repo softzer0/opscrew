@@ -258,12 +258,32 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
   - Rust: `rust-toolchain`.
   OpsCrew MUST pass the version explicitly where a builder ignores the file (Buildpacks ignores
   `.python-version` and defaults to Python 3.11).
-  When the app declares none, OpsCrew MUST use one default per language, kept in one place: the
-  current LTS where the language has one (Node 24 today), otherwise the newest stable version
-  OpsCrew has tested.
-  A declared version that a builder cannot provide MUST lead to another builder or a plain message,
-  never a silent older version. Today the Node templates are fixed at Node 22, and the Python
-  default is 3.13.
+  The version follows these rules, so the libraries the project uses keep working (founder,
+  2026-10-18):
+  1. **Exact.** A declared exact version is used as declared, never raised. OpsCrew only warns when
+     it is past its end of life.
+  2. **Range.** A declared range is kept: OpsCrew uses the newest version it supports inside the
+     range, never one outside it.
+  3. **Evidence.** With nothing declared, OpsCrew looks for evidence before any default:
+     - the versions the project's own CI uses (`node-version:` or `python-version:` in its
+       workflows);
+     - `.tool-versions` or `mise.toml`;
+     - the `FROM` line of an existing Dockerfile;
+     - the major version of `@types/node`;
+     - the Python range of a key framework's installed version.
+  4. **Default.** Only without evidence does it use a conservative default, kept in one place: the
+     current Node LTS once it has been out for a while (24 today); for other languages the
+     second-newest minor version, not the newest.
+  5. **Kept.** The chosen version is recorded in `plan.yaml` and kept on later runs. A newer OpsCrew
+     default never moves an app to another version. The adapt pull request adds the version file
+     (`.nvmrc`, `.python-version`, …), so the version is explicit in the repository.
+  6. **Majors are the user's.** Dependabot proposes only minor and patch updates for runtime images.
+     A major upgrade happens only when the user changes the version in `plan.yaml`, with a warning
+     that libraries may break.
+  7. **Unavailable.** A version that a builder cannot provide leads to another builder or a plain
+     message, never a silent older version.
+
+  Today the Node templates are fixed at Node 22 and the Python default is 3.13.
 - **FR-1205**: A project's own Dockerfile MUST be used as it is, unless the user chooses another
   builder. OpsCrew MUST check it against the baseline and list each finding with its fix.
 - **FR-1206**: When a deploy's new version fails to start or fails its health check, the message
