@@ -91,10 +91,9 @@ describe.skipIf(GIT === undefined)("opscrew dns", () => {
 
     const { ctx } = context(project, new FakeEngine(), { zone });
     expect(await run(ctx, "dns", "--plan-only", "--yes"), ctx.errors).toBe(0);
-    expect(ctx.output).toMatch(/Cloudflare plan: +[0-9a-f]{64}\n/);
-    expect(ctx.output).toMatch(
-      / {4}opscrew dns --approve [0-9a-f]{64}( --approve [0-9a-f]{64})? --yes\n/,
-    );
+    expect(ctx.output).toMatch(/Cloudflare plan hash: [0-9a-f]{64}\n/);
+    // `opscrew dns` has no --confirm: no --approve command a script cannot finish.
+    expect(ctx.output).not.toContain("opscrew dns --approve");
     expect(ctx.output).not.toContain("--confirm shop\n");
     expect(ctx.output).toContain(
       "This plan deletes or replaces resources, so it needs the app's name: run `opscrew dns` in a terminal and type shop when asked, or in a script run `opscrew provision --plan-only` and then the command it prints (with --confirm shop).",

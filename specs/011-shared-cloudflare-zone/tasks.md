@@ -197,7 +197,7 @@ Four read-only reviewers checked the whole feature (`bc01843..b73fad1`) by area.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
-- [ ] T1112 [P] The CLI and MCP tools in `packages/cli/src/**`, `packages/mcp-server/src/**`
+- [X] T1112 [P] The CLI and MCP tools in `packages/cli/src/**`, `packages/mcp-server/src/**`
   - Owns: those paths (+ tests)
   - Accept:
     - **MCP typed-name note** (spec gap, FR-1117). `opscrew_plan` says the user must type the app's name also when only the Cloudflare plan deletes (`result.cloudflarePlanDeletes`), as the CLI does. Add one assertion to the existing "returned alone and deleting OpsCrew's rule" test.

@@ -311,38 +311,42 @@ export async function runInfraCommand(
   const { outputs, applied } = result.result;
   if (planOnly) {
     if (result.planned.length > 0) {
-      printPlanHashes(
-        ctx,
-        result.planned,
-        applyCommand(
-          command,
-          result.planned.map((plan) => plan.hash),
-          {
-            ...(flags.engine === undefined ? {} : { engine: flags.engine }),
-            ...(flags.hostKey === undefined ? {} : { hostKey: flags.hostKey.trim() }),
-            ...(flags.passwordLogins === undefined ? {} : { passwordLogins: flags.passwordLogins }),
-            // The stack plan's hash depends on these, so the approving run repeats them.
-            ...(result.publicImage === undefined ? {} : { publicImage: result.publicImage }),
-            ...(flags.replaceToken === undefined ? {} : { replaceTokens: flags.replaceToken }),
-            ...(flags.push === false ? { push: false } : {}),
-            ...(flags.yes === true ? { yes: true } : {}),
-            ...(result.confirmApp === undefined ? {} : { confirm: result.confirmApp }),
-          },
-        ),
-      );
-      if (result.confirmApp !== undefined) {
-        ctx.stdout(
-          `This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm ${result.confirmApp} in the command above in a script.\n`,
+      if (result.dnsDeletes !== undefined) {
+        // `opscrew dns` has no --confirm, so no command of it applies this plan in a script.
+        const hashes = result.planned.map((plan) => plan.hash).join(" ");
+        ctx.stdout(`\n${approveLaterHint("opscrew dns", hashes, result.dnsDeletes)}\n`);
+      } else {
+        printPlanHashes(
+          ctx,
+          result.planned,
+          applyCommand(
+            command,
+            result.planned.map((plan) => plan.hash),
+            {
+              ...(flags.engine === undefined ? {} : { engine: flags.engine }),
+              ...(flags.hostKey === undefined ? {} : { hostKey: flags.hostKey.trim() }),
+              ...(flags.passwordLogins === undefined
+                ? {}
+                : { passwordLogins: flags.passwordLogins }),
+              // The stack plan's hash depends on these, so the approving run repeats them.
+              ...(result.publicImage === undefined ? {} : { publicImage: result.publicImage }),
+              ...(flags.replaceToken === undefined ? {} : { replaceTokens: flags.replaceToken }),
+              ...(flags.push === false ? { push: false } : {}),
+              ...(flags.yes === true ? { yes: true } : {}),
+              ...(result.confirmApp === undefined ? {} : { confirm: result.confirmApp }),
+            },
+          ),
         );
-      }
-      const [first] = result.planned;
-      if (result.dnsDeletes !== undefined && first !== undefined) {
-        ctx.stdout(`${approveLaterHint("opscrew dns", first.hash, result.dnsDeletes)}\n`);
-      }
-      if (result.stackFollows) {
-        ctx.stdout(
-          `The stack plan for your Portainer follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token. In a script that takes three runs: this one, the command above (it applies the infrastructure and stops at the stack plan, printing its hash), then \`opscrew ${command} --approve <stack plan hash>\`.\n`,
-        );
+        if (result.confirmApp !== undefined) {
+          ctx.stdout(
+            `This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm ${result.confirmApp} in the command above in a script.\n`,
+          );
+        }
+        if (result.stackFollows) {
+          ctx.stdout(
+            `The stack plan for your Portainer follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token. In a script that takes three runs: this one, the command above (it applies the infrastructure and stops at the stack plan, printing its hash), then \`opscrew ${command} --approve <stack plan hash>\`.\n`,
+          );
+        }
       }
       return;
     }

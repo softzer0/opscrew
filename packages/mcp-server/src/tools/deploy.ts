@@ -39,7 +39,7 @@ import {
   REQUIRES_USER,
   requireDialogs,
 } from "./elicitation";
-import { IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
+import { appliedCloudflarePlan, IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
 
 /**
  * Test-only collaborators for the deploy tools. Production leaves them unset, so every phase uses
@@ -133,23 +133,17 @@ function noSavedPlan(what: string, hash: string): OpsCrewError {
   });
 }
 
-/** The host plan as OpsCrew described it while planning (from the collected messages). */
-function hostPlanText(messages: readonly { message: string }[]): string | undefined {
-  return messages.find((m) => m.message.startsWith("Host plan for your server"))?.message;
-}
-
-/** The stack plan as OpsCrew described it while planning (from the collected messages). */
-function stackPlanText(messages: readonly { message: string }[]): string | undefined {
-  return messages.find((m) => m.message.startsWith("Stack plan for your Portainer"))?.message;
-}
-
-/** The Cloudflare plan with `hash` as OpsCrew described it while planning. */
-function cloudflarePlanText(
+/**
+ * The plan OpsCrew described while planning (from the collected messages): the first message that
+ * starts with `prefix` and, when given, names `hash`.
+ */
+function planText(
   messages: readonly { message: string }[],
-  hash: string,
+  prefix: string,
+  hash?: string,
 ): string | undefined {
   return messages.find(
-    (m) => m.message.startsWith("Cloudflare plan for") && m.message.includes(hash),
+    (m) => m.message.startsWith(prefix) && (hash === undefined || m.message.includes(hash)),
   )?.message;
 }
 
@@ -305,7 +299,10 @@ export function registerDeployTools(
             true
             ? result.hostPlanHash
             : undefined;
-        const hostText = hostHash === undefined ? undefined : hostPlanText(call.reporter.messages);
+        const hostText =
+          hostHash === undefined
+            ? undefined
+            : planText(call.reporter.messages, "Host plan for your server");
         // The user's Portainer: the stack plan, approved on its own by its hash.
         const stackHash =
           result.stackPlanHash !== undefined &&
@@ -314,7 +311,9 @@ export function registerDeployTools(
             ? result.stackPlanHash
             : undefined;
         const stackText =
-          stackHash === undefined ? undefined : stackPlanText(call.reporter.messages);
+          stackHash === undefined
+            ? undefined
+            : planText(call.reporter.messages, "Stack plan for your Portainer");
         // The stack plan needs the Cloudflare Tunnel's token, which exists only after the apply.
         const stackFollows = portainer && saved !== undefined && result.stackPlanHash === undefined;
         const second = hostHash ?? stackHash;
@@ -323,7 +322,7 @@ export function registerDeployTools(
         const cloudflareText =
           cloudflareHash === undefined
             ? undefined
-            : cloudflarePlanText(call.reporter.messages, cloudflareHash);
+            : planText(call.reporter.messages, "Cloudflare plan for", cloudflareHash);
         const primary = saved?.planHash ?? second;
         const hashes = [
           ...(cloudflareHash !== undefined ? [cloudflareHash] : []),
@@ -368,11 +367,7 @@ export function registerDeployTools(
           ...extras,
         ].join(" and ");
         const several = hashes.length > 1;
-        const shown = several
-          ? hashes.length === 2
-            ? "both plans"
-            : "all three plans"
-          : "this plan";
+        const shown = ["this plan", "both plans", "all three plans"][hashes.length - 1];
         const text = [
           ...(cloudflareText !== undefined ? [cloudflareText, ""] : []),
           // A server the user owns or their Portainer costs nothing more: no price in the plan.
@@ -394,7 +389,7 @@ export function registerDeployTools(
                 "The stack plan for the user's Portainer follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token: opscrew_apply then shows it to the user in its own dialog. In a terminal script that takes three runs: `opscrew provision --plan-only`, the command above, then `opscrew provision --approve <stack plan hash>`.",
               ]
             : []),
-          ...(saved?.hasDestroy
+          ...(saved?.hasDestroy || result.cloudflarePlanDeletes
             ? [
                 `This plan deletes or replaces resources; the user must type "${plan.app.name}" to approve it.`,
               ]
@@ -566,21 +561,17 @@ export function registerDeployTools(
             ];
         const text = [
           ...(result.cloudflarePlanHash !== undefined
-            ? [
-                `Applied the Cloudflare plan ${result.cloudflarePlanHash} (OpsCrew's shared Cloudflare resources).`,
-              ]
+            ? [appliedCloudflarePlan(result.cloudflarePlanHash)]
             : cloudflareHash !== undefined
               ? ["OpsCrew's shared Cloudflare resources needed no change."]
               : []),
-          hash === undefined
+          saved !== undefined
             ? result.applied
+              ? `Applied plan ${saved.planHash}.`
+              : `Plan ${saved.planHash} had nothing left to apply; the infrastructure already matches it.`
+            : result.applied
               ? `Applied the infrastructure plan ${result.planHash}.`
-              : "The infrastructure needed no change."
-            : hostOnly || stackOnly
-              ? "The infrastructure needed no change."
-              : result.applied
-                ? `Applied plan ${hash}.`
-                : `Plan ${hash} had nothing left to apply; the infrastructure already matches it.`,
+              : "The infrastructure needed no change.",
           ...(own
             ? [
                 result.hostApplied === true

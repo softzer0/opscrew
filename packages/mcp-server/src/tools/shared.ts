@@ -26,6 +26,11 @@ export const IDEMPOTENT_WRITE = {
   openWorldHint: true,
 } as const;
 
+/** The sentence for an applied Cloudflare plan (OpsCrew's shared Cloudflare resources). */
+export function appliedCloudflarePlan(hash: string): string {
+  return `Applied the Cloudflare plan ${hash} (OpsCrew's shared Cloudflare resources).`;
+}
+
 /** What a tool body returns: plain text for the model plus machine-readable data. */
 export interface ToolOutput {
   text: string;

@@ -566,6 +566,7 @@ describe.skipIf(!findExecutable("git"))("MCP tools on a server the user owns", (
         `call opscrew_apply with cloudflarePlanHash ${again.cloudflarePlanHash}:`,
       );
       expect(again.applyCommand).toBe(`opscrew provision --approve ${again.cloudflarePlanHash}`);
+      expect(textOf(planned)).toContain('the user must type "shop" to approve it.');
       const args = { cloudflarePlanHash: again.cloudflarePlanHash };
       const recorded = () => readFile(h.paths.files.cloudflareRecord, "utf8");
       const before = await recorded();

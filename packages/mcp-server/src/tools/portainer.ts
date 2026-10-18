@@ -12,7 +12,7 @@ import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
-import { IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
+import { appliedCloudflarePlan, IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
 
 /** Test-only collaborators for the Portainer tools (production uses the real ones). */
 export interface PortainerToolOptions {
@@ -23,9 +23,7 @@ export interface PortainerToolOptions {
 function changeText(command: "enable" | "disable", result: PortainerResult): string {
   return [
     ...(result.cloudflarePlanHash !== undefined
-      ? [
-          `Applied the Cloudflare plan ${result.cloudflarePlanHash} (OpsCrew's shared Cloudflare resources).`,
-        ]
+      ? [appliedCloudflarePlan(result.cloudflarePlanHash)]
       : []),
     ...(result.applied ? [`Applied the infrastructure plan ${result.planHash}.`] : []),
     ...(result.hostApplied
