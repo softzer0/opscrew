@@ -50,6 +50,7 @@ import {
   sharedRuleHosts,
   steadyLoad,
   ufwRulesBeyondSsh,
+  unprotectHetznerRoot,
   userRules,
   webListenersBeyondIpv4,
   type ZoneRule,
@@ -403,6 +404,31 @@ describe("OpsCrew's shared Cloudflare rules in the zone (feature 011)", () => {
     expect(runHostname("e2e.example.com", "abc")).toBe("e2e-abc.example.com");
     expect(runHostname("e2e.example.com", "abc", "b")).toBe("e2e-abc-b.example.com");
     expect(runHostname("example.com", "ABC-1", "b")).toBe("e2e-abc1-b.example.com");
+  });
+});
+
+describe("the teardown's Hetzner root", () => {
+  // The module blocks as the root renderer writes them (see iac-templates' infra snapshots).
+  const root = [
+    'module "server" {',
+    '  source             = "../modules/hetzner-vps"',
+    "  delete_protection  = var.delete_protection",
+    "}",
+    'module "server_previous" {',
+    '  source             = "../modules/hetzner-vps"',
+    "  delete_protection  = var.previous_delete_protection",
+    "}",
+  ].join("\n");
+
+  it("turns off the server's delete protection, setting it once", () => {
+    const unprotected = unprotectHetznerRoot(root);
+    expect(unprotected).toContain("  delete_protection  = false\n}");
+    expect(unprotected.match(/delete_protection\s*=/g)).toHaveLength(2);
+    expect(unprotected).toContain("var.previous_delete_protection");
+  });
+
+  it("says so when the root no longer passes the variable", () => {
+    expect(() => unprotectHetznerRoot('module "server" {\n}')).toThrow(/delete_protection/);
   });
 });
 

@@ -56,6 +56,20 @@ export function runHostname(domain: string, runId: string, app?: string): string
   return [`e2e-${id}${app === undefined ? "" : `-${app}`}`, ...zone].join(".");
 }
 
+/**
+ * A Hetzner root (`opscrew/infra/prod/main.tf`) whose server the teardown can destroy: the
+ * `module "server"` block's `delete_protection = var.delete_protection` becomes `false` (the
+ * module also lifts the rebuild protection with it). Throws when the root no longer has that line,
+ * so the teardown says so and falls back to the API instead of failing on a protected server.
+ */
+export function unprotectHetznerRoot(mainTf: string): string {
+  const line = /^(\s*delete_protection\s*=\s*)var\.delete_protection\s*$/m;
+  if (!line.test(mainTf)) {
+    throw new Error("The Hetzner root no longer sets delete_protection = var.delete_protection.");
+  }
+  return mainTf.replace(line, "$1false");
+}
+
 // ---------------------------------------------------------------------------------------------
 // OpsCrew's shared Cloudflare rules (contracts/cloudflare-shared.md of feature 011).
 

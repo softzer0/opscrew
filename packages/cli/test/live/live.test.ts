@@ -39,6 +39,7 @@ import {
   approveHashes,
   runHostname,
   sharedRuleHosts,
+  unprotectHetznerRoot,
   type ZoneEntrypoints,
 } from "./support";
 
@@ -175,11 +176,7 @@ const HETZNER: LiveProvider = {
   name: "Hetzner Cloud",
   token: E2E.hcloudToken,
   tokenVar: "HCLOUD_TOKEN",
-  unprotect: (source) =>
-    source.replace(
-      'source = "../modules/hetzner-vps"',
-      'source = "../modules/hetzner-vps"\n  delete_protection = false',
-    ),
+  unprotect: unprotectHetznerRoot,
   async apiCleanup(appName) {
     const selector = encodeURIComponent(`managed-by=opscrew,app=${appName}`);
     for (const kind of ["servers", "firewalls", "ssh_keys"] as const) {
@@ -327,6 +324,26 @@ async function expectInSharedRules(
       (ruleHosts ?? []).filter((host) => hosts.has(host)),
       `the app's hostnames in OpsCrew's shared rule ${ref} ${listed ? "after provision" : "after destroy"}`,
     ).toEqual([...want].sort());
+  }
+}
+
+/**
+ * The last resort after a failed teardown: deletes the DNS records left on the app's hostnames.
+ * They are this run's own (`runHostname`), so no other app's record is touched. Logs each by its
+ * type, never its content.
+ */
+async function removeRecordsOfRun(shared: SharedZone, rules: AppRules): Promise<void> {
+  const hosts = new Set(Object.values(rules).flat());
+  const records = await shared.cloudflare.list<{ id: string; type: string; name: string }>(
+    `/zones/${shared.zone.id}/dns_records`,
+  );
+  for (const record of records.filter((r) => hosts.has(r.name))) {
+    const deleted = await retryDelete(() =>
+      shared.cloudflare.call("DELETE", `/zones/${shared.zone.id}/dns_records/${record.id}`),
+    );
+    console.error(
+      `OpsCrew E2E: ${deleted ? "deleted" : "could not delete"} the ${record.type} record the teardown left on this run's hostname`,
+    );
   }
 }
 
@@ -687,6 +704,7 @@ async function deployAndTearDown(
       await teardown(live, repo, env, appName);
       for (const p of involved)
         if (p !== live && appName !== undefined) await p.apiCleanup(appName);
+      if (shared !== undefined) await removeRecordsOfRun(shared, sharedRules);
     }
     // After the destroy or its fallback, no shared rule may list the app's hostnames.
     // … and no DNS record on them is left in the zone.
