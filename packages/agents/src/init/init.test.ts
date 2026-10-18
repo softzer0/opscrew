@@ -612,6 +612,24 @@ describe("runInitChecks", () => {
       },
     );
 
+    it("does not report OpsCrew's rule changed in the dashboard as a token problem", async () => {
+      const rules = new FakeZone();
+      // OpsCrew's probe block, its expression edited by hand: provision stops on it, init does not.
+      const edited = {
+        ref: "opscrew-block-probes",
+        description: "Block probes for secrets and admin panels",
+        expression: '(http.host eq "shop.example.com")',
+        action: "block",
+      };
+      rules.seedRule("http_request_firewall_custom", edited);
+      const { deps } = await setup({ net: { rules } });
+      await writeArtifact("plan", deps.paths.files.plan, testPlan());
+      const checks = await runInitChecks(deps, { services: services() });
+      const cf = checks.find((c) => c.id === "cloudflare");
+      expect(cf?.status).toBe("pass");
+      expect(cf?.message).toBe("CLOUDFLARE_API_TOKEN works and can see the zone example.com.");
+    });
+
     it("only warns about a missing token before the DNS choice is known", async () => {
       const cf = await check("cloudflare", { env: { HCLOUD_TOKEN: HCLOUD, GITHUB_TOKEN: GITHUB } });
       expect(cf.status).toBe("warn");

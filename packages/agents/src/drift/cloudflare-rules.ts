@@ -8,14 +8,14 @@ import {
 import { listText } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import {
+  listsHostnames,
+  REFS,
   RULES,
   readCloudflareRecord,
   sharedCloudflareClient,
 } from "../provision/shared-cloudflare";
 import type { ProvisionServices } from "../provision/types";
 import type { CloudflareRuleDifference } from "./types";
-
-const REFS = Object.keys(SHARED_RULES) as SharedRuleRef[];
 
 /** The rule a change of one phase is about. */
 function refOf(change: Extract<SharedChange, { phase: string }>): SharedRuleRef {
@@ -33,9 +33,7 @@ export async function cloudflareRulesDrift(
   services: Pick<ProvisionServices, "sharedCloudflare">,
 ): Promise<CloudflareRuleDifference[] | undefined> {
   const record = await readCloudflareRecord(deps.paths);
-  if (record === undefined || !REFS.some((ref) => (record.hostnames[ref] ?? []).length > 0)) {
-    return undefined;
-  }
+  if (record === undefined || !listsHostnames(record)) return undefined;
   deps.reporter.step("Reading OpsCrew's shared rules in the Cloudflare zone (nothing is changed)");
   const facts = await inspectShared(sharedCloudflareClient(deps, services), {
     zoneId: record.zoneId,

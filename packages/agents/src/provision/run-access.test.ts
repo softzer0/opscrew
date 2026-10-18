@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { zeroTrustAuthDomain } from "@opscrew/iac-templates";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import type { PortainerServices } from "../portainer";
@@ -22,6 +21,7 @@ import {
 } from "../testing";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
+import { zeroTrustAuthDomain } from "./shared-cloudflare";
 
 const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
 const ORGANIZATIONS = `/accounts/${ACCOUNT_ID}/access/organizations`;

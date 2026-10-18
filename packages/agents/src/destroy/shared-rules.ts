@@ -12,6 +12,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   applyZonePlan,
+  listsHostnames,
   readCloudflareRecord,
   sharedCloudflareClient,
   sharedDesired,
@@ -41,8 +42,7 @@ export async function planSharedRemoval(
 ): Promise<SharedRemoval | undefined> {
   const record = await readCloudflareRecord(deps.paths);
   if (record === undefined) return undefined;
-  const listed = Object.values(record.hostnames).some((hosts) => (hosts ?? []).length > 0);
-  if (!listed && record.createdEntrypoints.length === 0) return undefined;
+  if (!listsHostnames(record) && record.createdEntrypoints.length === 0) return undefined;
   const client = sharedCloudflareClient(deps, services);
   const zone = await zonePlan(deps, {
     client,

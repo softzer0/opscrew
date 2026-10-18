@@ -11,7 +11,6 @@ import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-clou
 import type { ApprovalRequest, FetchLike } from "@opscrew/contracts";
 import { findExecutable, type OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { zeroTrustAuthDomain } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -36,7 +35,7 @@ import {
 } from "../testing";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
-import { sharedDesired } from "./shared-cloudflare";
+import { sharedDesired, zeroTrustAuthDomain } from "./shared-cloudflare";
 import type { ProvisionServices } from "./types";
 
 const WAF = "http_request_firewall_custom";
@@ -495,8 +494,7 @@ describe.skipIf(!findExecutable("git"))(
       if (token !== undefined) s.deps.env.CLOUDFLARE_API_TOKEN = token;
       expect(missing).toMatchObject({
         code: "CREDENTIALS_MISSING",
-        message:
-          "This app's hostnames are still in OpsCrew's shared rules of a Cloudflare zone the plan no longer uses, and CLOUDFLARE_API_TOKEN is not set, so OpsCrew cannot remove them. Nothing was changed.",
+        message: "No Cloudflare token found: set CLOUDFLARE_API_TOKEN. Nothing was changed.",
       });
       expect(kinds(s)).toEqual([]);
 
@@ -597,6 +595,41 @@ describe.skipIf(!findExecutable("git"))(
         "cloudflare-apply",
         "iac-apply",
       ]);
+    });
+
+    it("a zone left whose rules no longer list this app's hostnames changes nothing there, and says so plainly", async () => {
+      const OLD_ZONE = "b".repeat(32);
+      const current = new FakeZone();
+      // The old zone's rules lost this app's hostnames by hand: nothing to remove there.
+      const old = new FakeZone();
+      const fetch: FetchLike = (input, init) => {
+        const url = String(input);
+        return url.includes(`/zones/${OLD_ZONE}`)
+          ? old.fetch(url.replace(`/zones/${OLD_ZONE}`, `/zones/${FAKE_ZONE_ID}`), init)
+          : current.fetch(input, init);
+      };
+      const client = new CloudflareClient({
+        token: fakeSecret("cloudflare-token", "left-by-hand"),
+        fetch,
+        sleep: async () => undefined,
+      });
+      const s = await hetzner({ zone: current, client });
+      await mkdir(dirname(s.deps.paths.files.cloudflareRecord), { recursive: true });
+      const earlier: SharedRecord = {
+        zoneId: OLD_ZONE,
+        hostnames: both(["shop.example.com"]),
+        createdEntrypoints: [],
+      };
+      await writeFile(s.deps.paths.files.cloudflareRecord, JSON.stringify(earlier));
+
+      await runProvision(s.deps, { services: s.services });
+      const text = s.deps.reporter.text();
+      expect(text).toContain(
+        "None of this app's hostnames are in OpsCrew's shared Cloudflare rules there; nothing in Cloudflare changes.",
+      );
+      expect(text).not.toContain("already set up for this app");
+      expect(old.writes()).toEqual([]);
+      expect(s.handler.requests.filter((r) => r.kind === "cloudflare-apply")).toHaveLength(1);
     });
   },
 );

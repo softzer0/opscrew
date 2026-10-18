@@ -262,9 +262,14 @@ describe.skipIf(!findExecutable("git"))(
       expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
       expect(planned.hostPlanHash).toMatch(/^[0-9a-f]{64}$/);
       expect(s.events).toEqual([]);
-      expect(s.deps.reporter.text()).toContain(
-        `After this removal and the host plan are applied (\`opscrew provision --approve ${planned.planHash} --approve ${planned.hostPlanHash}\`, typing the app name to confirm; the host plan goes first, because Cloudflare deletes the tunnel only after its connector on your server has stopped), run \`opscrew provision\` again for the plan of the new setup.`,
-      );
+      const after = `After this removal and the host plan are applied (\`opscrew provision --approve ${planned.planHash} --approve ${planned.hostPlanHash}\`, typing the app name to confirm; the host plan goes first, because Cloudflare deletes the tunnel only after its connector on your server has stopped), run \`opscrew provision\` again for the plan of the new setup.`;
+      const text = s.deps.reporter.text();
+      expect(text).toContain(after);
+      // The Cloudflare plan of the new setup is shown too (FR-1114), before the early stop.
+      const cloudflare = text.indexOf("Cloudflare plan for example.com");
+      expect(cloudflare).toBeGreaterThan(-1);
+      expect(text).toMatch(/Cloudflare plan hash: [0-9a-f]{64}/);
+      expect(cloudflare).toBeLessThan(text.indexOf(after));
 
       await runProvision(s.deps, {
         services: s.services,

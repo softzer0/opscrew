@@ -341,13 +341,7 @@ export async function provisionPortainer(
           command,
           phase,
         });
-  const cloudflareHash =
-    sharedResult?.hash === undefined
-      ? {}
-      : {
-          cloudflarePlanHash: sharedResult.hash,
-          ...(sharedResult.deletes ? { cloudflarePlanDeletes: true as const } : {}),
-        };
+  const cloudflareHash = sharedResult?.fields ?? {};
   if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
 
   // 3b. Render and write the files (skipped when applying a saved plan: --plan-only wrote them).

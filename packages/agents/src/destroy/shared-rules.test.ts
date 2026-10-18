@@ -84,6 +84,9 @@ describe.skipIf(!findExecutable("git"))(
       );
       const request = a.handler.requests.find((r) => r.kind === "cloudflare-apply");
       expect(request).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
+      // Printed once, with the preview: the approval has it, the apply does not print it again.
+      expect(request?.details).toBe(previews[0]?.cloudflarePlan);
+      expect(a.deps.reporter.text().split("Cloudflare plan for the zone of")).toHaveLength(2);
       // After the app is removed from the server and its DNS records are deleted.
       expect(a.handler.requests.map((r) => r.kind)).toEqual([
         "iac-apply",

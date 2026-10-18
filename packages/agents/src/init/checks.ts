@@ -785,7 +785,10 @@ async function checkCloudflare(
       accountId: zone.accountId ?? "",
       access: false,
     });
-    denied = planShared(facts, { hostnames: {} }, undefined).findings;
+    // Only a missing permission is the token's problem; provision stops on the other findings.
+    denied = planShared(facts, { hostnames: {} }, undefined).findings.filter(
+      (finding) => finding.code === "permission-missing",
+    );
   } catch (error) {
     return {
       status: problem,

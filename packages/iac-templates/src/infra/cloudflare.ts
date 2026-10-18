@@ -4,11 +4,6 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { RenderContext } from "../types";
 import { moduleBlock, sensitiveOutput, type VariableSpec } from "./hcl";
 
-/** Team domain OpsCrew gives a Zero Trust organization it creates: `<zone>-opscrew.cloudflareaccess.com`. */
-export function zeroTrustAuthDomain(zone: string): string {
-  return `${zone.replaceAll(".", "-")}-opscrew.cloudflareaccess.com`;
-}
-
 /** The Cloudflare account the tunnels and Access belong to. */
 export function accountId(ctx: RenderContext): string {
   const id = ctx.cloudflare?.accountId;

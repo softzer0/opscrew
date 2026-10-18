@@ -182,7 +182,7 @@ Four read-only reviewers checked the whole feature (`bc01843..b73fad1`) by area.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/agents`
   - Effort: medium
 
-- [ ] T1111 [P] The flows in `packages/agents/src/**`
+- [X] T1111 [P] The flows in `packages/agents/src/**`
   - Owns: that path (+ tests); `packages/iac-templates/src/infra/{cloudflare,index}.ts` for the move below
   - Accept:
     - **`--plan-only` during a mode switch** (spec gap, FR-1114). On your own server, a switch between public and tunnel mode with a pending removal returns early (`provision/run.ts` ~318) without printing the Cloudflare plan it already made. Print it first.

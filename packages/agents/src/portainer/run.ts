@@ -314,7 +314,8 @@ async function runChange(
     });
     approvals.push(...shared.approvals);
     oneTimePinId = shared.oneTimePinId;
-    if (shared.hash !== undefined) cloudflareHash = { cloudflarePlanHash: shared.hash };
+    const { cloudflarePlanHash } = shared.fields;
+    if (cloudflarePlanHash !== undefined) cloudflareHash = { cloudflarePlanHash };
     if (shared.infrastructureWaits) {
       // `--approve <its hash>` without options then applies exactly this change.
       await savePendingPortainer(deps.paths, {

@@ -20,7 +20,6 @@ import { ownRoot } from "./own";
 import { portainerRoot } from "./portainer";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
-export { zeroTrustAuthDomain } from "./cloudflare";
 export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
 export { PORTAINER_WEBHOOK_PATH, portainerWebhookHostname } from "./portainer";
 

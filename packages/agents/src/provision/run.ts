@@ -317,6 +317,10 @@ async function provisionFlow(
     if (removal !== undefined) {
       const pending = (removal.plan?.changes.length ?? 0) > 0 && !removal.applied;
       if (options.planOnly && pending) {
+        // The new setup's Cloudflare plan is shown too; it is approved after the removal.
+        for (const zone of [shared?.leave, shared?.main]) {
+          if (zone !== undefined && zone.plan.changes.length > 0) deps.reporter.info(zone.details);
+        }
         const first = removal.host;
         deps.reporter.info(
           first !== undefined
@@ -348,13 +352,7 @@ async function provisionFlow(
           command,
           phase,
         });
-  const cloudflareHash =
-    sharedResult?.hash === undefined
-      ? {}
-      : {
-          cloudflarePlanHash: sharedResult.hash,
-          ...(sharedResult.deletes ? { cloudflarePlanDeletes: true as const } : {}),
-        };
+  const cloudflareHash = sharedResult?.fields ?? {};
   if (sharedResult?.infrastructureWaits) return { ...cloudflareHash, applied: false, outputs: {} };
   for (const approval of sharedResult?.approvals ?? []) approvals.push(approvalEntry(approval));
   if (sharedResult?.oneTimePinId !== undefined) {

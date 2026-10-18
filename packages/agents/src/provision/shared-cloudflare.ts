@@ -6,7 +6,6 @@
  */
 import {
   applyShared,
-  CLOUDFLARE_TOKEN_PERMISSIONS,
   type CloudflareClient,
   cloudflareConnector,
   inspectShared,
@@ -30,15 +29,9 @@ import {
   readTextIfExists,
   writeFileAtomic,
 } from "@opscrew/core";
-import {
-  portainerHostname,
-  tunnelMode,
-  usesTunnel,
-  zeroTrustAuthDomain,
-} from "@opscrew/iac-templates";
+import { portainerHostname, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { cloudflareTokenHint } from "../domain/common";
 import {
   type AdapterPlanItem,
   adapterBlocked,
@@ -47,9 +40,20 @@ import {
 } from "../shared";
 import { type CloudflareSetup, cloudflareTokenMissing, portainerCloudflare } from "./credentials";
 import { approveLaterHint } from "./plan-apply";
-import type { ProvisionServices } from "./types";
+import type { ProvisionResult, ProvisionServices } from "./types";
 
-const REFS = Object.keys(SHARED_RULES) as SharedRuleRef[];
+/** OpsCrew's shared rules, by their fixed `ref`. */
+export const REFS = Object.keys(SHARED_RULES) as SharedRuleRef[];
+
+/** True when the record lists a hostname of this app in any of OpsCrew's shared rules. */
+export function listsHostnames(record: SharedRecord): boolean {
+  return REFS.some((ref) => (record.hostnames[ref] ?? []).length > 0);
+}
+
+/** Team domain OpsCrew gives a Zero Trust organization it creates: `<zone>-opscrew.cloudflareaccess.com`. */
+export function zeroTrustAuthDomain(zone: string): string {
+  return `${zone.replaceAll(".", "-")}-opscrew.cloudflareaccess.com`;
+}
 
 /** Each shared rule in words, and the zone's rules it is one of. */
 export const RULES: Record<SharedRuleRef, { name: string; kind: string }> = {
@@ -308,20 +312,6 @@ export async function zonePlan(
   return { plan, desired: input.desired, details };
 }
 
-/** The stop when this app's hostnames must leave a zone's rules and there is no Cloudflare token. */
-function leftInZoneTokenMissing(): OpsCrewError {
-  return new OpsCrewError(
-    "CREDENTIALS_MISSING",
-    "This app's hostnames are still in OpsCrew's shared rules of a Cloudflare zone the plan no longer uses, and CLOUDFLARE_API_TOKEN is not set, so OpsCrew cannot remove them. Nothing was changed.",
-    {
-      hint: cloudflareTokenHint(
-        CLOUDFLARE_TOKEN_PERMISSIONS.join(", "),
-        "Then set CLOUDFLARE_API_TOKEN to it and run the command again.",
-      ),
-    },
-  );
-}
-
 /**
  * Plans the shared Cloudflare change, read-only (ADR 0014): this app's hostnames and the Zero
  * Trust pieces ({@link sharedDesired}) against its record, in the plan's zone (`cloudflare`, from
@@ -342,19 +332,10 @@ export async function planSharedCloudflare(
   const { cloudflare, command } = input;
   const record = await readCloudflareRecord(deps.paths);
   const left =
-    record !== undefined &&
-    record.zoneId !== cloudflare?.zoneId &&
-    REFS.some((ref) => (record.hostnames[ref] ?? []).length > 0)
+    record !== undefined && record.zoneId !== cloudflare?.zoneId && listsHostnames(record)
       ? record
       : undefined;
   if (cloudflare === undefined && left === undefined) return undefined;
-  if (
-    cloudflare === undefined &&
-    input.services.sharedCloudflare === undefined &&
-    !deps.env.CLOUDFLARE_API_TOKEN?.trim()
-  ) {
-    throw leftInZoneTokenMissing();
-  }
   const client = sharedCloudflareClient(deps, input.services);
   const leave =
     left === undefined
@@ -406,15 +387,12 @@ export interface SharedCloudflareInput {
 /** The outcome of {@link applySharedCloudflare}. */
 export interface SharedCloudflareResult {
   /**
-   * The hash of the Cloudflare plan with changes this run ended with: applied, or with `planOnly`
-   * the one to approve; absent when nothing in Cloudflare changes.
+   * The phase result's fields: the hash of the Cloudflare plan with changes this run ended with
+   * (applied, or with `planOnly` the one to approve; absent when nothing in Cloudflare changes),
+   * and `cloudflarePlanDeletes` when that plan deletes OpsCrew's rule or a ruleset it created, so
+   * approving it needs the typed app name (`--confirm <app>` in scripts).
    */
-  hash?: string;
-  /**
-   * True when the plan with {@link SharedCloudflareResult.hash} deletes OpsCrew's rule or a ruleset
-   * it created, so approving it needs the typed app name (`--confirm <app>` in scripts).
-   */
-  deletes: boolean;
+  fields: Pick<ProvisionResult, "cloudflarePlanHash" | "cloudflarePlanDeletes">;
   /** True when this run changed something in Cloudflare. */
   applied: boolean;
   /** The `cloudflare-apply` approvals of this run. */
@@ -437,7 +415,8 @@ export async function applyZonePlan(
   input: SharedCloudflareInput,
 ): Promise<{ applied?: SharedApplyResult; approval?: ApprovalRecord; deletes: boolean }> {
   const { plan, details } = zone;
-  deps.reporter.info(details);
+  // A destroy showed the plan in its deletion preview already.
+  if (input.allowDestroy !== true) deps.reporter.info(details);
   // Deleting OpsCrew's rule (or a ruleset it created) needs the typed app name.
   const deletes =
     input.allowDestroy === true ||
@@ -446,7 +425,9 @@ export async function applyZonePlan(
     );
   if (plan.changes.length === 0) {
     deps.reporter.success(
-      "OpsCrew's shared Cloudflare resources are already set up for this app; nothing in Cloudflare changes.",
+      listsHostnames(plan.record) || zone.desired.access !== undefined
+        ? "OpsCrew's shared Cloudflare resources are already set up for this app; nothing in Cloudflare changes."
+        : "None of this app's hostnames are in OpsCrew's shared Cloudflare rules there; nothing in Cloudflare changes.",
     );
     // Hostnames removed from OpsCrew's rules by hand and no longer wanted leave the record; a
     // `--plan-only` run writes nothing.
@@ -531,57 +512,42 @@ export async function applySharedCloudflare(
 ): Promise<SharedCloudflareResult> {
   const { command } = input;
   const approvals: ApprovalRecord[] = [];
-  /** The hash of the removal from the zone the app leaves, when it changes something. */
-  let left: string | undefined;
-  let leftApplied = false;
-  let leftDeletes = false;
-  if (planned.leave !== undefined) {
-    const { plan } = planned.leave;
-    const leave = await applyZonePlan(deps, planned.client, planned.leave, input);
+  let fields: SharedCloudflareResult["fields"] = {};
+  let applied = false;
+  let oneTimePinId: string | undefined;
+  for (const zone of [planned.leave, planned.main]) {
+    if (zone === undefined) continue;
+    const { plan } = zone;
+    const change = await applyZonePlan(deps, planned.client, zone, input);
+    if (plan.changes.length > 0) {
+      fields = {
+        cloudflarePlanHash: plan.hash,
+        ...(change.deletes ? { cloudflarePlanDeletes: true as const } : {}),
+      };
+    }
     // The new zone's plan is shown once this one is applied: one Cloudflare plan per run.
-    if (input.planOnly && plan.changes.length > 0 && planned.main !== undefined) {
+    if (input.planOnly && plan.changes.length > 0 && zone === planned.leave && planned.main) {
       deps.reporter.info(
         `After this Cloudflare plan is applied (\`${command} --approve ${plan.hash}\`), run \`${command}\` again for the plans that follow.`,
       );
-      return {
-        hash: plan.hash,
-        deletes: leave.deletes,
-        applied: false,
-        approvals,
-        infrastructureWaits: true,
-      };
+      return { fields, applied: false, approvals, infrastructureWaits: true };
     }
-    if (leave.approval !== undefined) approvals.push(leave.approval);
-    if (plan.changes.length > 0) left = plan.hash;
-    leftApplied = leave.applied !== undefined;
-    leftDeletes = leave.deletes;
+    if (change.approval !== undefined) approvals.push(change.approval);
+    applied ||= change.applied !== undefined;
+    // Only the plan's own zone (the last) reads the one-time PIN login.
+    oneTimePinId = change.applied?.oneTimePinId ?? plan.oneTimePinId;
   }
   const { main } = planned;
-  if (main === undefined) {
-    return {
-      ...(left !== undefined ? { hash: left } : {}),
-      deletes: leftDeletes,
-      applied: leftApplied,
-      approvals,
-      infrastructureWaits: false,
-    };
-  }
-  const change = await applyZonePlan(deps, planned.client, main, input);
-  if (change.approval !== undefined) approvals.push(change.approval);
-  const oneTimePinId = change.applied?.oneTimePinId ?? main.plan.oneTimePinId;
   const waits =
-    input.planOnly && main.desired.access?.oneTimePin === true && oneTimePinId === undefined;
+    input.planOnly && main?.desired.access?.oneTimePin === true && oneTimePinId === undefined;
   if (waits) {
     deps.reporter.info(
       `The infrastructure plan follows once this Cloudflare plan is applied, because it needs the one-time PIN login the Cloudflare plan adds (in scripts: run \`${command} --approve ${main.plan.hash}\`, then again with \`--approve\` and the infrastructure plan's hash).`,
     );
   }
-  const mainChanges = main.plan.changes.length > 0;
-  const hash = mainChanges ? main.plan.hash : left;
   return {
-    ...(hash !== undefined ? { hash } : {}),
-    deletes: mainChanges ? change.deletes : leftDeletes,
-    applied: leftApplied || change.applied !== undefined,
+    fields,
+    applied,
     approvals,
     ...(oneTimePinId !== undefined ? { oneTimePinId } : {}),
     infrastructureWaits: waits,
