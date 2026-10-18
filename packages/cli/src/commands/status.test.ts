@@ -38,6 +38,23 @@ describe("opscrew status and the server's address", () => {
     );
   });
 
+  it("shows the image builder and the deploy strategy with their reasons", async () => {
+    const paths = resolveProjectPaths(dir, { env: {} });
+    const plan = testPlan({ userSecret: false });
+    const build = {
+      builder: "railpack" as const,
+      chosen: "auto" as const,
+      reason: "Rust: Railpack builds it.",
+      runtime: { language: "rust" as const, version: "1.98" },
+    };
+    await writeArtifact("plan", paths.files.plan, { ...plan, app: { ...plan.app, build } });
+    await new ProjectStateStore(paths.files.state).markPhase("design", "ok");
+    const ctx = createTestContext({ cwd: dir });
+    expect(await main(argv("status"), ctx)).toBe(0);
+    expect(ctx.output).toContain("\nImage builder: railpack. Rust: Railpack builds it.\n");
+    expect(ctx.output).toContain("\nDeploys: rolling. New versions start next to the running one");
+  });
+
   it("prints only the IPv4 address with --ip, for ssh deploy@$(opscrew status --ip)", async () => {
     await provisioned();
     const ctx = createTestContext({ cwd: dir });

@@ -1,14 +1,18 @@
-import { formatMoney, OpsCrewError } from "@opscrew/core";
+import { join } from "node:path";
+import { exists, formatMoney, OpsCrewError } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
 import {
+  type AppBuild,
   type CloudDeployTarget,
   type DeployPlan,
   type DesignOption,
+  type ProjectFacts,
   type Retarget,
   readArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { buildDesignOptions } from "../design";
+import { buildDesignOptions, chooseBuilder } from "../design";
+import { deploySentence, deployStrategyFor } from "../design/strategy";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { readRequirements } from "../provision";
 import { designOptionLine, hasState, serverAddress } from "../shared";
@@ -93,12 +97,74 @@ function switchSentence(plan: DeployPlan, noun: string): string {
   return `Your app moves to the new ${noun}'s address (OpsCrew shows it), then OpsCrew checks it there.`;
 }
 
+/** What a move to `option` sets: the builder and the deploy strategy design picks for it. */
+interface NewServerBuild {
+  build: AppBuild;
+  deploy: DeployPlan["deploy"];
+}
+
+/**
+ * The image builder (`chooseBuilder` for the new server's architecture) and the deploy strategy
+ * (`deployStrategyFor` its memory) of a move to `option`, as design picks them, keeping the
+ * plan's drain time. Stops with `INVALID_INPUT` when the plan's builder cannot build there, and
+ * with `PHASE_PRECONDITION` when the builder needs a Dockerfile (`app.dockerfile`) the repository
+ * lacks.
+ */
+async function newServerBuild(
+  deps: PhaseDeps,
+  facts: ProjectFacts,
+  plan: DeployPlan,
+  option: DesignOption,
+): Promise<NewServerBuild> {
+  const choice = chooseBuilder(
+    facts,
+    plan,
+    option.target.architecture === "arm" ? "arm64" : "amd64",
+  );
+  if ("refused" in choice) {
+    throw new OpsCrewError("INVALID_INPUT", `${choice.refused} Nothing was changed.`, {
+      hint: `Change app.build.builder in opscrew/plan.yaml, then run \`${RUN_COMMAND}\` again.`,
+    });
+  }
+  const dockerfileBuild =
+    choice.builder === "generated-dockerfile" || choice.builder === "own-dockerfile";
+  if (dockerfileBuild && !(await exists(join(deps.paths.root, plan.app.dockerfile)))) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "The new server's builder needs a Dockerfile this repository lacks: run `opscrew design` and `opscrew adapt` first. Nothing was changed.",
+    );
+  }
+  for (const warning of choice.warnings) deps.reporter.warn(deps.redactor.redact(warning));
+  const { builder, chosen, reason, runtime, probe, automatic } = choice;
+  return {
+    build: { builder, chosen, reason, runtime, probe, automatic },
+    deploy: { ...deployStrategyFor(option), drainSeconds: plan.deploy.drainSeconds },
+  };
+}
+
+/** The builder and strategy lines of the summary that differ from the plan's, with reasons. */
+function buildChanges(plan: DeployPlan, next: NewServerBuild): string[] {
+  const changes: string[] = [];
+  const before = plan.app.build?.builder;
+  if (before !== next.build.builder) {
+    const was = before === undefined ? "" : ` (was ${before})`;
+    changes.push(`Image builder: ${next.build.builder}${was}. ${next.build.reason}`);
+  }
+  const { deploy } = next;
+  if (plan.deploy.strategy !== deploy.strategy) {
+    const why = deploySentence(deploy, deploy);
+    changes.push(`Deploys: ${deploy.strategy} (was ${plan.deploy.strategy}). ${why}`.trimEnd());
+  }
+  return changes;
+}
+
 /** The summary shown before the first change. */
 export function moveSummary(
   plan: DeployPlan,
   to: CloudDeployTarget,
   option: DesignOption,
   databaseBytes: number | undefined,
+  changes: string[],
 ): RetargetSummary {
   const from = cloudTarget(plan.target);
   const old = providerWords(from.provider);
@@ -124,6 +190,7 @@ export function moveSummary(
     extraMonthly: option.cost.monthly,
     ...(databaseBytes !== undefined ? { databaseBytes } : {}),
     ...(minutes !== undefined ? { expectedDowntimeMinutes: minutes } : {}),
+    changes,
   };
 }
 
@@ -144,6 +211,12 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
         : [
             `Database: ${sizeText(summary.databaseBytes)}; expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes.`,
           ]),
+    ...(summary.changes.length === 0
+      ? []
+      : [
+          `On the new ${fresh.noun} (opscrew/plan.yaml records it, and the final files use it):`,
+          ...summary.changes.map((change) => `  - ${change}`),
+        ]),
     `While the move runs, ${plan.infra.dir} holds a transitional version of the infrastructure files; \`${FINISH_COMMAND}\` publishes the final ones in a pull request.`,
   ].join("\n");
 }
@@ -222,6 +295,8 @@ export async function startMove(
   for (const option of designOptions) deps.reporter.info(designOptionLine(option));
   const chosen = await pickOption(designOptions, options);
   const target = targetOf(chosen);
+  // The builder and the deploy strategy for the new server, before anything is created.
+  const next = await newServerBuild(deps, facts, plan, chosen);
 
   // What it means: database size (over SSH to the old server) and the summary.
   const oldHost = address.ipv4;
@@ -232,7 +307,7 @@ export async function startMove(
     const old = remoteFor(deps, services, session.deployKey.privateKeyFile, oldHost);
     databaseBytes = await databaseSize(old, deps.redactor);
   }
-  const summary = moveSummary(plan, target, chosen, databaseBytes);
+  const summary = moveSummary(plan, target, chosen, databaseBytes, buildChanges(plan, next));
   deps.reporter.info(summaryText(summary, plan));
   if (options.confirmStart !== undefined && !(await options.confirmStart(summary))) {
     throw new OpsCrewError("APPROVAL_REFUSED", "The move was not started. Nothing was changed.", {
@@ -241,13 +316,22 @@ export async function startMove(
   }
 
   const retarget: Retarget = {
-    from: { target: from },
+    from: {
+      target: from,
+      deploy: plan.deploy,
+      ...(plan.app.build === undefined ? {} : { build: plan.app.build }),
+    },
     step: "started",
     startedAt: deps.clock.now().toISOString(),
   };
   // The old server's address goes to the local state, never into opscrew/plan.yaml.
   await recordMoveServers(deps, session.servers);
-  await saveMove(session, retarget, { target, cost: chosen.cost });
+  await saveMove(session, retarget, {
+    target,
+    cost: chosen.cost,
+    app: { ...plan.app, build: next.build },
+    deploy: next.deploy,
+  });
   deps.reporter.success(
     `Started the move of ${plan.app.name} to ${fresh.name} (${chosen.id}); opscrew/plan.yaml records each step.`,
   );

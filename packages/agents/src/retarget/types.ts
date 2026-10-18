@@ -79,6 +79,11 @@ export interface RetargetSummary {
   databaseBytes?: number;
   /** Rough length of the maintenance window. */
   expectedDowntimeMinutes?: number;
+  /**
+   * What changes with the new server, each with its reason: the image builder and the deploy
+   * strategy design picks for it (empty when they stay). They go into opscrew/plan.yaml.
+   */
+  changes: string[];
 }
 
 export interface RetargetOptions {

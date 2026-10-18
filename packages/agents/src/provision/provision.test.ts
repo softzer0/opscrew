@@ -150,6 +150,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect([...github.secrets.keys()].sort()).toEqual([
       "OPSCREW_APP_ENV",
       "OPSCREW_BUILD_ENV",
+      "OPSCREW_BUILD_SECRETS",
       "OPSCREW_DB_ENV",
       "OPSCREW_HOST",
       "OPSCREW_SSH_KNOWN_HOSTS",
@@ -1323,6 +1324,112 @@ describe.skipIf(!findExecutable("git"))("runProvision on DigitalOcean", () => {
     expect(hint).not.toContain("Hetzner");
     expect(everythingPrinted(run.deps)).not.toContain(DO_TOKEN);
     expect((await run.deps.state.read()).phases.provision?.status).toBe("failed");
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("runProvision hands the plan's build to the files", () => {
+  const MAPS_KEY = fakeSecret("google-api-key", "build");
+
+  /** The plan with a builder, a strategy, signing, deploy tags, retention and two build values. */
+  function builtPlan(provider: "hetzner" | "digitalocean") {
+    const base = testPlan({ provider });
+    return {
+      ...base,
+      app: {
+        ...base.app,
+        env: [
+          ...base.app.env,
+          { name: "NEXT_PUBLIC_SITE", secret: false, source: "user" as const },
+          { name: "NEXT_PUBLIC_MAPS_KEY", secret: true, source: "user" as const },
+        ],
+        build: {
+          builder: "railpack" as const,
+          chosen: "user" as const,
+          reason: "You chose Railpack.",
+          runtime: { language: "node" as const, version: "24" },
+        },
+      },
+      deploy: { strategy: "recreate" as const, drainSeconds: 20 },
+      supplyChain: { sign: true },
+      cicd: {
+        ...base.cicd,
+        deployTags: { enabled: true, release: false },
+        imageRetention: { enabled: true, keep: 4 },
+      },
+    };
+  }
+
+  it.each(["hetzner", "digitalocean"] as const)(
+    "on %s: the workflow and the runtime files follow the plan, and the build values are split",
+    async (provider) => {
+      const run = await setup({
+        plan: builtPlan(provider),
+        ...(provider === "digitalocean"
+          ? {
+              engine: new FakeEngine({
+                changes: DIGITALOCEAN_CREATE,
+                planJson: planJsonFor({ provider }),
+              }),
+              env: {
+                HCLOUD_TOKEN: undefined,
+                DIGITALOCEAN_TOKEN: fakeSecret("digitalocean-token", "build"),
+              },
+            }
+          : {}),
+      });
+      await writeFile(
+        join(run.root, "production.env"),
+        `STRIPE_SECRET_KEY=${STRIPE}\nNEXT_PUBLIC_SITE=https://shop.example.com\nNEXT_PUBLIC_MAPS_KEY=${MAPS_KEY}\n`,
+      );
+      await runProvision(run.deps, { services: run.services });
+
+      const workflow = await readFile(
+        join(run.root, ".github/workflows/opscrew-deploy.yml"),
+        "utf8",
+      );
+      expect(workflow).toContain("railpack prepare");
+      expect(workflow).toContain("cosign sign --yes");
+      expect(workflow).toContain("deploy-");
+      expect(workflow).toContain("contents: write");
+      const compose = await readFile(join(run.root, "opscrew/runtime/compose.yaml"), "utf8");
+      expect(compose).toContain("stop_grace_period: 25s");
+      expect(run.github.secrets.get("OPSCREW_BUILD_ENV")).toBe(
+        "NEXT_PUBLIC_SITE=https://shop.example.com\n",
+      );
+      expect(run.github.secrets.get("OPSCREW_BUILD_SECRETS")).toBe(
+        `NEXT_PUBLIC_MAPS_KEY=${MAPS_KEY}\n`,
+      );
+      expect(everythingPrinted(run.deps)).not.toContain(MAPS_KEY);
+    },
+  );
+
+  it("keeps a pin Dependabot updated in the committed workflow and runtime files", async () => {
+    const run = await setup({ plan: builtPlan("hetzner") });
+    await writeFile(
+      join(run.root, "production.env"),
+      `STRIPE_SECRET_KEY=${STRIPE}\nNEXT_PUBLIC_SITE=x\nNEXT_PUBLIC_MAPS_KEY=${MAPS_KEY}\n`,
+    );
+    await runProvision(run.deps, { services: run.services });
+    const composeFile = join(run.root, "opscrew/runtime/compose.yaml");
+    const workflowFile = join(run.root, ".github/workflows/opscrew-deploy.yml");
+    // Dependabot moves Postgres to a newer digest of its tag and checkout to a newer release.
+    const compose = await readFile(composeFile, "utf8");
+    const postgres = /postgres:17-alpine@sha256:[0-9a-f]{64}/.exec(compose)?.[0] as string;
+    const newerPostgres = `postgres:17-alpine@sha256:${"e".repeat(64)}`;
+    await writeFile(composeFile, compose.replace(postgres, newerPostgres));
+    const workflow = await readFile(workflowFile, "utf8");
+    const checkout = /actions\/checkout@[0-9a-f]{40} # \S+/.exec(workflow)?.[0] as string;
+    const newerCheckout = `actions/checkout@${"f".repeat(40)} # v99.0.0`;
+    await writeFile(workflowFile, workflow.replaceAll(checkout, newerCheckout));
+    await run.git(run.root, "commit", "-qam", "Dependabot updates");
+
+    // The first run's pull request is still open: the second run adds to it.
+    run.github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
+    await runProvision(run.deps, { services: run.services });
+    expect(await readFile(composeFile, "utf8")).toContain(newerPostgres);
+    expect(await readFile(composeFile, "utf8")).not.toContain(postgres);
+    expect(await readFile(workflowFile, "utf8")).toContain(newerCheckout);
+    expect(await readFile(workflowFile, "utf8")).not.toContain(checkout);
   });
 });
 

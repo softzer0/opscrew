@@ -19,7 +19,7 @@ import {
   writeFileAtomic,
 } from "@opscrew/core";
 import { listProjectFiles } from "@opscrew/detect";
-import { type RenderedFile, renderDockerAssets } from "@opscrew/iac-templates";
+import type { RenderedFile } from "@opscrew/iac-templates";
 import {
   type CodeChangeKind,
   type CodeChangeStatus,
@@ -28,16 +28,29 @@ import {
   readArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { scanDockerfile } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { backgroundJobsWarning } from "../design/background-jobs";
 import { type CodeChange, readScanReport } from "../design/code-changes";
 import { releaseCommandNote } from "../design/release";
 import { githubClientFromToken, requireGitRepo, writeRenderedFiles } from "../shared";
 import { runPhase } from "../shared/phase-status";
+import {
+  BASELINE_MET,
+  dependabotStep,
+  noDockerfileNote,
+  renderDockerFiles,
+  runtimeVersionFile,
+} from "./build-files";
 import { healthRouteEdit } from "./health";
 import { isNextConfigPath, nextConfigEdit } from "./next-config";
 import { playbookFor } from "./playbooks";
-import { healthCheckWarning, PULL_REQUEST_TITLE, renderPullRequestBody } from "./pr";
+import {
+  healthCheckWarning,
+  PULL_REQUEST_TITLE,
+  type PullRequestBuild,
+  renderPullRequestBody,
+} from "./pr";
 import {
   buildCodeChangePrompt,
   CODE_CHANGE_MODEL,
@@ -146,8 +159,11 @@ function templateFor(
  * The adapt phase (plan.md "Adapt"): requires a clean working tree, creates the
  * `opscrew/prepare-deploy` branch (the next free `-2`, `-3`, … when this clone or origin already has
  * it; it stops before changing anything while a pull request from an earlier run's branch is still
- * open), writes the Dockerfile, `.dockerignore` and `.env.example` when the plan asks for them and
- * they are missing, adds the health route itself for the frameworks it knows (`./health`), makes
+ * open), writes the Dockerfile (only for the `generated-dockerfile` builder, its runtime image
+ * pinned by the registry's digest), `.dockerignore` and `.env.example` when the plan asks for them
+ * and they are missing, adds the runtime version file and `.github/dependabot.yml` when the
+ * repository has none (else lists what the user's lacks), checks the user's own Dockerfile against
+ * the image baseline, adds the health route itself for the frameworks it knows (`./health`), makes
  * the deterministic Next.js standalone edit, runs the Code-change agent (`edit-repo` profile)
  * for the other pending changes when a model is configured, updates the statuses in
  * `opscrew/plan.yaml`, and then — each step after its own approval (`repo-write`, `git-push`,
@@ -294,6 +310,22 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     });
   }
 
+  // The user's own Dockerfile must be where the plan builds the image from.
+  const builder = plan.app.build?.builder;
+  const ownDockerfile =
+    builder === "own-dockerfile"
+      ? await readTextIfExists(join(paths.root, plan.app.dockerfile))
+      : undefined;
+  if (builder === "own-dockerfile" && ownDockerfile === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `opscrew/plan.yaml builds the image with your own Dockerfile at ${plan.app.dockerfile}, which does not exist, so OpsCrew did not touch anything.`,
+      {
+        hint: "Set app.dockerfile in opscrew/plan.yaml to your Dockerfile's path from the repository root, then run `opscrew adapt` again.",
+      },
+    );
+  }
+
   const baseBranch = original === "HEAD" ? await git.defaultBranch() : original;
   const { branch, originChecked } = await pickBranch(git, originCheck);
   await git.createBranch(branch);
@@ -310,18 +342,27 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
   };
   const pending = plan.codeChanges.filter((change) => change.status === "pending");
 
-  // 3. Deterministic files, only when missing.
+  // 3. Deterministic files, only when missing. OpsCrew writes its Dockerfile only when it builds
+  // the image with it; another builder needs none.
   const createdFiles: string[] = [];
   const forAgent: CodeChange[] = [];
   /** Ids of the changes OpsCrew made itself (shown as such in the pull request). */
   const byOpsCrew = new Set<string>();
-  const templated = pending.filter((change) => DETERMINISTIC[change.kind] !== undefined);
+  const noDockerfile = noDockerfileNote(builder, plan.app.dockerfile);
+  const templated: CodeChange[] = [];
+  for (const change of pending.filter((c) => DETERMINISTIC[c.kind] !== undefined)) {
+    if (change.kind === "dockerfile" && noDockerfile !== undefined) {
+      set(change, "skipped", noDockerfile);
+    } else {
+      templated.push(change);
+    }
+  }
   let rendered: RenderedFile[] = [];
   if (templated.length > 0) {
     try {
-      rendered = renderDockerAssets(facts, {
-        appPort: plan.app.port,
-        healthPath: plan.app.healthPath,
+      rendered = await renderDockerFiles(deps, facts, plan, {
+        dockerfile: noDockerfile === undefined,
+        warn,
       });
     } catch (error) {
       if (!isUserFacingError(error)) throw error;
@@ -347,9 +388,56 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
       byOpsCrew.add(change.id);
     }
   }
+  // The runtime version file (FR-1228 rule 5) and Dependabot's configuration (FR-1221), each
+  // only when the repository has none.
+  const versionFile = await runtimeVersionFile(paths.root, facts, plan);
+  if (versionFile !== undefined) toWrite.push(versionFile);
+  const dependabot = await dependabotStep(paths.root, facts, plan);
+  if (dependabot.action === "write") toWrite.push(dependabot.file);
   await writeRenderedFiles(paths.root, toWrite);
   for (const file of toWrite) createdFiles.push(file.path);
   if (createdFiles.length > 0) reporter.success(`Wrote ${createdFiles.join(", ")}.`);
+  if (dependabot.action === "keep") {
+    if (dependabot.missing === undefined) {
+      warn(
+        `OpsCrew could not read ${dependabot.path}, so it left it as it is and cannot tell which updates it lacks.`,
+      );
+    } else if (dependabot.missing.length > 0) {
+      reporter.info(
+        say(
+          `${dependabot.path} is yours, so OpsCrew left it as it is. OpsCrew's would also update: ${dependabot.missing.join(", ")}.`,
+        ),
+      );
+    }
+  }
+
+  // 3a. The user's own Dockerfile against the image baseline: each finding with its fix.
+  const baseline =
+    ownDockerfile === undefined ? undefined : scanDockerfile(plan.app.dockerfile, ownDockerfile);
+  if (baseline !== undefined) {
+    if (baseline.length === 0) {
+      reporter.info(say(`${plan.app.dockerfile} ${BASELINE_MET}.`));
+    } else {
+      warn(
+        `${plan.app.dockerfile} misses OpsCrew's image baseline in ${plural(baseline.length, "place")}; OpsCrew does not change your Dockerfile:`,
+      );
+      for (const finding of baseline) {
+        warn(`- line ${finding.line}: ${finding.title}. Fix: ${finding.remediation}`);
+      }
+    }
+  }
+  const version = plan.app.build?.runtime.version;
+  /** The build's part of the pull request. */
+  const build: PullRequestBuild = {
+    ...(builder !== undefined ? { builder } : {}),
+    dockerfile: plan.app.dockerfile,
+    context: plan.app.buildContext,
+    dependabot,
+    ...(versionFile !== undefined && version !== undefined
+      ? { versionFile: { path: versionFile.path, version } }
+      : {}),
+    ...(baseline !== undefined ? { baseline } : {}),
+  };
 
   // 3b. The health route, added by OpsCrew for the frameworks it knows when it can tell where
   // it goes (`./health`), and the Next.js standalone output, edited when the config is a plain
@@ -609,6 +697,7 @@ async function adapt(deps: PhaseDeps, options: RunAdaptOptions): Promise<AdaptRe
     originChecked,
     byOpsCrew: [...byOpsCrew],
     paths: madeIn,
+    build,
     result,
   });
 }
@@ -644,6 +733,8 @@ interface PushContext {
   byOpsCrew: readonly string[];
   /** The file a change was really made in, when it is not the plan's path. */
   paths: Readonly<Record<string, string>>;
+  /** What this run did for the image's build (absent when pushing an earlier run's commit). */
+  build?: PullRequestBuild;
   /** The result so far: its branch, base, changes, notes and dependencies go into the PR. */
   result: AdaptResult;
 }
@@ -737,6 +828,7 @@ async function pushAndOpen(ctx: PushContext): Promise<AdaptResult> {
         addedDependencies,
         byOpsCrew: ctx.byOpsCrew,
         paths: ctx.paths,
+        ...(ctx.build === undefined ? {} : { build: ctx.build }),
         ...(backgroundJobs === undefined ? {} : { backgroundJobs }),
         ...(migrations === undefined ? {} : { migrations }),
         ...(facts.notes === undefined ? {} : { appNotes: facts.notes }),

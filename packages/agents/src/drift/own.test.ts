@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
@@ -458,6 +458,22 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         ...(requirements?.contactEmail ? { acmeEmail: requirements.contactEmail } : {}),
       });
       expect(expected.rendered).toEqual({ "compose.yaml": sums.compose, Caddyfile: sums.caddy });
+      await deployed(s);
+      const report = await runDrift(s.deps, { services: s.services });
+      expect(report.host).toEqual({ differences: [] });
+    });
+
+    it("a pin Dependabot updated in the committed Compose file is no drift on the server", async () => {
+      const s = await ownProject();
+      await provisionOwn(s);
+      const file = join(s.root, "opscrew", "runtime", "compose.yaml");
+      const compose = await readFile(file, "utf8");
+      const postgres = /postgres:17-alpine@sha256:[0-9a-f]{64}/.exec(compose)?.[0] as string;
+      await writeFile(
+        file,
+        compose.replace(postgres, `postgres:17-alpine@sha256:${"e".repeat(64)}`),
+      );
+      // The deploy workflow copied the committed file to the server.
       await deployed(s);
       const report = await runDrift(s.deps, { services: s.services });
       expect(report.host).toEqual({ differences: [] });

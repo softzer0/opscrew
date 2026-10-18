@@ -454,4 +454,34 @@ describe("rendered files", () => {
     expect(diff.changed.map((f) => f.path)).toEqual(["opscrew/infra/prod/main.tf"]);
     expect(describeDiff({ created: [], changed: [], unchanged: [] })).toBe("no changes");
   });
+
+  it("keeps the newer pins of the committed copy when it writes or compares a file again", async () => {
+    const root = await temp();
+    const digest = (c: string) => `sha256:${c.repeat(64)}`;
+    const commit = (c: string) => c.repeat(40);
+    const path = "opscrew/runtime/compose.yaml";
+    const compose = (postgres: string, caddy: string) =>
+      `services:\n  db:\n    image: ${postgres}\n  web:\n    image: ${caddy}\n`;
+    // Dependabot moved Postgres to a newer digest of the same tag; Caddy's pin is older.
+    const committed = compose(`postgres:17-alpine@${digest("b")}`, `caddy:2.10.0@${digest("c")}`);
+    await writeRenderedFiles(root, [{ path, content: committed, kind: "runtime" }]);
+    const rendered = compose(`postgres:17-alpine@${digest("a")}`, `caddy:2.11.7@${digest("d")}`);
+    const kept = compose(`postgres:17-alpine@${digest("b")}`, `caddy:2.11.7@${digest("d")}`);
+
+    const diff = await diffRenderedFiles(root, [{ path, content: rendered, kind: "runtime" }]);
+    expect(diff.changed.map((f) => f.content)).toEqual([kept]);
+    await writeRenderedFiles(root, [{ path, content: rendered, kind: "runtime" }]);
+    expect(await readFile(join(root, path), "utf8")).toBe(kept);
+
+    // A workflow whose action Dependabot moved to a newer release is unchanged.
+    const workflow = ".github/workflows/opscrew-deploy.yml";
+    const uses = (sha: string, tag: string) => `- uses: actions/checkout@${sha} # ${tag}\n`;
+    await writeRenderedFiles(root, [
+      { path: workflow, content: uses(commit("e"), "v7.1.0"), kind: "workflow" },
+    ]);
+    const again = await diffRenderedFiles(root, [
+      { path: workflow, content: uses(commit("f"), "v7.0.1"), kind: "workflow" },
+    ]);
+    expect(again.unchanged.map((f) => f.content)).toEqual([uses(commit("e"), "v7.1.0")]);
+  });
 });

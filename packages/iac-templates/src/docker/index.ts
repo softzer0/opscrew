@@ -42,6 +42,11 @@ export interface DockerAssetOptions {
    * Without it, or when it finds none, that image is pinned by tag only and the Dockerfile says so.
    */
   resolveImageDigest?: ResolveImageDigest;
+  /**
+   * False when another builder builds the image (Buildpacks, Railpack, the user's own
+   * Dockerfile): only `.dockerignore` and `.env.example` are rendered, for any stack. Default true.
+   */
+  dockerfile?: boolean;
 }
 
 /** Port the container listens on for a stack. */
@@ -141,13 +146,19 @@ function envExample(facts: ProjectFacts): string {
  * `Dockerfile`, `.dockerignore` and `.env.example` for the detected stack. Callers write them only
  * when the files are missing (the user owns them afterwards). For an app in a subfolder
  * (`facts.appDir`) the Dockerfile is `<appDir>/Dockerfile`; the build context, and so the
- * `.dockerignore`, stays at the repository root. Throws `INVALID_INPUT` when OpsCrew has no
- * template for the stack.
+ * `.dockerignore`, stays at the repository root (Railpack's buildx context honours it too). With
+ * `options.dockerfile` false, only `.dockerignore` and `.env.example`, which need no stack.
+ * Throws `INVALID_INPUT` when the Dockerfile is wanted and OpsCrew has no template for the stack.
  */
 export function renderDockerAssets(
   facts: ProjectFacts,
   options: DockerAssetOptions,
 ): RenderedFile[] {
+  const context: RenderedFile[] = [
+    { path: ".dockerignore", content: DOCKERIGNORE, kind: "docker" },
+    { path: ".env.example", content: envExample(facts), kind: "docker" },
+  ];
+  if (options.dockerfile === false) return context;
   const stack = detectStack(facts);
   if (stack === undefined) {
     throw new OpsCrewError(
@@ -164,7 +175,6 @@ export function renderDockerAssets(
       content: dockerfile(stack, facts, port, options),
       kind: "docker",
     },
-    { path: ".dockerignore", content: DOCKERIGNORE, kind: "docker" },
-    { path: ".env.example", content: envExample(facts), kind: "docker" },
+    ...context,
   ];
 }

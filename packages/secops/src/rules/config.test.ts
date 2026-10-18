@@ -11,7 +11,7 @@ import {
   materialize,
   scanWith,
 } from "../scan/test-utils";
-import { createConfigScanner } from "./config";
+import { createConfigScanner, scanDockerfile } from "./config";
 
 let fixture: MaterializedFixture | undefined;
 const temps: string[] = [];
@@ -189,11 +189,40 @@ describe("createConfigScanner", () => {
     });
     expect(keys(findings)).toEqual(
       [
+        "config/dockerfile-unpinned-digest@api.Dockerfile:1",
         "config/dockerfile-root@api.Dockerfile:2",
         "config/dockerfile-latest-tag@Containerfile:1",
+        "config/dockerfile-unpinned-digest@docker/Dockerfile.prod:1",
         "config/dockerfile-secret-env@docker/Dockerfile.prod:2",
       ].sort(),
     );
+  });
+
+  it("flags a base image pinned by tag only, once per FROM, with the fix", async () => {
+    const digest = `sha256:${"0".repeat(64)}`;
+    const findings = scanDockerfile(
+      "Dockerfile",
+      [
+        "ARG BASE=node:24-alpine",
+        "FROM node:24-alpine AS deps",
+        `FROM python:3.14-slim@${digest} AS py`,
+        "FROM deps AS build",
+        "FROM $BASE",
+        "FROM scratch",
+        "FROM node:latest",
+        "USER app",
+        "",
+      ].join("\n"),
+    );
+    const unpinned = findings.filter((f) => f.ruleId === "config/dockerfile-unpinned-digest");
+    expect(unpinned.map((f) => [f.line, f.severity, f.evidence])).toEqual([
+      [2, "low", "FROM node:24-alpine"],
+    ]);
+    expect(unpinned[0]?.title).toBe("Base image is not pinned by digest");
+    expect(unpinned[0]?.remediation).toContain("FROM node:24-alpine@sha256:<digest>");
+    expect(unpinned[0]?.remediation).toContain("docker buildx imagetools inspect node:24-alpine");
+    // `latest` keeps its own finding instead.
+    expect(findings.map((f) => f.ruleId)).toContain("config/dockerfile-latest-tag");
   });
 
   it("reports the .env rule without a file when the project has no .gitignore", async () => {

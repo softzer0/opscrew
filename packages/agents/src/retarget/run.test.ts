@@ -4,8 +4,9 @@ import { join } from "node:path";
 import type { CommandResult } from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { ROLLING_NOTE } from "../design/strategy";
 import { readServerAddresses, serverAddressesFile } from "../shared";
 import {
   DOMAIN,
@@ -595,6 +596,84 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
   });
 
+  it("shows the builder and the deploy strategy for the new server before the start, and records them", async () => {
+    const h = await moveHarness();
+    const before = await readArtifact("plan", h.paths.files.plan);
+    const earlier = {
+      builder: "buildpacks" as const,
+      chosen: "auto" as const,
+      reason: "Before the move.",
+      runtime: { language: "node" as const, version: "24" },
+    };
+    await writeArtifact("plan", h.paths.files.plan, {
+      ...before,
+      app: { ...before.app, build: earlier },
+      deploy: { strategy: "recreate", drainSeconds: 45 },
+    });
+    let summary: RetargetSummary | undefined;
+    const refused = await caught(
+      run(h, {
+        confirmStart: async (s) => {
+          summary = s;
+          return false;
+        },
+      }),
+    );
+    expect(refused.code).toBe("APPROVAL_REFUSED");
+    expect(summary?.changes).toEqual([
+      expect.stringMatching(
+        /^Image builder: generated-dockerfile \(was buildpacks\)\. OpsCrew has/,
+      ),
+      `Deploys: rolling (was recreate). ${ROLLING_NOTE}`,
+    ]);
+    for (const change of summary?.changes ?? []) expect(h.reporter.text()).toContain(change);
+    expect(applies(h)).toHaveLength(0);
+    expect((await readArtifact("plan", h.paths.files.plan)).app.build).toEqual(earlier);
+
+    await run(h, { confirmStart: async () => true });
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    expect(plan.app.build).toMatchObject({ builder: "generated-dockerfile", chosen: "auto" });
+    expect(plan.deploy).toEqual({ strategy: "rolling", drainSeconds: 45 });
+  });
+
+  it("stops before anything is created when the new server's builder needs a missing Dockerfile", async () => {
+    const h = await moveHarness();
+    await rm(join(h.root, "Dockerfile"));
+    const error = await caught(run(h));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "The new server's builder needs a Dockerfile this repository lacks: run `opscrew design` and `opscrew adapt` first. Nothing was changed.",
+    );
+    expect(applies(h)).toHaveLength(0);
+    expect((await readArtifact("plan", h.paths.files.plan)).retarget).toBeUndefined();
+  });
+
+  it("stops before anything is created when the plan's builder cannot build the app", async () => {
+    const h = await moveHarness();
+    const before = await readArtifact("plan", h.paths.files.plan);
+    const build = {
+      builder: "buildpacks" as const,
+      chosen: "user" as const,
+      reason: "You chose it.",
+      runtime: { language: "node" as const, version: "24" },
+    };
+    await writeArtifact("plan", h.paths.files.plan, { ...before, app: { ...before.app, build } });
+    // Buildpacks has no pnpm support.
+    const architecture = await readArtifact("architecture", h.paths.files.architecture);
+    await writeArtifact("architecture", h.paths.files.architecture, {
+      ...architecture,
+      facts: { ...architecture.facts, packageManager: "pnpm" },
+    });
+    const error = await caught(run(h));
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toContain(
+      "sets app.build.builder to buildpacks, but the pinned Buildpacks builder has no pnpm support",
+    );
+    expect(error.message).toContain("Nothing was changed.");
+    expect(applies(h)).toHaveLength(0);
+    expect((await readArtifact("plan", h.paths.files.plan)).retarget).toBeUndefined();
+  });
+
   it("without a self-hosted database there is no maintenance window", async () => {
     const h = await moveHarness({ postgres: false });
     let summary: RetargetSummary | undefined;
@@ -933,7 +1012,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     h.github.conclusion = "success";
     expect(await run(h)).toMatchObject({ step: "switched", done: true });
     // The secrets were stored once; the workflow ran again.
-    expect(h.events.filter((e) => e.type === "secret")).toHaveLength(6);
+    expect(h.events.filter((e) => e.type === "secret")).toHaveLength(7);
     expect(h.github.runs).toHaveLength(2);
   });
 

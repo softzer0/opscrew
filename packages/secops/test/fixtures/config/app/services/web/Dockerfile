@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM node:22-alpine AS base
+FROM --platform=$BUILDPLATFORM node:22-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000 AS base
 WORKDIR /app
 USER node
 

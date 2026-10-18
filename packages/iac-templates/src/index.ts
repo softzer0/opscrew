@@ -7,6 +7,7 @@ export * from "./portainer-host";
 export * from "./portainer-target";
 export { webOnlyFromCloudflare } from "./predicates";
 export { cloudTarget, portainerTarget, wrongTarget } from "./providers";
+export { imageDigest } from "./registry";
 export * from "./render";
 export * from "./runbook";
 export * from "./runtime";

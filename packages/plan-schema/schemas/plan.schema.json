@@ -728,6 +728,79 @@
               },
               "required": ["provider", "mode", "location", "serverType", "backups"],
               "additionalProperties": false
+            },
+            "deploy": {
+              "type": "object",
+              "properties": {
+                "strategy": {
+                  "default": "rolling",
+                  "type": "string",
+                  "enum": ["rolling", "recreate"]
+                },
+                "drainSeconds": {
+                  "default": 30,
+                  "type": "integer",
+                  "minimum": 5,
+                  "maximum": 300
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            "build": {
+              "type": "object",
+              "properties": {
+                "builder": {
+                  "type": "string",
+                  "enum": ["generated-dockerfile", "own-dockerfile", "buildpacks", "railpack"]
+                },
+                "chosen": {
+                  "type": "string",
+                  "enum": ["auto", "user"]
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "runtime": {
+                  "type": "object",
+                  "properties": {
+                    "language": {
+                      "type": "string",
+                      "enum": [
+                        "node",
+                        "python",
+                        "ruby",
+                        "go",
+                        "java",
+                        "dotnet",
+                        "php",
+                        "rust",
+                        "other"
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+                    }
+                  },
+                  "required": ["language"],
+                  "additionalProperties": false
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": ["node", "python", "ruby", "php", "wget", "bash", "none"]
+                },
+                "automatic": {
+                  "type": "string",
+                  "enum": ["generated-dockerfile", "own-dockerfile", "buildpacks", "railpack"]
+                }
+              },
+              "required": ["builder", "chosen", "reason", "runtime"],
+              "additionalProperties": false
             }
           },
           "required": ["target"],

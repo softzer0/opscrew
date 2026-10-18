@@ -9,11 +9,9 @@ import {
   formatActionPin,
   OFFER_SOURCES,
   parseActionPin,
-  parseBearerChallenge,
   parseImageRef,
   platformManifest,
   readBuilderConfig,
-  registryOf,
   replaceOffers,
   replacePin,
   setToolChecksum,
@@ -202,7 +200,7 @@ describe("the pin script's offers helpers", () => {
 });
 
 describe("the pin script's helpers", () => {
-  it("splits image references into registry, repository, tag and digest", () => {
+  it("splits image references into repository, tag and digest", () => {
     const digest = "a".repeat(64);
     expect(parseImageRef("node:24-slim")).toEqual({ repo: "node", tag: "24-slim" });
     expect(parseImageRef(`basecamp/kamal-proxy:v0.10.2@sha256:${digest}`)).toEqual({
@@ -217,31 +215,6 @@ describe("the pin script's helpers", () => {
     for (const bad of ["node", "node@sha256:abc", "node:24@sha256:xyz", "Node:24"]) {
       expect(() => parseImageRef(bad), bad).toThrow(/image reference/);
     }
-    expect(registryOf("node")).toEqual({ host: "registry-1.docker.io", name: "library/node" });
-    expect(registryOf("valkey/valkey")).toEqual({
-      host: "registry-1.docker.io",
-      name: "valkey/valkey",
-    });
-    expect(registryOf("ghcr.io/railwayapp/railpack-frontend")).toEqual({
-      host: "ghcr.io",
-      name: "railwayapp/railpack-frontend",
-    });
-  });
-
-  it("reads a registry's bearer challenge", () => {
-    expect(
-      parseBearerChallenge(
-        'Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/node:pull"',
-      ),
-    ).toEqual({
-      realm: "https://auth.docker.io/token",
-      service: "registry.docker.io",
-      scope: "repository:library/node:pull",
-    });
-    expect(parseBearerChallenge('Bearer realm="https://ghcr.io/token"')).toEqual({
-      realm: "https://ghcr.io/token",
-    });
-    expect(() => parseBearerChallenge('Basic realm="x"')).toThrow(/bearer/i);
   });
 
   it("reads an action pinned by tag only, for the script to resolve", () => {

@@ -92,8 +92,9 @@ describe("runScan", () => {
       "critical secrets/stripe-secret-key@.env:1",
       "critical secrets/github-token@src/server.js:4",
       "medium config/dockerfile-root@Dockerfile:1",
+      "low config/dockerfile-unpinned-digest@Dockerfile:1",
     ]);
-    expect(report.counts).toEqual({ critical: 3, high: 0, medium: 1, low: 0, info: 0 });
+    expect(report.counts).toEqual({ critical: 3, high: 0, medium: 1, low: 1, info: 0 });
     expect(report.scanners).toEqual([
       { id: "opscrew-secrets", status: "ran", durationMs: expect.any(Number) },
       { id: "opscrew-config", status: "ran", durationMs: expect.any(Number) },
@@ -272,6 +273,7 @@ describe("runScan", () => {
         "secrets/stripe-secret-key@.env:1",
         "secrets/github-token@src/server.js:4",
         "config/dockerfile-root@Dockerfile:1",
+        "config/dockerfile-unpinned-digest@Dockerfile:1",
         "gitleaks/generic@:",
       ].sort(),
     );

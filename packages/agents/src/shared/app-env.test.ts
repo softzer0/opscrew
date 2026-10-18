@@ -255,6 +255,35 @@ describe("connection settings under the app's own names (FR-814)", () => {
     expect(parseDotenv(result.appEnv).get("DATABASE_URL")).toContain("db-password-0123456789");
   });
 
+  it("splits the build values: the ones the plan marks secret go only to the build secrets", async () => {
+    const key = fakeSecret("openai-key", "build");
+    const env: Env = [
+      { name: "NEXT_PUBLIC_SITE", secret: false, source: "user" },
+      { name: "NEXT_PUBLIC_OPENAI_KEY", secret: true, source: "user" },
+      { name: "STRIPE_SECRET_KEY", secret: true, source: "user" },
+    ];
+    const result = await assembleAppEnv({
+      plan: plan(env),
+      dotenvText: `NEXT_PUBLIC_SITE=https://shop.example.com\nNEXT_PUBLIC_OPENAI_KEY=${key}\nSTRIPE_SECRET_KEY=x\n`,
+      password: () => "db-password-0123456789",
+    });
+    expect(result.buildEnv).toBe("NEXT_PUBLIC_SITE=https://shop.example.com\n");
+    expect(result.buildSecrets).toBe(`NEXT_PUBLIC_OPENAI_KEY=${key}\n`);
+    expect(result.appEnv).not.toContain("NEXT_PUBLIC_");
+    expect(result.names).toEqual([
+      "DATABASE_URL",
+      "NEXT_PUBLIC_OPENAI_KEY",
+      "NEXT_PUBLIC_SITE",
+      "STRIPE_SECRET_KEY",
+    ]);
+    // Without a secret build value the build secrets are empty, like the build values.
+    const plain = await assembleAppEnv({
+      plan: plan([]),
+      password: () => "db-password-0123456789",
+    });
+    expect([plain.buildEnv, plain.buildSecrets]).toEqual(["\n", "\n"]);
+  });
+
   it("takes the user's value for an alias whose service OpsCrew does not run", async () => {
     const env: Env = [{ name: "CELERY_BROKER_URL", secret: false, source: "derived" }];
     const result = await assembleAppEnv({

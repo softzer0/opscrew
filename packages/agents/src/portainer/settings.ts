@@ -1,5 +1,5 @@
 import { normalizeHostName, OpsCrewError } from "@opscrew/core";
-import { PORTAINER_PORT } from "@opscrew/iac-templates";
+import { IMAGES, PORTAINER_PORT } from "@opscrew/iac-templates";
 import {
   cloudflareEdgeCoverage,
   type DeployPlan,
@@ -9,10 +9,10 @@ import {
 import { z } from "zod";
 
 /**
- * Portainer CE release OpsCrew pins (`portainer/portainer-ce:2.45.2`, the LTS tag on Docker Hub
- * on 2026-10-14). Enabling Portainer writes it to `plan.portainer.version`.
+ * Portainer CE release OpsCrew pins: the tag of `IMAGES.portainer` in pins.ts (the LTS release).
+ * Enabling Portainer writes it to `plan.portainer.version`.
  */
-export const PORTAINER_VERSION = "2.45.2";
+export const PORTAINER_VERSION = IMAGES.portainer.ref.split(/[:@]/)[1] as string;
 
 /** The address Portainer answers on through the SSH tunnel, on the user's computer. */
 export const PORTAINER_LOCAL_URL = `https://localhost:${PORTAINER_PORT}`;

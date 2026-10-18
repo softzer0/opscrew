@@ -139,6 +139,7 @@ export function deploySecrets(input: {
       ? { [DEPLOY_SECRETS.dbEnv]: input.environment.dbEnv }
       : {}),
     [DEPLOY_SECRETS.buildEnv]: input.environment.buildEnv,
+    [DEPLOY_SECRETS.buildSecrets]: input.environment.buildSecrets,
     ...(input.tunnel !== undefined
       ? {
           [TUNNEL_DEPLOY_SECRETS.serviceTokenId]: input.tunnel.serviceTokenId,
@@ -150,9 +151,10 @@ export function deploySecrets(input: {
 
 /**
  * The GitHub Actions secrets of the deploy workflow for the user's Portainer: the build's
- * client-side values (`OPSCREW_BUILD_ENV`) and, in redeploy mode `cloudflare`, Portainer's webhook
- * URL behind Cloudflare Access with the Access service token. The app's own values are not among
- * them: they live only in the stack's environment in Portainer.
+ * client-side values (`OPSCREW_BUILD_ENV`, and `OPSCREW_BUILD_SECRETS` for the secret ones) and,
+ * in redeploy mode `cloudflare`, Portainer's webhook URL behind Cloudflare Access with the Access
+ * service token. The app's own values are not among them: they live only in the stack's
+ * environment in Portainer.
  */
 export function portainerDeploySecrets(input: {
   environment: AppEnvironment;
@@ -160,6 +162,7 @@ export function portainerDeploySecrets(input: {
 }): Record<string, string> {
   return {
     [DEPLOY_SECRETS.buildEnv]: input.environment.buildEnv,
+    [DEPLOY_SECRETS.buildSecrets]: input.environment.buildSecrets,
     ...(input.webhook !== undefined
       ? {
           [PORTAINER_DEPLOY_SECRETS.webhookUrl]: input.webhook.url,

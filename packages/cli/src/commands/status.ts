@@ -1,4 +1,5 @@
 import {
+  buildStatusLines,
   formatServerAddress,
   type PhaseDeps,
   phaseStatusLines,
@@ -47,8 +48,9 @@ async function addressLines(deps: PhaseDeps, plan: DeployPlan | undefined): Prom
 
 /**
  * `opscrew status`: which phases have run in this project, with their result and time, the
- * server's address (from OpsCrew's local state; it is never committed) and a `retarget` line while
- * a move to another provider is in progress (from → to, last completed step, the next command).
+ * image builder and the deploy strategy with their reasons, the server's address (from OpsCrew's
+ * local state; it is never committed) and a `retarget` line while a move to another provider is
+ * in progress (from → to, last completed step, the next command).
  * `--ip` prints only the server's IPv4 address, for scripts such as
  * `ssh deploy@$(opscrew status --ip)`.
  */
@@ -83,9 +85,10 @@ export function register(program: Command, ctx: CliContext): void {
       const move = plan === undefined ? undefined : retargetStatusLine(plan);
       const moveLines = move === undefined ? [] : ["", "Move in progress:", move];
       const serverLines = await addressLines(deps, plan);
+      const buildLines = plan === undefined ? [] : ["", ...buildStatusLines(plan)];
       if (Object.keys(state.phases).length === 0) {
         ctx.stdout("No phases have run yet. Start with `opscrew scan`.\n");
-        const extra = [...serverLines, ...moveLines];
+        const extra = [...buildLines, ...serverLines, ...moveLines];
         if (extra.length > 0) ctx.stdout(`${extra.join("\n")}\n`);
         return;
       }
@@ -93,6 +96,7 @@ export function register(program: Command, ctx: CliContext): void {
         `OpsCrew phases in ${paths.root}`,
         "",
         ...phaseStatusLines(state.phases),
+        ...buildLines,
         ...serverLines,
         ...moveLines,
       ];

@@ -19,6 +19,7 @@ export {
   SEVERITY_LABEL,
   tableCell,
 } from "./report";
+export { scanDockerfile } from "./rules/config";
 export { createSecretsScanner } from "./rules/secrets";
 export { SEVERITY_RANK } from "./scan/finding";
 export { runScan } from "./scan/run";

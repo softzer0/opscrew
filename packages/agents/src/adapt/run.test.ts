@@ -126,8 +126,12 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
       "Dockerfile",
       ".dockerignore",
       ".env.example",
+      ".github/dependabot.yml",
       "app/api/health/route.ts",
     ]);
+    const dependabot = await readFile(join(repo.root, ".github", "dependabot.yml"), "utf8");
+    expect(dependabot).toContain("package-ecosystem: npm");
+    expect(dependabot).toContain("package-ecosystem: github-actions");
     const route = await readFile(join(repo.root, "app", "api", "health", "route.ts"), "utf8");
     expect(route).toContain('import { NextResponse } from "next/server";');
     expect(route).toContain('return NextResponse.json({ status: "ok" });');
@@ -194,6 +198,7 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
       [
         ".dockerignore",
         ".env.example",
+        ".github/dependabot.yml",
         "Dockerfile",
         "app/api/health/route.ts",
         "lib/stripe.ts",
@@ -279,6 +284,7 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(result.createdFiles).toEqual([
       ".dockerignore",
       ".env.example",
+      ".github/dependabot.yml",
       "app/api/health/route.ts",
     ]);
     expect(await statusOf(repo)).toMatchObject({
@@ -496,7 +502,16 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
 
   it("skips the agent and the commit when nothing needs to change", async () => {
     const changes = nextChanges().map((c) => ({ ...c, status: "applied" as const }));
-    const repo = await setup({ changes });
+    // The user's own Dependabot configuration stays as it is; adapt lists what it lacks.
+    const dependabot = [
+      "version: 2",
+      "updates:",
+      "  - package-ecosystem: npm",
+      '    directory: "/"',
+      "    schedule: { interval: daily }",
+      "",
+    ].join("\n");
+    const repo = await setup({ changes, files: { ".github/dependabot.yml": dependabot } });
     await git(repo.env, repo.root, "add", "-A");
     await git(repo.env, repo.root, "commit", "-m", "artefacts");
 
@@ -506,6 +521,10 @@ describe.skipIf(GIT === undefined)("runAdapt (real git repository)", () => {
     expect(result.committed).toBe(false);
     expect(repo.handler.requests).toHaveLength(0);
     expect(repo.deps.reporter.text()).toContain("Nothing to commit");
+    expect(await readFile(join(repo.root, ".github", "dependabot.yml"), "utf8")).toBe(dependabot);
+    expect(repo.deps.reporter.text()).toContain(
+      ".github/dependabot.yml is yours, so OpsCrew left it as it is. OpsCrew's would also update: docker in /, docker-compose in /opscrew/runtime and /opscrew/runtime/*, github-actions in /.",
+    );
   });
 
   it("tells the pull request that background jobs will not run yet", async () => {

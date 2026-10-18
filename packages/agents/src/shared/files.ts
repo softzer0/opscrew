@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { OpsCrewError, plural, readTextIfExists, writeFileAtomic } from "@opscrew/core";
-import type { RenderedFile } from "@opscrew/iac-templates";
+import { keepNewerPins, type RenderedFile } from "@opscrew/iac-templates";
 import type { z } from "zod";
 import type { PhaseDeps } from "../context";
 
@@ -30,14 +30,38 @@ export async function readValidJson<T>(file: string, schema: z.ZodType<T>): Prom
   return parsed.success ? parsed.data : undefined;
 }
 
-/** Compares rendered files with what is on disk under `root` (line endings ignored). */
+/**
+ * What OpsCrew writes for `file` over `current`, the copy on disk: the rendered content with the
+ * copy's newer image and action pins kept (FR-1222), so a pin the user or Dependabot updated is
+ * never reverted.
+ */
+function withCommittedPins(file: RenderedFile, current: string | undefined): RenderedFile {
+  return current === undefined ? file : { ...file, content: keepNewerPins(current, file.content) };
+}
+
+/**
+ * The repository's copies of those of `paths` that exist under `root`, joined: what OpsCrew
+ * passes to `keepNewerPins` for content it sends to a server or compares with one instead of
+ * writing it (FR-1222), so it carries the pins the user or Dependabot set in the committed files.
+ */
+export async function committedText(root: string, paths: readonly string[]): Promise<string> {
+  const copies = await Promise.all(paths.map((path) => readTextIfExists(join(root, path))));
+  return copies.filter((copy) => copy !== undefined).join("\n");
+}
+
+/**
+ * Compares rendered files with what is on disk under `root` (line endings ignored). A file on disk
+ * is compared with, and `changed` and `unchanged` hold, the rendered content with its newer pins
+ * kept.
+ */
 export async function diffRenderedFiles(
   root: string,
   files: readonly RenderedFile[],
 ): Promise<RenderedFileDiff> {
   const diff: RenderedFileDiff = { created: [], changed: [], unchanged: [] };
-  for (const file of files) {
-    const current = await readTextIfExists(join(root, file.path));
+  for (const rendered of files) {
+    const current = await readTextIfExists(join(root, rendered.path));
+    const file = withCommittedPins(rendered, current);
     if (current === undefined) diff.created.push(file);
     else if (normalise(current) === normalise(file.content)) diff.unchanged.push(file);
     else diff.changed.push(file);
@@ -45,13 +69,18 @@ export async function diffRenderedFiles(
   return diff;
 }
 
-/** Writes rendered files under `root` atomically with LF line endings. */
+/**
+ * Writes rendered files under `root` atomically with LF line endings, keeping the newer pins of a
+ * file already there.
+ */
 export async function writeRenderedFiles(
   root: string,
   files: readonly RenderedFile[],
 ): Promise<void> {
-  for (const file of files) {
-    await writeFileAtomic(join(root, file.path), normalise(file.content), {
+  for (const rendered of files) {
+    const target = join(root, rendered.path);
+    const file = withCommittedPins(rendered, await readTextIfExists(target));
+    await writeFileAtomic(target, normalise(file.content), {
       ...(file.mode !== undefined ? { mode: file.mode } : {}),
     });
   }

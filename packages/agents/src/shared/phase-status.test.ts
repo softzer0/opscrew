@@ -3,8 +3,31 @@ import { dirname } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { createTestPhaseDeps } from "../testing";
-import { runPhase } from "./phase-status";
+import { PORTAINER_RECREATE_NOTE, ROLLING_NOTE } from "../design/strategy";
+import { createTestPhaseDeps, testPlan } from "../testing";
+import { buildStatusLines, runPhase } from "./phase-status";
+
+describe("buildStatusLines", () => {
+  it("shows the builder and the deploy strategy with their reasons", () => {
+    const plan = testPlan();
+    const build = {
+      builder: "buildpacks" as const,
+      chosen: "auto" as const,
+      reason: "Go 1.26: Buildpacks builds it.",
+      runtime: { language: "go" as const, version: "1.26" },
+    };
+    expect(buildStatusLines({ ...plan, app: { ...plan.app, build } })).toEqual([
+      "Image builder: buildpacks. Go 1.26: Buildpacks builds it.",
+      `Deploys: rolling. ${ROLLING_NOTE}`,
+    ]);
+    const recreate = { strategy: "recreate" as const, drainSeconds: 30 };
+    expect(
+      buildStatusLines({ ...plan, deploy: { ...recreate, reason: PORTAINER_RECREATE_NOTE } }),
+    ).toEqual([`Deploys: recreate. ${PORTAINER_RECREATE_NOTE}`]);
+    // The user's own recreate in plan.yaml has no reason.
+    expect(buildStatusLines({ ...plan, deploy: recreate })).toEqual(["Deploys: recreate."]);
+  });
+});
 
 describe("runPhase", () => {
   it("returns the result and records nothing itself when the phase succeeds", async () => {

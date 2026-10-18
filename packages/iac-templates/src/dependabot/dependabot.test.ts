@@ -171,6 +171,24 @@ describe("renderDependabot", () => {
     expect(ecosystems("fastapi-sqlmodel (uv)")[0]).toBe("uv");
   });
 
+  it("adds Maven or Gradle for a Java app when the caller names its build tool", () => {
+    const [sample, deployPlan] = EXAMPLES["spring-boot-api (Buildpacks)"] as [
+      ProjectFacts,
+      DeployPlan,
+    ];
+    const maven = renderDependabot(sample, deployPlan, "maven");
+    expect(maven.content).toMatchSnapshot();
+    const ecosystems = (content: string) =>
+      (parse(content) as { updates: Update[] }).updates.map((u) => entries([u])[0]);
+    expect(ecosystems(maven.content)[0]).toBe("maven /");
+    expect(ecosystems(renderDependabot(sample, deployPlan, "gradle").content)[0]).toBe("gradle /");
+    // The build tool means nothing for another language.
+    const [go, goPlan] = EXAMPLES["go-api (Buildpacks)"] as [ProjectFacts, DeployPlan];
+    expect(renderDependabot(go, goPlan, "maven").content).toBe(
+      renderDependabot(go, goPlan).content,
+    );
+  });
+
   it("adds the Dockerfile only when the builder uses one", () => {
     const [sample] = EXAMPLES["nextjs-postgres (npm)"] as [ProjectFacts, DeployPlan];
     const has = (deployPlan: DeployPlan) =>

@@ -21,6 +21,8 @@ import {
 } from "@opscrew/connector-portainer";
 import type { PhaseName } from "@opscrew/contracts";
 import {
+  keepNewerPins,
+  PORTAINER_STACK_TEMPLATE_PATH,
   portainerStackEnvKeys,
   portainerStackVolumes,
   portainerTarget,
@@ -29,7 +31,18 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { committedText } from "./files";
 import type { PortainerConnection } from "./server-record";
+
+/**
+ * The committed stack template (`opscrew/runtime/compose.yaml`) of the project at `root`, for
+ * {@link desiredStacks}: in tunnel web mode it names the cloudflared image the connector stack
+ * (which lives only in Portainer) runs too, and Dependabot keeps it current. Empty when the
+ * repository has none yet.
+ */
+export function committedStackPins(root: string): Promise<string> {
+  return committedText(root, [PORTAINER_STACK_TEMPLATE_PATH]);
+}
 
 /** The host ports the app's stack publishes in the plan's web mode (none through the tunnel). */
 export function publishedPorts(target: PortainerDeployTarget): number[] {
@@ -54,7 +67,8 @@ export function recordedStack(
  * built from the deploy branch of `github`'s repository, the registry entry of its image, the
  * updater or the Cloudflare connector, the published ports and volumes and OpsCrew's record of
  * what it created; with the values' keyed fingerprints (and the tokens to send again) when given.
- * `opscrew provision` applies exactly this and `opscrew drift` compares with it.
+ * The connector stack keeps the newer pins of `opts.committed` (FR-1222). `opscrew provision`
+ * applies exactly this and `opscrew drift` compares with it.
  */
 export function desiredStacks(
   plan: DeployPlan,
@@ -63,6 +77,8 @@ export function desiredStacks(
     github: { owner: string; repo: string };
     repositoryPrivate: boolean;
     imagePrivate: boolean;
+    /** The committed stack template (`committedStackPins`), whose pins Dependabot updates. */
+    committed: string;
     fingerprints?: DesiredValueFingerprints;
     replaceTokens?: DesiredStacks["replaceTokens"];
   },
@@ -84,7 +100,11 @@ export function desiredStacks(
     redeploy: target.redeploy,
     ...(target.redeploy === "updater"
       ? { updater: { compose: renderUpdaterStack(plan).content } }
-      : { tunnelConnector: { compose: renderPortainerConnectorStack(plan).content } }),
+      : {
+          tunnelConnector: {
+            compose: keepNewerPins(opts.committed, renderPortainerConnectorStack(plan).content),
+          },
+        }),
     record: opts.connection.created,
     ports: publishedPorts(target),
     volumes: portainerStackVolumes(plan),

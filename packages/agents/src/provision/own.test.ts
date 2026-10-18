@@ -12,6 +12,7 @@ import {
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { IMAGES, renderTunnelConnectorCompose } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
@@ -229,6 +230,46 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     expect((await s.deps.state.read()).phases.provision?.status).toBe("ok");
   });
 
+  it("hands the plan's builder and strategy to the files, and stores the secret build values apart", async () => {
+    const mapsKey = fakeSecret("google-api-key", "own");
+    const base = ownPlan();
+    const plan: DeployPlan = {
+      ...base,
+      app: {
+        ...base.app,
+        env: [
+          ...base.app.env,
+          { name: "NEXT_PUBLIC_SITE", secret: false, source: "user" },
+          { name: "NEXT_PUBLIC_MAPS_KEY", secret: true, source: "user" },
+        ],
+        build: {
+          builder: "buildpacks",
+          chosen: "user",
+          reason: "You chose Buildpacks.",
+          runtime: { language: "node", version: "24" },
+        },
+      },
+      deploy: { strategy: "recreate", drainSeconds: 20 },
+    };
+    const s = await setup({ plan });
+    s.deps.env.OPSCREW_APP_ENV_FILE = "production.env";
+    await writeFile(
+      join(s.root, "production.env"),
+      `NEXT_PUBLIC_SITE=https://shop.example.com\nNEXT_PUBLIC_MAPS_KEY=${mapsKey}\n`,
+    );
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+
+    const workflow = await readFile(join(s.root, ".github/workflows/opscrew-deploy.yml"), "utf8");
+    expect(workflow).toContain("pack build");
+    const compose = await readFile(join(s.root, "opscrew/runtime/compose.yaml"), "utf8");
+    expect(compose).toContain("stop_grace_period: 25s");
+    expect(s.github.secrets.get("OPSCREW_BUILD_ENV")).toBe(
+      "NEXT_PUBLIC_SITE=https://shop.example.com\n",
+    );
+    expect(s.github.secrets.get("OPSCREW_BUILD_SECRETS")).toBe(`NEXT_PUBLIC_MAPS_KEY=${mapsKey}\n`);
+    expect(everythingPrinted(s.deps)).not.toContain(mapsKey);
+  });
+
   it("public mode on SSH port 2222: the workflow uses the port and known_hosts holds [ip]:2222", async () => {
     const s = await setup({
       own: { host: OWN_IPV4, port: 2222, user: "root", agent: true, reachable: true },
@@ -383,6 +424,48 @@ describe.skipIf(!findExecutable("git"))("runProvision on a server the user owns"
     for (const secret of [token, clientSecret, clientId]) expect(stored).not.toContain(secret);
     expect(result.outputs).not.toHaveProperty("tunnel_token");
     expect(result.outputs.tunnel_id).toBe(TUNNEL_ID);
+  });
+
+  it("tunnel mode: the connector on the server keeps a pin Dependabot updated in its committed Compose file", async () => {
+    const token = `eyJ${fakeSecret("cloudflare-token", "tunnel-pins")}`;
+    const s = await setup({
+      plan: ownPlan({ access: "tunnel" }),
+      interactive: true,
+      own: {
+        host: LAN_IPV4,
+        port: 2222,
+        user: "alice",
+        agent: false,
+        keyPath: "~/.ssh/id_ed25519",
+        reachable: false,
+      },
+      facts: freshFacts({
+        user: "alice",
+        sshPorts: [22],
+        addresses: [{ interface: "eth0", family: "ipv4", address: LAN_IPV4, public: false }],
+      }),
+      engine: new OwnEngine(
+        TUNNEL_CHANGES,
+        tunnelOutputs({ token, clientId: "client.access", clientSecret: "client-secret" }),
+      ),
+    });
+    await placeholderKey(s.home);
+    // Dependabot moved the committed connector to a newer digest of its tag.
+    const connector = renderTunnelConnectorCompose(ownPlan({ access: "tunnel" }));
+    const newer = IMAGES.cloudflared.ref.replace(/sha256:[0-9a-f]{64}/, `sha256:${"e".repeat(64)}`);
+    await mkdir(join(s.root, "opscrew/runtime/cloudflared"), { recursive: true });
+    await writeFile(
+      join(s.root, connector.path),
+      connector.content.replace(IMAGES.cloudflared.ref, newer),
+    );
+    await s.git(s.root, "add", "-A");
+    await s.git(s.root, "commit", "-qm", "Dependabot: cloudflared");
+
+    await runProvision(s.deps, { services: s.services });
+    const step = s.host.applies[0]?.plan.steps.find((entry) => entry.id === "tunnel-connector");
+    expect(step?.params.compose).toContain(newer);
+    expect(step?.params.compose).not.toContain(IMAGES.cloudflared.ref);
+    expect(await readFile(join(s.root, connector.path), "utf8")).toContain(newer);
   });
 
   it("stops before any change when inspection finds a blocking problem", async () => {

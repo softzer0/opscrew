@@ -459,7 +459,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     collectCodeChangeSignals(paths.root, facts).catch((): CodeChangeSignals => ({})),
     readScanReport(paths.files.scanReportJson),
   ]);
-  const codeChanges = deriveCodeChanges(facts, scan, signals);
+  const codeChanges = deriveCodeChanges(facts, scan, signals, build.builder);
   const fresh = optionToPlan(chosen, {
     facts,
     requirements,

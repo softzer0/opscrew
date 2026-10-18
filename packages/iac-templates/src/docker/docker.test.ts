@@ -540,6 +540,21 @@ describe("renderDockerAssets", () => {
     ).toThrow(/no container template/);
   });
 
+  it("renders only .dockerignore and .env.example when another builder builds the image", () => {
+    const go = facts({
+      languages: ["go"],
+      envVars: [
+        { name: "API_TOKEN", files: ["main.go"], clientExposed: false, secretLikely: true },
+      ],
+    });
+    const files = renderDockerAssets(go, { appPort: 8080, healthPath: "/", dockerfile: false });
+    expect(files.map((file) => file.path)).toEqual([".dockerignore", ".env.example"]);
+    // The same .dockerignore as with OpsCrew's Dockerfile.
+    const node = renderDockerAssets(nextApp, { appPort: 3000, healthPath: "/" });
+    expect(files[0]?.content).toBe(node.find((file) => file.path === ".dockerignore")?.content);
+    expect(files[1]?.content).toContain("# Secret: keep it out of git.\nAPI_TOKEN=\n");
+  });
+
   it("never emits secret-shaped strings", () => {
     for (const sample of [...Object.values(ALL), ...Object.values(SUBFOLDER)]) {
       for (const file of renderDockerAssets(sample, { appPort: 3000, healthPath: "/health" })) {

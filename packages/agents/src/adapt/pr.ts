@@ -1,7 +1,9 @@
-import { SEVERITIES, type Severity } from "@opscrew/contracts";
+import { type Finding, SEVERITIES, type Severity } from "@opscrew/contracts";
 import { upperFirst } from "@opscrew/core";
-import type { CodeChangeKind } from "@opscrew/plan-schema";
+import type { CodeChangeKind, ImageBuilder } from "@opscrew/plan-schema";
+import { BUILDER_NAMES } from "../design/builder";
 import type { CodeChange } from "../design/code-changes";
+import { BASELINE_MET, type DependabotStep, NO_DOCKERFILE_NEEDED } from "./build-files";
 
 /** Title of the pull request opened by `opscrew adapt`. */
 export const PULL_REQUEST_TITLE = "OpsCrew: prepare the app for deployment";
@@ -49,6 +51,88 @@ export interface PullRequestBodyInput {
   appNotes?: readonly string[];
   /** The database-migrations note (FR-813): the release command every deploy runs. */
   migrations?: string;
+  /** What adapt did for the image's build: its section and the checklist's build line. */
+  build?: PullRequestBuild;
+}
+
+/** The image build in the pull request (absent: OpsCrew's Dockerfile at the root, as before). */
+export interface PullRequestBuild {
+  /** `app.build.builder`; absent for a plan from before the builder choice (OpsCrew's Dockerfile). */
+  builder?: ImageBuilder;
+  /** `app.dockerfile` and `app.buildContext`, for the `docker build` line. */
+  dockerfile: string;
+  context: string;
+  /** `.github/dependabot.yml` written by OpsCrew, or the user's file and the entries it lacks. */
+  dependabot?: DependabotStep;
+  /** The runtime version file adapt added, with the version in it. */
+  versionFile?: { path: string; version: string };
+  /** The user's own Dockerfile's baseline findings, each with its fix (empty: it meets it). */
+  baseline?: readonly Pick<Finding, "line" | "title" | "remediation">[];
+}
+
+/** The name of a builder that needs no Dockerfile (Buildpacks, Railpack); else undefined. */
+function codeBuilder(builder: ImageBuilder | undefined): string | undefined {
+  return builder === "buildpacks" || builder === "railpack" ? BUILDER_NAMES[builder] : undefined;
+}
+
+/** The `## Image build` section: who builds the image and the files adapt added or checked. */
+function buildSection(build: PullRequestBuild): string[] {
+  const named = codeBuilder(build.builder);
+  const lines = [
+    "",
+    "## Image build",
+    "",
+    named !== undefined
+      ? `${named} ${NO_DOCKERFILE_NEEDED}.`
+      : `The deploy workflow builds the image with ${BUILDER_NAMES[build.builder ?? "generated-dockerfile"]}, \`${build.dockerfile}\`.`,
+  ];
+  const dependabot = build.dependabot;
+  if (dependabot?.action === "write") {
+    lines.push(
+      `- \`${dependabot.file.path}\` (added by OpsCrew): weekly dependency updates, with minor and patch versions grouped; major versions of the runtime images are left to you.`,
+    );
+  } else if (dependabot?.missing !== undefined && dependabot.missing.length > 0) {
+    lines.push(
+      `- \`${dependabot.path}\` is yours and stays as it is; OpsCrew's would also update: ${dependabot.missing.join(", ")}.`,
+    );
+  }
+  if (build.versionFile !== undefined) {
+    lines.push(
+      `- \`${build.versionFile.path}\` (added by OpsCrew): the runtime version the image uses, ${build.versionFile.version}, as recorded in \`opscrew/plan.yaml\` (\`app.build.runtime\`).`,
+    );
+  }
+  if (build.baseline !== undefined) {
+    lines.push(
+      build.baseline.length === 0
+        ? `- \`${build.dockerfile}\` ${BASELINE_MET}.`
+        : `- \`${build.dockerfile}\` (yours, unchanged) misses OpsCrew's image baseline:`,
+      ...build.baseline.map(
+        (finding) => `  - line ${finding.line}: ${finding.title}. Fix: ${finding.remediation}`,
+      ),
+    );
+  }
+  return lines;
+}
+
+/** The checklist's lines that check the image: the build, and the container answering. */
+function buildChecks(input: PullRequestBodyInput): string[] {
+  const { name, port, healthPath } = input.app;
+  const { build } = input;
+  const named = codeBuilder(build?.builder);
+  if (named !== undefined) {
+    return [
+      `- [ ] The image is built with ${named} in the deploy workflow: after the merge, its build job succeeds and the deploy's health check of \`${healthPath}\` passes.`,
+    ];
+  }
+  const custom =
+    build !== undefined && (build.dockerfile !== "Dockerfile" || build.context !== ".");
+  const command = custom
+    ? `docker build -f ${build.dockerfile} -t ${name} ${build.context}`
+    : `docker build -t ${name} .`;
+  return [
+    `- [ ] The image builds: \`${command}\``,
+    `- [ ] The container starts and \`http://localhost:${port}${healthPath}\` answers 200: \`docker run --rm -p ${port}:${port} --env-file .env ${name}\``,
+  ];
 }
 
 /** What a missing health endpoint means for deploys, in one plain sentence. */
@@ -125,6 +209,7 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
     lines.push("", "## Notes", "");
     for (const note of input.appNotes ?? []) lines.push(`- ${note}`);
   }
+  if (input.build !== undefined) lines.push(...buildSection(input.build));
 
   lines.push("", "## Reports", "");
   if (input.reports.length === 0) lines.push("No OpsCrew reports were included.");
@@ -144,13 +229,11 @@ export function renderPullRequestBody(input: PullRequestBodyInput): string {
     );
   }
 
-  const { name, port } = input.app;
   lines.push(
     "",
     "## Review checklist",
     "",
-    `- [ ] The image builds: \`docker build -t ${name} .\``,
-    `- [ ] The container starts and \`http://localhost:${port}${health}\` answers 200: \`docker run --rm -p ${port}:${port} --env-file .env ${name}\``,
+    ...buildChecks(input),
     "- [ ] Every edit keeps the app's behaviour the same.",
     "- [ ] No secret values appear anywhere in this diff.",
   );

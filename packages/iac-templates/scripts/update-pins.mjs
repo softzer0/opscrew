@@ -10,27 +10,26 @@
 // label from the registry, then each dependency buildpack's buildpack.toml at the version the
 // builder lists, and writes the versions available on the builder's stack.
 //
-// Every request is anonymous. Tests never run this script; its helpers are in update-pins-lib.ts.
+// Every request is anonymous. Tests never run this script; its helpers are in update-pins-lib.ts,
+// and its registry requests in src/registry.ts (shared with `opscrew adapt`).
 
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { ACTIONS, IMAGES, TOOLS } from "../src/pins.ts";
+import { imageDigest, registryRequest } from "../src/registry.ts";
 import {
   assetSha256,
   buildpackTomlUrl,
   buildpackVersion,
   dependencyVersions,
   formatActionPin,
-  MANIFEST_ACCEPT,
   OFFER_SOURCES,
   parseActionPin,
-  parseBearerChallenge,
   parseImageRef,
   platformManifest,
   readBuilderConfig,
-  registryOf,
   replaceOffers,
   replacePin,
   setToolChecksum,
@@ -40,42 +39,8 @@ import {
 const pinsFile = fileURLToPath(new URL("../src/pins.ts", import.meta.url));
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
-/**
- * `GET`/`HEAD` of `/v2/<name>/<path>` on the image's registry, asking anonymously and answering a
- * bearer challenge with an anonymous pull token.
- */
-async function registry(repo, path, { method = "GET", accept = MANIFEST_ACCEPT } = {}) {
-  const { host, name } = registryOf(repo);
-  const url = `https://${host}/v2/${name}/${path}`;
-  let response = await fetch(url, { method, headers: { Accept: accept } });
-  if (response.status === 401) {
-    const challenge = parseBearerChallenge(response.headers.get("www-authenticate") ?? "");
-    const tokenUrl = new URL(challenge.realm);
-    if (challenge.service) tokenUrl.searchParams.set("service", challenge.service);
-    tokenUrl.searchParams.set("scope", challenge.scope ?? `repository:${name}:pull`);
-    const tokenResponse = await fetch(tokenUrl);
-    if (!tokenResponse.ok) {
-      throw new Error(`${host} refused a pull token for ${repo} (${tokenResponse.status}).`);
-    }
-    const { token, access_token } = await tokenResponse.json();
-    response = await fetch(url, {
-      method,
-      headers: { Accept: accept, Authorization: `Bearer ${token ?? access_token}` },
-    });
-  }
-  if (!response.ok) throw new Error(`${host} answered ${response.status} for ${repo} ${path}.`);
-  return response;
-}
-
-/** The index digest (hex) of `repo:tag`. */
-async function imageDigest(repo, tag) {
-  const response = await registry(repo, `manifests/${tag}`, { method: "HEAD" });
-  const digest = /^sha256:([0-9a-f]{64})$/.exec(
-    response.headers.get("docker-content-digest") ?? "",
-  );
-  if (!digest) throw new Error(`The registry sent no digest for ${repo}:${tag}.`);
-  return digest[1];
-}
+/** `GET` of `/v2/<name>/<path>` on the image's registry, with the global fetch. */
+const registry = (repo, path) => registryRequest(fetch, repo, path);
 
 async function github(path) {
   const response = await fetch(`https://api.github.com${path}`, {
@@ -99,7 +64,7 @@ async function updatePins(source) {
   const changes = [];
   for (const [key, { ref }] of Object.entries(IMAGES)) {
     const { repo, tag } = parseImageRef(ref);
-    const next = `${repo}:${tag}@sha256:${await imageDigest(repo, tag)}`;
+    const next = `${repo}:${tag}@${await imageDigest(fetch, repo, tag)}`;
     if (next === ref) continue;
     source = replacePin(source, ref, next);
     changes.push(`IMAGES.${key}: ${next}`);

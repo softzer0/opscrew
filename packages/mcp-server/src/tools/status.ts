@@ -1,5 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { moveInProgress, moveProvider, phaseStatusLines, providerProfile } from "@opscrew/agents";
+import {
+  buildStatusLines,
+  moveInProgress,
+  moveProvider,
+  phaseStatusLines,
+  providerProfile,
+} from "@opscrew/agents";
 import { exists, toPosixRelative } from "@opscrew/core";
 import { type Retarget, readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
@@ -35,8 +41,8 @@ function billing(move: Retarget): string {
 }
 
 /**
- * `opscrew_status`: which phases have run (from `.opscrew/state.json`), which artefacts exist and
- * the next step. Read-only.
+ * `opscrew_status`: which phases have run (from `.opscrew/state.json`), which artefacts exist, the
+ * plan's image builder and deploy strategy, and the next step. Read-only.
  */
 export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): void {
   server.registerTool(
@@ -44,7 +50,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -110,6 +116,7 @@ export function registerStatusTool(server: McpServer, deps: ResolvedMcpDeps): vo
           ...Object.values(artifacts).map(
             (a) => `  ${a.path}: ${a.exists ? "present" : "missing"}`,
           ),
+          ...(plan === undefined ? [] : ["", ...buildStatusLines(plan)]),
           ...moveLines,
           "",
           `Next: ${step}`,

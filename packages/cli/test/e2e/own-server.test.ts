@@ -45,6 +45,7 @@ import {
   findLeaks,
   initRepoWithBareOrigin,
   listFiles,
+  networkCalls,
   plantedSecrets,
   readPlan,
   ScriptedApprovals,
@@ -111,7 +112,7 @@ describe.skipIf(GIT === undefined)(`example ${EXAMPLE} on a server the user owns
     const code = await run(ctx, ...args);
     outputs.set(`${args.join(" ")} (stdout)`, ctx.output);
     outputs.set(`${args.join(" ")} (stderr)`, ctx.errors);
-    expect(ctx.fetchUrls, `${args.join(" ")} fetched`).toEqual([]);
+    expect(networkCalls(args, ctx.fetchUrls), `${args.join(" ")} fetched`).toEqual([]);
     return { code, ctx, text: ctx.output + ctx.errors };
   }
 

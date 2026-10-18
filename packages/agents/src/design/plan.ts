@@ -194,6 +194,14 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   const releaseCommand = releaseCommandInImage(facts);
   const build = input.build;
   const tags = requirements.deployTags;
+  // The user's own Dockerfile is built where detection found it; OpsCrew's goes into the app's
+  // folder. Both are built from the repository root (`buildContext` stays `.`).
+  const dockerfile =
+    build?.builder === "own-dockerfile" && facts.docker.dockerfile !== undefined
+      ? facts.docker.dockerfile
+      : appDirOf(facts) !== "."
+        ? appDockerfile(facts).path
+        : undefined;
 
   return DeployPlanSchema.parse({
     schemaVersion: 1,
@@ -203,8 +211,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       name: appNameFor(facts),
       port: appPortFor(facts),
       healthPath: healthRouteFor(facts, input.signals).path,
-      // An app in a subfolder is built from the repository root (`buildContext` stays `.`).
-      ...(appDirOf(facts) !== "." ? { dockerfile: appDockerfile(facts).path } : {}),
+      ...(dockerfile !== undefined ? { dockerfile } : {}),
       // Database migrations, run before each new version takes traffic (FR-813).
       ...(releaseCommand !== undefined ? { releaseCommand } : {}),
       env: [...env.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),

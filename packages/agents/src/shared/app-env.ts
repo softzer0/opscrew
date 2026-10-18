@@ -182,8 +182,16 @@ export interface AppEnvironment {
   appEnv: string;
   /** Contents of `OPSCREW_DB_ENV` when Postgres is self-hosted. */
   dbEnv?: string;
-  /** Contents of `OPSCREW_BUILD_ENV`: client-exposed values passed as Docker build arguments. */
+  /**
+   * Contents of `OPSCREW_BUILD_ENV`: the client-exposed values the plan does not mark secret,
+   * passed to the build as build arguments (baked into the image).
+   */
   buildEnv: string;
+  /**
+   * Contents of `OPSCREW_BUILD_SECRETS`: the client-exposed values the plan marks secret (the
+   * Dockerfile's rule), which reach the build only as BuildKit secret mounts.
+   */
+  buildSecrets: string;
   /** Variable names set (never values), for display and audit. */
   names: string[];
   /** Optional variables left unset: the app uses the default in its code. */
@@ -198,7 +206,8 @@ export interface AppEnvironment {
   /**
    * The same values by name, exactly as set (no env-file quoting), for a target that takes them one
    * by one, such as a Portainer stack's environment: `app` holds what {@link appEnv} holds, `build`
-   * what {@link buildEnv} holds, `db` what {@link dbEnv} holds. Never logged.
+   * what {@link buildEnv} and {@link buildSecrets} hold, `db` what {@link dbEnv} holds. Never
+   * logged.
    */
   values: {
     app: Record<string, string>;
@@ -220,6 +229,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   const local = parseDotenv(options.dotenvText ?? "");
   const app = new Map<string, string>();
   const build = new Map<string, string>();
+  const buildSecrets = new Map<string, string>();
   const missing: string[] = [];
   const defaulted: string[] = [];
   const unresolved: string[] = [];
@@ -284,7 +294,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       if (/[\r\n]/.test(value)) {
         throw new OpsCrewError("INVALID_INPUT", `${variable.name} must be a single line.`);
       }
-      build.set(variable.name, value);
+      (variable.secret ? buildSecrets : build).set(variable.name, value);
     } else {
       app.set(variable.name, value);
     }
@@ -302,6 +312,9 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
 
   const sortedLines = (values: Map<string, string>, format: (n: string, v: string) => string) =>
     [...values.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([n, v]) => format(n, v));
+  const buildLines = (values: Map<string, string>) =>
+    `${sortedLines(values, (n, v) => `${n}=${v}`).join("\n")}\n`;
+  const allBuild = [...build.entries(), ...buildSecrets.entries()];
   return {
     appEnv: `${sortedLines(app, dotenvLine).join("\n")}\n`,
     ...(db !== undefined
@@ -314,14 +327,15 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
           ].join("\n"),
         }
       : {}),
-    buildEnv: `${sortedLines(build, (n, v) => `${n}=${v}`).join("\n")}\n`,
-    names: [...new Set([...app.keys(), ...build.keys()])].sort(),
+    buildEnv: buildLines(build),
+    buildSecrets: buildLines(buildSecrets),
+    names: [...new Set([...app.keys(), ...allBuild.map(([name]) => name)])].sort(),
     defaulted,
     unresolved,
     generated,
     values: {
       app: Object.fromEntries([...app.entries()].sort(([a], [b]) => a.localeCompare(b))),
-      build: Object.fromEntries([...build.entries()].sort(([a], [b]) => a.localeCompare(b))),
+      build: Object.fromEntries(allBuild.sort(([a], [b]) => a.localeCompare(b))),
       ...(db !== undefined ? { db } : {}),
     },
   };

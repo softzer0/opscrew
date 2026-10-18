@@ -187,3 +187,13 @@ export class ScriptedApprovals implements ApprovalHandler {
     };
   }
 }
+
+/**
+ * The requests `opscrew <args>` sent in a flow that runs offline: every one, except the registry
+ * lookups `adapt` makes for a runtime image OpsCrew has no pin for (the recording fetch fails them,
+ * so the Dockerfile pins that image by tag only).
+ */
+export function networkCalls(args: readonly string[], urls: readonly string[]): string[] {
+  if (args[0] !== "adapt") return [...urls];
+  return urls.filter((url) => !url.startsWith("https://registry-1.docker.io/v2/"));
+}

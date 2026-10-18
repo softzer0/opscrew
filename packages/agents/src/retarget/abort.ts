@@ -279,7 +279,15 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     );
   }
   const { retarget: _aborted, ...rest } = session.plan;
-  const restored: DeployPlan = { ...rest, target: from, ...(cost !== undefined ? { cost } : {}) };
+  // The old server's deploy settings and image build, as recorded when the move started.
+  const { build: _moved, ...unbuilt } = rest.app;
+  const restored: DeployPlan = {
+    ...rest,
+    app: move.from.build === undefined ? unbuilt : { ...unbuilt, build: move.from.build },
+    target: from,
+    deploy: move.from.deploy ?? rest.deploy,
+    ...(cost !== undefined ? { cost } : {}),
+  };
   await writeFinalFiles(session, restored, layoutOf(session, "both"), "infra");
   const oldAddress = oldServer(session);
   const oldHost = oldAddress.ipv4;

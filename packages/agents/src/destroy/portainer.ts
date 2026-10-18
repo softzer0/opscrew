@@ -86,7 +86,11 @@ const WORDS: CloudflareRemovalWords = {
 };
 
 /** The deploy secrets a Portainer setup stores (in redeploy mode `cloudflare`, the webhook's too). */
-const SECRET_NAMES = [DEPLOY_SECRETS.buildEnv, ...Object.values(PORTAINER_DEPLOY_SECRETS)];
+const SECRET_NAMES = [
+  DEPLOY_SECRETS.buildEnv,
+  DEPLOY_SECRETS.buildSecrets,
+  ...Object.values(PORTAINER_DEPLOY_SECRETS),
+];
 
 /** Stops (`PHASE_PRECONDITION`, nothing changed) when the teardown plan cannot run. */
 function requireNoStackBlockers(plan: StackPlan, name: string): void {

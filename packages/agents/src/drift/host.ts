@@ -15,6 +15,7 @@ import {
 import { listText, lowerFirst, sha256Hex } from "@opscrew/core";
 import {
   DEPLOY_SECRETS,
+  keepNewerPins,
   type RenderContext,
   renderCaddyfile,
   renderCompose,
@@ -25,7 +26,7 @@ import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
 import { readRequirements } from "../provision/render";
 import type { CloudflareApi } from "../provision/types";
-import { lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
+import { committedText, lastHostSetup, passwordLoginChoice, readDeployPublicKey } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 
 /** One way the user's own server differs from what OpsCrew set up. Never a secret or an address. */
@@ -357,11 +358,13 @@ export interface ExpectedRuntimeFiles {
 /**
  * The SHA-256 of `opscrew/runtime/compose.yaml` and `opscrew/runtime/Caddyfile` as OpsCrew renders
  * them from `plan` now (the deploy workflow copies exactly these to /srv/app). Both read only the
- * plan and the contact email for certificates, so no secret and no connection is needed.
+ * plan and the contact email for certificates, so no secret and no connection is needed. The
+ * Compose file keeps the newer pins of `committedCompose`, its committed copy (FR-1222).
  */
 export function expectedRuntimeFiles(
   plan: DeployPlan,
   ctx: Pick<RenderContext, "opscrewVersion" | "acmeEmail">,
+  committedCompose = "",
 ): ExpectedRuntimeFiles {
   // The Caddyfile does not depend on the repository or the deploy key (a test checks both files
   // match the full render), so these stay empty here.
@@ -373,7 +376,7 @@ export function expectedRuntimeFiles(
   };
   return {
     rendered: {
-      "compose.yaml": sha256Hex(renderCompose(plan).content),
+      "compose.yaml": sha256Hex(keepNewerPins(committedCompose, renderCompose(plan).content)),
       Caddyfile: sha256Hex(renderCaddyfile(plan, full).content),
     },
     dbEnv: plan.services.postgres,
@@ -671,7 +674,7 @@ export async function ownHostDrift(
   const passwordLogins = passwordLoginChoice(setup, facts);
   const tunnelId = options.tunnelId ?? facts.tunnel.tunnelId ?? undefined;
   const webSources = await driftWebSources(deps, plan, options.cloudflare, setup, facts);
-  const desired = desiredHost(
+  const desired = await desiredHost(
     deps,
     {
       session,
@@ -687,10 +690,11 @@ export async function ownHostDrift(
     },
   );
   const contactEmail = (await readRequirements(deps))?.contactEmail;
-  const runtimeFiles = expectedRuntimeFiles(plan, {
-    opscrewVersion: deps.version,
-    ...(contactEmail ? { acmeEmail: contactEmail } : {}),
-  });
+  const runtimeFiles = expectedRuntimeFiles(
+    plan,
+    { opscrewVersion: deps.version, ...(contactEmail ? { acmeEmail: contactEmail } : {}) },
+    await committedText(deps.paths.root, [renderCompose(plan).path]),
+  );
   return {
     differences: hostDifferences(
       facts,

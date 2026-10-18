@@ -29,6 +29,7 @@ import {
   applyStackPlanAudited,
   approvalEntry,
   approveAndWriteRenderedFiles,
+  committedStackPins,
   desiredStacks,
   infrastructureOutputs,
   inspectAudited,
@@ -292,10 +293,12 @@ export async function provisionPortainer(
   // The user's word on the image's visibility, as given now or recorded by an earlier run.
   const publicImage = options.publicImage ?? connection.publicImage ?? false;
   const imagePrivate = !publicImage;
+  const committed = await committedStackPins(root);
   const desired = (fingerprints?: DesiredValueFingerprints): DesiredStacks =>
     desiredStacks(plan, {
       connection,
       github,
+      committed,
       repositoryPrivate: repository.private,
       imagePrivate,
       ...(fingerprints !== undefined ? { fingerprints } : {}),

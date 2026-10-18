@@ -208,6 +208,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
 
     expect(s.github.deleted.sort()).toEqual([
       "OPSCREW_BUILD_ENV",
+      "OPSCREW_BUILD_SECRETS",
       "OPSCREW_PORTAINER_ACCESS_CLIENT_ID",
       "OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET",
       "OPSCREW_PORTAINER_WEBHOOK_URL",

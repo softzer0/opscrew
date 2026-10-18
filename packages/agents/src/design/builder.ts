@@ -44,7 +44,7 @@ const isBuildpacksLanguage = (language: RuntimeLanguage): language is Buildpacks
   Object.hasOwn(BUILDPACKS_OFFERS, language);
 
 /** Builder names in a sentence. */
-const BUILDER_NAMES: Readonly<Record<ImageBuilder, string>> = {
+export const BUILDER_NAMES: Readonly<Record<ImageBuilder, string>> = {
   "generated-dockerfile": "OpsCrew's generated Dockerfile",
   "own-dockerfile": "your own Dockerfile",
   buildpacks: "Buildpacks",

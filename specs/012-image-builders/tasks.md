@@ -161,7 +161,7 @@ Effort`.
 
 ## Phase 4: Flows
 
-- [ ] T1207 [US1] [US2] [US4] Adapt, provision, retarget and status wiring, and the own-Dockerfile checks, in `packages/agents/src/{adapt,provision,retarget,status,shared,portainer}/**`, `packages/secops/src/rules/**`
+- [X] T1207 [US1] [US2] [US4] Adapt, provision, retarget and status wiring, and the own-Dockerfile checks, in `packages/agents/src/{adapt,provision,retarget,status,shared,portainer}/**`, `packages/secops/src/rules/**`
   - Owns: those paths (+ tests); the import lines that follow in `packages/cli/src/**` and `packages/mcp-server/src/**`
   - Reads: plan.md "7. Wiring"; spec FR-1202, FR-1205, FR-1206, FR-1221, FR-1222
   - Depends: T1203, T1204, T1205, T1206

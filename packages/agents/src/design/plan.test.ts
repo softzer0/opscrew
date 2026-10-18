@@ -18,6 +18,7 @@ import {
   nextPostgresFacts,
   staticSpaFacts,
 } from "../testing";
+import { chooseBuilder } from "./builder";
 import { deriveCodeChanges } from "./code-changes";
 import { buildDesignOptions } from "./options";
 import { appNameFor, appPortFor, optionToPlan } from "./plan";
@@ -102,6 +103,18 @@ describe("optionToPlan", () => {
       { name: "NEXTAUTH_SECRET", secret: true, source: "generated" },
       { name: "NEXT_PUBLIC_SITE_URL", secret: false, source: "user" },
     ]);
+  });
+
+  it("builds the user's own Dockerfile from where detection found it", async () => {
+    const facts = nextPostgresFacts({ docker: { dockerfile: "docker/Dockerfile.prod" } });
+    const requirements = makeRequirements();
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    const build = chooseBuilder(facts, undefined, "amd64");
+    if ("refused" in build) throw new Error(build.refused);
+    expect(build.builder).toBe("own-dockerfile");
+    const plan = optionToPlan(option, { facts, requirements, now: NOW, codeChanges: [], build });
+    expect(plan.app).toMatchObject({ dockerfile: "docker/Dockerfile.prod", buildContext: "." });
   });
 
   it("serves a static site on 8080 with / as the health path and no DNS", async () => {

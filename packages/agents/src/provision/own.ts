@@ -11,6 +11,7 @@ import {
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, plural } from "@opscrew/core";
 import {
+  keepNewerPins,
   renderPortainerCompose,
   renderTunnelConnectorCompose,
   sshHostname,
@@ -22,6 +23,7 @@ import type { PhaseDeps } from "../context";
 import {
   addressFromOutputs,
   approveAndApplyHostPlan,
+  committedText,
   ensureSecretFile,
   type HostAdapterApi,
   type HostPlanOutcome,
@@ -199,11 +201,12 @@ function serverSshPort(facts: HostFacts, loginPort: number): number {
  * firewall settings for the access mode, the tunnel connector (with the tunnel's id) whenever the
  * plan has a Cloudflare Tunnel (tunnel mode, or a Portainer subdomain in either mode), Portainer
  * when the plan turns it on, and the web filter with Cloudflare's ranges (`run.webSources`) when
- * the site is served directly behind Cloudflare's proxy.
+ * the site is served directly behind Cloudflare's proxy. The connector's Compose file keeps the
+ * newer pins of its committed copy, so the server runs what Dependabot updated.
  * @throws Error when the plan needs the web filter but `run.webSources` is missing: a host plan
  * must never drop the filter because the ranges were not read.
  */
-export function desiredHost(
+export async function desiredHost(
   deps: Pick<PhaseDeps, "paths">,
   run: Pick<OwnServerRun, "session" | "facts" | "target" | "webSources">,
   input: {
@@ -217,17 +220,21 @@ export function desiredHost(
      */
     withoutTunnel?: boolean;
   },
-): DesiredHost {
+): Promise<DesiredHost> {
   const { plan } = input;
   const filtered = ownWebFromCloudflare(plan);
   if (filtered && run.webSources === undefined) {
     throw new Error("The web filter needs Cloudflare's IP ranges (read them with ownWebSources).");
   }
   const { connection } = run.session;
+  const connector = renderTunnelConnectorCompose(plan);
   const tunnel =
     usesTunnel(plan) && input.withoutTunnel !== true
       ? {
-          compose: renderTunnelConnectorCompose(plan).content,
+          compose: keepNewerPins(
+            await committedText(deps.paths.root, [connector.path]),
+            connector.content,
+          ),
           tunnelId: input.tunnelId ?? PENDING_TUNNEL_ID,
         }
       : undefined;
@@ -332,7 +339,7 @@ export async function prepareOwnServer(
   requireNoBlockers(
     planHost(
       facts,
-      desiredHost(deps, run, {
+      await desiredHost(deps, run, {
         plan,
         deployPublicKey: input.deployPublicKey,
         ...(input.options.passwordLogins !== undefined
@@ -606,7 +613,7 @@ export async function applyOwnHostPlan(
       : undefined;
   const plan = planHost(
     run.facts,
-    desiredHost(deps, run, {
+    await desiredHost(deps, run, {
       plan: input.plan,
       deployPublicKey: input.deployPublicKey,
       ...(tunnel !== undefined ? { tunnelId: tunnel.id } : {}),

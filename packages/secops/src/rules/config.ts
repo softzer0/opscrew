@@ -164,7 +164,12 @@ interface Stage {
 
 const ROOT_USERS = new Set(["root", "0"]);
 
-function scanDockerfile(file: string, text: string): Finding[] {
+/**
+ * The Dockerfile findings of the `opscrew-config` scanner for `text` (the file at repo-relative
+ * `file`): the image baseline (a non-root user, base images pinned by version and digest, no
+ * literal secret in `ENV`/`ARG`), each finding with its fix in `remediation`.
+ */
+export function scanDockerfile(file: string, text: string): Finding[] {
   const findings: Finding[] = [];
   const stages: Stage[] = [];
   for (const instruction of parseDockerfile(text)) {
@@ -196,6 +201,20 @@ function scanDockerfile(file: string, text: string): Finding[] {
               description: `"${image}" ${problem === "latest" ? "uses the moving latest tag" : "has no tag, so Docker pulls latest"}. Builds can silently change or break when a new version is published.`,
               remediation:
                 'Pin the base image to a specific version (for example "node:22-alpine" or "python:3.12-slim"), ideally with its @sha256 digest.',
+              rawMatch: `FROM ${image}`,
+            }),
+          );
+        } else if (isTagOnly(image)) {
+          findings.push(
+            configFinding({
+              ruleId: "config/dockerfile-unpinned-digest",
+              title: "Base image is not pinned by digest",
+              severity: "low",
+              file,
+              line,
+              evidence: `FROM ${image}`,
+              description: `"${image}" is pinned by its tag only. A tag can be moved to another image, so a later build can run code you never tested.`,
+              remediation: `Add the image's digest to the FROM line ("FROM ${image}@sha256:<digest>"; \`docker buildx imagetools inspect ${image}\` shows it). Dependabot keeps digests current.`,
               rawMatch: `FROM ${image}`,
             }),
           );
@@ -266,6 +285,14 @@ function imageTagProblem(image: string): "latest" | "untagged" | undefined {
   const colon = lastSegment.indexOf(":");
   if (colon === -1) return "untagged";
   return lastSegment.slice(colon + 1).toLowerCase() === "latest" ? "latest" : undefined;
+}
+
+/**
+ * Of the images {@link imageTagProblem} accepts, true for one pinned by its tag only: no digest,
+ * and neither `scratch` nor a variable.
+ */
+function isTagOnly(image: string): boolean {
+  return !image.includes("$") && !image.includes("@") && image.toLowerCase() !== "scratch";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -482,7 +509,8 @@ async function scanFile(context: ScanContext, file: string): Promise<Finding[]> 
 
 /**
  * Built-in configuration scanner (`opscrew-config`): Dockerfiles running as root (medium),
- * `latest` or untagged base images (low) and literal secrets in `ENV`/`ARG` (high); Django
+ * `latest` or untagged base images (low), base images without a digest (low) and literal secrets
+ * in `ENV`/`ARG` (high); Django
  * `DEBUG = True` and Flask debug mode (high); CORS `*` combined with credentials (medium);
  * client-exposed env names containing `SECRET`, `SERVICE_ROLE`, `PRIVATE` or `PASSWORD`
  * (critical); and `.env` files that `.gitignore` does not exclude (medium).

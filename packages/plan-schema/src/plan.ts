@@ -386,26 +386,6 @@ const DomainUrlSchema = z
   });
 
 /**
- * A move to another provider in progress (`opscrew retarget`). `plan.target` is already the new
- * target; `plan.deployment` describes the deployment that receives traffic (the old server until
- * the DNS switch). The servers' addresses are never committed: OpsCrew keeps them in its local
- * state (`.opscrew/server.json`). Moves to or from a server the user owns are not available.
- */
-export const RetargetSchema = z.strictObject({
-  /** The deployment being replaced. */
-  from: z.strictObject({ target: CloudTargetSchema }),
-  /** Last completed step. */
-  step: z.enum(["started", "renamed", "created", "deployed", "migrated", "switched"]),
-  /** Set while OpsCrew keeps the old server's app stopped (maintenance window, after the switch). */
-  oldAppStoppedAt: IsoDateTimeSchema.optional(),
-  /** Present once `opscrew retarget --abort` began: its last completed step. */
-  abort: z
-    .strictObject({ step: z.enum(["started", "new-removed", "secrets-restored"]) })
-    .optional(),
-  startedAt: IsoDateTimeSchema,
-});
-
-/**
  * How the app's image is built. Design sets it; with `chosen: user` later designs keep the user's
  * builder unless the baseline or the architecture rules it out.
  */
@@ -453,6 +433,43 @@ export const AppBuildSchema = z.strictObject({
 });
 export type AppBuild = z.output<typeof AppBuildSchema>;
 
+/** How a new version replaces the running one (`plan.deploy`). */
+export const DeploySettingsSchema = z.strictObject({
+  /** `rolling`: the new copy takes traffic once healthy. `recreate`: stop, then start. */
+  strategy: z.enum(["rolling", "recreate"]).default("rolling"),
+  /** Seconds the old copy keeps for open requests. */
+  drainSeconds: z.int().min(5).max(300).default(30),
+  /** Why the strategy is not `rolling`, for example "the server has 512 MB of memory". */
+  reason: z.string().min(1).optional(),
+});
+
+/**
+ * A move to another provider in progress (`opscrew retarget`). `plan.target` is already the new
+ * target; `plan.deployment` describes the deployment that receives traffic (the old server until
+ * the DNS switch). The servers' addresses are never committed: OpsCrew keeps them in its local
+ * state (`.opscrew/server.json`). Moves to or from a server the user owns are not available.
+ */
+export const RetargetSchema = z.strictObject({
+  /**
+   * The deployment being replaced: its target, deploy settings and image build, which an abort
+   * restores (the move may change the strategy and the builder for the new server).
+   */
+  from: z.strictObject({
+    target: CloudTargetSchema,
+    deploy: DeploySettingsSchema.optional(),
+    build: AppBuildSchema.optional(),
+  }),
+  /** Last completed step. */
+  step: z.enum(["started", "renamed", "created", "deployed", "migrated", "switched"]),
+  /** Set while OpsCrew keeps the old server's app stopped (maintenance window, after the switch). */
+  oldAppStoppedAt: IsoDateTimeSchema.optional(),
+  /** Present once `opscrew retarget --abort` began: its last completed step. */
+  abort: z
+    .strictObject({ step: z.enum(["started", "new-removed", "secrets-restored"]) })
+    .optional(),
+  startedAt: IsoDateTimeSchema,
+});
+
 const DeployPlanFieldsSchema = z.strictObject({
   schemaVersion: z.literal(1),
   createdAt: IsoDateTimeSchema,
@@ -496,16 +513,7 @@ const DeployPlanFieldsSchema = z.strictObject({
   }),
   target: DeployTargetSchema,
   /** How a new version replaces the running one. */
-  deploy: z
-    .strictObject({
-      /** `rolling`: the new copy takes traffic once healthy. `recreate`: stop, then start. */
-      strategy: z.enum(["rolling", "recreate"]).default("rolling"),
-      /** Seconds the old copy keeps for open requests. */
-      drainSeconds: z.int().min(5).max(300).default(30),
-      /** Why the strategy is not `rolling`, for example "the server has 512 MB of memory". */
-      reason: z.string().min(1).optional(),
-    })
-    .prefault({}),
+  deploy: DeploySettingsSchema.prefault({}),
   services: z.strictObject({ postgres: z.boolean(), redis: z.boolean() }),
   externalServices: z.array(ServiceKindSchema),
   cost: CostEstimateSchema,

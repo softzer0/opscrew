@@ -1,4 +1,4 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
@@ -10,6 +10,11 @@ import {
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import {
+  IMAGES,
+  PORTAINER_STACK_TEMPLATE_PATH,
+  renderPortainerStack,
+} from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   type PortainerDeployTarget,
@@ -430,7 +435,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     }
 
     // Only the build's values go to GitHub; the app's values live in Portainer.
-    expect([...s.github.secrets.keys()]).toEqual(["OPSCREW_BUILD_ENV"]);
+    expect([...s.github.secrets.keys()]).toEqual(["OPSCREW_BUILD_ENV", "OPSCREW_BUILD_SECRETS"]);
     // The engine never sees Portainer's address in updater mode.
     expect(s.engine.initOptions?.env?.TF_VAR_portainer_origin).toBeUndefined();
 
@@ -462,6 +467,70 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
       await readFile(stackPlanFile(s.deps.paths, result.stackPlanHash as string), "utf8"),
       webhookId,
     );
+  });
+
+  it("builds with the plan's builder and stores the secret build values apart", async () => {
+    const mapsKey = fakeSecret("google-api-key", "portainer");
+    const base = portainerPlan();
+    const plan: DeployPlan = {
+      ...base,
+      app: {
+        ...base.app,
+        env: [
+          ...base.app.env,
+          { name: "NEXT_PUBLIC_SITE", secret: false, source: "user" },
+          { name: "NEXT_PUBLIC_MAPS_KEY", secret: true, source: "user" },
+        ],
+        build: {
+          builder: "railpack",
+          chosen: "user",
+          reason: "You chose Railpack.",
+          runtime: { language: "node", version: "24" },
+        },
+      },
+    };
+    const s = await setup({ plan, changes: APP_TUNNEL });
+    await writeFile(
+      join(s.root, "production.env"),
+      `STRIPE_SECRET_KEY=${STRIPE}\nNEXT_PUBLIC_SITE=https://shop.example.com\nNEXT_PUBLIC_MAPS_KEY=${mapsKey}\n`,
+    );
+    await s.run();
+
+    const workflow = await readFile(join(s.root, ".github/workflows/opscrew-deploy.yml"), "utf8");
+    expect(workflow).toContain("railpack prepare");
+    expect(s.github.secrets.get("OPSCREW_BUILD_ENV")).toBe(
+      "NEXT_PUBLIC_SITE=https://shop.example.com\n",
+    );
+    expect(s.github.secrets.get("OPSCREW_BUILD_SECRETS")).toBe(`NEXT_PUBLIC_MAPS_KEY=${mapsKey}\n`);
+    expect(`${s.deps.reporter.text()}\n${JSON.stringify(s.deps.audit.entries)}`).not.toContain(
+      mapsKey,
+    );
+  });
+
+  it("the connector stack keeps a pin Dependabot updated in the committed stack template", async () => {
+    const plan = portainerPlan({ redeploy: "cloudflare" });
+    const s = await setup({ plan, changes: [...APP_TUNNEL, ...WEBHOOK_TUNNEL] });
+    // The committed template (tunnel web mode: it runs cloudflared too), with Dependabot's newer
+    // digest of cloudflared's tag.
+    const template = renderPortainerStack(plan, {
+      opscrewVersion: s.deps.version,
+      github: { owner: "acme", repo: "shop" },
+      deploySshPublicKey: "",
+    });
+    expect(template.content).toContain(IMAGES.cloudflared.ref);
+    const newer = IMAGES.cloudflared.ref.replace(/sha256:[0-9a-f]{64}/, `sha256:${"e".repeat(64)}`);
+    await mkdir(join(s.root, "opscrew/runtime"), { recursive: true });
+    await writeFile(
+      join(s.root, PORTAINER_STACK_TEMPLATE_PATH),
+      template.content.replace(IMAGES.cloudflared.ref, newer),
+    );
+    await s.git(s.root, "add", "-A");
+    await s.git(s.root, "commit", "-qm", "Dependabot: cloudflared");
+
+    await s.run();
+    const connector = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop-portainer-tunnel");
+    expect(connector?.file).toContain(newer);
+    expect(connector?.file).not.toContain(IMAGES.cloudflared.ref);
   });
 
   it("shows no changes and changes nothing in Portainer when run again", async () => {
@@ -695,6 +764,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
     expect(s.fake.stacks.some((stack) => stack.Name === "opscrew-shop-updater")).toBe(false);
     expect(Object.fromEntries(s.github.secrets)).toEqual({
       OPSCREW_BUILD_ENV: expect.any(String),
+      OPSCREW_BUILD_SECRETS: expect.any(String),
       OPSCREW_PORTAINER_WEBHOOK_URL: `https://portainer-shop.example.com/api/stacks/webhooks/${webhookId}`,
       OPSCREW_PORTAINER_ACCESS_CLIENT_ID: ACCESS_ID,
       OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET: ACCESS_SECRET,

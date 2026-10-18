@@ -6,6 +6,7 @@ import { listProjectFiles } from "@opscrew/detect";
 import {
   type CodeChangeKind,
   type DeployPlan,
+  type ImageBuilder,
   type ProjectFacts,
   RepoPathSchema,
 } from "@opscrew/plan-schema";
@@ -245,12 +246,16 @@ function hasEnvExample(facts: ProjectFacts, signals: CodeChangeSignals): boolean
  * `outputFileTracingRoot` for an app in a monorepo folder), and one `secret-removal` per source
  * file with a hard-coded secret found by the scan (`secrets/*`, `gitleaks/*`,
  * `supabase/service-role-*`; `.env` files are excluded). Ids are stable: the kind, plus a number
- * for kinds that can repeat (`port-config-1`, `secret-removal-2`). All start `pending`.
+ * for kinds that can repeat (`port-config-1`, `secret-removal-2`). All start `pending`. The
+ * Dockerfile change is derived only when OpsCrew's Dockerfile builds the image (`builder`
+ * `generated-dockerfile`, or none chosen): Buildpacks, Railpack and the user's own Dockerfile
+ * need none.
  */
 export function deriveCodeChanges(
   facts: ProjectFacts,
   scan?: ScanFindings,
   signals: CodeChangeSignals = {},
+  builder?: ImageBuilder,
 ): CodeChange[] {
   const changes: CodeChange[] = [];
   const add = (id: string, kind: CodeChangeKind, path: string, reason: string) => {
@@ -258,7 +263,8 @@ export function deriveCodeChanges(
   };
 
   const dockerfile = appDockerfile(facts);
-  if (!dockerfile.exists) {
+  const generated = builder === undefined || builder === "generated-dockerfile";
+  if (generated && !dockerfile.exists) {
     add(
       "dockerfile",
       "dockerfile",

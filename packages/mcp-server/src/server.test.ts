@@ -427,6 +427,9 @@ describe("createOpscrewMcpServer", () => {
     expect(selected.isError, textOf(selected)).toBeFalsy();
     const status = await h.call("opscrew_status");
     expect(dataOf(status).phases.design.status).toBe("ok");
+    // The builder and the deploy strategy, with their reasons.
+    expect(textOf(status)).toMatch(/\nImage builder: generated-dockerfile\. \S/);
+    expect(textOf(status)).toContain("\nDeploys: rolling. New versions start next to");
     expect(dataOf(h.outputs[1] as CallToolResult).facts.platformExport.platform).toBe("lovable");
 
     expectNoFakeSecrets(h.outputs);

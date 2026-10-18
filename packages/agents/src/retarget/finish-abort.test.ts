@@ -1,7 +1,7 @@
 import { access, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { findExecutable, NodeCommandRunner } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { previewDeploymentFiles } from "../provision";
 import { readServerAddresses, serverAddressesFile } from "../shared";
@@ -515,6 +515,34 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
       expect(await exists(join(h.paths.stateDir, "retarget-pending.json"))).toBe(false);
     },
   );
+
+  it("restores the deploy settings and the image build the move changed for the new server", async () => {
+    const h = await moveHarness();
+    const before = await readArtifact("plan", h.paths.files.plan);
+    const deploy = { strategy: "recreate" as const, drainSeconds: 45 };
+    const build = {
+      builder: "buildpacks" as const,
+      chosen: "auto" as const,
+      reason: "Before the move.",
+      runtime: { language: "node" as const, version: "24" },
+    };
+    await writeArtifact("plan", h.paths.files.plan, {
+      ...before,
+      app: { ...before.app, build },
+      deploy,
+    });
+    crashAfter(h, "created");
+    await expect(run(h)).rejects.toThrow("interrupted");
+    const moving = await readArtifact("plan", h.paths.files.plan);
+    expect(moving.deploy).toEqual({ strategy: "rolling", drainSeconds: 45 });
+    expect(moving.app.build?.builder).toBe("generated-dockerfile");
+    expect(moving.retarget?.from).toMatchObject({ deploy, build });
+
+    expect(await abort(h)).toMatchObject({ step: "aborted", done: true });
+    const restored = await readArtifact("plan", h.paths.files.plan);
+    expect(restored.deploy).toEqual(deploy);
+    expect(restored.app.build).toEqual(build);
+  });
 
   it("lifts a new Hetzner server's protection before deleting it", async () => {
     const h = await moveHarness({ from: "digitalocean" });

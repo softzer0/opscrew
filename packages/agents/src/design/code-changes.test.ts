@@ -253,6 +253,21 @@ describe("collectCodeChangeSignals", () => {
     );
   });
 
+  it("derives the Dockerfile change only when OpsCrew's Dockerfile builds the image", () => {
+    const facts = makeFacts({ languages: ["go"], packageManager: "none" });
+    const has = (builder?: Parameters<typeof deriveCodeChanges>[3]) =>
+      deriveCodeChanges(facts, undefined, {}, builder).some((c) => c.kind === "dockerfile");
+    expect(has()).toBe(true);
+    expect(has("generated-dockerfile")).toBe(true);
+    for (const builder of ["buildpacks", "railpack", "own-dockerfile"] as const) {
+      expect(has(builder), builder).toBe(false);
+    }
+    // The .dockerignore keeps secrets out of Railpack's build context too.
+    expect(deriveCodeChanges(facts, undefined, {}, "railpack").map((c) => c.kind)).toContain(
+      "dockerignore",
+    );
+  });
+
   it("asks a Django app without STATIC_ROOT to set it, so collectstatic works in the image", async () => {
     const facts = makeFacts({
       languages: ["python"],

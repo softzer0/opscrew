@@ -42,6 +42,7 @@ import {
   type AppEnvironment,
   adapterBlocked,
   assembleAppEnv,
+  committedStackPins,
   desiredStacks,
   diffRenderedFiles,
   gitClient,
@@ -470,7 +471,10 @@ export async function portainerDrift(
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);
   const changedFiles = diff.changed.map((file) => file.path);
-  const template = files.find((file) => file.path === PORTAINER_STACK_TEMPLATE_PATH)?.content;
+  // With the committed copy's newer pins kept, as the deploy workflow writes the branch from it.
+  const template = [...diff.created, ...diff.changed, ...diff.unchanged].find(
+    (file) => file.path === PORTAINER_STACK_TEMPLATE_PATH,
+  )?.content;
 
   // 3. The Cloudflare root: refresh-only and normal plans, both discarded.
   const { engine, env } = await driftEngine(deps, current, options, stateKind);
@@ -570,6 +574,7 @@ export async function portainerDrift(
   const desired = desiredStacks(current, {
     connection,
     github,
+    committed: await committedStackPins(deps.paths.root),
     repositoryPrivate: repository.private,
     imagePrivate: !publicImage,
     ...(fingerprints !== undefined ? { fingerprints } : {}),

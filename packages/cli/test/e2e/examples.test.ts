@@ -28,6 +28,7 @@ import {
   exampleNames,
   findLeaks,
   initRepoWithBareOrigin,
+  networkCalls,
   plantedSecrets,
   readExpected,
   readPlan,
@@ -119,7 +120,7 @@ describe.skipIf(GIT === undefined).each(EXAMPLES)("example %s", (example) => {
     outputs.set(`${args.join(" ")} (stdout)`, ctx.output);
     outputs.set(`${args.join(" ")} (stderr)`, ctx.errors);
     // Offline: no command in this flow may touch the network.
-    expect(ctx.fetchUrls, `${args.join(" ")} fetched`).toEqual([]);
+    expect(networkCalls(args, ctx.fetchUrls), `${args.join(" ")} fetched`).toEqual([]);
     return { code, ctx, text: ctx.output + ctx.errors };
   }
 

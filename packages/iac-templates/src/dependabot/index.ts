@@ -22,8 +22,8 @@ const PACKAGE_MANAGER_ECOSYSTEM: Partial<Record<PackageManager, string>> = {
 };
 
 /**
- * Dependabot ecosystem of each runtime whose packages no detected package manager covers. Java has
- * none: the facts do not say whether it builds with Maven or Gradle.
+ * Dependabot ecosystem of each runtime whose packages no detected package manager covers. Java's
+ * is its build tool, which the caller names ({@link JavaBuild}).
  */
 const RUNTIME_ECOSYSTEM: Partial<Record<RuntimeLanguage, string>> = {
   ruby: "bundler",
@@ -70,13 +70,21 @@ function rooted(dir: string): string {
   return dir === "." ? "/" : `/${dir}`;
 }
 
+/** The build tool of a Java app, which is also its Dependabot ecosystem. */
+export type JavaBuild = "maven" | "gradle";
+
 /**
  * `.github/dependabot.yml`: weekly updates with minor and patch versions grouped, one entry per
  * detected ecosystem and folder, plus the Dockerfile (when the builder uses one), the Compose files
- * in `opscrew/runtime` and the GitHub Actions. Runtime base images get no major updates. The
- * caller adds it only when the repository has no Dependabot configuration.
+ * in `opscrew/runtime` and the GitHub Actions. Runtime base images get no major updates. A Java
+ * app's entry needs its build tool, `javaBuild` (`pom.xml` or `build.gradle[.kts]`). The caller
+ * adds the file only when the repository has no Dependabot configuration.
  */
-export function renderDependabot(facts: ProjectFacts, plan: DeployPlan): RenderedFile {
+export function renderDependabot(
+  facts: ProjectFacts,
+  plan: DeployPlan,
+  javaBuild?: JavaBuild,
+): RenderedFile {
   const entries: Record<string, unknown>[] = [];
   const seen = new Set<string>();
   const add = (ecosystem: string | undefined, directory: string) => {
@@ -91,7 +99,7 @@ export function renderDependabot(facts: ProjectFacts, plan: DeployPlan): Rendere
   const jsWorkspace = facts.monorepo && (pm === "npm" || pm === "bun");
   add(pm, jsWorkspace ? "/" : appDir);
   const runtime = plan.app.build?.runtime.language;
-  add(runtime === undefined ? undefined : RUNTIME_ECOSYSTEM[runtime], appDir);
+  add(runtime === "java" ? javaBuild : runtime && RUNTIME_ECOSYSTEM[runtime], appDir);
 
   const builder = plan.app.build?.builder;
   if (builder === undefined || builder === "generated-dockerfile" || builder === "own-dockerfile") {

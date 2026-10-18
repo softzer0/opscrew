@@ -1,7 +1,7 @@
 /**
- * Pure helpers of `scripts/update-pins.mjs`: parsing image and action pins, registry challenges,
- * release and builder metadata, and rewriting values in `src/pins.ts`. Tested in
- * `src/pins.test.ts`; nothing here touches the network.
+ * Pure helpers of `scripts/update-pins.mjs`: parsing image and action pins, release and builder
+ * metadata, and rewriting values in `src/pins.ts`. Tested in `src/pins.test.ts`; nothing here
+ * touches the network. The registry requests are in `src/registry.ts`.
  */
 import type { BUILDPACKS_OFFERS, PinArch, ToolKey } from "../src/pins";
 
@@ -23,43 +23,6 @@ export function parseImageRef(ref: string): ImageRef {
   if (!match) throw new Error(`Not an image reference of the form repo:tag[@sha256:…]: ${ref}`);
   const [, repo, tag, digest] = match as unknown as [string, string, string, string | undefined];
   return digest === undefined ? { repo, tag } : { repo, tag, digest };
-}
-
-/** The registry host and repository name of an image, with Docker Hub's defaults. */
-export function registryOf(repo: string): { host: string; name: string } {
-  const [first, ...rest] = repo.split("/");
-  if (rest.length > 0 && first !== undefined && /[.:]/.test(first)) {
-    return { host: first, name: rest.join("/") };
-  }
-  return { host: "registry-1.docker.io", name: rest.length > 0 ? repo : `library/${repo}` };
-}
-
-/** Manifest types to ask for, so a multi-arch image answers with its index digest. */
-export const MANIFEST_ACCEPT = [
-  "application/vnd.oci.image.index.v1+json",
-  "application/vnd.docker.distribution.manifest.list.v2+json",
-  "application/vnd.oci.image.manifest.v1+json",
-  "application/vnd.docker.distribution.manifest.v2+json",
-].join(", ");
-
-/** The parameters of a registry's `WWW-Authenticate: Bearer …` challenge. */
-export function parseBearerChallenge(header: string): {
-  realm: string;
-  service?: string;
-  scope?: string;
-} {
-  if (!/^Bearer\s/i.test(header)) throw new Error(`Not a bearer challenge: ${header}`);
-  const params: Record<string, string> = {};
-  for (const [, key, value] of header.matchAll(/(\w+)="([^"]*)"/g)) {
-    if (key !== undefined && value !== undefined) params[key] = value;
-  }
-  const { realm, service, scope } = params;
-  if (realm === undefined) throw new Error(`The bearer challenge names no realm: ${header}`);
-  return {
-    realm,
-    ...(service === undefined ? {} : { service }),
-    ...(scope === undefined ? {} : { scope }),
-  };
 }
 
 /**

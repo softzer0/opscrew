@@ -1,4 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
+import { IMAGES } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import { testPlan } from "../testing";
 import { PORTAINER_VERSION, portainerSettings, withPortainer } from "./settings";
@@ -26,6 +27,12 @@ describe("portainerSettings", () => {
       access: "local",
     });
     expect(PORTAINER_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("pins the version of the Portainer image in pins.ts, so it lives in one place", () => {
+    expect(IMAGES.portainer.ref.startsWith(`portainer/portainer-ce:${PORTAINER_VERSION}@`)).toBe(
+      true,
+    );
   });
 
   it("expands a bare label to the zone and keeps the allowed emails", () => {

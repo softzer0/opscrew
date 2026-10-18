@@ -10,6 +10,7 @@ import type { ApprovalRecord, RemoteExec } from "@opscrew/contracts";
 import { exists, OpsCrewError } from "@opscrew/core";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import {
+  keepNewerPins,
   portainerHostname,
   renderPortainerCompose,
   renderTunnelConnectorCompose,
@@ -41,6 +42,7 @@ import {
   approvalEntry,
   approveAndApplyHostPlan,
   approveAndWriteRenderedFiles,
+  committedText,
   diffRenderedFiles,
   ensureDeployKey,
   githubCoordinates,
@@ -850,9 +852,14 @@ async function cloudHostChange(
         { hint: `Run \`${input.command}\` again; it plans what is missing.` },
       );
     }
+    // The connector runs with the newer pins of its committed Compose file.
+    const rendered = renderTunnelConnectorCompose(plan);
     connector = {
       dir: CLOUD_TUNNEL_DIR,
-      compose: renderTunnelConnectorCompose(plan).content,
+      compose: keepNewerPins(
+        await committedText(deps.paths.root, [rendered.path]),
+        rendered.content,
+      ),
       tunnelId,
       needsToken: true,
     };
