@@ -25,6 +25,9 @@ cicd:
   deployTags:
     enabled: false
     release: false                  # also a GitHub Release naming the image digest
+  imageRetention:
+    enabled: true                   # founder 2026-10-18: on by default
+    keep: 10                        # 2–100; never the running or the previous image
 ```
 
 **Validation:**

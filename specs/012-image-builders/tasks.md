@@ -27,7 +27,7 @@ Effort`.
   - Reads: data-model.md; plan.md "1. Plan, facts and pins"; research.md (pins used, R3 and R7 results); `packages/iac-templates/src/workflow/shared.ts` (the actions and the Trivy image pinned today)
   - Depends: —
   - Accept:
-    - **`plan.yaml`** gains `app.build`, `deploy`, `supplyChain` and `cicd.deployTags`, exactly as data-model.md, with zod validation and defaults. Existing plans without these fields still parse: `deploy` defaults to rolling with 30 s, signing off, tags off, and `app.build` absent until design sets it.
+    - **`plan.yaml`** gains `app.build`, `deploy`, `supplyChain`, `cicd.deployTags` and `cicd.imageRetention`, exactly as data-model.md, with zod validation and defaults. Existing plans without these fields still parse: `deploy` defaults to rolling with 30 s, signing off, tags off, and `app.build` absent until design sets it.
     - **`ProjectFacts.runtimeVersions`** gains `ruby`, `go`, `java`, `dotnet`, `php` and `rust`, read from the files in data-model.md. Detect tests use small fixtures per language.
     - **`pins.ts` exports `IMAGES`, `TOOLS`, `ACTIONS`, `RUNTIME_DEFAULTS` and `BUILDPACKS_OFFERS`:**
       - images as `repo:tag@sha256:…`: node 24 and its alpine variant, python, caddy, postgres, valkey, kamal-proxy v0.10.2, cloudflared, trivy, curl, the Paketo Noble builder and run image, the Railpack frontend v0.42.0;
@@ -116,6 +116,10 @@ Effort`.
       - `OPSCREW_BUILD_ENV` becomes build args and `OPSCREW_BUILD_SECRETS` becomes secrets. A test proves no secret name reaches `build-args`.
     - **The switch.** `switchCommands` renders rolling and recreate as the contract says: the release command first, then `kamal-proxy deploy` through `docker compose exec -T proxy`. The old container is removed on success, and the new one on failure, with exit 1 and the builder hint (the automatic builder and its `plan.yaml` line). The database and cache are never named in an `up` after the release.
     - **Signing:** a separate job with `id-token: write` and `cosign sign --yes <digest>`, only with `supplyChain.sign`.
+    - **Image retention** (FR-1229): a separate job after a healthy deploy, holding only `packages: write`.
+      - With `cicd.imageRetention.enabled`, it keeps the newest `keep` deployed `<sha>` versions with their untagged children (attestations, platform manifests). It never deletes the running or the previous digest, and deletes the rest through the GitHub API.
+      - It always deletes the `build-<sha>` intermediate versions once the seal is pushed.
+      - A test covers the selection logic: an index with children, tags, and the running/previous digests.
     - **Deploy tags:** a separate job after a healthy deploy, holding only `contents: write`. It creates `deploy-<UTC yyyymmdd-hhmmss>` on the commit, plus a release naming the digest when `release`.
     - **Portainer workflow:** it gets the same build. Its deploy stays as today.
     - **Snapshots:** one per builder, per strategy, and per option on and off.

@@ -344,6 +344,15 @@ chosen) point at the deployed commits. Turn it off and check that no tag is crea
 - **FR-1222**: A pin updated by the user or by Dependabot MUST NOT be reverted by OpsCrew's next
   provision.
 
+**Image retention**
+
+- **FR-1229**: After a deploy passes its health check, OpsCrew MUST prune old deployed images in the
+  repository's container registry (founder, 2026-10-18; on by default):
+  - it keeps the newest 10 deployed images, with their SBOM and provenance;
+  - it never deletes the running or the previous image;
+  - the number can be changed, or pruning switched off, in `plan.yaml`;
+  - the intermediate build images of Buildpacks and Railpack builds are always deleted once sealed.
+
 **Deploy tags**
 
 - **FR-1223**: Tagging deploys MUST be offered and off by default. When it is on, each deploy that
